@@ -1,0 +1,1244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>CellML Explorer</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&family=Syne:wght@400;600;800&display=swap');
+  :root {
+    --bg:#090d12; --bg1:#0d1219; --bg2:#111820; --bg3:#161f2a;
+    --border:#1e2d3d; --accent:#00d4aa; --accent2:#4f8ef7;
+    --accent3:#f7c948; --danger:#f74848; --csv:#c084fc;
+    --text:#c8daea; --muted:#4a6070;
+    --mono:'JetBrains Mono',monospace; --sans:'Syne',sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0;}
+  body{background:var(--bg);color:var(--text);font-family:var(--mono);font-size:12px;
+    height:100vh;display:flex;flex-direction:column;overflow:hidden;}
+
+  /* ── TOP BAR ── */
+  #topbar{background:var(--bg1);border-bottom:1px solid var(--border);padding:8px 16px;
+    display:flex;align-items:center;gap:12px;flex-shrink:0;}
+  #topbar h1{font-family:var(--sans);font-size:15px;font-weight:800;color:var(--accent);
+    letter-spacing:.05em;white-space:nowrap;}
+  .btn{background:var(--bg3);border:1px solid var(--border);color:var(--text);
+    padding:5px 12px;border-radius:4px;cursor:pointer;font-family:var(--mono);
+    font-size:11px;transition:all .15s;white-space:nowrap;}
+  .btn:hover{border-color:var(--accent);color:var(--accent);}
+  .btn.primary{border-color:var(--accent);color:var(--accent);}
+  .btn.primary:hover{background:var(--accent);color:var(--bg);}
+  .btn.csv-btn{border-color:var(--csv);color:var(--csv);}
+  .btn.csv-btn:hover{background:var(--csv);color:var(--bg);}
+  #model-name{font-size:11px;color:var(--accent3);font-family:var(--mono);}
+  .sim-ctrl{display:flex;align-items:center;gap:8px;margin-left:auto;}
+  .sim-ctrl label{color:var(--muted);font-size:10px;}
+  .sim-ctrl input[type=number]{width:60px;background:var(--bg3);border:1px solid var(--border);
+    color:var(--text);padding:4px 6px;border-radius:3px;font-family:var(--mono);font-size:11px;}
+
+  /* ── MAIN ── */
+  #main{display:flex;flex:1;overflow:hidden;}
+
+  /* ── LEFT PANEL: sliders ── */
+  #left{width:260px;min-width:220px;border-right:1px solid var(--border);
+    display:flex;flex-direction:column;overflow:hidden;background:var(--bg1);}
+  .panel-head{padding:8px 12px;font-size:9px;letter-spacing:.15em;color:var(--muted);
+    text-transform:uppercase;border-bottom:1px solid var(--border);background:var(--bg2);
+    display:flex;align-items:center;justify-content:space-between;flex-shrink:0;}
+  .badge{background:var(--bg3);border:1px solid var(--border);color:var(--accent);
+    border-radius:10px;padding:1px 7px;font-size:9px;}
+  #sliders-container{flex:1;overflow-y:auto;padding:8px;}
+  #sliders-container::-webkit-scrollbar{width:4px;}
+  #sliders-container::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px;}
+  .slider-card{background:var(--bg2);border:1px solid var(--border);border-radius:6px;
+    padding:8px 10px;margin-bottom:6px;}
+  .slider-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:5px;}
+  .slider-name{color:var(--accent);font-size:11px;font-weight:500;}
+  .slider-val{color:var(--accent3);font-size:10px;min-width:80px;text-align:right;}
+  input[type=range]{flex:1;height:3px;-webkit-appearance:none;appearance:none;
+    background:var(--border);border-radius:2px;outline:none;cursor:pointer;}
+  input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:12px;height:12px;
+    border-radius:50%;background:var(--accent);cursor:pointer;border:2px solid var(--bg);}
+  input[type=range]::-moz-range-thumb{width:12px;height:12px;border-radius:50%;
+    background:var(--accent);cursor:pointer;border:2px solid var(--bg);}
+  .slider-row{display:flex;align-items:center;gap:6px;margin-bottom:3px;}
+  .slider-bounds{display:flex;justify-content:space-between;font-size:9px;color:var(--muted);}
+  .tog{font-size:9px;color:var(--muted);cursor:pointer;border:1px solid var(--border);
+    border-radius:3px;padding:1px 5px;transition:all .15s;}
+  .tog.on{color:var(--accent2);border-color:var(--accent2);}
+  .smb{font-size:9px;color:var(--muted);cursor:pointer;padding:1px 5px;
+    border:1px solid transparent;border-radius:3px;transition:all .15s;}
+  .smb:hover{color:var(--danger);border-color:var(--danger);}
+
+  /* ── MIDDLE: plot ── */
+  #middle{flex:1;display:flex;flex-direction:column;overflow:hidden;min-width:0;}
+  #plot-controls{padding:8px 12px;border-bottom:1px solid var(--border);background:var(--bg2);
+    display:flex;align-items:center;gap:10px;flex-shrink:0;flex-wrap:wrap;}
+  .ax-lbl{color:var(--muted);font-size:10px;}
+  select{background:var(--bg3);border:1px solid var(--border);color:var(--text);
+    padding:4px 8px;border-radius:4px;font-family:var(--mono);font-size:11px;
+    cursor:pointer;outline:none;}
+  select:focus{border-color:var(--accent);}
+  #plot-wrap{flex:1;position:relative;overflow:hidden;}
+  #plot-canvas{width:100%;height:100%;display:block;cursor:crosshair;}
+
+  /* ── RIGHT: variables + CSV ── */
+  #right{width:230px;min-width:200px;border-left:1px solid var(--border);
+    display:flex;flex-direction:column;overflow:hidden;background:var(--bg1);}
+  #var-tabs{display:flex;border-bottom:1px solid var(--border);flex-shrink:0;}
+  .vt{flex:1;padding:7px 4px;text-align:center;font-size:9px;letter-spacing:.1em;
+    text-transform:uppercase;cursor:pointer;color:var(--muted);
+    border-bottom:2px solid transparent;transition:all .15s;}
+  .vt.active{color:var(--accent);border-bottom-color:var(--accent);}
+  #var-list{flex:1;overflow-y:auto;padding:6px;min-height:0;}
+  #var-list::-webkit-scrollbar{width:3px;}
+  #var-list::-webkit-scrollbar-thumb{background:var(--border);}
+  .vi{display:flex;align-items:center;justify-content:space-between;
+    padding:5px 8px;border-radius:4px;margin-bottom:2px;border:1px solid transparent;}
+  .vi:hover{background:var(--bg3);}
+  .vi-name{font-size:10px;color:var(--text);}
+  .vi-type{font-size:8px;padding:1px 5px;border-radius:3px;}
+  .t-ode{background:#1a3a2a;color:var(--accent);}
+  .t-alg{background:#1a2a3a;color:var(--accent2);}
+  .t-par{background:#2a2a1a;color:var(--accent3);}
+  .asb{font-size:9px;color:var(--muted);cursor:pointer;padding:1px 5px;
+    border:1px solid var(--border);border-radius:3px;transition:all .15s;}
+  .asb:hover{color:var(--accent3);border-color:var(--accent3);}
+  .asb.added{color:var(--accent);border-color:var(--accent);}
+
+  /* ── CSV PANEL (always visible at bottom of right) ── */
+  #csv-panel{
+    flex-shrink:0;
+    border-top:2px solid var(--csv);
+    background:var(--bg2);
+    display:flex;flex-direction:column;
+  }
+  #csv-head{
+    padding:8px 12px;font-size:9px;letter-spacing:.15em;color:var(--csv);
+    text-transform:uppercase;display:flex;align-items:center;justify-content:space-between;
+    background:rgba(192,132,252,0.07);
+    cursor:pointer;
+    flex-shrink:0;
+  }
+  #csv-head:hover{background:rgba(192,132,252,0.12);}
+  #csv-body{padding:8px;display:none;}
+  #csv-body.open{display:block;}
+
+  /* drop zone */
+  #csv-drop{
+    border:1px dashed var(--csv);
+    border-radius:6px;padding:14px 8px;text-align:center;
+    cursor:pointer;font-size:10px;color:var(--csv);
+    transition:all .2s;margin-bottom:8px;
+    background:rgba(192,132,252,0.04);
+    position:relative;
+  }
+  #csv-drop:hover,#csv-drop.over{background:rgba(192,132,252,0.12);}
+  #csv-drop input{display:none;}
+  #csv-drop .drop-icon{font-size:20px;display:block;margin-bottom:4px;}
+  #csv-loaded{font-size:9px;color:var(--accent2);margin-top:3px;word-break:break-all;}
+
+  .csv-row{display:flex;align-items:center;gap:6px;margin-bottom:6px;}
+  .csv-row label{font-size:9px;color:var(--muted);width:55px;flex-shrink:0;}
+  .csv-row select{flex:1;font-size:10px;padding:3px 5px;}
+  .csv-row input[type=color]{width:28px;height:22px;border:1px solid var(--border);
+    background:none;padding:1px;border-radius:3px;cursor:pointer;}
+
+  /* dot style options */
+  .csv-opt-row{display:flex;align-items:center;gap:6px;margin-bottom:5px;}
+  .csv-opt-row label{font-size:9px;color:var(--muted);width:55px;}
+  .csv-opt-row select,.csv-opt-row input[type=range]{flex:1;}
+
+  #csv-stats{
+    background:var(--bg3);border:1px solid var(--border);border-radius:4px;
+    padding:6px 8px;font-size:9px;color:var(--muted);margin-top:6px;line-height:1.8;
+  }
+  #csv-stats .sv{color:var(--accent3);}
+
+  /* ── STATUS BAR ── */
+  #statusbar{background:var(--bg1);border-top:1px solid var(--border);padding:4px 12px;
+    font-size:10px;color:var(--muted);display:flex;align-items:center;gap:16px;flex-shrink:0;}
+  .ok{color:var(--accent);} .err{color:var(--danger);} .warn{color:var(--accent3);}
+
+  /* ── LOAD OVERLAY ── */
+  #overlay{position:fixed;inset:0;background:rgba(9,13,18,.9);display:flex;
+    align-items:center;justify-content:center;z-index:100;backdrop-filter:blur(6px);}
+  #overlay.hidden{display:none;}
+  #dz{border:2px dashed var(--accent);border-radius:16px;padding:60px 80px;text-align:center;transition:all .2s;}
+  #dz.over{background:rgba(0,212,170,.06);}
+  #dz h2{font-family:var(--sans);font-size:24px;font-weight:800;color:var(--accent);margin-bottom:10px;}
+  #dz p{color:var(--muted);font-size:12px;margin-bottom:20px;}
+  .empty{padding:20px;text-align:center;color:var(--muted);font-size:10px;line-height:1.8;}
+
+  /* tooltip */
+  #tooltip{position:fixed;background:var(--bg2);border:1px solid var(--border);
+    border-radius:5px;padding:5px 9px;font-size:10px;color:var(--text);
+    pointer-events:none;display:none;z-index:50;white-space:nowrap;}
+</style>
+</head>
+<body>
+
+<!-- overlay -->
+<div id="overlay">
+  <div id="dz">
+    <h2>CellML Explorer</h2>
+    <p>Drop a .cellml file here, or click to browse</p>
+    <button class="btn primary" onclick="document.getElementById('fih').click()">Open CellML File</button>
+    <br/><br/>
+    <button class="btn csv-btn" onclick="document.getElementById('csv-input').click()">
+      Load Experimental Data (CSV)
+    </button>
+    <input type="file" id="fih" accept=".cellml,.xml"/>
+  </div>
+</div>
+
+<!-- top bar -->
+<div id="topbar">
+  <h1>⬡ CellML Explorer</h1>
+  <span style="color:var(--border)">|</span>
+  <div id="model-name">No model loaded</div>
+  <button class="btn" onclick="document.getElementById('fih').click()">Open CellML</button>
+  <div class="sim-ctrl">
+    <label>t₀</label><input type="number" id="ts" value="0" step="0.1"/>
+    <label>t₁</label><input type="number" id="te" value="20" step="1"/>
+    <label>N</label><input type="number" id="tn" value="200" step="100" min="50"/>
+    <button class="btn primary" onclick="runSim()">▶ Run</button>
+  </div>
+</div>
+
+<!-- main -->
+<div id="main">
+
+  <!-- LEFT: sliders -->
+  <div id="left">
+    <div class="panel-head">
+      Active Sliders
+      <span class="badge" id="sc">0</span>
+    </div>
+    <div id="sliders-container">
+      <div class="empty">Add parameters<br>from the Variables panel →</div>
+    </div>
+  </div>
+
+  <!-- MIDDLE: plot -->
+  <div id="middle">
+    <div id="plot-controls">
+      <span class="ax-lbl">X axis:</span>
+      <select id="xsel" onchange="redraw()"></select>
+      <span class="ax-lbl">Y axis:</span>
+      <select id="ysel" onchange="redraw()"></select>
+      <button class="btn" onclick="addSeries()" style="font-size:10px;padding:4px 9px;">+ Series</button>
+      <div id="slist" style="display:flex;gap:5px;flex-wrap:wrap;align-items:center;"></div>
+    </div>
+    <div id="plot-wrap">
+      <canvas id="plot-canvas"></canvas>
+    </div>
+  </div>
+
+  <!-- RIGHT: variables + CSV -->
+  <div id="right">
+    <!-- variable tabs -->
+    <div id="var-tabs">
+      <div class="vt active" data-tab="params" onclick="switchTab('params')">Params</div>
+      <div class="vt" data-tab="outputs" onclick="switchTab('outputs')">Outputs</div>
+      <div class="vt" data-tab="odes" onclick="switchTab('odes')">ODEs</div>
+    </div>
+    <div id="var-list"><div class="empty">Load a CellML file</div></div>
+
+    <!-- CSV panel -->
+    <div id="csv-panel">
+      <div id="csv-head" onclick="toggleCsv()">
+        <span>📊 Experimental Data</span>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <span id="csv-count" style="display:none;background:rgba(192,132,252,0.2);
+            border:1px solid var(--csv);border-radius:10px;padding:1px 7px;font-size:9px;">0 pts</span>
+          <span id="csv-arrow">▸</span>
+        </div>
+      </div>
+      <div id="csv-body">
+
+        <!-- drop zone -->
+        <div id="csv-drop"
+             onclick="document.getElementById('csv-input').click()"
+             ondragover="event.preventDefault();this.classList.add('over')"
+             ondragleave="this.classList.remove('over')"
+             ondrop="csvDrop(event)">
+          <input type="file" id="csv-input" accept=".csv,.txt" onchange="loadCsvFile(this)"/>
+          <span class="drop-icon">⬡</span>
+          Drop CSV file here<br>or click to browse
+          <div id="csv-loaded"></div>
+        </div>
+
+        <!-- column mapping -->
+        <div id="csv-mapping" style="display:none;">
+          <div class="csv-row">
+            <label>X column:</label>
+            <select id="cxc" onchange="redraw();updateCsvStats()"></select>
+          </div>
+          <div class="csv-row">
+            <label>Y column:</label>
+            <select id="cyc" onchange="redraw();updateCsvStats()"></select>
+          </div>
+          <div class="csv-row">
+            <label>Dot colour:</label>
+            <input type="color" id="csv-color" value="#ffffff" onchange="redraw()"/>
+            <span style="font-size:9px;color:var(--muted);margin-left:4px;">size:</span>
+            <input type="range" id="csv-size" min="2" max="10" value="4" step="0.5"
+              style="width:50px;flex:none;" oninput="redraw()"/>
+          </div>
+          <div class="csv-row">
+            <label>Style:</label>
+            <select id="csv-style" onchange="redraw()">
+              <option value="circle">● Circle</option>
+              <option value="cross">✕ Cross</option>
+              <option value="square">■ Square</option>
+              <option value="filled">⬤ Filled</option>
+            </select>
+          </div>
+          <!-- stats -->
+          <div id="csv-stats"></div>
+        </div>
+
+      </div>
+    </div><!-- /csv-panel -->
+
+  </div><!-- /right -->
+
+</div><!-- /main -->
+
+<div id="statusbar">
+  <span id="sm">Ready — load a CellML file to begin</span>
+  <span id="sv"></span>
+  <span id="ss"></span>
+</div>
+
+<div id="tooltip"></div>
+
+<script>
+// ═══════════════════════════════════════════════════════════════
+//  STATE
+// ═══════════════════════════════════════════════════════════════
+let model=null, simResult=null, sliders={}, csvData=null;
+let currentTab='params', yExtra=[];
+const COLORS=['#00d4aa','#4f8ef7','#f7c948','#f74848','#c084fc','#34d399','#fb923c','#38bdf8'];
+
+// ═══════════════════════════════════════════════════════════════
+//  FILE LOADING — CellML
+// ═══════════════════════════════════════════════════════════════
+document.getElementById('fih').addEventListener('change',function(){if(this.files[0])loadCellML(this.files[0]);});
+const dz=document.getElementById('dz');
+['dragover','dragleave','drop'].forEach(ev=>{
+  dz.addEventListener(ev,e=>{
+    e.preventDefault();
+    if(ev==='dragover') dz.classList.add('over');
+    else if(ev==='dragleave') dz.classList.remove('over');
+    else { dz.classList.remove('over'); const f=e.dataTransfer.files[0]; if(f) loadCellML(f); }
+  });
+});
+document.body.addEventListener('dragover',e=>e.preventDefault());
+document.body.addEventListener('drop',e=>{
+  e.preventDefault();
+  const f=e.dataTransfer.files[0];
+  if(!f) return;
+  if(f.name.match(/\.(cellml|xml)$/i)) loadCellML(f);
+  else if(f.name.match(/\.(csv|txt)$/i)) parseCsvFile(f);
+});
+
+
+function loadCellML(file){
+  const r=new FileReader();
+  r.onload=e=>{
+    try{
+      const xml=new DOMParser().parseFromString(e.target.result,'application/xml');
+      const pe=xml.querySelector('parsererror');
+      if(pe) throw new Error('XML error: '+pe.textContent.slice(0,80));
+      model=parseCellML(xml);
+      // terminate any existing worker so it re-initialises with new model
+      if(_worker){ _worker.terminate(); _worker=null; _workerBusy=false; _pendingRun=false; }
+      _serializedModel=null;  // invalidate cache
+      document.getElementById('overlay').classList.add('hidden');
+      document.getElementById('model-name').textContent=model.name;
+      setStatus('Loaded: '+model.name,
+        model.params.length+'p / '+model.odes.length+' ODEs / '+model.algebraic.length+' alg','','ok');
+      sliders={}; yExtra=[];
+      buildVarList(); buildAxisSelects(); runSim();
+    }catch(err){setStatus('','','Error: '+err.message,'err');console.error(err);}
+  };
+  r.readAsText(file);
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  NAMESPACE-SAFE DOM HELPERS
+// ═══════════════════════════════════════════════════════════════
+function lname(el){ return el.localName||el.nodeName.replace(/^.*:/,''); }
+
+function childByLocal(el,name){
+  for(const c of el.children){ if(lname(c)===name) return c; }
+  return null;
+}
+
+function hasDescendant(el,name){
+  if(lname(el)===name) return true;
+  for(const c of el.children){ if(hasDescendant(c,name)) return true; }
+  return false;
+}
+
+function walkElements(root,cb){
+  const w=document.createTreeWalker(root,NodeFilter.SHOW_ELEMENT);
+  let n=w.nextNode();
+  while(n){ cb(n); n=w.nextNode(); }
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  CELLML PARSER
+// ═══════════════════════════════════════════════════════════════
+function parseCellML(xml){
+  const modelEl=xml.documentElement;
+  const modelName=modelEl.getAttribute('name')||'model';
+
+  // collect all variables
+  const variables={};
+  walkElements(xml,n=>{
+    if(lname(n)!=='variable') return;
+    const name=n.getAttribute('name'); if(!name) return;
+    variables[name]={
+      name, units:n.getAttribute('units')||'',
+      initVal:n.hasAttribute('initial_value')?parseFloat(n.getAttribute('initial_value')):null,
+      hasInit:n.hasAttribute('initial_value'),
+      isOde:false, isAlgebraic:false
+    };
+  });
+
+  // find ODE vars: look for <diff> elements
+  const odeVars=new Set(), odeMap={};
+  walkElements(xml,n=>{
+    if(lname(n)!=='diff') return;
+    const diffApply=n.parentElement; if(!diffApply) return;
+    // climb to enclosing <apply><eq/>...
+    let eqApply=diffApply.parentElement;
+    while(eqApply && lname(eqApply)!=='apply') eqApply=eqApply.parentElement;
+    if(!eqApply) return;
+    if(!eqApply.children[0]||lname(eqApply.children[0])!=='eq') return;
+    // find the differentiated variable (ci inside diffApply, not inside bvar)
+    let varName=null;
+    for(const c of diffApply.children){
+      if(lname(c)==='ci') varName=c.textContent.trim();
+    }
+    if(!varName) return;
+    odeVars.add(varName);
+    if(variables[varName]) variables[varName].isOde=true;
+    const rhsEl=eqApply.children[2];
+    if(rhsEl) odeMap[varName]={rhsEl};
+  });
+
+  // find algebraic vars: <apply><eq/><ci>name</ci><rhs/></apply> where lhs not diff
+  const algMap={};
+  walkElements(xml,n=>{
+    if(lname(n)!=='apply') return;
+    const first=n.children[0]; if(!first||lname(first)!=='eq') return;
+    const lhsEl=n.children[1]; if(!lhsEl) return;
+    if(hasDescendant(lhsEl,'diff')) return;
+    let lhsName=null;
+    if(lname(lhsEl)==='ci') lhsName=lhsEl.textContent.trim();
+    else { const ci=childByLocal(lhsEl,'ci'); if(ci) lhsName=ci.textContent.trim(); }
+    if(!lhsName||odeVars.has(lhsName)) return;
+    const rhsEl=n.children[2]; if(!rhsEl) return;
+    if(algMap[lhsName]) return; // first assignment wins
+    algMap[lhsName]=rhsEl;
+    if(variables[lhsName]) variables[lhsName].isAlgebraic=true;
+  });
+
+  const params=Object.values(variables).filter(v=>v.hasInit&&!v.isOde&&!v.isAlgebraic);
+  const odes=Object.values(variables).filter(v=>v.isOde);
+  const algebraic=Object.values(variables).filter(v=>v.isAlgebraic);
+
+  console.log('ODEs:',odes.map(v=>v.name));
+  console.log('Params:',params.map(v=>v.name));
+  console.log('Alg:',algebraic.map(v=>v.name));
+
+  return {name:modelName,variables,params,odes,algebraic,odeMap,algMap};
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  MATHML EVALUATOR
+// ═══════════════════════════════════════════════════════════════
+function evalML(el,state){
+  if(!el) return 0;
+  const tag=lname(el);
+  if(tag==='cn') return parseFloat(el.textContent)||0;
+  if(tag==='ci'){ const n=el.textContent.trim(); return n in state?state[n]:0; }
+  if(tag==='pi') return Math.PI;
+  if(tag==='exponentiale') return Math.E;
+  if(tag==='true') return 1;
+  if(tag==='false') return 0;
+  if(tag==='apply'){
+    const op=lname(el.children[0]);
+    const args=Array.from(el.children).slice(1).map(c=>evalML(c,state));
+    switch(op){
+      case 'plus':    return args.reduce((a,b)=>a+b,0);
+      case 'minus':   return args.length===1?-args[0]:args[0]-args[1];
+      case 'times':   return args.reduce((a,b)=>a*b,1);
+      case 'divide':  return args[1]!==0?args[0]/args[1]:NaN;
+      case 'power':   return Math.pow(args[0],args[1]);
+      case 'root':    return args.length===2?Math.pow(args[1],1/args[0]):Math.sqrt(args[0]);
+      case 'abs':     return Math.abs(args[0]);
+      case 'exp':     return Math.exp(args[0]);
+      case 'ln':      return Math.log(Math.max(args[0],1e-300));
+      case 'log':     return Math.log10(Math.max(args[0],1e-300));
+      case 'sin':     return Math.sin(args[0]);
+      case 'cos':     return Math.cos(args[0]);
+      case 'tan':     return Math.tan(args[0]);
+      case 'sinh':    return Math.sinh(args[0]);
+      case 'cosh':    return Math.cosh(args[0]);
+      case 'tanh':    return Math.tanh(args[0]);
+      case 'floor':   return Math.floor(args[0]);
+      case 'ceiling': return Math.ceil(args[0]);
+      case 'eq':      return args[0]===args[1]?1:0;
+      case 'neq':     return args[0]!==args[1]?1:0;
+      case 'leq':     return args[0]<=args[1]?1:0;
+      case 'geq':     return args[0]>=args[1]?1:0;
+      case 'lt':      return args[0]<args[1]?1:0;
+      case 'gt':      return args[0]>args[1]?1:0;
+      case 'and':     return (args[0]&&args[1])?1:0;
+      case 'or':      return (args[0]||args[1])?1:0;
+      case 'not':     return args[0]?0:1;
+      case 'diff':    return 0;
+      default:        return 0;
+    }
+  }
+  if(tag==='piecewise'){
+    for(const piece of el.children){
+      if(lname(piece)!=='piece') continue;
+      if(evalML(piece.children[1],state)) return evalML(piece.children[0],state);
+    }
+    const ow=childByLocal(el,'otherwise');
+    return ow?evalML(ow.children[0],state):0;
+  }
+  return 0;
+}
+
+function evalAlgebraic(state){
+  for(let pass=0;pass<3;pass++){
+    for(const [name,rhsEl] of Object.entries(model.algMap)){
+      state[name]=evalML(rhsEl,state);
+    }
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  SIMULATION — RK4
+// ═══════════════════════════════════════════════════════════════
+function buildState(){
+  const s={};
+  model.params.forEach(p=>{ s[p.name]=sliders[p.name]!==undefined?sliders[p.name].value:p.initVal; });
+  model.odes.forEach(v=>{ s[v.name]=v.initVal!==null?v.initVal:0; });
+  return s;
+}
+
+function getDerivs(state){
+  const d={};
+  model.odes.forEach(v=>{
+    const e=model.odeMap[v.name];
+    d[v.name]=e?evalML(e.rhsEl,state):0;
+  });
+  return d;
+}
+
+function rk4step(state,h){
+  const names=model.odes.map(v=>v.name);
+  function dr(s){ const s2={...s}; evalAlgebraic(s2); return getDerivs(s2); }
+  const k1=dr(state);
+  const s2={...state,t:state.t+.5*h}; names.forEach(n=>s2[n]=state[n]+.5*h*k1[n]);
+  const k2=dr(s2);
+  const s3={...state,t:state.t+.5*h}; names.forEach(n=>s3[n]=state[n]+.5*h*k2[n]);
+  const k3=dr(s3);
+  const s4={...state,t:state.t+h};    names.forEach(n=>s4[n]=state[n]+h*k3[n]);
+  const k4=dr(s4);
+  const next={...state};
+  names.forEach(n=>next[n]=state[n]+(h/6)*(k1[n]+2*k2[n]+2*k3[n]+k4[n]));
+  return next;
+}
+
+
+// ═══════════════════════════════════════════════════════════════
+//  MODEL SERIALISER
+//  Converts parsed MathML DOM nodes into plain JS objects that
+//  can be posted to a Web Worker (no DOM in workers).
+//  Each expression node becomes: {op, val, children:[...]}
+// ═══════════════════════════════════════════════════════════════
+function serializeEl(el){
+  if(!el) return {op:'num',val:0};
+  const tag=lname(el);
+  if(tag==='cn')   return {op:'num',val:parseFloat(el.textContent)||0};
+  if(tag==='ci')   return {op:'var',val:el.textContent.trim()};
+  if(tag==='pi')   return {op:'num',val:Math.PI};
+  if(tag==='exponentiale') return {op:'num',val:Math.E};
+  if(tag==='true') return {op:'num',val:1};
+  if(tag==='false')return {op:'num',val:0};
+  if(tag==='apply'){
+    const opName=lname(el.children[0]);
+    const children=Array.from(el.children).slice(1).map(serializeEl);
+    return {op:opName,children};
+  }
+  if(tag==='piecewise'){
+    const pieces=[];
+    for(const p of el.children){
+      if(lname(p)==='piece')
+        pieces.push({cond:serializeEl(p.children[1]),val:serializeEl(p.children[0])});
+      else if(lname(p)==='otherwise')
+        pieces.push({cond:{op:'num',val:1},val:serializeEl(p.children[0])});
+    }
+    return {op:'piecewise',pieces};
+  }
+  return {op:'num',val:0};
+}
+
+function serializeModel(){
+  // algMap: name → serialised expression tree
+  const algMap={};
+  for(const [name,rhsEl] of Object.entries(model.algMap))
+    algMap[name]=serializeEl(rhsEl);
+  // odeMap: name → serialised expression tree
+  const odeMap={};
+  for(const [name,entry] of Object.entries(model.odeMap))
+    odeMap[name]=serializeEl(entry.rhsEl);
+  return {
+    algMap,
+    odeMap,
+    algOrder: model.algebraic.map(v=>v.name),
+    odeNames: model.odes.map(v=>v.name),
+    paramNames: model.params.map(v=>v.name),
+  };
+}
+
+// Cache serialised model so we don't re-serialise on every slider move
+let _serializedModel=null;
+//  WEB WORKER
+//  Receives plain serialised model + param values, runs RK4,
+//  posts back result arrays. No DOM needed inside the worker.
+// ═══════════════════════════════════════════════════════════════
+const WORKER_CODE=`
+// ── eval serialised expression tree ─────────────────────────
+function ev(node,state){
+  if(!node)return 0;
+  const op=node.op;
+  if(op==='num')return node.val;
+  if(op==='var')return node.val in state?state[node.val]:0;
+  const c=node.children||[];
+  const a=c.map(x=>ev(x,state));
+  switch(op){
+    case 'plus':    return a.reduce((x,y)=>x+y,0);
+    case 'minus':   return a.length===1?-a[0]:a[0]-a[1];
+    case 'times':   return a.reduce((x,y)=>x*y,1);
+    case 'divide':  return a[1]!==0?a[0]/a[1]:NaN;
+    case 'power':   return Math.pow(a[0],a[1]);
+    case 'root':    return a.length===2?Math.pow(a[1],1/a[0]):Math.sqrt(a[0]);
+    case 'abs':     return Math.abs(a[0]);
+    case 'exp':     return Math.exp(a[0]);
+    case 'ln':      return Math.log(Math.max(a[0],1e-300));
+    case 'log':     return Math.log10(Math.max(a[0],1e-300));
+    case 'sin':     return Math.sin(a[0]);
+    case 'cos':     return Math.cos(a[0]);
+    case 'tan':     return Math.tan(a[0]);
+    case 'sinh':    return Math.sinh(a[0]);
+    case 'cosh':    return Math.cosh(a[0]);
+    case 'tanh':    return Math.tanh(a[0]);
+    case 'floor':   return Math.floor(a[0]);
+    case 'ceiling': return Math.ceil(a[0]);
+    case 'eq':      return a[0]===a[1]?1:0;
+    case 'neq':     return a[0]!==a[1]?1:0;
+    case 'leq':     return a[0]<=a[1]?1:0;
+    case 'geq':     return a[0]>=a[1]?1:0;
+    case 'lt':      return a[0]<a[1]?1:0;
+    case 'gt':      return a[0]>a[1]?1:0;
+    case 'and':     return (a[0]&&a[1])?1:0;
+    case 'or':      return (a[0]||a[1])?1:0;
+    case 'not':     return a[0]?0:1;
+    case 'diff':    return 0;
+    case 'piecewise':
+      for(const p of node.pieces){if(ev(p.cond,state))return ev(p.val,state);}
+      return 0;
+    default:return 0;
+  }
+}
+
+// ── algebraic evaluation ─────────────────────────────────────
+function evalAlg(algMap,algOrder,state){
+  for(let pass=0;pass<3;pass++)
+    for(const name of algOrder)
+      state[name]=ev(algMap[name],state);
+}
+
+// ── RK4 ─────────────────────────────────────────────────────
+function rk4step(odeMap,odeNames,algMap,algOrder,state,h){
+  const dr=s=>{const s2={...s};evalAlg(algMap,algOrder,s2);const d={};odeNames.forEach(n=>{d[n]=ev(odeMap[n]||{op:'num',val:0},s2);});return d;};
+  const k1=dr(state);
+  const s2={...state,t:state.t+.5*h}; odeNames.forEach(n=>s2[n]=state[n]+.5*h*k1[n]);
+  const k2=dr(s2);
+  const s3={...state,t:state.t+.5*h}; odeNames.forEach(n=>s3[n]=state[n]+.5*h*k2[n]);
+  const k3=dr(s3);
+  const s4={...state,t:state.t+h};    odeNames.forEach(n=>s4[n]=state[n]+h*k3[n]);
+  const k4=dr(s4);
+  const next={...state};
+  odeNames.forEach(n=>next[n]=state[n]+(h/6)*(k1[n]+2*k2[n]+2*k3[n]+k4[n]));
+  return next;
+}
+
+// ── main ─────────────────────────────────────────────────────
+self.onmessage=function(msg){
+  const {algMap,odeMap,algOrder,odeNames,paramVals,odeInits,t0,t1,N,sent}=msg.data;
+  const h=(t1-t0)/N;
+  const state={...paramVals,...odeInits,t:t0};
+  evalAlg(algMap,algOrder,state);
+
+  const allNames=['t',...odeNames,...algOrder,...Object.keys(paramVals)];
+  const res={}; allNames.forEach(n=>res[n]=new Float64Array(N+1));
+
+  for(let i=0;i<=N;i++){
+    evalAlg(algMap,algOrder,state);
+    allNames.forEach(n=>res[n][i]=n==='t'?state.t:(isFinite(state[n])?state[n]:NaN));
+    if(i<N){
+      const next=rk4step(odeMap,odeNames,algMap,algOrder,state,h);
+      Object.assign(state,next);
+      state.t=t0+(i+1)*h;
+    }
+  }
+  // convert Float64Arrays to regular arrays for transfer
+  const out={};
+  allNames.forEach(n=>out[n]=Array.from(res[n]));
+  self.postMessage({res:out,elapsed:Date.now()-sent});
+};
+`;
+
+let _worker=null, _workerBusy=false, _pendingRun=false;
+
+function ensureWorker(){
+  if(_worker)return;
+  const blob=new Blob([WORKER_CODE],{type:'application/javascript'});
+  _worker=new Worker(URL.createObjectURL(blob));
+  _worker.onmessage=function(e){
+    simResult=e.data.res;
+    _workerBusy=false;
+    setStatus('Model: '+model.name,
+      model.params.length+'p / '+model.odes.length+' ODEs / '+model.algebraic.length+' alg',
+      'Sim ✓ '+e.data.elapsed+'ms','ok');
+    redraw();
+    if(_pendingRun){_pendingRun=false;runSim();}
+  };
+  _worker.onerror=function(err){
+    // worker failed — fall back to synchronous simulation
+    console.warn('Worker error, falling back to sync:',err.message);
+    _worker=null; _workerBusy=false;
+    runSimSync();
+  };
+}
+
+function runSim(){
+  if(!model)return;
+  ensureWorker();
+  if(_workerBusy){_pendingRun=true;return;}
+
+  const t0=parseFloat(document.getElementById('ts').value)||0;
+  const t1=parseFloat(document.getElementById('te').value)||20;
+  const N=Math.max(10,parseInt(document.getElementById('tn').value)||200);
+
+  // ensure model is serialised (cache it — only changes when model file changes)
+  if(!_serializedModel) _serializedModel=serializeModel();
+
+  const paramVals={};
+  model.params.forEach(p=>{
+    paramVals[p.name]=sliders[p.name]!==undefined?sliders[p.name].value:p.initVal;
+  });
+  const odeInits={};
+  model.odes.forEach(v=>{odeInits[v.name]=v.initVal!==null?v.initVal:0;});
+
+  setStatus('Model: '+model.name,
+    model.params.length+'p / '+model.odes.length+' ODEs / '+model.algebraic.length+' alg',
+    '⟳ simulating…','warn');
+
+  _workerBusy=true;
+  _worker.postMessage({
+    ..._serializedModel,
+    paramVals, odeInits, t0, t1, N,
+    sent:Date.now()
+  });
+}
+
+// ── synchronous fallback (used if worker unavailable) ──────────
+function runSimSync(){
+  if(!model)return;
+  const t0=parseFloat(document.getElementById('ts').value)||0;
+  const t1=parseFloat(document.getElementById('te').value)||20;
+  const N=Math.max(10,parseInt(document.getElementById('tn').value)||200);
+  const h=(t1-t0)/N;
+  let state=buildState(); state.t=t0;
+  evalAlgebraic(state);
+  const allNames=['t',...model.odes.map(v=>v.name),...model.algebraic.map(v=>v.name),...model.params.map(v=>v.name)];
+  const res={}; allNames.forEach(n=>res[n]=[]);
+  for(let i=0;i<=N;i++){
+    evalAlgebraic(state);
+    allNames.forEach(n=>res[n].push(n==='t'?state.t:(state[n]!==undefined?state[n]:NaN)));
+    if(i<N){state=rk4step(state,h);state.t=t0+(i+1)*h;}
+  }
+  simResult=res;
+  setStatus('Model: '+model.name,
+    model.params.length+'p / '+model.odes.length+' ODEs / '+model.algebraic.length+' alg',
+    'Sim ✓ (sync)','ok');
+  redraw();
+}
+
+
+// ═══════════════════════════════════════════════════════════════
+//  VARIABLE LIST & TABS
+// ═══════════════════════════════════════════════════════════════
+function switchTab(tab){
+  currentTab=tab;
+  document.querySelectorAll('.vt').forEach(el=>el.classList.toggle('active',el.dataset.tab===tab));
+  buildVarList();
+}
+
+function buildVarList(){
+  if(!model) return;
+  const c=document.getElementById('var-list'); c.innerHTML='';
+  const vars=currentTab==='params'?model.params:currentTab==='outputs'?model.algebraic:model.odes;
+  if(!vars.length){c.innerHTML='<div class="empty">No variables here</div>';return;}
+  vars.forEach(v=>{
+    const d=document.createElement('div'); d.className='vi';
+    const tc=currentTab==='params'?'t-par':currentTab==='outputs'?'t-alg':'t-ode';
+    const tl=currentTab==='params'?'param':currentTab==='outputs'?'alg':'ode';
+    const has=sliders[v.name]!==undefined;
+    d.innerHTML=`<span class="vi-name">${v.name}</span>
+      <div style="display:flex;align-items:center;gap:4px;">
+        <span class="vi-type ${tc}">${tl}</span>
+        ${currentTab==='params'?`<span class="asb ${has?'added':''}"
+          onclick="toggleSlider('${v.name}',${v.initVal})">${has?'✓':'+'}</span>`:''}
+      </div>`;
+    c.appendChild(d);
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  SLIDERS
+// ═══════════════════════════════════════════════════════════════
+function toggleSlider(name,initVal){
+  if(sliders[name]){delete sliders[name];}
+  else{
+    const v=initVal!==null?initVal:1;
+    const av=Math.abs(v)||1;
+    const log=av<1e-2||av>1e4;
+    let mn,mx;
+    if(log){mn=Math.log10(av)-2;mx=Math.log10(av)+2;}
+    else{mn=v*0.01;mx=v*100;}
+    sliders[name]={value:v,initVal:v,log,min:mn,max:mx};
+  }
+  buildSliders(); buildVarList();
+  document.getElementById('sc').textContent=Object.keys(sliders).length;
+  runSim();
+}
+
+function buildSliders(){
+  const c=document.getElementById('sliders-container');
+  if(!Object.keys(sliders).length){c.innerHTML='<div class="empty">Add parameters<br>from Variables →</div>';return;}
+  c.innerHTML='';
+  for(const [name,s] of Object.entries(sliders)){
+    const card=document.createElement('div'); card.className='slider-card';
+    const pos=s.log?(Math.log10(Math.abs(s.value)||1e-30)-s.min)/(s.max-s.min):(s.value-s.min)/(s.max-s.min);
+    card.innerHTML=`
+      <div class="slider-header">
+        <span class="slider-name">${name}</span>
+        <div style="display:flex;gap:4px;align-items:center;">
+          <span class="tog ${s.log?'on':''}" onclick="toggleLog('${name}')">log</span>
+          <span class="smb" onclick="resetSlider('${name}')">↺</span>
+          <span class="smb" onclick="toggleSlider('${name}',null)">✕</span>
+        </div>
+      </div>
+      <div class="slider-header" style="margin-bottom:4px;">
+        <span style="font-size:9px;color:var(--muted);">value</span>
+        <span class="slider-val" id="sv-${name}">${fv(s.value)}</span>
+      </div>
+      <div class="slider-row">
+        <input type="range" id="sl-${name}" min="0" max="1" step="0.0005"
+          value="${Math.max(0,Math.min(1,pos)).toFixed(5)}"
+          oninput="onSI('${name}',this.value)"/>
+      </div>
+      <div class="slider-bounds">
+        <span>${fv(s.log?Math.pow(10,s.min):s.min)}</span>
+        <span onclick="editBounds('${name}')" style="cursor:pointer;color:var(--accent2)">range</span>
+        <span>${fv(s.log?Math.pow(10,s.max):s.max)}</span>
+      </div>`;
+    c.appendChild(card);
+  }
+}
+
+// ── debounce timer ────────────────────────────────────────────
+let _simTimer=null;
+const DEBOUNCE_MS=60;  // ms after last slider move before sim runs
+
+function onSI(name,pos){
+  const s=sliders[name]; if(!s)return;
+  // update value + label IMMEDIATELY — always feels snappy
+  s.value=s.log?Math.pow(10,s.min+parseFloat(pos)*(s.max-s.min)):s.min+parseFloat(pos)*(s.max-s.min);
+  document.getElementById('sv-'+name).textContent=fv(s.value);
+  // defer the heavy simulation until finger/mouse stops moving
+  clearTimeout(_simTimer);
+  _simTimer=setTimeout(runSim, DEBOUNCE_MS);
+}
+
+function toggleLog(name){
+  const s=sliders[name]; s.log=!s.log;
+  const av=Math.abs(s.value)||1;
+  if(s.log){s.min=Math.log10(av)-2;s.max=Math.log10(av)+2;}
+  else{s.min=s.value*0.01;s.max=s.value*100;}
+  buildSliders(); runSim();
+}
+
+function resetSlider(name){sliders[name].value=sliders[name].initVal;buildSliders();runSim();}
+
+function editBounds(name){
+  const s=sliders[name];
+  const lv=s.log?Math.pow(10,s.min):s.min, hv=s.log?Math.pow(10,s.max):s.max;
+  const lo=prompt(`Min for ${name}:`,lv.toExponential(3));
+  if(lo===null)return;
+  const hi=prompt(`Max for ${name}:`,hv.toExponential(3));
+  if(hi===null)return;
+  const ln=parseFloat(lo),hn=parseFloat(hi);
+  if(isNaN(ln)||isNaN(hn)||ln>=hn){alert('Invalid range');return;}
+  if(s.log){s.min=Math.log10(Math.abs(ln)||1);s.max=Math.log10(Math.abs(hn)||1);}
+  else{s.min=ln;s.max=hn;}
+  buildSliders(); runSim();
+}
+
+function fv(v){
+  if(v===null||v===undefined||isNaN(v))return'N/A';
+  if(v===0)return'0';
+  if(Math.abs(v)>=0.001&&Math.abs(v)<10000)return parseFloat(v.toPrecision(5)).toString();
+  return v.toExponential(3);
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  AXIS SELECTS & EXTRA SERIES
+// ═══════════════════════════════════════════════════════════════
+function buildAxisSelects(){
+  if(!model)return;
+  const all=['t',...model.odes.map(v=>v.name),...model.algebraic.map(v=>v.name),...model.params.map(v=>v.name)];
+  ['xsel','ysel'].forEach((id,i)=>{
+    const sel=document.getElementById(id), prev=sel.value;
+    sel.innerHTML=all.map(n=>`<option value="${n}">${n}</option>`).join('');
+    if(all.includes(prev)) sel.value=prev;
+    else sel.value=i===0?'t':(model.algebraic[0]||model.odes[0]||{name:'t'}).name;
+  });
+}
+
+function addSeries(){
+  if(!model)return;
+  const all=['t',...model.odes.map(v=>v.name),...model.algebraic.map(v=>v.name)];
+  const name=prompt('Variable to add as extra Y series:\n\n'+all.join(', '));
+  if(!name||!all.includes(name)||yExtra.includes(name))return;
+  yExtra.push(name); renderSeries(); redraw();
+}
+
+function renderSeries(){
+  document.getElementById('slist').innerHTML=yExtra.map((n,i)=>`
+    <span style="font-size:10px;color:${COLORS[(i+1)%COLORS.length]};background:var(--bg3);
+      border:1px solid var(--border);border-radius:3px;padding:2px 7px;cursor:pointer;"
+      onclick="rmSeries('${n}')">${n} ✕</span>`).join('');
+}
+
+function rmSeries(n){yExtra=yExtra.filter(x=>x!==n);renderSeries();redraw();}
+
+// ═══════════════════════════════════════════════════════════════
+//  CSV LOADING
+// ═══════════════════════════════════════════════════════════════
+function toggleCsv(){
+  const b=document.getElementById('csv-body');
+  b.classList.toggle('open');
+  document.getElementById('csv-arrow').textContent=b.classList.contains('open')?'▾':'▸';
+}
+
+// Auto-open CSV panel on load
+window.addEventListener('load',()=>{
+  document.getElementById('csv-body').classList.add('open');
+  document.getElementById('csv-arrow').textContent='▾';
+});
+
+function csvDrop(e){
+  e.preventDefault();
+  document.getElementById('csv-drop').classList.remove('over');
+  const f=e.dataTransfer.files[0]; if(f) parseCsvFile(f);
+}
+
+function loadCsvFile(inp){if(inp.files[0]) parseCsvFile(inp.files[0]);}
+
+function parseCsvFile(file){
+  const r=new FileReader();
+  r.onload=e=>{
+    const text=e.target.result;
+    // detect delimiter
+    const firstLine=text.split('\n')[0];
+    const delim=firstLine.includes('\t')?'\t':',';
+    const lines=text.trim().split('\n');
+    const cols=lines[0].split(delim).map(h=>h.trim().replace(/^"|"$/g,''));
+    const rows=lines.slice(1)
+      .map(l=>l.split(delim).map(v=>v.trim().replace(/^"|"$/g,'')))
+      .filter(r=>r.some(v=>v!==''));
+    csvData={cols,rows,filename:file.name};
+
+    // populate UI
+    document.getElementById('csv-loaded').textContent=file.name+' ('+rows.length+' rows)';
+    ['cxc','cyc'].forEach((id,i)=>{
+      const sel=document.getElementById(id);
+      sel.innerHTML=cols.map((h,j)=>`<option value="${j}">${h}</option>`).join('');
+      if(i===1&&cols.length>1) sel.value='1';
+    });
+    document.getElementById('csv-mapping').style.display='block';
+    document.getElementById('csv-count').style.display='inline';
+    document.getElementById('csv-count').textContent=rows.length+' pts';
+    updateCsvStats();
+    redraw();
+  };
+  r.readAsText(file);
+}
+
+function updateCsvStats(){
+  if(!csvData) return;
+  const cx=parseInt(document.getElementById('cxc').value);
+  const cy=parseInt(document.getElementById('cyc').value);
+  const xs=csvData.rows.map(r=>parseFloat(r[cx])).filter(isFinite);
+  const ys=csvData.rows.map(r=>parseFloat(r[cy])).filter(isFinite);
+  if(!xs.length) return;
+  const xmin=Math.min(...xs),xmax=Math.max(...xs);
+  const ymin=Math.min(...ys),ymax=Math.max(...ys);
+  document.getElementById('csv-stats').innerHTML=
+    `<div>X (${csvData.cols[cx]}): <span class="sv">${fv(xmin)} → ${fv(xmax)}</span></div>`+
+    `<div>Y (${csvData.cols[cy]}): <span class="sv">${fv(ymin)} → ${fv(ymax)}</span></div>`+
+    `<div>Points: <span class="sv">${csvData.rows.length}</span></div>`;
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  CANVAS PLOT
+// ═══════════════════════════════════════════════════════════════
+function redraw(){
+  const canvas=document.getElementById('plot-canvas');
+  const wrap=document.getElementById('plot-wrap');
+  const dpr=window.devicePixelRatio||1;
+  canvas.width=wrap.clientWidth*dpr;
+  canvas.height=wrap.clientHeight*dpr;
+  canvas.style.width=wrap.clientWidth+'px';
+  canvas.style.height=wrap.clientHeight+'px';
+  const ctx=canvas.getContext('2d');
+  ctx.scale(dpr,dpr);
+  const W=wrap.clientWidth,H=wrap.clientHeight;
+  ctx.fillStyle='#090d12'; ctx.fillRect(0,0,W,H);
+  if(!simResult&&!csvData) return;
+
+  const xn=document.getElementById('xsel').value;
+  const yn=document.getElementById('ysel').value;
+  const series=[
+    {name:yn,color:COLORS[0],x:simResult?simResult[xn]:null,y:simResult?simResult[yn]:null},
+    ...yExtra.map((n,i)=>({name:n,color:COLORS[(i+1)%COLORS.length],
+      x:simResult?simResult[xn]:null,y:simResult?simResult[n]:null}))
+  ].filter(s=>s.x&&s.y);
+
+  // extents
+  let xmin=Infinity,xmax=-Infinity,ymin=Infinity,ymax=-Infinity;
+  series.forEach(s=>{
+    s.x.forEach(v=>{if(isFinite(v)){xmin=Math.min(xmin,v);xmax=Math.max(xmax,v);}});
+    s.y.forEach(v=>{if(isFinite(v)){ymin=Math.min(ymin,v);ymax=Math.max(ymax,v);}});
+  });
+
+  // include CSV in extent
+  if(csvData){
+    const cx=parseInt(document.getElementById('cxc').value);
+    const cy=parseInt(document.getElementById('cyc').value);
+    csvData.rows.forEach(r=>{
+      const a=parseFloat(r[cx]),b=parseFloat(r[cy]);
+      if(isFinite(a)){xmin=Math.min(xmin,a);xmax=Math.max(xmax,a);}
+      if(isFinite(b)){ymin=Math.min(ymin,b);ymax=Math.max(ymax,b);}
+    });
+  }
+
+  if(!isFinite(xmin)){xmin=0;xmax=1;}
+  if(!isFinite(ymin)){ymin=0;ymax=1;}
+
+  const pad={t:30,r:24,b:52,l:72};
+  const pw=W-pad.l-pad.r, ph=H-pad.t-pad.b;
+  const xr=xmax-xmin||1, yr=ymax-ymin||1;
+  const mg=0.06;
+  const x0=xmin-mg*xr, x1=xmax+mg*xr;
+  const y0=ymin-mg*yr, y1=ymax+mg*yr;
+  const tx=v=>pad.l+(v-x0)/(x1-x0)*pw;
+  const ty=v=>pad.t+ph-(v-y0)/(y1-y0)*ph;
+
+  // grid
+  const NT=6;
+  ctx.strokeStyle='#1a2a38'; ctx.lineWidth=1;
+  for(let i=0;i<=NT;i++){
+    const xv=x0+i*(x1-x0)/NT, yv=y0+i*(y1-y0)/NT;
+    ctx.beginPath();ctx.moveTo(tx(xv),pad.t);ctx.lineTo(tx(xv),pad.t+ph);ctx.stroke();
+    ctx.beginPath();ctx.moveTo(pad.l,ty(yv));ctx.lineTo(pad.l+pw,ty(yv));ctx.stroke();
+  }
+  ctx.strokeStyle='#253545'; ctx.lineWidth=1.5;
+  ctx.strokeRect(pad.l,pad.t,pw,ph);
+
+  // tick labels
+  ctx.fillStyle='#4a6070'; ctx.font="10px 'JetBrains Mono'";
+  ctx.textAlign='center';
+  for(let i=0;i<=NT;i++) ctx.fillText(ft(x0+i*(x1-x0)/NT),tx(x0+i*(x1-x0)/NT),pad.t+ph+16);
+  ctx.textAlign='right';
+  for(let i=0;i<=NT;i++) ctx.fillText(ft(y0+i*(y1-y0)/NT),pad.l-6,ty(y0+i*(y1-y0)/NT)+4);
+
+  // axis labels
+  ctx.textAlign='center'; ctx.font="11px 'Syne'"; ctx.fillStyle='#5a7080';
+  ctx.fillText(xn,pad.l+pw/2,H-10);
+  ctx.save(); ctx.translate(14,pad.t+ph/2); ctx.rotate(-Math.PI/2);
+  ctx.fillText(series.map(s=>s.name).join(', '),0,0); ctx.restore();
+
+  // ── CSV data points ──────────────────────────────────────────
+  if(csvData){
+    const cx=parseInt(document.getElementById('cxc').value);
+    const cy=parseInt(document.getElementById('cyc').value);
+    const color=document.getElementById('csv-color').value;
+    const size=parseFloat(document.getElementById('csv-size').value);
+    const style=document.getElementById('csv-style').value;
+
+    ctx.strokeStyle=color; ctx.fillStyle=color; ctx.lineWidth=1.5;
+
+    csvData.rows.forEach(r=>{
+      const a=parseFloat(r[cx]),b=parseFloat(r[cy]);
+      if(!isFinite(a)||!isFinite(b))return;
+      const px=tx(a),py=ty(b);
+      // clip to plot area
+      if(px<pad.l-size||px>pad.l+pw+size||py<pad.t-size||py>pad.t+ph+size)return;
+
+      ctx.beginPath();
+      if(style==='circle'){
+        ctx.arc(px,py,size,0,Math.PI*2);
+        ctx.stroke();
+      } else if(style==='filled'){
+        ctx.arc(px,py,size,0,Math.PI*2);
+        ctx.fill();
+      } else if(style==='cross'){
+        const s2=size*0.85;
+        ctx.moveTo(px-s2,py-s2);ctx.lineTo(px+s2,py+s2);
+        ctx.moveTo(px+s2,py-s2);ctx.lineTo(px-s2,py+s2);
+        ctx.stroke();
+      } else if(style==='square'){
+        ctx.rect(px-size*0.75,py-size*0.75,size*1.5,size*1.5);
+        ctx.stroke();
+      }
+    });
+
+    // legend entry for CSV
+    const lx=pad.l+pw-8, ly=pad.t+16+(series.length)*16+8;
+    ctx.beginPath();
+    ctx.arc(lx-50,ly,4,0,Math.PI*2);
+    ctx.stroke();
+    ctx.font="10px 'JetBrains Mono'"; ctx.textAlign='left';
+    ctx.fillText(csvData.filename||'data',lx-42,ly+4);
+  }
+
+  // ── Simulation lines ─────────────────────────────────────────
+  series.forEach(s=>{
+    if(!s.x||!s.y) return;
+    ctx.beginPath(); ctx.strokeStyle=s.color; ctx.lineWidth=2.2;
+    let first=true;
+    for(let i=0;i<s.x.length;i++){
+      const px=tx(s.x[i]),py=ty(s.y[i]);
+      if(!isFinite(px)||!isFinite(py)){first=true;continue;}
+      first?ctx.moveTo(px,py):ctx.lineTo(px,py); first=false;
+    }
+    ctx.stroke();
+  });
+
+  // ── Legend (sim lines) ────────────────────────────────────────
+  let ly=pad.t+14;
+  series.forEach(s=>{
+    ctx.fillStyle=s.color;
+    ctx.fillRect(pad.l+pw-65,ly-1.5,18,3);
+    ctx.font="10px 'JetBrains Mono'"; ctx.textAlign='left';
+    ctx.fillText(s.name,pad.l+pw-43,ly+4);
+    ly+=16;
+  });
+}
+
+function ft(v){
+  if(v===0)return'0';
+  if(Math.abs(v)>=0.01&&Math.abs(v)<10000) return parseFloat(v.toPrecision(3)).toString();
+  return v.toExponential(1);
+}
+
+// ── tooltip on hover ──────────────────────────────────────────
+document.getElementById('plot-canvas').addEventListener('mousemove',e=>{
+  if(!csvData) return;
+  const canvas=document.getElementById('plot-canvas');
+  const rect=canvas.getBoundingClientRect();
+  const mx=e.clientX-rect.left, my=e.clientY-rect.top;
+
+  const wrap=document.getElementById('plot-wrap');
+  const W=wrap.clientWidth, H=wrap.clientHeight;
+  const pad={t:30,r:24,b:52,l:72};
+  const pw=W-pad.l-pad.r, ph=H-pad.t-pad.b;
+
+  // find data extents (replicated from redraw — lightweight)
+  const xn=document.getElementById('xsel').value;
+  const yn=document.getElementById('ysel').value;
+  let xmin=Infinity,xmax=-Infinity,ymin=Infinity,ymax=-Infinity;
+  if(simResult&&simResult[xn]){
+    simResult[xn].forEach(v=>{if(isFinite(v)){xmin=Math.min(xmin,v);xmax=Math.max(xmax,v);}});
+    simResult[yn].forEach(v=>{if(isFinite(v)){ymin=Math.min(ymin,v);ymax=Math.max(ymax,v);}});
+  }
+  if(csvData){
+    const cx=parseInt(document.getElementById('cxc').value);
+    const cy=parseInt(document.getElementById('cyc').value);
+    csvData.rows.forEach(r=>{
+      const a=parseFloat(r[cx]),b=parseFloat(r[cy]);
+      if(isFinite(a)){xmin=Math.min(xmin,a);xmax=Math.max(xmax,a);}
+      if(isFinite(b)){ymin=Math.min(ymin,b);ymax=Math.max(ymax,b);}
+    });
+  }
+  if(!isFinite(xmin))return;
+  const mg=0.06,xr=xmax-xmin||1,yr=ymax-ymin||1;
+  const x0=xmin-mg*xr,x1=xmax+mg*xr,y0=ymin-mg*yr,y1=ymax+mg*yr;
+  const tx=v=>pad.l+(v-x0)/(x1-x0)*pw;
+  const ty=v=>pad.t+ph-(v-y0)/(y1-y0)*ph;
+
+  // find nearest CSV point
+  const cx=parseInt(document.getElementById('cxc').value);
+  const cy2=parseInt(document.getElementById('cyc').value);
+  const size=parseFloat(document.getElementById('csv-size').value);
+  let best=null, bestD=Infinity;
+  csvData.rows.forEach(r=>{
+    const a=parseFloat(r[cx]),b=parseFloat(r[cy2]);
+    if(!isFinite(a)||!isFinite(b))return;
+    const px=tx(a),py=ty(b);
+    const d=Math.hypot(mx-px,my-py);
+    if(d<bestD&&d<size+8){bestD=d;best={x:a,y:b,row:r};}
+  });
+  const tip=document.getElementById('tooltip');
+  if(best){
+    tip.style.display='block';
+    tip.style.left=(e.clientX+12)+'px';
+    tip.style.top=(e.clientY-10)+'px';
+    tip.textContent=`X=${fv(best.x)}  Y=${fv(best.y)}`;
+  } else {
+    tip.style.display='none';
+  }
+});
+document.getElementById('plot-canvas').addEventListener('mouseleave',()=>{
+  document.getElementById('tooltip').style.display='none';
+});
+
+// ═══════════════════════════════════════════════════════════════
+//  STATUS
+// ═══════════════════════════════════════════════════════════════
+function setStatus(m,v,s,type){
+  const sm=document.getElementById('sm'),sv=document.getElementById('sv'),ss=document.getElementById('ss');
+  sm.textContent=m; sm.className=type==='ok'?'ok':type==='err'?'err':'';
+  sv.textContent=v;
+  ss.textContent=s; ss.className=type==='ok'?'ok':type==='err'?'err':'warn';
+}
+
+window.addEventListener('resize',redraw);
+</script>
+</body>
+</html>
