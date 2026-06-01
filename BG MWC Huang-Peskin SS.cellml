@@ -1,0 +1,585 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<model name="my_model" xmlns="http://www.cellml.org/cellml/1.1#" xmlns:cellml="http://www.cellml.org/cellml/1.1#">
+    <!-- SS oxyhaemoglobin binding using Huang-Peskin model (Note: run the model for t=0 to 20 to cover the range of oxygen partial pressures)-->
+    <units name="dim">
+        <unit units="dimensionless"/>
+    </units>
+    <units name="mM">
+        <unit prefix="milli" units="mole"/>
+        <unit exponent="-1" units="litre"/>
+    </units>
+    <units name="kPa">
+        <unit units="joule"/>
+        <unit exponent="-1" units="litre"/>
+    </units>
+    <units name="kPa_per_s">
+        <unit units="kPa"/>
+        <unit exponent="-1" units="second"/>
+    </units>
+    <units name="mM_per_kPa">
+        <unit units="mM"/>
+        <unit exponent="-1" units="kPa"/>
+    </units>
+    <component name="main">
+        <variable name="t" units="second"/>
+        <!-- oxygen solubility        -->
+        <variable initial_value="0.011" name="alpha_o2" units="mM_per_kPa"/>
+        <variable name="c_o2" units="mM"/>
+        <variable initial_value="0" name="p_o2" units="kPa"/>
+        <math xmlns="http://www.w3.org/1998/Math/MathML">
+            <apply>
+                <eq/>
+                <apply>
+                    <diff/>
+                    <bvar>
+                        <ci>t</ci>
+                    </bvar>
+                    <ci>p_o2</ci>
+                </apply>
+                <cn cellml:units="kPa_per_s">1</cn>
+            </apply>
+            <apply>
+                <eq/>
+                <ci>c_o2</ci>
+                <apply>
+                    <times/>
+                    <ci>alpha_o2</ci>
+                    <ci>p_o2</ci>
+                </apply>
+            </apply>
+        </math>
+        <!--
+ Standard oxygen saturation curve (Figure 2 in Huang & Peskin)
+-->
+        <variable initial_value="2.1915e-2" name="KR_o2" units="mM"/>
+        <variable initial_value="1.1284" name="KT_o2" units="mM"/>
+        <variable name="S_o2_std" units="dim"/>
+        <variable initial_value="4.3e-2" name="K_RT0_std" units="dim"/>
+        <math xmlns="http://www.w3.org/1998/Math/MathML">
+            <apply>
+                <eq/>
+                <ci>S_o2_std</ci>
+                <apply>
+                    <divide/>
+                    <apply>
+                        <plus/>
+                        <apply>
+                            <times/>
+                            <apply>
+                                <divide/>
+                                <apply>
+                                    <times/>
+                                    <ci>K_RT0_std</ci>
+                                    <ci>c_o2</ci>
+                                </apply>
+                                <ci>KR_o2</ci>
+                            </apply>
+                            <apply>
+                                <power/>
+                                <apply>
+                                    <plus/>
+                                    <cn cellml:units="dim">1</cn>
+                                    <apply>
+                                        <divide/>
+                                        <ci>c_o2</ci>
+                                        <ci>KR_o2</ci>
+                                    </apply>
+                                </apply>
+                                <cn cellml:units="dim">3</cn>
+                            </apply>
+                        </apply>
+                        <apply>
+                            <times/>
+                            <apply>
+                                <divide/>
+                                <ci>c_o2</ci>
+                                <ci>KT_o2</ci>
+                            </apply>
+                            <apply>
+                                <power/>
+                                <apply>
+                                    <plus/>
+                                    <cn cellml:units="dim">1</cn>
+                                    <apply>
+                                        <divide/>
+                                        <ci>c_o2</ci>
+                                        <ci>KT_o2</ci>
+                                    </apply>
+                                </apply>
+                                <cn cellml:units="dim">3</cn>
+                            </apply>
+                        </apply>
+                    </apply>
+                    <apply>
+                        <plus/>
+                        <apply>
+                            <times/>
+                            <ci>K_RT0_std</ci>
+                            <apply>
+                                <power/>
+                                <apply>
+                                    <plus/>
+                                    <cn cellml:units="dim">1</cn>
+                                    <apply>
+                                        <divide/>
+                                        <ci>c_o2</ci>
+                                        <ci>KR_o2</ci>
+                                    </apply>
+                                </apply>
+                                <cn cellml:units="dim">4</cn>
+                            </apply>
+                        </apply>
+                        <apply>
+                            <power/>
+                            <apply>
+                                <plus/>
+                                <cn cellml:units="dim">1</cn>
+                                <apply>
+                                    <divide/>
+                                    <ci>c_o2</ci>
+                                    <ci>KT_o2</ci>
+                                </apply>
+                            </apply>
+                            <cn cellml:units="dim">4</cn>
+                        </apply>
+                    </apply>
+                </apply>
+            </apply>
+        </math>
+        <!-- Parameters for dependence on pH and CO2-->
+        <variable initial_value="3.114e-2" name="K_RT0_ref" units="dim"/>
+        <!--        var K_R12: mM {init: 6.6279e-1};-->
+        <variable initial_value="6.6279e-3" name="K_R12" units="mM"/>
+        <variable initial_value="405" name="K_R13" units="mM"/>
+        <variable initial_value="7.5550e-3" name="K_R43" units="mM"/>
+        <!--        var K_T12: mM {init: 7.2101e-5};-->
+        <variable initial_value="7.2101e-5" name="K_T12" units="mM"/>
+        <variable initial_value="8.3066e-1" name="K_T13" units="mM"/>
+        <variable initial_value="1.5880e-5" name="K_T43" units="mM"/>
+        <!--
+ 1st variation with pH=7.5 and pCO2=2kPa (15 mmHg) (LH curve in Figure 2 in Huang & Peskin) 
+-->
+        <variable initial_value="7.5" name="pH_1" units="dim"/>
+        <variable name="c_H_1" units="mM"/>
+        <math xmlns="http://www.w3.org/1998/Math/MathML">
+            <apply>
+                <eq/>
+                <ci>c_H_1</ci>
+                <apply>
+                    <power/>
+                    <cn cellml:units="dim">10</cn>
+                    <apply>
+                        <plus/>
+                        <apply>
+                            <minus/>
+                            <ci>pH_1</ci>
+                        </apply>
+                        <cn cellml:units="dim">3</cn>
+                    </apply>
+                </apply>
+            </apply>
+        </math>
+        <variable initial_value="0.245" name="alpha_CO2" units="mM_per_kPa"/>
+        <variable name="c_CO2_1" units="mM"/>
+        <variable initial_value="2" name="p_CO2_1" units="kPa"/>
+        <math xmlns="http://www.w3.org/1998/Math/MathML">
+            <apply>
+                <eq/>
+                <ci>c_CO2_1</ci>
+                <apply>
+                    <times/>
+                    <ci>alpha_CO2</ci>
+                    <ci>p_CO2_1</ci>
+                </apply>
+            </apply>
+        </math>
+        <variable name="K_RT0_1" units="dim"/>
+        <math xmlns="http://www.w3.org/1998/Math/MathML">
+            <apply>
+                <eq/>
+                <ci>K_RT0_1</ci>
+                <apply>
+                    <times/>
+                    <apply>
+                        <power/>
+                        <apply>
+                            <divide/>
+                            <apply>
+                                <plus/>
+                                <cn cellml:units="dim">1</cn>
+                                <apply>
+                                    <times/>
+                                    <apply>
+                                        <divide/>
+                                        <ci>K_R12</ci>
+                                        <ci>c_H_1</ci>
+                                    </apply>
+                                    <apply>
+                                        <plus/>
+                                        <cn cellml:units="dim">1</cn>
+                                        <apply>
+                                            <times/>
+                                            <apply>
+                                                <divide/>
+                                                <ci>c_CO2_1</ci>
+                                                <ci>K_R13</ci>
+                                            </apply>
+                                            <apply>
+                                                <plus/>
+                                                <cn cellml:units="dim">1</cn>
+                                                <apply>
+                                                    <divide/>
+                                                    <ci>K_R43</ci>
+                                                    <ci>c_H_1</ci>
+                                                </apply>
+                                            </apply>
+                                        </apply>
+                                    </apply>
+                                </apply>
+                            </apply>
+                            <apply>
+                                <plus/>
+                                <cn cellml:units="dim">1</cn>
+                                <apply>
+                                    <times/>
+                                    <apply>
+                                        <divide/>
+                                        <ci>K_T12</ci>
+                                        <ci>c_H_1</ci>
+                                    </apply>
+                                    <apply>
+                                        <plus/>
+                                        <cn cellml:units="dim">1</cn>
+                                        <apply>
+                                            <times/>
+                                            <apply>
+                                                <divide/>
+                                                <ci>c_CO2_1</ci>
+                                                <ci>K_T13</ci>
+                                            </apply>
+                                            <apply>
+                                                <plus/>
+                                                <cn cellml:units="dim">1</cn>
+                                                <apply>
+                                                    <divide/>
+                                                    <ci>K_T43</ci>
+                                                    <ci>c_H_1</ci>
+                                                </apply>
+                                            </apply>
+                                        </apply>
+                                    </apply>
+                                </apply>
+                            </apply>
+                        </apply>
+                        <cn cellml:units="dim">4</cn>
+                    </apply>
+                    <ci>K_RT0_ref</ci>
+                </apply>
+            </apply>
+        </math>
+        <variable name="S_o2_1" units="dim"/>
+        <math xmlns="http://www.w3.org/1998/Math/MathML">
+            <apply>
+                <eq/>
+                <ci>S_o2_1</ci>
+                <apply>
+                    <divide/>
+                    <apply>
+                        <plus/>
+                        <apply>
+                            <times/>
+                            <apply>
+                                <divide/>
+                                <apply>
+                                    <times/>
+                                    <ci>K_RT0_1</ci>
+                                    <ci>c_o2</ci>
+                                </apply>
+                                <ci>KR_o2</ci>
+                            </apply>
+                            <apply>
+                                <power/>
+                                <apply>
+                                    <plus/>
+                                    <cn cellml:units="dim">1</cn>
+                                    <apply>
+                                        <divide/>
+                                        <ci>c_o2</ci>
+                                        <ci>KR_o2</ci>
+                                    </apply>
+                                </apply>
+                                <cn cellml:units="dim">3</cn>
+                            </apply>
+                        </apply>
+                        <apply>
+                            <times/>
+                            <apply>
+                                <divide/>
+                                <ci>c_o2</ci>
+                                <ci>KT_o2</ci>
+                            </apply>
+                            <apply>
+                                <power/>
+                                <apply>
+                                    <plus/>
+                                    <cn cellml:units="dim">1</cn>
+                                    <apply>
+                                        <divide/>
+                                        <ci>c_o2</ci>
+                                        <ci>KT_o2</ci>
+                                    </apply>
+                                </apply>
+                                <cn cellml:units="dim">3</cn>
+                            </apply>
+                        </apply>
+                    </apply>
+                    <apply>
+                        <plus/>
+                        <apply>
+                            <times/>
+                            <ci>K_RT0_1</ci>
+                            <apply>
+                                <power/>
+                                <apply>
+                                    <plus/>
+                                    <cn cellml:units="dim">1</cn>
+                                    <apply>
+                                        <divide/>
+                                        <ci>c_o2</ci>
+                                        <ci>KR_o2</ci>
+                                    </apply>
+                                </apply>
+                                <cn cellml:units="dim">4</cn>
+                            </apply>
+                        </apply>
+                        <apply>
+                            <power/>
+                            <apply>
+                                <plus/>
+                                <cn cellml:units="dim">1</cn>
+                                <apply>
+                                    <divide/>
+                                    <ci>c_o2</ci>
+                                    <ci>KT_o2</ci>
+                                </apply>
+                            </apply>
+                            <cn cellml:units="dim">4</cn>
+                        </apply>
+                    </apply>
+                </apply>
+            </apply>
+        </math>
+        <!--
+ 2nd variation with pH=7.15 and pCO2=9.34kPa (70 mmHg) (RH curve in Figure 2 in Huang & Peskin) 
+-->
+        <variable initial_value="7.15" name="pH_2" units="dim"/>
+        <variable name="c_H_2" units="mM"/>
+        <math xmlns="http://www.w3.org/1998/Math/MathML">
+            <apply>
+                <eq/>
+                <ci>c_H_2</ci>
+                <apply>
+                    <power/>
+                    <cn cellml:units="dim">10</cn>
+                    <apply>
+                        <plus/>
+                        <apply>
+                            <minus/>
+                            <ci>pH_2</ci>
+                        </apply>
+                        <cn cellml:units="dim">3</cn>
+                    </apply>
+                </apply>
+            </apply>
+        </math>
+        <variable name="c_CO2_2" units="mM"/>
+        <variable initial_value="9.34" name="p_CO2_2" units="kPa"/>
+        <math xmlns="http://www.w3.org/1998/Math/MathML">
+            <apply>
+                <eq/>
+                <ci>c_CO2_2</ci>
+                <apply>
+                    <times/>
+                    <ci>alpha_CO2</ci>
+                    <ci>p_CO2_2</ci>
+                </apply>
+            </apply>
+        </math>
+        <variable name="K_RT0_2" units="dim"/>
+        <math xmlns="http://www.w3.org/1998/Math/MathML">
+            <apply>
+                <eq/>
+                <ci>K_RT0_2</ci>
+                <apply>
+                    <times/>
+                    <apply>
+                        <power/>
+                        <apply>
+                            <divide/>
+                            <apply>
+                                <plus/>
+                                <cn cellml:units="dim">1</cn>
+                                <apply>
+                                    <times/>
+                                    <apply>
+                                        <divide/>
+                                        <ci>K_R12</ci>
+                                        <ci>c_H_2</ci>
+                                    </apply>
+                                    <apply>
+                                        <plus/>
+                                        <cn cellml:units="dim">1</cn>
+                                        <apply>
+                                            <times/>
+                                            <apply>
+                                                <divide/>
+                                                <ci>c_CO2_2</ci>
+                                                <ci>K_R13</ci>
+                                            </apply>
+                                            <apply>
+                                                <plus/>
+                                                <cn cellml:units="dim">1</cn>
+                                                <apply>
+                                                    <divide/>
+                                                    <ci>K_R43</ci>
+                                                    <ci>c_H_2</ci>
+                                                </apply>
+                                            </apply>
+                                        </apply>
+                                    </apply>
+                                </apply>
+                            </apply>
+                            <apply>
+                                <plus/>
+                                <cn cellml:units="dim">1</cn>
+                                <apply>
+                                    <times/>
+                                    <apply>
+                                        <divide/>
+                                        <ci>K_T12</ci>
+                                        <ci>c_H_2</ci>
+                                    </apply>
+                                    <apply>
+                                        <plus/>
+                                        <cn cellml:units="dim">1</cn>
+                                        <apply>
+                                            <times/>
+                                            <apply>
+                                                <divide/>
+                                                <ci>c_CO2_2</ci>
+                                                <ci>K_T13</ci>
+                                            </apply>
+                                            <apply>
+                                                <plus/>
+                                                <cn cellml:units="dim">1</cn>
+                                                <apply>
+                                                    <divide/>
+                                                    <ci>K_T43</ci>
+                                                    <ci>c_H_2</ci>
+                                                </apply>
+                                            </apply>
+                                        </apply>
+                                    </apply>
+                                </apply>
+                            </apply>
+                        </apply>
+                        <cn cellml:units="dim">4</cn>
+                    </apply>
+                    <ci>K_RT0_ref</ci>
+                </apply>
+            </apply>
+        </math>
+        <variable name="S_o2_2" units="dim"/>
+        <math xmlns="http://www.w3.org/1998/Math/MathML">
+            <apply>
+                <eq/>
+                <ci>S_o2_2</ci>
+                <apply>
+                    <divide/>
+                    <apply>
+                        <plus/>
+                        <apply>
+                            <times/>
+                            <apply>
+                                <divide/>
+                                <apply>
+                                    <times/>
+                                    <ci>K_RT0_2</ci>
+                                    <ci>c_o2</ci>
+                                </apply>
+                                <ci>KR_o2</ci>
+                            </apply>
+                            <apply>
+                                <power/>
+                                <apply>
+                                    <plus/>
+                                    <cn cellml:units="dim">1</cn>
+                                    <apply>
+                                        <divide/>
+                                        <ci>c_o2</ci>
+                                        <ci>KR_o2</ci>
+                                    </apply>
+                                </apply>
+                                <cn cellml:units="dim">3</cn>
+                            </apply>
+                        </apply>
+                        <apply>
+                            <times/>
+                            <apply>
+                                <divide/>
+                                <ci>c_o2</ci>
+                                <ci>KT_o2</ci>
+                            </apply>
+                            <apply>
+                                <power/>
+                                <apply>
+                                    <plus/>
+                                    <cn cellml:units="dim">1</cn>
+                                    <apply>
+                                        <divide/>
+                                        <ci>c_o2</ci>
+                                        <ci>KT_o2</ci>
+                                    </apply>
+                                </apply>
+                                <cn cellml:units="dim">3</cn>
+                            </apply>
+                        </apply>
+                    </apply>
+                    <apply>
+                        <plus/>
+                        <apply>
+                            <times/>
+                            <ci>K_RT0_2</ci>
+                            <apply>
+                                <power/>
+                                <apply>
+                                    <plus/>
+                                    <cn cellml:units="dim">1</cn>
+                                    <apply>
+                                        <divide/>
+                                        <ci>c_o2</ci>
+                                        <ci>KR_o2</ci>
+                                    </apply>
+                                </apply>
+                                <cn cellml:units="dim">4</cn>
+                            </apply>
+                        </apply>
+                        <apply>
+                            <power/>
+                            <apply>
+                                <plus/>
+                                <cn cellml:units="dim">1</cn>
+                                <apply>
+                                    <divide/>
+                                    <ci>c_o2</ci>
+                                    <ci>KT_o2</ci>
+                                </apply>
+                            </apply>
+                            <cn cellml:units="dim">4</cn>
+                        </apply>
+                    </apply>
+                </apply>
+            </apply>
+        </math>
+    </component>
+</model>
