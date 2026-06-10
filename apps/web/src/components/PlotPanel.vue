@@ -27,6 +27,7 @@ ChartJS.register(
 const props = defineProps({
   simResult: { type: Object, default: null },
   dataItems: { type: Array, default: () => [] },
+  title: { type: String, default: '' },
 })
 
 const chartData = computed(() =>
@@ -49,6 +50,7 @@ defineExpose({ chartData })
 
 <template>
   <section class="plot-panel">
+    <h3 v-if="title" class="plot-title" data-testid="plot-title">{{ title }}</h3>
     <div class="chart-wrap">
       <Line :data="chartData" :options="chartOptions" />
     </div>
@@ -57,12 +59,20 @@ defineExpose({ chartData })
 
 <style scoped>
 .plot-panel {
+  display: flex;
+  flex-direction: column;
   height: 100%;
-  padding: 0.75rem;
+  padding: 0.5rem;
+}
+.plot-title {
+  margin: 0 0 0.25rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  opacity: 0.85;
 }
 .chart-wrap {
   position: relative;
-  height: 100%;
-  min-height: 320px;
+  flex: 1;
+  min-height: 180px;
 }
 </style>

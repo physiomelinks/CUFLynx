@@ -1,5 +1,5 @@
 <script setup>
-import { ref, watch } from 'vue'
+import { ref, computed, watch } from 'vue'
 import ControlPanel from './components/ControlPanel.vue'
 import VariableList from './components/VariableList.vue'
 import PlotPanel from './components/PlotPanel.vue'
@@ -7,6 +7,7 @@ import FileImport from './components/FileImport.vue'
 import StatusBar from './components/StatusBar.vue'
 import InputNumber from 'primevue/inputnumber'
 import Button from 'primevue/button'
+import Message from 'primevue/message'
 
 import { useModel } from './stores/useModel'
 import { useSliders, shouldUseLog } from './stores/useSliders'
@@ -14,6 +15,7 @@ import { useSimResult } from './stores/useSimResult'
 import { useObsData } from './stores/useObsData'
 import { useParamsForId } from './stores/useParamsForId'
 import { getVariables, simulate, runProtocol } from './lib/api'
+import { overlayItemsFor } from './lib/plot'
 
 const model = useModel()
 const sliders = useSliders()
@@ -71,22 +73,58 @@ async function runSimulation() {
   sim.setRunning()
   const started = performance.now()
   try {
-    let data
     if (obs.hasObsData.value) {
-      data = await runProtocol(model.modelId.value, sliders.paramDict.value)
-      // Flatten first experiment for the chart.
-      data = data.experiments?.[0] ?? { time: [], outputs: {} }
+      // Protocol run: request only the obs-referenced variables, keep every
+      // experiment, and render one plot per (experiment, variable).
+      const outputs = obs.plotVariables.value.map((v) => v.qname)
+      const data = await runProtocol(model.modelId.value, sliders.paramDict.value, {
+        outputs,
+      })
+      sim.setExperiments(data.experiments, data.warnings, performance.now() - started)
     } else {
-      data = await simulate(model.modelId.value, sliders.paramDict.value, {
+      const data = await simulate(model.modelId.value, sliders.paramDict.value, {
         simTime: simTime.value,
         preTime: preTime.value,
       })
+      sim.setResult(data, performance.now() - started)
     }
-    sim.setResult(data, performance.now() - started)
   } catch (e) {
     sim.setError(e?.response?.data?.detail || String(e))
   }
 }
+
+// One plot cell per (experiment, variable) when obs_data drives the run;
+// otherwise a single plot of the manual simulation.
+const plotCells = computed(() => {
+  if (obs.hasObsData.value && sim.experiments.value.length) {
+    const vars = obs.plotVariables.value
+    const labels = obs.experimentLabels.value
+    const cells = []
+    sim.experiments.value.forEach((exp, e) => {
+      const expLabel = labels[e] ?? `exp ${e}`
+      for (const v of vars) {
+        cells.push({
+          key: `${e}:${v.qname}`,
+          title: `${expLabel} · ${v.label}`,
+          simResult: { time: exp.time, outputs: { [v.qname]: exp.outputs?.[v.qname] ?? [] } },
+          dataItems: overlayItemsFor(obs.obsData.value, e, v.qname),
+        })
+      }
+    })
+    return cells
+  }
+  if (sim.result.value) {
+    return [
+      {
+        key: 'single',
+        title: model.name.value ?? '',
+        simResult: sim.result.value,
+        dataItems: [],
+      },
+    ]
+  }
+  return []
+})
 
 watch(
   () => ({ ...sliders.paramDict.value, _t: simTime.value, _p: preTime.value }),
@@ -122,7 +160,28 @@ watch(
       </aside>
 
       <section class="col col-center">
-        <PlotPanel :sim-result="sim.result.value" :data-items="obs.dataItems.value" />
+        <Message
+          v-if="sim.warnings.value.length"
+          severity="warn"
+          :closable="false"
+          class="warn-banner"
+          data-testid="sim-warning"
+        >
+          {{ sim.warnings.value.join(' ') }}
+        </Message>
+        <div class="plot-grid" :class="{ single: plotCells.length <= 1 }">
+          <PlotPanel
+            v-for="cell in plotCells"
+            :key="cell.key"
+            class="plot-cell"
+            :title="cell.title"
+            :sim-result="cell.simResult"
+            :data-items="cell.dataItems"
+          />
+          <p v-if="plotCells.length === 0" class="empty-hint">
+            Upload a CellML model and run a simulation.
+          </p>
+        </div>
         <StatusBar
           :status="sim.status.value"
           :message="sim.message.value"
@@ -192,6 +251,30 @@ watch(
 .col-center {
   display: flex;
   flex-direction: column;
+}
+.warn-banner {
+  margin: 0.5rem;
+}
+.plot-grid {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 0.5rem;
+  padding: 0.5rem;
+}
+.plot-grid.single {
+  grid-template-columns: 1fr;
+}
+.plot-cell {
+  min-height: 240px;
+  border: 1px solid var(--p-content-border-color, #333);
+  border-radius: 6px;
+}
+.empty-hint {
+  opacity: 0.6;
+  padding: 1rem;
 }
 .col-right {
   border-left: 1px solid var(--p-content-border-color, #333);

@@ -71,9 +71,43 @@ def _default_runner_factory(*, model_path, dt, solver_info):
     )
 
 
-def _to_dot(qname: str) -> str:
-    """Convert a ``component/var`` qname to Myokit's ``component.var`` form."""
-    return qname.replace("/", ".")
+def _resolve_output_key(var2idx, name):
+    """Resolve an output name against var2idx using CA's name resolver.
+
+    Handles the ``component`` vs ``component_module`` vessel convention and the
+    slash/dot separator difference (var2idx keys are Myokit dot qnames).
+    """
+    _ensure_ca_on_path()
+    from solver_wrappers.name_resolver import VariableNameResolver  # noqa: E402
+
+    _, key = VariableNameResolver.resolve_key(name, [("idx", var2idx)], separator=".")
+    return key
+
+
+def _sanitize_protocol_info(protocol_info):
+    """Replace string (time-varying trace) values in params_to_change.
+
+    Time-varying protocol traces are not yet wired into the helper (tracked
+    separately), so string trace keys would otherwise abort the whole run.
+    Here we substitute 0.0 and report which params were affected so the caller
+    can surface a warning instead of failing every experiment.
+    """
+    import copy
+
+    pi = copy.deepcopy(protocol_info)
+    stripped = set()
+    ptc = pi.get("params_to_change", {})
+    for pname, matrix in ptc.items():
+        if not isinstance(matrix, list):
+            continue
+        for row in matrix:
+            if not isinstance(row, list):
+                continue
+            for i, val in enumerate(row):
+                if isinstance(val, str):
+                    row[i] = 0.0
+                    stripped.add(pname)
+    return pi, sorted(stripped)
 
 
 class SimulationEngine:
@@ -149,6 +183,8 @@ class SimulationEngine:
         params: dict[str, float],
         outputs: list[str],
     ) -> dict:
+        safe_protocol_info, stripped_traces = _sanitize_protocol_info(protocol_info)
+
         with self._lock:
             runner = self._runners.get(model_id)
             if runner is None:
@@ -164,25 +200,37 @@ class SimulationEngine:
 
             t_list, res_list, _sim_times = runner.run_protocols(
                 str(model_path),
-                protocol_info=protocol_info,
+                protocol_info=safe_protocol_info,
                 id_param_names=names,
                 id_param_vals=vals,
             )
             var2idx = runner.get_var2idx_dict()
+
+        # Resolve each requested output name once against var2idx.
+        key_for = {var: _resolve_output_key(var2idx, var) for var in outputs}
 
         experiments = []
         for exp_idx, t in enumerate(t_list):
             res = res_list[exp_idx]
             exp_outputs: dict[str, list[float]] = {}
             for var in outputs:
-                idx = var2idx.get(_to_dot(var), var2idx.get(var))
-                if idx is None or res is None or idx >= len(res):
+                key = key_for.get(var)
+                if key is None or res is None:
+                    continue
+                idx = var2idx[key]
+                if idx >= len(res):
                     continue
                 exp_outputs[var] = [float(v) for v in res[idx]]
             time = [float(v) for v in t] if t is not None else []
             experiments.append({"time": time, "outputs": exp_outputs})
 
-        return {"experiments": experiments}
+        result = {"experiments": experiments}
+        if stripped_traces:
+            result["warnings"] = [
+                "Time-varying protocol traces are not yet applied for: "
+                + ", ".join(stripped_traces)
+            ]
+        return result
 
 
 # Module-level singleton shared by the FastAPI routes.

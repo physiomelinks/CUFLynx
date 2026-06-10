@@ -22,6 +22,9 @@ BG_MODEL_PATH = RESOURCES_DIR / "BG_MWC_Huang-Peskin_SS.cellml"
 LV_MODEL_PATH = RESOURCES_DIR / "Lotka_Volterra_forced.cellml"
 LV_OBS_DATA_PATH = RESOURCES_DIR / "Lotka_Volterra_obs_data.json"
 LV_PARAMS_CSV_PATH = RESOURCES_DIR / "Lotka_Volterra_params_for_id.csv"
+SN_MODEL_PATH = RESOURCES_DIR / "SN_simple_flat.cellml"
+SN_OBS_DATA_PATH = RESOURCES_DIR / "SN_simple_obs_data.json"
+SN_PARAMS_CSV_PATH = RESOURCES_DIR / "SN_simple_params_for_id.csv"
 
 
 # ---------------------------------------------------------------------------

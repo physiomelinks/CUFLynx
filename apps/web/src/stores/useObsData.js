@@ -1,4 +1,5 @@
 import { ref, computed } from 'vue'
+import { derivePlotVariables } from '../lib/plot'
 
 /**
  * Holds the uploaded obs_data summary/content. While obs_data is loaded the
@@ -30,6 +31,10 @@ export function useObsData() {
   const experimentLabels = computed(() => obsData.value?.experiment_labels ?? [])
 
   const dataItems = computed(() => obsData.value?.data_items ?? [])
+  const predictionItems = computed(() => obsData.value?.prediction_items ?? [])
+
+  /** Variables to plot, one column per entry in the (experiment x variable) grid. */
+  const plotVariables = computed(() => derivePlotVariables(obsData.value))
 
   return {
     obsData,
@@ -40,5 +45,7 @@ export function useObsData() {
     experimentCount,
     experimentLabels,
     dataItems,
+    predictionItems,
+    plotVariables,
   }
 }

@@ -218,7 +218,12 @@ async def upload_obs_data(
     if model_id and model_id in _models:
         _models[model_id].obs_data = parsed
 
-    return {"model_id": model_id, **parsed.summary()}
+    return {
+        "model_id": model_id,
+        **parsed.summary(),
+        "data_items": parsed.data_items,
+        "prediction_items": parsed.prediction_items,
+    }
 
 
 @app.post("/api/params_for_id/upload")
