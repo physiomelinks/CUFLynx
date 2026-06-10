@@ -1,0 +1,135 @@
+<script setup>
+import { computed } from 'vue'
+import Slider from 'primevue/slider'
+import ToggleButton from 'primevue/togglebutton'
+import Button from 'primevue/button'
+
+const props = defineProps({
+  sliders: { type: Object, default: () => ({}) },
+})
+const emit = defineEmits(['update', 'remove', 'toggle-log', 'import-csv'])
+
+const entries = computed(() => Object.values(props.sliders))
+
+function onValue(qname, value) {
+  emit('update', { qname, value: Number(value) })
+}
+</script>
+
+<template>
+  <section class="control-panel">
+    <header class="panel-header">
+      <h2>Parameters</h2>
+      <Button
+        label="Import CSV"
+        icon="pi pi-upload"
+        size="small"
+        text
+        data-testid="import-csv"
+        @click="emit('import-csv')"
+      />
+    </header>
+
+    <p v-if="entries.length === 0" class="empty-hint">
+      No active sliders. Add a parameter from the variable list or import a
+      params_for_id.csv file.
+    </p>
+
+    <div
+      v-for="s in entries"
+      :key="s.qname"
+      class="slider-row"
+      data-testid="slider-row"
+    >
+      <div class="slider-label">
+        <span class="qname">{{ s.name_for_plotting }}</span>
+        <Button
+          icon="pi pi-times"
+          text
+          rounded
+          size="small"
+          aria-label="remove"
+          @click="emit('remove', { qname: s.qname })"
+        />
+      </div>
+      <div class="slider-body">
+        <Slider
+          :model-value="s.value"
+          :min="s.min"
+          :max="s.max"
+          :step="(s.max - s.min) / 1000"
+          @update:model-value="onValue(s.qname, $event)"
+        />
+        <input
+          type="number"
+          class="value-input"
+          data-testid="value-input"
+          :value="s.value"
+          :min="s.min"
+          :max="s.max"
+          @input="onValue(s.qname, $event.target.value)"
+        />
+        <ToggleButton
+          :model-value="s.log"
+          on-label="log"
+          off-label="lin"
+          size="small"
+          @update:model-value="emit('toggle-log', { qname: s.qname })"
+        />
+      </div>
+      <div class="range-hint">[{{ s.min }}, {{ s.max }}]</div>
+    </div>
+  </section>
+</template>
+
+<style scoped>
+.control-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 0.75rem;
+  overflow-y: auto;
+}
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.slider-row {
+  border: 1px solid var(--p-content-border-color, #333);
+  border-radius: 6px;
+  padding: 0.5rem;
+}
+.slider-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.slider-body {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin: 0.5rem 0;
+}
+/* The PrimeVue Slider has no intrinsic width; let it fill the row so it sits
+   beside the value input instead of collapsing into a single point. */
+.slider-body :deep(.p-slider) {
+  flex: 1 1 auto;
+  min-width: 8rem;
+}
+.value-input {
+  flex: 0 0 5.5rem;
+  width: 5.5rem;
+}
+.slider-body :deep(.p-togglebutton) {
+  flex: 0 0 auto;
+}
+.range-hint {
+  font-size: 0.75rem;
+  opacity: 0.6;
+}
+.empty-hint {
+  opacity: 0.6;
+  font-size: 0.85rem;
+}
+</style>

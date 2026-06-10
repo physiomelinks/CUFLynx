@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [main, devel_FA]
+  pull_request:
+
+jobs:
+  backend-unit:
+    name: Backend unit tests (no Myokit)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/api
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      # Install only the light deps needed by the unit tier; the heavy
+      # simulation stack (myokit/libcellml) is exercised by the integration
+      # marker, which is skipped here.
+      - name: Install unit-test deps
+        run: pip install fastapi "uvicorn[standard]" numpy pandas python-multipart httpx pytest pytest-cov
+      - name: Run unit tests
+        run: pytest -m "not integration" -q
+
+  frontend:
+    name: Frontend tests + build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install
+        run: yarn install --frozen-lockfile
+      - name: Unit tests
+        run: yarn test
+      - name: Build
+        run: yarn build
