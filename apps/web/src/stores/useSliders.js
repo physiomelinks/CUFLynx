@@ -3,20 +3,52 @@ import { reactive, computed } from 'vue'
 const LOG_RANGE_THRESHOLD = 1e4
 const LOG_MIN_THRESHOLD = 1e-3
 
+/** Integer resolution of the underlying (linear) PrimeVue Slider track. */
+export const SLIDER_STEPS = 1000
+
 /**
  * Heuristic ported from cellml_explorer.html: use a log slider when the range
- * spans more than four orders of magnitude, or the lower bound is tiny.
+ * spans more than four orders of magnitude, or the lower bound is tiny. A range
+ * that touches or crosses zero can't be log-mapped, so it stays linear.
  */
 export function shouldUseLog(min, max) {
+  if (min <= 0) return false
   const lo = Math.min(Math.abs(min), Math.abs(max))
   const hi = Math.max(Math.abs(min), Math.abs(max))
-  if (min <= 0) return hi > LOG_RANGE_THRESHOLD
   if (min < LOG_MIN_THRESHOLD) return true
-  return lo === 0 ? hi > LOG_RANGE_THRESHOLD : hi / lo > LOG_RANGE_THRESHOLD
+  return hi / lo > LOG_RANGE_THRESHOLD
 }
 
 export function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value))
+}
+
+/** A log slider is only valid for a strictly-positive range. */
+function isLogSlider(s) {
+  return s.log && s.min > 0 && s.max > 0
+}
+
+/** Map a slider's current value to its [0, SLIDER_STEPS] track position. */
+export function valueToSlider(s) {
+  if (s.max === s.min) return 0
+  const v = clamp(s.value, s.min, s.max)
+  if (isLogSlider(s)) {
+    const lo = Math.log(s.min)
+    const hi = Math.log(s.max)
+    return Math.round((SLIDER_STEPS * (Math.log(v) - lo)) / (hi - lo))
+  }
+  return Math.round((SLIDER_STEPS * (v - s.min)) / (s.max - s.min))
+}
+
+/** Map a [0, SLIDER_STEPS] track position back to a value (log or linear). */
+export function sliderToValue(s, pos) {
+  const frac = pos / SLIDER_STEPS
+  if (isLogSlider(s)) {
+    const lo = Math.log(s.min)
+    const hi = Math.log(s.max)
+    return Math.exp(lo + frac * (hi - lo))
+  }
+  return s.min + frac * (s.max - s.min)
 }
 
 /**

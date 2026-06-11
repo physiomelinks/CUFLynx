@@ -3,6 +3,7 @@ import { computed } from 'vue'
 import Slider from 'primevue/slider'
 import ToggleButton from 'primevue/togglebutton'
 import Button from 'primevue/button'
+import { SLIDER_STEPS, valueToSlider, sliderToValue } from '../stores/useSliders'
 
 const props = defineProps({
   sliders: { type: Object, default: () => ({}) },
@@ -10,6 +11,13 @@ const props = defineProps({
 const emit = defineEmits(['update', 'remove', 'toggle-log', 'import-csv'])
 
 const entries = computed(() => Object.values(props.sliders))
+
+// The Slider operates on an integer [0, SLIDER_STEPS] track; values are mapped
+// to/from that position so log-scale params spread across the whole track
+// instead of bunching against the left edge.
+function onPosition(s, pos) {
+  emit('update', { qname: s.qname, value: sliderToValue(s, Number(pos)) })
+}
 
 function onValue(qname, value) {
   emit('update', { qname, value: Number(value) })
@@ -54,11 +62,11 @@ function onValue(qname, value) {
       </div>
       <div class="slider-body">
         <Slider
-          :model-value="s.value"
-          :min="s.min"
-          :max="s.max"
-          :step="(s.max - s.min) / 1000"
-          @update:model-value="onValue(s.qname, $event)"
+          :model-value="valueToSlider(s)"
+          :min="0"
+          :max="SLIDER_STEPS"
+          :step="1"
+          @update:model-value="onPosition(s, $event)"
         />
         <input
           type="number"

@@ -41,9 +41,11 @@ async function onModelLoaded(data) {
 
 function onAddSlider({ qname }) {
   const initial = model.variables.value.initial_values?.[qname]
-  // Without min/max metadata, seed a +/- one-decade range around the default.
+  // Without min/max metadata, seed a symmetric range around the default. Keep
+  // it symmetric (don't clamp min to 0) so negative defaults still get a usable
+  // range instead of collapsing to min == max == 0.
   const base = initial != null && initial !== 0 ? Math.abs(initial) : 1
-  const min = initial != null ? Math.max(0, initial - base) : 0
+  const min = initial != null ? initial - base : 0
   const max = initial != null ? initial + base : 1
   sliders.addSlider(qname, {
     min,

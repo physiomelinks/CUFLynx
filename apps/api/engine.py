@@ -72,42 +72,22 @@ def _default_runner_factory(*, model_path, dt, solver_info):
 
 
 def _resolve_output_key(var2idx, name):
-    """Resolve an output name against var2idx using CA's name resolver.
+    """Resolve an output name against var2idx (Myokit dot qnames).
 
-    Handles the ``component`` vs ``component_module`` vessel convention and the
-    slash/dot separator difference (var2idx keys are Myokit dot qnames).
+    Handles the slash/dot separator difference and the ``component`` vs
+    ``component_module`` vessel convention used by circulatory_autogen flat
+    CellML models. Local implementation so no CA import is needed (unit/CI safe).
     """
-    _ensure_ca_on_path()
-    from solver_wrappers.name_resolver import VariableNameResolver  # noqa: E402
-
-    _, key = VariableNameResolver.resolve_key(name, [("idx", var2idx)], separator=".")
-    return key
-
-
-def _sanitize_protocol_info(protocol_info):
-    """Replace string (time-varying trace) values in params_to_change.
-
-    Time-varying protocol traces are not yet wired into the helper (tracked
-    separately), so string trace keys would otherwise abort the whole run.
-    Here we substitute 0.0 and report which params were affected so the caller
-    can surface a warning instead of failing every experiment.
-    """
-    import copy
-
-    pi = copy.deepcopy(protocol_info)
-    stripped = set()
-    ptc = pi.get("params_to_change", {})
-    for pname, matrix in ptc.items():
-        if not isinstance(matrix, list):
-            continue
-        for row in matrix:
-            if not isinstance(row, list):
-                continue
-            for i, val in enumerate(row):
-                if isinstance(val, str):
-                    row[i] = 0.0
-                    stripped.add(pname)
-    return pi, sorted(stripped)
+    dotted = name.replace("/", ".")
+    candidates = [dotted]
+    if "." in dotted:
+        comp, var = dotted.split(".", 1)
+        comp_bare = comp[:-7] if comp.endswith("_module") else comp
+        candidates += [f"{comp_bare}.{var}", f"{comp_bare}_module.{var}", var]
+    for cand in candidates:
+        if cand in var2idx:
+            return cand
+    return None
 
 
 class SimulationEngine:
@@ -120,6 +100,9 @@ class SimulationEngine:
         self.runner_factory = _default_runner_factory
         self._helpers: dict[str, object] = {}
         self._runners: dict[str, object] = {}
+        # model_id -> last protocol_info object whose pace binding is active on
+        # the cached runner's helper (avoids re-binding/recreating every run).
+        self._runner_protocol_info: dict[str, object] = {}
         self._lock = threading.Lock()
 
     def reset(self) -> None:
@@ -127,6 +110,7 @@ class SimulationEngine:
         with self._lock:
             self._helpers.clear()
             self._runners.clear()
+            self._runner_protocol_info.clear()
 
     # ------------------------------------------------------------------
     # Single run
@@ -183,8 +167,6 @@ class SimulationEngine:
         params: dict[str, float],
         outputs: list[str],
     ) -> dict:
-        safe_protocol_info, stripped_traces = _sanitize_protocol_info(protocol_info)
-
         with self._lock:
             runner = self._runners.get(model_id)
             if runner is None:
@@ -195,12 +177,21 @@ class SimulationEngine:
                 )
                 self._runners[model_id] = runner
 
+            # Bind any time-varying protocol traces onto the helper before the
+            # run. set_protocol_info recreates the simulation with the `pace`
+            # binding, so only call it when the protocol actually changed.
+            helper = getattr(runner, "sim_helper", None)
+            if helper is not None and hasattr(helper, "set_protocol_info"):
+                if self._runner_protocol_info.get(model_id) is not protocol_info:
+                    helper.set_protocol_info(protocol_info)
+                    self._runner_protocol_info[model_id] = protocol_info
+
             names = list(params.keys()) if params else None
             vals = [params[n] for n in names] if names else None
 
             t_list, res_list, _sim_times = runner.run_protocols(
                 str(model_path),
-                protocol_info=safe_protocol_info,
+                protocol_info=protocol_info,
                 id_param_names=names,
                 id_param_vals=vals,
             )
@@ -224,13 +215,7 @@ class SimulationEngine:
             time = [float(v) for v in t] if t is not None else []
             experiments.append({"time": time, "outputs": exp_outputs})
 
-        result = {"experiments": experiments}
-        if stripped_traces:
-            result["warnings"] = [
-                "Time-varying protocol traces are not yet applied for: "
-                + ", ".join(stripped_traces)
-            ]
-        return result
+        return {"experiments": experiments}
 
 
 # Module-level singleton shared by the FastAPI routes.
