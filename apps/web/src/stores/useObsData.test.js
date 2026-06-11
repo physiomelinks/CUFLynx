@@ -27,12 +27,21 @@ describe('useObsData', () => {
     expect(o.experimentCount.value).toBe(1)
   })
 
-  it('data-only obs_data keeps manual time but stays loaded (3compartment)', () => {
+  it('any loaded obs_data disables the manual t1/pre controls', () => {
     const o = useObsData()
+    // data-only (3compartment): no protocol, but still an obs file -> manual off
     o.setObsData({ has_protocol: false, n_data_items: 6, data_items: [] })
     expect(o.hasObsData.value).toBe(true)
     expect(o.hasProtocol.value).toBe(false)
-    // No protocol -> manual time controls remain, overlays still available.
+    expect(o.useManualTime.value).toBe(false)
+  })
+
+  it('manual t1/pre controls are only used when no obs_data is loaded', () => {
+    const o = useObsData()
+    expect(o.useManualTime.value).toBe(true)
+    o.setObsData({ has_protocol: true, n_experiments: 2 })
+    expect(o.useManualTime.value).toBe(false)
+    o.clearObsData()
     expect(o.useManualTime.value).toBe(true)
   })
 })

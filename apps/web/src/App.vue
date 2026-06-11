@@ -76,23 +76,27 @@ async function runSimulation() {
   const started = performance.now()
   try {
     if (obs.hasProtocol.value) {
-      // Protocol run: request only the obs-referenced variables, keep every
-      // experiment, and render one plot per (experiment, variable).
+      // Protocol run: pre_times/sim_times come from the obs_data protocol_info.
+      // Request only the obs-referenced variables, keep every experiment, and
+      // render one plot per (experiment, variable).
       const outputs = obs.plotVariables.value.map((v) => v.qname)
       const data = await runProtocol(model.modelId.value, sliders.paramDict.value, {
         outputs,
       })
       sim.setExperiments(data.experiments, data.warnings, performance.now() - started)
+    } else if (obs.hasObsData.value) {
+      // Data-only obs_data: overlays only, no protocol. The manual t1/pre are
+      // not used; run with backend defaults and plot the referenced variables.
+      const outputs = obs.plotVariables.value.map((v) => v.qname)
+      const data = await simulate(model.modelId.value, sliders.paramDict.value, {
+        outputs,
+      })
+      sim.setResult(data, performance.now() - started)
     } else {
-      // Manual run. With a data-only obs_data loaded, still request the
-      // obs-referenced variables so each gets its own plot with overlays.
-      const outputs = obs.hasObsData.value
-        ? obs.plotVariables.value.map((v) => v.qname)
-        : undefined
+      // No obs_data: manual t1/pre drive the single run.
       const data = await simulate(model.modelId.value, sliders.paramDict.value, {
         simTime: simTime.value,
         preTime: preTime.value,
-        outputs,
       })
       sim.setResult(data, performance.now() - started)
     }
@@ -160,12 +164,20 @@ watch(
       <h1>CellML Explorer</h1>
       <span v-if="model.name.value" class="model-name">{{ model.name.value }}</span>
       <div class="spacer" />
-      <div v-if="obs.useManualTime.value" class="time-controls">
+      <div v-if="!obs.hasObsData.value" class="time-controls" data-testid="time-controls">
         <label>t₁ <InputNumber v-model="simTime" :min="0" show-buttons size="small" /></label>
         <label>pre <InputNumber v-model="preTime" :min="0" show-buttons size="small" /></label>
       </div>
-      <div v-else class="protocol-summary" data-testid="protocol-summary">
+      <div
+        v-else-if="obs.hasProtocol.value"
+        class="protocol-summary"
+        data-testid="protocol-summary"
+      >
         Protocol: {{ obs.experimentCount.value }} experiment(s)
+        <Button label="Clear obs data" size="small" text @click="obs.clearObsData()" />
+      </div>
+      <div v-else class="protocol-summary" data-testid="obs-overlay-summary">
+        Obs overlays: {{ obs.dataItems.value.length }} item(s)
         <Button label="Clear obs data" size="small" text @click="obs.clearObsData()" />
       </div>
       <Button label="Run" icon="pi pi-play" size="small" @click="runSimulation" />
