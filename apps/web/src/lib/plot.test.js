@@ -57,6 +57,36 @@ describe('obs plot helpers', () => {
   })
 })
 
+describe('data-only obs_data (3compartment shape)', () => {
+  // Bare-array obs: no prediction_items, horizontal / horizontal_from_min items.
+  const obs3 = {
+    has_protocol: false,
+    data_items: [
+      { variable: 'flow aortic root', operands: ['aortic_root/v'], data_type: 'constant', plot_type: 'horizontal', value: 1e-4 },
+      { variable: 'stroke volume', operands: ['heart/q_lv'], data_type: 'constant', plot_type: 'horizontal_from_min', value: 1.04e-4 },
+      { variable: 'pressure aortic root', operands: ['aortic_root/u'], data_type: 'constant', plot_type: 'horizontal', value: 16000 },
+    ],
+  }
+
+  it('horizontal_from_min counts as a plottable overlay', () => {
+    expect(isPlottableOverlay({ plot_type: 'horizontal_from_min' })).toBe(true)
+  })
+
+  it('derives one plot variable per referenced operand', () => {
+    expect(derivePlotVariables(obs3).map((v) => v.qname)).toEqual([
+      'aortic_root/v',
+      'heart/q_lv',
+      'aortic_root/u',
+    ])
+  })
+
+  it('overlays attach by variable for the single (experiment 0) run', () => {
+    const items = overlayItemsFor(obs3, 0, 'aortic_root/u')
+    expect(items).toHaveLength(1)
+    expect(items[0].value).toBe(16000)
+  })
+})
+
 describe('buildChartData reference lines', () => {
   const simResult = { time: [0, 1, 2], outputs: { 'soma_SN/V': [-80, -50, -79] } }
 

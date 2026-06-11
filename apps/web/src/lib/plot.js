@@ -35,7 +35,9 @@ export function obsModelVar(item) {
 /** A data_item that renders as a reference line (horizontal or vertical). */
 export function isPlottableOverlay(item) {
   if (item.data_type === 'frequency') return false // frequency overlays: future work
-  return item.plot_type === 'horizontal' || item.plot_type === 'vertical'
+  const pt = item.plot_type
+  // 'horizontal', 'horizontal_from_min', ... and 'vertical'.
+  return (typeof pt === 'string' && pt.startsWith('horizontal')) || pt === 'vertical'
 }
 
 /**
@@ -65,7 +67,7 @@ export function overlayItemsFor(obsData, expIdx, qname) {
   return (obsData.data_items ?? []).filter(
     (d) =>
       isPlottableOverlay(d) &&
-      d.experiment_idx === expIdx &&
+      (d.experiment_idx ?? 0) === expIdx &&
       obsModelVar(d) === qname,
   )
 }

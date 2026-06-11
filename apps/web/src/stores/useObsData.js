@@ -18,8 +18,19 @@ export function useObsData() {
 
   const hasObsData = computed(() => obsData.value !== null)
 
-  /** Manual time controls are shown only when no obs_data is loaded. */
-  const useManualTime = computed(() => obsData.value === null)
+  /** True when the obs_data carries a protocol_info (drives the run). */
+  const hasProtocol = computed(
+    () =>
+      obsData.value?.has_protocol === true ||
+      obsData.value?.protocol_info != null,
+  )
+
+  /**
+   * Manual t0/t1/N controls are shown unless a protocol drives the run. A
+   * data-only obs_data file (bare array, e.g. 3compartment) has no protocol, so
+   * it overlays its data_items but still runs with manual time.
+   */
+  const useManualTime = computed(() => !hasProtocol.value)
 
   const experimentCount = computed(() => {
     const d = obsData.value
@@ -41,6 +52,7 @@ export function useObsData() {
     setObsData,
     clearObsData,
     hasObsData,
+    hasProtocol,
     useManualTime,
     experimentCount,
     experimentLabels,

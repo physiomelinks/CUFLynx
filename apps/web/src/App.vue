@@ -75,7 +75,7 @@ async function runSimulation() {
   sim.setRunning()
   const started = performance.now()
   try {
-    if (obs.hasObsData.value) {
+    if (obs.hasProtocol.value) {
       // Protocol run: request only the obs-referenced variables, keep every
       // experiment, and render one plot per (experiment, variable).
       const outputs = obs.plotVariables.value.map((v) => v.qname)
@@ -84,9 +84,15 @@ async function runSimulation() {
       })
       sim.setExperiments(data.experiments, data.warnings, performance.now() - started)
     } else {
+      // Manual run. With a data-only obs_data loaded, still request the
+      // obs-referenced variables so each gets its own plot with overlays.
+      const outputs = obs.hasObsData.value
+        ? obs.plotVariables.value.map((v) => v.qname)
+        : undefined
       const data = await simulate(model.modelId.value, sliders.paramDict.value, {
         simTime: simTime.value,
         preTime: preTime.value,
+        outputs,
       })
       sim.setResult(data, performance.now() - started)
     }
@@ -98,7 +104,8 @@ async function runSimulation() {
 // One plot cell per (experiment, variable) when obs_data drives the run;
 // otherwise a single plot of the manual simulation.
 const plotCells = computed(() => {
-  if (obs.hasObsData.value && sim.experiments.value.length) {
+  // Protocol run: grid of (experiment, variable).
+  if (obs.hasProtocol.value && sim.experiments.value.length) {
     const vars = obs.plotVariables.value
     const labels = obs.experimentLabels.value
     const cells = []
@@ -115,6 +122,18 @@ const plotCells = computed(() => {
     })
     return cells
   }
+  // Data-only obs_data (no protocol): one plot per referenced variable, with
+  // overlays, from the single manual run.
+  if (obs.hasObsData.value && obs.plotVariables.value.length && sim.result.value) {
+    const out = sim.result.value.outputs ?? {}
+    return obs.plotVariables.value.map((v) => ({
+      key: v.qname,
+      title: v.label,
+      simResult: { time: sim.result.value.time, outputs: { [v.qname]: out[v.qname] ?? [] } },
+      dataItems: overlayItemsFor(obs.obsData.value, 0, v.qname),
+    }))
+  }
+  // Plain manual run.
   if (sim.result.value) {
     return [
       {
