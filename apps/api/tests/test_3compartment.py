@@ -46,6 +46,7 @@ def test_upload_3compartment_obs_returns_protocol_summary(client):
     assert body["has_protocol"] is True
     assert body["n_experiments"] == 1
     assert len(body["data_items"]) == 6
+    assert body["protocol_info"]["pre_times"] == [10.0]
 
 
 def test_bare_list_obs_data_is_still_supported():

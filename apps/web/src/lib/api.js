@@ -55,3 +55,28 @@ export async function uploadParamsForId(file, modelId) {
   const { data } = await axios.post(url('/api/params_for_id/upload'), form)
   return data
 }
+
+export async function getCalibrationDefaults() {
+  const { data } = await axios.get(url('/api/calibration/defaults'))
+  return data
+}
+
+export async function startCalibration(modelId, settings) {
+  const { data } = await axios.post(url('/api/calibration/run'), {
+    model_id: modelId,
+    settings,
+  })
+  return data
+}
+
+export async function getCalibrationStatus(jobId, offset = 0) {
+  const { data } = await axios.get(
+    url(`/api/calibration/${jobId}/status?offset=${offset}`),
+  )
+  return data
+}
+
+export async function cancelCalibration(jobId) {
+  const { data } = await axios.post(url(`/api/calibration/${jobId}/cancel`))
+  return data
+}

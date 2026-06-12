@@ -13,6 +13,7 @@ API_DIR = Path(__file__).resolve().parents[1]
 if str(API_DIR) not in sys.path:
     sys.path.insert(0, str(API_DIR))
 
+import calibration as calibration_mod  # noqa: E402
 import engine as engine_mod  # noqa: E402
 import main  # noqa: E402
 
@@ -63,11 +64,15 @@ def reset_app_state():
     engine_mod.engine.reset()
     engine_mod.engine.helper_factory = engine_mod._default_helper_factory
     engine_mod.engine.runner_factory = engine_mod._default_runner_factory
+    calibration_mod.calibration.reset()
+    calibration_mod.calibration.runner_path = calibration_mod.RUNNER_PATH
     yield
     main._models.clear()
     engine_mod.engine.reset()
     engine_mod.engine.helper_factory = engine_mod._default_helper_factory
     engine_mod.engine.runner_factory = engine_mod._default_runner_factory
+    calibration_mod.calibration.reset()
+    calibration_mod.calibration.runner_path = calibration_mod.RUNNER_PATH
 
 
 @pytest.fixture

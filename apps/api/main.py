@@ -26,6 +26,7 @@ from fastapi import FastAPI, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
+from calibration import calibration
 from cellml_meta import CellMLModel, CellMLParseError, parse_cellml
 from engine import SimulationError, engine
 from obs_data import ObsData, ObsDataError, parse_obs_data
@@ -51,6 +52,9 @@ class _ModelRecord:
         self.path = path
         self.meta = meta
         self.obs_data: ObsData | None = None
+        # Raw input files persisted on disk for circulatory_autogen calibration.
+        self.obs_path: Path | None = None
+        self.params_path: Path | None = None
 
 
 # In-memory registry of uploaded models (process-scoped session store).
@@ -217,12 +221,18 @@ async def upload_obs_data(
 
     if model_id and model_id in _models:
         _models[model_id].obs_data = parsed
+        obs_path = UPLOAD_DIR / f"{model_id}_obs_data.json"
+        obs_path.write_text(json.dumps(obj))
+        _models[model_id].obs_path = obs_path
 
     return {
         "model_id": model_id,
         **parsed.summary(),
         "data_items": parsed.data_items,
         "prediction_items": parsed.prediction_items,
+        # protocol_info lets the frontend plot the controlled (params_to_change)
+        # inputs per experiment; null for data-only obs_data.
+        "protocol_info": parsed.protocol_info,
     }
 
 
@@ -250,4 +260,77 @@ async def upload_params_for_id(
     except ParamsForIdError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
+    if model_id and model_id in _models:
+        params_path = UPLOAD_DIR / f"{model_id}_params_for_id.csv"
+        params_path.write_bytes(data if isinstance(data, bytes) else data.encode())
+        _models[model_id].params_path = params_path
+
     return {"params": [e.as_dict() for e in entries]}
+
+
+# ---------------------------------------------------------------------------
+# Calibration (circulatory_autogen parameter identification)
+# ---------------------------------------------------------------------------
+class CalibrationRequest(BaseModel):
+    model_id: str
+    settings: dict = Field(default_factory=dict)
+
+
+CALIBRATION_DEFAULTS = {
+    "param_id_method": "genetic_algorithm",
+    "methods": ["genetic_algorithm", "CMA-ES"],
+    "num_calls_to_function": 100,
+    "cost_convergence": 0.001,
+    "max_patience": 10,
+    "cost_type": "",
+    "pre_time": 0.0,
+    "sim_time": 2.0,
+    "dt": 0.01,
+    "solver": "CVODE_myokit",
+    "DEBUG": False,
+}
+
+
+@app.get("/api/calibration/defaults")
+def calibration_defaults() -> dict:
+    return CALIBRATION_DEFAULTS
+
+
+@app.post("/api/calibration/run")
+def calibration_run(req: CalibrationRequest) -> dict:
+    record = _get_model(req.model_id)
+    if record.obs_path is None or record.params_path is None:
+        raise HTTPException(
+            status_code=422,
+            detail="calibration requires both an obs_data.json and a "
+            "params_for_id.csv to be uploaded for this model",
+        )
+    output_dir = str(UPLOAD_DIR / f"calib_{req.model_id}_{uuid.uuid4().hex[:8]}")
+    config = {
+        "model_path": str(record.path),
+        "obs_path": str(record.obs_path),
+        "params_path": str(record.params_path),
+        "output_dir": output_dir,
+        "file_prefix": record.meta.name or "model",
+        "settings": req.settings,
+    }
+    try:
+        job_id = calibration.start(config)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"job_id": job_id}
+
+
+@app.get("/api/calibration/{job_id}/status")
+def calibration_status(job_id: str, offset: int = 0) -> dict:
+    status = calibration.status(job_id, offset)
+    if status is None:
+        raise HTTPException(status_code=404, detail="calibration job not found")
+    return status
+
+
+@app.post("/api/calibration/{job_id}/cancel")
+def calibration_cancel(job_id: str) -> dict:
+    if not calibration.cancel(job_id):
+        raise HTTPException(status_code=404, detail="calibration job not found")
+    return {"cancelled": True}
