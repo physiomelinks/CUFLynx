@@ -29,6 +29,9 @@ const calib = useCalibration()
 const simTime = ref(10)
 const preTime = ref(0)
 
+// Left column tab: 'params' | 'calibration'
+const leftTab = ref('params')
+
 // Calibration
 const calibDefaults = ref({})
 onMounted(async () => {
@@ -246,23 +249,49 @@ watch(
 
     <main class="columns">
       <aside class="col col-left">
-        <div class="col-left-scroll">
+        <div class="left-tabs">
+          <button
+            class="left-tab"
+            :class="{ active: leftTab === 'params' }"
+            data-testid="tab-params"
+            @click="leftTab = 'params'"
+          >
+            Parameters
+          </button>
+          <button
+            class="left-tab"
+            :class="{ active: leftTab === 'calibration' }"
+            data-testid="tab-calibration"
+            @click="leftTab = 'calibration'"
+          >
+            Calibration
+            <span
+              v-if="calib.running.value"
+              class="tab-dot"
+              title="calibration running"
+            />
+          </button>
+        </div>
+
+        <div v-show="leftTab === 'params'" class="left-pane left-pane-scroll">
           <ControlPanel
             :sliders="sliders.sliders"
             @update="onSliderUpdate"
             @remove="({ qname }) => sliders.removeSlider(qname)"
           />
         </div>
-        <CalibrationPanel
-          :defaults="calibDefaults"
-          :can-run="canCalibrate"
-          :lines="calib.lines.value"
-          :state="calib.state.value"
-          :cost="calib.cost.value"
-          :error="calib.error.value"
-          @run="onRunCalibration"
-          @cancel="calib.cancel()"
-        />
+        <div v-show="leftTab === 'calibration'" class="left-pane left-pane-scroll">
+          <CalibrationPanel
+            :defaults="calibDefaults"
+            :can-run="canCalibrate"
+            :lines="calib.lines.value"
+            :state="calib.state.value"
+            :cost="calib.cost.value"
+            :error="calib.error.value"
+            @run="onRunCalibration"
+            @cancel="calib.cancel()"
+          />
+        </div>
       </aside>
 
       <section class="col col-center">
@@ -369,9 +398,38 @@ watch(
   display: flex;
   flex-direction: column;
 }
-.col-left-scroll {
+.left-tabs {
+  display: flex;
+  border-bottom: 1px solid var(--p-content-border-color, #333);
+}
+.left-tab {
+  flex: 1;
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: inherit;
+  opacity: 0.6;
+  padding: 0.5rem;
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+.left-tab.active {
+  opacity: 1;
+  border-bottom-color: var(--p-primary-color, #5b9bd5);
+}
+.tab-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-left: 0.35rem;
+  border-radius: 50%;
+  background: #ffc000;
+}
+.left-pane {
   flex: 1;
   min-height: 0;
+}
+.left-pane-scroll {
   overflow-y: auto;
 }
 .col-center {

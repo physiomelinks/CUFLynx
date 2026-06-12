@@ -283,11 +283,11 @@ CALIBRATION_DEFAULTS = {
     "cost_convergence": 0.001,
     "max_patience": 10,
     "cost_type": "",
-    "pre_time": 0.0,
-    "sim_time": 2.0,
     "dt": 0.01,
     "solver": "CVODE_myokit",
     "DEBUG": False,
+    "num_cores": 1,  # >1 -> mpiexec -n N (parallel GA population evaluation)
+    # Note: pre_time / sim_time are taken from the obs_data protocol_info (#13).
 }
 
 
@@ -312,6 +312,7 @@ def calibration_run(req: CalibrationRequest) -> dict:
         "params_path": str(record.params_path),
         "output_dir": output_dir,
         "file_prefix": record.meta.name or "model",
+        "num_cores": int(req.settings.get("num_cores", 1) or 1),
         "settings": req.settings,
     }
     try:

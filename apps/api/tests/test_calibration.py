@@ -88,6 +88,21 @@ def test_calibration_defaults(client):
     body = client.get("/api/calibration/defaults").json()
     assert body["param_id_method"] == "genetic_algorithm"
     assert "CMA-ES" in body["methods"]
+    assert body["num_cores"] == 1
+    # pre_time / sim_time come from obs_data protocol_info (#13)
+    assert "pre_time" not in body and "sim_time" not in body
+
+
+def test_build_command_single_vs_mpiexec():
+    mgr = calibration_mod.CalibrationManager()
+    single = mgr.build_command({"num_cores": 1}, "/tmp/c.json")
+    assert "mpiexec" not in single[0]
+    assert single[-2:] == [mgr.runner_path, "/tmp/c.json"]
+
+    parallel = mgr.build_command({"num_cores": 4}, "/tmp/c.json")
+    assert "mpiexec" in parallel[0]
+    assert parallel[1] == "-n" and parallel[2] == "4"
+    assert parallel[-2:] == [mgr.runner_path, "/tmp/c.json"]
 
 
 def test_calibration_streams_and_completes(client, tmp_path):
@@ -144,12 +159,11 @@ def test_calibration_3compartment_genetic_algorithm(client, requires_simulation)
     model_id = _setup_model_obs_params(
         client, C3_MODEL_PATH, C3_OBS_DATA_PATH, C3_PARAMS_CSV_PATH
     )
+    # No pre_time / sim_time: timing comes from the obs_data protocol_info (#13).
     settings = {
         "param_id_method": "genetic_algorithm",
         "num_calls_to_function": 30,
         "DEBUG": True,  # small population for a fast interactive-scale run
-        "pre_time": 10,
-        "sim_time": 2,
         "dt": 0.01,
     }
     resp = client.post(

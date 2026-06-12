@@ -87,20 +87,26 @@ def run(config: dict) -> dict:
 
     param_id.run()
 
+    # Under mpiexec every rank runs this script; only rank 0 holds the
+    # authoritative best fit and writes the results (mirrors param_id_run_script).
+    rank = getattr(param_id, "rank", 0)
     best_vals = param_id.get_best_param_vals()
     param_names = param_id.get_param_names()  # list of lists of qnames
 
-    params: dict[str, float] = {}
-    for i, name_list in enumerate(param_names):
-        for qname in name_list:
-            params[qname] = float(best_vals[i])
-
-    cost = getattr(getattr(param_id, "param_id", None), "best_cost", None)
-    result = {"params": params, "cost": None if cost is None else float(cost)}
-
-    results_path = os.path.join(output_dir, "results.json")
-    with open(results_path, "w") as fh:
-        json.dump(result, fh)
+    result = {"params": {}, "cost": None, "rank": rank}
+    if rank == 0:
+        params: dict[str, float] = {}
+        for i, name_list in enumerate(param_names):
+            for qname in name_list:
+                params[qname] = float(best_vals[i])
+        cost = getattr(getattr(param_id, "param_id", None), "best_cost", None)
+        result = {
+            "params": params,
+            "cost": None if cost is None else float(cost),
+            "rank": rank,
+        }
+        with open(os.path.join(output_dir, "results.json"), "w") as fh:
+            json.dump({k: result[k] for k in ("params", "cost")}, fh)
     return result
 
 
@@ -114,10 +120,24 @@ def main(argv: list[str]) -> int:
     except Exception as exc:  # surface to the captured stdout for the UI
         print(f"{FAIL_MARKER} {exc}", flush=True)
         traceback.print_exc()
+        _abort_mpi()
         return 1
-    print(f"best cost: {result['cost']}", flush=True)
-    print(DONE_MARKER, flush=True)
+    # Only rank 0 reports completion (avoids duplicate markers under mpiexec).
+    if result.get("rank", 0) == 0:
+        print(f"best cost: {result['cost']}", flush=True)
+        print(DONE_MARKER, flush=True)
     return 0
+
+
+def _abort_mpi() -> None:
+    """Abort all MPI ranks so a failure on one rank doesn't hang the others."""
+    try:
+        from mpi4py import MPI
+
+        if MPI.COMM_WORLD.Get_size() > 1:
+            MPI.COMM_WORLD.Abort(1)
+    except Exception:
+        pass
 
 
 if __name__ == "__main__":

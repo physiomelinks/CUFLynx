@@ -15,13 +15,14 @@ const props = defineProps({
 })
 const emit = defineEmits(['run', 'cancel'])
 
+// Note: pre_time / sim_time are intentionally NOT here — calibration timing
+// comes from the obs_data.json protocol_info (see #13).
 const settings = reactive({
   param_id_method: 'genetic_algorithm',
   num_calls_to_function: 100,
   cost_convergence: 0.001,
   max_patience: 10,
-  pre_time: 0,
-  sim_time: 2,
+  num_cores: 1,
   dt: 0.01,
   DEBUG: false,
 })
@@ -97,11 +98,8 @@ function onRun() {
         <InputNumber v-model="settings.max_patience" :min="1" size="small" />
       </label>
       <label class="field">
-        <span>pre / sim time</span>
-        <span class="pair">
-          <InputNumber v-model="settings.pre_time" :min="0" size="small" />
-          <InputNumber v-model="settings.sim_time" :min="0" size="small" />
-        </span>
+        <span title="mpiexec -n N: parallel GA population evaluation">Cores</span>
+        <InputNumber v-model="settings.num_cores" :min="1" :max="64" size="small" />
       </label>
       <label class="field checkbox">
         <Checkbox v-model="settings.DEBUG" :binary="true" input-id="cal-debug" />
@@ -144,7 +142,6 @@ function onRun() {
   flex-direction: column;
   gap: 0.4rem;
   padding: 0.6rem 0.75rem;
-  border-top: 1px solid var(--p-content-border-color, #333);
 }
 .cal-header {
   display: flex;
@@ -179,10 +176,6 @@ function onRun() {
 }
 .field.checkbox {
   justify-content: flex-start;
-}
-.pair {
-  display: flex;
-  gap: 0.25rem;
 }
 .cal-actions {
   display: flex;

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -51,6 +52,19 @@ class CalibrationManager:
         job = self._job
         return job is not None and job.state == "running"
 
+    def build_command(self, config: dict, config_path: str) -> list[str]:
+        """Single-process by default; ``mpiexec -n N`` when num_cores > 1.
+
+        The genetic algorithm parallelises population evaluation across MPI
+        ranks, exactly like circulatory_autogen's run_param_id.sh.
+        """
+        base = [self.python, "-u", self.runner_path, config_path]
+        num_cores = int(config.get("num_cores", 1) or 1)
+        if num_cores > 1:
+            mpiexec = shutil.which("mpiexec") or "mpiexec"
+            return [mpiexec, "-n", str(num_cores), *base]
+        return base
+
     def start(self, config: dict) -> str:
         with self._lock:
             if self.busy:
@@ -64,7 +78,7 @@ class CalibrationManager:
             job = CalibrationJob(uuid.uuid4().hex, output_dir)
             env = dict(os.environ)
             job.proc = subprocess.Popen(
-                [self.python, "-u", self.runner_path, config_path],
+                self.build_command(config, config_path),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
