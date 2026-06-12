@@ -1,10 +1,11 @@
 <script setup>
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onMounted } from 'vue'
 import ControlPanel from './components/ControlPanel.vue'
 import VariableList from './components/VariableList.vue'
 import PlotPanel from './components/PlotPanel.vue'
 import FileImport from './components/FileImport.vue'
 import StatusBar from './components/StatusBar.vue'
+import CalibrationPanel from './components/CalibrationPanel.vue'
 import InputNumber from 'primevue/inputnumber'
 import Button from 'primevue/button'
 import Message from 'primevue/message'
@@ -14,17 +15,54 @@ import { useSliders, shouldUseLog } from './stores/useSliders'
 import { useSimResult } from './stores/useSimResult'
 import { useObsData } from './stores/useObsData'
 import { useParamsForId } from './stores/useParamsForId'
-import { getVariables, simulate, runProtocol } from './lib/api'
-import { overlayItemsFor } from './lib/plot'
+import { useCalibration, applyBestParams } from './stores/useCalibration'
+import { getVariables, simulate, runProtocol, getCalibrationDefaults } from './lib/api'
+import { overlayItemsFor, controlledSeries } from './lib/plot'
 
 const model = useModel()
 const sliders = useSliders()
 const sim = useSimResult()
 const obs = useObsData()
 const paramsForId = useParamsForId(sliders)
+const calib = useCalibration()
 
 const simTime = ref(10)
 const preTime = ref(0)
+
+// Left column tab: 'params' | 'calibration'
+const leftTab = ref('params')
+
+// Calibration
+const calibDefaults = ref({})
+onMounted(async () => {
+  try {
+    calibDefaults.value = await getCalibrationDefaults()
+  } catch {
+    /* backend not up yet; panel falls back to built-in defaults */
+  }
+})
+
+const canCalibrate = computed(
+  () =>
+    model.hasModel.value &&
+    obs.hasObsData.value &&
+    paramsForId.importedKeys.value.length > 0,
+)
+
+function onRunCalibration(settings) {
+  calib.start(model.modelId.value, settings)
+}
+
+// When calibration finishes, write best-fit params into the sliders and re-run.
+watch(
+  () => calib.state.value,
+  (state) => {
+    if (state === 'done' && calib.bestParams.value) {
+      applyBestParams(sliders, paramsForId.paramSpecs.value, calib.bestParams.value)
+      runSimulation()
+    }
+  },
+)
 
 async function onModelLoaded(data) {
   model.setModel(data)
@@ -105,46 +143,72 @@ async function runSimulation() {
   }
 }
 
-// One plot cell per (experiment, variable) when obs_data drives the run;
-// otherwise a single plot of the manual simulation.
-const plotCells = computed(() => {
-  // Protocol run: grid of (experiment, variable).
+// Plots grouped by experiment: each group has a heading and its plot cells.
+// A protocol run shows every experiment, prefixing each with the controlled
+// (params_to_change) inputs, then one plot per (experiment, variable).
+const plotGroups = computed(() => {
   if (obs.hasProtocol.value && sim.experiments.value.length) {
     const vars = obs.plotVariables.value
     const labels = obs.experimentLabels.value
-    const cells = []
-    sim.experiments.value.forEach((exp, e) => {
-      const expLabel = labels[e] ?? `exp ${e}`
+    const pi = obs.obsData.value?.protocol_info
+    return sim.experiments.value.map((exp, e) => {
+      const cells = []
+      // Controlled inputs first, flagged so they get a "controlled" label.
+      for (const c of controlledSeries(pi, e)) {
+        cells.push({
+          key: `${e}:ctrl:${c.qname}`,
+          title: c.label,
+          varLabel: c.label,
+          controlled: true,
+          simResult: { time: c.time, outputs: { [c.qname]: c.values } },
+          dataItems: [],
+        })
+      }
       for (const v of vars) {
         cells.push({
           key: `${e}:${v.qname}`,
-          title: `${expLabel} · ${v.label}`,
+          title: v.label,
+          varLabel: v.label,
+          controlled: false,
           simResult: { time: exp.time, outputs: { [v.qname]: exp.outputs?.[v.qname] ?? [] } },
           dataItems: overlayItemsFor(obs.obsData.value, e, v.qname),
         })
       }
+      const label = labels[e]
+        ? `Experiment ${e}: ${labels[e]}`
+        : `Experiment ${e}`
+      return { key: `exp${e}`, label, cells }
     })
-    return cells
   }
-  // Data-only obs_data (no protocol): one plot per referenced variable, with
-  // overlays, from the single manual run.
+  // Data-only obs_data: one group, no heading, one plot per referenced variable.
   if (obs.hasObsData.value && obs.plotVariables.value.length && sim.result.value) {
     const out = sim.result.value.outputs ?? {}
-    return obs.plotVariables.value.map((v) => ({
+    const cells = obs.plotVariables.value.map((v) => ({
       key: v.qname,
       title: v.label,
+      varLabel: v.label,
+      controlled: false,
       simResult: { time: sim.result.value.time, outputs: { [v.qname]: out[v.qname] ?? [] } },
       dataItems: overlayItemsFor(obs.obsData.value, 0, v.qname),
     }))
+    return [{ key: 'data-only', label: '', cells }]
   }
   // Plain manual run.
   if (sim.result.value) {
     return [
       {
         key: 'single',
-        title: model.name.value ?? '',
-        simResult: sim.result.value,
-        dataItems: [],
+        label: '',
+        cells: [
+          {
+            key: 'single',
+            title: model.name.value ?? '',
+            varLabel: '',
+            controlled: false,
+            simResult: sim.result.value,
+            dataItems: [],
+          },
+        ],
       },
     ]
   }
@@ -185,11 +249,49 @@ watch(
 
     <main class="columns">
       <aside class="col col-left">
-        <ControlPanel
-          :sliders="sliders.sliders"
-          @update="onSliderUpdate"
-          @remove="({ qname }) => sliders.removeSlider(qname)"
-        />
+        <div class="left-tabs">
+          <button
+            class="left-tab"
+            :class="{ active: leftTab === 'params' }"
+            data-testid="tab-params"
+            @click="leftTab = 'params'"
+          >
+            Parameters
+          </button>
+          <button
+            class="left-tab"
+            :class="{ active: leftTab === 'calibration' }"
+            data-testid="tab-calibration"
+            @click="leftTab = 'calibration'"
+          >
+            Calibration
+            <span
+              v-if="calib.running.value"
+              class="tab-dot"
+              title="calibration running"
+            />
+          </button>
+        </div>
+
+        <div v-show="leftTab === 'params'" class="left-pane left-pane-scroll">
+          <ControlPanel
+            :sliders="sliders.sliders"
+            @update="onSliderUpdate"
+            @remove="({ qname }) => sliders.removeSlider(qname)"
+          />
+        </div>
+        <div v-show="leftTab === 'calibration'" class="left-pane left-pane-scroll">
+          <CalibrationPanel
+            :defaults="calibDefaults"
+            :can-run="canCalibrate"
+            :lines="calib.lines.value"
+            :state="calib.state.value"
+            :cost="calib.cost.value"
+            :error="calib.error.value"
+            @run="onRunCalibration"
+            @cancel="calib.cancel()"
+          />
+        </div>
       </aside>
 
       <section class="col col-center">
@@ -202,16 +304,29 @@ watch(
         >
           {{ sim.warnings.value.join(' ') }}
         </Message>
-        <div class="plot-grid" :class="{ single: plotCells.length <= 1 }">
-          <PlotPanel
-            v-for="cell in plotCells"
-            :key="cell.key"
-            class="plot-cell"
-            :title="cell.title"
-            :sim-result="cell.simResult"
-            :data-items="cell.dataItems"
-          />
-          <p v-if="plotCells.length === 0" class="empty-hint">
+        <div class="plot-groups">
+          <section
+            v-for="g in plotGroups"
+            :key="g.key"
+            class="exp-group"
+            data-testid="exp-group"
+          >
+            <h2 v-if="g.label" class="exp-heading">{{ g.label }}</h2>
+            <div class="plot-grid" :class="{ single: g.cells.length <= 1 }">
+              <PlotPanel
+                v-for="cell in g.cells"
+                :key="cell.key"
+                class="plot-cell"
+                :title="cell.title"
+                :var-label="cell.varLabel"
+                :tag="cell.controlled ? 'controlled' : ''"
+                :stepped="cell.controlled"
+                :sim-result="cell.simResult"
+                :data-items="cell.dataItems"
+              />
+            </div>
+          </section>
+          <p v-if="plotGroups.length === 0" class="empty-hint">
             Upload a CellML model and run a simulation.
           </p>
         </div>
@@ -280,6 +395,42 @@ watch(
 }
 .col-left {
   border-right: 1px solid var(--p-content-border-color, #333);
+  display: flex;
+  flex-direction: column;
+}
+.left-tabs {
+  display: flex;
+  border-bottom: 1px solid var(--p-content-border-color, #333);
+}
+.left-tab {
+  flex: 1;
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: inherit;
+  opacity: 0.6;
+  padding: 0.5rem;
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+.left-tab.active {
+  opacity: 1;
+  border-bottom-color: var(--p-primary-color, #5b9bd5);
+}
+.tab-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-left: 0.35rem;
+  border-radius: 50%;
+  background: #ffc000;
+}
+.left-pane {
+  flex: 1;
+  min-height: 0;
+}
+.left-pane-scroll {
+  overflow-y: auto;
 }
 .col-center {
   display: flex;
@@ -288,14 +439,26 @@ watch(
 .warn-banner {
   margin: 0.5rem;
 }
-.plot-grid {
+.plot-groups {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  padding: 0.5rem;
+}
+.exp-group + .exp-group {
+  margin-top: 0.75rem;
+}
+.exp-heading {
+  margin: 0.25rem 0 0.5rem;
+  font-size: 0.95rem;
+  font-weight: 600;
+  border-bottom: 1px solid var(--p-content-border-color, #333);
+  padding-bottom: 0.25rem;
+}
+.plot-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
   gap: 0.5rem;
-  padding: 0.5rem;
 }
 .plot-grid.single {
   grid-template-columns: 1fr;

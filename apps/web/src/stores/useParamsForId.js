@@ -10,6 +10,9 @@ import { ref } from 'vue'
 export function useParamsForId(slidersStore) {
   const filename = ref(null)
   const importedKeys = ref([])
+  // qname -> { min, max, name_for_plotting } for calibration write-back of any
+  // param that no longer has a slider.
+  const paramSpecs = ref({})
 
   function importParams(params, name = null) {
     clear()
@@ -24,6 +27,11 @@ export function useParamsForId(slidersStore) {
         name_for_plotting: p.name_for_plotting ?? p.qname,
       })
       importedKeys.value.push(p.qname)
+      paramSpecs.value[p.qname] = {
+        min: p.min,
+        max: p.max,
+        name_for_plotting: p.name_for_plotting ?? p.qname,
+      }
     }
     return importedKeys.value.length
   }
@@ -31,8 +39,9 @@ export function useParamsForId(slidersStore) {
   function clear() {
     for (const key of importedKeys.value) slidersStore.removeSlider(key)
     importedKeys.value = []
+    paramSpecs.value = {}
     filename.value = null
   }
 
-  return { filename, importedKeys, importParams, clear }
+  return { filename, importedKeys, paramSpecs, importParams, clear }
 }

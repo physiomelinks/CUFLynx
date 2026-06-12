@@ -90,6 +90,9 @@ def test_obs_upload_returns_items_for_plot_grid(client):
     assert body["n_experiments"] == 3
     assert len(body["data_items"]) == len(obs["data_items"])
     assert len(body["prediction_items"]) == len(obs["prediction_items"])
+    # protocol_info (incl. params_to_change) is returned so the frontend can plot
+    # the controlled inputs per experiment.
+    assert "soma_SN/I_in" in body["protocol_info"]["params_to_change"]
 
 
 # ---------------------------------------------------------------------------

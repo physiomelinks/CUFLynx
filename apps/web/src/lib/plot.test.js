@@ -5,6 +5,8 @@ import {
   derivePlotVariables,
   overlayItemsFor,
   buildChartData,
+  computeFeature,
+  controlledSeries,
 } from './plot'
 
 // Mirrors the SN_simple obs_data shape (3 experiments, predictions + overlays).
@@ -84,6 +86,96 @@ describe('data-only obs_data (3compartment shape)', () => {
     const items = overlayItemsFor(obs3, 0, 'aortic_root/u')
     expect(items).toHaveLength(1)
     expect(items[0].value).toBe(16000)
+  })
+})
+
+describe('controlledSeries (params_to_change)', () => {
+  const pi = {
+    pre_times: [0, 0, 0],
+    sim_times: [[1, 2], [1, 2], [1, 1]],
+    params_to_change: {
+      'soma_SN/I_in': [[0, -0.15], [0, -0.15], [0.0, 'ramp_port']],
+      'soma_SN/g_M': [[0.08, 0.08], [0.12, 0.12], [0.08, 0.08]],
+    },
+    protocol_traces: { ramp_port: { t: [0, 0.5, 1], values: [0, -0.15, -0.3] } },
+  }
+
+  it('builds a step series held over each sub-experiment', () => {
+    const iin = controlledSeries(pi, 0).find((s) => s.qname === 'soma_SN/I_in')
+    // sub0: 0 over [0,1]; sub1: -0.15 over [1,3]
+    expect(iin.time).toEqual([0, 1, 1, 3])
+    expect(iin.values).toEqual([0, 0, -0.15, -0.15])
+  })
+
+  it('uses protocol_traces for a string sub-value, offset to the sub start', () => {
+    const iin = controlledSeries(pi, 2).find((s) => s.qname === 'soma_SN/I_in')
+    expect(iin.time).toEqual([0, 1, 1, 1.5, 2])
+    expect(iin.values).toEqual([0, 0, 0, -0.15, -0.3])
+  })
+
+  it('returns one series per controlled parameter', () => {
+    expect(controlledSeries(pi, 0).map((s) => s.qname)).toEqual([
+      'soma_SN/I_in',
+      'soma_SN/g_M',
+    ])
+  })
+
+  it('is empty without protocol_info / params_to_change', () => {
+    expect(controlledSeries(null, 0)).toEqual([])
+    expect(controlledSeries({ params_to_change: {} }, 0)).toEqual([])
+  })
+})
+
+describe('computeFeature', () => {
+  const time = [0, 1, 2, 3]
+  it('computes max/min with the time of occurrence', () => {
+    expect(computeFeature('max', time, [1, 5, 3, 2])).toEqual({ value: 5, at: 1 })
+    expect(computeFeature('min', time, [4, 5, 1, 2])).toEqual({ value: 1, at: 2 })
+  })
+  it('computes mean and max_minus_min', () => {
+    expect(computeFeature('mean', time, [1, 2, 3, 4]).value).toBeCloseTo(2.5)
+    expect(computeFeature('max_minus_min', time, [1, 2, 3, 4]).value).toBe(3)
+  })
+  it('returns null for unsupported (e.g. spike frequency) operations', () => {
+    expect(computeFeature('calc_spike_frequency_windowed', time, [1, 2])).toBeNull()
+  })
+})
+
+describe('buildChartData calculated features', () => {
+  it('plots the calculated feature beside the experimental value', () => {
+    const sim = { time: [0, 1, 2], outputs: { 'aortic_root/v': [1e-4, 5e-4, 2e-4] } }
+    const item = {
+      name_for_plotting: 'v_{AR}',
+      data_type: 'constant',
+      operation: 'max',
+      operands: ['aortic_root/v'],
+      plot_type: 'horizontal',
+      value: 4e-4,
+    }
+    const { datasets } = buildChartData(sim, { dataItems: [item], varLabel: 'v_{AR}' })
+    const obs = datasets.find((d) => d.kind === 'obs-constant')
+    const calc = datasets.find((d) => d.kind === 'calc-constant')
+    expect(obs.data[0].y).toBe(4e-4) // experimental max
+    expect(calc.data[0].y).toBe(5e-4) // calculated max from the trace
+    expect(obs.legendStyle).toBe('dash')
+    expect(calc.legendStyle).toBe('line')
+    expect(calc.mathLabel).toBe('v_{AR}')
+  })
+
+  it('stepped option disables line smoothing (for controlled step series)', () => {
+    const sim = { time: [0, 1, 1, 3], outputs: { 'soma_SN/I_in': [0, 0, -0.15, -0.15] } }
+    const smooth = buildChartData(sim, {}).datasets.find((d) => d.kind === 'simulation')
+    const stepped = buildChartData(sim, { stepped: true }).datasets.find((d) => d.kind === 'simulation')
+    expect(smooth.tension).toBe(0.15)
+    expect(stepped.tension).toBe(0)
+  })
+
+  it('simulation dataset carries the LaTeX varLabel and a line legend style', () => {
+    const sim = { time: [0, 1], outputs: { 'aortic_root/v': [1, 2] } }
+    const { datasets } = buildChartData(sim, { varLabel: 'v_{AR}' })
+    const s = datasets.find((d) => d.kind === 'simulation')
+    expect(s.mathLabel).toBe('v_{AR}')
+    expect(s.legendStyle).toBe('line')
   })
 })
 
