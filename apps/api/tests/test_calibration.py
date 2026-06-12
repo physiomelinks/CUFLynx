@@ -105,6 +105,35 @@ def test_build_command_single_vs_mpiexec():
     assert parallel[-2:] == [mgr.runner_path, "/tmp/c.json"]
 
 
+def test_build_command_uses_selected_python():
+    mgr = calibration_mod.CalibrationManager()
+    cmd = mgr.build_command({"num_cores": 1, "python": "/custom/py"}, "/tmp/c.json")
+    assert cmd[0] == "/custom/py"
+    mpi = mgr.build_command({"num_cores": 2, "python": "/custom/py"}, "/tmp/c.json")
+    assert "mpiexec" in mpi[0]
+    assert "/custom/py" in mpi
+
+
+def test_calibration_pythons_lists_interpreters(client):
+    body = client.get("/api/calibration/pythons").json()
+    assert "default" in body
+    assert isinstance(body["pythons"], list)
+    for p in body["pythons"]:
+        assert {"path", "version", "ready", "missing"} <= set(p)
+
+
+def test_calibration_invalid_python_returns_422(client, tmp_path):
+    _install_runner(tmp_path, FAKE_RUNNER)
+    model_id = _setup_model_obs_params(
+        client, LV_MODEL_PATH, LV_OBS_DATA_PATH, LV_PARAMS_CSV_PATH
+    )
+    resp = client.post(
+        "/api/calibration/run",
+        json={"model_id": model_id, "settings": {"python_path": "/no/such/python"}},
+    )
+    assert resp.status_code == 422
+
+
 def test_calibration_streams_and_completes(client, tmp_path):
     _install_runner(tmp_path, FAKE_RUNNER)
     model_id = _setup_model_obs_params(

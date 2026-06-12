@@ -18,6 +18,107 @@ from pathlib import Path
 
 RUNNER_PATH = str(Path(__file__).resolve().parent / "calibration_runner.py")
 
+# Modules a Python interpreter needs to run calibrations. myokit + libcellml are
+# required for any run; nevergrad (CMA-ES) and mpi4py (multi-core) are optional.
+REQUIRED_MODULES = ["myokit", "libcellml"]
+OPTIONAL_MODULES = ["nevergrad", "mpi4py"]
+
+
+def _candidate_python_paths() -> list[str]:
+    """Best-effort list of Python interpreters on this machine."""
+    import glob
+
+    cands = [sys.executable]
+    for name in (
+        "python3",
+        "python",
+        "python3.13",
+        "python3.12",
+        "python3.11",
+        "python3.10",
+        "python3.9",
+    ):
+        found = shutil.which(name)
+        if found:
+            cands.append(found)
+
+    home = os.path.expanduser("~")
+    for base in ("miniconda3", "anaconda3", "miniforge3", "mambaforge"):
+        cands.append(os.path.join(home, base, "bin", "python"))
+        cands.extend(glob.glob(os.path.join(home, base, "envs", "*", "bin", "python")))
+    cands.extend(glob.glob(os.path.join(home, ".conda", "envs", "*", "bin", "python")))
+    cands.extend(glob.glob("/opt/conda/envs/*/bin/python"))
+    if os.environ.get("CONDA_PREFIX"):
+        cands.append(os.path.join(os.environ["CONDA_PREFIX"], "bin", "python"))
+
+    out: list[str] = []
+    seen: set[str] = set()
+    for c in cands:
+        if not c:
+            continue
+        real = os.path.realpath(c)
+        if os.path.isfile(real) and os.access(real, os.X_OK) and real not in seen:
+            seen.add(real)
+            out.append(c)
+    return out
+
+
+def _probe_python(path: str) -> dict | None:
+    """Return {path, version, ready, missing} for an interpreter, or None."""
+    try:
+        ver = subprocess.run(
+            [path, "-c", "import sys;print('.'.join(map(str, sys.version_info[:3])))"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if ver.returncode != 0:
+            return None
+        version = ver.stdout.strip()
+        mods = REQUIRED_MODULES + OPTIONAL_MODULES
+        check = subprocess.run(
+            [
+                path,
+                "-c",
+                "import importlib.util as u;"
+                f"print(','.join(m for m in {mods!r} if u.find_spec(m) is None))",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        missing = (
+            [m for m in check.stdout.strip().split(",") if m]
+            if check.returncode == 0
+            else mods
+        )
+        ready = all(m not in missing for m in REQUIRED_MODULES)
+        return {"path": path, "version": version, "ready": ready, "missing": missing}
+    except Exception:  # noqa: BLE001 - a bad interpreter just gets skipped
+        return None
+
+
+_python_cache: list[dict] | None = None
+
+
+def list_python_interpreters(refresh: bool = False) -> list[dict]:
+    """Discover + probe available interpreters (cached for the process)."""
+    global _python_cache
+    if _python_cache is not None and not refresh:
+        return _python_cache
+    result = []
+    seen: set[str] = set()
+    for path in _candidate_python_paths():
+        real = os.path.realpath(path)
+        if real in seen:
+            continue
+        seen.add(real)
+        info = _probe_python(path)
+        if info:
+            result.append(info)
+    _python_cache = result
+    return result
+
 
 class CalibrationJob:
     def __init__(self, job_id: str, output_dir: str):
@@ -58,7 +159,8 @@ class CalibrationManager:
         The genetic algorithm parallelises population evaluation across MPI
         ranks, exactly like circulatory_autogen's run_param_id.sh.
         """
-        base = [self.python, "-u", self.runner_path, config_path]
+        python = config.get("python") or self.python
+        base = [python, "-u", self.runner_path, config_path]
         num_cores = int(config.get("num_cores", 1) or 1)
         if num_cores > 1:
             mpiexec = shutil.which("mpiexec") or "mpiexec"

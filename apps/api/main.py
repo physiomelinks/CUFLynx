@@ -18,6 +18,7 @@ work (and are unit-tested) without Myokit installed.
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import uuid
 from pathlib import Path
@@ -26,7 +27,7 @@ from fastapi import FastAPI, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from calibration import calibration
+from calibration import calibration, list_python_interpreters
 from cellml_meta import CellMLModel, CellMLParseError, parse_cellml
 from engine import SimulationError, engine
 from obs_data import ObsData, ObsDataError, parse_obs_data
@@ -296,6 +297,17 @@ def calibration_defaults() -> dict:
     return CALIBRATION_DEFAULTS
 
 
+@app.get("/api/calibration/pythons")
+def calibration_pythons(refresh: bool = False) -> dict:
+    """Discover Python interpreters that can run a calibration."""
+    import sys as _sys
+
+    return {
+        "default": _sys.executable,
+        "pythons": list_python_interpreters(refresh=refresh),
+    }
+
+
 @app.post("/api/calibration/run")
 def calibration_run(req: CalibrationRequest) -> dict:
     record = _get_model(req.model_id)
@@ -305,6 +317,15 @@ def calibration_run(req: CalibrationRequest) -> dict:
             detail="calibration requires both an obs_data.json and a "
             "params_for_id.csv to be uploaded for this model",
         )
+    python_path = req.settings.get("python_path") or None
+    if python_path and not (
+        os.path.isfile(python_path) and os.access(python_path, os.X_OK)
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail=f"python interpreter not found or not executable: {python_path}",
+        )
+
     output_dir = str(UPLOAD_DIR / f"calib_{req.model_id}_{uuid.uuid4().hex[:8]}")
     config = {
         "model_path": str(record.path),
@@ -313,6 +334,7 @@ def calibration_run(req: CalibrationRequest) -> dict:
         "output_dir": output_dir,
         "file_prefix": record.meta.name or "model",
         "num_cores": int(req.settings.get("num_cores", 1) or 1),
+        "python": python_path,
         "settings": req.settings,
     }
     try:

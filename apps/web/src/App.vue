@@ -16,7 +16,13 @@ import { useSimResult } from './stores/useSimResult'
 import { useObsData } from './stores/useObsData'
 import { useParamsForId } from './stores/useParamsForId'
 import { useCalibration, applyBestParams } from './stores/useCalibration'
-import { getVariables, simulate, runProtocol, getCalibrationDefaults } from './lib/api'
+import {
+  getVariables,
+  simulate,
+  runProtocol,
+  getCalibrationDefaults,
+  getCalibrationPythons,
+} from './lib/api'
 import { overlayItemsFor, controlledSeries } from './lib/plot'
 
 const model = useModel()
@@ -34,11 +40,17 @@ const leftTab = ref('params')
 
 // Calibration
 const calibDefaults = ref({})
+const calibPythons = ref([])
 onMounted(async () => {
   try {
     calibDefaults.value = await getCalibrationDefaults()
   } catch {
     /* backend not up yet; panel falls back to built-in defaults */
+  }
+  try {
+    calibPythons.value = (await getCalibrationPythons()).pythons ?? []
+  } catch {
+    /* interpreter discovery optional */
   }
 })
 
@@ -283,6 +295,7 @@ watch(
         <div v-show="leftTab === 'calibration'" class="left-pane left-pane-scroll">
           <CalibrationPanel
             :defaults="calibDefaults"
+            :pythons="calibPythons"
             :can-run="canCalibrate"
             :lines="calib.lines.value"
             :state="calib.state.value"

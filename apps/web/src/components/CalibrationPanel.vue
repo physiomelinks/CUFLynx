@@ -7,6 +7,7 @@ import Button from 'primevue/button'
 
 const props = defineProps({
   defaults: { type: Object, default: () => ({}) },
+  pythons: { type: Array, default: () => [] },
   canRun: { type: Boolean, default: false },
   lines: { type: Array, default: () => [] },
   state: { type: String, default: 'idle' },
@@ -23,8 +24,26 @@ const settings = reactive({
   cost_convergence: 0.001,
   max_patience: 10,
   num_cores: 1,
+  python_path: '',
   dt: 0.01,
   DEBUG: false,
+})
+
+const pythonOptions = computed(() => [
+  { label: 'Server default', value: '' },
+  ...props.pythons.map((p) => ({
+    label:
+      `Python ${p.version} — ${p.path}` +
+      (p.ready ? '' : ` (missing: ${(p.missing || []).join(', ')})`),
+    value: p.path,
+    ready: p.ready,
+  })),
+])
+
+// Whether the chosen interpreter is known to be missing required deps.
+const selectedNotReady = computed(() => {
+  const p = props.pythons.find((x) => x.path === settings.python_path)
+  return p && !p.ready ? p.missing : null
 })
 
 // Seed from server defaults once they arrive.
@@ -101,6 +120,20 @@ function onRun() {
         <span title="mpiexec -n N: parallel GA population evaluation">Cores</span>
         <InputNumber v-model="settings.num_cores" :min="1" :max="64" size="small" />
       </label>
+      <label class="field">
+        <span title="Interpreter/env used to run the calibration">Python</span>
+        <Select
+          v-model="settings.python_path"
+          :options="pythonOptions"
+          option-label="label"
+          option-value="value"
+          size="small"
+          data-testid="python-select"
+        />
+      </label>
+      <p v-if="selectedNotReady" class="cal-error" data-testid="python-warning">
+        Selected interpreter is missing: {{ selectedNotReady.join(', ') }}
+      </p>
       <label class="field checkbox">
         <Checkbox v-model="settings.DEBUG" :binary="true" input-id="cal-debug" />
         <span>DEBUG (small population, fast)</span>

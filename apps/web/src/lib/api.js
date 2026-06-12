@@ -61,6 +61,13 @@ export async function getCalibrationDefaults() {
   return data
 }
 
+export async function getCalibrationPythons(refresh = false) {
+  const { data } = await axios.get(
+    url(`/api/calibration/pythons${refresh ? '?refresh=true' : ''}`),
+  )
+  return data
+}
+
 export async function startCalibration(modelId, settings) {
   const { data } = await axios.post(url('/api/calibration/run'), {
     model_id: modelId,
