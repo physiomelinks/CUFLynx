@@ -1,0 +1,25 @@
+:root {
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  background: #1e1e1e;
+  color: #e0e0e0;
+}
+
+h1,
+h2 {
+  font-weight: 600;
+}
+
+h2 {
+  font-size: 0.95rem;
+  margin: 0 0 0.5rem;
+  opacity: 0.85;
+}

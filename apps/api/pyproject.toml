@@ -1,0 +1,45 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "cellml-explorer-api"
+version = "0.1.0"
+description = "FastAPI backend for the CellML slider-visualisation app"
+readme = "../../README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.110.0",
+    "uvicorn[standard]>=0.27.0",
+    "numpy>=1.24.0",
+    "pandas>=1.3.0",
+    "python-multipart>=0.0.9",
+    # CellML simulation (circulatory_autogen Myokit path; sibling repo on PYTHONPATH).
+    # Required only for the integration tier; unit tests run without them.
+    "myokit>=1.39.1",
+    "libcellml>=0.6.3",
+    "scipy>=1.7.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "httpx>=0.27.0",
+    "pytest>=7.0.0",
+    "pytest-cov>=3.0.0",
+]
+
+[tool.hatch.build.targets.wheel]
+only-include = [
+    "main.py",
+    "engine.py",
+    "cellml_meta.py",
+    "obs_data.py",
+    "params_for_id.py",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+markers = [
+    "integration: requires myokit and circulatory_autogen (real CellML simulation)",
+]
