@@ -6,6 +6,7 @@ import PlotPanel from './components/PlotPanel.vue'
 import FileImport from './components/FileImport.vue'
 import StatusBar from './components/StatusBar.vue'
 import CalibrationPanel from './components/CalibrationPanel.vue'
+import ProgressPanel from './components/ProgressPanel.vue'
 import InputNumber from 'primevue/inputnumber'
 import Button from 'primevue/button'
 import Message from 'primevue/message'
@@ -35,8 +36,13 @@ const calib = useCalibration()
 const simTime = ref(10)
 const preTime = ref(0)
 
+// Where calibration outputs are written; blank => backend uses a temp dir.
+const outputsDir = ref('')
+
 // Left column tab: 'params' | 'calibration'
 const leftTab = ref('params')
+// Center column tab: 'plots' | 'progress'
+const centerTab = ref('plots')
 
 // Calibration
 const calibDefaults = ref({})
@@ -62,7 +68,10 @@ const canCalibrate = computed(
 )
 
 function onRunCalibration(settings) {
-  calib.start(model.modelId.value, settings)
+  calib.start(model.modelId.value, {
+    ...settings,
+    config_outputs_dir: outputsDir.value.trim() || undefined,
+  })
 }
 
 // When calibration finishes, write best-fit params into the sliders and re-run.
@@ -308,8 +317,32 @@ watch(
       </aside>
 
       <section class="col col-center">
+        <div class="left-tabs">
+          <button
+            class="left-tab"
+            :class="{ active: centerTab === 'plots' }"
+            data-testid="tab-plots"
+            @click="centerTab = 'plots'"
+          >
+            Output plots
+          </button>
+          <button
+            class="left-tab"
+            :class="{ active: centerTab === 'progress' }"
+            data-testid="tab-progress"
+            @click="centerTab = 'progress'"
+          >
+            Progress
+            <span
+              v-if="calib.running.value"
+              class="tab-dot"
+              title="calibration running"
+            />
+          </button>
+        </div>
+
         <Message
-          v-if="sim.warnings.value.length"
+          v-if="centerTab === 'plots' && sim.warnings.value.length"
           severity="warn"
           :closable="false"
           class="warn-banner"
@@ -317,7 +350,7 @@ watch(
         >
           {{ sim.warnings.value.join(' ') }}
         </Message>
-        <div class="plot-groups">
+        <div v-show="centerTab === 'plots'" class="plot-groups">
           <section
             v-for="g in plotGroups"
             :key="g.key"
@@ -343,6 +376,13 @@ watch(
             Upload a CellML model and run a simulation.
           </p>
         </div>
+        <div v-show="centerTab === 'progress'" class="plot-groups">
+          <ProgressPanel
+            :cost-history="calib.costHistory.value"
+            :param-names="calib.paramHistory.value.paramNames"
+            :param-history="calib.paramHistory.value.generations"
+          />
+        </div>
         <StatusBar
           :status="sim.status.value"
           :message="sim.message.value"
@@ -352,6 +392,7 @@ watch(
 
       <aside class="col col-right">
         <FileImport
+          v-model:outputs-dir="outputsDir"
           :model-id="model.modelId.value"
           @model-loaded="onModelLoaded"
           @obs-data-loaded="obs.setObsData"

@@ -2,6 +2,7 @@ import { ref, computed } from 'vue'
 import {
   startCalibration,
   getCalibrationStatus,
+  getCalibrationProgress,
   cancelCalibration,
 } from '../lib/api'
 
@@ -34,6 +35,9 @@ export function useCalibration(options = {}) {
   const bestParams = ref(null)
   const cost = ref(null)
   const error = ref('')
+  // Live per-generation history for the Progress tab charts.
+  const costHistory = ref([]) // [[best, …top-10], …] one row per generation
+  const paramHistory = ref({ paramNames: [], generations: [] })
 
   let jobId = null
   let offset = 0
@@ -49,6 +53,22 @@ export function useCalibration(options = {}) {
     bestParams.value = null
     cost.value = null
     error.value = ''
+    costHistory.value = []
+    paramHistory.value = { paramNames: [], generations: [] }
+  }
+
+  async function fetchProgress() {
+    if (!jobId) return
+    try {
+      const p = await getCalibrationProgress(jobId)
+      costHistory.value = p.cost_history ?? []
+      paramHistory.value = {
+        paramNames: p.param_names ?? [],
+        generations: p.param_history ?? [],
+      }
+    } catch {
+      /* history not written yet (early run) or job gone; keep last values */
+    }
   }
 
   async function start(modelId, settings) {
@@ -73,6 +93,7 @@ export function useCalibration(options = {}) {
         offset = s.next_offset
       }
       state.value = s.state
+      await fetchProgress()
       if (s.state === 'running') {
         timer = setTimeout(poll, intervalMs)
       } else {
@@ -101,5 +122,17 @@ export function useCalibration(options = {}) {
 
   const running = computed(() => state.value === 'running')
 
-  return { state, lines, bestParams, cost, error, running, start, cancel, reset }
+  return {
+    state,
+    lines,
+    bestParams,
+    cost,
+    error,
+    costHistory,
+    paramHistory,
+    running,
+    start,
+    cancel,
+    reset,
+  }
 }

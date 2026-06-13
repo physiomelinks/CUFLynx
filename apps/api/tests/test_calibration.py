@@ -42,6 +42,23 @@ print("starting slow", flush=True)
 time.sleep(30)
 """
 
+# Writes history CSVs into a <case_type> subdir (like circulatory_autogen) before
+# finishing, so the progress endpoint has something to parse.
+HISTORY_RUNNER = """
+import json, os, sys
+from pathlib import Path
+cfg = json.loads(Path(sys.argv[1]).read_text())
+sub = Path(cfg["output_dir"], "genetic_algorithm_model_obs")
+sub.mkdir(parents=True, exist_ok=True)
+(sub / "best_cost_history.csv").write_text(
+    "1.0, 2.0, 3.0\\n0.5, 0.7, 0.9\\n")
+(sub / "best_param_vals_history.csv").write_text(
+    "a x,a y\\n0.10, 0.20\\n0.30, 0.40\\n")
+Path(cfg["output_dir"], "results.json").write_text(
+    json.dumps({"params": {"a/x": 1.5}, "cost": 0.5}))
+print("__CALIBRATION_DONE__", flush=True)
+"""
+
 
 def _install_runner(tmp_path, src) -> str:
     path = tmp_path / "fake_runner.py"
@@ -178,6 +195,77 @@ def test_calibration_busy_returns_409(client, tmp_path):
 
 def test_calibration_status_unknown_job_404(client):
     assert client.get("/api/calibration/nope/status").status_code == 404
+
+
+def test_read_history_parses_subdir_and_tolerates_partial(tmp_path):
+    sub = tmp_path / "genetic_algorithm_model_obs"
+    sub.mkdir()
+    # Two full generations plus a partially-flushed final row.
+    (sub / "best_cost_history.csv").write_text(
+        "0.9, 1.0, 1.1\n0.4, 0.6, 0.8\n0.3, 0.3"  # last line shorter, still parses
+    )
+    (sub / "best_param_vals_history.csv").write_text(
+        "global q_lv_init,aortic_root C\n0.75, 0.30\n1.00, 0.29\n1.00,"  # trailing
+    )
+    hist = calibration_mod._read_history(str(tmp_path))
+    assert hist["param_names"] == ["global q_lv_init", "aortic_root C"]
+    # cost: all rows parse (variable width tolerated); best is column 0.
+    assert [row[0] for row in hist["cost_history"]] == [0.9, 0.4, 0.3]
+    # params: only full-width rows kept (trailing "1.00," has wrong width).
+    assert hist["param_history"] == [[0.75, 0.30], [1.00, 0.29]]
+
+
+def test_read_history_missing_files_returns_empty(tmp_path):
+    hist = calibration_mod._read_history(str(tmp_path))
+    assert hist == {"param_names": [], "cost_history": [], "param_history": []}
+
+
+def test_calibration_progress_endpoint(client, tmp_path):
+    _install_runner(tmp_path, HISTORY_RUNNER)
+    model_id = _setup_model_obs_params(
+        client, LV_MODEL_PATH, LV_OBS_DATA_PATH, LV_PARAMS_CSV_PATH
+    )
+    resp = client.post("/api/calibration/run", json={"model_id": model_id, "settings": {}})
+    job_id = resp.json()["job_id"]
+    _wait(client, job_id)
+
+    prog = client.get(f"/api/calibration/{job_id}/progress").json()
+    assert prog["param_names"] == ["a x", "a y"]
+    assert [row[0] for row in prog["cost_history"]] == [1.0, 0.5]
+    assert prog["param_history"] == [[0.10, 0.20], [0.30, 0.40]]
+
+
+def test_calibration_progress_unknown_job_404(client):
+    assert client.get("/api/calibration/nope/progress").status_code == 404
+
+
+def test_calibration_honors_config_outputs_dir(client, tmp_path):
+    _install_runner(tmp_path, FAKE_RUNNER)
+    out = tmp_path / "my_outputs"
+    model_id = _setup_model_obs_params(
+        client, LV_MODEL_PATH, LV_OBS_DATA_PATH, LV_PARAMS_CSV_PATH
+    )
+    resp = client.post(
+        "/api/calibration/run",
+        json={"model_id": model_id, "settings": {"config_outputs_dir": str(out)}},
+    )
+    assert resp.status_code == 200, resp.text
+    status, _ = _wait(client, resp.json()["job_id"])
+    assert status["state"] == "done"
+    # Runner wrote results.json into the configured dir (proves it was used).
+    assert (out / "results.json").exists()
+
+
+def test_calibration_config_outputs_dir_must_be_absolute(client, tmp_path):
+    _install_runner(tmp_path, FAKE_RUNNER)
+    model_id = _setup_model_obs_params(
+        client, LV_MODEL_PATH, LV_OBS_DATA_PATH, LV_PARAMS_CSV_PATH
+    )
+    resp = client.post(
+        "/api/calibration/run",
+        json={"model_id": model_id, "settings": {"config_outputs_dir": "relative/dir"}},
+    )
+    assert resp.status_code == 422
 
 
 # ---------------------------------------------------------------------------

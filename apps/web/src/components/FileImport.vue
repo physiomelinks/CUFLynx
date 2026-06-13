@@ -1,15 +1,18 @@
 <script setup>
 import { ref } from 'vue'
 import Message from 'primevue/message'
+import InputText from 'primevue/inputtext'
 import { uploadCellML, uploadObsData, uploadParamsForId } from '../lib/api'
 
 const props = defineProps({
   modelId: { type: String, default: null },
+  outputsDir: { type: String, default: '' },
 })
 const emit = defineEmits([
   'model-loaded',
   'obs-data-loaded',
   'params-loaded',
+  'update:outputsDir',
 ])
 
 const error = ref('')
@@ -116,6 +119,22 @@ async function onParamsDrop(event) {
     >
       {{ error }}
     </Message>
+
+    <h2 class="exports-heading">Exports</h2>
+    <label class="outputs-dir">
+      <span>Outputs directory</span>
+      <InputText
+        :model-value="outputsDir"
+        data-testid="config-outputs-dir"
+        placeholder="default: system temp dir"
+        size="small"
+        @update:model-value="emit('update:outputsDir', $event)"
+      />
+    </label>
+    <small class="hint">
+      Absolute path where calibration outputs are written. Leave blank for a
+      temporary directory.
+    </small>
   </section>
 </template>
 
@@ -136,5 +155,21 @@ async function onParamsDrop(event) {
 }
 .dropzone:hover {
   border-color: var(--p-primary-color, #5b9bd5);
+}
+.exports-heading {
+  margin: 0.5rem 0 0;
+}
+.outputs-dir {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.85rem;
+}
+.outputs-dir :deep(input) {
+  width: 100%;
+}
+.hint {
+  opacity: 0.6;
+  font-size: 0.75rem;
 }
 </style>

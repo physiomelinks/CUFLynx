@@ -18,6 +18,76 @@ from pathlib import Path
 
 RUNNER_PATH = str(Path(__file__).resolve().parent / "calibration_runner.py")
 
+COST_HISTORY_FILE = "best_cost_history.csv"
+PARAM_HISTORY_FILE = "best_param_vals_history.csv"
+
+
+def _find_history_file(output_dir: str, name: str) -> str | None:
+    """Locate a history CSV under output_dir, tolerating the ``<case_type>``
+    subdir circulatory_autogen creates (e.g. ``genetic_algorithm_<prefix>_…``)."""
+    import glob
+
+    direct = os.path.join(output_dir, name)
+    if os.path.exists(direct):
+        return direct
+    matches = glob.glob(os.path.join(output_dir, "**", name), recursive=True)
+    return matches[0] if matches else None
+
+
+def _read_history(output_dir: str) -> dict:
+    """Parse the calibration history CSVs into JSON-friendly arrays.
+
+    ``best_cost_history.csv`` has one row of (up to 10) comma-separated costs per
+    generation, best first. ``best_param_vals_history.csv`` has a header row of
+    display-friendly param names followed by one row of normalised best param
+    values per generation. Never raises: missing files / partially-written final
+    rows yield empty or truncated arrays so a mid-run poll is always safe.
+    """
+    param_names: list[str] = []
+    cost_history: list[list[float]] = []
+    param_history: list[list[float]] = []
+
+    cost_path = _find_history_file(output_dir, COST_HISTORY_FILE)
+    if cost_path:
+        try:
+            for line in Path(cost_path).read_text().splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    cost_history.append([float(x) for x in line.split(",")])
+                except ValueError:
+                    # partially-flushed final row mid-write; skip it
+                    continue
+        except OSError:
+            pass
+
+    param_path = _find_history_file(output_dir, PARAM_HISTORY_FILE)
+    if param_path:
+        try:
+            lines = Path(param_path).read_text().splitlines()
+            if lines:
+                param_names = [c.strip() for c in lines[0].split(",")]
+                width = len(param_names)
+                for line in lines[1:]:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        row = [float(x) for x in line.split(",")]
+                    except ValueError:
+                        continue
+                    if len(row) == width:
+                        param_history.append(row)
+        except OSError:
+            pass
+
+    return {
+        "param_names": param_names,
+        "cost_history": cost_history,
+        "param_history": param_history,
+    }
+
 # Modules a Python interpreter needs to run calibrations. myokit + libcellml are
 # required for any run; nevergrad (CMA-ES) and mpi4py (multi-core) are optional.
 REQUIRED_MODULES = ["myokit", "libcellml"]
@@ -235,6 +305,19 @@ class CalibrationManager:
                 "cost": job.cost,
                 "error": job.error,
             }
+
+    def progress(self, job_id: str) -> dict | None:
+        """Per-generation cost/param history for the live progress charts.
+
+        Reads the history CSVs the runner subprocess writes (no lock needed —
+        a separate process owns the files). ``state`` lets the client stop
+        polling once the run is no longer ``running``.
+        """
+        job = self._job
+        if job is None or job.id != job_id:
+            return None
+        hist = _read_history(job.output_dir)
+        return {"job_id": job.id, "state": job.state, **hist}
 
     def cancel(self, job_id: str) -> bool:
         job = self._job

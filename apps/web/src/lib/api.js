@@ -83,6 +83,11 @@ export async function getCalibrationStatus(jobId, offset = 0) {
   return data
 }
 
+export async function getCalibrationProgress(jobId) {
+  const { data } = await axios.get(url(`/api/calibration/${jobId}/progress`))
+  return data
+}
+
 export async function cancelCalibration(jobId) {
   const { data } = await axios.post(url(`/api/calibration/${jobId}/cancel`))
   return data
