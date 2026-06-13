@@ -17,7 +17,13 @@ const SelectStub = {
     '<select v-bind="$attrs" :value="modelValue" @change="$emit(\'update:modelValue\', $event.target.value)">' +
     '<option v-for="o in options" :key="o.value" :value="o.value">{{ o.label }}</option></select>',
 }
-const stubs = { Select: true, InputNumber: true, Checkbox: true, Button: ButtonStub }
+const stubs = {
+  Select: true,
+  InputNumber: true,
+  Checkbox: true,
+  Button: ButtonStub,
+  FileBrowserDialog: true,
+}
 
 describe('CalibrationPanel', () => {
   it('renders streamed terminal lines', () => {

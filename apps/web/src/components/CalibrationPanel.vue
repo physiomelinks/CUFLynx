@@ -4,6 +4,7 @@ import Select from 'primevue/select'
 import InputNumber from 'primevue/inputnumber'
 import Checkbox from 'primevue/checkbox'
 import Button from 'primevue/button'
+import FileBrowserDialog from './FileBrowserDialog.vue'
 
 const props = defineProps({
   defaults: { type: Object, default: () => ({}) },
@@ -29,16 +30,29 @@ const settings = reactive({
   DEBUG: false,
 })
 
-const pythonOptions = computed(() => [
-  { label: 'Server default', value: '' },
-  ...props.pythons.map((p) => ({
-    label:
-      `Python ${p.version} — ${p.path}` +
-      (p.ready ? '' : ` (missing: ${(p.missing || []).join(', ')})`),
-    value: p.path,
-    ready: p.ready,
-  })),
-])
+const pythonBrowserOpen = ref(false)
+
+const pythonOptions = computed(() => {
+  const opts = [
+    { label: 'Server default', value: '' },
+    ...props.pythons.map((p) => ({
+      label:
+        `Python ${p.version} — ${p.path}` +
+        (p.ready ? '' : ` (missing: ${(p.missing || []).join(', ')})`),
+      value: p.path,
+      ready: p.ready,
+    })),
+  ]
+  // Show a browsed interpreter that isn't among the auto-discovered ones.
+  if (settings.python_path && !opts.some((o) => o.value === settings.python_path)) {
+    opts.push({ label: `Custom — ${settings.python_path}`, value: settings.python_path })
+  }
+  return opts
+})
+
+function onPythonSelected(p) {
+  settings.python_path = p
+}
 
 // Whether the chosen interpreter is known to be missing required deps.
 const selectedNotReady = computed(() => {
@@ -122,14 +136,24 @@ function onRun() {
       </label>
       <label class="field">
         <span title="Interpreter/env used to run the calibration">Python</span>
-        <Select
-          v-model="settings.python_path"
-          :options="pythonOptions"
-          option-label="label"
-          option-value="value"
-          size="small"
-          data-testid="python-select"
-        />
+        <span class="field-input">
+          <Select
+            v-model="settings.python_path"
+            :options="pythonOptions"
+            option-label="label"
+            option-value="value"
+            size="small"
+            data-testid="python-select"
+          />
+          <Button
+            icon="pi pi-folder-open"
+            size="small"
+            text
+            title="Browse for a Python interpreter"
+            data-testid="python-browse"
+            @click="pythonBrowserOpen = true"
+          />
+        </span>
       </label>
       <p v-if="selectedNotReady" class="cal-error" data-testid="python-warning">
         Selected interpreter is missing: {{ selectedNotReady.join(', ') }}
@@ -166,6 +190,13 @@ function onRun() {
     <p v-if="error" class="cal-error">{{ error }}</p>
 
     <pre ref="term" class="terminal" data-testid="cal-terminal">{{ lines.join('\n') }}</pre>
+
+    <FileBrowserDialog
+      v-model:visible="pythonBrowserOpen"
+      mode="file"
+      title="Select a Python interpreter"
+      @select="onPythonSelected"
+    />
   </section>
 </template>
 
@@ -209,6 +240,11 @@ function onRun() {
 }
 .field.checkbox {
   justify-content: flex-start;
+}
+.field-input {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
 }
 .cal-actions {
   display: flex;

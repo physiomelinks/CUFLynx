@@ -2,6 +2,8 @@
 import { ref, watch } from 'vue'
 import Message from 'primevue/message'
 import InputText from 'primevue/inputtext'
+import Button from 'primevue/button'
+import FileBrowserDialog from './FileBrowserDialog.vue'
 import { uploadCellML, uploadObsData, uploadParamsForId } from '../lib/api'
 
 const props = defineProps({
@@ -17,6 +19,7 @@ const emit = defineEmits([
 
 const error = ref('')
 const notice = ref('')
+const outputsBrowserOpen = ref(false)
 
 // obs_data / params depend on a model_id to attach server-side (and params is
 // parsed against the model's initial_values). Remember the last dropped inputs
@@ -175,18 +178,35 @@ async function onParamsDrop(event) {
     <h2 class="exports-heading">Exports</h2>
     <label class="outputs-dir">
       <span>Outputs directory</span>
-      <InputText
-        :model-value="outputsDir"
-        data-testid="config-outputs-dir"
-        placeholder="default: system temp dir"
-        size="small"
-        @update:model-value="emit('update:outputsDir', $event)"
-      />
+      <span class="outputs-input">
+        <InputText
+          :model-value="outputsDir"
+          data-testid="config-outputs-dir"
+          placeholder="default: system temp dir"
+          size="small"
+          @update:model-value="emit('update:outputsDir', $event)"
+        />
+        <Button
+          icon="pi pi-folder-open"
+          size="small"
+          text
+          title="Browse for an outputs directory"
+          data-testid="outputs-browse"
+          @click="outputsBrowserOpen = true"
+        />
+      </span>
     </label>
     <small class="hint">
       Absolute path where calibration outputs are written. Leave blank for a
       temporary directory.
     </small>
+
+    <FileBrowserDialog
+      v-model:visible="outputsBrowserOpen"
+      mode="dir"
+      title="Select an outputs directory"
+      @select="emit('update:outputsDir', $event)"
+    />
   </section>
 </template>
 
@@ -216,6 +236,11 @@ async function onParamsDrop(event) {
   flex-direction: column;
   gap: 0.25rem;
   font-size: 0.85rem;
+}
+.outputs-input {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
 }
 .outputs-dir :deep(input) {
   width: 100%;

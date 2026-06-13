@@ -11,6 +11,13 @@ export async function checkHealth() {
   return data.status === 'ok'
 }
 
+export async function listDir(path = null, dirsOnly = false) {
+  const { data } = await axios.get(url('/api/fs/list'), {
+    params: { ...(path ? { path } : {}), dirs_only: dirsOnly },
+  })
+  return data
+}
+
 export async function uploadCellML(file) {
   const form = new FormData()
   form.append('file', file)

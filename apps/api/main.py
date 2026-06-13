@@ -104,6 +104,47 @@ def health() -> dict:
     return {"status": "ok"}
 
 
+@app.get("/api/fs/list")
+def fs_list(
+    path: str | None = Query(default=None), dirs_only: bool = False
+) -> dict:
+    """List a server-side directory for the in-app file/folder browser.
+
+    This is a localhost tool, so the backend filesystem is the user's own. Used
+    to pick an absolute Python interpreter path and the calibration outputs dir.
+    Defaults to the user's home directory when no path is given.
+    """
+    base = Path(path).expanduser() if path else Path.home()
+    try:
+        base = base.resolve()
+    except OSError as exc:
+        raise HTTPException(status_code=400, detail=f"invalid path: {path}") from exc
+    if not base.is_dir():
+        raise HTTPException(status_code=404, detail=f"not a directory: {base}")
+    try:
+        children = list(base.iterdir())
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+    entries = []
+    for child in children:
+        try:
+            is_dir = child.is_dir()
+        except OSError:
+            continue  # broken symlink / unreadable — skip
+        if dirs_only and not is_dir:
+            continue
+        entries.append({"name": child.name, "path": str(child), "is_dir": is_dir})
+    entries.sort(key=lambda e: (not e["is_dir"], e["name"].lower()))
+
+    parent = str(base.parent)
+    return {
+        "path": str(base),
+        "parent": None if parent == str(base) else parent,
+        "entries": entries,
+    }
+
+
 @app.post("/api/models/upload")
 async def upload_model(file: UploadFile) -> dict:
     raw = await file.read()

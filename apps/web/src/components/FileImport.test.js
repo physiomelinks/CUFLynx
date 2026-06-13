@@ -10,7 +10,7 @@ vi.mock('../lib/api', () => ({
 import FileImport from './FileImport.vue'
 import { uploadCellML, uploadObsData, uploadParamsForId } from '../lib/api'
 
-const stubs = { Message: true, InputText: true }
+const stubs = { Message: true, InputText: true, Button: true, FileBrowserDialog: true }
 
 // jsdom's File has no .text(); browsers do. Stub it for obs_data JSON reads.
 function jsonFile(name, text) {
