@@ -1,5 +1,5 @@
 <script setup>
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
 import Message from 'primevue/message'
 import InputText from 'primevue/inputtext'
 import { uploadCellML, uploadObsData, uploadParamsForId } from '../lib/api'
@@ -16,10 +16,45 @@ const emit = defineEmits([
 ])
 
 const error = ref('')
+const notice = ref('')
+
+// obs_data / params depend on a model_id to attach server-side (and params is
+// parsed against the model's initial_values). Remember the last dropped inputs
+// so they can be (re)attached once a CellML model is present — making the drop
+// order irrelevant. See issue #16.
+const pendingObs = ref(null) // parsed obs_data object
+const pendingParams = ref(null) // params_for_id File
 
 function extOk(filename, exts) {
   return exts.some((e) => filename.toLowerCase().endsWith(e))
 }
+
+async function attachObs(obsData) {
+  const summary = await uploadObsData(props.modelId, obsData)
+  emit('obs-data-loaded', summary)
+}
+
+async function attachParams(file) {
+  const data = await uploadParamsForId(file, props.modelId)
+  emit('params-loaded', { ...data, filename: file.name })
+}
+
+// When a model is (re)loaded, flush any remembered obs/params onto it. The
+// parent clears its obs/params stores on model load, so this repopulates them.
+watch(
+  () => props.modelId,
+  async (id, prev) => {
+    if (!id || id === prev) return
+    error.value = ''
+    try {
+      if (pendingObs.value) await attachObs(pendingObs.value)
+      if (pendingParams.value) await attachParams(pendingParams.value)
+      notice.value = ''
+    } catch (e) {
+      error.value = e?.response?.data?.detail || String(e)
+    }
+  },
+)
 
 function filesFrom(event) {
   if (event.dataTransfer?.files?.length) return Array.from(event.dataTransfer.files)
@@ -55,8 +90,12 @@ async function onObsDrop(event) {
   }
   try {
     const obsData = JSON.parse(await file.text())
-    const summary = await uploadObsData(props.modelId, obsData)
-    emit('obs-data-loaded', summary)
+    pendingObs.value = obsData
+    if (props.modelId) {
+      await attachObs(obsData)
+    } else {
+      notice.value = 'obs_data queued — it will attach once a CellML model is loaded.'
+    }
   } catch (e) {
     error.value = e?.response?.data?.detail || String(e)
   }
@@ -72,8 +111,13 @@ async function onParamsDrop(event) {
     return
   }
   try {
-    const data = await uploadParamsForId(file, props.modelId)
-    emit('params-loaded', { ...data, filename: file.name })
+    pendingParams.value = file
+    if (props.modelId) {
+      await attachParams(file)
+    } else {
+      notice.value =
+        'params_for_id queued — it will attach once a CellML model is loaded.'
+    }
   } catch (e) {
     error.value = e?.response?.data?.detail || String(e)
   }
@@ -118,6 +162,14 @@ async function onParamsDrop(event) {
       :closable="false"
     >
       {{ error }}
+    </Message>
+    <Message
+      v-if="notice && !error"
+      severity="info"
+      data-testid="import-notice"
+      :closable="false"
+    >
+      {{ notice }}
     </Message>
 
     <h2 class="exports-heading">Exports</h2>
