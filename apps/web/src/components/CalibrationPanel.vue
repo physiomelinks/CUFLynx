@@ -134,7 +134,10 @@ function onRun() {
         <span title="mpiexec -n N: parallel GA population evaluation">Cores</span>
         <InputNumber v-model="settings.num_cores" :min="1" :max="64" size="small" />
       </label>
-      <label class="field">
+      <!-- Not a <label>: this row has two controls (Select + browse Button); a
+           label would forward chevron clicks to the native button (the browse
+           dialog) instead of opening the dropdown. -->
+      <div class="field">
         <span title="Interpreter/env used to run the calibration">Python</span>
         <span class="field-input">
           <Select
@@ -154,7 +157,7 @@ function onRun() {
             @click="pythonBrowserOpen = true"
           />
         </span>
-      </label>
+      </div>
       <p v-if="selectedNotReady" class="cal-error" data-testid="python-warning">
         Selected interpreter is missing: {{ selectedNotReady.join(', ') }}
       </p>
