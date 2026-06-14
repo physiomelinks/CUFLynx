@@ -44,6 +44,10 @@ const preTime = ref(0)
 // Where calibration outputs are written; blank => backend uses a temp dir.
 const outputsDir = ref('')
 
+// Python interpreter shared by the Sensitivity and Calibration panels: picking
+// one updates the other. Blank => backend uses its default interpreter.
+const pythonPath = ref('')
+
 // Left column tab: 'params' | 'sensitivity' | 'calibration'
 const leftTab = ref('params')
 // Center column tab: 'plots' | 'progress' | 'analysis'
@@ -77,6 +81,15 @@ const canCalibrate = computed(
     obs.hasObsData.value &&
     paramsForId.importedKeys.value.length > 0,
 )
+
+// qname -> plotting/LaTeX name, for the Analysis-tab heatmap row labels.
+const paramLabels = computed(() => {
+  const out = {}
+  for (const [qname, spec] of Object.entries(paramsForId.paramSpecs.value || {})) {
+    out[qname] = spec.name_for_plotting ?? qname
+  }
+  return out
+})
 
 function onRunCalibration(settings) {
   calib.start(model.modelId.value, {
@@ -343,6 +356,7 @@ watch(
         </div>
         <div v-show="leftTab === 'sensitivity'" class="left-pane left-pane-scroll">
           <SensitivityPanel
+            v-model:python-path="pythonPath"
             :defaults="saDefaults"
             :pythons="calibPythons"
             :can-run="canCalibrate"
@@ -355,6 +369,7 @@ watch(
         </div>
         <div v-show="leftTab === 'calibration'" class="left-pane left-pane-scroll">
           <CalibrationPanel
+            v-model:python-path="pythonPath"
             :defaults="calibDefaults"
             :pythons="calibPythons"
             :can-run="canCalibrate"
@@ -453,7 +468,10 @@ watch(
             :indices="sa.indices.value"
             :param-names="sa.paramNames.value"
             :output-names="sa.outputNames.value"
-            :state="sa.state.value"
+            :param-labels="paramLabels"
+            :percent-error="calib.percentError.value"
+            :std-error="calib.stdError.value"
+            :error-labels="calib.errorLabels.value"
           />
         </div>
         <StatusBar

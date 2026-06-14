@@ -38,6 +38,10 @@ export function useCalibration(options = {}) {
   // Live per-generation history for the Progress tab charts.
   const costHistory = ref([]) // [[best, …top-10], …] one row per generation
   const paramHistory = ref({ paramNames: [], generations: [] })
+  // Final per-observable fit errors for the Analysis tab bar charts.
+  const percentError = ref(null) // [number] one per observable
+  const stdError = ref(null) // [number] one per observable
+  const errorLabels = ref([]) // display names, one per observable
 
   let jobId = null
   let offset = 0
@@ -55,6 +59,9 @@ export function useCalibration(options = {}) {
     error.value = ''
     costHistory.value = []
     paramHistory.value = { paramNames: [], generations: [] }
+    percentError.value = null
+    stdError.value = null
+    errorLabels.value = []
   }
 
   async function fetchProgress() {
@@ -99,6 +106,9 @@ export function useCalibration(options = {}) {
       } else {
         bestParams.value = s.best_params
         cost.value = s.cost
+        percentError.value = s.percent_error
+        stdError.value = s.std_error
+        errorLabels.value = s.error_labels ?? []
         error.value = s.error || ''
       }
     } catch (e) {
@@ -130,6 +140,9 @@ export function useCalibration(options = {}) {
     error,
     costHistory,
     paramHistory,
+    percentError,
+    stdError,
+    errorLabels,
     running,
     start,
     cancel,

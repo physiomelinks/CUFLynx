@@ -17,7 +17,7 @@ const DialogStub = {
   props: ['visible'],
   template: '<div v-if="visible"><slot /><slot name="footer" /></div>',
 }
-const stubs = { Dialog: DialogStub, Button: ButtonStub }
+const stubs = { Dialog: DialogStub, Button: ButtonStub, Checkbox: true }
 
 beforeEach(() => listDir.mockReset())
 
@@ -63,6 +63,27 @@ describe('FileBrowserDialog', () => {
     await wrapper.find('[data-testid="fb-confirm"]').trigger('click')
     expect(wrapper.emitted('select')[0]).toEqual(['/home/u/run.py'])
     expect(wrapper.emitted('update:visible').at(-1)).toEqual([false])
+  })
+
+  it('hides dotfiles/dot-dirs by default', async () => {
+    listDir.mockResolvedValue({
+      path: '/home/u',
+      parent: '/home',
+      entries: [
+        { name: '.ssh', path: '/home/u/.ssh', is_dir: true },
+        { name: 'proj', path: '/home/u/proj', is_dir: true },
+        { name: '.bashrc', path: '/home/u/.bashrc', is_dir: false },
+      ],
+    })
+    const wrapper = mount(FileBrowserDialog, {
+      props: { visible: true, mode: 'file' },
+      global: { stubs },
+    })
+    await flushPromises()
+    expect(wrapper.text()).toContain('proj')
+    expect(wrapper.text()).not.toContain('.ssh')
+    expect(wrapper.text()).not.toContain('.bashrc')
+    expect(wrapper.findAll('.fb-list li')).toHaveLength(1)
   })
 
   it('in dir mode selects the current folder and requests dirs only', async () => {

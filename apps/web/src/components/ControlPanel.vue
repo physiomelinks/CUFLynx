@@ -4,6 +4,7 @@ import Slider from 'primevue/slider'
 import ToggleButton from 'primevue/togglebutton'
 import Button from 'primevue/button'
 import { SLIDER_STEPS, valueToSlider, sliderToValue } from '../stores/useSliders'
+import { renderMath } from '../lib/math'
 
 const props = defineProps({
   sliders: { type: Object, default: () => ({}) },
@@ -50,7 +51,7 @@ function onValue(qname, value) {
       data-testid="slider-row"
     >
       <div class="slider-label">
-        <span class="qname">{{ s.name_for_plotting }}</span>
+        <span class="qname" :title="s.qname" v-html="renderMath(s.name_for_plotting)" />
         <Button
           icon="pi pi-times"
           text

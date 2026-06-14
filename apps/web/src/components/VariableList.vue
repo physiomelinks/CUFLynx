@@ -13,7 +13,7 @@ const emit = defineEmits(['add-slider', 'toggle-output'])
 
 const tabs = [
   { key: 'params', label: 'Params' },
-  { key: 'odes', label: 'Outputs' },
+  { key: 'odes', label: 'States' },
   { key: 'algebraic', label: 'Algebraic' },
 ]
 const activeTab = ref('params')

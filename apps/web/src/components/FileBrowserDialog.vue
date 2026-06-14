@@ -1,7 +1,8 @@
 <script setup>
-import { ref, watch } from 'vue'
+import { ref, watch, computed } from 'vue'
 import Dialog from 'primevue/dialog'
 import Button from 'primevue/button'
+import Checkbox from 'primevue/checkbox'
 import { listDir } from '../lib/api'
 
 const props = defineProps({
@@ -17,6 +18,14 @@ const entries = ref([])
 const selectedFile = ref('')
 const error = ref('')
 const loading = ref(false)
+// Hide dotfiles/dot-dirs by default; the toolbar checkbox reveals them.
+const showHidden = ref(false)
+
+const visibleEntries = computed(() =>
+  showHidden.value
+    ? entries.value
+    : entries.value.filter((e) => !e.name.startsWith('.')),
+)
 
 async function load(p) {
   loading.value = true
@@ -76,11 +85,15 @@ function confirm() {
         @click="load(parent)"
       />
       <code class="fb-path">{{ path }}</code>
+      <label class="fb-hidden-toggle" title="Show dotfiles and hidden folders">
+        <Checkbox v-model="showHidden" :binary="true" data-testid="fb-show-hidden" />
+        <span>show hidden</span>
+      </label>
     </div>
     <p v-if="error" class="fb-error" data-testid="fb-error">{{ error }}</p>
     <ul class="fb-list">
       <li
-        v-for="e in entries"
+        v-for="e in visibleEntries"
         :key="e.path"
         :class="{ dir: e.is_dir, selected: e.path === selectedFile }"
         @click="onEntryClick(e)"
@@ -89,7 +102,7 @@ function confirm() {
         <i :class="e.is_dir ? 'pi pi-folder' : 'pi pi-file'" />
         <span>{{ e.name }}</span>
       </li>
-      <li v-if="!entries.length && !loading" class="fb-empty">(empty)</li>
+      <li v-if="!visibleEntries.length && !loading" class="fb-empty">(empty)</li>
     </ul>
     <template #footer>
       <Button label="Cancel" size="small" text @click="emit('update:visible', false)" />
@@ -115,6 +128,24 @@ function confirm() {
   font-size: 0.78rem;
   opacity: 0.8;
   word-break: break-all;
+}
+.fb-hidden-toggle {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.72rem;
+  opacity: 0.55;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.fb-hidden-toggle:hover {
+  opacity: 0.85;
+}
+/* shrink the checkbox so the toggle reads as a subtle control */
+.fb-hidden-toggle :deep(.p-checkbox) {
+  transform: scale(0.78);
 }
 .fb-list {
   list-style: none;

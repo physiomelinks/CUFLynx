@@ -198,6 +198,10 @@ class CalibrationJob:
         self.state = "running"  # running | done | error | cancelled
         self.best_params: dict | None = None
         self.cost = None
+        # Post-calibration per-observable fit errors (Analysis-tab bar charts).
+        self.percent_error: list | None = None
+        self.std_error: list | None = None
+        self.error_labels: list = []
         self.error: str | None = None
         self.proc: subprocess.Popen | None = None
         self.lock = threading.Lock()
@@ -282,6 +286,9 @@ class CalibrationManager:
                     data = json.loads(Path(results).read_text())
                     job.best_params = data.get("params", {})
                     job.cost = data.get("cost")
+                    job.percent_error = data.get("percent_error")
+                    job.std_error = data.get("std_error")
+                    job.error_labels = data.get("error_labels") or []
                     job.state = "done"
                 except Exception as exc:  # noqa: BLE001
                     job.state = "error"
@@ -303,6 +310,9 @@ class CalibrationManager:
                 "next_offset": offset + len(lines),
                 "best_params": job.best_params,
                 "cost": job.cost,
+                "percent_error": job.percent_error,
+                "std_error": job.std_error,
+                "error_labels": job.error_labels,
                 "error": job.error,
             }
 

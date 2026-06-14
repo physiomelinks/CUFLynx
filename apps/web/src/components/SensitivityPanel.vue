@@ -13,8 +13,10 @@ const props = defineProps({
   lines: { type: Array, default: () => [] },
   state: { type: String, default: 'idle' },
   error: { type: String, default: '' },
+  // Shared with the Calibration panel: picking an interpreter in one updates both.
+  pythonPath: { type: String, default: '' },
 })
-const emit = defineEmits(['run', 'cancel'])
+const emit = defineEmits(['run', 'cancel', 'update:pythonPath'])
 
 // Note: pre_time / sim_time are intentionally NOT here — SA timing comes from
 // the obs_data.json protocol_info (mirrors calibration, see #13).
@@ -48,9 +50,23 @@ const pythonOptions = computed(() => {
   return opts
 })
 
-function onPythonSelected(p) {
+// Update local state and notify the parent so the other panel stays in sync.
+function setPython(p) {
   settings.python_path = p
+  emit('update:pythonPath', p)
 }
+
+function onPythonSelected(p) {
+  setPython(p)
+}
+
+// Adopt an interpreter chosen in the sibling panel.
+watch(
+  () => props.pythonPath,
+  (p) => {
+    if (p !== settings.python_path) settings.python_path = p
+  },
+)
 
 // Whether the chosen interpreter is known to be missing required deps.
 const selectedNotReady = computed(() => {
@@ -139,12 +155,13 @@ function onRun() {
         <span title="Interpreter/env used to run the analysis">Python</span>
         <span class="field-input">
           <Select
-            v-model="settings.python_path"
+            :model-value="settings.python_path"
             :options="pythonOptions"
             option-label="label"
             option-value="value"
             size="small"
             data-testid="sa-python-select"
+            @update:model-value="setPython"
           />
           <Button
             icon="pi pi-folder-open"
