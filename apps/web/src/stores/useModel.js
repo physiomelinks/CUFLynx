@@ -4,11 +4,15 @@ import { ref, computed } from 'vue'
 export function useModel() {
   const modelId = ref(null)
   const name = ref(null)
+  // Prefix of the uploaded .cellml filename (extension stripped), shown in the
+  // top bar; falls back to the model name when no filename is available.
+  const filePrefix = ref(null)
   const variables = ref({ params: [], odes: [], algebraic: [], all_names: [] })
 
-  function setModel({ model_id, name: modelName }) {
+  function setModel({ model_id, name: modelName, filename }) {
     modelId.value = model_id
     name.value = modelName
+    filePrefix.value = filename ? filename.replace(/\.[^/.]+$/, '') : (modelName ?? null)
   }
 
   function setVariables(vars) {
@@ -24,5 +28,14 @@ export function useModel() {
   const hasModel = computed(() => modelId.value !== null)
   const defaultOutputs = computed(() => variables.value.odes)
 
-  return { modelId, name, variables, setModel, setVariables, hasModel, defaultOutputs }
+  return {
+    modelId,
+    name,
+    filePrefix,
+    variables,
+    setModel,
+    setVariables,
+    hasModel,
+    defaultOutputs,
+  }
 }

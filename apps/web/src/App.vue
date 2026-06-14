@@ -286,8 +286,8 @@ watch(
 <template>
   <div class="layout">
     <header class="topbar">
-      <h1>CellML Explorer</h1>
-      <span v-if="model.name.value" class="model-name">{{ model.name.value }}</span>
+      <h1>CUFLynx</h1>
+      <span v-if="model.filePrefix.value" class="model-name">{{ model.filePrefix.value }}</span>
       <div class="spacer" />
       <div v-if="!obs.hasObsData.value" class="time-controls" data-testid="time-controls">
         <label>t₁ <InputNumber v-model="simTime" :min="0" show-buttons size="small" /></label>

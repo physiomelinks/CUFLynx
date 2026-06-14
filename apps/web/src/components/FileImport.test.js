@@ -38,6 +38,7 @@ describe('FileImport', () => {
     expect(wrapper.emitted('model-loaded')[0][0]).toEqual({
       model_id: 'abc',
       name: 'm',
+      filename: 'model.cellml',
     })
   })
 

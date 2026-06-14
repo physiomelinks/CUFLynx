@@ -76,7 +76,7 @@ async function onCellmlDrop(event) {
   }
   try {
     const data = await uploadCellML(file)
-    emit('model-loaded', data)
+    emit('model-loaded', { ...data, filename: file.name })
   } catch (e) {
     error.value = e?.response?.data?.detail || String(e)
   }
