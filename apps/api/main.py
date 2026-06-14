@@ -32,6 +32,7 @@ from cellml_meta import CellMLModel, CellMLParseError, parse_cellml
 from engine import SimulationError, engine
 from obs_data import ObsData, ObsDataError, parse_obs_data
 from params_for_id import ParamsForIdError, parse_params_for_id
+from sensitivity import sensitivity
 
 app = FastAPI(title="CellML Explorer API", version="0.1.0")
 
@@ -414,4 +415,91 @@ def calibration_progress(job_id: str) -> dict:
 def calibration_cancel(job_id: str) -> dict:
     if not calibration.cancel(job_id):
         raise HTTPException(status_code=404, detail="calibration job not found")
+    return {"cancelled": True}
+
+
+# ---------------------------------------------------------------------------
+# Sensitivity analysis (circulatory_autogen Sobol indices)
+# ---------------------------------------------------------------------------
+class SensitivityRequest(BaseModel):
+    model_id: str
+    settings: dict = Field(default_factory=dict)
+
+
+SENSITIVITY_DEFAULTS = {
+    "method": "sobol",
+    "methods": ["sobol"],
+    "sample_type": "saltelli",
+    "sample_types": ["saltelli", "sobol"],
+    "num_samples": 256,
+    "dt": 0.01,
+    "solver": "CVODE_myokit",
+    "DEBUG": False,
+    "num_cores": 1,  # >1 -> mpiexec -n N (parallel sample evaluation)
+    # Note: pre_time / sim_time are taken from the obs_data protocol_info (#13).
+}
+
+
+@app.get("/api/sensitivity/defaults")
+def sensitivity_defaults() -> dict:
+    return SENSITIVITY_DEFAULTS
+
+
+@app.post("/api/sensitivity/run")
+def sensitivity_run(req: SensitivityRequest) -> dict:
+    record = _get_model(req.model_id)
+    if record.obs_path is None or record.params_path is None:
+        raise HTTPException(
+            status_code=422,
+            detail="sensitivity analysis requires both an obs_data.json and a "
+            "params_for_id.csv to be uploaded for this model",
+        )
+    python_path = req.settings.get("python_path") or None
+    if python_path and not (
+        os.path.isfile(python_path) and os.access(python_path, os.X_OK)
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail=f"python interpreter not found or not executable: {python_path}",
+        )
+
+    configured = (req.settings.get("config_outputs_dir") or "").strip()
+    if configured:
+        if not os.path.isabs(configured):
+            raise HTTPException(
+                status_code=422,
+                detail="config_outputs_dir must be an absolute path",
+            )
+        output_dir = configured
+    else:
+        output_dir = str(UPLOAD_DIR / f"sa_{req.model_id}_{uuid.uuid4().hex[:8]}")
+    config = {
+        "model_path": str(record.path),
+        "obs_path": str(record.obs_path),
+        "params_path": str(record.params_path),
+        "output_dir": output_dir,
+        "file_prefix": record.meta.name or "model",
+        "num_cores": int(req.settings.get("num_cores", 1) or 1),
+        "python": python_path,
+        "settings": req.settings,
+    }
+    try:
+        job_id = sensitivity.start(config)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"job_id": job_id}
+
+
+@app.get("/api/sensitivity/{job_id}/status")
+def sensitivity_status(job_id: str, offset: int = 0) -> dict:
+    status = sensitivity.status(job_id, offset)
+    if status is None:
+        raise HTTPException(status_code=404, detail="sensitivity job not found")
+    return status
+
+
+@app.post("/api/sensitivity/{job_id}/cancel")
+def sensitivity_cancel(job_id: str) -> dict:
+    if not sensitivity.cancel(job_id):
+        raise HTTPException(status_code=404, detail="sensitivity job not found")
     return {"cancelled": True}

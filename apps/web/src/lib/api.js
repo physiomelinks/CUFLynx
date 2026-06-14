@@ -99,3 +99,28 @@ export async function cancelCalibration(jobId) {
   const { data } = await axios.post(url(`/api/calibration/${jobId}/cancel`))
   return data
 }
+
+export async function getSensitivityDefaults() {
+  const { data } = await axios.get(url('/api/sensitivity/defaults'))
+  return data
+}
+
+export async function startSensitivity(modelId, settings) {
+  const { data } = await axios.post(url('/api/sensitivity/run'), {
+    model_id: modelId,
+    settings,
+  })
+  return data
+}
+
+export async function getSensitivityStatus(jobId, offset = 0) {
+  const { data } = await axios.get(
+    url(`/api/sensitivity/${jobId}/status?offset=${offset}`),
+  )
+  return data
+}
+
+export async function cancelSensitivity(jobId) {
+  const { data } = await axios.post(url(`/api/sensitivity/${jobId}/cancel`))
+  return data
+}

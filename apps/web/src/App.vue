@@ -7,6 +7,8 @@ import FileImport from './components/FileImport.vue'
 import StatusBar from './components/StatusBar.vue'
 import CalibrationPanel from './components/CalibrationPanel.vue'
 import ProgressPanel from './components/ProgressPanel.vue'
+import SensitivityPanel from './components/SensitivityPanel.vue'
+import AnalysisPanel from './components/AnalysisPanel.vue'
 import InputNumber from 'primevue/inputnumber'
 import Button from 'primevue/button'
 import Message from 'primevue/message'
@@ -17,12 +19,14 @@ import { useSimResult } from './stores/useSimResult'
 import { useObsData } from './stores/useObsData'
 import { useParamsForId } from './stores/useParamsForId'
 import { useCalibration, applyBestParams } from './stores/useCalibration'
+import { useSensitivity } from './stores/useSensitivity'
 import {
   getVariables,
   simulate,
   runProtocol,
   getCalibrationDefaults,
   getCalibrationPythons,
+  getSensitivityDefaults,
 } from './lib/api'
 import { overlayItemsFor, controlledSeries } from './lib/plot'
 
@@ -32,6 +36,7 @@ const sim = useSimResult()
 const obs = useObsData()
 const paramsForId = useParamsForId(sliders)
 const calib = useCalibration()
+const sa = useSensitivity()
 
 const simTime = ref(10)
 const preTime = ref(0)
@@ -39,17 +44,23 @@ const preTime = ref(0)
 // Where calibration outputs are written; blank => backend uses a temp dir.
 const outputsDir = ref('')
 
-// Left column tab: 'params' | 'calibration'
+// Left column tab: 'params' | 'sensitivity' | 'calibration'
 const leftTab = ref('params')
-// Center column tab: 'plots' | 'progress'
+// Center column tab: 'plots' | 'progress' | 'analysis'
 const centerTab = ref('plots')
 
-// Calibration
+// Calibration / sensitivity
 const calibDefaults = ref({})
 const calibPythons = ref([])
+const saDefaults = ref({})
 onMounted(async () => {
   try {
     calibDefaults.value = await getCalibrationDefaults()
+  } catch {
+    /* backend not up yet; panel falls back to built-in defaults */
+  }
+  try {
+    saDefaults.value = await getSensitivityDefaults()
   } catch {
     /* backend not up yet; panel falls back to built-in defaults */
   }
@@ -73,6 +84,22 @@ function onRunCalibration(settings) {
     config_outputs_dir: outputsDir.value.trim() || undefined,
   })
 }
+
+// Sensitivity reuses the same prerequisites as calibration (model + obs + params).
+function onRunSensitivity(settings) {
+  sa.start(model.modelId.value, {
+    ...settings,
+    config_outputs_dir: outputsDir.value.trim() || undefined,
+  })
+}
+
+// When a sensitivity run finishes, surface the heatmap automatically.
+watch(
+  () => sa.state.value,
+  (state) => {
+    if (state === 'done') centerTab.value = 'analysis'
+  },
+)
 
 // When calibration finishes, write best-fit params into the sliders and re-run.
 watch(
@@ -281,6 +308,19 @@ watch(
           </button>
           <button
             class="left-tab"
+            :class="{ active: leftTab === 'sensitivity' }"
+            data-testid="tab-sensitivity"
+            @click="leftTab = 'sensitivity'"
+          >
+            Sensitivity
+            <span
+              v-if="sa.running.value"
+              class="tab-dot"
+              title="sensitivity running"
+            />
+          </button>
+          <button
+            class="left-tab"
             :class="{ active: leftTab === 'calibration' }"
             data-testid="tab-calibration"
             @click="leftTab = 'calibration'"
@@ -299,6 +339,18 @@ watch(
             :sliders="sliders.sliders"
             @update="onSliderUpdate"
             @remove="({ qname }) => sliders.removeSlider(qname)"
+          />
+        </div>
+        <div v-show="leftTab === 'sensitivity'" class="left-pane left-pane-scroll">
+          <SensitivityPanel
+            :defaults="saDefaults"
+            :pythons="calibPythons"
+            :can-run="canCalibrate"
+            :lines="sa.lines.value"
+            :state="sa.state.value"
+            :error="sa.error.value"
+            @run="onRunSensitivity"
+            @cancel="sa.cancel()"
           />
         </div>
         <div v-show="leftTab === 'calibration'" class="left-pane left-pane-scroll">
@@ -337,6 +389,19 @@ watch(
               v-if="calib.running.value"
               class="tab-dot"
               title="calibration running"
+            />
+          </button>
+          <button
+            class="left-tab"
+            :class="{ active: centerTab === 'analysis' }"
+            data-testid="tab-analysis"
+            @click="centerTab = 'analysis'"
+          >
+            Analysis
+            <span
+              v-if="sa.running.value"
+              class="tab-dot"
+              title="sensitivity running"
             />
           </button>
         </div>
@@ -381,6 +446,14 @@ watch(
             :cost-history="calib.costHistory.value"
             :param-names="calib.paramHistory.value.paramNames"
             :param-history="calib.paramHistory.value.generations"
+          />
+        </div>
+        <div v-show="centerTab === 'analysis'" class="plot-groups">
+          <AnalysisPanel
+            :indices="sa.indices.value"
+            :param-names="sa.paramNames.value"
+            :output-names="sa.outputNames.value"
+            :state="sa.state.value"
           />
         </div>
         <StatusBar
