@@ -1,25 +1,6 @@
 <script setup>
 import { ref, computed } from 'vue'
-import { Bar } from 'vue-chartjs'
 import { renderMath } from '../lib/math'
-import {
-  Chart as ChartJS,
-  CategoryScale,
-  LinearScale,
-  BarElement,
-  BarController,
-  Legend,
-  Tooltip,
-} from 'chart.js'
-
-ChartJS.register(
-  CategoryScale,
-  LinearScale,
-  BarElement,
-  BarController,
-  Legend,
-  Tooltip,
-)
 
 const props = defineProps({
   // Sensitivity: { S1: {outName: {param: val}}, ST: {...} }
@@ -100,42 +81,27 @@ function barColors(values, hi) {
   })
 }
 
-const percentData = computed(() => ({
-  labels: props.errorLabels,
-  datasets: [
-    {
-      label: '% error',
-      data: props.percentError ?? [],
-      backgroundColor: barColors(props.percentError, 20),
-    },
-  ],
-}))
-
-const stdData = computed(() => ({
-  labels: props.errorLabels,
-  datasets: [
-    {
-      label: 'error (std)',
-      data: props.stdError ?? [],
-      backgroundColor: barColors(props.stdError, 3),
-    },
-  ],
-}))
-
-function barOptions(yTitle) {
-  return {
-    responsive: true,
-    maintainAspectRatio: false,
-    animation: false,
-    scales: {
-      x: { ticks: { autoSkip: false } },
-      y: { type: 'linear', title: { display: true, text: yTitle } },
-    },
-    plugins: { legend: { display: false } },
-  }
+// One zero-centered HTML bar per observable. Widths are normalised to the
+// largest |error| in that chart; positive errors extend right of centre,
+// negative left. `hi` sets the green->red colour scale; `fmt` the value label.
+function errorBars(values, hi, fmt) {
+  const vals = values ?? []
+  const maxAbs = Math.max(1e-9, ...vals.map((v) => Math.abs(v)))
+  const colors = barColors(vals, hi)
+  return vals.map((v, i) => {
+    const halfPct = (Math.min(1, Math.abs(v) / maxAbs) * 50).toFixed(2)
+    return {
+      label: props.errorLabels[i] ?? `obs ${i}`,
+      color: colors[i],
+      width: `${halfPct}%`,
+      left: v >= 0 ? '50%' : `${(50 - Number(halfPct)).toFixed(2)}%`,
+      text: fmt(v),
+    }
+  })
 }
-const percentOptions = barOptions('percent error (%)')
-const stdOptions = barOptions('error (number of std)')
+
+const percentBars = computed(() => errorBars(props.percentError, 20, (v) => `${v.toFixed(1)}%`))
+const stdBars = computed(() => errorBars(props.stdError, 3, (v) => `${v.toFixed(2)}σ`))
 </script>
 
 <template>
@@ -218,18 +184,34 @@ const stdOptions = barOptions('error (number of std)')
       <template v-else>
         <section class="error-chart">
           <h3>Percentage error per observable</h3>
-          <div class="chart-box">
-            <Bar
-              :data="percentData"
-              :options="percentOptions"
-              data-testid="percent-error-chart"
-            />
+          <div class="bar-list" data-testid="percent-error-chart">
+            <div v-for="(b, i) in percentBars" :key="i" class="bar-row">
+              <span class="bar-label" v-html="renderMath(b.label)" />
+              <div class="bar-track">
+                <span class="bar-zero" />
+                <span
+                  class="bar-fill"
+                  :style="{ left: b.left, width: b.width, background: b.color }"
+                />
+              </div>
+              <span class="bar-value">{{ b.text }}</span>
+            </div>
           </div>
         </section>
         <section class="error-chart">
           <h3>Error in standard deviations per observable</h3>
-          <div class="chart-box">
-            <Bar :data="stdData" :options="stdOptions" data-testid="std-error-chart" />
+          <div class="bar-list" data-testid="std-error-chart">
+            <div v-for="(b, i) in stdBars" :key="i" class="bar-row">
+              <span class="bar-label" v-html="renderMath(b.label)" />
+              <div class="bar-track">
+                <span class="bar-zero" />
+                <span
+                  class="bar-fill"
+                  :style="{ left: b.left, width: b.width, background: b.color }"
+                />
+              </div>
+              <span class="bar-value">{{ b.text }}</span>
+            </div>
           </div>
         </section>
       </template>
@@ -334,10 +316,48 @@ const stdOptions = barOptions('error (number of std)')
   font-size: 0.9rem;
   font-weight: 600;
 }
-.chart-box {
-  height: 280px;
-  border: 1px solid var(--p-content-border-color, #333);
-  border-radius: 6px;
-  padding: 0.5rem;
+.bar-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: 0.25rem 0;
+}
+.bar-row {
+  display: grid;
+  grid-template-columns: 9em 1fr 4.5em;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8rem;
+}
+.bar-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bar-track {
+  position: relative;
+  height: 16px;
+  background: var(--p-content-hover-background, rgba(127, 127, 127, 0.12));
+  border-radius: 3px;
+}
+.bar-zero {
+  position: absolute;
+  left: 50%;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--p-content-border-color, #555);
+}
+.bar-fill {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  min-width: 1px;
+  border-radius: 2px;
+}
+.bar-value {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.85;
 }
 </style>
