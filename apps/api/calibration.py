@@ -18,6 +18,19 @@ from pathlib import Path
 
 RUNNER_PATH = str(Path(__file__).resolve().parent / "calibration_runner.py")
 
+
+def _warn_no_mpiexec(num_cores: int) -> None:
+    """Warn (to the server log) that a requested parallel run fell back to a
+    single core because ``mpiexec`` is not installed."""
+    print(
+        f"warning: num_cores={num_cores} requested but 'mpiexec' was not found "
+        "on PATH; running on a single core instead. Install an MPI runtime "
+        "(see scripts/install.py) to enable parallel runs.",
+        file=sys.stderr,
+        flush=True,
+    )
+
+
 COST_HISTORY_FILE = "best_cost_history.csv"
 PARAM_HISTORY_FILE = "best_param_vals_history.csv"
 
@@ -241,12 +254,20 @@ class CalibrationManager:
 
         The genetic algorithm parallelises population evaluation across MPI
         ranks, exactly like circulatory_autogen's run_param_id.sh.
+
+        If ``num_cores > 1`` but ``mpiexec`` is not on PATH (common on Windows,
+        where MPI is rarely installed), fall back to a single-core run rather
+        than launching a non-existent ``mpiexec`` — which would raise
+        ``FileNotFoundError`` and surface to the client as an HTTP 500.
         """
         python = config.get("python") or self.python
         base = [python, "-u", self.runner_path, config_path]
         num_cores = int(config.get("num_cores", 1) or 1)
         if num_cores > 1:
-            mpiexec = shutil.which("mpiexec") or "mpiexec"
+            mpiexec = shutil.which("mpiexec")
+            if mpiexec is None:
+                _warn_no_mpiexec(num_cores)
+                return base
             return [mpiexec, "-n", str(num_cores), *base]
         return base
 

@@ -18,7 +18,10 @@ import uuid
 from pathlib import Path
 
 # Interpreter discovery is shared with calibration — same machine, same probe.
-from calibration import list_python_interpreters  # noqa: F401  (re-exported)
+from calibration import (  # noqa: F401  (list_python_interpreters re-exported)
+    _warn_no_mpiexec,
+    list_python_interpreters,
+)
 
 RUNNER_PATH = str(Path(__file__).resolve().parent / "uq_runner.py")
 
@@ -58,12 +61,20 @@ class UQManager:
 
     def build_command(self, config: dict, config_path: str) -> list[str]:
         """Single-process by default; ``mpiexec -n N`` when num_cores > 1 (MCMC
-        and the GA calibration step parallelise across MPI ranks)."""
+        and the GA calibration step parallelise across MPI ranks).
+
+        Falls back to a single core when ``num_cores > 1`` but ``mpiexec`` is not
+        on PATH (common on Windows), instead of launching a non-existent
+        ``mpiexec`` (which would crash the request with an HTTP 500).
+        """
         python = config.get("python") or self.python
         base = [python, "-u", self.runner_path, config_path]
         num_cores = int(config.get("num_cores", 1) or 1)
         if num_cores > 1:
-            mpiexec = shutil.which("mpiexec") or "mpiexec"
+            mpiexec = shutil.which("mpiexec")
+            if mpiexec is None:
+                _warn_no_mpiexec(num_cores)
+                return base
             return [mpiexec, "-n", str(num_cores), *base]
         return base
 

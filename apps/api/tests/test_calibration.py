@@ -110,7 +110,19 @@ def test_calibration_defaults(client):
     assert "pre_time" not in body and "sim_time" not in body
 
 
-def test_build_command_single_vs_mpiexec():
+def _force_mpiexec(monkeypatch, present: bool):
+    """Pin mpiexec discovery so build_command tests don't depend on the host
+    actually having (or lacking) an MPI runtime."""
+    path = "/usr/bin/mpiexec" if present else None
+    monkeypatch.setattr(
+        calibration_mod.shutil,
+        "which",
+        lambda name, *a, **k: path if name == "mpiexec" else None,
+    )
+
+
+def test_build_command_single_vs_mpiexec(monkeypatch):
+    _force_mpiexec(monkeypatch, present=True)
     mgr = calibration_mod.CalibrationManager()
     single = mgr.build_command({"num_cores": 1}, "/tmp/c.json")
     assert "mpiexec" not in single[0]
@@ -122,13 +134,25 @@ def test_build_command_single_vs_mpiexec():
     assert parallel[-2:] == [mgr.runner_path, "/tmp/c.json"]
 
 
-def test_build_command_uses_selected_python():
+def test_build_command_uses_selected_python(monkeypatch):
+    _force_mpiexec(monkeypatch, present=True)
     mgr = calibration_mod.CalibrationManager()
     cmd = mgr.build_command({"num_cores": 1, "python": "/custom/py"}, "/tmp/c.json")
     assert cmd[0] == "/custom/py"
     mpi = mgr.build_command({"num_cores": 2, "python": "/custom/py"}, "/tmp/c.json")
     assert "mpiexec" in mpi[0]
     assert "/custom/py" in mpi
+
+
+def test_build_command_falls_back_to_single_core_without_mpiexec(monkeypatch):
+    """num_cores>1 with no mpiexec must yield a single-core command (no mpiexec),
+    not a command that launches a non-existent 'mpiexec' (-> 500)."""
+    _force_mpiexec(monkeypatch, present=False)
+    mgr = calibration_mod.CalibrationManager()
+    cmd = mgr.build_command({"num_cores": 4}, "/tmp/c.json")
+    assert "mpiexec" not in " ".join(cmd)
+    assert "-n" not in cmd
+    assert cmd[-2:] == [mgr.runner_path, "/tmp/c.json"]
 
 
 def test_calibration_pythons_lists_interpreters(client):
