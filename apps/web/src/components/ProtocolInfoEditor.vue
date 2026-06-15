@@ -1,12 +1,13 @@
 <script setup>
 import { ref, computed } from 'vue'
 import Button from 'primevue/button'
-import ParamInputPlot from './ParamInputPlot.vue'
+import ParamInputPlot, { AXIS_W, RIGHT_PAD } from './ParamInputPlot.vue'
 import { controlledSeries } from '../lib/plot'
 import {
   SHAPES,
   buildProtocolInfo,
   subexpBoundaries,
+  experimentTotalSim,
   makeCell,
   addExperiment,
   removeExperiment,
@@ -41,6 +42,8 @@ const seriesByQname = computed(() => {
   return map
 })
 const boundaries = computed(() => subexpBoundaries(activeExperiment.value))
+const preTime = computed(() => Number(activeExperiment.value?.preTime) || 0)
+const totalSim = computed(() => experimentTotalSim(activeExperiment.value))
 
 function setActive(i) {
   emit('update:activeExp', i)
@@ -100,14 +103,14 @@ function onShapeChange(qname, s, shape) {
             @input="activeExperiment.label = $event.target.value"
           />
         </label>
-        <label>pre_time
-          <input
-            type="number"
-            step="any"
-            :value="activeExperiment.preTime"
-            @input="onNum(activeExperiment, 'preTime', $event.target.value)"
-          />
-        </label>
+        <Button
+          label="+ subexp"
+          icon="pi pi-plus"
+          size="small"
+          text
+          data-testid="add-subexp"
+          @click="addSubexp(model, activeExp)"
+        />
         <Button
           label="Remove experiment"
           icon="pi pi-times"
@@ -120,29 +123,6 @@ function onShapeChange(qname, s, shape) {
         />
       </div>
 
-      <!-- Subexperiment durations -->
-      <div class="pie-subs">
-        <span class="pie-label">subexperiments (durations):</span>
-        <span v-for="(sub, s) in activeExperiment.subexps" :key="s" class="pie-sub">
-          <input
-            type="number"
-            step="any"
-            :value="sub.duration"
-            data-testid="subexp-dur"
-            @input="onNum(sub, 'duration', $event.target.value)"
-          />
-          <Button
-            icon="pi pi-minus"
-            text
-            size="small"
-            :disabled="activeExperiment.subexps.length <= 1"
-            data-testid="remove-subexp"
-            @click="removeSubexp(model, activeExp, s)"
-          />
-        </span>
-        <Button icon="pi pi-plus" label="subexp" text size="small" data-testid="add-subexp" @click="addSubexp(model, activeExp)" />
-      </div>
-
       <!-- params_to_change -->
       <div class="pie-add-param">
         <select v-model="newParam" data-testid="param-select">
@@ -152,11 +132,69 @@ function onShapeChange(qname, s, shape) {
         <Button label="Add" size="small" data-testid="add-param" :disabled="!newParam" @click="onAddParam" />
       </div>
 
+      <!-- Time-aligned timeline: pre_time + each subexp duration sit over the plot's x-axis. -->
+      <div
+        class="pie-timeline"
+        :style="{ paddingLeft: AXIS_W + 'px', paddingRight: RIGHT_PAD + 'px' }"
+      >
+        <div class="tl-seg tl-pre" :style="{ flexGrow: Math.max(preTime, 0.001) }">
+          <span class="tl-h">pre</span>
+          <input
+            type="number"
+            step="any"
+            :value="activeExperiment.preTime"
+            data-testid="pre-time"
+            @input="onNum(activeExperiment, 'preTime', $event.target.value)"
+          />
+        </div>
+        <div
+          v-for="(sub, s) in activeExperiment.subexps"
+          :key="s"
+          class="tl-seg"
+          :style="{ flexGrow: Math.max(sub.duration, 0.001) }"
+        >
+          <span class="tl-h">sub {{ s }}</span>
+          <span class="tl-srow">
+            <input
+              type="number"
+              step="any"
+              :value="sub.duration"
+              data-testid="subexp-dur"
+              @input="onNum(sub, 'duration', $event.target.value)"
+            />
+            <Button
+              icon="pi pi-minus"
+              text
+              size="small"
+              :disabled="activeExperiment.subexps.length <= 1"
+              data-testid="remove-subexp"
+              @click="removeSubexp(model, activeExp, s)"
+            />
+          </span>
+        </div>
+      </div>
+
+      <!-- No controlled params → a single empty timeline plot (axes + subexp lines). -->
+      <ParamInputPlot
+        v-if="paramQnames.length === 0"
+        :series="null"
+        :pre-time="preTime"
+        :total-sim="totalSim"
+        :boundaries="boundaries"
+      />
+
       <div v-for="qname in paramQnames" :key="qname" class="pc-param" data-testid="pc-param">
         <div class="pc-head">
           <span class="pc-qname" :title="qname">{{ qname }}</span>
           <Button icon="pi pi-times" text rounded size="small" aria-label="remove param" @click="removeParam(model, qname)" />
         </div>
+        <ParamInputPlot
+          :series="seriesByQname[qname]"
+          :pre-time="preTime"
+          :total-sim="totalSim"
+          :boundaries="boundaries"
+          :title="qname"
+        />
         <div class="pc-cells">
           <div v-for="s in subexpCount" :key="s - 1" class="pc-cell">
             <span class="pc-cell-h">sub {{ s - 1 }}</span>
@@ -185,7 +223,6 @@ function onShapeChange(qname, s, shape) {
             </template>
           </div>
         </div>
-        <ParamInputPlot :series="seriesByQname[qname]" :boundaries="boundaries" :title="qname" />
       </div>
     </div>
   </div>
@@ -217,34 +254,53 @@ function onShapeChange(qname, s, shape) {
   background: var(--p-highlight-background, rgba(91, 155, 213, 0.2));
 }
 .pie-fields,
-.pie-subs,
 .pie-add-param {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 0.5rem;
 }
-.pie-fields label,
-.pie-add-param {
+.pie-fields label {
   display: flex;
   flex-direction: column;
   font-size: 0.72rem;
   gap: 0.15rem;
 }
 .pie-add-param {
-  flex-direction: row;
   align-items: flex-end;
 }
-.pie-label {
-  font-size: 0.72rem;
-  opacity: 0.7;
+/* Timeline: segments grow proportionally to time and align with the plot x-axis
+   (padding matches the chart's fixed y-axis width + right padding). */
+.pie-timeline {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
 }
-.pie-sub {
-  display: inline-flex;
+.tl-seg {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.1rem;
+  min-width: 3.4rem;
+  flex-basis: 0;
+  border-left: 1px solid var(--p-content-border-color, #333);
+  padding: 0.1rem 0.15rem;
+}
+.tl-pre {
+  opacity: 0.8;
+}
+.tl-h {
+  font-size: 0.62rem;
+  opacity: 0.55;
+}
+.tl-srow {
+  display: flex;
   align-items: center;
 }
-.pie-sub input {
-  width: 4.5rem;
+.tl-seg input {
+  width: 100%;
+  min-width: 2.4rem;
+  font-size: 0.74rem;
 }
 .pc-param {
   border: 1px solid var(--p-content-border-color, #333);

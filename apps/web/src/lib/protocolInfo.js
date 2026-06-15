@@ -178,6 +178,11 @@ export function buildProtocolInfo(model, original = null) {
   return result
 }
 
+/** Total simulated time of an experiment (sum of its subexperiment durations). */
+export function experimentTotalSim(experiment) {
+  return (experiment?.subexps ?? []).reduce((acc, s) => acc + num(s.duration, 0), 0)
+}
+
 /** Interior subexperiment boundary times (for vertical dashed plot lines). */
 export function subexpBoundaries(experiment) {
   const out = []
