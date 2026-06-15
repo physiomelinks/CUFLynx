@@ -199,10 +199,25 @@ function onRunCalibration(settings) {
   })
 }
 
+// Live calibration settings, mirrored from the Calibration panel so the
+// sensitivity tab's "run calibration first" can reuse the same configuration.
+const calibSettings = ref({})
+
 // Sensitivity reuses the same prerequisites as calibration (model + obs + params).
+// When 'run calibration first' is set, fold in the calibration panel's GA
+// settings rather than duplicating those controls in the sensitivity panel.
 function onRunSensitivity(settings) {
+  const calibFirst = settings.run_calibration_first
+    ? {
+        param_id_method: calibSettings.value.param_id_method,
+        num_calls_to_function: calibSettings.value.num_calls_to_function,
+        max_patience: calibSettings.value.max_patience,
+        cost_convergence: calibSettings.value.cost_convergence,
+      }
+    : {}
   sa.start(model.modelId.value, {
     ...settings,
+    ...calibFirst,
     python_path: pythonPath.value,
     config_outputs_dir: outputsDir.value.trim() || undefined,
   })
@@ -577,6 +592,7 @@ watch(
             :cost="calib.cost.value"
             :error="calib.error.value"
             @run="onRunCalibration"
+            @change="(s) => (calibSettings = s)"
             @cancel="calib.cancel()"
           />
         </div>
@@ -679,11 +695,16 @@ watch(
             :param-names="sa.paramNames.value"
             :output-names="sa.outputNames.value"
             :param-labels="paramLabels"
+            :saved-results="sa.results.value"
+            :selected-result-id="sa.selectedId.value"
             :percent-error="calib.percentError.value"
             :std-error="calib.stdError.value"
             :error-labels="calib.errorLabels.value"
             :uq-params="uq.params.value"
             :uq-method="uq.method.value"
+            @select-result="sa.selectResult"
+            @remove-result="sa.removeResult"
+            @clear-results="sa.clearResults"
           />
         </div>
         <StatusBar

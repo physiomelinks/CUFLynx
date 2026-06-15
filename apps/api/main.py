@@ -491,14 +491,35 @@ class SensitivityRequest(BaseModel):
 
 SENSITIVITY_DEFAULTS = {
     "method": "sobol",
-    "methods": ["sobol"],
+    "methods": ["sobol", "local"],
     "sample_type": "saltelli",
     "sample_types": ["saltelli", "sobol"],
     "num_samples": 256,
+    # Local (derivative-based) sensitivity options. Only the finite-difference
+    # gradient source is wired up today; AD and CVODES are advertised but
+    # disabled pending upstream support (CUFLynx #9, #22; CA issue #239).
+    "gradient_method": "FD",
+    "gradient_methods": [
+        {"value": "FD", "label": "Finite difference", "disabled": False},
+        {"value": "AD", "label": "Automatic differentiation (casadi)", "disabled": True},
+        {"value": "CVODES", "label": "Myokit CVODES sensitivities", "disabled": True},
+    ],
+    "rel_step": 0.01,  # relative central-difference step about the nominal point
+    # Where the nominal (linearisation) point comes from. "current" (default)
+    # uses the model's current parameter values; "best_fit" reuses a completed
+    # calibration; "midpoint"/"geometric" derive it from the params_for_id bounds.
+    "nominal": "current",
+    "nominals": ["current", "best_fit", "midpoint", "geometric"],
+    # Local SA convenience flag: when True, run a fresh calibration first and take
+    # the local sensitivity about that best fit. Default False — the user can run
+    # a calibration separately and then reuse it via nominal="best_fit". The GA
+    # settings come from the Calibration panel (folded in by the frontend), so
+    # they are not duplicated here.
+    "run_calibration_first": False,
     "dt": 0.01,
     "solver": "CVODE_myokit",
     "DEBUG": False,
-    "num_cores": 1,  # >1 -> mpiexec -n N (parallel sample evaluation)
+    "num_cores": 1,  # >1 -> mpiexec -n N (parallel sample evaluation; Sobol only)
     # Note: pre_time / sim_time are taken from the obs_data protocol_info (#13).
 }
 
@@ -526,6 +547,30 @@ def sensitivity_run(req: SensitivityRequest) -> dict:
             detail=f"python interpreter not found or not executable: {python_path}",
         )
 
+    # Local SA with nominal="best_fit" reuses a completed calibration's best fit
+    # (mirrors UQ's reuse mode). run_calibration_first runs a fresh one in the
+    # runner instead, so no reuse is needed here.
+    best_params = None
+    if (
+        req.settings.get("method") == "local"
+        and not req.settings.get("run_calibration_first", False)
+        and req.settings.get("nominal") == "best_fit"
+    ):
+        if calibration.busy:
+            raise HTTPException(
+                status_code=409,
+                detail="a calibration is still running; wait for it to finish "
+                "before running local sensitivity about its best fit",
+            )
+        best_params = calibration.last_completed_best_params(req.model_id)
+        if not best_params:
+            raise HTTPException(
+                status_code=422,
+                detail="no completed calibration to reuse — run a calibration to "
+                "completion first, enable 'run a fresh calibration first', or pick "
+                "a different nominal point",
+            )
+
     configured = (req.settings.get("config_outputs_dir") or "").strip()
     if configured:
         if not os.path.isabs(configured):
@@ -536,15 +581,21 @@ def sensitivity_run(req: SensitivityRequest) -> dict:
         output_dir = configured
     else:
         output_dir = str(UPLOAD_DIR / f"sa_{req.model_id}_{uuid.uuid4().hex[:8]}")
+    # Local (finite-difference) SA is single-process; only Sobol parallelises
+    # sample evaluation across MPI ranks.
+    num_cores = int(req.settings.get("num_cores", 1) or 1)
+    if req.settings.get("method") == "local":
+        num_cores = 1
     config = {
         "model_path": str(record.path),
         "obs_path": str(record.obs_path),
         "params_path": str(record.params_path),
         "output_dir": output_dir,
         "file_prefix": record.meta.name or "model",
-        "num_cores": int(req.settings.get("num_cores", 1) or 1),
+        "num_cores": num_cores,
         "python": python_path,
         "settings": req.settings,
+        "best_params": best_params,
     }
     try:
         job_id = sensitivity.start(config)
