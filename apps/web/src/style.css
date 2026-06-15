@@ -1,4 +1,8 @@
-:root {
+/* Theme follows the `.cellml-dark` class on <html> (PrimeVue darkModeSelector). */
+html {
+  color-scheme: light;
+}
+html.cellml-dark {
   color-scheme: dark;
 }
 
@@ -9,6 +13,10 @@
 body {
   margin: 0;
   font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  background: #ffffff;
+  color: #1a1a1a;
+}
+html.cellml-dark body {
   background: #1e1e1e;
   color: #e0e0e0;
 }

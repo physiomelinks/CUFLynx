@@ -61,6 +61,9 @@ def requires_simulation(simulation_deps_available: bool):
 @pytest.fixture(autouse=True)
 def reset_app_state():
     """Reset the model registry and engine caches/factories between tests."""
+    import os
+
+    _ca_src_before = os.environ.get("CIRCULATORY_AUTOGEN_SRC")
     main._models.clear()
     engine_mod.engine.reset()
     engine_mod.engine.helper_factory = engine_mod._default_helper_factory
@@ -78,6 +81,11 @@ def reset_app_state():
     calibration_mod.calibration.runner_path = calibration_mod.RUNNER_PATH
     uq_mod.uq.reset()
     uq_mod.uq.runner_path = uq_mod.RUNNER_PATH
+    # Restore CIRCULATORY_AUTOGEN_SRC so a /api/config test doesn't leak.
+    if _ca_src_before is None:
+        os.environ.pop("CIRCULATORY_AUTOGEN_SRC", None)
+    else:
+        os.environ["CIRCULATORY_AUTOGEN_SRC"] = _ca_src_before
 
 
 @pytest.fixture

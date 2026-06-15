@@ -1,6 +1,9 @@
 import axios from 'axios'
 
-const baseURL = import.meta.env?.VITE_API_URL || 'http://localhost:8000'
+// Default to same-origin: in production the FastAPI server serves this built app
+// and the API under /api; in dev the Vite proxy forwards /api to :8000. Override
+// with VITE_API_URL only for a split/remote backend.
+const baseURL = import.meta.env?.VITE_API_URL ?? ''
 
 function url(path) {
   return `${baseURL}${path}`
@@ -15,6 +18,16 @@ export async function listDir(path = null, dirsOnly = false) {
   const { data } = await axios.get(url('/api/fs/list'), {
     params: { ...(path ? { path } : {}), dirs_only: dirsOnly },
   })
+  return data
+}
+
+export async function getConfig() {
+  const { data } = await axios.get(url('/api/config'))
+  return data
+}
+
+export async function setConfig(caDir) {
+  const { data } = await axios.post(url('/api/config'), { ca_dir: caDir })
   return data
 }
 
