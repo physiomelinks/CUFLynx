@@ -4,11 +4,18 @@ import Message from 'primevue/message'
 import InputText from 'primevue/inputtext'
 import Button from 'primevue/button'
 import FileBrowserDialog from './FileBrowserDialog.vue'
+import EditParamsDialog from './EditParamsDialog.vue'
 import { uploadCellML, uploadObsData, uploadParamsForId } from '../lib/api'
 
 const props = defineProps({
   modelId: { type: String, default: null },
   outputsDir: { type: String, default: '' },
+  // For the params Edit dialog: the loaded CSV's params (with param_type), the
+  // model's candidate params + initial values, and names for the new filename.
+  currentParams: { type: Array, default: () => [] },
+  modelVariables: { type: Object, default: () => ({}) },
+  modelName: { type: String, default: null },
+  loadedFilename: { type: String, default: null },
 })
 const emit = defineEmits([
   'model-loaded',
@@ -20,6 +27,13 @@ const emit = defineEmits([
 const error = ref('')
 const notice = ref('')
 const outputsBrowserOpen = ref(false)
+const editParamsOpen = ref(false)
+
+// The Edit dialog produces a new params set the same shape as a CSV upload, so
+// reuse the existing params-loaded flow to re-seed sliders and make it active.
+function onEditSaved(payload) {
+  emit('params-loaded', payload)
+}
 
 // obs_data / params depend on a model_id to attach server-side (and params is
 // parsed against the model's initial_values). Remember the last dropped inputs
@@ -191,16 +205,28 @@ async function onParamsDrop(event) {
       <input type="file" accept=".json" @change="onObsDrop" />
     </label>
 
-    <label
-      class="dropzone"
-      data-testid="params-drop"
-      @dragover.prevent
-      @drop="onParamsDrop"
-    >
-      <i class="pi pi-sliders-h" /> Drop <strong>params_for_id.csv</strong>
-      <small>or click to browse</small>
-      <input type="file" accept=".csv" @change="onParamsDrop" />
-    </label>
+    <div class="params-row">
+      <label
+        class="dropzone"
+        data-testid="params-drop"
+        @dragover.prevent
+        @drop="onParamsDrop"
+      >
+        <i class="pi pi-sliders-h" /> Drop <strong>params_for_id.csv</strong>
+        <small>or click to browse</small>
+        <input type="file" accept=".csv" @change="onParamsDrop" />
+      </label>
+      <Button
+        label="Edit"
+        icon="pi pi-pencil"
+        size="small"
+        class="params-edit-btn"
+        data-testid="params-edit"
+        title="Edit included parameters and ranges, save a new dated CSV"
+        :disabled="!modelId"
+        @click="editParamsOpen = true"
+      />
+    </div>
 
     <Message
       v-if="error"
@@ -251,6 +277,16 @@ async function onParamsDrop(event) {
       title="Select an outputs directory"
       @select="emit('update:outputsDir', $event)"
     />
+
+    <EditParamsDialog
+      v-model:visible="editParamsOpen"
+      :model-id="modelId"
+      :current-params="currentParams"
+      :model-variables="modelVariables"
+      :model-name="modelName"
+      :loaded-filename="loadedFilename"
+      @saved="onEditSaved"
+    />
   </section>
 </template>
 
@@ -271,6 +307,27 @@ async function onParamsDrop(event) {
 }
 .dropzone:hover {
   border-color: var(--p-primary-color, #5b9bd5);
+}
+.params-row {
+  display: flex;
+  align-items: stretch;
+  gap: 0.5rem;
+}
+.params-row .dropzone {
+  flex: 1;
+}
+/* Match the Edit button to the dropzone's color scheme: dashed border,
+   transparent fill, inherited text, primary-color border on hover. */
+.params-row .params-edit-btn {
+  border: 1px dashed var(--p-content-border-color, #555);
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+}
+.params-row .params-edit-btn:enabled:hover {
+  border-color: var(--p-primary-color, #5b9bd5);
+  background: transparent;
+  color: inherit;
 }
 .dropzone input[type='file'] {
   display: none;

@@ -53,6 +53,12 @@ const preTime = ref(0)
 // Where calibration outputs are written; blank => backend uses a temp dir.
 const outputsDir = ref('')
 
+// Raw params_for_id entries (incl. param_type, which the slider store drops) and
+// the loaded CSV filename — fed to the params Edit dialog so it can pre-fill rows
+// and version the new filename.
+const loadedParamsRaw = ref([])
+const loadedParamsFilename = ref(null)
+
 // Python interpreter chosen once in the top bar and shared by the Sensitivity,
 // Calibration and UQ runs. Blank => backend uses its default interpreter.
 const pythonPath = ref('')
@@ -239,6 +245,8 @@ async function onModelLoaded(data) {
   model.setModel(data)
   obs.clearObsData()
   paramsForId.clear()
+  loadedParamsRaw.value = []
+  loadedParamsFilename.value = null
   sliders.clear()
   try {
     const vars = await getVariables(data.model_id)
@@ -268,8 +276,27 @@ function onSliderUpdate({ qname, value }) {
   sliders.setValue(qname, value)
 }
 
+// Whether a calibration best-fit exists, to gate the "Reset to best fit" button.
+const hasBestFit = computed(() => calib.bestParams.value != null)
+
+// Reset all parameter values back to their initial values (after manual edits).
+function onResetInit() {
+  sliders.resetToInit()
+  runSimulation()
+}
+
+// Reset all parameter values to the latest calibration best-fit.
+function onResetBest() {
+  if (!calib.bestParams.value) return
+  applyBestParams(sliders, paramsForId.paramSpecs.value, calib.bestParams.value)
+  runSimulation()
+}
+
 function onParamsLoaded(data) {
   paramsForId.importParams(data.params, data.filename)
+  // Keep the raw entries (with param_type) + filename for the Edit dialog.
+  loadedParamsRaw.value = data.params
+  loadedParamsFilename.value = data.filename
 }
 
 let timer = null
@@ -514,8 +541,11 @@ watch(
         <div v-show="leftTab === 'params'" class="left-pane left-pane-scroll">
           <ControlPanel
             :sliders="sliders.sliders"
+            :has-best-fit="hasBestFit"
             @update="onSliderUpdate"
             @remove="({ qname }) => sliders.removeSlider(qname)"
+            @reset-init="onResetInit"
+            @reset-best="onResetBest"
           />
         </div>
         <div v-show="leftTab === 'sensitivity'" class="left-pane left-pane-scroll">
@@ -658,6 +688,10 @@ watch(
         <FileImport
           v-model:outputs-dir="outputsDir"
           :model-id="model.modelId.value"
+          :current-params="loadedParamsRaw"
+          :model-variables="model.variables.value"
+          :model-name="model.name.value"
+          :loaded-filename="loadedParamsFilename"
           @model-loaded="onModelLoaded"
           @obs-data-loaded="obs.setObsData"
           @params-loaded="onParamsLoaded"

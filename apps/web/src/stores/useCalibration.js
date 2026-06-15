@@ -99,17 +99,23 @@ export function useCalibration(options = {}) {
         lines.value = lines.value.concat(s.lines)
         offset = s.next_offset
       }
-      state.value = s.state
       await fetchProgress()
       if (s.state === 'running') {
+        state.value = 'running'
         timer = setTimeout(poll, intervalMs)
       } else {
+        // Populate the results BEFORE flipping `state` to its terminal value.
+        // Watchers keyed on `state` (e.g. App.vue applying best-fit values to
+        // the sliders) read `bestParams` synchronously when the state change
+        // fires, so it must already be set — otherwise they see a stale null
+        // and the sliders never update.
         bestParams.value = s.best_params
         cost.value = s.cost
         percentError.value = s.percent_error
         stdError.value = s.std_error
         errorLabels.value = s.error_labels ?? []
         error.value = s.error || ''
+        state.value = s.state
       }
     } catch (e) {
       state.value = 'error'

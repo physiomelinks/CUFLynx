@@ -1,0 +1,106 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { flushPromises, mount } from '@vue/test-utils'
+
+vi.mock('../lib/api', () => ({ uploadParamsForId: vi.fn() }))
+
+import EditParamsDialog from './EditParamsDialog.vue'
+import { uploadParamsForId } from '../lib/api'
+
+// Inline stubs so the dialog + footer render without teleport.
+const DialogStub = {
+  props: ['visible'],
+  template: '<div v-if="visible"><slot /><slot name="footer" /></div>',
+}
+const ButtonStub = {
+  props: ['label', 'disabled', 'icon', 'size', 'text', 'title'],
+  emits: ['click'],
+  template:
+    '<button :disabled="disabled" v-bind="$attrs" @click="$emit(\'click\')">{{ label }}</button>',
+}
+const CheckboxStub = {
+  props: ['modelValue', 'binary'],
+  emits: ['update:modelValue'],
+  template:
+    '<input type="checkbox" :checked="modelValue" @change="$emit(\'update:modelValue\', $event.target.checked)" />',
+}
+const MessageStub = { template: '<div class="msg"><slot /></div>' }
+const stubs = { Dialog: DialogStub, Button: ButtonStub, Checkbox: CheckboxStub, Message: MessageStub }
+
+const baseProps = {
+  visible: true,
+  modelId: 'abc',
+  currentParams: [
+    { qname: 'v/a', min: 1, max: 2, name_for_plotting: '\\alpha', param_type: 'global', initial_value: 1.5 },
+  ],
+  modelVariables: { params: ['v/a', 'v/b'], initial_values: { 'v/b': 2 } },
+  loadedFilename: 'p.csv',
+  modelName: 'M',
+}
+
+function mountDialog(props = {}) {
+  return mount(EditParamsDialog, { props: { ...baseProps, ...props }, global: { stubs } })
+}
+
+beforeEach(() => {
+  uploadParamsForId.mockReset()
+  // jsdom lacks createObjectURL; provide a stub so the download path runs.
+  globalThis.URL.createObjectURL = vi.fn(() => 'blob:mock')
+  globalThis.URL.revokeObjectURL = vi.fn()
+})
+
+describe('EditParamsDialog', () => {
+  it('pre-includes loaded CSV params and lists model params unchecked', () => {
+    const wrapper = mountDialog()
+    const rows = wrapper.findAll('[data-testid="ep-row"]')
+    expect(rows).toHaveLength(2)
+    const checks = wrapper.findAll('input[type="checkbox"]')
+    expect(checks[0].element.checked).toBe(true) // v/a from CSV
+    expect(checks[1].element.checked).toBe(false) // v/b from model
+    expect(wrapper.text()).toContain('1 included')
+  })
+
+  it('disables Save when nothing is selected', async () => {
+    const wrapper = mountDialog()
+    await wrapper.findAll('input[type="checkbox"]')[0].setValue(false)
+    expect(wrapper.text()).toContain('0 included')
+    expect(wrapper.find('[data-testid="ep-save"]').attributes('disabled')).toBeDefined()
+  })
+
+  it('disables Save when an included row has min >= max', async () => {
+    const wrapper = mountDialog()
+    const row = wrapper.findAll('[data-testid="ep-row"]')[0]
+    const [minInput] = row.findAll('input.ep-num')
+    await minInput.setValue('5') // min 5 >= max 2 -> invalid
+    expect(wrapper.find('[data-testid="ep-save"]').attributes('disabled')).toBeDefined()
+  })
+
+  it('on Save: downloads a dated CSV, applies it, and emits saved', async () => {
+    uploadParamsForId.mockResolvedValue({ params: [{ qname: 'v/a' }] })
+    const clickSpy = vi
+      .spyOn(HTMLAnchorElement.prototype, 'click')
+      .mockImplementation(() => {})
+
+    const wrapper = mountDialog()
+    await wrapper.find('[data-testid="ep-save"]').trigger('click')
+    await flushPromises()
+
+    // download triggered
+    expect(globalThis.URL.createObjectURL).toHaveBeenCalledOnce()
+    expect(clickSpy).toHaveBeenCalledOnce()
+
+    // applied via the existing upload endpoint with a File + modelId
+    expect(uploadParamsForId).toHaveBeenCalledOnce()
+    const [fileArg, idArg] = uploadParamsForId.mock.calls[0]
+    expect(idArg).toBe('abc')
+    expect(fileArg).toBeInstanceOf(File)
+    expect(fileArg.name).toMatch(/^p_\d{6}\.csv$/) // <stem>_<yymmdd>.csv
+
+    // emits saved with parsed params + versioned filename, then closes
+    const saved = wrapper.emitted('saved')[0][0]
+    expect(saved.params).toEqual([{ qname: 'v/a' }])
+    expect(saved.filename).toMatch(/^p_\d{6}\.csv$/)
+    expect(wrapper.emitted('update:visible').at(-1)).toEqual([false])
+
+    clickSpy.mockRestore()
+  })
+})
