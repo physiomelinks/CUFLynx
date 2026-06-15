@@ -32,6 +32,7 @@ from calibration import calibration, list_python_interpreters
 from cellml_meta import CellMLModel, CellMLParseError, parse_cellml
 from engine import SimulationError, engine, _circulatory_autogen_src
 from obs_data import ObsData, ObsDataError, parse_obs_data
+from obs_options import get_obs_data_options, reset_cache as reset_obs_options
 from params_for_id import ParamsForIdError, parse_params_for_id
 from sensitivity import sensitivity
 from uq import uq
@@ -152,6 +153,7 @@ def set_config(req: ConfigRequest) -> dict:
     else:
         os.environ.pop("CIRCULATORY_AUTOGEN_SRC", None)
     engine.reset()  # drop cached compiled helpers so the next sim uses the new CA
+    reset_obs_options()  # obs_data operation/cost options come from the new CA too
     return _config_payload()
 
 
@@ -327,6 +329,16 @@ async def upload_obs_data(
         # inputs per experiment; null for data-only obs_data.
         "protocol_info": parsed.protocol_info,
     }
+
+
+@app.get("/api/obs_data/options")
+def obs_data_options(refresh: bool = False) -> dict:
+    """Operation (obs_funcs) and cost_type (cost_func) names from circulatory_autogen.
+
+    Drives the obs_data editor's dropdowns; degrades to a small built-in set when
+    CA can't be introspected.
+    """
+    return get_obs_data_options(refresh=refresh)
 
 
 @app.post("/api/params_for_id/upload")
