@@ -25,6 +25,24 @@ jobs:
       - name: Run unit tests
         run: pytest -m "not integration" -q
 
+  backend-unit-windows:
+    name: Backend unit tests (Windows, no Myokit)
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: apps/api
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      # Same light deps as the Ubuntu unit job; the heavy simulation stack
+      # (myokit/libcellml) is exercised by the integration marker, skipped here.
+      - name: Install unit-test deps
+        run: pip install fastapi "uvicorn[standard]" numpy pandas python-multipart httpx pytest pytest-cov
+      - name: Run unit tests
+        run: pytest -m "not integration" -q
+
   frontend:
     name: Frontend tests + build
     runs-on: ubuntu-latest

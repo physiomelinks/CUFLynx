@@ -100,12 +100,25 @@ def test_uq_defaults(client):
     assert body["cost_type"] == "gaussian_MLE"
 
 
-def test_uq_build_command_single_vs_mpiexec():
+def test_uq_build_command_single_vs_mpiexec(monkeypatch):
+    monkeypatch.setattr(
+        uq_mod.shutil,
+        "which",
+        lambda name, *a, **k: "/usr/bin/mpiexec" if name == "mpiexec" else None,
+    )
     mgr = uq_mod.UQManager()
     single = mgr.build_command({"num_cores": 1}, "/tmp/c.json")
     assert "mpiexec" not in single[0]
     parallel = mgr.build_command({"num_cores": 3}, "/tmp/c.json")
     assert "mpiexec" in parallel[0] and parallel[1:3] == ["-n", "3"]
+
+
+def test_uq_build_command_falls_back_to_single_core_without_mpiexec(monkeypatch):
+    monkeypatch.setattr(uq_mod.shutil, "which", lambda *a, **k: None)
+    mgr = uq_mod.UQManager()
+    cmd = mgr.build_command({"num_cores": 3}, "/tmp/c.json")
+    assert "mpiexec" not in " ".join(cmd)
+    assert "-n" not in cmd
 
 
 def test_uq_requires_obs_and_params_422(client, tmp_path):
