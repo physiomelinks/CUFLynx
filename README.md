@@ -13,9 +13,9 @@ python scripts/install.py    # one-time: install backend + frontend deps, build 
 python scripts/run.py        # build if needed, start the server, open the browser
 ```
 
-macOS/Linux can also use the wrappers `./install.sh` and `./run.sh`. Use the
-same Python interpreter for both scripts — that interpreter serves the API.
-`run.py` takes `--port N`, `--build` (force a fresh UI build) and `--no-browser`.
+Use the same Python interpreter for both scripts — that interpreter serves the
+API. `run.py` takes `--port N`, `--build` (force a fresh UI build) and
+`--no-browser`.
 
 Then the app opens at **http://localhost:8000**. The API is served under
 `/api/*` on the same origin; everything else serves the built Vue app from
