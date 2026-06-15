@@ -1,15 +1,22 @@
 <script setup>
 import { computed } from 'vue'
 import Slider from 'primevue/slider'
-import ToggleButton from 'primevue/togglebutton'
 import Button from 'primevue/button'
 import { SLIDER_STEPS, valueToSlider, sliderToValue } from '../stores/useSliders'
 import { renderMath } from '../lib/math'
 
 const props = defineProps({
   sliders: { type: Object, default: () => ({}) },
+  // Whether a calibration best-fit is available (gates "Reset to best fit").
+  hasBestFit: { type: Boolean, default: false },
 })
-const emit = defineEmits(['update', 'remove', 'toggle-log', 'import-csv'])
+const emit = defineEmits([
+  'update',
+  'remove',
+  'import-csv',
+  'reset-init',
+  'reset-best',
+])
 
 const entries = computed(() => Object.values(props.sliders))
 
@@ -29,14 +36,36 @@ function onValue(qname, value) {
   <section class="control-panel">
     <header class="panel-header">
       <h2>Parameters</h2>
-      <Button
-        label="Import CSV"
-        icon="pi pi-upload"
-        size="small"
-        text
-        data-testid="import-csv"
-        @click="emit('import-csv')"
-      />
+      <div class="panel-actions">
+        <Button
+          label="Reset to init"
+          icon="pi pi-undo"
+          size="small"
+          text
+          data-testid="reset-init"
+          title="Reset all parameter values to their initial values"
+          :disabled="entries.length === 0"
+          @click="emit('reset-init')"
+        />
+        <Button
+          label="Reset to best fit"
+          icon="pi pi-star"
+          size="small"
+          text
+          data-testid="reset-best"
+          title="Reset all parameter values to the latest calibration best-fit"
+          :disabled="!hasBestFit || entries.length === 0"
+          @click="emit('reset-best')"
+        />
+        <Button
+          label="Import CSV"
+          icon="pi pi-upload"
+          size="small"
+          text
+          data-testid="import-csv"
+          @click="emit('import-csv')"
+        />
+      </div>
     </header>
 
     <p v-if="entries.length === 0" class="empty-hint">
@@ -78,13 +107,6 @@ function onValue(qname, value) {
           :max="s.max"
           @input="onValue(s.qname, $event.target.value)"
         />
-        <ToggleButton
-          :model-value="s.log"
-          on-label="log"
-          off-label="lin"
-          size="small"
-          @update:model-value="emit('toggle-log', { qname: s.qname })"
-        />
       </div>
       <div class="range-hint">[{{ s.min }}, {{ s.max }}]</div>
     </div>
@@ -103,6 +125,14 @@ function onValue(qname, value) {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 0.5rem;
+}
+.panel-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 .slider-row {
   border: 1px solid var(--p-content-border-color, #333);
@@ -129,9 +159,6 @@ function onValue(qname, value) {
 .value-input {
   flex: 0 0 5.5rem;
   width: 5.5rem;
-}
-.slider-body :deep(.p-togglebutton) {
-  flex: 0 0 auto;
 }
 .range-hint {
   font-size: 0.75rem;

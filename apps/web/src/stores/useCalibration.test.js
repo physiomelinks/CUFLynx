@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { watch, nextTick } from 'vue'
 
 vi.mock('../lib/api', () => ({
   startCalibration: vi.fn(),
@@ -79,5 +80,36 @@ describe('useCalibration', () => {
     expect(c.lines.value).toEqual(['gen 0', 'best cost: 0.1'])
     expect(c.bestParams.value).toEqual({ 'a/x': 2 })
     vi.useRealTimers()
+  })
+
+  // Regression: when calibration finishes, the best-fit values must reach the
+  // sliders. App.vue does this with a watcher on `state` that calls
+  // applyBestParams once done. This only works if poll() sets `bestParams`
+  // BEFORE flipping `state` to 'done' — otherwise the watcher fires with a
+  // stale (null) bestParams and the sliders are never updated.
+  it('applies best-fit params to the sliders when calibration finishes', async () => {
+    startCalibration.mockResolvedValue({ job_id: 'j3' })
+    getCalibrationStatus.mockResolvedValue({
+      state: 'done',
+      lines: [],
+      next_offset: 0,
+      best_params: { 'a/x': 6 },
+      cost: 0.1,
+      error: null,
+    })
+    const s = useSliders()
+    s.addSlider('a/x', { min: 0, max: 10, value: 1 })
+    const c = useCalibration()
+    watch(
+      () => c.state.value,
+      (state) => {
+        if (state === 'done' && c.bestParams.value) {
+          applyBestParams(s, {}, c.bestParams.value)
+        }
+      },
+    )
+    await c.start('m1', {})
+    await nextTick()
+    expect(s.sliders['a/x'].value).toBe(6)
   })
 })

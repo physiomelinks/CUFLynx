@@ -276,6 +276,22 @@ function onSliderUpdate({ qname, value }) {
   sliders.setValue(qname, value)
 }
 
+// Whether a calibration best-fit exists, to gate the "Reset to best fit" button.
+const hasBestFit = computed(() => calib.bestParams.value != null)
+
+// Reset all parameter values back to their initial values (after manual edits).
+function onResetInit() {
+  sliders.resetToInit()
+  runSimulation()
+}
+
+// Reset all parameter values to the latest calibration best-fit.
+function onResetBest() {
+  if (!calib.bestParams.value) return
+  applyBestParams(sliders, paramsForId.paramSpecs.value, calib.bestParams.value)
+  runSimulation()
+}
+
 function onParamsLoaded(data) {
   paramsForId.importParams(data.params, data.filename)
   // Keep the raw entries (with param_type) + filename for the Edit dialog.
@@ -525,8 +541,11 @@ watch(
         <div v-show="leftTab === 'params'" class="left-pane left-pane-scroll">
           <ControlPanel
             :sliders="sliders.sliders"
+            :has-best-fit="hasBestFit"
             @update="onSliderUpdate"
             @remove="({ qname }) => sliders.removeSlider(qname)"
+            @reset-init="onResetInit"
+            @reset-best="onResetBest"
           />
         </div>
         <div v-show="leftTab === 'sensitivity'" class="left-pane left-pane-scroll">

@@ -62,13 +62,15 @@ export function useSliders() {
     const min = opts.min ?? 0
     const max = opts.max ?? 1
     const log = opts.log ?? shouldUseLog(min, max)
-    const rawValue = opts.value ?? (min + max) / 2
+    const rawValue = clamp(opts.value ?? (min + max) / 2, min, max)
     sliders[qname] = {
       qname,
       min,
       max,
       log,
-      value: clamp(rawValue, min, max),
+      value: rawValue,
+      // The value the slider was created with, for "reset to init".
+      init: rawValue,
       name_for_plotting: opts.name_for_plotting ?? qname,
     }
     return sliders[qname]
@@ -81,6 +83,11 @@ export function useSliders() {
   function setValue(qname, value) {
     const slider = sliders[qname]
     if (slider) slider.value = clamp(value, slider.min, slider.max)
+  }
+
+  /** Reset every slider's value back to the value it was created with. */
+  function resetToInit() {
+    for (const key of Object.keys(sliders)) sliders[key].value = sliders[key].init
   }
 
   function clear() {
@@ -96,5 +103,14 @@ export function useSliders() {
 
   const count = computed(() => Object.keys(sliders).length)
 
-  return { sliders, addSlider, removeSlider, setValue, clear, paramDict, count }
+  return {
+    sliders,
+    addSlider,
+    removeSlider,
+    setValue,
+    resetToInit,
+    clear,
+    paramDict,
+    count,
+  }
 }
