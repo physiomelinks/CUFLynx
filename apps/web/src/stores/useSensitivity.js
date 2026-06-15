@@ -7,24 +7,57 @@ import {
 
 /**
  * Drives a sensitivity-analysis job: start, poll status, expose the streamed
- * log + the final Sobol indices. Trimmed sibling of useCalibration — the Sobol
- * engine emits no per-iteration history, so there's no live progress, just a
- * terminal log followed by the final heatmap data.
+ * log + the final indices. Trimmed sibling of useCalibration — the engines emit
+ * no per-iteration history, so there's just a terminal log followed by the final
+ * heatmap data.
+ *
+ * Completed runs are *accumulated* into `results` (newest last) rather than
+ * overwriting each other, so the user can keep e.g. a global Sobol run and a
+ * local finite-difference run side by side and switch between them to compare
+ * (and eventually different gradient sources). `selectedId` picks which saved
+ * run the heatmap shows; `indices`/`paramNames`/`outputNames` are derived from
+ * it so the AnalysisPanel needs no special-casing.
  */
 export function useSensitivity(options = {}) {
   const intervalMs = options.intervalMs ?? 1000
   const state = ref('idle') // idle | running | done | error | cancelled
   const lines = ref([])
-  // { S1: {out: {param: val}}, ST: {...} }
-  const indices = ref(null)
-  const paramNames = ref([])
-  const outputNames = ref([])
   const error = ref('')
+
+  // Accumulated history of completed runs + which one is shown.
+  const results = ref([]) // [{ id, label, at, method, settings, indices, paramNames, outputNames }]
+  const selectedId = ref(null)
 
   let jobId = null
   let offset = 0
   let timer = null
+  let nextId = 1
+  let pendingSettings = null
 
+  // The selected run drives the heatmap (kept as computeds for the panel).
+  const selected = computed(
+    () => results.value.find((r) => r.id === selectedId.value) ?? null,
+  )
+  const indices = computed(() => selected.value?.indices ?? null)
+  const paramNames = computed(() => selected.value?.paramNames ?? [])
+  const outputNames = computed(() => selected.value?.outputNames ?? [])
+
+  // Human-readable label summarising what produced a run, so saved runs are
+  // distinguishable in the comparison selector.
+  function makeLabel(id, settings) {
+    const s = settings ?? {}
+    if (s.method === 'local') {
+      const parts = ['Local', (s.gradient_method ?? 'FD'), (s.nominal ?? 'current')]
+      if (s.run_calibration_first) parts.push('calib-first')
+      return `#${id} ${parts.join(' · ')}`
+    }
+    if (s.method === 'sobol') {
+      return `#${id} Sobol · ${s.sample_type ?? 'saltelli'} · n${s.num_samples ?? '?'}`
+    }
+    return `#${id} ${s.method ?? 'run'}`
+  }
+
+  // Clears the live-run transient state only; saved results are preserved.
   function reset() {
     if (timer) clearTimeout(timer)
     timer = null
@@ -32,14 +65,48 @@ export function useSensitivity(options = {}) {
     offset = 0
     state.value = 'idle'
     lines.value = []
-    indices.value = null
-    paramNames.value = []
-    outputNames.value = []
     error.value = ''
+  }
+
+  function clearResults() {
+    results.value = []
+    selectedId.value = null
+  }
+
+  function removeResult(id) {
+    results.value = results.value.filter((r) => r.id !== id)
+    if (selectedId.value === id) {
+      selectedId.value = results.value.length
+        ? results.value[results.value.length - 1].id
+        : null
+    }
+  }
+
+  function selectResult(id) {
+    if (results.value.some((r) => r.id === id)) selectedId.value = id
+  }
+
+  function saveResult(s) {
+    const id = nextId++
+    results.value = [
+      ...results.value,
+      {
+        id,
+        label: makeLabel(id, pendingSettings),
+        at: new Date().toLocaleTimeString(),
+        method: pendingSettings?.method ?? null,
+        settings: pendingSettings ? { ...pendingSettings } : null,
+        indices: s.indices,
+        paramNames: s.param_names ?? [],
+        outputNames: s.output_names ?? [],
+      },
+    ]
+    selectedId.value = id
   }
 
   async function start(modelId, settings) {
     reset()
+    pendingSettings = settings ? { ...settings } : null
     state.value = 'running'
     try {
       const { job_id } = await startSensitivity(modelId, settings)
@@ -63,9 +130,8 @@ export function useSensitivity(options = {}) {
       if (s.state === 'running') {
         timer = setTimeout(poll, intervalMs)
       } else {
-        indices.value = s.indices
-        paramNames.value = s.param_names ?? []
-        outputNames.value = s.output_names ?? []
+        // Save (rather than overwrite) a successful run so it can be compared.
+        if (s.state === 'done' && s.indices) saveResult(s)
         error.value = s.error || ''
       }
     } catch (e) {
@@ -97,6 +163,11 @@ export function useSensitivity(options = {}) {
     outputNames,
     error,
     running,
+    results,
+    selectedId,
+    selectResult,
+    removeResult,
+    clearResults,
     start,
     cancel,
     reset,

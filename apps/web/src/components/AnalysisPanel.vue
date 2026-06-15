@@ -16,7 +16,14 @@ const props = defineProps({
   // UQ: per-parameter posteriors [{qname, mean, std, q05, q50, q95, bins, counts}].
   uqParams: { type: Array, default: () => [] },
   uqMethod: { type: String, default: null },
+  // Saved sensitivity runs for comparison: [{ id, label, at }]. The currently
+  // shown run's matrix is in `indices`; this list lets the user switch between
+  // saved runs (e.g. global Sobol vs local FD) without overwriting.
+  savedResults: { type: Array, default: () => [] },
+  selectedResultId: { type: [Number, String], default: null },
 })
+
+const emit = defineEmits(['select-result', 'remove-result', 'clear-results'])
 
 // ---- Sensitivity heatmap ---------------------------------------------------
 // Sobol runs carry S1/ST; a local (finite-difference) run carries a single
@@ -218,6 +225,39 @@ const uqMethodLabel = computed(() =>
         Run a sensitivity analysis to see the heatmap.
       </p>
       <template v-else>
+        <div v-if="savedResults.length" class="saved-runs" data-testid="saved-runs">
+          <span class="toolbar-label">Runs</span>
+          <div class="run-chips">
+            <span
+              v-for="r in savedResults"
+              :key="r.id"
+              class="run-chip"
+              :class="{ active: r.id === selectedResultId }"
+              :data-testid="`run-chip-${r.id}`"
+              :title="r.at ? `saved ${r.at}` : ''"
+              @click="emit('select-result', r.id)"
+            >
+              {{ r.label }}
+              <button
+                class="run-x"
+                title="remove this saved run"
+                :data-testid="`run-remove-${r.id}`"
+                @click.stop="emit('remove-result', r.id)"
+              >
+                ×
+              </button>
+            </span>
+          </div>
+          <button
+            v-if="savedResults.length > 1"
+            class="run-clear"
+            data-testid="clear-runs"
+            @click="emit('clear-results')"
+          >
+            Clear all
+          </button>
+        </div>
+
         <div class="analysis-toolbar">
           <span class="toolbar-label">Index</span>
           <div class="type-toggle">
@@ -376,6 +416,58 @@ const uqMethodLabel = computed(() =>
 .toolbar-label {
   font-size: 0.8rem;
   opacity: 0.7;
+}
+.saved-runs {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.4rem;
+}
+.run-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+.run-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.74rem;
+  padding: 0.15rem 0.45rem;
+  border: 1px solid var(--p-content-border-color, #333);
+  border-radius: 999px;
+  cursor: pointer;
+  opacity: 0.65;
+  white-space: nowrap;
+}
+.run-chip.active {
+  opacity: 1;
+  border-color: #5b9bd5;
+  background: rgba(91, 155, 213, 0.15);
+}
+.run-x {
+  background: transparent;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  opacity: 0.6;
+  font-size: 0.9rem;
+  line-height: 1;
+  padding: 0;
+}
+.run-x:hover {
+  opacity: 1;
+  color: #e84a5f;
+}
+.run-clear {
+  background: transparent;
+  border: none;
+  color: inherit;
+  opacity: 0.6;
+  cursor: pointer;
+  font-size: 0.74rem;
+  text-decoration: underline;
 }
 .type-toggle {
   display: inline-flex;

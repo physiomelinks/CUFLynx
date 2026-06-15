@@ -43,3 +43,40 @@ describe('AnalysisPanel UQ section', () => {
     expect(rows[0].find('.uq-label').html()).toContain('katex')
   })
 })
+
+const SENS = {
+  indices: { local: { 'y (Exp0, Sub0)': { 'm/a': 0.5, 'm/b': -0.2 } } },
+  paramNames: ['m/a', 'm/b'],
+  outputNames: ['y (Exp0, Sub0)'],
+}
+const SAVED = [
+  { id: 1, label: '#1 Sobol · saltelli · n256', at: '10:00:00' },
+  { id: 2, label: '#2 Local · FD · current', at: '10:05:00' },
+]
+
+describe('AnalysisPanel sensitivity comparison', () => {
+  it('lists saved runs and emits select / remove / clear', async () => {
+    const wrapper = mount(AnalysisPanel, {
+      props: { ...SENS, savedResults: SAVED, selectedResultId: 2 },
+    })
+    const chips = wrapper.findAll('[data-testid^="run-chip-"]')
+    expect(chips).toHaveLength(2)
+    expect(wrapper.find('[data-testid="run-chip-2"]').classes()).toContain('active')
+
+    await wrapper.find('[data-testid="run-chip-1"]').trigger('click')
+    expect(wrapper.emitted('select-result')[0]).toEqual([1])
+
+    // the × removes that run without also selecting it (@click.stop)
+    await wrapper.find('[data-testid="run-remove-1"]').trigger('click')
+    expect(wrapper.emitted('remove-result')[0]).toEqual([1])
+    expect(wrapper.emitted('select-result')).toHaveLength(1)
+
+    await wrapper.find('[data-testid="clear-runs"]').trigger('click')
+    expect(wrapper.emitted('clear-results')).toBeTruthy()
+  })
+
+  it('hides the run selector when nothing is saved', () => {
+    const wrapper = mount(AnalysisPanel, { props: { ...SENS, savedResults: [] } })
+    expect(wrapper.find('[data-testid="saved-runs"]').exists()).toBe(false)
+  })
+})

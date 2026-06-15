@@ -695,11 +695,16 @@ watch(
             :param-names="sa.paramNames.value"
             :output-names="sa.outputNames.value"
             :param-labels="paramLabels"
+            :saved-results="sa.results.value"
+            :selected-result-id="sa.selectedId.value"
             :percent-error="calib.percentError.value"
             :std-error="calib.stdError.value"
             :error-labels="calib.errorLabels.value"
             :uq-params="uq.params.value"
             :uq-method="uq.method.value"
+            @select-result="sa.selectResult"
+            @remove-result="sa.removeResult"
+            @clear-results="sa.clearResults"
           />
         </div>
         <StatusBar
