@@ -65,13 +65,39 @@ function filesFrom(event) {
   return []
 }
 
+// After picking via the <input>, clear its value so selecting the SAME file
+// again still fires `change` (needed to retry after an error). Harmless for the
+// drag path, where the event target has no `value`.
+function resetPicker(event) {
+  if (event.target && 'value' in event.target) event.target.value = ''
+}
+
+// Some Linux desktop setups (e.g. multiple X display sessions, Snap-confined
+// apps) hand the browser a dragged file it can't actually read — it arrives as
+// 0 bytes and the upload fails with an opaque network error. Detect that and
+// point the user at the reliable file picker. Returns a message if unreadable.
+function unreadableDrop(file) {
+  if (file.size > 0) return ''
+  return (
+    `"${file.name}" came through as 0 bytes — your desktop didn't hand the ` +
+    `browser a readable file (a known Linux drag-and-drop limitation). Use the ` +
+    `"click to browse" button instead.`
+  )
+}
+
 async function onCellmlDrop(event) {
   event.preventDefault?.()
   error.value = ''
   const [file] = filesFrom(event)
+  resetPicker(event)
   if (!file) return
   if (!extOk(file.name, ['.cellml', '.xml'])) {
     error.value = `Expected a .cellml file, got "${file.name}"`
+    return
+  }
+  const unreadable = unreadableDrop(file)
+  if (unreadable) {
+    error.value = unreadable
     return
   }
   try {
@@ -86,9 +112,15 @@ async function onObsDrop(event) {
   event.preventDefault?.()
   error.value = ''
   const [file] = filesFrom(event)
+  resetPicker(event)
   if (!file) return
   if (!extOk(file.name, ['.json'])) {
     error.value = `Expected a .json file, got "${file.name}"`
+    return
+  }
+  const unreadable = unreadableDrop(file)
+  if (unreadable) {
+    error.value = unreadable
     return
   }
   try {
@@ -108,9 +140,15 @@ async function onParamsDrop(event) {
   event.preventDefault?.()
   error.value = ''
   const [file] = filesFrom(event)
+  resetPicker(event)
   if (!file) return
   if (!extOk(file.name, ['.csv'])) {
     error.value = `Expected a .csv file, got "${file.name}"`
+    return
+  }
+  const unreadable = unreadableDrop(file)
+  if (unreadable) {
+    error.value = unreadable
     return
   }
   try {
@@ -131,32 +169,38 @@ async function onParamsDrop(event) {
   <section class="file-import">
     <h2>Imports</h2>
 
-    <div
+    <label
       class="dropzone"
       data-testid="cellml-drop"
       @dragover.prevent
       @drop="onCellmlDrop"
     >
       <i class="pi pi-file" /> Drop <strong>CellML</strong> (.cellml)
-    </div>
+      <small>or click to browse</small>
+      <input type="file" accept=".cellml,.xml" @change="onCellmlDrop" />
+    </label>
 
-    <div
+    <label
       class="dropzone"
       data-testid="obs-drop"
       @dragover.prevent
       @drop="onObsDrop"
     >
       <i class="pi pi-chart-line" /> Drop <strong>obs_data.json</strong>
-    </div>
+      <small>or click to browse</small>
+      <input type="file" accept=".json" @change="onObsDrop" />
+    </label>
 
-    <div
+    <label
       class="dropzone"
       data-testid="params-drop"
       @dragover.prevent
       @drop="onParamsDrop"
     >
       <i class="pi pi-sliders-h" /> Drop <strong>params_for_id.csv</strong>
-    </div>
+      <small>or click to browse</small>
+      <input type="file" accept=".csv" @change="onParamsDrop" />
+    </label>
 
     <Message
       v-if="error"
@@ -227,6 +271,15 @@ async function onParamsDrop(event) {
 }
 .dropzone:hover {
   border-color: var(--p-primary-color, #5b9bd5);
+}
+.dropzone input[type='file'] {
+  display: none;
+}
+.dropzone small {
+  display: block;
+  opacity: 0.55;
+  font-size: 0.7rem;
+  margin-top: 0.15rem;
 }
 .exports-heading {
   margin: 0.5rem 0 0;
