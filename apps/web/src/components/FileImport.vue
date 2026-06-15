@@ -220,6 +220,7 @@ async function onParamsDrop(event) {
         label="Edit"
         icon="pi pi-pencil"
         size="small"
+        class="params-edit-btn"
         data-testid="params-edit"
         title="Edit included parameters and ranges, save a new dated CSV"
         :disabled="!modelId"
@@ -314,6 +315,19 @@ async function onParamsDrop(event) {
 }
 .params-row .dropzone {
   flex: 1;
+}
+/* Match the Edit button to the dropzone's color scheme: dashed border,
+   transparent fill, inherited text, primary-color border on hover. */
+.params-row .params-edit-btn {
+  border: 1px dashed var(--p-content-border-color, #555);
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+}
+.params-row .params-edit-btn:enabled:hover {
+  border-color: var(--p-primary-color, #5b9bd5);
+  background: transparent;
+  color: inherit;
 }
 .dropzone input[type='file'] {
   display: none;
