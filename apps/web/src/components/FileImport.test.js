@@ -10,7 +10,25 @@ vi.mock('../lib/api', () => ({
 import FileImport from './FileImport.vue'
 import { uploadCellML, uploadObsData, uploadParamsForId } from '../lib/api'
 
-const stubs = { Message: true, InputText: true, Button: true, FileBrowserDialog: true }
+// Real <button> stub so the Edit button's disabled state + click are observable;
+// EditParamsDialog stub renders only when opened.
+const ButtonStub = {
+  props: ['label', 'disabled', 'icon', 'size', 'text', 'title'],
+  emits: ['click'],
+  template:
+    '<button :disabled="disabled" v-bind="$attrs" @click="$emit(\'click\')">{{ label }}</button>',
+}
+const EditParamsStub = {
+  props: ['visible'],
+  template: '<div v-if="visible" data-testid="edit-dialog">open</div>',
+}
+const stubs = {
+  Message: true,
+  InputText: true,
+  Button: ButtonStub,
+  FileBrowserDialog: true,
+  EditParamsDialog: EditParamsStub,
+}
 
 // jsdom's File has no .text(); browsers do. Stub it for obs_data JSON reads.
 function jsonFile(name, text) {
@@ -106,5 +124,21 @@ describe('FileImport', () => {
     await flushPromises()
     expect(uploadObsData).toHaveBeenCalledWith('abc', { x: 1 })
     expect(wrapper.emitted('obs-data-loaded')).toBeTruthy()
+  })
+
+  it('test_edit_button_disabled_without_model', () => {
+    const wrapper = mount(FileImport, { global: { stubs } }) // no modelId
+    const edit = wrapper.find('[data-testid="params-edit"]')
+    expect(edit.exists()).toBe(true)
+    expect(edit.attributes('disabled')).toBeDefined()
+    expect(wrapper.find('[data-testid="edit-dialog"]').exists()).toBe(false)
+  })
+
+  it('test_edit_button_enabled_with_model_opens_dialog', async () => {
+    const wrapper = mount(FileImport, { props: { modelId: 'abc' }, global: { stubs } })
+    const edit = wrapper.find('[data-testid="params-edit"]')
+    expect(edit.attributes('disabled')).toBeUndefined()
+    await edit.trigger('click')
+    expect(wrapper.find('[data-testid="edit-dialog"]').exists()).toBe(true)
   })
 })

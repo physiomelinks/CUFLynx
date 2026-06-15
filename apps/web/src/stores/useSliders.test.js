@@ -71,4 +71,16 @@ describe('useSliders', () => {
     s.addSlider('a/x', { min: 0, max: 10, value: 3 })
     expect(s.paramDict.value).toEqual({ 'a/x': 3 })
   })
+
+  it('resetToInit restores each slider to the value it was created with', () => {
+    const s = useSliders()
+    s.addSlider('a/x', { min: 0, max: 10, value: 3 })
+    s.addSlider('a/y', { min: 0, max: 10, value: 7 })
+    s.setValue('a/x', 8)
+    s.setValue('a/y', 1)
+    expect(s.sliders['a/x'].value).toBe(8)
+    s.resetToInit()
+    expect(s.sliders['a/x'].value).toBe(3)
+    expect(s.sliders['a/y'].value).toBe(7)
+  })
 })
