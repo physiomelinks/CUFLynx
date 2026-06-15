@@ -5,6 +5,7 @@ vi.mock('../lib/api', () => ({
   uploadCellML: vi.fn(),
   uploadObsData: vi.fn(),
   uploadParamsForId: vi.fn(),
+  getObsDataOptions: vi.fn(),
 }))
 
 import FileImport from './FileImport.vue'
@@ -22,12 +23,17 @@ const EditParamsStub = {
   props: ['visible'],
   template: '<div v-if="visible" data-testid="edit-dialog">open</div>',
 }
+const EditObsStub = {
+  props: ['visible'],
+  template: '<div v-if="visible" data-testid="edit-obs-dialog">open</div>',
+}
 const stubs = {
   Message: true,
   InputText: true,
   Button: ButtonStub,
   FileBrowserDialog: true,
   EditParamsDialog: EditParamsStub,
+  EditObsDataDialog: EditObsStub,
 }
 
 // jsdom's File has no .text(); browsers do. Stub it for obs_data JSON reads.
@@ -88,9 +94,10 @@ describe('FileImport', () => {
     await wrapper.setProps({ modelId: 'abc' })
     await flushPromises()
     expect(uploadObsData).toHaveBeenCalledWith('abc', { protocol_info: {} })
-    expect(wrapper.emitted('obs-data-loaded')[0][0]).toEqual({
+    expect(wrapper.emitted('obs-data-loaded')[0][0]).toMatchObject({
       model_id: 'abc',
       experiment_count: 1,
+      filename: 'obs.json', // attachObs now carries the filename for versioning
     })
   })
 
@@ -140,5 +147,21 @@ describe('FileImport', () => {
     expect(edit.attributes('disabled')).toBeUndefined()
     await edit.trigger('click')
     expect(wrapper.find('[data-testid="edit-dialog"]').exists()).toBe(true)
+  })
+
+  it('test_obs_edit_button_disabled_without_model', () => {
+    const wrapper = mount(FileImport, { global: { stubs } }) // no modelId
+    const edit = wrapper.find('[data-testid="obs-edit"]')
+    expect(edit.exists()).toBe(true)
+    expect(edit.attributes('disabled')).toBeDefined()
+    expect(wrapper.find('[data-testid="edit-obs-dialog"]').exists()).toBe(false)
+  })
+
+  it('test_obs_edit_button_enabled_with_model_opens_dialog', async () => {
+    const wrapper = mount(FileImport, { props: { modelId: 'abc' }, global: { stubs } })
+    const edit = wrapper.find('[data-testid="obs-edit"]')
+    expect(edit.attributes('disabled')).toBeUndefined()
+    await edit.trigger('click')
+    expect(wrapper.find('[data-testid="edit-obs-dialog"]').exists()).toBe(true)
   })
 })

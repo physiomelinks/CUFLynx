@@ -68,6 +68,13 @@ export async function uploadObsData(modelId, obsData) {
   return data
 }
 
+// Operation (obs_funcs) + cost_type (cost_func) option lists, sourced from
+// circulatory_autogen — used to populate the obs_data editor dropdowns.
+export async function getObsDataOptions() {
+  const { data } = await axios.get(url('/api/obs_data/options'))
+  return data
+}
+
 export async function uploadParamsForId(file, modelId) {
   const form = new FormData()
   form.append('file', file)

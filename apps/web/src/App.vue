@@ -58,6 +58,9 @@ const outputsDir = ref('')
 // and version the new filename.
 const loadedParamsRaw = ref([])
 const loadedParamsFilename = ref(null)
+// Loaded obs_data filename, for versioning the obs Edit dialog's output. The obs
+// content itself already lives in obs.obsData.value.
+const loadedObsFilename = ref(null)
 
 // Python interpreter chosen once in the top bar and shared by the Sensitivity,
 // Calibration and UQ runs. Blank => backend uses its default interpreter.
@@ -247,6 +250,7 @@ async function onModelLoaded(data) {
   paramsForId.clear()
   loadedParamsRaw.value = []
   loadedParamsFilename.value = null
+  loadedObsFilename.value = null
   sliders.clear()
   try {
     const vars = await getVariables(data.model_id)
@@ -297,6 +301,11 @@ function onParamsLoaded(data) {
   // Keep the raw entries (with param_type) + filename for the Edit dialog.
   loadedParamsRaw.value = data.params
   loadedParamsFilename.value = data.filename
+}
+
+function onObsDataLoaded(payload) {
+  obs.setObsData(payload)
+  if (payload?.filename) loadedObsFilename.value = payload.filename
 }
 
 let timer = null
@@ -692,8 +701,13 @@ watch(
           :model-variables="model.variables.value"
           :model-name="model.name.value"
           :loaded-filename="loadedParamsFilename"
+          :current-data-items="obs.dataItems.value"
+          :current-prediction-items="obs.predictionItems.value"
+          :obs-protocol-info="obs.obsData.value?.protocol_info ?? null"
+          :experiment-count="obs.experimentCount.value"
+          :loaded-obs-filename="loadedObsFilename"
           @model-loaded="onModelLoaded"
-          @obs-data-loaded="obs.setObsData"
+          @obs-data-loaded="onObsDataLoaded"
           @params-loaded="onParamsLoaded"
         />
         <VariableList

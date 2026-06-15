@@ -51,6 +51,43 @@ def test_upload_experiment_idx_out_of_range_returns_422(client):
     assert resp.status_code == 422
 
 
+def test_obs_editor_object_form_round_trips(client):
+    # Shape the obs Edit dialog emits: object form with protocol_info verbatim,
+    # an edited constant + a preserved series item (with obs_dt). Guards format drift.
+    obs = {
+        "protocol_info": {"pre_times": [0.0], "sim_times": [[5]]},
+        "prediction_items": [],
+        "data_items": [
+            {
+                "variable": "x_max", "data_type": "constant", "operation": "max",
+                "operands": ["m/x"], "unit": "dimensionless", "value": 30, "std": 3,
+                "experiment_idx": 0, "plot_type": "horizontal",
+            },
+            {
+                "variable": "s", "data_type": "series", "obs_dt": 0.1,
+                "value": [1, 2], "std": 0.1, "experiment_idx": 0,
+            },
+        ],
+    }
+    resp = client.post("/api/obs_data/upload", json=obs)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["n_data_items"] == 2
+
+
+def test_obs_editor_data_only_array_form(client):
+    # Data-only files round-trip as a bare array (no protocol_info).
+    obs = [
+        {
+            "variable": "x_max", "data_type": "constant", "operation": "max",
+            "operands": ["m/x"], "unit": "dimensionless", "value": 30, "std": 3,
+            "experiment_idx": 0,
+        },
+    ]
+    resp = client.post("/api/obs_data/upload", json=obs)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["has_protocol"] is False
+
+
 # ---------------------------------------------------------------------------
 # Integration tier
 # ---------------------------------------------------------------------------

@@ -5,6 +5,7 @@ import InputText from 'primevue/inputtext'
 import Button from 'primevue/button'
 import FileBrowserDialog from './FileBrowserDialog.vue'
 import EditParamsDialog from './EditParamsDialog.vue'
+import EditObsDataDialog from './EditObsDataDialog.vue'
 import { uploadCellML, uploadObsData, uploadParamsForId } from '../lib/api'
 
 const props = defineProps({
@@ -16,6 +17,13 @@ const props = defineProps({
   modelVariables: { type: Object, default: () => ({}) },
   modelName: { type: String, default: null },
   loadedFilename: { type: String, default: null },
+  // For the obs_data Edit dialog: the loaded obs_data items + protocol_info and
+  // the loaded obs filename for versioning.
+  currentDataItems: { type: Array, default: () => [] },
+  currentPredictionItems: { type: Array, default: () => [] },
+  obsProtocolInfo: { type: Object, default: null },
+  experimentCount: { type: Number, default: 0 },
+  loadedObsFilename: { type: String, default: null },
 })
 const emit = defineEmits([
   'model-loaded',
@@ -28,11 +36,17 @@ const error = ref('')
 const notice = ref('')
 const outputsBrowserOpen = ref(false)
 const editParamsOpen = ref(false)
+const editObsOpen = ref(false)
 
 // The Edit dialog produces a new params set the same shape as a CSV upload, so
 // reuse the existing params-loaded flow to re-seed sliders and make it active.
 function onEditSaved(payload) {
   emit('params-loaded', payload)
+}
+
+// The obs Edit dialog already re-uploaded; reuse the obs-data-loaded flow.
+function onObsEditSaved(payload) {
+  emit('obs-data-loaded', payload)
 }
 
 // obs_data / params depend on a model_id to attach server-side (and params is
@@ -46,9 +60,9 @@ function extOk(filename, exts) {
   return exts.some((e) => filename.toLowerCase().endsWith(e))
 }
 
-async function attachObs(obsData) {
+async function attachObs(obsData, filename) {
   const summary = await uploadObsData(props.modelId, obsData)
-  emit('obs-data-loaded', summary)
+  emit('obs-data-loaded', { ...summary, filename })
 }
 
 async function attachParams(file) {
@@ -64,7 +78,7 @@ watch(
     if (!id || id === prev) return
     error.value = ''
     try {
-      if (pendingObs.value) await attachObs(pendingObs.value)
+      if (pendingObs.value) await attachObs(pendingObs.value.obsData, pendingObs.value.filename)
       if (pendingParams.value) await attachParams(pendingParams.value)
       notice.value = ''
     } catch (e) {
@@ -139,9 +153,9 @@ async function onObsDrop(event) {
   }
   try {
     const obsData = JSON.parse(await file.text())
-    pendingObs.value = obsData
+    pendingObs.value = { obsData, filename: file.name }
     if (props.modelId) {
-      await attachObs(obsData)
+      await attachObs(obsData, file.name)
     } else {
       notice.value = 'obs_data queued — it will attach once a CellML model is loaded.'
     }
@@ -194,16 +208,28 @@ async function onParamsDrop(event) {
       <input type="file" accept=".cellml,.xml" @change="onCellmlDrop" />
     </label>
 
-    <label
-      class="dropzone"
-      data-testid="obs-drop"
-      @dragover.prevent
-      @drop="onObsDrop"
-    >
-      <i class="pi pi-chart-line" /> Drop <strong>obs_data.json</strong>
-      <small>or click to browse</small>
-      <input type="file" accept=".json" @change="onObsDrop" />
-    </label>
+    <div class="params-row">
+      <label
+        class="dropzone"
+        data-testid="obs-drop"
+        @dragover.prevent
+        @drop="onObsDrop"
+      >
+        <i class="pi pi-chart-line" /> Drop <strong>obs_data.json</strong>
+        <small>or click to browse</small>
+        <input type="file" accept=".json" @change="onObsDrop" />
+      </label>
+      <Button
+        label="Edit"
+        icon="pi pi-pencil"
+        size="small"
+        class="params-edit-btn"
+        data-testid="obs-edit"
+        title="Edit obs_data items, save a new dated JSON"
+        :disabled="!modelId"
+        @click="editObsOpen = true"
+      />
+    </div>
 
     <div class="params-row">
       <label
@@ -286,6 +312,19 @@ async function onParamsDrop(event) {
       :model-name="modelName"
       :loaded-filename="loadedFilename"
       @saved="onEditSaved"
+    />
+
+    <EditObsDataDialog
+      v-model:visible="editObsOpen"
+      :model-id="modelId"
+      :current-data-items="currentDataItems"
+      :current-prediction-items="currentPredictionItems"
+      :protocol-info="obsProtocolInfo"
+      :experiment-count="experimentCount"
+      :model-variables="modelVariables"
+      :model-name="modelName"
+      :loaded-filename="loadedObsFilename"
+      @saved="onObsEditSaved"
     />
   </section>
 </template>
