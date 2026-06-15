@@ -17,7 +17,12 @@ const ButtonStub = {
     '<button v-bind="$attrs" :disabled="disabled" @click="$emit(\'click\')">{{ label }}</button>',
 }
 const MessageStub = { template: '<div class="msg"><slot /></div>' }
-const stubs = { Dialog: DialogStub, Button: ButtonStub, Message: MessageStub }
+const stubs = {
+  Dialog: DialogStub,
+  Button: ButtonStub,
+  Message: MessageStub,
+  ProtocolInfoEditor: true,
+}
 
 const baseProps = {
   visible: true,
@@ -107,8 +112,9 @@ describe('EditObsDataDialog', () => {
     expect(uploadObsData).toHaveBeenCalledOnce()
     const [idArg, obsArg] = uploadObsData.mock.calls[0]
     expect(idArg).toBe('abc')
-    // object form: protocol_info verbatim + edited constant + preserved series
-    expect(obsArg.protocol_info).toEqual(baseProps.protocolInfo)
+    // object form: protocol_info rebuilt from the model (pre/sim preserved) +
+    // edited constant + preserved series item.
+    expect(obsArg.protocol_info).toMatchObject({ pre_times: [0], sim_times: [[5]] })
     expect(obsArg.data_items).toHaveLength(2)
     expect(obsArg.data_items[1]).toMatchObject({ variable: 's', data_type: 'series' })
 
@@ -116,6 +122,29 @@ describe('EditObsDataDialog', () => {
     expect(saved.filename).toMatch(/^obs_\d{6}\.json$/)
     expect(wrapper.emitted('update:visible').at(-1)).toEqual([false])
 
+    clickSpy.mockRestore()
+  })
+
+  it('data-only: "Add protocol_info" → save emits object form', async () => {
+    uploadObsData.mockResolvedValue({})
+    const clickSpy = vi
+      .spyOn(HTMLAnchorElement.prototype, 'click')
+      .mockImplementation(() => {})
+    const wrapper = mountDialog({
+      protocolInfo: null,
+      experimentCount: 0,
+      currentDataItems: [],
+      currentPredictionItems: [],
+    })
+    await flushPromises()
+    await wrapper.find('[data-testid="add-protocol"]').trigger('click')
+    await flushPromises()
+    await wrapper.find('[data-testid="eo-save"]').trigger('click')
+    await flushPromises()
+
+    const obsArg = uploadObsData.mock.calls[0][1]
+    expect(Array.isArray(obsArg)).toBe(false) // object form now
+    expect(obsArg.protocol_info).toMatchObject({ pre_times: [0], sim_times: [[1]] })
     clickSpy.mockRestore()
   })
 })

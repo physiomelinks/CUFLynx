@@ -74,6 +74,46 @@ def test_obs_editor_object_form_round_trips(client):
     assert resp.json()["n_data_items"] == 2
 
 
+def test_protocol_info_with_generated_ramp_and_pulse_traces(client):
+    # Shape the protocol_info editor emits: params_to_change referencing generated
+    # ramp/pulse traces present in protocol_traces.
+    obs = {
+        "protocol_info": {
+            "pre_times": [0.0, 0.0],
+            "sim_times": [[5], [4]],
+            "experiment_labels": ["e0", "e1"],
+            "params_to_change": {
+                "m/I": [["m_I_e0s0"], [0.2]],
+                "m/g": [[0.1], ["m_g_e1s0"]],
+            },
+            "protocol_traces": {
+                "m_I_e0s0": {"t": [0, 5], "values": [0, 1]},
+                "m_g_e1s0": {"t": [0, 1, 1.001, 3, 3.001, 4], "values": [0, 0, 0.5, 0.5, 0, 0]},
+            },
+        },
+        "prediction_items": [],
+        "data_items": [],
+    }
+    resp = client.post("/api/obs_data/upload", json=obs)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["n_experiments"] == 2
+
+
+def test_protocol_info_missing_trace_key_returns_422(client):
+    obs = {
+        "protocol_info": {
+            "pre_times": [0.0],
+            "sim_times": [[5]],
+            "params_to_change": {"m/I": [["nonexistent_trace"]]},
+            "protocol_traces": {},
+        },
+        "data_items": [],
+    }
+    resp = client.post("/api/obs_data/upload", json=obs)
+    assert resp.status_code == 422
+    assert "trace" in resp.json()["detail"].lower()
+
+
 def test_obs_editor_data_only_array_form(client):
     # Data-only files round-trip as a bare array (no protocol_info).
     obs = [

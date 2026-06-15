@@ -60,6 +60,7 @@ export function itemToRow(item) {
     std: item.std ?? null,
     weight: item.weight ?? 1.0,
     experiment_idx: item.experiment_idx ?? 0,
+    subexperiment_idx: item.subexperiment_idx ?? 0,
     cost_type: item.cost_type ?? '',
     plot_type: item.plot_type && item.plot_type !== 'None' ? item.plot_type : '',
   }
@@ -78,6 +79,7 @@ export function newRow(experimentIdx = 0) {
     std: 1,
     weight: 1.0,
     experiment_idx: experimentIdx,
+    subexperiment_idx: 0,
     cost_type: '',
     plot_type: 'horizontal',
   }
@@ -98,6 +100,7 @@ export function rowToItem(row) {
   out.std = num(row.std, 0)
   out.weight = num(row.weight, 1.0)
   out.experiment_idx = num(row.experiment_idx, 0)
+  out.subexperiment_idx = num(row.subexperiment_idx, 0)
   out.plot_type = row.plot_type || 'None'
   if (row.operation) out.operation = row.operation
   else delete out.operation
