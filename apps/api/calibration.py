@@ -191,9 +191,10 @@ def list_python_interpreters(refresh: bool = False) -> list[dict]:
 
 
 class CalibrationJob:
-    def __init__(self, job_id: str, output_dir: str):
+    def __init__(self, job_id: str, output_dir: str, model_id: str | None = None):
         self.id = job_id
         self.output_dir = output_dir
+        self.model_id = model_id
         self.lines: list[str] = []
         self.state = "running"  # running | done | error | cancelled
         self.best_params: dict | None = None
@@ -227,6 +228,14 @@ class CalibrationManager:
         job = self._job
         return job is not None and job.state == "running"
 
+    def last_completed_best_params(self, model_id: str) -> dict | None:
+        """Best-fit params of the most recent completed calibration for ``model_id``
+        (for the UQ tab to reuse), or None if none has completed for it."""
+        job = self._job
+        if job is None or job.model_id != model_id or job.state != "done":
+            return None
+        return job.best_params or None
+
     def build_command(self, config: dict, config_path: str) -> list[str]:
         """Single-process by default; ``mpiexec -n N`` when num_cores > 1.
 
@@ -251,7 +260,7 @@ class CalibrationManager:
             with open(config_path, "w") as fh:
                 json.dump(config, fh)
 
-            job = CalibrationJob(uuid.uuid4().hex, output_dir)
+            job = CalibrationJob(uuid.uuid4().hex, output_dir, config.get("model_id"))
             env = dict(os.environ)
             job.proc = subprocess.Popen(
                 self.build_command(config, config_path),

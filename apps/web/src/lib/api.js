@@ -124,3 +124,26 @@ export async function cancelSensitivity(jobId) {
   const { data } = await axios.post(url(`/api/sensitivity/${jobId}/cancel`))
   return data
 }
+
+export async function getUQDefaults() {
+  const { data } = await axios.get(url('/api/uq/defaults'))
+  return data
+}
+
+export async function startUQ(modelId, settings) {
+  const { data } = await axios.post(url('/api/uq/run'), {
+    model_id: modelId,
+    settings,
+  })
+  return data
+}
+
+export async function getUQStatus(jobId, offset = 0) {
+  const { data } = await axios.get(url(`/api/uq/${jobId}/status?offset=${offset}`))
+  return data
+}
+
+export async function cancelUQ(jobId) {
+  const { data } = await axios.post(url(`/api/uq/${jobId}/cancel`))
+  return data
+}

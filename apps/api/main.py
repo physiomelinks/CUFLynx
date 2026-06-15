@@ -33,6 +33,7 @@ from engine import SimulationError, engine
 from obs_data import ObsData, ObsDataError, parse_obs_data
 from params_for_id import ParamsForIdError, parse_params_for_id
 from sensitivity import sensitivity
+from uq import uq
 
 app = FastAPI(title="CellML Explorer API", version="0.1.0")
 
@@ -379,6 +380,7 @@ def calibration_run(req: CalibrationRequest) -> dict:
     else:
         output_dir = str(UPLOAD_DIR / f"calib_{req.model_id}_{uuid.uuid4().hex[:8]}")
     config = {
+        "model_id": req.model_id,
         "model_path": str(record.path),
         "obs_path": str(record.obs_path),
         "params_path": str(record.params_path),
@@ -502,4 +504,116 @@ def sensitivity_status(job_id: str, offset: int = 0) -> dict:
 def sensitivity_cancel(job_id: str) -> dict:
     if not sensitivity.cancel(job_id):
         raise HTTPException(status_code=404, detail="sensitivity job not found")
+    return {"cancelled": True}
+
+
+# ---------------------------------------------------------------------------
+# UQ — uncertainty quantification (MCMC / Laplace posterior on parameters)
+# ---------------------------------------------------------------------------
+class UQRequest(BaseModel):
+    model_id: str
+    settings: dict = Field(default_factory=dict)
+
+
+UQ_DEFAULTS = {
+    "method": "mcmc",
+    "methods": ["mcmc", "laplace"],
+    "num_steps": 1000,
+    "num_walkers": 64,
+    "cost_type": "gaussian_MLE",
+    "cost_convergence": 0.001,
+    "dt": 0.01,
+    "solver": "CVODE_myokit",
+    "DEBUG": False,
+    "num_cores": 1,  # >1 -> mpiexec -n N
+    # False (default) reuses the latest completed calibration's best fit;
+    # True runs a fresh GA calibration first (self-contained).
+    "run_calibration_first": False,
+    "param_id_method": "genetic_algorithm",
+    "num_calls_to_function": 100,
+    "max_patience": 10,
+}
+
+
+@app.get("/api/uq/defaults")
+def uq_defaults() -> dict:
+    return UQ_DEFAULTS
+
+
+@app.post("/api/uq/run")
+def uq_run(req: UQRequest) -> dict:
+    record = _get_model(req.model_id)
+    if record.obs_path is None or record.params_path is None:
+        raise HTTPException(
+            status_code=422,
+            detail="UQ requires both an obs_data.json and a params_for_id.csv to be "
+            "uploaded for this model",
+        )
+    python_path = req.settings.get("python_path") or None
+    if python_path and not (
+        os.path.isfile(python_path) and os.access(python_path, os.X_OK)
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail=f"python interpreter not found or not executable: {python_path}",
+        )
+
+    # Reuse mode (default): need a completed calibration's best fit to start from.
+    best_params = None
+    if not req.settings.get("run_calibration_first", False):
+        if calibration.busy:
+            raise HTTPException(
+                status_code=409,
+                detail="a calibration is still running; wait for it to finish before "
+                "running UQ (or enable 'run a fresh calibration first')",
+            )
+        best_params = calibration.last_completed_best_params(req.model_id)
+        if not best_params:
+            raise HTTPException(
+                status_code=422,
+                detail="no completed calibration to reuse — run a calibration to "
+                "completion first, or enable 'run a fresh calibration first'",
+            )
+
+    configured = (req.settings.get("config_outputs_dir") or "").strip()
+    if configured:
+        if not os.path.isabs(configured):
+            raise HTTPException(
+                status_code=422,
+                detail="config_outputs_dir must be an absolute path",
+            )
+        output_dir = configured
+    else:
+        output_dir = str(UPLOAD_DIR / f"uq_{req.model_id}_{uuid.uuid4().hex[:8]}")
+    config = {
+        "model_id": req.model_id,
+        "model_path": str(record.path),
+        "obs_path": str(record.obs_path),
+        "params_path": str(record.params_path),
+        "output_dir": output_dir,
+        "file_prefix": record.meta.name or "model",
+        "num_cores": int(req.settings.get("num_cores", 1) or 1),
+        "python": python_path,
+        "settings": req.settings,
+        "best_params": best_params,
+    }
+    try:
+        job_id = uq.start(config)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"job_id": job_id}
+
+
+@app.get("/api/uq/{job_id}/status")
+def uq_status(job_id: str, offset: int = 0) -> dict:
+    status = uq.status(job_id, offset)
+    if status is None:
+        raise HTTPException(status_code=404, detail="UQ job not found")
+    return status
+
+
+@app.post("/api/uq/{job_id}/cancel")
+def uq_cancel(job_id: str) -> dict:
+    if not uq.cancel(job_id):
+        raise HTTPException(status_code=404, detail="UQ job not found")
     return {"cancelled": True}

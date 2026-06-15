@@ -14,18 +14,20 @@ const props = defineProps({
 })
 const emit = defineEmits(['run', 'cancel'])
 
-// pre_time / sim_time come from the obs_data.json protocol_info (mirrors
-// calibration, see #13). The Python interpreter is chosen once in the top bar.
+// pre_time / sim_time come from the obs_data protocol_info (mirrors calibration).
+// The Python interpreter is chosen once in the top bar.
 const settings = reactive({
-  method: 'sobol',
-  sample_type: 'saltelli',
-  num_samples: 256,
+  method: 'mcmc',
+  run_calibration_first: false,
+  num_steps: 1000,
+  num_walkers: 64,
   num_cores: 1,
   dt: 0.01,
   DEBUG: false,
 })
 
-// Seed from server defaults once they arrive.
+const isMcmc = computed(() => settings.method === 'mcmc')
+
 watch(
   () => props.defaults,
   (d) => {
@@ -38,11 +40,8 @@ watch(
 )
 
 const methods = computed(() =>
-  (props.defaults.methods ?? ['sobol']).map((m) => ({ label: m, value: m })),
-)
-const sampleTypes = computed(() =>
-  (props.defaults.sample_types ?? ['saltelli', 'sobol']).map((m) => ({
-    label: m,
+  (props.defaults.methods ?? ['mcmc', 'laplace']).map((m) => ({
+    label: m === 'mcmc' ? 'MCMC' : 'Laplace',
     value: m,
   })),
 )
@@ -66,13 +65,13 @@ function onRun() {
 <template>
   <section class="calibration-panel">
     <header class="cal-header">
-      <h2>Sensitivity</h2>
+      <h2>UQ</h2>
       <span class="cal-state" :data-state="state">{{ state }}</span>
     </header>
 
     <div class="cal-form">
       <label class="field">
-        <span>Method</span>
+        <span title="MCMC (emcee) posterior, or Laplace Gaussian approximation">Method</span>
         <Select
           v-model="settings.method"
           :options="methods"
@@ -81,36 +80,42 @@ function onRun() {
           size="small"
         />
       </label>
+      <template v-if="isMcmc">
+        <label class="field">
+          <span>Steps</span>
+          <InputNumber v-model="settings.num_steps" :min="1" size="small" />
+        </label>
+        <label class="field">
+          <span>Walkers</span>
+          <InputNumber v-model="settings.num_walkers" :min="2" size="small" />
+        </label>
+      </template>
       <label class="field">
-        <span>Sample type</span>
-        <Select
-          v-model="settings.sample_type"
-          :options="sampleTypes"
-          option-label="label"
-          option-value="value"
-          size="small"
-        />
-      </label>
-      <label class="field">
-        <span title="Base sample count N; total sims ~ N·(2·num_params+2)">Samples</span>
-        <InputNumber v-model="settings.num_samples" :min="1" size="small" />
-      </label>
-      <label class="field">
-        <span title="mpiexec -n N: parallel sample evaluation">Cores</span>
+        <span title="mpiexec -n N: parallel sampling / calibration">Cores</span>
         <InputNumber v-model="settings.num_cores" :min="1" :max="64" size="small" />
       </label>
       <label class="field checkbox">
-        <Checkbox v-model="settings.DEBUG" :binary="true" input-id="sa-debug" />
-        <span>DEBUG (fewer samples, fast)</span>
+        <Checkbox
+          v-model="settings.run_calibration_first"
+          :binary="true"
+          input-id="uq-fresh-calib"
+        />
+        <span title="Otherwise UQ reuses the latest completed calibration's best fit">
+          Run a fresh calibration first
+        </span>
+      </label>
+      <label class="field checkbox">
+        <Checkbox v-model="settings.DEBUG" :binary="true" input-id="uq-debug" />
+        <span>DEBUG (small/fast)</span>
       </label>
     </div>
 
     <div class="cal-actions">
       <Button
-        label="Run sensitivity"
+        label="Run UQ"
         icon="pi pi-play"
         size="small"
-        data-testid="run-sensitivity"
+        data-testid="run-uq"
         :disabled="!canRun || running"
         @click="onRun"
       />
@@ -125,12 +130,15 @@ function onRun() {
       />
     </div>
     <p v-if="!canRun" class="hint">
-      Load a model, an obs_data.json and a params_for_id.csv to run a sensitivity
-      analysis.
+      Load a model, an obs_data.json and a params_for_id.csv to run UQ.
+    </p>
+    <p v-else-if="!settings.run_calibration_first" class="hint">
+      Reuses the latest completed calibration's best fit — run a calibration first, or
+      tick the box above.
     </p>
     <p v-if="error" class="cal-error">{{ error }}</p>
 
-    <pre ref="term" class="terminal" data-testid="sa-terminal">{{ lines.join('\n') }}</pre>
+    <pre ref="term" class="terminal" data-testid="uq-terminal">{{ lines.join('\n') }}</pre>
   </section>
 </template>
 

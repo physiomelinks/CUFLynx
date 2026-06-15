@@ -13,6 +13,9 @@ const props = defineProps({
   percentError: { type: Array, default: null },
   stdError: { type: Array, default: null },
   errorLabels: { type: Array, default: () => [] },
+  // UQ: per-parameter posteriors [{qname, mean, std, q05, q50, q95, bins, counts}].
+  uqParams: { type: Array, default: () => [] },
+  uqMethod: { type: String, default: null },
 })
 
 // ---- Sensitivity heatmap ---------------------------------------------------
@@ -102,6 +105,48 @@ function errorBars(values, hi, fmt) {
 
 const percentBars = computed(() => errorBars(props.percentError, 20, (v) => `${v.toFixed(1)}%`))
 const stdBars = computed(() => errorBars(props.stdError, 3, (v) => `${v.toFixed(2)}σ`))
+
+// ---- UQ posterior densities ------------------------------------------------
+const PLOT_W = 260
+const PLOT_H = 60
+
+const hasUQ = computed(() => Array.isArray(props.uqParams) && props.uqParams.length > 0)
+
+// Build the SVG geometry for one parameter's posterior: a histogram silhouette
+// (area polygon from bins/counts), a shaded q05–q95 band and a mean line.
+function densityGeometry(p) {
+  const bins = p.bins ?? []
+  const counts = p.counts ?? []
+  const xmin = bins[0]
+  const xmax = bins[bins.length - 1]
+  const xspan = xmax - xmin || 1
+  const maxCount = Math.max(1, ...counts)
+  const xOf = (v) => ((v - xmin) / xspan) * PLOT_W
+  const yOf = (c) => PLOT_H - (c / maxCount) * PLOT_H
+
+  const pts = [`0,${PLOT_H}`]
+  for (let i = 0; i < counts.length; i++) {
+    const y = yOf(counts[i]).toFixed(2)
+    pts.push(`${xOf(bins[i]).toFixed(2)},${y}`, `${xOf(bins[i + 1]).toFixed(2)},${y}`)
+  }
+  pts.push(`${PLOT_W},${PLOT_H}`)
+
+  const bandX = xOf(p.q05)
+  return {
+    points: pts.join(' '),
+    meanX: xOf(p.mean).toFixed(2),
+    bandX: bandX.toFixed(2),
+    bandW: Math.max(0, xOf(p.q95) - bandX).toFixed(2),
+  }
+}
+
+const uqPlots = computed(() =>
+  props.uqParams.map((p) => ({ ...p, geom: densityGeometry(p) })),
+)
+
+const uqMethodLabel = computed(() =>
+  props.uqMethod === 'laplace' ? 'Laplace' : props.uqMethod === 'mcmc' ? 'MCMC' : '',
+)
 </script>
 
 <template>
@@ -215,6 +260,37 @@ const stdBars = computed(() => errorBars(props.stdError, 3, (v) => `${v.toFixed(
           </div>
         </section>
       </template>
+    </section>
+
+    <!-- UQ ------------------------------------------------------------------>
+    <section class="analysis-section">
+      <h2>UQ<span v-if="uqMethodLabel" class="uq-method"> · {{ uqMethodLabel }}</span></h2>
+      <p v-if="!hasUQ" class="empty-hint">
+        Run a UQ analysis to see parameter posteriors.
+      </p>
+      <div v-else class="uq-list">
+        <div v-for="(p, i) in uqPlots" :key="i" class="uq-row" data-testid="uq-row">
+          <div class="uq-head">
+            <span class="uq-label" v-html="renderMath(paramLabels[p.qname] ?? p.qname)" />
+            <span class="uq-stats">
+              {{ p.mean.toPrecision(3) }} ± {{ p.std.toPrecision(2) }}
+              <span class="uq-ci">
+                90% CI [{{ p.q05.toPrecision(3) }}, {{ p.q95.toPrecision(3) }}]
+              </span>
+            </span>
+          </div>
+          <svg
+            class="uq-plot"
+            viewBox="0 0 260 60"
+            preserveAspectRatio="none"
+            data-testid="uq-density"
+          >
+            <rect :x="p.geom.bandX" y="0" :width="p.geom.bandW" height="60" class="uq-band" />
+            <polygon :points="p.geom.points" class="uq-area" />
+            <line :x1="p.geom.meanX" y1="0" :x2="p.geom.meanX" y2="60" class="uq-mean" />
+          </svg>
+        </div>
+      </div>
     </section>
   </div>
 </template>
@@ -359,5 +435,59 @@ const stdBars = computed(() => errorBars(props.stdError, 3, (v) => `${v.toFixed(
   text-align: right;
   font-variant-numeric: tabular-nums;
   opacity: 0.85;
+}
+.uq-method {
+  font-size: 0.8rem;
+  font-weight: 400;
+  opacity: 0.6;
+}
+.uq-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+.uq-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+.uq-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-size: 0.8rem;
+}
+.uq-label {
+  font-weight: 600;
+}
+.uq-stats {
+  font-variant-numeric: tabular-nums;
+  opacity: 0.8;
+}
+.uq-ci {
+  opacity: 0.65;
+  margin-left: 0.35rem;
+}
+.uq-plot {
+  width: 100%;
+  height: 60px;
+  border: 1px solid var(--p-content-border-color, #333);
+  border-radius: 4px;
+  background: var(--p-content-hover-background, rgba(127, 127, 127, 0.06));
+}
+.uq-area {
+  fill: rgba(91, 155, 213, 0.45);
+  stroke: var(--p-primary-color, #5b9bd5);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+.uq-band {
+  fill: rgba(112, 173, 71, 0.18);
+}
+.uq-mean {
+  stroke: #ffc000;
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
 }
 </style>

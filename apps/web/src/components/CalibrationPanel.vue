@@ -4,76 +4,28 @@ import Select from 'primevue/select'
 import InputNumber from 'primevue/inputnumber'
 import Checkbox from 'primevue/checkbox'
 import Button from 'primevue/button'
-import FileBrowserDialog from './FileBrowserDialog.vue'
 
 const props = defineProps({
   defaults: { type: Object, default: () => ({}) },
-  pythons: { type: Array, default: () => [] },
   canRun: { type: Boolean, default: false },
   lines: { type: Array, default: () => [] },
   state: { type: String, default: 'idle' },
   cost: { type: Number, default: null },
   error: { type: String, default: '' },
-  // Shared with the Sensitivity panel: picking an interpreter in one updates both.
-  pythonPath: { type: String, default: '' },
 })
-const emit = defineEmits(['run', 'cancel', 'update:pythonPath'])
+const emit = defineEmits(['run', 'cancel'])
 
 // Note: pre_time / sim_time are intentionally NOT here — calibration timing
-// comes from the obs_data.json protocol_info (see #13).
+// comes from the obs_data.json protocol_info (see #13). The Python interpreter
+// is chosen once in the top bar (shared across calibration/sensitivity/UQ).
 const settings = reactive({
   param_id_method: 'genetic_algorithm',
   num_calls_to_function: 100,
   cost_convergence: 0.001,
   max_patience: 10,
   num_cores: 1,
-  python_path: '',
   dt: 0.01,
   DEBUG: false,
-})
-
-const pythonBrowserOpen = ref(false)
-
-const pythonOptions = computed(() => {
-  const opts = [
-    { label: 'Server default', value: '' },
-    ...props.pythons.map((p) => ({
-      label:
-        `Python ${p.version} — ${p.path}` +
-        (p.ready ? '' : ` (missing: ${(p.missing || []).join(', ')})`),
-      value: p.path,
-      ready: p.ready,
-    })),
-  ]
-  // Show a browsed interpreter that isn't among the auto-discovered ones.
-  if (settings.python_path && !opts.some((o) => o.value === settings.python_path)) {
-    opts.push({ label: `Custom — ${settings.python_path}`, value: settings.python_path })
-  }
-  return opts
-})
-
-// Update local state and notify the parent so the other panel stays in sync.
-function setPython(p) {
-  settings.python_path = p
-  emit('update:pythonPath', p)
-}
-
-function onPythonSelected(p) {
-  setPython(p)
-}
-
-// Adopt an interpreter chosen in the sibling panel.
-watch(
-  () => props.pythonPath,
-  (p) => {
-    if (p !== settings.python_path) settings.python_path = p
-  },
-)
-
-// Whether the chosen interpreter is known to be missing required deps.
-const selectedNotReady = computed(() => {
-  const p = props.pythons.find((x) => x.path === settings.python_path)
-  return p && !p.ready ? p.missing : null
 })
 
 // Seed from server defaults once they arrive.
@@ -150,34 +102,6 @@ function onRun() {
         <span title="mpiexec -n N: parallel GA population evaluation">Cores</span>
         <InputNumber v-model="settings.num_cores" :min="1" :max="64" size="small" />
       </label>
-      <!-- Not a <label>: this row has two controls (Select + browse Button); a
-           label would forward chevron clicks to the native button (the browse
-           dialog) instead of opening the dropdown. -->
-      <div class="field">
-        <span title="Interpreter/env used to run the calibration">Python</span>
-        <span class="field-input">
-          <Select
-            :model-value="settings.python_path"
-            :options="pythonOptions"
-            option-label="label"
-            option-value="value"
-            size="small"
-            data-testid="python-select"
-            @update:model-value="setPython"
-          />
-          <Button
-            icon="pi pi-folder-open"
-            size="small"
-            text
-            title="Browse for a Python interpreter"
-            data-testid="python-browse"
-            @click="pythonBrowserOpen = true"
-          />
-        </span>
-      </div>
-      <p v-if="selectedNotReady" class="cal-error" data-testid="python-warning">
-        Selected interpreter is missing: {{ selectedNotReady.join(', ') }}
-      </p>
       <label class="field checkbox">
         <Checkbox v-model="settings.DEBUG" :binary="true" input-id="cal-debug" />
         <span>DEBUG (small population, fast)</span>
@@ -210,13 +134,6 @@ function onRun() {
     <p v-if="error" class="cal-error">{{ error }}</p>
 
     <pre ref="term" class="terminal" data-testid="cal-terminal">{{ lines.join('\n') }}</pre>
-
-    <FileBrowserDialog
-      v-model:visible="pythonBrowserOpen"
-      mode="file"
-      title="Select a Python interpreter"
-      @select="onPythonSelected"
-    />
   </section>
 </template>
 
