@@ -57,6 +57,15 @@ Docs: `circulatory_autogen/tutorial/docs/parameter-identification.md`, `circulat
 - Parameter names for Myokit must use **`component/param`** form from `params_for_id` (`PrimitiveParsers.get_param_id_info`).
 - Slider debouncing: interactive exploration needs low-latency sim; protocol runs may take seconds on first compile (cache helper like ICUHealthy `acquire_helper`).
 
+## Security caveats (localhost-only assumptions)
+
+The backend assumes a single-user, localhost deployment and exposes the host filesystem to any client that can reach the API:
+
+- **`GET /api/fs/list`** (`apps/api/main.py`) — the in-app file/folder browser (Python interpreter + outputs dir pickers) lists arbitrary server directories, defaulting to `$HOME`. No path confinement.
+- **`config_outputs_dir`** (calibration) — writes calibration outputs to any absolute path the client supplies.
+
+These are acceptable for the current local use. **If the API is ever served beyond localhost, gate/confine both** under a configured root (and authenticate).
+
 ## Related repos (local paths may vary)
 
 | Repo | Use |

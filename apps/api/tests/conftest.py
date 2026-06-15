@@ -16,6 +16,7 @@ if str(API_DIR) not in sys.path:
 import calibration as calibration_mod  # noqa: E402
 import engine as engine_mod  # noqa: E402
 import main  # noqa: E402
+import uq as uq_mod  # noqa: E402
 
 # Repo-root resources (apps/api/tests -> parents[3] == repo root).
 RESOURCES_DIR = Path(__file__).resolve().parents[3] / "resources"
@@ -66,6 +67,8 @@ def reset_app_state():
     engine_mod.engine.runner_factory = engine_mod._default_runner_factory
     calibration_mod.calibration.reset()
     calibration_mod.calibration.runner_path = calibration_mod.RUNNER_PATH
+    uq_mod.uq.reset()
+    uq_mod.uq.runner_path = uq_mod.RUNNER_PATH
     yield
     main._models.clear()
     engine_mod.engine.reset()
@@ -73,6 +76,8 @@ def reset_app_state():
     engine_mod.engine.runner_factory = engine_mod._default_runner_factory
     calibration_mod.calibration.reset()
     calibration_mod.calibration.runner_path = calibration_mod.RUNNER_PATH
+    uq_mod.uq.reset()
+    uq_mod.uq.runner_path = uq_mod.RUNNER_PATH
 
 
 @pytest.fixture

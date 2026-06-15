@@ -2,6 +2,7 @@ import { ref, computed } from 'vue'
 import {
   startCalibration,
   getCalibrationStatus,
+  getCalibrationProgress,
   cancelCalibration,
 } from '../lib/api'
 
@@ -34,6 +35,13 @@ export function useCalibration(options = {}) {
   const bestParams = ref(null)
   const cost = ref(null)
   const error = ref('')
+  // Live per-generation history for the Progress tab charts.
+  const costHistory = ref([]) // [[best, …top-10], …] one row per generation
+  const paramHistory = ref({ paramNames: [], generations: [] })
+  // Final per-observable fit errors for the Analysis tab bar charts.
+  const percentError = ref(null) // [number] one per observable
+  const stdError = ref(null) // [number] one per observable
+  const errorLabels = ref([]) // display names, one per observable
 
   let jobId = null
   let offset = 0
@@ -49,6 +57,25 @@ export function useCalibration(options = {}) {
     bestParams.value = null
     cost.value = null
     error.value = ''
+    costHistory.value = []
+    paramHistory.value = { paramNames: [], generations: [] }
+    percentError.value = null
+    stdError.value = null
+    errorLabels.value = []
+  }
+
+  async function fetchProgress() {
+    if (!jobId) return
+    try {
+      const p = await getCalibrationProgress(jobId)
+      costHistory.value = p.cost_history ?? []
+      paramHistory.value = {
+        paramNames: p.param_names ?? [],
+        generations: p.param_history ?? [],
+      }
+    } catch {
+      /* history not written yet (early run) or job gone; keep last values */
+    }
   }
 
   async function start(modelId, settings) {
@@ -73,11 +100,15 @@ export function useCalibration(options = {}) {
         offset = s.next_offset
       }
       state.value = s.state
+      await fetchProgress()
       if (s.state === 'running') {
         timer = setTimeout(poll, intervalMs)
       } else {
         bestParams.value = s.best_params
         cost.value = s.cost
+        percentError.value = s.percent_error
+        stdError.value = s.std_error
+        errorLabels.value = s.error_labels ?? []
         error.value = s.error || ''
       }
     } catch (e) {
@@ -101,5 +132,20 @@ export function useCalibration(options = {}) {
 
   const running = computed(() => state.value === 'running')
 
-  return { state, lines, bestParams, cost, error, running, start, cancel, reset }
+  return {
+    state,
+    lines,
+    bestParams,
+    cost,
+    error,
+    costHistory,
+    paramHistory,
+    percentError,
+    stdError,
+    errorLabels,
+    running,
+    start,
+    cancel,
+    reset,
+  }
 }

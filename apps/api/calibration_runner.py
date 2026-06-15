@@ -27,6 +27,10 @@ import sys
 import traceback
 from pathlib import Path
 
+# Force a headless matplotlib backend before circulatory_autogen imports pyplot
+# (the post-calibration error plots run server-side with no display).
+os.environ.setdefault("MPLBACKEND", "Agg")
+
 # Markers the API watches for in stdout.
 DONE_MARKER = "__CALIBRATION_DONE__"
 FAIL_MARKER = "__CALIBRATION_FAILED__"
@@ -87,6 +91,10 @@ def run(config: dict) -> dict:
 
     param_id.run()
 
+    # Post-calibration fit-error vectors (percent + std error per observable),
+    # which drive the Analysis-tab bar charts. Best-effort; never fails the run.
+    errors = _generate_error_vectors(param_id, output_dir)
+
     # Under mpiexec every rank runs this script; only rank 0 holds the
     # authoritative best fit and writes the results (mirrors param_id_run_script).
     rank = getattr(param_id, "rank", 0)
@@ -100,14 +108,70 @@ def run(config: dict) -> dict:
             for qname in name_list:
                 params[qname] = float(best_vals[i])
         cost = getattr(getattr(param_id, "param_id", None), "best_cost", None)
-        result = {
+        payload = {
             "params": params,
             "cost": None if cost is None else float(cost),
-            "rank": rank,
+            **errors,
         }
+        result = {**payload, "rank": rank}
         with open(os.path.join(output_dir, "results.json"), "w") as fh:
-            json.dump({k: result[k] for k in ("params", "cost")}, fh)
+            json.dump(payload, fh)
     return result
+
+
+def _generate_error_vectors(param_id, output_dir: str) -> dict:
+    """Run circulatory_autogen's post-calibration plotting to produce the
+    per-observable percent/std error vectors, then load them.
+
+    Mirrors plot_param_id_script (simulate_with_best_param_vals -> plot_outputs),
+    which writes ``percent_error_vec.npy`` / ``std_error_vec.npy`` to output_dir.
+    Returns ``{"percent_error", "std_error", "error_labels"}`` on rank 0 (values
+    may be None when plotting is unavailable); ``{}`` on other ranks. Best-effort:
+    a plotting failure must not fail the calibration.
+    """
+    import numpy as np
+
+    try:
+        param_id.simulate_with_best_param_vals()
+        param_id.plot_outputs()
+    except Exception as exc:  # noqa: BLE001 - plotting is best-effort
+        print(f"warning: post-calibration error plots skipped: {exc}", flush=True)
+
+    if getattr(param_id, "rank", 0) != 0:
+        return {}
+
+    out = {"percent_error": None, "std_error": None, "error_labels": None}
+    try:
+        pe = _find_output_file(param_id, output_dir, "percent_error_vec.npy")
+        se = _find_output_file(param_id, output_dir, "std_error_vec.npy")
+        if pe and se:
+            out["percent_error"] = [float(x) for x in np.load(pe)]
+            out["std_error"] = [float(x) for x in np.load(se)]
+            obs_info = getattr(param_id, "obs_info", {}) or {}
+            names = obs_info.get("names_for_plotting", [])
+            out["error_labels"] = [str(n) for n in names]
+    except Exception as exc:  # noqa: BLE001
+        print(f"warning: could not load error vectors: {exc}", flush=True)
+    return out
+
+
+def _find_output_file(param_id, output_dir: str, name: str) -> str | None:
+    """Locate an output file, tolerating the ``<case_type>`` subdir
+    circulatory_autogen writes into (e.g. ``genetic_algorithm_<prefix>_…``).
+
+    param_id.output_dir is that nested dir; fall back to a recursive glob under
+    the top-level output_dir (mirrors calibration._find_history_file).
+    """
+    import glob
+
+    nested = getattr(param_id, "output_dir", None)
+    for base in (nested, output_dir):
+        if base:
+            direct = os.path.join(base, name)
+            if os.path.exists(direct):
+                return direct
+    matches = glob.glob(os.path.join(output_dir, "**", name), recursive=True)
+    return matches[0] if matches else None
 
 
 def main(argv: list[str]) -> int:

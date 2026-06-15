@@ -6,9 +6,15 @@ import PlotPanel from './components/PlotPanel.vue'
 import FileImport from './components/FileImport.vue'
 import StatusBar from './components/StatusBar.vue'
 import CalibrationPanel from './components/CalibrationPanel.vue'
+import ProgressPanel from './components/ProgressPanel.vue'
+import SensitivityPanel from './components/SensitivityPanel.vue'
+import UQPanel from './components/UQPanel.vue'
+import AnalysisPanel from './components/AnalysisPanel.vue'
 import InputNumber from 'primevue/inputnumber'
 import Button from 'primevue/button'
 import Message from 'primevue/message'
+import Select from 'primevue/select'
+import FileBrowserDialog from './components/FileBrowserDialog.vue'
 
 import { useModel } from './stores/useModel'
 import { useSliders, shouldUseLog } from './stores/useSliders'
@@ -16,7 +22,17 @@ import { useSimResult } from './stores/useSimResult'
 import { useObsData } from './stores/useObsData'
 import { useParamsForId } from './stores/useParamsForId'
 import { useCalibration, applyBestParams } from './stores/useCalibration'
-import { getVariables, simulate, runProtocol, getCalibrationDefaults } from './lib/api'
+import { useSensitivity } from './stores/useSensitivity'
+import { useUQ } from './stores/useUQ'
+import {
+  getVariables,
+  simulate,
+  runProtocol,
+  getCalibrationDefaults,
+  getCalibrationPythons,
+  getSensitivityDefaults,
+  getUQDefaults,
+} from './lib/api'
 import { overlayItemsFor, controlledSeries } from './lib/plot'
 
 const model = useModel()
@@ -25,22 +41,83 @@ const sim = useSimResult()
 const obs = useObsData()
 const paramsForId = useParamsForId(sliders)
 const calib = useCalibration()
+const sa = useSensitivity()
+const uq = useUQ()
 
 const simTime = ref(10)
 const preTime = ref(0)
 
-// Left column tab: 'params' | 'calibration'
-const leftTab = ref('params')
+// Where calibration outputs are written; blank => backend uses a temp dir.
+const outputsDir = ref('')
 
-// Calibration
+// Python interpreter chosen once in the top bar and shared by the Sensitivity,
+// Calibration and UQ runs. Blank => backend uses its default interpreter.
+const pythonPath = ref('')
+const pythonBrowserOpen = ref(false)
+
+// Left column tab: 'params' | 'sensitivity' | 'calibration' | 'uq'
+const leftTab = ref('params')
+// Center column tab: 'plots' | 'progress' | 'analysis'
+const centerTab = ref('plots')
+
+// Calibration / sensitivity
 const calibDefaults = ref({})
+const calibPythons = ref([])
+const saDefaults = ref({})
+const uqDefaults = ref({})
 onMounted(async () => {
   try {
     calibDefaults.value = await getCalibrationDefaults()
   } catch {
     /* backend not up yet; panel falls back to built-in defaults */
   }
+  try {
+    saDefaults.value = await getSensitivityDefaults()
+  } catch {
+    /* backend not up yet; panel falls back to built-in defaults */
+  }
+  try {
+    uqDefaults.value = await getUQDefaults()
+  } catch {
+    /* backend not up yet; panel falls back to built-in defaults */
+  }
+  try {
+    calibPythons.value = (await getCalibrationPythons()).pythons ?? []
+  } catch {
+    /* interpreter discovery optional */
+  }
 })
+
+const pythonOptions = computed(() => {
+  const opts = [
+    { label: 'Server default', value: '' },
+    ...calibPythons.value.map((p) => ({
+      label:
+        `Python ${p.version} — ${p.path}` +
+        (p.ready ? '' : ` (missing: ${(p.missing || []).join(', ')})`),
+      value: p.path,
+    })),
+  ]
+  // Show a browsed interpreter that isn't among the auto-discovered ones.
+  if (pythonPath.value && !opts.some((o) => o.value === pythonPath.value)) {
+    opts.push({ label: `Custom — ${pythonPath.value}`, value: pythonPath.value })
+  }
+  return opts
+})
+
+// Missing required deps for the chosen interpreter (shown as a warning chip).
+const pythonNotReady = computed(() => {
+  const p = calibPythons.value.find((x) => x.path === pythonPath.value)
+  return p && !p.ready ? p.missing : null
+})
+
+// Collapsed display: keep the bar compact by showing only the tail of the path
+// (the full label still shows in the dropdown). Empty value => server default.
+function shortPython(value) {
+  if (!value) return 'Server default'
+  const s = String(value)
+  return s.length > 20 ? '…' + s.slice(-20) : s
+}
 
 const canCalibrate = computed(
   () =>
@@ -49,9 +126,56 @@ const canCalibrate = computed(
     paramsForId.importedKeys.value.length > 0,
 )
 
+// qname -> plotting/LaTeX name, for the Analysis-tab heatmap row labels.
+const paramLabels = computed(() => {
+  const out = {}
+  for (const [qname, spec] of Object.entries(paramsForId.paramSpecs.value || {})) {
+    out[qname] = spec.name_for_plotting ?? qname
+  }
+  return out
+})
+
 function onRunCalibration(settings) {
-  calib.start(model.modelId.value, settings)
+  calib.start(model.modelId.value, {
+    ...settings,
+    python_path: pythonPath.value,
+    config_outputs_dir: outputsDir.value.trim() || undefined,
+  })
 }
+
+// Sensitivity reuses the same prerequisites as calibration (model + obs + params).
+function onRunSensitivity(settings) {
+  sa.start(model.modelId.value, {
+    ...settings,
+    python_path: pythonPath.value,
+    config_outputs_dir: outputsDir.value.trim() || undefined,
+  })
+}
+
+// When a sensitivity run finishes, surface the heatmap automatically.
+watch(
+  () => sa.state.value,
+  (state) => {
+    if (state === 'done') centerTab.value = 'analysis'
+  },
+)
+
+// UQ reuses the same prerequisites as calibration (model + obs + params).
+function onRunUQ(settings) {
+  uq.start(model.modelId.value, {
+    ...settings,
+    python_path: pythonPath.value,
+    config_outputs_dir: outputsDir.value.trim() || undefined,
+  })
+}
+
+// When a UQ run finishes, surface the posterior distributions automatically.
+watch(
+  () => uq.state.value,
+  (state) => {
+    if (state === 'done') centerTab.value = 'analysis'
+  },
+)
 
 // When calibration finishes, write best-fit params into the sliders and re-run.
 watch(
@@ -225,9 +349,46 @@ watch(
 <template>
   <div class="layout">
     <header class="topbar">
-      <h1>CellML Explorer</h1>
-      <span v-if="model.name.value" class="model-name">{{ model.name.value }}</span>
+      <h1>CUFLynx</h1>
+      <span v-if="model.filePrefix.value" class="model-name">{{ model.filePrefix.value }}</span>
       <div class="spacer" />
+      <!-- Shared Python interpreter for calibration / sensitivity / UQ runs.
+           Not a <label>: two controls (Select + browse Button) would make label
+           clicks forward to the button and hijack the dropdown. -->
+      <div class="python-bar" data-testid="python-bar">
+        <span class="py-label" title="Interpreter/env used for calibration, sensitivity and UQ">
+          Python
+        </span>
+        <Select
+          :model-value="pythonPath"
+          :options="pythonOptions"
+          option-label="label"
+          option-value="value"
+          size="small"
+          data-testid="python-select"
+          @update:model-value="pythonPath = $event"
+        >
+          <template #value="{ value }">
+            <span :title="value || 'Server default'">{{ shortPython(value) }}</span>
+          </template>
+        </Select>
+        <Button
+          icon="pi pi-folder-open"
+          size="small"
+          text
+          title="Browse for a Python interpreter"
+          data-testid="python-browse"
+          @click="pythonBrowserOpen = true"
+        />
+        <span
+          v-if="pythonNotReady"
+          class="py-warn"
+          data-testid="python-warning"
+          :title="'Selected interpreter is missing: ' + pythonNotReady.join(', ')"
+        >
+          ⚠
+        </span>
+      </div>
       <div v-if="!obs.hasObsData.value" class="time-controls" data-testid="time-controls">
         <label>t₁ <InputNumber v-model="simTime" :min="0" show-buttons size="small" /></label>
         <label>pre <InputNumber v-model="preTime" :min="0" show-buttons size="small" /></label>
@@ -260,6 +421,19 @@ watch(
           </button>
           <button
             class="left-tab"
+            :class="{ active: leftTab === 'sensitivity' }"
+            data-testid="tab-sensitivity"
+            @click="leftTab = 'sensitivity'"
+          >
+            Sensitivity
+            <span
+              v-if="sa.running.value"
+              class="tab-dot"
+              title="sensitivity running"
+            />
+          </button>
+          <button
+            class="left-tab"
             :class="{ active: leftTab === 'calibration' }"
             data-testid="tab-calibration"
             @click="leftTab = 'calibration'"
@@ -271,6 +445,15 @@ watch(
               title="calibration running"
             />
           </button>
+          <button
+            class="left-tab"
+            :class="{ active: leftTab === 'uq' }"
+            data-testid="tab-uq"
+            @click="leftTab = 'uq'"
+          >
+            UQ
+            <span v-if="uq.running.value" class="tab-dot" title="UQ running" />
+          </button>
         </div>
 
         <div v-show="leftTab === 'params'" class="left-pane left-pane-scroll">
@@ -278,6 +461,17 @@ watch(
             :sliders="sliders.sliders"
             @update="onSliderUpdate"
             @remove="({ qname }) => sliders.removeSlider(qname)"
+          />
+        </div>
+        <div v-show="leftTab === 'sensitivity'" class="left-pane left-pane-scroll">
+          <SensitivityPanel
+            :defaults="saDefaults"
+            :can-run="canCalibrate"
+            :lines="sa.lines.value"
+            :state="sa.state.value"
+            :error="sa.error.value"
+            @run="onRunSensitivity"
+            @cancel="sa.cancel()"
           />
         </div>
         <div v-show="leftTab === 'calibration'" class="left-pane left-pane-scroll">
@@ -292,11 +486,59 @@ watch(
             @cancel="calib.cancel()"
           />
         </div>
+        <div v-show="leftTab === 'uq'" class="left-pane left-pane-scroll">
+          <UQPanel
+            :defaults="uqDefaults"
+            :can-run="canCalibrate"
+            :lines="uq.lines.value"
+            :state="uq.state.value"
+            :error="uq.error.value"
+            @run="onRunUQ"
+            @cancel="uq.cancel()"
+          />
+        </div>
       </aside>
 
       <section class="col col-center">
+        <div class="left-tabs">
+          <button
+            class="left-tab"
+            :class="{ active: centerTab === 'plots' }"
+            data-testid="tab-plots"
+            @click="centerTab = 'plots'"
+          >
+            Output plots
+          </button>
+          <button
+            class="left-tab"
+            :class="{ active: centerTab === 'progress' }"
+            data-testid="tab-progress"
+            @click="centerTab = 'progress'"
+          >
+            Progress
+            <span
+              v-if="calib.running.value"
+              class="tab-dot"
+              title="calibration running"
+            />
+          </button>
+          <button
+            class="left-tab"
+            :class="{ active: centerTab === 'analysis' }"
+            data-testid="tab-analysis"
+            @click="centerTab = 'analysis'"
+          >
+            Analysis
+            <span
+              v-if="sa.running.value"
+              class="tab-dot"
+              title="sensitivity running"
+            />
+          </button>
+        </div>
+
         <Message
-          v-if="sim.warnings.value.length"
+          v-if="centerTab === 'plots' && sim.warnings.value.length"
           severity="warn"
           :closable="false"
           class="warn-banner"
@@ -304,7 +546,7 @@ watch(
         >
           {{ sim.warnings.value.join(' ') }}
         </Message>
-        <div class="plot-groups">
+        <div v-show="centerTab === 'plots'" class="plot-groups">
           <section
             v-for="g in plotGroups"
             :key="g.key"
@@ -330,6 +572,26 @@ watch(
             Upload a CellML model and run a simulation.
           </p>
         </div>
+        <div v-show="centerTab === 'progress'" class="plot-groups">
+          <ProgressPanel
+            :cost-history="calib.costHistory.value"
+            :param-names="calib.paramHistory.value.paramNames"
+            :param-history="calib.paramHistory.value.generations"
+          />
+        </div>
+        <div v-show="centerTab === 'analysis'" class="plot-groups">
+          <AnalysisPanel
+            :indices="sa.indices.value"
+            :param-names="sa.paramNames.value"
+            :output-names="sa.outputNames.value"
+            :param-labels="paramLabels"
+            :percent-error="calib.percentError.value"
+            :std-error="calib.stdError.value"
+            :error-labels="calib.errorLabels.value"
+            :uq-params="uq.params.value"
+            :uq-method="uq.method.value"
+          />
+        </div>
         <StatusBar
           :status="sim.status.value"
           :message="sim.message.value"
@@ -339,6 +601,7 @@ watch(
 
       <aside class="col col-right">
         <FileImport
+          v-model:outputs-dir="outputsDir"
           :model-id="model.modelId.value"
           @model-loaded="onModelLoaded"
           @obs-data-loaded="obs.setObsData"
@@ -351,6 +614,13 @@ watch(
         />
       </aside>
     </main>
+
+    <FileBrowserDialog
+      v-model:visible="pythonBrowserOpen"
+      mode="file"
+      title="Select a Python interpreter"
+      @select="(p) => (pythonPath = p)"
+    />
   </div>
 </template>
 
@@ -377,6 +647,19 @@ watch(
 }
 .spacer {
   flex: 1;
+}
+.python-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.8rem;
+}
+.python-bar .py-label {
+  opacity: 0.7;
+}
+.python-bar .py-warn {
+  color: #ffc000;
+  cursor: help;
 }
 .time-controls {
   display: flex;

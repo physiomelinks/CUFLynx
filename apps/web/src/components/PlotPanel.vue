@@ -10,9 +10,8 @@ import {
   LineController,
   Tooltip,
 } from 'chart.js'
-import katex from 'katex'
-import 'katex/dist/katex.min.css'
 import { buildChartData } from '../lib/plot'
+import { renderMath } from '../lib/math'
 
 ChartJS.register(
   LinearScale,
@@ -50,30 +49,6 @@ const chartOptions = {
     y: { type: 'linear' },
   },
   plugins: { legend: { display: false } },
-}
-
-function escapeHtml(s) {
-  return String(s)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-}
-
-// Only treat labels with LaTeX markup (braces, backslash commands, carets) as
-// math; plain qnames like "aortic_root/v" render as readable text.
-function looksLikeLatex(s) {
-  return /[\\{}^]/.test(s)
-}
-
-/** Render a LaTeX label to HTML, falling back to escaped text. */
-function renderMath(s) {
-  if (!s) return ''
-  if (!looksLikeLatex(s)) return escapeHtml(s)
-  try {
-    return katex.renderToString(String(s), { throwOnError: false })
-  } catch {
-    return escapeHtml(s)
-  }
 }
 
 defineExpose({ chartData })

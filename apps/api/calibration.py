@@ -18,15 +18,191 @@ from pathlib import Path
 
 RUNNER_PATH = str(Path(__file__).resolve().parent / "calibration_runner.py")
 
+COST_HISTORY_FILE = "best_cost_history.csv"
+PARAM_HISTORY_FILE = "best_param_vals_history.csv"
+
+
+def _find_history_file(output_dir: str, name: str) -> str | None:
+    """Locate a history CSV under output_dir, tolerating the ``<case_type>``
+    subdir circulatory_autogen creates (e.g. ``genetic_algorithm_<prefix>_…``)."""
+    import glob
+
+    direct = os.path.join(output_dir, name)
+    if os.path.exists(direct):
+        return direct
+    matches = glob.glob(os.path.join(output_dir, "**", name), recursive=True)
+    return matches[0] if matches else None
+
+
+def _read_history(output_dir: str) -> dict:
+    """Parse the calibration history CSVs into JSON-friendly arrays.
+
+    ``best_cost_history.csv`` has one row of (up to 10) comma-separated costs per
+    generation, best first. ``best_param_vals_history.csv`` has a header row of
+    display-friendly param names followed by one row of normalised best param
+    values per generation. Never raises: missing files / partially-written final
+    rows yield empty or truncated arrays so a mid-run poll is always safe.
+    """
+    param_names: list[str] = []
+    cost_history: list[list[float]] = []
+    param_history: list[list[float]] = []
+
+    cost_path = _find_history_file(output_dir, COST_HISTORY_FILE)
+    if cost_path:
+        try:
+            for line in Path(cost_path).read_text().splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    cost_history.append([float(x) for x in line.split(",")])
+                except ValueError:
+                    # partially-flushed final row mid-write; skip it
+                    continue
+        except OSError:
+            pass
+
+    param_path = _find_history_file(output_dir, PARAM_HISTORY_FILE)
+    if param_path:
+        try:
+            lines = Path(param_path).read_text().splitlines()
+            if lines:
+                param_names = [c.strip() for c in lines[0].split(",")]
+                width = len(param_names)
+                for line in lines[1:]:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        row = [float(x) for x in line.split(",")]
+                    except ValueError:
+                        continue
+                    if len(row) == width:
+                        param_history.append(row)
+        except OSError:
+            pass
+
+    return {
+        "param_names": param_names,
+        "cost_history": cost_history,
+        "param_history": param_history,
+    }
+
+# Modules a Python interpreter needs to run calibrations. myokit + libcellml are
+# required for any run; nevergrad (CMA-ES) and mpi4py (multi-core) are optional.
+REQUIRED_MODULES = ["myokit", "libcellml"]
+OPTIONAL_MODULES = ["nevergrad", "mpi4py"]
+
+
+def _candidate_python_paths() -> list[str]:
+    """Best-effort list of Python interpreters on this machine."""
+    import glob
+
+    cands = [sys.executable]
+    for name in (
+        "python3",
+        "python",
+        "python3.13",
+        "python3.12",
+        "python3.11",
+        "python3.10",
+        "python3.9",
+    ):
+        found = shutil.which(name)
+        if found:
+            cands.append(found)
+
+    home = os.path.expanduser("~")
+    for base in ("miniconda3", "anaconda3", "miniforge3", "mambaforge"):
+        cands.append(os.path.join(home, base, "bin", "python"))
+        cands.extend(glob.glob(os.path.join(home, base, "envs", "*", "bin", "python")))
+    cands.extend(glob.glob(os.path.join(home, ".conda", "envs", "*", "bin", "python")))
+    cands.extend(glob.glob("/opt/conda/envs/*/bin/python"))
+    if os.environ.get("CONDA_PREFIX"):
+        cands.append(os.path.join(os.environ["CONDA_PREFIX"], "bin", "python"))
+
+    out: list[str] = []
+    seen: set[str] = set()
+    for c in cands:
+        if not c:
+            continue
+        real = os.path.realpath(c)
+        if os.path.isfile(real) and os.access(real, os.X_OK) and real not in seen:
+            seen.add(real)
+            out.append(c)
+    return out
+
+
+def _probe_python(path: str) -> dict | None:
+    """Return {path, version, ready, missing} for an interpreter, or None."""
+    try:
+        ver = subprocess.run(
+            [path, "-c", "import sys;print('.'.join(map(str, sys.version_info[:3])))"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if ver.returncode != 0:
+            return None
+        version = ver.stdout.strip()
+        mods = REQUIRED_MODULES + OPTIONAL_MODULES
+        check = subprocess.run(
+            [
+                path,
+                "-c",
+                "import importlib.util as u;"
+                f"print(','.join(m for m in {mods!r} if u.find_spec(m) is None))",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        missing = (
+            [m for m in check.stdout.strip().split(",") if m]
+            if check.returncode == 0
+            else mods
+        )
+        ready = all(m not in missing for m in REQUIRED_MODULES)
+        return {"path": path, "version": version, "ready": ready, "missing": missing}
+    except Exception:  # noqa: BLE001 - a bad interpreter just gets skipped
+        return None
+
+
+_python_cache: list[dict] | None = None
+
+
+def list_python_interpreters(refresh: bool = False) -> list[dict]:
+    """Discover + probe available interpreters (cached for the process)."""
+    global _python_cache
+    if _python_cache is not None and not refresh:
+        return _python_cache
+    result = []
+    seen: set[str] = set()
+    for path in _candidate_python_paths():
+        real = os.path.realpath(path)
+        if real in seen:
+            continue
+        seen.add(real)
+        info = _probe_python(path)
+        if info:
+            result.append(info)
+    _python_cache = result
+    return result
+
 
 class CalibrationJob:
-    def __init__(self, job_id: str, output_dir: str):
+    def __init__(self, job_id: str, output_dir: str, model_id: str | None = None):
         self.id = job_id
         self.output_dir = output_dir
+        self.model_id = model_id
         self.lines: list[str] = []
         self.state = "running"  # running | done | error | cancelled
         self.best_params: dict | None = None
         self.cost = None
+        # Post-calibration per-observable fit errors (Analysis-tab bar charts).
+        self.percent_error: list | None = None
+        self.std_error: list | None = None
+        self.error_labels: list = []
         self.error: str | None = None
         self.proc: subprocess.Popen | None = None
         self.lock = threading.Lock()
@@ -52,13 +228,22 @@ class CalibrationManager:
         job = self._job
         return job is not None and job.state == "running"
 
+    def last_completed_best_params(self, model_id: str) -> dict | None:
+        """Best-fit params of the most recent completed calibration for ``model_id``
+        (for the UQ tab to reuse), or None if none has completed for it."""
+        job = self._job
+        if job is None or job.model_id != model_id or job.state != "done":
+            return None
+        return job.best_params or None
+
     def build_command(self, config: dict, config_path: str) -> list[str]:
         """Single-process by default; ``mpiexec -n N`` when num_cores > 1.
 
         The genetic algorithm parallelises population evaluation across MPI
         ranks, exactly like circulatory_autogen's run_param_id.sh.
         """
-        base = [self.python, "-u", self.runner_path, config_path]
+        python = config.get("python") or self.python
+        base = [python, "-u", self.runner_path, config_path]
         num_cores = int(config.get("num_cores", 1) or 1)
         if num_cores > 1:
             mpiexec = shutil.which("mpiexec") or "mpiexec"
@@ -75,7 +260,7 @@ class CalibrationManager:
             with open(config_path, "w") as fh:
                 json.dump(config, fh)
 
-            job = CalibrationJob(uuid.uuid4().hex, output_dir)
+            job = CalibrationJob(uuid.uuid4().hex, output_dir, config.get("model_id"))
             env = dict(os.environ)
             job.proc = subprocess.Popen(
                 self.build_command(config, config_path),
@@ -110,6 +295,9 @@ class CalibrationManager:
                     data = json.loads(Path(results).read_text())
                     job.best_params = data.get("params", {})
                     job.cost = data.get("cost")
+                    job.percent_error = data.get("percent_error")
+                    job.std_error = data.get("std_error")
+                    job.error_labels = data.get("error_labels") or []
                     job.state = "done"
                 except Exception as exc:  # noqa: BLE001
                     job.state = "error"
@@ -131,8 +319,24 @@ class CalibrationManager:
                 "next_offset": offset + len(lines),
                 "best_params": job.best_params,
                 "cost": job.cost,
+                "percent_error": job.percent_error,
+                "std_error": job.std_error,
+                "error_labels": job.error_labels,
                 "error": job.error,
             }
+
+    def progress(self, job_id: str) -> dict | None:
+        """Per-generation cost/param history for the live progress charts.
+
+        Reads the history CSVs the runner subprocess writes (no lock needed —
+        a separate process owns the files). ``state`` lets the client stop
+        polling once the run is no longer ``running``.
+        """
+        job = self._job
+        if job is None or job.id != job_id:
+            return None
+        hist = _read_history(job.output_dir)
+        return {"job_id": job.id, "state": job.state, **hist}
 
     def cancel(self, job_id: str) -> bool:
         job = self._job

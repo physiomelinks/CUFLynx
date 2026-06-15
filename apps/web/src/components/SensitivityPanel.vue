@@ -10,19 +10,16 @@ const props = defineProps({
   canRun: { type: Boolean, default: false },
   lines: { type: Array, default: () => [] },
   state: { type: String, default: 'idle' },
-  cost: { type: Number, default: null },
   error: { type: String, default: '' },
 })
 const emit = defineEmits(['run', 'cancel'])
 
-// Note: pre_time / sim_time are intentionally NOT here — calibration timing
-// comes from the obs_data.json protocol_info (see #13). The Python interpreter
-// is chosen once in the top bar (shared across calibration/sensitivity/UQ).
+// pre_time / sim_time come from the obs_data.json protocol_info (mirrors
+// calibration, see #13). The Python interpreter is chosen once in the top bar.
 const settings = reactive({
-  param_id_method: 'genetic_algorithm',
-  num_calls_to_function: 100,
-  cost_convergence: 0.001,
-  max_patience: 10,
+  method: 'sobol',
+  sample_type: 'saltelli',
+  num_samples: 256,
   num_cores: 1,
   dt: 0.01,
   DEBUG: false,
@@ -41,7 +38,10 @@ watch(
 )
 
 const methods = computed(() =>
-  (props.defaults.methods ?? ['genetic_algorithm', 'CMA-ES']).map((m) => ({
+  (props.defaults.methods ?? ['sobol']).map((m) => ({ label: m, value: m })),
+)
+const sampleTypes = computed(() =>
+  (props.defaults.sample_types ?? ['saltelli', 'sobol']).map((m) => ({
     label: m,
     value: m,
   })),
@@ -66,7 +66,7 @@ function onRun() {
 <template>
   <section class="calibration-panel">
     <header class="cal-header">
-      <h2>Calibration</h2>
+      <h2>Sensitivity</h2>
       <span class="cal-state" :data-state="state">{{ state }}</span>
     </header>
 
@@ -74,7 +74,7 @@ function onRun() {
       <label class="field">
         <span>Method</span>
         <Select
-          v-model="settings.param_id_method"
+          v-model="settings.method"
           :options="methods"
           option-label="label"
           option-value="value"
@@ -82,38 +82,35 @@ function onRun() {
         />
       </label>
       <label class="field">
-        <span>Max evals</span>
-        <InputNumber v-model="settings.num_calls_to_function" :min="1" size="small" />
-      </label>
-      <label class="field">
-        <span>Convergence</span>
-        <InputNumber
-          v-model="settings.cost_convergence"
-          :min-fraction-digits="1"
-          :max-fraction-digits="8"
+        <span>Sample type</span>
+        <Select
+          v-model="settings.sample_type"
+          :options="sampleTypes"
+          option-label="label"
+          option-value="value"
           size="small"
         />
       </label>
       <label class="field">
-        <span>Max patience</span>
-        <InputNumber v-model="settings.max_patience" :min="1" size="small" />
+        <span title="Base sample count N; total sims ~ N·(2·num_params+2)">Samples</span>
+        <InputNumber v-model="settings.num_samples" :min="1" size="small" />
       </label>
       <label class="field">
-        <span title="mpiexec -n N: parallel GA population evaluation">Cores</span>
+        <span title="mpiexec -n N: parallel sample evaluation">Cores</span>
         <InputNumber v-model="settings.num_cores" :min="1" :max="64" size="small" />
       </label>
       <label class="field checkbox">
-        <Checkbox v-model="settings.DEBUG" :binary="true" input-id="cal-debug" />
-        <span>DEBUG (small population, fast)</span>
+        <Checkbox v-model="settings.DEBUG" :binary="true" input-id="sa-debug" />
+        <span>DEBUG (fewer samples, fast)</span>
       </label>
     </div>
 
     <div class="cal-actions">
       <Button
-        label="Run calibration"
+        label="Run sensitivity"
         icon="pi pi-play"
         size="small"
-        data-testid="run-calibration"
+        data-testid="run-sensitivity"
         :disabled="!canRun || running"
         @click="onRun"
       />
@@ -126,14 +123,14 @@ function onRun() {
         text
         @click="emit('cancel')"
       />
-      <span v-if="cost != null" class="cal-cost">cost: {{ cost.toPrecision(4) }}</span>
     </div>
     <p v-if="!canRun" class="hint">
-      Load a model, an obs_data.json and a params_for_id.csv to calibrate.
+      Load a model, an obs_data.json and a params_for_id.csv to run a sensitivity
+      analysis.
     </p>
     <p v-if="error" class="cal-error">{{ error }}</p>
 
-    <pre ref="term" class="terminal" data-testid="cal-terminal">{{ lines.join('\n') }}</pre>
+    <pre ref="term" class="terminal" data-testid="sa-terminal">{{ lines.join('\n') }}</pre>
   </section>
 </template>
 
@@ -187,10 +184,6 @@ function onRun() {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-}
-.cal-cost {
-  font-size: 0.8rem;
-  color: #70ad47;
 }
 .hint,
 .cal-error {

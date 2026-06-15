@@ -18,6 +18,7 @@ work (and are unit-tested) without Myokit installed.
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import uuid
 from pathlib import Path
@@ -26,11 +27,13 @@ from fastapi import FastAPI, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from calibration import calibration
+from calibration import calibration, list_python_interpreters
 from cellml_meta import CellMLModel, CellMLParseError, parse_cellml
 from engine import SimulationError, engine
 from obs_data import ObsData, ObsDataError, parse_obs_data
 from params_for_id import ParamsForIdError, parse_params_for_id
+from sensitivity import sensitivity
+from uq import uq
 
 app = FastAPI(title="CellML Explorer API", version="0.1.0")
 
@@ -101,6 +104,47 @@ class ProtocolRunRequest(BaseModel):
 @app.get("/api/health")
 def health() -> dict:
     return {"status": "ok"}
+
+
+@app.get("/api/fs/list")
+def fs_list(
+    path: str | None = Query(default=None), dirs_only: bool = False
+) -> dict:
+    """List a server-side directory for the in-app file/folder browser.
+
+    This is a localhost tool, so the backend filesystem is the user's own. Used
+    to pick an absolute Python interpreter path and the calibration outputs dir.
+    Defaults to the user's home directory when no path is given.
+    """
+    base = Path(path).expanduser() if path else Path.home()
+    try:
+        base = base.resolve()
+    except OSError as exc:
+        raise HTTPException(status_code=400, detail=f"invalid path: {path}") from exc
+    if not base.is_dir():
+        raise HTTPException(status_code=404, detail=f"not a directory: {base}")
+    try:
+        children = list(base.iterdir())
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+    entries = []
+    for child in children:
+        try:
+            is_dir = child.is_dir()
+        except OSError:
+            continue  # broken symlink / unreadable — skip
+        if dirs_only and not is_dir:
+            continue
+        entries.append({"name": child.name, "path": str(child), "is_dir": is_dir})
+    entries.sort(key=lambda e: (not e["is_dir"], e["name"].lower()))
+
+    parent = str(base.parent)
+    return {
+        "path": str(base),
+        "parent": None if parent == str(base) else parent,
+        "entries": entries,
+    }
 
 
 @app.post("/api/models/upload")
@@ -296,6 +340,17 @@ def calibration_defaults() -> dict:
     return CALIBRATION_DEFAULTS
 
 
+@app.get("/api/calibration/pythons")
+def calibration_pythons(refresh: bool = False) -> dict:
+    """Discover Python interpreters that can run a calibration."""
+    import sys as _sys
+
+    return {
+        "default": _sys.executable,
+        "pythons": list_python_interpreters(refresh=refresh),
+    }
+
+
 @app.post("/api/calibration/run")
 def calibration_run(req: CalibrationRequest) -> dict:
     record = _get_model(req.model_id)
@@ -305,14 +360,34 @@ def calibration_run(req: CalibrationRequest) -> dict:
             detail="calibration requires both an obs_data.json and a "
             "params_for_id.csv to be uploaded for this model",
         )
-    output_dir = str(UPLOAD_DIR / f"calib_{req.model_id}_{uuid.uuid4().hex[:8]}")
+    python_path = req.settings.get("python_path") or None
+    if python_path and not (
+        os.path.isfile(python_path) and os.access(python_path, os.X_OK)
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail=f"python interpreter not found or not executable: {python_path}",
+        )
+
+    configured = (req.settings.get("config_outputs_dir") or "").strip()
+    if configured:
+        if not os.path.isabs(configured):
+            raise HTTPException(
+                status_code=422,
+                detail="config_outputs_dir must be an absolute path",
+            )
+        output_dir = configured
+    else:
+        output_dir = str(UPLOAD_DIR / f"calib_{req.model_id}_{uuid.uuid4().hex[:8]}")
     config = {
+        "model_id": req.model_id,
         "model_path": str(record.path),
         "obs_path": str(record.obs_path),
         "params_path": str(record.params_path),
         "output_dir": output_dir,
         "file_prefix": record.meta.name or "model",
         "num_cores": int(req.settings.get("num_cores", 1) or 1),
+        "python": python_path,
         "settings": req.settings,
     }
     try:
@@ -330,8 +405,215 @@ def calibration_status(job_id: str, offset: int = 0) -> dict:
     return status
 
 
+@app.get("/api/calibration/{job_id}/progress")
+def calibration_progress(job_id: str) -> dict:
+    prog = calibration.progress(job_id)
+    if prog is None:
+        raise HTTPException(status_code=404, detail="calibration job not found")
+    return prog
+
+
 @app.post("/api/calibration/{job_id}/cancel")
 def calibration_cancel(job_id: str) -> dict:
     if not calibration.cancel(job_id):
         raise HTTPException(status_code=404, detail="calibration job not found")
+    return {"cancelled": True}
+
+
+# ---------------------------------------------------------------------------
+# Sensitivity analysis (circulatory_autogen Sobol indices)
+# ---------------------------------------------------------------------------
+class SensitivityRequest(BaseModel):
+    model_id: str
+    settings: dict = Field(default_factory=dict)
+
+
+SENSITIVITY_DEFAULTS = {
+    "method": "sobol",
+    "methods": ["sobol"],
+    "sample_type": "saltelli",
+    "sample_types": ["saltelli", "sobol"],
+    "num_samples": 256,
+    "dt": 0.01,
+    "solver": "CVODE_myokit",
+    "DEBUG": False,
+    "num_cores": 1,  # >1 -> mpiexec -n N (parallel sample evaluation)
+    # Note: pre_time / sim_time are taken from the obs_data protocol_info (#13).
+}
+
+
+@app.get("/api/sensitivity/defaults")
+def sensitivity_defaults() -> dict:
+    return SENSITIVITY_DEFAULTS
+
+
+@app.post("/api/sensitivity/run")
+def sensitivity_run(req: SensitivityRequest) -> dict:
+    record = _get_model(req.model_id)
+    if record.obs_path is None or record.params_path is None:
+        raise HTTPException(
+            status_code=422,
+            detail="sensitivity analysis requires both an obs_data.json and a "
+            "params_for_id.csv to be uploaded for this model",
+        )
+    python_path = req.settings.get("python_path") or None
+    if python_path and not (
+        os.path.isfile(python_path) and os.access(python_path, os.X_OK)
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail=f"python interpreter not found or not executable: {python_path}",
+        )
+
+    configured = (req.settings.get("config_outputs_dir") or "").strip()
+    if configured:
+        if not os.path.isabs(configured):
+            raise HTTPException(
+                status_code=422,
+                detail="config_outputs_dir must be an absolute path",
+            )
+        output_dir = configured
+    else:
+        output_dir = str(UPLOAD_DIR / f"sa_{req.model_id}_{uuid.uuid4().hex[:8]}")
+    config = {
+        "model_path": str(record.path),
+        "obs_path": str(record.obs_path),
+        "params_path": str(record.params_path),
+        "output_dir": output_dir,
+        "file_prefix": record.meta.name or "model",
+        "num_cores": int(req.settings.get("num_cores", 1) or 1),
+        "python": python_path,
+        "settings": req.settings,
+    }
+    try:
+        job_id = sensitivity.start(config)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"job_id": job_id}
+
+
+@app.get("/api/sensitivity/{job_id}/status")
+def sensitivity_status(job_id: str, offset: int = 0) -> dict:
+    status = sensitivity.status(job_id, offset)
+    if status is None:
+        raise HTTPException(status_code=404, detail="sensitivity job not found")
+    return status
+
+
+@app.post("/api/sensitivity/{job_id}/cancel")
+def sensitivity_cancel(job_id: str) -> dict:
+    if not sensitivity.cancel(job_id):
+        raise HTTPException(status_code=404, detail="sensitivity job not found")
+    return {"cancelled": True}
+
+
+# ---------------------------------------------------------------------------
+# UQ — uncertainty quantification (MCMC / Laplace posterior on parameters)
+# ---------------------------------------------------------------------------
+class UQRequest(BaseModel):
+    model_id: str
+    settings: dict = Field(default_factory=dict)
+
+
+UQ_DEFAULTS = {
+    "method": "mcmc",
+    "methods": ["mcmc", "laplace"],
+    "num_steps": 1000,
+    "num_walkers": 64,
+    "cost_type": "gaussian_MLE",
+    "cost_convergence": 0.001,
+    "dt": 0.01,
+    "solver": "CVODE_myokit",
+    "DEBUG": False,
+    "num_cores": 1,  # >1 -> mpiexec -n N
+    # False (default) reuses the latest completed calibration's best fit;
+    # True runs a fresh GA calibration first (self-contained).
+    "run_calibration_first": False,
+    "param_id_method": "genetic_algorithm",
+    "num_calls_to_function": 100,
+    "max_patience": 10,
+}
+
+
+@app.get("/api/uq/defaults")
+def uq_defaults() -> dict:
+    return UQ_DEFAULTS
+
+
+@app.post("/api/uq/run")
+def uq_run(req: UQRequest) -> dict:
+    record = _get_model(req.model_id)
+    if record.obs_path is None or record.params_path is None:
+        raise HTTPException(
+            status_code=422,
+            detail="UQ requires both an obs_data.json and a params_for_id.csv to be "
+            "uploaded for this model",
+        )
+    python_path = req.settings.get("python_path") or None
+    if python_path and not (
+        os.path.isfile(python_path) and os.access(python_path, os.X_OK)
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail=f"python interpreter not found or not executable: {python_path}",
+        )
+
+    # Reuse mode (default): need a completed calibration's best fit to start from.
+    best_params = None
+    if not req.settings.get("run_calibration_first", False):
+        if calibration.busy:
+            raise HTTPException(
+                status_code=409,
+                detail="a calibration is still running; wait for it to finish before "
+                "running UQ (or enable 'run a fresh calibration first')",
+            )
+        best_params = calibration.last_completed_best_params(req.model_id)
+        if not best_params:
+            raise HTTPException(
+                status_code=422,
+                detail="no completed calibration to reuse — run a calibration to "
+                "completion first, or enable 'run a fresh calibration first'",
+            )
+
+    configured = (req.settings.get("config_outputs_dir") or "").strip()
+    if configured:
+        if not os.path.isabs(configured):
+            raise HTTPException(
+                status_code=422,
+                detail="config_outputs_dir must be an absolute path",
+            )
+        output_dir = configured
+    else:
+        output_dir = str(UPLOAD_DIR / f"uq_{req.model_id}_{uuid.uuid4().hex[:8]}")
+    config = {
+        "model_id": req.model_id,
+        "model_path": str(record.path),
+        "obs_path": str(record.obs_path),
+        "params_path": str(record.params_path),
+        "output_dir": output_dir,
+        "file_prefix": record.meta.name or "model",
+        "num_cores": int(req.settings.get("num_cores", 1) or 1),
+        "python": python_path,
+        "settings": req.settings,
+        "best_params": best_params,
+    }
+    try:
+        job_id = uq.start(config)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"job_id": job_id}
+
+
+@app.get("/api/uq/{job_id}/status")
+def uq_status(job_id: str, offset: int = 0) -> dict:
+    status = uq.status(job_id, offset)
+    if status is None:
+        raise HTTPException(status_code=404, detail="UQ job not found")
+    return status
+
+
+@app.post("/api/uq/{job_id}/cancel")
+def uq_cancel(job_id: str) -> dict:
+    if not uq.cancel(job_id):
+        raise HTTPException(status_code=404, detail="UQ job not found")
     return {"cancelled": True}

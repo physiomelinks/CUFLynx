@@ -9,7 +9,12 @@ const ButtonStub = {
   template:
     '<button :disabled="disabled" v-bind="$attrs" @click="$emit(\'click\')">{{ label }}</button>',
 }
-const stubs = { Select: true, InputNumber: true, Checkbox: true, Button: ButtonStub }
+const stubs = {
+  Select: true,
+  InputNumber: true,
+  Checkbox: true,
+  Button: ButtonStub,
+}
 
 describe('CalibrationPanel', () => {
   it('renders streamed terminal lines', () => {
@@ -32,6 +37,9 @@ describe('CalibrationPanel', () => {
     expect(ev).toBeTruthy()
     expect(ev[0][0].param_id_method).toBe('genetic_algorithm')
     expect(ev[0][0].num_calls_to_function).toBeGreaterThan(0)
+    expect(ev[0][0]).toHaveProperty('num_cores')
+    // Python interpreter is chosen in the top bar, not this panel.
+    expect(ev[0][0]).not.toHaveProperty('python_path')
   })
 
   it('disables run when not runnable', () => {

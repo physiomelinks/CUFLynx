@@ -11,6 +11,13 @@ export async function checkHealth() {
   return data.status === 'ok'
 }
 
+export async function listDir(path = null, dirsOnly = false) {
+  const { data } = await axios.get(url('/api/fs/list'), {
+    params: { ...(path ? { path } : {}), dirs_only: dirsOnly },
+  })
+  return data
+}
+
 export async function uploadCellML(file) {
   const form = new FormData()
   form.append('file', file)
@@ -61,6 +68,13 @@ export async function getCalibrationDefaults() {
   return data
 }
 
+export async function getCalibrationPythons(refresh = false) {
+  const { data } = await axios.get(
+    url(`/api/calibration/pythons${refresh ? '?refresh=true' : ''}`),
+  )
+  return data
+}
+
 export async function startCalibration(modelId, settings) {
   const { data } = await axios.post(url('/api/calibration/run'), {
     model_id: modelId,
@@ -76,7 +90,60 @@ export async function getCalibrationStatus(jobId, offset = 0) {
   return data
 }
 
+export async function getCalibrationProgress(jobId) {
+  const { data } = await axios.get(url(`/api/calibration/${jobId}/progress`))
+  return data
+}
+
 export async function cancelCalibration(jobId) {
   const { data } = await axios.post(url(`/api/calibration/${jobId}/cancel`))
+  return data
+}
+
+export async function getSensitivityDefaults() {
+  const { data } = await axios.get(url('/api/sensitivity/defaults'))
+  return data
+}
+
+export async function startSensitivity(modelId, settings) {
+  const { data } = await axios.post(url('/api/sensitivity/run'), {
+    model_id: modelId,
+    settings,
+  })
+  return data
+}
+
+export async function getSensitivityStatus(jobId, offset = 0) {
+  const { data } = await axios.get(
+    url(`/api/sensitivity/${jobId}/status?offset=${offset}`),
+  )
+  return data
+}
+
+export async function cancelSensitivity(jobId) {
+  const { data } = await axios.post(url(`/api/sensitivity/${jobId}/cancel`))
+  return data
+}
+
+export async function getUQDefaults() {
+  const { data } = await axios.get(url('/api/uq/defaults'))
+  return data
+}
+
+export async function startUQ(modelId, settings) {
+  const { data } = await axios.post(url('/api/uq/run'), {
+    model_id: modelId,
+    settings,
+  })
+  return data
+}
+
+export async function getUQStatus(jobId, offset = 0) {
+  const { data } = await axios.get(url(`/api/uq/${jobId}/status?offset=${offset}`))
+  return data
+}
+
+export async function cancelUQ(jobId) {
+  const { data } = await axios.post(url(`/api/uq/${jobId}/cancel`))
   return data
 }
