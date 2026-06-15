@@ -59,6 +59,22 @@ def test_min_greater_than_max_returns_422(client):
     assert resp.status_code == 422
 
 
+def test_edit_dialog_csv_format_round_trips(client):
+    # Exact format the frontend Edit dialog emits (buildParamsCsv): no spaces
+    # after commas, optional param_type column. Guards against format drift.
+    csv = (
+        "vessel_name,param_name,min,max,name_for_plotting,param_type\n"
+        "Lotka_Volterra_module,alpha,0.09,0.11,\\alpha,global\n"
+    )
+    resp = _post_csv_text(client, csv)
+    assert resp.status_code == 200, resp.text
+    (p,) = resp.json()["params"]
+    assert p["qname"] == "Lotka_Volterra_module/alpha"
+    assert p["min"] == 0.09 and p["max"] == 0.11
+    assert p["name_for_plotting"] == "\\alpha"
+    assert p["param_type"] == "global"
+
+
 def test_initial_value_from_model_default(client):
     model_id = upload_model(client, LV_MODEL_PATH)["model_id"]
     resp = _post_csv_file(client, LV_PARAMS_CSV_PATH, model_id=model_id)
