@@ -18,9 +18,18 @@ const emit = defineEmits(['run', 'cancel'])
 // calibration, see #13). The Python interpreter is chosen once in the top bar.
 const settings = reactive({
   method: 'sobol',
+  // Sobol (global) options:
   sample_type: 'saltelli',
   num_samples: 256,
   num_cores: 1,
+  // Local (derivative-based) options:
+  gradient_method: 'FD',
+  rel_step: 0.01,
+  nominal: 'current',
+  // When true, run a fresh calibration first and linearise about its best fit.
+  // The calibration uses whatever is configured in the Calibration panel
+  // (folded in by App.vue), so there are no GA controls duplicated here.
+  run_calibration_first: false,
   dt: 0.01,
   DEBUG: false,
 })
@@ -37,8 +46,12 @@ watch(
   { immediate: true },
 )
 
+const METHOD_LABELS = { sobol: 'Sobol (global)', local: 'Local (finite difference)' }
 const methods = computed(() =>
-  (props.defaults.methods ?? ['sobol']).map((m) => ({ label: m, value: m })),
+  (props.defaults.methods ?? ['sobol']).map((m) => ({
+    label: METHOD_LABELS[m] ?? m,
+    value: m,
+  })),
 )
 const sampleTypes = computed(() =>
   (props.defaults.sample_types ?? ['saltelli', 'sobol']).map((m) => ({
@@ -46,7 +59,20 @@ const sampleTypes = computed(() =>
     value: m,
   })),
 )
+// Gradient sources for local SA: [{value, label, disabled}]. Only FD is enabled
+// today; AD / CVODES are listed (disabled) so the UI shows where they'll slot in.
+const gradientMethods = computed(
+  () =>
+    props.defaults.gradient_methods ?? [{ value: 'FD', label: 'Finite difference' }],
+)
+const nominals = computed(() =>
+  (props.defaults.nominals ?? ['midpoint', 'geometric']).map((m) => ({
+    label: m,
+    value: m,
+  })),
+)
 
+const isLocal = computed(() => settings.method === 'local')
 const running = computed(() => props.state === 'running')
 
 const term = ref(null)
@@ -81,24 +107,77 @@ function onRun() {
           size="small"
         />
       </label>
-      <label class="field">
-        <span>Sample type</span>
-        <Select
-          v-model="settings.sample_type"
-          :options="sampleTypes"
-          option-label="label"
-          option-value="value"
-          size="small"
-        />
-      </label>
-      <label class="field">
-        <span title="Base sample count N; total sims ~ N·(2·num_params+2)">Samples</span>
-        <InputNumber v-model="settings.num_samples" :min="1" size="small" />
-      </label>
-      <label class="field">
-        <span title="mpiexec -n N: parallel sample evaluation">Cores</span>
-        <InputNumber v-model="settings.num_cores" :min="1" :max="64" size="small" />
-      </label>
+      <!-- Sobol (global) options -->
+      <template v-if="!isLocal">
+        <label class="field">
+          <span>Sample type</span>
+          <Select
+            v-model="settings.sample_type"
+            :options="sampleTypes"
+            option-label="label"
+            option-value="value"
+            size="small"
+          />
+        </label>
+        <label class="field">
+          <span title="Base sample count N; total sims ~ N·(2·num_params+2)">Samples</span>
+          <InputNumber v-model="settings.num_samples" :min="1" size="small" />
+        </label>
+        <label class="field">
+          <span title="mpiexec -n N: parallel sample evaluation">Cores</span>
+          <InputNumber v-model="settings.num_cores" :min="1" :max="64" size="small" />
+        </label>
+      </template>
+
+      <!-- Local (derivative-based) options -->
+      <template v-else>
+        <label class="field">
+          <span title="Gradient source. Only finite difference works for CellML today; AD needs casadi_python, CVODES needs upstream Myokit sensitivities.">Gradient source</span>
+          <Select
+            v-model="settings.gradient_method"
+            :options="gradientMethods"
+            option-label="label"
+            option-value="value"
+            :option-disabled="(o) => o.disabled"
+            size="small"
+            data-testid="gradient-method"
+          />
+        </label>
+        <label class="field">
+          <span title="Relative central-difference step about the nominal parameter value">Rel. step</span>
+          <InputNumber
+            v-model="settings.rel_step"
+            :min="1e-6"
+            :max="0.5"
+            :min-fraction-digits="2"
+            :max-fraction-digits="6"
+            size="small"
+          />
+        </label>
+        <label class="field">
+          <span title="Parameter point to linearise about. 'current' uses the model's current values; 'best_fit' reuses a completed calibration.">Nominal point</span>
+          <Select
+            v-model="settings.nominal"
+            :options="nominals"
+            option-label="label"
+            option-value="value"
+            :disabled="settings.run_calibration_first"
+            size="small"
+          />
+        </label>
+        <label class="field checkbox">
+          <Checkbox
+            v-model="settings.run_calibration_first"
+            :binary="true"
+            input-id="sa-run-calib-first"
+            data-testid="sa-run-calib-first"
+          />
+          <span title="Run a fresh calibration (using the Calibration tab's settings), then take the local sensitivity about that best fit">
+            Run calibration first (about best fit)
+          </span>
+        </label>
+      </template>
+
       <label class="field checkbox">
         <Checkbox v-model="settings.DEBUG" :binary="true" input-id="sa-debug" />
         <span>DEBUG (fewer samples, fast)</span>

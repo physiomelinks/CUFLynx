@@ -13,7 +13,7 @@ const props = defineProps({
   cost: { type: Number, default: null },
   error: { type: String, default: '' },
 })
-const emit = defineEmits(['run', 'cancel'])
+const emit = defineEmits(['run', 'cancel', 'change'])
 
 // Note: pre_time / sim_time are intentionally NOT here — calibration timing
 // comes from the obs_data.json protocol_info (see #13). The Python interpreter
@@ -39,6 +39,10 @@ watch(
   },
   { immediate: true },
 )
+
+// Surface the live settings upward so other panels (e.g. the sensitivity tab's
+// "run calibration first") can reuse the user's calibration configuration.
+watch(settings, () => emit('change', { ...settings }), { deep: true, immediate: true })
 
 const methods = computed(() =>
   (props.defaults.methods ?? ['genetic_algorithm', 'CMA-ES']).map((m) => ({

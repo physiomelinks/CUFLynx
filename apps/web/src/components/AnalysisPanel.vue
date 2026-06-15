@@ -1,9 +1,9 @@
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { renderMath } from '../lib/math'
 
 const props = defineProps({
-  // Sensitivity: { S1: {outName: {param: val}}, ST: {...} }
+  // Sensitivity: { S1: {outName: {param: val}}, ST: {...}, local: {...} }
   indices: { type: Object, default: null },
   paramNames: { type: Array, default: () => [] },
   outputNames: { type: Array, default: () => [] },
@@ -19,7 +19,28 @@ const props = defineProps({
 })
 
 // ---- Sensitivity heatmap ---------------------------------------------------
-const indexType = ref('ST') // 'S1' | 'ST'
+// Sobol runs carry S1/ST; a local (finite-difference) run carries a single
+// 'local' matrix of relative sensitivities. Offer whichever kinds are present.
+const TYPE_LABELS = {
+  S1: 'First-order (S₁)',
+  ST: 'Total-order (Sₜ)',
+  local: 'Local (∂lnY/∂lnP)',
+}
+const TYPE_ORDER = ['S1', 'ST', 'local']
+const availableTypes = computed(() =>
+  TYPE_ORDER.filter((t) => props.indices?.[t]),
+)
+const indexType = ref('ST')
+watch(
+  availableTypes,
+  (types) => {
+    if (!types.length || types.includes(indexType.value)) return
+    // Keep the long-standing default of total-order for Sobol runs.
+    indexType.value = types.includes('ST') ? 'ST' : types[0]
+  },
+  { immediate: true },
+)
+const isLocal = computed(() => indexType.value === 'local')
 
 const hasSensitivity = computed(
   () =>
@@ -34,7 +55,22 @@ function valueAt(outName, param) {
   return typeof v === 'number' && Number.isFinite(v) ? v : null
 }
 
-// A compact viridis-ish ramp (dark purple -> teal -> green -> yellow).
+// Local coefficients are signed and unbounded; scale colours by the largest
+// magnitude in the current matrix so the diverging ramp uses its full range.
+const maxAbsLocal = computed(() => {
+  if (!isLocal.value) return 1
+  let m = 0
+  for (const out of props.outputNames) {
+    for (const p of props.paramNames) {
+      const v = valueAt(out, p)
+      if (v != null) m = Math.max(m, Math.abs(v))
+    }
+  }
+  return m || 1
+})
+
+// Viridis-ish ramp for Sobol indices (∈ [0,1]); blue–white–red diverging ramp
+// for signed local sensitivities.
 const RAMP = [
   [68, 1, 84],
   [59, 82, 139],
@@ -42,25 +78,49 @@ const RAMP = [
   [94, 201, 98],
   [253, 231, 37],
 ]
+const DIVERGING = [
+  [33, 102, 172],
+  [247, 247, 247],
+  [178, 24, 43],
+]
 
-function colorFor(value) {
-  if (value == null) return 'transparent'
-  const t = Math.max(0, Math.min(1, value)) // Sobol indices clamp to [0, 1]
-  const seg = t * (RAMP.length - 1)
-  const i = Math.min(RAMP.length - 2, Math.floor(seg))
+function lerpRamp(ramp, t) {
+  t = Math.max(0, Math.min(1, t))
+  const seg = t * (ramp.length - 1)
+  const i = Math.min(ramp.length - 2, Math.floor(seg))
   const f = seg - i
-  const [r1, g1, b1] = RAMP[i]
-  const [r2, g2, b2] = RAMP[i + 1]
+  const [r1, g1, b1] = ramp[i]
+  const [r2, g2, b2] = ramp[i + 1]
   const r = Math.round(r1 + (r2 - r1) * f)
   const g = Math.round(g1 + (g2 - g1) * f)
   const b = Math.round(b1 + (b2 - b1) * f)
   return `rgb(${r}, ${g}, ${b})`
 }
 
-// Dark text on the light (yellow/green) end, light text on the dark end.
+function colorFor(value) {
+  if (value == null) return 'transparent'
+  if (isLocal.value) {
+    // Map [-maxAbs, +maxAbs] -> [0, 1] across the diverging ramp (0 -> centre).
+    const t = Math.max(-1, Math.min(1, value / maxAbsLocal.value))
+    return lerpRamp(DIVERGING, (t + 1) / 2)
+  }
+  return lerpRamp(RAMP, value) // Sobol indices clamp to [0, 1]
+}
+
+// Light text on the dark (high-magnitude) cells, dark text on the light centre.
 function textColorFor(value) {
   if (value == null) return 'inherit'
+  if (isLocal.value) {
+    return Math.abs(value) / maxAbsLocal.value > 0.5 ? '#eee' : '#111'
+  }
   return Math.max(0, Math.min(1, value)) > 0.55 ? '#111' : '#eee'
+}
+
+// Compact cell label: exponential for very large/small magnitudes.
+function fmtCell(value) {
+  if (value == null) return '–'
+  const a = Math.abs(value)
+  return a !== 0 && (a >= 100 || a < 0.01) ? value.toExponential(1) : value.toFixed(2)
 }
 
 // ---- Calibration error bars ------------------------------------------------
@@ -162,20 +222,14 @@ const uqMethodLabel = computed(() =>
           <span class="toolbar-label">Index</span>
           <div class="type-toggle">
             <button
+              v-for="t in availableTypes"
+              :key="t"
               class="toggle-btn"
-              :class="{ active: indexType === 'S1' }"
-              data-testid="index-s1"
-              @click="indexType = 'S1'"
+              :class="{ active: indexType === t }"
+              :data-testid="`index-${t.toLowerCase()}`"
+              @click="indexType = t"
             >
-              First-order (S₁)
-            </button>
-            <button
-              class="toggle-btn"
-              :class="{ active: indexType === 'ST' }"
-              data-testid="index-st"
-              @click="indexType = 'ST'"
-            >
-              Total-order (Sₜ)
+              {{ TYPE_LABELS[t] }}
             </button>
           </div>
         </div>
@@ -211,7 +265,7 @@ const uqMethodLabel = computed(() =>
                   }"
                   :title="`${param} → ${out}`"
                 >
-                  {{ valueAt(out, param) == null ? '–' : valueAt(out, param).toFixed(2) }}
+                  {{ fmtCell(valueAt(out, param)) }}
                 </td>
               </tr>
             </tbody>
