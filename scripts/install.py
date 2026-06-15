@@ -30,11 +30,18 @@ def run(cmd: list[str], cwd: Path) -> None:
 
 
 def node_tool() -> tuple[list[str], list[str]]:
-    """Return (install_cmd, build_cmd) for yarn if present, else npm."""
-    if shutil.which("yarn"):
-        return (["yarn"], ["yarn", "build"])
-    if shutil.which("npm"):
-        return (["npm", "install"], ["npm", "run", "build"])
+    """Return (install_cmd, build_cmd) for yarn if present, else npm.
+
+    Uses the resolved ``shutil.which`` path (not the bare name) so the command
+    works on Windows, where npm/yarn are ``.CMD`` shims: ``CreateProcess`` does
+    not consult PATHEXT, so a bare ``"npm"`` arg fails with WinError 2.
+    """
+    yarn = shutil.which("yarn")
+    if yarn:
+        return ([yarn], [yarn, "build"])
+    npm = shutil.which("npm")
+    if npm:
+        return ([npm, "install"], [npm, "run", "build"])
     sys.exit(
         "error: neither 'yarn' nor 'npm' found on PATH. Install Node.js "
         "(https://nodejs.org) — it's only needed to build the frontend."

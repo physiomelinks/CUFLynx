@@ -31,11 +31,18 @@ DIST = WEB_DIR / "dist"
 
 
 def node_cmd(script: str) -> list[str]:
-    """yarn <script> if yarn is present, else npm run <script>."""
-    if shutil.which("yarn"):
-        return ["yarn", script]
-    if shutil.which("npm"):
-        return ["npm", "run", script]
+    """yarn <script> if yarn is present, else npm run <script>.
+
+    Uses the resolved ``shutil.which`` path (not the bare name) so the command
+    works on Windows, where npm/yarn are ``.CMD`` shims: ``CreateProcess`` does
+    not consult PATHEXT, so a bare ``"npm"`` arg fails with WinError 2.
+    """
+    yarn = shutil.which("yarn")
+    if yarn:
+        return [yarn, script]
+    npm = shutil.which("npm")
+    if npm:
+        return [npm, "run", script]
     sys.exit(
         "error: neither 'yarn' nor 'npm' is on PATH. Run 'python scripts/install.py' "
         "first (and install Node.js if needed)."
