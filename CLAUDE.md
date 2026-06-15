@@ -32,6 +32,16 @@ apps/api/          FastAPI, depends on sibling circulatory_autogen
 
 Docs: `circulatory_autogen/tutorial/docs/parameter-identification.md`, `circulatory_autogen/claude.md`, `src/utilities/obs_data_helpers.py`.
 
+**Locating circulatory_autogen.** The source dir is resolved via the
+`CIRCULATORY_AUTOGEN_SRC` env var, defaulting to the sibling clone. It is
+selectable at runtime from the **Settings popup** (gear icon) "CA dir" picker (`POST /api/config`
+sets the env var + `engine.reset()`); subprocess runs inherit it, the in-process
+engine picks it up before its first sim (module caching means a mid-session
+switch fully re-points the live-plot engine only after a restart).
+**Planned:** once `circulatory_autogen` is pip-installable, default to the
+**installed package** instead of the sibling dir — but keep the CA-dir override
+so developers can point at a local checkout. (See issue #18.)
+
 ## Key files
 
 - `apps/web/src/App.vue` — main UI (tabs: Parameters · Sensitivity · Calibration · UQ; center: Output plots · Progress · Analysis)

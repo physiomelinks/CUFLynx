@@ -30,18 +30,59 @@ WEB_DIR = ROOT / "apps" / "web"
 DIST = WEB_DIR / "dist"
 
 
-def build_frontend() -> None:
+def node_cmd(script: str) -> list[str]:
+    """yarn <script> if yarn is present, else npm run <script>."""
     if shutil.which("yarn"):
-        cmd = ["yarn", "build"]
-    elif shutil.which("npm"):
-        cmd = ["npm", "run", "build"]
-    else:
-        sys.exit(
-            "error: frontend not built and neither 'yarn' nor 'npm' is on PATH. "
-            "Run 'python scripts/install.py' first."
-        )
+        return ["yarn", script]
+    if shutil.which("npm"):
+        return ["npm", "run", script]
+    sys.exit(
+        "error: neither 'yarn' nor 'npm' is on PATH. Run 'python scripts/install.py' "
+        "first (and install Node.js if needed)."
+    )
+
+
+def build_frontend() -> None:
+    cmd = node_cmd("build")
     print(f"Building frontend: {' '.join(cmd)}", flush=True)
     subprocess.run(cmd, cwd=str(WEB_DIR), check=True)
+
+
+def run_dev(port: int, open_browser: bool) -> int:
+    """Dev mode: uvicorn --reload (API) + Vite dev server (HMR), both concurrent.
+
+    The Vite dev server (http://localhost:5173) proxies /api to the backend on
+    :8000, so run the backend on 8000 for the proxy to line up.
+    """
+    backend = subprocess.Popen(
+        [sys.executable, "-m", "uvicorn", "main:app", "--reload", "--port", str(port)],
+        cwd=str(API_DIR),
+    )
+    frontend = subprocess.Popen(node_cmd("dev"), cwd=str(WEB_DIR))
+    procs = [backend, frontend]
+
+    if open_browser:
+        # Vite serves on 5173; its /api proxy lets the health check pass.
+        threading.Thread(
+            target=open_when_ready, args=("http://localhost:5173",), daemon=True
+        ).start()
+
+    print("Dev mode: API :%d (reload) + Vite :5173 (HMR). Ctrl+C to stop." % port)
+    try:
+        while all(p.poll() is None for p in procs):
+            time.sleep(0.3)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        for p in procs:
+            if p.poll() is None:
+                p.terminate()
+        for p in procs:
+            try:
+                p.wait(timeout=5)
+            except Exception:  # noqa: BLE001
+                p.kill()
+    return 0
 
 
 def open_when_ready(url: str) -> None:
@@ -62,7 +103,15 @@ def main() -> int:
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--build", action="store_true", help="force a fresh build")
     parser.add_argument("--no-browser", action="store_true")
+    parser.add_argument(
+        "--dev",
+        action="store_true",
+        help="dev mode: uvicorn --reload + Vite dev server (HMR) on :5173",
+    )
     args = parser.parse_args()
+
+    if args.dev:
+        return run_dev(args.port, not args.no_browser)
 
     if args.build or not DIST.is_dir():
         build_frontend()

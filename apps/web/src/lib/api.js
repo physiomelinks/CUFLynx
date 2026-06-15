@@ -21,6 +21,16 @@ export async function listDir(path = null, dirsOnly = false) {
   return data
 }
 
+export async function getConfig() {
+  const { data } = await axios.get(url('/api/config'))
+  return data
+}
+
+export async function setConfig(caDir) {
+  const { data } = await axios.post(url('/api/config'), { ca_dir: caDir })
+  return data
+}
+
 export async function uploadCellML(file) {
   const form = new FormData()
   form.append('file', file)

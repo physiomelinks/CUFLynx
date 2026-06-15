@@ -30,7 +30,7 @@ from pydantic import BaseModel, Field
 
 from calibration import calibration, list_python_interpreters
 from cellml_meta import CellMLModel, CellMLParseError, parse_cellml
-from engine import SimulationError, engine
+from engine import SimulationError, engine, _circulatory_autogen_src
 from obs_data import ObsData, ObsDataError, parse_obs_data
 from params_for_id import ParamsForIdError, parse_params_for_id
 from sensitivity import sensitivity
@@ -105,6 +105,54 @@ class ProtocolRunRequest(BaseModel):
 @app.get("/api/health")
 def health() -> dict:
     return {"status": "ok"}
+
+
+# ---------------------------------------------------------------------------
+# Runtime config — circulatory_autogen location
+# ---------------------------------------------------------------------------
+class ConfigRequest(BaseModel):
+    # The circulatory_autogen directory (repo root or its `src`); blank resets to
+    # the default (sibling clone / CIRCULATORY_AUTOGEN_SRC).
+    ca_dir: str = ""
+
+
+def _ca_src_from_dir(d: str) -> str:
+    """Normalize a chosen CA directory to its importable `src` path: accept the
+    repo root (append `src`) or a `src` dir directly."""
+    p = Path(d).expanduser()
+    return str(p / "src") if (p / "src").is_dir() else str(p)
+
+
+def _config_payload() -> dict:
+    src = _circulatory_autogen_src()
+    p = Path(src)
+    ca_dir = str(p.parent) if p.name == "src" else src
+    return {"ca_dir": ca_dir, "ca_src": src, "ca_exists": p.is_dir()}
+
+
+@app.get("/api/config")
+def get_config() -> dict:
+    return _config_payload()
+
+
+@app.post("/api/config")
+def set_config(req: ConfigRequest) -> dict:
+    """Point the backend at a circulatory_autogen directory at runtime.
+
+    Subprocess runs (calibration / sensitivity / UQ) inherit this on their next
+    launch. The in-process engine picks it up too, but because Python caches the
+    CA modules after the first simulation, switching mid-session fully re-points
+    the live-plot engine only after a restart.
+    """
+    d = (req.ca_dir or "").strip()
+    if d:
+        if not os.path.isdir(d):
+            raise HTTPException(status_code=422, detail=f"not a directory: {d}")
+        os.environ["CIRCULATORY_AUTOGEN_SRC"] = _ca_src_from_dir(d)
+    else:
+        os.environ.pop("CIRCULATORY_AUTOGEN_SRC", None)
+    engine.reset()  # drop cached compiled helpers so the next sim uses the new CA
+    return _config_payload()
 
 
 @app.get("/api/fs/list")

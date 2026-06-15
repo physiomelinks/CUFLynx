@@ -14,6 +14,7 @@ import InputNumber from 'primevue/inputnumber'
 import Button from 'primevue/button'
 import Message from 'primevue/message'
 import Select from 'primevue/select'
+import Dialog from 'primevue/dialog'
 import FileBrowserDialog from './components/FileBrowserDialog.vue'
 
 import { useModel } from './stores/useModel'
@@ -32,6 +33,8 @@ import {
   getCalibrationPythons,
   getSensitivityDefaults,
   getUQDefaults,
+  getConfig,
+  setConfig,
 } from './lib/api'
 import { overlayItemsFor, controlledSeries } from './lib/plot'
 
@@ -54,6 +57,40 @@ const outputsDir = ref('')
 // Calibration and UQ runs. Blank => backend uses its default interpreter.
 const pythonPath = ref('')
 const pythonBrowserOpen = ref(false)
+
+// circulatory_autogen source directory (top-bar "CA dir"), shared server-side via
+// /api/config. Defaults to the sibling clone; pick a different checkout to dev against.
+const caDir = ref('')
+const caExists = ref(true)
+const caBrowserOpen = ref(false)
+
+async function applyCaDir(dir) {
+  try {
+    const c = await setConfig(dir)
+    caDir.value = c.ca_dir
+    caExists.value = c.ca_exists
+  } catch {
+    /* leave previous value on error */
+  }
+}
+
+// Settings popup (CA dir + theme).
+const settingsOpen = ref(false)
+
+// Colour scheme: toggles the `.cellml-dark` class PrimeVue keys off. Persisted.
+const themeOptions = [
+  { label: 'Dark', value: 'dark' },
+  { label: 'Light', value: 'light' },
+]
+const theme = ref(localStorage.getItem('cuflynx-theme') || 'dark')
+watch(
+  theme,
+  (t) => {
+    document.documentElement.classList.toggle('cellml-dark', t === 'dark')
+    localStorage.setItem('cuflynx-theme', t)
+  },
+  { immediate: true },
+)
 
 // Left column tab: 'params' | 'sensitivity' | 'calibration' | 'uq'
 const leftTab = ref('params')
@@ -86,6 +123,13 @@ onMounted(async () => {
   } catch {
     /* interpreter discovery optional */
   }
+  try {
+    const c = await getConfig()
+    caDir.value = c.ca_dir
+    caExists.value = c.ca_exists
+  } catch {
+    /* backend not up yet */
+  }
 })
 
 const pythonOptions = computed(() => {
@@ -111,12 +155,15 @@ const pythonNotReady = computed(() => {
   return p && !p.ready ? p.missing : null
 })
 
-// Collapsed display: keep the bar compact by showing only the tail of the path
-// (the full label still shows in the dropdown). Empty value => server default.
-function shortPython(value) {
-  if (!value) return 'Server default'
-  const s = String(value)
+// Keep the top bar compact by showing only the tail of a long path.
+function pathTail(value) {
+  const s = String(value || '')
   return s.length > 20 ? '…' + s.slice(-20) : s
+}
+
+// Collapsed Python display (the full label still shows in the dropdown).
+function shortPython(value) {
+  return value ? pathTail(value) : 'Server default'
 }
 
 const canCalibrate = computed(
@@ -389,6 +436,14 @@ watch(
           ⚠
         </span>
       </div>
+      <Button
+        icon="pi pi-cog"
+        size="small"
+        text
+        title="Settings"
+        data-testid="settings-open"
+        @click="settingsOpen = true"
+      />
       <div v-if="!obs.hasObsData.value" class="time-controls" data-testid="time-controls">
         <label>t₁ <InputNumber v-model="simTime" :min="0" show-buttons size="small" /></label>
         <label>pre <InputNumber v-model="preTime" :min="0" show-buttons size="small" /></label>
@@ -615,11 +670,70 @@ watch(
       </aside>
     </main>
 
+    <Dialog
+      v-model:visible="settingsOpen"
+      modal
+      header="Settings"
+      :style="{ width: '34rem' }"
+      data-testid="settings-dialog"
+    >
+      <div class="settings-form">
+        <label class="settings-row">
+          <span class="settings-label">Colour scheme</span>
+          <Select
+            v-model="theme"
+            :options="themeOptions"
+            option-label="label"
+            option-value="value"
+            size="small"
+            data-testid="theme-select"
+          />
+        </label>
+        <div class="settings-row">
+          <span
+            class="settings-label"
+            title="circulatory_autogen directory used for simulation / calibration / sensitivity / UQ"
+          >
+            CA dir
+          </span>
+          <span class="settings-input">
+            <code class="ca-path" :title="caDir || '(default)'">{{ caDir || '(default)' }}</code>
+            <Button
+              icon="pi pi-folder-open"
+              size="small"
+              text
+              title="Browse for the circulatory_autogen directory"
+              data-testid="ca-browse"
+              @click="caBrowserOpen = true"
+            />
+            <span
+              v-if="!caExists"
+              class="py-warn"
+              data-testid="ca-warning"
+              :title="'circulatory_autogen not found at: ' + caDir"
+            >
+              ⚠
+            </span>
+          </span>
+        </div>
+        <p class="settings-hint">
+          Defaults to the sibling <code>circulatory_autogen</code> clone. Pick a
+          different checkout to develop against — runs use it on their next launch.
+        </p>
+      </div>
+    </Dialog>
+
     <FileBrowserDialog
       v-model:visible="pythonBrowserOpen"
       mode="file"
       title="Select a Python interpreter"
       @select="(p) => (pythonPath = p)"
+    />
+    <FileBrowserDialog
+      v-model:visible="caBrowserOpen"
+      mode="dir"
+      title="Select the circulatory_autogen directory"
+      @select="applyCaDir"
     />
   </div>
 </template>
@@ -660,6 +774,45 @@ watch(
 .python-bar .py-warn {
   color: #ffc000;
   cursor: help;
+}
+.settings-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+}
+.settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+.settings-label {
+  font-size: 0.9rem;
+  opacity: 0.85;
+}
+.settings-input {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+}
+.settings-input .ca-path {
+  font-family: monospace;
+  font-size: 0.78rem;
+  opacity: 0.85;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 18rem;
+}
+.settings-input .py-warn {
+  color: #ffc000;
+  cursor: help;
+}
+.settings-hint {
+  font-size: 0.78rem;
+  opacity: 0.65;
+  margin: 0;
 }
 .time-controls {
   display: flex;
