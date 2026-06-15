@@ -16,6 +16,13 @@ import {
   FALLBACK_PLOT_TYPES,
 } from '../lib/obsDataJson'
 import { uploadObsData, getObsDataOptions } from '../lib/api'
+import ProtocolInfoEditor from './ProtocolInfoEditor.vue'
+import {
+  protocolToModel,
+  buildProtocolInfo,
+  emptyModel,
+  validateModel,
+} from '../lib/protocolInfo'
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
@@ -38,6 +45,8 @@ const predRows = ref([])
 const operations = ref(FALLBACK_OPERATIONS)
 const costTypes = ref(FALLBACK_COST_TYPES)
 const plotTypes = ref(FALLBACK_PLOT_TYPES)
+const protocolModel = ref(null)
+const activeExp = ref(0)
 const saving = ref(false)
 const error = ref('')
 
@@ -60,15 +69,53 @@ watch(
     editableRows.value = editable
     preservedItems.value = preserved
     predRows.value = (props.currentPredictionItems ?? []).map(predToRow)
+    protocolModel.value = props.protocolInfo ? protocolToModel(props.protocolInfo) : null
+    activeExp.value = 0
   },
   { immediate: true },
 )
 
 const allNames = computed(() => props.modelVariables?.all_names ?? [])
 const operandOptions = computed(() => ['time', ...allNames.value])
-const expMax = computed(() => experimentIdxMax(props.experimentCount))
+const hasProtocol = computed(() => protocolModel.value != null)
+// Experiment/subexperiment counts come from the working protocol model once one
+// exists, so data_item idx selects track edits to the protocol.
+const experimentCountModel = computed(() =>
+  protocolModel.value ? protocolModel.value.experiments.length : props.experimentCount,
+)
+const expMax = computed(() => experimentIdxMax(experimentCountModel.value))
 const expOptions = computed(() => Array.from({ length: expMax.value + 1 }, (_, i) => i))
-const hasProtocol = computed(() => props.protocolInfo != null)
+function subexpOptions(expIdx) {
+  const n = protocolModel.value?.experiments?.[expIdx]?.subexps?.length ?? 1
+  return Array.from({ length: Math.max(1, n) }, (_, i) => i)
+}
+
+// Clamp data_item / prediction idxs into range whenever experiments or
+// subexperiments are added/removed, so the backend never sees an out-of-range idx.
+watch(
+  () =>
+    protocolModel.value
+      ? protocolModel.value.experiments.map((e) => e.subexps.length).join(',')
+      : '',
+  () => {
+    const m = protocolModel.value
+    if (!m) return
+    const nExp = m.experiments.length
+    const clampExp = (r) => {
+      if ((r.experiment_idx ?? 0) > nExp - 1) r.experiment_idx = Math.max(0, nExp - 1)
+    }
+    for (const r of editableRows.value) {
+      clampExp(r)
+      const nSub = m.experiments[r.experiment_idx]?.subexps.length ?? 1
+      if ((r.subexperiment_idx ?? 0) > nSub - 1) r.subexperiment_idx = Math.max(0, nSub - 1)
+    }
+    predRows.value.forEach(clampExp)
+  },
+)
+
+const modelErrors = computed(() =>
+  protocolModel.value ? validateModel(protocolModel.value) : [],
+)
 
 function onNum(row, field, value) {
   row[field] = value === '' ? null : Number(value)
@@ -84,8 +131,13 @@ function rowInvalid(row) {
 }
 
 const canSave = computed(
-  () => !saving.value && !editableRows.value.some(rowInvalid),
+  () => !saving.value && !editableRows.value.some(rowInvalid) && modelErrors.value.length === 0,
 )
+
+function addProtocol() {
+  protocolModel.value = emptyModel()
+  activeExp.value = 0
+}
 
 function addRow() {
   editableRows.value.push(newRow(0))
@@ -124,8 +176,11 @@ function downloadJson(text, filename) {
 
 async function onSave() {
   error.value = ''
+  const protocolInfo = protocolModel.value
+    ? buildProtocolInfo(protocolModel.value, props.protocolInfo)
+    : null
   const obsData = buildObsData({
-    protocolInfo: props.protocolInfo,
+    protocolInfo,
     editableRows: editableRows.value,
     preservedItems: preservedItems.value,
     predictionRows: predRows.value,
@@ -164,6 +219,35 @@ async function onSave() {
       {{ error }}
     </Message>
 
+    <h3 class="eo-section">protocol_info</h3>
+    <template v-if="!protocolModel">
+      <Button
+        label="Add protocol_info"
+        icon="pi pi-plus"
+        size="small"
+        data-testid="add-protocol"
+        @click="addProtocol"
+      />
+      <p class="eo-hint">
+        This is a data-only obs_data with no protocol. Add one to define
+        experiments, controlled inputs (params_to_change), and prediction_items.
+      </p>
+    </template>
+    <ProtocolInfoEditor
+      v-else
+      v-model:active-exp="activeExp"
+      :model="protocolModel"
+      :all-names="allNames"
+    />
+    <Message
+      v-if="modelErrors.length"
+      severity="warn"
+      :closable="false"
+      data-testid="eo-model-error"
+    >
+      {{ modelErrors.join('; ') }}
+    </Message>
+
     <h3 class="eo-section">data_items</h3>
     <div class="eo-head">
       <span>Variable</span>
@@ -171,6 +255,7 @@ async function onSave() {
       <span>std</span>
       <span>operation</span>
       <span>exp</span>
+      <span>sub</span>
       <span />
     </div>
     <ul class="eo-list">
@@ -207,6 +292,13 @@ async function onSave() {
             @change="row.experiment_idx = Number($event.target.value)"
           >
             <option v-for="e in expOptions" :key="e" :value="e">{{ e }}</option>
+          </select>
+          <select
+            :value="row.subexperiment_idx"
+            data-testid="eo-subexp"
+            @change="row.subexperiment_idx = Number($event.target.value)"
+          >
+            <option v-for="su in subexpOptions(row.experiment_idx)" :key="su" :value="su">{{ su }}</option>
           </select>
           <span class="eo-rowbtns">
             <Button
@@ -321,7 +413,7 @@ async function onSave() {
 .eo-head,
 .eo-main {
   display: grid;
-  grid-template-columns: 1.4fr 0.8fr 0.8fr 1.2fr 0.6fr 4rem;
+  grid-template-columns: 1.4fr 0.8fr 0.8fr 1.2fr 0.5fr 0.5fr 4rem;
   align-items: center;
   gap: 0.4rem;
 }
