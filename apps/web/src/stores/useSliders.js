@@ -7,7 +7,7 @@ const LOG_MIN_THRESHOLD = 1e-3
 export const SLIDER_STEPS = 1000
 
 /**
- * Heuristic ported from cellml_explorer.html: use a log slider when the range
+ * Heuristic: use a log slider when the range
  * spans more than four orders of magnitude, or the lower bound is tiny. A range
  * that touches or crosses zero can't be log-mapped, so it stays linear.
  */

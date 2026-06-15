@@ -25,6 +25,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from calibration import calibration, list_python_interpreters
@@ -617,3 +618,23 @@ def uq_cancel(job_id: str) -> dict:
     if not uq.cancel(job_id):
         raise HTTPException(status_code=404, detail="UQ job not found")
     return {"cancelled": True}
+
+
+# ---------------------------------------------------------------------------
+# Static frontend — single-server deployment
+# ---------------------------------------------------------------------------
+# Serve the built Vue app (apps/web/dist) from the same server as the API so the
+# whole thing runs as one process on one port. Mounted LAST so the /api/* routes
+# above take precedence; the SPA is served for everything else. The app uses no
+# client-side routing, so html=True (index.html for "/") is sufficient.
+_FRONTEND_DIST = Path(__file__).resolve().parents[1] / "web" / "dist"
+if _FRONTEND_DIST.is_dir():
+    app.mount("/", StaticFiles(directory=str(_FRONTEND_DIST), html=True), name="frontend")
+else:
+
+    @app.get("/")
+    def _frontend_not_built() -> dict:
+        return {
+            "detail": "frontend not built — run `yarn build` in apps/web, then reload "
+            "http://localhost:8000"
+        }

@@ -4,29 +4,17 @@
 
 Interactive **manual parameter exploration** for CellML models: sliders change constants, simulations update plots, and experimental CSV data can be overlaid for rough calibration before formal parameter identification.
 
-## Current state (legacy)
+## Test fixtures (`resources/`)
 
 | Artifact | Role |
 |----------|------|
-| `cellml_explorer.html` | Single-file app (~1.2k lines): UI + CellML XML parser + MathML eval + RK4 + Web Worker + canvas plot + CSV overlay |
 | `resources/BG_MWC_Huang-Peskin_SS.cellml` | Primary test model (CellML 1.1, component `main`; `main/p_o2` is state, `main/alpha_o2` is parameter) |
 | `resources/Lotka_Volterra_forced.cellml` | Integration test model (CellML 2.0, component `Lotka_Volterra_module`; params `alpha`,`beta`,`delta`,`gamma`) |
 | `resources/Lotka_Volterra_obs_data.json` | Test obs_data fixture (1 experiment, 2 constant data_items for `x_max` / `y_max`) |
 | `resources/Lotka_Volterra_params_for_id.csv` | Test params fixture (4 rows, vessel `Lotka_Volterra_module`) |
-| `*.csv` (root) | Legacy experimental traces (e.g. Dash2016, winslow_rw2) |
+| `resources/*.csv` (e.g. Dash2016, winslow_rw2) | Experimental traces for overlay |
 
-**No server, no build step.** User opens the HTML file and uploads CellML + optional CSV via `FileReader`.
-
-### In-browser pipeline
-
-1. **Parse CellML** — walk XML for variables, ODEs (`<diff>`), algebraics (`<eq>`), parameters (`initial_value`).
-2. **Serialize MathML** — DOM → JSON trees for the worker.
-3. **Simulate** — fixed-step RK4; slider values override parameter constants.
-4. **Plot** — canvas; optional CSV scatter overlay.
-
-Limitations: subset CellML/MathML, RK4 only, 3-pass algebraic solve. Not suitable for production circulatory models without backend integration.
-
-## Planned architecture (see `docs/github-issue-drafts.md`)
+## Architecture
 
 ```
 apps/web/          Vue 3 + Vite + PrimeVue
@@ -46,9 +34,10 @@ Docs: `circulatory_autogen/tutorial/docs/parameter-identification.md`, `circulat
 
 ## Key files
 
-- `cellml_explorer.html` — source of truth for current UX until ported
+- `apps/web/src/App.vue` — main UI (tabs: Parameters · Sensitivity · Calibration · UQ; center: Output plots · Progress · Analysis)
+- `apps/api/main.py` — FastAPI app: `/api/*` routes + serves the built frontend
+- `scripts/install.py`, `scripts/run.py` — cross-platform setup + single-server launcher
 - `README.md` — user-facing quick start
-- `docs/github-issue-drafts.md` — proposed GitHub issues (drafts)
 
 ## Conventions for agents
 

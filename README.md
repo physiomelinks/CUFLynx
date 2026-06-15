@@ -1,32 +1,49 @@
-# cellml_file_slider_visualization
+# CUFLynx
 
-Interactive **manual parameter exploration** for CellML models: sliders change
-constants, simulations update plots, and experimental data can be overlaid for
-rough calibration before formal parameter identification.
+This app is designed as the GUI for Circulatory Autogen link[https://github.com/physiomelinks/circulatory_autogen]. Here you can perform sensitivity analysis, calibration, uncertainty quantification and manually inspect influence of parameters on you (CellML) model outputs. 
 
-The project is moving from a single-file prototype (`cellml_explorer.html`) to a
-two-app monorepo:
+## Quick start
 
-```
-apps/
-  web/    Vue 3 + Vite + PrimeVue 4 frontend (three-column explorer UI)
-  api/    FastAPI backend; simulation delegated to circulatory_autogen (Myokit CVODE)
-resources/   CellML test models + obs_data / params_for_id fixtures
-cellml_explorer.html   legacy single-file app (preserved until feature parity)
+The FastAPI server serves the built frontend, so the whole app runs as **one
+process on one URL**. Two helper scripts (written in Python, so they work the
+same on **Linux, macOS and Windows**) do everything:
+
+```bash
+python scripts/install.py    # one-time: install backend + frontend deps, build the UI
+python scripts/run.py        # build if needed, start the server, open the browser
 ```
 
-Unlike the legacy RK4-in-the-browser approach, the backend runs models with
-[circulatory_autogen](https://github.com/) `get_simulation_helper` /
-`ProtocolRunner` (Myokit CVODE). CellML *metadata* parsing (variable/parameter
-classification, obs_data and params_for_id parsing) is dependency-light, so the
-upload/parse endpoints and their unit tests run without Myokit installed.
+macOS/Linux can also use the wrappers `./install.sh` and `./run.sh`. Use the
+same Python interpreter for both scripts — that interpreter serves the API.
+`run.py` takes `--port N`, `--build` (force a fresh UI build) and `--no-browser`.
+
+Then the app opens at **http://localhost:8000**. The API is served under
+`/api/*` on the same origin; everything else serves the built Vue app from
+`apps/web/dist`.
+
+Calibration / sensitivity / UQ runs use the Python interpreter chosen in the top
+bar — point it at your `circulatory_autogen` venv. The backend locates the
+`circulatory_autogen` source via `CIRCULATORY_AUTOGEN_SRC`, defaulting to the
+sibling clone next to this repository.
+
+<details>
+<summary>Manual equivalent (without the scripts)</summary>
+
+```bash
+cd apps/api && pip install -e ".[dev]"   # backend deps (fastapi, numpy, myokit, ...)
+cd ../web   && yarn && yarn build         # frontend -> apps/web/dist
+cd ../api   && uvicorn main:app --port 8000
+```
+
+Start the server before building and `/` returns a "frontend not built" hint.
+</details>
 
 ## Backend — `apps/api`
 
 ```bash
 cd apps/api
 pip install -e ".[dev]"          # fastapi, pandas, numpy, myokit, libcellml, ...
-uvicorn main:app --reload --port 8000
+uvicorn main:app --reload --port 8000   # serves /api/* and the built frontend
 ```
 
 Key endpoints:
@@ -57,19 +74,19 @@ pytest -m integration         # real CellML simulation (needs myokit + libcellml
 ```bash
 cd apps/web
 yarn            # install (uses yarn, not npm)
-yarn dev        # http://localhost:5173 (proxies /api to :8000)
+yarn build      # production build -> dist/, served by the API (see Quick start)
 yarn test       # vitest unit tests (mocked API)
-yarn build      # production build
+yarn dev        # development server with hot-reload
 ```
+
+For day-to-day frontend development, `yarn dev` runs Vite on
+**http://localhost:5173** with hot-reload and proxies `/api` to a separately-run
+`uvicorn main:app` on :8000. For running/using the app, prefer the single-server
+Quick start above (build once, then just run uvicorn). The app talks to its own
+origin by default; set `VITE_API_URL` only for a split/remote backend.
 
 The UI is a three-column explorer (sliders · chart · variables + imports) using
 the PrimeVue Aura dark theme and `vue-chartjs`. Drag-and-drop a CellML file to
 populate the variable list, then add sliders (or import a `params_for_id.csv` to
 seed them automatically). Importing an `obs_data.json` switches the run to its
 protocol and overlays the ground-truth data items on the chart.
-
-## Legacy single-file app
-
-`cellml_explorer.html` still works standalone — open it in a browser and upload a
-CellML file plus an optional CSV. It is preserved until the new apps reach
-feature parity.
