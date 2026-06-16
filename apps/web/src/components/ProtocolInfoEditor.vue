@@ -74,6 +74,49 @@ function onAddParam() {
 function onNum(obj, field, value) {
   obj[field] = value === '' ? null : Number(value)
 }
+// Horizontal bounds the edit popup must stay within: the window, tightened by any
+// clipping/scrolling ancestor (e.g. the obs_data dialog body) so the popup is never
+// hidden behind a clipped edge.
+function editorBounds(el) {
+  let left = 0
+  let right = window.innerWidth
+  let node = el.parentElement
+  while (node) {
+    const s = getComputedStyle(node)
+    if (/(auto|scroll|hidden|clip)/.test(s.overflow + s.overflowX + s.overflowY)) {
+      const r = node.getBoundingClientRect()
+      left = Math.max(left, r.left)
+      right = Math.min(right, r.right)
+    }
+    node = node.parentElement
+  }
+  return { left, right }
+}
+// When a cell's edit popup opens, if it would run off the right edge (of the window
+// or its clipping container), shift it left so every input stays reachable on screen
+// instead of stretching off and being clipped.
+function fitEditor(e) {
+  const edit = e.currentTarget.querySelector('.tt-edit')
+  if (!edit) return
+  // clear any prior shift so the CSS-default position is measured first
+  edit.style.left = ''
+  edit.style.right = ''
+  edit.style.transform = ''
+  requestAnimationFrame(() => {
+    const rect = edit.getBoundingClientRect()
+    const margin = 8
+    const { left: bl, right: br } = editorBounds(edit)
+    if (rect.left >= bl + margin && rect.right <= br - margin) return // already fits
+    const parent = edit.offsetParent
+    if (!parent) return
+    const parentLeft = parent.getBoundingClientRect().left
+    let rendered = Math.min(rect.left, br - margin - rect.width)
+    rendered = Math.max(rendered, bl + margin)
+    edit.style.left = `${rendered - parentLeft}px`
+    edit.style.right = 'auto'
+    edit.style.transform = 'none'
+  })
+}
 // Time fields (step/pulse start & end) are clamped to [0, dur] so a perturbation
 // can only move within its own subexperiment, never past its boundary.
 function onTimeNum(obj, field, value, dur) {
@@ -170,7 +213,7 @@ function shapeIcon(cell) {
 
         <!-- Time-aligned timeline: pre_time + each subexp duration over the plot's x-axis. -->
         <div class="tt-track" :style="trackStyle">
-        <div class="tt-pre dim" :style="{ flexGrow: preFlex }">
+        <div class="tt-pre dim" :style="{ flexGrow: preFlex }" @mouseenter="fitEditor" @focusin="fitEditor">
           <span class="dim-val">{{ activeExperiment.preTime }}</span>
           <span class="dim-line" />
           <div class="tt-edit">
@@ -189,6 +232,8 @@ function shapeIcon(cell) {
           :key="s"
           class="tt-seg dim"
           :style="{ flexGrow: Math.max(sub.duration, 0.001) }"
+          @mouseenter="fitEditor"
+          @focusin="fitEditor"
         >
           <span class="dim-val">{{ sub.duration }}</span>
           <span class="dim-line" />
@@ -242,6 +287,8 @@ function shapeIcon(cell) {
             :key="s - 1"
             class="tt-seg"
             :style="{ flexGrow: Math.max(activeExperiment.subexps[s - 1].duration, 0.001) }"
+            @mouseenter="fitEditor"
+            @focusin="fitEditor"
           >
             <span class="tt-mark">
               <i v-if="model.params[qname][activeExp][s - 1].shape === 'trace'" class="pi pi-file tt-ico" />
@@ -258,22 +305,42 @@ function shapeIcon(cell) {
                 <option v-for="sh in shapeOptions(model.params[qname][activeExp][s - 1])" :key="sh" :value="sh">{{ sh }}</option>
               </select>
               <template v-if="model.params[qname][activeExp][s - 1].shape === 'constant'">
-                <input type="number" step="any" placeholder="value" :value="model.params[qname][activeExp][s - 1].value" @input="onNum(model.params[qname][activeExp][s - 1], 'value', $event.target.value)" />
+                <label class="tt-field"><span class="tt-cap">value</span>
+                  <input type="number" step="any" title="constant value, held over this sub-experiment" :value="model.params[qname][activeExp][s - 1].value" @input="onNum(model.params[qname][activeExp][s - 1], 'value', $event.target.value)" />
+                </label>
               </template>
               <template v-else-if="model.params[qname][activeExp][s - 1].shape === 'ramp'">
-                <input type="number" step="any" placeholder="from" :value="model.params[qname][activeExp][s - 1].from" @input="onNum(model.params[qname][activeExp][s - 1], 'from', $event.target.value)" />
-                <input type="number" step="any" placeholder="to" :value="model.params[qname][activeExp][s - 1].to" @input="onNum(model.params[qname][activeExp][s - 1], 'to', $event.target.value)" />
+                <label class="tt-field"><span class="tt-cap">from</span>
+                  <input type="number" step="any" title="value at the start of this sub-experiment" :value="model.params[qname][activeExp][s - 1].from" @input="onNum(model.params[qname][activeExp][s - 1], 'from', $event.target.value)" />
+                </label>
+                <label class="tt-field"><span class="tt-cap">to</span>
+                  <input type="number" step="any" title="value at the end of this sub-experiment" :value="model.params[qname][activeExp][s - 1].to" @input="onNum(model.params[qname][activeExp][s - 1], 'to', $event.target.value)" />
+                </label>
               </template>
               <template v-else-if="model.params[qname][activeExp][s - 1].shape === 'step'">
-                <input type="number" step="any" placeholder="baseline" :value="model.params[qname][activeExp][s - 1].baseline" @input="onNum(model.params[qname][activeExp][s - 1], 'baseline', $event.target.value)" />
-                <input type="number" step="any" placeholder="level" :value="model.params[qname][activeExp][s - 1].level" @input="onNum(model.params[qname][activeExp][s - 1], 'level', $event.target.value)" />
-                <input type="number" step="any" min="0" :max="activeExperiment.subexps[s - 1].duration" placeholder="t step" :value="model.params[qname][activeExp][s - 1].ts" @input="onTimeNum(model.params[qname][activeExp][s - 1], 'ts', $event.target.value, activeExperiment.subexps[s - 1].duration)" />
+                <label class="tt-field"><span class="tt-cap">baseline</span>
+                  <input type="number" step="any" title="value before the step" :value="model.params[qname][activeExp][s - 1].baseline" @input="onNum(model.params[qname][activeExp][s - 1], 'baseline', $event.target.value)" />
+                </label>
+                <label class="tt-field"><span class="tt-cap">level</span>
+                  <input type="number" step="any" title="value after the step, held to the end of the sub-experiment" :value="model.params[qname][activeExp][s - 1].level" @input="onNum(model.params[qname][activeExp][s - 1], 'level', $event.target.value)" />
+                </label>
+                <label class="tt-field"><span class="tt-cap">t step</span>
+                  <input type="number" step="0.1" min="0" :max="activeExperiment.subexps[s - 1].duration" title="time within the sub-experiment when the step occurs" :value="model.params[qname][activeExp][s - 1].ts" @input="onTimeNum(model.params[qname][activeExp][s - 1], 'ts', $event.target.value, activeExperiment.subexps[s - 1].duration)" />
+                </label>
               </template>
               <template v-else-if="model.params[qname][activeExp][s - 1].shape === 'pulse'">
-                <input type="number" step="any" placeholder="baseline" :value="model.params[qname][activeExp][s - 1].baseline" @input="onNum(model.params[qname][activeExp][s - 1], 'baseline', $event.target.value)" />
-                <input type="number" step="any" placeholder="peak" :value="model.params[qname][activeExp][s - 1].peak" @input="onNum(model.params[qname][activeExp][s - 1], 'peak', $event.target.value)" />
-                <input type="number" step="any" min="0" :max="activeExperiment.subexps[s - 1].duration" placeholder="t start" :value="model.params[qname][activeExp][s - 1].ts" @input="onTimeNum(model.params[qname][activeExp][s - 1], 'ts', $event.target.value, activeExperiment.subexps[s - 1].duration)" />
-                <input type="number" step="any" min="0" :max="activeExperiment.subexps[s - 1].duration" placeholder="t end" :value="model.params[qname][activeExp][s - 1].te" @input="onTimeNum(model.params[qname][activeExp][s - 1], 'te', $event.target.value, activeExperiment.subexps[s - 1].duration)" />
+                <label class="tt-field"><span class="tt-cap">baseline</span>
+                  <input type="number" step="any" title="value outside the pulse" :value="model.params[qname][activeExp][s - 1].baseline" @input="onNum(model.params[qname][activeExp][s - 1], 'baseline', $event.target.value)" />
+                </label>
+                <label class="tt-field"><span class="tt-cap">peak</span>
+                  <input type="number" step="any" title="value during the pulse" :value="model.params[qname][activeExp][s - 1].peak" @input="onNum(model.params[qname][activeExp][s - 1], 'peak', $event.target.value)" />
+                </label>
+                <label class="tt-field"><span class="tt-cap">t start</span>
+                  <input type="number" step="0.1" min="0" :max="activeExperiment.subexps[s - 1].duration" title="pulse start time within the sub-experiment" :value="model.params[qname][activeExp][s - 1].ts" @input="onTimeNum(model.params[qname][activeExp][s - 1], 'ts', $event.target.value, activeExperiment.subexps[s - 1].duration)" />
+                </label>
+                <label class="tt-field"><span class="tt-cap">t end</span>
+                  <input type="number" step="0.1" min="0" :max="activeExperiment.subexps[s - 1].duration" title="pulse end time within the sub-experiment" :value="model.params[qname][activeExp][s - 1].te" @input="onTimeNum(model.params[qname][activeExp][s - 1], 'te', $event.target.value, activeExperiment.subexps[s - 1].duration)" />
+                </label>
               </template>
               <template v-else>
                 <span class="pc-traceref" :title="model.params[qname][activeExp][s - 1].key">trace: {{ model.params[qname][activeExp][s - 1].key }}</span>
@@ -416,9 +483,9 @@ i.tt-ico {
 .tt-seg:hover .tt-edit,
 .tt-seg:focus-within .tt-edit {
   display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 2px;
+  align-items: flex-end;
+  flex-wrap: nowrap;
+  gap: 3px;
   position: absolute;
   left: 0;
   top: -2px;
@@ -446,6 +513,18 @@ i.tt-ico {
 .tt-edit select {
   width: 3rem;
   font-size: 0.74rem;
+}
+/* Each shape input gets an always-visible caption so its purpose is clear. */
+.tt-field {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.tt-cap {
+  font-size: 0.58rem;
+  opacity: 0.6;
+  line-height: 1;
+  white-space: nowrap;
 }
 .pc-param {
   border: 1px solid var(--p-content-border-color, #333);
