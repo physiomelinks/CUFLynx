@@ -66,6 +66,38 @@ describe('itemToRow / rowToItem round-trip', () => {
     expect('cost_type' in item).toBe(false)
     expect(item.plot_type).toBe('horizontal')
   })
+
+  it('round-trips a text source and drops it when cleared', () => {
+    const row = itemToRow({
+      variable: 'a', data_type: 'constant', operation: 'max', operands: ['m/x'],
+      value: 1, std: 0.1, source: 'Smith et al. 2020, fig 3',
+    })
+    expect(row.source).toBe('Smith et al. 2020, fig 3')
+    expect(rowToItem(row).source).toBe('Smith et al. 2020, fig 3')
+    row.source = ''
+    expect('source' in rowToItem(row)).toBe(false)
+  })
+
+  it('round-trips a comment and drops it when cleared', () => {
+    const row = itemToRow({
+      variable: 'a', data_type: 'constant', operation: 'max', operands: ['m/x'],
+      value: 1, std: 0.1, comment: 'noisy near t=0',
+    })
+    expect(row.comment).toBe('noisy near t=0')
+    expect(rowToItem(row).comment).toBe('noisy near t=0')
+    row.comment = ''
+    expect('comment' in rowToItem(row)).toBe(false)
+  })
+
+  it('never clobbers a legacy dict source (file paths)', () => {
+    const item = {
+      variable: 'a', data_type: 'constant', operation: 'max', operands: ['m/x'],
+      value: 1, std: 0.1, source: { value_path: 'x.npy' },
+    }
+    const row = itemToRow(item)
+    expect(row.source).toBe('') // dict not surfaced as editable text
+    expect(rowToItem(row).source).toEqual({ value_path: 'x.npy' }) // preserved
+  })
 })
 
 describe('newRow defaults', () => {

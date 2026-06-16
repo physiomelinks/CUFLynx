@@ -153,11 +153,21 @@ function addProtocol() {
 // experiment and lightly highlights its target subexperiment. No-op when the
 // obs_data is data-only (no protocol model to point at).
 function selectRow(row) {
-  if (!protocolModel.value) return
+  // Clicking anywhere on a data_item expands it (so its details are visible) and
+  // marks it selected.
   selectedRow.value = row
+  row._expanded = true
+  if (!protocolModel.value) return
   activeExp.value = Number(row.experiment_idx ?? 0)
   highlightExp.value = Number(row.experiment_idx ?? 0)
   highlightSubexp.value = Number(row.subexperiment_idx ?? 0)
+}
+
+// Chevron: a down-chevron (collapsed) expands AND highlights the item; an
+// up-chevron (expanded) just collapses it without changing the selection.
+function toggleRow(row) {
+  if (row._expanded) row._expanded = false
+  else selectRow(row)
 }
 
 function addRow() {
@@ -307,19 +317,21 @@ async function onSave() {
             :value="row.std"
             @input="onNum(row, 'std', $event.target.value)"
           />
-          <select :value="row.operation" @change="row.operation = $event.target.value">
+          <select :value="row.operation" @focus="selectRow(row)" @change="row.operation = $event.target.value">
             <option v-for="op in operations" :key="op" :value="op">{{ op || '(none)' }}</option>
           </select>
           <select
             :value="row.experiment_idx"
-            @change="row.experiment_idx = Number($event.target.value)"
+            @focus="selectRow(row)"
+            @change="row.experiment_idx = Number($event.target.value); selectRow(row)"
           >
             <option v-for="e in expOptions" :key="e" :value="e">{{ e }}</option>
           </select>
           <select
             :value="row.subexperiment_idx"
             data-testid="eo-subexp"
-            @change="row.subexperiment_idx = Number($event.target.value)"
+            @focus="selectRow(row)"
+            @change="row.subexperiment_idx = Number($event.target.value); selectRow(row)"
           >
             <option v-for="su in subexpOptions(row.experiment_idx)" :key="su" :value="su">{{ su }}</option>
           </select>
@@ -330,7 +342,7 @@ async function onSave() {
               rounded
               size="small"
               aria-label="details"
-              @click="row._expanded = !row._expanded"
+              @click.stop="toggleRow(row)"
             />
             <Button
               icon="pi pi-times"
@@ -340,7 +352,7 @@ async function onSave() {
               severity="danger"
               aria-label="remove"
               data-testid="eo-remove-row"
-              @click="removeRow(i)"
+              @click.stop="removeRow(i)"
             />
           </span>
         </div>
@@ -377,6 +389,22 @@ async function onSave() {
             <select :value="row.plot_type" @change="row.plot_type = $event.target.value">
               <option v-for="pt in plotTypes" :key="pt" :value="pt">{{ pt || '(none)' }}</option>
             </select>
+          </label>
+          <label class="eo-wide">source — where this data came from (e.g. paper / dataset / DOI)
+            <textarea
+              rows="2"
+              :value="row.source"
+              data-testid="eo-source"
+              @input="row.source = $event.target.value"
+            />
+          </label>
+          <label class="eo-wide">comment
+            <textarea
+              rows="2"
+              :value="row.comment"
+              data-testid="eo-comment"
+              @input="row.comment = $event.target.value"
+            />
           </label>
         </div>
       </li>
@@ -490,6 +518,28 @@ async function onSave() {
   font-size: 0.7rem;
   opacity: 0.8;
   gap: 0.15rem;
+}
+/* Free-text notes (source / comment) span the full detail width, stretchable. */
+.eo-wide {
+  grid-column: 1 / -1;
+}
+.eo-detail textarea {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.3rem 0.4rem;
+  font: inherit;
+  font-size: 0.78rem;
+  color: inherit;
+  background: var(--p-content-background, #1b1b1b);
+  border: 1px solid var(--p-content-border-color, #3a3a3a);
+  border-radius: 4px;
+  resize: vertical;
+  min-height: 2.2rem;
+}
+.eo-detail textarea:focus {
+  outline: none;
+  border-color: var(--p-primary-color, #5b9bd5);
+  box-shadow: 0 0 0 2px rgba(91, 155, 213, 0.2);
 }
 .eo-operands {
   display: flex;
