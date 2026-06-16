@@ -63,6 +63,11 @@ export function itemToRow(item) {
     subexperiment_idx: item.subexperiment_idx ?? 0,
     cost_type: item.cost_type ?? '',
     plot_type: item.plot_type && item.plot_type !== 'None' ? item.plot_type : '',
+    // free-text provenance ("where the data came from"). CA's `source` may also be
+    // a dict of file paths — only surface/edit the string form here.
+    source: typeof item.source === 'string' ? item.source : '',
+    // free-text comment about this data item.
+    comment: typeof item.comment === 'string' ? item.comment : '',
   }
 }
 
@@ -82,6 +87,8 @@ export function newRow(experimentIdx = 0) {
     subexperiment_idx: 0,
     cost_type: '',
     plot_type: 'horizontal',
+    source: '',
+    comment: '',
   }
 }
 
@@ -106,6 +113,11 @@ export function rowToItem(row) {
   else delete out.operation
   if (row.cost_type) out.cost_type = row.cost_type
   else delete out.cost_type
+  // Write the text source, but never clobber a legacy dict source (file paths).
+  if (row.source) out.source = row.source
+  else if (typeof out.source === 'string') delete out.source
+  if (row.comment) out.comment = row.comment
+  else delete out.comment
   return out
 }
 

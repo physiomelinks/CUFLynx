@@ -14,7 +14,7 @@ const ButtonStub = {
   props: ['label', 'icon', 'disabled', 'size', 'text', 'rounded', 'title'],
   emits: ['click'],
   template:
-    '<button v-bind="$attrs" :disabled="disabled" @click="$emit(\'click\')">{{ label }}</button>',
+    '<button v-bind="$attrs" :disabled="disabled" @click="$emit(\'click\', $event)">{{ label }}</button>',
 }
 const MessageStub = { template: '<div class="msg"><slot /></div>' }
 // Records the props it receives so tests can assert active-exp / highlight-subexp.
@@ -150,6 +150,9 @@ describe('EditObsDataDialog', () => {
     expect(pie.props('highlightSubexp')).toBe(null)
     expect(pie.props('highlightExp')).toBe(null)
 
+    // collapsed before selection: the detail (source note) is not rendered
+    expect(wrapper.find('[data-testid="eo-source"]').exists()).toBe(false)
+
     await wrapper.find('[data-testid="eo-main"]').trigger('click')
 
     expect(pie.props('activeExp')).toBe(1)
@@ -157,6 +160,58 @@ describe('EditObsDataDialog', () => {
     // highlight is pinned to the item's experiment so it shows only there
     expect(pie.props('highlightExp')).toBe(1)
     // the clicked row is marked selected (distinct from the others)
+    expect(wrapper.find('[data-testid="eo-row"]').classes()).toContain('selected')
+    // clicking a box in the row also un-minimises it (details now visible)
+    expect(wrapper.find('[data-testid="eo-source"]').exists()).toBe(true)
+  })
+
+  it('down-chevron expands+highlights; up-chevron just collapses (no re-highlight)', async () => {
+    const wrapper = mountDialog({
+      protocolInfo: { pre_times: [0, 0], sim_times: [[5, 5], [5, 5]] },
+      experimentCount: 2,
+      currentDataItems: [
+        {
+          variable: 'x_max', data_type: 'constant', operation: 'max', operands: ['m/x'],
+          value: 1, std: 1, experiment_idx: 1, subexperiment_idx: 1,
+        },
+      ],
+    })
+    await flushPromises()
+    const pie = wrapper.findComponent(ProtocolEditorStub)
+    const chevron = () => wrapper.find('[data-testid="eo-row"]').findAll('button')[0]
+
+    // down-chevron (collapsed) -> expands AND highlights
+    await chevron().trigger('click')
+    expect(wrapper.find('[data-testid="eo-source"]').exists()).toBe(true)
+    expect(pie.props('highlightExp')).toBe(1)
+    expect(wrapper.find('[data-testid="eo-row"]').classes()).toContain('selected')
+
+    // up-chevron (expanded) -> collapses, selection/highlight unchanged
+    await chevron().trigger('click')
+    expect(wrapper.find('[data-testid="eo-source"]').exists()).toBe(false)
+    expect(pie.props('highlightExp')).toBe(1)
+  })
+
+  it('focusing a row dropdown also selects/highlights that data_item', async () => {
+    const wrapper = mountDialog({
+      protocolInfo: { pre_times: [0, 0], sim_times: [[5, 5], [5, 5]] },
+      experimentCount: 2,
+      currentDataItems: [
+        {
+          variable: 'x_max', data_type: 'constant', operation: 'max', operands: ['m/x'],
+          value: 1, std: 1, experiment_idx: 1, subexperiment_idx: 1,
+        },
+      ],
+    })
+    await flushPromises()
+    const pie = wrapper.findComponent(ProtocolEditorStub)
+    expect(pie.props('highlightExp')).toBe(null)
+
+    await wrapper.find('[data-testid="eo-subexp"]').trigger('focus')
+
+    expect(pie.props('activeExp')).toBe(1)
+    expect(pie.props('highlightExp')).toBe(1)
+    expect(pie.props('highlightSubexp')).toBe(1)
     expect(wrapper.find('[data-testid="eo-row"]').classes()).toContain('selected')
   })
 
