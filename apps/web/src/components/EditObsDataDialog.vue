@@ -314,6 +314,7 @@ async function onSave() {
               text
               rounded
               size="small"
+              severity="danger"
               aria-label="remove"
               data-testid="eo-remove-row"
               @click="removeRow(i)"
@@ -374,7 +375,7 @@ async function onSave() {
             <select :value="row.experiment_idx" @change="row.experiment_idx = Number($event.target.value)">
               <option v-for="e in expOptions" :key="e" :value="e">{{ e }}</option>
             </select>
-            <Button icon="pi pi-times" text rounded size="small" aria-label="remove" @click="removePred(i)" />
+            <Button icon="pi pi-times" text rounded size="small" severity="danger" aria-label="remove" @click="removePred(i)" />
           </div>
         </li>
       </ul>

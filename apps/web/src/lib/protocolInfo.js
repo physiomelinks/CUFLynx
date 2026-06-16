@@ -6,7 +6,7 @@
 // module defines GUI "shapes" (constant / ramp / pulse) that compile down to
 // those native traces, and round-trips the working model <-> protocol_info.
 
-export const SHAPES = ['constant', 'ramp', 'pulse']
+export const SHAPES = ['constant', 'ramp', 'step', 'pulse']
 // Edge sharpness for pulses, as a fraction of the subexperiment duration. Keeps
 // myokit's TimeSeriesProtocol happy (strictly-increasing t) while looking ~step.
 const EPS_FRACTION = 1e-3
@@ -23,6 +23,8 @@ export function makeCell(shape, dur = 1) {
   switch (shape) {
     case 'ramp':
       return { shape: 'ramp', from: 0, to: 0 }
+    case 'step':
+      return { shape: 'step', baseline: 0, level: 1, ts: num(dur, 1) / 2 }
     case 'pulse':
       return { shape: 'pulse', baseline: 0, peak: 1, ts: 0, te: num(dur, 1) }
     case 'trace':
@@ -121,12 +123,38 @@ export function pulseTrace(b, p, ts, te, dur) {
   return { t, values }
 }
 
+/** A step: baseline until ts, then jumps to `level` and holds to the end. */
+export function stepTrace(baseline, level, ts, dur) {
+  const d = num(dur, 1)
+  const t0 = clamp(num(ts, 0), 0, d)
+  const eps = d * EPS_FRACTION
+  const t = [0]
+  const values = [num(baseline, 0)]
+  const push = (tt, vv) => {
+    const x = clamp(tt, 0, d)
+    if (x > t[t.length - 1]) {
+      t.push(x)
+      values.push(vv)
+    } else {
+      values[values.length - 1] = vv
+    }
+  }
+  if (t0 > 0) push(t0, num(baseline, 0)) // hold baseline up to the step
+  push(Math.min(t0 + eps, d), num(level, 0)) // jump to level
+  push(d, num(level, 0)) // hold to the end
+  return { t, values }
+}
+
 /** Compile a cell to its params_to_change leaf + an optional generated trace. */
 export function compileCell(cell, dur, qname, e, s) {
   switch (cell?.shape) {
     case 'ramp': {
       const name = traceName(qname, e, s)
       return { value: name, trace: { name, def: rampTrace(cell.from, cell.to, dur) } }
+    }
+    case 'step': {
+      const name = traceName(qname, e, s)
+      return { value: name, trace: { name, def: stepTrace(cell.baseline, cell.level, cell.ts, dur) } }
     }
     case 'pulse': {
       const name = traceName(qname, e, s)
@@ -218,13 +246,17 @@ export function validateModel(model) {
         return
       }
       row.forEach((cell, s) => {
+        const dur = num(exp.subexps[s].duration, 0)
         if (cell.shape === 'pulse') {
-          const dur = num(exp.subexps[s].duration, 0)
           const ts = num(cell.ts, 0)
           const te = num(cell.te, dur)
           if (!(ts < te)) errors.push(`Param ${qname} e${e}s${s}: pulse start must be < end`)
           if (ts < 0 || te > dur)
             errors.push(`Param ${qname} e${e}s${s}: pulse times must be within [0, ${dur}]`)
+        } else if (cell.shape === 'step') {
+          const ts = num(cell.ts, 0)
+          if (ts < 0 || ts > dur)
+            errors.push(`Param ${qname} e${e}s${s}: step time must be within [0, ${dur}]`)
         }
       })
     })
