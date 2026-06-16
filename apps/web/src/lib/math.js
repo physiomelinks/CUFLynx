@@ -29,3 +29,13 @@ export function renderMath(s) {
     return escapeHtml(s)
   }
 }
+
+/** Render a sensitivity output label `var^{e,s} [operation]`: the `var^{e,s}`
+ * part is typeset as math, but the trailing `[operation]` is kept as plain text
+ * (its underscores are operation-name separators, not LaTeX subscripts). */
+export function renderOutputLabel(s) {
+  if (!s) return ''
+  const m = String(s).match(/^(.*?)\s*\[([^\]]*)\]\s*$/)
+  if (!m) return renderMath(s)
+  return `${renderMath(m[1])} <span class="op-label">[${escapeHtml(m[2])}]</span>`
+}

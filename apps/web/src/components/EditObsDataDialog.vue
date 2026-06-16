@@ -47,6 +47,13 @@ const costTypes = ref(FALLBACK_COST_TYPES)
 const plotTypes = ref(FALLBACK_PLOT_TYPES)
 const protocolModel = ref(null)
 const activeExp = ref(0)
+// 0-based subexp of the last-selected data_item, lightly highlighted in the
+// embedded protocol timeline. null = nothing selected.
+const highlightSubexp = ref(null)
+// Experiment the highlighted subexp belongs to (so it only shows in that exp's
+// timeline), and the currently selected row (shown distinctly in the list).
+const highlightExp = ref(null)
+const selectedRow = ref(null)
 const saving = ref(false)
 const error = ref('')
 
@@ -71,6 +78,9 @@ watch(
     predRows.value = (props.currentPredictionItems ?? []).map(predToRow)
     protocolModel.value = props.protocolInfo ? protocolToModel(props.protocolInfo) : null
     activeExp.value = 0
+    highlightSubexp.value = null
+    highlightExp.value = null
+    selectedRow.value = null
   },
   { immediate: true },
 )
@@ -137,6 +147,17 @@ const canSave = computed(
 function addProtocol() {
   protocolModel.value = emptyModel()
   activeExp.value = 0
+}
+
+// Selecting a data_item row points the embedded protocol editor at that item's
+// experiment and lightly highlights its target subexperiment. No-op when the
+// obs_data is data-only (no protocol model to point at).
+function selectRow(row) {
+  if (!protocolModel.value) return
+  selectedRow.value = row
+  activeExp.value = Number(row.experiment_idx ?? 0)
+  highlightExp.value = Number(row.experiment_idx ?? 0)
+  highlightSubexp.value = Number(row.subexperiment_idx ?? 0)
 }
 
 function addRow() {
@@ -238,6 +259,8 @@ async function onSave() {
       v-model:active-exp="activeExp"
       :model="protocolModel"
       :all-names="allNames"
+      :highlight-subexp="highlightSubexp"
+      :highlight-exp="highlightExp"
     />
     <Message
       v-if="modelErrors.length"
@@ -262,10 +285,10 @@ async function onSave() {
       <li
         v-for="(row, i) in editableRows"
         :key="i"
-        :class="{ invalid: rowInvalid(row) }"
+        :class="{ invalid: rowInvalid(row), selected: row === selectedRow }"
         data-testid="eo-row"
       >
-        <div class="eo-main">
+        <div class="eo-main" data-testid="eo-main" @click="selectRow(row)">
           <input
             type="text"
             class="eo-var"
@@ -443,6 +466,13 @@ async function onSave() {
 .eo-list li.invalid {
   background: rgba(232, 74, 95, 0.12);
 }
+/* The currently selected data_item stands out with an accent bar + tint. */
+.eo-list li.selected {
+  box-shadow: inset 3px 0 0 0 var(--p-primary-color, #5b9bd5);
+}
+.eo-list li.selected:not(.invalid) {
+  background: rgba(91, 155, 213, 0.16);
+}
 .eo-rowbtns {
   display: flex;
   justify-content: flex-end;
@@ -491,7 +521,22 @@ async function onSave() {
 .eo-detail input,
 .eo-detail select {
   width: 100%;
+  height: 1.75rem;
+  box-sizing: border-box;
+  padding: 0 0.4rem;
   font-size: 0.78rem;
+  color: inherit;
+  background: var(--p-content-background, #1b1b1b);
+  border: 1px solid var(--p-content-border-color, #3a3a3a);
+  border-radius: 4px;
+}
+.eo-list input:focus,
+.eo-list select:focus,
+.eo-detail input:focus,
+.eo-detail select:focus {
+  outline: none;
+  border-color: var(--p-primary-color, #5b9bd5);
+  box-shadow: 0 0 0 2px rgba(91, 155, 213, 0.2);
 }
 .eo-count {
   margin-right: auto;

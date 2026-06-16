@@ -21,6 +21,12 @@ const props = defineProps({
   model: { type: Object, required: true }, // mutated in place (parent owns it)
   allNames: { type: Array, default: () => [] },
   activeExp: { type: Number, default: 0 },
+  // 0-based subexp index to lightly highlight in the active experiment's timeline
+  // (e.g. the subexperiment a selected data_item targets). null = no highlight.
+  highlightSubexp: { type: Number, default: null },
+  // The experiment the highlight belongs to: the subexp is only highlighted while
+  // that experiment is the active one (a data_item lives in a single experiment).
+  highlightExp: { type: Number, default: null },
 })
 const emit = defineEmits(['update:activeExp'])
 
@@ -44,6 +50,15 @@ const seriesByQname = computed(() => {
 const boundaries = computed(() => subexpBoundaries(activeExperiment.value))
 const preTime = computed(() => Number(activeExperiment.value?.preTime) || 0)
 const totalSim = computed(() => experimentTotalSim(activeExperiment.value))
+
+// Highlight a subexp only when one is requested AND (no experiment is pinned, or
+// the pinned experiment is the one currently shown) — so a data_item's highlight
+// appears only in its own experiment's timeline, not on every experiment tab.
+const showHighlight = computed(
+  () =>
+    props.highlightSubexp != null &&
+    (props.highlightExp == null || props.activeExp === props.highlightExp),
+)
 // Pads a "time track" so its segments line up with the plot's drawing area
 // (left = chart y-axis width, right = chart padding).
 const trackStyle = computed(() => ({
@@ -231,6 +246,7 @@ function shapeIcon(cell) {
           v-for="(sub, s) in activeExperiment.subexps"
           :key="s"
           class="tt-seg dim"
+          :class="{ 'tt-highlight': showHighlight && s === highlightSubexp }"
           :style="{ flexGrow: Math.max(sub.duration, 0.001) }"
           @mouseenter="fitEditor"
           @focusin="fitEditor"
@@ -286,6 +302,7 @@ function shapeIcon(cell) {
             v-for="s in subexpCount"
             :key="s - 1"
             class="tt-seg"
+            :class="{ 'tt-highlight': showHighlight && s - 1 === highlightSubexp }"
             :style="{ flexGrow: Math.max(activeExperiment.subexps[s - 1].duration, 0.001) }"
             @mouseenter="fitEditor"
             @focusin="fitEditor"
@@ -426,6 +443,11 @@ function shapeIcon(cell) {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
+}
+/* Light tint marking the subexperiment targeted by a selected data_item. */
+.tt-seg.tt-highlight {
+  background: var(--p-highlight-background, rgba(91, 155, 213, 0.12));
+  border-radius: 3px;
 }
 .tt-mark {
   font-size: 0.72rem;

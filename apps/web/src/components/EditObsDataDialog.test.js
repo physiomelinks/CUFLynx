@@ -17,11 +17,18 @@ const ButtonStub = {
     '<button v-bind="$attrs" :disabled="disabled" @click="$emit(\'click\')">{{ label }}</button>',
 }
 const MessageStub = { template: '<div class="msg"><slot /></div>' }
+// Records the props it receives so tests can assert active-exp / highlight-subexp.
+const ProtocolEditorStub = {
+  name: 'ProtocolInfoEditor',
+  props: ['model', 'allNames', 'activeExp', 'highlightSubexp', 'highlightExp'],
+  emits: ['update:activeExp'],
+  template: '<div class="pie-stub" />',
+}
 const stubs = {
   Dialog: DialogStub,
   Button: ButtonStub,
   Message: MessageStub,
-  ProtocolInfoEditor: true,
+  ProtocolInfoEditor: ProtocolEditorStub,
 }
 
 const baseProps = {
@@ -123,6 +130,34 @@ describe('EditObsDataDialog', () => {
     expect(wrapper.emitted('update:visible').at(-1)).toEqual([false])
 
     clickSpy.mockRestore()
+  })
+
+  it('selecting a data_item row points the protocol editor at its exp/subexp', async () => {
+    const wrapper = mountDialog({
+      protocolInfo: { pre_times: [0, 0], sim_times: [[5, 5], [5, 5]] },
+      experimentCount: 2,
+      currentDataItems: [
+        {
+          variable: 'x_max', data_type: 'constant', operation: 'max', operands: ['m/x'],
+          value: 1, std: 1, experiment_idx: 1, subexperiment_idx: 1,
+        },
+      ],
+    })
+    await flushPromises()
+    const pie = wrapper.findComponent(ProtocolEditorStub)
+    // defaults before any selection
+    expect(pie.props('activeExp')).toBe(0)
+    expect(pie.props('highlightSubexp')).toBe(null)
+    expect(pie.props('highlightExp')).toBe(null)
+
+    await wrapper.find('[data-testid="eo-main"]').trigger('click')
+
+    expect(pie.props('activeExp')).toBe(1)
+    expect(pie.props('highlightSubexp')).toBe(1)
+    // highlight is pinned to the item's experiment so it shows only there
+    expect(pie.props('highlightExp')).toBe(1)
+    // the clicked row is marked selected (distinct from the others)
+    expect(wrapper.find('[data-testid="eo-row"]').classes()).toContain('selected')
   })
 
   it('data-only: "Add protocol_info" → save emits object form', async () => {
