@@ -63,6 +63,19 @@ describe('buildProtocolInfo', () => {
     expect(pi.protocol_traces[key]).toEqual({ t: [0, 4], values: [1, 5] })
   })
 
+  it('generates a step trace that jumps to the level and holds', () => {
+    const m = emptyModel()
+    addParam(m, 'a/x')
+    m.experiments[0].subexps[0].duration = 10
+    m.params['a/x'][0][0] = { shape: 'step', baseline: 0, level: 3, ts: 4 }
+    const pi = buildProtocolInfo(m, null)
+    const tr = pi.protocol_traces[traceName('a/x', 0, 0)]
+    for (let i = 1; i < tr.t.length; i++) expect(tr.t[i]).toBeGreaterThan(tr.t[i - 1])
+    expect(tr.values[0]).toBe(0) // baseline first
+    expect(tr.values[tr.values.length - 1]).toBe(3) // holds the level to the end
+    expect(tr.t[tr.t.length - 1]).toBe(10)
+  })
+
   it('generates a strictly-increasing pulse trace reaching the peak', () => {
     const m = emptyModel()
     addParam(m, 'a/y')
@@ -136,6 +149,7 @@ describe('makeCell', () => {
   it('returns shape defaults', () => {
     expect(makeCell('constant')).toEqual({ shape: 'constant', value: 0 })
     expect(makeCell('ramp')).toEqual({ shape: 'ramp', from: 0, to: 0 })
+    expect(makeCell('step', 4)).toEqual({ shape: 'step', baseline: 0, level: 1, ts: 2 })
     expect(makeCell('pulse', 4)).toEqual({ shape: 'pulse', baseline: 0, peak: 1, ts: 0, te: 4 })
   })
 })

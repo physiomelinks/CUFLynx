@@ -45,9 +45,9 @@ describe('AnalysisPanel UQ section', () => {
 })
 
 const SENS = {
-  indices: { local: { 'y (Exp0, Sub0)': { 'm/a': 0.5, 'm/b': -0.2 } } },
+  indices: { local: { 'y^{0,0} [max]': { 'm/a': 0.5, 'm/b': -0.2 } } },
   paramNames: ['m/a', 'm/b'],
-  outputNames: ['y (Exp0, Sub0)'],
+  outputNames: ['y^{0,0} [max]'],
 }
 const SAVED = [
   { id: 1, label: '#1 Sobol · saltelli · n256', at: '10:00:00' },
@@ -78,5 +78,23 @@ describe('AnalysisPanel sensitivity comparison', () => {
   it('hides the run selector when nothing is saved', () => {
     const wrapper = mount(AnalysisPanel, { props: { ...SENS, savedResults: [] } })
     expect(wrapper.find('[data-testid="saved-runs"]').exists()).toBe(false)
+  })
+
+  it('typesets the var^{e,s} [op] output-name column header via KaTeX', () => {
+    const wrapper = mount(AnalysisPanel, { props: { ...SENS } })
+    const head = wrapper.find('[data-testid="heatmap-table"] thead .col-head')
+    // The ^{0,0} superscript means the label is LaTeX, so the cell content is
+    // typeset via KaTeX (the raw caret/brace form survives only in the title
+    // tooltip, kept for accessibility / hover).
+    expect(head.find('.katex').exists()).toBe(true)
+    expect(head.attributes('title')).toBe('y^{0,0} [max]')
+    // the [operation] suffix is plain text, NOT typeset by KaTeX
+    const op = head.find('.op-label')
+    expect(op.exists()).toBe(true)
+    expect(op.text()).toBe('[max]')
+    expect(op.find('.katex').exists()).toBe(false)
+    // indices are still looked up by the (reformatted) output-name string key
+    const cell = wrapper.find('[data-testid="heatmap-table"] tbody .cell')
+    expect(cell.text()).toBe('0.50')
   })
 })

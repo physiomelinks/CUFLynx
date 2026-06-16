@@ -54,8 +54,23 @@ def _indices_to_dict(sa) -> dict:
     ``load_sobol_indices`` returns ``{'S1': {out_name: {param: val}}, 'ST': {...}}``.
     Derive the param/output name lists from it so the frontend heatmap can render a
     stable params x outputs grid.
+
+    CA emits Sobol keys as ``name (ExpX, SubY)`` (plus optional ``[op]``/``#k``).
+    Reformat them into the shared ``var^{e,s} [op]`` label so global (Sobol) and
+    local runs display identically. Both the ``indices`` dict keys *and* the
+    ``output_names`` list are remapped together, keeping each label aligned with
+    its indices column (the frontend looks up indices by the output-name string).
     """
-    indices = sa.SA_manager.load_sobol_indices()
+    from local_sensitivity import format_sobol_output_name  # noqa: E402
+
+    raw = sa.SA_manager.load_sobol_indices()
+    indices: dict = {}
+    for kind, by_out in raw.items():
+        indices[kind] = {
+            format_sobol_output_name(out_name): params
+            for out_name, params in (by_out or {}).items()
+        }
+
     param_names: list[str] = []
     output_names: list[str] = []
     for kind in ("S1", "ST"):

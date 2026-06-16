@@ -37,9 +37,54 @@ undefined) or a simulation failed are reported as ``None`` ("–" in the heatmap
 
 from __future__ import annotations
 
+import re
+
 import numpy as np
 
 _TINY = 1e-12
+
+
+def format_output_name(name_for_plotting, exp_idx, subexp_idx, operation=None) -> str:
+    """Shared sensitivity output-name label, used by both the local and Sobol paths.
+
+    Produces ``var^{exp,subexp} [operation]`` (e.g. ``V_lv^{0,1} [max]``). When the
+    operation is empty/None the ``[..]`` suffix is omitted (``V_lv^{0,1}``). The
+    ``^{e,s}`` superscript is LaTeX so the frontend's ``renderMath`` typesets it.
+    """
+    label = f"{name_for_plotting}^{{{exp_idx},{subexp_idx}}}"
+    op = (str(operation).strip() if operation is not None else "")
+    if op and op.lower() != "none":
+        label += f" [{op}]"
+    return label
+
+
+# Matches the legacy Sobol key form ``name (ExpX, SubY)`` with an optional
+# trailing ``[op]`` (added by CA on name collisions) and ``#k`` dedupe suffix, so
+# the Sobol path can be reformatted to match the local path without re-deriving
+# from obs_info (which would risk misaligning labels with the indices columns).
+_SOBOL_KEY_RE = re.compile(
+    r"^(?P<name>.*?)\s*\(Exp(?P<exp>[^,]+),\s*Sub(?P<sub>[^)]+)\)"
+    r"(?:\s*\[(?P<op>[^\]]*)\])?(?P<dup>\s*#\d+)?$"
+)
+
+
+def format_sobol_output_name(key: str) -> str:
+    """Reformat one CA Sobol indices key into the shared output-name format.
+
+    CA keys look like ``name (ExpX, SubY)``, optionally ``... [op]`` and/or
+    ``... #k`` (collision dedupe). Keys that don't match (e.g. the trailing
+    ``Cost`` column) are returned unchanged. The ``#k`` dedupe suffix is preserved
+    so distinct columns keep distinct (and still unique) keys.
+    """
+    m = _SOBOL_KEY_RE.match(key)
+    if not m:
+        return key
+    label = format_output_name(
+        m.group("name").strip(), m.group("exp").strip(), m.group("sub").strip(),
+        m.group("op"),
+    )
+    dup = m.group("dup")
+    return f"{label}{dup}" if dup else label
 
 
 def _bounds_point(mins: np.ndarray, maxs: np.ndarray, mode: str) -> np.ndarray:
@@ -90,11 +135,15 @@ def _resolve_nominal(sm, param_names, mins, maxs, settings, best_vals, best_para
 
 
 def _output_names(sm) -> list[str]:
-    """One label per observable operation, matching the Sobol CSV naming."""
+    """One label per observable operation, matching the Sobol output naming."""
     obs = sm.obs_info
     return [
-        f"{obs['names_for_plotting'][j]} "
-        f"(Exp{obs['experiment_idxs'][j]}, Sub{obs['subexperiment_idxs'][j]})"
+        format_output_name(
+            obs["names_for_plotting"][j],
+            obs["experiment_idxs"][j],
+            obs["subexperiment_idxs"][j],
+            obs["operations"][j],
+        )
         for j in range(len(obs["operations"]))
     ]
 

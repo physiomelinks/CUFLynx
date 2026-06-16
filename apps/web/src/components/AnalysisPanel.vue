@@ -1,6 +1,6 @@
 <script setup>
 import { ref, computed, watch } from 'vue'
-import { renderMath } from '../lib/math'
+import { renderMath, renderOutputLabel } from '../lib/math'
 
 const props = defineProps({
   // Sensitivity: { S1: {outName: {param: val}}, ST: {...}, local: {...} }
@@ -284,7 +284,7 @@ const uqMethodLabel = computed(() =>
                   :key="out"
                   class="col-head"
                   :title="out"
-                  v-html="renderMath(out)"
+                  v-html="renderOutputLabel(out)"
                 />
               </tr>
             </thead>
@@ -515,6 +515,12 @@ const uqMethodLabel = computed(() =>
   overflow: hidden;
   text-overflow: ellipsis;
   font-weight: 600;
+}
+/* The [operation] suffix is plain text, not math — keep it upright/unstyled. */
+.op-label {
+  font-weight: 400;
+  font-style: normal;
+  white-space: nowrap;
 }
 .row-head {
   text-align: left;
