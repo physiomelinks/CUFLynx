@@ -162,7 +162,22 @@ def _relative_coeff(deriv: float, pj: float, denom: float, rng: float) -> float 
     return float(deriv * (rng if rng > 0 else 1.0) / denom)
 
 
-def _evaluate_features(sm, param_vals: np.ndarray) -> np.ndarray:
+def _numpy_operation_funcs(sm):
+    """Operation funcs that reduce the *numeric* (numpy) results of a forward run.
+
+    For ``casadi_python`` the SA manager builds casadi-mode operation funcs (they
+    call ``.numel()`` etc. on CasADi symbols), which fail on the plain numpy
+    arrays a finite-difference forward run produces. Rebuild a numpy-mode table in
+    that case; other backends already use numpy-mode ops.
+    """
+    if getattr(sm, "model_type", None) != "casadi_python":
+        return sm.operation_funcs_dict
+    import operation_funcs as _op  # noqa: E402 (CA module, resolved via sys.path)
+
+    return _op.get_operation_funcs_dict_for_mode("numpy")
+
+
+def _evaluate_features(sm, param_vals: np.ndarray, op_funcs) -> np.ndarray:
     """Run the protocol once and reduce each observable to a scalar feature.
 
     Mirrors ``sobol_SA.generate_outputs_mpi``'s per-sample inner loop, but for a
@@ -189,7 +204,7 @@ def _evaluate_features(sm, param_vals: np.ndarray) -> np.ndarray:
         operands_outputs = operands_outputs_dict.get((exp_idx, subexp_idx), None)
         if operands_outputs is None:
             continue
-        func = sm.operation_funcs_dict[obs["operations"][j]]
+        func = op_funcs[obs["operations"][j]]
         raw_kwargs = obs["operation_kwargs"][j]
         kwargs = dict(raw_kwargs) if isinstance(raw_kwargs, dict) else {}
         for k, v in list(kwargs.items()):
@@ -206,8 +221,11 @@ def _evaluate_features(sm, param_vals: np.ndarray) -> np.ndarray:
 
 def _fd_local_sensitivity(sm, param_names, nominal, mins, maxs, output_names, h):
     """Central finite-difference local sensitivities (works for any backend that
-    runs a forward simulation, including ``cellml_only``)."""
-    y0 = _evaluate_features(sm, nominal)
+    runs a forward simulation, including ``cellml_only`` and ``casadi_python``)."""
+    # FD reduces numeric (numpy) forward-run results, so use numpy-mode ops even
+    # when the casadi_python SA manager holds casadi-mode operation funcs.
+    op_funcs = _numpy_operation_funcs(sm)
+    y0 = _evaluate_features(sm, nominal, op_funcs)
 
     local: dict[str, dict[str, float | None]] = {name: {} for name in output_names}
     for k, pname in enumerate(param_names):
@@ -219,8 +237,8 @@ def _fd_local_sensitivity(sm, param_names, nominal, mins, maxs, output_names, h)
         p_plus[k] = pj + step
         p_minus = nominal.copy()
         p_minus[k] = pj - step
-        yp = _evaluate_features(sm, p_plus)
-        ym = _evaluate_features(sm, p_minus)
+        yp = _evaluate_features(sm, p_plus, op_funcs)
+        ym = _evaluate_features(sm, p_minus, op_funcs)
         print(f"  d/d[{pname}] evaluated", flush=True)
 
         for i, oname in enumerate(output_names):
