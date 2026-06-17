@@ -1052,6 +1052,15 @@ watch(
               : `AD unavailable — these obs_data operations in use are not @differentiable: ${nonDifferentiableOps.join(', ')}`
           }}</span>.
         </p>
+        <p
+          v-if="solverInfo.method === 'semi_implicit_euler'"
+          class="settings-warn"
+          data-testid="semi-implicit-warning"
+        >
+          ⚠ semi_implicit_euler is a first-order, fixed-step damped solver — it enables
+          AD on stiff models but is <strong>less accurate than CVODES</strong>. Reduce
+          dt and run a convergence study (confirm results stop changing) before trusting them.
+        </p>
       </div>
     </Dialog>
 
@@ -1186,6 +1195,11 @@ watch(
   border-top: 1px solid var(--p-content-border-color, #333);
   margin: 0.5rem 0 0.25rem;
   width: 100%;
+}
+.settings-warn {
+  font-size: 0.78rem;
+  margin: 0;
+  color: #d08700;
 }
 .time-controls {
   display: flex;
