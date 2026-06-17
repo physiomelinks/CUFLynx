@@ -84,7 +84,12 @@ const costOptions = {
   maintainAspectRatio: false,
   animation: false,
   scales: {
-    x: { type: 'linear', title: { display: true, text: 'generation' } },
+    x: {
+      type: 'linear',
+      title: { display: true, text: 'generation' },
+      // Generations are whole numbers — no fractional ticks on the x axis.
+      ticks: { stepSize: 1, precision: 0 },
+    },
     y: { type: 'logarithmic', title: { display: true, text: 'cost' } },
   },
   plugins: { legend: { display: true, position: 'bottom' } },
@@ -95,7 +100,12 @@ const paramOptions = {
   maintainAspectRatio: false,
   animation: false,
   scales: {
-    x: { type: 'linear', title: { display: true, text: 'generation' } },
+    x: {
+      type: 'linear',
+      title: { display: true, text: 'generation' },
+      // Generations are whole numbers — no fractional ticks on the x axis.
+      ticks: { stepSize: 1, precision: 0 },
+    },
     y: {
       type: 'linear',
       min: 0,
