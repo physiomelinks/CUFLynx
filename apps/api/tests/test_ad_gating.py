@@ -10,7 +10,35 @@ import math
 import model_codegen
 import pytest
 import sensitivity_runner
-from conftest import LV_MODEL_PATH, LV_OBS_DATA_PATH, LV_PARAMS_CSV_PATH
+from conftest import LV_MODEL_PATH, LV_OBS_DATA_PATH, LV_PARAMS_CSV_PATH, RESOURCES_DIR
+
+C3_MODEL_PATH = RESOURCES_DIR / "3compartment_flat.cellml"
+C3_OBS_DATA_PATH = RESOURCES_DIR / "3compartment_obs_data.json"
+C3_PARAMS_CSV_PATH = RESOURCES_DIR / "3compartment_params_for_id.csv"
+
+
+@pytest.mark.integration
+def test_fd_local_sensitivity_on_casadi_python_reduces_with_numpy_ops(tmp_path, requires_casadi):
+    """Regression: FD local sensitivity on a casadi_python model reduces its
+    numeric forward-run results with numpy-mode operation funcs. The SA manager
+    holds casadi-mode ops for casadi_python (e.g. mean -> ca.sum(x)/x.numel()),
+    which crash on the numpy arrays the FD path produces. 3compartment's obs_data
+    uses 'mean'/'max_minus_min'/'min', so this exercises that path."""
+    config = {
+        "model_path": model_codegen.resolve_model_path(str(C3_MODEL_PATH), "casadi_python"),
+        "model_type": "casadi_python",
+        "solver": "casadi_integrator",
+        "solver_info": {"solver": "casadi_integrator", "method": "semi_implicit_euler"},
+        "obs_path": str(C3_OBS_DATA_PATH),
+        "params_path": str(C3_PARAMS_CSV_PATH),
+        "output_dir": str(tmp_path / "sa_out"),
+        "file_prefix": "3compartment",
+        "settings": {"method": "local", "gradient_method": "FD", "nominal": "current", "dt": 0.01},
+    }
+    payload = sensitivity_runner.run(config)
+    assert payload["gradient_method"] == "FD"
+    coeffs = [v for row in payload["indices"]["local"].values() for v in row.values()]
+    assert any(c is not None and math.isfinite(c) for c in coeffs)
 
 
 @pytest.mark.integration
