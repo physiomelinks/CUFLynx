@@ -36,7 +36,14 @@ import {
   getConfig,
   setConfig,
 } from './lib/api'
-import { overlayItemsFor, controlledSeries } from './lib/plot'
+import { overlayItemsFor, controlledSeries, buildExtraPlotCells } from './lib/plot'
+import {
+  solversForFormat,
+  defaultSolverFor,
+  solverFieldsForMethod,
+  defaultSolverInfo,
+  nonDifferentiableInUse,
+} from './lib/solverConfig'
 
 const model = useModel()
 const sliders = useSliders()
@@ -73,18 +80,100 @@ const caDir = ref('')
 const caExists = ref(true)
 const caBrowserOpen = ref(false)
 
+// Backend solver selection (Settings popup). generatedModelFormat is CA's
+// model_type; solver + solverInfo are gated by it. solverOpts holds the
+// capabilities/schema from /api/config (formats, solvers-per-format, solver_info
+// fields, differentiability). adAvailable gates the AD/sp_minimize options.
+const solverOpts = ref({})
+const generatedModelFormat = ref('cellml_only')
+const solver = ref('CVODE_myokit')
+const solverInfo = ref({})
+
+function applyConfigPayload(c) {
+  caDir.value = c.ca_dir
+  caExists.value = c.ca_exists
+  solverOpts.value = c
+  generatedModelFormat.value = c.generated_model_format ?? 'cellml_only'
+  solver.value = c.solver ?? ''
+  solverInfo.value = { ...(c.solver_info ?? {}) }
+}
+
 async function applyCaDir(dir) {
   try {
-    const c = await setConfig(dir)
-    caDir.value = c.ca_dir
-    caExists.value = c.ca_exists
+    applyConfigPayload(await setConfig(dir))
   } catch {
     /* leave previous value on error */
   }
 }
 
-// Settings popup (CA dir + theme).
+// Set when the user changes the backend solver selection, so closing Settings
+// regenerates + re-runs the model for the new backend (see the settingsOpen watch).
+const solverConfigDirty = ref(false)
+
+// Persist the current backend-solver selection and re-read the payload (so
+// ad_available + any re-gated options refresh).
+async function applyBackendSolver() {
+  try {
+    applyConfigPayload(
+      await setConfig({
+        generatedModelFormat: generatedModelFormat.value,
+        solver: solver.value,
+        solverInfo: solverInfo.value,
+      }),
+    )
+    solverConfigDirty.value = true
+  } catch {
+    /* leave previous value on error */
+  }
+}
+
+const solverChoices = computed(() => solversForFormat(solverOpts.value, generatedModelFormat.value))
+const solverInfoFields = computed(() =>
+  solverFieldsForMethod(solverOpts.value, solver.value, solverInfo.value.method),
+)
+
+// The operations actually used by the current obs_data that aren't
+// @differentiable — surfaced when casadi_python is selected so the user knows
+// exactly which in-use operations block AD (the unused CA registry is ignored).
+const nonDifferentiableOps = computed(() =>
+  nonDifferentiableInUse(obs.obsData.value, solverOpts.value.differentiable_operations),
+)
+
+// AD is valid for casadi_python only, and only when every operation the loaded
+// obs_data uses is @differentiable. With no obs_data there's nothing to block it.
+const adAvailable = computed(
+  () => generatedModelFormat.value === 'casadi_python' && nonDifferentiableOps.value.length === 0,
+)
+
+// Changing the format picks that format's default solver + default solver_info,
+// then persists. Changing the solver reseeds solver_info for the new solver. The
+// model is (re)generated, cached and run when Settings is closed (see below),
+// so the user sees the new backend's outputs immediately on exit.
+function onFormatChange(fmt) {
+  generatedModelFormat.value = fmt
+  solver.value = defaultSolverFor(solverOpts.value, fmt)
+  solverInfo.value = defaultSolverInfo(solverOpts.value, solver.value)
+  applyBackendSolver()
+}
+function onSolverChange(s) {
+  solver.value = s
+  solverInfo.value = defaultSolverInfo(solverOpts.value, s)
+  applyBackendSolver()
+}
+
+// Settings popup (CA dir + backend solver + theme).
 const settingsOpen = ref(false)
+
+// Closing Settings after a backend-solver change (re)generates + caches the
+// model and runs it, so the new backend's outputs show immediately — and any
+// later sensitivity/calibration run reuses the cached build instead of
+// regenerating. scheduleRun no-ops without a loaded model.
+watch(settingsOpen, (open) => {
+  if (!open && solverConfigDirty.value) {
+    solverConfigDirty.value = false
+    scheduleRun()
+  }
+})
 
 // Colour scheme: toggles the `.cellml-dark` class PrimeVue keys off. Persisted.
 const themeOptions = [
@@ -105,6 +194,83 @@ watch(
 const leftTab = ref('params')
 // Center column tab: 'plots' | 'progress' | 'analysis'
 const centerTab = ref('plots')
+
+// User-added output plots. Each plot is scoped to one experiment group via
+// `groupKey` (e.g. 'exp0', 'data-only', 'single') so the "+ Add plot" button at
+// the bottom of an experiment creates a plot for that experiment's run only.
+// { id, groupKey, expIdx, qname, label }
+const extraPlots = ref([])
+let nextPlotId = 1
+
+// Model variables that can be plotted as time series (states + algebraic);
+// params are constants set via sliders, so they're excluded.
+const plottableVariables = computed(() => {
+  const v = model.variables.value
+  return [...(v.odes ?? []), ...(v.algebraic ?? [])]
+})
+
+// Extra-plot qnames to append to a run's requested outputs so the chosen
+// variables come back from the engine.
+const extraOutputNames = computed(() => [
+  ...new Set(extraPlots.value.map((p) => p.qname)),
+])
+
+// Add-plot dialog state.
+const addPlotOpen = ref(false)
+const addPlotTarget = ref({ groupKey: null, expIdx: 0, label: '' })
+const addPlotVar = ref(null)
+
+// Variables offered in the dialog: plottable vars not already shown in the
+// target group (neither an obs-derived nor an already-added plot).
+const addPlotChoices = computed(() => {
+  const key = addPlotTarget.value.groupKey
+  const taken = new Set(
+    extraPlots.value.filter((p) => p.groupKey === key).map((p) => p.qname),
+  )
+  if (key && key.startsWith('exp')) {
+    for (const v of obs.plotVariables.value) taken.add(v.qname)
+  } else if (key === 'data-only') {
+    for (const v of obs.plotVariables.value) taken.add(v.qname)
+  }
+  return plottableVariables.value
+    .filter((q) => !taken.has(q))
+    .map((q) => ({ label: q, value: q }))
+})
+
+function openAddPlot(group) {
+  addPlotTarget.value = {
+    groupKey: group.key,
+    expIdx: group.expIdx ?? 0,
+    label: group.label || '',
+  }
+  addPlotVar.value = null
+  addPlotOpen.value = true
+}
+
+function confirmAddPlot() {
+  const qname = addPlotVar.value
+  if (!qname) return
+  extraPlots.value.push({
+    id: nextPlotId++,
+    groupKey: addPlotTarget.value.groupKey,
+    expIdx: addPlotTarget.value.expIdx,
+    qname,
+    label: qname,
+  })
+  addPlotOpen.value = false
+  // Re-run so the newly requested variable is fetched for this experiment.
+  runSimulation()
+}
+
+function removeExtraPlot(id) {
+  extraPlots.value = extraPlots.value.filter((p) => p.id !== id)
+}
+
+// Extra-plot cells for a group, each a single-variable plot built from that
+// group's own simulation outputs.
+function extraCellsFor(groupKey, time, outputs) {
+  return buildExtraPlotCells(extraPlots.value, groupKey, time, outputs)
+}
 
 // Calibration / sensitivity
 const calibDefaults = ref({})
@@ -133,9 +299,7 @@ onMounted(async () => {
     /* interpreter discovery optional */
   }
   try {
-    const c = await getConfig()
-    caDir.value = c.ca_dir
-    caExists.value = c.ca_exists
+    applyConfigPayload(await getConfig())
   } catch {
     /* backend not up yet */
   }
@@ -266,6 +430,7 @@ async function onModelLoaded(data) {
   loadedParamsRaw.value = []
   loadedParamsFilename.value = null
   loadedObsFilename.value = null
+  extraPlots.value = []
   sliders.clear()
   try {
     const vars = await getVariables(data.model_id)
@@ -321,6 +486,9 @@ function onParamsLoaded(data) {
 function onObsDataLoaded(payload) {
   obs.setObsData(payload)
   if (payload?.filename) loadedObsFilename.value = payload.filename
+  // The experiment grouping changes with the obs_data, so per-experiment added
+  // plots no longer have a stable home.
+  extraPlots.value = []
 }
 
 let timer = null
@@ -337,27 +505,42 @@ async function runSimulation() {
   try {
     if (obs.hasProtocol.value) {
       // Protocol run: pre_times/sim_times come from the obs_data protocol_info.
-      // Request only the obs-referenced variables, keep every experiment, and
-      // render one plot per (experiment, variable).
-      const outputs = obs.plotVariables.value.map((v) => v.qname)
+      // Request the obs-referenced variables plus any user-added plots, keep
+      // every experiment, and render one plot per (experiment, variable).
+      const outputs = [
+        ...new Set([
+          ...obs.plotVariables.value.map((v) => v.qname),
+          ...extraOutputNames.value,
+        ]),
+      ]
       const data = await runProtocol(model.modelId.value, sliders.paramDict.value, {
         outputs,
       })
       sim.setExperiments(data.experiments, data.warnings, performance.now() - started)
     } else if (obs.hasObsData.value) {
       // Data-only obs_data: overlays only, no protocol. The manual t1/pre are
-      // not used; run with backend defaults and plot the referenced variables.
-      const outputs = obs.plotVariables.value.map((v) => v.qname)
+      // not used; run with backend defaults and plot the referenced variables
+      // plus any user-added plots.
+      const outputs = [
+        ...new Set([
+          ...obs.plotVariables.value.map((v) => v.qname),
+          ...extraOutputNames.value,
+        ]),
+      ]
       const data = await simulate(model.modelId.value, sliders.paramDict.value, {
         outputs,
       })
       sim.setResult(data, performance.now() - started)
     } else {
-      // No obs_data: manual t1/pre drive the single run.
-      const data = await simulate(model.modelId.value, sliders.paramDict.value, {
-        simTime: simTime.value,
-        preTime: preTime.value,
-      })
+      // No obs_data: manual t1/pre drive the single run. Default outputs are the
+      // states; add any user-added plot variables so they're fetched too.
+      const opts = { simTime: simTime.value, preTime: preTime.value }
+      if (extraOutputNames.value.length) {
+        opts.outputs = [
+          ...new Set([...model.defaultOutputs.value, ...extraOutputNames.value]),
+        ]
+      }
+      const data = await simulate(model.modelId.value, sliders.paramDict.value, opts)
       sim.setResult(data, performance.now() - started)
     }
   } catch (e) {
@@ -396,10 +579,11 @@ const plotGroups = computed(() => {
           dataItems: overlayItemsFor(obs.obsData.value, e, v.qname),
         })
       }
+      cells.push(...extraCellsFor(`exp${e}`, exp.time, exp.outputs))
       const label = labels[e]
         ? `Experiment ${e}: ${labels[e]}`
         : `Experiment ${e}`
-      return { key: `exp${e}`, label, cells }
+      return { key: `exp${e}`, expIdx: e, label, cells }
     })
   }
   // Data-only obs_data: one group, no heading, one plot per referenced variable.
@@ -413,26 +597,31 @@ const plotGroups = computed(() => {
       simResult: { time: sim.result.value.time, outputs: { [v.qname]: out[v.qname] ?? [] } },
       dataItems: overlayItemsFor(obs.obsData.value, 0, v.qname),
     }))
-    return [{ key: 'data-only', label: '', cells }]
+    cells.push(...extraCellsFor('data-only', sim.result.value.time, out))
+    return [{ key: 'data-only', expIdx: 0, label: '', cells }]
   }
-  // Plain manual run.
+  // Plain manual run: one combined plot of all returned outputs, with any
+  // user-added variables split out into their own plots (and excluded here).
   if (sim.result.value) {
-    return [
+    const out = sim.result.value.outputs ?? {}
+    const extraNames = new Set(
+      extraPlots.value.filter((p) => p.groupKey === 'single').map((p) => p.qname),
+    )
+    const mainOutputs = Object.fromEntries(
+      Object.entries(out).filter(([k]) => !extraNames.has(k)),
+    )
+    const cells = [
       {
         key: 'single',
-        label: '',
-        cells: [
-          {
-            key: 'single',
-            title: model.name.value ?? '',
-            varLabel: '',
-            controlled: false,
-            simResult: sim.result.value,
-            dataItems: [],
-          },
-        ],
+        title: model.name.value ?? '',
+        varLabel: '',
+        controlled: false,
+        simResult: { time: sim.result.value.time, outputs: mainOutputs },
+        dataItems: [],
       },
     ]
+    cells.push(...extraCellsFor('single', sim.result.value.time, out))
+    return [{ key: 'single', expIdx: 0, label: '', cells }]
   }
   return []
 })
@@ -576,6 +765,7 @@ watch(
           <SensitivityPanel
             :defaults="saDefaults"
             :can-run="canCalibrate"
+            :ad-available="adAvailable"
             :lines="sa.lines.value"
             :state="sa.state.value"
             :error="sa.error.value"
@@ -587,6 +777,7 @@ watch(
           <CalibrationPanel
             :defaults="calibDefaults"
             :can-run="canCalibrate"
+            :ad-available="adAvailable"
             :lines="calib.lines.value"
             :state="calib.state.value"
             :cost="calib.cost.value"
@@ -675,6 +866,18 @@ watch(
                 :stepped="cell.controlled"
                 :sim-result="cell.simResult"
                 :data-items="cell.dataItems"
+                :removable="!!cell.removeId"
+                @remove="removeExtraPlot(cell.removeId)"
+              />
+            </div>
+            <div v-if="plottableVariables.length" class="add-plot-row">
+              <Button
+                label="Add plot"
+                icon="pi pi-plus"
+                text
+                size="small"
+                data-testid="add-plot-btn"
+                @click="openAddPlot(g)"
               />
             </div>
           </section>
@@ -789,6 +992,75 @@ watch(
           Defaults to the sibling <code>circulatory_autogen</code> clone. Pick a
           different checkout to develop against — runs use it on their next launch.
         </p>
+
+        <hr class="settings-sep" />
+
+        <label class="settings-row">
+          <span
+            class="settings-label"
+            title="circulatory_autogen model_type: the backend the dropped CellML runs through. python / casadi_python generate a Python model from the CellML."
+          >
+            Generated model format
+          </span>
+          <Select
+            :model-value="generatedModelFormat"
+            :options="solverOpts.model_formats ?? ['cellml_only']"
+            size="small"
+            data-testid="model-format-select"
+            @update:model-value="onFormatChange"
+          />
+        </label>
+        <label class="settings-row">
+          <span class="settings-label" title="Solver wrapper, gated by the model format">Solver</span>
+          <Select
+            :model-value="solver"
+            :options="solverChoices"
+            size="small"
+            data-testid="solver-select"
+            @update:model-value="onSolverChange"
+          />
+        </label>
+        <div
+          v-for="f in solverInfoFields"
+          :key="f.key"
+          class="settings-row"
+        >
+          <span class="settings-label">{{ f.label }}</span>
+          <Select
+            v-if="f.type === 'select'"
+            v-model="solverInfo[f.key]"
+            :options="f.options"
+            size="small"
+            :data-testid="`solver-info-${f.key}`"
+            @update:model-value="applyBackendSolver"
+          />
+          <InputNumber
+            v-else
+            v-model="solverInfo[f.key]"
+            :min-fraction-digits="1"
+            :max-fraction-digits="12"
+            size="small"
+            :data-testid="`solver-info-${f.key}`"
+            @update:model-value="applyBackendSolver"
+          />
+        </div>
+        <p v-if="generatedModelFormat === 'casadi_python'" class="settings-hint">
+          casadi_python enables automatic differentiation:
+          <span data-testid="ad-status">{{
+            adAvailable
+              ? 'AD available'
+              : `AD unavailable — these obs_data operations in use are not @differentiable: ${nonDifferentiableOps.join(', ')}`
+          }}</span>.
+        </p>
+        <p
+          v-if="solverInfo.method === 'semi_implicit_euler'"
+          class="settings-warn"
+          data-testid="semi-implicit-warning"
+        >
+          ⚠ semi_implicit_euler is a first-order, fixed-step damped solver — it enables
+          AD on stiff models but is <strong>less accurate than CVODES</strong>. Reduce
+          dt and run a convergence study (confirm results stop changing) before trusting them.
+        </p>
       </div>
     </Dialog>
 
@@ -804,6 +1076,41 @@ watch(
       title="Select the circulatory_autogen directory"
       @select="applyCaDir"
     />
+
+    <Dialog
+      v-model:visible="addPlotOpen"
+      modal
+      :header="addPlotTarget.label ? `Add plot — ${addPlotTarget.label}` : 'Add plot'"
+      :style="{ width: '24rem' }"
+    >
+      <div class="add-plot-dialog">
+        <label class="add-plot-label" for="add-plot-var">Variable</label>
+        <Select
+          id="add-plot-var"
+          v-model="addPlotVar"
+          :options="addPlotChoices"
+          option-label="label"
+          option-value="value"
+          placeholder="Select a variable"
+          filter
+          data-testid="add-plot-select"
+          class="add-plot-select"
+        />
+        <p v-if="!addPlotChoices.length" class="empty-hint">
+          All available variables are already plotted here.
+        </p>
+      </div>
+      <template #footer>
+        <Button label="Cancel" text @click="addPlotOpen = false" />
+        <Button
+          label="Add"
+          icon="pi pi-plus"
+          :disabled="!addPlotVar"
+          data-testid="add-plot-confirm"
+          @click="confirmAddPlot"
+        />
+      </template>
+    </Dialog>
   </div>
 </template>
 
@@ -882,6 +1189,17 @@ watch(
   font-size: 0.78rem;
   opacity: 0.65;
   margin: 0;
+}
+.settings-sep {
+  border: none;
+  border-top: 1px solid var(--p-content-border-color, #333);
+  margin: 0.5rem 0 0.25rem;
+  width: 100%;
+}
+.settings-warn {
+  font-size: 0.78rem;
+  margin: 0;
+  color: #d08700;
 }
 .time-controls {
   display: flex;
@@ -976,6 +1294,23 @@ watch(
 .empty-hint {
   opacity: 0.6;
   padding: 1rem;
+}
+.add-plot-row {
+  display: flex;
+  justify-content: center;
+  margin-top: 0.4rem;
+}
+.add-plot-dialog {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+.add-plot-label {
+  font-size: 0.8rem;
+  opacity: 0.8;
+}
+.add-plot-select {
+  width: 100%;
 }
 .col-right {
   border-left: 1px solid var(--p-content-border-color, #333);

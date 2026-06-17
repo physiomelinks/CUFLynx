@@ -31,9 +31,15 @@ from pydantic import BaseModel, Field
 from calibration import calibration, list_python_interpreters
 from cellml_meta import CellMLModel, CellMLParseError, parse_cellml
 from engine import SimulationError, engine, _circulatory_autogen_src
+from model_codegen import resolve_model_path, reset_cache as reset_codegen
 from obs_data import ObsData, ObsDataError, parse_obs_data
 from obs_options import get_obs_data_options, reset_cache as reset_obs_options
 from params_for_id import ParamsForIdError, parse_params_for_id
+from solver_options import (
+    ad_available,
+    get_solver_options,
+    reset_cache as reset_solver_options,
+)
 from sensitivity import sensitivity
 from uq import uq
 
@@ -69,6 +75,21 @@ _models: dict[str, _ModelRecord] = {}
 def _get_model(model_id: str) -> _ModelRecord:
     record = _models.get(model_id)
     if record is None:
+        # Recover from the persisted upload if the in-memory registry lost it
+        # (e.g. a dev-server --reload wiped it). The CellML file still lives in
+        # UPLOAD_DIR, so a parameter change / new plot can re-derive the model
+        # and regenerate its python/casadi build instead of failing. obs_data /
+        # params_for_id aren't restored (re-upload to run protocols / calibration).
+        path = UPLOAD_DIR / f"{model_id}.cellml"
+        if path.is_file():
+            try:
+                meta = parse_cellml(path.read_bytes())
+            except CellMLParseError:
+                meta = None
+            if meta is not None:
+                record = _ModelRecord(model_id, path, meta)
+                _models[model_id] = record
+                return record
         raise HTTPException(status_code=404, detail=f"model {model_id!r} not found")
     return record
 
@@ -115,6 +136,12 @@ class ConfigRequest(BaseModel):
     # The circulatory_autogen directory (repo root or its `src`); blank resets to
     # the default (sibling clone / CIRCULATORY_AUTOGEN_SRC).
     ca_dir: str = ""
+    # Backend solver selection. generated_model_format is CA's `model_type`
+    # (cellml_only / python / casadi_python); solver must be compatible with it;
+    # solver_info holds the per-solver tuning. Blank/empty => leave unchanged.
+    generated_model_format: str = ""
+    solver: str = ""
+    solver_info: dict = Field(default_factory=dict)
 
 
 def _ca_src_from_dir(d: str) -> str:
@@ -128,7 +155,20 @@ def _config_payload() -> dict:
     src = _circulatory_autogen_src()
     p = Path(src)
     ca_dir = str(p.parent) if p.name == "src" else src
-    return {"ca_dir": ca_dir, "ca_src": src, "ca_exists": p.is_dir()}
+    opts = get_solver_options()
+    return {
+        "ca_dir": ca_dir,
+        "ca_src": src,
+        "ca_exists": p.is_dir(),
+        # Current backend solver selection (engine is the source of truth). dt is
+        # carried in solver_info for the UI but stored separately on the engine.
+        "generated_model_format": engine.model_type,
+        "solver": engine.solver,
+        "solver_info": {**engine.solver_info, "dt": engine.dt},
+        # Capabilities for the settings UI + AD gating.
+        **opts,
+        "ad_available": ad_available(engine.model_type, opts),
+    }
 
 
 @app.get("/api/config")
@@ -152,7 +192,43 @@ def set_config(req: ConfigRequest) -> dict:
         os.environ["CIRCULATORY_AUTOGEN_SRC"] = _ca_src_from_dir(d)
     else:
         os.environ.pop("CIRCULATORY_AUTOGEN_SRC", None)
+
+    # Backend solver selection. Validate against CA's schema (re-read against the
+    # possibly-new CA dir), then store on the engine (the live-sim source of truth)
+    # and export to env so subprocess runs inherit it.
+    reset_solver_options()  # capabilities come from the (possibly new) CA
+    solvers_by_format = get_solver_options()["solvers_by_format"]
+
+    fmt = (req.generated_model_format or "").strip()
+    if fmt:
+        if fmt not in solvers_by_format:
+            raise HTTPException(status_code=422, detail=f"unknown generated_model_format: {fmt}")
+        engine.model_type = fmt
+    solver = (req.solver or "").strip()
+    if solver:
+        valid = solvers_by_format.get(engine.model_type, [])
+        if solver not in valid:
+            raise HTTPException(
+                status_code=422,
+                detail=f"solver {solver!r} is not valid for {engine.model_type!r} (choose from {valid})",
+            )
+        engine.solver = solver
+    if req.solver_info:
+        si = dict(req.solver_info)
+        # dt is edited in the same form but is engine-level (passed separately to
+        # the solver), not a solver_info key; pull it out.
+        if "dt" in si:
+            try:
+                engine.dt = float(si.pop("dt"))
+            except (TypeError, ValueError):
+                si.pop("dt", None)
+        engine.solver_info = si
+    os.environ["CUFLYNX_MODEL_TYPE"] = engine.model_type
+    os.environ["CUFLYNX_SOLVER"] = engine.solver
+    os.environ["CUFLYNX_SOLVER_INFO"] = json.dumps(engine.solver_info)
+
     engine.reset()  # drop cached compiled helpers so the next sim uses the new CA
+    reset_codegen()  # regenerate python/casadi models against the new CA / format
     reset_obs_options()  # obs_data operation/cost options come from the new CA too
     return _config_payload()
 
@@ -239,9 +315,10 @@ def simulate(req: SimulateRequest) -> dict:
     _validate_param_keys(req.params)
     outputs = req.outputs or record.meta.odes
     try:
+        model_path = resolve_model_path(str(record.path), engine.model_type, model_id=req.model_id)
         result = engine.simulate(
             model_id=req.model_id,
-            model_path=str(record.path),
+            model_path=model_path,
             params=req.params,
             sim_time=req.sim_time,
             pre_time=req.pre_time,
@@ -270,9 +347,10 @@ def protocol_run(req: ProtocolRunRequest) -> dict:
 
     outputs = req.outputs or (record.meta.odes + record.meta.algebraic)
     try:
+        model_path = resolve_model_path(str(record.path), engine.model_type, model_id=req.model_id)
         result = engine.run_protocol(
             model_id=req.model_id,
-            model_path=str(record.path),
+            model_path=model_path,
             protocol_info=protocol_info,
             params=req.params,
             outputs=outputs,
@@ -442,7 +520,10 @@ def calibration_run(req: CalibrationRequest) -> dict:
         output_dir = str(UPLOAD_DIR / f"calib_{req.model_id}_{uuid.uuid4().hex[:8]}")
     config = {
         "model_id": req.model_id,
-        "model_path": str(record.path),
+        "model_path": resolve_model_path(str(record.path), engine.model_type, model_id=req.model_id),
+        "model_type": engine.model_type,
+        "solver": engine.solver,
+        "solver_info": dict(engine.solver_info),
         "obs_path": str(record.obs_path),
         "params_path": str(record.params_path),
         "output_dir": output_dir,
@@ -587,7 +668,10 @@ def sensitivity_run(req: SensitivityRequest) -> dict:
     if req.settings.get("method") == "local":
         num_cores = 1
     config = {
-        "model_path": str(record.path),
+        "model_path": resolve_model_path(str(record.path), engine.model_type, model_id=req.model_id),
+        "model_type": engine.model_type,
+        "solver": engine.solver,
+        "solver_info": dict(engine.solver_info),
         "obs_path": str(record.obs_path),
         "params_path": str(record.params_path),
         "output_dir": output_dir,
@@ -699,7 +783,10 @@ def uq_run(req: UQRequest) -> dict:
         output_dir = str(UPLOAD_DIR / f"uq_{req.model_id}_{uuid.uuid4().hex[:8]}")
     config = {
         "model_id": req.model_id,
-        "model_path": str(record.path),
+        "model_path": resolve_model_path(str(record.path), engine.model_type, model_id=req.model_id),
+        "model_type": engine.model_type,
+        "solver": engine.solver,
+        "solver_info": dict(engine.solver_info),
         "obs_path": str(record.obs_path),
         "params_path": str(record.params_path),
         "output_dir": output_dir,

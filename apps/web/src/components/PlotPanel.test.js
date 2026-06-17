@@ -60,4 +60,23 @@ describe('PlotPanel', () => {
     expect(sim.length).toBe(1)
     expect(sim[0].label).toBe('Lotka_Volterra_module/x')
   })
+
+  it('shows no remove button by default', () => {
+    const wrapper = mount(PlotPanel, {
+      props: { simResult, title: 'x' },
+      global: { stubs },
+    })
+    expect(wrapper.find('[data-testid="plot-remove"]').exists()).toBe(false)
+  })
+
+  it('emits remove when the removable ✕ is clicked', async () => {
+    const wrapper = mount(PlotPanel, {
+      props: { simResult, title: 'x', removable: true },
+      global: { stubs },
+    })
+    const btn = wrapper.find('[data-testid="plot-remove"]')
+    expect(btn.exists()).toBe(true)
+    await btn.trigger('click')
+    expect(wrapper.emitted('remove')).toHaveLength(1)
+  })
 })

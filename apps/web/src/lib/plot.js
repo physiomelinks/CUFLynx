@@ -167,6 +167,26 @@ export function controlledSeries(protocolInfo, expIdx) {
   return out
 }
 
+/**
+ * Plot cells for user-added ("Add plot") outputs scoped to one experiment
+ * group. Each entry of `extraPlots` is { id, groupKey, qname, label }; only
+ * those whose `groupKey` matches build a single-variable cell from this group's
+ * own `outputs`/`time`.
+ */
+export function buildExtraPlotCells(extraPlots, groupKey, time, outputs) {
+  return (extraPlots ?? [])
+    .filter((p) => p.groupKey === groupKey)
+    .map((p) => ({
+      key: `extra:${p.id}`,
+      title: p.label,
+      varLabel: p.label,
+      controlled: false,
+      removeId: p.id,
+      simResult: { time, outputs: { [p.qname]: outputs?.[p.qname] ?? [] } },
+      dataItems: [],
+    }))
+}
+
 /** data_items overlaying a given (experiment, variable) plot cell. */
 export function overlayItemsFor(obsData, expIdx, qname) {
   if (!obsData) return []

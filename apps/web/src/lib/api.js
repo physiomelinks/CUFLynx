@@ -26,8 +26,23 @@ export async function getConfig() {
   return data
 }
 
-export async function setConfig(caDir) {
-  const { data } = await axios.post(url('/api/config'), { ca_dir: caDir })
+/**
+ * Update runtime config. Accepts a string (CA dir, back-compat) or an options
+ * object: { caDir, generatedModelFormat, solver, solverInfo }. Omitted fields are
+ * left unchanged server-side.
+ */
+export async function setConfig(opts = {}) {
+  const body = {}
+  if (typeof opts === 'string') {
+    body.ca_dir = opts
+  } else {
+    if (opts.caDir != null) body.ca_dir = opts.caDir
+    if (opts.generatedModelFormat != null)
+      body.generated_model_format = opts.generatedModelFormat
+    if (opts.solver != null) body.solver = opts.solver
+    if (opts.solverInfo != null) body.solver_info = opts.solverInfo
+  }
+  const { data } = await axios.post(url('/api/config'), body)
   return data
 }
 

@@ -29,7 +29,10 @@ const props = defineProps({
   varLabel: { type: String, default: '' },
   tag: { type: String, default: '' },
   stepped: { type: Boolean, default: false },
+  removable: { type: Boolean, default: false },
 })
+
+defineEmits(['remove'])
 
 const chartData = computed(() =>
   buildChartData(props.simResult, {
@@ -56,7 +59,7 @@ defineExpose({ chartData })
 
 <template>
   <section class="plot-panel">
-    <div v-if="tag || title" class="plot-head">
+    <div v-if="tag || title || removable" class="plot-head">
       <span v-if="tag" class="plot-tag" data-testid="plot-tag">{{ tag }}</span>
       <h3
         v-if="title"
@@ -64,6 +67,17 @@ defineExpose({ chartData })
         data-testid="plot-title"
         v-html="renderMath(title)"
       />
+      <button
+        v-if="removable"
+        type="button"
+        class="plot-remove"
+        title="Remove plot"
+        aria-label="Remove plot"
+        data-testid="plot-remove"
+        @click="$emit('remove')"
+      >
+        ✕
+      </button>
     </div>
     <div class="chart-wrap">
       <Line :data="chartData" :options="chartOptions" />
@@ -123,6 +137,20 @@ defineExpose({ chartData })
   font-size: 0.8rem;
   font-weight: 600;
   opacity: 0.85;
+}
+.plot-remove {
+  margin-left: auto;
+  border: none;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  opacity: 0.5;
+  font-size: 0.85rem;
+  line-height: 1;
+  padding: 0.1rem 0.25rem;
+}
+.plot-remove:hover {
+  opacity: 1;
 }
 .chart-wrap {
   position: relative;

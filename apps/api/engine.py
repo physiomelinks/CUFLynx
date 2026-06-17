@@ -17,6 +17,7 @@ import threading
 from pathlib import Path
 
 DEFAULT_DT = 0.01
+DEFAULT_MODEL_TYPE = "cellml_only"
 DEFAULT_SOLVER = "CVODE_myokit"
 DEFAULT_SOLVER_INFO = {"MaximumStep": 0.001, "MaximumNumberOfSteps": 5000}
 
@@ -45,14 +46,16 @@ def _ensure_ca_on_path() -> None:
         sys.path.insert(0, src)
 
 
-def _default_helper_factory(*, model_path, dt, sim_time, pre_time, solver_info):
+def _default_helper_factory(
+    *, model_path, dt, sim_time, pre_time, solver_info, model_type=DEFAULT_MODEL_TYPE, solver=DEFAULT_SOLVER
+):
     _ensure_ca_on_path()
     from solver_wrappers import get_simulation_helper  # noqa: E402
 
     return get_simulation_helper(
         model_path=str(model_path),
-        solver=DEFAULT_SOLVER,
-        model_type="cellml_only",
+        solver=solver,
+        model_type=model_type,
         dt=dt,
         sim_time=sim_time,
         pre_time=pre_time,
@@ -60,33 +63,45 @@ def _default_helper_factory(*, model_path, dt, sim_time, pre_time, solver_info):
     )
 
 
-def _default_runner_factory(*, model_path, dt, solver_info):
+def _default_runner_factory(
+    *, model_path, dt, solver_info, model_type=DEFAULT_MODEL_TYPE, solver=DEFAULT_SOLVER
+):
     _ensure_ca_on_path()
     from protocol_runners import ProtocolRunner  # noqa: E402
 
     return ProtocolRunner(
         str(model_path),
-        inp_data_dict={"dt": dt, "solver_info": solver_info},
-        solver=DEFAULT_SOLVER,
+        inp_data_dict={"dt": dt, "solver_info": solver_info, "model_type": model_type},
+        solver=solver,
+        model_type=model_type,
     )
 
 
 def _resolve_output_key(var2idx, name):
-    """Resolve an output name against var2idx (Myokit dot qnames).
+    """Resolve an output name against var2idx across CA backends.
 
-    Handles the slash/dot separator difference and the ``component`` vs
-    ``component_module`` vessel convention used by circulatory_autogen flat
-    CellML models. Local implementation so no CA import is needed (unit/CI safe).
+    Handles both the separator difference — Myokit uses dotted ``comp.var`` while
+    the python / casadi ProtocolRunners use ``comp/var`` — and the ``component``
+    vs ``component_module`` vessel convention of circulatory_autogen flat CellML
+    models. Local implementation so no CA import is needed (unit/CI safe).
     """
-    dotted = name.replace("/", ".")
-    candidates = [dotted]
-    if "." in dotted:
-        comp, var = dotted.split(".", 1)
-        comp_bare = comp[:-7] if comp.endswith("_module") else comp
-        candidates += [f"{comp_bare}.{var}", f"{comp_bare}_module.{var}", var]
+    candidates = [name]
+    for sep in ("/", "."):
+        if sep in name:
+            comp, var = name.split(sep, 1)
+            comp_bare = comp[:-7] if comp.endswith("_module") else comp
+            for out_sep in (".", "/"):
+                candidates.append(f"{comp}{out_sep}{var}")
+                candidates.append(f"{comp_bare}{out_sep}{var}")
+                candidates.append(f"{comp_bare}_module{out_sep}{var}")
+            candidates.append(var)
+            break
+    seen = set()
     for cand in candidates:
-        if cand in var2idx:
-            return cand
+        if cand not in seen:
+            seen.add(cand)
+            if cand in var2idx:
+                return cand
     return None
 
 
@@ -95,6 +110,10 @@ class SimulationEngine:
 
     def __init__(self):
         self.dt = DEFAULT_DT
+        # Backend solver selection (set from /api/config). model_type is CA's
+        # generated_model_format; solver must be compatible with it.
+        self.model_type = DEFAULT_MODEL_TYPE
+        self.solver = DEFAULT_SOLVER
         self.solver_info = dict(DEFAULT_SOLVER_INFO)
         self.helper_factory = _default_helper_factory
         self.runner_factory = _default_runner_factory
@@ -133,6 +152,8 @@ class SimulationEngine:
                     sim_time=float(sim_time),
                     pre_time=float(pre_time),
                     solver_info=self.solver_info,
+                    model_type=self.model_type,
+                    solver=self.solver,
                 )
                 self._helpers[model_id] = helper
 
@@ -148,7 +169,12 @@ class SimulationEngine:
             if ok is False:
                 raise SimulationError("simulation failed")
 
-            time = [float(t) for t in helper.get_time(include_pre_time=False)]
+            # Myokit/OpenCOR/python helpers expose get_time; the CasADi helper
+            # doesn't, but resolves the logged time vector as the 'time' variable.
+            if hasattr(helper, "get_time"):
+                time = [float(t) for t in helper.get_time(include_pre_time=False)]
+            else:
+                time = [float(t) for t in helper.get_results(["time"], flatten=True)[0]]
             out: dict[str, list[float]] = {}
             for var in outputs:
                 series = helper.get_results([var], flatten=True)[0]
@@ -174,6 +200,8 @@ class SimulationEngine:
                     model_path=str(model_path),
                     dt=self.dt,
                     solver_info=self.solver_info,
+                    model_type=self.model_type,
+                    solver=self.solver,
                 )
                 self._runners[model_id] = runner
 
