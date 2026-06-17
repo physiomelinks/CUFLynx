@@ -41,12 +41,14 @@ def _ensure_ca_on_path() -> None:
         sys.path.insert(0, src)
 
 
-def _solver_info(settings: dict) -> dict:
-    return {
-        "solver": settings.get("solver", "CVODE_myokit"),
-        "MaximumStep": settings.get("MaximumStep", 0.0001),
-        "MaximumNumberOfSteps": settings.get("MaximumNumberOfSteps", 5000),
-    }
+def _solver_info(config: dict, settings: dict) -> dict:
+    """Solver_info for the chosen backend: the config's solver_info (set in the
+    Settings popup) with the solver name + CVODE step defaults filled in."""
+    si = dict(config.get("solver_info") or {})
+    si.setdefault("solver", config.get("solver") or settings.get("solver", "CVODE_myokit"))
+    si.setdefault("MaximumStep", settings.get("MaximumStep", 0.0001))
+    si.setdefault("MaximumNumberOfSteps", settings.get("MaximumNumberOfSteps", 5000))
+    return si
 
 
 def _mle_obs_path(config, cost_type: str) -> str:
@@ -68,7 +70,7 @@ def _make_param_id(config, settings, obs_path, *, mcmc, options_key, options):
 
     kwargs = dict(
         model_path=config["model_path"],
-        model_type="cellml_only",
+        model_type=config.get("model_type", "cellml_only"),
         param_id_method=settings.get("param_id_method", "genetic_algorithm"),
         mcmc_instead=mcmc,
         file_name_prefix=config.get("file_prefix", "model"),
@@ -77,7 +79,7 @@ def _make_param_id(config, settings, obs_path, *, mcmc, options_key, options):
         sim_time=float(settings.get("sim_time", 2.0)),
         pre_time=float(settings.get("pre_time", 0.0)),
         dt=float(settings.get("dt", 0.01)),
-        solver_info=_solver_info(settings),
+        solver_info=_solver_info(config, settings),
         DEBUG=bool(settings.get("DEBUG", False)),
         param_id_output_dir=config["output_dir"],
         resources_dir=os.path.dirname(config["params_path"]),
@@ -203,7 +205,7 @@ def run(config: dict) -> dict:
         )
         best = best if run_calib else _best_from_reuse(cvs, reuse_best)
         ia = IdentifiabilityAnalysis(
-            config["model_path"], "cellml_only", config.get("file_prefix", "model"),
+            config["model_path"], config.get("model_type", "cellml_only"), config.get("file_prefix", "model"),
             param_id_output_dir=output_dir,
             resources_dir=os.path.dirname(config["params_path"]),
             param_id=cvs.param_id,

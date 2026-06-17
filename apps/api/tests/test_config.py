@@ -1,9 +1,157 @@
-"""Tests for the runtime CA-directory config endpoints."""
+"""Tests for the runtime CA-directory + backend-solver config endpoints."""
+
+import os
+
+import engine as engine_mod
+import solver_options as solver_options_mod
 
 
 def test_get_config_shape(client):
     body = client.get("/api/config").json()
     assert {"ca_dir", "ca_src", "ca_exists"} <= set(body)
+
+
+def test_config_exposes_backend_solver_capabilities(client):
+    body = client.get("/api/config").json()
+    # Settings UI + AD gating metadata.
+    assert {
+        "generated_model_format",
+        "solver",
+        "solver_info",
+        "model_formats",
+        "solvers_by_format",
+        "solver_info_schema",
+        "ad_available",
+    } <= set(body)
+    assert body["generated_model_format"] == "cellml_only"
+    assert body["ad_available"] is False  # cellml_only never offers AD
+
+
+def test_set_backend_solver_roundtrips(client):
+    resp = client.post(
+        "/api/config",
+        json={
+            "generated_model_format": "python",
+            "solver": "solve_ivp",
+            "solver_info": {"method": "BDF", "rtol": 1e-6},
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["generated_model_format"] == "python"
+    assert body["solver"] == "solve_ivp"
+    assert body["solver_info"]["method"] == "BDF"
+    assert body["ad_available"] is False  # python (not casadi_python)
+    # Stored on the engine (live sim) + exported for subprocess runners.
+    assert engine_mod.engine.model_type == "python"
+    assert engine_mod.engine.solver == "solve_ivp"
+    assert os.environ["CUFLYNX_MODEL_TYPE"] == "python"
+    assert os.environ["CUFLYNX_SOLVER"] == "solve_ivp"
+
+
+def test_dt_in_solver_info_sets_engine_dt(client):
+    """dt is edited in the solver-settings form but is engine-level: it must be
+    pulled out of solver_info and applied to engine.dt (and echoed back)."""
+    resp = client.post(
+        "/api/config",
+        json={
+            "generated_model_format": "casadi_python",
+            "solver": "casadi_integrator",
+            "solver_info": {"method": "semi_implicit_euler", "dt": 0.005},
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    assert engine_mod.engine.dt == 0.005
+    # dt is not kept as a solver_info key (passed separately to the solver)...
+    assert "dt" not in engine_mod.engine.solver_info
+    # ...but is surfaced in the payload's solver_info for the UI.
+    assert resp.json()["solver_info"]["dt"] == 0.005
+
+
+def test_set_backend_solver_rejects_incompatible_solver(client):
+    # solve_ivp is for python models; CVODE_myokit is cellml-only.
+    resp = client.post(
+        "/api/config",
+        json={"generated_model_format": "python", "solver": "CVODE_myokit"},
+    )
+    assert resp.status_code == 422
+
+
+def test_set_unknown_format_422(client):
+    resp = client.post("/api/config", json={"generated_model_format": "bogus_format"})
+    assert resp.status_code == 422
+
+
+def test_ad_available_when_casadi_python_and_all_ops_differentiable(client, monkeypatch):
+    """When casadi_python is chosen and every operation is @differentiable, the
+    payload reports ad_available so the UI can offer AD local-SA + sp_minimize."""
+    monkeypatch.setattr(
+        solver_options_mod, "_introspect_differentiable", lambda: {"max": True, "min": True}
+    )
+    solver_options_mod.reset_cache()
+    body = client.post(
+        "/api/config",
+        json={"generated_model_format": "casadi_python", "solver": "casadi_integrator"},
+    ).json()
+    assert body["all_differentiable"] is True
+    assert body["ad_available"] is True
+    solver_options_mod.reset_cache()
+
+
+def test_ad_unavailable_when_an_op_is_not_differentiable(client, monkeypatch):
+    monkeypatch.setattr(
+        solver_options_mod,
+        "_introspect_differentiable",
+        lambda: {"max": True, "calc_spike_period": False},
+    )
+    solver_options_mod.reset_cache()
+    body = client.post(
+        "/api/config",
+        json={"generated_model_format": "casadi_python", "solver": "casadi_integrator"},
+    ).json()
+    assert body["all_differentiable"] is False
+    assert body["ad_available"] is False
+    solver_options_mod.reset_cache()
+
+
+def test_engine_forwards_format_and_solver_to_helper_factory():
+    """The engine threads its model_type/solver/solver_info into the helper
+    factory (so live sims use the configured backend) — no CA needed."""
+    captured = {}
+
+    class _Dummy:
+        def reset_and_clear(self):
+            pass
+
+        def update_times(self, *a, **k):
+            pass
+
+        def set_param_vals(self, *a, **k):
+            pass
+
+        def run(self):
+            return True
+
+        def get_time(self, include_pre_time=False):
+            return [0.0, 1.0]
+
+        def get_results(self, variables, flatten=False):
+            return [[0.0, 1.0]]
+
+    eng = engine_mod.engine
+    eng.model_type = "casadi_python"
+    eng.solver = "casadi_integrator"
+
+    def _factory(**kwargs):
+        captured.update(kwargs)
+        return _Dummy()
+
+    eng.helper_factory = _factory
+    out = eng.simulate("m", "/tmp/model.py", {}, 1.0, 0.0, ["a/b"])
+    assert out["outputs"]["a/b"] == [0.0, 1.0]
+    assert captured["model_type"] == "casadi_python"
+    assert captured["solver"] == "casadi_integrator"
+    assert captured["solver_info"] == eng.solver_info
 
 
 def test_set_config_repo_dir_appends_src(client, tmp_path):

@@ -148,6 +148,20 @@ def _output_names(sm) -> list[str]:
     ]
 
 
+def _relative_coeff(deriv: float, pj: float, denom: float, rng: float) -> float | None:
+    """Dimensionless relative sensitivity from a raw derivative ``dY/dP``.
+
+    Shared by the FD and AD paths: ``d ln(Y)/d ln(P) = (dY/dP)·P/Y`` about a
+    non-zero nominal; when the nominal is 0 there's no log scale, so normalise by
+    the parameter range instead. Returns ``None`` when undefined (Y≈0 / non-finite).
+    """
+    if not (np.isfinite(deriv) and np.isfinite(denom) and abs(denom) > _TINY):
+        return None
+    if pj != 0.0:
+        return float(deriv * pj / denom)
+    return float(deriv * (rng if rng > 0 else 1.0) / denom)
+
+
 def _evaluate_features(sm, param_vals: np.ndarray) -> np.ndarray:
     """Run the protocol once and reduce each observable to a scalar feature.
 
@@ -190,24 +204,180 @@ def _evaluate_features(sm, param_vals: np.ndarray) -> np.ndarray:
     return features
 
 
-def compute_local_sensitivity(sa, settings: dict, best_vals=None, best_params=None) -> dict:
-    """Central-difference local sensitivities about a nominal parameter point.
+def _fd_local_sensitivity(sm, param_names, nominal, mins, maxs, output_names, h):
+    """Central finite-difference local sensitivities (works for any backend that
+    runs a forward simulation, including ``cellml_only``)."""
+    y0 = _evaluate_features(sm, nominal)
+
+    local: dict[str, dict[str, float | None]] = {name: {} for name in output_names}
+    for k, pname in enumerate(param_names):
+        pj = nominal[k]
+        rng = maxs[k] - mins[k]
+        step = abs(pj) * h if pj != 0.0 else (h * rng if rng > 0 else h)
+
+        p_plus = nominal.copy()
+        p_plus[k] = pj + step
+        p_minus = nominal.copy()
+        p_minus[k] = pj - step
+        yp = _evaluate_features(sm, p_plus)
+        ym = _evaluate_features(sm, p_minus)
+        print(f"  d/d[{pname}] evaluated", flush=True)
+
+        for i, oname in enumerate(output_names):
+            coeff = None
+            if np.isfinite(yp[i]) and np.isfinite(ym[i]):
+                deriv = (yp[i] - ym[i]) / (2.0 * step)
+                coeff = _relative_coeff(deriv, pj, y0[i], rng)
+            local[oname][pname] = coeff
+    return local
+
+
+def _non_differentiable(names, funcs_dict, is_differentiable):
+    """Names (de-duplicated, skipping empty/'none') whose func isn't differentiable."""
+    bad = []
+    for name in dict.fromkeys(names or []):
+        if not name or str(name).lower() == "none":
+            continue
+        fn = funcs_dict.get(name) if funcs_dict else None
+        if fn is None or not is_differentiable(fn):
+            bad.append(name)
+    return bad
+
+
+def assert_ad_operations(
+    operations, op_funcs_dict, is_differentiable, cost_types=None, cost_funcs_dict=None
+) -> None:
+    """Raise an informative error if any obs operation / cost function in use
+    isn't ``@differentiable``.
+
+    AD (CasADi symbolic execution) only works when every operation applied to the
+    observables — and every cost function, when checked — is marked
+    ``@differentiable``. The error names the specific offenders, grouped by kind,
+    so the user knows exactly what to change. ``is_differentiable`` is injected
+    (CA's ``is_circulatory_differentiable``) so this stays unit-testable.
+    """
+    bad_ops = _non_differentiable(operations, op_funcs_dict, is_differentiable)
+    bad_costs = _non_differentiable(cost_types, cost_funcs_dict, is_differentiable)
+    if not (bad_ops or bad_costs):
+        return
+    details = []
+    if bad_ops:
+        details.append(f"operation(s) {bad_ops}")
+    if bad_costs:
+        details.append(f"cost function(s) {bad_costs}")
+    raise ValueError(
+        "Automatic differentiation requires every obs_data operation and cost "
+        f"function to be marked @differentiable; these are not: {' and '.join(details)}. "
+        "Switch the gradient method to 'FD' (finite difference), or make the "
+        "offending function(s) differentiable in circulatory_autogen."
+    )
+
+
+def _ad_local_sensitivity(sm, param_names, nominal, mins, maxs, output_names):
+    """Exact local sensitivities via CasADi automatic differentiation.
+
+    Only valid for ``casadi_python`` models with all-``@differentiable`` ops.
+    Mirrors ``paramID.build_casadi_functions``: put the helper in AD mode with the
+    symbolic parameter subset, run the protocol symbolically so observables come
+    back as CasADi ``SX`` expressions, reduce them with the casadi-mode operation
+    funcs, then take the analytic jacobian and evaluate it at the nominal point.
+    """
+    import casadi as ca  # noqa: E402 (heavy; only imported on the AD path)
+    import operation_funcs as _op  # noqa: E402 (CA module, resolved via sys.path)
+    from param_id.differentiable import is_circulatory_differentiable  # noqa: E402
+
+    obs = sm.obs_info
+    n = len(obs["operations"])
+
+    # The SA manager's operation_funcs are numpy-mode; AD needs the casadi ones.
+    op_funcs = _op.get_operation_funcs_dict_for_mode("casadi")
+    # Fail fast (and clearly) if an operation in use can't be differentiated.
+    assert_ad_operations(obs["operations"], op_funcs, is_circulatory_differentiable)
+
+    nominal = np.asarray(nominal, dtype=float)
+    # Symbolic parameter subset + AD mode (sets sim_helper.variables_symb_subset).
+    sm.sim_helper._create_param_subset(sm.param_id_info["param_names"], nominal)
+    p_symb = sm.sim_helper.variables_symb_subset
+
+    success, operands_outputs_dict, _, _ = sm._protocol_executor.run_protocol(
+        sm.protocol_info,
+        id_param_names=sm.param_id_info["param_names"],
+        id_param_vals=nominal,
+        result_variables=obs["operands"],
+        continue_on_failure=False,
+        reset_after_experiment=False,  # AD needs solver state preserved across exps
+    )
+    if not success:
+        raise RuntimeError("symbolic (AD) protocol run failed")
+
+    feature_exprs = []
+    temp_results: dict = {}
+    for j in range(n):
+        exp_idx = obs["experiment_idxs"][j]
+        subexp_idx = obs["subexperiment_idxs"][j]
+        operands_outputs = operands_outputs_dict.get((exp_idx, subexp_idx))
+        if operands_outputs is None:
+            feature_exprs.append(ca.SX(float("nan")))
+            continue
+        func = op_funcs[obs["operations"][j]]
+        raw_kwargs = obs["operation_kwargs"][j]
+        kwargs = dict(raw_kwargs) if isinstance(raw_kwargs, dict) else {}
+        for k, v in list(kwargs.items()):
+            if isinstance(v, str) and v in temp_results:
+                kwargs[k] = temp_results[v]
+        feature = func(*operands_outputs[j], **kwargs)
+        temp_results[obs["names_for_plotting"][j]] = feature
+        feature_exprs.append(ca.SX(feature))
+
+    features_vec = ca.vertcat(*feature_exprs)
+    jac = ca.jacobian(features_vec, p_symb)
+    # The feature expressions still reference the full state/variable symbol
+    # vectors (initial states, protocol input params); mirror paramID's
+    # build_casadi_functions and bind those as inputs, evaluating at the helper's
+    # numeric operating point so only the param subset is differentiated.
+    helper = sm.sim_helper
+    evaluate = ca.Function(
+        "local_ad", [helper.states_symb, helper.variables_symb], [features_vec, jac]
+    )
+    y0_dm, jac_dm = evaluate(helper.states, helper.variables)
+    y0 = np.array(y0_dm).reshape(-1)
+    J = np.array(jac_dm).reshape(n, len(param_names))
+
+    local: dict[str, dict[str, float | None]] = {name: {} for name in output_names}
+    for k, pname in enumerate(param_names):
+        pj = nominal[k]
+        rng = maxs[k] - mins[k]
+        for i, oname in enumerate(output_names):
+            local[oname][pname] = _relative_coeff(float(J[i, k]), pj, float(y0[i]), rng)
+    return local
+
+
+def compute_local_sensitivity(
+    sa, settings: dict, best_vals=None, best_params=None, model_type: str = "cellml_only"
+) -> dict:
+    """Local sensitivities ``d ln(Y)/d ln(P)`` about a nominal parameter point.
 
     ``sa`` is a constructed ``SensitivityAnalysis`` (built by the runner exactly
     as for the Sobol path); we drive its ``SA_manager`` evaluation machinery.
     ``best_vals`` is a fresh-calibration best-fit vector (``run_calibration_first``);
     ``best_params`` is a reused best-fit dict keyed by qname. See
     :func:`_resolve_nominal` for how the nominal point is chosen.
+
+    The gradient source is ``settings['gradient_method']``: ``FD`` (finite
+    difference, any backend) or ``AD`` (exact CasADi jacobian, ``casadi_python``
+    only). ``CVODES`` is still gated upstream (CA issue #239).
     """
     gradient_method = str(settings.get("gradient_method", "FD")).upper()
-    if gradient_method != "FD":
-        # AD / CVODES are advertised in the UI but gated upstream; fail loudly
-        # rather than silently producing FD numbers under the wrong label.
+    if gradient_method not in ("FD", "AD"):
         raise NotImplementedError(
-            f"gradient_method '{gradient_method}' is not available yet for "
-            "cellml_only models; only 'FD' (finite difference) is supported. "
-            "AD needs model_type casadi_python (CUFLynx #9); CVODES needs Myokit "
+            f"gradient_method '{gradient_method}' is not available yet; use 'FD' "
+            "(finite difference) or 'AD' (casadi_python). CVODES needs Myokit "
             "forward sensitivities (CA issue #239)."
+        )
+    if gradient_method == "AD" and model_type != "casadi_python":
+        raise NotImplementedError(
+            "AD gradients require generated_model_format 'casadi_python' (set it in "
+            f"the Settings popup); current format is {model_type!r}."
         )
 
     sm = sa.SA_manager
@@ -223,57 +393,24 @@ def compute_local_sensitivity(sa, settings: dict, best_vals=None, best_params=No
     h = float(settings.get("rel_step", 0.01))
     output_names = _output_names(sm)
 
+    source = "AD jacobian" if gradient_method == "AD" else f"finite difference, rel_step={h}"
     print(
-        f"Local sensitivity (finite difference, central, rel_step={h}, "
-        f"nominal={nominal_source}): "
+        f"Local sensitivity ({source}, nominal={nominal_source}): "
         f"{len(param_names)} params x {len(output_names)} outputs",
         flush=True,
     )
 
-    y0 = _evaluate_features(sm, nominal)
-
-    local: dict[str, dict[str, float | None]] = {name: {} for name in output_names}
-    for k, pname in enumerate(param_names):
-        pj = nominal[k]
-        if pj != 0.0:
-            step = abs(pj) * h
-        else:
-            rng = maxs[k] - mins[k]
-            step = h * rng if rng > 0 else h
-
-        p_plus = nominal.copy()
-        p_plus[k] = pj + step
-        p_minus = nominal.copy()
-        p_minus[k] = pj - step
-        yp = _evaluate_features(sm, p_plus)
-        ym = _evaluate_features(sm, p_minus)
-        print(f"  d/d[{pname}] evaluated", flush=True)
-
-        for i, oname in enumerate(output_names):
-            coeff = None
-            denom = y0[i]
-            if (
-                np.isfinite(yp[i])
-                and np.isfinite(ym[i])
-                and np.isfinite(denom)
-                and abs(denom) > _TINY
-            ):
-                deriv = (yp[i] - ym[i]) / (2.0 * step)
-                if pj != 0.0:
-                    # central diff with multiplicative step => d ln y / d ln p.
-                    coeff = float(deriv * pj / denom)
-                else:
-                    # nominal is 0: no log scale; normalise by the param range.
-                    rng = maxs[k] - mins[k]
-                    coeff = float(deriv * (rng if rng > 0 else 1.0) / denom)
-            local[oname][pname] = coeff
+    if gradient_method == "AD":
+        local = _ad_local_sensitivity(sm, param_names, nominal, mins, maxs, output_names)
+    else:
+        local = _fd_local_sensitivity(sm, param_names, nominal, mins, maxs, output_names, h)
 
     return {
         "indices": {"local": local},
         "param_names": param_names,
         "output_names": output_names,
         "method": "local",
-        "gradient_method": "FD",
+        "gradient_method": gradient_method,
         "nominal": nominal.tolist(),
         "nominal_source": nominal_source,
     }

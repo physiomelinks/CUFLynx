@@ -45,6 +45,16 @@ def _ensure_ca_on_path() -> None:
         sys.path.insert(0, src)
 
 
+def _solver_info_from_config(config: dict, settings: dict) -> dict:
+    """Solver_info for the chosen backend: the config's solver_info (set in the
+    Settings popup) with the solver name + CVODE step defaults filled in."""
+    si = dict(config.get("solver_info") or {})
+    si.setdefault("solver", config.get("solver") or settings.get("solver", "CVODE_myokit"))
+    si.setdefault("MaximumStep", settings.get("MaximumStep", 0.0001))
+    si.setdefault("MaximumNumberOfSteps", settings.get("MaximumNumberOfSteps", 5000))
+    return si
+
+
 def run(config: dict) -> dict:
     _ensure_ca_on_path()
     from param_id.paramID import CVS0DParamID  # noqa: E402
@@ -53,11 +63,11 @@ def run(config: dict) -> dict:
     output_dir = config["output_dir"]
     os.makedirs(output_dir, exist_ok=True)
 
-    solver_info = {
-        "solver": settings.get("solver", "CVODE_myokit"),
-        "MaximumStep": settings.get("MaximumStep", 0.0001),
-        "MaximumNumberOfSteps": settings.get("MaximumNumberOfSteps", 5000),
-    }
+    model_type = config.get("model_type", "cellml_only")
+    solver_info = _solver_info_from_config(config, settings)
+    # gradient_method drives CA's gradient source for sp_minimize: AD => CasADi
+    # jacobian, FD => finite difference. Ignored by the non-gradient methods.
+    do_ad = str(settings.get("gradient_method", "FD")).upper() == "AD"
     optimiser_options = {
         "num_calls_to_function": int(settings.get("num_calls_to_function", 100)),
         "cost_convergence": float(settings.get("cost_convergence", 0.0001)),
@@ -74,7 +84,7 @@ def run(config: dict) -> dict:
 
     param_id = CVS0DParamID(
         model_path=config["model_path"],
-        model_type="cellml_only",
+        model_type=model_type,
         param_id_method=settings.get("param_id_method", "genetic_algorithm"),
         file_name_prefix=config.get("file_prefix", "model"),
         params_for_id_path=config["params_path"],
@@ -84,6 +94,7 @@ def run(config: dict) -> dict:
         dt=float(settings.get("dt", 0.01)),
         solver_info=solver_info,
         optimiser_options=optimiser_options,
+        do_ad=do_ad,
         DEBUG=bool(settings.get("DEBUG", False)),
         param_id_output_dir=output_dir,
         resources_dir=os.path.dirname(config["params_path"]),

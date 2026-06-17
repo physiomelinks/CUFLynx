@@ -6,8 +6,8 @@ Reads a JSON config and writes the resulting indices to
 * ``method: "sobol"`` — circulatory_autogen's ``SensitivityAnalysis`` global
   variance-based (Sobol) engine; also writes CSV/PNG artifacts to ``output_dir``.
 * ``method: "local"`` — derivative-based local sensitivity about a nominal point
-  (see :mod:`local_sensitivity`). Only the finite-difference gradient source is
-  wired up today.
+  (see :mod:`local_sensitivity`). Finite-difference (any backend) or, for
+  ``casadi_python`` models, exact CasADi automatic differentiation.
 
 Progress is printed straight to stdout, which the API captures for the terminal
 view; run with ``python -u`` so it streams unbuffered.
@@ -87,7 +87,17 @@ def _indices_to_dict(sa) -> dict:
     }
 
 
-def _calibrate_for_nominal(config: dict, settings: dict, solver_info: dict):
+def _solver_info_from_config(config: dict, settings: dict) -> dict:
+    """Solver_info for the chosen backend: the config's solver_info (set in the
+    Settings popup) with the solver name + CVODE step defaults filled in."""
+    si = dict(config.get("solver_info") or {})
+    si.setdefault("solver", config.get("solver") or settings.get("solver", "CVODE_myokit"))
+    si.setdefault("MaximumStep", settings.get("MaximumStep", 0.0001))
+    si.setdefault("MaximumNumberOfSteps", settings.get("MaximumNumberOfSteps", 5000))
+    return si
+
+
+def _calibrate_for_nominal(config: dict, settings: dict, solver_info: dict, model_type: str):
     """Run a GA calibration in-process and return its best-fit parameter vector.
 
     Used by the local-SA ``run_calibration_first`` path to find the point to
@@ -114,7 +124,7 @@ def _calibrate_for_nominal(config: dict, settings: dict, solver_info: dict):
     )
     param_id = CVS0DParamID(
         model_path=config["model_path"],
-        model_type="cellml_only",
+        model_type=model_type,
         param_id_method=settings.get("param_id_method", "genetic_algorithm"),
         file_name_prefix=config.get("file_prefix", "model"),
         params_for_id_path=config["params_path"],
@@ -141,11 +151,8 @@ def run(config: dict) -> dict:
     output_dir = config["output_dir"]
     os.makedirs(output_dir, exist_ok=True)
 
-    solver_info = {
-        "solver": settings.get("solver", "CVODE_myokit"),
-        "MaximumStep": settings.get("MaximumStep", 0.0001),
-        "MaximumNumberOfSteps": settings.get("MaximumNumberOfSteps", 5000),
-    }
+    model_type = config.get("model_type", "cellml_only")
+    solver_info = _solver_info_from_config(config, settings)
     # sample_type / num_samples are only used by the Sobol engine, but the
     # SensitivityAnalysis constructor needs them present to build its param
     # table; harmless placeholders for the local (finite-difference) path.
@@ -158,7 +165,7 @@ def run(config: dict) -> dict:
 
     sa = SensitivityAnalysis(
         model_path=config["model_path"],
-        model_type="cellml_only",
+        model_type=model_type,
         file_name_prefix=config.get("file_prefix", "model"),
         sa_options=sa_options,
         DEBUG=bool(settings.get("DEBUG", False)),
@@ -179,9 +186,13 @@ def run(config: dict) -> dict:
         # the current parameter values / a reused best fit / the bounds.
         best_vals = None
         if bool(settings.get("run_calibration_first", False)):
-            best_vals = _calibrate_for_nominal(config, settings, solver_info)
+            best_vals = _calibrate_for_nominal(config, settings, solver_info, model_type)
         payload = compute_local_sensitivity(
-            sa, settings, best_vals=best_vals, best_params=config.get("best_params")
+            sa,
+            settings,
+            best_vals=best_vals,
+            best_params=config.get("best_params"),
+            model_type=model_type,
         )
         with open(os.path.join(output_dir, "results.json"), "w") as fh:
             json.dump(payload, fh)

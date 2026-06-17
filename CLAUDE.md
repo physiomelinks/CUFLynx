@@ -49,6 +49,17 @@ so developers can point at a local checkout. (See issue #18.)
 - `scripts/install.py`, `scripts/run.py` — cross-platform setup + single-server launcher
 - `README.md` — user-facing quick start
 
+**Analysis backends** (one API module + runner each, plus a Vue panel):
+
+- `apps/api/sensitivity.py` / `sensitivity_runner.py` — global **Sobol** sensitivity; `local_sensitivity.py` — local **finite-difference** sensitivity (`d ln Y/d ln P` about a nominal point: current values / reused calibration best fit / bounds centre; optional "run calibration first"). UI: `SensitivityPanel.vue`; results render in `AnalysisPanel.vue` (S1/ST/local heatmaps).
+- `apps/api/calibration.py` / `calibration_runner.py` — GA parameter identification; `CalibrationPanel.vue` (also emits live settings reused by local-sensitivity "run calibration first").
+- `apps/api/uq.py` / `uq_runner.py` — uncertainty quantification; `UQPanel.vue`.
+
+**GUI config editing** (edit CA config files in the browser → download dated copy → apply immediately):
+
+- **obs_data.json** — `EditObsDataDialog.vue` + `apps/web/src/lib/obsDataJson.js`; edits `data_items`/`prediction_items` (incl. `source`/`comment` notes) and embeds `ProtocolInfoEditor.vue` (+ `lib/protocolInfo.js`) for `protocol_info` (experiments, params_to_change, ramp/pulse/step traces, time-view plots). Dropdown vocabularies come from `apps/api/obs_options.py` (`GET /api/obs_data/options`), which introspects CA registries — **never hardcode** operations/cost_types/data_types/plot_types.
+- **params_for_id.csv** — `EditParamsDialog.vue` + `apps/web/src/lib/paramsCsv.js`; edits ranges/selection, writes a dated CSV, can apply best-fit to sliders.
+
 ## Conventions for agents
 
 - Prefer **minimal diffs**; match ICUHealthy / circulatory_autogen patterns when adding API or UI.
@@ -74,8 +85,13 @@ These are acceptable for the current local use. **If the API is ever served beyo
 
 ## Tests
 
-No automated test suite yet. Test fixtures live in `resources/`:
+There are two suites — **keep both green** and run them before declaring work done:
+
+- **Frontend (vitest):** `cd apps/web && npm test` (`vitest run`). Component/lib tests live beside their source as `*.test.js` (e.g. `EditObsDataDialog.test.js`, `lib/obsDataJson.test.js`).
+- **Backend (pytest):** `cd apps/api && pytest -m "not integration"` (unit only, no Myokit required). Tests live in `apps/api/tests/`. Integration tests need Myokit + `circulatory_autogen` on `sys.path`; they skip automatically via the `requires_simulation` fixture (run them with plain `pytest`).
+
+> **Add tests with every change.** Each new feature should ship with frontend and/or backend tests covering it, and each bug fix should add a regression test that fails before the fix and passes after. Match the existing patterns (co-located `*.test.js`, `apps/api/tests/test_*.py`). Recent PRs report **141 frontend + ~79 backend** passing — don't let that regress, and confirm `npm run build` is clean.
+
+Test fixtures live in `resources/`:
 - **BG model** (`resources/BG_MWC_Huang-Peskin_SS.cellml`) — used in upload, simulate, and variable-list integration tests.
 - **Lotka-Volterra** (`resources/Lotka_Volterra_forced.cellml` + `Lotka_Volterra_obs_data.json` + `Lotka_Volterra_params_for_id.csv`) — primary integration fixture for protocol runs and param slider tests.
-
-Backend pytest: `pytest -m "not integration"` (unit only, no Myokit required). Integration tests need Myokit + `circulatory_autogen` on `sys.path`; skip automatically via `requires_simulation` fixture.

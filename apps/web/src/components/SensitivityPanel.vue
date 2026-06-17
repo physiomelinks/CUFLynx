@@ -11,6 +11,9 @@ const props = defineProps({
   lines: { type: Array, default: () => [] },
   state: { type: String, default: 'idle' },
   error: { type: String, default: '' },
+  // AD gradients are only valid for casadi_python + all-differentiable ops
+  // (set in the Settings popup). Gates the AD gradient-source option.
+  adAvailable: { type: Boolean, default: false },
 })
 const emit = defineEmits(['run', 'cancel'])
 
@@ -46,6 +49,15 @@ watch(
   { immediate: true },
 )
 
+// If AD becomes unavailable (backend solver switched away from casadi_python),
+// don't leave a now-invalid AD selection behind.
+watch(
+  () => props.adAvailable,
+  (ok) => {
+    if (!ok && settings.gradient_method === 'AD') settings.gradient_method = 'FD'
+  },
+)
+
 const METHOD_LABELS = { sobol: 'Sobol (global)', local: 'Local (finite difference)' }
 const methods = computed(() =>
   (props.defaults.methods ?? ['sobol']).map((m) => ({
@@ -59,12 +71,19 @@ const sampleTypes = computed(() =>
     value: m,
   })),
 )
-// Gradient sources for local SA: [{value, label, disabled}]. Only FD is enabled
-// today; AD / CVODES are listed (disabled) so the UI shows where they'll slot in.
-const gradientMethods = computed(
-  () =>
-    props.defaults.gradient_methods ?? [{ value: 'FD', label: 'Finite difference' }],
-)
+// Gradient sources for local SA: [{value, label, disabled}]. FD is always
+// available; AD is enabled only when the backend reports it (casadi_python +
+// all-differentiable ops); CVODES stays gated upstream. The server-provided list
+// is re-gated here so toggling the backend solver flips AD without a refetch.
+const gradientMethods = computed(() => {
+  const base = props.defaults.gradient_methods ?? [
+    { value: 'FD', label: 'Finite difference' },
+    { value: 'AD', label: 'Automatic differentiation (casadi)' },
+  ]
+  return base.map((o) =>
+    o.value === 'AD' ? { ...o, disabled: !props.adAvailable } : o,
+  )
+})
 const nominals = computed(() =>
   (props.defaults.nominals ?? ['midpoint', 'geometric']).map((m) => ({
     label: m,

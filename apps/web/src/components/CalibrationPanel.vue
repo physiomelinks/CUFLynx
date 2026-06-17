@@ -12,6 +12,9 @@ const props = defineProps({
   state: { type: String, default: 'idle' },
   cost: { type: Number, default: null },
   error: { type: String, default: '' },
+  // Gradient-based 'sp_minimize' is only valid for casadi_python + all-
+  // differentiable ops (set in the Settings popup). Gates the method + FD/AD.
+  adAvailable: { type: Boolean, default: false },
 })
 const emit = defineEmits(['run', 'cancel', 'change'])
 
@@ -26,6 +29,9 @@ const settings = reactive({
   num_cores: 1,
   dt: 0.01,
   DEBUG: false,
+  // Gradient source for the gradient-based 'sp_minimize' method (AD=CasADi
+  // jacobian, FD=finite difference). Ignored by the other methods.
+  gradient_method: 'FD',
 })
 
 // Seed from server defaults once they arrive.
@@ -44,11 +50,34 @@ watch(
 // "run calibration first") can reuse the user's calibration configuration.
 watch(settings, () => emit('change', { ...settings }), { deep: true, immediate: true })
 
-const methods = computed(() =>
-  (props.defaults.methods ?? ['genetic_algorithm', 'CMA-ES']).map((m) => ({
+const SP_MINIMIZE = 'sp_minimize'
+const methods = computed(() => {
+  const base = (props.defaults.methods ?? ['genetic_algorithm', 'CMA-ES']).map((m) => ({
     label: m,
     value: m,
-  })),
+  }))
+  // sp_minimize (gradient-based) needs casadi_python + differentiable ops.
+  if (props.adAvailable && !base.some((m) => m.value === SP_MINIMIZE)) {
+    base.push({ label: 'SciPy minimize (gradient-based)', value: SP_MINIMIZE })
+  }
+  return base
+})
+
+const isGradientMethod = computed(() => settings.param_id_method === SP_MINIMIZE)
+
+const GRADIENT_METHODS = [
+  { label: 'Finite difference', value: 'FD' },
+  { label: 'Automatic differentiation (casadi)', value: 'AD' },
+]
+
+// Don't leave a now-invalid sp_minimize selection if AD support disappears.
+watch(
+  () => props.adAvailable,
+  (ok) => {
+    if (!ok && settings.param_id_method === SP_MINIMIZE) {
+      settings.param_id_method = 'genetic_algorithm'
+    }
+  },
 )
 
 const running = computed(() => props.state === 'running')
@@ -83,6 +112,18 @@ function onRun() {
           option-label="label"
           option-value="value"
           size="small"
+          data-testid="calib-method"
+        />
+      </label>
+      <label v-if="isGradientMethod" class="field">
+        <span title="Gradient source for sp_minimize: automatic differentiation (CasADi) or finite difference">Gradient</span>
+        <Select
+          v-model="settings.gradient_method"
+          :options="GRADIENT_METHODS"
+          option-label="label"
+          option-value="value"
+          size="small"
+          data-testid="calib-gradient-method"
         />
       </label>
       <label class="field">

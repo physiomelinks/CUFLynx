@@ -7,6 +7,7 @@ import {
   buildChartData,
   computeFeature,
   controlledSeries,
+  buildExtraPlotCells,
 } from './plot'
 
 // Mirrors the SN_simple obs_data shape (3 experiments, predictions + overlays).
@@ -197,5 +198,42 @@ describe('buildChartData reference lines', () => {
       dataItems: [{ name_for_plotting: 'V_max', plot_type: 'horizontal', value: 20, data_type: 'constant' }],
     })
     expect(datasets.some((d) => d.kind === 'obs-constant' && Array.isArray(d.borderDash))).toBe(true)
+  })
+})
+
+describe('buildExtraPlotCells', () => {
+  const outputs = { 'm/x': [1, 2, 3], 'm/y': [4, 5, 6] }
+  const time = [0, 1, 2]
+  const extras = [
+    { id: 1, groupKey: 'exp0', qname: 'm/x', label: 'm/x' },
+    { id: 2, groupKey: 'exp1', qname: 'm/y', label: 'm/y' },
+    { id: 3, groupKey: 'exp0', qname: 'm/y', label: 'm/y' },
+  ]
+
+  it('only returns cells whose groupKey matches the experiment', () => {
+    const cells = buildExtraPlotCells(extras, 'exp0', time, outputs)
+    expect(cells.map((c) => c.removeId)).toEqual([1, 3])
+  })
+
+  it('builds a single-variable simResult from the group outputs', () => {
+    const [cell] = buildExtraPlotCells(extras, 'exp1', time, outputs)
+    expect(cell.simResult).toEqual({ time, outputs: { 'm/y': [4, 5, 6] } })
+    expect(cell.removeId).toBe(2)
+    expect(cell.key).toBe('extra:2')
+  })
+
+  it('falls back to an empty series when the variable is absent', () => {
+    const [cell] = buildExtraPlotCells(
+      [{ id: 9, groupKey: 'exp0', qname: 'm/z', label: 'm/z' }],
+      'exp0',
+      time,
+      outputs,
+    )
+    expect(cell.simResult.outputs).toEqual({ 'm/z': [] })
+  })
+
+  it('returns nothing when no extras match', () => {
+    expect(buildExtraPlotCells(extras, 'data-only', time, outputs)).toEqual([])
+    expect(buildExtraPlotCells(undefined, 'exp0', time, outputs)).toEqual([])
   })
 })

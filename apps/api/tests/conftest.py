@@ -16,6 +16,8 @@ if str(API_DIR) not in sys.path:
 import calibration as calibration_mod  # noqa: E402
 import engine as engine_mod  # noqa: E402
 import main  # noqa: E402
+import model_codegen as model_codegen_mod  # noqa: E402
+import solver_options as solver_options_mod  # noqa: E402
 import uq as uq_mod  # noqa: E402
 
 # Repo-root resources (apps/api/tests -> parents[3] == repo root).
@@ -55,9 +57,31 @@ def requires_simulation(simulation_deps_available: bool):
         pytest.skip("myokit / libcellml / circulatory_autogen not available")
 
 
+@pytest.fixture
+def requires_casadi(requires_simulation):
+    """For the casadi_python backend (generated model + CasADi AD)."""
+    try:
+        import casadi  # noqa: F401
+    except ImportError:
+        pytest.skip("casadi not available")
+
+
 # ---------------------------------------------------------------------------
 # App + state isolation
 # ---------------------------------------------------------------------------
+def _reset_backend_solver():
+    """Restore the engine's backend-solver selection to defaults."""
+    engine_mod.engine.model_type = engine_mod.DEFAULT_MODEL_TYPE
+    engine_mod.engine.solver = engine_mod.DEFAULT_SOLVER
+    engine_mod.engine.solver_info = dict(engine_mod.DEFAULT_SOLVER_INFO)
+    import os
+
+    for var in ("CUFLYNX_MODEL_TYPE", "CUFLYNX_SOLVER", "CUFLYNX_SOLVER_INFO"):
+        os.environ.pop(var, None)
+    solver_options_mod.reset_cache()
+    model_codegen_mod.reset_cache()
+
+
 @pytest.fixture(autouse=True)
 def reset_app_state():
     """Reset the model registry and engine caches/factories between tests."""
@@ -68,6 +92,7 @@ def reset_app_state():
     engine_mod.engine.reset()
     engine_mod.engine.helper_factory = engine_mod._default_helper_factory
     engine_mod.engine.runner_factory = engine_mod._default_runner_factory
+    _reset_backend_solver()
     calibration_mod.calibration.reset()
     calibration_mod.calibration.runner_path = calibration_mod.RUNNER_PATH
     uq_mod.uq.reset()
@@ -77,6 +102,7 @@ def reset_app_state():
     engine_mod.engine.reset()
     engine_mod.engine.helper_factory = engine_mod._default_helper_factory
     engine_mod.engine.runner_factory = engine_mod._default_runner_factory
+    _reset_backend_solver()
     calibration_mod.calibration.reset()
     calibration_mod.calibration.runner_path = calibration_mod.RUNNER_PATH
     uq_mod.uq.reset()
