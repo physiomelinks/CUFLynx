@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "cellml-explorer-api"
+name = "cuflynx-api"
 version = "0.1.0"
 description = "FastAPI backend for the CellML slider-visualisation app"
 readme = "../../README.md"

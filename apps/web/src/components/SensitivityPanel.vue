@@ -15,7 +15,7 @@ const props = defineProps({
   // (set in the Settings popup). Gates the AD gradient-source option.
   adAvailable: { type: Boolean, default: false },
 })
-const emit = defineEmits(['run', 'cancel'])
+const emit = defineEmits(['run', 'cancel', 'change'])
 
 // pre_time / sim_time come from the obs_data.json protocol_info (mirrors
 // calibration, see #13). The Python interpreter is chosen once in the top bar.
@@ -48,6 +48,9 @@ watch(
   },
   { immediate: true },
 )
+
+// Surface live settings upward so the pipeline export can capture them.
+watch(settings, () => emit('change', { ...settings }), { deep: true, immediate: true })
 
 // If AD becomes unavailable (backend solver switched away from casadi_python),
 // don't leave a now-invalid AD selection behind.

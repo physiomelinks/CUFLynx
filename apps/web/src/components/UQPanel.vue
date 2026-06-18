@@ -12,7 +12,7 @@ const props = defineProps({
   state: { type: String, default: 'idle' },
   error: { type: String, default: '' },
 })
-const emit = defineEmits(['run', 'cancel'])
+const emit = defineEmits(['run', 'cancel', 'change'])
 
 // pre_time / sim_time come from the obs_data protocol_info (mirrors calibration).
 // The Python interpreter is chosen once in the top bar.
@@ -25,6 +25,9 @@ const settings = reactive({
   dt: 0.01,
   DEBUG: false,
 })
+
+// Surface live settings upward so the pipeline export can capture them.
+watch(settings, () => emit('change', { ...settings }), { deep: true, immediate: true })
 
 const isMcmc = computed(() => settings.method === 'mcmc')
 

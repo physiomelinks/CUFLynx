@@ -24,12 +24,16 @@ const props = defineProps({
   obsProtocolInfo: { type: Object, default: null },
   experimentCount: { type: Number, default: 0 },
   loadedObsFilename: { type: String, default: null },
+  // Enables the pipeline/plotting export buttons (a model must be loaded).
+  canExport: { type: Boolean, default: false },
 })
 const emit = defineEmits([
   'model-loaded',
   'obs-data-loaded',
   'params-loaded',
   'update:outputsDir',
+  'export-pipeline',
+  'export-plotting',
 ])
 
 const error = ref('')
@@ -292,10 +296,26 @@ async function onParamsDrop(event) {
         />
       </span>
     </label>
-    <small class="hint">
-      Absolute path where calibration outputs are written. Leave blank for a
-      temporary directory.
-    </small>
+    <div class="export-buttons">
+      <Button
+        label="Export pipeline to python"
+        icon="pi pi-file-export"
+        size="small"
+        text
+        :disabled="!canExport"
+        data-testid="export-pipeline"
+        @click="emit('export-pipeline')"
+      />
+      <Button
+        label="Export python plotting script"
+        icon="pi pi-chart-line"
+        size="small"
+        text
+        :disabled="!canExport"
+        data-testid="export-plotting"
+        @click="emit('export-plotting')"
+      />
+    </div>
 
     <FileBrowserDialog
       v-model:visible="outputsBrowserOpen"
@@ -379,6 +399,13 @@ async function onParamsDrop(event) {
 }
 .exports-heading {
   margin: 0.5rem 0 0;
+}
+.export-buttons {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.35rem;
+  margin: 0.5rem 0;
 }
 .outputs-dir {
   display: flex;

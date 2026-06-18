@@ -19,9 +19,12 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import tempfile
 import uuid
 from pathlib import Path
+
+import yaml
 
 from fastapi import FastAPI, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -31,6 +34,7 @@ from pydantic import BaseModel, Field
 from calibration import calibration, list_python_interpreters
 from cellml_meta import CellMLModel, CellMLParseError, parse_cellml
 from engine import SimulationError, engine, _circulatory_autogen_src
+import export_pipeline
 from model_codegen import resolve_model_path, reset_cache as reset_codegen
 from obs_data import ObsData, ObsDataError, parse_obs_data
 from obs_options import get_obs_data_options, reset_cache as reset_obs_options
@@ -43,7 +47,7 @@ from solver_options import (
 from sensitivity import sensitivity
 from uq import uq
 
-app = FastAPI(title="CellML Explorer API", version="0.1.0")
+app = FastAPI(title="CUFLynx API", version="0.1.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -53,7 +57,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-UPLOAD_DIR = Path(tempfile.gettempdir()) / "cellml_explorer_uploads"
+UPLOAD_DIR = Path(tempfile.gettempdir()) / "cuflynx_uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -233,6 +237,110 @@ def set_config(req: ConfigRequest) -> dict:
     return _config_payload()
 
 
+# ---------------------------------------------------------------------------
+# Pipeline export — reproducible script + dated user_inputs.yaml
+# ---------------------------------------------------------------------------
+class ExportPipelineRequest(BaseModel):
+    model_id: str
+    # Loaded CellML filename stem (preferred over the internal <model name>).
+    file_prefix: str = ""
+    sim_time: float = 2.0
+    pre_time: float = 0.0
+    calibration: dict = Field(default_factory=dict)
+    sensitivity: dict = Field(default_factory=dict)
+    uq: dict = Field(default_factory=dict)
+    enabled: dict = Field(default_factory=dict)
+    # Base dir for the export folder; blank => the temp uploads dir.
+    config_outputs_dir: str = ""
+
+
+class ExportPlottingRequest(BaseModel):
+    # Where to write plot_outputs.py; blank => the temp uploads dir.
+    config_outputs_dir: str = ""
+
+
+def _export_base_dir(configured: str) -> Path:
+    configured = (configured or "").strip()
+    if configured:
+        if not os.path.isabs(configured):
+            raise HTTPException(status_code=422, detail="config_outputs_dir must be an absolute path")
+        return Path(configured)
+    return UPLOAD_DIR
+
+
+@app.post("/api/export/pipeline")
+def export_pipeline_route(req: ExportPipelineRequest) -> dict:
+    """Write a self-contained, reproducible export folder: the dated
+    user_inputs yaml + run_pipeline.py + plot_outputs.py + copies of the model /
+    obs / params, all referenced by relative paths."""
+    record = _get_model(req.model_id)
+    suffix = export_pipeline.dated_suffix()
+    export_dir = _export_base_dir(req.config_outputs_dir) / f"export_{suffix}"
+    resources = export_dir / "resources"
+    resources.mkdir(parents=True, exist_ok=True)
+
+    # Use the loaded CellML file's prefix (e.g. "3compartment"), not the internal
+    # <model name> (often a generic "cardiovascularSystem"). The client passes it.
+    file_prefix = req.file_prefix.strip() or record.meta.name or "model"
+    # The model lives where circulatory_autogen resolves model_path:
+    # generated_models/<prefix>/<prefix>.cellml. obs/params go in resources/.
+    model_file = f"{file_prefix}.cellml"
+    model_dir = export_dir / "generated_models" / file_prefix
+    model_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(record.path, model_dir / model_file)
+    obs_file = None
+    if record.obs_path is not None:
+        obs_file = "obs_data.json"
+        shutil.copyfile(record.obs_path, resources / obs_file)
+    params_file = None
+    if record.params_path is not None:
+        params_file = "params_for_id.csv"
+        shutil.copyfile(record.params_path, resources / params_file)
+
+    user_inputs = export_pipeline.build_user_inputs(
+        file_prefix=file_prefix,
+        model_type=engine.model_type,
+        solver=engine.solver,
+        solver_info=dict(engine.solver_info),
+        dt=engine.dt,
+        pre_time=req.pre_time,
+        sim_time=req.sim_time,
+        model_file=model_file,
+        obs_file=obs_file,
+        params_for_id_file=params_file,
+        calibration=req.calibration,
+        sensitivity=req.sensitivity,
+        uq=req.uq,
+        enabled=req.enabled,
+    )
+    yaml_name = f"user_inputs_{suffix}.yaml"
+    with open(export_dir / yaml_name, "w") as fh:
+        yaml.safe_dump(user_inputs, fh, default_flow_style=False, sort_keys=False)
+    (export_dir / "run_pipeline.py").write_text(export_pipeline.render_pipeline_script())
+    (export_dir / "plot_outputs.py").write_text(export_pipeline.render_plotting_script())
+
+    files = [
+        yaml_name, "run_pipeline.py", "plot_outputs.py",
+        f"generated_models/{file_prefix}/{model_file}",
+    ]
+    if obs_file:
+        files.append(f"resources/{obs_file}")
+    if params_file:
+        files.append(f"resources/{params_file}")
+    return {"export_dir": str(export_dir), "files": files}
+
+
+@app.post("/api/export/plotting")
+def export_plotting_route(req: ExportPlottingRequest) -> dict:
+    """Write just the plotting script (regenerates output/progress/analysis plots
+    from a pipeline's output data)."""
+    base = _export_base_dir(req.config_outputs_dir)
+    base.mkdir(parents=True, exist_ok=True)
+    path = base / "plot_outputs.py"
+    path.write_text(export_pipeline.render_plotting_script())
+    return {"path": str(path)}
+
+
 @app.get("/api/fs/list")
 def fs_list(
     path: str | None = Query(default=None), dirs_only: bool = False
@@ -272,6 +380,35 @@ def fs_list(
         "parent": None if parent == str(base) else parent,
         "entries": entries,
     }
+
+
+class MkdirRequest(BaseModel):
+    parent: str
+    name: str
+
+
+@app.post("/api/fs/mkdir")
+def fs_mkdir(req: MkdirRequest) -> dict:
+    """Create a new folder under ``parent`` for the file/folder browser (e.g. to
+    make a fresh outputs directory). Localhost tool — see ``fs_list``."""
+    name = (req.name or "").strip()
+    if not name or name in (".", "..") or "/" in name or "\\" in name:
+        raise HTTPException(status_code=422, detail="invalid folder name")
+    base = Path(req.parent).expanduser() if req.parent else Path.home()
+    try:
+        base = base.resolve()
+    except OSError as exc:
+        raise HTTPException(status_code=400, detail=f"invalid path: {req.parent}") from exc
+    if not base.is_dir():
+        raise HTTPException(status_code=404, detail=f"not a directory: {base}")
+    target = base / name
+    try:
+        target.mkdir(parents=False, exist_ok=False)
+    except FileExistsError as exc:
+        raise HTTPException(status_code=409, detail="folder already exists") from exc
+    except OSError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"path": str(target)}
 
 
 @app.post("/api/models/upload")

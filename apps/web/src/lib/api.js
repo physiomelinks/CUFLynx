@@ -21,6 +21,11 @@ export async function listDir(path = null, dirsOnly = false) {
   return data
 }
 
+export async function makeDir(parent, name) {
+  const { data } = await axios.post(url('/api/fs/mkdir'), { parent, name })
+  return data
+}
+
 export async function getConfig() {
   const { data } = await axios.get(url('/api/config'))
   return data
@@ -180,5 +185,15 @@ export async function getUQStatus(jobId, offset = 0) {
 
 export async function cancelUQ(jobId) {
   const { data } = await axios.post(url(`/api/uq/${jobId}/cancel`))
+  return data
+}
+
+export async function exportPipeline(payload) {
+  const { data } = await axios.post(url('/api/export/pipeline'), payload)
+  return data
+}
+
+export async function exportPlotting(payload) {
+  const { data } = await axios.post(url('/api/export/plotting'), payload)
   return data
 }

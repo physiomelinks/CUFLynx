@@ -1,10 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 
-vi.mock('../lib/api', () => ({ listDir: vi.fn() }))
+vi.mock('../lib/api', () => ({ listDir: vi.fn(), makeDir: vi.fn() }))
 
 import FileBrowserDialog from './FileBrowserDialog.vue'
-import { listDir } from '../lib/api'
+import { listDir, makeDir } from '../lib/api'
 
 // Render the PrimeVue Dialog inline (no teleport) and Button as a real button.
 const ButtonStub = {
@@ -17,9 +17,18 @@ const DialogStub = {
   props: ['visible'],
   template: '<div v-if="visible"><slot /><slot name="footer" /></div>',
 }
-const stubs = { Dialog: DialogStub, Button: ButtonStub, Checkbox: true }
+const InputTextStub = {
+  props: ['modelValue'],
+  emits: ['update:modelValue'],
+  template:
+    '<input :value="modelValue" v-bind="$attrs" @input="$emit(\'update:modelValue\', $event.target.value)" />',
+}
+const stubs = { Dialog: DialogStub, Button: ButtonStub, Checkbox: true, InputText: InputTextStub }
 
-beforeEach(() => listDir.mockReset())
+beforeEach(() => {
+  listDir.mockReset()
+  makeDir.mockReset()
+})
 
 describe('FileBrowserDialog', () => {
   it('lists the home dir on open and navigates into folders', async () => {
@@ -96,5 +105,30 @@ describe('FileBrowserDialog', () => {
     expect(listDir).toHaveBeenCalledWith(null, true) // dir mode -> dirs_only true
     await wrapper.find('[data-testid="fb-confirm"]').trigger('click')
     expect(wrapper.emitted('select')[0]).toEqual(['/data/out'])
+  })
+
+  it('creates a new folder and steps into it', async () => {
+    listDir
+      .mockResolvedValueOnce({ path: '/data', parent: '/', entries: [] })
+      .mockResolvedValueOnce({ path: '/data/runs', parent: '/data', entries: [] })
+    makeDir.mockResolvedValue({ path: '/data/runs' })
+    const wrapper = mount(FileBrowserDialog, {
+      props: { visible: true, mode: 'dir' },
+      global: { stubs },
+    })
+    await flushPromises()
+
+    await wrapper.find('[data-testid="fb-new-folder"]').trigger('click')
+    const input = wrapper.find('[data-testid="fb-new-folder-name"]')
+    expect(input.exists()).toBe(true)
+    await input.setValue('runs')
+    await wrapper.find('[data-testid="fb-new-folder-create"]').trigger('click')
+    await flushPromises()
+
+    expect(makeDir).toHaveBeenCalledWith('/data', 'runs')
+    expect(listDir).toHaveBeenLastCalledWith('/data/runs', true) // stepped into it
+    // selecting now returns the freshly created folder
+    await wrapper.find('[data-testid="fb-confirm"]').trigger('click')
+    expect(wrapper.emitted('select')[0]).toEqual(['/data/runs'])
   })
 })
