@@ -59,8 +59,12 @@ const uq = useUQ()
 const simTime = ref(10)
 const preTime = ref(0)
 
-// Where calibration outputs are written; blank => backend uses a temp dir.
-const outputsDir = ref('')
+// Where outputs are written. Chosen at startup (see the outputs-dir prompt) and
+// remembered across sessions; blank => backend uses a temp dir.
+const outputsDir = ref(localStorage.getItem('cuflynx-outputs-dir') || '')
+watch(outputsDir, (v) => localStorage.setItem('cuflynx-outputs-dir', v || ''))
+// On open, ask the user where outputs should go (the first thing they see).
+const outputsSetupOpen = ref(false)
 
 // Raw params_for_id entries (incl. param_type, which the slider store drops) and
 // the loaded CSV filename — fed to the params Edit dialog so it can pre-fill rows
@@ -305,6 +309,8 @@ onMounted(async () => {
   } catch {
     /* backend not up yet */
   }
+  // First thing on open: ask where outputs should go (sets outputsDir).
+  outputsSetupOpen.value = true
 })
 
 const pythonOptions = computed(() => {
@@ -1145,6 +1151,12 @@ watch(
       mode="dir"
       title="Select the circulatory_autogen directory"
       @select="applyCaDir"
+    />
+    <FileBrowserDialog
+      v-model:visible="outputsSetupOpen"
+      mode="dir"
+      title="Where should outputs be saved?"
+      @select="(d) => (outputsDir = d)"
     />
 
     <Dialog

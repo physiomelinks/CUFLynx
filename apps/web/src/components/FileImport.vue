@@ -296,11 +296,6 @@ async function onParamsDrop(event) {
         />
       </span>
     </label>
-    <small class="hint">
-      Absolute path where calibration outputs are written. Leave blank for a
-      temporary directory.
-    </small>
-
     <div class="export-buttons">
       <Button
         label="Export pipeline to python"
