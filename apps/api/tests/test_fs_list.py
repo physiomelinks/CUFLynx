@@ -32,3 +32,22 @@ def test_fs_list_defaults_to_home(client):
 def test_fs_list_missing_dir_404(client, tmp_path):
     resp = client.get("/api/fs/list", params={"path": str(tmp_path / "nope")})
     assert resp.status_code == 404
+
+
+def test_fs_mkdir_creates_folder(client, tmp_path):
+    resp = client.post("/api/fs/mkdir", json={"parent": str(tmp_path), "name": "outputs"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["path"] == str(tmp_path / "outputs")
+    assert (tmp_path / "outputs").is_dir()
+
+
+def test_fs_mkdir_rejects_bad_name(client, tmp_path):
+    for bad in ["", "a/b", "..", "."]:
+        resp = client.post("/api/fs/mkdir", json={"parent": str(tmp_path), "name": bad})
+        assert resp.status_code == 422, bad
+
+
+def test_fs_mkdir_conflict_409(client, tmp_path):
+    (tmp_path / "dup").mkdir()
+    resp = client.post("/api/fs/mkdir", json={"parent": str(tmp_path), "name": "dup"})
+    assert resp.status_code == 409

@@ -382,6 +382,35 @@ def fs_list(
     }
 
 
+class MkdirRequest(BaseModel):
+    parent: str
+    name: str
+
+
+@app.post("/api/fs/mkdir")
+def fs_mkdir(req: MkdirRequest) -> dict:
+    """Create a new folder under ``parent`` for the file/folder browser (e.g. to
+    make a fresh outputs directory). Localhost tool — see ``fs_list``."""
+    name = (req.name or "").strip()
+    if not name or name in (".", "..") or "/" in name or "\\" in name:
+        raise HTTPException(status_code=422, detail="invalid folder name")
+    base = Path(req.parent).expanduser() if req.parent else Path.home()
+    try:
+        base = base.resolve()
+    except OSError as exc:
+        raise HTTPException(status_code=400, detail=f"invalid path: {req.parent}") from exc
+    if not base.is_dir():
+        raise HTTPException(status_code=404, detail=f"not a directory: {base}")
+    target = base / name
+    try:
+        target.mkdir(parents=False, exist_ok=False)
+    except FileExistsError as exc:
+        raise HTTPException(status_code=409, detail="folder already exists") from exc
+    except OSError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"path": str(target)}
+
+
 @app.post("/api/models/upload")
 async def upload_model(file: UploadFile) -> dict:
     raw = await file.read()

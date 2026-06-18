@@ -21,6 +21,11 @@ export async function listDir(path = null, dirsOnly = false) {
   return data
 }
 
+export async function makeDir(parent, name) {
+  const { data } = await axios.post(url('/api/fs/mkdir'), { parent, name })
+  return data
+}
+
 export async function getConfig() {
   const { data } = await axios.get(url('/api/config'))
   return data

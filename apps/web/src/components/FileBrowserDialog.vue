@@ -3,7 +3,8 @@ import { ref, watch, computed } from 'vue'
 import Dialog from 'primevue/dialog'
 import Button from 'primevue/button'
 import Checkbox from 'primevue/checkbox'
-import { listDir } from '../lib/api'
+import InputText from 'primevue/inputtext'
+import { listDir, makeDir } from '../lib/api'
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
@@ -20,6 +21,9 @@ const error = ref('')
 const loading = ref(false)
 // Hide dotfiles/dot-dirs by default; the toolbar checkbox reveals them.
 const showHidden = ref(false)
+// Inline "new folder" creation in the current directory.
+const creatingFolder = ref(false)
+const newFolderName = ref('')
 
 const visibleEntries = computed(() =>
   showHidden.value
@@ -48,10 +52,27 @@ async function load(p) {
 watch(
   () => props.visible,
   (v) => {
-    if (v) load(null)
+    if (v) {
+      creatingFolder.value = false
+      newFolderName.value = ''
+      load(null)
+    }
   },
   { immediate: true },
 )
+
+async function createFolder() {
+  const name = newFolderName.value.trim()
+  if (!name) return
+  try {
+    const res = await makeDir(path.value, name)
+    creatingFolder.value = false
+    newFolderName.value = ''
+    await load(res.path) // step into the new folder so it's ready to select
+  } catch (e) {
+    error.value = e?.response?.data?.detail || String(e)
+  }
+}
 
 function onEntryClick(entry) {
   if (entry.is_dir) load(entry.path)
@@ -85,10 +106,30 @@ function confirm() {
         @click="load(parent)"
       />
       <code class="fb-path">{{ path }}</code>
+      <Button
+        icon="pi pi-folder-plus"
+        label="New folder"
+        size="small"
+        text
+        data-testid="fb-new-folder"
+        @click="creatingFolder = true"
+      />
       <label class="fb-hidden-toggle" title="Show dotfiles and hidden folders">
         <Checkbox v-model="showHidden" :binary="true" data-testid="fb-show-hidden" />
         <span>show hidden</span>
       </label>
+    </div>
+    <div v-if="creatingFolder" class="fb-new-folder">
+      <InputText
+        v-model="newFolderName"
+        placeholder="New folder name"
+        size="small"
+        autofocus
+        data-testid="fb-new-folder-name"
+        @keyup.enter="createFolder"
+      />
+      <Button label="Create" size="small" data-testid="fb-new-folder-create" @click="createFolder" />
+      <Button label="Cancel" size="small" text @click="creatingFolder = false" />
     </div>
     <p v-if="error" class="fb-error" data-testid="fb-error">{{ error }}</p>
     <ul class="fb-list">
@@ -128,6 +169,15 @@ function confirm() {
   font-size: 0.78rem;
   opacity: 0.8;
   word-break: break-all;
+}
+.fb-new-folder {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-bottom: 0.5rem;
+}
+.fb-new-folder :deep(input) {
+  flex: 1;
 }
 .fb-hidden-toggle {
   margin-left: auto;
