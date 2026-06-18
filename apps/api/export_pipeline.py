@@ -141,6 +141,61 @@ def resolve_ca_src():
     return args.ca_src
 
 
+def build_param_id(cfg, *, model_path, model_type, params_path, obs_path, out_dir,
+                   resources, solver_info, dt, sim_time, pre_time, do_ad=False,
+                   mcmc=False, options_key="optimiser_options", options=None):
+    """Construct a CVS0DParamID (mirrors CUFLynx's runners) without running it."""
+    from param_id.paramID import CVS0DParamID
+
+    kwargs = dict(
+        model_path=model_path, model_type=model_type,
+        param_id_method=cfg.get("param_id_method", "genetic_algorithm"),
+        mcmc_instead=mcmc, file_name_prefix=cfg["file_prefix"],
+        params_for_id_path=params_path, param_id_obs_path=obs_path,
+        sim_time=sim_time, pre_time=pre_time, dt=dt, solver_info=solver_info,
+        do_ad=do_ad, param_id_output_dir=out_dir, resources_dir=resources,
+    )
+    kwargs[options_key] = options or {}
+    return CVS0DParamID(**kwargs)
+
+
+def _mle_obs_data(obs_path, out_dir, cost_type="gaussian_MLE"):
+    """MCMC / Laplace need ln L = -cost, so write a copy of the obs_data with every
+    data_item's cost_type set to an MLE cost (mirrors uq_runner._mle_obs_path)."""
+    obs = json.loads(open(obs_path).read())
+    for item in obs.get("data_items", []):
+        item["cost_type"] = cost_type
+    out = os.path.join(out_dir, "uq_obs_data.json")
+    open(out, "w").write(json.dumps(obs))
+    return out
+
+
+def _flat_param_names(param_id):
+    return [g[0] if isinstance(g, (list, tuple)) else g for g in param_id.get_param_names()]
+
+
+def _write_uq(out_dir, method, flat, qnames):
+    """Per-parameter posterior summary + histogram from samples (N, P)."""
+    import numpy as np
+
+    flat = np.asarray(flat)
+    params = []
+    for i, qname in enumerate(qnames):
+        col = np.asarray(flat[:, i], dtype=float)
+        col = col[np.isfinite(col)]
+        if col.size == 0:
+            continue
+        counts, edges = np.histogram(col, bins=30)
+        q05, q50, q95 = (float(x) for x in np.percentile(col, [5, 50, 95]))
+        params.append({
+            "qname": qname, "mean": float(np.mean(col)), "std": float(np.std(col)),
+            "q05": q05, "q50": q50, "q95": q95,
+            "bins": [float(x) for x in edges], "counts": [int(x) for x in counts],
+        })
+    with open(os.path.join(out_dir, "results.json"), "w") as fh:
+        json.dump({"method": method, "params": params}, fh)
+
+
 def main():
     sys.path.insert(0, resolve_ca_src())
     cfg = load_config()
@@ -203,29 +258,84 @@ def main():
         )
         sa.run_sensitivity_analysis()
 
+    best_vals = None  # calibration best fit, reused by UQ if available
     if cfg.get("do_calibration"):
         print("=== calibration ===", flush=True)
-        from param_id.paramID import CVS0DParamID
+        import numpy as np
 
-        param_id = CVS0DParamID(
-            model_path=model_path, model_type=model_type,
-            param_id_method=cfg.get("param_id_method", "genetic_algorithm"),
-            file_name_prefix=file_prefix, params_for_id_path=params_path,
-            param_id_obs_path=obs_path, sim_time=sim_time, pre_time=pre_time, dt=dt,
-            solver_info=solver_info, optimiser_options=cfg.get("optimiser_options", {}),
-            do_ad=bool(cfg.get("do_ad", False)), param_id_output_dir=out_dir,
-            resources_dir=resources,
+        param_id = build_param_id(
+            cfg, model_path=model_path, model_type=model_type, params_path=params_path,
+            obs_path=obs_path, out_dir=out_dir, resources=resources, solver_info=solver_info,
+            dt=dt, sim_time=sim_time, pre_time=pre_time, do_ad=bool(cfg.get("do_ad", False)),
+            options_key="optimiser_options", options=cfg.get("optimiser_options", {}),
         )
         param_id.run()
+        try:
+            best_vals = np.asarray(param_id.get_best_param_vals(), dtype=float)
+        except Exception:
+            best_vals = None
 
     if cfg.get("do_mcmc") or cfg.get("do_ia"):
-        print("=== uncertainty quantification ===", flush=True)
-        # MCMC (do_mcmc) uses CVS0DParamID(mcmc_instead=True); identifiability
-        # (do_ia) uses IdentifiabilityAnalysis. Both need a best-fit point — run
-        # calibration above (do_calibration) first, or set the best params here.
-        # See circulatory_autogen src/scripts/param_id_run_script.py for the full
-        # MCMC / Laplace flow to adapt to your study.
-        print("  Configure UQ following param_id_run_script.py (needs a best fit).", flush=True)
+        method = "mcmc" if cfg.get("do_mcmc") else "laplace"
+        print(f"=== uncertainty quantification ({method}) ===", flush=True)
+        import numpy as np
+        import param_id.paramID as pid
+        from param_id.paramID import ensure_mle_cost_type_for_bayesian_inner
+
+        # MCMC / Laplace require ln L = -cost: use an MLE obs copy + MLE cost_type.
+        cost_type = (cfg.get("mcmc_options") or {}).get("cost_type", "gaussian_MLE")
+        uq_obs = _mle_obs_data(obs_path, out_dir, cost_type)
+        optimiser_options = {**cfg.get("optimiser_options", {}), "cost_type": cost_type}
+        mcmc_options = {**cfg.get("mcmc_options", {}), "cost_type": cost_type}
+        inp = {"DEBUG": False, "optimiser_options": optimiser_options, "mcmc_options": mcmc_options}
+
+        # A best fit is required. Reuse the calibration above if it ran; else run a
+        # GA calibration here (against the MLE obs).
+        ga = None
+        if best_vals is None:
+            print("  no calibration best fit yet -> running calibration for UQ", flush=True)
+            ga = build_param_id(
+                cfg, model_path=model_path, model_type=model_type, params_path=params_path,
+                obs_path=uq_obs, out_dir=out_dir, resources=resources, solver_info=solver_info,
+                dt=dt, sim_time=sim_time, pre_time=pre_time,
+                options_key="optimiser_options", options=optimiser_options,
+            )
+            ga.run()
+            best_vals = np.asarray(ga.get_best_param_vals(), dtype=float)
+
+        if method == "mcmc":
+            mcmc = build_param_id(
+                cfg, model_path=model_path, model_type=model_type, params_path=params_path,
+                obs_path=uq_obs, out_dir=out_dir, resources=resources, solver_info=solver_info,
+                dt=dt, sim_time=sim_time, pre_time=pre_time,
+                mcmc=True, options_key="mcmc_options", options=mcmc_options,
+            )
+            mcmc.set_best_param_vals(np.asarray(best_vals, dtype=float))
+            ensure_mle_cost_type_for_bayesian_inner(pid.mcmc_object, inp)
+            mcmc.run_mcmc()
+            if getattr(mcmc, "rank", 0) == 0:
+                _write_uq(out_dir, method, mcmc.get_mcmc_samples()[0], _flat_param_names(mcmc))
+        else:
+            from identifiabilty_analysis.identifiabilityAnalysis import IdentifiabilityAnalysis
+
+            cvs = ga or build_param_id(
+                cfg, model_path=model_path, model_type=model_type, params_path=params_path,
+                obs_path=uq_obs, out_dir=out_dir, resources=resources, solver_info=solver_info,
+                dt=dt, sim_time=sim_time, pre_time=pre_time,
+                options_key="optimiser_options", options=optimiser_options,
+            )
+            ia = IdentifiabilityAnalysis(
+                model_path, model_type, file_prefix, param_id_output_dir=out_dir,
+                resources_dir=resources, param_id=cvs.param_id,
+            )
+            ia.set_best_param_vals(np.asarray(best_vals, dtype=float))
+            ensure_mle_cost_type_for_bayesian_inner(cvs.param_id, inp)
+            ia.run({"method": "Laplace"})
+            if getattr(ia, "rank", 0) == 0:
+                flat = np.random.multivariate_normal(
+                    ia.mean_Lapalace, ia.covariance_matrix_Laplace, size=100000
+                )
+                _write_uq(out_dir, method, flat, _flat_param_names(cvs))
 
     print(f"Done. Outputs in {out_dir}", flush=True)
 

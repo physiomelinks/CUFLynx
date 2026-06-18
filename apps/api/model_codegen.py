@@ -20,7 +20,7 @@ from engine import _ensure_ca_on_path
 
 # Generated modules live next to the uploads, keyed by model + format so the two
 # python backends don't clobber each other.
-GEN_DIR = Path(tempfile.gettempdir()) / "cellml_explorer_generated"
+GEN_DIR = Path(tempfile.gettempdir()) / "cuflynx_generated"
 
 # (abspath(cellml), casadi_compat) -> generated .py path.
 _cache: dict[tuple[str, bool], str] = {}

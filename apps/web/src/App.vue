@@ -390,6 +390,7 @@ const exportEnabled = computed(() => ({
 function exportPayload() {
   return {
     model_id: model.modelId.value,
+    file_prefix: model.filePrefix.value || undefined,
     sim_time: simTime.value,
     pre_time: preTime.value,
     calibration: { ...calibSettings.value },

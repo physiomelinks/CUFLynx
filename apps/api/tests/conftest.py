@@ -1,4 +1,4 @@
-"""Shared pytest fixtures for the CellML Explorer backend tests."""
+"""Shared pytest fixtures for the CUFLynx backend tests."""
 
 from __future__ import annotations
 

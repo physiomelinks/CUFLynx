@@ -65,6 +65,9 @@ def test_pipeline_script_is_valid_python_and_gates_each_stage():
         assert f'cfg.get("{flag}")' in src
     # drives CA (not a reimplementation)
     assert "CVS0DParamID" in src and "SensitivityAnalysis" in src and "get_simulation_helper" in src
+    # UQ actually runs MCMC / Laplace (not a stub)
+    assert "run_mcmc()" in src and "IdentifiabilityAnalysis" in src
+    assert "ensure_mle_cost_type_for_bayesian_inner" in src
 
 
 def test_plotting_script_is_valid_python_with_three_plot_kinds():
@@ -91,6 +94,7 @@ def test_export_pipeline_writes_self_contained_folder(client, tmp_path):
     model_id = _setup_lv(client)
     resp = client.post("/api/export/pipeline", json={
         "model_id": model_id,
+        "file_prefix": "lotka_volterra",  # loaded filename stem, not <model name>
         "sim_time": 2.0,
         "calibration": {"param_id_method": "genetic_algorithm"},
         "enabled": {"do_simulation": True, "do_calibration": True},
@@ -108,6 +112,9 @@ def test_export_pipeline_writes_self_contained_folder(client, tmp_path):
     ui = yaml.safe_load(open(os.path.join(export_dir, yaml_files[0])))
     assert ui["do_calibration"] is True and ui["do_simulation"] is True
     assert ui["param_id_obs_path"] == "resources/obs_data.json"
+    # Uses the supplied file_prefix for the model file, not the internal model name.
+    assert ui["file_prefix"] == "lotka_volterra"
+    assert ui["model_file"] == "lotka_volterra.cellml"
     res = os.path.join(export_dir, "resources")
     assert os.path.isfile(os.path.join(res, ui["model_file"]))
     assert os.path.isfile(os.path.join(res, "obs_data.json"))

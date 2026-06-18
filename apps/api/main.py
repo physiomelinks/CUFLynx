@@ -47,7 +47,7 @@ from solver_options import (
 from sensitivity import sensitivity
 from uq import uq
 
-app = FastAPI(title="CellML Explorer API", version="0.1.0")
+app = FastAPI(title="CUFLynx API", version="0.1.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -57,7 +57,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-UPLOAD_DIR = Path(tempfile.gettempdir()) / "cellml_explorer_uploads"
+UPLOAD_DIR = Path(tempfile.gettempdir()) / "cuflynx_uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -242,6 +242,8 @@ def set_config(req: ConfigRequest) -> dict:
 # ---------------------------------------------------------------------------
 class ExportPipelineRequest(BaseModel):
     model_id: str
+    # Loaded CellML filename stem (preferred over the internal <model name>).
+    file_prefix: str = ""
     sim_time: float = 2.0
     pre_time: float = 0.0
     calibration: dict = Field(default_factory=dict)
@@ -277,8 +279,11 @@ def export_pipeline_route(req: ExportPipelineRequest) -> dict:
     resources = export_dir / "resources"
     resources.mkdir(parents=True, exist_ok=True)
 
+    # Use the loaded CellML file's prefix (e.g. "3compartment"), not the internal
+    # <model name> (often a generic "cardiovascularSystem"). The client passes it.
+    file_prefix = req.file_prefix.strip() or record.meta.name or "model"
     # Copy the input resources into the bundle (relative paths in the yaml).
-    model_file = f"{record.meta.name or 'model'}.cellml"
+    model_file = f"{file_prefix}.cellml"
     shutil.copyfile(record.path, resources / model_file)
     obs_file = None
     if record.obs_path is not None:
@@ -290,7 +295,7 @@ def export_pipeline_route(req: ExportPipelineRequest) -> dict:
         shutil.copyfile(record.params_path, resources / params_file)
 
     user_inputs = export_pipeline.build_user_inputs(
-        file_prefix=record.meta.name or "model",
+        file_prefix=file_prefix,
         model_type=engine.model_type,
         solver=engine.solver,
         solver_info=dict(engine.solver_info),
