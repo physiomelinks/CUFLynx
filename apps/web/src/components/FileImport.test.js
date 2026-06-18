@@ -164,4 +164,18 @@ describe('FileImport', () => {
     await edit.trigger('click')
     expect(wrapper.find('[data-testid="edit-obs-dialog"]').exists()).toBe(true)
   })
+
+  it('export buttons are disabled until a model is loaded', () => {
+    const wrapper = mount(FileImport, { global: { stubs } }) // canExport defaults false
+    expect(wrapper.find('[data-testid="export-pipeline"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.find('[data-testid="export-plotting"]').attributes('disabled')).toBeDefined()
+  })
+
+  it('export buttons emit their events when exporting is enabled', async () => {
+    const wrapper = mount(FileImport, { props: { canExport: true }, global: { stubs } })
+    await wrapper.find('[data-testid="export-pipeline"]').trigger('click')
+    await wrapper.find('[data-testid="export-plotting"]').trigger('click')
+    expect(wrapper.emitted('export-pipeline')).toHaveLength(1)
+    expect(wrapper.emitted('export-plotting')).toHaveLength(1)
+  })
 })

@@ -19,9 +19,12 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import tempfile
 import uuid
 from pathlib import Path
+
+import yaml
 
 from fastapi import FastAPI, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -31,6 +34,7 @@ from pydantic import BaseModel, Field
 from calibration import calibration, list_python_interpreters
 from cellml_meta import CellMLModel, CellMLParseError, parse_cellml
 from engine import SimulationError, engine, _circulatory_autogen_src
+import export_pipeline
 from model_codegen import resolve_model_path, reset_cache as reset_codegen
 from obs_data import ObsData, ObsDataError, parse_obs_data
 from obs_options import get_obs_data_options, reset_cache as reset_obs_options
@@ -231,6 +235,99 @@ def set_config(req: ConfigRequest) -> dict:
     reset_codegen()  # regenerate python/casadi models against the new CA / format
     reset_obs_options()  # obs_data operation/cost options come from the new CA too
     return _config_payload()
+
+
+# ---------------------------------------------------------------------------
+# Pipeline export — reproducible script + dated user_inputs.yaml
+# ---------------------------------------------------------------------------
+class ExportPipelineRequest(BaseModel):
+    model_id: str
+    sim_time: float = 2.0
+    pre_time: float = 0.0
+    calibration: dict = Field(default_factory=dict)
+    sensitivity: dict = Field(default_factory=dict)
+    uq: dict = Field(default_factory=dict)
+    enabled: dict = Field(default_factory=dict)
+    # Base dir for the export folder; blank => the temp uploads dir.
+    config_outputs_dir: str = ""
+
+
+class ExportPlottingRequest(BaseModel):
+    # Where to write plot_outputs.py; blank => the temp uploads dir.
+    config_outputs_dir: str = ""
+
+
+def _export_base_dir(configured: str) -> Path:
+    configured = (configured or "").strip()
+    if configured:
+        if not os.path.isabs(configured):
+            raise HTTPException(status_code=422, detail="config_outputs_dir must be an absolute path")
+        return Path(configured)
+    return UPLOAD_DIR
+
+
+@app.post("/api/export/pipeline")
+def export_pipeline_route(req: ExportPipelineRequest) -> dict:
+    """Write a self-contained, reproducible export folder: the dated
+    user_inputs yaml + run_pipeline.py + plot_outputs.py + copies of the model /
+    obs / params, all referenced by relative paths."""
+    record = _get_model(req.model_id)
+    suffix = export_pipeline.dated_suffix()
+    export_dir = _export_base_dir(req.config_outputs_dir) / f"export_{suffix}"
+    resources = export_dir / "resources"
+    resources.mkdir(parents=True, exist_ok=True)
+
+    # Copy the input resources into the bundle (relative paths in the yaml).
+    model_file = f"{record.meta.name or 'model'}.cellml"
+    shutil.copyfile(record.path, resources / model_file)
+    obs_file = None
+    if record.obs_path is not None:
+        obs_file = "obs_data.json"
+        shutil.copyfile(record.obs_path, resources / obs_file)
+    params_file = None
+    if record.params_path is not None:
+        params_file = "params_for_id.csv"
+        shutil.copyfile(record.params_path, resources / params_file)
+
+    user_inputs = export_pipeline.build_user_inputs(
+        file_prefix=record.meta.name or "model",
+        model_type=engine.model_type,
+        solver=engine.solver,
+        solver_info=dict(engine.solver_info),
+        dt=engine.dt,
+        pre_time=req.pre_time,
+        sim_time=req.sim_time,
+        model_file=model_file,
+        obs_file=obs_file,
+        params_for_id_file=params_file,
+        calibration=req.calibration,
+        sensitivity=req.sensitivity,
+        uq=req.uq,
+        enabled=req.enabled,
+    )
+    yaml_name = f"user_inputs_{suffix}.yaml"
+    with open(export_dir / yaml_name, "w") as fh:
+        yaml.safe_dump(user_inputs, fh, default_flow_style=False, sort_keys=False)
+    (export_dir / "run_pipeline.py").write_text(export_pipeline.render_pipeline_script())
+    (export_dir / "plot_outputs.py").write_text(export_pipeline.render_plotting_script())
+
+    files = [yaml_name, "run_pipeline.py", "plot_outputs.py", f"resources/{model_file}"]
+    if obs_file:
+        files.append(f"resources/{obs_file}")
+    if params_file:
+        files.append(f"resources/{params_file}")
+    return {"export_dir": str(export_dir), "files": files}
+
+
+@app.post("/api/export/plotting")
+def export_plotting_route(req: ExportPlottingRequest) -> dict:
+    """Write just the plotting script (regenerates output/progress/analysis plots
+    from a pipeline's output data)."""
+    base = _export_base_dir(req.config_outputs_dir)
+    base.mkdir(parents=True, exist_ok=True)
+    path = base / "plot_outputs.py"
+    path.write_text(export_pipeline.render_plotting_script())
+    return {"path": str(path)}
 
 
 @app.get("/api/fs/list")

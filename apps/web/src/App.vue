@@ -35,6 +35,8 @@ import {
   getUQDefaults,
   getConfig,
   setConfig,
+  exportPipeline,
+  exportPlotting,
 } from './lib/api'
 import { overlayItemsFor, controlledSeries, buildExtraPlotCells } from './lib/plot'
 import {
@@ -366,6 +368,65 @@ function onRunCalibration(settings) {
 // Live calibration settings, mirrored from the Calibration panel so the
 // sensitivity tab's "run calibration first" can reuse the same configuration.
 const calibSettings = ref({})
+// Live sensitivity / UQ settings, mirrored so the pipeline export can capture
+// the current configuration without needing a run first.
+const saSettings = ref({})
+const uqSettings = ref({})
+
+// ----- Pipeline export ----------------------------------------------------
+const exportPromptOpen = ref(false)
+const exportNotice = ref('')
+const CUFLYNX_ISSUES_URL = 'https://github.com/physiomelinks/CUFLynx/issues/new'
+
+// Which stages the exported pipeline should run, from the current UI state.
+const exportEnabled = computed(() => ({
+  do_simulation: true,
+  do_calibration: canCalibrate.value,
+  do_sensitivity: canCalibrate.value,
+  do_mcmc: canCalibrate.value && uqSettings.value.method === 'mcmc',
+  do_ia: canCalibrate.value && uqSettings.value.method === 'laplace',
+}))
+
+function exportPayload() {
+  return {
+    model_id: model.modelId.value,
+    sim_time: simTime.value,
+    pre_time: preTime.value,
+    calibration: { ...calibSettings.value },
+    sensitivity: { ...saSettings.value },
+    uq: { ...uqSettings.value },
+    enabled: exportEnabled.value,
+    config_outputs_dir: outputsDir.value.trim() || undefined,
+  }
+}
+
+// Clicking "export pipeline" first prompts the user to file an issue for gaps.
+function onExportPipeline() {
+  if (!model.hasModel.value) return
+  exportPromptOpen.value = true
+}
+
+async function confirmExportPipeline() {
+  exportPromptOpen.value = false
+  try {
+    const res = await exportPipeline(exportPayload())
+    exportNotice.value = `Exported pipeline to ${res.export_dir}`
+  } catch (e) {
+    exportNotice.value = `Export failed: ${e?.response?.data?.detail || String(e)}`
+  }
+}
+
+async function onExportPlotting() {
+  if (!model.hasModel.value) return
+  try {
+    const res = await exportPlotting({
+      config_outputs_dir: outputsDir.value.trim() || undefined,
+    })
+    exportNotice.value = `Exported plotting script to ${res.path}`
+  } catch (e) {
+    exportNotice.value = `Export failed: ${e?.response?.data?.detail || String(e)}`
+  }
+}
 
 // Sensitivity reuses the same prerequisites as calibration (model + obs + params).
 // When 'run calibration first' is set, fold in the calibration panel's GA
@@ -770,6 +831,7 @@ watch(
             :state="sa.state.value"
             :error="sa.error.value"
             @run="onRunSensitivity"
+            @change="(s) => (saSettings = s)"
             @cancel="sa.cancel()"
           />
         </div>
@@ -795,6 +857,7 @@ watch(
             :state="uq.state.value"
             :error="uq.error.value"
             @run="onRunUQ"
+            @change="(s) => (uqSettings = s)"
             @cancel="uq.cancel()"
           />
         </div>
@@ -930,10 +993,16 @@ watch(
           :obs-protocol-info="obs.obsData.value?.protocol_info ?? null"
           :experiment-count="obs.experimentCount.value"
           :loaded-obs-filename="loadedObsFilename"
+          :can-export="model.hasModel.value"
           @model-loaded="onModelLoaded"
           @obs-data-loaded="onObsDataLoaded"
           @params-loaded="onParamsLoaded"
+          @export-pipeline="onExportPipeline"
+          @export-plotting="onExportPlotting"
         />
+        <p v-if="exportNotice" class="export-notice" data-testid="export-notice">
+          {{ exportNotice }}
+        </p>
         <VariableList
           :variables="model.variables.value"
           :active-keys="Object.keys(sliders.sliders)"
@@ -1111,6 +1180,32 @@ watch(
         />
       </template>
     </Dialog>
+
+    <Dialog
+      v-model:visible="exportPromptOpen"
+      modal
+      header="Export pipeline script"
+      :style="{ width: '32rem' }"
+      data-testid="export-prompt"
+    >
+      <p>
+        This exports a reproducible Python pipeline driven by the dated
+        <code>user_inputs.yaml</code>. If there's something you need to do that
+        CUFLynx can't, please
+        <a :href="CUFLYNX_ISSUES_URL" target="_blank" rel="noopener" data-testid="export-issue-link">
+          create a GitHub issue</a>
+        so we can improve functionality and keep your work in a reproducible pipeline.
+      </p>
+      <template #footer>
+        <Button label="Cancel" text @click="exportPromptOpen = false" />
+        <Button
+          label="Continue export"
+          icon="pi pi-file-export"
+          data-testid="export-confirm"
+          @click="confirmExportPipeline"
+        />
+      </template>
+    </Dialog>
   </div>
 </template>
 
@@ -1200,6 +1295,12 @@ watch(
   font-size: 0.78rem;
   margin: 0;
   color: #d08700;
+}
+.export-notice {
+  font-size: 0.75rem;
+  opacity: 0.8;
+  margin: 0.25rem 0 0;
+  word-break: break-all;
 }
 .time-controls {
   display: flex;
