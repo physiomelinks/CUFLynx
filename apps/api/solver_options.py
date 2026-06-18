@@ -28,7 +28,7 @@ from engine import _circulatory_autogen_src
 # model_types CUFLynx can actually run (it code-generates python/casadi from the
 # uploaded CellML; it has no 'cpp' build path), so cpp is filtered out even though
 # CA's schema lists it.
-SUPPORTED_FORMATS = ("cellml_only", "python", "casadi_python")
+SUPPORTED_FORMATS = ("cellml_only", "python", "casadi_python", "aadc_python")
 
 # Used only when CA's SOLVER_SCHEMA can't be imported (mirrors it).
 FALLBACK_SOLVER_SCHEMA = {
@@ -38,18 +38,21 @@ FALLBACK_SOLVER_SCHEMA = {
         "python": ["solve_ivp"],
         "cpp": ["CVODE", "RK4", "PETSC"],
         "casadi_python": ["casadi_integrator"],
+        "aadc_python": ["aadc_semi_implicit"],
     },
     "methods_by_solver": {
         "CVODE_opencor": ["CVODE"],
         "CVODE_myokit": ["CVODE"],
         "solve_ivp": ["RK45", "RK23", "DOP853", "Radau", "BDF", "LSODA", "forward_euler"],
         "casadi_integrator": ["cvodes", "idas", "collocation", "rk", "semi_implicit_euler"],
+        "aadc_semi_implicit": ["adaptive_rk45"],
     },
     "default_solver_by_model_type": {
         "cellml_only": "CVODE_opencor",
         "python": "solve_ivp",
         "cpp": "CVODE",
         "casadi_python": "casadi_integrator",
+        "aadc_python": "aadc_semi_implicit",
     },
 }
 
@@ -153,6 +156,13 @@ def _solver_info_schema(methods_by_solver: dict) -> dict:
             {"key": "abstol", "label": "Abs. tol", "type": _NUM, "default": 1e-10, "methods": casadi_adaptive},
             {"key": "max_num_steps", "label": "Max # steps", "type": _NUM, "default": None, "methods": casadi_adaptive},
         ],
+        "aadc_semi_implicit": [
+            _dt_field(),
+            {"key": "tol", "label": "Tolerance", "type": _NUM, "default": 1e-8},
+            {"key": "threads", "label": "Threads", "type": _NUM, "default": 4},
+            {"key": "gradient_method", "label": "Gradient method", "type": _SEL,
+             "default": "auto", "options": ["auto", "tape", "cvodes", "adjoint"]},
+        ],
     }
 
 
@@ -205,6 +215,12 @@ def get_solver_options(refresh: bool = False) -> dict:
 
 
 def ad_available(model_type: str, options: dict | None = None) -> bool:
-    """True when AD gradients are valid: casadi_python + all ops differentiable."""
+    """True when AD gradients are valid.
+
+    CasADI: casadi_python + all ops @differentiable.
+    AADC: aadc_python (always available — handles conditionals via iif).
+    """
+    if model_type == "aadc_python":
+        return True  # AADC handles conditionals natively
     opts = options if options is not None else get_solver_options()
     return model_type == "casadi_python" and bool(opts.get("all_differentiable"))
