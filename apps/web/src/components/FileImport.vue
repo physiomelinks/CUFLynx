@@ -303,9 +303,10 @@ async function onParamsDrop(event) {
 
     <div class="export-buttons">
       <Button
-        label="Export python script for current pipeline"
+        label="Export pipeline to python"
         icon="pi pi-file-export"
         size="small"
+        text
         :disabled="!canExport"
         data-testid="export-pipeline"
         @click="emit('export-pipeline')"
