@@ -65,6 +65,7 @@ def build_user_inputs(
         "file_prefix": file_prefix,
         "model_type": model_type,
         "model_file": model_file,  # CUFLynx extra: the (flat) CellML to run/generate from
+        "input_param_file": f"{file_prefix}_parameters.csv",
         "resources_dir": "resources",
         # --- solver / sim ---
         "solver": solver,
@@ -104,10 +105,16 @@ def build_user_inputs(
 PIPELINE_SCRIPT = '''#!/usr/bin/env python3
 """Reproducible CUFLynx pipeline (exported).
 
-Drives circulatory_autogen from the sibling user_inputs_*.yaml, running each
-stage that is enabled by a do_* flag in that yaml:
-    do_simulation, do_sensitivity, do_calibration, do_mcmc / do_ia (UQ).
-Toggle the flags in the yaml (or comment out a block below) to change what runs.
+This follows the circulatory_autogen "generation and calibration" tutorial:
+build ONE config dict (``inp_data_dict``) from the exported user_inputs_*.yaml,
+then drive each stage with the class ``init_from_dict(...)`` constructors. Each
+stage runs only if its ``do_*`` flag is set in the yaml — flip them there.
+
+This export folder is self-contained:
+    user_inputs_<date>.yaml      the run configuration (edit the do_* flags here)
+    generated_models/<prefix>/   the CellML model
+    resources/                   obs_data.json + params_for_id.csv
+    output/                      results are written here
 
 Usage:
     python run_pipeline.py --ca-src /path/to/circulatory_autogen/src
@@ -119,6 +126,7 @@ import json
 import os
 import sys
 
+import numpy as np
 import yaml
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -141,25 +149,44 @@ def resolve_ca_src():
     return args.ca_src
 
 
-def build_param_id(cfg, *, model_path, model_type, params_path, obs_path, out_dir,
-                   resources, solver_info, dt, sim_time, pre_time, do_ad=False,
-                   mcmc=False, options_key="optimiser_options", options=None):
-    """Construct a CVS0DParamID (mirrors CUFLynx's runners) without running it."""
-    from param_id.paramID import CVS0DParamID
+def build_inp_data_dict(cfg, output_dir):
+    """Turn the exported yaml into a circulatory_autogen ``inp_data_dict`` with
+    every path resolved to an absolute location inside this export folder. This is
+    the dict the ``init_from_dict`` constructors consume (see the CA tutorial)."""
+    resources = os.path.join(HERE, cfg.get("resources_dir", "resources"))
+    generated_models_dir = os.path.join(HERE, "generated_models")
+    solver_info = dict(cfg.get("solver_info", {}))
+    solver_info.setdefault("solver", cfg.get("solver"))
 
-    kwargs = dict(
-        model_path=model_path, model_type=model_type,
-        param_id_method=cfg.get("param_id_method", "genetic_algorithm"),
-        mcmc_instead=mcmc, file_name_prefix=cfg["file_prefix"],
-        params_for_id_path=params_path, param_id_obs_path=obs_path,
-        sim_time=sim_time, pre_time=pre_time, dt=dt, solver_info=solver_info,
-        do_ad=do_ad, param_id_output_dir=out_dir, resources_dir=resources,
-    )
-    kwargs[options_key] = options or {}
-    return CVS0DParamID(**kwargs)
+    inp = {
+        "file_prefix": cfg["file_prefix"],
+        "input_param_file": cfg.get("input_param_file", cfg["file_prefix"] + "_parameters.csv"),
+        "model_type": cfg.get("model_type", "cellml_only"),
+        # The CellML lives at generated_models/<prefix>/<prefix>.cellml — the layout
+        # circulatory_autogen resolves model_path to, so every stage agrees.
+        "model_path": os.path.join(generated_models_dir, cfg["file_prefix"], cfg["model_file"]),
+        "generated_models_dir": generated_models_dir,
+        "resources_dir": resources,
+        "param_id_output_dir": output_dir,
+        "solver_info": solver_info,
+        "dt": float(cfg.get("dt", 0.01)),
+        "sim_time": float(cfg.get("sim_time", 2.0)),
+        "pre_time": float(cfg.get("pre_time", 0.0)),
+        "param_id_method": cfg.get("param_id_method", "genetic_algorithm"),
+        "do_ad": bool(cfg.get("do_ad", False)),
+        "optimiser_options": dict(cfg.get("optimiser_options", {})),
+        "mcmc_options": dict(cfg.get("mcmc_options", {})),
+        "sa_options": {**cfg.get("sa_options", {}), "output_dir": output_dir},
+        "DEBUG": False,
+    }
+    if cfg.get("param_id_obs_path"):
+        inp["param_id_obs_path"] = os.path.join(HERE, cfg["param_id_obs_path"])
+    if cfg.get("params_for_id_file"):
+        inp["params_for_id_path"] = os.path.join(resources, cfg["params_for_id_file"])
+    return inp
 
 
-def _mle_obs_data(obs_path, out_dir, cost_type="gaussian_MLE"):
+def mle_obs_data(obs_path, out_dir, cost_type="gaussian_MLE"):
     """MCMC / Laplace need ln L = -cost, so write a copy of the obs_data with every
     data_item's cost_type set to an MLE cost (mirrors uq_runner._mle_obs_path)."""
     obs = json.loads(open(obs_path).read())
@@ -170,11 +197,11 @@ def _mle_obs_data(obs_path, out_dir, cost_type="gaussian_MLE"):
     return out
 
 
-def _flat_param_names(param_id):
+def flat_param_names(param_id):
     return [g[0] if isinstance(g, (list, tuple)) else g for g in param_id.get_param_names()]
 
 
-def _write_uq(out_dir, method, flat, qnames):
+def write_uq(out_dir, method, flat, qnames):
     """Per-parameter posterior summary + histogram from samples (N, P)."""
     import numpy as np
 
@@ -200,144 +227,100 @@ def main():
     sys.path.insert(0, resolve_ca_src())
     cfg = load_config()
 
-    resources = os.path.join(HERE, cfg.get("resources_dir", "resources"))
-    out_dir = os.path.join(HERE, "output")
-    os.makedirs(out_dir, exist_ok=True)
+    output_dir = os.path.join(HERE, "output")
+    os.makedirs(output_dir, exist_ok=True)
+    inp = build_inp_data_dict(cfg, output_dir)
 
-    model_type = cfg.get("model_type", "cellml_only")
-    solver = cfg.get("solver")
-    solver_info = dict(cfg.get("solver_info", {}))
-    dt = float(cfg.get("dt", 0.01))
-    sim_time = float(cfg.get("sim_time", 2.0))
-    pre_time = float(cfg.get("pre_time", 0.0))
-    file_prefix = cfg["file_prefix"]
-    model_path = os.path.join(resources, cfg["model_file"])
-    obs_path = os.path.join(HERE, cfg["param_id_obs_path"]) if cfg.get("param_id_obs_path") else None
-    params_path = (
-        os.path.join(resources, cfg["params_for_id_file"]) if cfg.get("params_for_id_file") else None
-    )
-
-    # python / casadi_python backends run a generated .py model.
-    if model_type in ("python", "casadi_python"):
+    # python / casadi_python backends run a generated .py model: build it from the
+    # bundled CellML, alongside where circulatory_autogen expects the model.
+    if inp["model_type"] in ("python", "casadi_python"):
         from generators.PythonGenerator import PythonGenerator
 
-        model_path = PythonGenerator(
-            model_path,
-            output_dir=out_dir,
-            module_name=f"{file_prefix}_gen",
-            casadi_compat=(model_type == "casadi_python"),
+        cellml_path = os.path.join(HERE, "generated_models", cfg["file_prefix"], cfg["model_file"])
+        inp["model_path"] = PythonGenerator(
+            cellml_path,
+            output_dir=os.path.dirname(cellml_path),
+            module_name=cfg["file_prefix"],
+            casadi_compat=(inp["model_type"] == "casadi_python"),
         ).generate()
 
+    # ---- 1) Simulation -----------------------------------------------------
     if cfg.get("do_simulation"):
         print("=== simulation ===", flush=True)
-        from solver_wrappers import get_simulation_helper
+        from solver_wrappers import get_simulation_helper_from_inp_data_dict
 
-        helper = get_simulation_helper(
-            model_path=model_path, solver=solver, model_type=model_type,
-            dt=dt, sim_time=sim_time, pre_time=pre_time, solver_info=solver_info,
-        )
-        helper.run()
-        if hasattr(helper, "get_time"):
-            time = [float(t) for t in helper.get_time(include_pre_time=False)]
-        else:
-            time = [float(t) for t in helper.get_results(["time"], flatten=True)[0]]
-        names = helper.get_all_variable_names()
-        outputs = {n: [float(v) for v in helper.get_results([n], flatten=True)[0]] for n in names}
-        with open(os.path.join(out_dir, "simulation.json"), "w") as fh:
+        sim_helper = get_simulation_helper_from_inp_data_dict(inp)
+        sim_helper.run()
+        names = sim_helper.get_all_variable_names()
+        results = sim_helper.get_results(names, flatten=True)
+        time = [float(t) for t in sim_helper.get_time()]
+        outputs = {name: [float(v) for v in series] for name, series in zip(names, results)}
+        with open(os.path.join(output_dir, "simulation.json"), "w") as fh:
             json.dump({"time": time, "outputs": outputs}, fh)
 
+    # ---- 2) Sensitivity analysis ------------------------------------------
     if cfg.get("do_sensitivity"):
         print("=== sensitivity analysis ===", flush=True)
         from sensitivity_analysis.sensitivityAnalysis import SensitivityAnalysis
 
-        sa = SensitivityAnalysis(
-            model_path=model_path, model_type=model_type, file_name_prefix=file_prefix,
-            sa_options={**cfg.get("sa_options", {}), "output_dir": out_dir},
-            param_id_output_dir=out_dir, resources_dir=resources, solver_info=solver_info,
-            dt=dt, param_id_obs_path=obs_path, params_for_id_path=params_path,
-        )
-        sa.run_sensitivity_analysis()
+        sa_agent = SensitivityAnalysis.init_from_dict(inp)
+        sa_agent.run_sensitivity_analysis(inp["sa_options"])
 
-    best_vals = None  # calibration best fit, reused by UQ if available
+    # ---- 3) Calibration ----------------------------------------------------
+    best_param_vals = None  # reused by UQ below when available
     if cfg.get("do_calibration"):
         print("=== calibration ===", flush=True)
-        import numpy as np
+        from param_id.paramID import CVS0DParamID
 
-        param_id = build_param_id(
-            cfg, model_path=model_path, model_type=model_type, params_path=params_path,
-            obs_path=obs_path, out_dir=out_dir, resources=resources, solver_info=solver_info,
-            dt=dt, sim_time=sim_time, pre_time=pre_time, do_ad=bool(cfg.get("do_ad", False)),
-            options_key="optimiser_options", options=cfg.get("optimiser_options", {}),
-        )
+        param_id = CVS0DParamID.init_from_dict(inp)
         param_id.run()
-        try:
-            best_vals = np.asarray(param_id.get_best_param_vals(), dtype=float)
-        except Exception:
-            best_vals = None
+        param_id.plot_outputs()
+        best_param_vals = param_id.get_best_param_vals()
 
+    # ---- 4) Uncertainty quantification ------------------------------------
     if cfg.get("do_mcmc") or cfg.get("do_ia"):
         method = "mcmc" if cfg.get("do_mcmc") else "laplace"
         print(f"=== uncertainty quantification ({method}) ===", flush=True)
-        import numpy as np
-        import param_id.paramID as pid
-        from param_id.paramID import ensure_mle_cost_type_for_bayesian_inner
+        import param_id.paramID as paramID_module
+        from param_id.paramID import CVS0DParamID, ensure_mle_cost_type_for_bayesian_inner
 
-        # MCMC / Laplace require ln L = -cost: use an MLE obs copy + MLE cost_type.
-        cost_type = (cfg.get("mcmc_options") or {}).get("cost_type", "gaussian_MLE")
-        uq_obs = _mle_obs_data(obs_path, out_dir, cost_type)
-        optimiser_options = {**cfg.get("optimiser_options", {}), "cost_type": cost_type}
-        mcmc_options = {**cfg.get("mcmc_options", {}), "cost_type": cost_type}
-        inp = {"DEBUG": False, "optimiser_options": optimiser_options, "mcmc_options": mcmc_options}
+        # MCMC / Laplace need ln L = -cost, so use an MLE obs copy + MLE cost_type.
+        cost_type = inp["mcmc_options"].get("cost_type", "gaussian_MLE")
+        uq_inp = dict(inp)
+        uq_inp["param_id_obs_path"] = mle_obs_data(inp["param_id_obs_path"], output_dir, cost_type)
+        uq_inp["optimiser_options"] = {**inp["optimiser_options"], "cost_type": cost_type}
+        uq_inp["mcmc_options"] = {**inp["mcmc_options"], "cost_type": cost_type}
 
-        # A best fit is required. Reuse the calibration above if it ran; else run a
-        # GA calibration here (against the MLE obs).
-        ga = None
-        if best_vals is None:
-            print("  no calibration best fit yet -> running calibration for UQ", flush=True)
-            ga = build_param_id(
-                cfg, model_path=model_path, model_type=model_type, params_path=params_path,
-                obs_path=uq_obs, out_dir=out_dir, resources=resources, solver_info=solver_info,
-                dt=dt, sim_time=sim_time, pre_time=pre_time,
-                options_key="optimiser_options", options=optimiser_options,
-            )
-            ga.run()
-            best_vals = np.asarray(ga.get_best_param_vals(), dtype=float)
+        # UQ needs a best fit: reuse the calibration above, else run one now.
+        if best_param_vals is None:
+            print("  running a calibration first to get the best fit for UQ", flush=True)
+            calib = CVS0DParamID.init_from_dict(uq_inp)
+            calib.run()
+            best_param_vals = calib.get_best_param_vals()
+        best_param_vals = np.asarray(best_param_vals, dtype=float)
 
         if method == "mcmc":
-            mcmc = build_param_id(
-                cfg, model_path=model_path, model_type=model_type, params_path=params_path,
-                obs_path=uq_obs, out_dir=out_dir, resources=resources, solver_info=solver_info,
-                dt=dt, sim_time=sim_time, pre_time=pre_time,
-                mcmc=True, options_key="mcmc_options", options=mcmc_options,
-            )
-            mcmc.set_best_param_vals(np.asarray(best_vals, dtype=float))
-            ensure_mle_cost_type_for_bayesian_inner(pid.mcmc_object, inp)
+            mcmc = CVS0DParamID.init_from_dict({**uq_inp, "mcmc_instead": True})
+            mcmc.set_best_param_vals(best_param_vals)
+            ensure_mle_cost_type_for_bayesian_inner(paramID_module.mcmc_object, uq_inp)
             mcmc.run_mcmc()
             if getattr(mcmc, "rank", 0) == 0:
-                _write_uq(out_dir, method, mcmc.get_mcmc_samples()[0], _flat_param_names(mcmc))
+                write_uq(output_dir, method, mcmc.get_mcmc_samples()[0], flat_param_names(mcmc))
         else:
             from identifiabilty_analysis.identifiabilityAnalysis import IdentifiabilityAnalysis
 
-            cvs = ga or build_param_id(
-                cfg, model_path=model_path, model_type=model_type, params_path=params_path,
-                obs_path=uq_obs, out_dir=out_dir, resources=resources, solver_info=solver_info,
-                dt=dt, sim_time=sim_time, pre_time=pre_time,
-                options_key="optimiser_options", options=optimiser_options,
-            )
-            ia = IdentifiabilityAnalysis(
-                model_path, model_type, file_prefix, param_id_output_dir=out_dir,
-                resources_dir=resources, param_id=cvs.param_id,
-            )
-            ia.set_best_param_vals(np.asarray(best_vals, dtype=float))
-            ensure_mle_cost_type_for_bayesian_inner(cvs.param_id, inp)
+            cvs = CVS0DParamID.init_from_dict(uq_inp)
+            ia = IdentifiabilityAnalysis.init_from_dict(uq_inp, cvs.param_id)
+            ia.set_best_param_vals(best_param_vals)
+            ensure_mle_cost_type_for_bayesian_inner(cvs.param_id, uq_inp)
             ia.run({"method": "Laplace"})
             if getattr(ia, "rank", 0) == 0:
-                flat = np.random.multivariate_normal(
+                samples = np.random.multivariate_normal(
                     ia.mean_Lapalace, ia.covariance_matrix_Laplace, size=100000
                 )
-                _write_uq(out_dir, method, flat, _flat_param_names(cvs))
+                write_uq(output_dir, method, samples, flat_param_names(cvs))
 
-    print(f"Done. Outputs in {out_dir}", flush=True)
+    print(f"Done. Outputs in {output_dir}", flush=True)
 
 
 if __name__ == "__main__":

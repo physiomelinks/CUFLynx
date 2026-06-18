@@ -282,9 +282,12 @@ def export_pipeline_route(req: ExportPipelineRequest) -> dict:
     # Use the loaded CellML file's prefix (e.g. "3compartment"), not the internal
     # <model name> (often a generic "cardiovascularSystem"). The client passes it.
     file_prefix = req.file_prefix.strip() or record.meta.name or "model"
-    # Copy the input resources into the bundle (relative paths in the yaml).
+    # The model lives where circulatory_autogen resolves model_path:
+    # generated_models/<prefix>/<prefix>.cellml. obs/params go in resources/.
     model_file = f"{file_prefix}.cellml"
-    shutil.copyfile(record.path, resources / model_file)
+    model_dir = export_dir / "generated_models" / file_prefix
+    model_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(record.path, model_dir / model_file)
     obs_file = None
     if record.obs_path is not None:
         obs_file = "obs_data.json"
@@ -316,7 +319,10 @@ def export_pipeline_route(req: ExportPipelineRequest) -> dict:
     (export_dir / "run_pipeline.py").write_text(export_pipeline.render_pipeline_script())
     (export_dir / "plot_outputs.py").write_text(export_pipeline.render_plotting_script())
 
-    files = [yaml_name, "run_pipeline.py", "plot_outputs.py", f"resources/{model_file}"]
+    files = [
+        yaml_name, "run_pipeline.py", "plot_outputs.py",
+        f"generated_models/{file_prefix}/{model_file}",
+    ]
     if obs_file:
         files.append(f"resources/{obs_file}")
     if params_file:

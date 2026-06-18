@@ -63,10 +63,14 @@ def test_pipeline_script_is_valid_python_and_gates_each_stage():
     assert "user_inputs_*.yaml" in src
     for flag in ("do_simulation", "do_sensitivity", "do_calibration", "do_mcmc"):
         assert f'cfg.get("{flag}")' in src
-    # drives CA (not a reimplementation)
-    assert "CVS0DParamID" in src and "SensitivityAnalysis" in src and "get_simulation_helper" in src
+    # drives CA via the tutorial's init_from_dict idiom (not a custom builder)
+    assert "init_from_dict" in src
+    assert "build_inp_data_dict" in src
+    assert "CVS0DParamID.init_from_dict" in src
+    assert "SensitivityAnalysis.init_from_dict" in src
+    assert "get_simulation_helper_from_inp_data_dict" in src
     # UQ actually runs MCMC / Laplace (not a stub)
-    assert "run_mcmc()" in src and "IdentifiabilityAnalysis" in src
+    assert "run_mcmc()" in src and "IdentifiabilityAnalysis.init_from_dict" in src
     assert "ensure_mle_cost_type_for_bayesian_inner" in src
 
 
@@ -115,8 +119,9 @@ def test_export_pipeline_writes_self_contained_folder(client, tmp_path):
     # Uses the supplied file_prefix for the model file, not the internal model name.
     assert ui["file_prefix"] == "lotka_volterra"
     assert ui["model_file"] == "lotka_volterra.cellml"
+    # Model laid out where circulatory_autogen resolves model_path; obs/params in resources/.
+    assert os.path.isfile(os.path.join(export_dir, "generated_models", "lotka_volterra", ui["model_file"]))
     res = os.path.join(export_dir, "resources")
-    assert os.path.isfile(os.path.join(res, ui["model_file"]))
     assert os.path.isfile(os.path.join(res, "obs_data.json"))
     assert os.path.isfile(os.path.join(res, "params_for_id.csv"))
 
