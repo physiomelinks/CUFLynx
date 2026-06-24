@@ -62,10 +62,11 @@ describe('solverFieldsForMethod', () => {
   const opts2 = {
     solver_info_schema: {
       casadi_integrator: [
-        { key: 'method', type: 'select', options: ['cvodes', 'semi_implicit_euler'] },
+        { key: 'method', type: 'select', options: ['cvodes', 'semi_implicit_euler', 'bdf'] },
         { key: 'dt', type: 'number', default: 0.01 },
         { key: 'reltol', type: 'number', methods: ['cvodes'] },
         { key: 'abstol', type: 'number', methods: ['cvodes'] },
+        { key: 'max_step', type: 'number', default: 1e-3, methods: ['bdf'] },
       ],
     },
   }
@@ -77,6 +78,10 @@ describe('solverFieldsForMethod', () => {
     // semi_implicit_euler: tolerance fields drop out; method + dt remain.
     const sie = solverFieldsForMethod(opts2, 'casadi_integrator', 'semi_implicit_euler').map((f) => f.key)
     expect(sie).toEqual(['method', 'dt'])
+
+    // bdf: exposes its internal sub-step cap (max_step) but not the cvodes tolerances.
+    const bdf = solverFieldsForMethod(opts2, 'casadi_integrator', 'bdf').map((f) => f.key)
+    expect(bdf).toEqual(['method', 'dt', 'max_step'])
   })
 })
 

@@ -74,6 +74,18 @@ def test_casadi_tolerance_fields_restricted_to_adaptive_methods():
             assert "cvodes" in field["methods"]
 
 
+def test_casadi_max_step_field_offered_for_bdf_only():
+    """The bdf integrator's internal sub-step cap (max_step) is an editable setting,
+    scoped to 'bdf' only (other casadi methods don't consume it)."""
+    opts = so.get_solver_options()
+    fields = opts["solver_info_schema"]["casadi_integrator"]
+    assert "bdf" in _method_options(opts, "casadi_integrator")
+    max_step = next((f for f in fields if f["key"] == "max_step"), None)
+    assert max_step is not None, "casadi_integrator should expose a max_step setting"
+    assert max_step["methods"] == ["bdf"]
+    assert max_step["default"] == 1e-3  # matches the CA helper's default sub-step cap
+
+
 def test_ad_available_requires_casadi_python_and_all_differentiable():
     diff_all = _build({"max": True, "min": True})
     assert diff_all["all_differentiable"] is True

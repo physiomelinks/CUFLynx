@@ -43,7 +43,7 @@ FALLBACK_SOLVER_SCHEMA = {
         "CVODE_opencor": ["CVODE"],
         "CVODE_myokit": ["CVODE"],
         "solve_ivp": ["RK45", "RK23", "DOP853", "Radau", "BDF", "LSODA", "forward_euler"],
-        "casadi_integrator": ["cvodes", "idas", "collocation", "rk", "semi_implicit_euler"],
+        "casadi_integrator": ["cvodes", "idas", "collocation", "rk", "semi_implicit_euler", "bdf"],
     },
     "default_solver_by_model_type": {
         "cellml_only": "CVODE_opencor",
@@ -152,6 +152,11 @@ def _solver_info_schema(methods_by_solver: dict) -> dict:
             {"key": "reltol", "label": "Rel. tol", "type": _NUM, "default": 1e-8, "methods": casadi_adaptive},
             {"key": "abstol", "label": "Abs. tol", "type": _NUM, "default": 1e-10, "methods": casadi_adaptive},
             {"key": "max_num_steps", "label": "Max # steps", "type": _NUM, "default": None, "methods": casadi_adaptive},
+            # The implicit 'bdf' integrator solves each step on an internal sub-step
+            # capped at max_step (default 1e-3), then subsamples to dt. Smaller =>
+            # more robust/accurate on stiff, discontinuous models (valve switches),
+            # slower. Only 'bdf' consumes it.
+            {"key": "max_step", "label": "Max internal step", "type": _NUM, "default": 1e-3, "methods": ["bdf"]},
         ],
     }
 
