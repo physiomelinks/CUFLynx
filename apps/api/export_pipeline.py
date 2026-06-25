@@ -181,6 +181,22 @@ def build_inp_data_dict(cfg, output_dir):
     }
     if cfg.get("param_id_obs_path"):
         inp["param_id_obs_path"] = os.path.join(HERE, cfg["param_id_obs_path"])
+        # Run the simulation over the same protocol window as calibration/SA and the
+        # live app: when obs_data carries a protocol_info, its pre/sim times take
+        # precedence over the yaml. The SA/calibration init_from_dict constructors
+        # already do this internally; get_simulation_helper_from_inp_data_dict reads
+        # only inp["pre_time"]/["sim_time"], so without this the simulation would run
+        # an unwarmed, wrong-length window and its outputs wouldn't match the obs_data.
+        try:
+            proto = json.loads(open(inp["param_id_obs_path"]).read()).get("protocol_info") or {}
+            pre = (proto.get("pre_times") or [None])[0]
+            sim = (proto.get("sim_times") or [[None]])[0][0]
+            if pre is not None:
+                inp["pre_time"] = float(pre)
+            if sim is not None:
+                inp["sim_time"] = float(sim)
+        except (OSError, ValueError, KeyError, IndexError, TypeError):
+            pass
     if cfg.get("params_for_id_file"):
         inp["params_for_id_path"] = os.path.join(resources, cfg["params_for_id_file"])
     return inp
@@ -253,7 +269,12 @@ def main():
         sim_helper.run()
         names = sim_helper.get_all_variable_names()
         results = sim_helper.get_results(names, flatten=True)
-        time = [float(t) for t in sim_helper.get_time()]
+        # Myokit/OpenCOR/python helpers expose get_time; the CasADi helper doesn't,
+        # but resolves the logged sim-time vector as the 'time' variable.
+        if hasattr(sim_helper, "get_time"):
+            time = [float(t) for t in sim_helper.get_time()]
+        else:
+            time = [float(t) for t in sim_helper.get_results(["time"], flatten=True)[0]]
         outputs = {name: [float(v) for v in series] for name, series in zip(names, results)}
         with open(os.path.join(output_dir, "simulation.json"), "w") as fh:
             json.dump({"time": time, "outputs": outputs}, fh)
