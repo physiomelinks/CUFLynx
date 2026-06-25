@@ -2,8 +2,10 @@
 
 import ast
 import json
+import math
 
 import export_pipeline as ep
+import pytest
 import yaml
 from conftest import LV_MODEL_PATH, LV_OBS_DATA_PATH, LV_PARAMS_CSV_PATH, upload_model
 
@@ -140,3 +142,100 @@ def test_export_plotting_writes_script(client, tmp_path):
     import os
     assert os.path.isfile(resp.json()["path"])
     assert resp.json()["path"].endswith("plot_outputs.py")
+
+
+# ---------------------------------------------------------------------------
+# End-to-end: full CUFLynx pipeline (load 3 files -> export -> run -> check)
+# ---------------------------------------------------------------------------
+from conftest import RESOURCES_DIR  # noqa: E402
+
+C3_MODEL_PATH = RESOURCES_DIR / "3compartment_flat.cellml"
+C3_OBS_DATA_PATH = RESOURCES_DIR / "3compartment_obs_data.json"
+C3_PARAMS_CSV_PATH = RESOURCES_DIR / "3compartment_params_for_id.csv"
+
+
+def _setup_3compartment(client):
+    """Load the model + obs_data + params_for_id (the three files) into the app."""
+    model_id = upload_model(client, C3_MODEL_PATH)["model_id"]
+    obs = json.loads(C3_OBS_DATA_PATH.read_text())
+    assert client.post(
+        "/api/obs_data/upload", json={"model_id": model_id, "obs_data": obs}
+    ).status_code == 200
+    with open(C3_PARAMS_CSV_PATH, "rb") as fh:
+        r = client.post(
+            f"/api/params_for_id/upload?model_id={model_id}",
+            files={"file": (C3_PARAMS_CSV_PATH.name, fh, "text/csv")},
+        )
+    assert r.status_code == 200
+    return model_id
+
+
+@pytest.mark.integration
+def test_export_pipeline_simulation_runs_and_honors_obs_protocol(client, requires_casadi, tmp_path):
+    """Full pipeline: load the three files, set a casadi_python backend, export the
+    reproducible python bundle, run its simulation stage, and check the outputs.
+
+    Asserts, end to end:
+      * the generated script runs to completion and writes simulation.json with the
+        obs_data operand traces, all finite (the casadi helper has no get_time, so the
+        export must fall back to the 'time' variable — regression for that crash);
+      * the simulation window is driven by the obs_data protocol_info (sim_time=2),
+        *not* the yaml times we deliberately export wrong (sim_time=10) — regression
+        for the simulation stage ignoring protocol_info.
+    """
+    import os
+    import subprocess
+    import sys
+
+    import engine as engine_mod
+
+    model_id = _setup_3compartment(client)
+    body = client.post(
+        "/api/config",
+        json={
+            "generated_model_format": "casadi_python",
+            "solver": "casadi_integrator",
+            "solver_info": {"method": "cvodes"},
+        },
+    ).json()
+    assert body["generated_model_format"] == "casadi_python"
+
+    # Export with deliberately wrong sim/pre times; obs_data protocol_info (pre=10,
+    # sim=2) must take precedence in the simulation stage.
+    resp = client.post("/api/export/pipeline", json={
+        "model_id": model_id,
+        "file_prefix": "3compartment_flat",
+        "pre_time": 0.0,
+        "sim_time": 10.0,
+        "enabled": {"do_simulation": True},
+        "config_outputs_dir": str(tmp_path),
+    })
+    assert resp.status_code == 200, resp.text
+    export_dir = resp.json()["export_dir"]
+
+    ca_src = engine_mod._circulatory_autogen_src()
+    proc = subprocess.run(
+        [sys.executable, "run_pipeline.py", "--ca-src", ca_src],
+        cwd=export_dir, capture_output=True, text=True, timeout=600,
+    )
+    assert proc.returncode == 0, f"pipeline failed:\n{proc.stdout}\n{proc.stderr}"
+
+    sim_path = os.path.join(export_dir, "output", "simulation.json")
+    assert os.path.isfile(sim_path), "simulation.json not written"
+    sim = json.loads(open(sim_path).read())
+    t, outputs = sim["time"], sim["outputs"]
+
+    # Window comes from obs_data protocol_info (sim_time=2), not the yaml's 10.
+    assert abs((t[-1] - t[0]) - 2.0) < 0.2, f"sim window {t[-1]-t[0]:.2f}s != obs sim_time 2s"
+
+    # The obs_data operand traces are present and finite.
+    obs = json.loads(C3_OBS_DATA_PATH.read_text())
+    operands = {op for item in obs["data_items"] for op in item["operands"]}
+    for op in operands:
+        assert op in outputs, f"obs operand {op!r} missing from simulation outputs"
+        series = outputs[op]
+        assert len(series) > 0 and all(math.isfinite(v) for v in series), f"{op} not finite"
+
+    # Aortic pressure is a sensible pulsatile trace (max above min).
+    u = outputs["aortic_root/u"]
+    assert max(u) > min(u), "aortic pressure is flat — simulation did not run a pulse"
