@@ -52,6 +52,38 @@ def test_libcellml_pin_matches_circulatory_autogen():
     assert _requirement("libcellml") == "libcellml>=0.6.3,<0.7.0"
 
 
+# Every package circulatory_autogen imports on the *simulation* path. The live
+# engine imports CA in-process, so these must exist in whatever environment runs
+# the app — including the frozen bundle, which is built from a clean install of
+# pyproject.toml. casadi was missing, and because dev machines have it installed
+# for CA anyway, only the CI-built binary was broken: the casadi_python backend
+# died with "CasADi solver requested but CasADi is not available".
+#
+# CA's *analysis* deps (emcee, SALib, nevergrad, mpi4py, matplotlib, ...) are
+# deliberately absent: those run in the user's own interpreter via the subprocess
+# runners, never in-process.
+SIMULATION_PATH_DEPS = [
+    "numpy",
+    "scipy",
+    "pandas",
+    "myokit",
+    "libcellml",
+    "casadi",
+    "sympy",
+    "pyyaml",
+    "ruamel.yaml",
+    "rdflib",
+    "pint",
+]
+
+
+@pytest.mark.parametrize("package", SIMULATION_PATH_DEPS)
+def test_simulation_path_dependency_is_declared(package):
+    """A CA simulation-path import that we don't declare will be absent from the
+    packaged app — and present on every dev machine, so nobody notices."""
+    _requirement(package)  # asserts it appears in [project] dependencies
+
+
 @pytest.mark.integration
 def test_installed_libcellml_still_emits_variable_count():
     """The pin is only worth anything if the *installed* libcellml honours it.
