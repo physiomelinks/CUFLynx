@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -13,10 +15,17 @@ API_DIR = Path(__file__).resolve().parents[1]
 if str(API_DIR) not in sys.path:
     sys.path.insert(0, str(API_DIR))
 
+# Point the settings store at a throwaway dir *before* importing main, which
+# restores persisted settings at import time. Otherwise the suite would inherit
+# (and overwrite) the developer's real ~/.config/cuflynx/config.json — e.g. their
+# saved ca_dir would leak in and change which CA the tests resolve.
+os.environ["CUFLYNX_CONFIG_DIR"] = tempfile.mkdtemp(prefix="cuflynx-test-config-")
+
 import calibration as calibration_mod  # noqa: E402
 import engine as engine_mod  # noqa: E402
 import main  # noqa: E402
 import model_codegen as model_codegen_mod  # noqa: E402
+import sensitivity as sensitivity_mod  # noqa: E402
 import solver_options as solver_options_mod  # noqa: E402
 import uq as uq_mod  # noqa: E402
 
@@ -82,12 +91,32 @@ def _reset_backend_solver():
     model_codegen_mod.reset_cache()
 
 
+def _analysis_pythons() -> tuple:
+    return (
+        calibration_mod.calibration.python,
+        sensitivity_mod.sensitivity.python,
+        uq_mod.uq.python,
+    )
+
+
+def _set_analysis_pythons(pythons: tuple) -> None:
+    (
+        calibration_mod.calibration.python,
+        sensitivity_mod.sensitivity.python,
+        uq_mod.uq.python,
+    ) = pythons
+
+
 @pytest.fixture(autouse=True)
 def reset_app_state():
     """Reset the model registry and engine caches/factories between tests."""
     import os
 
     _ca_src_before = os.environ.get("CIRCULATORY_AUTOGEN_SRC")
+    # The job managers are module-level singletons, so a test that repoints their
+    # interpreter (directly, or via POST /api/config) would otherwise leak a bogus
+    # python into every later test — which spawns runners with it.
+    _pythons_before = _analysis_pythons()
     main._models.clear()
     engine_mod.engine.reset()
     engine_mod.engine.helper_factory = engine_mod._default_helper_factory
@@ -107,6 +136,7 @@ def reset_app_state():
     calibration_mod.calibration.runner_path = calibration_mod.RUNNER_PATH
     uq_mod.uq.reset()
     uq_mod.uq.runner_path = uq_mod.RUNNER_PATH
+    _set_analysis_pythons(_pythons_before)
     # Restore CIRCULATORY_AUTOGEN_SRC so a /api/config test doesn't leak.
     if _ca_src_before is None:
         os.environ.pop("CIRCULATORY_AUTOGEN_SRC", None)

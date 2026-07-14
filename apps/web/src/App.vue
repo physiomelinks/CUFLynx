@@ -76,7 +76,10 @@ const loadedParamsFilename = ref(null)
 const loadedObsFilename = ref(null)
 
 // Python interpreter chosen once in the top bar and shared by the Sensitivity,
-// Calibration and UQ runs. Blank => backend uses its default interpreter.
+// Calibration and UQ runs. Blank => backend uses its default interpreter — but
+// the packaged desktop app *has* no default (its own executable is the frozen
+// bundle, not a Python), so there the choice is required. Hydrated from, and
+// persisted back to, /api/config so it survives a restart.
 const pythonPath = ref('')
 const pythonBrowserOpen = ref(false)
 
@@ -95,6 +98,17 @@ const generatedModelFormat = ref('cellml_only')
 const solver = ref('CVODE_myokit')
 const solverInfo = ref({})
 
+// Myokit JIT-compiles each model, so without a C toolchain every simulation
+// fails with an opaque 500. The backend detects this (compiler_check.py) and we
+// warn up front — it's the most likely first-run stumble in the packaged app,
+// which has no compiler of its own to fall back on.
+const cppCompiler = ref({ present: true, hint: '' })
+
+// Last value the server told us about. Hydrating pythonPath from /api/config
+// triggers the watch below, and without this it would POST the value straight
+// back on every load.
+let serverPythonPath = ''
+
 function applyConfigPayload(c) {
   caDir.value = c.ca_dir
   caExists.value = c.ca_exists
@@ -102,7 +116,22 @@ function applyConfigPayload(c) {
   generatedModelFormat.value = c.generated_model_format ?? 'cellml_only'
   solver.value = c.solver ?? ''
   solverInfo.value = { ...(c.solver_info ?? {}) }
+  cppCompiler.value = c.cpp_compiler ?? { present: true, hint: '' }
+  pythonPath.value = c.python_path ?? ''
+  serverPythonPath = pythonPath.value
 }
+
+// Remember the interpreter server-side (it's what spawns the runners, and the
+// packaged app can't fall back on a default).
+watch(pythonPath, async (p) => {
+  if (!p || p === serverPythonPath) return
+  try {
+    serverPythonPath = p
+    await setConfig({ pythonPath: p })
+  } catch {
+    /* keep the in-session choice even if persisting fails */
+  }
+})
 
 async function applyCaDir(dir) {
   try {
@@ -909,6 +938,18 @@ watch(
         </div>
 
         <Message
+          v-if="!cppCompiler.present"
+          severity="error"
+          :closable="false"
+          class="warn-banner"
+          data-testid="no-compiler-warning"
+        >
+          <strong>No C compiler found — simulations will fail.</strong>
+          Myokit compiles each model to a native extension when it runs.
+          <pre class="compiler-hint">{{ cppCompiler.hint }}</pre>
+        </Message>
+
+        <Message
           v-if="centerTab === 'plots' && sim.warnings.value.length"
           severity="warn"
           :closable="false"
@@ -1375,6 +1416,13 @@ watch(
 }
 .warn-banner {
   margin: 0.5rem;
+}
+/* The install hint is copy-pasteable shell commands, so keep its line breaks. */
+.compiler-hint {
+  margin: 0.4rem 0 0;
+  font-size: 0.8rem;
+  white-space: pre-wrap;
+  font-family: monospace;
 }
 .plot-groups {
   flex: 1;

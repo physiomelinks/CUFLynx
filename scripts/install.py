@@ -71,39 +71,17 @@ def warn_if_no_mpiexec() -> None:
     )
 
 
-# The C/C++ build tools Myokit needs to JIT-compile models at run time. Kept as
-# a module constant so the prompt text and the actual command can't drift apart.
-_VC_TOOLS_COMPONENT = "Microsoft.VisualStudio.Component.VC.Tools.x86.x64"
+# The C/C++ build tools Myokit needs to JIT-compile models at run time. Detection
+# lives in apps/api/compiler_check.py so the installer and the app's in-UI warning
+# (GET /api/config -> cpp_compiler) can't drift apart.
+sys.path.insert(0, str(API_DIR))
+from compiler_check import has_cpp_compiler  # noqa: E402
+
 _BUILD_TOOLS_WINGET_ID = "Microsoft.VisualStudio.2022.BuildTools"
 _BUILD_TOOLS_OVERRIDE = (
     "--quiet --wait --norestart "
     "--add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
 )
-
-
-def _has_cpp_compiler() -> bool:
-    """True if an MSVC C/C++ compiler is discoverable on Windows.
-
-    Checks ``cl.exe`` on PATH first, then asks ``vswhere`` whether any install
-    provides the VC tools component (the way setuptools/Myokit locate it).
-    """
-    if shutil.which("cl"):
-        return True
-    program_files_x86 = os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")
-    vswhere = Path(program_files_x86) / "Microsoft Visual Studio" / "Installer" / "vswhere.exe"
-    if vswhere.is_file():
-        try:
-            out = subprocess.run(
-                [str(vswhere), "-products", "*", "-latest",
-                 "-requires", _VC_TOOLS_COMPONENT,
-                 "-property", "installationPath"],
-                capture_output=True, text=True, timeout=30,
-            )
-            if out.stdout.strip():
-                return True
-        except Exception:  # noqa: BLE001 - if vswhere misbehaves, treat as absent
-            pass
-    return False
 
 
 def ensure_cpp_build_tools() -> None:
@@ -116,7 +94,7 @@ def ensure_cpp_build_tools() -> None:
     """
     if platform.system() != "Windows":
         return  # Linux/macOS ship a usable C compiler via the OS / Xcode CLT.
-    if _has_cpp_compiler():
+    if has_cpp_compiler():
         return
 
     print(

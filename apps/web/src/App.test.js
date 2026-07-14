@@ -25,6 +25,7 @@ vi.mock('./lib/api', () => ({
   setConfig: vi.fn().mockResolvedValue({}),
 }))
 
+import { getConfig, setConfig } from './lib/api'
 import App from './App.vue'
 
 describe('App.vue', () => {
@@ -46,5 +47,82 @@ describe('App.vue', () => {
     setup.vm.$emit('select', '/data/outputs')
     await flushPromises()
     expect(localStorage.getItem('cuflynx-outputs-dir')).toBe('/data/outputs')
+  })
+
+  // Myokit JIT-compiles every model, so a missing C toolchain breaks all
+  // simulation. The packaged desktop app can't ship a compiler, making this the
+  // most likely first-run failure — warn instead of letting sims 500.
+  describe('missing C compiler warning', () => {
+    const BASE_CONFIG = {
+      ca_dir: '',
+      ca_exists: true,
+      generated_model_format: 'cellml_only',
+      solver: 'CVODE_myokit',
+      solver_info: {},
+      differentiable_operations: {},
+    }
+
+    it('warns, with the install hint, when the backend reports no compiler', async () => {
+      getConfig.mockResolvedValueOnce({
+        ...BASE_CONFIG,
+        cpp_compiler: { present: false, hint: 'xcode-select --install' },
+      })
+      // Render Message for real: shallowMount stubs it, and a stub drops the
+      // slot content — which is where the install hint lives.
+      const wrapper = shallowMount(App, { global: { stubs: { Message: false } } })
+      await flushPromises()
+
+      const banner = wrapper.find('[data-testid="no-compiler-warning"]')
+      expect(banner.exists()).toBe(true)
+      expect(banner.text()).toContain('xcode-select --install')
+    })
+
+    it('stays quiet when a compiler is present', async () => {
+      getConfig.mockResolvedValueOnce({
+        ...BASE_CONFIG,
+        cpp_compiler: { present: true, hint: '' },
+      })
+      const wrapper = shallowMount(App)
+      await flushPromises()
+
+      expect(wrapper.find('[data-testid="no-compiler-warning"]').exists()).toBe(false)
+    })
+
+    it('stays quiet when the backend omits cpp_compiler (older API)', async () => {
+      getConfig.mockResolvedValueOnce({ ...BASE_CONFIG })
+      const wrapper = shallowMount(App)
+      await flushPromises()
+
+      expect(wrapper.find('[data-testid="no-compiler-warning"]').exists()).toBe(false)
+    })
+  })
+
+  // The packaged desktop app has no default interpreter (its own executable is
+  // the frozen bundle), so the choice must survive a restart or the user re-picks
+  // it on every launch.
+  describe('analysis interpreter persistence', () => {
+    const BASE_CONFIG = {
+      ca_dir: '',
+      ca_exists: true,
+      generated_model_format: 'cellml_only',
+      solver: 'CVODE_myokit',
+      solver_info: {},
+      differentiable_operations: {},
+    }
+
+    it('hydrates the remembered interpreter without echoing it back', async () => {
+      getConfig.mockResolvedValueOnce({
+        ...BASE_CONFIG,
+        python_path: '/venv/bin/python',
+      })
+      setConfig.mockClear()
+      shallowMount(App)
+      await flushPromises()
+
+      // Hydration must not trigger a redundant write-back of the same value.
+      expect(setConfig).not.toHaveBeenCalledWith(
+        expect.objectContaining({ pythonPath: '/venv/bin/python' }),
+      )
+    })
   })
 })
