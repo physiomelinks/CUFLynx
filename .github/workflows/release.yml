@@ -124,9 +124,23 @@ jobs:
           curl -sf http://127.0.0.1:8123/api/config | grep -q '"packaged":true'
 
           # Point it at circulatory_autogen, exactly as a user does in Settings.
+          # Build the payload with python: on Windows the shell is Git-bash, where
+          # $PWD is a POSIX path (/d/a/...) that the app's os.path.isdir can't
+          # resolve — and the native path (D:\a\...) needs its backslashes escaped
+          # for JSON. json.dumps handles both.
+          python - <<'PY' > ca_dir.json
+          import json, os
+          print(json.dumps({"ca_dir": os.path.abspath("circulatory_autogen")}))
+          PY
           curl -sf -X POST http://127.0.0.1:8123/api/config \
-            -H 'Content-Type: application/json' \
-            -d "{\"ca_dir\":\"$PWD/circulatory_autogen\"}" | grep -q '"ca_exists":true'
+            -H 'Content-Type: application/json' -d @ca_dir.json -o config.json
+          python - <<'PY'
+          import json, sys
+          d = json.load(open("config.json"))
+          if not d.get("ca_exists"):
+              sys.exit(f"CA dir not accepted: ca_dir={d.get('ca_dir')!r}")
+          print("CA dir OK:", d["ca_dir"])
+          PY
 
           MODEL_ID=$(curl -sf -F "file=@resources/Lotka_Volterra_forced.cellml" \
             http://127.0.0.1:8123/api/models/upload \
