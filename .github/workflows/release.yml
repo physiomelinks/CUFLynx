@@ -35,11 +35,14 @@ jobs:
             binary: dist/CUFLynx
           # PyInstaller can't cross-compile, and a macOS arm64 binary won't run on
           # an Intel Mac — so each architecture needs its own runner. macos-latest
-          # is Apple silicon; macos-13 is the last Intel image.
+          # is Apple silicon. For Intel use macos-15-intel: macos-13 was RETIRED in
+          # Dec 2025 and jobs targeting it queue forever rather than failing, and
+          # macos-15-intel is the last Intel image (GitHub drops x86-64 macOS in
+          # Fall 2027, after which Intel Macs must build from source).
           - os: macos-latest
             asset: CUFLynx-macos-arm64
             binary: dist/CUFLynx
-          - os: macos-13
+          - os: macos-15-intel
             asset: CUFLynx-macos-x86_64
             binary: dist/CUFLynx
           - os: windows-latest
