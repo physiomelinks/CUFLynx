@@ -19,6 +19,8 @@ Interactive **manual parameter exploration** for CellML models: sliders change c
 ```
 apps/web/          Vue 3 + Vite + PrimeVue
 apps/api/          FastAPI, depends on sibling circulatory_autogen
+apps/desktop/      pywebview shell (native window around the same server)
+packaging/         PyInstaller spec + runtime hooks (single-file executable)
 ```
 
 **Backend engine (target):** [circulatory_autogen](https://github.com/...) `protocol_runners.ProtocolRunner` + `solver_wrappers.get_simulation_helper` (Myokit CVODE). Not the in-browser RK4.
@@ -47,6 +49,8 @@ so developers can point at a local checkout. (See issue #18.)
 - `apps/web/src/App.vue` — main UI (tabs: Parameters · Sensitivity · Calibration · UQ; center: Output plots · Progress · Analysis)
 - `apps/api/main.py` — FastAPI app: `/api/*` routes + serves the built frontend
 - `scripts/install.py`, `scripts/run.py` — cross-platform setup + single-server launcher
+- `scripts/package.py` — build the single-file desktop executable (see below)
+- `apps/desktop/app.py` — pywebview shell; `packaging/cuflynx.spec` — PyInstaller spec
 - `README.md` — user-facing quick start
 
 **Analysis backends** (one API module + runner each, plus a Vue panel):
@@ -59,6 +63,77 @@ so developers can point at a local checkout. (See issue #18.)
 
 - **obs_data.json** — `EditObsDataDialog.vue` + `apps/web/src/lib/obsDataJson.js`; edits `data_items`/`prediction_items` (incl. `source`/`comment` notes) and embeds `ProtocolInfoEditor.vue` (+ `lib/protocolInfo.js`) for `protocol_info` (experiments, params_to_change, ramp/pulse/step traces, time-view plots). Dropdown vocabularies come from `apps/api/obs_options.py` (`GET /api/obs_data/options`), which introspects CA registries — **never hardcode** operations/cost_types/data_types/plot_types.
 - **params_for_id.csv** — `EditParamsDialog.vue` + `apps/web/src/lib/paramsCsv.js`; edits ranges/selection, writes a dated CSV, can apply best-fit to sliders.
+
+## Desktop packaging (pywebview + PyInstaller)
+
+**Current shipping model:** one double-clickable executable per OS, built by
+`python scripts/package.py` → `dist/CUFLynx[.exe]` (~420 MB), published by
+`.github/workflows/release.yml` on a `v*` tag.
+
+**This is deliberately a thin shell, not a second frontend.** `apps/desktop/app.py`
+starts the *same* uvicorn + `main:app` and points a pywebview window at
+`http://127.0.0.1:<free port>`. It uses **no** pywebview JS bridge and no
+`window.pywebview` APIs, so **the web-app path stays first-class** — the intended
+future is to drop the shell and serve the same app remotely. Keep it that way:
+**never** reach for pywebview APIs from Vue, and never let the frontend assume a
+local filesystem/backend. `--browser` runs server-only and opens a normal browser.
+
+**What is and isn't bundled.** The app has two execution tiers with different needs:
+
+| Tier | Runs | Deps come from |
+|------|------|----------------|
+| Live simulation (sliders/plots) | **in-process** (`engine.py` imports CA's `solver_wrappers`) | **bundled**: myokit, libcellml, casadi, numpy, scipy, pandas |
+| Calibration / sensitivity / UQ | **subprocess** (`*_runner.py`) | the **user's own Python**, picked in Settings (emcee, SALib, nevergrad, mpi4py…) |
+
+`circulatory_autogen` itself is **not** bundled — it's chosen at runtime (Settings
+→ CA dir). When CA becomes pip-installable, add it to the build env and it gets
+collected like any other package; no change to this split. (Issue #18.)
+
+**Frozen-app hazards — all fixed; do not regress:**
+
+- **`sys.executable` is the bundle, not a Python.** A naive
+  `Popen([sys.executable, runner.py, …])` *relaunches the GUI*. Always go through
+  `runtime_paths.default_python()`, which returns `None` when frozen so the caller
+  falls back to a user-chosen interpreter. Never reintroduce bare `sys.executable`
+  in `calibration.py` / `sensitivity.py` / `uq.py`.
+- **`__file__` doesn't point at real files.** Use `runtime_paths.resource_path()` /
+  `frontend_dist()`. The `*_runner.py` scripts ship as **data**, not frozen modules,
+  because an *external* Python has to execute them as files.
+- **Myokit JIT-compiles a CPython extension at run time, inside the frozen
+  process.** That drags in things static analysis can't see, all handled in
+  `packaging/cuflynx.spec` + `packaging/rthook_myokit.py`:
+  - Myokit derives `DIR_CFUNC` from `abspath(dirname(inspect.getfile(...)))`, which
+    in a bundle resolves against the **CWD** → `FileNotFoundError: cmodel.h`. The
+    runtime hook repoints `DIR_CFUNC` / `DIR_DATA` (they're read at call time).
+  - The compile needs **setuptools/distutils command modules** (looked up *by name*,
+    so every one must be a hidden import) and **CPython's headers** (`Python.h`),
+    which the spec bundles at `include/python<X.Y>`.
+  - **Sundials/CVODE headers + libs are bundled** and the hook repoints
+    `myokit.SUNDIALS_INC` / `SUNDIALS_LIB`, so users needn't install Sundials.
+- **A C compiler cannot be bundled away — but it is only needed for one backend.**
+  Of CA's `src/solver_wrappers/*`, **only `myokit_helper.py` compiles anything**;
+  `python` (scipy `solve_ivp`) and `casadi_python` (`casadi_integrator`) are
+  compiler-free and both are verified working in the frozen app. So a missing
+  compiler is a **warning, not an error**: `compiler_check.py` detects it,
+  `GET /api/config` returns `cpp_compiler: {present, hint, affects, alternatives}`,
+  and `App.vue` shows a `warn` banner naming the backends that still work. Don't
+  regress this to an error. `scripts/install.py` shares the detection — keep it in
+  one place.
+
+**`POST /api/config` semantics — `ca_dir` omitted means "leave unchanged".** It is
+`str | None = None`; only an explicit `""` resets to the default. This is load-
+bearing: the Settings popup saves solver choices with a payload that carries no
+`ca_dir`, and when omission meant "reset", **every solver change silently wiped the
+CA directory**. From source that was invisible (the default is the sibling clone,
+which is correct on a dev box); in the packaged app there is no sibling, so CA was
+lost and the non-Myokit backends died with `No module named 'generators'`. Relatedly,
+`engine._circulatory_autogen_src()` returns `""` when frozen and unconfigured rather
+than guessing a sibling (which produced `/circulatory_autogen`).
+
+**Settings persist** (`settings_store.py` → user config dir; `CUFLYNX_CONFIG_DIR`
+overrides, and the test suite points it at a tmp dir). `ca_dir` and `python_path`
+*must* persist: the frozen app has no sibling CA checkout and no default
+interpreter, so without this the user reconfigures on every launch.
 
 ## Conventions for agents
 

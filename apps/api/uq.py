@@ -12,7 +12,6 @@ import json
 import os
 import shutil
 import subprocess
-import sys
 import threading
 import uuid
 from pathlib import Path
@@ -22,8 +21,9 @@ from calibration import (  # noqa: F401  (list_python_interpreters re-exported)
     _warn_no_mpiexec,
     list_python_interpreters,
 )
+from runtime_paths import NO_PYTHON_ERROR, default_python, resource_path
 
-RUNNER_PATH = str(Path(__file__).resolve().parent / "uq_runner.py")
+RUNNER_PATH = str(resource_path("uq_runner.py"))
 
 
 class UQJob:
@@ -42,7 +42,7 @@ class UQJob:
 class UQManager:
     def __init__(self):
         self.runner_path = RUNNER_PATH
-        self.python = sys.executable
+        self.python = default_python()
         self._job: UQJob | None = None
         self._lock = threading.Lock()
 
@@ -68,6 +68,8 @@ class UQManager:
         ``mpiexec`` (which would crash the request with an HTTP 500).
         """
         python = config.get("python") or self.python
+        if not python:
+            raise RuntimeError(NO_PYTHON_ERROR)
         base = [python, "-u", self.runner_path, config_path]
         num_cores = int(config.get("num_cores", 1) or 1)
         if num_cores > 1:

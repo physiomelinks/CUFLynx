@@ -16,7 +16,9 @@ import threading
 import uuid
 from pathlib import Path
 
-RUNNER_PATH = str(Path(__file__).resolve().parent / "calibration_runner.py")
+from runtime_paths import NO_PYTHON_ERROR, default_python, resource_path
+
+RUNNER_PATH = str(resource_path("calibration_runner.py"))
 
 
 def _warn_no_mpiexec(num_cores: int) -> None:
@@ -108,10 +110,14 @@ OPTIONAL_MODULES = ["nevergrad", "mpi4py"]
 
 
 def _candidate_python_paths() -> list[str]:
-    """Best-effort list of Python interpreters on this machine."""
+    """Best-effort list of Python interpreters on this machine.
+
+    ``default_python()`` (rather than ``sys.executable``) seeds the list so the
+    packaged desktop build never offers its own frozen bundle as an interpreter.
+    """
     import glob
 
-    cands = [sys.executable]
+    cands = [default_python()]
     for name in (
         "python3",
         "python",
@@ -224,7 +230,7 @@ class CalibrationJob:
 class CalibrationManager:
     def __init__(self):
         self.runner_path = RUNNER_PATH
-        self.python = sys.executable
+        self.python = default_python()
         self._job: CalibrationJob | None = None
         self._lock = threading.Lock()
 
@@ -261,6 +267,8 @@ class CalibrationManager:
         ``FileNotFoundError`` and surface to the client as an HTTP 500.
         """
         python = config.get("python") or self.python
+        if not python:
+            raise RuntimeError(NO_PYTHON_ERROR)
         base = [python, "-u", self.runner_path, config_path]
         num_cores = int(config.get("num_cores", 1) or 1)
         if num_cores > 1:

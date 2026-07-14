@@ -33,8 +33,12 @@ export async function getConfig() {
 
 /**
  * Update runtime config. Accepts a string (CA dir, back-compat) or an options
- * object: { caDir, generatedModelFormat, solver, solverInfo }. Omitted fields are
- * left unchanged server-side.
+ * object: { caDir, generatedModelFormat, solver, solverInfo, pythonPath }.
+ * Omitted fields are left unchanged server-side.
+ *
+ * The server persists these to a user config file, so they survive a restart —
+ * which is what lets the packaged desktop app remember where circulatory_autogen
+ * and the analysis interpreter are.
  */
 export async function setConfig(opts = {}) {
   const body = {}
@@ -46,6 +50,7 @@ export async function setConfig(opts = {}) {
       body.generated_model_format = opts.generatedModelFormat
     if (opts.solver != null) body.solver = opts.solver
     if (opts.solverInfo != null) body.solver_info = opts.solverInfo
+    if (opts.pythonPath != null) body.python_path = opts.pythonPath
   }
   const { data } = await axios.post(url('/api/config'), body)
   return data

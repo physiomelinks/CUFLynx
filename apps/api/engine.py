@@ -16,6 +16,8 @@ import sys
 import threading
 from pathlib import Path
 
+from runtime_paths import is_frozen
+
 DEFAULT_DT = 0.01
 DEFAULT_MODEL_TYPE = "cellml_only"
 DEFAULT_SOLVER = "CVODE_myokit"
@@ -31,10 +33,18 @@ def _circulatory_autogen_src() -> str:
 
     Order: ``CIRCULATORY_AUTOGEN_SRC`` env var, then the conventional sibling
     location next to this repository.
+
+    Returns "" in the packaged app when nothing is configured: there is no
+    checkout to be a sibling *of* (paths derived from ``__file__`` point inside
+    the bundle), so the sibling guess would yield nonsense like
+    ``/circulatory_autogen``. An empty string means "not configured" — callers
+    report ca_exists=False and the user picks a directory in Settings.
     """
     env = os.environ.get("CIRCULATORY_AUTOGEN_SRC")
     if env:
         return env
+    if is_frozen():
+        return ""
     # apps/api/engine.py -> parents[2] == repo root; its parent holds siblings.
     repo_root = Path(__file__).resolve().parents[2]
     return str(repo_root.parent / "circulatory_autogen" / "src")
@@ -42,6 +52,8 @@ def _circulatory_autogen_src() -> str:
 
 def _ensure_ca_on_path() -> None:
     src = _circulatory_autogen_src()
+    if not src:
+        return  # unconfigured; never put "" on sys.path (that means the CWD)
     if src not in sys.path:
         sys.path.insert(0, src)
 

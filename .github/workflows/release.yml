@@ -1,0 +1,116 @@
+name: Release desktop app
+
+# Builds the double-clickable CUFLynx executable for each OS and attaches it to a
+# GitHub Release. PyInstaller cannot cross-compile, so each artifact is built on
+# its own runner.
+#
+# Push a tag to publish:  git tag v0.1.0 && git push origin v0.1.0
+# Or run manually (workflow_dispatch) to get artifacts without cutting a release.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            asset: CUFLynx-linux-x86_64
+            binary: dist/CUFLynx
+          - os: macos-latest
+            asset: CUFLynx-macos-arm64
+            binary: dist/CUFLynx
+          - os: windows-latest
+            asset: CUFLynx-windows-x86_64.exe
+            binary: dist/CUFLynx.exe
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # Myokit compiles models at run time against Sundials, and the spec bundles
+      # Sundials' headers/libs into the executable — so they must be present here,
+      # at *build* time. Linux/macOS need an explicit install; the Windows myokit
+      # wheel ships them.
+      - name: Install Sundials (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libsundials-dev python3-dev
+
+      - name: Install Sundials (macOS)
+        if: runner.os == 'macOS'
+        run: brew install sundials
+
+      - name: Install Python deps
+        working-directory: apps/api
+        run: pip install -e ".[desktop]"
+
+      - name: Install frontend deps
+        working-directory: apps/web
+        run: npm ci
+
+      - name: Build executable
+        run: python scripts/package.py
+
+      # Smoke-test the frozen app on a machine that never ran it from source:
+      # serve, hit /api/health, confirm it reports itself as packaged.
+      - name: Smoke-test the executable
+        shell: bash
+        run: |
+          "${{ matrix.binary }}" --port 8123 --browser &
+          APP=$!
+          for _ in $(seq 1 60); do
+            if curl -sf http://127.0.0.1:8123/api/health > /dev/null; then break; fi
+            sleep 2
+          done
+          curl -sf http://127.0.0.1:8123/api/health
+          curl -sf http://127.0.0.1:8123/api/config | grep -q '"packaged":true'
+          kill $APP || true
+
+      - name: Rename artifact
+        shell: bash
+        run: cp "${{ matrix.binary }}" "${{ matrix.asset }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: ${{ matrix.asset }}
+
+  release:
+    name: Publish release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: CUFLynx-*
+          body: |
+            Download the file for your OS and double-click it.
+
+            **Optional:** a C compiler — only the `CVODE_myokit` backend needs one
+            (Myokit compiles each model to a native extension at run time, which
+            can't be bundled away). Without it the app shows a warning and you use
+            the `python` (scipy `solve_ivp`) or `casadi_python` backends, which
+            need no compiler. Sundials/CVODE and the Python headers *are* bundled.
+
+            Point the app at your `circulatory_autogen` checkout via
+            **Settings -> CA dir** on first run; it is remembered afterwards.

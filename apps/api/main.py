@@ -33,12 +33,15 @@ from pydantic import BaseModel, Field
 
 from calibration import calibration, list_python_interpreters
 from cellml_meta import CellMLModel, CellMLParseError, parse_cellml
+from compiler_check import compiler_status
 from engine import SimulationError, engine, _circulatory_autogen_src
 import export_pipeline
 from model_codegen import resolve_model_path, reset_cache as reset_codegen
 from obs_data import ObsData, ObsDataError, parse_obs_data
 from obs_options import get_obs_data_options, reset_cache as reset_obs_options
 from params_for_id import ParamsForIdError, parse_params_for_id
+from runtime_paths import default_python, frontend_dist, is_frozen
+import settings_store
 from solver_options import (
     ad_available,
     get_solver_options,
@@ -137,15 +140,25 @@ def health() -> dict:
 # Runtime config — circulatory_autogen location
 # ---------------------------------------------------------------------------
 class ConfigRequest(BaseModel):
-    # The circulatory_autogen directory (repo root or its `src`); blank resets to
-    # the default (sibling clone / CIRCULATORY_AUTOGEN_SRC).
-    ca_dir: str = ""
+    # The circulatory_autogen directory (repo root or its `src`).
+    #   omitted (None) -> leave unchanged   |   "" -> reset to the default
+    # Omission must NOT reset it: the Settings popup saves solver choices with a
+    # payload that carries no ca_dir, and treating that as "reset" silently
+    # dropped the user's CA directory on every solver change. From source that
+    # was invisible (the default is the sibling clone), but the packaged app has
+    # no sibling — CA was lost and every non-Myokit backend died with
+    # "No module named 'generators'".
+    ca_dir: str | None = None
     # Backend solver selection. generated_model_format is CA's `model_type`
     # (cellml_only / python / casadi_python); solver must be compatible with it;
     # solver_info holds the per-solver tuning. Blank/empty => leave unchanged.
     generated_model_format: str = ""
     solver: str = ""
     solver_info: dict = Field(default_factory=dict)
+    # Interpreter for calibration / sensitivity / UQ subprocess runs. Persisted
+    # because the packaged app has no default (its own sys.executable is the
+    # bundle), so re-picking it every launch would be the first thing a user does.
+    python_path: str = ""
 
 
 def _ca_src_from_dir(d: str) -> str:
@@ -153,6 +166,62 @@ def _ca_src_from_dir(d: str) -> str:
     repo root (append `src`) or a `src` dir directly."""
     p = Path(d).expanduser()
     return str(p / "src") if (p / "src").is_dir() else str(p)
+
+
+def _set_analysis_python(path: str) -> None:
+    """Point every analysis job manager at ``path``.
+
+    All three spawn a runner script the same way, so they share one interpreter
+    choice; keeping them in lockstep here avoids a per-manager setting the UI
+    would have to expose three times.
+    """
+    calibration.python = path
+    sensitivity.python = path
+    uq.python = path
+
+
+def _restore_persisted_settings() -> None:
+    """Re-apply the last-saved ca_dir / solver / interpreter at startup.
+
+    Without this the packaged app forgets where circulatory_autogen and the
+    analysis interpreter are every time it's launched — it has no sibling
+    checkout to fall back on and no usable default interpreter.
+
+    Best-effort: a stale path (CA moved, venv deleted) must not stop the app from
+    starting, so invalid values are dropped and the user re-picks in Settings.
+    """
+    saved = settings_store.load()
+
+    ca_dir = (saved.get("ca_dir") or "").strip()
+    if ca_dir and os.path.isdir(ca_dir):
+        os.environ["CIRCULATORY_AUTOGEN_SRC"] = _ca_src_from_dir(ca_dir)
+
+    fmt = (saved.get("generated_model_format") or "").strip()
+    if fmt:
+        engine.model_type = fmt
+    solver = (saved.get("solver") or "").strip()
+    if solver:
+        engine.solver = solver
+    solver_info = saved.get("solver_info")
+    if isinstance(solver_info, dict):
+        si = dict(solver_info)
+        if "dt" in si:
+            try:
+                engine.dt = float(si.pop("dt"))
+            except (TypeError, ValueError):
+                si.pop("dt", None)
+        engine.solver_info = si
+    if fmt or solver or solver_info:
+        os.environ["CUFLYNX_MODEL_TYPE"] = engine.model_type
+        os.environ["CUFLYNX_SOLVER"] = engine.solver
+        os.environ["CUFLYNX_SOLVER_INFO"] = json.dumps(engine.solver_info)
+
+    python_path = (saved.get("python_path") or "").strip()
+    if python_path and os.path.isfile(python_path) and os.access(python_path, os.X_OK):
+        _set_analysis_python(python_path)
+
+
+_restore_persisted_settings()
 
 
 def _config_payload() -> dict:
@@ -164,6 +233,8 @@ def _config_payload() -> dict:
         "ca_dir": ca_dir,
         "ca_src": src,
         "ca_exists": p.is_dir(),
+        # Remembered interpreter for analysis runs (blank = none chosen yet).
+        "python_path": calibration.python or "",
         # Current backend solver selection (engine is the source of truth). dt is
         # carried in solver_info for the UI but stored separately on the engine.
         "generated_model_format": engine.model_type,
@@ -172,6 +243,12 @@ def _config_payload() -> dict:
         # Capabilities for the settings UI + AD gating.
         **opts,
         "ad_available": ad_available(engine.model_type, opts),
+        # Myokit JIT-compiles models, so a missing C compiler breaks every
+        # simulation. Surfaced here so the UI can warn up front rather than
+        # letting the first run fail with an opaque 500 (matters most in the
+        # packaged desktop build, which can't ship a compiler).
+        "cpp_compiler": compiler_status(),
+        "packaged": is_frozen(),
     }
 
 
@@ -189,13 +266,16 @@ def set_config(req: ConfigRequest) -> dict:
     CA modules after the first simulation, switching mid-session fully re-points
     the live-plot engine only after a restart.
     """
-    d = (req.ca_dir or "").strip()
-    if d:
-        if not os.path.isdir(d):
-            raise HTTPException(status_code=422, detail=f"not a directory: {d}")
-        os.environ["CIRCULATORY_AUTOGEN_SRC"] = _ca_src_from_dir(d)
-    else:
-        os.environ.pop("CIRCULATORY_AUTOGEN_SRC", None)
+    # None => not mentioned in this request, so leave the CA dir alone (see
+    # ConfigRequest). Only an explicit "" resets it to the default.
+    if req.ca_dir is not None:
+        d = req.ca_dir.strip()
+        if d:
+            if not os.path.isdir(d):
+                raise HTTPException(status_code=422, detail=f"not a directory: {d}")
+            os.environ["CIRCULATORY_AUTOGEN_SRC"] = _ca_src_from_dir(d)
+        else:
+            os.environ.pop("CIRCULATORY_AUTOGEN_SRC", None)
 
     # Backend solver selection. Validate against CA's schema (re-read against the
     # possibly-new CA dir), then store on the engine (the live-sim source of truth)
@@ -227,6 +307,16 @@ def set_config(req: ConfigRequest) -> dict:
             except (TypeError, ValueError):
                 si.pop("dt", None)
         engine.solver_info = si
+    # Interpreter for analysis runs. Shared by all three job managers.
+    python_path = (req.python_path or "").strip()
+    if python_path:
+        if not (os.path.isfile(python_path) and os.access(python_path, os.X_OK)):
+            raise HTTPException(
+                status_code=422,
+                detail=f"python interpreter not found or not executable: {python_path}",
+            )
+        _set_analysis_python(python_path)
+
     os.environ["CUFLYNX_MODEL_TYPE"] = engine.model_type
     os.environ["CUFLYNX_SOLVER"] = engine.solver
     os.environ["CUFLYNX_SOLVER_INFO"] = json.dumps(engine.solver_info)
@@ -234,7 +324,10 @@ def set_config(req: ConfigRequest) -> dict:
     engine.reset()  # drop cached compiled helpers so the next sim uses the new CA
     reset_codegen()  # regenerate python/casadi models against the new CA / format
     reset_obs_options()  # obs_data operation/cost options come from the new CA too
-    return _config_payload()
+
+    payload = _config_payload()
+    settings_store.save({k: payload[k] for k in settings_store.PERSISTED_KEYS if k in payload})
+    return payload
 
 
 # ---------------------------------------------------------------------------
@@ -618,11 +711,14 @@ def calibration_defaults() -> dict:
 
 @app.get("/api/calibration/pythons")
 def calibration_pythons(refresh: bool = False) -> dict:
-    """Discover Python interpreters that can run a calibration."""
-    import sys as _sys
+    """Discover Python interpreters that can run a calibration.
 
+    ``default`` is null in the packaged desktop build: there, the app's own
+    "interpreter" is the frozen bundle, which cannot run a runner script. The
+    client then requires an explicit pick from ``pythons``.
+    """
     return {
-        "default": _sys.executable,
+        "default": default_python(),
         "pythons": list_python_interpreters(refresh=refresh),
     }
 
@@ -962,7 +1058,7 @@ def uq_cancel(job_id: str) -> dict:
 # whole thing runs as one process on one port. Mounted LAST so the /api/* routes
 # above take precedence; the SPA is served for everything else. The app uses no
 # client-side routing, so html=True (index.html for "/") is sufficient.
-_FRONTEND_DIST = Path(__file__).resolve().parents[1] / "web" / "dist"
+_FRONTEND_DIST = frontend_dist()
 if _FRONTEND_DIST.is_dir():
     app.mount("/", StaticFiles(directory=str(_FRONTEND_DIST), html=True), name="frontend")
 else:
