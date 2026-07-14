@@ -85,19 +85,74 @@ jobs:
       - name: Build executable
         run: python scripts/package.py
 
-      # Smoke-test the frozen app on a machine that never ran it from source:
-      # serve, hit /api/health, confirm it reports itself as packaged.
-      - name: Smoke-test the executable
+      # circulatory_autogen isn't bundled (it's picked at runtime), but the smoke
+      # test needs it to run a real simulation — see below.
+      - name: Check out circulatory_autogen
+        uses: actions/checkout@v4
+        with:
+          repository: physiomelinks/circulatory_autogen
+          path: circulatory_autogen
+
+      # Smoke-test the frozen app on a machine that never ran it from source.
+      #
+      # This deliberately runs a REAL SIMULATION, not just /api/health. v0.1.0
+      # shipped with the python/casadi_python backends completely broken
+      # (KeyError: 'VARIABLE_COUNT' — the build resolved libcellml 0.7, which CA
+      # doesn't support) and a health-only check waved it straight through. The
+      # bug lived in the *bundled dependency set*, so only exercising the real
+      # code path in the frozen binary can catch it.
+      #
+      # Uses the `python` backend (scipy solve_ivp): it exercises CellML -> Python
+      # code generation, which is where the breakage was, and needs no C compiler,
+      # so it runs identically on all four runners.
+      #
+      # Model is Lotka-Volterra, not 3compartment: solve_ivp's default RK45 is an
+      # *explicit* method and 3compartment is stiff, so it would run essentially
+      # forever (and hang the job). LV exercises the same codegen path in <1s.
+      - name: Smoke-test the executable (real simulation)
         shell: bash
         run: |
+          set -euo pipefail
           "${{ matrix.binary }}" --port 8123 --browser &
           APP=$!
           for _ in $(seq 1 60); do
             if curl -sf http://127.0.0.1:8123/api/health > /dev/null; then break; fi
             sleep 2
           done
+
           curl -sf http://127.0.0.1:8123/api/health
           curl -sf http://127.0.0.1:8123/api/config | grep -q '"packaged":true'
+
+          # Point it at circulatory_autogen, exactly as a user does in Settings.
+          curl -sf -X POST http://127.0.0.1:8123/api/config \
+            -H 'Content-Type: application/json' \
+            -d "{\"ca_dir\":\"$PWD/circulatory_autogen\"}" | grep -q '"ca_exists":true'
+
+          MODEL_ID=$(curl -sf -F "file=@resources/Lotka_Volterra_forced.cellml" \
+            http://127.0.0.1:8123/api/models/upload \
+            | python -c "import json,sys; print(json.load(sys.stdin)['model_id'])")
+
+          # Compiler-free backend: CellML -> Python codegen + scipy solve_ivp.
+          curl -sf -X POST http://127.0.0.1:8123/api/config \
+            -H 'Content-Type: application/json' \
+            -d '{"generated_model_format":"python","solver":"solve_ivp","solver_info":{"method":"RK45","dt":0.01}}' > /dev/null
+
+          curl -sf --max-time 300 -X POST http://127.0.0.1:8123/api/simulate \
+            -H 'Content-Type: application/json' \
+            -d "{\"model_id\":\"$MODEL_ID\",\"params\":{},\"sim_time\":2.0}" \
+            -o sim.json || true
+
+          python - <<'PY'
+          import json, sys
+          d = json.load(open("sim.json"))
+          if "detail" in d:
+              sys.exit(f"SIMULATION FAILED in the packaged app: {d['detail']}")
+          n = len(d["time"])
+          if n < 2 or not d["outputs"]:
+              sys.exit(f"simulation returned no usable data: {n} points, outputs={list(d['outputs'])}")
+          print(f"simulation OK: {n} points, outputs: {', '.join(list(d['outputs'])[:3])}")
+          PY
+
           kill $APP || true
 
       - name: Rename artifact

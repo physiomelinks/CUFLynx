@@ -17,7 +17,13 @@ dependencies = [
     # CellML simulation (circulatory_autogen Myokit path; sibling repo on PYTHONPATH).
     # Required only for the integration tier; unit tests run without them.
     "myokit>=1.39.1",
-    "libcellml>=0.6.3",
+    # Upper bound is load-bearing — keep it in step with circulatory_autogen's own
+    # pin. libcellml 0.7 changed the generated Python code (no VARIABLE_COUNT), and
+    # CA's PythonGenerator still expects it, so the python / casadi_python backends
+    # die with KeyError: 'VARIABLE_COUNT'. Without the bound a fresh `pip install`
+    # silently resolves 0.7.0 — which is exactly how the v0.1.0 desktop build
+    # shipped broken while a dev machine holding 0.6.3 looked fine.
+    "libcellml>=0.6.3,<0.7.0",
     "scipy>=1.7.0",
 ]
 
