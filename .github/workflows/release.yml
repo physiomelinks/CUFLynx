@@ -60,9 +60,11 @@ jobs:
         working-directory: apps/api
         run: pip install -e ".[desktop]"
 
+      # yarn, not npm: the repo has yarn.lock and no package-lock.json, so
+      # `npm ci` errors out. Matches ci.yml.
       - name: Install frontend deps
         working-directory: apps/web
-        run: npm ci
+        run: yarn install --frozen-lockfile
 
       - name: Build executable
         run: python scripts/package.py
