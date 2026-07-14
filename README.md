@@ -13,9 +13,13 @@ it. No Python or Node.js needed.
 
 | OS | Download |
 |----|----------|
-| **Linux** | [**CUFLynx-linux-x86_64**](https://github.com/physiomelinks/CUFLynx/releases/latest/download/CUFLynx-linux-x86_64) — then `chmod +x CUFLynx-linux-x86_64` |
-| **macOS** (Apple silicon) | [**CUFLynx-macos-arm64**](https://github.com/physiomelinks/CUFLynx/releases/latest/download/CUFLynx-macos-arm64) |
-| **Windows** | [**CUFLynx-windows-x86_64.exe**](https://github.com/physiomelinks/CUFLynx/releases/latest/download/CUFLynx-windows-x86_64.exe) |
+| **Linux** (x86-64, glibc 2.35+ / Ubuntu 22.04+) | [**CUFLynx-linux-x86_64**](https://github.com/physiomelinks/CUFLynx/releases/latest/download/CUFLynx-linux-x86_64) — then `chmod +x CUFLynx-linux-x86_64` |
+| **macOS** — Apple silicon (M1/M2/M3) | [**CUFLynx-macos-arm64**](https://github.com/physiomelinks/CUFLynx/releases/latest/download/CUFLynx-macos-arm64) |
+| **macOS** — Intel | [**CUFLynx-macos-x86_64**](https://github.com/physiomelinks/CUFLynx/releases/latest/download/CUFLynx-macos-x86_64) |
+| **Windows** (x86-64) | [**CUFLynx-windows-x86_64.exe**](https://github.com/physiomelinks/CUFLynx/releases/latest/download/CUFLynx-windows-x86_64.exe) |
+
+Not sure which Mac you have? **Apple menu → About This Mac**: "Apple M1/M2/M3…" is
+Apple silicon; "Intel…" is Intel.
 
 These links always point at the newest release. All builds are also listed on the
 [releases page](https://github.com/physiomelinks/CUFLynx/releases/latest).

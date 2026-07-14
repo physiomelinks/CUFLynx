@@ -33,8 +33,14 @@ jobs:
           - os: ubuntu-22.04
             asset: CUFLynx-linux-x86_64
             binary: dist/CUFLynx
+          # PyInstaller can't cross-compile, and a macOS arm64 binary won't run on
+          # an Intel Mac — so each architecture needs its own runner. macos-latest
+          # is Apple silicon; macos-13 is the last Intel image.
           - os: macos-latest
             asset: CUFLynx-macos-arm64
+            binary: dist/CUFLynx
+          - os: macos-13
+            asset: CUFLynx-macos-x86_64
             binary: dist/CUFLynx
           - os: windows-latest
             asset: CUFLynx-windows-x86_64.exe
