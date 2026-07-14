@@ -104,6 +104,12 @@ const solverInfo = ref({})
 // which has no compiler of its own to fall back on.
 const cppCompiler = ref({ present: true, hint: '' })
 
+// "Python (scipy solve_ivp) or CasADi" — the compiler-free backends, named by the
+// server so the UI can't drift from CA's solver schema.
+const compilerAlternatives = computed(() =>
+  (cppCompiler.value.alternatives ?? []).map((a) => a.label).join(' or '),
+)
+
 // Last value the server told us about. Hydrating pythonPath from /api/config
 // triggers the watch below, and without this it would POST the value straight
 // back on every load.
@@ -939,14 +945,19 @@ watch(
 
         <Message
           v-if="!cppCompiler.present"
-          severity="error"
+          severity="warn"
           :closable="false"
           class="warn-banner"
           data-testid="no-compiler-warning"
         >
-          <strong>No C compiler found — simulations will fail.</strong>
-          Myokit compiles each model to a native extension when it runs.
-          <pre class="compiler-hint">{{ cppCompiler.hint }}</pre>
+          <strong>No C compiler found — the Myokit CVODE solver is unavailable.</strong>
+          Myokit compiles each model to a native extension when it runs. Everything
+          else still works: switch the backend in <strong>Settings</strong> to
+          <em>{{ compilerAlternatives }}</em> — neither needs a compiler.
+          <details v-if="cppCompiler.hint">
+            <summary>To enable CVODE_myokit, install a C compiler</summary>
+            <pre class="compiler-hint">{{ cppCompiler.hint }}</pre>
+          </details>
         </Message>
 
         <Message

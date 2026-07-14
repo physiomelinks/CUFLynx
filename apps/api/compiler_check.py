@@ -1,10 +1,20 @@
 """Detect the C/C++ compiler Myokit needs, and explain how to install it.
 
-Myokit's CVODE solver compiles each model into a native extension *at run time*,
-so a C compiler is a hard runtime prerequisite. Freezing the app with PyInstaller
-cannot bundle that away — the packaged build has no compiler of its own — so the
-desktop app detects the compiler at startup and surfaces the per-OS install hint
-instead of failing later with an opaque HTTP 500 on the first simulation.
+A missing compiler is a **limitation, not a fatal error**. Only the Myokit
+backend compiles: ``CVODE_myokit`` (generated_model_format ``cellml_only``) turns
+each model into a native extension *at run time*. The other backends are pure
+Python / precompiled and need no toolchain:
+
+    python        -> solve_ivp          (scipy)
+    casadi_python -> casadi_integrator  (casadi)
+
+(Confirmed against circulatory_autogen: of ``src/solver_wrappers/*``, only
+``myokit_helper.py`` compiles anything.)
+
+So the app warns and points at those alternatives rather than pretending it's
+broken. Freezing with PyInstaller can't bundle a compiler away, which is why the
+packaged build detects this at startup instead of failing later with an opaque
+HTTP 500 on the first simulation.
 
 Shared by ``scripts/install.py`` (prompt to install) and ``GET /api/config``
 (in-app banner), so the two can't drift.
@@ -84,10 +94,26 @@ def compiler_hint() -> str:
     )
 
 
+# The backends that work without any C toolchain, for the "you can still..." half
+# of the warning. Names match CA's SOLVER_SCHEMA (see solver_options.py).
+COMPILER_FREE_BACKENDS = (
+    {"generated_model_format": "python", "solver": "solve_ivp", "label": "Python (scipy solve_ivp)"},
+    {"generated_model_format": "casadi_python", "solver": "casadi_integrator", "label": "CasADi"},
+)
+
+
 def compiler_status() -> dict:
-    """Compiler availability + install hint, for ``GET /api/config``."""
+    """Compiler availability, install hint, and what still works without it.
+
+    Consumed by ``GET /api/config``; drives a *warning* (not an error) banner —
+    only the Myokit/CVODE backend is blocked, so ``affects`` says what's lost and
+    ``alternatives`` says what to use instead.
+    """
     present = has_cpp_compiler()
     return {
         "present": present,
         "hint": "" if present else compiler_hint(),
+        # Only this backend JIT-compiles; everything else is unaffected.
+        "affects": "" if present else "CVODE_myokit (generated model format 'cellml_only')",
+        "alternatives": [] if present else [dict(b) for b in COMPILER_FREE_BACKENDS],
     }

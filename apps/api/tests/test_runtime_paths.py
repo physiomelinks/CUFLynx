@@ -125,19 +125,36 @@ def test_build_command_uses_the_configured_interpreter(manager_cls):
 # ---------------------------------------------------------------------------
 # Compiler detection (surfaced by GET /api/config so the UI can warn up front)
 # ---------------------------------------------------------------------------
-def test_compiler_status_reports_a_hint_only_when_missing(monkeypatch):
+def test_compiler_status_is_quiet_when_a_compiler_is_present(monkeypatch):
     monkeypatch.setattr(compiler_check, "has_cpp_compiler", lambda: True)
-    assert compiler_check.compiler_status() == {"present": True, "hint": ""}
+    status = compiler_check.compiler_status()
+    assert status["present"] is True
+    assert status["hint"] == ""
+    assert status["affects"] == ""
+    assert status["alternatives"] == []
 
+
+def test_missing_compiler_names_what_breaks_and_what_still_works(monkeypatch):
+    """A missing compiler is a limitation, not a fatal error: only the Myokit
+    backend JIT-compiles, so the UI must be able to point at the alternatives."""
     monkeypatch.setattr(compiler_check, "has_cpp_compiler", lambda: False)
     status = compiler_check.compiler_status()
+
     assert status["present"] is False
-    assert status["hint"]  # a non-empty, per-OS install instruction
+    assert status["hint"]  # a per-OS install instruction
+    assert "CVODE_myokit" in status["affects"]
+
+    # The compiler-free backends, exactly as named in CA's solver schema.
+    formats = {a["generated_model_format"] for a in status["alternatives"]}
+    solvers = {a["solver"] for a in status["alternatives"]}
+    assert formats == {"python", "casadi_python"}
+    assert solvers == {"solve_ivp", "casadi_integrator"}
+    assert all(a["label"] for a in status["alternatives"])
 
 
 def test_config_route_exposes_compiler_status_and_packaged_flag(client):
     body = client.get("/api/config").json()
-    assert set(body["cpp_compiler"]) == {"present", "hint"}
+    assert {"present", "hint", "affects", "alternatives"} == set(body["cpp_compiler"])
     assert body["packaged"] is False  # tests run from source, never frozen
 
 

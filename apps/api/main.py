@@ -140,9 +140,15 @@ def health() -> dict:
 # Runtime config — circulatory_autogen location
 # ---------------------------------------------------------------------------
 class ConfigRequest(BaseModel):
-    # The circulatory_autogen directory (repo root or its `src`); blank resets to
-    # the default (sibling clone / CIRCULATORY_AUTOGEN_SRC).
-    ca_dir: str = ""
+    # The circulatory_autogen directory (repo root or its `src`).
+    #   omitted (None) -> leave unchanged   |   "" -> reset to the default
+    # Omission must NOT reset it: the Settings popup saves solver choices with a
+    # payload that carries no ca_dir, and treating that as "reset" silently
+    # dropped the user's CA directory on every solver change. From source that
+    # was invisible (the default is the sibling clone), but the packaged app has
+    # no sibling — CA was lost and every non-Myokit backend died with
+    # "No module named 'generators'".
+    ca_dir: str | None = None
     # Backend solver selection. generated_model_format is CA's `model_type`
     # (cellml_only / python / casadi_python); solver must be compatible with it;
     # solver_info holds the per-solver tuning. Blank/empty => leave unchanged.
@@ -260,13 +266,16 @@ def set_config(req: ConfigRequest) -> dict:
     CA modules after the first simulation, switching mid-session fully re-points
     the live-plot engine only after a restart.
     """
-    d = (req.ca_dir or "").strip()
-    if d:
-        if not os.path.isdir(d):
-            raise HTTPException(status_code=422, detail=f"not a directory: {d}")
-        os.environ["CIRCULATORY_AUTOGEN_SRC"] = _ca_src_from_dir(d)
-    else:
-        os.environ.pop("CIRCULATORY_AUTOGEN_SRC", None)
+    # None => not mentioned in this request, so leave the CA dir alone (see
+    # ConfigRequest). Only an explicit "" resets it to the default.
+    if req.ca_dir is not None:
+        d = req.ca_dir.strip()
+        if d:
+            if not os.path.isdir(d):
+                raise HTTPException(status_code=422, detail=f"not a directory: {d}")
+            os.environ["CIRCULATORY_AUTOGEN_SRC"] = _ca_src_from_dir(d)
+        else:
+            os.environ.pop("CIRCULATORY_AUTOGEN_SRC", None)
 
     # Backend solver selection. Validate against CA's schema (re-read against the
     # possibly-new CA dir), then store on the engine (the live-sim source of truth)

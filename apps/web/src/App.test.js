@@ -62,19 +62,40 @@ describe('App.vue', () => {
       differentiable_operations: {},
     }
 
-    it('warns, with the install hint, when the backend reports no compiler', async () => {
-      getConfig.mockResolvedValueOnce({
-        ...BASE_CONFIG,
-        cpp_compiler: { present: false, hint: 'xcode-select --install' },
-      })
-      // Render Message for real: shallowMount stubs it, and a stub drops the
-      // slot content — which is where the install hint lives.
+    const NO_COMPILER = {
+      present: false,
+      hint: 'xcode-select --install',
+      affects: "CVODE_myokit (generated model format 'cellml_only')",
+      alternatives: [
+        { generated_model_format: 'python', solver: 'solve_ivp', label: 'Python (scipy solve_ivp)' },
+        { generated_model_format: 'casadi_python', solver: 'casadi_integrator', label: 'CasADi' },
+      ],
+    }
+
+    it('warns (not errors) and names the backends that still work', async () => {
+      getConfig.mockResolvedValueOnce({ ...BASE_CONFIG, cpp_compiler: NO_COMPILER })
+      // Render Message for real: shallowMount stubs it, and a stub drops the slot
+      // content — which is where the message body lives.
       const wrapper = shallowMount(App, { global: { stubs: { Message: false } } })
       await flushPromises()
 
-      const banner = wrapper.find('[data-testid="no-compiler-warning"]')
+      const banner = wrapper.findComponent('[data-testid="no-compiler-warning"]')
       expect(banner.exists()).toBe(true)
-      expect(banner.text()).toContain('xcode-select --install')
+      // A missing compiler only costs you Myokit/CVODE — it is not fatal.
+      expect(banner.props('severity')).toBe('warn')
+      expect(banner.text()).toContain('Myokit CVODE solver is unavailable')
+      expect(banner.text()).toContain('Python (scipy solve_ivp)')
+      expect(banner.text()).toContain('CasADi')
+    })
+
+    it('still offers the install hint for those who want CVODE_myokit', async () => {
+      getConfig.mockResolvedValueOnce({ ...BASE_CONFIG, cpp_compiler: NO_COMPILER })
+      const wrapper = shallowMount(App, { global: { stubs: { Message: false } } })
+      await flushPromises()
+
+      expect(wrapper.find('[data-testid="no-compiler-warning"]').text()).toContain(
+        'xcode-select --install',
+      )
     })
 
     it('stays quiet when a compiler is present', async () => {

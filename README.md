@@ -25,16 +25,27 @@ On first run, point the app at your `circulatory_autogen` checkout under
 / UQ runs (those run in a separate process and need `circulatory_autogen` and its
 dependencies installed). Both choices are remembered.
 
-**One prerequisite: a C compiler.** Myokit compiles each CellML model to a native
-extension when it runs, so it needs a C toolchain — this can't be shipped inside
-the app. If one is missing, CUFLynx says so on startup and tells you how to
-install it:
+### Optional: a C compiler (only for the Myokit/CVODE backend)
+
+CUFLynx works out of the box with no compiler. Of the three solver backends, only
+one needs a C toolchain:
+
+| Backend (Settings) | Solver | Needs a C compiler? |
+|---|---|---|
+| `python` | scipy `solve_ivp` | no |
+| `casadi_python` | `casadi_integrator` | no |
+| `cellml_only` | `CVODE_myokit` | **yes** |
+
+Myokit compiles each CellML model to a native extension when it runs, and that
+toolchain can't be shipped inside the app. If it's missing, CUFLynx shows a
+warning and you simply pick one of the other two backends. To enable
+`CVODE_myokit`:
 
 - **Linux** — `sudo apt install build-essential`
 - **macOS** — `xcode-select --install`
 - **Windows** — [Microsoft C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) ("Desktop development with C++")
 
-(Sundials/CVODE is bundled — you do *not* need to install it separately.)
+(Sundials/CVODE itself is bundled — you do *not* need to install it separately.)
 
 ## Install from source
 

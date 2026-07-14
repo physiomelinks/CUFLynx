@@ -90,9 +90,11 @@ def warn_if_no_compiler() -> None:
     if has_cpp_compiler():
         return
     print(
-        f"\nWARNING: no C compiler found.\n"
-        f"  Myokit compiles each model to a native extension at run time, so\n"
-        f"  simulations will fail without one.\n\n{compiler_hint()}\n",
+        "\nWARNING: no C compiler found — the Myokit CVODE solver is unavailable.\n"
+        "  Myokit compiles each model to a native extension at run time. The other\n"
+        "  backends need no compiler: choose 'python' (scipy solve_ivp) or\n"
+        "  'casadi_python' (CasADi) under Settings.\n\n"
+        f"  To enable CVODE_myokit:\n{compiler_hint()}\n",
         file=sys.stderr,
         flush=True,
     )

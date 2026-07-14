@@ -182,3 +182,62 @@ def test_set_config_blank_resets_to_default(client, tmp_path):
     # Blank clears the override; ca_dir falls back to the sibling default.
     body = client.post("/api/config", json={"ca_dir": ""}).json()
     assert str(tmp_path) not in body["ca_src"]
+
+
+# ---------------------------------------------------------------------------
+# Regression: a config POST that doesn't mention ca_dir must not clear it.
+#
+# The Settings popup saves solver choices with a payload carrying no ca_dir, and
+# ca_dir used to default to "" == "reset to default". From source that looked
+# harmless (the default is the sibling clone), but in the packaged app there is
+# no sibling: changing any solver setting silently dropped the user's CA dir, and
+# every non-Myokit backend then died with "No module named 'generators'".
+# ---------------------------------------------------------------------------
+def test_solver_only_post_preserves_the_ca_dir(client, tmp_path):
+    ca = tmp_path / "circulatory_autogen"
+    (ca / "src").mkdir(parents=True)
+    client.post("/api/config", json={"ca_dir": str(ca)})
+
+    # Exactly what the Settings popup sends when only the solver changes.
+    body = client.post(
+        "/api/config",
+        json={
+            "generated_model_format": "python",
+            "solver": "solve_ivp",
+            "solver_info": {"method": "RK45", "dt": 0.01},
+        },
+    ).json()
+
+    assert body["ca_dir"] == str(ca)
+    assert body["ca_exists"] is True
+    assert os.environ["CIRCULATORY_AUTOGEN_SRC"] == str(ca / "src")
+
+
+def test_explicit_empty_ca_dir_still_resets_to_the_default(client, tmp_path):
+    ca = tmp_path / "circulatory_autogen"
+    (ca / "src").mkdir(parents=True)
+    client.post("/api/config", json={"ca_dir": str(ca)})
+
+    client.post("/api/config", json={"ca_dir": ""})
+
+    assert "CIRCULATORY_AUTOGEN_SRC" not in os.environ
+
+
+def test_frozen_app_reports_no_ca_dir_instead_of_guessing_a_sibling(monkeypatch):
+    """Frozen, __file__ is inside the bundle, so the sibling guess would produce
+    nonsense like '/circulatory_autogen'. Report "not configured" instead."""
+    monkeypatch.delenv("CIRCULATORY_AUTOGEN_SRC", raising=False)
+    monkeypatch.setattr(engine_mod, "is_frozen", lambda: True)
+
+    assert engine_mod._circulatory_autogen_src() == ""
+
+
+def test_unconfigured_ca_is_never_put_on_sys_path(monkeypatch):
+    """"" on sys.path means the CWD — which would import whatever happens to be
+    next to wherever the user launched the app."""
+    import sys
+
+    monkeypatch.setattr(engine_mod, "_circulatory_autogen_src", lambda: "")
+    before = list(sys.path)
+    engine_mod._ensure_ca_on_path()
+    assert sys.path == before

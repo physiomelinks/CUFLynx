@@ -106,11 +106,11 @@ jobs:
           body: |
             Download the file for your OS and double-click it.
 
-            **Prerequisite:** a C compiler. Myokit compiles each CellML model to a
-            native extension at run time, which cannot be bundled away. The app
-            detects a missing compiler on startup and shows install instructions.
-            (Sundials/CVODE and the Python headers *are* bundled — you don't need
-            to install those.)
+            **Optional:** a C compiler — only the `CVODE_myokit` backend needs one
+            (Myokit compiles each model to a native extension at run time, which
+            can't be bundled away). Without it the app shows a warning and you use
+            the `python` (scipy `solve_ivp`) or `casadi_python` backends, which
+            need no compiler. Sundials/CVODE and the Python headers *are* bundled.
 
             Point the app at your `circulatory_autogen` checkout via
             **Settings -> CA dir** on first run; it is remembered afterwards.

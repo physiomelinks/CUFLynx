@@ -110,10 +110,25 @@ collected like any other package; no change to this split. (Issue #18.)
     which the spec bundles at `include/python<X.Y>`.
   - **Sundials/CVODE headers + libs are bundled** and the hook repoints
     `myokit.SUNDIALS_INC` / `SUNDIALS_LIB`, so users needn't install Sundials.
-- **A C compiler is still required on the user's machine** and cannot be bundled
-  away. `compiler_check.py` detects it; `GET /api/config` returns `cpp_compiler:
-  {present, hint}` and `App.vue` shows a banner. `scripts/install.py` shares the
-  same detection — keep them in one place.
+- **A C compiler cannot be bundled away — but it is only needed for one backend.**
+  Of CA's `src/solver_wrappers/*`, **only `myokit_helper.py` compiles anything**;
+  `python` (scipy `solve_ivp`) and `casadi_python` (`casadi_integrator`) are
+  compiler-free and both are verified working in the frozen app. So a missing
+  compiler is a **warning, not an error**: `compiler_check.py` detects it,
+  `GET /api/config` returns `cpp_compiler: {present, hint, affects, alternatives}`,
+  and `App.vue` shows a `warn` banner naming the backends that still work. Don't
+  regress this to an error. `scripts/install.py` shares the detection — keep it in
+  one place.
+
+**`POST /api/config` semantics — `ca_dir` omitted means "leave unchanged".** It is
+`str | None = None`; only an explicit `""` resets to the default. This is load-
+bearing: the Settings popup saves solver choices with a payload that carries no
+`ca_dir`, and when omission meant "reset", **every solver change silently wiped the
+CA directory**. From source that was invisible (the default is the sibling clone,
+which is correct on a dev box); in the packaged app there is no sibling, so CA was
+lost and the non-Myokit backends died with `No module named 'generators'`. Relatedly,
+`engine._circulatory_autogen_src()` returns `""` when frozen and unconfigured rather
+than guessing a sibling (which produced `/circulatory_autogen`).
 
 **Settings persist** (`settings_store.py` → user config dir; `CUFLYNX_CONFIG_DIR`
 overrides, and the test suite points it at a tmp dir). `ca_dir` and `python_path`
