@@ -69,41 +69,80 @@ if not Path(_PY_INCLUDE, "Python.h").is_file():
 datas.append((_PY_INCLUDE, f"include/python{sysconfig.get_python_version()}"))
 
 # Sundials (CVODE) — the ODE solver Myokit's generated C links against. Myokit
-# needs its *headers* to compile and its *shared libraries* to link/load, and by
-# default finds them on the host. Bundling both means a user doesn't have to
-# install Sundials separately; the runtime hook repoints myokit.SUNDIALS_INC /
-# SUNDIALS_LIB at these copies. Source dirs come from the build interpreter's own
-# myokit config, so this follows however Sundials was installed here (apt, conda,
-# brew, ...) rather than hardcoding a path.
+# needs its *headers* to compile and its *libraries* to link/load. Bundling both
+# means the user doesn't have to install Sundials; the runtime hook repoints
+# myokit.SUNDIALS_INC / SUNDIALS_LIB at these copies.
+#
+# We *search* rather than trust myokit.SUNDIALS_INC/LIB, because those are only
+# hints and are wrong on two of the three platforms we ship:
+#   - Linux: myokit hard-codes /usr/local/*, but apt's libsundials-dev installs to
+#     /usr/include + /usr/lib/<triplet>. (Myokit still works there because the
+#     compiler searches those by default — but we need the real location to copy.)
+#   - Windows: myokit ships its own Sundials under myokit/_bin/sundials-win-vs,
+#     and names the libs `sundials_cvodes.lib` — no "lib" prefix.
 import myokit  # noqa: E402 - the build env has it; the spec fails loudly if not
 
-_SUNDIALS_HEADERS = ("sundials", "cvode", "cvodes", "nvector", "sunmatrix",
-                     "sunlinsol", "sunnonlinsol")
-_found_sundials_inc = False
-for _inc in myokit.SUNDIALS_INC:
-    for _sub in _SUNDIALS_HEADERS:
-        _d = Path(_inc) / _sub
-        if _d.is_dir():
-            datas.append((str(_d), f"sundials/include/{_sub}"))
-            _found_sundials_inc = True
+_HEADER_SUBDIRS = ("sundials", "cvode", "cvodes", "nvector", "sunmatrix",
+                   "sunlinsol", "sunnonlinsol")
+# Loadable at run time (must reach the bundle root, for the dynamic loader) vs
+# link-time-only import libs / static archives (only need to sit under -L).
+_SHARED_SUFFIXES = (".so", ".dylib", ".dll")
 
-_found_sundials_lib = False
-for _libdir in myokit.SUNDIALS_LIB:
-    for _lib in Path(_libdir).glob("libsundials_*"):
-        if _lib.is_file() or _lib.is_symlink():
-            # Into sundials/lib for the linker's -L, and to the bundle root (via
-            # `binaries`) so the loader finds them through PyInstaller's search path.
-            datas.append((str(_lib), "sundials/lib"))
-            binaries.append((str(_lib), "."))
-            _found_sundials_lib = True
 
-if not (_found_sundials_inc and _found_sundials_lib):
-    raise SystemExit(
-        "Sundials (CVODE) headers/libraries not found via myokit.SUNDIALS_INC="
-        f"{myokit.SUNDIALS_INC} / SUNDIALS_LIB={myokit.SUNDIALS_LIB}. Myokit needs "
-        "them to compile models. Install Sundials in the build environment (e.g. "
-        "`conda install sundials`, `brew install sundials`, or apt) and rebuild."
+def _looks_like_sundials_include(d: Path) -> bool:
+    return (d / "cvodes" / "cvodes.h").is_file() or (
+        d / "sundials" / "sundials_config.h"
+    ).is_file()
+
+
+def _sundials_libs_in(d: Path) -> list:
+    # libsundials_cvodes.so (unix) and sundials_cvodes.lib/.dll (windows).
+    return sorted(
+        f for pat in ("libsundials_*", "sundials_*") for f in d.glob(pat)
+        if f.is_file() or f.is_symlink()
     )
+
+
+_inc_candidates = [Path(p) for p in myokit.SUNDIALS_INC] + [
+    Path("/usr/include"), Path("/usr/local/include"),
+    Path("/opt/homebrew/include"), Path("/opt/local/include"),
+]
+_lib_candidates = [Path(p) for p in myokit.SUNDIALS_LIB] + [
+    Path("/usr/lib"), Path("/usr/lib64"), Path("/usr/local/lib"), Path("/usr/local/lib64"),
+    Path("/opt/homebrew/lib"), Path("/opt/local/lib"),
+] + sorted(Path("/usr/lib").glob("*-linux-gnu"))  # Debian/Ubuntu multiarch triplet
+
+_sundials_inc = next((d for d in _inc_candidates if d.is_dir() and _looks_like_sundials_include(d)), None)
+_sundials_lib, _sundials_lib_files = next(
+    ((d, libs) for d in _lib_candidates if d.is_dir() and (libs := _sundials_libs_in(d))),
+    (None, []),
+)
+
+if _sundials_inc is None or not _sundials_lib_files:
+    raise SystemExit(
+        "Sundials (CVODE) not found. Myokit needs its headers to compile models "
+        "and its libraries to link them.\n"
+        f"  headers: {'ok: ' + str(_sundials_inc) if _sundials_inc else 'NOT FOUND'}\n"
+        f"  libs:    {'ok: ' + str(_sundials_lib) if _sundials_lib_files else 'NOT FOUND'}\n"
+        f"  searched (inc): {[str(p) for p in _inc_candidates]}\n"
+        f"  searched (lib): {[str(p) for p in _lib_candidates]}\n"
+        "Install Sundials in the build environment (apt install libsundials-dev, "
+        "brew install sundials, conda install sundials) and rebuild."
+    )
+
+for _sub in _HEADER_SUBDIRS:
+    _d = _sundials_inc / _sub
+    if _d.is_dir():
+        datas.append((str(_d), f"sundials/include/{_sub}"))
+
+for _lib in _sundials_lib_files:
+    # Under sundials/lib for the linker's -L (import libs and static archives
+    # only ever need to be here)...
+    datas.append((str(_lib), "sundials/lib"))
+    # ...and shared libraries also at the bundle root, where the dynamic loader
+    # looks (PyInstaller puts its search path there).
+    if any(s in _lib.name for s in _SHARED_SUFFIXES):
+        binaries.append((str(_lib), "."))
 
 # uvicorn resolves its loop/protocol implementations by string name at runtime.
 hiddenimports += collect_submodules("uvicorn")
