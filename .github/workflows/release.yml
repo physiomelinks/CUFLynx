@@ -23,7 +23,14 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          # Pinned, NOT ubuntu-latest. glibc is backward- but not forward-
+          # compatible: a binary built against ubuntu-latest (24.04, glibc 2.39)
+          # dies on anything older with
+          #   "libm.so.6: version `GLIBC_2.38' not found"
+          # — including Ubuntu 22.04, which is still widely used. Build against the
+          # OLDEST glibc we want to support; the result runs on that and newer.
+          # Bumping this raises the minimum distro users can run the app on.
+          - os: ubuntu-22.04
             asset: CUFLynx-linux-x86_64
             binary: dist/CUFLynx
           - os: macos-latest
