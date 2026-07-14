@@ -185,6 +185,26 @@ for pkg in ("myokit", "libcellml", "casadi", "webview", "setuptools", "numpy"):
     binaries += pkg_binaries
     hiddenimports += pkg_hidden
 
+# casadi needs its native libraries to sit NEXT TO the _casadi extension module,
+# not at the bundle root where PyInstaller normally flattens binaries. Without the
+# original layout, `import casadi` fails inside the frozen app on Windows and CA
+# reports "CasADi solver requested but CasADi is not available" — while the build
+# itself looks perfectly healthy. Re-add the whole package tree preserving its
+# structure; PyInstaller de-duplicates identical entries.
+import casadi  # noqa: E402 - guaranteed importable by the _REQUIRED check above
+
+_CASADI_DIR = Path(casadi.__file__).parent
+_NATIVE_SUFFIXES = {".dll", ".so", ".dylib", ".pyd"}
+for _f in _CASADI_DIR.rglob("*"):
+    if not _f.is_file():
+        continue
+    _dest = str(Path("casadi") / _f.relative_to(_CASADI_DIR).parent)
+    # `.so.3`-style versioned names have a numeric suffix, so match on the stem too.
+    if any(s in _f.name for s in _NATIVE_SUFFIXES):
+        binaries.append((str(_f), _dest))
+    else:
+        datas.append((str(_f), _dest))
+
 # The build_ext machinery Myokit reaches for when compiling a model. distutils
 # and setuptools look their commands up *by name* (`get_command_class('build')`),
 # so nothing imports them statically and PyInstaller can't infer them — every one
