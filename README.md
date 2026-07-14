@@ -1,20 +1,24 @@
 # CUFLynx
 
+[![Latest release](https://img.shields.io/github/v/release/physiomelinks/CUFLynx?label=download)](https://github.com/physiomelinks/CUFLynx/releases/latest)
+
 A GUI for [Circulatory Autogen](https://github.com/physiomelinks/circulatory_autogen):
 run sensitivity analysis, calibration and uncertainty quantification, and
 manually explore how parameters affect your (CellML) model outputs.
 
 ## Download the desktop app
 
-The easiest way to run CUFLynx: grab the file for your OS from the
-[latest release](https://github.com/physiomelinks/CUFLynx/releases/latest) and
-double-click it. No Python or Node.js needed.
+The easiest way to run CUFLynx: download the one file for your OS and double-click
+it. No Python or Node.js needed.
 
-| OS | File |
-|----|------|
-| Linux | `CUFLynx-linux-x86_64` (`chmod +x` it first) |
-| macOS | `CUFLynx-macos-arm64` |
-| Windows | `CUFLynx-windows-x86_64.exe` |
+| OS | Download |
+|----|----------|
+| **Linux** | [**CUFLynx-linux-x86_64**](https://github.com/physiomelinks/CUFLynx/releases/latest/download/CUFLynx-linux-x86_64) — then `chmod +x CUFLynx-linux-x86_64` |
+| **macOS** (Apple silicon) | [**CUFLynx-macos-arm64**](https://github.com/physiomelinks/CUFLynx/releases/latest/download/CUFLynx-macos-arm64) |
+| **Windows** | [**CUFLynx-windows-x86_64.exe**](https://github.com/physiomelinks/CUFLynx/releases/latest/download/CUFLynx-windows-x86_64.exe) |
+
+These links always point at the newest release. All builds are also listed on the
+[releases page](https://github.com/physiomelinks/CUFLynx/releases/latest).
 
 On first run, point the app at your `circulatory_autogen` checkout under
 **Settings → CA dir**, and pick a Python interpreter for calibration / sensitivity
