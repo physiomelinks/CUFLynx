@@ -25,6 +25,8 @@ change to this split is needed.
 """
 
 import importlib
+import os
+import sys
 import sysconfig
 from pathlib import Path
 
@@ -56,10 +58,14 @@ for runner in ("calibration_runner.py", "sensitivity_runner.py", "uq_runner.py")
 
 # CPython's development headers. Myokit compiles a *CPython extension module* at
 # run time, inside this frozen process — so the bundle has to carry Python.h and
-# friends. distutils looks for them at sysconfig's include path, which inside the
-# bundle resolves to <bundle>/include/python<X.Y>, so that's where they must land.
-# (Build machine therefore needs python3-dev / the Xcode CLT / the Windows Python
-# headers, which ship with the standard installer.)
+# friends. distutils finds them via sysconfig's include path, and that path differs
+# by platform, so the headers must land where the *frozen* interpreter will look:
+#   - posix (Linux/macOS): <bundle>/include/python<X.Y>
+#   - nt (Windows):        <bundle>/Include   (capital I, no version dir)
+# Shipping to the posix location on Windows is why CVODE_myokit there died with
+#   fatal error C1083: Cannot open include file: 'Python.h'
+# even though MSVC ran fine. (Build machine needs python3-dev / the Xcode CLT / the
+# Windows Python headers, which ship with the standard installer.)
 _PY_INCLUDE = sysconfig.get_paths()["include"]
 if not Path(_PY_INCLUDE, "Python.h").is_file():
     raise SystemExit(
@@ -67,7 +73,22 @@ if not Path(_PY_INCLUDE, "Python.h").is_file():
         "headers so Myokit can compile models at run time. Install the Python "
         "development headers (e.g. `sudo apt install python3-dev`) and rebuild."
     )
-datas.append((_PY_INCLUDE, f"include/python{sysconfig.get_python_version()}"))
+if sys.platform == "win32":
+    datas.append((_PY_INCLUDE, "Include"))
+    # Linking the extension on Windows needs pythonXX.lib, which MSVC looks for in
+    # <prefix>/libs. Without it the compile finds Python.h but fails at link.
+    _py_libs = Path(sys.base_exec_prefix) / "libs"
+    _lib_files = list(_py_libs.glob("python*.lib")) if _py_libs.is_dir() else []
+    if not _lib_files:
+        raise SystemExit(
+            f"No python*.lib found in {_py_libs}. Windows needs the import library "
+            "to link Myokit's compiled models. Use a standard python.org / "
+            "actions-setup-python interpreter (it ships libs/pythonXX.lib)."
+        )
+    for _lib in _lib_files:
+        datas.append((str(_lib), "libs"))
+else:
+    datas.append((_PY_INCLUDE, f"include/python{sysconfig.get_python_version()}"))
 
 # Sundials (CVODE) — the ODE solver Myokit's generated C links against. Myokit
 # needs its *headers* to compile and its *libraries* to link/load. Bundling both
@@ -104,11 +125,20 @@ def _sundials_libs_in(d: Path) -> list:
     )
 
 
-_inc_candidates = [Path(p) for p in myokit.SUNDIALS_INC] + [
+# CUFLYNX_SUNDIALS_ROOT is searched FIRST when set. The macOS build uses it to
+# point at a serial (non-MPI) Sundials built from source: Homebrew's Sundials is
+# MPI-built and its libraries abort at run time with "MPI_Comm_dup() called
+# before MPI_INIT" even for a serial model, so it can't be shipped. See the macOS
+# "Build serial Sundials" step in release.yml.
+_env_root = os.environ.get("CUFLYNX_SUNDIALS_ROOT")
+_env_inc = [Path(_env_root) / "include"] if _env_root else []
+_env_lib = [Path(_env_root) / "lib", Path(_env_root) / "lib64"] if _env_root else []
+
+_inc_candidates = _env_inc + [Path(p) for p in myokit.SUNDIALS_INC] + [
     Path("/usr/include"), Path("/usr/local/include"),
     Path("/opt/homebrew/include"), Path("/opt/local/include"),
 ]
-_lib_candidates = [Path(p) for p in myokit.SUNDIALS_LIB] + [
+_lib_candidates = _env_lib + [Path(p) for p in myokit.SUNDIALS_LIB] + [
     Path("/usr/lib"), Path("/usr/lib64"), Path("/usr/local/lib"), Path("/usr/local/lib64"),
     Path("/opt/homebrew/lib"), Path("/opt/local/lib"),
 ] + sorted(Path("/usr/lib").glob("*-linux-gnu"))  # Debian/Ubuntu multiarch triplet
@@ -131,10 +161,40 @@ if _sundials_inc is None or not _sundials_lib_files:
         "brew install sundials, conda install sundials) and rebuild."
     )
 
+# Bundle the Sundials headers via a staging copy so we can patch one line without
+# touching the build machine's system headers.
+#
+# Homebrew's macOS Sundials is built with MPI, so its sundials_config.h has
+#   #define SUNDIALS_MPI_ENABLED 1
+# which makes sundials_types.h `#include <mpi.h>`. Myokit compiles each model
+# against these headers at the *user's* run time, where mpi.h isn't present, and
+# CVODE_myokit then dies with "fatal error: 'mpi.h' file not found". Myokit only
+# ever uses the SERIAL N_Vector, so MPI is genuinely unused — force the flag off.
+# (Linux/Windows Sundials already ship it as 0, so the rewrite is a no-op there.)
+import re  # noqa: E402
+import shutil  # noqa: E402
+import tempfile  # noqa: E402
+
+_sundials_stage = Path(tempfile.mkdtemp(prefix="cuflynx_sundials_"))
 for _sub in _HEADER_SUBDIRS:
     _d = _sundials_inc / _sub
     if _d.is_dir():
-        datas.append((str(_d), f"sundials/include/{_sub}"))
+        shutil.copytree(_d, _sundials_stage / _sub)
+
+_cfg = _sundials_stage / "sundials" / "sundials_config.h"
+if _cfg.is_file():
+    _cfg.write_text(
+        re.sub(
+            r"(#define\s+SUNDIALS_MPI_ENABLED\s+)1",
+            r"\g<1>0",
+            _cfg.read_text(),
+        )
+    )
+
+for _sub in _HEADER_SUBDIRS:
+    _sd = _sundials_stage / _sub
+    if _sd.is_dir():
+        datas.append((str(_sd), f"sundials/include/{_sub}"))
 
 for _lib in _sundials_lib_files:
     # Under sundials/lib for the linker's -L (import libs and static archives

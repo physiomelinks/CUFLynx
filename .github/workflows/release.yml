@@ -68,9 +68,29 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libsundials-dev python3-dev
 
-      - name: Install Sundials (macOS)
+      # NOT `brew install sundials`: Homebrew's build is MPI-enabled, and its
+      # libraries abort at run time with "MPI_Comm_dup() called before MPI_INIT"
+      # even for a serial model — so it cannot be shipped. Build a serial (non-MPI)
+      # Sundials from source with @rpath install names (so the bundled copies
+      # resolve via the rpath Myokit sets on the compiled model), and point the
+      # spec at it via CUFLYNX_SUNDIALS_ROOT.
+      - name: Build serial Sundials (macOS)
         if: runner.os == 'macOS'
-        run: brew install sundials
+        run: |
+          set -euo pipefail
+          VER=6.5.1
+          curl -fsSL "https://github.com/LLNL/sundials/releases/download/v${VER}/sundials-${VER}.tar.gz" -o sundials.tar.gz
+          tar xzf sundials.tar.gz
+          cmake -S "sundials-${VER}" -B sundials-build \
+            -DCMAKE_INSTALL_PREFIX="$HOME/sundials-serial" \
+            -DBUILD_SHARED_LIBS=ON -DBUILD_STATIC_LIBS=OFF \
+            -DENABLE_MPI=OFF -DEXAMPLES_ENABLE_C=OFF -DEXAMPLES_INSTALL=OFF \
+            -DBUILD_TESTING=OFF \
+            -DCMAKE_INSTALL_NAME_DIR=@rpath
+          cmake --build sundials-build --target install -j3
+          echo "CUFLYNX_SUNDIALS_ROOT=$HOME/sundials-serial" >> "$GITHUB_ENV"
+          # Sanity: the built config must have MPI off.
+          grep -q "SUNDIALS_MPI_ENABLED 0" "$HOME/sundials-serial/include/sundials/sundials_config.h"
 
       - name: Install Python deps
         working-directory: apps/api
@@ -146,16 +166,22 @@ jobs:
             http://127.0.0.1:8123/api/models/upload \
             | python -c "import json,sys; print(json.load(sys.stdin)['model_id'])")
 
-          # Exercise BOTH compiler-free backends. Testing only `python` is what let
-          # v0.1.0 ship with no casadi in the bundle: the python backend passed, and
-          # casadi_python failed in the user's hands with "CasADi solver requested
-          # but CasADi is not available".
-          for BACKEND in python casadi_python; do
-            if [ "$BACKEND" = "python" ]; then
-              SOLVER='{"generated_model_format":"python","solver":"solve_ivp","solver_info":{"method":"RK45","dt":0.01}}'
-            else
-              SOLVER='{"generated_model_format":"casadi_python","solver":"casadi_integrator","solver_info":{"method":"cvodes","dt":0.01}}'
-            fi
+          # Exercise ALL THREE backends. Each has broken in the packaged app for a
+          # different reason that only a real simulation in the frozen binary caught:
+          #   python        - libcellml 0.7 (KeyError: VARIABLE_COUNT)
+          #   casadi_python - casadi missing from the bundle
+          #   cellml_only   - CVODE_myokit JIT-compiles a C extension; on Windows it
+          #                   couldn't find Python.h (headers shipped to the posix
+          #                   dir, not <bundle>/Include) nor pythonXX.lib to link.
+          # cellml_only needs a C compiler, but all four runners have one (gcc /
+          # clang / MSVC), so testing it here validates the Python-header + Sundials
+          # bundling on every platform.
+          for BACKEND in python casadi_python cellml_only; do
+            case "$BACKEND" in
+              python)        SOLVER='{"generated_model_format":"python","solver":"solve_ivp","solver_info":{"method":"RK45","dt":0.01}}' ;;
+              casadi_python) SOLVER='{"generated_model_format":"casadi_python","solver":"casadi_integrator","solver_info":{"method":"cvodes","dt":0.01}}' ;;
+              cellml_only)   SOLVER='{"generated_model_format":"cellml_only","solver":"CVODE_myokit","solver_info":{"method":"CVODE","dt":0.01}}' ;;
+            esac
             curl -sf -X POST http://127.0.0.1:8123/api/config \
               -H 'Content-Type: application/json' -d "$SOLVER" > /dev/null
 
