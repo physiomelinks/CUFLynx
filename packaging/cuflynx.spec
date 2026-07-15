@@ -25,6 +25,7 @@ change to this split is needed.
 """
 
 import importlib
+import sys
 import sysconfig
 from pathlib import Path
 
@@ -56,10 +57,14 @@ for runner in ("calibration_runner.py", "sensitivity_runner.py", "uq_runner.py")
 
 # CPython's development headers. Myokit compiles a *CPython extension module* at
 # run time, inside this frozen process — so the bundle has to carry Python.h and
-# friends. distutils looks for them at sysconfig's include path, which inside the
-# bundle resolves to <bundle>/include/python<X.Y>, so that's where they must land.
-# (Build machine therefore needs python3-dev / the Xcode CLT / the Windows Python
-# headers, which ship with the standard installer.)
+# friends. distutils finds them via sysconfig's include path, and that path differs
+# by platform, so the headers must land where the *frozen* interpreter will look:
+#   - posix (Linux/macOS): <bundle>/include/python<X.Y>
+#   - nt (Windows):        <bundle>/Include   (capital I, no version dir)
+# Shipping to the posix location on Windows is why CVODE_myokit there died with
+#   fatal error C1083: Cannot open include file: 'Python.h'
+# even though MSVC ran fine. (Build machine needs python3-dev / the Xcode CLT / the
+# Windows Python headers, which ship with the standard installer.)
 _PY_INCLUDE = sysconfig.get_paths()["include"]
 if not Path(_PY_INCLUDE, "Python.h").is_file():
     raise SystemExit(
@@ -67,7 +72,22 @@ if not Path(_PY_INCLUDE, "Python.h").is_file():
         "headers so Myokit can compile models at run time. Install the Python "
         "development headers (e.g. `sudo apt install python3-dev`) and rebuild."
     )
-datas.append((_PY_INCLUDE, f"include/python{sysconfig.get_python_version()}"))
+if sys.platform == "win32":
+    datas.append((_PY_INCLUDE, "Include"))
+    # Linking the extension on Windows needs pythonXX.lib, which MSVC looks for in
+    # <prefix>/libs. Without it the compile finds Python.h but fails at link.
+    _py_libs = Path(sys.base_exec_prefix) / "libs"
+    _lib_files = list(_py_libs.glob("python*.lib")) if _py_libs.is_dir() else []
+    if not _lib_files:
+        raise SystemExit(
+            f"No python*.lib found in {_py_libs}. Windows needs the import library "
+            "to link Myokit's compiled models. Use a standard python.org / "
+            "actions-setup-python interpreter (it ships libs/pythonXX.lib)."
+        )
+    for _lib in _lib_files:
+        datas.append((str(_lib), "libs"))
+else:
+    datas.append((_PY_INCLUDE, f"include/python{sysconfig.get_python_version()}"))
 
 # Sundials (CVODE) — the ODE solver Myokit's generated C links against. Myokit
 # needs its *headers* to compile and its *libraries* to link/load. Bundling both

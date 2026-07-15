@@ -146,16 +146,22 @@ jobs:
             http://127.0.0.1:8123/api/models/upload \
             | python -c "import json,sys; print(json.load(sys.stdin)['model_id'])")
 
-          # Exercise BOTH compiler-free backends. Testing only `python` is what let
-          # v0.1.0 ship with no casadi in the bundle: the python backend passed, and
-          # casadi_python failed in the user's hands with "CasADi solver requested
-          # but CasADi is not available".
-          for BACKEND in python casadi_python; do
-            if [ "$BACKEND" = "python" ]; then
-              SOLVER='{"generated_model_format":"python","solver":"solve_ivp","solver_info":{"method":"RK45","dt":0.01}}'
-            else
-              SOLVER='{"generated_model_format":"casadi_python","solver":"casadi_integrator","solver_info":{"method":"cvodes","dt":0.01}}'
-            fi
+          # Exercise ALL THREE backends. Each has broken in the packaged app for a
+          # different reason that only a real simulation in the frozen binary caught:
+          #   python        - libcellml 0.7 (KeyError: VARIABLE_COUNT)
+          #   casadi_python - casadi missing from the bundle
+          #   cellml_only   - CVODE_myokit JIT-compiles a C extension; on Windows it
+          #                   couldn't find Python.h (headers shipped to the posix
+          #                   dir, not <bundle>/Include) nor pythonXX.lib to link.
+          # cellml_only needs a C compiler, but all four runners have one (gcc /
+          # clang / MSVC), so testing it here validates the Python-header + Sundials
+          # bundling on every platform.
+          for BACKEND in python casadi_python cellml_only; do
+            case "$BACKEND" in
+              python)        SOLVER='{"generated_model_format":"python","solver":"solve_ivp","solver_info":{"method":"RK45","dt":0.01}}' ;;
+              casadi_python) SOLVER='{"generated_model_format":"casadi_python","solver":"casadi_integrator","solver_info":{"method":"cvodes","dt":0.01}}' ;;
+              cellml_only)   SOLVER='{"generated_model_format":"cellml_only","solver":"CVODE_myokit","solver_info":{"method":"CVODE","dt":0.01}}' ;;
+            esac
             curl -sf -X POST http://127.0.0.1:8123/api/config \
               -H 'Content-Type: application/json' -d "$SOLVER" > /dev/null
 
