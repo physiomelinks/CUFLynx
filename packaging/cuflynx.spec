@@ -24,6 +24,7 @@ to the build environment and it will be collected like any other package — no
 change to this split is needed.
 """
 
+import importlib
 import sysconfig
 from pathlib import Path
 
@@ -155,11 +156,54 @@ hiddenimports += collect_submodules("uvicorn")
 # extension at run time*, and that compile happens inside this frozen process. It
 # needs setuptools' build_ext command (resolved dynamically via pkg_resources, so
 # invisible to static analysis) and numpy's C headers (package data, not code).
+# collect_all() on a package that isn't installed returns EMPTY LISTS rather than
+# raising — so a missing dependency silently produces a bundle without it, and the
+# failure only shows up as a runtime error in the user's hands. That is exactly how
+# v0.1.0 shipped with no casadi ("CasADi solver requested but CasADi is not
+# available"): a dev machine had it installed for CA, the CI build machine did not.
+# Fail the build instead.
+_REQUIRED = ("myokit", "libcellml", "casadi", "webview", "setuptools", "numpy",
+             "scipy", "pandas", "sympy", "yaml", "ruamel.yaml", "rdflib", "pint")
+_missing = []
+for pkg in _REQUIRED:
+    try:
+        importlib.import_module(pkg)
+    except ImportError:
+        _missing.append(pkg)
+if _missing:
+    raise SystemExit(
+        f"Cannot build: these packages are required in the bundle but are not "
+        f"installed in the build environment: {', '.join(_missing)}.\n"
+        "The frozen app imports circulatory_autogen in-process, so CA's simulation-"
+        "path dependencies must be present here. Run `pip install -e \".[desktop]\"` "
+        "in apps/api and rebuild."
+    )
+
 for pkg in ("myokit", "libcellml", "casadi", "webview", "setuptools", "numpy"):
     pkg_datas, pkg_binaries, pkg_hidden = collect_all(pkg)
     datas += pkg_datas
     binaries += pkg_binaries
     hiddenimports += pkg_hidden
+
+# casadi needs its native libraries to sit NEXT TO the _casadi extension module,
+# not at the bundle root where PyInstaller normally flattens binaries. Without the
+# original layout, `import casadi` fails inside the frozen app on Windows and CA
+# reports "CasADi solver requested but CasADi is not available" — while the build
+# itself looks perfectly healthy. Re-add the whole package tree preserving its
+# structure; PyInstaller de-duplicates identical entries.
+import casadi  # noqa: E402 - guaranteed importable by the _REQUIRED check above
+
+_CASADI_DIR = Path(casadi.__file__).parent
+_NATIVE_SUFFIXES = {".dll", ".so", ".dylib", ".pyd"}
+for _f in _CASADI_DIR.rglob("*"):
+    if not _f.is_file():
+        continue
+    _dest = str(Path("casadi") / _f.relative_to(_CASADI_DIR).parent)
+    # `.so.3`-style versioned names have a numeric suffix, so match on the stem too.
+    if any(s in _f.name for s in _NATIVE_SUFFIXES):
+        binaries.append((str(_f), _dest))
+    else:
+        datas.append((str(_f), _dest))
 
 # The build_ext machinery Myokit reaches for when compiling a model. distutils
 # and setuptools look their commands up *by name* (`get_command_class('build')`),

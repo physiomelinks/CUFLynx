@@ -25,6 +25,22 @@ dependencies = [
     # shipped broken while a dev machine holding 0.6.3 looked fine.
     "libcellml>=0.6.3,<0.7.0",
     "scipy>=1.7.0",
+    # circulatory_autogen's *simulation-path* imports. The live engine imports CA
+    # in-process, so these have to be present in whatever environment runs the app —
+    # including the frozen desktop bundle, whose contents come from a clean install
+    # of this file. They were missing, and because a dev machine has them installed
+    # for CA anyway, local builds bundled them and only the CI-built binary was
+    # broken ("CasADi solver requested but CasADi is not available").
+    # Versions track circulatory_autogen's own pins.
+    "casadi>=3.7.2",        # casadi_python backend (compiler-free)
+    "sympy>=1.8.0",
+    "pyyaml>=5.4.0",        # also imported directly by main.py
+    "ruamel.yaml>=0.17.0",
+    "rdflib>=5.0.0",
+    "pint>=0.18",
+    # NB: CA's *analysis* deps (emcee, SALib, nevergrad, mpi4py, matplotlib, ...) are
+    # deliberately NOT here — those run in the user's own interpreter via the
+    # subprocess runners, never in-process. See packaging/cuflynx.spec.
 ]
 
 [project.optional-dependencies]

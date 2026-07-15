@@ -146,26 +146,39 @@ jobs:
             http://127.0.0.1:8123/api/models/upload \
             | python -c "import json,sys; print(json.load(sys.stdin)['model_id'])")
 
-          # Compiler-free backend: CellML -> Python codegen + scipy solve_ivp.
-          curl -sf -X POST http://127.0.0.1:8123/api/config \
-            -H 'Content-Type: application/json' \
-            -d '{"generated_model_format":"python","solver":"solve_ivp","solver_info":{"method":"RK45","dt":0.01}}' > /dev/null
+          # Exercise BOTH compiler-free backends. Testing only `python` is what let
+          # v0.1.0 ship with no casadi in the bundle: the python backend passed, and
+          # casadi_python failed in the user's hands with "CasADi solver requested
+          # but CasADi is not available".
+          for BACKEND in python casadi_python; do
+            if [ "$BACKEND" = "python" ]; then
+              SOLVER='{"generated_model_format":"python","solver":"solve_ivp","solver_info":{"method":"RK45","dt":0.01}}'
+            else
+              SOLVER='{"generated_model_format":"casadi_python","solver":"casadi_integrator","solver_info":{"method":"cvodes","dt":0.01}}'
+            fi
+            curl -sf -X POST http://127.0.0.1:8123/api/config \
+              -H 'Content-Type: application/json' -d "$SOLVER" > /dev/null
 
-          curl -sf --max-time 300 -X POST http://127.0.0.1:8123/api/simulate \
-            -H 'Content-Type: application/json' \
-            -d "{\"model_id\":\"$MODEL_ID\",\"params\":{},\"sim_time\":2.0}" \
-            -o sim.json || true
+            curl -s --max-time 300 -X POST http://127.0.0.1:8123/api/simulate \
+              -H 'Content-Type: application/json' \
+              -d "{\"model_id\":\"$MODEL_ID\",\"params\":{},\"sim_time\":2.0}" \
+              -o "sim_$BACKEND.json" || true
 
-          python - <<'PY'
-          import json, sys
-          d = json.load(open("sim.json"))
+            BACKEND="$BACKEND" python - <<'PY'
+          import json, os, sys
+          backend = os.environ["BACKEND"]
+          path = f"sim_{backend}.json"
+          if not os.path.exists(path) or os.path.getsize(path) == 0:
+              sys.exit(f"[{backend}] no response — the app hung or died")
+          d = json.load(open(path))
           if "detail" in d:
-              sys.exit(f"SIMULATION FAILED in the packaged app: {d['detail']}")
+              sys.exit(f"[{backend}] SIMULATION FAILED in the packaged app: {d['detail']}")
           n = len(d["time"])
           if n < 2 or not d["outputs"]:
-              sys.exit(f"simulation returned no usable data: {n} points, outputs={list(d['outputs'])}")
-          print(f"simulation OK: {n} points, outputs: {', '.join(list(d['outputs'])[:3])}")
+              sys.exit(f"[{backend}] no usable data: {n} points, outputs={list(d['outputs'])}")
+          print(f"simulation OK [{backend}]: {n} points, outputs: {', '.join(list(d['outputs'])[:3])}")
           PY
+          done
 
           kill $APP || true
 
