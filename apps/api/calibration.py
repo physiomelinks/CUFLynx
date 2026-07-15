@@ -16,7 +16,7 @@ import threading
 import uuid
 from pathlib import Path
 
-from runtime_paths import NO_PYTHON_ERROR, default_python, resource_path
+from runtime_paths import NO_PYTHON_ERROR, default_python, resource_path, subprocess_env
 
 RUNNER_PATH = str(resource_path("calibration_runner.py"))
 
@@ -290,7 +290,7 @@ class CalibrationManager:
                 json.dump(config, fh)
 
             job = CalibrationJob(uuid.uuid4().hex, output_dir, config.get("model_id"))
-            env = dict(os.environ)
+            env = subprocess_env()
             job.proc = subprocess.Popen(
                 self.build_command(config, config_path),
                 stdout=subprocess.PIPE,

@@ -85,3 +85,34 @@ def default_python() -> str | None:
     if is_frozen():
         return None
     return sys.executable
+
+
+# Dynamic-linker search-path variables PyInstaller rewrites to point at the
+# unpacked bundle. It stashes the caller's original value in ``<VAR>_ORIG``.
+_LOADER_VARS = ("LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH", "DYLD_FRAMEWORK_PATH")
+
+
+def subprocess_env() -> dict:
+    """Environment for spawning an *external* interpreter (the analysis runners).
+
+    In a PyInstaller bundle the running process has ``LD_LIBRARY_PATH`` /
+    ``DYLD_*`` pointing at the unpacked bundle so its own libs resolve. Inheriting
+    that into a subprocess that runs a **different** Python is a trap: the external
+    interpreter then loads the bundle's native libraries (numpy/OpenBLAS/…), built
+    for the frozen interpreter, and imports blow up with things like
+    ``numpy.core.multiarray failed to import`` / ``_ARRAY_API not found``.
+
+    Restore each loader var to the value PyInstaller saved in ``<VAR>_ORIG`` (or
+    drop it if there was none), so the runner sees a clean, non-bundle
+    environment. A no-op when not frozen.
+    """
+    env = dict(os.environ)
+    if not is_frozen():
+        return env
+    for var in _LOADER_VARS:
+        original = env.get(f"{var}_ORIG")
+        if original is not None:
+            env[var] = original
+        else:
+            env.pop(var, None)
+    return env
