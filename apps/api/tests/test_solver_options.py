@@ -42,6 +42,15 @@ def test_get_solver_options_shape():
         assert solver in opts["solver_info_schema"]
 
 
+def test_cellml_only_defaults_to_myokit_not_opencor():
+    """cellml_only must default to CVODE_myokit, not CA's CVODE_opencor: OpenCOR is
+    a separate program most users don't have (and it isn't bundled), so defaulting
+    to it makes a fresh simulate fail with 'OpenCOR ... is not available'."""
+    opts = so.get_solver_options()
+    if "cellml_only" in opts["model_formats"]:
+        assert opts["default_solver_by_format"]["cellml_only"] == "CVODE_myokit"
+
+
 def test_method_options_come_from_ca_schema():
     """The method dropdown options mirror CA's methods_by_solver (not hardcoded)."""
     opts = so.get_solver_options()

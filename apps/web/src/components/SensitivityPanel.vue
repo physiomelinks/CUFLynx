@@ -202,7 +202,7 @@ function onRun() {
 
       <label class="field checkbox">
         <Checkbox v-model="settings.DEBUG" :binary="true" input-id="sa-debug" />
-        <span>DEBUG (fewer samples, fast)</span>
+        <span>DEBUG (more output info)</span>
       </label>
     </div>
 
