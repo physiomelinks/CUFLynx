@@ -217,9 +217,60 @@ jobs:
           name: ${{ matrix.asset }}
           path: ${{ matrix.asset }}
 
+  # End-to-end test of the ANALYSIS tier (sensitivity + calibration) in the built
+  # binary. The build-job smoke test covers live simulation (in-process); analysis
+  # is different — it runs in a *separate interpreter* the app spawns, so the
+  # frozen-app orchestration (resolve interpreter, launch runner, stream progress,
+  # detect completion) needs its own end-to-end check against a real binary.
+  #
+  # Reuses the Linux artifact (no rebuild). The runner interpreter is this job's
+  # own Python, into which we install circulatory_autogen + its analysis deps.
+  # Linux only: the orchestration is OS-agnostic (cross-platform Popen), so one
+  # platform validates the path; per-OS builds already prove the binary runs.
+  analysis-e2e:
+    name: Analysis e2e (built app)
+    needs: build
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Download the Linux executable
+        uses: actions/download-artifact@v4
+        with:
+          name: CUFLynx-linux-x86_64
+
+      - name: Check out circulatory_autogen
+        uses: actions/checkout@v4
+        with:
+          repository: physiomelinks/circulatory_autogen
+          path: circulatory_autogen
+
+      # The runner interpreter needs CA + its analysis deps (emcee / SALib /
+      # nevergrad / myokit / ...). mpi4py (a CA dep) needs MPI headers to build,
+      # and CVODE_myokit needs Sundials + a C compiler at run time.
+      - name: Install analysis dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsundials-dev python3-dev libopenmpi-dev
+          python -m pip install -e ./circulatory_autogen
+
+      - name: Run sensitivity + calibration in the built app
+        run: |
+          chmod +x CUFLynx-linux-x86_64
+          python scripts/analysis_smoke.py \
+            --binary "$PWD/CUFLynx-linux-x86_64" \
+            --ca-dir "$PWD/circulatory_autogen" \
+            --runner-python "$(which python)" \
+            --sensitivity-timeout 600 --calibration-timeout 600
+
   release:
     name: Publish release
-    needs: build
+    # Gate on the analysis e2e too: don't publish a build that can't run SA/calibration.
+    needs: [build, analysis-e2e]
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
