@@ -68,9 +68,29 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libsundials-dev python3-dev
 
-      - name: Install Sundials (macOS)
+      # NOT `brew install sundials`: Homebrew's build is MPI-enabled, and its
+      # libraries abort at run time with "MPI_Comm_dup() called before MPI_INIT"
+      # even for a serial model — so it cannot be shipped. Build a serial (non-MPI)
+      # Sundials from source with @rpath install names (so the bundled copies
+      # resolve via the rpath Myokit sets on the compiled model), and point the
+      # spec at it via CUFLYNX_SUNDIALS_ROOT.
+      - name: Build serial Sundials (macOS)
         if: runner.os == 'macOS'
-        run: brew install sundials
+        run: |
+          set -euo pipefail
+          VER=6.5.1
+          curl -fsSL "https://github.com/LLNL/sundials/releases/download/v${VER}/sundials-${VER}.tar.gz" -o sundials.tar.gz
+          tar xzf sundials.tar.gz
+          cmake -S "sundials-${VER}" -B sundials-build \
+            -DCMAKE_INSTALL_PREFIX="$HOME/sundials-serial" \
+            -DBUILD_SHARED_LIBS=ON -DBUILD_STATIC_LIBS=OFF \
+            -DENABLE_MPI=OFF -DEXAMPLES_ENABLE_C=OFF -DEXAMPLES_INSTALL=OFF \
+            -DBUILD_TESTING=OFF \
+            -DCMAKE_INSTALL_NAME_DIR=@rpath
+          cmake --build sundials-build --target install -j3
+          echo "CUFLYNX_SUNDIALS_ROOT=$HOME/sundials-serial" >> "$GITHUB_ENV"
+          # Sanity: the built config must have MPI off.
+          grep -q "SUNDIALS_MPI_ENABLED 0" "$HOME/sundials-serial/include/sundials/sundials_config.h"
 
       - name: Install Python deps
         working-directory: apps/api

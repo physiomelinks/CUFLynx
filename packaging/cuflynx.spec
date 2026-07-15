@@ -25,6 +25,7 @@ change to this split is needed.
 """
 
 import importlib
+import os
 import sys
 import sysconfig
 from pathlib import Path
@@ -124,11 +125,20 @@ def _sundials_libs_in(d: Path) -> list:
     )
 
 
-_inc_candidates = [Path(p) for p in myokit.SUNDIALS_INC] + [
+# CUFLYNX_SUNDIALS_ROOT is searched FIRST when set. The macOS build uses it to
+# point at a serial (non-MPI) Sundials built from source: Homebrew's Sundials is
+# MPI-built and its libraries abort at run time with "MPI_Comm_dup() called
+# before MPI_INIT" even for a serial model, so it can't be shipped. See the macOS
+# "Build serial Sundials" step in release.yml.
+_env_root = os.environ.get("CUFLYNX_SUNDIALS_ROOT")
+_env_inc = [Path(_env_root) / "include"] if _env_root else []
+_env_lib = [Path(_env_root) / "lib", Path(_env_root) / "lib64"] if _env_root else []
+
+_inc_candidates = _env_inc + [Path(p) for p in myokit.SUNDIALS_INC] + [
     Path("/usr/include"), Path("/usr/local/include"),
     Path("/opt/homebrew/include"), Path("/opt/local/include"),
 ]
-_lib_candidates = [Path(p) for p in myokit.SUNDIALS_LIB] + [
+_lib_candidates = _env_lib + [Path(p) for p in myokit.SUNDIALS_LIB] + [
     Path("/usr/lib"), Path("/usr/lib64"), Path("/usr/local/lib"), Path("/usr/local/lib64"),
     Path("/opt/homebrew/lib"), Path("/opt/local/lib"),
 ] + sorted(Path("/usr/lib").glob("*-linux-gnu"))  # Debian/Ubuntu multiarch triplet
