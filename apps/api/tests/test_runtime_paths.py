@@ -158,6 +158,32 @@ def test_config_route_exposes_compiler_status_and_packaged_flag(client):
     assert body["packaged"] is False  # tests run from source, never frozen
 
 
+# ---------------------------------------------------------------------------
+# subprocess_env — the runner must NOT inherit the bundle's loader paths
+# ---------------------------------------------------------------------------
+def test_subprocess_env_is_untouched_when_not_frozen(monkeypatch):
+    monkeypatch.setenv("LD_LIBRARY_PATH", "/whatever")
+    assert runtime_paths.subprocess_env().get("LD_LIBRARY_PATH") == "/whatever"
+
+
+def test_subprocess_env_restores_pyinstaller_originals(frozen, monkeypatch):
+    """Frozen, LD_LIBRARY_PATH points at the bundle; PyInstaller saved the
+    caller's value in LD_LIBRARY_PATH_ORIG. The runner must get the original,
+    or its own numpy/OpenBLAS loads the bundle's libs and imports blow up."""
+    monkeypatch.setenv("LD_LIBRARY_PATH", "/tmp/_MEIxxxx")  # bundle path
+    monkeypatch.setenv("LD_LIBRARY_PATH_ORIG", "/usr/lib/original")
+    env = runtime_paths.subprocess_env()
+    assert env["LD_LIBRARY_PATH"] == "/usr/lib/original"
+
+
+def test_subprocess_env_drops_bundle_loader_path_when_no_original(frozen, monkeypatch):
+    """If the caller had no LD_LIBRARY_PATH, PyInstaller sets no _ORIG — the
+    bundle value must be removed entirely, not left pointing at the bundle."""
+    monkeypatch.setenv("LD_LIBRARY_PATH", "/tmp/_MEIxxxx")
+    monkeypatch.delenv("LD_LIBRARY_PATH_ORIG", raising=False)
+    assert "LD_LIBRARY_PATH" not in runtime_paths.subprocess_env()
+
+
 def test_pythons_route_default_is_null_when_packaged(client, frozen, monkeypatch):
     """In the packaged app the client must force an explicit interpreter pick."""
     monkeypatch.setattr(calibration_mod, "list_python_interpreters", lambda refresh=False: [])
