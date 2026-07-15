@@ -50,10 +50,20 @@ datas = [
 binaries = []
 hiddenimports = []
 
-# The runner scripts must ship as *data*, not as frozen modules: they are executed
+# The runner scripts must ship as *data*, not as frozen modules: they're executed
 # by an external Python (`python runner.py config.json`), so they have to exist as
-# real .py files on disk. runtime_paths.resource_path() finds them at the bundle root.
-for runner in ("calibration_runner.py", "sensitivity_runner.py", "uq_runner.py"):
+# real .py files on disk. runtime_paths.resource_path() finds them at the bundle
+# root, and Python puts that dir on the runner's sys.path — so their apps/api
+# sibling imports must sit beside them as data files too. local_sensitivity is the
+# one such sibling (imported by sensitivity_runner); without it a local
+# sensitivity run dies with "No module named 'local_sensitivity'" on any machine
+# whose runner interpreter doesn't happen to have cuflynx-api installed.
+for runner in (
+    "calibration_runner.py",
+    "sensitivity_runner.py",
+    "uq_runner.py",
+    "local_sensitivity.py",
+):
     datas.append((str(API_DIR / runner), "."))
 
 # CPython's development headers. Myokit compiles a *CPython extension module* at

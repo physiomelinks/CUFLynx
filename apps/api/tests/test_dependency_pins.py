@@ -84,6 +84,48 @@ def test_simulation_path_dependency_is_declared(package):
     _requirement(package)  # asserts it appears in [project] dependencies
 
 
+# The analysis runners (*_runner.py) are executed by an *external* interpreter, so
+# any apps/api sibling module they import must be shipped beside them as a data
+# file in the bundle — the external interpreter doesn't have cuflynx-api installed.
+# local_sensitivity was missing, and a local sensitivity run died in the packaged
+# app with "No module named 'local_sensitivity'" (invisible on a dev box, whose
+# runner interpreter has an editable cuflynx-api on its path).
+API_DIR = PYPROJECT.parent
+SPEC = API_DIR.parents[1] / "packaging" / "cuflynx.spec"
+RUNNERS = ("calibration_runner.py", "sensitivity_runner.py", "uq_runner.py")
+
+
+def _sibling_module_imports(py_file: Path) -> set[str]:
+    """Names imported in ``py_file`` that resolve to an apps/api sibling module."""
+    import ast
+
+    tree = ast.parse(py_file.read_text())
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+            names.add(node.module.split(".")[0])
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                names.add(alias.name.split(".")[0])
+    return {n for n in names if (API_DIR / f"{n}.py").is_file()}
+
+
+def test_runner_sibling_imports_are_bundled():
+    """Every apps/api module a runner imports must be listed as bundled data in
+    the PyInstaller spec, or it's absent from the packaged app."""
+    spec_text = SPEC.read_text()
+    required: set[str] = set()
+    for runner in RUNNERS:
+        required |= _sibling_module_imports(API_DIR / runner)
+
+    missing = [m for m in sorted(required) if f'"{m}.py"' not in spec_text]
+    assert not missing, (
+        f"runner(s) import apps/api modules not bundled by {SPEC.name}: {missing}. "
+        "Add them to the data-file list next to the *_runner.py entries, or they "
+        "won't exist for the external interpreter that runs the analysis."
+    )
+
+
 @pytest.mark.integration
 def test_installed_libcellml_still_emits_variable_count():
     """The pin is only worth anything if the *installed* libcellml honours it.
