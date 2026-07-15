@@ -172,6 +172,13 @@ def _build_options(schema: dict, differentiable: dict[str, bool]) -> dict:
         m: defaults.get(m) or (solvers_by_format[m][0] if solvers_by_format[m] else "")
         for m in formats
     }
+    # CA's schema defaults cellml_only to CVODE_opencor, but OpenCOR is a separate
+    # application most users don't have installed (and it isn't in the desktop
+    # bundle) — selecting it fails with "OpenCOR solver requested but OpenCOR is not
+    # available". CVODE_myokit is bundled and needs no external program, so prefer
+    # it as the cellml_only default when available.
+    if "CVODE_myokit" in solvers_by_format.get("cellml_only", []):
+        default_solver_by_format["cellml_only"] = "CVODE_myokit"
     all_diff = bool(differentiable) and all(differentiable.values())
     return {
         "model_formats": formats,

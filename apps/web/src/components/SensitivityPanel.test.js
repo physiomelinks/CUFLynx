@@ -48,4 +48,17 @@ describe('SensitivityPanel AD gating', () => {
     await wrapper.find('[data-testid="run-sensitivity"]').trigger('click')
     expect(wrapper.emitted('run')[0][0].gradient_method).toBe('FD')
   })
+
+  // In SA, DEBUG does NOT reduce the sample count (num_samples is a separate
+  // field) — it enables extra debug output. The label must describe that, not
+  // the calibration-only "fewer/fast" behaviour.
+  it('describes the DEBUG option as adding output, not reducing samples', () => {
+    const wrapper = mount(SensitivityPanel, {
+      props: { defaults: {} },
+      global: { stubs },
+    })
+    const text = wrapper.text()
+    expect(text).toContain('more output info')
+    expect(text).not.toContain('fewer samples')
+  })
 })
