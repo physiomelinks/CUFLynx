@@ -151,10 +151,40 @@ if _sundials_inc is None or not _sundials_lib_files:
         "brew install sundials, conda install sundials) and rebuild."
     )
 
+# Bundle the Sundials headers via a staging copy so we can patch one line without
+# touching the build machine's system headers.
+#
+# Homebrew's macOS Sundials is built with MPI, so its sundials_config.h has
+#   #define SUNDIALS_MPI_ENABLED 1
+# which makes sundials_types.h `#include <mpi.h>`. Myokit compiles each model
+# against these headers at the *user's* run time, where mpi.h isn't present, and
+# CVODE_myokit then dies with "fatal error: 'mpi.h' file not found". Myokit only
+# ever uses the SERIAL N_Vector, so MPI is genuinely unused — force the flag off.
+# (Linux/Windows Sundials already ship it as 0, so the rewrite is a no-op there.)
+import re  # noqa: E402
+import shutil  # noqa: E402
+import tempfile  # noqa: E402
+
+_sundials_stage = Path(tempfile.mkdtemp(prefix="cuflynx_sundials_"))
 for _sub in _HEADER_SUBDIRS:
     _d = _sundials_inc / _sub
     if _d.is_dir():
-        datas.append((str(_d), f"sundials/include/{_sub}"))
+        shutil.copytree(_d, _sundials_stage / _sub)
+
+_cfg = _sundials_stage / "sundials" / "sundials_config.h"
+if _cfg.is_file():
+    _cfg.write_text(
+        re.sub(
+            r"(#define\s+SUNDIALS_MPI_ENABLED\s+)1",
+            r"\g<1>0",
+            _cfg.read_text(),
+        )
+    )
+
+for _sub in _HEADER_SUBDIRS:
+    _sd = _sundials_stage / _sub
+    if _sd.is_dir():
+        datas.append((str(_sd), f"sundials/include/{_sub}"))
 
 for _lib in _sundials_lib_files:
     # Under sundials/lib for the linker's -L (import libs and static archives
