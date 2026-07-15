@@ -51,6 +51,19 @@ def test_resource_path_resolves_next_to_the_api_from_source():
     assert runtime_paths.resource_path("calibration_runner.py").is_file()
 
 
+def test_runner_path_is_in_a_subdir_when_frozen(frozen):
+    """Runners must NOT be at the bundle root: that dir holds the app's numpy, and
+    the external interpreter would import it (via sys.path[0]) instead of its own.
+    A 'runners' subdir keeps the bundle's packages off the runner's path."""
+    p = runtime_paths.runner_path("sensitivity_runner.py")
+    assert p == frozen / "runners" / "sensitivity_runner.py"
+    assert p.parent != frozen  # the whole point: not the bundle root
+
+
+def test_runner_path_resolves_beside_the_api_from_source():
+    assert runtime_paths.runner_path("calibration_runner.py").is_file()
+
+
 def test_frontend_dist_points_into_the_bundle_when_frozen(frozen):
     assert runtime_paths.frontend_dist() == frozen / "web" / "dist"
 

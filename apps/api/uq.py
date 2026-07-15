@@ -21,9 +21,9 @@ from calibration import (  # noqa: F401  (list_python_interpreters re-exported)
     _warn_no_mpiexec,
     list_python_interpreters,
 )
-from runtime_paths import NO_PYTHON_ERROR, default_python, resource_path, subprocess_env
+from runtime_paths import NO_PYTHON_ERROR, default_python, runner_path, subprocess_env
 
-RUNNER_PATH = str(resource_path("uq_runner.py"))
+RUNNER_PATH = str(runner_path("uq_runner.py"))
 
 
 class UQJob:

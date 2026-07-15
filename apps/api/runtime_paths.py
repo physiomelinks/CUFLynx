@@ -58,6 +58,24 @@ def resource_path(*parts: str) -> Path:
     return bundle_root().joinpath(*parts)
 
 
+def runner_path(name: str) -> Path:
+    """Absolute path to an analysis runner script (executed by an *external*
+    interpreter).
+
+    Frozen, these live in a **subdirectory** (``<bundle>/runners``), not the
+    bundle root. That's load-bearing: Python puts the running script's directory
+    on ``sys.path[0]``, and the bundle root holds the app's own numpy / scipy /
+    etc. If the runner sat there, the external interpreter would import the
+    *bundle's* packages instead of its own and crash on the ABI mismatch
+    (``numpy.core.multiarray failed to import``). A dedicated subdir keeps the
+    bundle's Python packages off the runner's path. From source the runners live
+    beside this module in ``apps/api``.
+    """
+    if is_frozen():
+        return resource_path("runners", name)
+    return _SOURCE_API_DIR / name
+
+
 def frontend_dist() -> Path:
     """The built Vue app.
 

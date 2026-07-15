@@ -126,6 +126,26 @@ def test_runner_sibling_imports_are_bundled():
     )
 
 
+def test_runners_are_bundled_into_a_subdir_not_the_root():
+    """The runner scripts must land in a 'runners' subdir, never the bundle root.
+
+    At the root, the external interpreter's sys.path[0] would include the bundle's
+    own numpy/scipy/... and import those instead of its own — crashing with
+    'numpy.core.multiarray failed to import'. Guards against a regression that
+    moves the data-file dest back to '.'.
+    """
+    spec_text = SPEC.read_text()
+    for runner in RUNNERS + ("local_sensitivity.py",):
+        # Each runner entry must be bundled to "runners", not "." (bundle root).
+        assert f'(str(API_DIR / runner), "runners")' in spec_text or (
+            '"runners"' in spec_text
+        ), f"{runner} must be bundled into the 'runners' subdir (see runtime_paths.runner_path)"
+    assert '(str(API_DIR / runner), ".")' not in spec_text, (
+        "a runner is bundled to the bundle root ('.') — that puts the bundle's "
+        "numpy on the external interpreter's sys.path[0]. Use the 'runners' subdir."
+    )
+
+
 @pytest.mark.integration
 def test_installed_libcellml_still_emits_variable_count():
     """The pin is only worth anything if the *installed* libcellml honours it.
