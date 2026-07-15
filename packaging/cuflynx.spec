@@ -58,13 +58,19 @@ hiddenimports = []
 # one such sibling (imported by sensitivity_runner); without it a local
 # sensitivity run dies with "No module named 'local_sensitivity'" on any machine
 # whose runner interpreter doesn't happen to have cuflynx-api installed.
+# ...into a "runners/" SUBDIR, not the bundle root. The external interpreter puts
+# the runner's own directory on sys.path[0]; if that were the bundle root (which
+# holds the app's numpy/scipy/...), the runner would import the *bundle's* numpy
+# instead of its own and crash with "numpy.core.multiarray failed to import". A
+# dedicated subdir keeps the bundle's Python packages off the runner's path.
+# runtime_paths.runner_path() resolves them here.
 for runner in (
     "calibration_runner.py",
     "sensitivity_runner.py",
     "uq_runner.py",
     "local_sensitivity.py",
 ):
-    datas.append((str(API_DIR / runner), "."))
+    datas.append((str(API_DIR / runner), "runners"))
 
 # CPython's development headers. Myokit compiles a *CPython extension module* at
 # run time, inside this frozen process — so the bundle has to carry Python.h and

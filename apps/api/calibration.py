@@ -16,9 +16,9 @@ import threading
 import uuid
 from pathlib import Path
 
-from runtime_paths import NO_PYTHON_ERROR, default_python, resource_path, subprocess_env
+from runtime_paths import NO_PYTHON_ERROR, default_python, runner_path, subprocess_env
 
-RUNNER_PATH = str(resource_path("calibration_runner.py"))
+RUNNER_PATH = str(runner_path("calibration_runner.py"))
 
 
 def _warn_no_mpiexec(num_cores: int) -> None:
