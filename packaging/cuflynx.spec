@@ -277,24 +277,42 @@ for pkg in _ANALYSIS_PKGS:
     binaries += pkg_binaries
     hiddenimports += pkg_hidden
 
-# mpi4py's extension links the system MPI runtime (libmpi). PyInstaller usually
-# follows that dependency, but on some layouts it doesn't — bundle the runtime
-# libs explicitly so `from mpi4py import MPI` works with no MPI installed on the
-# user's machine (single-core; multi-core still needs a system mpiexec).
+# mpi4py's extension links the system MPI runtime. PyInstaller usually follows
+# that dependency, but on some layouts it doesn't — bundle the runtime libs
+# explicitly so `from mpi4py import MPI` works with no MPI installed on the user's
+# machine (single-core; multi-core still needs a system mpiexec/msmpi launcher).
+#   Linux:   libmpi.so.*        (OpenMPI/MPICH)
+#   macOS:   libmpi*.dylib      (OpenMPI via Homebrew)
+#   Windows: msmpi.dll          (Microsoft MPI, in System32)
 import mpi4py  # noqa: E402 - guaranteed importable by the _REQUIRED check
 _mpi_libdir = Path(mpi4py.get_config().get("library_dirs", "") or "").expanduser()
 _mpi_lib_candidates = [_mpi_libdir] if _mpi_libdir.is_dir() else []
-_mpi_lib_candidates += [Path("/usr/lib/x86_64-linux-gnu"), Path("/usr/lib"),
-                        Path("/usr/local/lib"), Path("/opt/homebrew/lib"),
-                        Path("/opt/local/lib")]
+_mpi_lib_candidates += [
+    Path("/usr/lib/x86_64-linux-gnu"), Path("/usr/lib"), Path("/usr/local/lib"),
+    Path("/opt/homebrew/lib"), Path("/opt/local/lib"),
+]
+if sys.platform == "win32":
+    _mpi_lib_candidates += [Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32",
+                            Path(os.environ.get("MSMPI_BIN", ""))]
+_MPI_PATTERNS = ("libmpi*.so*", "libmpi*.dylib", "msmpi*.dll", "msmpi*.dylib")
 _seen_mpi = set()
+_found_mpi = False
 for _d in _mpi_lib_candidates:
-    if not _d.is_dir():
+    if not _d or not _d.is_dir():
         continue
-    for _lib in list(_d.glob("libmpi*.so*")) + list(_d.glob("libmpi*.dylib")):
-        if _lib.name not in _seen_mpi and (_lib.is_file() or _lib.is_symlink()):
-            _seen_mpi.add(_lib.name)
-            binaries.append((str(_lib), "."))
+    for _pat in _MPI_PATTERNS:
+        for _lib in _d.glob(_pat):
+            if _lib.name.lower() not in _seen_mpi and (_lib.is_file() or _lib.is_symlink()):
+                _seen_mpi.add(_lib.name.lower())
+                binaries.append((str(_lib), "."))
+                _found_mpi = True
+if not _found_mpi:
+    raise SystemExit(
+        "MPI runtime library not found (searched "
+        f"{[str(p) for p in _mpi_lib_candidates]}). mpi4py needs it at run time. "
+        "Install an MPI runtime in the build environment: libopenmpi-dev (Linux), "
+        "open-mpi (macOS), or Microsoft MPI (Windows)."
+    )
 
 # casadi needs its native libraries to sit NEXT TO the _casadi extension module,
 # not at the bundle root where PyInstaller normally flattens binaries. Without the

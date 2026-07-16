@@ -78,9 +78,15 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          # Microsoft MPI runtime + SDK, so mpi4py can build and load.
-          choco install -y msmpi
-          choco install -y msmpi-sdk || echo "sdk step best-effort"
+          # Microsoft MPI runtime (provides msmpi.dll) from the official GitHub
+          # release. mpi4py's Windows wheel loads msmpi.dll at run time; the spec
+          # bundles that DLL so it works on a machine with no MS-MPI installed.
+          $ErrorActionPreference = "Stop"
+          $url = "https://github.com/microsoft/Microsoft-MPI/releases/download/v10.1.1/msmpisetup.exe"
+          Invoke-WebRequest -Uri $url -OutFile msmpisetup.exe
+          Start-Process -Wait -FilePath .\msmpisetup.exe -ArgumentList "-unattend"
+          # Surface the runtime dir for later steps / the spec.
+          "MSMPI_BIN=$env:SystemRoot\System32" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       # NOT `brew install sundials`: Homebrew's build is MPI-enabled, and its
       # libraries abort at run time with "MPI_Comm_dup() called before MPI_INIT"
