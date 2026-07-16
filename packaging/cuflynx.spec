@@ -301,6 +301,17 @@ def _add_mpi_libs(directory, patterns):
     return found
 
 
+# mpi4py 4.x ships one extension per MPI ABI (MPI.mpich.*.so, MPI.openmpi.*.so)
+# and picks one at import via a custom finder that looks for the file in the
+# mpi4py package dir. PyInstaller doesn't reliably place these ABI-suffixed
+# extensions there, so the finder fails with "unsupported MPI ABI 'mpich'". Force
+# every MPI.<abi> extension into the mpi4py/ dir so the finder resolves it.
+import mpi4py  # noqa: E402
+_m4p_dir = Path(mpi4py.__file__).parent
+for _pat in ("MPI.*.so", "MPI.*.pyd", "MPI.*.dylib"):
+    for _so in _m4p_dir.glob(_pat):
+        binaries.append((str(_so), "mpi4py"))
+
 _prefix_lib = Path(sys.prefix) / "lib"
 _found_mpi = False
 # pip-MPICH: the library + its bundled deps (in the mpich/ subdir).
