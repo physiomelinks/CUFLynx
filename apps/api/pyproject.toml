@@ -55,6 +55,30 @@ desktop = [
     "pywebview>=5.0",
     "pyinstaller>=6.0",
 ]
+# circulatory_autogen's *analysis* dependencies. The self-contained desktop build
+# bundles these so sensitivity / calibration / UQ run in the app's own interpreter
+# (the exe re-invokes itself as the runner) — no external Python required. Versions
+# track circulatory_autogen's own pins. mpi4py is imported unconditionally by CA's
+# param_id modules (even single-core), so it's required, not optional; it needs an
+# MPI runtime present at build time (the spec bundles the runtime libs).
+analysis = [
+    "matplotlib>=3.3.0",
+    "emcee>=3.0.0",
+    "corner>=2.2.0",
+    "SALib==1.5.1",
+    "seaborn>=0.11.0",
+    "statsmodels>=0.12.0",
+    "schwimmbad>=0.3.0",
+    "nevergrad>=1.0.12",
+    "numdifftools>=0.9.0",
+    "scikit-learn",
+    "tqdm>=4.62.0",
+    "mpi4py>=3.0.0",
+    # A pip-installable, fully self-contained MPICH runtime (libmpi + libfabric/ucx),
+    # so the bundle needs NO system MPI on the user's machine. mpi4py's wheel loads
+    # this MPICH variant. Not on Windows (no wheel) — Windows uses Microsoft MPI.
+    "mpich>=4.0; platform_system != 'Windows'",
+]
 
 [tool.hatch.build.targets.wheel]
 only-include = [

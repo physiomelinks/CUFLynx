@@ -17,7 +17,6 @@ import compiler_check
 import runtime_paths
 import sensitivity as sensitivity_mod
 import uq as uq_mod
-from runtime_paths import NO_PYTHON_ERROR
 
 
 @pytest.fixture
@@ -99,8 +98,8 @@ def test_candidate_pythons_never_include_the_frozen_bundle(frozen, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# The three job managers refuse to run with no interpreter (rather than
-# re-executing the bundle, or crashing on a None in the argv list).
+# With no external interpreter, the managers fall back to running the runner in
+# the current interpreter (from source) or re-invoking the bundle (frozen).
 # ---------------------------------------------------------------------------
 @pytest.mark.parametrize(
     "manager_cls",
@@ -110,12 +109,34 @@ def test_candidate_pythons_never_include_the_frozen_bundle(frozen, monkeypatch):
         uq_mod.UQManager,
     ],
 )
-def test_build_command_errors_clearly_without_an_interpreter(manager_cls):
+def test_build_command_without_an_interpreter_uses_the_serving_python_from_source(manager_cls):
+    """From source, no external interpreter -> run the runner with sys.executable
+    (not an error, and never a None in the argv)."""
     manager = manager_cls()
-    manager.python = None  # what default_python() yields in the packaged app
-    with pytest.raises(RuntimeError, match="no Python interpreter selected"):
-        manager.build_command({}, "/tmp/config.json")
-    assert "circulatory_autogen" in NO_PYTHON_ERROR
+    manager.python = None
+    cmd = manager.build_command({}, "/tmp/config.json")
+    assert cmd[0] == sys.executable
+    assert None not in cmd
+    assert cmd[-1] == "/tmp/config.json"
+
+
+@pytest.mark.parametrize(
+    "manager_cls",
+    [
+        calibration_mod.CalibrationManager,
+        sensitivity_mod.SensitivityManager,
+        uq_mod.UQManager,
+    ],
+)
+def test_build_command_reinvokes_the_bundle_when_frozen(manager_cls, frozen):
+    """Frozen with no external interpreter -> re-invoke the exe in runner mode, so
+    the analysis runs in the bundle's own Python (which carries CA's deps)."""
+    manager = manager_cls()
+    manager.python = None
+    cmd = manager.build_command({}, "/tmp/config.json")
+    assert cmd[0] == sys.executable  # the bundle
+    assert runtime_paths.RUNNER_MODE_FLAG in cmd
+    assert cmd[-1] == "/tmp/config.json"
 
 
 @pytest.mark.parametrize(

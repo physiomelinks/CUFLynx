@@ -238,8 +238,14 @@ hiddenimports += collect_submodules("uvicorn")
 # v0.1.0 shipped with no casadi ("CasADi solver requested but CasADi is not
 # available"): a dev machine had it installed for CA, the CI build machine did not.
 # Fail the build instead.
+# CA's analysis-path packages are bundled too, so the app runs SA/calibration/UQ
+# itself (no external Python needed by default). mpi4py is imported unconditionally
+# by CA's param_id modules, so it's required, not optional.
+_ANALYSIS_PKGS = ("matplotlib", "emcee", "corner", "SALib", "seaborn", "statsmodels",
+                  "schwimmbad", "nevergrad", "numdifftools", "sklearn", "tqdm", "mpi4py")
 _REQUIRED = ("myokit", "libcellml", "casadi", "webview", "setuptools", "numpy",
-             "scipy", "pandas", "sympy", "yaml", "ruamel.yaml", "rdflib", "pint")
+             "scipy", "pandas", "sympy", "yaml", "ruamel.yaml", "rdflib", "pint",
+             *_ANALYSIS_PKGS)
 _missing = []
 for pkg in _REQUIRED:
     try:
@@ -260,6 +266,71 @@ for pkg in ("myokit", "libcellml", "casadi", "webview", "setuptools", "numpy"):
     datas += pkg_datas
     binaries += pkg_binaries
     hiddenimports += pkg_hidden
+
+# CA's analysis stack. collect_all grabs each package's data + compiled libs +
+# submodules (matplotlib's mpl-data/fonts, sklearn/statsmodels/scipy .so's,
+# mpi4py's MPI extension). Several resolve submodules dynamically, so collecting
+# submodules explicitly avoids "module not found" at runtime.
+for pkg in _ANALYSIS_PKGS:
+    pkg_datas, pkg_binaries, pkg_hidden = collect_all(pkg)
+    datas += pkg_datas
+    binaries += pkg_binaries
+    hiddenimports += pkg_hidden
+
+# CA imports mpi4py unconditionally, so the MPI runtime must be in the bundle for
+# the app to run analysis with no MPI on the user's machine. On Linux/macOS the
+# build pip-installs a self-contained MPICH (the `mpich` wheel) into <prefix>/lib:
+#   <prefix>/lib/libmpi.so.12         the MPICH library mpi4py's MPI.mpich.so loads
+#   <prefix>/lib/mpich/lib{fabric,uc*} its dependencies
+# Flatten all of them to the bundle root; PyInstaller puts the root on the runtime
+# loader path (LD_LIBRARY_PATH / DYLD), so libmpi and its deps resolve. On Windows
+# there is no MPICH wheel, so Microsoft MPI's msmpi.dll (System32) is bundled.
+_seen_mpi = set()
+
+
+def _add_mpi_libs(directory, patterns):
+    found = False
+    if not directory or not Path(directory).is_dir():
+        return found
+    for pat in patterns:
+        for lib in Path(directory).glob(pat):
+            if lib.name.lower() not in _seen_mpi and (lib.is_file() or lib.is_symlink()):
+                _seen_mpi.add(lib.name.lower())
+                binaries.append((str(lib), "."))
+                found = True
+    return found
+
+
+# mpi4py 4.x ships one extension per MPI ABI (MPI.mpich.*.so, MPI.openmpi.*.so)
+# and picks one at import via a custom finder that looks for the file in the
+# mpi4py package dir. PyInstaller doesn't reliably place these ABI-suffixed
+# extensions there, so the finder fails with "unsupported MPI ABI 'mpich'". Force
+# every MPI.<abi> extension into the mpi4py/ dir so the finder resolves it.
+import mpi4py  # noqa: E402
+_m4p_dir = Path(mpi4py.__file__).parent
+for _pat in ("MPI.*.so", "MPI.*.pyd", "MPI.*.dylib"):
+    for _so in _m4p_dir.glob(_pat):
+        binaries.append((str(_so), "mpi4py"))
+
+_prefix_lib = Path(sys.prefix) / "lib"
+_found_mpi = False
+# pip-MPICH: the library + its bundled deps (in the mpich/ subdir).
+_found_mpi |= _add_mpi_libs(_prefix_lib, ("libmpi*.so*", "libmpi*.dylib"))
+_found_mpi |= _add_mpi_libs(_prefix_lib / "mpich", ("*.so*", "*.dylib"))
+# Fall back to a system MPI (e.g. a dev machine with OpenMPI) if no pip-MPICH.
+for _d in (Path("/usr/lib/x86_64-linux-gnu"), Path("/usr/lib"), Path("/usr/local/lib"),
+           Path("/opt/homebrew/lib"), Path("/opt/local/lib")):
+    _found_mpi |= _add_mpi_libs(_d, ("libmpi*.so*", "libmpi*.dylib"))
+if sys.platform == "win32":
+    _found_mpi |= _add_mpi_libs(Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32",
+                                ("msmpi*.dll",))
+    _found_mpi |= _add_mpi_libs(os.environ.get("MSMPI_BIN", ""), ("msmpi*.dll",))
+if not _found_mpi:
+    raise SystemExit(
+        f"MPI runtime not found (looked in {_prefix_lib} and system dirs). mpi4py "
+        "needs it at run time. Install the pip `mpich` package (Linux/macOS) or "
+        "Microsoft MPI (Windows) in the build environment."
+    )
 
 # casadi needs its native libraries to sit NEXT TO the _casadi extension module,
 # not at the bundle root where PyInstaller normally flattens binaries. Without the
@@ -316,19 +387,12 @@ hiddenimports += [
     "runtime_paths",
 ]
 
-# Analysis-only (they run in the user's external Python, never in here) plus the
-# usual PyInstaller dead weight. Keeps the executable substantially smaller.
+# CA's analysis dependencies (emcee/SALib/nevergrad/matplotlib/mpi4py/...) are now
+# BUNDLED, not excluded, so sensitivity / calibration / UQ run in the app's own
+# interpreter (the exe re-invokes itself as the runner). Only genuine dead weight
+# is excluded. tkinter is dropped because matplotlib defaults to the headless Agg
+# backend here (MPLBACKEND=Agg is set before any pyplot import).
 excludes = [
-    "emcee",
-    "corner",
-    "SALib",
-    "seaborn",
-    "statsmodels",
-    "nevergrad",
-    "numdifftools",
-    "schwimmbad",
-    "sklearn",
-    "mpi4py",
     "tkinter",
     "pytest",
     "IPython",

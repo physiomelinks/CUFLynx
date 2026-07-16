@@ -27,15 +27,6 @@ from pathlib import Path
 
 _SOURCE_API_DIR = Path(__file__).resolve().parent
 
-# Raised when an analysis run has no interpreter to spawn. Only reachable in the
-# packaged build (from source, default_python() is always the serving interpreter).
-NO_PYTHON_ERROR = (
-    "no Python interpreter selected. The packaged CUFLynx app cannot run "
-    "calibration / sensitivity / UQ by itself: those run in a separate process "
-    "that needs Python with circulatory_autogen and Myokit installed. Pick one "
-    "under Settings -> Python interpreter."
-)
-
 
 def is_frozen() -> bool:
     """True when running inside a PyInstaller bundle."""
@@ -87,13 +78,20 @@ def frontend_dist() -> Path:
     return _SOURCE_API_DIR.parent / "web" / "dist"
 
 
-def default_python() -> str | None:
-    """Interpreter to run calibration/sensitivity/UQ runners with, or None.
+# argv sentinel that makes the frozen exe run an analysis runner in-process
+# instead of launching the GUI. See apps/desktop/app.py.
+RUNNER_MODE_FLAG = "--_cuflynx-run-analysis"
 
-    From source this is the interpreter serving the API — it has the backend deps,
-    so it's a sane default. Frozen, ``sys.executable`` is the bundle itself and
-    running it would relaunch the desktop app, so return None: the caller must
-    use a discovered interpreter or one the user picked in Settings.
+
+def default_python() -> str | None:
+    """Default *external* interpreter for the analysis runners, or None.
+
+    From source this is the interpreter serving the API (it has the deps). Frozen,
+    there is no external default — None means "run the analysis in the bundle
+    itself" (the exe re-invokes itself in runner mode; see :func:`runner_command`).
+    The bundle carries CA's analysis deps, so this works with no user setup; the
+    user can still pick an external interpreter (e.g. a local CA checkout) in
+    Settings, which overrides this.
 
     ``CUFLYNX_PYTHON`` overrides both (handy for the packaged app and for tests).
     """
@@ -103,6 +101,21 @@ def default_python() -> str | None:
     if is_frozen():
         return None
     return sys.executable
+
+
+def runner_command(python: str | None, runner_script: str, config_path: str) -> list:
+    """Build the argv to run an analysis runner.
+
+    - An explicit external ``python`` runs the runner script directly.
+    - Frozen with no external python: re-invoke the bundle in runner mode, so the
+      analysis runs in the app's own interpreter (which has CA's analysis deps).
+    - From source with no external python: this interpreter runs the script.
+    """
+    if python:
+        return [python, "-u", runner_script, config_path]
+    if is_frozen():
+        return [sys.executable, RUNNER_MODE_FLAG, runner_script, config_path]
+    return [sys.executable, "-u", runner_script, config_path]
 
 
 # Dynamic-linker search-path variables PyInstaller rewrites to point at the

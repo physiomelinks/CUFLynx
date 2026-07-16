@@ -23,66 +23,18 @@ Apple silicon; "Intel…" is Intel.
 These links always point at the newest release. All builds are also listed on the
 [releases page](https://github.com/physiomelinks/CUFLynx/releases/latest).
 
-## First-run setup
+The app is self-contained — it bundles Python and everything
+`circulatory_autogen` needs, so simulation **and** analysis (sensitivity /
+calibration / UQ) run without any Python setup.
 
-CUFLynx drives [circulatory_autogen](https://github.com/physiomelinks/circulatory_autogen),
-so you need two things once, then the app remembers them:
+On first run, point the app at a `circulatory_autogen` checkout under
+**Settings → CA dir** (clone it with
+`git clone https://github.com/physiomelinks/circulatory_autogen.git`). That's the
+only setup; it's remembered.
 
-**1. A `circulatory_autogen` checkout.** Clone it if you don't have one:
-
-```bash
-git clone https://github.com/physiomelinks/circulatory_autogen.git
-```
-
-**2. A Python environment with circulatory_autogen's requirements installed.**
-Sensitivity, calibration and UQ run in a *separate* Python process (not inside the
-app), so you must supply a Python that has `circulatory_autogen` and its
-dependencies. The simplest way is a virtual environment in the CA repo with an
-editable install (`pip install -e .` pulls in every dependency):
-
-<details open>
-<summary><b>Linux</b></summary>
-
-```bash
-cd circulatory_autogen
-python3 -m venv venv
-source venv/bin/activate
-pip install -e .
-```
-</details>
-
-<details>
-<summary><b>macOS</b></summary>
-
-```bash
-cd circulatory_autogen
-python3 -m venv venv
-source venv/bin/activate
-pip install -e .
-```
-</details>
-
-<details>
-<summary><b>Windows</b></summary>
-
-```powershell
-cd circulatory_autogen
-python -m venv venv
-venv\Scripts\activate
-pip install -e .
-```
-</details>
-
-**3. Point the app at both.** In CUFLynx's top bar:
-
-- **CA dir** → your `circulatory_autogen` checkout.
-- **Python interpreter** → the `python` from the environment above
-  (e.g. `circulatory_autogen/venv/bin/python`, or `...\venv\Scripts\python.exe`
-  on Windows).
-
-Both choices are remembered across restarts. Interactive model simulation works
-without step 2; only the analysis features (sensitivity / calibration / UQ) need
-the Python environment.
+**Developing circulatory_autogen?** You can switch analysis to your own Python
+under **Settings → Python interpreter** (pick one with your local CA + its deps
+installed) instead of the bundled one, so your edits to CA take effect.
 
 ### Optional: a C compiler (only for the Myokit/CVODE backend)
 

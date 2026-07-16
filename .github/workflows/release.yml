@@ -68,6 +68,23 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libsundials-dev python3-dev
 
+      # NB: no system OpenMPI on Linux/macOS — the [analysis] extra pip-installs a
+      # self-contained MPICH (bundled by the spec), so the app needs no system MPI.
+      # Windows has no MPICH wheel, so it uses Microsoft MPI (msmpi.dll).
+      - name: Install MPI (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # Microsoft MPI runtime (provides msmpi.dll) from the official GitHub
+          # release. mpi4py's Windows wheel loads msmpi.dll at run time; the spec
+          # bundles that DLL so it works on a machine with no MS-MPI installed.
+          $ErrorActionPreference = "Stop"
+          $url = "https://github.com/microsoft/Microsoft-MPI/releases/download/v10.1.1/msmpisetup.exe"
+          Invoke-WebRequest -Uri $url -OutFile msmpisetup.exe
+          Start-Process -Wait -FilePath .\msmpisetup.exe -ArgumentList "-unattend"
+          # Surface the runtime dir for later steps / the spec.
+          "MSMPI_BIN=$env:SystemRoot\System32" | Out-File -FilePath $env:GITHUB_ENV -Append
+
       # NOT `brew install sundials`: Homebrew's build is MPI-enabled, and its
       # libraries abort at run time with "MPI_Comm_dup() called before MPI_INIT"
       # even for a serial model — so it cannot be shipped. Build a serial (non-MPI)
@@ -92,9 +109,11 @@ jobs:
           # Sanity: the built config must have MPI off.
           grep -q "SUNDIALS_MPI_ENABLED 0" "$HOME/sundials-serial/include/sundials/sundials_config.h"
 
+      # [analysis] bundles CA's analysis stack (emcee/SALib/nevergrad/matplotlib/
+      # mpi4py/...) so the packaged app runs SA/calibration/UQ itself.
       - name: Install Python deps
         working-directory: apps/api
-        run: pip install -e ".[desktop]"
+        run: pip install -e ".[desktop,analysis]"
 
       # yarn, not npm: the repo has yarn.lock and no package-lock.json, so
       # `npm ci` errors out. Matches ci.yml.
@@ -218,17 +237,17 @@ jobs:
           path: ${{ matrix.asset }}
 
   # End-to-end test of the ANALYSIS tier (sensitivity + calibration) in the built
-  # binary. The build-job smoke test covers live simulation (in-process); analysis
-  # is different — it runs in a *separate interpreter* the app spawns, so the
-  # frozen-app orchestration (resolve interpreter, launch runner, stream progress,
-  # detect completion) needs its own end-to-end check against a real binary.
+  # binary. The build-job smoke test covers live simulation; analysis is different
+  # — the app spawns runners for it. The app now bundles CA's analysis stack and
+  # runs the runners in its OWN interpreter (runner mode), so the key thing to
+  # verify is that this works with NO external Python configured.
   #
-  # Reuses the Linux artifact (no rebuild). The runner interpreter is this job's
-  # own Python, into which we install circulatory_autogen + its analysis deps.
-  # Linux only: the orchestration is OS-agnostic (cross-platform Popen), so one
-  # platform validates the path; per-OS builds already prove the binary runs.
+  # Reuses the Linux artifact (no rebuild). We only need circulatory_autogen's
+  # *source* (for the CA dir); its dependencies are already inside the bundle.
+  # Linux only: the orchestration is OS-agnostic; per-OS builds prove the binary
+  # runs on each platform.
   analysis-e2e:
-    name: Analysis e2e (built app)
+    name: Analysis e2e (built app, self-contained)
     needs: build
     runs-on: ubuntu-22.04
     steps:
@@ -249,22 +268,16 @@ jobs:
           repository: physiomelinks/circulatory_autogen
           path: circulatory_autogen
 
-      # The runner interpreter needs CA + its analysis deps (emcee / SALib /
-      # nevergrad / myokit / ...). mpi4py (a CA dep) needs MPI headers to build,
-      # and CVODE_myokit needs Sundials + a C compiler at run time.
-      - name: Install analysis dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libsundials-dev python3-dev libopenmpi-dev
-          python -m pip install -e ./circulatory_autogen
-
-      - name: Run sensitivity + calibration in the built app
+      # No `--runner-python`: the app must run SA + calibration in its OWN bundled
+      # interpreter (runner mode). This is the whole point of the self-contained
+      # build — deliberately do NOT install CA's deps into this job's Python, so a
+      # pass proves the bundle really is self-sufficient.
+      - name: Run sensitivity + calibration in the built app (bundled interpreter)
         run: |
           chmod +x CUFLynx-linux-x86_64
           python scripts/analysis_smoke.py \
             --binary "$PWD/CUFLynx-linux-x86_64" \
             --ca-dir "$PWD/circulatory_autogen" \
-            --runner-python "$(which python)" \
             --sensitivity-timeout 600 --calibration-timeout 600
 
   release:
