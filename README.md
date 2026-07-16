@@ -24,10 +24,18 @@ Apple silicon; "Intel…" is Intel.
 These links always point at the newest release. All builds are also listed on the
 [releases page](https://github.com/physiomelinks/CUFLynx/releases/latest).
 
-On first run, point the app at your `circulatory_autogen` checkout under
-**Settings → CA dir**, and pick a Python interpreter for calibration / sensitivity
-/ UQ runs (those run in a separate process and need `circulatory_autogen` and its
-dependencies installed). Both choices are remembered.
+The app is self-contained — it bundles Python and everything
+`circulatory_autogen` needs, so simulation **and** analysis (sensitivity /
+calibration / UQ) run without any Python setup.
+
+On first run, point the app at a `circulatory_autogen` checkout under
+**Settings → CA dir** (clone it with
+`git clone https://github.com/physiomelinks/circulatory_autogen.git`). That's the
+only setup; it's remembered.
+
+**Developing circulatory_autogen?** You can switch analysis to your own Python
+under **Settings → Python interpreter** (pick one with your local CA + its deps
+installed) instead of the bundled one, so your edits to CA take effect.
 
 ### Optional: a C compiler (only for the Myokit/CVODE backend)
 

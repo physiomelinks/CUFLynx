@@ -36,6 +36,27 @@ if not getattr(sys, "frozen", False):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "api"))
 
 
+def _run_analysis_runner(script: str, config_path: str) -> None:
+    """Runner mode: execute an analysis runner in *this* (bundled) interpreter.
+
+    The packaged app spawns sensitivity/calibration/UQ by re-invoking itself with
+    ``RUNNER_MODE_FLAG`` (see runtime_paths.runner_command) instead of an external
+    Python, so the analysis runs against the bundle's own dependencies — no user
+    Python setup needed. This replicates ``python runner.py <config>``: the runner
+    reads ``sys.argv[1]`` and imports its siblings (e.g. local_sensitivity) from
+    its own directory, so put that directory on the path.
+    """
+    import runpy
+
+    runner_dir = os.path.dirname(script)
+    if runner_dir and runner_dir not in sys.path:
+        sys.path.insert(0, runner_dir)
+    sys.argv = [script, config_path]
+    # The runner's `if __name__ == "__main__"` block raises SystemExit(code); let
+    # that propagate so the parent sees the runner's exit status.
+    runpy.run_path(script, run_name="__main__")
+
+
 def free_port() -> int:
     """An OS-assigned free port.
 
@@ -165,4 +186,13 @@ if __name__ == "__main__":
     # relaunch the whole GUI instead of running its worker payload.
     multiprocessing.freeze_support()
     os.environ.setdefault("MPLBACKEND", "Agg")
-    raise SystemExit(main())
+
+    # Runner mode: the app spawned itself to run an analysis runner in-process
+    # (see runtime_paths.runner_command). Handle it before argparse — the flag and
+    # its args aren't the GUI's options. argv: [FLAG, runner_script, config_path].
+    from runtime_paths import RUNNER_MODE_FLAG  # noqa: PLC0415
+
+    if len(sys.argv) >= 2 and sys.argv[1] == RUNNER_MODE_FLAG:
+        _run_analysis_runner(sys.argv[2], sys.argv[3])
+    else:
+        raise SystemExit(main())

@@ -23,7 +23,7 @@ from calibration import (  # noqa: F401  (list_python_interpreters re-exported)
     _warn_no_mpiexec,
     list_python_interpreters,
 )
-from runtime_paths import NO_PYTHON_ERROR, default_python, runner_path, subprocess_env
+from runtime_paths import default_python, runner_command, runner_path, subprocess_env
 
 RUNNER_PATH = str(runner_path("sensitivity_runner.py"))
 
@@ -73,9 +73,7 @@ class SensitivityManager:
         ``mpiexec`` (which would crash the request with an HTTP 500).
         """
         python = config.get("python") or self.python
-        if not python:
-            raise RuntimeError(NO_PYTHON_ERROR)
-        base = [python, "-u", self.runner_path, config_path]
+        base = runner_command(python, self.runner_path, config_path)
         num_cores = int(config.get("num_cores", 1) or 1)
         if num_cores > 1:
             mpiexec = shutil.which("mpiexec")

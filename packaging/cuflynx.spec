@@ -238,8 +238,14 @@ hiddenimports += collect_submodules("uvicorn")
 # v0.1.0 shipped with no casadi ("CasADi solver requested but CasADi is not
 # available"): a dev machine had it installed for CA, the CI build machine did not.
 # Fail the build instead.
+# CA's analysis-path packages are bundled too, so the app runs SA/calibration/UQ
+# itself (no external Python needed by default). mpi4py is imported unconditionally
+# by CA's param_id modules, so it's required, not optional.
+_ANALYSIS_PKGS = ("matplotlib", "emcee", "corner", "SALib", "seaborn", "statsmodels",
+                  "schwimmbad", "nevergrad", "numdifftools", "sklearn", "tqdm", "mpi4py")
 _REQUIRED = ("myokit", "libcellml", "casadi", "webview", "setuptools", "numpy",
-             "scipy", "pandas", "sympy", "yaml", "ruamel.yaml", "rdflib", "pint")
+             "scipy", "pandas", "sympy", "yaml", "ruamel.yaml", "rdflib", "pint",
+             *_ANALYSIS_PKGS)
 _missing = []
 for pkg in _REQUIRED:
     try:
@@ -260,6 +266,35 @@ for pkg in ("myokit", "libcellml", "casadi", "webview", "setuptools", "numpy"):
     datas += pkg_datas
     binaries += pkg_binaries
     hiddenimports += pkg_hidden
+
+# CA's analysis stack. collect_all grabs each package's data + compiled libs +
+# submodules (matplotlib's mpl-data/fonts, sklearn/statsmodels/scipy .so's,
+# mpi4py's MPI extension). Several resolve submodules dynamically, so collecting
+# submodules explicitly avoids "module not found" at runtime.
+for pkg in _ANALYSIS_PKGS:
+    pkg_datas, pkg_binaries, pkg_hidden = collect_all(pkg)
+    datas += pkg_datas
+    binaries += pkg_binaries
+    hiddenimports += pkg_hidden
+
+# mpi4py's extension links the system MPI runtime (libmpi). PyInstaller usually
+# follows that dependency, but on some layouts it doesn't — bundle the runtime
+# libs explicitly so `from mpi4py import MPI` works with no MPI installed on the
+# user's machine (single-core; multi-core still needs a system mpiexec).
+import mpi4py  # noqa: E402 - guaranteed importable by the _REQUIRED check
+_mpi_libdir = Path(mpi4py.get_config().get("library_dirs", "") or "").expanduser()
+_mpi_lib_candidates = [_mpi_libdir] if _mpi_libdir.is_dir() else []
+_mpi_lib_candidates += [Path("/usr/lib/x86_64-linux-gnu"), Path("/usr/lib"),
+                        Path("/usr/local/lib"), Path("/opt/homebrew/lib"),
+                        Path("/opt/local/lib")]
+_seen_mpi = set()
+for _d in _mpi_lib_candidates:
+    if not _d.is_dir():
+        continue
+    for _lib in list(_d.glob("libmpi*.so*")) + list(_d.glob("libmpi*.dylib")):
+        if _lib.name not in _seen_mpi and (_lib.is_file() or _lib.is_symlink()):
+            _seen_mpi.add(_lib.name)
+            binaries.append((str(_lib), "."))
 
 # casadi needs its native libraries to sit NEXT TO the _casadi extension module,
 # not at the bundle root where PyInstaller normally flattens binaries. Without the
@@ -316,19 +351,12 @@ hiddenimports += [
     "runtime_paths",
 ]
 
-# Analysis-only (they run in the user's external Python, never in here) plus the
-# usual PyInstaller dead weight. Keeps the executable substantially smaller.
+# CA's analysis dependencies (emcee/SALib/nevergrad/matplotlib/mpi4py/...) are now
+# BUNDLED, not excluded, so sensitivity / calibration / UQ run in the app's own
+# interpreter (the exe re-invokes itself as the runner). Only genuine dead weight
+# is excluded. tkinter is dropped because matplotlib defaults to the headless Agg
+# backend here (MPLBACKEND=Agg is set before any pyplot import).
 excludes = [
-    "emcee",
-    "corner",
-    "SALib",
-    "seaborn",
-    "statsmodels",
-    "nevergrad",
-    "numdifftools",
-    "schwimmbad",
-    "sklearn",
-    "mpi4py",
     "tkinter",
     "pytest",
     "IPython",

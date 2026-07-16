@@ -16,7 +16,7 @@ import threading
 import uuid
 from pathlib import Path
 
-from runtime_paths import NO_PYTHON_ERROR, default_python, runner_path, subprocess_env
+from runtime_paths import default_python, runner_command, runner_path, subprocess_env
 
 RUNNER_PATH = str(runner_path("calibration_runner.py"))
 
@@ -266,10 +266,10 @@ class CalibrationManager:
         than launching a non-existent ``mpiexec`` — which would raise
         ``FileNotFoundError`` and surface to the client as an HTTP 500.
         """
+        # An explicit interpreter runs the runner script; with none, the frozen app
+        # runs it in-process (runner mode) and from source uses the serving Python.
         python = config.get("python") or self.python
-        if not python:
-            raise RuntimeError(NO_PYTHON_ERROR)
-        base = [python, "-u", self.runner_path, config_path]
+        base = runner_command(python, self.runner_path, config_path)
         num_cores = int(config.get("num_cores", 1) or 1)
         if num_cores > 1:
             mpiexec = shutil.which("mpiexec")

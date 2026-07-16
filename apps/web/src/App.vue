@@ -82,6 +82,8 @@ const loadedObsFilename = ref(null)
 // persisted back to, /api/config so it survives a restart.
 const pythonPath = ref('')
 const pythonBrowserOpen = ref(false)
+// True in the packaged desktop app; drives the "Bundled (CUFLynx)" default label.
+const packaged = ref(false)
 
 // circulatory_autogen source directory (top-bar "CA dir"), shared server-side via
 // /api/config. Defaults to the sibling clone; pick a different checkout to dev against.
@@ -125,6 +127,7 @@ function applyConfigPayload(c) {
   cppCompiler.value = c.cpp_compiler ?? { present: true, hint: '' }
   pythonPath.value = c.python_path ?? ''
   serverPythonPath = pythonPath.value
+  packaged.value = c.packaged ?? false
 }
 
 // Remember the interpreter server-side (it's what spawns the runners, and the
@@ -349,8 +352,15 @@ onMounted(async () => {
 })
 
 const pythonOptions = computed(() => {
+  // Blank = the server default. In the packaged app that's the bundled
+  // interpreter (analysis runs in-app, no external Python needed); from source
+  // it's the serving interpreter. Switching to a discovered/browsed Python is for
+  // pointing at a local circulatory_autogen checkout during CA development.
+  const defaultLabel = packaged.value
+    ? 'Bundled (CUFLynx) — runs analysis in-app'
+    : 'Server default'
   const opts = [
-    { label: 'Server default', value: '' },
+    { label: defaultLabel, value: '' },
     ...calibPythons.value.map((p) => ({
       label:
         `Python ${p.version} — ${p.path}` +
