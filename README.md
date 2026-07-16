@@ -8,8 +8,7 @@ manually explore how parameters affect your (CellML) model outputs.
 
 ## Download the desktop app
 
-The easiest way to run CUFLynx: download the one file for your OS and double-click
-it. No Python or Node.js needed.
+Download the one file for your OS and double-click it.
 
 | OS | Download |
 |----|----------|
