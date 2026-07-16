@@ -277,41 +277,48 @@ for pkg in _ANALYSIS_PKGS:
     binaries += pkg_binaries
     hiddenimports += pkg_hidden
 
-# mpi4py's extension links the system MPI runtime. PyInstaller usually follows
-# that dependency, but on some layouts it doesn't — bundle the runtime libs
-# explicitly so `from mpi4py import MPI` works with no MPI installed on the user's
-# machine (single-core; multi-core still needs a system mpiexec/msmpi launcher).
-#   Linux:   libmpi.so.*        (OpenMPI/MPICH)
-#   macOS:   libmpi*.dylib      (OpenMPI via Homebrew)
-#   Windows: msmpi.dll          (Microsoft MPI, in System32)
-import mpi4py  # noqa: E402 - guaranteed importable by the _REQUIRED check
-_mpi_libdir = Path(mpi4py.get_config().get("library_dirs", "") or "").expanduser()
-_mpi_lib_candidates = [_mpi_libdir] if _mpi_libdir.is_dir() else []
-_mpi_lib_candidates += [
-    Path("/usr/lib/x86_64-linux-gnu"), Path("/usr/lib"), Path("/usr/local/lib"),
-    Path("/opt/homebrew/lib"), Path("/opt/local/lib"),
-]
-if sys.platform == "win32":
-    _mpi_lib_candidates += [Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32",
-                            Path(os.environ.get("MSMPI_BIN", ""))]
-_MPI_PATTERNS = ("libmpi*.so*", "libmpi*.dylib", "msmpi*.dll", "msmpi*.dylib")
+# CA imports mpi4py unconditionally, so the MPI runtime must be in the bundle for
+# the app to run analysis with no MPI on the user's machine. On Linux/macOS the
+# build pip-installs a self-contained MPICH (the `mpich` wheel) into <prefix>/lib:
+#   <prefix>/lib/libmpi.so.12         the MPICH library mpi4py's MPI.mpich.so loads
+#   <prefix>/lib/mpich/lib{fabric,uc*} its dependencies
+# Flatten all of them to the bundle root; PyInstaller puts the root on the runtime
+# loader path (LD_LIBRARY_PATH / DYLD), so libmpi and its deps resolve. On Windows
+# there is no MPICH wheel, so Microsoft MPI's msmpi.dll (System32) is bundled.
 _seen_mpi = set()
+
+
+def _add_mpi_libs(directory, patterns):
+    found = False
+    if not directory or not Path(directory).is_dir():
+        return found
+    for pat in patterns:
+        for lib in Path(directory).glob(pat):
+            if lib.name.lower() not in _seen_mpi and (lib.is_file() or lib.is_symlink()):
+                _seen_mpi.add(lib.name.lower())
+                binaries.append((str(lib), "."))
+                found = True
+    return found
+
+
+_prefix_lib = Path(sys.prefix) / "lib"
 _found_mpi = False
-for _d in _mpi_lib_candidates:
-    if not _d or not _d.is_dir():
-        continue
-    for _pat in _MPI_PATTERNS:
-        for _lib in _d.glob(_pat):
-            if _lib.name.lower() not in _seen_mpi and (_lib.is_file() or _lib.is_symlink()):
-                _seen_mpi.add(_lib.name.lower())
-                binaries.append((str(_lib), "."))
-                _found_mpi = True
+# pip-MPICH: the library + its bundled deps (in the mpich/ subdir).
+_found_mpi |= _add_mpi_libs(_prefix_lib, ("libmpi*.so*", "libmpi*.dylib"))
+_found_mpi |= _add_mpi_libs(_prefix_lib / "mpich", ("*.so*", "*.dylib"))
+# Fall back to a system MPI (e.g. a dev machine with OpenMPI) if no pip-MPICH.
+for _d in (Path("/usr/lib/x86_64-linux-gnu"), Path("/usr/lib"), Path("/usr/local/lib"),
+           Path("/opt/homebrew/lib"), Path("/opt/local/lib")):
+    _found_mpi |= _add_mpi_libs(_d, ("libmpi*.so*", "libmpi*.dylib"))
+if sys.platform == "win32":
+    _found_mpi |= _add_mpi_libs(Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32",
+                                ("msmpi*.dll",))
+    _found_mpi |= _add_mpi_libs(os.environ.get("MSMPI_BIN", ""), ("msmpi*.dll",))
 if not _found_mpi:
     raise SystemExit(
-        "MPI runtime library not found (searched "
-        f"{[str(p) for p in _mpi_lib_candidates]}). mpi4py needs it at run time. "
-        "Install an MPI runtime in the build environment: libopenmpi-dev (Linux), "
-        "open-mpi (macOS), or Microsoft MPI (Windows)."
+        f"MPI runtime not found (looked in {_prefix_lib} and system dirs). mpi4py "
+        "needs it at run time. Install the pip `mpich` package (Linux/macOS) or "
+        "Microsoft MPI (Windows) in the build environment."
     )
 
 # casadi needs its native libraries to sit NEXT TO the _casadi extension module,

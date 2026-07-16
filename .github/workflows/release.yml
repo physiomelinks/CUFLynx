@@ -64,16 +64,13 @@ jobs:
       # Sundials' headers/libs into the executable — so they must be present here,
       # at *build* time. Linux/macOS need an explicit install; the Windows myokit
       # wheel ships them.
-      # libopenmpi-dev provides the MPI headers/libs mpi4py builds against (CA
-      # imports mpi4py unconditionally, so it's bundled — see the analysis extra).
-      - name: Install Sundials + MPI (Linux)
+      - name: Install Sundials (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libsundials-dev python3-dev libopenmpi-dev
+        run: sudo apt-get update && sudo apt-get install -y libsundials-dev python3-dev
 
-      - name: Install MPI (macOS)
-        if: runner.os == 'macOS'
-        run: brew install open-mpi
-
+      # NB: no system OpenMPI on Linux/macOS — the [analysis] extra pip-installs a
+      # self-contained MPICH (bundled by the spec), so the app needs no system MPI.
+      # Windows has no MPICH wheel, so it uses Microsoft MPI (msmpi.dll).
       - name: Install MPI (Windows)
         if: runner.os == 'Windows'
         shell: pwsh

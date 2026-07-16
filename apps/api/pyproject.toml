@@ -74,6 +74,10 @@ analysis = [
     "scikit-learn",
     "tqdm>=4.62.0",
     "mpi4py>=3.0.0",
+    # A pip-installable, fully self-contained MPICH runtime (libmpi + libfabric/ucx),
+    # so the bundle needs NO system MPI on the user's machine. mpi4py's wheel loads
+    # this MPICH variant. Not on Windows (no wheel) — Windows uses Microsoft MPI.
+    "mpich>=4.0; platform_system != 'Windows'",
 ]
 
 [tool.hatch.build.targets.wheel]
