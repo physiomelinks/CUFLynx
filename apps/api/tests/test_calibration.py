@@ -104,7 +104,11 @@ def _wait(client, job_id, timeout=15):
 def test_calibration_defaults(client):
     body = client.get("/api/calibration/defaults").json()
     assert body["param_id_method"] == "genetic_algorithm"
-    assert "CMA-ES" in body["methods"]
+    # methods are introspected from CA's PARAM_ID_METHODS schema (fallback list
+    # when CA lacks it): a list of {value, label, gradient_based, ...}.
+    methods = body["methods"]
+    assert any(m["value"] == "CMA-ES" for m in methods)
+    assert all({"value", "label", "gradient_based"} <= set(m) for m in methods)
     assert body["num_cores"] == 1
     # pre_time / sim_time come from obs_data protocol_info (#13)
     assert "pre_time" not in body and "sim_time" not in body

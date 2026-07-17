@@ -50,33 +50,40 @@ watch(
 // "run calibration first") can reuse the user's calibration configuration.
 watch(settings, () => emit('change', { ...settings }), { deep: true, immediate: true })
 
-const SP_MINIMIZE = 'sp_minimize'
+// Methods come from CA's PARAM_ID_METHODS schema (GET /api/calibration/defaults),
+// each { value, label, gradient_based } — never hardcoded, so a CA version with
+// new methods surfaces them automatically. Tolerate the old string-array shape
+// (an older backend, or the built-in fallback) so the panel still works.
+const GRADIENT_FALLBACK = ['sp_minimize', 'multi_start_sp_minimize']
 const methods = computed(() => {
-  const base = (props.defaults.methods ?? ['genetic_algorithm', 'CMA-ES']).map((m) => ({
-    label: m,
-    value: m,
-  }))
-  // sp_minimize (gradient-based) needs casadi_python + differentiable ops.
-  if (props.adAvailable && !base.some((m) => m.value === SP_MINIMIZE)) {
-    base.push({ label: 'SciPy minimize (gradient-based)', value: SP_MINIMIZE })
-  }
-  return base
+  const raw = props.defaults.methods ?? ['genetic_algorithm', 'CMA-ES']
+  return raw.map((m) =>
+    typeof m === 'string'
+      ? { value: m, label: m, gradient_based: GRADIENT_FALLBACK.includes(m) }
+      : { value: m.value, label: m.label ?? m.value, gradient_based: !!m.gradient_based },
+  )
 })
 
-const isGradientMethod = computed(() => settings.param_id_method === SP_MINIMIZE)
+// The FD/AD gradient selector shows only for gradient-based methods, per the
+// schema's flag (works for any current or future gradient method, not just
+// sp_minimize).
+const isGradientMethod = computed(
+  () => methods.value.find((m) => m.value === settings.param_id_method)?.gradient_based ?? false,
+)
 
-const GRADIENT_METHODS = [
+// Gradient methods run with finite differences by default; AD (CasADi jacobian)
+// is only offered when the model supports it (casadi_python + all-differentiable ops).
+const GRADIENT_METHODS = computed(() => [
   { label: 'Finite difference', value: 'FD' },
-  { label: 'Automatic differentiation (casadi)', value: 'AD' },
-]
+  { label: 'Automatic differentiation (casadi)', value: 'AD', disabled: !props.adAvailable },
+])
 
-// Don't leave a now-invalid sp_minimize selection if AD support disappears.
+// If AD support disappears while an AD gradient is selected, fall back to FD; the
+// gradient method itself still runs (CA uses finite differences when AD is off).
 watch(
   () => props.adAvailable,
   (ok) => {
-    if (!ok && settings.param_id_method === SP_MINIMIZE) {
-      settings.param_id_method = 'genetic_algorithm'
-    }
+    if (!ok && settings.gradient_method === 'AD') settings.gradient_method = 'FD'
   },
 )
 
@@ -122,6 +129,7 @@ function onRun() {
           :options="GRADIENT_METHODS"
           option-label="label"
           option-value="value"
+          option-disabled="disabled"
           size="small"
           data-testid="calib-gradient-method"
         />

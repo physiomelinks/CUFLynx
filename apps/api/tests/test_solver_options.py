@@ -5,6 +5,9 @@ schema (or the built-in fallback). The casadi_python AD path itself is covered b
 the integration tests.
 """
 
+import sys
+import types
+
 import solver_options as so
 
 
@@ -115,3 +118,52 @@ def test_ad_available_introspects_when_no_options_passed(monkeypatch):
     """ad_available() falls back to get_solver_options() when not given a payload."""
     monkeypatch.setattr(so, "get_solver_options", lambda: _build({"max": False}))
     assert so.ad_available("casadi_python") is False
+
+
+# ---------------------------------------------------------------------------
+# Calibration (param_id) methods — introspected from CA, with a fallback.
+# ---------------------------------------------------------------------------
+def test_param_id_methods_from_ca_schema(monkeypatch):
+    """When CA exposes PARAM_ID_METHODS, its methods (canonical names + metadata)
+    are surfaced instead of a hardcoded list. Patches the CA import so the real
+    introspection body runs against a fake schema."""
+    fake_schema = {
+        "genetic_algorithm": {"label": "GA", "gradient_based": False, "description": "d1"},
+        "sp_minimize": {"label": "L-BFGS-B", "gradient_based": True},
+        "CMA-ES": {"label": "CMA-ES", "aliases": ["cmaes"], "gradient_based": False},
+    }
+    fake_mod = types.SimpleNamespace(PARAM_ID_METHODS=fake_schema)
+    monkeypatch.setitem(sys.modules, "parsers.PrimitiveParsers", fake_mod)
+    monkeypatch.setattr(so, "_ensure_ca_path", lambda: None)
+    so.reset_cache()
+
+    methods = so.get_param_id_methods(refresh=True)
+
+    values = [m["value"] for m in methods]
+    assert values == ["genetic_algorithm", "sp_minimize", "CMA-ES"]
+    assert "cmaes" not in values  # alias is accepted by CA but not shown in the menu
+    sp = next(m for m in methods if m["value"] == "sp_minimize")
+    assert sp["gradient_based"] is True and sp["label"] == "L-BFGS-B"
+
+
+def test_param_id_methods_fall_back_for_older_ca(monkeypatch):
+    """An older CA without PARAM_ID_METHODS (introspection raises) must not break
+    calibration — degrade to the built-in list."""
+    def _boom():
+        raise ImportError("cannot import name 'PARAM_ID_METHODS'")
+
+    monkeypatch.setattr(so, "_introspect_param_id_methods", _boom)
+    so.reset_cache()
+    methods = so.get_param_id_methods(refresh=True)
+    assert [m["value"] for m in methods] == ["genetic_algorithm", "CMA-ES"]
+    assert all(m["gradient_based"] is False for m in methods)
+
+
+def test_calibration_defaults_route_uses_introspected_methods(client, monkeypatch):
+    monkeypatch.setattr(so, "_introspect_param_id_methods",
+                        lambda: [{"value": "bayesian", "label": "Bayes",
+                                  "gradient_based": False, "description": ""}])
+    so.reset_cache()
+    body = client.get("/api/calibration/defaults").json()
+    assert body["methods"] == [{"value": "bayesian", "label": "Bayes",
+                                "gradient_based": False, "description": ""}]

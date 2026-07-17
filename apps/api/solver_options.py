@@ -61,13 +61,23 @@ _FALLBACK_DIFFERENTIABLE = {
 _NUM = "number"
 _SEL = "select"
 
+# Calibration (param_id) methods offered when CA can't be introspected — i.e. an
+# older circulatory_autogen without ``PARAM_ID_METHODS`` in its schema. Matches
+# what CUFLynx historically hardcoded, so older CA behaves exactly as before.
+_FALLBACK_PARAM_ID_METHODS = [
+    {"value": "genetic_algorithm", "label": "Genetic algorithm", "gradient_based": False, "description": ""},
+    {"value": "CMA-ES", "label": "CMA-ES", "gradient_based": False, "description": ""},
+]
+
 _cache: dict | None = None
+_param_id_cache: list | None = None
 
 
 def reset_cache() -> None:
     """Drop the cached options (call when the CA directory changes)."""
-    global _cache
+    global _cache, _param_id_cache
     _cache = None
+    _param_id_cache = None
 
 
 def _ca_paths() -> list[str]:
@@ -98,6 +108,29 @@ def _introspect_differentiable() -> dict[str, bool]:
 
     funcs = operation_funcs.get_operation_funcs_dict_for_mode("numpy")
     return {name: bool(is_circulatory_differentiable(fn)) for name, fn in funcs.items()}
+
+
+def _introspect_param_id_methods() -> list[dict]:
+    """The calibration methods CA supports, from its ``PARAM_ID_METHODS`` schema.
+
+    Raises (AttributeError/ImportError) on an older CA that has no such schema, so
+    the caller degrades to :data:`_FALLBACK_PARAM_ID_METHODS`. Only the canonical
+    method names become menu entries; aliases (e.g. CMAES) are accepted by CA but
+    not shown. Same "introspect CA, never hardcode" pattern as the solver schema.
+    """
+    _ensure_ca_path()
+    from parsers.PrimitiveParsers import PARAM_ID_METHODS  # noqa: E402
+
+    methods = []
+    for canonical, meta in PARAM_ID_METHODS.items():
+        meta = meta or {}
+        methods.append({
+            "value": canonical,
+            "label": meta.get("label", canonical),
+            "gradient_based": bool(meta.get("gradient_based", False)),
+            "description": meta.get("description", ""),
+        })
+    return methods
 
 
 def _dt_field() -> dict:
@@ -214,6 +247,23 @@ def get_solver_options(refresh: bool = False) -> dict:
     if ok_schema and ok_diff:
         _cache = opts
     return opts
+
+
+def get_param_id_methods(refresh: bool = False) -> list[dict]:
+    """Calibration methods from CA's ``PARAM_ID_METHODS`` schema (introspected, not
+    hardcoded), each ``{value, label, gradient_based, description}``.
+
+    Degrades to :data:`_FALLBACK_PARAM_ID_METHODS` on an older CA that lacks the
+    schema, so calibration keeps working. Caches a successful introspection;
+    returns the fallback uncached so a later CA-dir change can still pick it up.
+    """
+    global _param_id_cache
+    if _param_id_cache is not None and not refresh:
+        return _param_id_cache
+    methods, ok = _safe(_introspect_param_id_methods, [dict(m) for m in _FALLBACK_PARAM_ID_METHODS])
+    if ok:
+        _param_id_cache = methods
+    return methods
 
 
 def ad_available(model_type: str, options: dict | None = None) -> bool:
