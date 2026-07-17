@@ -241,3 +241,16 @@ def test_unconfigured_ca_is_never_put_on_sys_path(monkeypatch):
     before = list(sys.path)
     engine_mod._ensure_ca_on_path()
     assert sys.path == before
+
+
+def test_ca_exists_is_false_when_unconfigured(client, monkeypatch):
+    """Regression: frozen + unconfigured, _circulatory_autogen_src() returns "",
+    and Path("").is_dir() is True (empty path -> cwd). ca_exists must still be
+    False so the packaged app prompts for a CA dir instead of silently proceeding
+    and failing the first run with 'No module named generators'."""
+    import main as main_mod
+
+    monkeypatch.setattr(main_mod, "_circulatory_autogen_src", lambda: "")
+    body = client.get("/api/config").json()
+    assert body["ca_src"] == ""
+    assert body["ca_exists"] is False

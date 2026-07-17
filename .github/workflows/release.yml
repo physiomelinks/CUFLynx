@@ -238,18 +238,32 @@ jobs:
 
   # End-to-end test of the ANALYSIS tier (sensitivity + calibration) in the built
   # binary. The build-job smoke test covers live simulation; analysis is different
-  # — the app spawns runners for it. The app now bundles CA's analysis stack and
-  # runs the runners in its OWN interpreter (runner mode), so the key thing to
-  # verify is that this works with NO external Python configured.
+  # — the app runs the runners in its OWN bundled interpreter (runner mode), which
+  # is the ONLY path that loads the bundled MPI runtime (CA imports mpi4py). So
+  # this runs on EVERY platform: the MPI bundling differs per-OS (MPICH on
+  # Linux/macOS, MS-MPI on Windows) and is otherwise untested — a broken macOS or
+  # Windows analysis bundle would ship green without this.
   #
-  # Reuses the Linux artifact (no rebuild). We only need circulatory_autogen's
-  # *source* (for the CA dir); its dependencies are already inside the bundle.
-  # Linux only: the orchestration is OS-agnostic; per-OS builds prove the binary
-  # runs on each platform.
+  # Reuses each platform's artifact (no rebuild). Only circulatory_autogen's
+  # *source* is needed (for the CA dir); its deps are already in the bundle. No
+  # `--runner-python`, and deliberately NO CA deps installed into this job's
+  # Python, so a pass proves the bundle is self-sufficient.
   analysis-e2e:
-    name: Analysis e2e (built app, self-contained)
+    name: Analysis e2e (${{ matrix.os }})
     needs: build
-    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            asset: CUFLynx-linux-x86_64
+          - os: macos-latest
+            asset: CUFLynx-macos-arm64
+          - os: macos-15-intel
+            asset: CUFLynx-macos-x86_64
+          - os: windows-latest
+            asset: CUFLynx-windows-x86_64.exe
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
@@ -257,10 +271,10 @@ jobs:
         with:
           python-version: "3.10"
 
-      - name: Download the Linux executable
+      - name: Download the executable
         uses: actions/download-artifact@v4
         with:
-          name: CUFLynx-linux-x86_64
+          name: ${{ matrix.asset }}
 
       - name: Check out circulatory_autogen
         uses: actions/checkout@v4
@@ -268,17 +282,14 @@ jobs:
           repository: physiomelinks/circulatory_autogen
           path: circulatory_autogen
 
-      # No `--runner-python`: the app must run SA + calibration in its OWN bundled
-      # interpreter (runner mode). This is the whole point of the self-contained
-      # build — deliberately do NOT install CA's deps into this job's Python, so a
-      # pass proves the bundle really is self-sufficient.
       - name: Run sensitivity + calibration in the built app (bundled interpreter)
+        shell: bash
         run: |
-          chmod +x CUFLynx-linux-x86_64
+          chmod +x "${{ matrix.asset }}" 2>/dev/null || true
           python scripts/analysis_smoke.py \
-            --binary "$PWD/CUFLynx-linux-x86_64" \
+            --binary "$PWD/${{ matrix.asset }}" \
             --ca-dir "$PWD/circulatory_autogen" \
-            --sensitivity-timeout 600 --calibration-timeout 600
+            --sensitivity-timeout 900 --calibration-timeout 900
 
   release:
     name: Publish release

@@ -38,9 +38,9 @@ dependencies = [
     "ruamel.yaml>=0.17.0",
     "rdflib>=5.0.0",
     "pint>=0.18",
-    # NB: CA's *analysis* deps (emcee, SALib, nevergrad, mpi4py, matplotlib, ...) are
-    # deliberately NOT here — those run in the user's own interpreter via the
-    # subprocess runners, never in-process. See packaging/cuflynx.spec.
+    # NB: CA's *analysis* deps (emcee, SALib, nevergrad, mpi4py, matplotlib, ...) live
+    # in the [analysis] extra below — the self-contained desktop build bundles them
+    # so analysis runs in-app. They're not core runtime deps for a source install.
 ]
 
 [project.optional-dependencies]

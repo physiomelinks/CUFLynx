@@ -155,10 +155,11 @@ class ConfigRequest(BaseModel):
     generated_model_format: str = ""
     solver: str = ""
     solver_info: dict = Field(default_factory=dict)
-    # Interpreter for calibration / sensitivity / UQ subprocess runs. Persisted
-    # because the packaged app has no default (its own sys.executable is the
-    # bundle), so re-picking it every launch would be the first thing a user does.
-    python_path: str = ""
+    # Interpreter for calibration / sensitivity / UQ runs.
+    #   omitted (None) -> leave unchanged   |   "" -> reset to the default
+    # The default is the bundled interpreter (packaged) or the serving one (source),
+    # so "" lets the user switch back to "Bundled" after picking an external venv.
+    python_path: str | None = None
 
 
 def _ca_src_from_dir(d: str) -> str:
@@ -232,7 +233,10 @@ def _config_payload() -> dict:
     return {
         "ca_dir": ca_dir,
         "ca_src": src,
-        "ca_exists": p.is_dir(),
+        # `bool(src)` guard is load-bearing: when frozen and unconfigured, src is ""
+        # and Path("").is_dir() is True (empty path -> cwd), which would wrongly
+        # report CA as present and skip the first-run "pick a CA dir" prompt.
+        "ca_exists": bool(src) and p.is_dir(),
         # Remembered interpreter for analysis runs (blank = none chosen yet).
         "python_path": calibration.python or "",
         # Current backend solver selection (engine is the source of truth). dt is
@@ -308,14 +312,20 @@ def set_config(req: ConfigRequest) -> dict:
                 si.pop("dt", None)
         engine.solver_info = si
     # Interpreter for analysis runs. Shared by all three job managers.
-    python_path = (req.python_path or "").strip()
-    if python_path:
-        if not (os.path.isfile(python_path) and os.access(python_path, os.X_OK)):
-            raise HTTPException(
-                status_code=422,
-                detail=f"python interpreter not found or not executable: {python_path}",
-            )
-        _set_analysis_python(python_path)
+    #   None  -> not in this request, leave unchanged
+    #   ""    -> reset to the default (bundled when packaged, serving when source)
+    #   path  -> validate + use that external interpreter
+    if req.python_path is not None:
+        python_path = req.python_path.strip()
+        if python_path:
+            if not (os.path.isfile(python_path) and os.access(python_path, os.X_OK)):
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"python interpreter not found or not executable: {python_path}",
+                )
+            _set_analysis_python(python_path)
+        else:
+            _set_analysis_python(default_python())
 
     os.environ["CUFLYNX_MODEL_TYPE"] = engine.model_type
     os.environ["CUFLYNX_SOLVER"] = engine.solver

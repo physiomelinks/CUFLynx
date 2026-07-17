@@ -192,7 +192,7 @@ if __name__ == "__main__":
     # its args aren't the GUI's options. argv: [FLAG, runner_script, config_path].
     from runtime_paths import RUNNER_MODE_FLAG  # noqa: PLC0415
 
-    if len(sys.argv) >= 2 and sys.argv[1] == RUNNER_MODE_FLAG:
+    if len(sys.argv) >= 4 and sys.argv[1] == RUNNER_MODE_FLAG:
         _run_analysis_runner(sys.argv[2], sys.argv[3])
     else:
         raise SystemExit(main())

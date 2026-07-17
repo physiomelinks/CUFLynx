@@ -130,10 +130,11 @@ function applyConfigPayload(c) {
   packaged.value = c.packaged ?? false
 }
 
-// Remember the interpreter server-side (it's what spawns the runners, and the
-// packaged app can't fall back on a default).
+// Persist the interpreter choice server-side (it's what spawns the runners).
+// An empty value is a real choice — "reset to the bundled/default interpreter" —
+// so it must POST too, not be skipped; the backend treats "" as reset.
 watch(pythonPath, async (p) => {
-  if (!p || p === serverPythonPath) return
+  if (p === serverPythonPath) return
   try {
     serverPythonPath = p
     await setConfig({ pythonPath: p })

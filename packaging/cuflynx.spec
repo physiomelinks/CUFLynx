@@ -256,9 +256,9 @@ if _missing:
     raise SystemExit(
         f"Cannot build: these packages are required in the bundle but are not "
         f"installed in the build environment: {', '.join(_missing)}.\n"
-        "The frozen app imports circulatory_autogen in-process, so CA's simulation-"
-        "path dependencies must be present here. Run `pip install -e \".[desktop]\"` "
-        "in apps/api and rebuild."
+        "The frozen app imports circulatory_autogen in-process, so CA's simulation "
+        "and analysis dependencies must be present here. Run "
+        "`pip install -e \".[desktop,analysis]\"` in apps/api and rebuild."
     )
 
 for pkg in ("myokit", "libcellml", "casadi", "webview", "setuptools", "numpy"):
@@ -314,14 +314,21 @@ for _pat in ("MPI.*.so", "MPI.*.pyd", "MPI.*.dylib"):
 
 _prefix_lib = Path(sys.prefix) / "lib"
 _found_mpi = False
-# pip-MPICH: the library + its bundled deps (in the mpich/ subdir).
+# pip-MPICH: the library + its bundled deps (in the mpich/ subdir). This is the
+# canonical, relocatable runtime; take it and STOP, so a system OpenMPI on a dev
+# machine (e.g. `brew install open-mpi`) isn't also pulled in — two different
+# libmpis in one bundle would let mpi4py (built for the MPICH ABI) bind the wrong
+# one at run time.
 _found_mpi |= _add_mpi_libs(_prefix_lib, ("libmpi*.so*", "libmpi*.dylib"))
 _found_mpi |= _add_mpi_libs(_prefix_lib / "mpich", ("*.so*", "*.dylib"))
-# Fall back to a system MPI (e.g. a dev machine with OpenMPI) if no pip-MPICH.
-for _d in (Path("/usr/lib/x86_64-linux-gnu"), Path("/usr/lib"), Path("/usr/local/lib"),
-           Path("/opt/homebrew/lib"), Path("/opt/local/lib")):
-    _found_mpi |= _add_mpi_libs(_d, ("libmpi*.so*", "libmpi*.dylib"))
-if sys.platform == "win32":
+if not _found_mpi and sys.platform != "win32":
+    # No pip-MPICH: fall back to a system MPI (only reached on a dev build without
+    # the analysis extra installed).
+    for _d in (Path("/usr/lib/x86_64-linux-gnu"), Path("/usr/lib"), Path("/usr/local/lib"),
+               Path("/opt/homebrew/lib"), Path("/opt/local/lib")):
+        _found_mpi |= _add_mpi_libs(_d, ("libmpi*.so*", "libmpi*.dylib"))
+if not _found_mpi and sys.platform == "win32":
+    # Windows has no MPICH wheel; use Microsoft MPI's msmpi.dll.
     _found_mpi |= _add_mpi_libs(Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32",
                                 ("msmpi*.dll",))
     _found_mpi |= _add_mpi_libs(os.environ.get("MSMPI_BIN", ""), ("msmpi*.dll",))

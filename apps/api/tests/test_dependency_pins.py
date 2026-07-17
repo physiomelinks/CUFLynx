@@ -59,9 +59,9 @@ def test_libcellml_pin_matches_circulatory_autogen():
 # for CA anyway, only the CI-built binary was broken: the casadi_python backend
 # died with "CasADi solver requested but CasADi is not available".
 #
-# CA's *analysis* deps (emcee, SALib, nevergrad, mpi4py, matplotlib, ...) are
-# deliberately absent: those run in the user's own interpreter via the subprocess
-# runners, never in-process.
+# CA's *analysis* deps (emcee, SALib, nevergrad, mpi4py, matplotlib, ...) are ALSO
+# bundled now (the self-contained app runs SA/calibration/UQ in its own
+# interpreter, no external Python), declared in the [analysis] extra — see below.
 SIMULATION_PATH_DEPS = [
     "numpy",
     "scipy",
@@ -76,12 +76,38 @@ SIMULATION_PATH_DEPS = [
     "pint",
 ]
 
+# CA's analysis-path packages, declared in the [analysis] extra (pip names). The
+# frozen build installs and bundles these so calibration/UQ/global-SA run in-app.
+# Dropping any is a "breaks only once shipped" regression (the runner interpreter
+# is the bundle), so guard them the same way as the simulation deps.
+ANALYSIS_PATH_DEPS = [
+    "matplotlib",
+    "emcee",
+    "corner",
+    "SALib",
+    "seaborn",
+    "statsmodels",
+    "schwimmbad",
+    "nevergrad",
+    "numdifftools",
+    "scikit-learn",
+    "tqdm",
+    "mpi4py",
+]
+
 
 @pytest.mark.parametrize("package", SIMULATION_PATH_DEPS)
 def test_simulation_path_dependency_is_declared(package):
     """A CA simulation-path import that we don't declare will be absent from the
     packaged app — and present on every dev machine, so nobody notices."""
-    _requirement(package)  # asserts it appears in [project] dependencies
+    _requirement(package)  # asserts it appears in the pyproject dependencies
+
+
+@pytest.mark.parametrize("package", ANALYSIS_PATH_DEPS)
+def test_analysis_path_dependency_is_declared(package):
+    """Same guard for the bundled analysis stack: a missing one breaks
+    calibration/UQ/global-SA only in the shipped binary."""
+    _requirement(package)
 
 
 # The analysis runners (*_runner.py) are executed by an *external* interpreter, so
@@ -131,19 +157,19 @@ def test_runners_are_bundled_into_a_subdir_not_the_root():
 
     At the root, the external interpreter's sys.path[0] would include the bundle's
     own numpy/scipy/... and import those instead of its own — crashing with
-    'numpy.core.multiarray failed to import'. Guards against a regression that
-    moves the data-file dest back to '.'.
+    'numpy.core.multiarray failed to import'. Extract the ACTUAL data-file dest of
+    the runner-bundling loop and assert it, so the guard can't pass trivially.
     """
+    import re
+
     spec_text = SPEC.read_text()
-    for runner in RUNNERS + ("local_sensitivity.py",):
-        # Each runner entry must be bundled to "runners", not "." (bundle root).
-        assert f'(str(API_DIR / runner), "runners")' in spec_text or (
-            '"runners"' in spec_text
-        ), f"{runner} must be bundled into the 'runners' subdir (see runtime_paths.runner_path)"
-    assert '(str(API_DIR / runner), ".")' not in spec_text, (
-        "a runner is bundled to the bundle root ('.') — that puts the bundle's "
-        "numpy on the external interpreter's sys.path[0]. Use the 'runners' subdir."
-    )
+    dests = re.findall(r'datas\.append\(\(str\(API_DIR / runner\), "([^"]+)"\)\)', spec_text)
+    assert dests, "could not locate the runner-bundling `datas.append` in the spec"
+    for dest in dests:
+        assert dest == "runners", (
+            f"runners bundled to {dest!r}, must be the 'runners' subdir — bundling to "
+            "'.' puts the app's numpy on the external interpreter's sys.path[0]."
+        )
 
 
 @pytest.mark.integration
