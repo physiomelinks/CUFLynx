@@ -61,12 +61,25 @@ _FALLBACK_DIFFERENTIABLE = {
 _NUM = "number"
 _SEL = "select"
 
+# Settings each fallback method exposes (name/type/default) — the fields CUFLynx
+# historically showed. Used only when CA can't be introspected.
+_FALLBACK_OPTS = [
+    {"name": "num_calls_to_function", "type": "int", "default": 100, "required": True,
+     "description": "Evaluation budget: maximum number of cost-function calls."},
+    {"name": "cost_convergence", "type": "float", "default": 1e-3, "required": False,
+     "description": "Stop once the cost drops below this value."},
+    {"name": "max_patience", "type": "int", "default": 10, "required": False,
+     "description": "Stop after this many iterations without improvement."},
+]
+
 # Calibration (param_id) methods offered when CA can't be introspected — i.e. an
 # older circulatory_autogen without ``PARAM_ID_METHODS`` in its schema. Matches
 # what CUFLynx historically hardcoded, so older CA behaves exactly as before.
 _FALLBACK_PARAM_ID_METHODS = [
-    {"value": "genetic_algorithm", "label": "Genetic algorithm", "gradient_based": False, "description": ""},
-    {"value": "CMA-ES", "label": "CMA-ES", "gradient_based": False, "description": ""},
+    {"value": "genetic_algorithm", "label": "Genetic algorithm", "gradient_based": False,
+     "description": "", "options": [dict(o) for o in _FALLBACK_OPTS]},
+    {"value": "CMA-ES", "label": "CMA-ES", "gradient_based": False,
+     "description": "", "options": [dict(o) for o in _FALLBACK_OPTS]},
 ]
 
 _cache: dict | None = None
@@ -129,6 +142,10 @@ def _introspect_param_id_methods() -> list[dict]:
             "label": meta.get("label", canonical),
             "gradient_based": bool(meta.get("gradient_based", False)),
             "description": meta.get("description", ""),
+            # Per-method settings (name/type/default/choices/...), so the UI shows
+            # only the fields that method actually consumes — e.g. gradient-descent
+            # methods don't list max_patience.
+            "options": [dict(o) for o in (meta.get("options") or [])],
         })
     return methods
 
@@ -264,6 +281,27 @@ def get_param_id_methods(refresh: bool = False) -> list[dict]:
     if ok:
         _param_id_cache = methods
     return methods
+
+
+def gradient_sources(model_type: str, solver: str, all_differentiable: bool) -> list[dict]:
+    """Gradient sources available for the current model, for the calibration UI's
+    gradient-source menu (a gradient method's do_ad choice).
+
+    circulatory_autogen has no static schema for this — it derives the source from
+    ``do_ad`` + ``model_type`` + ``solver`` (see PrimitiveParsers' do_ad/FSA
+    checks), so this mirrors those rules:
+      - casadi_python (+ all ops differentiable): symbolic CasADi AD
+      - cellml_only + CVODE_myokit: Myokit CVODES forward sensitivity (FSA)
+      - otherwise: finite differences only
+    Finite difference is always available. Kept in step with CA's logic; if CA ever
+    exposes a gradient-source schema, introspect that instead (like the solvers).
+    """
+    sources = [{"value": "FD", "label": "Finite difference"}]
+    if model_type == "casadi_python" and all_differentiable:
+        sources.append({"value": "AD", "label": "Automatic differentiation (CasADi)"})
+    elif model_type == "cellml_only" and solver == "CVODE_myokit":
+        sources.append({"value": "FSA", "label": "Forward sensitivity (Myokit CVODES)"})
+    return sources
 
 
 def ad_available(model_type: str, options: dict | None = None) -> bool:

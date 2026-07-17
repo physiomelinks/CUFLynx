@@ -45,6 +45,7 @@ import settings_store
 from solver_options import (
     ad_available,
     get_param_id_methods,
+    gradient_sources,
     get_solver_options,
     reset_cache as reset_solver_options,
 )
@@ -248,6 +249,11 @@ def _config_payload() -> dict:
         # Capabilities for the settings UI + AD gating.
         **opts,
         "ad_available": ad_available(engine.model_type, opts),
+        # Gradient sources (FD / AD / FSA) available for the current model, for the
+        # calibration gradient-source menu — derived from CA's do_ad/FSA rules.
+        "gradient_sources": gradient_sources(
+            engine.model_type, engine.solver, bool(opts.get("all_differentiable")),
+        ),
         # Myokit JIT-compiles models, so a missing C compiler breaks every
         # simulation. Surfaced here so the UI can warn up front rather than
         # letting the first run fail with an opaque 500 (matters most in the

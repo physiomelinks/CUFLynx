@@ -190,6 +190,10 @@ const adAvailable = computed(
   () => generatedModelFormat.value === 'casadi_python' && nonDifferentiableOps.value.length === 0,
 )
 
+// Gradient sources (FD / AD / FSA) for the current model, from /api/config; the
+// calibration panel's gradient menu is populated from this, not hardcoded.
+const gradientSources = computed(() => solverOpts.value.gradient_sources ?? [])
+
 // Changing the format picks that format's default solver + default solver_info,
 // then persists. Changing the solver reseeds solver_info for the new solver. The
 // model is (re)generated, cached and run when Settings is closed (see below),
@@ -893,6 +897,7 @@ watch(
             :defaults="calibDefaults"
             :can-run="canCalibrate"
             :ad-available="adAvailable"
+            :gradient-sources="gradientSources"
             :lines="calib.lines.value"
             :state="calib.state.value"
             :cost="calib.cost.value"

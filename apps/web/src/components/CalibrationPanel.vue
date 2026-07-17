@@ -12,29 +12,32 @@ const props = defineProps({
   state: { type: String, default: 'idle' },
   cost: { type: Number, default: null },
   error: { type: String, default: '' },
-  // Gradient-based 'sp_minimize' is only valid for casadi_python + all-
-  // differentiable ops (set in the Settings popup). Gates the method + FD/AD.
   adAvailable: { type: Boolean, default: false },
+  // Gradient sources available for the current model (FD / AD / FSA), from the
+  // backend's /api/config -> gradient_sources.
+  gradientSources: { type: Array, default: () => [] },
 })
 const emit = defineEmits(['run', 'cancel', 'change'])
 
 // Note: pre_time / sim_time are intentionally NOT here — calibration timing
 // comes from the obs_data.json protocol_info (see #13). The Python interpreter
 // is chosen once in the top bar (shared across calibration/sensitivity/UQ).
+// CUFLynx-level settings that apply to every method (the per-method settings come
+// from CA's schema — see optionValues below). num_cores drives mpiexec parallelism;
+// gradient_method is the gradient source for gradient-based methods.
 const settings = reactive({
   param_id_method: 'genetic_algorithm',
-  num_calls_to_function: 100,
-  cost_convergence: 0.001,
-  max_patience: 10,
+  gradient_method: 'FD',
   num_cores: 1,
   dt: 0.01,
   DEBUG: false,
-  // Gradient source for the gradient-based 'sp_minimize' method (AD=CasADi
-  // jacobian, FD=finite difference). Ignored by the other methods.
-  gradient_method: 'FD',
 })
 
-// Seed from server defaults once they arrive.
+// Per-method setting values, keyed by option name (from CA's schema). Seeded from
+// each option's default; the run/change payload includes only the current method's.
+const optionValues = reactive({})
+
+// Seed the CUFLynx-level settings from server defaults once they arrive.
 watch(
   () => props.defaults,
   (d) => {
@@ -46,46 +49,89 @@ watch(
   { immediate: true },
 )
 
-// Surface the live settings upward so other panels (e.g. the sensitivity tab's
-// "run calibration first") can reuse the user's calibration configuration.
-watch(settings, () => emit('change', { ...settings }), { deep: true, immediate: true })
-
 // Methods come from CA's PARAM_ID_METHODS schema (GET /api/calibration/defaults),
-// each { value, label, gradient_based } — never hardcoded, so a CA version with
-// new methods surfaces them automatically. Tolerate the old string-array shape
-// (an older backend, or the built-in fallback) so the panel still works.
+// each { value, label, gradient_based, options } — never hardcoded, so new CA
+// methods and their settings surface automatically. Tolerate the old string-array
+// shape (older backend / built-in fallback).
 const GRADIENT_FALLBACK = ['sp_minimize', 'multi_start_sp_minimize']
 const methods = computed(() => {
   const raw = props.defaults.methods ?? ['genetic_algorithm', 'CMA-ES']
   return raw.map((m) =>
     typeof m === 'string'
-      ? { value: m, label: m, gradient_based: GRADIENT_FALLBACK.includes(m) }
-      : { value: m.value, label: m.label ?? m.value, gradient_based: !!m.gradient_based },
+      ? { value: m, label: m, gradient_based: GRADIENT_FALLBACK.includes(m), options: [] }
+      : {
+          value: m.value,
+          label: m.label ?? m.value,
+          gradient_based: !!m.gradient_based,
+          options: m.options ?? [],
+        },
   )
 })
 
-// The FD/AD gradient selector shows only for gradient-based methods, per the
-// schema's flag (works for any current or future gradient method, not just
-// sp_minimize).
-const isGradientMethod = computed(
-  () => methods.value.find((m) => m.value === settings.param_id_method)?.gradient_based ?? false,
+const selectedMethod = computed(() =>
+  methods.value.find((m) => m.value === settings.param_id_method),
 )
+// The settings CA says this method actually consumes — so gradient-descent methods
+// don't show max_patience, etc.
+const methodOptions = computed(() => selectedMethod.value?.options ?? [])
+const isGradientMethod = computed(() => selectedMethod.value?.gradient_based ?? false)
 
-// Gradient methods run with finite differences by default; AD (CasADi jacobian)
-// is only offered when the model supports it (casadi_python + all-differentiable ops).
-const GRADIENT_METHODS = computed(() => [
-  { label: 'Finite difference', value: 'FD' },
-  { label: 'Automatic differentiation (casadi)', value: 'AD', disabled: !props.adAvailable },
-])
-
-// If AD support disappears while an AD gradient is selected, fall back to FD; the
-// gradient method itself still runs (CA uses finite differences when AD is off).
+// Seed each option's default when the selected method's options change, keeping any
+// value the user already set for a like-named option.
 watch(
-  () => props.adAvailable,
-  (ok) => {
-    if (!ok && settings.gradient_method === 'AD') settings.gradient_method = 'FD'
+  methodOptions,
+  (opts) => {
+    for (const o of opts) {
+      if (optionValues[o.name] === undefined) optionValues[o.name] = o.default
+    }
   },
+  { immediate: true },
 )
+
+// Gradient sources (FD / AD / FSA) come from the backend, derived from the current
+// model (GET /api/config -> gradient_sources); never hardcoded, so FSA shows for
+// cellml_only + CVODE_myokit.
+const gradientOptions = computed(() =>
+  props.gradientSources?.length ? props.gradientSources : [{ value: 'FD', label: 'Finite difference' }],
+)
+
+// If the current gradient source isn't offered for this model, fall back to FD;
+// the gradient method itself still runs (CA uses finite differences).
+watch(
+  gradientOptions,
+  (opts) => {
+    if (!opts.some((o) => o.value === settings.gradient_method)) settings.gradient_method = 'FD'
+  },
+  { immediate: true },
+)
+
+// A short field label from an option name (num_calls_to_function -> "Num calls to function").
+function optionLabel(name) {
+  const s = String(name).replace(/_/g, ' ')
+  return s.charAt(0).toUpperCase() + s.slice(1)
+}
+
+// The run/change payload: CUFLynx-level settings + the selected method's option
+// values (only those), plus the gradient source for gradient methods.
+function buildSettings() {
+  const opts = {}
+  for (const o of methodOptions.value) opts[o.name] = optionValues[o.name]
+  return {
+    param_id_method: settings.param_id_method,
+    num_cores: settings.num_cores,
+    dt: settings.dt,
+    DEBUG: settings.DEBUG,
+    ...(isGradientMethod.value ? { gradient_method: settings.gradient_method } : {}),
+    ...opts,
+  }
+}
+
+// Surface live settings upward so other panels (e.g. sensitivity "run calibration
+// first") reuse the user's calibration configuration.
+watch([settings, optionValues], () => emit('change', buildSettings()), {
+  deep: true,
+  immediate: true,
+})
 
 const running = computed(() => props.state === 'running')
 
@@ -99,7 +145,7 @@ watch(
 )
 
 function onRun() {
-  emit('run', { ...settings })
+  emit('run', buildSettings())
 }
 </script>
 
@@ -123,36 +169,46 @@ function onRun() {
         />
       </label>
       <label v-if="isGradientMethod" class="field">
-        <span title="Gradient source for sp_minimize: automatic differentiation (CasADi) or finite difference">Gradient</span>
+        <span title="Gradient source: finite difference, or automatic differentiation / forward sensitivity where the model supports it">Gradient</span>
         <Select
           v-model="settings.gradient_method"
-          :options="GRADIENT_METHODS"
+          :options="gradientOptions"
           option-label="label"
           option-value="value"
-          option-disabled="disabled"
           size="small"
           data-testid="calib-gradient-method"
         />
       </label>
+
+      <!-- Per-method settings, from CA's PARAM_ID_METHODS[method].options schema. -->
+      <template v-for="opt in methodOptions" :key="opt.name">
+        <label v-if="opt.type === 'bool'" class="field checkbox">
+          <Checkbox v-model="optionValues[opt.name]" :binary="true" :input-id="'opt-' + opt.name" />
+          <span :title="opt.description">{{ optionLabel(opt.name) }}</span>
+        </label>
+        <label v-else-if="opt.type === 'enum'" class="field">
+          <span :title="opt.description">{{ optionLabel(opt.name) }}</span>
+          <Select
+            v-model="optionValues[opt.name]"
+            :options="opt.choices"
+            size="small"
+            :data-testid="'calib-opt-' + opt.name"
+          />
+        </label>
+        <label v-else class="field">
+          <span :title="opt.description">{{ optionLabel(opt.name) }}</span>
+          <InputNumber
+            v-model="optionValues[opt.name]"
+            :min-fraction-digits="opt.type === 'float' ? 1 : undefined"
+            :max-fraction-digits="opt.type === 'float' ? 10 : undefined"
+            size="small"
+            :data-testid="'calib-opt-' + opt.name"
+          />
+        </label>
+      </template>
+
       <label class="field">
-        <span>Max evals</span>
-        <InputNumber v-model="settings.num_calls_to_function" :min="1" size="small" />
-      </label>
-      <label class="field">
-        <span>Convergence</span>
-        <InputNumber
-          v-model="settings.cost_convergence"
-          :min-fraction-digits="1"
-          :max-fraction-digits="8"
-          size="small"
-        />
-      </label>
-      <label class="field">
-        <span>Max patience</span>
-        <InputNumber v-model="settings.max_patience" :min="1" size="small" />
-      </label>
-      <label class="field">
-        <span title="mpiexec -n N: parallel GA population evaluation">Cores</span>
+        <span title="mpiexec -n N: parallel population evaluation">Cores</span>
         <InputNumber v-model="settings.num_cores" :min="1" :max="64" size="small" />
       </label>
       <label class="field checkbox">
