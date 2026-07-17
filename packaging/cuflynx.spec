@@ -312,6 +312,15 @@ for _pat in ("MPI.*.so", "MPI.*.pyd", "MPI.*.dylib"):
     for _so in _m4p_dir.glob(_pat):
         binaries.append((str(_so), "mpi4py"))
 
+# On Windows, mpi4py's __init__ does `__import__('_mpi_dll_path').install()` to put
+# the MS-MPI DLL dir on the search path. That top-level module is generated at
+# install time and isn't part of the mpi4py package, so PyInstaller misses it and
+# `from mpi4py import MPI` dies with "No module named '_mpi_dll_path'". Collect it.
+# (The bundled msmpi.dll is found via PyInstaller's own bundle-root DLL path, so
+# the wrong build-time path _mpi_dll_path adds is harmless.)
+if sys.platform == "win32":
+    hiddenimports += ["_mpi_dll_path"]
+
 _prefix_lib = Path(sys.prefix) / "lib"
 _found_mpi = False
 # pip-MPICH: the library + its bundled deps (in the mpich/ subdir). This is the
