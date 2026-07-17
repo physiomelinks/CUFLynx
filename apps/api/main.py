@@ -44,6 +44,7 @@ from runtime_paths import default_python, frontend_dist, is_frozen
 import settings_store
 from solver_options import (
     ad_available,
+    get_param_id_methods,
     get_solver_options,
     reset_cache as reset_solver_options,
 )
@@ -701,6 +702,8 @@ class CalibrationRequest(BaseModel):
 
 CALIBRATION_DEFAULTS = {
     "param_id_method": "genetic_algorithm",
+    # NB: `methods` is replaced by the CA-introspected list in calibration_defaults();
+    # this literal is only a shape placeholder.
     "methods": ["genetic_algorithm", "CMA-ES"],
     "num_calls_to_function": 100,
     "cost_convergence": 0.001,
@@ -716,7 +719,9 @@ CALIBRATION_DEFAULTS = {
 
 @app.get("/api/calibration/defaults")
 def calibration_defaults() -> dict:
-    return CALIBRATION_DEFAULTS
+    # `methods` is introspected from CA's PARAM_ID_METHODS schema (never hardcoded);
+    # falls back to the built-in list on an older CA without that schema.
+    return {**CALIBRATION_DEFAULTS, "methods": get_param_id_methods()}
 
 
 @app.get("/api/calibration/pythons")

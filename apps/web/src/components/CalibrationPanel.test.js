@@ -59,45 +59,72 @@ describe('CalibrationPanel', () => {
     ).toBeDefined()
   })
 
-  it('offers sp_minimize only when AD is available', () => {
-    const without = mount(CalibrationPanel, {
-      props: { adAvailable: false },
-      global: { stubs: selectStubs },
-    })
-    expect(without.find('[data-testid="calib-method"]').text()).not.toContain('SciPy minimize')
+  // Methods come from CA's PARAM_ID_METHODS schema (introspected, not hardcoded).
+  const SCHEMA_METHODS = [
+    { value: 'genetic_algorithm', label: 'Genetic algorithm', gradient_based: false },
+    { value: 'sp_minimize', label: 'Gradient descent (L-BFGS-B)', gradient_based: true },
+    { value: 'multi_start_sp_minimize', label: 'Multi-start gradient descent', gradient_based: true },
+  ]
 
-    const withAd = mount(CalibrationPanel, {
-      props: { adAvailable: true },
+  it('shows every method from the introspected schema (incl. new ones)', () => {
+    const w = mount(CalibrationPanel, {
+      props: { defaults: { methods: SCHEMA_METHODS }, adAvailable: false },
       global: { stubs: selectStubs },
     })
-    expect(withAd.find('[data-testid="calib-method"]').text()).toContain('SciPy minimize')
+    const text = w.find('[data-testid="calib-method"]').text()
+    // Gradient methods are offered even without AD — they run with finite differences.
+    expect(text).toContain('Genetic algorithm')
+    expect(text).toContain('Gradient descent (L-BFGS-B)')
+    expect(text).toContain('Multi-start gradient descent') // a method the panel never hardcoded
   })
 
-  it('shows the FD/AD gradient dropdown only for sp_minimize', () => {
+  it('shows the FD/AD gradient dropdown only for gradient-based methods', () => {
     const ga = mount(CalibrationPanel, {
-      props: { adAvailable: true },
+      props: {
+        defaults: { methods: SCHEMA_METHODS, param_id_method: 'genetic_algorithm' },
+        adAvailable: true,
+      },
       global: { stubs: selectStubs },
     })
     expect(ga.find('[data-testid="calib-gradient-method"]').exists()).toBe(false)
 
-    // Seeding param_id_method via defaults selects sp_minimize on mount.
     const sp = mount(CalibrationPanel, {
-      props: { adAvailable: true, defaults: { param_id_method: 'sp_minimize' } },
+      props: {
+        defaults: { methods: SCHEMA_METHODS, param_id_method: 'multi_start_sp_minimize' },
+        adAvailable: true,
+      },
       global: { stubs: selectStubs },
     })
-    const grad = sp.find('[data-testid="calib-gradient-method"]')
-    expect(grad.exists()).toBe(true)
-    expect(grad.text()).toContain('Automatic differentiation')
+    expect(sp.find('[data-testid="calib-gradient-method"]').exists()).toBe(true)
   })
 
   it('emits the gradient_method with the run settings', async () => {
     const wrapper = mount(CalibrationPanel, {
-      props: { canRun: true, adAvailable: true, defaults: { param_id_method: 'sp_minimize' } },
+      props: {
+        canRun: true,
+        adAvailable: true,
+        defaults: { methods: SCHEMA_METHODS, param_id_method: 'sp_minimize' },
+      },
       global: { stubs: selectStubs },
     })
     await wrapper.find('[data-testid="run-calibration"]').trigger('click')
     const ev = wrapper.emitted('run')
     expect(ev[0][0].param_id_method).toBe('sp_minimize')
     expect(ev[0][0].gradient_method).toBe('FD')
+  })
+
+  it('falls back the gradient source to FD when AD support disappears', async () => {
+    const wrapper = mount(CalibrationPanel, {
+      props: {
+        canRun: true,
+        adAvailable: true,
+        defaults: { methods: SCHEMA_METHODS, param_id_method: 'sp_minimize', gradient_method: 'AD' },
+      },
+      global: { stubs: selectStubs },
+    })
+    await wrapper.setProps({ adAvailable: false })
+    await wrapper.find('[data-testid="run-calibration"]').trigger('click')
+    // The gradient method still runs, just with finite differences.
+    expect(wrapper.emitted('run').at(-1)[0].gradient_method).toBe('FD')
   })
 })
