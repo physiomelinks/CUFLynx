@@ -82,15 +82,61 @@ _FALLBACK_PARAM_ID_METHODS = [
      "description": "", "options": [dict(o) for o in _FALLBACK_OPTS]},
 ]
 
+# Option blocks for the non-calibration analysis modes (sensitivity / MCMC /
+# identifiability) offered when CA can't be introspected — mirrors
+# PrimitiveParsers.ANALYSIS_OPTIONS so the SA/UQ panels still render their settings
+# on an older CA. Same descriptor shape as a param_id method's options.
+_FALLBACK_ANALYSIS_OPTIONS = {
+    "sensitivity_analysis": {
+        "label": "Sobol sensitivity analysis",
+        "enable_flag": "do_sensitivity",
+        "options_key": "sa_options",
+        "options": [
+            {"name": "method", "type": "enum", "default": "sobol", "required": False,
+             "choices": ["sobol", "naive"],
+             "description": "Sensitivity method: Sobol indices or a naive one-at-a-time sweep."},
+            {"name": "sample_type", "type": "str", "default": "saltelli", "required": False,
+             "description": "SALib sampling scheme (e.g. saltelli for Sobol)."},
+            {"name": "num_samples", "type": "int", "default": 256, "required": True,
+             "description": "Base sample count; total runs ~ num_samples*(2M+2) for Sobol."},
+        ],
+    },
+    "mcmc": {
+        "label": "MCMC posterior sampling",
+        "enable_flag": "do_mcmc",
+        "options_key": "mcmc_options",
+        "options": [
+            {"name": "num_steps", "type": "int", "default": 1000, "required": False,
+             "description": "Number of MCMC steps per walker."},
+            {"name": "num_walkers", "type": "int", "default": 64, "required": False,
+             "description": "Number of ensemble walkers (defaults to 2 * number of parameters)."},
+        ],
+    },
+    "identifiability_analysis": {
+        "label": "Identifiability analysis",
+        "enable_flag": "do_ia",
+        "options_key": "ia_options",
+        "options": [
+            {"name": "method", "type": "enum", "default": "Laplace", "required": True,
+             "choices": ["Laplace", "profile_likelihood"],
+             "description": "Identifiability method: Laplace approximation or profile likelihood."},
+            {"name": "sub_method", "type": "str", "default": "parabola_fit", "required": False,
+             "description": "Hessian method for the Laplace approximation."},
+        ],
+    },
+}
+
 _cache: dict | None = None
 _param_id_cache: list | None = None
+_analysis_cache: dict | None = None
 
 
 def reset_cache() -> None:
     """Drop the cached options (call when the CA directory changes)."""
-    global _cache, _param_id_cache
+    global _cache, _param_id_cache, _analysis_cache
     _cache = None
     _param_id_cache = None
+    _analysis_cache = None
 
 
 def _ca_paths() -> list[str]:
@@ -148,6 +194,30 @@ def _introspect_param_id_methods() -> list[dict]:
             "options": [dict(o) for o in (meta.get("options") or [])],
         })
     return methods
+
+
+def _introspect_analysis_options() -> dict:
+    """The option blocks for the non-calibration analysis modes (sensitivity /
+    MCMC / identifiability), from CA's ``ANALYSIS_OPTIONS`` schema.
+
+    Raises on an older CA that has no such schema, so the caller degrades to
+    :data:`_FALLBACK_ANALYSIS_OPTIONS`. Same "introspect CA, never hardcode"
+    pattern as the solver and param_id schemas — so new SA/MCMC/IA options in CA
+    surface in the UI automatically.
+    """
+    _ensure_ca_path()
+    from parsers.PrimitiveParsers import ANALYSIS_OPTIONS  # noqa: E402
+
+    out = {}
+    for mode, meta in ANALYSIS_OPTIONS.items():
+        meta = meta or {}
+        out[mode] = {
+            "label": meta.get("label", mode),
+            "enable_flag": meta.get("enable_flag"),
+            "options_key": meta.get("options_key"),
+            "options": [dict(o) for o in (meta.get("options") or [])],
+        }
+    return out
 
 
 def _dt_field() -> dict:
@@ -281,6 +351,33 @@ def get_param_id_methods(refresh: bool = False) -> list[dict]:
     if ok:
         _param_id_cache = methods
     return methods
+
+
+def get_analysis_options(refresh: bool = False) -> dict:
+    """Analysis-mode option blocks from CA's ``ANALYSIS_OPTIONS`` schema
+    (introspected, not hardcoded), keyed by mode ('sensitivity_analysis', 'mcmc',
+    'identifiability_analysis'). Each value carries ``label``/``enable_flag``/
+    ``options_key`` and the per-mode ``options`` descriptors the SA/UQ panels render.
+
+    Degrades to :data:`_FALLBACK_ANALYSIS_OPTIONS` on an older CA that lacks the
+    schema. Caches a successful introspection; returns the fallback uncached so a
+    later CA-dir change can still pick it up.
+    """
+    global _analysis_cache
+    if _analysis_cache is not None and not refresh:
+        return _analysis_cache
+    opts, ok = _safe(
+        _introspect_analysis_options,
+        {k: dict(v, options=[dict(o) for o in v["options"]]) for k, v in _FALLBACK_ANALYSIS_OPTIONS.items()},
+    )
+    if ok:
+        _analysis_cache = opts
+    return opts
+
+
+def analysis_mode_options(mode: str) -> list[dict]:
+    """The option descriptors for a single analysis mode; [] for an unknown mode."""
+    return get_analysis_options().get(mode, {}).get("options", [])
 
 
 def gradient_sources(model_type: str, solver: str, all_differentiable: bool) -> list[dict]:

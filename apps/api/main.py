@@ -44,6 +44,7 @@ from runtime_paths import default_python, frontend_dist, is_frozen
 import settings_store
 from solver_options import (
     ad_available,
+    get_analysis_options,
     get_param_id_methods,
     gradient_sources,
     get_solver_options,
@@ -861,7 +862,10 @@ SENSITIVITY_DEFAULTS = {
 
 @app.get("/api/sensitivity/defaults")
 def sensitivity_defaults() -> dict:
-    return SENSITIVITY_DEFAULTS
+    # `options` are CA's sensitivity_analysis descriptors (introspected from
+    # ANALYSIS_OPTIONS, never hardcoded) so the Sobol settings form tracks CA.
+    sa = get_analysis_options().get("sensitivity_analysis", {})
+    return {**SENSITIVITY_DEFAULTS, "options": sa.get("options", [])}
 
 
 @app.post("/api/sensitivity/run")
@@ -987,7 +991,14 @@ UQ_DEFAULTS = {
 
 @app.get("/api/uq/defaults")
 def uq_defaults() -> dict:
-    return UQ_DEFAULTS
+    # `mcmc_options` / `ia_options` are CA's descriptors (introspected from
+    # ANALYSIS_OPTIONS, never hardcoded) so the UQ settings forms track CA.
+    ao = get_analysis_options()
+    return {
+        **UQ_DEFAULTS,
+        "mcmc_options": ao.get("mcmc", {}).get("options", []),
+        "ia_options": ao.get("identifiability_analysis", {}).get("options", []),
+    }
 
 
 @app.post("/api/uq/run")

@@ -15,21 +15,37 @@ const props = defineProps({
 const emit = defineEmits(['run', 'cancel', 'change'])
 
 // pre_time / sim_time come from the obs_data protocol_info (mirrors calibration).
-// The Python interpreter is chosen once in the top bar.
+// The Python interpreter is chosen once in the top bar. The MCMC options
+// (num_steps, num_walkers, …) are NOT here — they come from CA's ANALYSIS_OPTIONS
+// schema (see mcmcOptions/optionValues below), so new CA MCMC options surface
+// automatically.
 const settings = reactive({
   method: 'mcmc',
   run_calibration_first: false,
-  num_steps: 1000,
-  num_walkers: 64,
   num_cores: 1,
   dt: 0.01,
   DEBUG: false,
 })
 
-// Surface live settings upward so the pipeline export can capture them.
-watch(settings, () => emit('change', { ...settings }), { deep: true, immediate: true })
+// Per-option values for CA's MCMC settings, keyed by option name (seeded from
+// each descriptor's default). Merged into the run/change payload flat.
+const optionValues = reactive({})
 
 const isMcmc = computed(() => settings.method === 'mcmc')
+
+// CA's mcmc option descriptors (num_steps, num_walkers, …), never hardcoded.
+const mcmcOptions = computed(() => props.defaults.mcmc_options ?? [])
+
+// Seed each option's default when the schema arrives, keeping any user value.
+watch(
+  mcmcOptions,
+  (opts) => {
+    for (const o of opts) {
+      if (optionValues[o.name] === undefined) optionValues[o.name] = o.default
+    }
+  },
+  { immediate: true },
+)
 
 watch(
   () => props.defaults,
@@ -41,6 +57,25 @@ watch(
   },
   { immediate: true },
 )
+
+// A short field label from an option name (num_steps -> "Num steps").
+function optionLabel(name) {
+  const s = String(name).replace(/_/g, ' ')
+  return s.charAt(0).toUpperCase() + s.slice(1)
+}
+
+// The run/change payload: CUFLynx-level settings + the MCMC option values.
+function buildSettings() {
+  const opts = {}
+  for (const o of mcmcOptions.value) opts[o.name] = optionValues[o.name]
+  return { ...settings, ...opts }
+}
+
+// Surface live settings upward so the pipeline export can capture them.
+watch([settings, optionValues], () => emit('change', buildSettings()), {
+  deep: true,
+  immediate: true,
+})
 
 const methods = computed(() =>
   (props.defaults.methods ?? ['mcmc', 'laplace']).map((m) => ({
@@ -61,7 +96,7 @@ watch(
 )
 
 function onRun() {
-  emit('run', { ...settings })
+  emit('run', buildSettings())
 }
 </script>
 
@@ -83,15 +118,33 @@ function onRun() {
           size="small"
         />
       </label>
+      <!-- MCMC options, from CA's ANALYSIS_OPTIONS[mcmc]. -->
       <template v-if="isMcmc">
-        <label class="field">
-          <span>Steps</span>
-          <InputNumber v-model="settings.num_steps" :min="1" size="small" />
-        </label>
-        <label class="field">
-          <span>Walkers</span>
-          <InputNumber v-model="settings.num_walkers" :min="2" size="small" />
-        </label>
+        <template v-for="opt in mcmcOptions" :key="opt.name">
+          <label v-if="opt.type === 'bool'" class="field checkbox">
+            <Checkbox v-model="optionValues[opt.name]" :binary="true" :input-id="'mcmc-opt-' + opt.name" />
+            <span :title="opt.description">{{ optionLabel(opt.name) }}</span>
+          </label>
+          <label v-else-if="opt.type === 'enum'" class="field">
+            <span :title="opt.description">{{ optionLabel(opt.name) }}</span>
+            <Select
+              v-model="optionValues[opt.name]"
+              :options="opt.choices"
+              size="small"
+              :data-testid="'mcmc-opt-' + opt.name"
+            />
+          </label>
+          <label v-else class="field">
+            <span :title="opt.description">{{ optionLabel(opt.name) }}</span>
+            <InputNumber
+              v-model="optionValues[opt.name]"
+              :min-fraction-digits="opt.type === 'float' ? 1 : undefined"
+              :max-fraction-digits="opt.type === 'float' ? 10 : undefined"
+              size="small"
+              :data-testid="'mcmc-opt-' + opt.name"
+            />
+          </label>
+        </template>
       </template>
       <label class="field">
         <span title="mpiexec -n N: parallel sampling / calibration">Cores</span>

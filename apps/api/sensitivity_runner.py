@@ -38,6 +38,14 @@ from pathlib import Path
 DONE_MARKER = "__SENSITIVITY_DONE__"
 FAIL_MARKER = "__SENSITIVITY_FAILED__"
 
+# CUFLynx-level / local-path settings that must NOT be forwarded into CA's
+# sa_options (the rest are the CA sensitivity_analysis option values).
+_SA_RESERVED = {
+    "method", "gradient_method", "rel_step", "nominal", "run_calibration_first",
+    "dt", "DEBUG", "num_cores", "solver", "solver_info", "python_path",
+    "sim_time", "pre_time", "cost_type", "generated_model_format",
+}
+
 
 def _ensure_ca_on_path() -> None:
     src = os.environ.get("CIRCULATORY_AUTOGEN_SRC")
@@ -159,9 +167,15 @@ def run(config: dict) -> dict:
     sa_options = {
         "method": method,
         "sample_type": settings.get("sample_type", "saltelli"),
-        "num_samples": int(settings.get("num_samples", 256)),
+        "num_samples": int(settings.get("num_samples") or 256),
         "output_dir": output_dir,
     }
+    # Forward any additional CA sensitivity options the UI collected from CA's
+    # ANALYSIS_OPTIONS schema (forward-compatible: new sa_options keys added to CA
+    # flow through without a runner change). CUFLynx-level / local-path keys stay out.
+    for k, v in settings.items():
+        if k not in _SA_RESERVED and k not in sa_options and v is not None:
+            sa_options[k] = v
 
     sa = SensitivityAnalysis(
         model_path=config["model_path"],

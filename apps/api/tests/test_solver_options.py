@@ -167,3 +167,65 @@ def test_calibration_defaults_route_uses_introspected_methods(client, monkeypatc
     body = client.get("/api/calibration/defaults").json()
     assert body["methods"] == [{"value": "bayesian", "label": "Bayes",
                                 "gradient_based": False, "description": ""}]
+
+
+def test_analysis_options_from_ca_schema(monkeypatch):
+    """When CA exposes ANALYSIS_OPTIONS, the SA/MCMC/IA option blocks (and their
+    per-mode option descriptors) are surfaced instead of hardcoded lists."""
+    fake = {
+        "sensitivity_analysis": {
+            "label": "SA", "enable_flag": "do_sensitivity", "options_key": "sa_options",
+            "options": [{"name": "num_samples", "type": "int", "default": None, "required": True}],
+        },
+        "mcmc": {
+            "label": "MCMC", "enable_flag": "do_mcmc", "options_key": "mcmc_options",
+            "options": [{"name": "num_steps", "type": "int", "default": 5000}],
+        },
+    }
+    fake_mod = types.SimpleNamespace(ANALYSIS_OPTIONS=fake)
+    monkeypatch.setitem(sys.modules, "parsers.PrimitiveParsers", fake_mod)
+    monkeypatch.setattr(so, "_ensure_ca_path", lambda: None)
+    so.reset_cache()
+
+    ao = so.get_analysis_options(refresh=True)
+    assert set(ao) == {"sensitivity_analysis", "mcmc"}
+    assert ao["mcmc"]["options_key"] == "mcmc_options"
+    assert so.analysis_mode_options("mcmc")[0]["name"] == "num_steps"
+    # num_steps default flows through untouched from CA.
+    assert so.analysis_mode_options("mcmc")[0]["default"] == 5000
+
+
+def test_analysis_options_fall_back_for_older_ca(monkeypatch):
+    """An older CA without ANALYSIS_OPTIONS (introspection raises) degrades to the
+    built-in blocks so the SA/UQ panels still render."""
+    def _boom():
+        raise ImportError("cannot import name 'ANALYSIS_OPTIONS'")
+
+    monkeypatch.setattr(so, "_introspect_analysis_options", _boom)
+    so.reset_cache()
+    ao = so.get_analysis_options(refresh=True)
+    assert {"sensitivity_analysis", "mcmc", "identifiability_analysis"} <= set(ao)
+    names = [o["name"] for o in ao["sensitivity_analysis"]["options"]]
+    assert "num_samples" in names and "sample_type" in names
+
+
+def test_sensitivity_defaults_route_exposes_ca_options(client, monkeypatch):
+    monkeypatch.setattr(so, "_introspect_analysis_options",
+                        lambda: {"sensitivity_analysis": {
+                            "label": "SA", "enable_flag": "do_sensitivity",
+                            "options_key": "sa_options",
+                            "options": [{"name": "num_samples", "type": "int", "default": 512}]}})
+    so.reset_cache()
+    body = client.get("/api/sensitivity/defaults").json()
+    assert body["options"] == [{"name": "num_samples", "type": "int", "default": 512}]
+
+
+def test_uq_defaults_route_exposes_ca_mcmc_options(client, monkeypatch):
+    monkeypatch.setattr(so, "_introspect_analysis_options",
+                        lambda: {"mcmc": {
+                            "label": "MCMC", "enable_flag": "do_mcmc",
+                            "options_key": "mcmc_options",
+                            "options": [{"name": "num_steps", "type": "int", "default": 3000}]}})
+    so.reset_cache()
+    body = client.get("/api/uq/defaults").json()
+    assert body["mcmc_options"] == [{"name": "num_steps", "type": "int", "default": 3000}]
