@@ -160,3 +160,27 @@ def test_saved_config_file_only_contains_persisted_keys(client, config_dir):
     client.post("/api/config", json={})
     saved = json.loads((config_dir / settings_store.CONFIG_FILENAME).read_text())
     assert set(saved) <= set(settings_store.PERSISTED_KEYS)
+
+
+def test_clearing_python_path_resets_to_default(client, config_dir, tmp_path):
+    """python_path="" resets the analysis interpreter to the default (bundled when
+    packaged, serving when source), so a user can switch back to "Bundled" after
+    picking a venv. python_path omitted (None) leaves it unchanged."""
+    import runtime_paths
+
+    fake_python = tmp_path / "python"
+    fake_python.write_text("#!/bin/sh\n")
+    fake_python.chmod(0o755)
+
+    # Pick an external interpreter, then clear it.
+    client.post("/api/config", json={"python_path": str(fake_python)})
+    assert main_mod.calibration.python == str(fake_python)
+
+    body = client.post("/api/config", json={"python_path": ""}).json()
+    assert main_mod.calibration.python == runtime_paths.default_python()
+    assert body["python_path"] == (runtime_paths.default_python() or "")
+
+    # Omitting it entirely must NOT change it.
+    main_mod.calibration.python = str(fake_python)
+    client.post("/api/config", json={"solver": ""})
+    assert main_mod.calibration.python == str(fake_python)

@@ -145,5 +145,19 @@ describe('App.vue', () => {
         expect.objectContaining({ pythonPath: '/venv/bin/python' }),
       )
     })
+
+    it('persists a reset to the bundled default (empty value POSTs)', async () => {
+      // Start hydrated with a venv, then clear back to "" (Bundled). The watcher
+      // must POST "" so the backend resets — not skip it as a no-op.
+      getConfig.mockResolvedValueOnce({ ...BASE_CONFIG, python_path: '/venv/bin/python' })
+      setConfig.mockClear()
+      const wrapper = shallowMount(App)
+      await flushPromises()
+
+      wrapper.vm.pythonPath = ''
+      await flushPromises()
+
+      expect(setConfig).toHaveBeenCalledWith(expect.objectContaining({ pythonPath: '' }))
+    })
   })
 })
