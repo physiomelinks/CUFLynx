@@ -14,6 +14,7 @@ import InputNumber from 'primevue/inputnumber'
 import Button from 'primevue/button'
 import Message from 'primevue/message'
 import Select from 'primevue/select'
+import Checkbox from 'primevue/checkbox'
 import Dialog from 'primevue/dialog'
 import FileBrowserDialog from './components/FileBrowserDialog.vue'
 
@@ -1175,6 +1176,13 @@ watch(
             v-model="solverInfo[f.key]"
             :options="f.options"
             size="small"
+            :data-testid="`solver-info-${f.key}`"
+            @update:model-value="applyBackendSolver"
+          />
+          <Checkbox
+            v-else-if="f.type === 'bool'"
+            v-model="solverInfo[f.key]"
+            :binary="true"
             :data-testid="`solver-info-${f.key}`"
             @update:model-value="applyBackendSolver"
           />

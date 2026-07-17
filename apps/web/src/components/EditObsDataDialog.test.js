@@ -86,6 +86,19 @@ describe('EditObsDataDialog', () => {
     expect(wrapper.html()).toContain('pulse_plot') // only appears in plot_type options
   })
 
+  it('annotates cost_type options with CA cost_func_metadata flags', async () => {
+    getObsDataOptions.mockResolvedValueOnce({
+      ...FETCH,
+      cost_func_metadata: { gaussian_MLE: { is_MLE: true, differentiable: true } },
+    })
+    const wrapper = mountDialog()
+    await flushPromises()
+    await wrapper.find('button[aria-label="details"]').trigger('click') // expand row detail
+    // Flagged cost function is labelled; an unflagged one stays bare.
+    expect(wrapper.text()).toContain('gaussian_MLE — MLE, AD')
+    expect(wrapper.text()).toContain('my_custom_cost')
+  })
+
   it('falls back when getObsDataOptions rejects', async () => {
     getObsDataOptions.mockRejectedValueOnce(new Error('offline'))
     const wrapper = mountDialog()

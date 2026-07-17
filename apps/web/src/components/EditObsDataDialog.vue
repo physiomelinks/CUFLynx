@@ -44,6 +44,9 @@ const preservedItems = ref([])
 const predRows = ref([])
 const operations = ref(FALLBACK_OPERATIONS)
 const costTypes = ref(FALLBACK_COST_TYPES)
+// Per-cost-function flags (is_MLE / is_combiner / differentiable) from CA, used
+// only to annotate the cost_type options; empty when CA doesn't expose them.
+const costMeta = ref({})
 const plotTypes = ref(FALLBACK_PLOT_TYPES)
 const protocolModel = ref(null)
 const activeExp = ref(0)
@@ -68,6 +71,7 @@ watch(
       const opts = await getObsDataOptions()
       if (opts?.operations?.length) operations.value = opts.operations
       if (opts?.cost_types?.length) costTypes.value = opts.cost_types
+      if (opts?.cost_func_metadata) costMeta.value = opts.cost_func_metadata
       if (opts?.plot_types?.length) plotTypes.value = opts.plot_types
     } catch {
       /* keep fallbacks — editor still works offline */
@@ -126,6 +130,18 @@ watch(
 const modelErrors = computed(() =>
   protocolModel.value ? validateModel(protocolModel.value) : [],
 )
+
+// Annotate a cost_type option with its CA flags (MLE / combiner / AD) when known,
+// e.g. "gaussian_MLE — MLE"; falls back to the bare name when CA has no metadata.
+function costTypeLabel(ct) {
+  const m = costMeta.value[ct]
+  if (!m) return ct
+  const tags = []
+  if (m.is_MLE) tags.push('MLE')
+  if (m.is_combiner) tags.push('combiner')
+  if (m.differentiable) tags.push('AD')
+  return tags.length ? `${ct} — ${tags.join(', ')}` : ct
+}
 
 function onNum(row, field, value) {
   row[field] = value === '' ? null : Number(value)
@@ -382,7 +398,7 @@ async function onSave() {
           <label>cost_type
             <select :value="row.cost_type" @change="row.cost_type = $event.target.value">
               <option value="">(default)</option>
-              <option v-for="ct in costTypes" :key="ct" :value="ct">{{ ct }}</option>
+              <option v-for="ct in costTypes" :key="ct" :value="ct">{{ costTypeLabel(ct) }}</option>
             </select>
           </label>
           <label>plot_type

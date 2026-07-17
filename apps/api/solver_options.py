@@ -234,6 +234,66 @@ def _method_field(options, label) -> dict:
     }
 
 
+# Short, familiar labels for well-known solver_info keys (CA's schema carries a
+# `description`, not a UI label); anything else is prettified from its name.
+_SOLVER_INFO_LABELS = {
+    "MaximumStep": "Max step",
+    "MaximumNumberOfSteps": "Max # steps",
+    "rtol": "Rel. tol",
+    "atol": "Abs. tol",
+    "reltol": "Rel. tol",
+    "abstol": "Abs. tol",
+    "max_step": "Max step",
+    "max_step_size": "Max step size",
+    "max_num_steps": "Max # steps",
+}
+
+
+def _pretty_label(name: str) -> str:
+    s = str(name).replace("_", " ").strip()
+    return (s[:1].upper() + s[1:]) if s else str(name)
+
+
+def _si_field_from_descriptor(desc: dict) -> dict | None:
+    """Map a CA solver_info descriptor (name/type/default/choices) to a CUFLynx
+    form field, or None when the compact settings form can't render it — i.e. the
+    ``str``/``dict`` fields (jac, gradient_method, casadi ``options``)."""
+    name = desc.get("name")
+    typ = desc.get("type")
+    if typ in ("str", "dict"):
+        return None
+    label = _SOLVER_INFO_LABELS.get(name, _pretty_label(name))
+    if typ == "enum":
+        return {"key": name, "label": label, "type": _SEL,
+                "default": desc.get("default"), "options": list(desc.get("choices") or [])}
+    if typ == "bool":
+        return {"key": name, "label": label, "type": "bool", "default": desc.get("default")}
+    return {"key": name, "label": label, "type": _NUM, "default": desc.get("default")}
+
+
+def _solver_info_schema_from_ca(fields_by_solver: dict, methods_by_solver: dict) -> dict:
+    """Per-solver solver_info form fields introspected from CA's ``SOLVER_INFO_FIELDS``
+    (the single source of truth). CA omits the framework keys, so ``method`` (from
+    the solver's method menu) and ``dt`` are injected; ``str``/``dict`` fields are
+    skipped. No per-method gating — CA's schema doesn't model it, so every field a
+    solver accepts is shown for that solver.
+    """
+    out = {}
+    for solver, descriptors in fields_by_solver.items():
+        fields = []
+        methods = methods_by_solver.get(solver, [])
+        if methods:
+            label = "Integrator" if solver == "casadi_integrator" else "Method"
+            fields.append(_method_field(methods, label))
+        fields.append(_dt_field())
+        for desc in descriptors or []:
+            field = _si_field_from_descriptor(desc)
+            if field is not None:
+                fields.append(field)
+        out[solver] = fields
+    return out
+
+
 def _solver_info_schema(methods_by_solver: dict) -> dict:
     """Per-solver editable solver_info fields. `method` options come from CA;
     fields carry an optional `methods` restriction so the available settings track
@@ -300,12 +360,20 @@ def _build_options(schema: dict, differentiable: dict[str, bool]) -> dict:
     if "CVODE_myokit" in solvers_by_format.get("cellml_only", []):
         default_solver_by_format["cellml_only"] = "CVODE_myokit"
     all_diff = bool(differentiable) and all(differentiable.values())
+    # Prefer CA's SOLVER_INFO_FIELDS (single source of truth) when present; an older
+    # CA (or the offline fallback schema) has no such key, so degrade to the curated
+    # built-in form.
+    fields_by_solver = schema.get("solver_info_fields_by_solver") or {}
+    if fields_by_solver:
+        solver_info_schema = _solver_info_schema_from_ca(fields_by_solver, methods_by_solver)
+    else:
+        solver_info_schema = _solver_info_schema(methods_by_solver)
     return {
         "model_formats": formats,
         "solvers_by_format": solvers_by_format,
         "default_solver_by_format": default_solver_by_format,
         "methods_by_solver": {s: list(m) for s, m in methods_by_solver.items()},
-        "solver_info_schema": _solver_info_schema(methods_by_solver),
+        "solver_info_schema": solver_info_schema,
         "differentiable_operations": dict(differentiable),
         "all_differentiable": all_diff,
     }

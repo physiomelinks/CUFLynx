@@ -56,6 +56,20 @@ describe('solverConfig helpers', () => {
     expect(defaultSolverInfo(opts, 'solve_ivp')).toEqual({ method: 'RK45', rtol: 1e-6 })
     expect(defaultSolverInfo(opts, 'nope')).toEqual({})
   })
+
+  it('seeds boolean solver_info fields (false is kept, not treated as null)', () => {
+    // Introspected CA bool fields (e.g. vectorized/dense_output) must seed their
+    // false default rather than being dropped by the non-null check.
+    const o = {
+      solver_info_schema: {
+        s: [
+          { key: 'vectorized', type: 'bool', default: false },
+          { key: 'dense_output', type: 'bool', default: true },
+        ],
+      },
+    }
+    expect(defaultSolverInfo(o, 's')).toEqual({ vectorized: false, dense_output: true })
+  })
 })
 
 describe('solverFieldsForMethod', () => {

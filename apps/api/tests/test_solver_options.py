@@ -98,6 +98,48 @@ def test_casadi_max_step_field_offered_for_bdf_only():
     assert max_step["default"] == 1e-3  # matches the CA helper's default sub-step cap
 
 
+def test_solver_info_introspected_from_ca_schema():
+    """When CA's SOLVER_SCHEMA carries solver_info_fields_by_solver, the form is
+    built from it (full introspection, CA as source of truth): framework keys
+    (method, dt) are injected, enum->select, bool->bool, and the str/dict fields
+    the compact form can't render are skipped."""
+    schema = {
+        "model_types": ["casadi_python"],
+        "solvers_by_model_type": {"casadi_python": ["casadi_integrator"]},
+        "methods_by_solver": {"casadi_integrator": ["cvodes", "bdf"]},
+        "default_solver_by_model_type": {"casadi_python": "casadi_integrator"},
+        "solver_info_fields_by_solver": {
+            "casadi_integrator": [
+                {"name": "max_step_size", "type": "float", "default": 0.001},
+                {"name": "max_step", "type": "float", "default": 1e-3},
+                {"name": "some_flag", "type": "bool", "default": False},
+                {"name": "mode", "type": "enum", "default": "a", "choices": ["a", "b"]},
+                {"name": "opts", "type": "dict", "default": None},  # not renderable -> skipped
+                {"name": "jac", "type": "str", "default": None},    # not renderable -> skipped
+            ],
+        },
+    }
+    opts = so._build_options(schema, {"max": True})
+    by_key = {f["key"]: f for f in opts["solver_info_schema"]["casadi_integrator"]}
+    assert by_key["method"]["type"] == "select" and by_key["method"]["options"] == ["cvodes", "bdf"]
+    assert "dt" in by_key
+    assert by_key["max_step"]["default"] == 1e-3
+    assert by_key["some_flag"]["type"] == "bool"
+    assert by_key["mode"]["type"] == "select" and by_key["mode"]["options"] == ["a", "b"]
+    assert "opts" not in by_key and "jac" not in by_key
+    # Full introspection carries no per-method gating (CA's schema doesn't model it).
+    assert "methods" not in by_key["max_step"]
+
+
+def test_solver_info_falls_back_to_curated_without_ca_fields():
+    """An older CA (or the offline fallback schema) whose SOLVER_SCHEMA lacks
+    solver_info_fields_by_solver keeps the curated, per-method-gated form."""
+    opts = so._build_options(so.FALLBACK_SOLVER_SCHEMA, {"max": True})
+    max_step = next(f for f in opts["solver_info_schema"]["casadi_integrator"]
+                    if f["key"] == "max_step")
+    assert max_step["methods"] == ["bdf"]  # curated gating preserved
+
+
 def test_ad_available_requires_casadi_python_and_all_differentiable():
     diff_all = _build({"max": True, "min": True})
     assert diff_all["all_differentiable"] is True
