@@ -19,11 +19,11 @@ const emit = defineEmits(['run', 'cancel', 'change'])
 
 // pre_time / sim_time come from the obs_data.json protocol_info (mirrors
 // calibration, see #13). The Python interpreter is chosen once in the top bar.
+// The Sobol (global) options (sample_type, num_samples, …) are NOT here — they
+// come from CA's ANALYSIS_OPTIONS schema (see saOptions/optionValues below), so
+// new CA sensitivity options surface automatically.
 const settings = reactive({
   method: 'sobol',
-  // Sobol (global) options:
-  sample_type: 'saltelli',
-  num_samples: 256,
   num_cores: 1,
   // Local (derivative-based) options:
   gradient_method: 'FD',
@@ -37,7 +37,29 @@ const settings = reactive({
   DEBUG: false,
 })
 
-// Seed from server defaults once they arrive.
+// Per-option values for CA's Sobol settings, keyed by option name (seeded from
+// each descriptor's default). Merged into the run/change payload flat.
+const optionValues = reactive({})
+
+// CA's sensitivity_analysis option descriptors, minus `method` (CUFLynx's own
+// top-level Sobol/local selector already covers that axis). Never hardcoded.
+const saOptions = computed(() =>
+  (props.defaults.options ?? []).filter((o) => o.name !== 'method'),
+)
+
+// Seed each option's default when the schema arrives, keeping any value the user
+// already set.
+watch(
+  saOptions,
+  (opts) => {
+    for (const o of opts) {
+      if (optionValues[o.name] === undefined) optionValues[o.name] = o.default
+    }
+  },
+  { immediate: true },
+)
+
+// Seed the CUFLynx-level settings from server defaults once they arrive.
 watch(
   () => props.defaults,
   (d) => {
@@ -49,8 +71,24 @@ watch(
   { immediate: true },
 )
 
+// A short field label from an option name (num_samples -> "Num samples").
+function optionLabel(name) {
+  const s = String(name).replace(/_/g, ' ')
+  return s.charAt(0).toUpperCase() + s.slice(1)
+}
+
+// The run/change payload: CUFLynx-level settings + the Sobol option values.
+function buildSettings() {
+  const opts = {}
+  for (const o of saOptions.value) opts[o.name] = optionValues[o.name]
+  return { ...settings, ...opts }
+}
+
 // Surface live settings upward so the pipeline export can capture them.
-watch(settings, () => emit('change', { ...settings }), { deep: true, immediate: true })
+watch([settings, optionValues], () => emit('change', buildSettings()), {
+  deep: true,
+  immediate: true,
+})
 
 // If AD becomes unavailable (backend solver switched away from casadi_python),
 // don't leave a now-invalid AD selection behind.
@@ -65,12 +103,6 @@ const METHOD_LABELS = { sobol: 'Sobol (global)', local: 'Local (finite differenc
 const methods = computed(() =>
   (props.defaults.methods ?? ['sobol']).map((m) => ({
     label: METHOD_LABELS[m] ?? m,
-    value: m,
-  })),
-)
-const sampleTypes = computed(() =>
-  (props.defaults.sample_types ?? ['saltelli', 'sobol']).map((m) => ({
-    label: m,
     value: m,
   })),
 )
@@ -107,7 +139,7 @@ watch(
 )
 
 function onRun() {
-  emit('run', { ...settings })
+  emit('run', buildSettings())
 }
 </script>
 
@@ -129,22 +161,33 @@ function onRun() {
           size="small"
         />
       </label>
-      <!-- Sobol (global) options -->
+      <!-- Sobol (global) options, from CA's ANALYSIS_OPTIONS[sensitivity_analysis]. -->
       <template v-if="!isLocal">
-        <label class="field">
-          <span>Sample type</span>
-          <Select
-            v-model="settings.sample_type"
-            :options="sampleTypes"
-            option-label="label"
-            option-value="value"
-            size="small"
-          />
-        </label>
-        <label class="field">
-          <span title="Base sample count N; total sims ~ N·(2·num_params+2)">Samples</span>
-          <InputNumber v-model="settings.num_samples" :min="1" size="small" />
-        </label>
+        <template v-for="opt in saOptions" :key="opt.name">
+          <label v-if="opt.type === 'bool'" class="field checkbox">
+            <Checkbox v-model="optionValues[opt.name]" :binary="true" :input-id="'sa-opt-' + opt.name" />
+            <span :title="opt.description">{{ optionLabel(opt.name) }}</span>
+          </label>
+          <label v-else-if="opt.type === 'enum'" class="field">
+            <span :title="opt.description">{{ optionLabel(opt.name) }}</span>
+            <Select
+              v-model="optionValues[opt.name]"
+              :options="opt.choices"
+              size="small"
+              :data-testid="'sa-opt-' + opt.name"
+            />
+          </label>
+          <label v-else class="field">
+            <span :title="opt.description">{{ optionLabel(opt.name) }}</span>
+            <InputNumber
+              v-model="optionValues[opt.name]"
+              :min-fraction-digits="opt.type === 'float' ? 1 : undefined"
+              :max-fraction-digits="opt.type === 'float' ? 10 : undefined"
+              size="small"
+              :data-testid="'sa-opt-' + opt.name"
+            />
+          </label>
+        </template>
         <label class="field">
           <span title="mpiexec -n N: parallel sample evaluation">Cores</span>
           <InputNumber v-model="settings.num_cores" :min="1" :max="64" size="small" />

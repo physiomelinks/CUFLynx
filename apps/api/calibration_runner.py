@@ -65,20 +65,27 @@ def run(config: dict) -> dict:
 
     model_type = config.get("model_type", "cellml_only")
     solver_info = _solver_info_from_config(config, settings)
-    # gradient_method drives CA's gradient source for sp_minimize: AD => CasADi
-    # jacobian, FD => finite difference. Ignored by the non-gradient methods.
-    do_ad = str(settings.get("gradient_method", "FD")).upper() == "AD"
-    optimiser_options = {
-        "num_calls_to_function": int(settings.get("num_calls_to_function", 100)),
-        "cost_convergence": float(settings.get("cost_convergence", 0.0001)),
-        "max_patience": int(settings.get("max_patience", 10)),
+    # gradient_method drives CA's gradient source for the gradient methods:
+    # AD/FSA => automatic (CasADi jacobian or Myokit CVODES forward sensitivity),
+    # FD => finite difference. Ignored by the non-gradient methods.
+    do_ad = str(settings.get("gradient_method", "FD")).upper() in ("AD", "FSA")
+
+    # optimiser_options are the per-method settings the UI collected from CA's
+    # PARAM_ID_METHODS[method]['options'] schema. Forward them as-is (each method
+    # consumes only its own keys) rather than hardcoding a fixed set — so, e.g.,
+    # multi_start_sp_minimize gets num_starts and never a spurious max_patience.
+    _RESERVED = {
+        "param_id_method", "gradient_method", "methods", "num_cores", "DEBUG",
+        "sim_time", "pre_time", "dt", "solver", "solver_info", "python_path",
+        "config_outputs_dir", "generated_model_format",
     }
-    if settings.get("cost_type"):
-        optimiser_options["cost_type"] = settings["cost_type"]
+    optimiser_options = {
+        k: v for k, v in settings.items() if k not in _RESERVED and v is not None
+    }
 
     print(
         f"Starting {settings.get('param_id_method', 'genetic_algorithm')} "
-        f"calibration ({optimiser_options['num_calls_to_function']} max evals)",
+        f"calibration ({optimiser_options.get('num_calls_to_function', '?')} max evals)",
         flush=True,
     )
 

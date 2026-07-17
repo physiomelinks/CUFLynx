@@ -98,6 +98,48 @@ def test_casadi_max_step_field_offered_for_bdf_only():
     assert max_step["default"] == 1e-3  # matches the CA helper's default sub-step cap
 
 
+def test_solver_info_introspected_from_ca_schema():
+    """When CA's SOLVER_SCHEMA carries solver_info_fields_by_solver, the form is
+    built from it (full introspection, CA as source of truth): framework keys
+    (method, dt) are injected, enum->select, bool->bool, and the str/dict fields
+    the compact form can't render are skipped."""
+    schema = {
+        "model_types": ["casadi_python"],
+        "solvers_by_model_type": {"casadi_python": ["casadi_integrator"]},
+        "methods_by_solver": {"casadi_integrator": ["cvodes", "bdf"]},
+        "default_solver_by_model_type": {"casadi_python": "casadi_integrator"},
+        "solver_info_fields_by_solver": {
+            "casadi_integrator": [
+                {"name": "max_step_size", "type": "float", "default": 0.001},
+                {"name": "max_step", "type": "float", "default": 1e-3},
+                {"name": "some_flag", "type": "bool", "default": False},
+                {"name": "mode", "type": "enum", "default": "a", "choices": ["a", "b"]},
+                {"name": "opts", "type": "dict", "default": None},  # not renderable -> skipped
+                {"name": "jac", "type": "str", "default": None},    # not renderable -> skipped
+            ],
+        },
+    }
+    opts = so._build_options(schema, {"max": True})
+    by_key = {f["key"]: f for f in opts["solver_info_schema"]["casadi_integrator"]}
+    assert by_key["method"]["type"] == "select" and by_key["method"]["options"] == ["cvodes", "bdf"]
+    assert "dt" in by_key
+    assert by_key["max_step"]["default"] == 1e-3
+    assert by_key["some_flag"]["type"] == "bool"
+    assert by_key["mode"]["type"] == "select" and by_key["mode"]["options"] == ["a", "b"]
+    assert "opts" not in by_key and "jac" not in by_key
+    # Full introspection carries no per-method gating (CA's schema doesn't model it).
+    assert "methods" not in by_key["max_step"]
+
+
+def test_solver_info_falls_back_to_curated_without_ca_fields():
+    """An older CA (or the offline fallback schema) whose SOLVER_SCHEMA lacks
+    solver_info_fields_by_solver keeps the curated, per-method-gated form."""
+    opts = so._build_options(so.FALLBACK_SOLVER_SCHEMA, {"max": True})
+    max_step = next(f for f in opts["solver_info_schema"]["casadi_integrator"]
+                    if f["key"] == "max_step")
+    assert max_step["methods"] == ["bdf"]  # curated gating preserved
+
+
 def test_ad_available_requires_casadi_python_and_all_differentiable():
     diff_all = _build({"max": True, "min": True})
     assert diff_all["all_differentiable"] is True
@@ -167,3 +209,65 @@ def test_calibration_defaults_route_uses_introspected_methods(client, monkeypatc
     body = client.get("/api/calibration/defaults").json()
     assert body["methods"] == [{"value": "bayesian", "label": "Bayes",
                                 "gradient_based": False, "description": ""}]
+
+
+def test_analysis_options_from_ca_schema(monkeypatch):
+    """When CA exposes ANALYSIS_OPTIONS, the SA/MCMC/IA option blocks (and their
+    per-mode option descriptors) are surfaced instead of hardcoded lists."""
+    fake = {
+        "sensitivity_analysis": {
+            "label": "SA", "enable_flag": "do_sensitivity", "options_key": "sa_options",
+            "options": [{"name": "num_samples", "type": "int", "default": None, "required": True}],
+        },
+        "mcmc": {
+            "label": "MCMC", "enable_flag": "do_mcmc", "options_key": "mcmc_options",
+            "options": [{"name": "num_steps", "type": "int", "default": 5000}],
+        },
+    }
+    fake_mod = types.SimpleNamespace(ANALYSIS_OPTIONS=fake)
+    monkeypatch.setitem(sys.modules, "parsers.PrimitiveParsers", fake_mod)
+    monkeypatch.setattr(so, "_ensure_ca_path", lambda: None)
+    so.reset_cache()
+
+    ao = so.get_analysis_options(refresh=True)
+    assert set(ao) == {"sensitivity_analysis", "mcmc"}
+    assert ao["mcmc"]["options_key"] == "mcmc_options"
+    assert so.analysis_mode_options("mcmc")[0]["name"] == "num_steps"
+    # num_steps default flows through untouched from CA.
+    assert so.analysis_mode_options("mcmc")[0]["default"] == 5000
+
+
+def test_analysis_options_fall_back_for_older_ca(monkeypatch):
+    """An older CA without ANALYSIS_OPTIONS (introspection raises) degrades to the
+    built-in blocks so the SA/UQ panels still render."""
+    def _boom():
+        raise ImportError("cannot import name 'ANALYSIS_OPTIONS'")
+
+    monkeypatch.setattr(so, "_introspect_analysis_options", _boom)
+    so.reset_cache()
+    ao = so.get_analysis_options(refresh=True)
+    assert {"sensitivity_analysis", "mcmc", "identifiability_analysis"} <= set(ao)
+    names = [o["name"] for o in ao["sensitivity_analysis"]["options"]]
+    assert "num_samples" in names and "sample_type" in names
+
+
+def test_sensitivity_defaults_route_exposes_ca_options(client, monkeypatch):
+    monkeypatch.setattr(so, "_introspect_analysis_options",
+                        lambda: {"sensitivity_analysis": {
+                            "label": "SA", "enable_flag": "do_sensitivity",
+                            "options_key": "sa_options",
+                            "options": [{"name": "num_samples", "type": "int", "default": 512}]}})
+    so.reset_cache()
+    body = client.get("/api/sensitivity/defaults").json()
+    assert body["options"] == [{"name": "num_samples", "type": "int", "default": 512}]
+
+
+def test_uq_defaults_route_exposes_ca_mcmc_options(client, monkeypatch):
+    monkeypatch.setattr(so, "_introspect_analysis_options",
+                        lambda: {"mcmc": {
+                            "label": "MCMC", "enable_flag": "do_mcmc",
+                            "options_key": "mcmc_options",
+                            "options": [{"name": "num_steps", "type": "int", "default": 3000}]}})
+    so.reset_cache()
+    body = client.get("/api/uq/defaults").json()
+    assert body["mcmc_options"] == [{"name": "num_steps", "type": "int", "default": 3000}]

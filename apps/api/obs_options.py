@@ -27,6 +27,9 @@ FALLBACK_OPERATIONS = [
     "division",
 ]
 FALLBACK_COST_TYPES = ["MSE", "AE", "gaussian_MLE"]
+# Accessor/helper names that CA's cost-func registry may enumerate but which are
+# not selectable cost functions.
+_NON_COST_FUNC_NAMES = {"cost_func_metadata"}
 FALLBACK_DATA_TYPES = ["constant", "series", "frequency", "prob_dist"]
 FALLBACK_PLOT_TYPES = ["", "horizontal", "vertical", "horizontal_from_min", "series", "frequency"]
 
@@ -77,13 +80,40 @@ def _introspect() -> dict:
     if "" not in operations:
         operations = [""] + operations  # allow "no operation"
     cost_types = sorted(cost_funcs_user.get_cost_funcs_dict_for_mode("numpy"))
+    # Defensive: some CA builds also enumerate the ``cost_func_metadata`` accessor
+    # itself as if it were a cost function — it isn't, so keep it out of the
+    # dropdown (and its self-referential metadata entry never renders).
+    cost_types = [c for c in cost_types if c not in _NON_COST_FUNC_NAMES]
     data_types, plot_types = _introspect_schema()
     return {
         "operations": operations,
         "cost_types": cost_types,
+        "cost_func_metadata": _introspect_cost_func_metadata(cost_funcs_user),
         "data_types": data_types,
         "plot_types": plot_types,
     }
+
+
+def _introspect_cost_func_metadata(cost_funcs_user) -> dict:
+    """Per-cost-function flags (is_MLE / is_combiner / differentiable) from CA's
+    ``cost_func_metadata()``, so the obs-data editor can label cost types without
+    poking at function attributes. Best-effort: an older CA without the accessor
+    (or a partial payload) yields ``{}`` / defaults, leaving the plain cost_types
+    list working.
+    """
+    try:
+        raw = cost_funcs_user.cost_func_metadata()
+    except Exception:  # noqa: BLE001 - older CA without the accessor
+        return {}
+    out = {}
+    for name, meta in (raw or {}).items():
+        meta = meta or {}
+        out[name] = {
+            "is_MLE": bool(meta.get("is_MLE", False)),
+            "is_combiner": bool(meta.get("is_combiner", False)),
+            "differentiable": bool(meta.get("differentiable", False)),
+        }
+    return out
 
 
 def get_obs_data_options(refresh: bool = False) -> dict:
@@ -102,6 +132,7 @@ def get_obs_data_options(refresh: bool = False) -> dict:
         return {
             "operations": list(FALLBACK_OPERATIONS),
             "cost_types": list(FALLBACK_COST_TYPES),
+            "cost_func_metadata": {},
             "data_types": list(FALLBACK_DATA_TYPES),
             "plot_types": list(FALLBACK_PLOT_TYPES),
         }

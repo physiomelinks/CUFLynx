@@ -14,6 +14,7 @@ import InputNumber from 'primevue/inputnumber'
 import Button from 'primevue/button'
 import Message from 'primevue/message'
 import Select from 'primevue/select'
+import Checkbox from 'primevue/checkbox'
 import Dialog from 'primevue/dialog'
 import FileBrowserDialog from './components/FileBrowserDialog.vue'
 
@@ -189,6 +190,10 @@ const nonDifferentiableOps = computed(() =>
 const adAvailable = computed(
   () => generatedModelFormat.value === 'casadi_python' && nonDifferentiableOps.value.length === 0,
 )
+
+// Gradient sources (FD / AD / FSA) for the current model, from /api/config; the
+// calibration panel's gradient menu is populated from this, not hardcoded.
+const gradientSources = computed(() => solverOpts.value.gradient_sources ?? [])
 
 // Changing the format picks that format's default solver + default solver_info,
 // then persists. Changing the solver reseeds solver_info for the new solver. The
@@ -893,6 +898,7 @@ watch(
             :defaults="calibDefaults"
             :can-run="canCalibrate"
             :ad-available="adAvailable"
+            :gradient-sources="gradientSources"
             :lines="calib.lines.value"
             :state="calib.state.value"
             :cost="calib.cost.value"
@@ -1170,6 +1176,13 @@ watch(
             v-model="solverInfo[f.key]"
             :options="f.options"
             size="small"
+            :data-testid="`solver-info-${f.key}`"
+            @update:model-value="applyBackendSolver"
+          />
+          <Checkbox
+            v-else-if="f.type === 'bool'"
+            v-model="solverInfo[f.key]"
+            :binary="true"
             :data-testid="`solver-info-${f.key}`"
             @update:model-value="applyBackendSolver"
           />

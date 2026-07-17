@@ -62,3 +62,42 @@ describe('SensitivityPanel AD gating', () => {
     expect(text).not.toContain('fewer samples')
   })
 })
+
+// The Sobol settings come from CA's ANALYSIS_OPTIONS[sensitivity_analysis]
+// descriptors (introspected, not hardcoded), so new CA options surface here.
+describe('SensitivityPanel Sobol options from CA schema', () => {
+  const SA_OPTIONS = [
+    { name: 'method', type: 'enum', default: 'sobol', choices: ['sobol', 'naive'] },
+    { name: 'sample_type', type: 'str', default: 'saltelli' },
+    { name: 'num_samples', type: 'int', default: 256 },
+    { name: 'confidence_level', type: 'float', default: 0.95 }, // a future CA option
+  ]
+
+  it('renders the schema options (excluding method) and seeds their defaults', async () => {
+    const wrapper = mount(SensitivityPanel, {
+      props: { canRun: true, defaults: { method: 'sobol', options: SA_OPTIONS } },
+      global: { stubs },
+    })
+    // Every descriptor except `method` (the top-level Sobol/local selector covers that).
+    expect(wrapper.find('[data-testid="sa-opt-num_samples"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="sa-opt-sample_type"]').exists()).toBe(true)
+    // A new CA option appears without any panel change.
+    expect(wrapper.find('[data-testid="sa-opt-confidence_level"]').exists()).toBe(true)
+    // CA's own `method` option is not a second control.
+    expect(wrapper.find('[data-testid="sa-opt-method"]').exists()).toBe(false)
+
+    await wrapper.find('[data-testid="run-sensitivity"]').trigger('click')
+    const payload = wrapper.emitted('run')[0][0]
+    expect(payload.num_samples).toBe(256) // seeded from the schema default
+    expect(payload.sample_type).toBe('saltelli')
+    expect(payload.confidence_level).toBe(0.95)
+  })
+
+  it('hides the Sobol options for the local (finite-difference) method', () => {
+    const wrapper = mount(SensitivityPanel, {
+      props: { defaults: { method: 'local', options: SA_OPTIONS } },
+      global: { stubs },
+    })
+    expect(wrapper.find('[data-testid="sa-opt-num_samples"]').exists()).toBe(false)
+  })
+})

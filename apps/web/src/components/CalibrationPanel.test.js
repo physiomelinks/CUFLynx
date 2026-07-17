@@ -34,16 +34,29 @@ describe('CalibrationPanel', () => {
     expect(term.text()).toContain('best cost: 0.25')
   })
 
-  it('emits run with the current settings when runnable', async () => {
+  it('emits run with the method + its schema settings seeded from defaults', async () => {
     const wrapper = mount(CalibrationPanel, {
-      props: { canRun: true, defaults: { methods: ['genetic_algorithm', 'CMA-ES'] } },
+      props: {
+        canRun: true,
+        defaults: {
+          methods: [
+            {
+              value: 'genetic_algorithm',
+              label: 'GA',
+              gradient_based: false,
+              options: [{ name: 'num_calls_to_function', type: 'int', default: 100 }],
+            },
+          ],
+        },
+      },
       global: { stubs },
     })
     await wrapper.find('[data-testid="run-calibration"]').trigger('click')
     const ev = wrapper.emitted('run')
     expect(ev).toBeTruthy()
     expect(ev[0][0].param_id_method).toBe('genetic_algorithm')
-    expect(ev[0][0].num_calls_to_function).toBeGreaterThan(0)
+    // Per-method setting, seeded from the schema default (not hardcoded).
+    expect(ev[0][0].num_calls_to_function).toBe(100)
     expect(ev[0][0]).toHaveProperty('num_cores')
     // Python interpreter is chosen in the top bar, not this panel.
     expect(ev[0][0]).not.toHaveProperty('python_path')
@@ -113,18 +126,87 @@ describe('CalibrationPanel', () => {
     expect(ev[0][0].gradient_method).toBe('FD')
   })
 
-  it('falls back the gradient source to FD when AD support disappears', async () => {
+  // Per-method settings come from CA's schema — a gradient method must not show
+  // max_patience, and a method's own options (num_starts) must show.
+  const METHODS_WITH_OPTIONS = [
+    {
+      value: 'genetic_algorithm', label: 'GA', gradient_based: false,
+      options: [
+        { name: 'num_calls_to_function', type: 'int', default: 100 },
+        { name: 'max_patience', type: 'int', default: 10 },
+      ],
+    },
+    {
+      value: 'multi_start_sp_minimize', label: 'Multi-start', gradient_based: true,
+      options: [
+        { name: 'num_starts', type: 'int', default: 10 },
+        { name: 'cost_convergence', type: 'float', default: 1e-3 },
+      ],
+    },
+  ]
+
+  it('shows only the selected method\'s settings (no max_patience for gradient descent)', async () => {
+    const ga = mount(CalibrationPanel, {
+      props: { defaults: { methods: METHODS_WITH_OPTIONS, param_id_method: 'genetic_algorithm' } },
+      global: { stubs: selectStubs },
+    })
+    expect(ga.find('[data-testid="calib-opt-max_patience"]').exists()).toBe(true)
+    expect(ga.find('[data-testid="calib-opt-num_starts"]').exists()).toBe(false)
+
+    const ms = mount(CalibrationPanel, {
+      props: { defaults: { methods: METHODS_WITH_OPTIONS, param_id_method: 'multi_start_sp_minimize' } },
+      global: { stubs: selectStubs },
+    })
+    // The reported bug: max_patience must NOT appear for multi-start gradient descent.
+    expect(ms.find('[data-testid="calib-opt-max_patience"]').exists()).toBe(false)
+    expect(ms.find('[data-testid="calib-opt-num_starts"]').exists()).toBe(true)
+  })
+
+  it('emits only the selected method\'s settings (num_starts, not max_patience)', async () => {
     const wrapper = mount(CalibrationPanel, {
       props: {
         canRun: true,
-        adAvailable: true,
-        defaults: { methods: SCHEMA_METHODS, param_id_method: 'sp_minimize', gradient_method: 'AD' },
+        defaults: { methods: METHODS_WITH_OPTIONS, param_id_method: 'multi_start_sp_minimize' },
       },
       global: { stubs: selectStubs },
     })
-    await wrapper.setProps({ adAvailable: false })
     await wrapper.find('[data-testid="run-calibration"]').trigger('click')
-    // The gradient method still runs, just with finite differences.
+    const payload = wrapper.emitted('run')[0][0]
+    expect(payload).toHaveProperty('num_starts', 10)
+    expect(payload).not.toHaveProperty('max_patience')
+  })
+
+  it('populates the gradient menu from the backend (FSA visible for cellml_only)', () => {
+    const wrapper = mount(CalibrationPanel, {
+      props: {
+        defaults: { methods: METHODS_WITH_OPTIONS, param_id_method: 'multi_start_sp_minimize' },
+        gradientSources: [
+          { value: 'FD', label: 'Finite difference' },
+          { value: 'FSA', label: 'Forward sensitivity (Myokit CVODES)' },
+        ],
+      },
+      global: { stubs: selectStubs },
+    })
+    const grad = wrapper.find('[data-testid="calib-gradient-method"]')
+    expect(grad.exists()).toBe(true)
+    expect(grad.text()).toContain('Forward sensitivity')
+  })
+
+  it('falls back the gradient source to FD when it is no longer offered', async () => {
+    const wrapper = mount(CalibrationPanel, {
+      props: {
+        canRun: true,
+        defaults: { methods: SCHEMA_METHODS, param_id_method: 'sp_minimize', gradient_method: 'AD' },
+        gradientSources: [
+          { value: 'FD', label: 'Finite difference' },
+          { value: 'AD', label: 'AD' },
+        ],
+      },
+      global: { stubs: selectStubs },
+    })
+    // The model changes and AD is no longer a source (e.g. switched to cellml_only).
+    await wrapper.setProps({ gradientSources: [{ value: 'FD', label: 'Finite difference' }] })
+    await wrapper.find('[data-testid="run-calibration"]').trigger('click')
     expect(wrapper.emitted('run').at(-1)[0].gradient_method).toBe('FD')
   })
 })

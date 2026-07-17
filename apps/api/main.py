@@ -44,7 +44,9 @@ from runtime_paths import default_python, frontend_dist, is_frozen
 import settings_store
 from solver_options import (
     ad_available,
+    get_analysis_options,
     get_param_id_methods,
+    gradient_sources,
     get_solver_options,
     reset_cache as reset_solver_options,
 )
@@ -248,6 +250,11 @@ def _config_payload() -> dict:
         # Capabilities for the settings UI + AD gating.
         **opts,
         "ad_available": ad_available(engine.model_type, opts),
+        # Gradient sources (FD / AD / FSA) available for the current model, for the
+        # calibration gradient-source menu — derived from CA's do_ad/FSA rules.
+        "gradient_sources": gradient_sources(
+            engine.model_type, engine.solver, bool(opts.get("all_differentiable")),
+        ),
         # Myokit JIT-compiles models, so a missing C compiler breaks every
         # simulation. Surfaced here so the UI can warn up front rather than
         # letting the first run fail with an opaque 500 (matters most in the
@@ -855,7 +862,10 @@ SENSITIVITY_DEFAULTS = {
 
 @app.get("/api/sensitivity/defaults")
 def sensitivity_defaults() -> dict:
-    return SENSITIVITY_DEFAULTS
+    # `options` are CA's sensitivity_analysis descriptors (introspected from
+    # ANALYSIS_OPTIONS, never hardcoded) so the Sobol settings form tracks CA.
+    sa = get_analysis_options().get("sensitivity_analysis", {})
+    return {**SENSITIVITY_DEFAULTS, "options": sa.get("options", [])}
 
 
 @app.post("/api/sensitivity/run")
@@ -981,7 +991,14 @@ UQ_DEFAULTS = {
 
 @app.get("/api/uq/defaults")
 def uq_defaults() -> dict:
-    return UQ_DEFAULTS
+    # `mcmc_options` / `ia_options` are CA's descriptors (introspected from
+    # ANALYSIS_OPTIONS, never hardcoded) so the UQ settings forms track CA.
+    ao = get_analysis_options()
+    return {
+        **UQ_DEFAULTS,
+        "mcmc_options": ao.get("mcmc", {}).get("options", []),
+        "ia_options": ao.get("identifiability_analysis", {}).get("options", []),
+    }
 
 
 @app.post("/api/uq/run")

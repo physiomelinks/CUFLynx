@@ -28,6 +28,14 @@ os.environ.setdefault("MPLBACKEND", "Agg")
 DONE_MARKER = "__UQ_DONE__"
 FAIL_MARKER = "__UQ_FAILED__"
 
+# CUFLynx-level / calibration settings that must NOT be forwarded into CA's
+# mcmc_options (the rest are the CA mcmc option values the UI collected).
+_UQ_RESERVED = {
+    "method", "run_calibration_first", "num_cores", "dt", "DEBUG", "solver",
+    "solver_info", "python_path", "sim_time", "pre_time", "generated_model_format",
+    "param_id_method", "num_calls_to_function", "max_patience", "gradient_method",
+}
+
 NUM_BINS = 30
 LAPLACE_SAMPLES = 100000
 
@@ -148,11 +156,17 @@ def run(config: dict) -> dict:
         "cost_type": settings.get("cost_type", "gaussian_MLE"),
     }
     mcmc_options = {
-        "num_steps": int(settings.get("num_steps", 1000)),
-        "num_walkers": int(settings.get("num_walkers", 64)),
+        "num_steps": int(settings.get("num_steps") or 1000),
+        "num_walkers": int(settings.get("num_walkers") or 64),
         "cost_convergence": float(settings.get("cost_convergence", 0.001)),
         "cost_type": settings.get("cost_type", "gaussian_MLE"),
     }
+    # Forward any additional CA mcmc options the UI collected from CA's
+    # ANALYSIS_OPTIONS schema (forward-compatible: new mcmc_options keys added to CA
+    # flow through without a runner change).
+    for k, v in settings.items():
+        if k not in _UQ_RESERVED and k not in mcmc_options and v is not None:
+            mcmc_options[k] = v
     # Minimal inp_data_dict so ensure_mle_cost_type_for_bayesian_inner can pick the
     # MLE cost from our option dicts (required for ln L = -cost in MCMC / Laplace).
     inp = {

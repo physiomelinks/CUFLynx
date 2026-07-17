@@ -61,23 +61,82 @@ _FALLBACK_DIFFERENTIABLE = {
 _NUM = "number"
 _SEL = "select"
 
+# Settings each fallback method exposes (name/type/default) — the fields CUFLynx
+# historically showed. Used only when CA can't be introspected.
+_FALLBACK_OPTS = [
+    {"name": "num_calls_to_function", "type": "int", "default": 100, "required": True,
+     "description": "Evaluation budget: maximum number of cost-function calls."},
+    {"name": "cost_convergence", "type": "float", "default": 1e-3, "required": False,
+     "description": "Stop once the cost drops below this value."},
+    {"name": "max_patience", "type": "int", "default": 10, "required": False,
+     "description": "Stop after this many iterations without improvement."},
+]
+
 # Calibration (param_id) methods offered when CA can't be introspected — i.e. an
 # older circulatory_autogen without ``PARAM_ID_METHODS`` in its schema. Matches
 # what CUFLynx historically hardcoded, so older CA behaves exactly as before.
 _FALLBACK_PARAM_ID_METHODS = [
-    {"value": "genetic_algorithm", "label": "Genetic algorithm", "gradient_based": False, "description": ""},
-    {"value": "CMA-ES", "label": "CMA-ES", "gradient_based": False, "description": ""},
+    {"value": "genetic_algorithm", "label": "Genetic algorithm", "gradient_based": False,
+     "description": "", "options": [dict(o) for o in _FALLBACK_OPTS]},
+    {"value": "CMA-ES", "label": "CMA-ES", "gradient_based": False,
+     "description": "", "options": [dict(o) for o in _FALLBACK_OPTS]},
 ]
+
+# Option blocks for the non-calibration analysis modes (sensitivity / MCMC /
+# identifiability) offered when CA can't be introspected — mirrors
+# PrimitiveParsers.ANALYSIS_OPTIONS so the SA/UQ panels still render their settings
+# on an older CA. Same descriptor shape as a param_id method's options.
+_FALLBACK_ANALYSIS_OPTIONS = {
+    "sensitivity_analysis": {
+        "label": "Sobol sensitivity analysis",
+        "enable_flag": "do_sensitivity",
+        "options_key": "sa_options",
+        "options": [
+            {"name": "method", "type": "enum", "default": "sobol", "required": False,
+             "choices": ["sobol", "naive"],
+             "description": "Sensitivity method: Sobol indices or a naive one-at-a-time sweep."},
+            {"name": "sample_type", "type": "str", "default": "saltelli", "required": False,
+             "description": "SALib sampling scheme (e.g. saltelli for Sobol)."},
+            {"name": "num_samples", "type": "int", "default": 256, "required": True,
+             "description": "Base sample count; total runs ~ num_samples*(2M+2) for Sobol."},
+        ],
+    },
+    "mcmc": {
+        "label": "MCMC posterior sampling",
+        "enable_flag": "do_mcmc",
+        "options_key": "mcmc_options",
+        "options": [
+            {"name": "num_steps", "type": "int", "default": 1000, "required": False,
+             "description": "Number of MCMC steps per walker."},
+            {"name": "num_walkers", "type": "int", "default": 64, "required": False,
+             "description": "Number of ensemble walkers (defaults to 2 * number of parameters)."},
+        ],
+    },
+    "identifiability_analysis": {
+        "label": "Identifiability analysis",
+        "enable_flag": "do_ia",
+        "options_key": "ia_options",
+        "options": [
+            {"name": "method", "type": "enum", "default": "Laplace", "required": True,
+             "choices": ["Laplace", "profile_likelihood"],
+             "description": "Identifiability method: Laplace approximation or profile likelihood."},
+            {"name": "sub_method", "type": "str", "default": "parabola_fit", "required": False,
+             "description": "Hessian method for the Laplace approximation."},
+        ],
+    },
+}
 
 _cache: dict | None = None
 _param_id_cache: list | None = None
+_analysis_cache: dict | None = None
 
 
 def reset_cache() -> None:
     """Drop the cached options (call when the CA directory changes)."""
-    global _cache, _param_id_cache
+    global _cache, _param_id_cache, _analysis_cache
     _cache = None
     _param_id_cache = None
+    _analysis_cache = None
 
 
 def _ca_paths() -> list[str]:
@@ -129,8 +188,36 @@ def _introspect_param_id_methods() -> list[dict]:
             "label": meta.get("label", canonical),
             "gradient_based": bool(meta.get("gradient_based", False)),
             "description": meta.get("description", ""),
+            # Per-method settings (name/type/default/choices/...), so the UI shows
+            # only the fields that method actually consumes — e.g. gradient-descent
+            # methods don't list max_patience.
+            "options": [dict(o) for o in (meta.get("options") or [])],
         })
     return methods
+
+
+def _introspect_analysis_options() -> dict:
+    """The option blocks for the non-calibration analysis modes (sensitivity /
+    MCMC / identifiability), from CA's ``ANALYSIS_OPTIONS`` schema.
+
+    Raises on an older CA that has no such schema, so the caller degrades to
+    :data:`_FALLBACK_ANALYSIS_OPTIONS`. Same "introspect CA, never hardcode"
+    pattern as the solver and param_id schemas — so new SA/MCMC/IA options in CA
+    surface in the UI automatically.
+    """
+    _ensure_ca_path()
+    from parsers.PrimitiveParsers import ANALYSIS_OPTIONS  # noqa: E402
+
+    out = {}
+    for mode, meta in ANALYSIS_OPTIONS.items():
+        meta = meta or {}
+        out[mode] = {
+            "label": meta.get("label", mode),
+            "enable_flag": meta.get("enable_flag"),
+            "options_key": meta.get("options_key"),
+            "options": [dict(o) for o in (meta.get("options") or [])],
+        }
+    return out
 
 
 def _dt_field() -> dict:
@@ -145,6 +232,66 @@ def _method_field(options, label) -> dict:
         "key": "method", "label": label, "type": _SEL,
         "default": opts[0] if opts else "", "options": opts,
     }
+
+
+# Short, familiar labels for well-known solver_info keys (CA's schema carries a
+# `description`, not a UI label); anything else is prettified from its name.
+_SOLVER_INFO_LABELS = {
+    "MaximumStep": "Max step",
+    "MaximumNumberOfSteps": "Max # steps",
+    "rtol": "Rel. tol",
+    "atol": "Abs. tol",
+    "reltol": "Rel. tol",
+    "abstol": "Abs. tol",
+    "max_step": "Max step",
+    "max_step_size": "Max step size",
+    "max_num_steps": "Max # steps",
+}
+
+
+def _pretty_label(name: str) -> str:
+    s = str(name).replace("_", " ").strip()
+    return (s[:1].upper() + s[1:]) if s else str(name)
+
+
+def _si_field_from_descriptor(desc: dict) -> dict | None:
+    """Map a CA solver_info descriptor (name/type/default/choices) to a CUFLynx
+    form field, or None when the compact settings form can't render it — i.e. the
+    ``str``/``dict`` fields (jac, gradient_method, casadi ``options``)."""
+    name = desc.get("name")
+    typ = desc.get("type")
+    if typ in ("str", "dict"):
+        return None
+    label = _SOLVER_INFO_LABELS.get(name, _pretty_label(name))
+    if typ == "enum":
+        return {"key": name, "label": label, "type": _SEL,
+                "default": desc.get("default"), "options": list(desc.get("choices") or [])}
+    if typ == "bool":
+        return {"key": name, "label": label, "type": "bool", "default": desc.get("default")}
+    return {"key": name, "label": label, "type": _NUM, "default": desc.get("default")}
+
+
+def _solver_info_schema_from_ca(fields_by_solver: dict, methods_by_solver: dict) -> dict:
+    """Per-solver solver_info form fields introspected from CA's ``SOLVER_INFO_FIELDS``
+    (the single source of truth). CA omits the framework keys, so ``method`` (from
+    the solver's method menu) and ``dt`` are injected; ``str``/``dict`` fields are
+    skipped. No per-method gating — CA's schema doesn't model it, so every field a
+    solver accepts is shown for that solver.
+    """
+    out = {}
+    for solver, descriptors in fields_by_solver.items():
+        fields = []
+        methods = methods_by_solver.get(solver, [])
+        if methods:
+            label = "Integrator" if solver == "casadi_integrator" else "Method"
+            fields.append(_method_field(methods, label))
+        fields.append(_dt_field())
+        for desc in descriptors or []:
+            field = _si_field_from_descriptor(desc)
+            if field is not None:
+                fields.append(field)
+        out[solver] = fields
+    return out
 
 
 def _solver_info_schema(methods_by_solver: dict) -> dict:
@@ -213,12 +360,20 @@ def _build_options(schema: dict, differentiable: dict[str, bool]) -> dict:
     if "CVODE_myokit" in solvers_by_format.get("cellml_only", []):
         default_solver_by_format["cellml_only"] = "CVODE_myokit"
     all_diff = bool(differentiable) and all(differentiable.values())
+    # Prefer CA's SOLVER_INFO_FIELDS (single source of truth) when present; an older
+    # CA (or the offline fallback schema) has no such key, so degrade to the curated
+    # built-in form.
+    fields_by_solver = schema.get("solver_info_fields_by_solver") or {}
+    if fields_by_solver:
+        solver_info_schema = _solver_info_schema_from_ca(fields_by_solver, methods_by_solver)
+    else:
+        solver_info_schema = _solver_info_schema(methods_by_solver)
     return {
         "model_formats": formats,
         "solvers_by_format": solvers_by_format,
         "default_solver_by_format": default_solver_by_format,
         "methods_by_solver": {s: list(m) for s, m in methods_by_solver.items()},
-        "solver_info_schema": _solver_info_schema(methods_by_solver),
+        "solver_info_schema": solver_info_schema,
         "differentiable_operations": dict(differentiable),
         "all_differentiable": all_diff,
     }
@@ -264,6 +419,54 @@ def get_param_id_methods(refresh: bool = False) -> list[dict]:
     if ok:
         _param_id_cache = methods
     return methods
+
+
+def get_analysis_options(refresh: bool = False) -> dict:
+    """Analysis-mode option blocks from CA's ``ANALYSIS_OPTIONS`` schema
+    (introspected, not hardcoded), keyed by mode ('sensitivity_analysis', 'mcmc',
+    'identifiability_analysis'). Each value carries ``label``/``enable_flag``/
+    ``options_key`` and the per-mode ``options`` descriptors the SA/UQ panels render.
+
+    Degrades to :data:`_FALLBACK_ANALYSIS_OPTIONS` on an older CA that lacks the
+    schema. Caches a successful introspection; returns the fallback uncached so a
+    later CA-dir change can still pick it up.
+    """
+    global _analysis_cache
+    if _analysis_cache is not None and not refresh:
+        return _analysis_cache
+    opts, ok = _safe(
+        _introspect_analysis_options,
+        {k: dict(v, options=[dict(o) for o in v["options"]]) for k, v in _FALLBACK_ANALYSIS_OPTIONS.items()},
+    )
+    if ok:
+        _analysis_cache = opts
+    return opts
+
+
+def analysis_mode_options(mode: str) -> list[dict]:
+    """The option descriptors for a single analysis mode; [] for an unknown mode."""
+    return get_analysis_options().get(mode, {}).get("options", [])
+
+
+def gradient_sources(model_type: str, solver: str, all_differentiable: bool) -> list[dict]:
+    """Gradient sources available for the current model, for the calibration UI's
+    gradient-source menu (a gradient method's do_ad choice).
+
+    circulatory_autogen has no static schema for this — it derives the source from
+    ``do_ad`` + ``model_type`` + ``solver`` (see PrimitiveParsers' do_ad/FSA
+    checks), so this mirrors those rules:
+      - casadi_python (+ all ops differentiable): symbolic CasADi AD
+      - cellml_only + CVODE_myokit: Myokit CVODES forward sensitivity (FSA)
+      - otherwise: finite differences only
+    Finite difference is always available. Kept in step with CA's logic; if CA ever
+    exposes a gradient-source schema, introspect that instead (like the solvers).
+    """
+    sources = [{"value": "FD", "label": "Finite difference"}]
+    if model_type == "casadi_python" and all_differentiable:
+        sources.append({"value": "AD", "label": "Automatic differentiation (CasADi)"})
+    elif model_type == "cellml_only" and solver == "CVODE_myokit":
+        sources.append({"value": "FSA", "label": "Forward sensitivity (Myokit CVODES)"})
+    return sources
 
 
 def ad_available(model_type: str, options: dict | None = None) -> bool:
