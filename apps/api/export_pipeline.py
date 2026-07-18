@@ -336,8 +336,13 @@ def main():
             ensure_mle_cost_type_for_bayesian_inner(cvs.param_id, uq_inp)
             ia.run({"method": "Laplace"})
             if getattr(ia, "rank", 0) == 0:
+                # CA renamed `mean_Lapalace` -> `mean_Laplace`; prefer the corrected
+                # name, fall back to the old spelling for older CA versions.
+                laplace_mean = getattr(ia, "mean_Laplace", None)
+                if laplace_mean is None:
+                    laplace_mean = ia.mean_Lapalace
                 samples = np.random.multivariate_normal(
-                    ia.mean_Lapalace, ia.covariance_matrix_Laplace, size=100000
+                    laplace_mean, ia.covariance_matrix_Laplace, size=100000
                 )
                 write_uq(output_dir, method, samples, flat_param_names(cvs))
 

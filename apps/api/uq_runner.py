@@ -230,8 +230,13 @@ def run(config: dict) -> dict:
         rank = getattr(ia, "rank", 0)
         if rank != 0:
             return {"rank": rank}
+        # CA renamed the misspelt `mean_Lapalace` -> `mean_Laplace`; read the
+        # corrected name but fall back to the old one so we work against any CA.
+        laplace_mean = getattr(ia, "mean_Laplace", None)
+        if laplace_mean is None:
+            laplace_mean = ia.mean_Lapalace
         flat = np.random.multivariate_normal(
-            ia.mean_Lapalace, ia.covariance_matrix_Laplace, size=LAPLACE_SAMPLES
+            laplace_mean, ia.covariance_matrix_Laplace, size=LAPLACE_SAMPLES
         )
         qnames = _flat_param_names(cvs)
     else:
