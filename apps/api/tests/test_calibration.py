@@ -125,6 +125,50 @@ def _force_mpiexec(monkeypatch, present: bool):
     )
 
 
+def _fake_env(tmp_path, name, *, with_mpiexec):
+    """A fake interpreter environment: <name>/bin/python, optionally with its own
+    mpiexec beside it (as `pip install mpi4py mpich` produces)."""
+    bindir = tmp_path / name / "bin"
+    bindir.mkdir(parents=True)
+    python = bindir / "python"
+    python.write_text("#!/bin/sh\n")
+    python.chmod(0o755)
+    if with_mpiexec:
+        mpi = bindir / "mpiexec"
+        mpi.write_text("#!/bin/sh\n")
+        mpi.chmod(0o755)
+    return str(python)
+
+
+def test_resolve_mpiexec_prefers_the_interpreters_own_launcher(tmp_path):
+    """The launcher must come from the selected interpreter's environment, not
+    PATH. Mixing them is what aborts every rank with 'unsupported PMI version
+    PMIx' (a system Open MPI mpiexec launching a venv's MPICH-linked mpi4py).
+
+    No mocking: the venv's mpiexec is a real file, so this fails against the old
+    `shutil.which("mpiexec")` behaviour, which would return the system one.
+    """
+    python = _fake_env(tmp_path, "venv", with_mpiexec=True)
+    own = str(tmp_path / "venv" / "bin" / "mpiexec")
+    assert calibration_mod.resolve_mpiexec(python) == own
+    # And it is genuinely different from whatever PATH would have given us.
+    assert own != calibration_mod.shutil.which("mpiexec")
+
+
+def test_resolve_mpiexec_falls_back_to_path(tmp_path):
+    """When the interpreter's env ships no launcher, fall back to PATH — this
+    preserves the previous behaviour rather than regressing to no-MPI."""
+    python = _fake_env(tmp_path, "bare", with_mpiexec=False)
+    real = calibration_mod.shutil.which("mpiexec")
+    assert calibration_mod.resolve_mpiexec(python) == real
+
+
+def test_resolve_mpiexec_returns_none_when_nothing_found(tmp_path, monkeypatch):
+    python = _fake_env(tmp_path, "none", with_mpiexec=False)
+    monkeypatch.setattr(calibration_mod.shutil, "which", lambda name, *a, **k: None)
+    assert calibration_mod.resolve_mpiexec(python) is None
+
+
 def test_build_command_single_vs_mpiexec(monkeypatch):
     _force_mpiexec(monkeypatch, present=True)
     mgr = calibration_mod.CalibrationManager()

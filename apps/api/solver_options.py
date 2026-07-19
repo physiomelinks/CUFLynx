@@ -30,6 +30,14 @@ from engine import _circulatory_autogen_src
 # CA's schema lists it.
 SUPPORTED_FORMATS = ("cellml_only", "python", "casadi_python")
 
+# Solvers CUFLynx must NOT surface because it does **not** bundle OpenCOR (see
+# CLAUDE.md — no OpenCOR dependency is shipped). CA's schema lists CVODE_opencor as
+# a cellml_only solver (and its default), but that backend needs an OpenCOR runtime
+# CUFLynx doesn't have; CUFLynx runs CellML through Myokit's CVODE instead. Offering
+# CVODE_opencor would present a solver that can't run here, so it's filtered out of
+# every payload (both the CA-introspected schema and the fallback below).
+UNSUPPORTED_SOLVERS = ("CVODE_opencor",)
+
 # Used only when CA's SOLVER_SCHEMA can't be imported (mirrors it).
 FALLBACK_SOLVER_SCHEMA = {
     "model_types": ["cellml_only", "python", "cpp", "casadi_python"],
@@ -347,18 +355,18 @@ def _build_options(schema: dict, differentiable: dict[str, bool]) -> dict:
     defaults = schema.get("default_solver_by_model_type", {})
     methods_by_solver = schema.get("methods_by_solver", {})
 
-    solvers_by_format = {m: list(solvers_by_model_type.get(m, [])) for m in formats}
-    default_solver_by_format = {
-        m: defaults.get(m) or (solvers_by_format[m][0] if solvers_by_format[m] else "")
-        for m in formats
-    }
-    # CA's schema defaults cellml_only to CVODE_opencor, but OpenCOR is a separate
-    # application most users don't have installed (and it isn't in the desktop
-    # bundle) — selecting it fails with "OpenCOR solver requested but OpenCOR is not
-    # available". CVODE_myokit is bundled and needs no external program, so prefer
-    # it as the cellml_only default when available.
-    if "CVODE_myokit" in solvers_by_format.get("cellml_only", []):
-        default_solver_by_format["cellml_only"] = "CVODE_myokit"
+    def _supported(solvers):
+        return [s for s in solvers if s not in UNSUPPORTED_SOLVERS]
+
+    solvers_by_format = {m: _supported(solvers_by_model_type.get(m, [])) for m in formats}
+    # If CA names an unsupported solver (e.g. CVODE_opencor) as a format's default,
+    # fall back to the first solver CUFLynx can actually run for that format.
+    default_solver_by_format = {}
+    for m in formats:
+        d = defaults.get(m)
+        if not d or d in UNSUPPORTED_SOLVERS:
+            d = solvers_by_format[m][0] if solvers_by_format[m] else ""
+        default_solver_by_format[m] = d
     all_diff = bool(differentiable) and all(differentiable.values())
     # Prefer CA's SOLVER_INFO_FIELDS (single source of truth) when present; an older
     # CA (or the offline fallback schema) has no such key, so degrade to the curated
@@ -372,8 +380,15 @@ def _build_options(schema: dict, differentiable: dict[str, bool]) -> dict:
         "model_formats": formats,
         "solvers_by_format": solvers_by_format,
         "default_solver_by_format": default_solver_by_format,
-        "methods_by_solver": {s: list(m) for s, m in methods_by_solver.items()},
-        "solver_info_schema": solver_info_schema,
+        "methods_by_solver": {
+            s: list(m) for s, m in methods_by_solver.items() if s not in UNSUPPORTED_SOLVERS
+        },
+        # Filter the CA-introspected schema (not a rebuilt one) so the OpenCOR
+        # exclusion composes with SOLVER_INFO_FIELDS introspection rather than
+        # discarding it.
+        "solver_info_schema": {
+            s: fields for s, fields in solver_info_schema.items() if s not in UNSUPPORTED_SOLVERS
+        },
         "differentiable_operations": dict(differentiable),
         "all_differentiable": all_diff,
     }

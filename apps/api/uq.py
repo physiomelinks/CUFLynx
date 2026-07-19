@@ -20,6 +20,7 @@ from pathlib import Path
 from calibration import (  # noqa: F401  (list_python_interpreters re-exported)
     _warn_no_mpiexec,
     list_python_interpreters,
+    resolve_mpiexec,
 )
 from runtime_paths import default_python, runner_command, runner_path, subprocess_env
 
@@ -63,15 +64,19 @@ class UQManager:
         """Single-process by default; ``mpiexec -n N`` when num_cores > 1 (MCMC
         and the GA calibration step parallelise across MPI ranks).
 
-        Falls back to a single core when ``num_cores > 1`` but ``mpiexec`` is not
-        on PATH (common on Windows), instead of launching a non-existent
+        The launcher is resolved from the selected interpreter's environment
+        (see :func:`calibration.resolve_mpiexec`) so it matches that
+        interpreter's mpi4py.
+
+        Falls back to a single core when ``num_cores > 1`` but no ``mpiexec``
+        can be found (common on Windows), instead of launching a non-existent
         ``mpiexec`` (which would crash the request with an HTTP 500).
         """
         python = config.get("python") or self.python
         base = runner_command(python, self.runner_path, config_path)
         num_cores = int(config.get("num_cores", 1) or 1)
         if num_cores > 1:
-            mpiexec = shutil.which("mpiexec")
+            mpiexec = resolve_mpiexec(python)
             if mpiexec is None:
                 _warn_no_mpiexec(num_cores)
                 return base

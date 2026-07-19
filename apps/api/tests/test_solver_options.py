@@ -45,13 +45,18 @@ def test_get_solver_options_shape():
         assert solver in opts["solver_info_schema"]
 
 
-def test_cellml_only_defaults_to_myokit_not_opencor():
-    """cellml_only must default to CVODE_myokit, not CA's CVODE_opencor: OpenCOR is
-    a separate program most users don't have (and it isn't bundled), so defaulting
-    to it makes a fresh simulate fail with 'OpenCOR ... is not available'."""
+def test_cvode_opencor_not_offered_because_no_opencor_bundled():
+    """CUFLynx does not bundle OpenCOR, so CVODE_opencor must never be surfaced:
+    not as a selectable solver, not as the cellml_only default, and not in the
+    solver_info schema. CellML runs through Myokit's CVODE instead."""
     opts = so.get_solver_options()
-    if "cellml_only" in opts["model_formats"]:
-        assert opts["default_solver_by_format"]["cellml_only"] == "CVODE_myokit"
+    for solvers in opts["solvers_by_format"].values():
+        assert "CVODE_opencor" not in solvers
+    assert "CVODE_opencor" not in opts["solver_info_schema"]
+    assert "CVODE_opencor" not in opts["methods_by_solver"]
+    # cellml_only falls back to the Myokit CVODE that CUFLynx can actually run.
+    assert opts["default_solver_by_format"]["cellml_only"] == "CVODE_myokit"
+    assert "CVODE_myokit" in opts["solvers_by_format"]["cellml_only"]
 
 
 def test_method_options_come_from_ca_schema():
