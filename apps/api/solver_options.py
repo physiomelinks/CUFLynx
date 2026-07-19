@@ -279,25 +279,70 @@ def _si_field_from_descriptor(desc: dict) -> dict | None:
     return {"key": name, "label": label, "type": _NUM, "default": desc.get("default")}
 
 
+# CA's SOLVER_INFO_FIELDS lists the keys a solver *accepts*, but not which of its
+# *methods* actually consume them — that lives in the wrapper's run() dispatch, so
+# mirror it here. Without this the form offers settings the chosen method ignores,
+# and some CasADi plugins reject outright ("Unknown option: abstol" on rk /
+# collocation).
+#
+# casadi_python_solver_helper.run() dispatches:
+#   semi_implicit_euler -> _run_semi_implicit_euler  (dt only)
+#   bdf / BDF           -> _run_symbolic_bdf         (dt + max_step sub-step cap)
+#   anything else       -> ca.integrator() with _build_integrator_opts(), which
+#                          passes reltol/abstol (rtol/atol as fallback) only for
+#                          the SUNDIALS plugins, and max_num_steps/max_step_size
+#                          for any plugin method.
+_CASADI_CUSTOM_LOOP_METHODS = ("semi_implicit_euler", "bdf", "BDF")
+_CASADI_SUNDIALS_METHODS = ("cvodes", "idas")
+
+
+def _casadi_method_gates(methods: list) -> dict[str, list]:
+    """Map casadi_integrator solver_info key -> the methods that consume it.
+
+    Derived from the offered method list, so a CA that adds or drops an integrator
+    stays in step (a key whose methods aren't offered gates to [] and is hidden).
+    """
+    plugin = [m for m in methods if m not in _CASADI_CUSTOM_LOOP_METHODS]
+    sundials = [m for m in methods if m in _CASADI_SUNDIALS_METHODS]
+    bdf = [m for m in methods if m in ("bdf", "BDF")]
+    return {
+        "reltol": sundials, "abstol": sundials, "rtol": sundials, "atol": sundials,
+        "max_num_steps": plugin, "max_step_size": plugin,
+        "max_step": bdf,
+    }
+
+
+# Solvers whose fields need per-method gating. solve_ivp is absent deliberately:
+# the python helper forwards rtol/atol/max_step for every scipy method.
+_METHOD_GATES_BY_SOLVER = {"casadi_integrator": _casadi_method_gates}
+
+
 def _solver_info_schema_from_ca(fields_by_solver: dict, methods_by_solver: dict) -> dict:
     """Per-solver solver_info form fields introspected from CA's ``SOLVER_INFO_FIELDS``
     (the single source of truth). CA omits the framework keys, so ``method`` (from
     the solver's method menu) and ``dt`` are injected; ``str``/``dict`` fields are
-    skipped. No per-method gating — CA's schema doesn't model it, so every field a
-    solver accepts is shown for that solver.
+    skipped.
+
+    CA's schema doesn't model per-method applicability, so :data:`_METHOD_GATES_BY_SOLVER`
+    overlays it — introspection stays the source of truth for *which fields exist*,
+    while the gating says which methods each one applies to.
     """
     out = {}
     for solver, descriptors in fields_by_solver.items():
         fields = []
-        methods = methods_by_solver.get(solver, [])
+        methods = list(methods_by_solver.get(solver, []))
         if methods:
             label = "Integrator" if solver == "casadi_integrator" else "Method"
             fields.append(_method_field(methods, label))
         fields.append(_dt_field())
+        gates = _METHOD_GATES_BY_SOLVER.get(solver, lambda _m: {})(methods)
         for desc in descriptors or []:
             field = _si_field_from_descriptor(desc)
-            if field is not None:
-                fields.append(field)
+            if field is None:
+                continue
+            if field["key"] in gates:
+                field["methods"] = gates[field["key"]]
+            fields.append(field)
         out[solver] = fields
     return out
 

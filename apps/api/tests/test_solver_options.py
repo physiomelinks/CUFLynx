@@ -83,8 +83,13 @@ def test_dt_offered_for_every_solver():
 
 def test_casadi_tolerance_fields_restricted_to_adaptive_methods():
     """reltol/abstol/max_num_steps apply to the adaptive CasADi plugins but not to
-    the fixed-step semi_implicit_euler (which uses only dt)."""
-    opts = so.get_solver_options()
+    the fixed-step semi_implicit_euler (which uses only dt).
+
+    Built from the fallback schema rather than get_solver_options(): the curated
+    form is only reached when CA carries no solver_info_fields_by_solver, so going
+    through get_solver_options() would silently test the *other* builder on a
+    machine that has a circulatory_autogen checkout."""
+    opts = so._build_options(so.FALLBACK_SOLVER_SCHEMA, {"max": True})
     for field in opts["solver_info_schema"]["casadi_integrator"]:
         if field["key"] in ("reltol", "abstol", "max_num_steps"):
             assert "semi_implicit_euler" not in field["methods"]
@@ -94,7 +99,7 @@ def test_casadi_tolerance_fields_restricted_to_adaptive_methods():
 def test_casadi_max_step_field_offered_for_bdf_only():
     """The bdf integrator's internal sub-step cap (max_step) is an editable setting,
     scoped to 'bdf' only (other casadi methods don't consume it)."""
-    opts = so.get_solver_options()
+    opts = so._build_options(so.FALLBACK_SOLVER_SCHEMA, {"max": True})
     fields = opts["solver_info_schema"]["casadi_integrator"]
     assert "bdf" in _method_options(opts, "casadi_integrator")
     max_step = next((f for f in fields if f["key"] == "max_step"), None)
@@ -132,8 +137,76 @@ def test_solver_info_introspected_from_ca_schema():
     assert by_key["some_flag"]["type"] == "bool"
     assert by_key["mode"]["type"] == "select" and by_key["mode"]["options"] == ["a", "b"]
     assert "opts" not in by_key and "jac" not in by_key
-    # Full introspection carries no per-method gating (CA's schema doesn't model it).
-    assert "methods" not in by_key["max_step"]
+    # CA's schema doesn't model per-method applicability, so CUFLynx overlays it:
+    # max_step is the bdf sub-step cap, max_step_size is a plugin option (so it is
+    # gated to the plugin methods, i.e. not bdf).
+    assert by_key["max_step"]["methods"] == ["bdf"]
+    assert by_key["max_step_size"]["methods"] == ["cvodes"]
+
+
+def test_ca_introspected_fields_keep_per_method_gating():
+    """Regression: the CA-introspection path must gate fields by method just like
+    the curated form.
+
+    Introspection is the source of truth for *which* fields exist, but CA's
+    SOLVER_INFO_FIELDS says nothing about which methods consume them. Without the
+    overlay every casadi field showed for every method, so selecting the fixed-step
+    semi_implicit_euler offered reltol/abstol/max_num_steps it never reads, and
+    rk/collocation offered tolerances CasADi rejects outright ("Unknown option:
+    abstol"). Gates mirror casadi_python_solver_helper.run()'s dispatch."""
+    methods = ["cvodes", "idas", "collocation", "rk", "semi_implicit_euler", "bdf"]
+    schema = {
+        "model_types": ["casadi_python"],
+        "solvers_by_model_type": {"casadi_python": ["casadi_integrator"]},
+        "methods_by_solver": {"casadi_integrator": methods},
+        "default_solver_by_model_type": {"casadi_python": "casadi_integrator"},
+        "solver_info_fields_by_solver": {
+            "casadi_integrator": [
+                {"name": "max_step_size", "type": "float", "default": 0.001},
+                {"name": "max_step", "type": "float", "default": 1e-3},
+                {"name": "max_num_steps", "type": "int", "default": 5000},
+                {"name": "reltol", "type": "float", "default": 1e-8},
+                {"name": "abstol", "type": "float", "default": 1e-10},
+                {"name": "rtol", "type": "float", "default": None},
+                {"name": "atol", "type": "float", "default": None},
+            ],
+        },
+    }
+    by_key = {f["key"]: f
+              for f in so._build_options(schema, {"max": True})["solver_info_schema"]["casadi_integrator"]}
+
+    # Tolerances reach ca.integrator only for the SUNDIALS plugins.
+    for key in ("reltol", "abstol", "rtol", "atol"):
+        assert by_key[key]["methods"] == ["cvodes", "idas"], key
+
+    # Plugin options: every method that goes through ca.integrator() — so not the
+    # custom run loops (semi_implicit_euler, bdf).
+    for key in ("max_num_steps", "max_step_size"):
+        assert by_key[key]["methods"] == ["cvodes", "idas", "collocation", "rk"], key
+
+    # The bdf sub-step cap is consumed only by _run_symbolic_bdf.
+    assert by_key["max_step"]["methods"] == ["bdf"]
+
+    # dt applies to every method, so it stays ungated.
+    assert "methods" not in by_key["dt"]
+
+
+def test_method_gates_track_the_offered_method_list():
+    """A CA that doesn't offer a gated method must not leave it dangling: gates are
+    computed from the offered methods, so an absent one yields an empty gate (the
+    field is then hidden for every method) rather than a stale reference."""
+    schema = {
+        "model_types": ["casadi_python"],
+        "solvers_by_model_type": {"casadi_python": ["casadi_integrator"]},
+        "methods_by_solver": {"casadi_integrator": ["cvodes"]},  # no bdf offered
+        "default_solver_by_model_type": {"casadi_python": "casadi_integrator"},
+        "solver_info_fields_by_solver": {
+            "casadi_integrator": [{"name": "max_step", "type": "float", "default": 1e-3}],
+        },
+    }
+    by_key = {f["key"]: f
+              for f in so._build_options(schema, {"max": True})["solver_info_schema"]["casadi_integrator"]}
+    assert by_key["max_step"]["methods"] == []
 
 
 def test_solver_info_falls_back_to_curated_without_ca_fields():
