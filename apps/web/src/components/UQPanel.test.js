@@ -11,7 +11,13 @@ const ButtonStub = {
   props: ['disabled', 'label'],
   template: '<button :disabled="disabled" v-bind="$attrs">{{ label }}</button>',
 }
-const stubs = { Select: SelectStub, InputNumber: true, Checkbox: true, Button: ButtonStub }
+const stubs = {
+  Select: SelectStub,
+  InputNumber: true,
+  InputText: true,
+  Checkbox: true,
+  Button: ButtonStub,
+}
 
 // The MCMC settings come from CA's ANALYSIS_OPTIONS[mcmc] descriptors
 // (introspected, not hardcoded), so new CA options surface here automatically.
@@ -45,5 +51,22 @@ describe('UQPanel MCMC options from CA schema', () => {
       global: { stubs },
     })
     expect(wrapper.find('[data-testid="mcmc-opt-num_steps"]').exists()).toBe(false)
+  })
+
+  it("renders a 'str' option as a text input, not a number input", async () => {
+    // Regression: str descriptors fell through to InputNumber and displayed NaN.
+    // CA's identifiability sub_method ('parabola_fit') is the real instance.
+    const opts = [...MCMC_OPTIONS, { name: 'moves', type: 'str', default: 'stretch' }]
+    const wrapper = mount(UQPanel, {
+      props: { canRun: true, defaults: { method: 'mcmc', mcmc_options: opts } },
+      global: { stubs },
+    })
+    const tag = (id) => wrapper.find(`[data-testid="mcmc-opt-${id}"]`).element.tagName.toLowerCase()
+    expect(tag('moves')).toBe('input-text-stub')
+    expect(tag('num_steps')).toBe('input-number-stub')
+
+    // and the string default survives instead of becoming NaN
+    await wrapper.find('[data-testid="run-uq"]').trigger('click')
+    expect(wrapper.emitted('run')[0][0].moves).toBe('stretch')
   })
 })

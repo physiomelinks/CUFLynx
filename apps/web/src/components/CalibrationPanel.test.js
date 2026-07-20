@@ -18,6 +18,7 @@ const SelectStub = {
 const stubs = {
   Select: true,
   InputNumber: true,
+  InputText: true,
   Checkbox: true,
   Button: ButtonStub,
 }
@@ -160,6 +161,26 @@ describe('CalibrationPanel', () => {
     // The reported bug: max_patience must NOT appear for multi-start gradient descent.
     expect(ms.find('[data-testid="calib-opt-max_patience"]').exists()).toBe(false)
     expect(ms.find('[data-testid="calib-opt-num_starts"]').exists()).toBe(true)
+  })
+
+  it("renders a 'str' method option as a text input, not a number input", () => {
+    // Regression: str descriptors fell through to InputNumber and displayed NaN.
+    const methods = [
+      {
+        value: 'genetic_algorithm', label: 'GA', gradient_based: false,
+        options: [
+          { name: 'num_calls_to_function', type: 'int', default: 100 },
+          { name: 'selection', type: 'str', default: 'tournament' },
+        ],
+      },
+    ]
+    const wrapper = mount(CalibrationPanel, {
+      props: { defaults: { methods, param_id_method: 'genetic_algorithm' } },
+      global: { stubs: selectStubs },
+    })
+    const tag = (id) => wrapper.find(`[data-testid="calib-opt-${id}"]`).element.tagName.toLowerCase()
+    expect(tag('selection')).toBe('input-text-stub')
+    expect(tag('num_calls_to_function')).toBe('input-number-stub')
   })
 
   it('emits only the selected method\'s settings (num_starts, not max_patience)', async () => {
