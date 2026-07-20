@@ -8,17 +8,40 @@ manually explore how parameters affect your (CellML) model outputs.
 
 ## Download the desktop app
 
-Download the one file for your OS and double-click it.
-
 | OS | Download |
 |----|----------|
-| **Linux** (x86-64, glibc 2.35+ / Ubuntu 22.04+) | [**CUFLynx-linux-x86_64**](https://github.com/physiomelinks/CUFLynx/releases/latest/download/CUFLynx-linux-x86_64) — then `chmod +x CUFLynx-linux-x86_64` |
-| **macOS** — Apple silicon (M1/M2/M3) | [**CUFLynx-macos-arm64**](https://github.com/physiomelinks/CUFLynx/releases/latest/download/CUFLynx-macos-arm64) |
-| **macOS** — Intel | [**CUFLynx-macos-x86_64**](https://github.com/physiomelinks/CUFLynx/releases/latest/download/CUFLynx-macos-x86_64) |
+| **Linux** (x86-64, glibc 2.35+ / Ubuntu 22.04+) | [**CUFLynx-linux-x86_64**](https://github.com/physiomelinks/CUFLynx/releases/latest/download/CUFLynx-linux-x86_64) |
+| **macOS** — Apple silicon (any M-series: M1–M5 and later; macOS 11+) | [**CUFLynx-macos-arm64**](https://github.com/physiomelinks/CUFLynx/releases/latest/download/CUFLynx-macos-arm64) |
+| **macOS** — Intel (macOS 11+) | [**CUFLynx-macos-x86_64**](https://github.com/physiomelinks/CUFLynx/releases/latest/download/CUFLynx-macos-x86_64) |
 | **Windows** (x86-64) | [**CUFLynx-windows-x86_64.exe**](https://github.com/physiomelinks/CUFLynx/releases/latest/download/CUFLynx-windows-x86_64.exe) |
 
-Not sure which Mac you have? **Apple menu → About This Mac**: "Apple M1/M2/M3…" is
-Apple silicon; "Intel…" is Intel.
+Not sure which Mac you have? **Apple menu → About This Mac**: anything starting
+"Apple M" is Apple silicon; "Intel…" is Intel. Every M-series chip runs the same
+`arm64` build — there is no per-generation download.
+
+### Making it runnable (macOS and Linux)
+
+**Windows:** double-click the `.exe`.
+
+**macOS and Linux:** a GitHub release asset is stored as a plain file, so the
+executable bit is stripped on download. You must restore it before the file will
+run — otherwise double-clicking opens it in a **text editor** and you get a
+screenful of binary garbage, which is the file's own machine code, not an error:
+
+```bash
+cd ~/Downloads
+chmod +x CUFLynx-macos-arm64          # or CUFLynx-macos-x86_64 / CUFLynx-linux-x86_64
+./CUFLynx-macos-arm64
+```
+
+**macOS only — Gatekeeper.** The app is not yet notarized, so a file downloaded
+through a browser is quarantined and macOS refuses it with *"cannot be opened
+because the developer cannot be verified."* Either right-click the file →
+**Open** → **Open** (once per download), or clear the quarantine flag:
+
+```bash
+xattr -d com.apple.quarantine CUFLynx-macos-arm64
+```
 
 These links always point at the newest release. All builds are also listed on the
 [releases page](https://github.com/physiomelinks/CUFLynx/releases/latest).
