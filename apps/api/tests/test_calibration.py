@@ -6,6 +6,8 @@ short real genetic-algorithm calibration on the 3compartment model.
 
 import json
 import math
+import os
+import sys
 import time
 
 import pytest
@@ -125,19 +127,35 @@ def _force_mpiexec(monkeypatch, present: bool):
     )
 
 
+# The fake environment has to look executable to shutil.which, and that is
+# platform-specific. On Windows which() only ever considers candidates carrying a
+# PATHEXT extension (it builds `[cmd + ext for ext in PATHEXT]`), so an
+# extension-less "mpiexec" file is invisible there — and a real Windows venv puts
+# its executables in Scripts/, not bin/. Building the fixture the POSIX way made
+# this test fail on windows-latest for a reason that has nothing to do with the
+# behaviour under test.
+_EXE = ".exe" if sys.platform == "win32" else ""
+_BINDIR = "Scripts" if sys.platform == "win32" else "bin"
+
+
 def _fake_env(tmp_path, name, *, with_mpiexec):
-    """A fake interpreter environment: <name>/bin/python, optionally with its own
-    mpiexec beside it (as `pip install mpi4py mpich` produces)."""
-    bindir = tmp_path / name / "bin"
+    """A fake interpreter environment: <name>/<bindir>/python, optionally with its
+    own mpiexec beside it (as `pip install mpi4py mpich` produces)."""
+    bindir = tmp_path / name / _BINDIR
     bindir.mkdir(parents=True)
-    python = bindir / "python"
+    python = bindir / f"python{_EXE}"
     python.write_text("#!/bin/sh\n")
     python.chmod(0o755)
     if with_mpiexec:
-        mpi = bindir / "mpiexec"
+        mpi = bindir / f"mpiexec{_EXE}"
         mpi.write_text("#!/bin/sh\n")
         mpi.chmod(0o755)
     return str(python)
+
+
+def _own_mpiexec(tmp_path, name):
+    """The launcher _fake_env put inside that environment."""
+    return str(tmp_path / name / _BINDIR / f"mpiexec{_EXE}")
 
 
 def test_resolve_mpiexec_prefers_the_interpreters_own_launcher(tmp_path):
@@ -149,10 +167,16 @@ def test_resolve_mpiexec_prefers_the_interpreters_own_launcher(tmp_path):
     `shutil.which("mpiexec")` behaviour, which would return the system one.
     """
     python = _fake_env(tmp_path, "venv", with_mpiexec=True)
-    own = str(tmp_path / "venv" / "bin" / "mpiexec")
-    assert calibration_mod.resolve_mpiexec(python) == own
+    own = _own_mpiexec(tmp_path, "venv")
+    found = calibration_mod.resolve_mpiexec(python)
+    assert found is not None, "the interpreter's own launcher should have been found"
+    # samefile, not string equality: resolve_mpiexec derives the directory via
+    # Path.resolve(), which on Windows may normalise case or expand an 8.3 short
+    # path, so the strings can differ while naming the same file.
+    assert os.path.samefile(found, own)
     # And it is genuinely different from whatever PATH would have given us.
-    assert own != calibration_mod.shutil.which("mpiexec")
+    on_path = calibration_mod.shutil.which("mpiexec")
+    assert on_path is None or not os.path.samefile(found, on_path)
 
 
 def test_resolve_mpiexec_falls_back_to_path(tmp_path):
