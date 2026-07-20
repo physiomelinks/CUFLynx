@@ -8,17 +8,63 @@ manually explore how parameters affect your (CellML) model outputs.
 
 ## Download the desktop app
 
-Download the one file for your OS and double-click it.
-
 | OS | Download |
 |----|----------|
-| **Linux** (x86-64, glibc 2.35+ / Ubuntu 22.04+) | [**CUFLynx-linux-x86_64**](https://github.com/physiomelinks/CUFLynx/releases/latest/download/CUFLynx-linux-x86_64) — then `chmod +x CUFLynx-linux-x86_64` |
-| **macOS** — Apple silicon (M1/M2/M3) | [**CUFLynx-macos-arm64**](https://github.com/physiomelinks/CUFLynx/releases/latest/download/CUFLynx-macos-arm64) |
-| **macOS** — Intel | [**CUFLynx-macos-x86_64**](https://github.com/physiomelinks/CUFLynx/releases/latest/download/CUFLynx-macos-x86_64) |
+| **Linux** (x86-64, glibc 2.35+ / Ubuntu 22.04+) | [**CUFLynx-linux-x86_64**](https://github.com/physiomelinks/CUFLynx/releases/latest/download/CUFLynx-linux-x86_64) |
+| **macOS** — Apple silicon (any M-series: M1–M5 and later; macOS 11+) | [**CUFLynx-macos-arm64**](https://github.com/physiomelinks/CUFLynx/releases/latest/download/CUFLynx-macos-arm64) |
+| **macOS** — Intel (macOS 11+) | [**CUFLynx-macos-x86_64**](https://github.com/physiomelinks/CUFLynx/releases/latest/download/CUFLynx-macos-x86_64) |
 | **Windows** (x86-64) | [**CUFLynx-windows-x86_64.exe**](https://github.com/physiomelinks/CUFLynx/releases/latest/download/CUFLynx-windows-x86_64.exe) |
 
-Not sure which Mac you have? **Apple menu → About This Mac**: "Apple M1/M2/M3…" is
-Apple silicon; "Intel…" is Intel.
+Not sure which Mac you have? **Apple menu → About This Mac**: anything starting
+"Apple M" is Apple silicon; "Intel…" is Intel. Every M-series chip runs the same
+`arm64` build.
+
+### Run it
+
+<details open>
+<summary><b>macOS</b></summary>
+
+Apple silicon:
+
+```bash
+cd ~/Downloads
+chmod +x CUFLynx-macos-arm64
+xattr -d com.apple.quarantine CUFLynx-macos-arm64
+./CUFLynx-macos-arm64
+```
+
+Intel:
+
+```bash
+cd ~/Downloads
+chmod +x CUFLynx-macos-x86_64
+xattr -d com.apple.quarantine CUFLynx-macos-x86_64
+./CUFLynx-macos-x86_64
+```
+
+The app isn't notarized yet, so macOS blocks the download until the quarantine
+flag is cleared — the `xattr` line does that, or right-click → **Open** → **Open**.
+
+</details>
+
+<details>
+<summary><b>Linux</b></summary>
+
+```bash
+cd ~/Downloads
+chmod +x CUFLynx-linux-x86_64
+./CUFLynx-linux-x86_64
+```
+
+</details>
+
+<details>
+<summary><b>Windows</b></summary>
+
+Double-click `CUFLynx-windows-x86_64.exe`. If SmartScreen warns, choose
+**More info** → **Run anyway**.
+
+</details>
 
 These links always point at the newest release. All builds are also listed on the
 [releases page](https://github.com/physiomelinks/CUFLynx/releases/latest).

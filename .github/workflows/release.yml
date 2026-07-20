@@ -123,6 +123,15 @@ jobs:
 
       - name: Build executable
         run: python scripts/package.py
+        env:
+          # Pin the macOS floor for the same reason ubuntu-22.04 is pinned above.
+          # Without this the deployment target defaults to the build SDK, so as
+          # the floating macos-latest image advances the binary's LC_BUILD_VERSION
+          # minos silently rises and OLDER Macs stop launching it — the macOS
+          # analogue of "GLIBC_2.38 not found", and just as invisible at build
+          # time. 11.0 is the first macOS with Apple silicon support, so it costs
+          # nothing on arm64 and keeps Intel users on Big Sur working.
+          MACOSX_DEPLOYMENT_TARGET: "11.0"
 
       # circulatory_autogen isn't bundled (it's picked at runtime), but the smoke
       # test needs it to run a real simulation — see below.
