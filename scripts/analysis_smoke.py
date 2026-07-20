@@ -30,10 +30,15 @@ import argparse
 import json
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+
+# The flag runtime_paths.RUNNER_MODE_FLAG uses to re-invoke the frozen bundle as
+# an analysis runner. Kept in sync with apps/api/runtime_paths.py.
+RUNNER_MODE_FLAG = "--_cuflynx-run-analysis"
 
 ROOT = Path(__file__).resolve().parents[1]
 RESOURCES = ROOT / "resources"
@@ -111,6 +116,39 @@ def _fail(msg: str, lines: list[str] | None = None) -> None:
     sys.exit(1)
 
 
+def _check_bundled_scipy_data(binary: str) -> None:
+    """Guard that scipy's runtime *data files* are in the bundle.
+
+    scipy.stats.qmc.Sobol reads scipy/stats/_sobol_direction_numbers.npz at
+    construction; if the spec doesn't collect scipy's data files that .npz is
+    absent and a Sobol run (e.g. multi-start with start_sampling='sobol') fails
+    with FileNotFoundError. scipy *ignores* that exception, so it never surfaces
+    as a job failure -- which is exactly how it shipped unnoticed. Probe it
+    directly by re-invoking the bundle in runner mode on a tiny script.
+    """
+    with tempfile.TemporaryDirectory() as td:
+        probe = Path(td) / "sobol_probe.py"
+        probe.write_text(
+            "from scipy.stats import qmc\n"
+            "pts = qmc.Sobol(d=3, scramble=False).random(4)\n"
+            # point index 1 of an unscrambled Sobol sequence is [.5,.5,.5]; it is
+            # 0 if the direction numbers failed to load -> proves the .npz loaded.
+            "assert abs(float(pts[1].sum()) - 1.5) < 1e-9, f'bad Sobol pts: {pts.tolist()}'\n"
+            "print('SCIPY_SOBOL_OK')\n"
+        )
+        cfg = Path(td) / "cfg.json"  # runner mode expects a config-path argv[2]
+        cfg.write_text("{}")
+        out = subprocess.run(
+            [binary, RUNNER_MODE_FLAG, str(probe), str(cfg)],
+            capture_output=True, text=True, timeout=120,
+        )
+        combined = out.stdout + out.stderr
+        if "SCIPY_SOBOL_OK" not in combined:
+            _fail("scipy Sobol probe failed in the built app (missing bundled "
+                  "scipy data file?)", combined.splitlines())
+        print("scipy data OK (Sobol direction numbers load in the bundle)")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--binary", required=True, help="path to the built CUFLynx executable")
@@ -135,6 +173,9 @@ def main() -> int:
     try:
         if not _wait_health(base):
             _fail("app did not become healthy")
+
+        # 0. Cheap guard: scipy's runtime data files are bundled (see below).
+        _check_bundled_scipy_data(args.binary)
 
         # 1. Configure CA dir + runner interpreter + backend, as a user would.
         #    Pin the backend to cellml_only / CVODE_myokit explicitly: the analysis
