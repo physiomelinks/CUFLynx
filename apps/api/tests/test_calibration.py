@@ -193,6 +193,47 @@ def test_resolve_mpiexec_returns_none_when_nothing_found(tmp_path, monkeypatch):
     assert calibration_mod.resolve_mpiexec(python) is None
 
 
+@pytest.mark.parametrize("python", [None, "", "   "])
+def test_resolve_mpiexec_tolerates_a_missing_interpreter(python, monkeypatch):
+    """Regression: default_python() returns None in the packaged app ("no external
+    interpreter -- run in the bundle"), and that None flows straight into
+    resolve_mpiexec. `os.sep in None` raised TypeError, so any num_cores>1
+    sensitivity/calibration/UQ run failed with an HTTP 500 instead of falling back.
+
+    With no interpreter there is no environment to resolve a launcher from, so the
+    correct answer is PATH -- the pre-existing behaviour."""
+    monkeypatch.setattr(
+        calibration_mod.shutil, "which",
+        lambda name, *a, **k: "/usr/bin/mpiexec" if name == "mpiexec" else None,
+    )
+    assert calibration_mod.resolve_mpiexec(python) == "/usr/bin/mpiexec"
+
+
+@pytest.mark.parametrize(
+    "module_name", ["calibration", "sensitivity", "uq"],
+)
+def test_build_command_with_no_interpreter_does_not_raise(module_name, monkeypatch):
+    """All three managers share the launcher lookup, so all three regressed
+    together. Drives build_command (not just the helper) with the packaged-app
+    state -- no configured interpreter, num_cores>1 -- and asserts it returns a
+    command rather than raising, which is what surfaced as the 500."""
+    import importlib
+
+    mod = importlib.import_module(module_name)
+    monkeypatch.setattr(
+        calibration_mod.shutil, "which",
+        lambda name, *a, **k: "/usr/bin/mpiexec" if name == "mpiexec" else None,
+    )
+    manager = next(
+        obj for obj in vars(mod).values()
+        if hasattr(obj, "build_command") and hasattr(obj, "python")
+    )
+    monkeypatch.setattr(manager, "python", None)  # packaged app: no external default
+    cmd = manager.build_command({"num_cores": 2}, "/tmp/cfg.json")
+    assert isinstance(cmd, list) and cmd
+    assert cmd[0] == "/usr/bin/mpiexec" and cmd[1:3] == ["-n", "2"]
+
+
 def test_build_command_single_vs_mpiexec(monkeypatch):
     _force_mpiexec(monkeypatch, present=True)
     mgr = calibration_mod.CalibrationManager()

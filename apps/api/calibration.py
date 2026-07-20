@@ -33,7 +33,7 @@ def _warn_no_mpiexec(num_cores: int) -> None:
     )
 
 
-def resolve_mpiexec(python: str) -> str | None:
+def resolve_mpiexec(python: str | None) -> str | None:
     """Locate the ``mpiexec`` belonging to ``python``'s own environment.
 
     MPI only works when the launcher and the ``mpi4py`` runtime come from the
@@ -48,8 +48,17 @@ def resolve_mpiexec(python: str) -> str | None:
     mpich`` drops both into ``<sys.prefix>/bin``). Only fall back to PATH, which
     preserves the previous behaviour when the environment ships no launcher.
 
+    ``python`` may be None: :func:`runtime_paths.default_python` returns None in
+    the packaged app, meaning "no external interpreter -- run the analysis in the
+    bundle itself". There is then no environment to resolve a launcher *from*, so
+    fall back to PATH. Do not drop this guard: without it ``os.sep in python``
+    raises TypeError and the caller's num_cores>1 request dies as an HTTP 500,
+    which is exactly what the mpiexec-missing fallback exists to prevent.
+
     Returns the launcher path, or None when none can be found.
     """
+    if not python:
+        return shutil.which("mpiexec")
     # `python` may be a bare command name; resolve it to a real path first so
     # that its directory is meaningful.
     exe = python if os.sep in python else (shutil.which(python) or python)
