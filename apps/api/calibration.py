@@ -16,7 +16,13 @@ import threading
 import uuid
 from pathlib import Path
 
-from runtime_paths import default_python, runner_command, runner_path, subprocess_env
+from runtime_paths import (
+    bundled_mpiexec,
+    default_python,
+    runner_command,
+    runner_path,
+    subprocess_env,
+)
 
 RUNNER_PATH = str(runner_path("calibration_runner.py"))
 
@@ -58,7 +64,12 @@ def resolve_mpiexec(python: str | None) -> str | None:
     Returns the launcher path, or None when none can be found.
     """
     if not python:
-        return shutil.which("mpiexec")
+        # Packaged app, no external interpreter: the ranks are the bundle itself,
+        # loading the bundle's MPICH. Prefer the MPICH Hydra launcher bundled
+        # beside the app so launcher and runtime are the same MPI by construction;
+        # a PATH mpiexec from a different MPI (e.g. system Open MPI) would abort
+        # every rank at MPI_Init with "unsupported PMI version PMIx".
+        return bundled_mpiexec() or shutil.which("mpiexec")
     # `python` may be a bare command name; resolve it to a real path first so
     # that its directory is meaningful.
     exe = python if os.sep in python else (shutil.which(python) or python)

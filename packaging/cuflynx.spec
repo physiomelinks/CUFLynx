@@ -348,6 +348,45 @@ if not _found_mpi:
         "Microsoft MPI (Windows) in the build environment."
     )
 
+# --- PROTOTYPE: bundle MPICH's own launcher (Hydra) so multi-core analysis in the
+# packaged app uses a launcher that matches the bundled MPICH runtime.
+#
+# Without this the app falls back to whatever `mpiexec` is on the user's PATH.
+# When that is a different MPI (e.g. system Open MPI, whose launcher speaks PMIx)
+# driving the bundle's MPICH ranks, every rank aborts at MPI_Init with
+# "unsupported PMI version PMIx" -- or, on a machine with no MPI at all, there is
+# no launcher and the run silently drops to a single core.
+#
+# Hydra is MPICH-only. It is NOT how Windows MPI works (Microsoft MPI uses its own
+# mpiexec.exe + smpd, no Hydra) and there is no MPICH wheel for Windows or macOS
+# Intel (pip installs a do-nothing 0.0.0 stub there). So bundle the launcher only
+# where a real MPICH wheel provided one; other platforms keep the PATH fallback.
+#
+# mpiexec.hydra and hydra_pmi_proxy are standalone process-manager binaries that
+# do NOT link libmpi, and mpiexec.hydra locates its proxy relative to its own
+# path -- so bundling the two together in one dir is sufficient; no env or rpath
+# work is needed (verified on Linux with a stripped environment).
+_prefix_bin = Path(sys.prefix) / "bin"
+_hydra = _prefix_bin / "mpiexec.hydra"
+_hydra_proxy = _prefix_bin / "hydra_pmi_proxy"
+if _hydra.is_file() and _hydra_proxy.is_file():
+    # Land under mpi/bin/ (a dedicated subdir, not the flattened root) so the
+    # launcher and its proxy sit beside each other and runtime_paths.bundled_mpiexec
+    # can find them deterministically.
+    binaries.append((str(_hydra), "mpi/bin"))
+    binaries.append((str(_hydra_proxy), "mpi/bin"))
+    # A plain `mpiexec` shim if present (hydra symlink/copy); harmless, keeps the
+    # dir self-consistent.
+    _mpiexec_shim = _prefix_bin / "mpiexec"
+    if _mpiexec_shim.is_file():
+        binaries.append((str(_mpiexec_shim), "mpi/bin"))
+elif sys.platform != "win32":
+    # Linux / macOS-arm64 are expected to have it; macOS-Intel legitimately won't
+    # (0.0.0 stub wheel). Warn rather than fail so the build still produces a
+    # working single-core-capable app.
+    print(f"WARNING: no bundled Hydra launcher ({_hydra}); multi-core analysis in "
+          "the packaged app will fall back to the PATH mpiexec.")
+
 # casadi needs its native libraries to sit NEXT TO the _casadi extension module,
 # not at the bundle root where PyInstaller normally flattens binaries. Without the
 # original layout, `import casadi` fails inside the frozen app on Windows and CA
