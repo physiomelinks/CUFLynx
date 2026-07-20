@@ -116,15 +116,27 @@ jobs:
         run: pip install -e ".[desktop,analysis]"
 
       # Windows antivirus (Defender et al.) frequently flags PyInstaller onefile
-      # exes as trojans -- a false positive driven mainly by the *stock* bootloader
-      # shipped in the PyInstaller wheel, whose exact bytes are in AV signature
-      # databases. Rebuilding the bootloader from source (needs a C compiler;
-      # windows-latest has MSVC) produces a unique bootloader that isn't a
-      # signature match, which clears the bulk of the Defender detections. This is
-      # a mitigation, not a guarantee -- the durable fix is Authenticode signing.
+      # exes as trojans -- a false positive driven mainly by the *stock* bootloader,
+      # whose exact bytes are in AV signature databases (malware built with
+      # PyInstaller shares it). Rebuilding it from source produces a unique
+      # bootloader that isn't a signature match, clearing the bulk of the Defender
+      # detections. Mitigation, not a guarantee -- the durable fix is Authenticode
+      # signing (see packaging/README.md).
+      #
+      # PYINSTALLER_COMPILE_BOOTLOADER=1 is load-bearing: PyInstaller's *sdist*
+      # ships a prebuilt Windows bootloader (PyInstaller/bootloader/Windows-64bit-
+      # intel/run.exe), so `--no-binary pyinstaller` alone reuses it and compiles
+      # nothing (verified: the wheel build finished in 0.07 s with no cl.exe). The
+      # env var forces hatch_build.py to compile even when a prebuilt exists
+      # (hatch_build.py: `bootloader_exists() and not env[...]`). --no-cache-dir
+      # avoids reusing a previously-built wheel. windows-latest has the MSVC waf
+      # needs; if the compile can't find it the step fails loudly rather than
+      # silently shipping the stock bootloader.
       - name: Rebuild PyInstaller bootloader from source (Windows AV false-positive)
         if: runner.os == 'Windows'
-        run: pip install --no-binary pyinstaller --force-reinstall "pyinstaller>=6.0"
+        env:
+          PYINSTALLER_COMPILE_BOOTLOADER: "1"
+        run: pip install --no-binary pyinstaller --force-reinstall --no-cache-dir "pyinstaller>=6.0"
 
       # yarn, not npm: the repo has yarn.lock and no package-lock.json, so
       # `npm ci` errors out. Matches ci.yml.
