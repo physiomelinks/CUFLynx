@@ -62,18 +62,47 @@ def resolve_mpiexec(python: str | None) -> str | None:
     # `python` may be a bare command name; resolve it to a real path first so
     # that its directory is meaningful.
     exe = python if os.sep in python else (shutil.which(python) or python)
-    try:
-        bindir = Path(exe).resolve().parent
-    except (OSError, ValueError):
-        bindir = None
-    if bindir is not None:
+    for bindir in _interpreter_bindirs(exe):
         for name in ("mpiexec", "mpirun"):
-            # shutil.which(path=...) confines the search to the interpreter's
-            # own bin dir and still handles Windows extensions + the exec bit.
+            # shutil.which(path=...) confines the search to that one dir and
+            # still handles Windows extensions + the exec bit.
             found = shutil.which(name, path=str(bindir))
             if found:
                 return found
     return shutil.which("mpiexec")
+
+
+def _interpreter_bindirs(exe: str) -> list[Path]:
+    """Directories that may hold ``exe``'s own launcher, nearest first.
+
+    The *literal* directory must be searched first and must not be replaced by
+    the resolved one. A venv's ``bin/python`` is a symlink to the interpreter it
+    was created from, so resolving it walks straight back out of the venv::
+
+        <venv>/bin/python -> python3 -> /usr/bin/python3.10
+
+    Searching the resolved directory therefore lands in ``/usr/bin`` and finds
+    the *system* launcher while the venv's own ``mpiexec`` sits unused right
+    beside the symlink -- which is exactly the launcher/runtime mismatch this
+    function exists to prevent, and it made the interpreter-relative lookup a
+    no-op for every standard venv on Linux and macOS.
+
+    The resolved directory is still tried second, for a symlink that lives
+    outside the environment it points into (e.g. ``~/bin/mypython``).
+    """
+    dirs: list[Path] = []
+    try:
+        literal = Path(os.path.abspath(exe)).parent
+    except (OSError, ValueError):
+        return dirs
+    dirs.append(literal)
+    try:
+        resolved = Path(exe).resolve().parent
+    except (OSError, ValueError):
+        return dirs
+    if resolved != literal:
+        dirs.append(resolved)
+    return dirs
 
 
 COST_HISTORY_FILE = "best_cost_history.csv"
