@@ -248,6 +248,39 @@ def test_resolve_mpiexec_returns_none_when_nothing_found(tmp_path, monkeypatch):
     assert calibration_mod.resolve_mpiexec(python) is None
 
 
+def test_resolve_mpiexec_prefers_the_bundled_launcher_when_frozen(tmp_path, monkeypatch):
+    """Packaged app, no external interpreter: prefer the MPICH Hydra launcher
+    bundled beside the app over a PATH mpiexec, so the launcher matches the
+    bundle's MPICH runtime (a PATH Open MPI launcher would abort every rank with
+    'unsupported PMI version PMIx'). The bundled launcher lives at
+    <_MEIPASS>/mpi/bin/mpiexec.hydra (see packaging/cuflynx.spec)."""
+    meipass = tmp_path / "_MEIPASS"
+    launcher = meipass / "mpi" / "bin" / f"mpiexec.hydra{_EXE}"
+    launcher.parent.mkdir(parents=True)
+    launcher.write_text("#!/bin/sh\n")
+    launcher.chmod(0o755)
+    monkeypatch.setattr(calibration_mod.shutil, "which", lambda name, *a, **k: "/usr/bin/mpiexec")
+
+    import runtime_paths as rp
+    monkeypatch.setattr(rp.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(rp.sys, "_MEIPASS", str(meipass), raising=False)
+
+    # None => packaged default. Must pick the bundled launcher, not the PATH one.
+    assert calibration_mod.resolve_mpiexec(None) == str(launcher)
+
+
+def test_resolve_mpiexec_frozen_without_a_bundled_launcher_falls_back_to_path(tmp_path, monkeypatch):
+    """A frozen platform build with no bundled launcher (macOS Intel / Windows have
+    no MPICH wheel) must still fall back to PATH rather than break."""
+    meipass = tmp_path / "_MEIPASS"
+    meipass.mkdir()  # no mpi/bin/ inside
+    monkeypatch.setattr(calibration_mod.shutil, "which", lambda name, *a, **k: "/usr/bin/mpiexec")
+    import runtime_paths as rp
+    monkeypatch.setattr(rp.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(rp.sys, "_MEIPASS", str(meipass), raising=False)
+    assert calibration_mod.resolve_mpiexec(None) == "/usr/bin/mpiexec"
+
+
 @pytest.mark.parametrize("python", [None, "", "   "])
 def test_resolve_mpiexec_tolerates_a_missing_interpreter(python, monkeypatch):
     """Regression: default_python() returns None in the packaged app ("no external

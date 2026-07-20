@@ -49,6 +49,23 @@ def resource_path(*parts: str) -> Path:
     return bundle_root().joinpath(*parts)
 
 
+def bundled_mpiexec() -> str | None:
+    """The MPICH Hydra launcher bundled beside the app, or None.
+
+    Only the frozen app bundles a launcher, and only where the build had a real
+    MPICH wheel to take it from (Linux, macOS-arm64 -- see packaging/cuflynx.spec).
+    It is the launcher matching the bundle's own MPICH runtime, so using it avoids
+    the launcher/runtime mismatch that a PATH ``mpiexec`` from a different MPI
+    causes. Returns None from source, on platforms without a bundled launcher, or
+    if the file is somehow absent -- callers then fall back to PATH.
+    """
+    if not is_frozen():
+        return None
+    exe = "mpiexec.hydra" + (".exe" if sys.platform == "win32" else "")
+    cand = resource_path("mpi", "bin", exe)
+    return str(cand) if cand.is_file() else None
+
+
 def runner_path(name: str) -> Path:
     """Absolute path to an analysis runner script (executed by an *external*
     interpreter).
