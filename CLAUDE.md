@@ -23,7 +23,9 @@ apps/desktop/      pywebview shell (native window around the same server)
 packaging/         PyInstaller spec + runtime hooks (single-file executable)
 ```
 
-**Backend engine (target):** [circulatory_autogen](https://github.com/...) `protocol_runners.ProtocolRunner` + `solver_wrappers.get_simulation_helper` (Myokit CVODE). Not the in-browser RK4.
+**Backend engine (target):** [circulatory_autogen](https://github.com/...) `protocol_runners.ProtocolRunner` + `solver_wrappers.get_simulation_helper` (**Myokit** CVODE). Not the in-browser RK4.
+
+> **No OpenCOR — ever.** CUFLynx must **not** bundle OpenCOR or any OpenCOR dependency, and must not depend on an OpenCOR runtime. CellML is simulated through **Myokit** (`CVODE_myokit`), not OpenCOR. Consequently CA's `CVODE_opencor` solver must never be surfaced in CUFLynx: it's filtered out of the solver options in `apps/api/solver_options.py` (`UNSUPPORTED_SOLVERS`), so `cellml_only` offers/defaults to `CVODE_myokit`. When consuming CA's discoverable schemas, always drop OpenCOR-only choices rather than passing them through. (CA's own test/run env requires OpenCOR's Python shell — that requirement stays inside CA and must not leak into CUFLynx.)
 
 **Reference implementation:** sibling repo `ICUHealthy` — FastAPI + cached `get_simulation_helper`, `helper.set_param_vals(param_names, param_vals)`, `helper.run()`, `helper.get_results()`.
 

@@ -12,7 +12,9 @@ import {
 const opts = {
   model_formats: ['cellml_only', 'python', 'casadi_python'],
   solvers_by_format: {
-    cellml_only: ['CVODE_myokit', 'CVODE_opencor'],
+    // CVODE_opencor is filtered out server-side (no OpenCOR bundled); CellML runs
+    // through Myokit's CVODE. See apps/api/solver_options.py UNSUPPORTED_SOLVERS.
+    cellml_only: ['CVODE_myokit'],
     python: ['solve_ivp'],
     casadi_python: ['casadi_integrator'],
   },

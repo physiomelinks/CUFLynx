@@ -8,7 +8,83 @@ the integration tests.
 import sys
 import types
 
+import pytest
+
 import solver_options as so
+
+# A CA-shaped schema: mirrors circulatory_autogen's SOLVER_SCHEMA *including*
+# solver_info_fields_by_solver, which is what selects the introspected form
+# builder. Field descriptors match CA's real ones (name/type/default).
+#
+# Why this exists: _build_options has two form builders, and which one runs
+# depends on whether the schema carries solver_info_fields_by_solver. Tests that
+# went through get_solver_options() therefore exercised whichever path the *host
+# machine* produced — the fallback on CI (no circulatory_autogen sibling), the
+# introspected one on a dev box. That blind spot hid a real regression, so the
+# invariant tests below run against both schemas explicitly.
+CA_SCHEMA = {
+    "model_types": ["cellml_only", "python", "cpp", "casadi_python"],
+    "solvers_by_model_type": {
+        "cellml_only": ["CVODE_opencor", "CVODE_myokit"],
+        "python": ["solve_ivp"],
+        "cpp": ["CVODE", "RK4", "PETSC"],
+        "casadi_python": ["casadi_integrator"],
+    },
+    "methods_by_solver": {
+        "CVODE_opencor": ["CVODE"],
+        "CVODE_myokit": ["CVODE"],
+        "solve_ivp": ["RK45", "RK23", "DOP853", "Radau", "BDF", "LSODA", "forward_euler"],
+        "casadi_integrator": ["cvodes", "idas", "collocation", "rk", "semi_implicit_euler", "bdf"],
+    },
+    # CA really does default cellml_only to the OpenCOR solver, so this exercises
+    # the substitution branch rather than assuming it away.
+    "default_solver_by_model_type": {
+        "cellml_only": "CVODE_opencor",
+        "python": "solve_ivp",
+        "cpp": "CVODE",
+        "casadi_python": "casadi_integrator",
+    },
+    "solver_info_fields_by_solver": {
+        "CVODE_opencor": [
+            {"name": "MaximumStep", "type": "float", "default": 0.001},
+            {"name": "MaximumNumberOfSteps", "type": "int", "default": 5000},
+            {"name": "rtol", "type": "float", "default": 1e-8},
+            {"name": "atol", "type": "float", "default": 1e-8},
+        ],
+        "CVODE_myokit": [
+            {"name": "MaximumStep", "type": "float", "default": 0.001},
+            {"name": "MaximumNumberOfSteps", "type": "int", "default": 5000},
+            {"name": "rtol", "type": "float", "default": 1e-8},
+            {"name": "atol", "type": "float", "default": 1e-8},
+        ],
+        "solve_ivp": [
+            {"name": "rtol", "type": "float", "default": 1e-8},
+            {"name": "atol", "type": "float", "default": 1e-8},
+            {"name": "max_step", "type": "float", "default": 0.001},
+            {"name": "vectorized", "type": "bool", "default": False},
+            {"name": "dense_output", "type": "bool", "default": False},
+            {"name": "jac", "type": "str", "default": None},  # not renderable -> skipped
+        ],
+        "casadi_integrator": [
+            {"name": "max_step_size", "type": "float", "default": 0.001},
+            {"name": "max_step", "type": "float", "default": 0.001},
+            {"name": "max_num_steps", "type": "int", "default": 5000},
+            {"name": "reltol", "type": "float", "default": 1e-8},
+            {"name": "abstol", "type": "float", "default": 1e-10},
+            {"name": "rtol", "type": "float", "default": None},
+            {"name": "atol", "type": "float", "default": None},
+            {"name": "options", "type": "dict", "default": None},  # not renderable -> skipped
+        ],
+    },
+}
+
+# Both form builders. Every invariant below must hold on each, whatever the host
+# machine has installed.
+BOTH_SCHEMAS = pytest.mark.parametrize(
+    "schema",
+    [so.FALLBACK_SOLVER_SCHEMA, CA_SCHEMA],
+    ids=["curated-fallback", "ca-introspected"],
+)
 
 
 def _build(diff):
@@ -23,9 +99,11 @@ def _method_options(opts, solver):
     return []
 
 
-def test_get_solver_options_shape():
-    """The payload exposes the format/solver/method/schema metadata, sourced from
-    CA's schema (or the built-in fallback when CA is unavailable)."""
+def test_get_solver_options_entry_point_works():
+    """Smoke test for the real entry point: whichever path this machine takes
+    (introspected when circulatory_autogen is importable, fallback otherwise), it
+    returns a well-formed payload. The per-path invariants are covered by the
+    parametrized tests below."""
     opts = so.get_solver_options()
     assert set(opts) >= {
         "model_formats",
@@ -45,32 +123,45 @@ def test_get_solver_options_shape():
         assert solver in opts["solver_info_schema"]
 
 
-def test_cellml_only_defaults_to_myokit_not_opencor():
-    """cellml_only must default to CVODE_myokit, not CA's CVODE_opencor: OpenCOR is
-    a separate program most users don't have (and it isn't bundled), so defaulting
-    to it makes a fresh simulate fail with 'OpenCOR ... is not available'."""
-    opts = so.get_solver_options()
-    if "cellml_only" in opts["model_formats"]:
-        assert opts["default_solver_by_format"]["cellml_only"] == "CVODE_myokit"
+@BOTH_SCHEMAS
+def test_cvode_opencor_not_offered_because_no_opencor_bundled(schema):
+    """CUFLynx does not bundle OpenCOR, so CVODE_opencor must never be surfaced:
+    not as a selectable solver, not as the cellml_only default, and not in the
+    solver_info schema. CellML runs through Myokit's CVODE instead.
+
+    Both schemas name CVODE_opencor as a cellml_only solver *and* its default, so
+    each exercises the substitution branch."""
+    opts = so._build_options(schema, {"max": True})
+    for solvers in opts["solvers_by_format"].values():
+        assert "CVODE_opencor" not in solvers
+    assert "CVODE_opencor" not in opts["solver_info_schema"]
+    assert "CVODE_opencor" not in opts["methods_by_solver"]
+    # cellml_only falls back to the Myokit CVODE that CUFLynx can actually run.
+    assert opts["default_solver_by_format"]["cellml_only"] == "CVODE_myokit"
+    assert "CVODE_myokit" in opts["solvers_by_format"]["cellml_only"]
 
 
-def test_method_options_come_from_ca_schema():
+@BOTH_SCHEMAS
+def test_method_options_come_from_ca_schema(schema):
     """The method dropdown options mirror CA's methods_by_solver (not hardcoded)."""
-    opts = so.get_solver_options()
+    opts = so._build_options(schema, {"max": True})
     assert _method_options(opts, "casadi_integrator") == opts["methods_by_solver"]["casadi_integrator"]
     assert _method_options(opts, "solve_ivp") == opts["methods_by_solver"]["solve_ivp"]
 
 
-def test_semi_implicit_euler_only_offered_for_casadi_python():
+@BOTH_SCHEMAS
+def test_semi_implicit_euler_only_offered_for_casadi_python(schema):
     """The dampened semi-implicit Euler is a casadi_python integrator method; it
     must not be offered as a solve_ivp (standard python) method."""
-    opts = so.get_solver_options()
+    opts = so._build_options(schema, {"max": True})
     assert "semi_implicit_euler" in _method_options(opts, "casadi_integrator")
     assert "semi_implicit_euler" not in _method_options(opts, "solve_ivp")
 
 
-def test_dt_offered_for_every_solver():
-    opts = so.get_solver_options()
+@BOTH_SCHEMAS
+def test_dt_offered_for_every_solver(schema):
+    """dt is a framework key CA's schema omits, so both builders must inject it."""
+    opts = so._build_options(schema, {"max": True})
     for solver in ("CVODE_myokit", "solve_ivp", "casadi_integrator"):
         keys = [f["key"] for f in opts["solver_info_schema"][solver]]
         assert "dt" in keys
@@ -78,8 +169,13 @@ def test_dt_offered_for_every_solver():
 
 def test_casadi_tolerance_fields_restricted_to_adaptive_methods():
     """reltol/abstol/max_num_steps apply to the adaptive CasADi plugins but not to
-    the fixed-step semi_implicit_euler (which uses only dt)."""
-    opts = so.get_solver_options()
+    the fixed-step semi_implicit_euler (which uses only dt).
+
+    Built from the fallback schema rather than get_solver_options(): the curated
+    form is only reached when CA carries no solver_info_fields_by_solver, so going
+    through get_solver_options() would silently test the *other* builder on a
+    machine that has a circulatory_autogen checkout."""
+    opts = so._build_options(so.FALLBACK_SOLVER_SCHEMA, {"max": True})
     for field in opts["solver_info_schema"]["casadi_integrator"]:
         if field["key"] in ("reltol", "abstol", "max_num_steps"):
             assert "semi_implicit_euler" not in field["methods"]
@@ -89,7 +185,7 @@ def test_casadi_tolerance_fields_restricted_to_adaptive_methods():
 def test_casadi_max_step_field_offered_for_bdf_only():
     """The bdf integrator's internal sub-step cap (max_step) is an editable setting,
     scoped to 'bdf' only (other casadi methods don't consume it)."""
-    opts = so.get_solver_options()
+    opts = so._build_options(so.FALLBACK_SOLVER_SCHEMA, {"max": True})
     fields = opts["solver_info_schema"]["casadi_integrator"]
     assert "bdf" in _method_options(opts, "casadi_integrator")
     max_step = next((f for f in fields if f["key"] == "max_step"), None)
@@ -127,8 +223,76 @@ def test_solver_info_introspected_from_ca_schema():
     assert by_key["some_flag"]["type"] == "bool"
     assert by_key["mode"]["type"] == "select" and by_key["mode"]["options"] == ["a", "b"]
     assert "opts" not in by_key and "jac" not in by_key
-    # Full introspection carries no per-method gating (CA's schema doesn't model it).
-    assert "methods" not in by_key["max_step"]
+    # CA's schema doesn't model per-method applicability, so CUFLynx overlays it:
+    # max_step is the bdf sub-step cap, max_step_size is a plugin option (so it is
+    # gated to the plugin methods, i.e. not bdf).
+    assert by_key["max_step"]["methods"] == ["bdf"]
+    assert by_key["max_step_size"]["methods"] == ["cvodes"]
+
+
+def test_ca_introspected_fields_keep_per_method_gating():
+    """Regression: the CA-introspection path must gate fields by method just like
+    the curated form.
+
+    Introspection is the source of truth for *which* fields exist, but CA's
+    SOLVER_INFO_FIELDS says nothing about which methods consume them. Without the
+    overlay every casadi field showed for every method, so selecting the fixed-step
+    semi_implicit_euler offered reltol/abstol/max_num_steps it never reads, and
+    rk/collocation offered tolerances CasADi rejects outright ("Unknown option:
+    abstol"). Gates mirror casadi_python_solver_helper.run()'s dispatch."""
+    methods = ["cvodes", "idas", "collocation", "rk", "semi_implicit_euler", "bdf"]
+    schema = {
+        "model_types": ["casadi_python"],
+        "solvers_by_model_type": {"casadi_python": ["casadi_integrator"]},
+        "methods_by_solver": {"casadi_integrator": methods},
+        "default_solver_by_model_type": {"casadi_python": "casadi_integrator"},
+        "solver_info_fields_by_solver": {
+            "casadi_integrator": [
+                {"name": "max_step_size", "type": "float", "default": 0.001},
+                {"name": "max_step", "type": "float", "default": 1e-3},
+                {"name": "max_num_steps", "type": "int", "default": 5000},
+                {"name": "reltol", "type": "float", "default": 1e-8},
+                {"name": "abstol", "type": "float", "default": 1e-10},
+                {"name": "rtol", "type": "float", "default": None},
+                {"name": "atol", "type": "float", "default": None},
+            ],
+        },
+    }
+    by_key = {f["key"]: f
+              for f in so._build_options(schema, {"max": True})["solver_info_schema"]["casadi_integrator"]}
+
+    # Tolerances reach ca.integrator only for the SUNDIALS plugins.
+    for key in ("reltol", "abstol", "rtol", "atol"):
+        assert by_key[key]["methods"] == ["cvodes", "idas"], key
+
+    # Plugin options: every method that goes through ca.integrator() — so not the
+    # custom run loops (semi_implicit_euler, bdf).
+    for key in ("max_num_steps", "max_step_size"):
+        assert by_key[key]["methods"] == ["cvodes", "idas", "collocation", "rk"], key
+
+    # The bdf sub-step cap is consumed only by _run_symbolic_bdf.
+    assert by_key["max_step"]["methods"] == ["bdf"]
+
+    # dt applies to every method, so it stays ungated.
+    assert "methods" not in by_key["dt"]
+
+
+def test_method_gates_track_the_offered_method_list():
+    """A CA that doesn't offer a gated method must not leave it dangling: gates are
+    computed from the offered methods, so an absent one yields an empty gate (the
+    field is then hidden for every method) rather than a stale reference."""
+    schema = {
+        "model_types": ["casadi_python"],
+        "solvers_by_model_type": {"casadi_python": ["casadi_integrator"]},
+        "methods_by_solver": {"casadi_integrator": ["cvodes"]},  # no bdf offered
+        "default_solver_by_model_type": {"casadi_python": "casadi_integrator"},
+        "solver_info_fields_by_solver": {
+            "casadi_integrator": [{"name": "max_step", "type": "float", "default": 1e-3}],
+        },
+    }
+    by_key = {f["key"]: f
+              for f in so._build_options(schema, {"max": True})["solver_info_schema"]["casadi_integrator"]}
+    assert by_key["max_step"]["methods"] == []
 
 
 def test_solver_info_falls_back_to_curated_without_ca_fields():

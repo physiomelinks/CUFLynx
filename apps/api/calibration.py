@@ -33,6 +33,40 @@ def _warn_no_mpiexec(num_cores: int) -> None:
     )
 
 
+def resolve_mpiexec(python: str) -> str | None:
+    """Locate the ``mpiexec`` belonging to ``python``'s own environment.
+
+    MPI only works when the launcher and the ``mpi4py`` runtime come from the
+    same MPI implementation. Resolving the launcher via PATH breaks that: the
+    runtime is chosen independently by ``mpi4py``'s dlopen of ``libmpi`` (which
+    follows ``LD_LIBRARY_PATH``), so a system Open MPI ``mpiexec`` can end up
+    launching an interpreter whose ``mpi4py`` bound MPICH. Every rank then
+    aborts at ``MPI_Init`` with "unsupported PMI version PMIx".
+
+    Prefer the launcher installed next to the selected interpreter, since that
+    is the same environment that provides ``mpi4py`` (``pip install mpi4py
+    mpich`` drops both into ``<sys.prefix>/bin``). Only fall back to PATH, which
+    preserves the previous behaviour when the environment ships no launcher.
+
+    Returns the launcher path, or None when none can be found.
+    """
+    # `python` may be a bare command name; resolve it to a real path first so
+    # that its directory is meaningful.
+    exe = python if os.sep in python else (shutil.which(python) or python)
+    try:
+        bindir = Path(exe).resolve().parent
+    except (OSError, ValueError):
+        bindir = None
+    if bindir is not None:
+        for name in ("mpiexec", "mpirun"):
+            # shutil.which(path=...) confines the search to the interpreter's
+            # own bin dir and still handles Windows extensions + the exec bit.
+            found = shutil.which(name, path=str(bindir))
+            if found:
+                return found
+    return shutil.which("mpiexec")
+
+
 COST_HISTORY_FILE = "best_cost_history.csv"
 PARAM_HISTORY_FILE = "best_param_vals_history.csv"
 
@@ -261,7 +295,10 @@ class CalibrationManager:
         The genetic algorithm parallelises population evaluation across MPI
         ranks, exactly like circulatory_autogen's run_param_id.sh.
 
-        If ``num_cores > 1`` but ``mpiexec`` is not on PATH (common on Windows,
+        The launcher is resolved from the selected interpreter's environment
+        (see :func:`resolve_mpiexec`) so it matches that interpreter's mpi4py.
+
+        If ``num_cores > 1`` but no ``mpiexec`` can be found (common on Windows,
         where MPI is rarely installed), fall back to a single-core run rather
         than launching a non-existent ``mpiexec`` — which would raise
         ``FileNotFoundError`` and surface to the client as an HTTP 500.
@@ -272,7 +309,7 @@ class CalibrationManager:
         base = runner_command(python, self.runner_path, config_path)
         num_cores = int(config.get("num_cores", 1) or 1)
         if num_cores > 1:
-            mpiexec = shutil.which("mpiexec")
+            mpiexec = resolve_mpiexec(python)
             if mpiexec is None:
                 _warn_no_mpiexec(num_cores)
                 return base

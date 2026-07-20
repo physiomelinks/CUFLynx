@@ -30,6 +30,14 @@ from engine import _circulatory_autogen_src
 # CA's schema lists it.
 SUPPORTED_FORMATS = ("cellml_only", "python", "casadi_python")
 
+# Solvers CUFLynx must NOT surface because it does **not** bundle OpenCOR (see
+# CLAUDE.md — no OpenCOR dependency is shipped). CA's schema lists CVODE_opencor as
+# a cellml_only solver (and its default), but that backend needs an OpenCOR runtime
+# CUFLynx doesn't have; CUFLynx runs CellML through Myokit's CVODE instead. Offering
+# CVODE_opencor would present a solver that can't run here, so it's filtered out of
+# every payload (both the CA-introspected schema and the fallback below).
+UNSUPPORTED_SOLVERS = ("CVODE_opencor",)
+
 # Used only when CA's SOLVER_SCHEMA can't be imported (mirrors it).
 FALLBACK_SOLVER_SCHEMA = {
     "model_types": ["cellml_only", "python", "cpp", "casadi_python"],
@@ -271,25 +279,70 @@ def _si_field_from_descriptor(desc: dict) -> dict | None:
     return {"key": name, "label": label, "type": _NUM, "default": desc.get("default")}
 
 
+# CA's SOLVER_INFO_FIELDS lists the keys a solver *accepts*, but not which of its
+# *methods* actually consume them — that lives in the wrapper's run() dispatch, so
+# mirror it here. Without this the form offers settings the chosen method ignores,
+# and some CasADi plugins reject outright ("Unknown option: abstol" on rk /
+# collocation).
+#
+# casadi_python_solver_helper.run() dispatches:
+#   semi_implicit_euler -> _run_semi_implicit_euler  (dt only)
+#   bdf / BDF           -> _run_symbolic_bdf         (dt + max_step sub-step cap)
+#   anything else       -> ca.integrator() with _build_integrator_opts(), which
+#                          passes reltol/abstol (rtol/atol as fallback) only for
+#                          the SUNDIALS plugins, and max_num_steps/max_step_size
+#                          for any plugin method.
+_CASADI_CUSTOM_LOOP_METHODS = ("semi_implicit_euler", "bdf", "BDF")
+_CASADI_SUNDIALS_METHODS = ("cvodes", "idas")
+
+
+def _casadi_method_gates(methods: list) -> dict[str, list]:
+    """Map casadi_integrator solver_info key -> the methods that consume it.
+
+    Derived from the offered method list, so a CA that adds or drops an integrator
+    stays in step (a key whose methods aren't offered gates to [] and is hidden).
+    """
+    plugin = [m for m in methods if m not in _CASADI_CUSTOM_LOOP_METHODS]
+    sundials = [m for m in methods if m in _CASADI_SUNDIALS_METHODS]
+    bdf = [m for m in methods if m in ("bdf", "BDF")]
+    return {
+        "reltol": sundials, "abstol": sundials, "rtol": sundials, "atol": sundials,
+        "max_num_steps": plugin, "max_step_size": plugin,
+        "max_step": bdf,
+    }
+
+
+# Solvers whose fields need per-method gating. solve_ivp is absent deliberately:
+# the python helper forwards rtol/atol/max_step for every scipy method.
+_METHOD_GATES_BY_SOLVER = {"casadi_integrator": _casadi_method_gates}
+
+
 def _solver_info_schema_from_ca(fields_by_solver: dict, methods_by_solver: dict) -> dict:
     """Per-solver solver_info form fields introspected from CA's ``SOLVER_INFO_FIELDS``
     (the single source of truth). CA omits the framework keys, so ``method`` (from
     the solver's method menu) and ``dt`` are injected; ``str``/``dict`` fields are
-    skipped. No per-method gating — CA's schema doesn't model it, so every field a
-    solver accepts is shown for that solver.
+    skipped.
+
+    CA's schema doesn't model per-method applicability, so :data:`_METHOD_GATES_BY_SOLVER`
+    overlays it — introspection stays the source of truth for *which fields exist*,
+    while the gating says which methods each one applies to.
     """
     out = {}
     for solver, descriptors in fields_by_solver.items():
         fields = []
-        methods = methods_by_solver.get(solver, [])
+        methods = list(methods_by_solver.get(solver, []))
         if methods:
             label = "Integrator" if solver == "casadi_integrator" else "Method"
             fields.append(_method_field(methods, label))
         fields.append(_dt_field())
+        gates = _METHOD_GATES_BY_SOLVER.get(solver, lambda _m: {})(methods)
         for desc in descriptors or []:
             field = _si_field_from_descriptor(desc)
-            if field is not None:
-                fields.append(field)
+            if field is None:
+                continue
+            if field["key"] in gates:
+                field["methods"] = gates[field["key"]]
+            fields.append(field)
         out[solver] = fields
     return out
 
@@ -347,18 +400,18 @@ def _build_options(schema: dict, differentiable: dict[str, bool]) -> dict:
     defaults = schema.get("default_solver_by_model_type", {})
     methods_by_solver = schema.get("methods_by_solver", {})
 
-    solvers_by_format = {m: list(solvers_by_model_type.get(m, [])) for m in formats}
-    default_solver_by_format = {
-        m: defaults.get(m) or (solvers_by_format[m][0] if solvers_by_format[m] else "")
-        for m in formats
-    }
-    # CA's schema defaults cellml_only to CVODE_opencor, but OpenCOR is a separate
-    # application most users don't have installed (and it isn't in the desktop
-    # bundle) — selecting it fails with "OpenCOR solver requested but OpenCOR is not
-    # available". CVODE_myokit is bundled and needs no external program, so prefer
-    # it as the cellml_only default when available.
-    if "CVODE_myokit" in solvers_by_format.get("cellml_only", []):
-        default_solver_by_format["cellml_only"] = "CVODE_myokit"
+    def _supported(solvers):
+        return [s for s in solvers if s not in UNSUPPORTED_SOLVERS]
+
+    solvers_by_format = {m: _supported(solvers_by_model_type.get(m, [])) for m in formats}
+    # If CA names an unsupported solver (e.g. CVODE_opencor) as a format's default,
+    # fall back to the first solver CUFLynx can actually run for that format.
+    default_solver_by_format = {}
+    for m in formats:
+        d = defaults.get(m)
+        if not d or d in UNSUPPORTED_SOLVERS:
+            d = solvers_by_format[m][0] if solvers_by_format[m] else ""
+        default_solver_by_format[m] = d
     all_diff = bool(differentiable) and all(differentiable.values())
     # Prefer CA's SOLVER_INFO_FIELDS (single source of truth) when present; an older
     # CA (or the offline fallback schema) has no such key, so degrade to the curated
@@ -372,8 +425,15 @@ def _build_options(schema: dict, differentiable: dict[str, bool]) -> dict:
         "model_formats": formats,
         "solvers_by_format": solvers_by_format,
         "default_solver_by_format": default_solver_by_format,
-        "methods_by_solver": {s: list(m) for s, m in methods_by_solver.items()},
-        "solver_info_schema": solver_info_schema,
+        "methods_by_solver": {
+            s: list(m) for s, m in methods_by_solver.items() if s not in UNSUPPORTED_SOLVERS
+        },
+        # Filter the CA-introspected schema (not a rebuilt one) so the OpenCOR
+        # exclusion composes with SOLVER_INFO_FIELDS introspection rather than
+        # discarding it.
+        "solver_info_schema": {
+            s: fields for s, fields in solver_info_schema.items() if s not in UNSUPPORTED_SOLVERS
+        },
         "differentiable_operations": dict(differentiable),
         "all_differentiable": all_diff,
     }
