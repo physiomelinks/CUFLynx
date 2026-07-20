@@ -115,6 +115,17 @@ jobs:
         working-directory: apps/api
         run: pip install -e ".[desktop,analysis]"
 
+      # Windows antivirus (Defender et al.) frequently flags PyInstaller onefile
+      # exes as trojans -- a false positive driven mainly by the *stock* bootloader
+      # shipped in the PyInstaller wheel, whose exact bytes are in AV signature
+      # databases. Rebuilding the bootloader from source (needs a C compiler;
+      # windows-latest has MSVC) produces a unique bootloader that isn't a
+      # signature match, which clears the bulk of the Defender detections. This is
+      # a mitigation, not a guarantee -- the durable fix is Authenticode signing.
+      - name: Rebuild PyInstaller bootloader from source (Windows AV false-positive)
+        if: runner.os == 'Windows'
+        run: pip install --no-binary pyinstaller --force-reinstall "pyinstaller>=6.0"
+
       # yarn, not npm: the repo has yarn.lock and no package-lock.json, so
       # `npm ci` errors out. Matches ci.yml.
       - name: Install frontend deps

@@ -504,4 +504,8 @@ exe = EXE(  # noqa: F821
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    # Windows version resource (CompanyName / ProductName / version). A bare exe
+    # with no metadata is a heuristic red flag for AV engines; this makes the
+    # binary look like the real software it is. Ignored on Linux/macOS.
+    version=(str(Path(SPECPATH) / "version_info.txt") if sys.platform == "win32" else None),
 )
