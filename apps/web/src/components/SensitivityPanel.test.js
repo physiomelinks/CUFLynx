@@ -13,7 +13,13 @@ const ButtonStub = {
   props: ['disabled', 'label'],
   template: '<button :disabled="disabled" v-bind="$attrs">{{ label }}</button>',
 }
-const stubs = { Select: SelectStub, InputNumber: true, Checkbox: true, Button: ButtonStub }
+const stubs = {
+  Select: SelectStub,
+  InputNumber: true,
+  InputText: true,
+  Checkbox: true,
+  Button: ButtonStub,
+}
 
 function gradientOptions(wrapper) {
   return wrapper.find('[data-testid="gradient-method"]').findAll('option')
@@ -99,5 +105,21 @@ describe('SensitivityPanel Sobol options from CA schema', () => {
       global: { stubs },
     })
     expect(wrapper.find('[data-testid="sa-opt-num_samples"]').exists()).toBe(false)
+  })
+
+  it("renders a 'str' option as a text input, not a number input", () => {
+    // Regression: the template had branches for bool and enum then fell through to
+    // InputNumber, so a str descriptor (CA's sample_type, default 'saltelli') was
+    // bound to a numeric control and displayed as NaN. Asserting the control's
+    // existence is not enough — the old code rendered a control too, the wrong one.
+    const wrapper = mount(SensitivityPanel, {
+      props: { canRun: true, defaults: { method: 'sobol', options: SA_OPTIONS } },
+      global: { stubs },
+    })
+    const tag = (id) => wrapper.find(`[data-testid="sa-opt-${id}"]`).element.tagName.toLowerCase()
+    expect(tag('sample_type')).toBe('input-text-stub')
+    // numeric descriptors must keep the number input
+    expect(tag('num_samples')).toBe('input-number-stub')
+    expect(tag('confidence_level')).toBe('input-number-stub')
   })
 })

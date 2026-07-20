@@ -2,6 +2,7 @@
 import { ref, reactive, watch, nextTick, computed } from 'vue'
 import Select from 'primevue/select'
 import InputNumber from 'primevue/inputnumber'
+import InputText from 'primevue/inputtext'
 import Checkbox from 'primevue/checkbox'
 import Button from 'primevue/button'
 
@@ -173,6 +174,16 @@ function onRun() {
             <Select
               v-model="optionValues[opt.name]"
               :options="opt.choices"
+              size="small"
+              :data-testid="'sa-opt-' + opt.name"
+            />
+          </label>
+          <!-- 'str' needs a text box: falling through to InputNumber coerces a
+               string default (e.g. sample_type='saltelli') to NaN. -->
+          <label v-else-if="opt.type === 'str'" class="field">
+            <span :title="opt.description">{{ optionLabel(opt.name) }}</span>
+            <InputText
+              v-model="optionValues[opt.name]"
               size="small"
               :data-testid="'sa-opt-' + opt.name"
             />
