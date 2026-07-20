@@ -138,14 +138,28 @@ _EXE = ".exe" if sys.platform == "win32" else ""
 _BINDIR = "Scripts" if sys.platform == "win32" else "bin"
 
 
-def _fake_env(tmp_path, name, *, with_mpiexec):
+def _fake_env(tmp_path, name, *, with_mpiexec, symlink_python=False):
     """A fake interpreter environment: <name>/<bindir>/python, optionally with its
-    own mpiexec beside it (as `pip install mpi4py mpich` produces)."""
+    own mpiexec beside it (as `pip install mpi4py mpich` produces).
+
+    ``symlink_python`` reproduces a real venv, where ``bin/python`` is a symlink
+    to the interpreter the venv was created from rather than a regular file. That
+    detail is load-bearing: resolving the symlink walks out of the environment.
+    """
     bindir = tmp_path / name / _BINDIR
     bindir.mkdir(parents=True)
     python = bindir / f"python{_EXE}"
-    python.write_text("#!/bin/sh\n")
-    python.chmod(0o755)
+    if symlink_python:
+        # the "base" interpreter the venv was created from, in a different dir
+        base_bin = tmp_path / f"{name}_base" / _BINDIR
+        base_bin.mkdir(parents=True)
+        base = base_bin / f"python{_EXE}"
+        base.write_text("#!/bin/sh\n")
+        base.chmod(0o755)
+        python.symlink_to(base)
+    else:
+        python.write_text("#!/bin/sh\n")
+        python.chmod(0o755)
     if with_mpiexec:
         mpi = bindir / f"mpiexec{_EXE}"
         mpi.write_text("#!/bin/sh\n")
@@ -177,6 +191,47 @@ def test_resolve_mpiexec_prefers_the_interpreters_own_launcher(tmp_path):
     # And it is genuinely different from whatever PATH would have given us.
     on_path = calibration_mod.shutil.which("mpiexec")
     assert on_path is None or not os.path.samefile(found, on_path)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="venvs on Windows copy python.exe, not symlink it")
+def test_resolve_mpiexec_finds_a_venvs_own_launcher_through_the_python_symlink(tmp_path):
+    """Regression: a real venv's bin/python is a SYMLINK to the interpreter it was
+    created from, so Path(exe).resolve() walks out of the venv:
+
+        <venv>/bin/python -> <base>/bin/python
+
+    Searching only the resolved directory found the *base* environment (in
+    practice /usr/bin, i.e. the system Open MPI launcher) while the venv's own
+    mpiexec sat unused beside the symlink -- the exact launcher/runtime mismatch
+    this function exists to prevent. `pip install mpi4py mpich` into a venv is the
+    documented fix path, so this made that path a no-op on Linux and macOS.
+
+    The earlier tests missed it because the fixture wrote bin/python as a regular
+    file, which makes .resolve() a no-op.
+    """
+    python = _fake_env(tmp_path, "venv", with_mpiexec=True, symlink_python=True)
+    own = _own_mpiexec(tmp_path, "venv")
+    found = calibration_mod.resolve_mpiexec(python)
+    assert found is not None, "the venv's own launcher should have been found"
+    assert os.path.samefile(found, own), (
+        f"resolved to {found!r} instead of the venv's own {own!r} — "
+        "the python symlink was followed out of the environment"
+    )
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlink semantics")
+def test_resolve_mpiexec_uses_the_symlink_target_dir_when_the_link_dir_has_none(tmp_path):
+    """A symlink that lives outside the environment it points into (e.g.
+    ~/bin/mypython -> <venv>/bin/python) must still find the target's launcher, so
+    the resolved directory is searched second rather than dropped."""
+    python = _fake_env(tmp_path, "venv2", with_mpiexec=True)
+    link_dir = tmp_path / "elsewhere"
+    link_dir.mkdir()
+    link = link_dir / f"mypython{_EXE}"
+    link.symlink_to(python)
+    found = calibration_mod.resolve_mpiexec(str(link))
+    assert found is not None
+    assert os.path.samefile(found, _own_mpiexec(tmp_path, "venv2"))
 
 
 def test_resolve_mpiexec_falls_back_to_path(tmp_path):
