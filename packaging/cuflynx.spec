@@ -30,7 +30,7 @@ import sys
 import sysconfig
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_all, collect_submodules
+from PyInstaller.utils.hooks import collect_all, collect_data_files, collect_submodules
 
 ROOT = Path(SPECPATH).parent  # noqa: F821 - SPECPATH is injected by PyInstaller
 API_DIR = ROOT / "apps" / "api"
@@ -276,6 +276,19 @@ for pkg in _ANALYSIS_PKGS:
     datas += pkg_datas
     binaries += pkg_binaries
     hiddenimports += pkg_hidden
+
+# scipy's *data files* are not collected by the loops above (scipy is neither in
+# _ANALYSIS_PKGS nor the numpy/etc. collect_all list -- its modules and compiled
+# libs come in transitively via PyInstaller's built-in scipy hook, but its data
+# files do not). One of them is load-bearing at run time: scipy.stats.qmc.Sobol
+# reads scipy/stats/_sobol_direction_numbers.npz to seed the sequence, so without
+# it a Sobol run (e.g. multi-start gradient descent with start_sampling='sobol')
+# fails with FileNotFoundError on that .npz. scipy swallows the error
+# ("Exception ignored in: scipy.stats._sobol._initialize_v"), so the run limps on
+# with un-seeded direction numbers rather than aborting -- a silent-wrong, not a
+# crash. Collect scipy's runtime data files (excluding the bulky tests/data
+# fixtures) so the .npz -- and any sibling runtime data -- is present.
+datas += collect_data_files("scipy", excludes=["**/tests/**"])
 
 # CA imports mpi4py unconditionally, so the MPI runtime must be in the bundle for
 # the app to run analysis with no MPI on the user's machine. On Linux/macOS the
