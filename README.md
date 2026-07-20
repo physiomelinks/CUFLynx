@@ -17,31 +17,54 @@ manually explore how parameters affect your (CellML) model outputs.
 
 Not sure which Mac you have? **Apple menu → About This Mac**: anything starting
 "Apple M" is Apple silicon; "Intel…" is Intel. Every M-series chip runs the same
-`arm64` build — there is no per-generation download.
+`arm64` build.
 
-### Making it runnable (macOS and Linux)
+### Run it
 
-**Windows:** double-click the `.exe`.
+<details open>
+<summary><b>macOS</b></summary>
 
-**macOS and Linux:** a GitHub release asset is stored as a plain file, so the
-executable bit is stripped on download. You must restore it before the file will
-run — otherwise double-clicking opens it in a **text editor** and you get a
-screenful of binary garbage, which is the file's own machine code, not an error:
+Apple silicon:
 
 ```bash
 cd ~/Downloads
-chmod +x CUFLynx-macos-arm64          # or CUFLynx-macos-x86_64 / CUFLynx-linux-x86_64
+chmod +x CUFLynx-macos-arm64
+xattr -d com.apple.quarantine CUFLynx-macos-arm64
 ./CUFLynx-macos-arm64
 ```
 
-**macOS only — Gatekeeper.** The app is not yet notarized, so a file downloaded
-through a browser is quarantined and macOS refuses it with *"cannot be opened
-because the developer cannot be verified."* Either right-click the file →
-**Open** → **Open** (once per download), or clear the quarantine flag:
+Intel:
 
 ```bash
-xattr -d com.apple.quarantine CUFLynx-macos-arm64
+cd ~/Downloads
+chmod +x CUFLynx-macos-x86_64
+xattr -d com.apple.quarantine CUFLynx-macos-x86_64
+./CUFLynx-macos-x86_64
 ```
+
+The app isn't notarized yet, so macOS blocks the download until the quarantine
+flag is cleared — the `xattr` line does that, or right-click → **Open** → **Open**.
+
+</details>
+
+<details>
+<summary><b>Linux</b></summary>
+
+```bash
+cd ~/Downloads
+chmod +x CUFLynx-linux-x86_64
+./CUFLynx-linux-x86_64
+```
+
+</details>
+
+<details>
+<summary><b>Windows</b></summary>
+
+Double-click `CUFLynx-windows-x86_64.exe`. If SmartScreen warns, choose
+**More info** → **Run anyway**.
+
+</details>
 
 These links always point at the newest release. All builds are also listed on the
 [releases page](https://github.com/physiomelinks/CUFLynx/releases/latest).
