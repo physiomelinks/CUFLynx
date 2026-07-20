@@ -132,6 +132,24 @@ jobs:
           # time. 11.0 is the first macOS with Apple silicon support, so it costs
           # nothing on arm64 and keeps Intel users on Big Sur working.
           MACOSX_DEPLOYMENT_TARGET: "11.0"
+          # Stop mpi4py from calling MPI_Init while PyInstaller *analyses* it.
+          # collect_all('mpi4py.futures') enumerates submodules in an isolated
+          # child process, which imports mpi4py — and mpi4py initialises MPI at
+          # import. On the Linux runners MPICH's UCX transport intermittently
+          # fails to come up:
+          #     UCX  ERROR failed to unpack address, invalid bandwidth 0.00
+          #     Abort: Fatal error in internal_Init_thread ... MPIDI_UCX_init_local
+          # killing the child (exit 143) and failing the build with
+          # SubprocessDiedError. It took out 2 of 3 release builds.
+          #
+          # The build only needs to *enumerate* mpi4py, never to run MPI, so skip
+          # the init entirely. This is a build-time env var: it is not baked into
+          # the executable, so MPI still initialises normally at run time.
+          MPI4PY_RC_INITIALIZE: "0"
+          # Belt and braces: if mpi4py is too old to honour the rc env var
+          # (added in 3.1; the extra pins only >=3.0), keep UCX off the device
+          # probe that fails. Harmless where UCX isn't present.
+          UCX_TLS: "tcp,self"
 
       # circulatory_autogen isn't bundled (it's picked at runtime), but the smoke
       # test needs it to run a real simulation — see below.
