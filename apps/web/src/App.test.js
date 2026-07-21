@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { shallowMount, flushPromises } from '@vue/test-utils'
 
 // Mock the API so the onMounted bootstrap doesn't hit the network. shallowMount
@@ -23,12 +23,9 @@ vi.mock('./lib/api', () => ({
     differentiable_operations: {},
   }),
   setConfig: vi.fn().mockResolvedValue({}),
-  startSensitivity: vi.fn().mockResolvedValue({ job_id: 'j1' }),
-  getSensitivityStatus: vi.fn().mockResolvedValue({ state: 'done', lines: [] }),
-  cancelSensitivity: vi.fn().mockResolvedValue({}),
 }))
 
-import { getConfig, setConfig, startSensitivity } from './lib/api'
+import { getConfig, setConfig } from './lib/api'
 import App from './App.vue'
 
 describe('App.vue', () => {
@@ -121,96 +118,6 @@ describe('App.vue', () => {
     })
   })
 
-  // When >1 cores are requested but no MPI launcher exists, the backend silently
-  // runs on a single core. Warn and confirm first instead of running silently.
-  describe('multi-core run without an MPI launcher', () => {
-    const BASE_CONFIG = {
-      ca_dir: '',
-      ca_exists: true,
-      generated_model_format: 'cellml_only',
-      solver: 'CVODE_myokit',
-      solver_info: {},
-      differentiable_operations: {},
-    }
-
-    // PrimeVue's Dialog teleports its DOM (jsdom doesn't surface it), so stub it
-    // with one that renders its default + footer slots inline. Then the real
-    // confirm/cancel buttons are in the wrapper and clickable.
-    const DialogStub = {
-      name: 'Dialog',
-      props: { visible: Boolean },
-      emits: ['update:visible'],
-      template:
-        '<div v-if="visible" v-bind="$attrs"><slot /><slot name="footer" /></div>',
-    }
-
-    let wrapper
-    beforeEach(() => vi.clearAllMocks())
-    afterEach(() => wrapper?.unmount())
-
-    async function mountWith(mpiexecAvailable) {
-      getConfig.mockResolvedValueOnce({ ...BASE_CONFIG, mpiexec_available: mpiexecAvailable })
-      wrapper = shallowMount(App, {
-        global: { stubs: { Dialog: DialogStub, Button: false } },
-      })
-      await flushPromises()
-      return wrapper
-    }
-
-    function runSensitivity(num_cores) {
-      wrapper.findComponent({ name: 'SensitivityPanel' }).vm.$emit('run', { method: 'sobol', num_cores })
-      return flushPromises()
-    }
-
-    const warnDialog = () => wrapper.find('[data-testid="cores-warning"]')
-
-    it('warns and defers the run instead of silently using one core', async () => {
-      await mountWith(false)
-      await runSensitivity(4)
-
-      expect(startSensitivity).not.toHaveBeenCalled() // deferred, not run
-      expect(warnDialog().exists()).toBe(true)
-      expect(warnDialog().text()).toContain('single core')
-    })
-
-    it('runs (on one core, server-side) when the user confirms', async () => {
-      await mountWith(false)
-      await runSensitivity(4)
-      await wrapper.find('[data-testid="cores-warning-confirm"]').trigger('click')
-      await flushPromises()
-
-      expect(startSensitivity).toHaveBeenCalledTimes(1)
-      // num_cores is sent as-is; the backend does the single-core fallback.
-      expect(startSensitivity.mock.calls[0][1]).toMatchObject({ num_cores: 4 })
-      expect(warnDialog().exists()).toBe(false)
-    })
-
-    it('does not run when the user cancels', async () => {
-      await mountWith(false)
-      await runSensitivity(4)
-      await wrapper.find('[data-testid="cores-warning-cancel"]').trigger('click')
-      await flushPromises()
-
-      expect(startSensitivity).not.toHaveBeenCalled()
-      expect(warnDialog().exists()).toBe(false)
-    })
-
-    it('runs directly (no warning) for a single core', async () => {
-      await mountWith(false)
-      await runSensitivity(1)
-
-      expect(startSensitivity).toHaveBeenCalledTimes(1)
-      expect(warnDialog().exists()).toBe(false)
-    })
-
-    it('runs directly (no warning) when a launcher is available', async () => {
-      await mountWith(true)
-      await runSensitivity(4)
-
-      expect(startSensitivity).toHaveBeenCalledTimes(1)
-      expect(warnDialog().exists()).toBe(false)
-    })
-  })
 
   // The packaged desktop app has no default interpreter (its own executable is
   // the frozen bundle), so the choice must survive a restart or the user re-picks

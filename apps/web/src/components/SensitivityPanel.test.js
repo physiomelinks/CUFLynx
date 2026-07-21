@@ -123,3 +123,40 @@ describe('SensitivityPanel Sobol options from CA schema', () => {
     expect(tag('confidence_level')).toBe('input-number-stub')
   })
 })
+
+describe('SensitivityPanel cores gating (no MPI launcher)', () => {
+  const mountPanel = (mpiexecAvailable, num_cores, method = 'sobol') =>
+    mount(SensitivityPanel, {
+      props: { canRun: true, mpiexecAvailable, defaults: { method, num_cores } },
+      global: { stubs },
+    })
+  const msg = (w) => w.find('[data-testid="sa-cores-invalid"]')
+  const runBtn = (w) => w.find('[data-testid="run-sensitivity"]')
+
+  it('marks Cores invalid and disables Run for >1 core with no launcher', () => {
+    const w = mountPanel(false, 4)
+    expect(msg(w).exists()).toBe(true)
+    expect(msg(w).text()).toContain('no MPI launcher')
+    expect(runBtn(w).attributes('disabled')).toBeDefined()
+  })
+
+  it('does not emit run while Cores is invalid', async () => {
+    const w = mountPanel(false, 4)
+    await runBtn(w).trigger('click')
+    expect(w.emitted('run')).toBeFalsy()
+  })
+
+  it('does not gate when a launcher is available', () => {
+    const w = mountPanel(true, 4)
+    expect(msg(w).exists()).toBe(false)
+    expect(runBtn(w).attributes('disabled')).toBeUndefined()
+  })
+
+  it('does not gate a single-core run', () => {
+    expect(msg(mountPanel(false, 1)).exists()).toBe(false)
+  })
+
+  it('does not gate the local method (cores unused there)', () => {
+    expect(msg(mountPanel(false, 4, 'local')).exists()).toBe(false)
+  })
+})

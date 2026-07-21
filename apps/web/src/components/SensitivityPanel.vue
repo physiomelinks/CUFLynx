@@ -15,6 +15,10 @@ const props = defineProps({
   // AD gradients are only valid for casadi_python + all-differentiable ops
   // (set in the Settings popup). Gates the AD gradient-source option.
   adAvailable: { type: Boolean, default: false },
+  // False when no MPI launcher is available for the current interpreter. Cores>1
+  // would then silently run on one core, so we mark the Cores field invalid and
+  // block the run until it's set back to 1.
+  mpiexecAvailable: { type: Boolean, default: true },
 })
 const emit = defineEmits(['run', 'cancel', 'change'])
 
@@ -130,6 +134,12 @@ const nominals = computed(() =>
 const isLocal = computed(() => settings.method === 'local')
 const running = computed(() => props.state === 'running')
 
+// Cores>1 only applies to the Sobol (global) method, and only runs when an MPI
+// launcher is available. Otherwise the field is invalid and the run is blocked.
+const coresInvalid = computed(
+  () => !isLocal.value && !props.mpiexecAvailable && Number(settings.num_cores) > 1,
+)
+
 const term = ref(null)
 watch(
   () => props.lines.length,
@@ -140,6 +150,7 @@ watch(
 )
 
 function onRun() {
+  if (coresInvalid.value) return
   emit('run', buildSettings())
 }
 </script>
@@ -201,7 +212,17 @@ function onRun() {
         </template>
         <label class="field">
           <span title="mpiexec -n N: parallel sample evaluation">Cores</span>
-          <InputNumber v-model="settings.num_cores" :min="1" :max="64" size="small" />
+          <InputNumber
+            v-model="settings.num_cores"
+            :min="1"
+            :max="64"
+            size="small"
+            :invalid="coresInvalid"
+            data-testid="sa-cores"
+          />
+          <small v-if="coresInvalid" class="cores-invalid" data-testid="sa-cores-invalid">
+            Cores &gt; 1 not available (no MPI launcher). Set to 1 to run.
+          </small>
         </label>
       </template>
 
@@ -266,7 +287,7 @@ function onRun() {
         icon="pi pi-play"
         size="small"
         data-testid="run-sensitivity"
-        :disabled="!canRun || running"
+        :disabled="!canRun || running || coresInvalid"
         @click="onRun"
       />
       <Button
@@ -349,6 +370,12 @@ function onRun() {
 .cal-error {
   color: #e84a5f;
   opacity: 1;
+}
+.cores-invalid {
+  display: block;
+  margin-top: 0.15rem;
+  color: #e84a5f;
+  font-size: 0.72rem;
 }
 .terminal {
   margin: 0.25rem 0 0;

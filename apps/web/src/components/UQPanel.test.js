@@ -70,3 +70,36 @@ describe('UQPanel MCMC options from CA schema', () => {
     expect(wrapper.emitted('run')[0][0].moves).toBe('stretch')
   })
 })
+
+describe('UQPanel cores gating (no MPI launcher)', () => {
+  const mountPanel = (mpiexecAvailable, num_cores) =>
+    mount(UQPanel, {
+      props: { canRun: true, mpiexecAvailable, defaults: { method: 'mcmc', num_cores } },
+      global: { stubs },
+    })
+  const msg = (w) => w.find('[data-testid="uq-cores-invalid"]')
+  const runBtn = (w) => w.find('[data-testid="run-uq"]')
+
+  it('marks Cores invalid and disables Run for >1 core with no launcher', () => {
+    const w = mountPanel(false, 4)
+    expect(msg(w).exists()).toBe(true)
+    expect(msg(w).text()).toContain('no MPI launcher')
+    expect(runBtn(w).attributes('disabled')).toBeDefined()
+  })
+
+  it('does not emit run while Cores is invalid', async () => {
+    const w = mountPanel(false, 4)
+    await runBtn(w).trigger('click')
+    expect(w.emitted('run')).toBeFalsy()
+  })
+
+  it('does not gate when a launcher is available', () => {
+    const w = mountPanel(true, 4)
+    expect(msg(w).exists()).toBe(false)
+    expect(runBtn(w).attributes('disabled')).toBeUndefined()
+  })
+
+  it('does not gate a single-core run', () => {
+    expect(msg(mountPanel(false, 1)).exists()).toBe(false)
+  })
+})
