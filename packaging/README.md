@@ -20,16 +20,32 @@ of impact:
 ### What we do about it (free mitigations, in this repo)
 
 - **UPX is disabled** (`upx=False` in `cuflynx.spec`) — packing makes FPs worse.
-- **Bootloader rebuilt from source** on the Windows CI runner
-  (`pip install --no-binary pyinstaller --force-reinstall`, in `release.yml`),
-  so the bootloader is unique and not a signature match. This clears the bulk of
-  the Defender detections.
 - **Version resource embedded** (`version_info.txt` → `EXE(version=...)`), so the
-  binary carries CompanyName/ProductName/version like real software.
+  binary carries CompanyName/ProductName/version like real software instead of
+  being a bare metadata-less exe. Verified embedded in the built artifact.
 
 These reduce, but do not guarantee elimination of, the detections — especially
 across third-party AV vendors and on each new release (a new unsigned binary has
 a new hash and no reputation).
+
+### Bootloader-rebuild: attempted, does not work in CI (deferred)
+
+The higher-impact free lever is rebuilding the PyInstaller bootloader from source
+(the stock bootloader's bytes are the main signature match). This was tried in
+`release.yml` and **removed because it did not fire on the Windows runner**:
+
+- PyInstaller's *sdist* ships a prebuilt Windows bootloader
+  (`PyInstaller/bootloader/Windows-64bit-intel/run.exe`), and the build reuses it.
+- `hatch_build.py` only compiles when no prebuilt exists *or*
+  `PYINSTALLER_COMPILE_BOOTLOADER=1` is set. Setting that env var forced a real
+  recompile **locally** (verified: 25 source files compiled), but in CI on Windows
+  it still didn't — the wheel build finished in ~0.07 s with zero compiler output,
+  for a reason not yet diagnosed (no Windows box to reproduce on).
+
+To make this work, a follow-up should compile the bootloader explicitly and
+visibly (clone the source, set up the MSVC env, run `python waf all`, then
+install), and validate on a real Windows machine that (a) the bootloader binary
+actually changed and (b) Defender's verdict improved. Tracked separately.
 
 ### If a release is still flagged
 

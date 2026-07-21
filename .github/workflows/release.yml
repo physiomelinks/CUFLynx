@@ -115,28 +115,13 @@ jobs:
         working-directory: apps/api
         run: pip install -e ".[desktop,analysis]"
 
-      # Windows antivirus (Defender et al.) frequently flags PyInstaller onefile
-      # exes as trojans -- a false positive driven mainly by the *stock* bootloader,
-      # whose exact bytes are in AV signature databases (malware built with
-      # PyInstaller shares it). Rebuilding it from source produces a unique
-      # bootloader that isn't a signature match, clearing the bulk of the Defender
-      # detections. Mitigation, not a guarantee -- the durable fix is Authenticode
-      # signing (see packaging/README.md).
-      #
-      # PYINSTALLER_COMPILE_BOOTLOADER=1 is load-bearing: PyInstaller's *sdist*
-      # ships a prebuilt Windows bootloader (PyInstaller/bootloader/Windows-64bit-
-      # intel/run.exe), so `--no-binary pyinstaller` alone reuses it and compiles
-      # nothing (verified: the wheel build finished in 0.07 s with no cl.exe). The
-      # env var forces hatch_build.py to compile even when a prebuilt exists
-      # (hatch_build.py: `bootloader_exists() and not env[...]`). --no-cache-dir
-      # avoids reusing a previously-built wheel. windows-latest has the MSVC waf
-      # needs; if the compile can't find it the step fails loudly rather than
-      # silently shipping the stock bootloader.
-      - name: Rebuild PyInstaller bootloader from source (Windows AV false-positive)
-        if: runner.os == 'Windows'
-        env:
-          PYINSTALLER_COMPILE_BOOTLOADER: "1"
-        run: pip install --no-binary pyinstaller --force-reinstall --no-cache-dir "pyinstaller>=6.0"
+      # NB: rebuilding the PyInstaller bootloader from source (to dodge the Windows
+      # AV false-positive) was attempted here and REMOVED -- it did not fire on the
+      # Windows runner. PyInstaller's sdist ships a prebuilt Windows bootloader and
+      # the build reused it; even PYINSTALLER_COMPILE_BOOTLOADER=1 did not force a
+      # recompile in CI (verified: 0.07s wheel build, zero compiler output). See
+      # issue and packaging/README.md. The version resource below is the mitigation
+      # that IS applied; code signing is the durable fix.
 
       # yarn, not npm: the repo has yarn.lock and no package-lock.json, so
       # `npm ci` errors out. Matches ci.yml.
