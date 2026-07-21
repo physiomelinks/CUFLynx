@@ -118,6 +118,7 @@ describe('App.vue', () => {
     })
   })
 
+
   // The packaged desktop app has no default interpreter (its own executable is
   // the frozen bundle), so the choice must survive a restart or the user re-picks
   // it on every launch.

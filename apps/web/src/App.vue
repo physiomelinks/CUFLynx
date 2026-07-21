@@ -86,6 +86,12 @@ const pythonBrowserOpen = ref(false)
 // True in the packaged desktop app; drives the "Bundled (CUFLynx)" default label.
 const packaged = ref(false)
 
+// Whether an MPI launcher is available for the current interpreter. When false,
+// a num_cores>1 run would silently drop to a single core server-side, so the
+// analysis panels mark the Cores field invalid and block the run until it's set
+// back to 1. Tracks the selected interpreter.
+const mpiexecAvailable = ref(true)
+
 // circulatory_autogen source directory (top-bar "CA dir"), shared server-side via
 // /api/config. Defaults to the sibling clone; pick a different checkout to dev against.
 const caDir = ref('')
@@ -129,6 +135,7 @@ function applyConfigPayload(c) {
   pythonPath.value = c.python_path ?? ''
   serverPythonPath = pythonPath.value
   packaged.value = c.packaged ?? false
+  mpiexecAvailable.value = c.mpiexec_available ?? true
 }
 
 // Persist the interpreter choice server-side (it's what spawns the runners).
@@ -884,6 +891,7 @@ watch(
           <SensitivityPanel
             :defaults="saDefaults"
             :can-run="canCalibrate"
+            :mpiexec-available="mpiexecAvailable"
             :ad-available="adAvailable"
             :lines="sa.lines.value"
             :state="sa.state.value"
@@ -897,6 +905,7 @@ watch(
           <CalibrationPanel
             :defaults="calibDefaults"
             :can-run="canCalibrate"
+            :mpiexec-available="mpiexecAvailable"
             :ad-available="adAvailable"
             :gradient-sources="gradientSources"
             :lines="calib.lines.value"
@@ -912,6 +921,7 @@ watch(
           <UQPanel
             :defaults="uqDefaults"
             :can-run="canCalibrate"
+            :mpiexec-available="mpiexecAvailable"
             :lines="uq.lines.value"
             :state="uq.state.value"
             :error="uq.error.value"
@@ -1295,6 +1305,7 @@ watch(
         />
       </template>
     </Dialog>
+
   </div>
 </template>
 

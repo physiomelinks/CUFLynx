@@ -31,7 +31,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from calibration import calibration, list_python_interpreters
+from calibration import calibration, list_python_interpreters, resolve_mpiexec
 from cellml_meta import CellMLModel, CellMLParseError, parse_cellml
 from compiler_check import compiler_status
 from engine import SimulationError, engine, _circulatory_autogen_src
@@ -261,6 +261,12 @@ def _config_payload() -> dict:
         # packaged desktop build, which can't ship a compiler).
         "cpp_compiler": compiler_status(),
         "packaged": is_frozen(),
+        # Whether a matching MPI launcher is available for the current interpreter,
+        # so the UI can warn *before* a num_cores>1 run silently drops to a single
+        # core (build_command falls back when no mpiexec is found -- common on
+        # Windows without MS-MPI). Tracks the selected interpreter: resolved the
+        # same way the run does (see calibration.resolve_mpiexec).
+        "mpiexec_available": resolve_mpiexec(calibration.python) is not None,
     }
 
 

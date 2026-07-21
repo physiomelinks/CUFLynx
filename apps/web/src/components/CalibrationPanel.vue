@@ -17,6 +17,9 @@ const props = defineProps({
   // Gradient sources available for the current model (FD / AD / FSA), from the
   // backend's /api/config -> gradient_sources.
   gradientSources: { type: Array, default: () => [] },
+  // False when no MPI launcher is available: cores>1 would silently run on one
+  // core, so mark the Cores field invalid and block the run until it's set to 1.
+  mpiexecAvailable: { type: Boolean, default: true },
 })
 const emit = defineEmits(['run', 'cancel', 'change'])
 
@@ -136,6 +139,11 @@ watch([settings, optionValues], () => emit('change', buildSettings()), {
 
 const running = computed(() => props.state === 'running')
 
+// cores>1 only runs with an MPI launcher available; otherwise invalid + blocked.
+const coresInvalid = computed(
+  () => !props.mpiexecAvailable && Number(settings.num_cores) > 1,
+)
+
 const term = ref(null)
 watch(
   () => props.lines.length,
@@ -146,6 +154,7 @@ watch(
 )
 
 function onRun() {
+  if (coresInvalid.value) return
   emit('run', buildSettings())
 }
 </script>
@@ -220,7 +229,17 @@ function onRun() {
 
       <label class="field">
         <span title="mpiexec -n N: parallel population evaluation">Cores</span>
-        <InputNumber v-model="settings.num_cores" :min="1" :max="64" size="small" />
+        <InputNumber
+          v-model="settings.num_cores"
+          :min="1"
+          :max="64"
+          size="small"
+          :invalid="coresInvalid"
+          data-testid="calib-cores"
+        />
+        <small v-if="coresInvalid" class="cores-invalid" data-testid="calib-cores-invalid">
+          Cores &gt; 1 not available (no MPI launcher). Set to 1 to run.
+        </small>
       </label>
       <label class="field checkbox">
         <Checkbox v-model="settings.DEBUG" :binary="true" input-id="cal-debug" />
@@ -234,7 +253,7 @@ function onRun() {
         icon="pi pi-play"
         size="small"
         data-testid="run-calibration"
-        :disabled="!canRun || running"
+        :disabled="!canRun || running || coresInvalid"
         @click="onRun"
       />
       <Button
@@ -321,6 +340,12 @@ function onRun() {
 .cal-error {
   color: #e84a5f;
   opacity: 1;
+}
+.cores-invalid {
+  display: block;
+  margin-top: 0.15rem;
+  color: #e84a5f;
+  font-size: 0.72rem;
 }
 .terminal {
   margin: 0.25rem 0 0;
