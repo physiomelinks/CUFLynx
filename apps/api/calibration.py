@@ -120,16 +120,50 @@ COST_HISTORY_FILE = "best_cost_history.csv"
 PARAM_HISTORY_FILE = "best_param_vals_history.csv"
 
 
+#: Transient per-generation progress files CA appends to during a run (they drive
+#: the live cost/param plots). CA opens them in append mode and creates a new
+#: <case_type>_<prefix> subdir per method, so in a reused output_dir a previous
+#: run's copies linger; they are cleared at the start of each run (see
+#: _clear_progress_history) so a second run's plots start fresh and update live.
+HISTORY_FILES = (COST_HISTORY_FILE, PARAM_HISTORY_FILE)
+
+
 def _find_history_file(output_dir: str, name: str) -> str | None:
     """Locate a history CSV under output_dir, tolerating the ``<case_type>``
-    subdir circulatory_autogen creates (e.g. ``genetic_algorithm_<prefix>_…``)."""
+    subdir circulatory_autogen creates (e.g. ``genetic_algorithm_<prefix>_…``).
+
+    Prefer the most-recently-modified match: a reused output_dir can hold copies
+    from earlier runs (in other method subdirs), and picking an arbitrary one
+    would show stale data that never changes during the current run.
+    """
     import glob
 
     direct = os.path.join(output_dir, name)
     if os.path.exists(direct):
         return direct
     matches = glob.glob(os.path.join(output_dir, "**", name), recursive=True)
-    return matches[0] if matches else None
+    if not matches:
+        return None
+    return max(matches, key=os.path.getmtime)
+
+
+def _clear_progress_history(output_dir: str) -> None:
+    """Remove any leftover progress-history CSVs under output_dir.
+
+    CA appends to these and never truncates, and a run may reuse an output_dir
+    (a user-configured outputs dir is fixed). Without clearing, a new run's live
+    plots read the previous run's history and appear stuck. Best-effort: never
+    raises. Only the transient *_history.csv files are removed -- final results
+    (results.json, param CSVs, plots) are left intact.
+    """
+    import glob
+
+    for name in HISTORY_FILES:
+        for path in glob.glob(os.path.join(output_dir, "**", name), recursive=True):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
 
 
 def _read_history(output_dir: str) -> dict:
@@ -371,6 +405,9 @@ class CalibrationManager:
                 raise RuntimeError("a calibration job is already running")
             output_dir = config["output_dir"]
             os.makedirs(output_dir, exist_ok=True)
+            # A reused output_dir may hold a previous run's progress history; clear
+            # it so this run's live plots start fresh instead of reading stale data.
+            _clear_progress_history(output_dir)
             config_path = os.path.join(output_dir, "calib_config.json")
             with open(config_path, "w") as fh:
                 json.dump(config, fh)

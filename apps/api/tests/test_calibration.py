@@ -445,6 +445,48 @@ def test_read_history_missing_files_returns_empty(tmp_path):
     assert hist == {"param_names": [], "cost_history": [], "param_history": []}
 
 
+def test_find_history_prefers_the_most_recent_match(tmp_path):
+    """A reused output_dir can hold a previous run's history in another method
+    subdir; _read_history must follow the freshest one, not an arbitrary match,
+    or a second run's live plot shows stale data that never changes."""
+    old = tmp_path / "genetic_algorithm_model_run1"
+    old.mkdir()
+    (old / "best_cost_history.csv").write_text("9.9\n8.8\n")
+    time.sleep(0.02)
+    new = tmp_path / "sp_minimize_model_run2"
+    new.mkdir()
+    (new / "best_cost_history.csv").write_text("5.0\n4.0\n3.0\n")
+
+    assert calibration_mod._find_history_file(str(tmp_path), "best_cost_history.csv") == str(
+        new / "best_cost_history.csv"
+    )
+    assert [r[0] for r in calibration_mod._read_history(str(tmp_path))["cost_history"]] == [5.0, 4.0, 3.0]
+
+
+def test_clear_progress_history_removes_stale_history_but_keeps_results(tmp_path):
+    """Regression: a calibration run reusing an output_dir must clear the previous
+    run's progress-history CSVs so its live plots start fresh (CA appends to them
+    and never truncates). Final results must be left intact."""
+    sub = tmp_path / "genetic_algorithm_model_run1"
+    sub.mkdir()
+    (sub / "best_cost_history.csv").write_text("9.9\n8.8\n7.7\n")
+    (sub / "best_param_vals_history.csv").write_text("a,b\n0.1,0.2\n")
+    (sub / "results.json").write_text('{"cost": 0.1}')  # a real result -> keep
+    (tmp_path / "best_cost_history.csv").write_text("1.0\n")  # also the direct copy
+
+    # Before: stale history is read.
+    assert calibration_mod._read_history(str(tmp_path))["cost_history"]
+
+    calibration_mod._clear_progress_history(str(tmp_path))
+
+    # History cleared everywhere; results preserved.
+    assert calibration_mod._read_history(str(tmp_path))["cost_history"] == []
+    assert not (sub / "best_cost_history.csv").exists()
+    assert not (sub / "best_param_vals_history.csv").exists()
+    assert not (tmp_path / "best_cost_history.csv").exists()
+    assert (sub / "results.json").exists()  # final result untouched
+
+
 def test_calibration_progress_endpoint(client, tmp_path):
     _install_runner(tmp_path, HISTORY_RUNNER)
     model_id = _setup_model_obs_params(
@@ -458,6 +500,35 @@ def test_calibration_progress_endpoint(client, tmp_path):
     assert prog["param_names"] == ["a x", "a y"]
     assert [row[0] for row in prog["cost_history"]] == [1.0, 0.5]
     assert prog["param_history"] == [[0.10, 0.20], [0.30, 0.40]]
+
+
+def test_run_clears_stale_progress_history_from_a_reused_outputs_dir(client, tmp_path):
+    """End-to-end regression for the reported bug: a second calibration into a
+    reused (user-configured) outputs dir must not show the first run's stale
+    plots. start() clears the history before launching, so a poll right after
+    the run starts reads no leftover data."""
+    outdir = tmp_path / "outputs"
+    stale = outdir / "genetic_algorithm_model_run1"
+    stale.mkdir(parents=True)
+    (stale / "best_cost_history.csv").write_text("9.9\n8.8\n7.7\n")
+
+    _install_runner(tmp_path, SLOW_RUNNER)  # launches but writes no history
+    model_id = _setup_model_obs_params(
+        client, LV_MODEL_PATH, LV_OBS_DATA_PATH, LV_PARAMS_CSV_PATH
+    )
+    resp = client.post(
+        "/api/calibration/run",
+        json={"model_id": model_id, "settings": {"config_outputs_dir": str(outdir)}},
+    )
+    assert resp.status_code == 200
+    try:
+        # The stale history is gone the moment the run starts.
+        assert calibration_mod._read_history(str(outdir))["cost_history"] == []
+        assert client.get(f"/api/calibration/{resp.json()['job_id']}/progress").json()[
+            "cost_history"
+        ] == []
+    finally:
+        client.post(f"/api/calibration/{resp.json()['job_id']}/cancel")
 
 
 def test_calibration_progress_unknown_job_404(client):
