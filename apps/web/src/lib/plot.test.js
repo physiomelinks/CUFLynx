@@ -8,6 +8,8 @@ import {
   computeFeature,
   controlledSeries,
   buildExtraPlotCells,
+  lighten,
+  shadeForStart,
 } from './plot'
 
 // Mirrors the SN_simple obs_data shape (3 experiments, predictions + overlays).
@@ -235,5 +237,25 @@ describe('buildExtraPlotCells', () => {
   it('returns nothing when no extras match', () => {
     expect(buildExtraPlotCells(extras, 'data-only', time, outputs)).toEqual([])
     expect(buildExtraPlotCells(undefined, 'exp0', time, outputs)).toEqual([])
+  })
+})
+
+describe('lighten / shadeForStart', () => {
+  it('lighten blends toward white; t=0 is identity, t=1 is white', () => {
+    expect(lighten('#5b9bd5', 0)).toBe('#5b9bd5')
+    expect(lighten('#5b9bd5', 1)).toBe('#ffffff')
+    expect(lighten('#000000', 0.5)).toBe('#808080')
+  })
+
+  it('shadeForStart returns the base for start 0 and lighter shades after', () => {
+    // Single start -> base colour unchanged.
+    expect(shadeForStart('#5b9bd5', 0, 1)).toBe('#5b9bd5')
+    // First of several starts is the base; later starts are strictly lighter.
+    expect(shadeForStart('#5b9bd5', 0, 4)).toBe('#5b9bd5')
+    const mid = shadeForStart('#5b9bd5', 2, 4)
+    const last = shadeForStart('#5b9bd5', 3, 4)
+    expect(mid).not.toBe('#5b9bd5')
+    // Monotonically lighter: the last start's red channel exceeds the mid one's.
+    expect(parseInt(last.slice(1, 3), 16)).toBeGreaterThan(parseInt(mid.slice(1, 3), 16))
   })
 })

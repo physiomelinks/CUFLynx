@@ -41,6 +41,10 @@ export function useCalibration(options = {}) {
   // Per-start cost curves for multi-start gradient descent: startCosts[start] =
   // [cost per iteration]. Empty for GA / single-start runs.
   const startCosts = ref([])
+  // Per-start parameter trajectories for multi-start gradient descent:
+  // { param_names, starts } where starts[start][iteration] = [val per param].
+  // Empty for GA / single-start runs.
+  const startParams = ref({ param_names: [], starts: [] })
   // Final per-observable fit errors for the Analysis tab bar charts.
   const percentError = ref(null) // [number] one per observable
   const stdError = ref(null) // [number] one per observable
@@ -62,6 +66,7 @@ export function useCalibration(options = {}) {
     error.value = ''
     costHistory.value = []
     startCosts.value = []
+    startParams.value = { param_names: [], starts: [] }
     paramHistory.value = { paramNames: [], generations: [] }
     percentError.value = null
     stdError.value = null
@@ -74,6 +79,7 @@ export function useCalibration(options = {}) {
       const p = await getCalibrationProgress(jobId)
       costHistory.value = p.cost_history ?? []
       startCosts.value = p.start_costs ?? []
+      startParams.value = p.start_params ?? { param_names: [], starts: [] }
       paramHistory.value = {
         paramNames: p.param_names ?? [],
         generations: p.param_history ?? [],
@@ -151,6 +157,7 @@ export function useCalibration(options = {}) {
     error,
     costHistory,
     startCosts,
+    startParams,
     paramHistory,
     percentError,
     stdError,

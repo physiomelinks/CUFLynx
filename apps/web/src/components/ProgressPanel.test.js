@@ -57,4 +57,55 @@ describe('ProgressPanel', () => {
     const wrapper = mount(ProgressPanel, { props: { costHistory: [], startCosts: [] } })
     expect(wrapper.text()).toContain('Run a calibration')
   })
+
+  it('test_multi_start_cost_lines_are_shades_of_one_base_colour', () => {
+    const wrapper = mount(ProgressPanel, {
+      props: { costHistory: [], startCosts: [[1.5, 1.0], [2.0, 1.1], [3.0, 1.2]] },
+    })
+    const colours = wrapper.vm.costData.datasets.map((d) => d.borderColor)
+    // start 0 is the base palette colour; later starts are distinct (shaded).
+    expect(colours[0]).toBe('#5b9bd5')
+    expect(new Set(colours).size).toBe(3)
+  })
+
+  it('test_plots_param_per_colour_and_start_per_shade', () => {
+    const wrapper = mount(ProgressPanel, {
+      props: {
+        costHistory: [],
+        startCosts: [[1.5], [2.0]],
+        startParams: {
+          param_names: ['well x', 'well y'],
+          starts: [
+            // start 0: two iterations, each [x, y]
+            [
+              [1.2, 3.4],
+              [1.0, 3.0],
+            ],
+            // start 1
+            [
+              [2.2, 4.4],
+              [1.9, 4.0],
+            ],
+          ],
+        },
+      },
+    })
+    expect(wrapper.vm.hasStartParams).toBe(true)
+    const sets = wrapper.vm.startParamData.datasets
+    // 2 params × 2 starts = 4 lines.
+    expect(sets).toHaveLength(4)
+    // Each param picks the p-th column across a start's iteration rows.
+    const wellX_start0 = sets.find((d) => d.label === 'well x' && d._legend === true)
+    expect(wellX_start0.data).toEqual([1.2, 1.0])
+    // well x uses palette[0] as its base; well y uses palette[1].
+    expect(sets.filter((d) => d.label === 'well x')[0].borderColor).toBe('#5b9bd5')
+    expect(sets.filter((d) => d.label === 'well y')[0].borderColor).toBe('#ed7d31')
+    // Within a param, start 0 is the base colour and start 1 a lighter shade.
+    const wellX = sets.filter((d) => d.label === 'well x')
+    expect(wellX[0].borderColor).not.toBe(wellX[1].borderColor)
+    // One legend entry per param (the start-0 datasets).
+    expect(sets.filter((d) => d._legend).length).toBe(2)
+    // The per-start param chart renders.
+    expect(wrapper.text()).toContain('Parameter values vs iteration')
+  })
 })

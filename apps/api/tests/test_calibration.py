@@ -447,6 +447,7 @@ def test_read_history_missing_files_returns_empty(tmp_path):
         "cost_history": [],
         "param_history": [],
         "start_costs": [],
+        "start_params": {"param_names": [], "starts": []},
     }
 
 
@@ -478,6 +479,51 @@ def test_read_multistart_costs_absent_returns_empty(tmp_path):
     sub.mkdir()
     (sub / "best_cost_history.csv").write_text("0.9\n0.4\n")
     assert calibration_mod._read_multistart_costs(str(tmp_path)) == []
+
+
+def test_read_multistart_params_demuxes_interleaved_rows(tmp_path):
+    """CA writes a header naming the params then `start_idx, iteration, <vals>`
+    rows interleaved across MPI ranks; _read_multistart_params must name the
+    params and group each start's rows into one [iteration][param] matrix."""
+    sub = tmp_path / "sp_minimize_model_obs"
+    sub.mkdir()
+    (sub / "multi_start_param_vals_history.csv").write_text(
+        "start_idx, iteration, well x, well y\n"
+        "0, 0, 1.2, 3.4\n"
+        "1, 0, 2.2, 4.4\n"
+        "0, 1, 1.0, 3.0\n"
+        "1, 1, 1.9, 4.0\n"
+    )
+    res = calibration_mod._read_multistart_params(str(tmp_path))
+    assert res == {
+        "param_names": ["well x", "well y"],
+        "starts": [
+            [[1.2, 3.4], [1.0, 3.0]],
+            [[2.2, 4.4], [1.9, 4.0]],
+        ],
+    }
+    # Surfaced by _read_history for the progress endpoint.
+    assert calibration_mod._read_history(str(tmp_path))["start_params"] == res
+
+
+def test_read_multistart_params_tolerates_partial_and_absent(tmp_path):
+    """Partial mid-write rows (wrong width) are skipped; an absent file yields
+    empty names/starts (GA / single-start runs)."""
+    assert calibration_mod._read_multistart_params(str(tmp_path)) == {
+        "param_names": [],
+        "starts": [],
+    }
+    sub = tmp_path / "sp_minimize_model_obs"
+    sub.mkdir()
+    (sub / "multi_start_param_vals_history.csv").write_text(
+        "start_idx, iteration, well x, well y\n"
+        "0, 0, 1.2, 3.4\n"
+        "0, 1, 1.0"  # partially-flushed final row: wrong width, skipped
+    )
+    assert calibration_mod._read_multistart_params(str(tmp_path)) == {
+        "param_names": ["well x", "well y"],
+        "starts": [[[1.2, 3.4]]],
+    }
 
 
 def test_find_history_prefers_the_most_recent_match(tmp_path):
