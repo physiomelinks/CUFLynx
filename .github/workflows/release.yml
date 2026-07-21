@@ -115,6 +115,14 @@ jobs:
         working-directory: apps/api
         run: pip install -e ".[desktop,analysis]"
 
+      # NB: rebuilding the PyInstaller bootloader from source (to dodge the Windows
+      # AV false-positive) was attempted here and REMOVED -- it did not fire on the
+      # Windows runner. PyInstaller's sdist ships a prebuilt Windows bootloader and
+      # the build reused it; even PYINSTALLER_COMPILE_BOOTLOADER=1 did not force a
+      # recompile in CI (verified: 0.07s wheel build, zero compiler output). See
+      # issue and packaging/README.md. The version resource below is the mitigation
+      # that IS applied; code signing is the durable fix.
+
       # yarn, not npm: the repo has yarn.lock and no package-lock.json, so
       # `npm ci` errors out. Matches ci.yml.
       - name: Install frontend deps

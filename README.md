@@ -64,6 +64,12 @@ chmod +x CUFLynx-linux-x86_64
 Double-click `CUFLynx-windows-x86_64.exe`. If SmartScreen warns, choose
 **More info** → **Run anyway**.
 
+Windows Defender (or another antivirus) may flag the file as a threat. This is a
+**false positive** — a known quirk of the PyInstaller packaging the app uses, not
+actual malware. If it's quarantined, restore it and allow it in your antivirus,
+or download again. (The app isn't code-signed yet, which is what would stop this
+for good.)
+
 </details>
 
 These links always point at the newest release. All builds are also listed on the

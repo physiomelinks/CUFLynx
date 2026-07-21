@@ -1,0 +1,44 @@
+# PyInstaller Windows version resource (VSVersionInfo).
+#
+# Embeds CompanyName / ProductName / FileDescription / version into the exe.
+# A bare Windows executable with no version metadata is a heuristic red flag for
+# antivirus engines; real software carries this resource. Wired in via the EXE()
+# `version=` argument in cuflynx.spec (Windows only; ignored on Linux/macOS).
+#
+# Keep the version fields roughly in step with the release tag. The AV heuristic
+# cares that the metadata is *present and plausible*, not that the number is
+# exact, so this doesn't have to be bumped on every patch — but do update it on
+# notable releases.
+VSVersionInfo(
+  ffi=FixedFileInfo(
+    filevers=(0, 1, 2, 0),
+    prodvers=(0, 1, 2, 0),
+    mask=0x3f,
+    flags=0x0,
+    OS=0x40004,        # VOS_NT_WINDOWS32
+    fileType=0x1,      # VFT_APP
+    subtype=0x0,
+    date=(0, 0),
+  ),
+  kids=[
+    StringFileInfo(
+      [
+        StringTable(
+          '040904B0',  # US English, Unicode
+          [
+            StringStruct('CompanyName', 'physiomelinks'),
+            StringStruct('FileDescription',
+                         'CUFLynx - CellML parameter exploration and analysis (sensitivity, calibration, UQ)'),
+            StringStruct('FileVersion', '0.1.2.0'),
+            StringStruct('InternalName', 'CUFLynx'),
+            StringStruct('OriginalFilename', 'CUFLynx-windows-x86_64.exe'),
+            StringStruct('ProductName', 'CUFLynx'),
+            StringStruct('ProductVersion', '0.1.2.0'),
+            StringStruct('LegalCopyright', 'Copyright (c) physiomelinks. MIT-licensed.'),
+          ],
+        )
+      ]
+    ),
+    VarFileInfo([VarStruct('Translation', [1033, 1200])]),
+  ],
+)
