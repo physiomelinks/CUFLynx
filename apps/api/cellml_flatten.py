@@ -15,7 +15,10 @@ import os
 import re
 from pathlib import Path
 
-from libcellml import Importer, Parser, Printer
+# NB: libcellml is imported lazily inside flatten_cellml() -- it is only present
+# in the full simulation environment (and the packaged app), not the unit-test
+# tier. Keeping it out of module scope lets main.py import the pure-Python helpers
+# (has_imports / pick_main_cellml, regex-based) without libcellml installed.
 
 #: <import ... xlink:href="sister.cellml"> -- the sister files a model references.
 _IMPORT_HREF = re.compile(rb'<import\b[^>]*?href\s*=\s*[\'"]([^\'"]+)[\'"]', re.IGNORECASE)
@@ -67,6 +70,8 @@ def flatten_cellml(main_path: str, base_dir: str | None = None) -> str:
     ``base_dir`` (default: the main file's directory) is where the imported sister
     files are located. Mirrors circulatory_autogen's parse/resolve/flatten/print.
     """
+    from libcellml import Importer, Parser, Printer  # lazy: full env only
+
     base_dir = base_dir or os.path.dirname(os.path.abspath(main_path))
     parser = Parser(False)  # non-strict: accept CellML 1.1 as well as 2.0
     model = parser.parseModel(Path(main_path).read_text())
