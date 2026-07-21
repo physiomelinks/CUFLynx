@@ -1039,6 +1039,7 @@ watch(
             :cost-history="calib.costHistory.value"
             :param-names="calib.paramHistory.value.paramNames"
             :param-history="calib.paramHistory.value.generations"
+            :start-costs="calib.startCosts.value"
           />
         </div>
         <div v-show="centerTab === 'analysis'" class="plot-groups">

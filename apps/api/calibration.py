@@ -118,6 +118,10 @@ def _interpreter_bindirs(exe: str) -> list[Path]:
 
 COST_HISTORY_FILE = "best_cost_history.csv"
 PARAM_HISTORY_FILE = "best_param_vals_history.csv"
+#: multi_start_sp_minimize streams one ``start_idx, iteration, cost`` row per
+#: L-BFGS-B iteration here (CA #286), so the Progress tab can draw one cost line
+#: per start while the run is in progress.
+MULTISTART_COST_FILE = "multi_start_cost_history.csv"
 
 
 #: Transient per-generation progress files CA appends to during a run (they drive
@@ -125,7 +129,7 @@ PARAM_HISTORY_FILE = "best_param_vals_history.csv"
 #: <case_type>_<prefix> subdir per method, so in a reused output_dir a previous
 #: run's copies linger; they are cleared at the start of each run (see
 #: _clear_progress_history) so a second run's plots start fresh and update live.
-HISTORY_FILES = (COST_HISTORY_FILE, PARAM_HISTORY_FILE)
+HISTORY_FILES = (COST_HISTORY_FILE, PARAM_HISTORY_FILE, MULTISTART_COST_FILE)
 
 
 def _find_history_file(output_dir: str, name: str) -> str | None:
@@ -218,7 +222,43 @@ def _read_history(output_dir: str) -> dict:
         "param_names": param_names,
         "cost_history": cost_history,
         "param_history": param_history,
+        "start_costs": _read_multistart_costs(output_dir),
     }
+
+
+def _read_multistart_costs(output_dir: str) -> list[list[float]]:
+    """Per-start cost curves from multi_start_cost_history.csv, for the multi-start
+    gradient-descent plot.
+
+    CA streams ``start_idx, iteration, cost`` rows, interleaved across MPI ranks.
+    Group by start and order by iteration into one cost list per start (index =
+    start_idx); returns [] when the file is absent (GA / single-start runs).
+    Never raises: partial mid-write rows are skipped.
+    """
+    path = _find_history_file(output_dir, MULTISTART_COST_FILE)
+    if not path:
+        return []
+    by_start: dict[int, dict[int, float]] = {}
+    try:
+        for line in Path(path).read_text().splitlines():
+            parts = line.split(",")
+            if len(parts) != 3:
+                continue
+            try:
+                start = int(float(parts[0]))
+                iteration = int(float(parts[1]))
+                cost = float(parts[2])
+            except ValueError:
+                continue  # header or partially-flushed row
+            by_start.setdefault(start, {})[iteration] = cost
+    except OSError:
+        return []
+    if not by_start:
+        return []
+    return [
+        [by_start[s][i] for i in sorted(by_start[s])] if s in by_start else []
+        for s in range(max(by_start) + 1)
+    ]
 
 # Modules a Python interpreter needs to run calibrations. myokit + libcellml are
 # required for any run; nevergrad (CMA-ES) and mpi4py (multi-core) are optional.

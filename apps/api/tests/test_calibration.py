@@ -442,7 +442,42 @@ def test_read_history_parses_subdir_and_tolerates_partial(tmp_path):
 
 def test_read_history_missing_files_returns_empty(tmp_path):
     hist = calibration_mod._read_history(str(tmp_path))
-    assert hist == {"param_names": [], "cost_history": [], "param_history": []}
+    assert hist == {
+        "param_names": [],
+        "cost_history": [],
+        "param_history": [],
+        "start_costs": [],
+    }
+
+
+def test_read_multistart_costs_demuxes_interleaved_rows(tmp_path):
+    """CA appends `start_idx, iteration, cost` rows interleaved across MPI ranks;
+    _read_multistart_costs must group by start and order by iteration so each
+    start becomes one cost-vs-iteration curve for the Progress plot."""
+    sub = tmp_path / "sp_minimize_model_obs"
+    sub.mkdir()
+    (sub / "multi_start_cost_history.csv").write_text(
+        "0,0,1.5\n1,0,2.0\n2,0,3.0\n0,1,1.2\n1,1,1.1\n0,2,1.0\n"
+    )
+    assert calibration_mod._read_multistart_costs(str(tmp_path)) == [
+        [1.5, 1.2, 1.0],
+        [2.0, 1.1],
+        [3.0],
+    ]
+    # And it's surfaced by _read_history for the progress endpoint.
+    assert calibration_mod._read_history(str(tmp_path))["start_costs"] == [
+        [1.5, 1.2, 1.0],
+        [2.0, 1.1],
+        [3.0],
+    ]
+
+
+def test_read_multistart_costs_absent_returns_empty(tmp_path):
+    """GA / single-start runs write no multi_start_cost_history.csv -> []."""
+    sub = tmp_path / "genetic_algorithm_model_obs"
+    sub.mkdir()
+    (sub / "best_cost_history.csv").write_text("0.9\n0.4\n")
+    assert calibration_mod._read_multistart_costs(str(tmp_path)) == []
 
 
 def test_find_history_prefers_the_most_recent_match(tmp_path):

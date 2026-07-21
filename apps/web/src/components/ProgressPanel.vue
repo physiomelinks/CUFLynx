@@ -32,13 +32,35 @@ const props = defineProps({
   paramNames: { type: Array, default: () => [] },
   // [[v0, v1, …], …] normalised best param values, one row per generation
   paramHistory: { type: Array, default: () => [] },
+  // Per-start cost curves for multi-start gradient descent:
+  // startCosts[start] = [cost per iteration]. Empty for GA / single-start runs.
+  startCosts: { type: Array, default: () => [] },
 })
 
-const hasData = computed(() => props.costHistory.length > 0)
+const hasData = computed(() => props.costHistory.length > 0 || multiStart.value)
+// Multi-start when CA emitted per-start cost curves with more than one start.
+const multiStart = computed(
+  () => props.startCosts.length > 0 && props.startCosts.some((c) => c && c.length),
+)
 const generations = computed(() => props.costHistory.map((_, i) => i))
 
-// Best-cost line plus a shaded band spanning each generation's top-10 spread.
+// Multi-start: one cost-vs-iteration line per start. Single-start / GA: the
+// best-cost line plus a shaded band over each generation's top-10 spread.
 const costData = computed(() => {
+  if (multiStart.value) {
+    const maxLen = Math.max(...props.startCosts.map((c) => (c ? c.length : 0)))
+    return {
+      labels: Array.from({ length: maxLen }, (_, i) => i),
+      datasets: props.startCosts.map((curve, i) => ({
+        label: `start ${i}`,
+        data: curve ?? [],
+        borderColor: PALETTE[i % PALETTE.length],
+        backgroundColor: PALETTE[i % PALETTE.length],
+        borderWidth: 2,
+        pointRadius: 0,
+      })),
+    }
+  }
   const best = props.costHistory.map((row) => row[0])
   const worst = props.costHistory.map((row) => Math.max(...row))
   return {
@@ -79,21 +101,23 @@ const paramData = computed(() => ({
   })),
 }))
 
-const costOptions = {
+// X axis is "iteration" for multi-start gradient descent, "generation" for GA.
+const xLabel = computed(() => (multiStart.value ? 'iteration' : 'generation'))
+const costOptions = computed(() => ({
   responsive: true,
   maintainAspectRatio: false,
   animation: false,
   scales: {
     x: {
       type: 'linear',
-      title: { display: true, text: 'generation' },
-      // Generations are whole numbers — no fractional ticks on the x axis.
+      title: { display: true, text: xLabel.value },
+      // Iterations/generations are whole numbers — no fractional ticks.
       ticks: { stepSize: 1, precision: 0 },
     },
     y: { type: 'logarithmic', title: { display: true, text: 'cost' } },
   },
   plugins: { legend: { display: true, position: 'bottom' } },
-}
+}))
 
 const paramOptions = {
   responsive: true,
@@ -124,12 +148,12 @@ const paramOptions = {
     </p>
     <template v-else>
       <section class="progress-chart">
-        <h3>Cost vs generation</h3>
+        <h3>Cost vs {{ xLabel }}</h3>
         <div class="chart-box">
           <Line :data="costData" :options="costOptions" />
         </div>
       </section>
-      <section class="progress-chart">
+      <section v-if="paramHistory.length" class="progress-chart">
         <h3>Best parameter values vs generation</h3>
         <div class="chart-box">
           <Line :data="paramData" :options="paramOptions" />
