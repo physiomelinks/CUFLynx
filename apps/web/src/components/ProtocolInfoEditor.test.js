@@ -48,6 +48,18 @@ describe('ProtocolInfoEditor', () => {
     expect(model.params['a/x'][0][0].shape).toBe('ramp')
   })
 
+  it('seeds a newly added param with its uploaded value as the baseline', async () => {
+    const model = reactive(emptyModel())
+    const wrapper = mountEditor(model, { initialValues: { 'a/x': 1.5e-8 } })
+
+    await wrapper.find('[data-testid="param-select"]').setValue('a/x')
+    await wrapper.find('[data-testid="add-param"]').trigger('click')
+    // baseline = the uploaded value, not 0.
+    expect(model.params['a/x'][0][0]).toEqual({ shape: 'constant', value: 1.5e-8 })
+    // and it shows in scientific notation in the value field.
+    expect(wrapper.find('[data-testid="pc-value"]').element.value).toBe('1.5e-8')
+  })
+
   it('renders one empty plot when there are no controlled params', () => {
     const wrapper = mountEditor(reactive(emptyModel()))
     const plots = wrapper.findAllComponents(PlotStub)

@@ -41,6 +41,23 @@ describe('protocolToModel', () => {
   })
 })
 
+describe('addParam', () => {
+  it('seeds every subexp constant cell with the uploaded baseline value', () => {
+    const m = emptyModel()
+    addParam(m, 'a/x', 1.5e-8)
+    for (const expCells of m.params['a/x'])
+      for (const cell of expCells) expect(cell).toEqual({ shape: 'constant', value: 1.5e-8 })
+  })
+
+  it('defaults to 0 when no baseline is known', () => {
+    const m = emptyModel()
+    addParam(m, 'a/x')
+    expect(m.params['a/x'][0][0]).toEqual({ shape: 'constant', value: 0 })
+    addParam(m, 'a/y', undefined)
+    expect(m.params['a/y'][0][0].value).toBe(0)
+  })
+})
+
 describe('buildProtocolInfo', () => {
   it('round-trips structure + preserved trace', () => {
     const back = buildProtocolInfo(protocolToModel(PI), PI)

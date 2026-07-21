@@ -285,6 +285,7 @@ async function onSave() {
       v-model:active-exp="activeExp"
       :model="protocolModel"
       :all-names="allNames"
+      :initial-values="modelVariables?.initial_values ?? {}"
       :highlight-subexp="highlightSubexp"
       :highlight-exp="highlightExp"
     />

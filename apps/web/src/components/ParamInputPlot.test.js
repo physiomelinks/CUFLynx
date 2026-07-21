@@ -35,6 +35,18 @@ describe('ParamInputPlot', () => {
     expect(opts.scales.x.ticks.callback(2)).toBe(2)
   })
 
+  it('formats large/small y-axis ticks in scientific notation', () => {
+    const cb = mountPlot({
+      series: { time: [0, 1], values: [1e-8, 5e-8] },
+      preTime: 0,
+      totalSim: 1,
+      boundaries: [],
+    }).vm.chartOptions.scales.y.ticks.callback
+    expect(cb(1.5e-8)).toBe('1.5e-8')
+    expect(cb(2e6)).toBe('2e6')
+    expect(cb(50)).toBe('50') // moderate values stay plain
+  })
+
   it('no pre_time → x starts at 0; empty series → only vertical lines', () => {
     const wrapper = mountPlot({ series: null, preTime: 0, totalSim: 5, boundaries: [2] })
     const { datasets } = wrapper.vm.chartData

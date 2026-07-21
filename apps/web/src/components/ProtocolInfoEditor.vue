@@ -1,6 +1,7 @@
 <script setup>
 import { ref, computed } from 'vue'
 import Button from 'primevue/button'
+import SciNumberInput from './SciNumberInput.vue'
 import ParamInputPlot, { AXIS_W, RIGHT_PAD, PRE_FRAC } from './ParamInputPlot.vue'
 import { controlledSeries } from '../lib/plot'
 import {
@@ -27,6 +28,10 @@ const props = defineProps({
   // The experiment the highlight belongs to: the subexp is only highlighted while
   // that experiment is the active one (a data_item lives in a single experiment).
   highlightExp: { type: Number, default: null },
+  // Uploaded per-parameter values (qname -> number), from the model / the loaded
+  // params_for_id.csv. A freshly added controlled param starts at its uploaded
+  // value as the baseline, so the user only edits what to change it TO.
+  initialValues: { type: Object, default: () => ({}) },
 })
 const emit = defineEmits(['update:activeExp'])
 
@@ -83,7 +88,9 @@ function onRemoveExperiment(e) {
 }
 function onAddParam() {
   if (!newParam.value) return
-  addParam(props.model, newParam.value)
+  // Seed the baseline with the parameter's uploaded value, so the user starts
+  // from the real value and only changes what to set it to.
+  addParam(props.model, newParam.value, props.initialValues[newParam.value])
   newParam.value = ''
 }
 function onNum(obj, field, value) {
@@ -323,23 +330,23 @@ function shapeIcon(cell) {
               </select>
               <template v-if="model.params[qname][activeExp][s - 1].shape === 'constant'">
                 <label class="tt-field"><span class="tt-cap">value</span>
-                  <input type="number" step="any" title="constant value, held over this sub-experiment" :value="model.params[qname][activeExp][s - 1].value" @input="onNum(model.params[qname][activeExp][s - 1], 'value', $event.target.value)" />
+                  <SciNumberInput data-testid="pc-value" title="constant value, held over this sub-experiment" :model-value="model.params[qname][activeExp][s - 1].value" @update:model-value="model.params[qname][activeExp][s - 1].value = $event" />
                 </label>
               </template>
               <template v-else-if="model.params[qname][activeExp][s - 1].shape === 'ramp'">
                 <label class="tt-field"><span class="tt-cap">from</span>
-                  <input type="number" step="any" title="value at the start of this sub-experiment" :value="model.params[qname][activeExp][s - 1].from" @input="onNum(model.params[qname][activeExp][s - 1], 'from', $event.target.value)" />
+                  <SciNumberInput title="value at the start of this sub-experiment" :model-value="model.params[qname][activeExp][s - 1].from" @update:model-value="model.params[qname][activeExp][s - 1].from = $event" />
                 </label>
                 <label class="tt-field"><span class="tt-cap">to</span>
-                  <input type="number" step="any" title="value at the end of this sub-experiment" :value="model.params[qname][activeExp][s - 1].to" @input="onNum(model.params[qname][activeExp][s - 1], 'to', $event.target.value)" />
+                  <SciNumberInput title="value at the end of this sub-experiment" :model-value="model.params[qname][activeExp][s - 1].to" @update:model-value="model.params[qname][activeExp][s - 1].to = $event" />
                 </label>
               </template>
               <template v-else-if="model.params[qname][activeExp][s - 1].shape === 'step'">
                 <label class="tt-field"><span class="tt-cap">baseline</span>
-                  <input type="number" step="any" title="value before the step" :value="model.params[qname][activeExp][s - 1].baseline" @input="onNum(model.params[qname][activeExp][s - 1], 'baseline', $event.target.value)" />
+                  <SciNumberInput title="value before the step" :model-value="model.params[qname][activeExp][s - 1].baseline" @update:model-value="model.params[qname][activeExp][s - 1].baseline = $event" />
                 </label>
                 <label class="tt-field"><span class="tt-cap">level</span>
-                  <input type="number" step="any" title="value after the step, held to the end of the sub-experiment" :value="model.params[qname][activeExp][s - 1].level" @input="onNum(model.params[qname][activeExp][s - 1], 'level', $event.target.value)" />
+                  <SciNumberInput title="value after the step, held to the end of the sub-experiment" :model-value="model.params[qname][activeExp][s - 1].level" @update:model-value="model.params[qname][activeExp][s - 1].level = $event" />
                 </label>
                 <label class="tt-field"><span class="tt-cap">t step</span>
                   <input type="number" step="0.1" min="0" :max="activeExperiment.subexps[s - 1].duration" title="time within the sub-experiment when the step occurs" :value="model.params[qname][activeExp][s - 1].ts" @input="onTimeNum(model.params[qname][activeExp][s - 1], 'ts', $event.target.value, activeExperiment.subexps[s - 1].duration)" />
@@ -347,10 +354,10 @@ function shapeIcon(cell) {
               </template>
               <template v-else-if="model.params[qname][activeExp][s - 1].shape === 'pulse'">
                 <label class="tt-field"><span class="tt-cap">baseline</span>
-                  <input type="number" step="any" title="value outside the pulse" :value="model.params[qname][activeExp][s - 1].baseline" @input="onNum(model.params[qname][activeExp][s - 1], 'baseline', $event.target.value)" />
+                  <SciNumberInput title="value outside the pulse" :model-value="model.params[qname][activeExp][s - 1].baseline" @update:model-value="model.params[qname][activeExp][s - 1].baseline = $event" />
                 </label>
                 <label class="tt-field"><span class="tt-cap">peak</span>
-                  <input type="number" step="any" title="value during the pulse" :value="model.params[qname][activeExp][s - 1].peak" @input="onNum(model.params[qname][activeExp][s - 1], 'peak', $event.target.value)" />
+                  <SciNumberInput title="value during the pulse" :model-value="model.params[qname][activeExp][s - 1].peak" @update:model-value="model.params[qname][activeExp][s - 1].peak = $event" />
                 </label>
                 <label class="tt-field"><span class="tt-cap">t start</span>
                   <input type="number" step="0.1" min="0" :max="activeExperiment.subexps[s - 1].duration" title="pulse start time within the sub-experiment" :value="model.params[qname][activeExp][s - 1].ts" @input="onTimeNum(model.params[qname][activeExp][s - 1], 'ts', $event.target.value, activeExperiment.subexps[s - 1].duration)" />
