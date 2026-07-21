@@ -291,10 +291,13 @@ export function removeSubexp(model, e, s) {
   for (const qname of Object.keys(model.params)) model.params[qname][e].splice(s, 1)
 }
 
-export function addParam(model, qname) {
+export function addParam(model, qname, baseline) {
   if (!qname || model.params[qname]) return
+  // Start every subexp at the param's uploaded value (the baseline the user will
+  // change from); fall back to 0 when it's unknown.
+  const value = Number.isFinite(Number(baseline)) ? Number(baseline) : 0
   model.params[qname] = model.experiments.map((exp) =>
-    exp.subexps.map(() => makeCell('constant')),
+    exp.subexps.map(() => ({ shape: 'constant', value })),
   )
 }
 

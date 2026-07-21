@@ -21,6 +21,8 @@ import {
   Tooltip,
 } from 'chart.js'
 
+import { fmtAxis } from '../lib/format'
+
 ChartJS.register(LinearScale, PointElement, LineElement, LineController, Tooltip)
 
 const props = defineProps({
@@ -120,7 +122,9 @@ const chartOptions = computed(() => ({
       afterFit: (s) => {
         s.width = AXIS_W
       },
-      ticks: { maxTicksLimit: 4, font: { size: 9 } },
+      // Scientific notation for large/small parameter magnitudes (e.g. 1e-9
+      // compliances) so the axis labels stay short and readable.
+      ticks: { maxTicksLimit: 4, font: { size: 9 }, callback: (v) => fmtAxis(v) },
     },
   },
   plugins: { legend: { display: false } },
