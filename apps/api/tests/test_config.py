@@ -11,6 +11,19 @@ def test_get_config_shape(client):
     assert {"ca_dir", "ca_src", "ca_exists"} <= set(body)
 
 
+def test_config_reports_mpiexec_availability(client, monkeypatch):
+    """The UI warns before a num_cores>1 run silently drops to a single core, so
+    /api/config must report whether a launcher is available for the current
+    interpreter (resolved the same way the run does)."""
+    import main
+
+    monkeypatch.setattr(main, "resolve_mpiexec", lambda python: "/usr/bin/mpiexec")
+    assert client.get("/api/config").json()["mpiexec_available"] is True
+
+    monkeypatch.setattr(main, "resolve_mpiexec", lambda python: None)
+    assert client.get("/api/config").json()["mpiexec_available"] is False
+
+
 def test_config_exposes_backend_solver_capabilities(client):
     body = client.get("/api/config").json()
     # Settings UI + AD gating metadata.

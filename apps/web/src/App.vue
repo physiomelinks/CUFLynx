@@ -86,6 +86,11 @@ const pythonBrowserOpen = ref(false)
 // True in the packaged desktop app; drives the "Bundled (CUFLynx)" default label.
 const packaged = ref(false)
 
+// Whether an MPI launcher is available for the current interpreter. When false,
+// a num_cores>1 run silently drops to a single core server-side, so we warn and
+// confirm before running (see maybeRunWithCores). Tracks the selected interpreter.
+const mpiexecAvailable = ref(true)
+
 // circulatory_autogen source directory (top-bar "CA dir"), shared server-side via
 // /api/config. Defaults to the sibling clone; pick a different checkout to dev against.
 const caDir = ref('')
@@ -129,6 +134,34 @@ function applyConfigPayload(c) {
   pythonPath.value = c.python_path ?? ''
   serverPythonPath = pythonPath.value
   packaged.value = c.packaged ?? false
+  mpiexecAvailable.value = c.mpiexec_available ?? true
+}
+
+// Confirmation gate for a multi-core run when no MPI launcher is available: the
+// backend would otherwise silently run it on a single core. Warn first, and only
+// start the run if the user accepts. `pendingRun` holds the deferred start.
+const coresWarnOpen = ref(false)
+let pendingRun = null
+
+function maybeRunWithCores(numCores, runFn) {
+  if (Number(numCores) > 1 && !mpiexecAvailable.value) {
+    pendingRun = runFn
+    coresWarnOpen.value = true
+  } else {
+    runFn()
+  }
+}
+
+function confirmRunSingleCore() {
+  coresWarnOpen.value = false
+  const fn = pendingRun
+  pendingRun = null
+  if (fn) fn()
+}
+
+function cancelCoresWarn() {
+  coresWarnOpen.value = false
+  pendingRun = null
 }
 
 // Persist the interpreter choice server-side (it's what spawns the runners).
@@ -415,11 +448,13 @@ const paramLabels = computed(() => {
 })
 
 function onRunCalibration(settings) {
-  calib.start(model.modelId.value, {
-    ...settings,
-    python_path: pythonPath.value,
-    config_outputs_dir: outputsDir.value.trim() || undefined,
-  })
+  maybeRunWithCores(settings.num_cores, () =>
+    calib.start(model.modelId.value, {
+      ...settings,
+      python_path: pythonPath.value,
+      config_outputs_dir: outputsDir.value.trim() || undefined,
+    }),
+  )
 }
 
 // Live calibration settings, mirrored from the Calibration panel so the
@@ -498,12 +533,14 @@ function onRunSensitivity(settings) {
         cost_convergence: calibSettings.value.cost_convergence,
       }
     : {}
-  sa.start(model.modelId.value, {
-    ...settings,
-    ...calibFirst,
-    python_path: pythonPath.value,
-    config_outputs_dir: outputsDir.value.trim() || undefined,
-  })
+  maybeRunWithCores(settings.num_cores, () =>
+    sa.start(model.modelId.value, {
+      ...settings,
+      ...calibFirst,
+      python_path: pythonPath.value,
+      config_outputs_dir: outputsDir.value.trim() || undefined,
+    }),
+  )
 }
 
 // When a sensitivity run finishes, surface the heatmap automatically.
@@ -516,11 +553,13 @@ watch(
 
 // UQ reuses the same prerequisites as calibration (model + obs + params).
 function onRunUQ(settings) {
-  uq.start(model.modelId.value, {
-    ...settings,
-    python_path: pythonPath.value,
-    config_outputs_dir: outputsDir.value.trim() || undefined,
-  })
+  maybeRunWithCores(settings.num_cores, () =>
+    uq.start(model.modelId.value, {
+      ...settings,
+      python_path: pythonPath.value,
+      config_outputs_dir: outputsDir.value.trim() || undefined,
+    }),
+  )
 }
 
 // When a UQ run finishes, surface the posterior distributions automatically.
@@ -1292,6 +1331,41 @@ watch(
           icon="pi pi-file-export"
           data-testid="export-confirm"
           @click="confirmExportPipeline"
+        />
+      </template>
+    </Dialog>
+
+    <Dialog
+      v-model:visible="coresWarnOpen"
+      modal
+      header="No MPI launcher found"
+      :style="{ width: '32rem' }"
+      data-testid="cores-warning"
+      @update:visible="(v) => { if (!v) cancelCoresWarn() }"
+    >
+      <p>
+        You asked for more than one core, but no MPI launcher (<code>mpiexec</code>)
+        was found for the current interpreter — so this run will use a
+        <strong>single core</strong>.
+      </p>
+      <p class="cores-warning-hint">
+        <template v-if="packaged">
+          To enable parallel runs, install an MPI runtime (on Windows, install
+          <a href="https://learn.microsoft.com/en-us/message-passing-interface/microsoft-mpi" target="_blank" rel="noopener">Microsoft MPI</a>),
+        </template>
+        <template v-else>
+          To enable parallel runs, install an MPI runtime (e.g.
+          <code>pip install mpi4py mpich</code> into your interpreter),
+        </template>
+        or pick an interpreter that already has MPI in the top bar.
+      </p>
+      <template #footer>
+        <Button label="Cancel" text data-testid="cores-warning-cancel" @click="cancelCoresWarn" />
+        <Button
+          label="Continue on 1 core"
+          icon="pi pi-play"
+          data-testid="cores-warning-confirm"
+          @click="confirmRunSingleCore"
         />
       </template>
     </Dialog>
