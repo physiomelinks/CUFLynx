@@ -66,6 +66,39 @@ describe('FileImport', () => {
     })
   })
 
+  it('sends a whole bundle (main + sister files) when several are dropped', async () => {
+    uploadCellML.mockResolvedValue({ model_id: 'abc', name: 'CardiovascularSystem' })
+    const wrapper = mount(FileImport, { global: { stubs } })
+    const files = [
+      new File(['<model/>'], '3compartment.cellml', { type: 'application/xml' }),
+      new File(['<model/>'], '3compartment_modules.cellml', { type: 'application/xml' }),
+      new File(['<model/>'], '3compartment_units.cellml', { type: 'application/xml' }),
+    ]
+    await wrapper
+      .find('[data-testid="cellml-drop"]')
+      .trigger('drop', { dataTransfer: { files } })
+    await flushPromises()
+    // All files forwarded to the server (which flattens them).
+    expect(uploadCellML).toHaveBeenCalledOnce()
+    expect(uploadCellML.mock.calls[0][0]).toHaveLength(3)
+    // The display name comes from the main .cellml.
+    expect(wrapper.emitted('model-loaded')[0][0].filename).toBe('3compartment.cellml')
+  })
+
+  it('rejects a bundle if any file is not .cellml/.xml', async () => {
+    const wrapper = mount(FileImport, { global: { stubs } })
+    const files = [
+      new File(['<model/>'], 'main.cellml', { type: 'application/xml' }),
+      new File(['x'], 'notes.txt', { type: 'text/plain' }),
+    ]
+    await wrapper
+      .find('[data-testid="cellml-drop"]')
+      .trigger('drop', { dataTransfer: { files } })
+    await flushPromises()
+    expect(uploadCellML).not.toHaveBeenCalled()
+    expect(wrapper.find('[data-testid="import-error"]').exists()).toBe(true)
+  })
+
   it('test_invalid_extension_shows_error', async () => {
     const wrapper = mount(FileImport, { global: { stubs } })
     const file = new File(['hello'], 'notes.txt', { type: 'text/plain' })
