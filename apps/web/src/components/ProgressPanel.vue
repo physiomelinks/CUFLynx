@@ -38,6 +38,9 @@ const props = defineProps({
   // Per-start parameter trajectories for multi-start gradient descent:
   // { param_names, starts } where starts[start][iteration] = [val per param].
   startParams: { type: Object, default: () => ({ param_names: [], starts: [] }) },
+  // qname -> { min, max, … } from params_for_id, used to normalise the per-start
+  // parameter plot to [0, 1] against each param's allowable range.
+  paramSpecs: { type: Object, default: () => ({}) },
 })
 
 const hasData = computed(
@@ -104,18 +107,45 @@ const hasStartParams = computed(
     (props.startParams?.param_names ?? []).length > 0 &&
     (props.startParams?.starts ?? []).some((c) => c && c.length),
 )
+
+// CA labels the streamed params `vessel param` (its qname with '/' -> ' '), so
+// index the params_for_id ranges by that same form to look up each param's
+// allowable [min, max].
+const rangesByLabel = computed(() => {
+  const out = {}
+  for (const [qname, spec] of Object.entries(props.paramSpecs ?? {})) {
+    if (spec && Number.isFinite(spec.min) && Number.isFinite(spec.max)) {
+      out[String(qname).replaceAll('/', ' ')] = spec
+    }
+  }
+  return out
+})
+
+// Normalise a value to [0, 1] against its param range (0 = min, 1 = max). Falls
+// back to the raw value when the range is unknown or degenerate.
+function normToRange(v, range) {
+  if (v == null || !range) return v
+  const span = range.max - range.min
+  if (!(span > 0)) return v
+  return (v - range.min) / span
+}
+
 const startParamData = computed(() => {
   const names = props.startParams?.param_names ?? []
   const starts = props.startParams?.starts ?? []
+  const ranges = rangesByLabel.value
   const n = starts.length
   const maxLen = Math.max(0, ...starts.map((c) => (c ? c.length : 0)))
   const datasets = []
   names.forEach((name, p) => {
     const base = PALETTE[p % PALETTE.length]
+    const range = ranges[name]
     starts.forEach((curve, s) => {
       datasets.push({
         label: name,
-        data: (curve ?? []).map((row) => (Array.isArray(row) ? row[p] : undefined)),
+        data: (curve ?? []).map((row) =>
+          Array.isArray(row) ? normToRange(row[p], range) : undefined,
+        ),
         borderColor: shadeForStart(base, s, n),
         backgroundColor: shadeForStart(base, s, n),
         borderWidth: 2,
@@ -158,9 +188,9 @@ const costOptions = computed(() => ({
   plugins: { legend: { display: true, position: 'bottom' } },
 }))
 
-// Actual (unnormalised) parameter values vs iteration; y is linear (values may
-// be negative / span orders of magnitude). Legend lists each parameter once,
-// via its start-0 dataset, so P×S lines don't flood it.
+// Parameter values vs iteration, normalised to each param's params_for_id range
+// (0 = min, 1 = max). Legend lists each parameter once, via its start-0 dataset,
+// so P×S lines don't flood it.
 const startParamOptions = {
   responsive: true,
   maintainAspectRatio: false,
@@ -171,7 +201,12 @@ const startParamOptions = {
       title: { display: true, text: 'iteration' },
       ticks: { stepSize: 1, precision: 0 },
     },
-    y: { type: 'linear', title: { display: true, text: 'value' } },
+    y: {
+      type: 'linear',
+      min: 0,
+      max: 1,
+      title: { display: true, text: 'normalised value' },
+    },
   },
   plugins: {
     legend: {
@@ -217,7 +252,7 @@ const paramOptions = {
         </div>
       </section>
       <section v-if="hasStartParams" class="progress-chart">
-        <h3>Parameter values vs iteration (per start)</h3>
+        <h3>Normalised parameter values vs iteration (per start)</h3>
         <div class="chart-box">
           <Line :data="startParamData" :options="startParamOptions" />
         </div>

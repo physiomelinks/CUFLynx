@@ -68,7 +68,7 @@ describe('ProgressPanel', () => {
     expect(new Set(colours).size).toBe(3)
   })
 
-  it('test_plots_param_per_colour_and_start_per_shade', () => {
+  it('test_plots_param_per_colour_and_start_per_shade_normalised_to_range', () => {
     const wrapper = mount(ProgressPanel, {
       props: {
         costHistory: [],
@@ -88,15 +88,23 @@ describe('ProgressPanel', () => {
             ],
           ],
         },
+        // params_for_id ranges keyed by qname (slash form); labels come slashless.
+        paramSpecs: {
+          'well/x': { min: 0, max: 2 },
+          'well/y': { min: 2, max: 4 },
+        },
       },
     })
     expect(wrapper.vm.hasStartParams).toBe(true)
     const sets = wrapper.vm.startParamData.datasets
     // 2 params × 2 starts = 4 lines.
     expect(sets).toHaveLength(4)
-    // Each param picks the p-th column across a start's iteration rows.
+    // Values are normalised to each param's [min, max]: x in [0,2] -> /2;
+    // y in [2,4] -> (v-2)/2. Start 0's well x column [1.2, 1.0] -> [0.6, 0.5].
     const wellX_start0 = sets.find((d) => d.label === 'well x' && d._legend === true)
-    expect(wellX_start0.data).toEqual([1.2, 1.0])
+    expect(wellX_start0.data).toEqual([0.6, 0.5])
+    const wellY_start0 = sets.find((d) => d.label === 'well y' && d._legend === true)
+    expect(wellY_start0.data).toEqual([0.7, 0.5])
     // well x uses palette[0] as its base; well y uses palette[1].
     expect(sets.filter((d) => d.label === 'well x')[0].borderColor).toBe('#5b9bd5')
     expect(sets.filter((d) => d.label === 'well y')[0].borderColor).toBe('#ed7d31')
@@ -106,6 +114,23 @@ describe('ProgressPanel', () => {
     // One legend entry per param (the start-0 datasets).
     expect(sets.filter((d) => d._legend).length).toBe(2)
     // The per-start param chart renders.
-    expect(wrapper.text()).toContain('Parameter values vs iteration')
+    expect(wrapper.text()).toContain('Normalised parameter values vs iteration')
+  })
+
+  it('test_param_plot_falls_back_to_raw_when_range_unknown', () => {
+    const wrapper = mount(ProgressPanel, {
+      props: {
+        costHistory: [],
+        startCosts: [[1.5]],
+        startParams: {
+          param_names: ['well x'],
+          starts: [[[1.2], [1.0]]],
+        },
+        // No matching spec -> values left un-normalised.
+        paramSpecs: {},
+      },
+    })
+    const [set] = wrapper.vm.startParamData.datasets
+    expect(set.data).toEqual([1.2, 1.0])
   })
 })
