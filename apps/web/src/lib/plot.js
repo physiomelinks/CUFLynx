@@ -13,6 +13,28 @@ function color(i) {
   return PALETTE[i % PALETTE.length]
 }
 
+/** Blend a #rrggbb colour toward white by t in [0, 1] (0 = base, 1 = white). */
+export function lighten(hex, t) {
+  const c = String(hex).replace('#', '')
+  const n = parseInt(c, 16)
+  const r = (n >> 16) & 0xff
+  const g = (n >> 8) & 0xff
+  const b = n & 0xff
+  const mix = (x) => Math.round(x + (255 - x) * t)
+  const h = (x) => mix(x).toString(16).padStart(2, '0')
+  return `#${h(r)}${h(g)}${h(b)}`
+}
+
+/**
+ * A distinct shade of `hex` for start `s` of `n` starts: start 0 is the base
+ * colour, later starts progressively lighter (up to 60% toward white), so a
+ * family of multi-start lines reads as one hue in graduated shades.
+ */
+export function shadeForStart(hex, s, n) {
+  if (n <= 1) return hex
+  return lighten(hex, (s / (n - 1)) * 0.6)
+}
+
 function toXY(time, values) {
   if (!time || !values) return []
   const n = Math.min(time.length, values.length)

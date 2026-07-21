@@ -122,6 +122,11 @@ PARAM_HISTORY_FILE = "best_param_vals_history.csv"
 #: L-BFGS-B iteration here (CA #286), so the Progress tab can draw one cost line
 #: per start while the run is in progress.
 MULTISTART_COST_FILE = "multi_start_cost_history.csv"
+#: Sibling of MULTISTART_COST_FILE (CA #291): a header row naming the params
+#: followed by ``start_idx, iteration, <param values…>`` rows (actual,
+#: unnormalised values), so the Progress tab can draw each parameter's per-start
+#: trajectory alongside the cost while the run is in progress.
+MULTISTART_PARAM_FILE = "multi_start_param_vals_history.csv"
 
 
 #: Transient per-generation progress files CA appends to during a run (they drive
@@ -129,7 +134,12 @@ MULTISTART_COST_FILE = "multi_start_cost_history.csv"
 #: <case_type>_<prefix> subdir per method, so in a reused output_dir a previous
 #: run's copies linger; they are cleared at the start of each run (see
 #: _clear_progress_history) so a second run's plots start fresh and update live.
-HISTORY_FILES = (COST_HISTORY_FILE, PARAM_HISTORY_FILE, MULTISTART_COST_FILE)
+HISTORY_FILES = (
+    COST_HISTORY_FILE,
+    PARAM_HISTORY_FILE,
+    MULTISTART_COST_FILE,
+    MULTISTART_PARAM_FILE,
+)
 
 
 def _find_history_file(output_dir: str, name: str) -> str | None:
@@ -223,6 +233,7 @@ def _read_history(output_dir: str) -> dict:
         "cost_history": cost_history,
         "param_history": param_history,
         "start_costs": _read_multistart_costs(output_dir),
+        "start_params": _read_multistart_params(output_dir),
     }
 
 
@@ -259,6 +270,52 @@ def _read_multistart_costs(output_dir: str) -> list[list[float]]:
         [by_start[s][i] for i in sorted(by_start[s])] if s in by_start else []
         for s in range(max(by_start) + 1)
     ]
+
+
+def _read_multistart_params(output_dir: str) -> dict:
+    """Per-start parameter trajectories from multi_start_param_vals_history.csv.
+
+    CA writes a header naming the params, then ``start_idx, iteration, <param
+    values…>`` rows (actual, unnormalised values), interleaved across MPI ranks.
+    Group by start and order by iteration into one ``[iteration][param]`` matrix
+    per start (index = start_idx). Returns ``{"param_names": [], "starts": []}``
+    when the file is absent (GA / single-start runs). Never raises: partial
+    mid-write rows (wrong width / unparseable) are skipped.
+    """
+    empty = {"param_names": [], "starts": []}
+    path = _find_history_file(output_dir, MULTISTART_PARAM_FILE)
+    if not path:
+        return empty
+    try:
+        lines = Path(path).read_text().splitlines()
+    except OSError:
+        return empty
+    if not lines:
+        return empty
+    # Header: "start_idx, iteration, <param label>, …" -> drop the two key cols.
+    param_names = [c.strip() for c in lines[0].split(",")][2:]
+    width = len(param_names)
+    if width == 0:
+        return empty
+    by_start: dict[int, dict[int, list[float]]] = {}
+    for line in lines[1:]:
+        parts = line.split(",")
+        if len(parts) != width + 2:
+            continue
+        try:
+            start = int(float(parts[0]))
+            iteration = int(float(parts[1]))
+            vals = [float(x) for x in parts[2:]]
+        except ValueError:
+            continue  # header repeat or partially-flushed row
+        by_start.setdefault(start, {})[iteration] = vals
+    if not by_start:
+        return {"param_names": param_names, "starts": []}
+    starts = [
+        [by_start[s][i] for i in sorted(by_start[s])] if s in by_start else []
+        for s in range(max(by_start) + 1)
+    ]
+    return {"param_names": param_names, "starts": starts}
 
 # Modules a Python interpreter needs to run calibrations. myokit + libcellml are
 # required for any run; nevergrad (CMA-ES) and mpi4py (multi-core) are optional.
