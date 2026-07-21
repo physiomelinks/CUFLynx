@@ -26,9 +26,53 @@ def test_obs_data_options_fallback_when_ca_unavailable(monkeypatch):
     assert opts["operations"] == obs_options.FALLBACK_OPERATIONS
     assert opts["cost_types"] == obs_options.FALLBACK_COST_TYPES
     assert opts["cost_func_metadata"] == {}
+    assert opts["differentiable_operations"] == {}
     assert opts["data_types"] == obs_options.FALLBACK_DATA_TYPES
     assert opts["plot_types"] == obs_options.FALLBACK_PLOT_TYPES
     obs_options.reset_cache()
+
+
+def test_operation_differentiability_introspected():
+    """Each operation is mapped to whether it's @differentiable, so the obs editor
+    can flag data_items whose operation blocks AD gradients."""
+    import obs_options
+
+    op_funcs = {"max": object(), "calc_spike_period": object()}
+    calls = {}
+
+    def fake_is_diff(fn):
+        calls.setdefault("seen", []).append(fn)
+        return fn is op_funcs["max"]
+
+    import sys
+    import types
+
+    fake_mod = types.ModuleType("param_id.differentiable")
+    fake_mod.is_circulatory_differentiable = fake_is_diff
+    # param_id.differentiable is imported inside the helper; inject both the
+    # package and submodule so the `from ... import ...` resolves.
+    pkg = sys.modules.get("param_id") or types.ModuleType("param_id")
+    monkey_added = "param_id" not in sys.modules
+    sys.modules["param_id"] = pkg
+    sys.modules["param_id.differentiable"] = fake_mod
+    try:
+        out = obs_options._introspect_operation_differentiability(op_funcs)
+    finally:
+        del sys.modules["param_id.differentiable"]
+        if monkey_added:
+            del sys.modules["param_id"]
+    assert out == {"max": True, "calc_spike_period": False}
+
+
+def test_operation_differentiability_empty_on_older_ca(monkeypatch):
+    """An older CA without is_circulatory_differentiable yields {} (no false
+    'not differentiable' warnings in the editor)."""
+    import sys
+    import obs_options
+
+    # Ensure the import fails deterministically.
+    monkeypatch.setitem(sys.modules, "param_id.differentiable", None)
+    assert obs_options._introspect_operation_differentiability({"max": object()}) == {}
 
 
 def test_cost_func_metadata_introspected_and_normalised():

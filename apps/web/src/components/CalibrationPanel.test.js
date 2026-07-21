@@ -213,6 +213,24 @@ describe('CalibrationPanel', () => {
     expect(grad.text()).toContain('Forward sensitivity')
   })
 
+  it('renders whatever gradient sources the backend supplies (e.g. AADC AD)', () => {
+    // The panel keys off value/label, so a new CA source (AADC AD) renders without
+    // any frontend change.
+    const wrapper = mount(CalibrationPanel, {
+      props: {
+        defaults: { methods: METHODS_WITH_OPTIONS, param_id_method: 'multi_start_sp_minimize' },
+        gradientSources: [
+          { value: 'FD', label: 'Finite difference', do_ad: false },
+          { value: 'AD', label: 'Automatic differentiation (AADC)', do_ad: true },
+        ],
+      },
+      global: { stubs: selectStubs },
+    })
+    expect(wrapper.find('[data-testid="calib-gradient-method"]').text()).toContain(
+      'Automatic differentiation (AADC)',
+    )
+  })
+
   it('falls back the gradient source to FD when it is no longer offered', async () => {
     const wrapper = mount(CalibrationPanel, {
       props: {

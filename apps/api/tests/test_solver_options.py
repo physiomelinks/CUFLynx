@@ -326,6 +326,75 @@ def test_ad_available_introspects_when_no_options_passed(monkeypatch):
     assert so.ad_available("casadi_python") is False
 
 
+def test_ad_available_true_for_aadc_python(monkeypatch):
+    """AADC AD is not gated on all-differentiable, so ad_available is True for
+    aadc_python even when some ops aren't @differentiable."""
+    monkeypatch.setattr(so, "_introspect_gradient_sources", _boom_gradient_sources)
+    assert so.ad_available("aadc_python", _build({"max": False})) is True
+
+
+# ---------------------------------------------------------------------------
+# Gradient sources — introspected from CA's `gradient_sources` accessor, with a
+# hand-coded fallback mirror of get_gradient for older CA.
+# ---------------------------------------------------------------------------
+def _boom_gradient_sources(*_a, **_k):
+    raise ImportError("cannot import name 'gradient_sources'")
+
+
+def _values(sources):
+    return [s["value"] for s in sources]
+
+
+def test_gradient_sources_fallback_mirrors_get_gradient(monkeypatch):
+    """On an older CA (no gradient_sources accessor) the hand-coded fallback stands
+    in, matching CA's get_gradient dispatch, and the runtime all_differentiable gate
+    drops CasADi AD when an op isn't @differentiable."""
+    monkeypatch.setattr(so, "_introspect_gradient_sources", _boom_gradient_sources)
+
+    # casadi_python: AD present only when all ops differentiable (gate).
+    assert _values(so.gradient_sources("casadi_python", "casadi_integrator", True)) == ["FD", "AD"]
+    assert _values(so.gradient_sources("casadi_python", "casadi_integrator", False)) == ["FD"]
+    # aadc_python: AD present regardless of the differentiability gate.
+    assert _values(so.gradient_sources("aadc_python", None, False)) == ["FD", "AD"]
+    # cellml_only + CVODE_myokit: FSA; other solver / model types: FD only.
+    assert _values(so.gradient_sources("cellml_only", "CVODE_myokit", True)) == ["FD", "FSA"]
+    assert _values(so.gradient_sources("cellml_only", "CVODE_opencor", True)) == ["FD"]
+    assert _values(so.gradient_sources("python", "solve_ivp", True)) == ["FD"]
+
+    # Descriptors carry the do_ad / requires_all_differentiable flags the UI + gate use.
+    ad = next(s for s in so.gradient_sources("casadi_python", None, True) if s["value"] == "AD")
+    assert ad["do_ad"] is True and ad["requires_all_differentiable"] is True
+    fsa = next(s for s in so.gradient_sources("cellml_only", "CVODE_myokit", True)
+               if s["value"] == "FSA")
+    assert fsa["do_ad"] is True and fsa["requires_all_differentiable"] is False
+
+
+def test_gradient_sources_introspects_ca_accessor(monkeypatch):
+    """When CA exposes a `gradient_sources` accessor, its descriptors are used
+    verbatim (not the hand-coded mirror), with the all_differentiable gate applied
+    on the CUFLynx side."""
+    calls = {}
+
+    def fake_gradient_sources(model_type, solver):
+        calls["args"] = (model_type, solver)
+        return [
+            {"value": "FD", "label": "FD", "do_ad": False,
+             "requires_all_differentiable": False, "description": ""},
+            {"value": "AD", "label": "AD (CasADi)", "do_ad": True,
+             "requires_all_differentiable": True, "description": ""},
+        ]
+
+    fake_mod = types.SimpleNamespace(gradient_sources=fake_gradient_sources)
+    monkeypatch.setitem(sys.modules, "parsers.PrimitiveParsers", fake_mod)
+    monkeypatch.setattr(so, "_ensure_ca_path", lambda: None)
+
+    # Gate keeps the requires_all_differentiable source when all ops differentiable...
+    assert _values(so.gradient_sources("casadi_python", "casadi_integrator", True)) == ["FD", "AD"]
+    assert calls["args"] == ("casadi_python", "casadi_integrator")
+    # ...and drops it otherwise.
+    assert _values(so.gradient_sources("casadi_python", "casadi_integrator", False)) == ["FD"]
+
+
 # ---------------------------------------------------------------------------
 # Calibration (param_id) methods — introspected from CA, with a fallback.
 # ---------------------------------------------------------------------------

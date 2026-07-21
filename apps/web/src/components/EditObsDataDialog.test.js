@@ -99,6 +99,40 @@ describe('EditObsDataDialog', () => {
     expect(wrapper.text()).toContain('my_custom_cost')
   })
 
+  it('flags a data_item whose operation is not @differentiable', async () => {
+    getObsDataOptions.mockResolvedValueOnce({
+      ...FETCH,
+      differentiable_operations: { max: false, min: true },
+    })
+    const wrapper = mountDialog()
+    await flushPromises()
+    const row = wrapper.find('[data-testid="eo-row"]')
+    expect(row.classes()).toContain('non-diff')
+    const warn = wrapper.find('[data-testid="eo-nondiff-warn"]')
+    expect(warn.exists()).toBe(true)
+    expect(warn.text()).toContain('max')
+    expect(warn.text()).toContain('not differentiable')
+  })
+
+  it('does not flag a differentiable operation, nor when CA reports no map', async () => {
+    // Differentiable -> no warning.
+    getObsDataOptions.mockResolvedValueOnce({
+      ...FETCH,
+      differentiable_operations: { max: true },
+    })
+    let wrapper = mountDialog()
+    await flushPromises()
+    expect(wrapper.find('[data-testid="eo-row"]').classes()).not.toContain('non-diff')
+    expect(wrapper.find('[data-testid="eo-nondiff-warn"]').exists()).toBe(false)
+
+    // No map at all (older CA) -> never flag, avoiding false warnings.
+    getObsDataOptions.mockResolvedValueOnce({ ...FETCH })
+    wrapper = mountDialog()
+    await flushPromises()
+    expect(wrapper.find('[data-testid="eo-row"]').classes()).not.toContain('non-diff')
+    expect(wrapper.find('[data-testid="eo-nondiff-warn"]').exists()).toBe(false)
+  })
+
   it('falls back when getObsDataOptions rejects', async () => {
     getObsDataOptions.mockRejectedValueOnce(new Error('offline'))
     const wrapper = mountDialog()

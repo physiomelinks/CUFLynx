@@ -11,8 +11,12 @@ CA's own input validation). The per-method ``solver_info`` *fields* (dt, tols, �
 reflect which keys each backend's solver wrapper actually consumes, with the
 ``method`` options injected from the CA schema.
 
-AD (CasADi) gradients are only valid when the format is ``casadi_python`` and
-every CA operation_func is ``@differentiable`` (see ``param_id/differentiable.py``).
+The available gradient sources (FD / AD / FSA) are likewise **introspected** from
+CA's discoverable ``gradient_sources`` accessor (matching its ``get_gradient``
+dispatch), with a hand-coded mirror as the fallback for an older CA. CasADi AD is
+gated on every CA operation_func being ``@differentiable`` (see
+``param_id/differentiable.py``); that gate is applied here at runtime because CA
+can't know it statically.
 
 Like :mod:`obs_options`, this introspects CA, caches a successful introspection,
 and falls back to a built-in copy of the schema when CA can't be imported.
@@ -508,28 +512,88 @@ def analysis_mode_options(mode: str) -> list[dict]:
     return get_analysis_options().get(mode, {}).get("options", [])
 
 
-def gradient_sources(model_type: str, solver: str, all_differentiable: bool) -> list[dict]:
-    """Gradient sources available for the current model, for the calibration UI's
-    gradient-source menu (a gradient method's do_ad choice).
+def _introspect_gradient_sources(model_type: str, solver: str | None) -> list[dict]:
+    """The gradient sources CA reports for ``model_type`` + ``solver``, from its
+    discoverable ``gradient_sources`` accessor (single source of truth for the
+    AD/FSA/FD dispatch, matching ``get_gradient``).
 
-    circulatory_autogen has no static schema for this — it derives the source from
-    ``do_ad`` + ``model_type`` + ``solver`` (see PrimitiveParsers' do_ad/FSA
-    checks), so this mirrors those rules:
-      - casadi_python (+ all ops differentiable): symbolic CasADi AD
-      - cellml_only + CVODE_myokit: Myokit CVODES forward sensitivity (FSA)
-      - otherwise: finite differences only
-    Finite difference is always available. Kept in step with CA's logic; if CA ever
-    exposes a gradient-source schema, introspect that instead (like the solvers).
+    Raises (ImportError/AttributeError) on an older CA that has no such accessor,
+    so the caller degrades to :func:`_fallback_gradient_sources`. Same "introspect
+    CA, never hardcode" pattern as the solver/param_id/analysis schemas.
     """
-    sources = [{"value": "FD", "label": "Finite difference"}]
-    if model_type == "casadi_python" and all_differentiable:
-        sources.append({"value": "AD", "label": "Automatic differentiation (CasADi)"})
+    _ensure_ca_path()
+    from parsers.PrimitiveParsers import gradient_sources as ca_gradient_sources  # noqa: E402
+
+    return [dict(d) for d in ca_gradient_sources(model_type, solver)]
+
+
+def _fallback_gradient_sources(model_type: str, solver: str | None) -> list[dict]:
+    """Hand-coded mirror of CA's ``get_gradient`` dispatch, used only when CA lacks
+    the ``gradient_sources`` accessor (older CA). Emits the same descriptor shape as
+    the accessor so the runtime ``all_differentiable`` gate applies uniformly.
+
+    Finite difference is always available. casadi_python adds symbolic CasADi AD
+    (requires every op @differentiable — enforced by the caller's gate);
+    aadc_python adds AADC AD (no differentiability gate); cellml_only + CVODE_myokit
+    adds Myokit CVODES forward sensitivity (FSA).
+    """
+    sources = [{
+        "value": "FD", "label": "Finite difference", "do_ad": False,
+        "requires_all_differentiable": False,
+        "description": "Finite-difference (numerical) gradient. Always available.",
+    }]
+    if model_type == "casadi_python":
+        sources.append({
+            "value": "AD", "label": "Automatic differentiation (CasADi)", "do_ad": True,
+            "requires_all_differentiable": True,
+            "description": "Symbolic CasADi automatic differentiation.",
+        })
+    elif model_type == "aadc_python":
+        sources.append({
+            "value": "AD", "label": "Automatic differentiation (AADC)", "do_ad": True,
+            "requires_all_differentiable": False,
+            "description": "AADC automatic differentiation.",
+        })
     elif model_type == "cellml_only" and solver == "CVODE_myokit":
-        sources.append({"value": "FSA", "label": "Forward sensitivity (Myokit CVODES)"})
+        sources.append({
+            "value": "FSA", "label": "Forward sensitivity (Myokit CVODES)", "do_ad": True,
+            "requires_all_differentiable": False,
+            "description": "Myokit CVODES forward sensitivity analysis.",
+        })
     return sources
 
 
+def gradient_sources(model_type: str, solver: str | None, all_differentiable: bool) -> list[dict]:
+    """Gradient sources available for the current model, for the calibration /
+    sensitivity gradient-source menus.
+
+    Introspects CA's discoverable ``gradient_sources`` accessor (falling back to a
+    hand-coded mirror of ``get_gradient`` on an older CA), then applies the runtime
+    ``all_differentiable`` gate CA can't know statically: any source flagged
+    ``requires_all_differentiable`` (CasADi AD) is dropped when not every operation
+    is @differentiable. Each descriptor carries ``value``/``label``/``do_ad``/
+    ``requires_all_differentiable``/``description``.
+    """
+    descriptors, ok = _safe(lambda: _introspect_gradient_sources(model_type, solver), None)
+    if not ok or descriptors is None:
+        descriptors = _fallback_gradient_sources(model_type, solver)
+    return [
+        d for d in descriptors
+        if all_differentiable or not d.get("requires_all_differentiable")
+    ]
+
+
 def ad_available(model_type: str, options: dict | None = None) -> bool:
-    """True when AD gradients are valid: casadi_python + all ops differentiable."""
+    """True when symbolic AD gradients are valid for ``model_type`` — i.e. CA's
+    gradient sources include an ``AD`` source once the ``all_differentiable`` gate
+    is applied (casadi_python + all ops differentiable, or aadc_python).
+
+    Defers to :func:`gradient_sources` (CA's list, gated) rather than re-encoding
+    the rule. ``solver`` is irrelevant to AD (it's model-type-determined, unlike
+    FSA), so it's left unset; this flag is deliberately AD-only — FSA is surfaced
+    through the gradient-source menu, not here.
+    """
     opts = options if options is not None else get_solver_options()
-    return model_type == "casadi_python" and bool(opts.get("all_differentiable"))
+    all_diff = bool(opts.get("all_differentiable"))
+    sources = gradient_sources(model_type, None, all_diff)
+    return any(s.get("value") == "AD" for s in sources)
