@@ -26,12 +26,18 @@ from pathlib import Path
 
 import yaml
 
-from fastapi import FastAPI, HTTPException, Query, Request, UploadFile
+from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from calibration import calibration, list_python_interpreters, resolve_mpiexec
+from cellml_flatten import (
+    CellMLFlattenError,
+    flatten_cellml,
+    has_imports,
+    pick_main_cellml,
+)
 from cellml_meta import CellMLModel, CellMLParseError, parse_cellml
 from compiler_check import compiler_status
 from engine import SimulationError, engine, _circulatory_autogen_src
@@ -529,8 +535,43 @@ def fs_mkdir(req: MkdirRequest) -> dict:
 
 
 @app.post("/api/models/upload")
-async def upload_model(file: UploadFile) -> dict:
-    raw = await file.read()
+async def upload_model(
+    file: UploadFile | None = None,
+    files: list[UploadFile] = File(default_factory=list),
+) -> dict:
+    """Upload a CellML model. Accepts either a single self-contained ``.cellml``
+    (``file``, back-compatible) or a bundle of files (``files``): a non-flattened
+    main model plus the sister files it imports. A non-flattened / CellML 1.1
+    bundle is resolved and flattened to one self-contained CellML 2.0 document
+    before it is saved, so the rest of the pipeline sees a flat model as usual.
+    """
+    uploads = list(files) + ([file] if file is not None else [])
+    if not uploads:
+        raise HTTPException(status_code=422, detail="no file uploaded")
+
+    raw_by_name: dict[str, bytes] = {}
+    for up in uploads:
+        raw_by_name[up.filename or f"model_{len(raw_by_name)}.cellml"] = await up.read()
+
+    single = len(raw_by_name) == 1
+    only_name, only_bytes = next(iter(raw_by_name.items()))
+    if single and not has_imports(only_bytes):
+        # Self-contained single file: save as-is (unchanged behaviour).
+        raw = only_bytes
+    else:
+        # A main model + sisters (or a single file that itself imports): resolve
+        # imports and flatten to one CellML 2.0 document. Write the bundle to a
+        # temp dir so libCellML resolves the sisters by their relative hrefs.
+        try:
+            main_name = pick_main_cellml(raw_by_name)
+            with tempfile.TemporaryDirectory() as td:
+                for name, data in raw_by_name.items():
+                    (Path(td) / os.path.basename(name)).write_bytes(data)
+                flat = flatten_cellml(str(Path(td) / os.path.basename(main_name)), td)
+            raw = flat.encode("utf-8")
+        except CellMLFlattenError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
     try:
         meta = parse_cellml(raw)
     except CellMLParseError as exc:

@@ -120,21 +120,27 @@ function unreadableDrop(file) {
 async function onCellmlDrop(event) {
   event.preventDefault?.()
   error.value = ''
-  const [file] = filesFrom(event)
+  // Accept a whole bundle: a non-flattened model plus the sister files it
+  // imports. The server picks the main file, resolves imports and flattens to
+  // one CellML 2.0 document. A single self-contained file is just a bundle of 1.
+  const files = filesFrom(event)
   resetPicker(event)
-  if (!file) return
-  if (!extOk(file.name, ['.cellml', '.xml'])) {
-    error.value = `Expected a .cellml file, got "${file.name}"`
+  if (!files.length) return
+  const bad = files.find((f) => !extOk(f.name, ['.cellml', '.xml']))
+  if (bad) {
+    error.value = `Expected .cellml files, got "${bad.name}"`
     return
   }
-  const unreadable = unreadableDrop(file)
+  const unreadable = files.map(unreadableDrop).find(Boolean)
   if (unreadable) {
     error.value = unreadable
     return
   }
+  // The main file (for the display name) is the one importing sisters, if any.
+  const main = files.find((f) => f.name.toLowerCase().endsWith('.cellml')) ?? files[0]
   try {
-    const data = await uploadCellML(file)
-    emit('model-loaded', { ...data, filename: file.name })
+    const data = await uploadCellML(files)
+    emit('model-loaded', { ...data, filename: main.name })
   } catch (e) {
     error.value = e?.response?.data?.detail || String(e)
   }
@@ -208,8 +214,8 @@ async function onParamsDrop(event) {
       @drop="onCellmlDrop"
     >
       <i class="pi pi-file" /> Drop <strong>CellML</strong> (.cellml)
-      <small>or click to browse</small>
-      <input type="file" accept=".cellml,.xml" @change="onCellmlDrop" />
+      <small>one file, or a non-flattened model with its sister files</small>
+      <input type="file" accept=".cellml,.xml" multiple @change="onCellmlDrop" />
     </label>
 
     <div class="params-row">

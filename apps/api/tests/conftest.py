@@ -197,3 +197,10 @@ def upload_model(client: TestClient, path: Path) -> dict:
         )
     assert resp.status_code == 200, resp.text
     return resp.json()
+
+
+def upload_bundle(client: TestClient, paths):
+    """Helper: upload a multi-file CellML bundle (main + sisters) via the ``files``
+    field, returning the raw response so error cases can assert on it too."""
+    files = [("files", (p.name, p.read_bytes(), "application/xml")) for p in paths]
+    return client.post("/api/models/upload", files=files)

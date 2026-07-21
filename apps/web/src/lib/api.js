@@ -56,9 +56,17 @@ export async function setConfig(opts = {}) {
   return data
 }
 
-export async function uploadCellML(file) {
+// Accepts a single File or an array of Files (a non-flattened model + its sister
+// files). Multiple files go under the `files` field, which the server flattens
+// to one CellML 2.0 model; a single file uses `file` (back-compatible).
+export async function uploadCellML(fileOrFiles) {
+  const files = Array.isArray(fileOrFiles) ? fileOrFiles : [fileOrFiles]
   const form = new FormData()
-  form.append('file', file)
+  if (files.length === 1) {
+    form.append('file', files[0])
+  } else {
+    for (const f of files) form.append('files', f)
+  }
   const { data } = await axios.post(url('/api/models/upload'), form)
   return data
 }
