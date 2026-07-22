@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
+import { nextTick } from 'vue'
 import { shallowMount, flushPromises } from '@vue/test-utils'
 
 // Mock the API so the onMounted bootstrap doesn't hit the network. shallowMount
@@ -118,6 +119,38 @@ describe('App.vue', () => {
     })
   })
 
+
+  // The RHS import column (model / obs_data / params uploads) can collapse off
+  // the right edge once those files are in, freeing width for plots/analysis.
+  describe('collapsible RHS import column', () => {
+    it('starts expanded, and the edge handle is always present', () => {
+      const wrapper = shallowMount(App)
+      const handle = wrapper.find('[data-testid="rhs-handle"]')
+      const column = wrapper.find('[data-testid="rhs-column"]')
+      expect(handle.exists()).toBe(true)
+      expect(column.classes()).not.toContain('collapsed')
+    })
+
+    it('clicking the handle toggles the collapsed class on the column', async () => {
+      const wrapper = shallowMount(App)
+      const handle = wrapper.find('[data-testid="rhs-handle"]')
+
+      await handle.trigger('click')
+      expect(wrapper.vm.rhsCollapsed).toBe(true)
+      expect(wrapper.find('[data-testid="rhs-column"]').classes()).toContain('collapsed')
+
+      await handle.trigger('click')
+      expect(wrapper.vm.rhsCollapsed).toBe(false)
+      expect(wrapper.find('[data-testid="rhs-column"]').classes()).not.toContain('collapsed')
+    })
+
+    it('reflects programmatic state changes on the column class', async () => {
+      const wrapper = shallowMount(App)
+      wrapper.vm.rhsCollapsed = true
+      await nextTick()
+      expect(wrapper.find('[data-testid="rhs-column"]').classes()).toContain('collapsed')
+    })
+  })
 
   // The packaged desktop app has no default interpreter (its own executable is
   // the frozen bundle), so the choice must survive a restart or the user re-picks

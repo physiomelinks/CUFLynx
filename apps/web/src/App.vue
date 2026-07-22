@@ -249,6 +249,10 @@ watch(
 
 // Left column tab: 'params' | 'sensitivity' | 'calibration' | 'uq'
 const leftTab = ref('params')
+// Once the model / obs_data / params are loaded, the right-hand import column
+// can be collapsed off the right edge to give the plots/analysis more room.
+// A small handle stays pinned to the edge to reopen it (hover peeks, click toggles).
+const rhsCollapsed = ref(false)
 // Center column tab: 'plots' | 'progress' | 'analysis'
 const centerTab = ref('plots')
 
@@ -1084,7 +1088,25 @@ watch(
         />
       </section>
 
-      <aside class="col col-right">
+      <aside
+        class="col col-right"
+        :class="{ collapsed: rhsCollapsed }"
+        data-testid="rhs-column"
+      >
+        <button
+          type="button"
+          class="rhs-handle"
+          data-testid="rhs-handle"
+          :aria-expanded="!rhsCollapsed"
+          :title="rhsCollapsed ? 'Show import panel' : 'Hide import panel'"
+          @click="rhsCollapsed = !rhsCollapsed"
+        >
+          <span
+            class="pi rhs-handle-icon"
+            :class="rhsCollapsed ? 'pi-angle-left' : 'pi-angle-right'"
+          />
+        </button>
+        <div class="rhs-content">
         <FileImport
           v-model:outputs-dir="outputsDir"
           :model-id="model.modelId.value"
@@ -1112,6 +1134,7 @@ watch(
           :active-keys="Object.keys(sliders.sliders)"
           @add-slider="onAddSlider"
         />
+        </div>
       </aside>
     </main>
 
@@ -1430,6 +1453,17 @@ watch(
   grid-template-columns: 320px 1fr 300px;
   flex: 1;
   min-height: 0;
+  overflow: hidden;
+  transition: grid-template-columns 0.25s ease;
+}
+/* Collapsed: hand the right column's width to the center (plots/analysis). */
+.columns:has(.col-right.collapsed) {
+  grid-template-columns: 320px 1fr 0px;
+}
+/* Hovering the handle temporarily peeks the column back open. Higher :has
+   specificity than the collapse rule above, so it wins while hovering. */
+.columns:has(.col-right.collapsed .rhs-handle:hover) {
+  grid-template-columns: 320px 1fr 300px;
 }
 .col {
   min-height: 0;
@@ -1542,5 +1576,56 @@ watch(
   border-left: 1px solid var(--p-content-border-color, #333);
   display: flex;
   flex-direction: column;
+  position: relative;
+  /* Override .col's overflow:hidden so the edge handle can jut out. Content is
+     clipped instead by .rhs-content / the .columns box. */
+  overflow: visible;
+}
+.rhs-content {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  transition: transform 0.25s ease, opacity 0.2s ease;
+}
+.col-right.collapsed .rhs-content {
+  transform: translateX(100%);
+  opacity: 0;
+  pointer-events: none;
+}
+/* Peek back open while the handle is hovered. */
+.col-right.collapsed:has(.rhs-handle:hover) .rhs-content {
+  transform: none;
+  opacity: 1;
+  pointer-events: auto;
+}
+/* Small triangle handle pinned to the column's inner edge (the divider); it
+   stays visible when collapsed so the column can be reopened. */
+.rhs-handle {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  transform: translate(-100%, -50%);
+  z-index: 6;
+  width: 16px;
+  height: 46px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid var(--p-content-border-color, #333);
+  border-right: none;
+  border-radius: 6px 0 0 6px;
+  background: var(--p-content-background, #1e1e1e);
+  color: inherit;
+  cursor: pointer;
+  opacity: 0.65;
+  transition: opacity 0.2s ease;
+}
+.rhs-handle:hover {
+  opacity: 1;
+}
+.rhs-handle-icon {
+  font-size: 0.8rem;
 }
 </style>
