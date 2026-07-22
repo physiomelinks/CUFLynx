@@ -104,12 +104,12 @@ export function useSensitivity(options = {}) {
     selectedId.value = id
   }
 
-  async function start(modelId, settings) {
+  async function start(modelId, settings, currentParams = null) {
     reset()
     pendingSettings = settings ? { ...settings } : null
     state.value = 'running'
     try {
-      const { job_id } = await startSensitivity(modelId, settings)
+      const { job_id } = await startSensitivity(modelId, settings, currentParams)
       jobId = job_id
       await poll()
     } catch (e) {

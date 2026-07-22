@@ -32,6 +32,9 @@ const emit = defineEmits(['run', 'cancel', 'change'])
 const settings = reactive({
   param_id_method: 'genetic_algorithm',
   gradient_method: 'FD',
+  // Gradient descent starts from the model's initial values by default; when set,
+  // it starts from the user's current slider values instead (#65).
+  start_from_current: false,
   num_cores: 1,
   dt: 0.01,
   DEBUG: false,
@@ -133,7 +136,12 @@ function buildSettings() {
     num_cores: settings.num_cores,
     dt: settings.dt,
     DEBUG: settings.DEBUG,
-    ...(isGradientMethod.value ? { gradient_method: settings.gradient_method } : {}),
+    ...(isGradientMethod.value
+      ? {
+          gradient_method: settings.gradient_method,
+          start_from_current: settings.start_from_current,
+        }
+      : {}),
     ...opts,
   }
 }
@@ -196,6 +204,15 @@ function onRun() {
           size="small"
           data-testid="calib-gradient-method"
         />
+      </label>
+      <label v-if="isGradientMethod" class="field checkbox">
+        <Checkbox
+          v-model="settings.start_from_current"
+          :binary="true"
+          input-id="calib-start-from-current"
+          data-testid="calib-start-from-current"
+        />
+        <span title="Start the gradient descent from the current slider values instead of the model's initial values.">Start from current parameter values</span>
       </label>
 
       <!-- Per-method settings, from CA's PARAM_ID_METHODS[method].options schema. -->

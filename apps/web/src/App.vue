@@ -422,11 +422,17 @@ const paramLabels = computed(() => {
 })
 
 function onRunCalibration(settings) {
-  calib.start(model.modelId.value, {
-    ...settings,
-    python_path: pythonPath.value,
-    config_outputs_dir: outputsDir.value.trim() || undefined,
-  })
+  calib.start(
+    model.modelId.value,
+    {
+      ...settings,
+      python_path: pythonPath.value,
+      config_outputs_dir: outputsDir.value.trim() || undefined,
+    },
+    // Live slider values, so gradient descent can start from the user's current
+    // parameter values when "start from current" is enabled (#65).
+    { ...sliders.paramDict.value },
+  )
 }
 
 // Live calibration settings, mirrored from the Calibration panel so the
@@ -505,12 +511,18 @@ function onRunSensitivity(settings) {
         cost_convergence: calibSettings.value.cost_convergence,
       }
     : {}
-  sa.start(model.modelId.value, {
-    ...settings,
-    ...calibFirst,
-    python_path: pythonPath.value,
-    config_outputs_dir: outputsDir.value.trim() || undefined,
-  })
+  sa.start(
+    model.modelId.value,
+    {
+      ...settings,
+      ...calibFirst,
+      python_path: pythonPath.value,
+      config_outputs_dir: outputsDir.value.trim() || undefined,
+    },
+    // Live slider values, so local SA with nominal="current" linearises about the
+    // user's current parameter values rather than the model defaults (#65).
+    { ...sliders.paramDict.value },
+  )
 }
 
 // When a sensitivity run finishes, surface the heatmap automatically.

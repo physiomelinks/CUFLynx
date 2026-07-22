@@ -5,7 +5,14 @@ vi.mock('axios', () => ({
 }))
 
 import axios from 'axios'
-import { checkHealth, uploadCellML, simulate, uploadParamsForId } from './api'
+import {
+  checkHealth,
+  uploadCellML,
+  simulate,
+  uploadParamsForId,
+  startCalibration,
+  startSensitivity,
+} from './api'
 
 beforeEach(() => {
   axios.get.mockReset()
@@ -44,5 +51,29 @@ describe('api client', () => {
     await uploadParamsForId(file, 'mid')
     const [, body] = axios.post.mock.calls[0]
     expect(body).toBeInstanceOf(FormData)
+  })
+
+  it('test_start_calibration_sends_current_params', async () => {
+    axios.post.mockResolvedValue({ data: { job_id: 'j1' } })
+    const cur = { 'm/a': 1.5, 'm/b': 2.5 }
+    await startCalibration('mid', { param_id_method: 'sp_minimize' }, cur)
+    const [, body] = axios.post.mock.calls[0]
+    expect(body.model_id).toBe('mid')
+    expect(body.current_params).toEqual(cur)
+  })
+
+  it('test_start_calibration_omits_current_params_when_absent', async () => {
+    axios.post.mockResolvedValue({ data: { job_id: 'j1' } })
+    await startCalibration('mid', {})
+    const [, body] = axios.post.mock.calls[0]
+    expect('current_params' in body).toBe(false)
+  })
+
+  it('test_start_sensitivity_sends_current_params', async () => {
+    axios.post.mockResolvedValue({ data: { job_id: 'j2' } })
+    const cur = { 'm/a': 3 }
+    await startSensitivity('mid', { method: 'local', nominal: 'current' }, cur)
+    const [, body] = axios.post.mock.calls[0]
+    expect(body.current_params).toEqual(cur)
   })
 })

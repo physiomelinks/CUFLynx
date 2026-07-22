@@ -102,16 +102,18 @@ def _bounds_point(mins: np.ndarray, maxs: np.ndarray, mode: str) -> np.ndarray:
     return 0.5 * (mins + maxs)
 
 
-def _resolve_nominal(sm, param_names, mins, maxs, settings, best_vals, best_params):
+def _resolve_nominal(sm, param_names, mins, maxs, settings, best_vals, best_params,
+                     current_params=None):
     """Pick the parameter point to linearise about, and a label for the log.
 
     Priority:
       1. ``best_vals`` — a fresh calibration was run first (``run_calibration_first``).
       2. ``nominal == "best_fit"`` — reuse a completed calibration's best fit
          (``best_params`` dict, keyed by qname), supplied by the API.
-      3. ``nominal == "current"`` (default) — the model's current parameter
-         values (``get_init_param_vals``), so sensitivity is taken about wherever
-         the model currently sits.
+      3. ``nominal == "current"`` (default) — the current parameter values. When the
+         UI passes ``current_params`` (the live slider values), sensitivity is taken
+         about exactly those; otherwise it falls back to the model's built-in init
+         values (``get_init_param_vals``). Fixes local SA ignoring the sliders (#65).
       4. ``nominal in {"midpoint", "geometric"}`` — derived from the bounds.
     """
     if best_vals is not None:
@@ -130,8 +132,19 @@ def _resolve_nominal(sm, param_names, mins, maxs, settings, best_vals, best_para
         )
     if mode == "current":
         vals = sm.sim_helper.get_init_param_vals(sm.SA_info["param_names"])
-        flat = [v[0] if isinstance(v, (list, tuple)) else v for v in vals]
-        return np.asarray(flat, dtype=float), "current parameter values"
+        nominal = np.asarray(
+            [v[0] if isinstance(v, (list, tuple)) else v for v in vals], dtype=float
+        )
+        if current_params:
+            applied = 0
+            for i, name in enumerate(param_names):
+                val = current_params.get(name)
+                if val is not None:
+                    nominal[i] = float(val)
+                    applied += 1
+            if applied:
+                return nominal, "current parameter values (from sliders)"
+        return nominal, "current parameter values (model defaults)"
     return _bounds_point(mins, maxs, mode), f"{mode} of bounds"
 
 
@@ -428,7 +441,7 @@ def _ca_analytic_local_sensitivity(pid, param_names, nominal, mins, maxs):
 
 def compute_local_sensitivity(
     sa, settings: dict, best_vals=None, best_params=None,
-    model_type: str = "cellml_only", engine=None,
+    model_type: str = "cellml_only", engine=None, current_params=None,
 ) -> dict:
     """Local sensitivities ``d ln(Y)/d ln(P)`` about a nominal parameter point.
 
@@ -473,7 +486,7 @@ def compute_local_sensitivity(
     mins = np.asarray(sm.param_id_info["param_mins"], dtype=float)
     maxs = np.asarray(sm.param_id_info["param_maxs"], dtype=float)
     nominal, nominal_source = _resolve_nominal(
-        sm, param_names, mins, maxs, settings, best_vals, best_params
+        sm, param_names, mins, maxs, settings, best_vals, best_params, current_params
     )
     h = float(settings.get("rel_step", 0.01))
     output_names = _output_names(sm)

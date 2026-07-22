@@ -55,6 +55,42 @@ def _solver_info_from_config(config: dict, settings: dict) -> dict:
     return si
 
 
+def _apply_current_param_start(param_id, current_params: dict) -> None:
+    """Override the gradient-descent start point with the UI's current slider values.
+
+    CA seeds ``OpencorParamID.param_init`` (the sp_minimize x0) from the model's
+    built-in initial values; this replaces it with ``current_params`` ({qname: value})
+    so the descent starts from where the user is (issue #65). Parameter order follows
+    ``param_id_info``; a param absent from ``current_params`` keeps its model-default
+    init. ``param_init`` is a list with one entry per parameter (``[value]`` or a bare
+    value), matching ``get_init_param_vals`` — CA reads ``vals[0]`` for the x0.
+
+    Best-effort: a start-point tweak must never abort the run, so any failure is
+    logged and the model-default start is kept.
+    """
+    try:
+        pid = param_id.param_id
+        names = [
+            n[0] if isinstance(n, (list, tuple)) else n
+            for n in pid.param_id_info["param_names"]
+        ]
+        current = list(pid.param_init) if pid.param_init is not None else [None] * len(names)
+        applied = 0
+        for i, name in enumerate(names):
+            val = current_params.get(name)
+            if val is not None:
+                current[i] = [float(val)]
+                applied += 1
+        pid.param_init = current
+        print(
+            f"Starting gradient descent from current parameter values "
+            f"({applied}/{len(names)} params overridden from the sliders)",
+            flush=True,
+        )
+    except Exception as exc:  # noqa: BLE001 - never fail the run over a start-point tweak
+        print(f"warning: could not apply current-values start point: {exc}", flush=True)
+
+
 def run(config: dict) -> dict:
     _ensure_ca_on_path()
     from param_id.paramID import CVS0DParamID  # noqa: E402
@@ -106,6 +142,12 @@ def run(config: dict) -> dict:
         param_id_output_dir=output_dir,
         resources_dir=os.path.dirname(config["params_path"]),
     )
+
+    # Gradient descent (sp_minimize) starts from param_init, which CA seeds from the
+    # model's built-in initial values. When the user asks to start from the values
+    # they've dialled in on the sliders (issue #65), override that start point.
+    if settings.get("start_from_current") and config.get("current_params"):
+        _apply_current_param_start(param_id, config["current_params"])
 
     param_id.run()
 
