@@ -20,8 +20,8 @@ from runtime_paths import (
     bundled_mpiexec,
     default_python,
     runner_command,
+    runner_launch_env,
     runner_path,
-    subprocess_env,
 )
 
 RUNNER_PATH = str(runner_path("calibration_runner.py"))
@@ -649,7 +649,7 @@ class CalibrationManager:
             job = CalibrationJob(
                 uuid.uuid4().hex, output_dir, config.get("model_id"), config.get("params_path"),
             )
-            env = subprocess_env()
+            env = runner_launch_env(config.get("python") or self.python)
             job.proc = subprocess.Popen(
                 self.build_command(config, config_path),
                 stdout=subprocess.PIPE,

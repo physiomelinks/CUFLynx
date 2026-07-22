@@ -8,6 +8,7 @@ would relaunch the whole GUI instead of running a calibration — recursively.
 
 from __future__ import annotations
 
+import os
 import sys
 
 import pytest
@@ -222,3 +223,87 @@ def test_pythons_route_default_is_null_when_packaged(client, frozen, monkeypatch
     """In the packaged app the client must force an explicit interpreter pick."""
     monkeypatch.setattr(calibration_mod, "list_python_interpreters", lambda refresh=False: [])
     assert client.get("/api/calibration/pythons").json()["default"] is None
+
+
+# ---------------------------------------------------------------------------
+# Onefile extraction reuse / relocation (issue #67)
+# ---------------------------------------------------------------------------
+def test_user_cache_base_per_platform():
+    env = {"XDG_CACHE_HOME": "", "LOCALAPPDATA": r"C:\Users\me\AppData\Local"}
+    from pathlib import Path
+
+    assert runtime_paths.user_cache_base("linux", {}, "/home/me") == Path("/home/me/.cache")
+    # XDG_CACHE_HOME wins on Linux when set.
+    assert runtime_paths.user_cache_base(
+        "linux", {"XDG_CACHE_HOME": "/xdg"}, "/home/me") == Path("/xdg")
+    assert runtime_paths.user_cache_base("darwin", {}, "/Users/me") == Path(
+        "/Users/me/Library/Caches")
+    assert runtime_paths.user_cache_base("win32", env, r"C:\Users\me") == Path(
+        r"C:\Users\me\AppData\Local")
+
+
+def test_user_cache_base_is_none_without_a_home():
+    assert runtime_paths.user_cache_base("linux", {}, "") is None
+
+
+def test_extraction_cache_key_is_stable_and_build_sensitive():
+    a = runtime_paths.extraction_cache_key("/app/CUFLynx", 305_000_000, 1700.0)
+    # Same identity -> same key (so all ranks of one launch agree).
+    assert a == runtime_paths.extraction_cache_key("/app/CUFLynx", 305_000_000, 1700.9)
+    # A rebuild (different size) -> different key, so no stale reuse across versions.
+    assert a != runtime_paths.extraction_cache_key("/app/CUFLynx", 305_000_001, 1700.0)
+
+
+def test_extraction_cache_dir_is_versioned_under_the_app_cache():
+    from pathlib import Path
+
+    d = runtime_paths.extraction_cache_dir(Path("/home/me/.cache"), "deadbeef")
+    assert d == Path("/home/me/.cache/CUFLynx/onefile-cache/deadbeef")
+
+
+def test_runner_launch_env_is_plain_subprocess_env_from_source():
+    """Not frozen -> no relocation, identical to subprocess_env()."""
+    assert runtime_paths.runner_launch_env(None) == runtime_paths.subprocess_env()
+
+
+def test_runner_launch_env_skips_relocation_for_external_python(frozen, monkeypatch):
+    """An external interpreter isn't the bundle, so no extraction relocation."""
+    monkeypatch.setenv("XDG_CACHE_HOME", str(frozen / "cache"))
+    env = runtime_paths.runner_launch_env("/opt/ca-venv/bin/python")
+    assert "onefile-cache" not in env.get("TMPDIR", "")
+
+
+def test_runner_launch_env_relocates_extraction_for_the_bundle(frozen, monkeypatch, tmp_path):
+    """Frozen bundle re-invocation -> relocate each rank's extraction onto the
+    roomy per-build cache dir (TMPDIR/TMP/TEMP), off the volatile system temp.
+
+    Note: PyInstaller 6.x has no cross-rank extraction *sharing* we can trigger from
+    the environment (see runtime_paths / packaging/README.md), so this only moves
+    where the ranks extract; it does not de-duplicate. No _MEIPASS2 is set."""
+    cache = tmp_path / "cache"
+    monkeypatch.setenv("XDG_CACHE_HOME", str(cache))
+    monkeypatch.setattr(sys, "platform", "linux")
+    # sys.executable must exist for os.stat; point it at a real file.
+    exe = tmp_path / "CUFLynx"
+    exe.write_bytes(b"x" * 16)
+    monkeypatch.setattr(sys, "executable", str(exe))
+
+    env = runtime_paths.runner_launch_env(None)
+
+    # The dead _MEIPASS2 signal is gone.
+    assert "_MEIPASS2" not in env
+    extraction = env["TMPDIR"]
+    assert extraction == env["TMP"] == env["TEMP"]
+    assert str(cache) in extraction and "onefile-cache" in extraction
+    assert os.path.isdir(extraction)  # created, so the ranks can extract there
+
+
+def test_runner_launch_env_survives_an_uncreatable_cache(frozen, monkeypatch):
+    """If the cache dir can't be made, leave the env untouched (no regression):
+    no bogus TMPDIR is forced, and the bundle falls back to its default temp."""
+    monkeypatch.setattr(runtime_paths, "_ensure_extraction_cache_dir", lambda: None)
+    base = runtime_paths.subprocess_env()
+    env = runtime_paths.runner_launch_env(None)
+    # Relocation cleanly skipped -> TMPDIR is whatever subprocess_env already had.
+    assert env.get("TMPDIR") == base.get("TMPDIR")
+    assert "onefile-cache" not in env.get("TMPDIR", "")

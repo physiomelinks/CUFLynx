@@ -22,7 +22,7 @@ from calibration import (  # noqa: F401  (list_python_interpreters re-exported)
     list_python_interpreters,
     resolve_mpiexec,
 )
-from runtime_paths import default_python, runner_command, runner_path, subprocess_env
+from runtime_paths import default_python, runner_command, runner_launch_env, runner_path
 
 RUNNER_PATH = str(runner_path("uq_runner.py"))
 
@@ -94,7 +94,7 @@ class UQManager:
                 json.dump(config, fh)
 
             job = UQJob(uuid.uuid4().hex, output_dir)
-            env = subprocess_env()
+            env = runner_launch_env(config.get("python") or self.python)
             job.proc = subprocess.Popen(
                 self.build_command(config, config_path),
                 stdout=subprocess.PIPE,

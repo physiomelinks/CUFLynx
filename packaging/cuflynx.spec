@@ -494,6 +494,15 @@ exe = EXE(  # noqa: F821
     bootloader_ignore_signals=False,
     strip=False,
     upx=False,
+    # Left as None deliberately (issue #67). A per-user cache dir cannot be baked
+    # here: PyInstaller 6.x does NOT expand ~/$VAR in runtime_tmpdir on POSIX, and
+    # this spec runs on the *build* machine, so any absolute path would point at
+    # the CI runner's home, not the user's. The onefile extraction is therefore
+    # *relocated* at launch time (TMPDIR/TMP/TEMP) onto a per-build user-cache dir
+    # in runtime_paths.runner_launch_env(), where a real per-user path is available,
+    # so N MPI ranks don't exhaust the system temp. (There is no cross-rank
+    # extraction sharing to bake either: 6.x has no env-triggerable reuse for
+    # independent mpiexec processes -- see runtime_paths / packaging/README.md.)
     runtime_tmpdir=None,
     # One file, double-click. console=False would hide the terminal, but it also
     # hides startup errors (e.g. the missing-C-compiler warning) and breaks the
