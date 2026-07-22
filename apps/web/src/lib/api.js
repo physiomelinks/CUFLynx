@@ -111,9 +111,29 @@ export async function uploadObsData(modelId, obsData) {
 }
 
 // Operation (obs_funcs) + cost_type (cost_func) option lists, sourced from
-// circulatory_autogen — used to populate the obs_data editor dropdowns.
-export async function getObsDataOptions() {
-  const { data } = await axios.get(url('/api/obs_data/options'))
+// circulatory_autogen — used to populate the obs_data editor dropdowns. Pass
+// refresh=true to re-introspect CA (e.g. after adding a custom operation).
+export async function getObsDataOptions(refresh = false) {
+  const { data } = await axios.get(url('/api/obs_data/options'), {
+    params: refresh ? { refresh: true } : {},
+  })
+  return data
+}
+
+// User-authored observable operations (issue #58): list / save / delete the
+// funcs stored in CA's funcs_user/operation_funcs_user_CUFLynx.py.
+export async function getUserOperations() {
+  const { data } = await axios.get(url('/api/operation_funcs'))
+  return data
+}
+
+export async function saveUserOperation(name, source) {
+  const { data } = await axios.post(url('/api/operation_funcs'), { name, source })
+  return data
+}
+
+export async function deleteUserOperation(name) {
+  const { data } = await axios.delete(url(`/api/operation_funcs/${encodeURIComponent(name)}`))
   return data
 }
 

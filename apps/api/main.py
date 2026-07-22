@@ -57,6 +57,12 @@ from solver_options import (
     get_solver_options,
     reset_cache as reset_solver_options,
 )
+from user_operations import (
+    UserOperationError,
+    delete_user_operation,
+    read_user_operations,
+    save_user_operation,
+)
 from sensitivity import sensitivity
 from uq import uq
 
@@ -783,6 +789,41 @@ def obs_data_options(refresh: bool = False) -> dict:
     CA can't be introspected.
     """
     return get_obs_data_options(refresh=refresh)
+
+
+class UserOperationRequest(BaseModel):
+    name: str
+    source: str
+
+
+@app.get("/api/operation_funcs")
+def list_operation_funcs() -> dict:
+    """User-authored observable operations + the editor template (issue #58)."""
+    return read_user_operations()
+
+
+@app.post("/api/operation_funcs")
+def save_operation_func(req: UserOperationRequest) -> dict:
+    """Create or update a user operation func; then it appears in the options list.
+
+    Writes to CA's ``funcs_user/operation_funcs_user_CUFLynx.py`` (bridged into CA's
+    discovery) and resets the obs_data option cache so the new op is selectable.
+    """
+    try:
+        result = save_user_operation(req.name, req.source)
+    except UserOperationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return result
+
+
+@app.delete("/api/operation_funcs/{name}")
+def delete_operation_func(name: str) -> dict:
+    """Remove a user operation func."""
+    try:
+        result = delete_user_operation(name)
+    except UserOperationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return result
 
 
 @app.post("/api/params_for_id/upload")
