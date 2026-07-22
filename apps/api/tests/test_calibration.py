@@ -392,6 +392,46 @@ def test_calibration_streams_and_completes(client, tmp_path):
     assert any("generation 0 cost" in ln for ln in lines)
 
 
+# Echoes the config's global seed back through results.json so the test can assert
+# it was threaded frontend -> /api/config -> run config -> runner.
+SEED_ECHO_RUNNER = """
+import json, sys
+from pathlib import Path
+cfg = json.loads(Path(sys.argv[1]).read_text())
+Path(cfg["output_dir"], "results.json").write_text(
+    json.dumps({"params": {"seed_seen": cfg.get("seed")}, "cost": 0.0}))
+print("__CALIBRATION_DONE__", flush=True)
+"""
+
+
+def test_calibration_config_carries_global_seed(client, tmp_path):
+    """The seed set in Settings (POST /api/config) is injected into the run config
+    so the runner (and thence CA) can make the run reproducible."""
+    _install_runner(tmp_path, SEED_ECHO_RUNNER)
+    model_id = _setup_model_obs_params(
+        client, LV_MODEL_PATH, LV_OBS_DATA_PATH, LV_PARAMS_CSV_PATH
+    )
+    client.post("/api/config", json={"seed": 314})
+    resp = client.post("/api/calibration/run", json={"model_id": model_id, "settings": {}})
+    assert resp.status_code == 200, resp.text
+    status, _ = _wait(client, resp.json()["job_id"])
+    assert status["state"] == "done"
+    assert status["best_params"]["seed_seen"] == 314
+
+
+def test_calibration_config_omits_seed_by_default(client, tmp_path):
+    """With no seed set, the run config carries seed=None (non-deterministic)."""
+    _install_runner(tmp_path, SEED_ECHO_RUNNER)
+    model_id = _setup_model_obs_params(
+        client, LV_MODEL_PATH, LV_OBS_DATA_PATH, LV_PARAMS_CSV_PATH
+    )
+    resp = client.post("/api/calibration/run", json={"model_id": model_id, "settings": {}})
+    assert resp.status_code == 200, resp.text
+    status, _ = _wait(client, resp.json()["job_id"])
+    assert status["state"] == "done"
+    assert status["best_params"]["seed_seen"] is None
+
+
 def test_calibration_requires_obs_and_params_422(client, tmp_path):
     _install_runner(tmp_path, FAKE_RUNNER)
     model_id = upload_model(client, LV_MODEL_PATH)["model_id"]  # no obs/params

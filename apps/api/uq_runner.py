@@ -40,6 +40,40 @@ NUM_BINS = 30
 LAPLACE_SAMPLES = 100000
 
 
+def _optimiser_options(settings: dict, seed=None) -> dict:
+    """optimiser_options for the ``run_calibration_first`` best-fit search. A global
+    random ``seed`` lands under ``optimiser_options['seed']`` (the multi-start start
+    sampler key); ``None`` omits it."""
+    opts = {
+        "num_calls_to_function": int(settings.get("num_calls_to_function", 100)),
+        "cost_convergence": float(settings.get("cost_convergence", 0.001)),
+        "max_patience": int(settings.get("max_patience", 10)),
+        "cost_type": settings.get("cost_type", "gaussian_MLE"),
+    }
+    if seed is not None:
+        opts["seed"] = int(seed)
+    return opts
+
+
+def _mcmc_options(settings: dict, seed=None) -> dict:
+    """CA ``mcmc_options`` from the UI settings. Any additional CA mcmc option the UI
+    collected from CA's ANALYSIS_OPTIONS schema is forwarded (forward-compatible).
+    A global random ``seed`` is forwarded under ``mcmc_options['seed']``; ``None``
+    omits it."""
+    opts = {
+        "num_steps": int(settings.get("num_steps") or 1000),
+        "num_walkers": int(settings.get("num_walkers") or 64),
+        "cost_convergence": float(settings.get("cost_convergence", 0.001)),
+        "cost_type": settings.get("cost_type", "gaussian_MLE"),
+    }
+    for k, v in settings.items():
+        if k not in _UQ_RESERVED and k not in opts and v is not None:
+            opts[k] = v
+    if seed is not None:
+        opts["seed"] = int(seed)
+    return opts
+
+
 def _ensure_ca_on_path() -> None:
     src = os.environ.get("CIRCULATORY_AUTOGEN_SRC")
     if not src:
@@ -149,24 +183,15 @@ def run(config: dict) -> dict:
     output_dir = config["output_dir"]
     os.makedirs(output_dir, exist_ok=True)
 
-    optimiser_options = {
-        "num_calls_to_function": int(settings.get("num_calls_to_function", 100)),
-        "cost_convergence": float(settings.get("cost_convergence", 0.001)),
-        "max_patience": int(settings.get("max_patience", 10)),
-        "cost_type": settings.get("cost_type", "gaussian_MLE"),
-    }
-    mcmc_options = {
-        "num_steps": int(settings.get("num_steps") or 1000),
-        "num_walkers": int(settings.get("num_walkers") or 64),
-        "cost_convergence": float(settings.get("cost_convergence", 0.001)),
-        "cost_type": settings.get("cost_type", "gaussian_MLE"),
-    }
-    # Forward any additional CA mcmc options the UI collected from CA's
-    # ANALYSIS_OPTIONS schema (forward-compatible: new mcmc_options keys added to CA
-    # flow through without a runner change).
-    for k, v in settings.items():
-        if k not in _UQ_RESERVED and k not in mcmc_options and v is not None:
-            mcmc_options[k] = v
+    # Global random seed (Settings popup). When set, seed numpy's legacy global RNG
+    # so the MCMC walker initialisation / Laplace sampling (which draw from np.random
+    # directly) and any emcee sampling are repeatable, and forward it into CA's
+    # option dicts. None => leave every random process non-deterministic.
+    seed = config.get("seed")
+    if seed is not None:
+        np.random.seed(int(seed))
+    optimiser_options = _optimiser_options(settings, seed)
+    mcmc_options = _mcmc_options(settings, seed)
     # Minimal inp_data_dict so ensure_mle_cost_type_for_bayesian_inner can pick the
     # MLE cost from our option dicts (required for ln L = -cost in MCMC / Laplace).
     inp = {

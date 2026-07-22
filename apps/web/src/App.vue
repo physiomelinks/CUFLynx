@@ -119,10 +119,17 @@ const compilerAlternatives = computed(() =>
   (cppCompiler.value.alternatives ?? []).map((a) => a.label).join(' or '),
 )
 
+// Global random seed for analysis runs (Settings popup). null = no seed
+// (non-deterministic, the default); an integer makes calibration / sensitivity /
+// UQ reproducible. Persisted server-side via /api/config, so it survives a restart.
+const seed = ref(null)
+
 // Last value the server told us about. Hydrating pythonPath from /api/config
 // triggers the watch below, and without this it would POST the value straight
 // back on every load.
 let serverPythonPath = ''
+// Same guard for the seed: hydrating it must not immediately POST it back.
+let serverSeed = null
 
 function applyConfigPayload(c) {
   caDir.value = c.ca_dir
@@ -134,6 +141,8 @@ function applyConfigPayload(c) {
   cppCompiler.value = c.cpp_compiler ?? { present: true, hint: '' }
   pythonPath.value = c.python_path ?? ''
   serverPythonPath = pythonPath.value
+  seed.value = c.seed ?? null
+  serverSeed = seed.value
   packaged.value = c.packaged ?? false
   mpiexecAvailable.value = c.mpiexec_available ?? true
 }
@@ -146,6 +155,19 @@ watch(pythonPath, async (p) => {
   try {
     serverPythonPath = p
     await setConfig({ pythonPath: p })
+  } catch {
+    /* keep the in-session choice even if persisting fails */
+  }
+})
+
+// Persist the global random seed server-side. Clearing it (null) is a real choice
+// — "no seed, non-deterministic" — so it POSTs '' (the backend's clear signal),
+// while a number sets it.
+watch(seed, async (s) => {
+  if (s === serverSeed) return
+  try {
+    serverSeed = s
+    await setConfig({ seed: s == null ? '' : s })
   } catch {
     /* keep the in-session choice even if persisting fails */
   }
@@ -1362,6 +1384,31 @@ watch(
           ⚠ semi_implicit_euler is a first-order, fixed-step damped solver — it enables
           AD on stiff models but is <strong>less accurate than CVODES</strong>. Reduce
           dt and run a convergence study (confirm results stop changing) before trusting them.
+        </p>
+
+        <hr class="settings-sep" />
+
+        <label class="settings-row">
+          <span
+            class="settings-label"
+            title="Seed CA's random processes (GA, multi-start sampling, Sobol sampling, MCMC) so calibration / sensitivity / UQ runs are reproducible. Leave blank for non-deterministic runs."
+          >
+            Random seed (optional)
+          </span>
+          <InputNumber
+            v-model="seed"
+            :use-grouping="false"
+            :min="0"
+            :step="1"
+            show-buttons
+            placeholder="none"
+            size="small"
+            data-testid="seed-input"
+          />
+        </label>
+        <p class="settings-hint">
+          Set a seed to make calibration / sensitivity / UQ runs repeatable. Leave
+          blank (clear it) for non-deterministic runs.
         </p>
       </div>
     </Dialog>

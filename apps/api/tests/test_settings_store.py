@@ -110,6 +110,24 @@ def test_restore_ignores_a_python_that_no_longer_exists(config_dir, monkeypatch)
     assert main_mod.calibration.python is None
 
 
+def test_seed_persists_and_restores(config_dir, monkeypatch):
+    """The global analysis seed round-trips through the config file and is restored
+    into main's module state at startup."""
+    assert "seed" in settings_store.PERSISTED_KEYS
+    settings_store.save({"seed": 2024})
+    assert settings_store.load()["seed"] == 2024
+
+    monkeypatch.setattr(main_mod, "_analysis_seed", None)
+    main_mod._restore_persisted_settings()
+    assert main_mod._analysis_seed == 2024
+
+
+def test_setting_a_seed_persists_it(client, config_dir):
+    body = client.post("/api/config", json={"seed": 55}).json()
+    assert body["seed"] == 55
+    assert settings_store.load()["seed"] == 55
+
+
 def test_restore_points_all_three_managers_at_the_saved_interpreter(
     config_dir, tmp_path, monkeypatch
 ):

@@ -253,6 +253,53 @@ describe('App.vue', () => {
       expect(setConfig).toHaveBeenCalledWith(expect.objectContaining({ pythonPath: '' }))
     })
   })
+
+  // The global random seed (Settings popup) makes analysis runs reproducible; it
+  // persists server-side like the interpreter choice, and defaults to none.
+  describe('global random seed', () => {
+    const BASE_CONFIG = {
+      ca_dir: '',
+      ca_exists: true,
+      generated_model_format: 'cellml_only',
+      solver: 'CVODE_myokit',
+      solver_info: {},
+      differentiable_operations: {},
+    }
+
+    it('hydrates the remembered seed without echoing it back', async () => {
+      getConfig.mockResolvedValueOnce({ ...BASE_CONFIG, seed: 42 })
+      setConfig.mockClear()
+      const wrapper = shallowMount(App)
+      await flushPromises()
+
+      expect(wrapper.vm.seed).toBe(42)
+      expect(setConfig).not.toHaveBeenCalledWith(expect.objectContaining({ seed: expect.anything() }))
+    })
+
+    it('captures and sends the seed when set', async () => {
+      getConfig.mockResolvedValueOnce({ ...BASE_CONFIG, seed: null })
+      setConfig.mockClear()
+      const wrapper = shallowMount(App)
+      await flushPromises()
+
+      wrapper.vm.seed = 7
+      await flushPromises()
+
+      expect(setConfig).toHaveBeenCalledWith(expect.objectContaining({ seed: 7 }))
+    })
+
+    it('clears the seed by POSTing an empty value', async () => {
+      getConfig.mockResolvedValueOnce({ ...BASE_CONFIG, seed: 7 })
+      setConfig.mockClear()
+      const wrapper = shallowMount(App)
+      await flushPromises()
+
+      wrapper.vm.seed = null
+      await flushPromises()
+
+      expect(setConfig).toHaveBeenCalledWith(expect.objectContaining({ seed: '' }))
+    })
+  })
 })
 
 // Regression for #84: switching the backend solver must update the LOCAL-SA
