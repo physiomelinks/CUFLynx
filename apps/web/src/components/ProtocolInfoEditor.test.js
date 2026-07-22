@@ -48,6 +48,25 @@ describe('ProtocolInfoEditor', () => {
     expect(model.params['a/x'][0][0].shape).toBe('ramp')
   })
 
+  it('filters the controlled-parameter picker options by the search box', async () => {
+    const model = reactive(emptyModel())
+    const wrapper = mountEditor(model, { allNames: ['a/x', 'a/y', 'b/z'] })
+
+    // all candidates offered (plus the placeholder option) when search is empty
+    let opts = wrapper.find('[data-testid="param-select"]').findAll('option')
+    expect(opts.map((o) => o.element.value)).toEqual(['', 'a/x', 'a/y', 'b/z'])
+
+    // typing filters, case-insensitively, by qname substring
+    await wrapper.find('[data-testid="param-search"]').setValue('B/')
+    opts = wrapper.find('[data-testid="param-select"]').findAll('option')
+    expect(opts.map((o) => o.element.value)).toEqual(['', 'b/z'])
+
+    // the filtered option can still be picked and added
+    await wrapper.find('[data-testid="param-select"]').setValue('b/z')
+    await wrapper.find('[data-testid="add-param"]').trigger('click')
+    expect(model.params['b/z']).toBeTruthy()
+  })
+
   it('seeds a newly added param with its uploaded value as the baseline', async () => {
     const model = reactive(emptyModel())
     const wrapper = mountEditor(model, { initialValues: { 'a/x': 1.5e-8 } })
