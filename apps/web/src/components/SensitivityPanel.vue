@@ -95,35 +95,37 @@ watch([settings, optionValues], () => emit('change', buildSettings()), {
   immediate: true,
 })
 
-// If AD becomes unavailable (backend solver switched away from casadi_python),
-// don't leave a now-invalid AD selection behind.
-watch(
-  () => props.adAvailable,
-  (ok) => {
-    if (!ok && settings.gradient_method === 'AD') settings.gradient_method = 'FD'
-  },
-)
-
-const METHOD_LABELS = { sobol: 'Sobol (global)', local: 'Local (finite difference)' }
+const METHOD_LABELS = { sobol: 'Sobol (global)', local: 'Local (derivative-based)' }
 const methods = computed(() =>
   (props.defaults.methods ?? ['sobol']).map((m) => ({
     label: METHOD_LABELS[m] ?? m,
     value: m,
   })),
 )
-// Gradient sources for local SA: [{value, label, disabled}]. FD is always
-// available; AD is enabled only when the backend reports it (casadi_python +
-// all-differentiable ops); CVODES stays gated upstream. The server-provided list
-// is re-gated here so toggling the backend solver flips AD without a refetch.
+// Gradient sources for local SA come from the backend's CA gradient_sources
+// accessor for the current model (FD always; AD for casadi_python; FSA for
+// cellml_only + CVODE_myokit). Sources flagged requires_all_differentiable (CasADi
+// AD) need every in-use op differentiable, so they're gated here against
+// adAvailable — the per-model check the model-agnostic endpoint can't do. FD / FSA
+// are never gated. Re-gating here flips AD as the backend solver toggles without a
+// refetch.
 const gradientMethods = computed(() => {
-  const base = props.defaults.gradient_methods ?? [
-    { value: 'FD', label: 'Finite difference' },
-    { value: 'AD', label: 'Automatic differentiation (casadi)' },
-  ]
+  const base = props.defaults.gradient_methods ?? [{ value: 'FD', label: 'Finite difference' }]
   return base.map((o) =>
-    o.value === 'AD' ? { ...o, disabled: !props.adAvailable } : o,
+    o.requires_all_differentiable ? { ...o, disabled: !props.adAvailable } : { ...o, disabled: false },
   )
 })
+
+// If the current gradient source isn't offered/enabled for this model (backend
+// solver switched, or AD gated off), fall back to FD.
+watch(
+  gradientMethods,
+  (opts) => {
+    const ok = opts.some((o) => o.value === settings.gradient_method && !o.disabled)
+    if (!ok) settings.gradient_method = 'FD'
+  },
+  { immediate: true },
+)
 const nominals = computed(() =>
   (props.defaults.nominals ?? ['midpoint', 'geometric']).map((m) => ({
     label: m,
@@ -229,7 +231,7 @@ function onRun() {
       <!-- Local (derivative-based) options -->
       <template v-else>
         <label class="field">
-          <span title="Gradient source. Only finite difference works for CellML today; AD needs casadi_python, CVODES needs upstream Myokit sensitivities.">Gradient source</span>
+          <span title="Gradient source for the local sensitivity. FD (finite difference) works for any model; AD (CasADi) needs casadi_python with differentiable ops; FSA (Myokit CVODES forward sensitivities) needs cellml_only + CVODE_myokit.">Gradient source</span>
           <Select
             v-model="settings.gradient_method"
             :options="gradientMethods"

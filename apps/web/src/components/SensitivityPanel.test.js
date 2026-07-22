@@ -25,10 +25,22 @@ function gradientOptions(wrapper) {
   return wrapper.find('[data-testid="gradient-method"]').findAll('option')
 }
 
+// The backend's CA-sourced gradient list for a casadi_python model: FD + CasADi AD
+// (requires_all_differentiable). AD is gated client-side by adAvailable.
+const GRAD_CASADI = [
+  { value: 'FD', label: 'Finite difference', requires_all_differentiable: false },
+  { value: 'AD', label: 'Automatic differentiation (CasADi)', requires_all_differentiable: true },
+]
+// For a cellml_only + CVODE_myokit model: FD + Myokit CVODES FSA (never AD-gated).
+const GRAD_CELLML = [
+  { value: 'FD', label: 'Finite difference', requires_all_differentiable: false },
+  { value: 'FSA', label: 'Forward sensitivity (Myokit CVODES)', requires_all_differentiable: false },
+]
+
 describe('SensitivityPanel AD gating', () => {
   it('disables the AD gradient source when AD is unavailable', () => {
     const wrapper = mount(SensitivityPanel, {
-      props: { defaults: { method: 'local' }, adAvailable: false },
+      props: { defaults: { method: 'local', gradient_methods: GRAD_CASADI }, adAvailable: false },
       global: { stubs },
     })
     const ad = gradientOptions(wrapper).find((o) => o.text().includes('Automatic'))
@@ -38,16 +50,30 @@ describe('SensitivityPanel AD gating', () => {
 
   it('enables the AD gradient source when AD is available', () => {
     const wrapper = mount(SensitivityPanel, {
-      props: { defaults: { method: 'local' }, adAvailable: true },
+      props: { defaults: { method: 'local', gradient_methods: GRAD_CASADI }, adAvailable: true },
       global: { stubs },
     })
     const ad = gradientOptions(wrapper).find((o) => o.text().includes('Automatic'))
     expect(ad.attributes('disabled')).toBeUndefined()
   })
 
+  it('offers FSA (Myokit CVODES) enabled for cellml_only, regardless of adAvailable', () => {
+    const wrapper = mount(SensitivityPanel, {
+      props: { defaults: { method: 'local', gradient_methods: GRAD_CELLML }, adAvailable: false },
+      global: { stubs },
+    })
+    const fsa = gradientOptions(wrapper).find((o) => o.text().includes('Forward sensitivity'))
+    expect(fsa).toBeTruthy()
+    expect(fsa.attributes('disabled')).toBeUndefined()
+  })
+
   it('resets a selected AD gradient source when AD becomes unavailable', async () => {
     const wrapper = mount(SensitivityPanel, {
-      props: { defaults: { method: 'local', gradient_method: 'AD' }, adAvailable: true, canRun: true },
+      props: {
+        defaults: { method: 'local', gradient_method: 'AD', gradient_methods: GRAD_CASADI },
+        adAvailable: true,
+        canRun: true,
+      },
       global: { stubs },
     })
     await wrapper.setProps({ adAvailable: false })

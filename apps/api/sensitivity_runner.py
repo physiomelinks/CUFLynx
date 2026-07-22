@@ -105,6 +105,34 @@ def _solver_info_from_config(config: dict, settings: dict) -> dict:
     return si
 
 
+def _build_local_engine(config: dict, settings: dict, solver_info: dict, model_type: str):
+    """A ``do_ad`` ``CVS0DParamID`` for the analytic (FSA) local-sensitivity path.
+
+    Not ``run()`` — only its backend-agnostic ``get_observable_sensitivities``
+    accessor is used (Myokit CVODES forward sensitivities for cellml_only +
+    CVODE_myokit). Mirrors :func:`_calibrate_for_nominal`'s construction; ``do_ad``
+    is forced on so CA takes the analytic-sensitivity path.
+    """
+    from param_id.paramID import CVS0DParamID  # noqa: E402
+
+    return CVS0DParamID(
+        model_path=config["model_path"],
+        model_type=model_type,
+        param_id_method=settings.get("param_id_method", "genetic_algorithm"),
+        file_name_prefix=config.get("file_prefix", "model"),
+        params_for_id_path=config["params_path"],
+        param_id_obs_path=config["obs_path"],
+        sim_time=float(settings.get("sim_time", 2.0)),
+        pre_time=float(settings.get("pre_time", 0.0)),
+        dt=float(settings.get("dt", 0.01)),
+        solver_info=solver_info,
+        do_ad=True,
+        DEBUG=bool(settings.get("DEBUG", False)),
+        param_id_output_dir=config["output_dir"],
+        resources_dir=os.path.dirname(config["params_path"]),
+    )
+
+
 def _calibrate_for_nominal(config: dict, settings: dict, solver_info: dict, model_type: str):
     """Run a GA calibration in-process and return its best-fit parameter vector.
 
@@ -201,12 +229,19 @@ def run(config: dict) -> dict:
         best_vals = None
         if bool(settings.get("run_calibration_first", False)):
             best_vals = _calibrate_for_nominal(config, settings, solver_info, model_type)
+        # FSA (Myokit CVODES forward sensitivities) is computed by circulatory_autogen's
+        # backend-agnostic accessor, which needs a do_ad param-id engine; FD/AD use the
+        # SA manager directly, so only build the engine when it's actually needed.
+        engine = None
+        if str(settings.get("gradient_method", "FD")).upper() in ("FSA", "CVODES"):
+            engine = _build_local_engine(config, settings, solver_info, model_type)
         payload = compute_local_sensitivity(
             sa,
             settings,
             best_vals=best_vals,
             best_params=config.get("best_params"),
             model_type=model_type,
+            engine=engine,
         )
         with open(os.path.join(output_dir, "results.json"), "w") as fh:
             json.dump(payload, fh)
