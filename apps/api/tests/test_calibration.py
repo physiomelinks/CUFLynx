@@ -680,12 +680,12 @@ def test_calibration_3compartment_genetic_algorithm(client, requires_simulation)
     assert status["cost"] is not None and math.isfinite(status["cost"])
 
 
-# --- issue #65: gradient descent can start from the current slider values ---
-def test_apply_current_param_start_overrides_param_init():
-    """_apply_current_param_start replaces CA's param_init (the sp_minimize x0,
-    seeded from the model defaults) with the UI's current slider values, in
-    param_id_info order, in the [value] shape CA reads x0 from. Params absent from
-    the slider map keep their model-default init."""
+# --- issues #65 / #83: gradient descent can start from a chosen point ---
+def test_apply_start_point_overrides_param_init():
+    """_apply_start_point replaces CA's param_init (the sp_minimize x0, seeded from
+    the model defaults) with the supplied {qname: value} map, in param_id_info order,
+    in the [value] shape CA reads x0 from. Params absent from the map keep their
+    model-default init."""
     import calibration_runner
 
     class _Pid:
@@ -696,12 +696,12 @@ def test_apply_current_param_start_overrides_param_init():
         param_id = _Pid()
 
     cvs = _CVS()
-    calibration_runner._apply_current_param_start(cvs, {"a/x": 5.0, "c/z": 9.0})
-    # a/x and c/z start from the sliders; b/y (not supplied) keeps its default.
+    calibration_runner._apply_start_point(cvs, {"a/x": 5.0, "c/z": 9.0}, "previous best fit")
+    # a/x and c/z start from the supplied map; b/y (not supplied) keeps its default.
     assert cvs.param_id.param_init == [[5.0], [2.0], [9.0]]
 
 
-def test_apply_current_param_start_is_best_effort():
+def test_apply_start_point_is_best_effort():
     """A malformed param_id must not raise (a start-point tweak can't abort a run)."""
     import calibration_runner
 
@@ -709,7 +709,48 @@ def test_apply_current_param_start_is_best_effort():
         param_id = object()  # no param_id_info -> AttributeError inside
 
     # Should swallow the error, not propagate.
-    calibration_runner._apply_current_param_start(_Broken(), {"a/x": 1.0})
+    calibration_runner._apply_start_point(_Broken(), {"a/x": 1.0}, "current parameter values")
+
+
+def test_best_fit_start_without_a_prior_fit_returns_422(client):
+    """start_from='best_fit' with no completed calibration for the model is a clear
+    422 (there is nothing to continue from) rather than a silent model-default run."""
+    model_id = _setup_model_obs_params(
+        client, LV_MODEL_PATH, LV_OBS_DATA_PATH, LV_PARAMS_CSV_PATH
+    )
+    resp = client.post(
+        "/api/calibration/run",
+        json={"model_id": model_id, "settings": {"start_from": "best_fit"}},
+    )
+    assert resp.status_code == 422
+    assert "best fit" in resp.json()["detail"].lower()
+
+
+def test_best_fit_start_supplies_last_completed_best_params(client, monkeypatch):
+    """start_from='best_fit' feeds the runner config the last completed calibration's
+    best fit (from calibration.last_completed_best_params), so a stopped run can be
+    continued (#83)."""
+    model_id = _setup_model_obs_params(
+        client, LV_MODEL_PATH, LV_OBS_DATA_PATH, LV_PARAMS_CSV_PATH
+    )
+    best = {"Lotka_Volterra_module/alpha": 1.25, "Lotka_Volterra_module/beta": 0.5}
+    monkeypatch.setattr(
+        calibration_mod.calibration, "last_completed_best_params", lambda mid: best
+    )
+    captured: dict = {}
+
+    def _fake_start(config):
+        captured["config"] = config
+        return "job-xyz"
+
+    monkeypatch.setattr(calibration_mod.calibration, "start", _fake_start)
+
+    resp = client.post(
+        "/api/calibration/run",
+        json={"model_id": model_id, "settings": {"start_from": "best_fit"}},
+    )
+    assert resp.status_code == 200, resp.text
+    assert captured["config"]["best_fit_params"] == best
 
 
 @pytest.mark.integration
@@ -742,7 +783,7 @@ def test_sp_minimize_starts_from_current_param_values(tmp_path, requires_simulat
             # cellml_only gradient descent needs an analytic gradient (Myokit FSA);
             # the start-point override itself is independent of the gradient source.
             "gradient_method": "FSA",
-            "start_from_current": True,
+            "start_from": "current",
             # Stop almost immediately so the test stays fast; the override happens
             # before the first evaluation regardless of the budget.
             "cost_convergence": 1e12,

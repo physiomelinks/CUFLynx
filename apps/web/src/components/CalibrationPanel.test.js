@@ -322,36 +322,41 @@ describe('CalibrationPanel cores gating (no MPI launcher)', () => {
   })
 })
 
-describe('CalibrationPanel start-from-current (#65)', () => {
+describe('CalibrationPanel start-from selector (#65 / #83)', () => {
   const METHODS = [
     { value: 'genetic_algorithm', label: 'GA', gradient_based: false },
     { value: 'sp_minimize', label: 'Gradient descent', gradient_based: true },
   ]
 
-  it('includes start_from_current in the run payload for gradient methods', async () => {
+  it('emits the chosen start_from for gradient methods (model / current / best_fit)', async () => {
     const wrapper = mount(CalibrationPanel, {
       props: { canRun: true, defaults: { methods: METHODS, param_id_method: 'sp_minimize' } },
       global: { stubs: selectStubs },
     })
-    // The toggle is shown for gradient methods.
-    expect(wrapper.find('[data-testid="calib-start-from-current"]').exists()).toBe(true)
-    // Default: off.
+    // The selector is shown for gradient methods.
+    expect(wrapper.find('[data-testid="calib-start-from"]').exists()).toBe(true)
+    // Default: model-default values.
     await wrapper.find('[data-testid="run-calibration"]').trigger('click')
-    expect(wrapper.emitted('run').at(-1)[0].start_from_current).toBe(false)
-    // Enable it -> the payload reflects it.
-    wrapper.vm.settings.start_from_current = true
+    expect(wrapper.emitted('run').at(-1)[0].start_from).toBe('model')
+    // Choose current values.
+    wrapper.vm.settings.start_from = 'current'
     await wrapper.vm.$nextTick()
     await wrapper.find('[data-testid="run-calibration"]').trigger('click')
-    expect(wrapper.emitted('run').at(-1)[0].start_from_current).toBe(true)
+    expect(wrapper.emitted('run').at(-1)[0].start_from).toBe('current')
+    // Choose the previous best fit (#83).
+    wrapper.vm.settings.start_from = 'best_fit'
+    await wrapper.vm.$nextTick()
+    await wrapper.find('[data-testid="run-calibration"]').trigger('click')
+    expect(wrapper.emitted('run').at(-1)[0].start_from).toBe('best_fit')
   })
 
-  it('omits start_from_current (and the toggle) for non-gradient methods', async () => {
+  it('omits start_from (and the selector) for non-gradient methods', async () => {
     const wrapper = mount(CalibrationPanel, {
       props: { canRun: true, defaults: { methods: METHODS, param_id_method: 'genetic_algorithm' } },
       global: { stubs: selectStubs },
     })
-    expect(wrapper.find('[data-testid="calib-start-from-current"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="calib-start-from"]').exists()).toBe(false)
     await wrapper.find('[data-testid="run-calibration"]').trigger('click')
-    expect('start_from_current' in wrapper.emitted('run').at(-1)[0]).toBe(false)
+    expect('start_from' in wrapper.emitted('run').at(-1)[0]).toBe(false)
   })
 })

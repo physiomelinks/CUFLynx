@@ -32,13 +32,21 @@ const emit = defineEmits(['run', 'cancel', 'change'])
 const settings = reactive({
   param_id_method: 'genetic_algorithm',
   gradient_method: 'FD',
-  // Gradient descent starts from the model's initial values by default; when set,
-  // it starts from the user's current slider values instead (#65).
-  start_from_current: false,
+  // Where gradient descent starts: 'model' (CA's model-default initial values),
+  // 'current' (the user's current slider values, #65), or 'best_fit' (the previous
+  // completed calibration's best fit, so a stopped run can be continued, #83).
+  start_from: 'model',
   num_cores: 1,
   dt: 0.01,
   DEBUG: false,
 })
+
+// Start-point choices for gradient methods (label ↔ start_from value).
+const startFromOptions = [
+  { value: 'model', label: 'Model default values' },
+  { value: 'current', label: 'Current parameter values' },
+  { value: 'best_fit', label: 'Previous best fit' },
+]
 
 // Per-method setting values, keyed by option name (from CA's schema). Seeded from
 // each option's default; the run/change payload includes only the current method's.
@@ -139,7 +147,7 @@ function buildSettings() {
     ...(isGradientMethod.value
       ? {
           gradient_method: settings.gradient_method,
-          start_from_current: settings.start_from_current,
+          start_from: settings.start_from,
         }
       : {}),
     ...opts,
@@ -205,14 +213,16 @@ function onRun() {
           data-testid="calib-gradient-method"
         />
       </label>
-      <label v-if="isGradientMethod" class="field checkbox">
-        <Checkbox
-          v-model="settings.start_from_current"
-          :binary="true"
-          input-id="calib-start-from-current"
-          data-testid="calib-start-from-current"
+      <label v-if="isGradientMethod" class="field">
+        <span title="Where gradient descent starts: the model's initial values, the current slider values, or the previous completed calibration's best fit (to continue a stopped run).">Start from</span>
+        <Select
+          v-model="settings.start_from"
+          :options="startFromOptions"
+          option-label="label"
+          option-value="value"
+          size="small"
+          data-testid="calib-start-from"
         />
-        <span title="Start the gradient descent from the current slider values instead of the model's initial values.">Start from current parameter values</span>
       </label>
 
       <!-- Per-method settings, from CA's PARAM_ID_METHODS[method].options schema. -->

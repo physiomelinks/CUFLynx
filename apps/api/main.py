@@ -757,7 +757,7 @@ class CalibrationRequest(BaseModel):
     model_id: str
     settings: dict = Field(default_factory=dict)
     # Current parameter values from the UI sliders ({qname: value}); used as the
-    # gradient-descent start point when settings['start_from_current'] is set (#65).
+    # gradient-descent start point when settings['start_from'] == 'current' (#65).
     current_params: dict | None = None
 
 
@@ -817,6 +817,18 @@ def calibration_run(req: CalibrationRequest) -> dict:
             detail=f"python interpreter not found or not executable: {python_path}",
         )
 
+    # start_from == 'best_fit' continues from the previous completed calibration's
+    # best fit (#83); the backend supplies those values so the UI needn't carry them.
+    best_fit_params = None
+    if req.settings.get("start_from") == "best_fit":
+        best_fit_params = calibration.last_completed_best_params(req.model_id)
+        if not best_fit_params:
+            raise HTTPException(
+                status_code=422,
+                detail="cannot start from the previous best fit: no completed "
+                "calibration exists yet for this model",
+            )
+
     configured = (req.settings.get("config_outputs_dir") or "").strip()
     if configured:
         if not os.path.isabs(configured):
@@ -841,6 +853,7 @@ def calibration_run(req: CalibrationRequest) -> dict:
         "python": python_path,
         "settings": req.settings,
         "current_params": req.current_params,
+        "best_fit_params": best_fit_params,
     }
     try:
         job_id = calibration.start(config)

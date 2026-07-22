@@ -55,15 +55,18 @@ def _solver_info_from_config(config: dict, settings: dict) -> dict:
     return si
 
 
-def _apply_current_param_start(param_id, current_params: dict) -> None:
-    """Override the gradient-descent start point with the UI's current slider values.
+def _apply_start_point(param_id, values: dict, source_label: str) -> None:
+    """Override the gradient-descent start point with a ``{qname: value}`` map.
 
     CA seeds ``OpencorParamID.param_init`` (the sp_minimize x0) from the model's
-    built-in initial values; this replaces it with ``current_params`` ({qname: value})
-    so the descent starts from where the user is (issue #65). Parameter order follows
-    ``param_id_info``; a param absent from ``current_params`` keeps its model-default
-    init. ``param_init`` is a list with one entry per parameter (``[value]`` or a bare
-    value), matching ``get_init_param_vals`` — CA reads ``vals[0]`` for the x0.
+    built-in initial values; this replaces it with ``values`` so the descent starts
+    from a chosen point instead — the user's current slider values (issue #65) or the
+    previous completed calibration's best fit, so a stopped run can be continued
+    (issue #83). ``source_label`` names the chosen point for the log line. Parameter
+    order follows ``param_id_info``; a param absent from ``values`` keeps its
+    model-default init. ``param_init`` is a list with one entry per parameter
+    (``[value]`` or a bare value), matching ``get_init_param_vals`` — CA reads
+    ``vals[0]`` for the x0.
 
     Best-effort: a start-point tweak must never abort the run, so any failure is
     logged and the model-default start is kept.
@@ -77,18 +80,18 @@ def _apply_current_param_start(param_id, current_params: dict) -> None:
         current = list(pid.param_init) if pid.param_init is not None else [None] * len(names)
         applied = 0
         for i, name in enumerate(names):
-            val = current_params.get(name)
+            val = values.get(name)
             if val is not None:
                 current[i] = [float(val)]
                 applied += 1
         pid.param_init = current
         print(
-            f"Starting gradient descent from current parameter values "
-            f"({applied}/{len(names)} params overridden from the sliders)",
+            f"Starting gradient descent from {source_label} "
+            f"({applied}/{len(names)} params overridden)",
             flush=True,
         )
     except Exception as exc:  # noqa: BLE001 - never fail the run over a start-point tweak
-        print(f"warning: could not apply current-values start point: {exc}", flush=True)
+        print(f"warning: could not apply {source_label} start point: {exc}", flush=True)
 
 
 def run(config: dict) -> dict:
@@ -144,10 +147,18 @@ def run(config: dict) -> dict:
     )
 
     # Gradient descent (sp_minimize) starts from param_init, which CA seeds from the
-    # model's built-in initial values. When the user asks to start from the values
-    # they've dialled in on the sliders (issue #65), override that start point.
-    if settings.get("start_from_current") and config.get("current_params"):
-        _apply_current_param_start(param_id, config["current_params"])
+    # model's built-in initial values. The user can instead start from a chosen point
+    # (issues #65 / #83) via the ``start_from`` selector: ``current`` = the UI slider
+    # values, ``best_fit`` = the previous completed calibration's best fit (so a
+    # stopped run can be continued). ``model`` (default) keeps CA's model-default x0.
+    # The legacy ``start_from_current`` boolean maps to ``current``.
+    start_from = settings.get("start_from")
+    if not start_from:
+        start_from = "current" if settings.get("start_from_current") else "model"
+    if start_from == "current" and config.get("current_params"):
+        _apply_start_point(param_id, config["current_params"], "current parameter values")
+    elif start_from == "best_fit" and config.get("best_fit_params"):
+        _apply_start_point(param_id, config["best_fit_params"], "previous best fit")
 
     param_id.run()
 
