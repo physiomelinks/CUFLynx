@@ -352,7 +352,12 @@ async function onSave() {
             @input="onNum(row, 'std', $event.target.value)"
           />
           <select :value="row.operation" @focus="selectRow(row)" @change="row.operation = $event.target.value">
-            <option v-for="op in operations" :key="op" :value="op">{{ op || '(none)' }}</option>
+            <option
+              v-for="op in operations"
+              :key="op"
+              :value="op"
+              :class="{ 'non-diff-option': isNonDifferentiable(op) }"
+            >{{ op || '(none)' }}</option>
           </select>
           <select
             :value="row.experiment_idx"
@@ -543,6 +548,11 @@ async function onSave() {
    AD). An actual error (invalid) still wins the background. */
 .eo-list li.non-diff:not(.invalid) {
   background: rgba(237, 125, 49, 0.12);
+}
+/* Light-orange background on operation <option>s that aren't @differentiable, so
+   AD/FSA-blocking choices stand out in the dropdown (Chromium styles natively). */
+.non-diff-option {
+  background: rgba(237, 125, 49, 0.25);
 }
 .eo-nondiff-warn {
   display: flex;
