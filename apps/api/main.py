@@ -257,10 +257,14 @@ def _config_payload() -> dict:
         **opts,
         "ad_available": ad_available(engine.model_type, opts),
         # Gradient sources (FD / AD / FSA) available for the current model, for the
-        # calibration gradient-source menu — derived from CA's do_ad/FSA rules.
-        "gradient_sources": gradient_sources(
-            engine.model_type, engine.solver, bool(opts.get("all_differentiable")),
-        ),
+        # calibration gradient-source menu — introspected from CA's do_ad/FSA rules.
+        # The `requires_all_differentiable` gate (CasADi AD) is a *per-model* property
+        # (every op the loaded obs_data uses must be @differentiable), and this route
+        # is model-agnostic, so it can't apply that gate here — it passes the sources
+        # through with their flags and the client gates them against its in-use
+        # differentiability (App.vue `adAvailable`). Passing True keeps those sources
+        # in the list rather than dropping them on the coarse whole-registry flag.
+        "gradient_sources": gradient_sources(engine.model_type, engine.solver, True),
         # Myokit JIT-compiles models, so a missing C compiler breaks every
         # simulation. Surfaced here so the UI can warn up front rather than
         # letting the first run fail with an opaque 500 (matters most in the

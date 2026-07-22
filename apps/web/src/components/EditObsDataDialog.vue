@@ -43,6 +43,9 @@ const editableRows = ref([])
 const preservedItems = ref([])
 const predRows = ref([])
 const operations = ref(FALLBACK_OPERATIONS)
+// operation name -> @differentiable (from CA); empty when CA can't report it, in
+// which case no row is flagged (avoids false "not differentiable" warnings).
+const diffOps = ref({})
 const costTypes = ref(FALLBACK_COST_TYPES)
 // Per-cost-function flags (is_MLE / is_combiner / differentiable) from CA, used
 // only to annotate the cost_type options; empty when CA doesn't expose them.
@@ -70,6 +73,7 @@ watch(
     try {
       const opts = await getObsDataOptions()
       if (opts?.operations?.length) operations.value = opts.operations
+      if (opts?.differentiable_operations) diffOps.value = opts.differentiable_operations
       if (opts?.cost_types?.length) costTypes.value = opts.cost_types
       if (opts?.cost_func_metadata) costMeta.value = opts.cost_func_metadata
       if (opts?.plot_types?.length) plotTypes.value = opts.plot_types
@@ -154,6 +158,15 @@ function rowInvalid(row) {
     Number(row.std) <= 0 ||
     (row.operands ?? []).filter((o) => o).length < 1
   )
+}
+
+// True when this row's operation is a real op CA reports as NOT @differentiable,
+// so it blocks AD gradients. Only flags when CA supplied the map (else no map ->
+// no warning) and the op is non-empty and explicitly non-differentiable.
+function isNonDifferentiable(operation) {
+  const op = operation
+  if (!op || !Object.keys(diffOps.value).length) return false
+  return diffOps.value[op] !== true
 }
 
 const canSave = computed(
@@ -312,7 +325,11 @@ async function onSave() {
       <li
         v-for="(row, i) in editableRows"
         :key="i"
-        :class="{ invalid: rowInvalid(row), selected: row === selectedRow }"
+        :class="{
+          invalid: rowInvalid(row),
+          selected: row === selectedRow,
+          'non-diff': isNonDifferentiable(row.operation),
+        }"
         data-testid="eo-row"
       >
         <div class="eo-main" data-testid="eo-main" @click="selectRow(row)">
@@ -373,6 +390,17 @@ async function onSave() {
             />
           </span>
         </div>
+
+        <p
+          v-if="isNonDifferentiable(row.operation)"
+          class="eo-nondiff-warn"
+          data-testid="eo-nondiff-warn"
+        >
+          <i class="pi pi-exclamation-triangle" />
+          Operation “{{ row.operation }}” is not differentiable — automatic
+          differentiation (AD) gradients are unavailable; gradient-based
+          calibration/sensitivity falls back to finite differences.
+        </p>
 
         <div v-if="row._expanded" class="eo-detail">
           <label>operands
@@ -510,6 +538,22 @@ async function onSave() {
 }
 .eo-list li.invalid {
   background: rgba(232, 74, 95, 0.12);
+}
+/* A subtle orange tinge on rows whose operation isn't @differentiable (blocks
+   AD). An actual error (invalid) still wins the background. */
+.eo-list li.non-diff:not(.invalid) {
+  background: rgba(237, 125, 49, 0.12);
+}
+.eo-nondiff-warn {
+  display: flex;
+  align-items: baseline;
+  gap: 0.35rem;
+  margin: 0.1rem 0.3rem 0.2rem;
+  font-size: 0.78rem;
+  color: #ed7d31;
+}
+.eo-nondiff-warn .pi {
+  font-size: 0.72rem;
 }
 /* The currently selected data_item stands out with an accent bar + tint. */
 .eo-list li.selected {

@@ -76,7 +76,8 @@ def _introspect() -> dict:
 
     # numpy mode keeps this light (no casadi/myokit). The op dict includes the
     # user operations registered from funcs_user/operation_funcs_user.py.
-    operations = sorted(operation_funcs.get_operation_funcs_dict_for_mode("numpy"))
+    op_funcs = operation_funcs.get_operation_funcs_dict_for_mode("numpy")
+    operations = sorted(op_funcs)
     if "" not in operations:
         operations = [""] + operations  # allow "no operation"
     cost_types = sorted(cost_funcs_user.get_cost_funcs_dict_for_mode("numpy"))
@@ -89,9 +90,23 @@ def _introspect() -> dict:
         "operations": operations,
         "cost_types": cost_types,
         "cost_func_metadata": _introspect_cost_func_metadata(cost_funcs_user),
+        # op name -> @differentiable, so the editor can flag data_items whose
+        # operation blocks AD gradients. Empty on an older CA without the marker.
+        "differentiable_operations": _introspect_operation_differentiability(op_funcs),
         "data_types": data_types,
         "plot_types": plot_types,
     }
+
+
+def _introspect_operation_differentiability(op_funcs) -> dict:
+    """Map each CA operation name -> whether it's ``@differentiable`` (so AD can use
+    it). Best-effort: an older CA without ``is_circulatory_differentiable`` yields
+    ``{}``, leaving the editor unable to flag ops (no false warnings)."""
+    try:
+        from param_id.differentiable import is_circulatory_differentiable  # noqa: E402
+    except Exception:  # noqa: BLE001 - older CA without the marker
+        return {}
+    return {name: bool(is_circulatory_differentiable(fn)) for name, fn in op_funcs.items()}
 
 
 def _introspect_cost_func_metadata(cost_funcs_user) -> dict:
@@ -133,6 +148,7 @@ def get_obs_data_options(refresh: bool = False) -> dict:
             "operations": list(FALLBACK_OPERATIONS),
             "cost_types": list(FALLBACK_COST_TYPES),
             "cost_func_metadata": {},
+            "differentiable_operations": {},
             "data_types": list(FALLBACK_DATA_TYPES),
             "plot_types": list(FALLBACK_PLOT_TYPES),
         }

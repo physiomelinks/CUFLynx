@@ -95,9 +95,17 @@ watch(
 // Gradient sources (FD / AD / FSA) come from the backend, derived from the current
 // model (GET /api/config -> gradient_sources); never hardcoded, so FSA shows for
 // cellml_only + CVODE_myokit.
-const gradientOptions = computed(() =>
-  props.gradientSources?.length ? props.gradientSources : [{ value: 'FD', label: 'Finite difference' }],
-)
+//
+// Sources CA flags `requires_all_differentiable` (CasADi AD) only apply when every
+// operation the loaded obs_data uses is @differentiable. That's a per-model
+// property the model-agnostic /api/config can't evaluate, so it's gated here
+// against `adAvailable` (App.vue's in-use differentiability check).
+const gradientOptions = computed(() => {
+  const base = props.gradientSources?.length
+    ? props.gradientSources
+    : [{ value: 'FD', label: 'Finite difference' }]
+  return base.filter((o) => !o.requires_all_differentiable || props.adAvailable)
+})
 
 // If the current gradient source isn't offered for this model, fall back to FD;
 // the gradient method itself still runs (CA uses finite differences).
