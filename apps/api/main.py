@@ -882,15 +882,11 @@ SENSITIVITY_DEFAULTS = {
     "sample_type": "saltelli",
     "sample_types": ["saltelli", "sobol"],
     "num_samples": 256,
-    # Local (derivative-based) sensitivity options. Only the finite-difference
-    # gradient source is wired up today; AD and CVODES are advertised but
-    # disabled pending upstream support (CUFLynx #9, #22; CA issue #239).
+    # Local (derivative-based) sensitivity gradient source. The available list is
+    # NOT hardcoded here: sensitivity_defaults() sources it from CA's gradient_sources
+    # accessor for the current model (FD always; AD for casadi_python; FSA for
+    # cellml_only + CVODE_myokit), exactly like the calibration menu.
     "gradient_method": "FD",
-    "gradient_methods": [
-        {"value": "FD", "label": "Finite difference", "disabled": False},
-        {"value": "AD", "label": "Automatic differentiation (casadi)", "disabled": True},
-        {"value": "CVODES", "label": "Myokit CVODES sensitivities", "disabled": True},
-    ],
     "rel_step": 0.01,  # relative central-difference step about the nominal point
     # Where the nominal (linearisation) point comes from. "current" (default)
     # uses the model's current parameter values; "best_fit" reuses a completed
@@ -916,7 +912,22 @@ def sensitivity_defaults() -> dict:
     # `options` are CA's sensitivity_analysis descriptors (introspected from
     # ANALYSIS_OPTIONS, never hardcoded) so the Sobol settings form tracks CA.
     sa = get_analysis_options().get("sensitivity_analysis", {})
-    return {**SENSITIVITY_DEFAULTS, "options": sa.get("options", [])}
+    # Local-SA gradient sources for the current model, from CA's gradient_sources
+    # accessor (FD / AD / FSA) — same source of truth as the calibration menu, so
+    # FSA surfaces for cellml_only + CVODE_myokit and AD for casadi_python. The
+    # requires_all_differentiable (CasADi AD) gate is applied client-side against
+    # the in-use differentiability (SensitivityPanel adAvailable), so pass True here.
+    grad = gradient_sources(engine.model_type, engine.solver, True)
+    gradient_methods = [
+        {"value": g["value"], "label": g["label"],
+         "requires_all_differentiable": bool(g.get("requires_all_differentiable"))}
+        for g in grad
+    ]
+    return {
+        **SENSITIVITY_DEFAULTS,
+        "gradient_methods": gradient_methods,
+        "options": sa.get("options", []),
+    }
 
 
 @app.post("/api/sensitivity/run")

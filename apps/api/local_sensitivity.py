@@ -5,16 +5,17 @@ sampling the whole parameter box, this perturbs each parameter about a single
 *nominal* point and measures how each observable responds — a local sensitivity
 analysis (CUFLynx issue #22).
 
-Only the **finite-difference (FD)** gradient source is implemented here. FD works
-for ``cellml_only`` (Myokit) models because it only needs the forward simulation,
-which is exactly what the sobol engine already wires up. The two other gradient
-sources the UI advertises depend on upstream circulatory_autogen support and are
-not available yet:
+Three gradient sources are available, per the loaded model:
 
-* **AD** (CasADi automatic differentiation) — only for ``model_type:
-  casadi_python`` (CUFLynx issue #9).
-* **CVODES** (Myokit forward sensitivities) — not exposed by the Myokit solver
-  wrapper yet (CA issue physiomelinks/circulatory_autogen#239).
+* **FD** (finite difference) — any backend; only needs the forward simulation the
+  sobol engine already wires up. Implemented here directly.
+* **AD** (CasADi automatic differentiation) — ``model_type: casadi_python`` with
+  all-``@differentiable`` ops. Implemented here directly.
+* **FSA** (Myokit CVODES forward sensitivities) — ``cellml_only`` + ``CVODE_myokit``.
+  Delegated to circulatory_autogen's backend-agnostic
+  ``OpencorParamID.get_observable_sensitivities`` (CA #283/#284), driven through a
+  ``do_ad`` ``CVS0DParamID`` engine the runner builds; we only normalise + relabel
+  its output to match the FD/AD payload.
 
 Rather than re-derive obs_data / params_for_id parsing, observable extraction and
 the simulation helper, we reuse the already-constructed
@@ -370,8 +371,64 @@ def _ad_local_sensitivity(sm, param_names, nominal, mins, maxs, output_names):
     return local
 
 
+def _ca_feature_values(pid, nominal) -> dict:
+    """Nominal feature value ``Y`` per observable label, for the log-log denominator.
+
+    Uses the param-id engine's own const-observable evaluation so the keys line up
+    exactly with ``get_observable_sensitivities``' labels (``pid._observable_label``).
+    """
+    _, operands_list, _ = pid.get_cost_obs_and_pred_from_params(
+        np.asarray(nominal, dtype=float), reset=True, only_one_exp=0
+    )
+    if not operands_list or operands_list[0] is None:
+        raise RuntimeError("Local sensitivity nominal simulation failed to converge.")
+    const = np.asarray(pid.get_obs_output_dict(operands_list[0])["const"], dtype=float)
+    c2o = pid.obs_info["const_idx_to_obs_idx"]
+    return {pid._observable_label(o): float(const[k]) for k, o in enumerate(c2o)}
+
+
+def _ca_analytic_local_sensitivity(pid, param_names, nominal, mins, maxs):
+    """Local sensitivities via circulatory_autogen's backend-agnostic accessor
+    ``OpencorParamID.get_observable_sensitivities`` — the Myokit CVODES forward
+    sensitivities (FSA) for ``cellml_only`` + ``CVODE_myokit``.
+
+    CA returns the raw ``d(feature)/d(param)`` per const (scalar) observable; we
+    normalise to the same dimensionless ``d ln(Y)/d ln(P)`` the FD/AD paths report
+    (via :func:`_relative_coeff`) and label the outputs with
+    :func:`format_output_name`, so the payload and heatmap are identical across
+    gradient sources. Returns ``(local, output_names)``.
+    """
+    nominal = np.asarray(nominal, dtype=float)
+    sens = pid.get_observable_sensitivities(nominal)  # {obs_label: {qname: dY/dP}}
+    y0 = _ca_feature_values(pid, nominal)  # {obs_label: Y}
+    obs = pid.obs_info
+
+    local: dict[str, dict[str, float | None]] = {}
+    output_names: list[str] = []
+    for _k, obs_idx in enumerate(obs["const_idx_to_obs_idx"]):
+        label = pid._observable_label(obs_idx)
+        oname = format_output_name(
+            obs["names_for_plotting"][obs_idx],
+            obs["experiment_idxs"][obs_idx],
+            obs["subexperiment_idxs"][obs_idx],
+            obs["operations"][obs_idx],
+        )
+        output_names.append(oname)
+        denom = y0.get(label, float("nan"))
+        deriv_map = sens.get(label, {})
+        row: dict[str, float | None] = {}
+        for j, pname in enumerate(param_names):
+            rng = maxs[j] - mins[j]
+            row[pname] = _relative_coeff(
+                float(deriv_map.get(pname, np.nan)), nominal[j], denom, rng
+            )
+        local[oname] = row
+    return local, output_names
+
+
 def compute_local_sensitivity(
-    sa, settings: dict, best_vals=None, best_params=None, model_type: str = "cellml_only"
+    sa, settings: dict, best_vals=None, best_params=None,
+    model_type: str = "cellml_only", engine=None,
 ) -> dict:
     """Local sensitivities ``d ln(Y)/d ln(P)`` about a nominal parameter point.
 
@@ -381,21 +438,31 @@ def compute_local_sensitivity(
     ``best_params`` is a reused best-fit dict keyed by qname. See
     :func:`_resolve_nominal` for how the nominal point is chosen.
 
-    The gradient source is ``settings['gradient_method']``: ``FD`` (finite
-    difference, any backend) or ``AD`` (exact CasADi jacobian, ``casadi_python``
-    only). ``CVODES`` is still gated upstream (CA issue #239).
+    The gradient source is ``settings['gradient_method']``:
+      * ``FD``  — central finite differences (any backend); CUFLynx's own loop.
+      * ``AD``  — exact CasADi jacobian (``casadi_python`` only); CUFLynx's own path.
+      * ``FSA`` — Myokit CVODES forward sensitivities (``cellml_only`` + ``CVODE_myokit``),
+        delegated to circulatory_autogen's ``get_observable_sensitivities`` via the
+        ``engine`` (a ``do_ad`` ``CVS0DParamID`` the runner builds). ``CVODES`` is
+        accepted as a legacy alias for ``FSA``.
     """
     gradient_method = str(settings.get("gradient_method", "FD")).upper()
-    if gradient_method not in ("FD", "AD"):
+    if gradient_method == "CVODES":
+        gradient_method = "FSA"  # legacy alias -> the Myokit forward-sensitivity path
+    if gradient_method not in ("FD", "AD", "FSA"):
         raise NotImplementedError(
-            f"gradient_method '{gradient_method}' is not available yet; use 'FD' "
-            "(finite difference) or 'AD' (casadi_python). CVODES needs Myokit "
-            "forward sensitivities (CA issue #239)."
+            f"gradient_method '{gradient_method}' is not available; use 'FD' (finite "
+            "difference), 'AD' (casadi_python), or 'FSA' (cellml_only + CVODE_myokit)."
         )
     if gradient_method == "AD" and model_type != "casadi_python":
         raise NotImplementedError(
             "AD gradients require generated_model_format 'casadi_python' (set it in "
             f"the Settings popup); current format is {model_type!r}."
+        )
+    if gradient_method == "FSA" and model_type != "cellml_only":
+        raise NotImplementedError(
+            "FSA (Myokit CVODES forward sensitivities) requires generated_model_format "
+            f"'cellml_only' with solver 'CVODE_myokit'; current format is {model_type!r}."
         )
 
     sm = sa.SA_manager
@@ -411,7 +478,10 @@ def compute_local_sensitivity(
     h = float(settings.get("rel_step", 0.01))
     output_names = _output_names(sm)
 
-    source = "AD jacobian" if gradient_method == "AD" else f"finite difference, rel_step={h}"
+    source = {
+        "AD": "AD jacobian",
+        "FSA": "Myokit CVODES forward sensitivities",
+    }.get(gradient_method, f"finite difference, rel_step={h}")
     print(
         f"Local sensitivity ({source}, nominal={nominal_source}): "
         f"{len(param_names)} params x {len(output_names)} outputs",
@@ -420,6 +490,15 @@ def compute_local_sensitivity(
 
     if gradient_method == "AD":
         local = _ad_local_sensitivity(sm, param_names, nominal, mins, maxs, output_names)
+    elif gradient_method == "FSA":
+        if engine is None:
+            raise RuntimeError(
+                "FSA local sensitivity needs a param-id engine; the runner must build "
+                "one (internal error)."
+            )
+        local, output_names = _ca_analytic_local_sensitivity(
+            engine.param_id, param_names, nominal, mins, maxs
+        )
     else:
         local = _fd_local_sensitivity(sm, param_names, nominal, mins, maxs, output_names, h)
 

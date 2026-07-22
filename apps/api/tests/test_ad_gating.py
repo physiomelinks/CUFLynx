@@ -88,6 +88,51 @@ def test_ad_local_sensitivity_runs_on_casadi_python(tmp_path, requires_casadi):
     assert any(c is not None and math.isfinite(c) for c in coeffs)
 
 
+def _fsa_local_sa_config(tmp_path):
+    """A sensitivity_runner config for a cellml_only + CVODE_myokit FSA local-SA
+    run on 3compartment (a single-subexperiment obs_data, which FSA requires)."""
+    return {
+        "model_path": model_codegen.resolve_model_path(str(C3_MODEL_PATH), "cellml_only"),
+        "model_type": "cellml_only",
+        "solver": "CVODE_myokit",
+        "solver_info": {"solver": "CVODE_myokit", "method": "CVODE"},
+        "obs_path": str(C3_OBS_DATA_PATH),
+        "params_path": str(C3_PARAMS_CSV_PATH),
+        "output_dir": str(tmp_path / "sa_out"),
+        "file_prefix": "3compartment",
+        "settings": {
+            "method": "local",
+            "gradient_method": "FSA",
+            "nominal": "current",
+            "dt": 0.01,
+        },
+    }
+
+
+@pytest.mark.integration
+def test_fsa_local_sensitivity_runs_on_cellml_only(tmp_path, requires_simulation):
+    """FSA (Myokit CVODES forward sensitivities) local SA runs on a cellml_only +
+    CVODE_myokit model, delegating to circulatory_autogen's backend-agnostic
+    get_observable_sensitivities. Regression: FSA used to be a hard-disabled stub."""
+    payload = sensitivity_runner.run(_fsa_local_sa_config(tmp_path))
+    assert payload["gradient_method"] == "FSA"
+    local = payload["indices"]["local"]
+    assert payload["param_names"] and payload["output_names"]
+    coeffs = [v for row in local.values() for v in row.values()]
+    # FSA produced real analytic sensitivities (at least one finite coefficient).
+    assert any(c is not None and math.isfinite(c) for c in coeffs)
+
+
+@pytest.mark.integration
+def test_fsa_local_sensitivity_rejected_for_casadi_python(tmp_path, requires_casadi):
+    """FSA is Myokit-only; requesting it for a casadi_python model must fail with a
+    clear message pointing at cellml_only + CVODE_myokit, not silently mislabel."""
+    config = _local_sa_config(tmp_path, "FSA")
+    with pytest.raises(NotImplementedError) as ei:
+        sensitivity_runner.run(config)
+    assert "cellml_only" in str(ei.value) and "CVODE_myokit" in str(ei.value)
+
+
 @pytest.mark.integration
 def test_ad_with_non_differentiable_obs_op_fails_informatively(tmp_path, requires_casadi):
     """Using AD with an obs operation that isn't @differentiable must fail with a
