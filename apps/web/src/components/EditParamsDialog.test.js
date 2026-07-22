@@ -49,6 +49,14 @@ beforeEach(() => {
 })
 
 describe('EditParamsDialog', () => {
+  it('shows a hover hint about choosing physiologically realistic ranges', () => {
+    const wrapper = mountDialog()
+    const hint = wrapper.find('[data-testid="ep-ranges-hint"]')
+    expect(hint.exists()).toBe(true)
+    expect(hint.attributes('title')).toContain('physiologically realistic')
+    expect(hint.attributes('title')).toContain('sensitivity analysis lacks meaning')
+  })
+
   it('pre-includes loaded CSV params and lists model params unchecked', () => {
     const wrapper = mountDialog()
     const rows = wrapper.findAll('[data-testid="ep-row"]')
