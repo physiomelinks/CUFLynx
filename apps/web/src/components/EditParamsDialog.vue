@@ -98,6 +98,14 @@ async function onSave() {
     <p class="ep-hint">
       Tick the parameters to include and set their ranges. Saving downloads a new
       <code>…_yymmdd.csv</code> (the original is kept) and applies it.
+      <i
+        class="pi pi-info-circle ep-hint-info"
+        data-testid="ep-ranges-hint"
+        title="You should choose your parameter ranges to be physiologically realistic, otherwise the sensitivity analysis lacks meaning."
+        tabindex="0"
+        role="img"
+        aria-label="You should choose your parameter ranges to be physiologically realistic, otherwise the sensitivity analysis lacks meaning."
+      />
     </p>
 
     <Message v-if="error" severity="error" data-testid="ep-error" :closable="false">
@@ -168,6 +176,16 @@ async function onSave() {
   font-size: 0.8rem;
   opacity: 0.75;
   margin: 0 0 0.5rem;
+}
+.ep-hint-info {
+  margin-left: 0.35rem;
+  cursor: help;
+  color: #5b9bd5;
+  opacity: 1;
+}
+.ep-hint-info:hover,
+.ep-hint-info:focus {
+  color: #7db3e0;
 }
 .ep-head,
 .ep-list li {
