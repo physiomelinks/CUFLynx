@@ -6,7 +6,9 @@ import Button from 'primevue/button'
 import FileBrowserDialog from './FileBrowserDialog.vue'
 import EditParamsDialog from './EditParamsDialog.vue'
 import EditObsDataDialog from './EditObsDataDialog.vue'
-import { uploadCellML, uploadObsData, uploadParamsForId } from '../lib/api'
+import StartDialog from './StartDialog.vue'
+import { uploadCellML, uploadObsData, uploadParamsForId, fetchExampleModel } from '../lib/api'
+import { PHLYNX_URL } from '../lib/examples'
 
 const props = defineProps({
   modelId: { type: String, default: null },
@@ -41,6 +43,33 @@ const notice = ref('')
 const outputsBrowserOpen = ref(false)
 const editParamsOpen = ref(false)
 const editObsOpen = ref(false)
+const startOpen = ref(false)
+
+// The box beside the CellML dropzone: "Start" (no model yet) opens the Start
+// dialog to pick an example or link to PhLynx; "Edit" (a model is loaded) opens
+// the current model in PhLynx to edit it.
+function onStartEdit() {
+  if (props.modelId) {
+    // A link that opens PhLynx is enough for now; deeper integration is future
+    // work (issue #91).
+    window.open(PHLYNX_URL, '_blank', 'noopener')
+  } else {
+    startOpen.value = true
+  }
+}
+
+// The Start dialog chose an example: fetch it and feed it through the normal
+// CellML upload flow, so a loaded example is indistinguishable from a drop.
+async function onSelectExample(example) {
+  error.value = ''
+  try {
+    const file = await fetchExampleModel(example.name, example.filename)
+    const data = await uploadCellML([file])
+    emit('model-loaded', { ...data, filename: example.filename })
+  } catch (e) {
+    error.value = e?.response?.data?.detail || String(e)
+  }
+}
 
 // The Edit dialog produces a new params set the same shape as a CSV upload, so
 // reuse the existing params-loaded flow to re-seed sliders and make it active.
@@ -207,16 +236,31 @@ async function onParamsDrop(event) {
   <section class="file-import">
     <h2>Imports</h2>
 
-    <label
-      class="dropzone"
-      data-testid="cellml-drop"
-      @dragover.prevent
-      @drop="onCellmlDrop"
-    >
-      <i class="pi pi-file" /> Drop <strong>CellML</strong> (.cellml)
-      <small>one file, or a non-flattened model with its sister files</small>
-      <input type="file" accept=".cellml,.xml" multiple @change="onCellmlDrop" />
-    </label>
+    <div class="params-row">
+      <label
+        class="dropzone"
+        data-testid="cellml-drop"
+        @dragover.prevent
+        @drop="onCellmlDrop"
+      >
+        <i class="pi pi-file" /> Drop <strong>CellML</strong> (.cellml)
+        <small>one file, or a non-flattened model with its sister files</small>
+        <input type="file" accept=".cellml,.xml" multiple @change="onCellmlDrop" />
+      </label>
+      <Button
+        :label="modelId ? 'Edit' : 'Start'"
+        :icon="modelId ? 'pi pi-pencil' : 'pi pi-play'"
+        size="small"
+        class="params-edit-btn"
+        data-testid="start-edit"
+        :title="
+          modelId
+            ? 'Edit the current model in PhLynx'
+            : 'Start from an example model or build one in PhLynx'
+        "
+        @click="onStartEdit"
+      />
+    </div>
 
     <div class="params-row">
       <label
@@ -322,6 +366,11 @@ async function onParamsDrop(event) {
         @click="emit('export-plotting')"
       />
     </div>
+
+    <StartDialog
+      v-model:visible="startOpen"
+      @select-example="onSelectExample"
+    />
 
     <FileBrowserDialog
       v-model:visible="outputsBrowserOpen"

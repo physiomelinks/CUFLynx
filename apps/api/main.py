@@ -28,6 +28,7 @@ import yaml
 
 from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -46,7 +47,7 @@ from model_codegen import resolve_model_path, reset_cache as reset_codegen
 from obs_data import ObsData, ObsDataError, parse_obs_data
 from obs_options import get_obs_data_options, reset_cache as reset_obs_options
 from params_for_id import ParamsForIdError, parse_params_for_id
-from runtime_paths import default_python, frontend_dist, is_frozen
+from runtime_paths import default_python, frontend_dist, is_frozen, resources_dir
 import settings_store
 from solver_options import (
     ad_available,
@@ -536,6 +537,31 @@ def fs_mkdir(req: MkdirRequest) -> dict:
     except OSError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"path": str(target)}
+
+
+# Example CellML models offered by the "Start" dialog. Data-driven so more
+# examples (e.g. PMR models) slot in later without touching the route. Each
+# value is a filename under the bundled ``resources/`` dir. The frontend fetches
+# one of these and feeds it through the normal upload flow.
+EXAMPLE_MODELS: dict[str, str] = {
+    "3compartment": "3compartment_flat.cellml",
+}
+
+
+@app.get("/api/examples/{name}")
+def get_example_model(name: str) -> FileResponse:
+    """Serve a bundled example CellML model by its logical name.
+
+    The Start dialog loads the returned file through the normal upload flow, so
+    no separate ingest path is needed.
+    """
+    filename = EXAMPLE_MODELS.get(name)
+    if filename is None:
+        raise HTTPException(status_code=404, detail=f"unknown example model: {name}")
+    path = resources_dir() / filename
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail=f"example model file missing: {filename}")
+    return FileResponse(path, media_type="application/xml", filename=filename)
 
 
 @app.post("/api/models/upload")
