@@ -40,6 +40,8 @@ export function mergedRows(currentParams = [], modelVariables = {}) {
       name_for_plotting: p.name_for_plotting ?? p.qname,
       param_type: p.param_type ?? null,
       initial_value: p.initial_value ?? initials[p.qname] ?? null,
+      // free-text annotation/note about this parameter's range.
+      comment: p.comment ?? '',
     })
   }
 
@@ -55,6 +57,7 @@ export function mergedRows(currentParams = [], modelVariables = {}) {
       name_for_plotting: qname,
       param_type: null,
       initial_value: iv,
+      comment: '',
     })
   }
 
@@ -83,17 +86,21 @@ function numField(value) {
 
 /**
  * Build params_for_id CSV text from the rows to write (one row per qname). The
- * `param_type` column is only emitted when at least one row carries one. Column
- * order matches the parser's expectations (vessel_name, param_name, min, max,
- * name_for_plotting[, param_type]).
+ * `param_type` and `comment` columns are only emitted when at least one row
+ * carries one. Column order matches the parser's expectations (vessel_name,
+ * param_name, min, max, name_for_plotting[, param_type][, comment]).
+ * circulatory_autogen reads columns by name and ignores unknown ones (like the
+ * `comment` annotation), so the CSV stays valid for CA.
  *
  * @param {Array<object>} rows
  * @returns {string}
  */
 export function buildParamsCsv(rows) {
   const withType = rows.some((r) => r.param_type != null && r.param_type !== '')
+  const withComment = rows.some((r) => r.comment != null && r.comment !== '')
   const header = ['vessel_name', 'param_name', 'min', 'max', 'name_for_plotting']
   if (withType) header.push('param_type')
+  if (withComment) header.push('comment')
 
   const lines = [header.join(',')]
   for (const r of rows) {
@@ -106,6 +113,7 @@ export function buildParamsCsv(rows) {
       csvField(r.name_for_plotting ?? r.qname),
     ]
     if (withType) cells.push(csvField(r.param_type))
+    if (withComment) cells.push(csvField(r.comment))
     lines.push(cells.join(','))
   }
   return lines.join('\n') + '\n'

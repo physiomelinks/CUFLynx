@@ -23,6 +23,8 @@ const rows = ref([])
 const saving = ref(false)
 const error = ref('')
 const search = ref('')
+// qnames whose free-text annotation row is expanded (issue #25).
+const expanded = ref(new Set())
 
 // Rebuild the merged row set each time the dialog opens, so it reflects the
 // latest loaded CSV + model params without stale edits leaking between opens.
@@ -31,6 +33,8 @@ watch(
   (v) => {
     if (v) {
       rows.value = mergedRows(props.currentParams, props.modelVariables)
+      // Auto-expand rows that already carry an annotation so it's visible.
+      expanded.value = new Set(rows.value.filter((r) => r.comment).map((r) => r.qname))
       error.value = ''
       search.value = ''
     }
@@ -50,6 +54,12 @@ const visibleRows = computed(() => {
       (r.name_for_plotting || '').toLowerCase().includes(q),
   )
 })
+
+function toggleComment(qname) {
+  const next = new Set(expanded.value)
+  next.has(qname) ? next.delete(qname) : next.add(qname)
+  expanded.value = next
+}
 
 function onNum(row, field, value) {
   row[field] = value === '' ? null : Number(value)
@@ -141,6 +151,7 @@ async function onSave() {
       <span class="ep-num">min</span>
       <span class="ep-num">max</span>
       <span class="ep-plot">Plot label</span>
+      <span class="ep-note-col">Note</span>
     </div>
 
     <ul class="ep-list">
@@ -177,6 +188,27 @@ async function onSave() {
           :disabled="!row.included"
           @input="row.name_for_plotting = $event.target.value"
         />
+        <button
+          type="button"
+          class="ep-note-btn"
+          :class="{ 'has-note': !!row.comment }"
+          data-testid="ep-note-toggle"
+          :aria-expanded="expanded.has(row.qname)"
+          :title="row.comment ? 'Edit annotation' : 'Add annotation'"
+          @click="toggleComment(row.qname)"
+        >
+          <i class="pi pi-comment" />
+        </button>
+        <div v-if="expanded.has(row.qname)" class="ep-note">
+          <textarea
+            class="ep-note-input"
+            rows="2"
+            placeholder="Annotation / note (e.g. source of this range)"
+            data-testid="ep-note-input"
+            :value="row.comment"
+            @input="row.comment = $event.target.value"
+          />
+        </div>
       </li>
     </ul>
 
@@ -220,7 +252,7 @@ async function onSave() {
 .ep-head,
 .ep-list li {
   display: grid;
-  grid-template-columns: 2.5rem 1fr 6rem 6rem 7rem;
+  grid-template-columns: 2.5rem 1fr 6rem 6rem 7rem 2rem;
   align-items: center;
   gap: 0.5rem;
 }
@@ -262,6 +294,38 @@ input.ep-plot {
 }
 input:disabled {
   opacity: 0.4;
+}
+.ep-note-col {
+  text-align: center;
+}
+.ep-note-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: inherit;
+  opacity: 0.55;
+  padding: 0.2rem;
+  font-size: 0.85rem;
+  justify-self: center;
+}
+.ep-note-btn:hover,
+.ep-note-btn[aria-expanded='true'] {
+  opacity: 1;
+}
+.ep-note-btn.has-note {
+  color: #5b9bd5;
+  opacity: 1;
+}
+.ep-note {
+  grid-column: 1 / -1;
+  padding: 0 0.2rem 0.2rem;
+}
+.ep-note-input {
+  width: 100%;
+  font-size: 0.8rem;
+  font-family: inherit;
+  resize: vertical;
+  box-sizing: border-box;
 }
 .ep-count {
   margin-right: auto;

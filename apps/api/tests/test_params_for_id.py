@@ -75,6 +75,27 @@ def test_edit_dialog_csv_format_round_trips(client):
     assert p["param_type"] == "global"
 
 
+def test_comment_annotation_round_trips(client):
+    # Free-text annotation column (issue #25): parsed back into each entry, and
+    # blank cells stay None rather than becoming the string "nan".
+    csv = (
+        "vessel_name,param_name,min,max,name_for_plotting,comment\n"
+        "Lotka_Volterra_module,alpha,0.1,7,\\alpha,\"range from Dash 2016, tentative\"\n"
+        "Lotka_Volterra_module,beta,0.01,2,\\beta,\n"
+    )
+    resp = _post_csv_text(client, csv)
+    assert resp.status_code == 200, resp.text
+    by_qname = {p["qname"]: p for p in resp.json()["params"]}
+    assert by_qname["Lotka_Volterra_module/alpha"]["comment"] == "range from Dash 2016, tentative"
+    assert by_qname["Lotka_Volterra_module/beta"]["comment"] is None
+
+
+def test_comment_absent_when_column_missing(client):
+    resp = _post_csv_file(client, LV_PARAMS_CSV_PATH)
+    assert resp.status_code == 200, resp.text
+    assert all(p["comment"] is None for p in resp.json()["params"])
+
+
 def test_initial_value_from_model_default(client):
     model_id = upload_model(client, LV_MODEL_PATH)["model_id"]
     resp = _post_csv_file(client, LV_PARAMS_CSV_PATH, model_id=model_id)
