@@ -32,6 +32,8 @@ Path(cfg["output_dir"], "results.json").write_text(json.dumps({
     "indices": {"local": {"out^{1,1}": {"p/a": 0.5, "p/b": -0.2}}},
     "param_names": ["p/a", "p/b"],
     "output_names": ["out^{1,1}"],
+    "nominal": [1.5, 2.5e-8],
+    "nominal_source": "current parameter values (from sliders)",
 }))
 print("__SENSITIVITY_DONE__", flush=True)
 """
@@ -99,6 +101,9 @@ def test_sensitivity_run_launches_and_completes(client, tmp_path):
     assert resp.status_code == 200, resp.text
     status, lines = _wait(client, resp.json()["job_id"])
     assert status["state"] == "done", "\n".join(lines)
+    # The local-SA nominal point is surfaced so the Analysis panel can show it.
+    assert status["nominal"] == [1.5, 2.5e-8]
+    assert "sliders" in status["nominal_source"]
 
 
 def test_sensitivity_status_404_for_unknown_job(client):

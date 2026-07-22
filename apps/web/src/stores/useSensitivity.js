@@ -41,6 +41,10 @@ export function useSensitivity(options = {}) {
   const indices = computed(() => selected.value?.indices ?? null)
   const paramNames = computed(() => selected.value?.paramNames ?? [])
   const outputNames = computed(() => selected.value?.outputNames ?? [])
+  // Local SA only: the nominal (linearisation) point the run was taken about, and
+  // a short description of where it came from (current / best fit / bounds).
+  const nominal = computed(() => selected.value?.nominal ?? null)
+  const nominalSource = computed(() => selected.value?.nominalSource ?? null)
 
   // Human-readable label summarising what produced a run, so saved runs are
   // distinguishable in the comparison selector.
@@ -99,6 +103,8 @@ export function useSensitivity(options = {}) {
         indices: s.indices,
         paramNames: s.param_names ?? [],
         outputNames: s.output_names ?? [],
+        nominal: s.nominal ?? null,
+        nominalSource: s.nominal_source ?? null,
       },
     ]
     selectedId.value = id
@@ -161,6 +167,8 @@ export function useSensitivity(options = {}) {
     indices,
     paramNames,
     outputNames,
+    nominal,
+    nominalSource,
     error,
     running,
     results,

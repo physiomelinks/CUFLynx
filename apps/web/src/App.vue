@@ -1062,6 +1062,8 @@ watch(
             :param-names="sa.paramNames.value"
             :output-names="sa.outputNames.value"
             :param-labels="paramLabels"
+            :nominal="sa.nominal.value"
+            :nominal-source="sa.nominalSource.value"
             :saved-results="sa.results.value"
             :selected-result-id="sa.selectedId.value"
             :percent-error="calib.percentError.value"

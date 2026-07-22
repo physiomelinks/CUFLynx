@@ -38,6 +38,10 @@ class SensitivityJob:
         self.indices: dict | None = None
         self.param_names: list[str] = []
         self.output_names: list[str] = []
+        # Local SA only: the nominal (linearisation) point + where it came from,
+        # surfaced so the Analysis panel can show what values it was taken about.
+        self.nominal: list | None = None
+        self.nominal_source: str | None = None
         self.error: str | None = None
         self.proc: subprocess.Popen | None = None
         self.lock = threading.Lock()
@@ -134,6 +138,8 @@ class SensitivityManager:
                     job.indices = data.get("indices", {})
                     job.param_names = data.get("param_names", [])
                     job.output_names = data.get("output_names", [])
+                    job.nominal = data.get("nominal")
+                    job.nominal_source = data.get("nominal_source")
                     job.state = "done"
                 except Exception as exc:  # noqa: BLE001
                     job.state = "error"
@@ -156,6 +162,8 @@ class SensitivityManager:
                 "indices": job.indices,
                 "param_names": job.param_names,
                 "output_names": job.output_names,
+                "nominal": job.nominal,
+                "nominal_source": job.nominal_source,
                 "error": job.error,
             }
 

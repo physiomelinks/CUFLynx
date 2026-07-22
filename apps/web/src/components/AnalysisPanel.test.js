@@ -98,3 +98,40 @@ describe('AnalysisPanel sensitivity comparison', () => {
     expect(cell.text()).toBe('0.50')
   })
 })
+
+describe('AnalysisPanel nominal (local SA)', () => {
+  it('shows the nominal parameter values between Runs and Index for a local run', () => {
+    const wrapper = mount(AnalysisPanel, {
+      props: {
+        ...SENS,
+        nominal: [1.5, 2.5e-8],
+        nominalSource: 'current parameter values (from sliders)',
+        paramLabels: { 'm/a': 'a', 'm/b': 'b' },
+      },
+    })
+    const row = wrapper.find('[data-testid="nominal-row"]')
+    expect(row.exists()).toBe(true)
+    const chips = row.findAll('.nominal-chip')
+    expect(chips).toHaveLength(2)
+    // Values formatted (plain + scientific), aligned with paramNames.
+    expect(chips[0].find('.nominal-val').text()).toBe('1.5')
+    expect(chips[1].find('.nominal-val').text()).toBe('2.5e-8')
+    // The source of the nominal point is shown.
+    expect(row.text()).toContain('from current parameter values')
+  })
+
+  it('hides the nominal row for a Sobol (global) run even if nominal is passed', () => {
+    const sobol = {
+      indices: { S1: { y: { 'm/a': 0.3 } }, ST: { y: { 'm/a': 0.5 } } },
+      paramNames: ['m/a'],
+      outputNames: ['y'],
+    }
+    const wrapper = mount(AnalysisPanel, { props: { ...sobol, nominal: [1.0] } })
+    expect(wrapper.find('[data-testid="nominal-row"]').exists()).toBe(false)
+  })
+
+  it('hides the nominal row for a local run when no nominal is provided', () => {
+    const wrapper = mount(AnalysisPanel, { props: { ...SENS } })
+    expect(wrapper.find('[data-testid="nominal-row"]').exists()).toBe(false)
+  })
+})
