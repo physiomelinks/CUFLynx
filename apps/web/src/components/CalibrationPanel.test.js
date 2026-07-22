@@ -231,6 +231,45 @@ describe('CalibrationPanel', () => {
     )
   })
 
+  it('gates a requires_all_differentiable source (CasADi AD) by adAvailable', async () => {
+    // The backend can't evaluate the per-model differentiability gate, so it sends
+    // CasADi AD flagged requires_all_differentiable; the panel drops it unless the
+    // loaded model qualifies (adAvailable).
+    const gradientSources = [
+      { value: 'FD', label: 'Finite difference', requires_all_differentiable: false },
+      { value: 'AD', label: 'Automatic differentiation (CasADi)', requires_all_differentiable: true },
+    ]
+    const wrapper = mount(CalibrationPanel, {
+      props: {
+        defaults: { methods: METHODS_WITH_OPTIONS, param_id_method: 'multi_start_sp_minimize' },
+        gradientSources,
+        adAvailable: false,
+      },
+      global: { stubs: selectStubs },
+    })
+    // Not differentiable in use -> AD hidden.
+    expect(wrapper.find('[data-testid="calib-gradient-method"]').text()).not.toContain('CasADi')
+    // Model qualifies -> AD offered.
+    await wrapper.setProps({ adAvailable: true })
+    expect(wrapper.find('[data-testid="calib-gradient-method"]').text()).toContain('CasADi')
+  })
+
+  it('keeps sources without the differentiability flag regardless of adAvailable', () => {
+    // FSA / AADC AD (requires_all_differentiable false) are never gated by adAvailable.
+    const wrapper = mount(CalibrationPanel, {
+      props: {
+        defaults: { methods: METHODS_WITH_OPTIONS, param_id_method: 'multi_start_sp_minimize' },
+        gradientSources: [
+          { value: 'FD', label: 'Finite difference', requires_all_differentiable: false },
+          { value: 'FSA', label: 'Forward sensitivity (Myokit CVODES)', requires_all_differentiable: false },
+        ],
+        adAvailable: false,
+      },
+      global: { stubs: selectStubs },
+    })
+    expect(wrapper.find('[data-testid="calib-gradient-method"]').text()).toContain('Forward sensitivity')
+  })
+
   it('falls back the gradient source to FD when it is no longer offered', async () => {
     const wrapper = mount(CalibrationPanel, {
       props: {

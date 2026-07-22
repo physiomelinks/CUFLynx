@@ -95,6 +95,29 @@ def test_set_unknown_format_422(client):
     assert resp.status_code == 422
 
 
+def test_config_passes_casadi_ad_source_through_for_client_side_gating(client, monkeypatch):
+    """/api/config is model-agnostic, so it can't evaluate the per-model
+    requires_all_differentiable gate (which ops the loaded obs_data uses). It must
+    therefore pass the CasADi AD source through *with its flag* even when the
+    whole-registry all_differentiable is False — the client gates it against its
+    in-use differentiability. Regression: gating on the coarse whole-registry flag
+    here hid AD for every casadi_python model."""
+    monkeypatch.setattr(
+        solver_options_mod,
+        "_introspect_differentiable",
+        lambda: {"max": True, "calc_spike_period": False},  # registry NOT all-differentiable
+    )
+    solver_options_mod.reset_cache()
+    body = client.post(
+        "/api/config",
+        json={"generated_model_format": "casadi_python", "solver": "casadi_integrator"},
+    ).json()
+    assert body["all_differentiable"] is False
+    ad = [s for s in body["gradient_sources"] if s["value"] == "AD"]
+    assert ad and ad[0]["requires_all_differentiable"] is True
+    solver_options_mod.reset_cache()
+
+
 def test_ad_available_when_casadi_python_and_all_ops_differentiable(client, monkeypatch):
     """When casadi_python is chosen and every operation is @differentiable, the
     payload reports ad_available so the UI can offer AD local-SA + sp_minimize."""
