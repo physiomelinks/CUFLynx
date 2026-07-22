@@ -321,3 +321,37 @@ describe('CalibrationPanel cores gating (no MPI launcher)', () => {
     expect(msg(mountPanel(false, 1)).exists()).toBe(false)
   })
 })
+
+describe('CalibrationPanel start-from-current (#65)', () => {
+  const METHODS = [
+    { value: 'genetic_algorithm', label: 'GA', gradient_based: false },
+    { value: 'sp_minimize', label: 'Gradient descent', gradient_based: true },
+  ]
+
+  it('includes start_from_current in the run payload for gradient methods', async () => {
+    const wrapper = mount(CalibrationPanel, {
+      props: { canRun: true, defaults: { methods: METHODS, param_id_method: 'sp_minimize' } },
+      global: { stubs: selectStubs },
+    })
+    // The toggle is shown for gradient methods.
+    expect(wrapper.find('[data-testid="calib-start-from-current"]').exists()).toBe(true)
+    // Default: off.
+    await wrapper.find('[data-testid="run-calibration"]').trigger('click')
+    expect(wrapper.emitted('run').at(-1)[0].start_from_current).toBe(false)
+    // Enable it -> the payload reflects it.
+    wrapper.vm.settings.start_from_current = true
+    await wrapper.vm.$nextTick()
+    await wrapper.find('[data-testid="run-calibration"]').trigger('click')
+    expect(wrapper.emitted('run').at(-1)[0].start_from_current).toBe(true)
+  })
+
+  it('omits start_from_current (and the toggle) for non-gradient methods', async () => {
+    const wrapper = mount(CalibrationPanel, {
+      props: { canRun: true, defaults: { methods: METHODS, param_id_method: 'genetic_algorithm' } },
+      global: { stubs: selectStubs },
+    })
+    expect(wrapper.find('[data-testid="calib-start-from-current"]').exists()).toBe(false)
+    await wrapper.find('[data-testid="run-calibration"]').trigger('click')
+    expect('start_from_current' in wrapper.emitted('run').at(-1)[0]).toBe(false)
+  })
+})

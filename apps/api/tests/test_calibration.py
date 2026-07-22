@@ -678,3 +678,80 @@ def test_calibration_3compartment_genetic_algorithm(client, requires_simulation)
     }
     assert all(math.isfinite(v) for v in best.values())
     assert status["cost"] is not None and math.isfinite(status["cost"])
+
+
+# --- issue #65: gradient descent can start from the current slider values ---
+def test_apply_current_param_start_overrides_param_init():
+    """_apply_current_param_start replaces CA's param_init (the sp_minimize x0,
+    seeded from the model defaults) with the UI's current slider values, in
+    param_id_info order, in the [value] shape CA reads x0 from. Params absent from
+    the slider map keep their model-default init."""
+    import calibration_runner
+
+    class _Pid:
+        param_id_info = {"param_names": [["a/x"], ["b/y"], ["c/z"]]}
+        param_init = [[1.0], [2.0], [3.0]]  # model defaults
+
+    class _CVS:
+        param_id = _Pid()
+
+    cvs = _CVS()
+    calibration_runner._apply_current_param_start(cvs, {"a/x": 5.0, "c/z": 9.0})
+    # a/x and c/z start from the sliders; b/y (not supplied) keeps its default.
+    assert cvs.param_id.param_init == [[5.0], [2.0], [9.0]]
+
+
+def test_apply_current_param_start_is_best_effort():
+    """A malformed param_id must not raise (a start-point tweak can't abort a run)."""
+    import calibration_runner
+
+    class _Broken:
+        param_id = object()  # no param_id_info -> AttributeError inside
+
+    # Should swallow the error, not propagate.
+    calibration_runner._apply_current_param_start(_Broken(), {"a/x": 1.0})
+
+
+@pytest.mark.integration
+def test_sp_minimize_starts_from_current_param_values(tmp_path, requires_simulation, capsys):
+    """End-to-end (#65): with start_from_current, an sp_minimize run overrides the
+    x0 (param_init) with the supplied current slider values before descending — the
+    runner logs that it started from the current values for all params."""
+    import calibration_runner
+    import model_codegen
+
+    # In-bounds values distinct from the model defaults (see the params_for_id CSV).
+    current = {
+        "global/q_lv_init": 800e-6,
+        "aortic_root/C": 2e-8,
+        "global/E_lv_A": 3e8,
+        "global/E_lv_B": 2e7,
+    }
+    config = {
+        "model_path": model_codegen.resolve_model_path(str(C3_MODEL_PATH), "cellml_only"),
+        "model_type": "cellml_only",
+        "solver": "CVODE_myokit",
+        "solver_info": {"solver": "CVODE_myokit", "method": "CVODE"},
+        "obs_path": str(C3_OBS_DATA_PATH),
+        "params_path": str(C3_PARAMS_CSV_PATH),
+        "output_dir": str(tmp_path / "out"),
+        "file_prefix": "3compartment",
+        "current_params": current,
+        "settings": {
+            "param_id_method": "sp_minimize",
+            # cellml_only gradient descent needs an analytic gradient (Myokit FSA);
+            # the start-point override itself is independent of the gradient source.
+            "gradient_method": "FSA",
+            "start_from_current": True,
+            # Stop almost immediately so the test stays fast; the override happens
+            # before the first evaluation regardless of the budget.
+            "cost_convergence": 1e12,
+            "num_calls_to_function": 5,
+            "dt": 0.01,
+        },
+    }
+    result = calibration_runner.run(config)
+    out = capsys.readouterr().out
+    assert "Starting gradient descent from current parameter values" in out
+    assert "4/4 params overridden" in out
+    assert isinstance(result.get("params"), dict)

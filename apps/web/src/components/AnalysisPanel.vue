@@ -1,6 +1,7 @@
 <script setup>
 import { ref, computed, watch } from 'vue'
 import { renderMath, renderOutputLabel } from '../lib/math'
+import { fmtSci } from '../lib/format'
 
 const props = defineProps({
   // Sensitivity: { S1: {outName: {param: val}}, ST: {...}, local: {...} }
@@ -9,6 +10,10 @@ const props = defineProps({
   outputNames: { type: Array, default: () => [] },
   // qname -> LaTeX/plotting name, for the heatmap row labels.
   paramLabels: { type: Object, default: () => ({}) },
+  // Local SA only: the nominal (linearisation) parameter point (aligned with
+  // paramNames) and a short description of where it came from.
+  nominal: { type: Array, default: null },
+  nominalSource: { type: String, default: null },
   // Calibration: one error per observable, aligned with errorLabels.
   percentError: { type: Array, default: null },
   stdError: { type: Array, default: null },
@@ -48,6 +53,18 @@ watch(
   { immediate: true },
 )
 const isLocal = computed(() => indexType.value === 'local')
+
+// A local SA run carries a 'local' matrix (Sobol runs carry S1/ST instead). Only
+// for such a run do we show the nominal parameter point it was linearised about.
+const isLocalRun = computed(() => !!props.indices?.local)
+const nominalPairs = computed(() => {
+  if (!isLocalRun.value || !Array.isArray(props.nominal)) return []
+  return props.paramNames.map((qname, i) => ({
+    qname,
+    label: renderMath(props.paramLabels[qname] ?? qname),
+    value: fmtSci(props.nominal[i]),
+  }))
+})
 
 const hasSensitivity = computed(
   () =>
@@ -258,6 +275,21 @@ const uqMethodLabel = computed(() =>
           </button>
         </div>
 
+        <div
+          v-if="nominalPairs.length"
+          class="nominal-row"
+          data-testid="nominal-row"
+        >
+          <span class="toolbar-label">Nominal</span>
+          <div class="nominal-chips">
+            <span v-for="p in nominalPairs" :key="p.qname" class="nominal-chip">
+              <span class="nominal-name" v-html="p.label" />
+              <span class="nominal-val">{{ p.value }}</span>
+            </span>
+          </div>
+          <span v-if="nominalSource" class="nominal-source">from {{ nominalSource }}</span>
+        </div>
+
         <div class="analysis-toolbar">
           <span class="toolbar-label">Index</span>
           <div class="type-toggle">
@@ -423,6 +455,39 @@ const uqMethodLabel = computed(() =>
   gap: 0.5rem;
   flex-wrap: wrap;
   margin-bottom: 0.4rem;
+}
+/* Nominal (linearisation) point for a local SA run — label left, values right. */
+.nominal-row {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.4rem;
+}
+.nominal-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+.nominal-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.3rem;
+  font-size: 0.74rem;
+  padding: 0.15rem 0.45rem;
+  border: 1px solid var(--p-content-border-color, #333);
+  border-radius: 6px;
+  white-space: nowrap;
+}
+.nominal-name {
+  opacity: 0.8;
+}
+.nominal-val {
+  font-variant-numeric: tabular-nums;
+}
+.nominal-source {
+  font-size: 0.72rem;
+  opacity: 0.55;
 }
 .run-chips {
   display: flex;

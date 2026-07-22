@@ -128,10 +128,11 @@ export async function getCalibrationPythons(refresh = false) {
   return data
 }
 
-export async function startCalibration(modelId, settings) {
+export async function startCalibration(modelId, settings, currentParams = null) {
   const { data } = await axios.post(url('/api/calibration/run'), {
     model_id: modelId,
     settings,
+    ...(currentParams ? { current_params: currentParams } : {}),
   })
   return data
 }
@@ -158,10 +159,11 @@ export async function getSensitivityDefaults() {
   return data
 }
 
-export async function startSensitivity(modelId, settings) {
+export async function startSensitivity(modelId, settings, currentParams = null) {
   const { data } = await axios.post(url('/api/sensitivity/run'), {
     model_id: modelId,
     settings,
+    ...(currentParams ? { current_params: currentParams } : {}),
   })
   return data
 }

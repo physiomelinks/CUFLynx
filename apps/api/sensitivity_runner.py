@@ -242,6 +242,7 @@ def run(config: dict) -> dict:
             best_params=config.get("best_params"),
             model_type=model_type,
             engine=engine,
+            current_params=config.get("current_params"),
         )
         with open(os.path.join(output_dir, "results.json"), "w") as fh:
             json.dump(payload, fh)

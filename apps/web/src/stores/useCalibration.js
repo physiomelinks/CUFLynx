@@ -89,11 +89,11 @@ export function useCalibration(options = {}) {
     }
   }
 
-  async function start(modelId, settings) {
+  async function start(modelId, settings, currentParams = null) {
     reset()
     state.value = 'running'
     try {
-      const { job_id } = await startCalibration(modelId, settings)
+      const { job_id } = await startCalibration(modelId, settings, currentParams)
       jobId = job_id
       await poll()
     } catch (e) {

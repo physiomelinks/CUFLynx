@@ -756,6 +756,9 @@ async def upload_params_for_id(
 class CalibrationRequest(BaseModel):
     model_id: str
     settings: dict = Field(default_factory=dict)
+    # Current parameter values from the UI sliders ({qname: value}); used as the
+    # gradient-descent start point when settings['start_from_current'] is set (#65).
+    current_params: dict | None = None
 
 
 CALIBRATION_DEFAULTS = {
@@ -837,6 +840,7 @@ def calibration_run(req: CalibrationRequest) -> dict:
         "num_cores": int(req.settings.get("num_cores", 1) or 1),
         "python": python_path,
         "settings": req.settings,
+        "current_params": req.current_params,
     }
     try:
         job_id = calibration.start(config)
@@ -874,6 +878,9 @@ def calibration_cancel(job_id: str) -> dict:
 class SensitivityRequest(BaseModel):
     model_id: str
     settings: dict = Field(default_factory=dict)
+    # Current parameter values from the UI sliders ({qname: value}); used as the
+    # nominal (linearisation) point for local SA when nominal=="current" (#65).
+    current_params: dict | None = None
 
 
 SENSITIVITY_DEFAULTS = {
@@ -1000,6 +1007,7 @@ def sensitivity_run(req: SensitivityRequest) -> dict:
         "python": python_path,
         "settings": req.settings,
         "best_params": best_params,
+        "current_params": req.current_params,
     }
     try:
         job_id = sensitivity.start(config)
