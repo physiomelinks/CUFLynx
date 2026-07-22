@@ -448,6 +448,8 @@ def test_read_history_missing_files_returns_empty(tmp_path):
         "param_history": [],
         "start_costs": [],
         "start_params": {"param_names": [], "starts": []},
+        "grad_history": [],
+        "start_grads": {"param_names": [], "starts": []},
     }
 
 
@@ -524,6 +526,84 @@ def test_read_multistart_params_tolerates_partial_and_absent(tmp_path):
         "param_names": ["well x", "well y"],
         "starts": [[[1.2, 3.4]]],
     }
+
+
+def test_read_grad_history_single_start_skips_header_and_partial(tmp_path):
+    """CA #296: best_gradient_history.csv has a header row of param labels then one
+    dJ/dp row per L-BFGS-B iteration (lockstep with best_cost_history), plus a final
+    best-gradient row. _read_grad_history drops the header and keeps full-width rows."""
+    sub = tmp_path / "sp_minimize_model_obs"
+    sub.mkdir()
+    (sub / "best_gradient_history.csv").write_text(
+        "well x, well y\n"
+        "1.0e+00, -2.0e+00\n"
+        "5.0e-01, -1.0e+00\n"
+        "1.0e-03, -2.0e-03\n"  # final best-gradient row, converging toward zero
+        "9.0e-04"  # partially-flushed final row: wrong width, skipped
+    )
+    hist = calibration_mod._read_history(str(tmp_path))
+    assert hist["grad_history"] == [
+        [1.0, -2.0],
+        [0.5, -1.0],
+        [1.0e-03, -2.0e-03],
+    ]
+
+
+def test_read_grad_history_absent_returns_empty(tmp_path):
+    """GA / population-based runs write no best_gradient_history.csv -> []."""
+    sub = tmp_path / "genetic_algorithm_model_obs"
+    sub.mkdir()
+    (sub / "best_cost_history.csv").write_text("0.9\n0.4\n")
+    assert calibration_mod._read_grad_history(str(tmp_path)) == []
+    assert calibration_mod._read_history(str(tmp_path))["grad_history"] == []
+
+
+def test_read_multistart_grads_demuxes_interleaved_rows(tmp_path):
+    """CA #296: multi_start_gradient_history.csv shares the (start_idx, iteration)
+    keying of the cost/param streams; _read_multistart_grads groups each start's
+    dJ/dp rows into one [iteration][param] matrix, interleaving tolerated."""
+    sub = tmp_path / "sp_minimize_model_obs"
+    sub.mkdir()
+    (sub / "multi_start_gradient_history.csv").write_text(
+        "start_idx, iteration, well x, well y\n"
+        "0, 0, 1.0, -2.0\n"
+        "1, 0, 3.0, -4.0\n"
+        "0, 1, 0.5, -1.0\n"
+        "1, 1, 1.5, -2.0\n"
+        "0, 2, 1.0"  # partially-flushed final row: wrong width, skipped
+    )
+    res = calibration_mod._read_multistart_grads(str(tmp_path))
+    assert res == {
+        "param_names": ["well x", "well y"],
+        "starts": [
+            [[1.0, -2.0], [0.5, -1.0]],
+            [[3.0, -4.0], [1.5, -2.0]],
+        ],
+    }
+    # Surfaced by _read_history for the progress endpoint.
+    assert calibration_mod._read_history(str(tmp_path))["start_grads"] == res
+
+
+def test_read_multistart_grads_absent_returns_empty(tmp_path):
+    """GA / single-start runs write no multi_start_gradient_history.csv."""
+    assert calibration_mod._read_multistart_grads(str(tmp_path)) == {
+        "param_names": [],
+        "starts": [],
+    }
+
+
+def test_clear_progress_history_removes_gradient_files(tmp_path):
+    """The gradient streams are transient progress files too: a reused output_dir
+    must clear them so a second run's gradient plot starts fresh (CA appends)."""
+    sub = tmp_path / "sp_minimize_model_run1"
+    sub.mkdir()
+    (sub / "best_gradient_history.csv").write_text("a, b\n1.0, 2.0\n")
+    (sub / "multi_start_gradient_history.csv").write_text(
+        "start_idx, iteration, a, b\n0, 0, 1.0, 2.0\n"
+    )
+    calibration_mod._clear_progress_history(str(tmp_path))
+    assert not (sub / "best_gradient_history.csv").exists()
+    assert not (sub / "multi_start_gradient_history.csv").exists()
 
 
 def test_find_history_prefers_the_most_recent_match(tmp_path):

@@ -1155,6 +1155,8 @@ watch(
             :param-history="calib.paramHistory.value.generations"
             :start-costs="calib.startCosts.value"
             :start-params="calib.startParams.value"
+            :grad-history="calib.gradHistory.value"
+            :start-grads="calib.startGrads.value"
             :param-specs="paramsForId.paramSpecs.value"
           />
         </div>
