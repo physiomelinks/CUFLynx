@@ -15,6 +15,12 @@ const props = defineProps({
   // AD gradients are only valid for casadi_python + all-differentiable ops
   // (set in the Settings popup). Gates the AD gradient-source option.
   adAvailable: { type: Boolean, default: false },
+  // Gradient sources (FD / AD / FSA) for the current model, from the reactive
+  // GET /api/config -> gradient_sources (App.vue re-fetches on every backend
+  // change). Same source the calibration menu uses, so the local-SA gradient
+  // list tracks the backend solver instead of going stale (see #84). Falls back
+  // to the one-time sensitivity defaults when empty.
+  gradientSources: { type: Array, default: () => [] },
   // False when no MPI launcher is available for the current interpreter. Cores>1
   // would then silently run on one core, so we mark the Cores field invalid and
   // block the run until it's set back to 1.
@@ -104,13 +110,18 @@ const methods = computed(() =>
 )
 // Gradient sources for local SA come from the backend's CA gradient_sources
 // accessor for the current model (FD always; AD for casadi_python; FSA for
-// cellml_only + CVODE_myokit). Sources flagged requires_all_differentiable (CasADi
-// AD) need every in-use op differentiable, so they're gated here against
-// adAvailable — the per-model check the model-agnostic endpoint can't do. FD / FSA
-// are never gated. Re-gating here flips AD as the backend solver toggles without a
-// refetch.
+// cellml_only + CVODE_myokit). Prefer the reactive `gradientSources` prop (the
+// same /api/config source the calibration menu uses, re-fetched on every backend
+// change) so the list tracks the backend solver; the one-time sensitivity
+// defaults are only a fallback (see #84). Sources flagged
+// requires_all_differentiable (CasADi AD) need every in-use op differentiable, so
+// they're gated here against adAvailable — the per-model check the model-agnostic
+// endpoint can't do. FD / FSA are never gated. Re-gating here flips AD as the
+// backend solver toggles without a refetch.
 const gradientMethods = computed(() => {
-  const base = props.defaults.gradient_methods ?? [{ value: 'FD', label: 'Finite difference' }]
+  const base = props.gradientSources?.length
+    ? props.gradientSources
+    : props.defaults.gradient_methods ?? [{ value: 'FD', label: 'Finite difference' }]
   return base.map((o) =>
     o.requires_all_differentiable ? { ...o, disabled: !props.adAvailable } : { ...o, disabled: false },
   )

@@ -905,6 +905,7 @@ watch(
             :can-run="canCalibrate"
             :mpiexec-available="mpiexecAvailable"
             :ad-available="adAvailable"
+            :gradient-sources="gradientSources"
             :lines="sa.lines.value"
             :state="sa.state.value"
             :error="sa.error.value"
