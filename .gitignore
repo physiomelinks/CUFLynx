@@ -14,6 +14,11 @@ venv/
 node_modules/
 apps/web/dist/
 *.local
+# This is a yarn project (see apps/web package.json "packageManager" + CI
+# `yarn install --frozen-lockfile`). yarn.lock is the single source of truth;
+# ignore npm's package-lock.json so running `npm install` here can't recommit a
+# competing lockfile that then drifts from yarn.lock.
+apps/web/package-lock.json
 
 # Editor / OS
 .DS_Store
