@@ -224,6 +224,28 @@ const adAvailable = computed(
 // calibration panel's gradient menu is populated from this, not hardcoded.
 const gradientSources = computed(() => solverOpts.value.gradient_sources ?? [])
 
+// Some integrators can't produce their backend's analytic gradient — CasADi AD
+// fails with the SUNDIALS adjoint integrators (cvodes/idas); Myokit FSA needs the
+// CVODE integrator (CA #298). When the selected integrator is unsuitable, warn and
+// name the suitable ones (the analytic source is already dropped from the menus).
+const gradientIntegratorWarning = computed(() => {
+  const method = solverInfo.value.method
+  if (!method) return ''
+  const fmt = generatedModelFormat.value
+  if (fmt === 'casadi_python') {
+    const ok = solverOpts.value.ad_suitable_methods?.[solver.value]
+    if (ok && !ok.includes(method))
+      return `Automatic differentiation (AD) is not available with the '${method}' integrator ` +
+        `(it uses SUNDIALS adjoint sensitivity). For AD, choose one of: ${ok.join(', ')}.`
+  } else if (fmt === 'cellml_only') {
+    const ok = solverOpts.value.fsa_suitable_methods?.[solver.value]
+    if (ok && !ok.includes(method))
+      return `Forward sensitivity (FSA) is not available with the '${method}' integrator. ` +
+        `For FSA, choose one of: ${ok.join(', ')}.`
+  }
+  return ''
+})
+
 // Changing the format picks that format's default solver + default solver_info,
 // then persists. Changing the solver reseeds solver_info for the new solver. The
 // model is (re)generated, cached and run when Settings is closed (see below),
@@ -1375,6 +1397,13 @@ watch(
               ? 'AD available'
               : `AD unavailable — these obs_data operations in use are not @differentiable: ${nonDifferentiableOps.join(', ')}`
           }}</span>.
+        </p>
+        <p
+          v-if="gradientIntegratorWarning"
+          class="settings-warn"
+          data-testid="gradient-integrator-warning"
+        >
+          ⚠ {{ gradientIntegratorWarning }}
         </p>
         <p
           v-if="solverInfo.method === 'semi_implicit_euler'"

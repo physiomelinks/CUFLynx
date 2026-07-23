@@ -70,6 +70,23 @@ _FALLBACK_DIFFERENTIABLE = {
     "addition": True, "subtraction": True, "multiplication": True, "division": True,
 }
 
+# Per-integrator suitability for the backend's *analytic* gradient, used until CA's
+# SOLVER_SCHEMA exposes these (CA issue #298). CasADi AD works with the symbolic
+# integrators but NOT the SUNDIALS adjoint ones (cvodes/idas), whose adjoint
+# sensitivity fails (CV_TOO_MUCH_WORK); Myokit FSA works with the CVODE integrator.
+_FALLBACK_AD_SUITABLE = {
+    "casadi_integrator": ["collocation", "rk", "semi_implicit_euler", "bdf"],
+}
+_FALLBACK_FSA_SUITABLE = {
+    "CVODE_myokit": ["CVODE"],
+    "CVODE_opencor": ["CVODE"],
+}
+# Preferred default integrator per solver (AD-suitable + stable for stiff models),
+# overriding "first in the method list". bdf for casadi_python (vs cvodes).
+_FALLBACK_DEFAULT_METHOD = {
+    "casadi_integrator": "bdf",
+}
+
 _NUM = "number"
 _SEL = "select"
 
@@ -238,11 +255,12 @@ def _dt_field() -> dict:
     return {"key": "dt", "label": "Time step (dt)", "type": _NUM, "default": 0.01}
 
 
-def _method_field(options, label) -> dict:
+def _method_field(options, label, default=None) -> dict:
     opts = list(options)
+    chosen = default if (default in opts) else (opts[0] if opts else "")
     return {
         "key": "method", "label": label, "type": _SEL,
-        "default": opts[0] if opts else "", "options": opts,
+        "default": chosen, "options": opts,
     }
 
 
@@ -321,7 +339,9 @@ def _casadi_method_gates(methods: list) -> dict[str, list]:
 _METHOD_GATES_BY_SOLVER = {"casadi_integrator": _casadi_method_gates}
 
 
-def _solver_info_schema_from_ca(fields_by_solver: dict, methods_by_solver: dict) -> dict:
+def _solver_info_schema_from_ca(
+    fields_by_solver: dict, methods_by_solver: dict, default_method_by_solver: dict | None = None
+) -> dict:
     """Per-solver solver_info form fields introspected from CA's ``SOLVER_INFO_FIELDS``
     (the single source of truth). CA omits the framework keys, so ``method`` (from
     the solver's method menu) and ``dt`` are injected; ``str``/``dict`` fields are
@@ -331,13 +351,14 @@ def _solver_info_schema_from_ca(fields_by_solver: dict, methods_by_solver: dict)
     overlays it — introspection stays the source of truth for *which fields exist*,
     while the gating says which methods each one applies to.
     """
+    default_method_by_solver = default_method_by_solver or {}
     out = {}
     for solver, descriptors in fields_by_solver.items():
         fields = []
         methods = list(methods_by_solver.get(solver, []))
         if methods:
             label = "Integrator" if solver == "casadi_integrator" else "Method"
-            fields.append(_method_field(methods, label))
+            fields.append(_method_field(methods, label, default_method_by_solver.get(solver)))
         fields.append(_dt_field())
         gates = _METHOD_GATES_BY_SOLVER.get(solver, lambda _m: {})(methods)
         for desc in descriptors or []:
@@ -351,10 +372,11 @@ def _solver_info_schema_from_ca(fields_by_solver: dict, methods_by_solver: dict)
     return out
 
 
-def _solver_info_schema(methods_by_solver: dict) -> dict:
+def _solver_info_schema(methods_by_solver: dict, default_method_by_solver: dict | None = None) -> dict:
     """Per-solver editable solver_info fields. `method` options come from CA;
     fields carry an optional `methods` restriction so the available settings track
     which solver_info keys each method actually consumes."""
+    default_method_by_solver = default_method_by_solver or {}
     def cvode_fields():
         return [
             _dt_field(),
@@ -384,7 +406,7 @@ def _solver_info_schema(methods_by_solver: dict) -> dict:
             {"key": "max_step", "label": "Max step", "type": _NUM, "default": None},
         ],
         "casadi_integrator": [
-            _method_field(casadi_methods, "Integrator"),
+            _method_field(casadi_methods, "Integrator", default_method_by_solver.get("casadi_integrator")),
             _dt_field(),
             {"key": "reltol", "label": "Rel. tol", "type": _NUM, "default": 1e-8, "methods": casadi_adaptive},
             {"key": "abstol", "label": "Abs. tol", "type": _NUM, "default": 1e-10, "methods": casadi_adaptive},
@@ -417,14 +439,19 @@ def _build_options(schema: dict, differentiable: dict[str, bool]) -> dict:
             d = solvers_by_format[m][0] if solvers_by_format[m] else ""
         default_solver_by_format[m] = d
     all_diff = bool(differentiable) and all(differentiable.values())
+    # Per-integrator gradient suitability + preferred default method: from CA's
+    # schema when present (CA issue #298), else the built-in fallbacks.
+    ad_suitable = schema.get("ad_suitable_methods") or dict(_FALLBACK_AD_SUITABLE)
+    fsa_suitable = schema.get("fsa_suitable_methods") or dict(_FALLBACK_FSA_SUITABLE)
+    default_method = schema.get("default_method_by_solver") or dict(_FALLBACK_DEFAULT_METHOD)
     # Prefer CA's SOLVER_INFO_FIELDS (single source of truth) when present; an older
     # CA (or the offline fallback schema) has no such key, so degrade to the curated
     # built-in form.
     fields_by_solver = schema.get("solver_info_fields_by_solver") or {}
     if fields_by_solver:
-        solver_info_schema = _solver_info_schema_from_ca(fields_by_solver, methods_by_solver)
+        solver_info_schema = _solver_info_schema_from_ca(fields_by_solver, methods_by_solver, default_method)
     else:
-        solver_info_schema = _solver_info_schema(methods_by_solver)
+        solver_info_schema = _solver_info_schema(methods_by_solver, default_method)
     return {
         "model_formats": formats,
         "solvers_by_format": solvers_by_format,
@@ -440,6 +467,11 @@ def _build_options(schema: dict, differentiable: dict[str, bool]) -> dict:
         },
         "differentiable_operations": dict(differentiable),
         "all_differentiable": all_diff,
+        # Per-integrator suitability for the backend's analytic gradient, so the UI
+        # can offer AD/FSA only for a suitable integrator and warn otherwise (#298).
+        "ad_suitable_methods": {s: list(m) for s, m in ad_suitable.items() if s not in UNSUPPORTED_SOLVERS},
+        "fsa_suitable_methods": {s: list(m) for s, m in fsa_suitable.items() if s not in UNSUPPORTED_SOLVERS},
+        "default_method_by_solver": dict(default_method),
     }
 
 
@@ -563,23 +595,47 @@ def _fallback_gradient_sources(model_type: str, solver: str | None) -> list[dict
     return sources
 
 
-def gradient_sources(model_type: str, solver: str | None, all_differentiable: bool) -> list[dict]:
+def _method_supports_analytic_gradient(solver: str | None, method: str | None, value: str) -> bool:
+    """Whether the selected integrator (``method``) supports the analytic gradient
+    source ``value`` (AD/FSA) for ``solver`` — the per-integrator gate from CA's
+    ad_suitable_methods / fsa_suitable_methods (fallback until CA exposes them, #298).
+
+    A solver absent from the suitability table isn't gated (e.g. AADC AD) → suitable.
+    ``method`` None (unknown/not yet chosen) → suitable, so the source still shows.
+    """
+    if value not in ("AD", "FSA") or not method:
+        return True
+    opts = get_solver_options()
+    table = opts.get("ad_suitable_methods") if value == "AD" else opts.get("fsa_suitable_methods")
+    suitable = (table or {}).get(solver)
+    return True if suitable is None else method in suitable
+
+
+def gradient_sources(
+    model_type: str, solver: str | None, all_differentiable: bool, method: str | None = None
+) -> list[dict]:
     """Gradient sources available for the current model, for the calibration /
     sensitivity gradient-source menus.
 
     Introspects CA's discoverable ``gradient_sources`` accessor (falling back to a
-    hand-coded mirror of ``get_gradient`` on an older CA), then applies the runtime
-    ``all_differentiable`` gate CA can't know statically: any source flagged
-    ``requires_all_differentiable`` (CasADi AD) is dropped when not every operation
-    is @differentiable. Each descriptor carries ``value``/``label``/``do_ad``/
-    ``requires_all_differentiable``/``description``.
+    hand-coded mirror of ``get_gradient`` on an older CA), then applies two gates CA
+    can't know statically:
+      * the runtime ``all_differentiable`` gate — any source flagged
+        ``requires_all_differentiable`` (CasADi AD) is dropped when not every
+        operation is @differentiable;
+      * the per-integrator suitability gate — an analytic source (AD/FSA) is dropped
+        when the selected ``method`` (integrator) doesn't support it, e.g. CasADi AD
+        with the SUNDIALS adjoint integrators cvodes/idas (CA issue #298).
+    Each descriptor carries ``value``/``label``/``do_ad``/``requires_all_differentiable``/
+    ``description``.
     """
     descriptors, ok = _safe(lambda: _introspect_gradient_sources(model_type, solver), None)
     if not ok or descriptors is None:
         descriptors = _fallback_gradient_sources(model_type, solver)
     return [
         d for d in descriptors
-        if all_differentiable or not d.get("requires_all_differentiable")
+        if (all_differentiable or not d.get("requires_all_differentiable"))
+        and _method_supports_analytic_gradient(solver, method, d["value"])
     ]
 
 
