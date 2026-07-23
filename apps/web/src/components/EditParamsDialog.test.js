@@ -145,4 +145,41 @@ describe('EditParamsDialog', () => {
 
     clickSpy.mockRestore()
   })
+
+  it('expands an annotation field, edits it, and writes it into the saved CSV', async () => {
+    uploadParamsForId.mockResolvedValue({ params: [{ qname: 'v/a' }] })
+    const wrapper = mountDialog()
+
+    // Comment field is hidden until the note toggle is clicked.
+    expect(wrapper.find('[data-testid="ep-note-input"]').exists()).toBe(false)
+    const row = wrapper.findAll('[data-testid="ep-row"]')[0]
+    await row.find('[data-testid="ep-note-toggle"]').trigger('click')
+
+    const input = row.find('[data-testid="ep-note-input"]')
+    expect(input.exists()).toBe(true)
+    await input.setValue('range from Dash 2016')
+
+    await wrapper.find('[data-testid="ep-save"]').trigger('click')
+    await flushPromises()
+
+    const [fileArg] = uploadParamsForId.mock.calls[0]
+    const text = await new Promise((resolve) => {
+      const reader = new FileReader()
+      reader.onload = () => resolve(reader.result)
+      reader.readAsText(fileArg)
+    })
+    expect(text.split('\n')[0]).toContain('comment')
+    expect(text).toContain('range from Dash 2016')
+  })
+
+  it('auto-expands rows that already carry an annotation', () => {
+    const wrapper = mountDialog({
+      currentParams: [
+        { qname: 'v/a', min: 1, max: 2, name_for_plotting: '\\alpha', comment: 'preloaded note' },
+      ],
+    })
+    const input = wrapper.find('[data-testid="ep-note-input"]')
+    expect(input.exists()).toBe(true)
+    expect(input.element.value).toBe('preloaded note')
+  })
 })

@@ -106,6 +106,38 @@ describe('buildParamsCsv', () => {
     ])
     expect(csv).toContain('"a, b"')
   })
+
+  it('adds a comment column only when some row has an annotation', () => {
+    const withComment = buildParamsCsv([
+      { qname: 'v/a', min: 0, max: 1, name_for_plotting: 'a', param_type: null, comment: 'from Smith 2020' },
+    ])
+    const lines = withComment.trim().split('\n')
+    expect(lines[0]).toBe('vessel_name,param_name,min,max,name_for_plotting,comment')
+    expect(lines[1]).toBe('v,a,0,1,a,from Smith 2020')
+
+    const withoutComment = buildParamsCsv([
+      { qname: 'v/a', min: 0, max: 1, name_for_plotting: 'a', param_type: null, comment: '' },
+    ])
+    expect(withoutComment.split('\n')[0]).not.toContain('comment')
+  })
+
+  it('quotes a comment containing commas so CA can still parse it', () => {
+    const csv = buildParamsCsv([
+      { qname: 'v/a', min: 0, max: 1, name_for_plotting: 'a', param_type: null, comment: 'lit range, tentative' },
+    ])
+    expect(csv).toContain('"lit range, tentative"')
+  })
+})
+
+describe('mergedRows annotation round-trip', () => {
+  it('carries the comment from a loaded CSV param and defaults to empty', () => {
+    const rows = mergedRows(
+      [{ qname: 'v/a', min: 1, max: 2, name_for_plotting: 'a', comment: 'note A' }],
+      { params: ['v/a', 'v/b'], initial_values: { 'v/b': 2 } },
+    )
+    expect(rows.find((r) => r.qname === 'v/a').comment).toBe('note A')
+    expect(rows.find((r) => r.qname === 'v/b').comment).toBe('')
+  })
 })
 
 describe('versionedFilename', () => {

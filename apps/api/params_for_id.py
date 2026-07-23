@@ -29,6 +29,7 @@ class ParamEntry:
     name_for_plotting: str | None
     param_type: str | None
     initial_value: float | None = None
+    comment: str | None = None
 
     def as_dict(self) -> dict:
         return {
@@ -38,6 +39,7 @@ class ParamEntry:
             "name_for_plotting": self.name_for_plotting,
             "param_type": self.param_type,
             "initial_value": self.initial_value,
+            "comment": self.comment,
         }
 
 
@@ -69,6 +71,7 @@ def parse_params_for_id(
 
     has_plotting = "name_for_plotting" in df.columns
     has_type = "param_type" in df.columns
+    has_comment = "comment" in df.columns
     initial_values = initial_values or {}
 
     entries: list[ParamEntry] = []
@@ -90,6 +93,12 @@ def parse_params_for_id(
             str(row["name_for_plotting"]).strip() if has_plotting else None
         )
         param_type = str(row["param_type"]).strip() if has_type else None
+        # `comment` is a free-text annotation (issue #25); rows may leave it
+        # blank, so treat NaN/empty as "no comment" rather than the string "nan".
+        comment = None
+        if has_comment and not pd.isna(row["comment"]):
+            comment_str = str(row["comment"]).strip()
+            comment = comment_str or None
 
         vessels = str(row["vessel_name"]).split()
         if not vessels:
@@ -104,6 +113,7 @@ def parse_params_for_id(
                     name_for_plotting=name_for_plotting,
                     param_type=param_type,
                     initial_value=initial_values.get(qname),
+                    comment=comment,
                 )
             )
 
