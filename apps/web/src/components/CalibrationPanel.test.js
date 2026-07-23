@@ -388,4 +388,24 @@ describe('CalibrationPanel start-from selector (#65 / #83)', () => {
     await wrapper.find('[data-testid="run-calibration"]').trigger('click')
     expect('start_from' in wrapper.emitted('run').at(-1)[0]).toBe(false)
   })
+
+  it('omits start_from for multi-start (it samples its own start points)', async () => {
+    // Multi-start is detected schema-side by a num_starts / start_sampling option.
+    const MULTI = [
+      { value: 'sp_minimize', label: 'Gradient descent', gradient_based: true },
+      {
+        value: 'multi_start_sp_minimize', label: 'Multi-start', gradient_based: true,
+        options: [{ name: 'num_starts', type: 'int', default: 10 }],
+      },
+    ]
+    const wrapper = mount(CalibrationPanel, {
+      props: { canRun: true, defaults: { methods: MULTI, param_id_method: 'multi_start_sp_minimize' } },
+      global: { stubs: selectStubs },
+    })
+    // Gradient source still shows, but the single "Start from" point does not.
+    expect(wrapper.find('[data-testid="calib-gradient-method"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="calib-start-from"]').exists()).toBe(false)
+    await wrapper.find('[data-testid="run-calibration"]').trigger('click')
+    expect('start_from' in wrapper.emitted('run').at(-1)[0]).toBe(false)
+  })
 })
