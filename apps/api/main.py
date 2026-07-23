@@ -57,11 +57,12 @@ from solver_options import (
     get_solver_options,
     reset_cache as reset_solver_options,
 )
-from user_operations import (
-    UserOperationError,
-    delete_user_operation,
-    read_user_operations,
-    save_user_operation,
+from user_funcs import (
+    UserFuncError,
+    apply_env as apply_user_funcs_env,
+    delete_user_func,
+    read_user_funcs,
+    save_user_func,
 )
 from sensitivity import sensitivity
 from uq import uq
@@ -261,6 +262,10 @@ def _restore_persisted_settings() -> None:
     if isinstance(seed, int) and not isinstance(seed, bool):
         global _analysis_seed
         _analysis_seed = seed
+
+    # Point CA at any previously-saved external operation/cost func files so the
+    # subprocess runners (which inherit os.environ) load them (CA #303).
+    apply_user_funcs_env()
 
 
 _restore_persisted_settings()
@@ -791,39 +796,60 @@ def obs_data_options(refresh: bool = False) -> dict:
     return get_obs_data_options(refresh=refresh)
 
 
-class UserOperationRequest(BaseModel):
+class UserFuncRequest(BaseModel):
     name: str
     source: str
 
 
+# One pair of routes per kind. CUFLynx saves the func to an external file it
+# manages (<config>/user_funcs/...) and points CA at it via an env var, instead
+# of writing into CA's tracked tree (issue #104 rework; CA #303).
 @app.get("/api/operation_funcs")
 def list_operation_funcs() -> dict:
-    """User-authored observable operations + the editor template (issue #58)."""
-    return read_user_operations()
+    """User-authored observable operations + the editor templates (issue #58)."""
+    return read_user_funcs("operation")
 
 
 @app.post("/api/operation_funcs")
-def save_operation_func(req: UserOperationRequest) -> dict:
-    """Create or update a user operation func; then it appears in the options list.
-
-    Writes to CA's ``funcs_user/operation_funcs_user_CUFLynx.py`` (bridged into CA's
-    discovery) and resets the obs_data option cache so the new op is selectable.
-    """
+def save_operation_func(req: UserFuncRequest) -> dict:
+    """Create or update a user operation func; then it appears in the options list."""
     try:
-        result = save_user_operation(req.name, req.source)
-    except UserOperationError as exc:
+        return save_user_func("operation", req.name, req.source)
+    except UserFuncError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    return result
 
 
 @app.delete("/api/operation_funcs/{name}")
 def delete_operation_func(name: str) -> dict:
     """Remove a user operation func."""
     try:
-        result = delete_user_operation(name)
-    except UserOperationError as exc:
+        return delete_user_func("operation", name)
+    except UserFuncError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    return result
+
+
+@app.get("/api/cost_funcs")
+def list_cost_funcs() -> dict:
+    """User-authored cost functions + the editor templates (issue #104)."""
+    return read_user_funcs("cost")
+
+
+@app.post("/api/cost_funcs")
+def save_cost_func(req: UserFuncRequest) -> dict:
+    """Create or update a user cost func; then it appears as a cost_type option."""
+    try:
+        return save_user_func("cost", req.name, req.source)
+    except UserFuncError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.delete("/api/cost_funcs/{name}")
+def delete_cost_func(name: str) -> dict:
+    """Remove a user cost func."""
+    try:
+        return delete_user_func("cost", name)
+    except UserFuncError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @app.post("/api/params_for_id/upload")

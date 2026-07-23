@@ -120,22 +120,32 @@ export async function getObsDataOptions(refresh = false) {
   return data
 }
 
-// User-authored observable operations (issue #58): list / save / delete the
-// funcs stored in CA's funcs_user/operation_funcs_user_CUFLynx.py.
-export async function getUserOperations() {
-  const { data } = await axios.get(url('/api/operation_funcs'))
+// User-authored observable operation & cost funcs (issues #58 / #104). CUFLynx
+// saves them to an external file it manages and points CA at it (CA #303). The
+// `kind` is 'operation' or 'cost'; each maps to /api/{operation,cost}_funcs.
+const FUNC_ENDPOINT = { operation: 'operation_funcs', cost: 'cost_funcs' }
+
+export async function getUserFuncs(kind = 'operation') {
+  const { data } = await axios.get(url(`/api/${FUNC_ENDPOINT[kind]}`))
   return data
 }
 
-export async function saveUserOperation(name, source) {
-  const { data } = await axios.post(url('/api/operation_funcs'), { name, source })
+export async function saveUserFunc(kind, name, source) {
+  const { data } = await axios.post(url(`/api/${FUNC_ENDPOINT[kind]}`), { name, source })
   return data
 }
 
-export async function deleteUserOperation(name) {
-  const { data } = await axios.delete(url(`/api/operation_funcs/${encodeURIComponent(name)}`))
+export async function deleteUserFunc(kind, name) {
+  const { data } = await axios.delete(
+    url(`/api/${FUNC_ENDPOINT[kind]}/${encodeURIComponent(name)}`),
+  )
   return data
 }
+
+// Back-compat wrappers (operation-only) for existing callers.
+export const getUserOperations = () => getUserFuncs('operation')
+export const saveUserOperation = (name, source) => saveUserFunc('operation', name, source)
+export const deleteUserOperation = (name) => deleteUserFunc('operation', name)
 
 export async function uploadParamsForId(file, modelId) {
   const form = new FormData()

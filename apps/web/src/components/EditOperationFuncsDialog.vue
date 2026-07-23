@@ -4,29 +4,36 @@ import Dialog from 'primevue/dialog'
 import Button from 'primevue/button'
 import InputText from 'primevue/inputtext'
 import Message from 'primevue/message'
-import { getUserOperations, saveUserOperation, deleteUserOperation } from '../lib/api'
+import { getUserFuncs, saveUserFunc, deleteUserFunc } from '../lib/api'
 
-// Author custom observable "operations" (obs_funcs) without opening
-// circulatory_autogen (issue #58). Saved funcs live in CA's
-// funcs_user/operation_funcs_user_CUFLynx.py and become selectable operations in
-// the obs_data editor; existing funcs are listed and editable.
+// Author custom observable "operations" (obs_funcs) AND custom "cost functions"
+// without opening circulatory_autogen (issues #58 / #104). CUFLynx saves each
+// func to a file it manages and points CA at it via an env var (CA #303); the
+// funcs become selectable in the obs_data editor's operation / cost_type lists.
 const props = defineProps({
   visible: { type: Boolean, default: false },
 })
 const emit = defineEmits(['update:visible', 'saved'])
 
-const DEFAULT_TEMPLATE = `def my_operation(x, series_output=False):
-    """Return a scalar summarising the operand series x."""
-    if series_output:
-        return x
-    return float(np.max(x) - np.min(x))
-`
+const KINDS = [
+  { key: 'operation', label: 'Operation', noun: 'operation' },
+  { key: 'cost', label: 'Cost function', noun: 'cost function' },
+]
+// Human labels for the template tabs (backend keys -> display text).
+const TEMPLATE_LABELS = {
+  basic: 'Basic',
+  multi_operand: 'Multi-operand',
+  kwargs: 'With kwargs',
+  MLE: 'MLE (Bayesian)',
+}
 
+const kind = ref('operation')
 const functions = ref([])
-const template = ref(DEFAULT_TEMPLATE)
+const templates = ref({})
 const available = ref(true)
 const name = ref('')
-const source = ref(DEFAULT_TEMPLATE)
+const source = ref('')
+const activeTemplate = ref(null)
 // The name currently being edited (an existing func) vs a brand-new one.
 const editingName = ref(null)
 const loading = ref(false)
@@ -34,19 +41,25 @@ const saving = ref(false)
 const error = ref('')
 const notice = ref('')
 
+const currentKind = computed(() => KINDS.find((k) => k.key === kind.value) || KINDS[0])
+const templateKeys = computed(() => Object.keys(templates.value))
 const nameValid = computed(() => /^[A-Za-z][A-Za-z0-9_]*$/.test(name.value.trim()))
 const canSave = computed(() => nameValid.value && source.value.trim().length > 0 && !saving.value)
+
+function templateLabel(key) {
+  return TEMPLATE_LABELS[key] || key
+}
 
 async function refresh() {
   loading.value = true
   error.value = ''
   try {
-    const data = await getUserOperations()
+    const data = await getUserFuncs(kind.value)
     functions.value = data.functions ?? []
-    template.value = data.template || DEFAULT_TEMPLATE
+    templates.value = data.templates ?? (data.template ? { basic: data.template } : {})
     available.value = data.available !== false
   } catch {
-    error.value = 'Could not load custom operations.'
+    error.value = `Could not load custom ${currentKind.value.noun}s.`
   } finally {
     loading.value = false
   }
@@ -55,7 +68,18 @@ async function refresh() {
 function startNew() {
   editingName.value = null
   name.value = ''
-  source.value = template.value
+  const first = templateKeys.value[0]
+  activeTemplate.value = first ?? null
+  source.value = first ? templates.value[first] : ''
+  error.value = ''
+  notice.value = ''
+}
+
+function applyTemplate(key) {
+  editingName.value = null
+  name.value = ''
+  activeTemplate.value = key
+  source.value = templates.value[key] || ''
   error.value = ''
   notice.value = ''
 }
@@ -64,8 +88,16 @@ function editFunc(fn) {
   editingName.value = fn.name
   name.value = fn.name
   source.value = fn.source
+  activeTemplate.value = null
   error.value = ''
   notice.value = ''
+}
+
+async function setKind(k) {
+  if (k === kind.value) return
+  kind.value = k
+  await refresh()
+  startNew()
 }
 
 watch(
@@ -84,11 +116,12 @@ async function onSave() {
   error.value = ''
   notice.value = ''
   try {
-    const data = await saveUserOperation(name.value.trim(), source.value)
+    const data = await saveUserFunc(kind.value, name.value.trim(), source.value)
     functions.value = data.functions ?? []
     editingName.value = name.value.trim()
+    activeTemplate.value = null
     notice.value = `Saved "${name.value.trim()}".`
-    emit('saved', functions.value)
+    emit('saved', { kind: kind.value, functions: functions.value })
   } catch (e) {
     error.value = e?.response?.data?.detail ?? 'Save failed.'
   } finally {
@@ -101,10 +134,10 @@ async function onDelete(fn) {
   error.value = ''
   notice.value = ''
   try {
-    const data = await deleteUserOperation(fn.name)
+    const data = await deleteUserFunc(kind.value, fn.name)
     functions.value = data.functions ?? []
     if (editingName.value === fn.name) startNew()
-    emit('saved', functions.value)
+    emit('saved', { kind: kind.value, functions: functions.value })
   } catch (e) {
     error.value = e?.response?.data?.detail ?? 'Delete failed.'
   } finally {
@@ -117,17 +150,36 @@ async function onDelete(fn) {
   <Dialog
     :visible="visible"
     modal
-    header="Custom operations"
+    header="Custom funcs"
     :style="{ width: '48rem' }"
     data-testid="edit-op-funcs"
     @update:visible="emit('update:visible', $event)"
   >
+    <div class="of-kinds" data-testid="of-kinds">
+      <Button
+        v-for="k in KINDS"
+        :key="k.key"
+        :label="k.label"
+        size="small"
+        :outlined="kind !== k.key"
+        :data-testid="`of-kind-${k.key}`"
+        @click="setKind(k.key)"
+      />
+    </div>
+
     <p class="of-hint">
-      Write your own observable <strong>operation</strong> — the reduction applied
-      to a data_item's operand series to produce the scalar a cost function
-      compares. Saved operations are stored in circulatory_autogen's
-      <code>funcs_user/operation_funcs_user_CUFLynx.py</code> and become selectable
-      in the operation dropdown.
+      <template v-if="kind === 'operation'">
+        Write your own observable <strong>operation</strong> — the reduction applied
+        to a data_item's operand series to produce the scalar a cost function
+        compares.
+      </template>
+      <template v-else>
+        Write your own <strong>cost function</strong> — it compares a model output
+        to its target and returns a scalar cost (lower = better fit), selectable as
+        a data_item's <code>cost_type</code>.
+      </template>
+      Saved funcs are stored in a file CUFLynx manages and loaded by
+      circulatory_autogen at run time.
     </p>
 
     <Message
@@ -148,7 +200,7 @@ async function onDelete(fn) {
     <div class="of-body">
       <div class="of-list">
         <div class="of-list-head">
-          <span>Your operations</span>
+          <span>Your {{ currentKind.noun }}s</span>
           <Button
             label="New"
             icon="pi pi-plus"
@@ -158,7 +210,9 @@ async function onDelete(fn) {
             @click="startNew"
           />
         </div>
-        <p v-if="!functions.length" class="of-empty">No custom operations yet.</p>
+        <p v-if="!functions.length" class="of-empty">
+          No custom {{ currentKind.noun }}s yet.
+        </p>
         <ul v-else>
           <li
             v-for="fn in functions"
@@ -182,11 +236,24 @@ async function onDelete(fn) {
       </div>
 
       <div class="of-editor">
+        <div v-if="templateKeys.length" class="of-templates" data-testid="of-templates">
+          <span class="of-templates-label">Template:</span>
+          <Button
+            v-for="key in templateKeys"
+            :key="key"
+            :label="templateLabel(key)"
+            size="small"
+            text
+            :class="{ 'of-tab-active': activeTemplate === key }"
+            :data-testid="`of-template-${key}`"
+            @click="applyTemplate(key)"
+          />
+        </div>
         <label class="of-field">
-          <span>Operation name</span>
+          <span>{{ currentKind.label }} name</span>
           <InputText
             v-model="name"
-            placeholder="my_operation"
+            :placeholder="kind === 'cost' ? 'my_cost' : 'my_operation'"
             :invalid="name.length > 0 && !nameValid"
             data-testid="of-name-input"
           />
@@ -211,7 +278,7 @@ async function onDelete(fn) {
     <template #footer>
       <Button label="Close" text data-testid="of-close" @click="emit('update:visible', false)" />
       <Button
-        label="Save operation"
+        :label="`Save ${currentKind.noun}`"
         icon="pi pi-save"
         :disabled="!canSave"
         :loading="saving"
@@ -223,6 +290,11 @@ async function onDelete(fn) {
 </template>
 
 <style scoped>
+.of-kinds {
+  display: flex;
+  gap: 0.4rem;
+  margin-bottom: 0.6rem;
+}
 .of-hint {
   font-size: 0.85rem;
   margin: 0 0 0.5rem;
@@ -275,6 +347,21 @@ async function onDelete(fn) {
   display: flex;
   flex-direction: column;
   gap: 0.4rem;
+}
+.of-templates {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.2rem;
+}
+.of-templates-label {
+  font-size: 0.8rem;
+  opacity: 0.75;
+  margin-right: 0.2rem;
+}
+.of-tab-active {
+  font-weight: 700;
+  text-decoration: underline;
 }
 .of-field {
   display: flex;

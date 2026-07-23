@@ -328,12 +328,12 @@ async function onSave() {
     <div class="eo-section-row">
       <h3 class="eo-section">data_items</h3>
       <Button
-        label="Custom operation"
+        label="Custom funcs"
         icon="pi pi-code"
         size="small"
         text
         data-testid="eo-add-op-func"
-        title="Write your own operation (obs_func) in Python"
+        title="Write your own operation or cost function in Python"
         @click="opFuncsOpen = true"
       />
     </div>

@@ -4,15 +4,15 @@ import { flushPromises, mount } from '@vue/test-utils'
 vi.mock('../lib/api', () => ({
   uploadObsData: vi.fn(),
   getObsDataOptions: vi.fn(),
-  // Used by the embedded EditOperationFuncsDialog ("Custom operation").
-  getUserOperations: vi.fn(),
-  saveUserOperation: vi.fn(),
-  deleteUserOperation: vi.fn(),
+  // Used by the embedded EditOperationFuncsDialog ("Custom funcs").
+  getUserFuncs: vi.fn(),
+  saveUserFunc: vi.fn(),
+  deleteUserFunc: vi.fn(),
 }))
 
 import EditObsDataDialog from './EditObsDataDialog.vue'
 import EditOperationFuncsDialog from './EditOperationFuncsDialog.vue'
-import { uploadObsData, getObsDataOptions, getUserOperations } from '../lib/api'
+import { uploadObsData, getObsDataOptions, getUserFuncs } from '../lib/api'
 
 const DialogStub = {
   props: ['visible'],
@@ -76,7 +76,7 @@ function mountDialog(props = {}) {
 
 beforeEach(() => {
   uploadObsData.mockReset()
-  getUserOperations.mockReset().mockResolvedValue({ functions: [], template: 'def f(x):\n    return x\n', available: true })
+  getUserFuncs.mockReset().mockResolvedValue({ kind: 'operation', functions: [], templates: { basic: 'def f(x):\n    return x\n' }, template: 'def f(x):\n    return x\n', available: true })
   getObsDataOptions.mockReset().mockResolvedValue(FETCH)
   globalThis.URL.createObjectURL = vi.fn(() => 'blob:mock')
   globalThis.URL.revokeObjectURL = vi.fn()
@@ -317,17 +317,17 @@ describe('EditObsDataDialog', () => {
     clickSpy.mockRestore()
   })
 
-  it('opens the custom-operation dialog and re-introspects options after a save', async () => {
+  it('opens the custom-funcs dialog and re-introspects options after a save', async () => {
     const wrapper = mountDialog()
     await flushPromises()
-    // The "Custom operation" affordance opens the authoring dialog.
+    // The "Custom funcs" affordance opens the authoring dialog.
     await wrapper.find('[data-testid="eo-add-op-func"]').trigger('click')
     await flushPromises()
-    expect(getUserOperations).toHaveBeenCalled()
+    expect(getUserFuncs).toHaveBeenCalled()
 
-    // When a custom op is saved, the operation options are refreshed (refresh=true).
+    // When a custom func is saved, the operation options are refreshed (refresh=true).
     getObsDataOptions.mockClear()
-    wrapper.findComponent(EditOperationFuncsDialog).vm.$emit('saved', [])
+    wrapper.findComponent(EditOperationFuncsDialog).vm.$emit('saved', { kind: 'operation', functions: [] })
     await flushPromises()
     expect(getObsDataOptions).toHaveBeenCalledWith(true)
   })
