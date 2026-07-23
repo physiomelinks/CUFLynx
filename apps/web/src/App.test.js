@@ -162,3 +162,49 @@ describe('App.vue', () => {
     })
   })
 })
+
+// Regression for #84: switching the backend solver must update the LOCAL-SA
+// gradient sources shown in the Sensitivity panel (cellml_only+CVODE_myokit -> FSA;
+// casadi_python -> AD). PR #95 made the panel read the reactive /api/config
+// gradient_sources; this drives the real App reactive path through a backend switch.
+describe('App.vue sensitivity gradient sources track the backend (#84)', () => {
+  const cellml = {
+    ca_dir: '', ca_exists: true, generated_model_format: 'cellml_only',
+    solver: 'CVODE_myokit', solver_info: {}, differentiable_operations: {},
+    model_formats: ['cellml_only', 'python', 'casadi_python'],
+    solvers_by_format: { cellml_only: ['CVODE_myokit'], python: ['solve_ivp'], casadi_python: ['casadi_integrator'] },
+    default_solver_by_format: { cellml_only: 'CVODE_myokit', python: 'solve_ivp', casadi_python: 'casadi_integrator' },
+    gradient_sources: [
+      { value: 'FD', label: 'Finite difference', requires_all_differentiable: false },
+      { value: 'FSA', label: 'Forward sensitivity (Myokit CVODES)', requires_all_differentiable: false },
+    ],
+  }
+  const casadi = {
+    ...cellml, generated_model_format: 'casadi_python', solver: 'casadi_integrator',
+    gradient_sources: [
+      { value: 'FD', label: 'Finite difference', requires_all_differentiable: false },
+      { value: 'AD', label: 'Automatic differentiation (CasADi)', requires_all_differentiable: true },
+    ],
+  }
+
+  it('swaps FSA for AD when switching cellml_only -> casadi_python (and back)', async () => {
+    getConfig.mockResolvedValue({ ...cellml })
+    setConfig.mockImplementation(async (payload) =>
+      payload && payload.generatedModelFormat === 'casadi_python' ? { ...casadi } : { ...cellml },
+    )
+    const wrapper = shallowMount(App)
+    await flushPromises()
+    // initial: cellml_only -> FD + FSA
+    expect(wrapper.vm.gradientSources.map((s) => s.value)).toEqual(['FD', 'FSA'])
+
+    // user switches backend to casadi_python in Settings
+    wrapper.vm.onFormatChange('casadi_python')
+    await flushPromises()
+    expect(wrapper.vm.gradientSources.map((s) => s.value)).toEqual(['FD', 'AD'])
+
+    // and back
+    wrapper.vm.onFormatChange('cellml_only')
+    await flushPromises()
+    expect(wrapper.vm.gradientSources.map((s) => s.value)).toEqual(['FD', 'FSA'])
+  })
+})

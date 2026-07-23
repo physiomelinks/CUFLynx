@@ -81,6 +81,34 @@ describe('SensitivityPanel AD gating', () => {
     expect(wrapper.emitted('run')[0][0].gradient_method).toBe('FD')
   })
 
+  // Regression for #84: the gradient list must track the reactive
+  // `gradientSources` prop (GET /api/config, re-fetched on every backend change),
+  // not the one-time sensitivity defaults. Switching cellml_only (FSA) ->
+  // casadi_python (AD) must swap FSA out for AD without a defaults refetch.
+  it('tracks the reactive gradientSources prop when the backend solver switches', async () => {
+    const wrapper = mount(SensitivityPanel, {
+      // defaults.gradient_methods is the stale one-time list (cellml_only / FSA);
+      // the reactive prop is what drives the menu.
+      props: {
+        defaults: { method: 'local', gradient_methods: GRAD_CELLML },
+        gradientSources: GRAD_CELLML,
+        adAvailable: false,
+      },
+      global: { stubs },
+    })
+    // cellml_only + CVODE_myokit: FSA present, AD absent.
+    expect(gradientOptions(wrapper).find((o) => o.text().includes('Forward sensitivity'))).toBeTruthy()
+    expect(gradientOptions(wrapper).find((o) => o.text().includes('Automatic'))).toBeFalsy()
+
+    // Switch backend to casadi_python: /api/config now yields FD + AD, and AD is
+    // available. AD must appear (enabled) and FSA must disappear.
+    await wrapper.setProps({ gradientSources: GRAD_CASADI, adAvailable: true })
+    const ad = gradientOptions(wrapper).find((o) => o.text().includes('Automatic'))
+    expect(ad).toBeTruthy()
+    expect(ad.attributes('disabled')).toBeUndefined()
+    expect(gradientOptions(wrapper).find((o) => o.text().includes('Forward sensitivity'))).toBeFalsy()
+  })
+
   // In SA, DEBUG does NOT reduce the sample count (num_samples is a separate
   // field) — it enables extra debug output. The label must describe that, not
   // the calibration-only "fewer/fast" behaviour.
@@ -184,5 +212,36 @@ describe('SensitivityPanel cores gating (no MPI launcher)', () => {
 
   it('does not gate the local method (cores unused there)', () => {
     expect(msg(mountPanel(false, 4, 'local')).exists()).toBe(false)
+  })
+})
+
+describe('SensitivityPanel reacts to a backend switch (#84)', () => {
+  it('swaps FSA for AD when gradientSources prop updates (and back)', async () => {
+    const wrapper = mount(SensitivityPanel, {
+      props: {
+        defaults: { method: 'local', gradient_methods: GRAD_CELLML },
+        gradientSources: GRAD_CELLML,
+        adAvailable: false,
+      },
+      global: { stubs },
+    })
+    let opts = gradientOptions(wrapper).map((o) => o.text())
+    expect(opts.some((t) => t.includes('Forward sensitivity'))).toBe(true)
+    expect(opts.some((t) => t.includes('Automatic'))).toBe(false)
+
+    // backend switched to casadi_python: reactive gradientSources becomes FD+AD
+    await wrapper.setProps({ gradientSources: GRAD_CASADI, adAvailable: true })
+    opts = gradientOptions(wrapper).map((o) => o.text())
+    expect(opts.some((t) => t.includes('Automatic'))).toBe(true)
+    expect(opts.some((t) => t.includes('Forward sensitivity'))).toBe(false)
+    // AD is enabled (adAvailable true), not faded
+    const ad = gradientOptions(wrapper).find((o) => o.text().includes('Automatic'))
+    expect(ad.attributes('disabled')).toBeUndefined()
+
+    // switch back to cellml_only
+    await wrapper.setProps({ gradientSources: GRAD_CELLML, adAvailable: false })
+    opts = gradientOptions(wrapper).map((o) => o.text())
+    expect(opts.some((t) => t.includes('Forward sensitivity'))).toBe(true)
+    expect(opts.some((t) => t.includes('Automatic'))).toBe(false)
   })
 })

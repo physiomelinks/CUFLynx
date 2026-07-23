@@ -55,6 +55,42 @@ def build_frontend() -> None:
     subprocess.run(cmd, cwd=str(WEB_DIR), check=True)
 
 
+def _newest_mtime(paths) -> float:
+    newest = 0.0
+    for p in paths:
+        try:
+            newest = max(newest, p.stat().st_mtime)
+        except OSError:
+            pass
+    return newest
+
+
+def _frontend_sources(web_dir: Path) -> list:
+    """The frontend inputs whose change means the built bundle is out of date:
+    everything under src/ plus the entry HTML and build config."""
+    src = web_dir / "src"
+    files = list(src.rglob("*")) if src.is_dir() else []
+    for name in ("index.html", "package.json", "vite.config.js", "vite.config.mjs", "vite.config.ts"):
+        f = web_dir / name
+        if f.exists():
+            files.append(f)
+    return [f for f in files if f.is_file()]
+
+
+def frontend_is_stale(web_dir: Path = WEB_DIR, dist: Path = DIST) -> bool:
+    """True when the built frontend is missing OR older than its sources.
+
+    Without this, ``run.py`` served whatever was last built — so after a
+    ``git checkout`` / source edit the app showed the OLD code (e.g. a fixed
+    Sensitivity gradient menu that never appeared to update). Rebuild when the
+    newest source file is newer than the built ``dist/index.html``.
+    """
+    marker = dist / "index.html"
+    if not marker.is_file():
+        return True
+    return _newest_mtime(_frontend_sources(web_dir)) > marker.stat().st_mtime
+
+
 def run_dev(port: int, open_browser: bool) -> int:
     """Dev mode: uvicorn --reload (API) + Vite dev server (HMR), both concurrent.
 
@@ -120,7 +156,9 @@ def main() -> int:
     if args.dev:
         return run_dev(args.port, not args.no_browser)
 
-    if args.build or not DIST.is_dir():
+    if args.build or frontend_is_stale():
+        if not args.build and DIST.is_dir():
+            print("Frontend sources changed since the last build — rebuilding.", flush=True)
         build_frontend()
 
     url = f"http://localhost:{args.port}"
