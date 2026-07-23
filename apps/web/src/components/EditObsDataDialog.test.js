@@ -329,6 +329,6 @@ describe('EditObsDataDialog', () => {
     getObsDataOptions.mockClear()
     wrapper.findComponent(EditOperationFuncsDialog).vm.$emit('saved', { kind: 'operation', functions: [] })
     await flushPromises()
-    expect(getObsDataOptions).toHaveBeenCalledWith(true)
+    expect(getObsDataOptions).toHaveBeenCalledWith(true, '')
   })
 })

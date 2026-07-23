@@ -71,7 +71,7 @@ describe('EditOperationFuncsDialog', () => {
   it('lists existing operations and prefills the first template on open', async () => {
     const wrapper = mountDialog()
     await flushPromises()
-    expect(getUserFuncs).toHaveBeenCalledWith('operation')
+    expect(getUserFuncs).toHaveBeenCalledWith('operation', '')
     const items = wrapper.findAll('[data-testid="of-item"]')
     expect(items).toHaveLength(1)
     expect(items[0].text()).toBe('spread')
@@ -94,7 +94,7 @@ describe('EditOperationFuncsDialog', () => {
     await flushPromises()
     await wrapper.get('[data-testid="of-kind-cost"]').trigger('click')
     await flushPromises()
-    expect(getUserFuncs).toHaveBeenCalledWith('cost')
+    expect(getUserFuncs).toHaveBeenCalledWith('cost', '')
     expect(wrapper.get('[data-testid="of-item"]').text()).toBe('my_cost')
     expect(wrapper.find('[data-testid="of-template-MLE"]').exists()).toBe(true)
     // Editor prefilled with the cost basic template.
@@ -120,7 +120,7 @@ describe('EditOperationFuncsDialog', () => {
     await wrapper.get('[data-testid="of-source"]').setValue('def my_op(x):\n    return x\n')
     await wrapper.get('[data-testid="of-save"]').trigger('click')
     await flushPromises()
-    expect(saveUserFunc).toHaveBeenCalledWith('operation', 'my_op', 'def my_op(x):\n    return x\n')
+    expect(saveUserFunc).toHaveBeenCalledWith('operation', 'my_op', 'def my_op(x):\n    return x\n', '')
     expect(wrapper.emitted('saved')).toBeTruthy()
     expect(wrapper.findAll('[data-testid="of-item"]')).toHaveLength(2)
   })
@@ -135,7 +135,7 @@ describe('EditOperationFuncsDialog', () => {
     await wrapper.get('[data-testid="of-source"]').setValue('def my_cost2(o, d, s, w):\n    return 0.0\n')
     await wrapper.get('[data-testid="of-save"]').trigger('click')
     await flushPromises()
-    expect(saveUserFunc).toHaveBeenCalledWith('cost', 'my_cost2', 'def my_cost2(o, d, s, w):\n    return 0.0\n')
+    expect(saveUserFunc).toHaveBeenCalledWith('cost', 'my_cost2', 'def my_cost2(o, d, s, w):\n    return 0.0\n', '')
   })
 
   it('loads an existing func into the editor when selected', async () => {
@@ -162,7 +162,7 @@ describe('EditOperationFuncsDialog', () => {
     await flushPromises()
     await wrapper.get('[data-testid="of-delete"]').trigger('click')
     await flushPromises()
-    expect(deleteUserFunc).toHaveBeenCalledWith('operation', 'spread')
+    expect(deleteUserFunc).toHaveBeenCalledWith('operation', 'spread', '')
     expect(wrapper.findAll('[data-testid="of-item"]')).toHaveLength(0)
   })
 })

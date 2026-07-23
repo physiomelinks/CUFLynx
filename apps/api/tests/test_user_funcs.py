@@ -1,14 +1,13 @@
 """Tests for user-authored operation & cost funcs (issues #58 / #104 rework).
 
 Covers the ``user_funcs`` module (validation, upsert, delete, external-file
-layout, env-var wiring for both kinds) and the ``/api/{operation,cost}_funcs``
-routes. A gated integration test confirms a saved op surfaces in the real
-CA-sourced options.
+layout under the output dir, templates for both kinds) and the
+``/api/{operation,cost}_funcs`` routes. A gated integration test confirms a saved
+op surfaces in the real CA-sourced options.
 """
 
 from __future__ import annotations
 
-import os
 import shutil
 import sys
 from pathlib import Path
@@ -131,19 +130,51 @@ def test_delete_removes(tmp_cfg):
 # ---------------------------------------------------------------------------
 def test_operation_templates_have_tabs_and_mention_plotting(tmp_cfg):
     result = uf.read_user_funcs("operation")
-    assert set(result["templates"]) == {"basic", "multi_operand", "kwargs"}
+    assert set(result["templates"]) == {"basic", "multi_operand", "kwargs", "differentiable"}
     # The template explains series_output is the series plotted with the feature.
     assert "plotted with the feature" in result["templates"]["basic"]
     # The kwargs template explains how kwarg entries are entered (per data_item).
     assert "data_item" in result["templates"]["kwargs"]
+    # The differentiable template uses @differentiable + the casadi math backend
+    # and states it is needed for AD or FSA.
+    diff = result["templates"]["differentiable"]
+    assert "@differentiable" in diff and "mb." in diff and "AD or FSA" in diff
     # Back-compat single ``template`` still present (first tab).
     assert result["template"] == result["templates"]["basic"]
 
 
 def test_cost_templates_present(tmp_cfg):
     result = uf.read_user_funcs("cost")
-    assert set(result["templates"]) == {"basic", "MLE"}
+    assert set(result["templates"]) == {"basic", "differentiable", "MLE"}
     assert "cost_type" in result["templates"]["basic"]
+    # The differentiable cost template uses @differentiable + the math backend.
+    assert "@differentiable" in result["templates"]["differentiable"]
+    assert "mb." in result["templates"]["differentiable"]
+    # The old "see CA's cost_funcs_user.py" pointer is gone from every template.
+    assert not any("see CA" in t for t in result["templates"].values())
+
+
+def test_saves_under_output_directory(tmp_cfg, tmp_path):
+    """With an output dir the func file lives there, not in the config dir."""
+    out = tmp_path / "run_outputs"
+    uf.save_user_func("operation", "spread", VALID_OP, base_dir=str(out))
+    path = out / "user_funcs" / "operation_funcs_user.py"
+    assert path.is_file()
+    assert uf.external_path("operation", str(out)) == str(path)
+    assert uf.external_paths(str(out)) == {"operation_funcs_external_path": str(path)}
+    # It is NOT in the config-dir fallback location.
+    assert uf.external_path("operation") is None
+    # And it round-trips when read back with the same base_dir.
+    assert [f["name"] for f in uf.read_user_funcs("operation", str(out))["functions"]] == ["spread"]
+
+
+def test_differentiable_operation_header_defines_mb(tmp_cfg):
+    """The generated file imports the math backend and binds ``mb`` so casadi
+    templates work when CA rebinds it."""
+    uf.save_user_func("operation", "spread", VALID_OP)
+    text = (tmp_cfg / "user_funcs" / "operation_funcs_user.py").read_text()
+    assert "from param_id.math_backend import make_math_backend" in text
+    assert "mb = make_math_backend(" in text
 
 
 # ---------------------------------------------------------------------------
@@ -243,6 +274,28 @@ def test_route_invalid_returns_422(client, tmp_cfg):
     resp = client.post("/api/operation_funcs", json={"name": "1bad", "source": VALID_OP})
     assert resp.status_code == 422
     resp = client.post("/api/cost_funcs", json={"name": "my_cost", "source": "def my_cost(x)\n x"})
+    assert resp.status_code == 422
+
+
+def test_route_saves_under_output_dir(client, tmp_cfg, tmp_path):
+    out = tmp_path / "outs"
+    resp = client.post(
+        "/api/operation_funcs",
+        json={"name": "spread", "source": VALID_OP, "output_dir": str(out)},
+    )
+    assert resp.status_code == 200, resp.text
+    assert (out / "user_funcs" / "operation_funcs_user.py").is_file()
+    # Listing with the same output_dir returns it; the config-dir fallback is empty.
+    resp = client.get("/api/operation_funcs", params={"output_dir": str(out)})
+    assert [f["name"] for f in resp.json()["functions"]] == ["spread"]
+    assert client.get("/api/operation_funcs").json()["functions"] == []
+
+
+def test_route_rejects_relative_output_dir(client, tmp_cfg):
+    resp = client.post(
+        "/api/operation_funcs",
+        json={"name": "spread", "source": VALID_OP, "output_dir": "relative/dir"},
+    )
     assert resp.status_code == 422
 
 

@@ -783,67 +783,80 @@ async def upload_obs_data(
 
 
 @app.get("/api/obs_data/options")
-def obs_data_options(refresh: bool = False) -> dict:
+def obs_data_options(refresh: bool = False, output_dir: str = "") -> dict:
     """Operation (obs_funcs) and cost_type (cost_func) names from circulatory_autogen.
 
     Drives the obs_data editor's dropdowns; degrades to a small built-in set when
-    CA can't be introspected.
+    CA can't be introspected. ``output_dir`` locates the user's custom funcs so
+    they appear in the lists.
     """
-    return get_obs_data_options(refresh=refresh)
+    return get_obs_data_options(refresh=refresh, output_dir=_user_func_base_dir(output_dir))
 
 
 class UserFuncRequest(BaseModel):
     name: str
     source: str
+    # The user's output directory (config_outputs_dir); funcs are stored there so
+    # they travel with the run outputs. Empty falls back to the config dir.
+    output_dir: str = ""
 
 
-# One pair of routes per kind. CUFLynx saves the func to an external file it
-# manages (<config>/user_funcs/...) and points CA at it via an env var, instead
-# of writing into CA's tracked tree (issue #104 rework; CA #303).
+def _user_func_base_dir(output_dir: str | None) -> str | None:
+    """Normalise a client-supplied output dir for user-func storage: '' -> None
+    (config-dir fallback), and require an absolute path when given."""
+    d = (output_dir or "").strip()
+    if d and not os.path.isabs(d):
+        raise HTTPException(status_code=422, detail="output_dir must be an absolute path")
+    return d or None
+
+
+# One pair of routes per kind. CUFLynx saves the func to an external file under the
+# user's output directory and points CA at it via the config keys (issue #104
+# rework; CA #303), instead of writing into CA's tracked tree.
 @app.get("/api/operation_funcs")
-def list_operation_funcs() -> dict:
+def list_operation_funcs(output_dir: str = "") -> dict:
     """User-authored observable operations + the editor templates (issue #58)."""
-    return read_user_funcs("operation")
+    return read_user_funcs("operation", _user_func_base_dir(output_dir))
 
 
 @app.post("/api/operation_funcs")
 def save_operation_func(req: UserFuncRequest) -> dict:
     """Create or update a user operation func; then it appears in the options list."""
     try:
-        return save_user_func("operation", req.name, req.source)
+        return save_user_func("operation", req.name, req.source, _user_func_base_dir(req.output_dir))
     except UserFuncError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @app.delete("/api/operation_funcs/{name}")
-def delete_operation_func(name: str) -> dict:
+def delete_operation_func(name: str, output_dir: str = "") -> dict:
     """Remove a user operation func."""
     try:
-        return delete_user_func("operation", name)
+        return delete_user_func("operation", name, _user_func_base_dir(output_dir))
     except UserFuncError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @app.get("/api/cost_funcs")
-def list_cost_funcs() -> dict:
+def list_cost_funcs(output_dir: str = "") -> dict:
     """User-authored cost functions + the editor templates (issue #104)."""
-    return read_user_funcs("cost")
+    return read_user_funcs("cost", _user_func_base_dir(output_dir))
 
 
 @app.post("/api/cost_funcs")
 def save_cost_func(req: UserFuncRequest) -> dict:
     """Create or update a user cost func; then it appears as a cost_type option."""
     try:
-        return save_user_func("cost", req.name, req.source)
+        return save_user_func("cost", req.name, req.source, _user_func_base_dir(req.output_dir))
     except UserFuncError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @app.delete("/api/cost_funcs/{name}")
-def delete_cost_func(name: str) -> dict:
+def delete_cost_func(name: str, output_dir: str = "") -> dict:
     """Remove a user cost func."""
     try:
-        return delete_user_func("cost", name)
+        return delete_user_func("cost", name, _user_func_base_dir(output_dir))
     except UserFuncError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -978,9 +991,10 @@ def calibration_run(req: CalibrationRequest) -> dict:
         "solver_info": dict(engine.solver_info),
         "obs_path": str(record.obs_path),
         "params_path": str(record.params_path),
-        # CUFLynx-authored operation/cost funcs; CA loads them from these paths (CA #303).
-        "operation_funcs_external_path": user_func_path("operation"),
-        "cost_funcs_external_path": user_func_path("cost"),
+        # CUFLynx-authored operation/cost funcs, saved under the output dir; CA
+        # loads them from these paths (CA #303).
+        "operation_funcs_external_path": user_func_path("operation", configured or None),
+        "cost_funcs_external_path": user_func_path("cost", configured or None),
         "output_dir": output_dir,
         "file_prefix": record.meta.name or "model",
         "num_cores": int(req.settings.get("num_cores", 1) or 1),
@@ -1150,9 +1164,10 @@ def sensitivity_run(req: SensitivityRequest) -> dict:
         "solver_info": dict(engine.solver_info),
         "obs_path": str(record.obs_path),
         "params_path": str(record.params_path),
-        # CUFLynx-authored operation/cost funcs; CA loads them from these paths (CA #303).
-        "operation_funcs_external_path": user_func_path("operation"),
-        "cost_funcs_external_path": user_func_path("cost"),
+        # CUFLynx-authored operation/cost funcs, saved under the output dir; CA
+        # loads them from these paths (CA #303).
+        "operation_funcs_external_path": user_func_path("operation", configured or None),
+        "cost_funcs_external_path": user_func_path("cost", configured or None),
         "output_dir": output_dir,
         "file_prefix": record.meta.name or "model",
         "num_cores": num_cores,
@@ -1278,9 +1293,10 @@ def uq_run(req: UQRequest) -> dict:
         "solver_info": dict(engine.solver_info),
         "obs_path": str(record.obs_path),
         "params_path": str(record.params_path),
-        # CUFLynx-authored operation/cost funcs; CA loads them from these paths (CA #303).
-        "operation_funcs_external_path": user_func_path("operation"),
-        "cost_funcs_external_path": user_func_path("cost"),
+        # CUFLynx-authored operation/cost funcs, saved under the output dir; CA
+        # loads them from these paths (CA #303).
+        "operation_funcs_external_path": user_func_path("operation", configured or None),
+        "cost_funcs_external_path": user_func_path("cost", configured or None),
         "output_dir": output_dir,
         "file_prefix": record.meta.name or "model",
         "num_cores": int(req.settings.get("num_cores", 1) or 1),

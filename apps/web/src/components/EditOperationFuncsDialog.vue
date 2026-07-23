@@ -8,8 +8,9 @@ import { getUserFuncs, saveUserFunc, deleteUserFunc } from '../lib/api'
 
 // Author custom observable "operations" (obs_funcs) AND custom "cost functions"
 // without opening circulatory_autogen (issues #58 / #104). CUFLynx saves each
-// func to a file it manages and points CA at it via an env var (CA #303); the
-// funcs become selectable in the obs_data editor's operation / cost_type lists.
+// func to a file in the user's output directory and points CA at it via config
+// keys (CA #303); the funcs become selectable in the obs_data editor's operation
+// / cost_type lists.
 const props = defineProps({
   visible: { type: Boolean, default: false },
 })
@@ -24,6 +25,7 @@ const TEMPLATE_LABELS = {
   basic: 'Basic',
   multi_operand: 'Multi-operand',
   kwargs: 'With kwargs',
+  differentiable: 'Differentiable (AD/FSA)',
   MLE: 'MLE (Bayesian)',
 }
 
@@ -41,6 +43,9 @@ const saving = ref(false)
 const error = ref('')
 const notice = ref('')
 
+// The user's output directory (App.vue persists it here); funcs are stored there.
+const outputDir = () => localStorage.getItem('cuflynx-outputs-dir') || ''
+
 const currentKind = computed(() => KINDS.find((k) => k.key === kind.value) || KINDS[0])
 const templateKeys = computed(() => Object.keys(templates.value))
 const nameValid = computed(() => /^[A-Za-z][A-Za-z0-9_]*$/.test(name.value.trim()))
@@ -54,7 +59,7 @@ async function refresh() {
   loading.value = true
   error.value = ''
   try {
-    const data = await getUserFuncs(kind.value)
+    const data = await getUserFuncs(kind.value, outputDir())
     functions.value = data.functions ?? []
     templates.value = data.templates ?? (data.template ? { basic: data.template } : {})
     available.value = data.available !== false
@@ -116,7 +121,7 @@ async function onSave() {
   error.value = ''
   notice.value = ''
   try {
-    const data = await saveUserFunc(kind.value, name.value.trim(), source.value)
+    const data = await saveUserFunc(kind.value, name.value.trim(), source.value, outputDir())
     functions.value = data.functions ?? []
     editingName.value = name.value.trim()
     activeTemplate.value = null
@@ -134,7 +139,7 @@ async function onDelete(fn) {
   error.value = ''
   notice.value = ''
   try {
-    const data = await deleteUserFunc(kind.value, fn.name)
+    const data = await deleteUserFunc(kind.value, fn.name, outputDir())
     functions.value = data.functions ?? []
     if (editingName.value === fn.name) startNew()
     emit('saved', { kind: kind.value, functions: functions.value })
@@ -178,7 +183,7 @@ async function onDelete(fn) {
         to its target and returns a scalar cost (lower = better fit), selectable as
         a data_item's <code>cost_type</code>.
       </template>
-      Saved funcs are stored in a file CUFLynx manages and loaded by
+      Saved funcs are stored in your output directory and loaded by
       circulatory_autogen at run time.
     </p>
 

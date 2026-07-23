@@ -6,10 +6,12 @@ compares) *and* their own cost func (compares a model output to a target ->
 scalar cost) from the GUI, without opening circulatory_autogen.
 
 **External-file design (no bridge into CA's tree).** Each kind is stored in a
-single CUFLynx-managed file under the user config dir::
+single file under the user's chosen **output directory** (``config_outputs_dir``,
+the same dir the analysis runs write to), so the funcs travel with the outputs.
+When no output directory is set it falls back to the user config dir::
 
-    <config_dir>/user_funcs/operation_funcs_user.py
-    <config_dir>/user_funcs/cost_funcs_user.py
+    <output_dir>/user_funcs/operation_funcs_user.py
+    <output_dir>/user_funcs/cost_funcs_user.py
 
 CUFLynx passes the file path to circulatory_autogen through CA's config keys
 ``operation_funcs_external_path`` / ``cost_funcs_external_path`` (CA #303): the
@@ -62,8 +64,10 @@ obs_data editor and used by circulatory_autogen during calibration / sensitivity
 An operation receives the operand array(s) for a data_item and returns a scalar.
 Return the operand series when ``series_output=True`` so the reduction can be
 plotted on top of the series — that returned series is what is drawn with the
-feature in the plots. ``np`` (numpy) is available; the ``@differentiable`` /
-``@series_to_constant`` markers mirror CA's (imported, never redefined).
+feature in the plots. ``np`` (numpy) is available for plain funcs; write the body
+against the math backend ``mb`` (and add ``@differentiable``) to use the operation
+with AD or FSA gradients. The ``@differentiable`` / ``@series_to_constant`` markers
+mirror CA's (imported, never redefined).
 
 Managed by CUFLynx's "Custom funcs" dialog; the header may be regenerated.
 """
@@ -72,6 +76,11 @@ import numpy as np  # noqa: F401 -- available to user operations
 # Imported (not defined) so CA registers only the user funcs below, never these.
 from param_id.differentiable import differentiable  # noqa: F401
 from param_id.operation_funcs import series_to_constant  # noqa: F401
+from param_id.math_backend import make_math_backend
+
+# Math backend for differentiable ops: use ``mb.<op>`` instead of numpy so CA can
+# rebind it to casadi and take symbolic gradients. CA sets this per backend.
+mb = make_math_backend("numpy")
 '''
 
 _COST_HEADER = '''"""User-defined cost functions authored via CUFLynx (issues #58 / #104).
@@ -82,9 +91,9 @@ obs_data editor and used by circulatory_autogen during calibration / sensitivity
 
 A cost func compares a model ``output`` to its target and returns a scalar cost
 (lower = better fit). It must work for both scalars and arrays. ``np`` (numpy) is
-available; the ``@differentiable`` / ``@is_MLE`` / ``@cost_combiner`` markers
-mirror CA's (imported, never redefined). For AD-differentiable costs use CA's
-math backend instead of numpy (see CA's ``cost_funcs_user.py``).
+available for plain funcs; write the body against the math backend ``mb`` (and add
+``@differentiable``) for AD gradients. The ``@differentiable`` / ``@is_MLE`` /
+``@cost_combiner`` markers mirror CA's (imported, never redefined).
 
 Managed by CUFLynx's "Custom funcs" dialog; the header may be regenerated.
 """
@@ -93,16 +102,22 @@ import numpy as np  # noqa: F401 -- available to user cost funcs
 # Imported (not defined) so CA registers only the user funcs below, never these.
 from param_id.differentiable import differentiable  # noqa: F401
 from cost_funcs_user import is_MLE, cost_combiner  # noqa: F401
+from param_id.math_backend import make_math_backend
+
+# Math backend for differentiable costs: use ``mb.<op>`` instead of numpy so CA
+# can rebind it to casadi and take symbolic gradients. CA sets this per backend.
+mb = make_math_backend("numpy")
 '''
 
-# Operation editor templates (basic / multi-operand / kwargs). The dialog offers
-# each as a tab; the backend is the single source of truth for their text.
+# Operation editor templates. The dialog offers each as a tab; the backend is the
+# single source of truth for their text.
 _OPERATION_TEMPLATES = {
     "basic": '''def my_operation(x, series_output=False):
     """Reduce the operand series ``x`` to a scalar (what a cost func compares).
 
     When ``series_output=True`` return the *series* to draw on top of the data;
-    that same series is what gets plotted with the feature in the plots.
+    that same series is what gets plotted with the feature in the plots. For AD or
+    FSA gradients, use the Differentiable template instead.
     """
     if series_output:
         return x
@@ -133,6 +148,21 @@ _OPERATION_TEMPLATES = {
         return x
     return float(np.mean(above[:n_peaks]) if len(above) else 0.0)
 ''',
+    "differentiable": '''@differentiable
+def my_operation(x, series_output=False):
+    """Differentiable operation — the ``@differentiable`` marker is required to use
+    it with AD or FSA gradients.
+
+    Built on the math backend ``mb`` (not numpy) so CA can rebind ``mb`` to casadi
+    and take symbolic gradients. ``mb`` provides ``max``/``min``/``mean``/
+    ``max_minus_min``/``power``/``abs``/``sum``/``exp``/``log``. Drop the decorator
+    (and you may use numpy) if finite-difference gradients are enough.
+    ``series_output=True`` returns the series plotted with the feature.
+    """
+    if series_output:
+        return x
+    return mb.max_minus_min(x)
+''',
 }
 
 _COST_TEMPLATES = {
@@ -140,21 +170,32 @@ _COST_TEMPLATES = {
     """Scalar cost between model ``output`` and the target ``desired_mean``.
 
     Must work for scalars and arrays; lower = better fit. Select it as a
-    data_item's ``cost_type`` in the obs_data editor.
+    data_item's ``cost_type`` in the obs_data editor. For AD gradients, use the
+    Differentiable template instead.
     """
     return float(np.sum(((output - desired_mean) / std) ** 2 * weight))
+''',
+    "differentiable": '''@differentiable
+def my_cost(output, desired_mean, std, weight):
+    """Differentiable cost — the ``@differentiable`` marker is required to use AD
+    gradients.
+
+    Built on the math backend ``mb`` (not numpy) so CA can rebind ``mb`` to casadi
+    and take symbolic gradients. Must work for scalars and arrays; lower = better
+    fit.
+    """
+    return mb.sum(mb.power((output - desired_mean) / std, 2) * weight)
 ''',
     "MLE": '''@differentiable
 @is_MLE
 def my_mle_cost(output, desired_mean, std, weight):
     """Negative-log-likelihood cost (required by the Bayesian method).
 
-    ``@is_MLE`` marks the value as a negative log likelihood; keep
-    ``@differentiable`` only if the body is CasADi-safe. Use CA's math backend
-    instead of numpy for AD gradients (see CA's ``cost_funcs_user.py``).
+    ``@is_MLE`` marks the value as a negative log likelihood; ``@differentiable``
+    (built on the ``mb`` math backend) keeps it usable for AD gradients.
     """
-    per = ((output - desired_mean) / std) ** 2 * weight
-    return float(0.5 * np.mean(per))
+    per = mb.power((output - desired_mean) / std, 2) * weight
+    return 0.5 * mb.mean(per)
 ''',
 }
 
@@ -179,7 +220,10 @@ _KINDS = {
         header=_OPERATION_HEADER,
         templates=_OPERATION_TEMPLATES,
         reserved=frozenset(
-            {"CUFLYNX_OPERATIONS", "series_to_constant", "differentiable", "np"}
+            {
+                "CUFLYNX_OPERATIONS", "series_to_constant", "differentiable",
+                "np", "mb", "make_math_backend",
+            }
         ),
     ),
     "cost": _Kind(
@@ -190,7 +234,10 @@ _KINDS = {
         header=_COST_HEADER,
         templates=_COST_TEMPLATES,
         reserved=frozenset(
-            {"CUFLYNX_COSTS", "is_MLE", "cost_combiner", "differentiable", "np"}
+            {
+                "CUFLYNX_COSTS", "is_MLE", "cost_combiner", "differentiable",
+                "np", "mb", "make_math_backend",
+            }
         ),
     ),
 }
@@ -204,36 +251,39 @@ def _kind(kind: str) -> _Kind:
 
 
 # ---------------------------------------------------------------------------
-# Paths / environment
+# Paths
 # ---------------------------------------------------------------------------
-def _user_dir() -> Path:
-    """CUFLynx-managed dir for the external func files (in the user config dir)."""
-    return config_dir() / "user_funcs"
+def _user_dir(base_dir: str | None = None) -> Path:
+    """Dir holding the external func files: the run's output directory when given
+    (so funcs live with the outputs), else the user config dir as a fallback."""
+    root = Path(base_dir) if base_dir else config_dir()
+    return root / "user_funcs"
 
 
-def _user_file(kind: str) -> Path:
-    return _user_dir() / _kind(kind).filename
+def _user_file(kind: str, base_dir: str | None = None) -> Path:
+    return _user_dir(base_dir) / _kind(kind).filename
 
 
-def external_path(kind: str) -> str | None:
+def external_path(kind: str, base_dir: str | None = None) -> str | None:
     """The external func file path for ``kind`` when it exists, else ``None``.
 
     Single source of the path CUFLynx passes to CA — into the analysis run configs
     (forwarded to ``CVS0DParamID`` / ``SensitivityAnalysis``) and to CA's discovery
-    builders in ``obs_options`` (CA #303).
+    builders in ``obs_options`` (CA #303). ``base_dir`` is the output directory the
+    funcs were saved under.
     """
-    path = _user_file(kind)
+    path = _user_file(kind, base_dir)
     return str(path) if path.is_file() else None
 
 
-def external_paths() -> dict:
+def external_paths(base_dir: str | None = None) -> dict:
     """``{ca_config_key: path}`` for every kind whose file exists — splat into a
     run config so CA loads the user funcs (``operation_funcs_external_path`` /
     ``cost_funcs_external_path``)."""
     return {
-        k.config_key: str(_user_dir() / k.filename)
+        k.config_key: str(_user_dir(base_dir) / k.filename)
         for k in _KINDS.values()
-        if (_user_dir() / k.filename).is_file()
+        if (_user_dir(base_dir) / k.filename).is_file()
     }
 
 
@@ -293,10 +343,10 @@ def _node_source(text: str, node: ast.FunctionDef) -> str | None:
     return seg
 
 
-def _parse_existing(kind: str) -> tuple[list[str], dict[str, str]]:
+def _parse_existing(kind: str, base_dir: str | None = None) -> tuple[list[str], dict[str, str]]:
     """Return (ordered names, {name: source}) from the on-disk user file."""
     k = _kind(kind)
-    path = _user_file(kind)
+    path = _user_file(kind, base_dir)
     if not path.is_file():
         return [], {}
     text = path.read_text(encoding="utf-8")
@@ -324,23 +374,24 @@ def _parse_existing(kind: str) -> tuple[list[str], dict[str, str]]:
     return ordered, sources
 
 
-def read_user_funcs(kind: str) -> dict:
+def read_user_funcs(kind: str, base_dir: str | None = None) -> dict:
     """List the current user funcs of ``kind`` plus the editor templates.
 
     Shape: ``{"kind", "functions": [{"name","source"}], "templates", "template",
     "available", "path"}``. ``available`` is False when CA isn't configured (the
-    imported decorators can't resolve, so the funcs can't load).
+    imported decorators can't resolve, so the funcs can't load). ``base_dir`` is
+    the output directory the funcs are stored under.
     """
     k = _kind(kind)
     available = bool(_circulatory_autogen_src())
-    order, sources = _parse_existing(kind)
+    order, sources = _parse_existing(kind, base_dir)
     return {
         "kind": k.key,
         "functions": [{"name": n, "source": sources[n]} for n in order],
         "templates": dict(k.templates),
         "template": next(iter(k.templates.values())),  # back-compat: the first tab
         "available": available,
-        "path": str(_user_file(kind)),
+        "path": str(_user_file(kind, base_dir)),
     }
 
 
@@ -358,37 +409,38 @@ def _render(kind: str, order: list[str], sources: dict[str, str]) -> str:
     return "\n".join(parts).rstrip("\n") + "\n"
 
 
-def save_user_func(kind: str, name: str, source: str) -> dict:
-    """Create or update the ``kind`` func ``name`` with body ``source``.
+def save_user_func(kind: str, name: str, source: str, base_dir: str | None = None) -> dict:
+    """Create or update the ``kind`` func ``name`` with body ``source``, under the
+    output directory ``base_dir`` (falling back to the config dir).
 
     Raises :class:`UserFuncError` (HTTP 422) on an invalid name or code.
     """
     name = _validate_name(kind, name)
     source = _validate_source(kind, name, source)
-    order, sources = _parse_existing(kind)
+    order, sources = _parse_existing(kind, base_dir)
     if name not in sources:
         order.append(name)
     sources[name] = source
 
-    _user_dir().mkdir(parents=True, exist_ok=True)
-    _user_file(kind).write_text(_render(kind, order, sources), encoding="utf-8")
+    _user_dir(base_dir).mkdir(parents=True, exist_ok=True)
+    _user_file(kind, base_dir).write_text(_render(kind, order, sources), encoding="utf-8")
     _refresh_options()
-    return read_user_funcs(kind)
+    return read_user_funcs(kind, base_dir)
 
 
-def delete_user_func(kind: str, name: str) -> dict:
-    """Remove the ``kind`` func ``name``; return the updated list.
+def delete_user_func(kind: str, name: str, base_dir: str | None = None) -> dict:
+    """Remove the ``kind`` func ``name`` (under ``base_dir``); return the list.
 
     Raises :class:`UserFuncError` (HTTP 422) if it doesn't exist.
     """
-    order, sources = _parse_existing(kind)
+    order, sources = _parse_existing(kind, base_dir)
     if name not in sources:
         raise UserFuncError(f"no user {kind} named '{name}'")
     order = [n for n in order if n != name]
     del sources[name]
-    _user_file(kind).write_text(_render(kind, order, sources), encoding="utf-8")
+    _user_file(kind, base_dir).write_text(_render(kind, order, sources), encoding="utf-8")
     _refresh_options()
-    return read_user_funcs(kind)
+    return read_user_funcs(kind, base_dir)
 
 
 def _refresh_options() -> None:

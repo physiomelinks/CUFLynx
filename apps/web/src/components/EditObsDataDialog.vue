@@ -70,7 +70,8 @@ const opFuncsOpen = ref(false)
 // a custom operation is added, so the new op appears in the dropdown).
 async function loadOptions(refresh = false) {
   try {
-    const opts = await getObsDataOptions(refresh)
+    // Pass the output dir so the user's custom funcs (stored there) show up.
+    const opts = await getObsDataOptions(refresh, localStorage.getItem('cuflynx-outputs-dir') || '')
     if (opts?.operations?.length) operations.value = opts.operations
     if (opts?.differentiable_operations) diffOps.value = opts.differentiable_operations
     if (opts?.cost_types?.length) costTypes.value = opts.cost_types

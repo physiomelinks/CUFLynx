@@ -112,32 +112,42 @@ export async function uploadObsData(modelId, obsData) {
 
 // Operation (obs_funcs) + cost_type (cost_func) option lists, sourced from
 // circulatory_autogen — used to populate the obs_data editor dropdowns. Pass
-// refresh=true to re-introspect CA (e.g. after adding a custom operation).
-export async function getObsDataOptions(refresh = false) {
-  const { data } = await axios.get(url('/api/obs_data/options'), {
-    params: refresh ? { refresh: true } : {},
-  })
+// refresh=true to re-introspect CA (e.g. after adding a custom operation), and
+// outputDir so the user's custom funcs (stored there) appear in the lists.
+export async function getObsDataOptions(refresh = false, outputDir = '') {
+  const params = {}
+  if (refresh) params.refresh = true
+  if (outputDir) params.output_dir = outputDir
+  const { data } = await axios.get(url('/api/obs_data/options'), { params })
   return data
 }
 
 // User-authored observable operation & cost funcs (issues #58 / #104). CUFLynx
-// saves them to an external file it manages and points CA at it (CA #303). The
-// `kind` is 'operation' or 'cost'; each maps to /api/{operation,cost}_funcs.
+// saves them to a file in the user's output directory and points CA at it (CA
+// #303). `kind` is 'operation' or 'cost' -> /api/{operation,cost}_funcs;
+// `outputDir` is where the funcs live (config_outputs_dir).
 const FUNC_ENDPOINT = { operation: 'operation_funcs', cost: 'cost_funcs' }
 
-export async function getUserFuncs(kind = 'operation') {
-  const { data } = await axios.get(url(`/api/${FUNC_ENDPOINT[kind]}`))
+export async function getUserFuncs(kind = 'operation', outputDir = '') {
+  const { data } = await axios.get(url(`/api/${FUNC_ENDPOINT[kind]}`), {
+    params: outputDir ? { output_dir: outputDir } : {},
+  })
   return data
 }
 
-export async function saveUserFunc(kind, name, source) {
-  const { data } = await axios.post(url(`/api/${FUNC_ENDPOINT[kind]}`), { name, source })
+export async function saveUserFunc(kind, name, source, outputDir = '') {
+  const { data } = await axios.post(url(`/api/${FUNC_ENDPOINT[kind]}`), {
+    name,
+    source,
+    output_dir: outputDir || '',
+  })
   return data
 }
 
-export async function deleteUserFunc(kind, name) {
+export async function deleteUserFunc(kind, name, outputDir = '') {
   const { data } = await axios.delete(
     url(`/api/${FUNC_ENDPOINT[kind]}/${encodeURIComponent(name)}`),
+    { params: outputDir ? { output_dir: outputDir } : {} },
   )
   return data
 }

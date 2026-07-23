@@ -34,12 +34,14 @@ FALLBACK_DATA_TYPES = ["constant", "series", "frequency", "prob_dist"]
 FALLBACK_PLOT_TYPES = ["", "horizontal", "vertical", "horizontal_from_min", "series", "frequency"]
 
 _cache: dict | None = None
+_cache_output_dir: str | None = None
 
 
 def reset_cache() -> None:
     """Drop the cached options (call when the CA directory changes)."""
-    global _cache
+    global _cache, _cache_output_dir
     _cache = None
+    _cache_output_dir = None
 
 
 def _ca_paths() -> list[str]:
@@ -67,7 +69,7 @@ def _introspect_schema() -> tuple[list, list]:
         return list(FALLBACK_DATA_TYPES), list(FALLBACK_PLOT_TYPES)
 
 
-def _introspect() -> dict:
+def _introspect(output_dir: str | None = None) -> dict:
     for p in _ca_paths():
         if p not in sys.path:
             sys.path.insert(0, p)
@@ -78,7 +80,7 @@ def _introspect() -> dict:
     # in external files (issue #104); hand their paths to CA's builders so the
     # merged set — user funcs included, with correct @differentiable / @is_MLE
     # flags — is discovered by CA itself (CA #303).
-    op_path, cost_path = _external_func_paths()
+    op_path, cost_path = _external_func_paths(output_dir)
     op_funcs = _op_funcs_dict(operation_funcs, op_path)
     operations = sorted(op_funcs)
     if "" not in operations:
@@ -101,13 +103,17 @@ def _introspect() -> dict:
     }
 
 
-def _external_func_paths() -> tuple:
-    """(operation path, cost path) for the CUFLynx-authored external files, or
-    (None, None) — passed to CA's builders so it registers the user funcs."""
+def _external_func_paths(output_dir: str | None = None) -> tuple:
+    """(operation path, cost path) for the CUFLynx-authored external files under
+    ``output_dir``, or (None, None) — passed to CA's builders so it registers the
+    user funcs."""
     try:
         import user_funcs
 
-        return user_funcs.external_path("operation"), user_funcs.external_path("cost")
+        return (
+            user_funcs.external_path("operation", output_dir),
+            user_funcs.external_path("cost", output_dir),
+        )
     except Exception:  # noqa: BLE001 - external paths are best-effort
         return None, None
 
@@ -167,17 +173,19 @@ def _introspect_cost_func_metadata(cost_funcs_user, external_path=None) -> dict:
     return out
 
 
-def get_obs_data_options(refresh: bool = False) -> dict:
-    """Return ``{"operations": [...], "cost_types": [...]}`` from CA.
+def get_obs_data_options(refresh: bool = False, output_dir: str | None = None) -> dict:
+    """Return ``{"operations": [...], "cost_types": [...]}`` from CA, including the
+    user's custom funcs under ``output_dir``.
 
-    Caches a successful introspection; returns fallbacks (uncached) when CA is
-    unavailable so a later CA-dir change can still succeed.
+    Caches a successful introspection (keyed on ``output_dir``); returns fallbacks
+    (uncached) when CA is unavailable so a later CA-dir change can still succeed.
     """
-    global _cache
-    if _cache is not None and not refresh:
+    global _cache, _cache_output_dir
+    if _cache is not None and not refresh and _cache_output_dir == output_dir:
         return _cache
     try:
-        _cache = _introspect()
+        _cache = _introspect(output_dir)
+        _cache_output_dir = output_dir
         return _cache
     except Exception:  # noqa: BLE001 - CA missing / import failure → fallbacks
         return {
