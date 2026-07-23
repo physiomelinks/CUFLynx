@@ -1,5 +1,5 @@
 <script setup>
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { Line } from 'vue-chartjs'
 import {
   Chart as ChartJS,
@@ -41,10 +41,20 @@ const props = defineProps({
   // qname -> { min, max, … } from params_for_id, used to normalise the per-start
   // parameter plot to [0, 1] against each param's allowable range.
   paramSpecs: { type: Object, default: () => ({}) },
+  // Cost-gradient (dJ/dp) history for gradient-based runs (CA #296). Single-start:
+  // one gradient vector per iteration ([[dJ/dp per param], …]). Empty otherwise.
+  gradHistory: { type: Array, default: () => [] },
+  // Multi-start cost-gradient trajectories: { param_names, starts } where
+  // starts[start][iteration] = [dJ/dp per param]. Empty for GA / single-start runs.
+  startGrads: { type: Object, default: () => ({ param_names: [], starts: [] }) },
 })
 
 const hasData = computed(
-  () => props.costHistory.length > 0 || multiStart.value || hasStartParams.value,
+  () =>
+    props.costHistory.length > 0 ||
+    multiStart.value ||
+    hasStartParams.value ||
+    hasGradient.value,
 )
 // Multi-start when CA emitted per-start cost curves with more than one start.
 const multiStart = computed(
@@ -99,6 +109,92 @@ const costData = computed(() => {
     ],
   }
 })
+
+// --- Cost gradient (issue #86) ---------------------------------------------
+// Gradient-based (L-BFGS-B) runs stream dJ/dp per iteration (CA #296). The
+// gradient is a vector, so to plot it "just like the cost" (one scalar curve per
+// start, or a single line) reduce each iterate's vector to its infinity norm
+// (max |component|) — the same measure CA prints as |grad|_inf and which decays
+// to 0 as the descent reaches a stationary point.
+function infNorm(vec) {
+  if (!Array.isArray(vec)) return undefined
+  let m = 0
+  for (const v of vec) {
+    const a = Math.abs(v)
+    if (a > m) m = a
+  }
+  return m
+}
+
+// Single-start |grad|_inf per iteration.
+const gradMagHistory = computed(() => (props.gradHistory ?? []).map(infNorm))
+// Multi-start |grad|_inf per iteration, one curve per start (mirrors startCosts).
+const startGradCurves = computed(() =>
+  (props.startGrads?.starts ?? []).map((start) => (start ?? []).map(infNorm)),
+)
+// Gradient data is present only for gradient-based runs; the toggle hides otherwise.
+const hasGradient = computed(
+  () => gradMagHistory.value.length > 0 || startGradCurves.value.some((c) => c && c.length),
+)
+
+// Plotted quantity: 'cost' (default) or 'gradient'. Force cost when no gradient.
+const metric = ref('cost')
+const activeMetric = computed(() => (hasGradient.value ? metric.value : 'cost'))
+function setMetric(m) {
+  metric.value = m
+}
+
+// Top-chart y-axis scale, user-toggleable. Cost spans orders of magnitude, so log
+// is the default; the gradient magnitude decays toward 0 (which a log scale drops),
+// so switch the default to linear when the gradient is shown. An explicit user
+// choice sticks until they change it.
+const yScaleChoice = ref(null) // null = follow the per-metric default; else 'log' | 'linear'
+const yScale = computed(
+  () => yScaleChoice.value ?? (activeMetric.value === 'gradient' ? 'linear' : 'log'),
+)
+function setYScale(s) {
+  yScaleChoice.value = s
+}
+
+// Gradient magnitude plotted exactly like the cost: one line per start for
+// multi-start, a single line for single-start (no top-10 band — L-BFGS-B has a
+// single trajectory).
+const gradData = computed(() => {
+  if (multiStart.value) {
+    const curves = startGradCurves.value
+    const n = curves.length
+    const maxLen = Math.max(0, ...curves.map((c) => (c ? c.length : 0)))
+    return {
+      labels: Array.from({ length: maxLen }, (_, i) => i),
+      datasets: curves.map((curve, i) => ({
+        label: `start ${i}`,
+        data: curve ?? [],
+        borderColor: shadeForStart(PALETTE[0], i, n),
+        backgroundColor: shadeForStart(PALETTE[0], i, n),
+        borderWidth: 2,
+        pointRadius: 0,
+      })),
+    }
+  }
+  return {
+    labels: gradMagHistory.value.map((_, i) => i),
+    datasets: [
+      {
+        label: '|gradient|',
+        data: gradMagHistory.value,
+        borderColor: PALETTE[0],
+        backgroundColor: PALETTE[0],
+        borderWidth: 2,
+        pointRadius: 0,
+      },
+    ],
+  }
+})
+
+// The series the top chart draws, switched by the cost/gradient toggle.
+const displayData = computed(() =>
+  activeMetric.value === 'gradient' ? gradData.value : costData.value,
+)
 
 // Multi-start parameter trajectories: each parameter a distinct colour, each
 // start a distinct shade of that colour (start 0 darkest). P×S lines total.
@@ -183,10 +279,21 @@ const costOptions = computed(() => ({
       // Iterations/generations are whole numbers — no fractional ticks.
       ticks: { stepSize: 1, precision: 0 },
     },
-    y: { type: 'logarithmic', title: { display: true, text: 'cost' } },
+    // Log or linear per the user's y-axis toggle (default: log for cost, linear
+    // for the gradient magnitude, which decays toward 0 a log scale can't render).
+    y: {
+      type: yScale.value === 'log' ? 'logarithmic' : 'linear',
+      title: {
+        display: true,
+        text: activeMetric.value === 'gradient' ? 'cost gradient (|grad|∞)' : 'cost',
+      },
+    },
   },
   plugins: { legend: { display: true, position: 'bottom' } },
 }))
+
+// Heading + axis wording for the top chart, tracking the cost/gradient toggle.
+const metricLabel = computed(() => (activeMetric.value === 'gradient' ? 'cost gradient' : 'cost'))
 
 // Parameter values vs iteration, normalised to each param's params_for_id range
 // (0 = min, 1 = max). Legend lists each parameter once, via its start-0 dataset,
@@ -246,9 +353,50 @@ const paramOptions = {
     </p>
     <template v-else>
       <section class="progress-chart">
-        <h3>Cost vs {{ xLabel }}</h3>
+        <div class="chart-head">
+          <h3>{{ metricLabel === 'cost' ? 'Cost' : 'Cost gradient' }} vs {{ xLabel }}</h3>
+          <!-- Gradient-based runs stream the cost gradient too (CA #296); let the
+               user toggle the plotted quantity. Hidden for GA / population runs. -->
+          <div v-if="hasGradient" class="metric-toggle" data-testid="metric-toggle">
+            <button
+              type="button"
+              data-testid="metric-cost"
+              :class="{ active: activeMetric === 'cost' }"
+              @click="setMetric('cost')"
+            >
+              Cost
+            </button>
+            <button
+              type="button"
+              data-testid="metric-gradient"
+              :class="{ active: activeMetric === 'gradient' }"
+              @click="setMetric('gradient')"
+            >
+              Gradient
+            </button>
+          </div>
+          <!-- Y-axis scale: log (default for cost) or linear. -->
+          <div class="metric-toggle" data-testid="yscale-toggle">
+            <button
+              type="button"
+              data-testid="yscale-log"
+              :class="{ active: yScale === 'log' }"
+              @click="setYScale('log')"
+            >
+              Log
+            </button>
+            <button
+              type="button"
+              data-testid="yscale-linear"
+              :class="{ active: yScale === 'linear' }"
+              @click="setYScale('linear')"
+            >
+              Linear
+            </button>
+          </div>
+        </div>
         <div class="chart-box">
-          <Line :data="costData" :options="costOptions" />
+          <Line :data="displayData" :options="costOptions" />
         </div>
       </section>
       <section v-if="hasStartParams" class="progress-chart">
@@ -278,6 +426,34 @@ const paramOptions = {
   margin: 0 0 0.5rem;
   font-size: 0.95rem;
   font-weight: 600;
+}
+.chart-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+/* Push the toggles to the right; the heading takes the remaining space. */
+.chart-head h3 {
+  margin-right: auto;
+}
+.metric-toggle {
+  display: inline-flex;
+  margin-bottom: 0.5rem;
+  border: 1px solid var(--p-content-border-color, #333);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.metric-toggle button {
+  border: none;
+  background: transparent;
+  color: inherit;
+  padding: 0.2rem 0.6rem;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+.metric-toggle button.active {
+  background: var(--p-primary-color, #5b9bd5);
+  color: #fff;
 }
 .chart-box {
   height: 300px;

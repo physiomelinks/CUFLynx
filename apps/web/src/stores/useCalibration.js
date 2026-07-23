@@ -45,6 +45,11 @@ export function useCalibration(options = {}) {
   // { param_names, starts } where starts[start][iteration] = [val per param].
   // Empty for GA / single-start runs.
   const startParams = ref({ param_names: [], starts: [] })
+  // Cost-gradient (dJ/dp) history for gradient-based runs, used by the Progress
+  // tab's cost/gradient toggle. Single-start: one gradient vector per iteration.
+  // Multi-start: { param_names, starts } like startParams. Empty for GA runs.
+  const gradHistory = ref([])
+  const startGrads = ref({ param_names: [], starts: [] })
   // Final per-observable fit errors for the Analysis tab bar charts.
   const percentError = ref(null) // [number] one per observable
   const stdError = ref(null) // [number] one per observable
@@ -67,6 +72,8 @@ export function useCalibration(options = {}) {
     costHistory.value = []
     startCosts.value = []
     startParams.value = { param_names: [], starts: [] }
+    gradHistory.value = []
+    startGrads.value = { param_names: [], starts: [] }
     paramHistory.value = { paramNames: [], generations: [] }
     percentError.value = null
     stdError.value = null
@@ -80,6 +87,8 @@ export function useCalibration(options = {}) {
       costHistory.value = p.cost_history ?? []
       startCosts.value = p.start_costs ?? []
       startParams.value = p.start_params ?? { param_names: [], starts: [] }
+      gradHistory.value = p.grad_history ?? []
+      startGrads.value = p.start_grads ?? { param_names: [], starts: [] }
       paramHistory.value = {
         paramNames: p.param_names ?? [],
         generations: p.param_history ?? [],
@@ -158,6 +167,8 @@ export function useCalibration(options = {}) {
     costHistory,
     startCosts,
     startParams,
+    gradHistory,
+    startGrads,
     paramHistory,
     percentError,
     stdError,

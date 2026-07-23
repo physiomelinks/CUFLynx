@@ -117,6 +117,109 @@ describe('ProgressPanel', () => {
     expect(wrapper.text()).toContain('Normalised parameter values vs iteration')
   })
 
+  it('test_hides_metric_toggle_without_gradient_data', () => {
+    const wrapper = mount(ProgressPanel, {
+      props: { costHistory: [[0.9], [0.4]] },
+    })
+    expect(wrapper.vm.hasGradient).toBe(false)
+    expect(wrapper.find('[data-testid="metric-toggle"]').exists()).toBe(false)
+    // Falls back to cost even if asked for gradient.
+    expect(wrapper.vm.activeMetric).toBe('cost')
+  })
+
+  it('test_shows_metric_toggle_and_switches_to_gradient_single_start', async () => {
+    const wrapper = mount(ProgressPanel, {
+      props: {
+        // single-start gradient-based run: one cost per iteration + dJ/dp vectors.
+        costHistory: [[0.9], [0.4], [0.1]],
+        // gradient converges toward 0; |grad|_inf = max|component|.
+        gradHistory: [
+          [1.0, -2.0],
+          [0.5, -1.0],
+          [0.01, -0.02],
+        ],
+      },
+    })
+    expect(wrapper.vm.hasGradient).toBe(true)
+    expect(wrapper.find('[data-testid="metric-toggle"]').exists()).toBe(true)
+    // Default shows the cost series.
+    expect(wrapper.vm.activeMetric).toBe('cost')
+    expect(wrapper.vm.displayData.datasets[0].data).toEqual([0.9, 0.4, 0.1])
+    // Switch to gradient: a single |grad|_inf line.
+    await wrapper.find('[data-testid="metric-gradient"]').trigger('click')
+    expect(wrapper.vm.activeMetric).toBe('gradient')
+    expect(wrapper.vm.displayData.datasets).toHaveLength(1)
+    expect(wrapper.vm.displayData.datasets[0].data).toEqual([2.0, 1.0, 0.02])
+  })
+
+  it('test_y_axis_toggle_switches_between_log_and_linear', async () => {
+    const wrapper = mount(ProgressPanel, {
+      props: {
+        costHistory: [[0.9], [0.4], [0.1]],
+        gradHistory: [[1.0], [0.5], [0.01]],
+      },
+    })
+    // Cost defaults to a logarithmic y-axis.
+    expect(wrapper.vm.costOptions.scales.y.type).toBe('logarithmic')
+    // Toggle to linear.
+    await wrapper.find('[data-testid="yscale-linear"]').trigger('click')
+    expect(wrapper.vm.costOptions.scales.y.type).toBe('linear')
+    // Back to log.
+    await wrapper.find('[data-testid="yscale-log"]').trigger('click')
+    expect(wrapper.vm.costOptions.scales.y.type).toBe('logarithmic')
+  })
+
+  it('test_gradient_metric_defaults_to_linear_y_but_can_be_toggled_to_log', async () => {
+    const wrapper = mount(ProgressPanel, {
+      props: { costHistory: [[0.9], [0.4]], gradHistory: [[1.0], [0.01]] },
+    })
+    await wrapper.find('[data-testid="metric-gradient"]').trigger('click')
+    // Gradient decays toward 0, so linear by default.
+    expect(wrapper.vm.costOptions.scales.y.type).toBe('linear')
+    // The user can still force log.
+    await wrapper.find('[data-testid="yscale-log"]').trigger('click')
+    expect(wrapper.vm.costOptions.scales.y.type).toBe('logarithmic')
+  })
+
+  it('test_gradient_toggle_plots_one_line_per_start_for_multi_start', async () => {
+    const wrapper = mount(ProgressPanel, {
+      props: {
+        costHistory: [],
+        startCosts: [
+          [1.5, 1.2],
+          [2.0, 1.1],
+        ],
+        startGrads: {
+          param_names: ['well x', 'well y'],
+          starts: [
+            // start 0: two iterations, each [dJ/dx, dJ/dy]
+            [
+              [1.0, -2.0],
+              [0.5, -1.0],
+            ],
+            // start 1
+            [
+              [3.0, -4.0],
+              [1.5, -2.0],
+            ],
+          ],
+        },
+      },
+    })
+    expect(wrapper.vm.hasGradient).toBe(true)
+    await wrapper.find('[data-testid="metric-gradient"]').trigger('click')
+    const sets = wrapper.vm.displayData.datasets
+    // One |grad|_inf curve per start, mirroring the multi-start cost plot.
+    expect(sets).toHaveLength(2)
+    expect(sets.map((d) => d.label)).toEqual(['start 0', 'start 1'])
+    expect(sets.map((d) => d.data)).toEqual([
+      [2.0, 1.0],
+      [4.0, 2.0],
+    ])
+    // No fill band in multi-start gradient mode.
+    expect(sets.some((d) => d.fill)).toBe(false)
+  })
+
   it('test_param_plot_falls_back_to_raw_when_range_unknown', () => {
     const wrapper = mount(ProgressPanel, {
       props: {
