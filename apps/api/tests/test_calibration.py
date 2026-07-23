@@ -680,12 +680,12 @@ def test_calibration_3compartment_genetic_algorithm(client, requires_simulation)
     assert status["cost"] is not None and math.isfinite(status["cost"])
 
 
-# --- issue #65: gradient descent can start from the current slider values ---
-def test_apply_current_param_start_overrides_param_init():
-    """_apply_current_param_start replaces CA's param_init (the sp_minimize x0,
-    seeded from the model defaults) with the UI's current slider values, in
-    param_id_info order, in the [value] shape CA reads x0 from. Params absent from
-    the slider map keep their model-default init."""
+# --- issues #65 / #83: gradient descent can start from a chosen point ---
+def test_apply_start_point_overrides_param_init():
+    """_apply_start_point replaces CA's param_init (the sp_minimize x0, seeded from
+    the model defaults) with the supplied {qname: value} map, in param_id_info order,
+    in the [value] shape CA reads x0 from. Params absent from the map keep their
+    model-default init."""
     import calibration_runner
 
     class _Pid:
@@ -696,12 +696,12 @@ def test_apply_current_param_start_overrides_param_init():
         param_id = _Pid()
 
     cvs = _CVS()
-    calibration_runner._apply_current_param_start(cvs, {"a/x": 5.0, "c/z": 9.0})
-    # a/x and c/z start from the sliders; b/y (not supplied) keeps its default.
+    calibration_runner._apply_start_point(cvs, {"a/x": 5.0, "c/z": 9.0}, "previous best fit")
+    # a/x and c/z start from the supplied map; b/y (not supplied) keeps its default.
     assert cvs.param_id.param_init == [[5.0], [2.0], [9.0]]
 
 
-def test_apply_current_param_start_is_best_effort():
+def test_apply_start_point_is_best_effort():
     """A malformed param_id must not raise (a start-point tweak can't abort a run)."""
     import calibration_runner
 
@@ -709,7 +709,48 @@ def test_apply_current_param_start_is_best_effort():
         param_id = object()  # no param_id_info -> AttributeError inside
 
     # Should swallow the error, not propagate.
-    calibration_runner._apply_current_param_start(_Broken(), {"a/x": 1.0})
+    calibration_runner._apply_start_point(_Broken(), {"a/x": 1.0}, "current parameter values")
+
+
+def test_best_fit_start_without_a_prior_fit_returns_422(client):
+    """start_from='best_fit' with no completed calibration for the model is a clear
+    422 (there is nothing to continue from) rather than a silent model-default run."""
+    model_id = _setup_model_obs_params(
+        client, LV_MODEL_PATH, LV_OBS_DATA_PATH, LV_PARAMS_CSV_PATH
+    )
+    resp = client.post(
+        "/api/calibration/run",
+        json={"model_id": model_id, "settings": {"start_from": "best_fit"}},
+    )
+    assert resp.status_code == 422
+    assert "best fit" in resp.json()["detail"].lower()
+
+
+def test_best_fit_start_supplies_last_completed_best_params(client, monkeypatch):
+    """start_from='best_fit' feeds the runner config the last completed calibration's
+    best fit (from calibration.last_completed_best_params), so a stopped run can be
+    continued (#83)."""
+    model_id = _setup_model_obs_params(
+        client, LV_MODEL_PATH, LV_OBS_DATA_PATH, LV_PARAMS_CSV_PATH
+    )
+    best = {"Lotka_Volterra_module/alpha": 1.25, "Lotka_Volterra_module/beta": 0.5}
+    monkeypatch.setattr(
+        calibration_mod.calibration, "last_completed_best_params", lambda mid: best
+    )
+    captured: dict = {}
+
+    def _fake_start(config):
+        captured["config"] = config
+        return "job-xyz"
+
+    monkeypatch.setattr(calibration_mod.calibration, "start", _fake_start)
+
+    resp = client.post(
+        "/api/calibration/run",
+        json={"model_id": model_id, "settings": {"start_from": "best_fit"}},
+    )
+    assert resp.status_code == 200, resp.text
+    assert captured["config"]["best_fit_params"] == best
 
 
 @pytest.mark.integration
@@ -742,7 +783,7 @@ def test_sp_minimize_starts_from_current_param_values(tmp_path, requires_simulat
             # cellml_only gradient descent needs an analytic gradient (Myokit FSA);
             # the start-point override itself is independent of the gradient source.
             "gradient_method": "FSA",
-            "start_from_current": True,
+            "start_from": "current",
             # Stop almost immediately so the test stays fast; the override happens
             # before the first evaluation regardless of the budget.
             "cost_convergence": 1e12,
@@ -755,3 +796,65 @@ def test_sp_minimize_starts_from_current_param_values(tmp_path, requires_simulat
     assert "Starting gradient descent from current parameter values" in out
     assert "4/4 params overridden" in out
     assert isinstance(result.get("params"), dict)
+
+
+# --- #83: a calibration stopped early can still be continued from ---
+def test_read_interrupted_best_params_maps_npy_to_qnames(tmp_path):
+    """CA saves the actual best-so-far to best_param_vals.npy incrementally, so a
+    cancelled run's best is recoverable and mapped to {qname: value} via the CSV."""
+    import numpy as np
+
+    sub = tmp_path / "genetic_algorithm_model_obs"
+    sub.mkdir()
+    np.save(sub / "best_param_vals.npy", np.array([1.5, 2.5e-8, 3e8]))
+    csv = tmp_path / "params.csv"
+    csv.write_text(
+        "vessel_name, param_name, param_type, min, max, name_for_plotting\n"
+        "global, q_lv_init, const, 200e-6, 1500e-6, q\n"
+        "aortic_root, C, const, 1e-9, 5e-8, C\n"
+        "global, E_lv_A, const, 1e8, 5e8, E\n"
+    )
+    out = calibration_mod._read_interrupted_best_params(str(tmp_path), str(csv))
+    assert out == {"global/q_lv_init": 1.5, "aortic_root/C": 2.5e-8, "global/E_lv_A": 3e8}
+
+
+def test_read_interrupted_best_params_none_on_mismatch_or_absent(tmp_path):
+    import numpy as np
+
+    # No params_path / no npy -> None (never a misaligned guess).
+    assert calibration_mod._read_interrupted_best_params(str(tmp_path), None) is None
+    csv = tmp_path / "p.csv"
+    csv.write_text("vessel_name, param_name, param_type, min, max, name_for_plotting\n"
+                   "g, a, const, 0, 1, a\n")
+    assert calibration_mod._read_interrupted_best_params(str(tmp_path), str(csv)) is None
+    # Count mismatch (e.g. tied params) -> None, not a misaligned dict.
+    sub = tmp_path / "sp_minimize_model_obs"
+    sub.mkdir()
+    np.save(sub / "best_param_vals.npy", np.array([1.0, 2.0]))  # 2 values, 1 row
+    assert calibration_mod._read_interrupted_best_params(str(tmp_path), str(csv)) is None
+
+
+def test_cancelled_run_best_is_captured_and_reusable(tmp_path):
+    """End-to-end (#83): finalising a cancelled job recovers its best-so-far, and
+    last_completed_best_params then returns it so a new run can continue from it."""
+    import numpy as np
+
+    out = tmp_path / "out"
+    sub = out / "genetic_algorithm_m_obs"
+    sub.mkdir(parents=True)
+    np.save(sub / "best_param_vals.npy", np.array([1.5, 2.0]))
+    csv = tmp_path / "p.csv"
+    csv.write_text("vessel_name, param_name, param_type, min, max, name_for_plotting\n"
+                   "global, a, const, 0, 10, a\n"
+                   "aortic, b, const, 0, 10, b\n")
+
+    mgr = calibration_mod.CalibrationManager()
+    job = calibration_mod.CalibrationJob("j1", str(out), model_id="m", params_path=str(csv))
+    job.state = "cancelled"  # user stopped it partway
+    mgr._job = job
+    mgr._finalize(job, code=-15)  # subprocess terminated
+
+    assert job.state == "cancelled"  # still cancelled...
+    assert job.best_params == {"global/a": 1.5, "aortic/b": 2.0}  # ...but best recovered
+    assert mgr.last_completed_best_params("m") == {"global/a": 1.5, "aortic/b": 2.0}
+    assert mgr.last_completed_best_params("other-model") is None

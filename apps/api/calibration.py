@@ -141,6 +141,39 @@ HISTORY_FILES = (
     MULTISTART_PARAM_FILE,
 )
 
+#: CA writes the *actual* best-so-far parameter vector here, incrementally (each time
+#: the optimiser finds a new best — see circulatory_autogen optimisers.py). So it
+#: exists even when a run is stopped early, which is what lets a cancelled
+#: calibration be continued from (#83).
+BEST_PARAM_VALS_FILE = "best_param_vals.npy"
+
+
+def _read_interrupted_best_params(output_dir: str, params_path: str | None) -> dict | None:
+    """Best-so-far params of a run that ended early, mapped to ``{qname: value}``.
+
+    Reads CA's incrementally-saved :data:`BEST_PARAM_VALS_FILE` (a bare value array,
+    ordered as the params_for_id rows) and pairs it with the qnames parsed from the
+    params CSV. Returns None if the file/params are missing or the counts don't line
+    up (e.g. tied params grouped by CA), so a misaligned guess is never returned.
+    Best-effort — never raises.
+    """
+    if not params_path:
+        return None
+    npy = _find_history_file(output_dir, BEST_PARAM_VALS_FILE)
+    if not npy:
+        return None
+    try:
+        import numpy as np  # noqa: E402 (heavy; only on this recovery path)
+        from params_for_id import parse_params_for_id  # noqa: E402
+
+        vals = np.load(npy).reshape(-1)
+        qnames = [e.qname for e in parse_params_for_id(Path(params_path).read_bytes())]
+        if not qnames or len(qnames) != len(vals):
+            return None
+        return {q: float(v) for q, v in zip(qnames, vals)}
+    except Exception:  # noqa: BLE001 - a best-effort recovery must never fail a run
+        return None
+
 
 def _find_history_file(output_dir: str, name: str) -> str | None:
     """Locate a history CSV under output_dir, tolerating the ``<case_type>``
@@ -424,10 +457,14 @@ def list_python_interpreters(refresh: bool = False) -> list[dict]:
 
 
 class CalibrationJob:
-    def __init__(self, job_id: str, output_dir: str, model_id: str | None = None):
+    def __init__(self, job_id: str, output_dir: str, model_id: str | None = None,
+                 params_path: str | None = None):
         self.id = job_id
         self.output_dir = output_dir
         self.model_id = model_id
+        # The params_for_id CSV, so a cancelled run's best-so-far (best_param_vals.npy,
+        # a bare value array) can be mapped back to {qname: value} — see #83.
+        self.params_path = params_path
         self.lines: list[str] = []
         self.state = "running"  # running | done | error | cancelled
         self.best_params: dict | None = None
@@ -462,10 +499,16 @@ class CalibrationManager:
         return job is not None and job.state == "running"
 
     def last_completed_best_params(self, model_id: str) -> dict | None:
-        """Best-fit params of the most recent completed calibration for ``model_id``
-        (for the UQ tab to reuse), or None if none has completed for it."""
+        """Best-fit params of the most recent finished calibration for ``model_id``,
+        for reuse as a start point / nominal (sensitivity 'best_fit', UQ, and #83's
+        'start from previous best fit'). ``None`` if none is available.
+
+        A **cancelled** run counts too, as long as its best-so-far was recovered
+        (:func:`_read_interrupted_best_params`) — that's what lets a calibration
+        stopped partway be continued from. A still-running job never qualifies.
+        """
         job = self._job
-        if job is None or job.model_id != model_id or job.state != "done":
+        if job is None or job.model_id != model_id or job.state not in ("done", "cancelled"):
             return None
         return job.best_params or None
 
@@ -509,7 +552,9 @@ class CalibrationManager:
             with open(config_path, "w") as fh:
                 json.dump(config, fh)
 
-            job = CalibrationJob(uuid.uuid4().hex, output_dir, config.get("model_id"))
+            job = CalibrationJob(
+                uuid.uuid4().hex, output_dir, config.get("model_id"), config.get("params_path"),
+            )
             env = subprocess_env()
             job.proc = subprocess.Popen(
                 self.build_command(config, config_path),
@@ -537,6 +582,9 @@ class CalibrationManager:
     def _finalize(self, job: CalibrationJob, code: int) -> None:
         with job.lock:
             if job.state == "cancelled":
+                # Stopped early — recover the best-so-far so it can be continued
+                # from (#83). Never overrides the cancelled state.
+                job.best_params = _read_interrupted_best_params(job.output_dir, job.params_path)
                 return
             results = os.path.join(job.output_dir, "results.json")
             if code == 0 and os.path.exists(results):
