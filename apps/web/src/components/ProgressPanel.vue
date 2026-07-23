@@ -144,6 +144,18 @@ function setMetric(m) {
   metric.value = m
 }
 
+// Top-chart y-axis scale, user-toggleable. Cost spans orders of magnitude, so log
+// is the default; the gradient magnitude decays toward 0 (which a log scale drops),
+// so switch the default to linear when the gradient is shown. An explicit user
+// choice sticks until they change it.
+const yScaleChoice = ref(null) // null = follow the per-metric default; else 'log' | 'linear'
+const yScale = computed(
+  () => yScaleChoice.value ?? (activeMetric.value === 'gradient' ? 'linear' : 'log'),
+)
+function setYScale(s) {
+  yScaleChoice.value = s
+}
+
 // Gradient magnitude plotted exactly like the cost: one line per start for
 // multi-start, a single line for single-start (no top-10 band — L-BFGS-B has a
 // single trajectory).
@@ -267,12 +279,15 @@ const costOptions = computed(() => ({
       // Iterations/generations are whole numbers — no fractional ticks.
       ticks: { stepSize: 1, precision: 0 },
     },
-    // Cost spans orders of magnitude (log); the gradient magnitude decays toward
-    // 0, which a log scale can't render, so plot it linearly.
-    y:
-      activeMetric.value === 'gradient'
-        ? { type: 'linear', title: { display: true, text: 'cost gradient (|grad|∞)' } }
-        : { type: 'logarithmic', title: { display: true, text: 'cost' } },
+    // Log or linear per the user's y-axis toggle (default: log for cost, linear
+    // for the gradient magnitude, which decays toward 0 a log scale can't render).
+    y: {
+      type: yScale.value === 'log' ? 'logarithmic' : 'linear',
+      title: {
+        display: true,
+        text: activeMetric.value === 'gradient' ? 'cost gradient (|grad|∞)' : 'cost',
+      },
+    },
   },
   plugins: { legend: { display: true, position: 'bottom' } },
 }))
@@ -360,6 +375,25 @@ const paramOptions = {
               Gradient
             </button>
           </div>
+          <!-- Y-axis scale: log (default for cost) or linear. -->
+          <div class="metric-toggle" data-testid="yscale-toggle">
+            <button
+              type="button"
+              data-testid="yscale-log"
+              :class="{ active: yScale === 'log' }"
+              @click="setYScale('log')"
+            >
+              Log
+            </button>
+            <button
+              type="button"
+              data-testid="yscale-linear"
+              :class="{ active: yScale === 'linear' }"
+              @click="setYScale('linear')"
+            >
+              Linear
+            </button>
+          </div>
         </div>
         <div class="chart-box">
           <Line :data="displayData" :options="costOptions" />
@@ -396,8 +430,11 @@ const paramOptions = {
 .chart-head {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 0.5rem;
+}
+/* Push the toggles to the right; the heading takes the remaining space. */
+.chart-head h3 {
+  margin-right: auto;
 }
 .metric-toggle {
   display: inline-flex;

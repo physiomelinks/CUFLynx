@@ -152,6 +152,35 @@ describe('ProgressPanel', () => {
     expect(wrapper.vm.displayData.datasets[0].data).toEqual([2.0, 1.0, 0.02])
   })
 
+  it('test_y_axis_toggle_switches_between_log_and_linear', async () => {
+    const wrapper = mount(ProgressPanel, {
+      props: {
+        costHistory: [[0.9], [0.4], [0.1]],
+        gradHistory: [[1.0], [0.5], [0.01]],
+      },
+    })
+    // Cost defaults to a logarithmic y-axis.
+    expect(wrapper.vm.costOptions.scales.y.type).toBe('logarithmic')
+    // Toggle to linear.
+    await wrapper.find('[data-testid="yscale-linear"]').trigger('click')
+    expect(wrapper.vm.costOptions.scales.y.type).toBe('linear')
+    // Back to log.
+    await wrapper.find('[data-testid="yscale-log"]').trigger('click')
+    expect(wrapper.vm.costOptions.scales.y.type).toBe('logarithmic')
+  })
+
+  it('test_gradient_metric_defaults_to_linear_y_but_can_be_toggled_to_log', async () => {
+    const wrapper = mount(ProgressPanel, {
+      props: { costHistory: [[0.9], [0.4]], gradHistory: [[1.0], [0.01]] },
+    })
+    await wrapper.find('[data-testid="metric-gradient"]').trigger('click')
+    // Gradient decays toward 0, so linear by default.
+    expect(wrapper.vm.costOptions.scales.y.type).toBe('linear')
+    // The user can still force log.
+    await wrapper.find('[data-testid="yscale-log"]').trigger('click')
+    expect(wrapper.vm.costOptions.scales.y.type).toBe('logarithmic')
+  })
+
   it('test_gradient_toggle_plots_one_line_per_start_for_multi_start', async () => {
     const wrapper = mount(ProgressPanel, {
       props: {
