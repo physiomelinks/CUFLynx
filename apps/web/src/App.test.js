@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { nextTick } from 'vue'
 import { shallowMount, flushPromises } from '@vue/test-utils'
 
@@ -120,35 +120,55 @@ describe('App.vue', () => {
   })
 
 
-  // The RHS import column (model / obs_data / params uploads) can collapse off
-  // the right edge once those files are in, freeing width for plots/analysis.
-  describe('collapsible RHS import column', () => {
-    it('starts expanded, and the edge handle is always present', () => {
+  // The RHS import column (model / obs_data / params uploads) is resized by a
+  // draggable divider: drag it to resize, drag fully right to hide, drag the tab
+  // (or double-click) to bring it back. Frees width for plots/analysis.
+  describe('resizable RHS import column', () => {
+    const dragTo = async (wrapper, clientX) => {
+      await wrapper.find('[data-testid="rhs-handle"]').trigger('mousedown')
+      window.dispatchEvent(new MouseEvent('mousemove', { clientX }))
+      window.dispatchEvent(new MouseEvent('mouseup'))
+      await nextTick()
+    }
+
+    beforeEach(() => localStorage.removeItem('cuflynx-rhs-width'))
+
+    it('starts expanded, and the drag divider is always present', () => {
       const wrapper = shallowMount(App)
-      const handle = wrapper.find('[data-testid="rhs-handle"]')
-      const column = wrapper.find('[data-testid="rhs-column"]')
-      expect(handle.exists()).toBe(true)
-      expect(column.classes()).not.toContain('collapsed')
+      expect(wrapper.find('[data-testid="rhs-handle"]').exists()).toBe(true)
+      expect(wrapper.find('[data-testid="rhs-column"]').classes()).not.toContain('collapsed')
+      expect(wrapper.vm.rhsWidth).toBeGreaterThan(0)
     })
 
-    it('clicking the handle toggles the collapsed class on the column', async () => {
+    it('dragging the divider resizes the column width', async () => {
       const wrapper = shallowMount(App)
-      const handle = wrapper.find('[data-testid="rhs-handle"]')
-
-      await handle.trigger('click')
-      expect(wrapper.vm.rhsCollapsed).toBe(true)
-      expect(wrapper.find('[data-testid="rhs-column"]').classes()).toContain('collapsed')
-
-      await handle.trigger('click')
-      expect(wrapper.vm.rhsCollapsed).toBe(false)
+      await dragTo(wrapper, window.innerWidth - 350) // 350px from the right edge
+      expect(wrapper.vm.rhsWidth).toBe(350)
       expect(wrapper.find('[data-testid="rhs-column"]').classes()).not.toContain('collapsed')
     })
 
-    it('reflects programmatic state changes on the column class', async () => {
+    it('dragging fully to the right edge collapses (hides) the column', async () => {
       const wrapper = shallowMount(App)
-      wrapper.vm.rhsCollapsed = true
-      await nextTick()
+      await dragTo(wrapper, window.innerWidth - 10) // past the snap threshold
+      expect(wrapper.vm.rhsWidth).toBe(0)
+      expect(wrapper.vm.rhsCollapsed).toBe(true)
       expect(wrapper.find('[data-testid="rhs-column"]').classes()).toContain('collapsed')
+    })
+
+    it('the tab drags the hidden column back out, and double-click restores it', async () => {
+      const wrapper = shallowMount(App)
+      await dragTo(wrapper, window.innerWidth - 10) // hide
+      expect(wrapper.vm.rhsCollapsed).toBe(true)
+
+      // drag the tab back out
+      await dragTo(wrapper, window.innerWidth - 300)
+      expect(wrapper.vm.rhsWidth).toBe(300)
+      expect(wrapper.vm.rhsCollapsed).toBe(false)
+
+      // hide again, then double-click the tab to restore the default width
+      await dragTo(wrapper, window.innerWidth - 10)
+      await wrapper.find('[data-testid="rhs-handle"]').trigger('dblclick')
+      expect(wrapper.vm.rhsWidth).toBe(300)
     })
   })
 
