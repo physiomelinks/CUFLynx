@@ -36,6 +36,7 @@ const props = defineProps({
 const emit = defineEmits(['update:activeExp'])
 
 const newParam = ref('')
+const paramSearch = ref('')
 
 const activeExperiment = computed(() => props.model.experiments[props.activeExp] ?? null)
 const subexpCount = computed(() => activeExperiment.value?.subexps.length ?? 0)
@@ -43,6 +44,13 @@ const paramQnames = computed(() => Object.keys(props.model.params))
 const availableNames = computed(() =>
   props.allNames.filter((n) => !(n in props.model.params)),
 )
+// Candidate params offered in the picker, filtered by the search box (qname
+// substring, case-insensitive) so a long parameter list stays navigable.
+const filteredAvailableNames = computed(() => {
+  const q = paramSearch.value.trim().toLowerCase()
+  if (!q) return availableNames.value
+  return availableNames.value.filter((n) => n.toLowerCase().includes(q))
+})
 
 // Compile the working model to a real protocol_info and reuse controlledSeries so
 // the plot shows exactly what will be saved (ramp/pulse compiled to traces).
@@ -216,9 +224,16 @@ function shapeIcon(cell) {
 
       <!-- params_to_change -->
       <div class="pie-add-param">
+        <input
+          v-model="paramSearch"
+          type="text"
+          class="pie-param-search"
+          placeholder="search…"
+          data-testid="param-search"
+        />
         <select v-model="newParam" data-testid="param-select">
           <option value="">add controlled parameter…</option>
-          <option v-for="n in availableNames" :key="n" :value="n">{{ n }}</option>
+          <option v-for="n in filteredAvailableNames" :key="n" :value="n">{{ n }}</option>
         </select>
         <Button label="Add" size="small" data-testid="add-param" :disabled="!newParam" @click="onAddParam" />
       </div>
@@ -418,6 +433,11 @@ function shapeIcon(cell) {
 }
 .pie-add-param {
   align-items: flex-end;
+}
+.pie-param-search {
+  font-size: 0.8rem;
+  padding: 0.25rem 0.4rem;
+  min-width: 8rem;
 }
 /* "+ subexp" floats at the top-right of the plot area. */
 .pie-plotwrap {

@@ -22,6 +22,7 @@ const emit = defineEmits(['update:visible', 'saved'])
 const rows = ref([])
 const saving = ref(false)
 const error = ref('')
+const search = ref('')
 
 // Rebuild the merged row set each time the dialog opens, so it reflects the
 // latest loaded CSV + model params without stale edits leaking between opens.
@@ -31,10 +32,24 @@ watch(
     if (v) {
       rows.value = mergedRows(props.currentParams, props.modelVariables)
       error.value = ''
+      search.value = ''
     }
   },
   { immediate: true },
 )
+
+// Rows shown in the list, filtered by the search box (qname / plot label,
+// case-insensitive). Filtering is display-only: `rows` stays the source of
+// truth for inclusion and saving, so hidden rows keep their edits.
+const visibleRows = computed(() => {
+  const q = search.value.trim().toLowerCase()
+  if (!q) return rows.value
+  return rows.value.filter(
+    (r) =>
+      r.qname.toLowerCase().includes(q) ||
+      (r.name_for_plotting || '').toLowerCase().includes(q),
+  )
+})
 
 function onNum(row, field, value) {
   row[field] = value === '' ? null : Number(value)
@@ -112,6 +127,14 @@ async function onSave() {
       {{ error }}
     </Message>
 
+    <input
+      v-model="search"
+      type="text"
+      class="ep-search"
+      placeholder="Search parameters…"
+      data-testid="ep-search"
+    />
+
     <div class="ep-head">
       <span class="ep-inc">Use</span>
       <span class="ep-name">Parameter</span>
@@ -122,7 +145,7 @@ async function onSave() {
 
     <ul class="ep-list">
       <li
-        v-for="row in rows"
+        v-for="row in visibleRows"
         :key="row.qname"
         :class="{ invalid: rowInvalid(row) }"
         data-testid="ep-row"
@@ -186,6 +209,13 @@ async function onSave() {
 .ep-hint-info:hover,
 .ep-hint-info:focus {
   color: #7db3e0;
+}
+.ep-search {
+  width: 100%;
+  box-sizing: border-box;
+  margin-bottom: 0.5rem;
+  padding: 0.35rem 0.5rem;
+  font-size: 0.82rem;
 }
 .ep-head,
 .ep-list li {

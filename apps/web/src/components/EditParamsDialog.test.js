@@ -67,6 +67,40 @@ describe('EditParamsDialog', () => {
     expect(wrapper.text()).toContain('1 included')
   })
 
+  it('filters the visible rows by the search box (qname / plot label)', async () => {
+    const wrapper = mountDialog()
+    expect(wrapper.findAll('[data-testid="ep-row"]')).toHaveLength(2)
+
+    const search = wrapper.find('[data-testid="ep-search"]')
+    await search.setValue('v/b')
+    let rows = wrapper.findAll('[data-testid="ep-row"]')
+    expect(rows).toHaveLength(1)
+    expect(rows[0].text()).toContain('v/b')
+
+    // case-insensitive, and also matches the plot label (\alpha on v/a)
+    await search.setValue('ALPHA')
+    rows = wrapper.findAll('[data-testid="ep-row"]')
+    expect(rows).toHaveLength(1)
+    expect(rows[0].text()).toContain('v/a')
+
+    // clearing restores the full list
+    await search.setValue('')
+    expect(wrapper.findAll('[data-testid="ep-row"]')).toHaveLength(2)
+  })
+
+  it('keeps a filtered-out row included and saved', async () => {
+    uploadParamsForId.mockResolvedValue({ params: [] })
+    const wrapper = mountDialog()
+    // v/a is included by default; hide it via search — inclusion is unaffected.
+    await wrapper.find('[data-testid="ep-search"]').setValue('v/b')
+    expect(wrapper.find('[data-testid="ep-row"]').text()).toContain('v/b')
+    expect(wrapper.text()).toContain('1 included')
+    // saving still proceeds (the hidden-but-included v/a is written to the CSV).
+    await wrapper.find('[data-testid="ep-save"]').trigger('click')
+    await flushPromises()
+    expect(uploadParamsForId).toHaveBeenCalledOnce()
+  })
+
   it('disables Save when nothing is selected', async () => {
     const wrapper = mountDialog()
     await wrapper.findAll('input[type="checkbox"]')[0].setValue(false)
