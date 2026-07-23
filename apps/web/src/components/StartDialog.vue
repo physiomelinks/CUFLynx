@@ -1,7 +1,7 @@
 <script setup>
 import Dialog from 'primevue/dialog'
 import Button from 'primevue/button'
-import { PHLYNX_URL, EXAMPLE_MODELS } from '../lib/examples'
+import { PHLYNX_URL, PMR_URL, EXAMPLE_MODELS } from '../lib/examples'
 
 defineProps({
   visible: { type: Boolean, default: false },
@@ -37,6 +37,22 @@ function chooseExample(example) {
           data-testid="start-phlynx-link"
         >
           <i class="pi pi-external-link" /> Open PhLynx
+        </a>
+      </section>
+
+      <section class="start-section">
+        <h3>Download from the Physiome Model Repository</h3>
+        <p class="start-hint">
+          Browse the PMR and download a published CellML model, then drop the file here.
+        </p>
+        <a
+          :href="PMR_URL"
+          target="_blank"
+          rel="noopener"
+          class="phlynx-link"
+          data-testid="start-pmr-link"
+        >
+          <i class="pi pi-external-link" /> Open the Physiome Model Repository
         </a>
       </section>
 

@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { mount } from '@vue/test-utils'
 
 import StartDialog from './StartDialog.vue'
-import { PHLYNX_URL, EXAMPLE_MODELS } from '../lib/examples'
+import { PHLYNX_URL, PMR_URL, EXAMPLE_MODELS } from '../lib/examples'
 
 // Render the Dialog's default slot inline when visible so the body is testable
 // without PrimeVue's overlay/teleport machinery.
@@ -19,11 +19,15 @@ const ButtonStub = {
 const stubs = { Dialog: DialogStub, Button: ButtonStub }
 
 describe('StartDialog', () => {
-  it('lists the 3compartment example and links to PhLynx', () => {
+  it('lists the 3compartment example and links to PhLynx and the PMR', () => {
     const wrapper = mount(StartDialog, { props: { visible: true }, global: { stubs } })
     const link = wrapper.find('[data-testid="start-phlynx-link"]')
     expect(link.exists()).toBe(true)
     expect(link.attributes('href')).toBe(PHLYNX_URL)
+    // Download-from-PMR option links to the Physiome Model Repository.
+    const pmr = wrapper.find('[data-testid="start-pmr-link"]')
+    expect(pmr.exists()).toBe(true)
+    expect(pmr.attributes('href')).toBe(PMR_URL)
     // Every data-driven example gets a button; the 3compartment one is present.
     expect(wrapper.find('[data-testid="start-example-3compartment"]').exists()).toBe(true)
     expect(wrapper.findAll('.example-list li')).toHaveLength(EXAMPLE_MODELS.length)
