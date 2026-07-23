@@ -217,18 +217,18 @@ describe('FileImport', () => {
     expect(wrapper.find('[data-testid="edit-obs-dialog"]').exists()).toBe(true)
   })
 
-  // Issue #91: the box beside the CellML dropzone reads "Start" until a model
+  // Issue #91: the box beside the CellML dropzone reads "Create" until a model
   // is loaded, then "Edit".
-  it('shows Start with no model and Edit with a model', async () => {
+  it('shows Create with no model and Edit with a model', async () => {
     const wrapper = mount(FileImport, { global: { stubs } }) // no modelId
     const btn = wrapper.find('[data-testid="start-edit"]')
     expect(btn.exists()).toBe(true)
-    expect(btn.text()).toBe('Start')
+    expect(btn.text()).toBe('Create')
     await wrapper.setProps({ modelId: 'abc' })
     expect(wrapper.find('[data-testid="start-edit"]').text()).toBe('Edit')
   })
 
-  it('Start opens the dialog, and picking the example runs the load flow', async () => {
+  it('Create opens the dialog, and picking the example runs the load flow', async () => {
     const file = new File(['<model/>'], '3compartment_flat.cellml', {
       type: 'application/xml',
     })

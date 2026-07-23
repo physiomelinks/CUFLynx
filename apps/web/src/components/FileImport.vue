@@ -248,15 +248,15 @@ async function onParamsDrop(event) {
         <input type="file" accept=".cellml,.xml" multiple @change="onCellmlDrop" />
       </label>
       <Button
-        :label="modelId ? 'Edit' : 'Start'"
-        :icon="modelId ? 'pi pi-pencil' : 'pi pi-play'"
+        :label="modelId ? 'Edit' : 'Create'"
+        :icon="modelId ? 'pi pi-pencil' : 'pi pi-plus'"
         size="small"
         class="params-edit-btn"
         data-testid="start-edit"
         :title="
           modelId
             ? 'Edit the current model in PhLynx'
-            : 'Start from an example model or build one in PhLynx'
+            : 'Create a model: start from an example or build one in PhLynx'
         "
         @click="onStartEdit"
       />

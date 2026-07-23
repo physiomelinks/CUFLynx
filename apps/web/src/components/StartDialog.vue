@@ -18,7 +18,7 @@ function chooseExample(example) {
   <Dialog
     :visible="visible"
     modal
-    header="Start a model"
+    header="Create a model"
     :style="{ width: '30rem' }"
     data-testid="start-dialog"
     @update:visible="emit('update:visible', $event)"
