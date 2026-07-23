@@ -817,16 +817,17 @@ def calibration_run(req: CalibrationRequest) -> dict:
             detail=f"python interpreter not found or not executable: {python_path}",
         )
 
-    # start_from == 'best_fit' continues from the previous completed calibration's
-    # best fit (#83); the backend supplies those values so the UI needn't carry them.
+    # start_from == 'best_fit' continues from the previous calibration's best fit
+    # (#83) — including one you stopped early (its best-so-far is recovered). The
+    # backend supplies those values so the UI needn't carry them.
     best_fit_params = None
     if req.settings.get("start_from") == "best_fit":
         best_fit_params = calibration.last_completed_best_params(req.model_id)
         if not best_fit_params:
             raise HTTPException(
                 status_code=422,
-                detail="cannot start from the previous best fit: no completed "
-                "calibration exists yet for this model",
+                detail="cannot start from the previous best fit: no finished "
+                "calibration (completed or stopped) is available for this model yet",
             )
 
     configured = (req.settings.get("config_outputs_dir") or "").strip()

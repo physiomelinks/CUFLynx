@@ -796,3 +796,65 @@ def test_sp_minimize_starts_from_current_param_values(tmp_path, requires_simulat
     assert "Starting gradient descent from current parameter values" in out
     assert "4/4 params overridden" in out
     assert isinstance(result.get("params"), dict)
+
+
+# --- #83: a calibration stopped early can still be continued from ---
+def test_read_interrupted_best_params_maps_npy_to_qnames(tmp_path):
+    """CA saves the actual best-so-far to best_param_vals.npy incrementally, so a
+    cancelled run's best is recoverable and mapped to {qname: value} via the CSV."""
+    import numpy as np
+
+    sub = tmp_path / "genetic_algorithm_model_obs"
+    sub.mkdir()
+    np.save(sub / "best_param_vals.npy", np.array([1.5, 2.5e-8, 3e8]))
+    csv = tmp_path / "params.csv"
+    csv.write_text(
+        "vessel_name, param_name, param_type, min, max, name_for_plotting\n"
+        "global, q_lv_init, const, 200e-6, 1500e-6, q\n"
+        "aortic_root, C, const, 1e-9, 5e-8, C\n"
+        "global, E_lv_A, const, 1e8, 5e8, E\n"
+    )
+    out = calibration_mod._read_interrupted_best_params(str(tmp_path), str(csv))
+    assert out == {"global/q_lv_init": 1.5, "aortic_root/C": 2.5e-8, "global/E_lv_A": 3e8}
+
+
+def test_read_interrupted_best_params_none_on_mismatch_or_absent(tmp_path):
+    import numpy as np
+
+    # No params_path / no npy -> None (never a misaligned guess).
+    assert calibration_mod._read_interrupted_best_params(str(tmp_path), None) is None
+    csv = tmp_path / "p.csv"
+    csv.write_text("vessel_name, param_name, param_type, min, max, name_for_plotting\n"
+                   "g, a, const, 0, 1, a\n")
+    assert calibration_mod._read_interrupted_best_params(str(tmp_path), str(csv)) is None
+    # Count mismatch (e.g. tied params) -> None, not a misaligned dict.
+    sub = tmp_path / "sp_minimize_model_obs"
+    sub.mkdir()
+    np.save(sub / "best_param_vals.npy", np.array([1.0, 2.0]))  # 2 values, 1 row
+    assert calibration_mod._read_interrupted_best_params(str(tmp_path), str(csv)) is None
+
+
+def test_cancelled_run_best_is_captured_and_reusable(tmp_path):
+    """End-to-end (#83): finalising a cancelled job recovers its best-so-far, and
+    last_completed_best_params then returns it so a new run can continue from it."""
+    import numpy as np
+
+    out = tmp_path / "out"
+    sub = out / "genetic_algorithm_m_obs"
+    sub.mkdir(parents=True)
+    np.save(sub / "best_param_vals.npy", np.array([1.5, 2.0]))
+    csv = tmp_path / "p.csv"
+    csv.write_text("vessel_name, param_name, param_type, min, max, name_for_plotting\n"
+                   "global, a, const, 0, 10, a\n"
+                   "aortic, b, const, 0, 10, b\n")
+
+    mgr = calibration_mod.CalibrationManager()
+    job = calibration_mod.CalibrationJob("j1", str(out), model_id="m", params_path=str(csv))
+    job.state = "cancelled"  # user stopped it partway
+    mgr._job = job
+    mgr._finalize(job, code=-15)  # subprocess terminated
+
+    assert job.state == "cancelled"  # still cancelled...
+    assert job.best_params == {"global/a": 1.5, "aortic/b": 2.0}  # ...but best recovered
+    assert mgr.last_completed_best_params("m") == {"global/a": 1.5, "aortic/b": 2.0}
+    assert mgr.last_completed_best_params("other-model") is None
