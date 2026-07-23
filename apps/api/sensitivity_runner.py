@@ -155,6 +155,8 @@ def _build_local_engine(config: dict, settings: dict, solver_info: dict, model_t
         DEBUG=bool(settings.get("DEBUG", False)),
         param_id_output_dir=config["output_dir"],
         resources_dir=os.path.dirname(config["params_path"]),
+        operation_funcs_external_path=config.get("operation_funcs_external_path"),
+        cost_funcs_external_path=config.get("cost_funcs_external_path"),
     )
 
 
@@ -198,6 +200,8 @@ def _calibrate_for_nominal(config: dict, settings: dict, solver_info: dict, mode
         DEBUG=bool(settings.get("DEBUG", False)),
         param_id_output_dir=config["output_dir"],
         resources_dir=os.path.dirname(config["params_path"]),
+        operation_funcs_external_path=config.get("operation_funcs_external_path"),
+        cost_funcs_external_path=config.get("cost_funcs_external_path"),
     )
     param_id.run()
     return np.asarray(param_id.get_best_param_vals(), dtype=float)
@@ -236,6 +240,8 @@ def run(config: dict) -> dict:
         dt=float(settings.get("dt", 0.01)),
         param_id_obs_path=config["obs_path"],
         params_for_id_path=config["params_path"],
+        operation_funcs_external_path=config.get("operation_funcs_external_path"),
+        cost_funcs_external_path=config.get("cost_funcs_external_path"),
     )
 
     # Local (derivative-based) SA runs single-process; no Sobol sampling / MPI.

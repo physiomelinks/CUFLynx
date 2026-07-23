@@ -74,26 +74,25 @@ def _introspect() -> dict:
     import operation_funcs  # noqa: E402 (CA module, resolved via sys.path)
     import cost_funcs_user  # noqa: E402
 
-    # numpy mode keeps this light (no casadi/myokit). Merge in CUFLynx-authored
-    # external funcs (issue #104) so the editor shows them even before CA #303
-    # loads them itself — they live outside CA's tree now.
-    ext_ops, ext_costs = _external_funcs()
-    op_funcs = {**operation_funcs.get_operation_funcs_dict_for_mode("numpy"), **ext_ops}
+    # numpy mode keeps this light (no casadi/myokit). CUFLynx-authored funcs live
+    # in external files (issue #104); hand their paths to CA's builders so the
+    # merged set — user funcs included, with correct @differentiable / @is_MLE
+    # flags — is discovered by CA itself (CA #303).
+    op_path, cost_path = _external_func_paths()
+    op_funcs = _op_funcs_dict(operation_funcs, op_path)
     operations = sorted(op_funcs)
     if "" not in operations:
         operations = [""] + operations  # allow "no operation"
-    cost_types = sorted(cost_funcs_user.get_cost_funcs_dict_for_mode("numpy"))
+    cost_types = sorted(_cost_funcs_dict(cost_funcs_user, cost_path))
     # Defensive: some CA builds also enumerate the ``cost_func_metadata`` accessor
     # itself as if it were a cost function — it isn't, so keep it out of the
     # dropdown (and its self-referential metadata entry never renders).
-    cost_types = sorted((set(cost_types) | set(ext_costs)) - set(_NON_COST_FUNC_NAMES))
+    cost_types = [c for c in cost_types if c not in _NON_COST_FUNC_NAMES]
     data_types, plot_types = _introspect_schema()
-    metadata = _introspect_cost_func_metadata(cost_funcs_user)
-    metadata.update(_external_cost_metadata(ext_costs))
     return {
         "operations": operations,
         "cost_types": cost_types,
-        "cost_func_metadata": metadata,
+        "cost_func_metadata": _introspect_cost_func_metadata(cost_funcs_user, cost_path),
         # op name -> @differentiable, so the editor can flag data_items whose
         # operation blocks AD gradients. Empty on an older CA without the marker.
         "differentiable_operations": _introspect_operation_differentiability(op_funcs),
@@ -102,33 +101,31 @@ def _introspect() -> dict:
     }
 
 
-def _external_funcs() -> tuple[dict, dict]:
-    """(operation funcs, cost funcs) authored in CUFLynx's external files, or ({}, {})."""
+def _external_func_paths() -> tuple:
+    """(operation path, cost path) for the CUFLynx-authored external files, or
+    (None, None) — passed to CA's builders so it registers the user funcs."""
     try:
         import user_funcs
 
-        return user_funcs.external_funcs("operation"), user_funcs.external_funcs("cost")
-    except Exception:  # noqa: BLE001 - external funcs are best-effort
-        return {}, {}
+        return user_funcs.external_path("operation"), user_funcs.external_path("cost")
+    except Exception:  # noqa: BLE001 - external paths are best-effort
+        return None, None
 
 
-def _external_cost_metadata(funcs) -> dict:
-    """is_MLE / is_combiner / differentiable flags for external cost funcs, read
-    from the decorator-set attributes (mirrors CA's ``cost_func_metadata``)."""
+def _op_funcs_dict(operation_funcs, external_path):
+    """CA's operation dict incl. the external file. Falls back to the built-ins on
+    an older CA whose builder predates the ``external_path`` arg (CA #303)."""
     try:
-        from param_id.differentiable import is_circulatory_differentiable  # noqa: E402
-    except Exception:  # noqa: BLE001 - older CA without the marker
-        def is_circulatory_differentiable(_fn):
-            return False
+        return operation_funcs.get_operation_funcs_dict_for_mode("numpy", external_path=external_path)
+    except TypeError:  # older CA without the external_path parameter
+        return operation_funcs.get_operation_funcs_dict_for_mode("numpy")
 
-    return {
-        name: {
-            "is_MLE": bool(getattr(fn, "is_MLE", False)),
-            "is_combiner": bool(getattr(fn, "cost_combiner", False)),
-            "differentiable": bool(is_circulatory_differentiable(fn)),
-        }
-        for name, fn in funcs.items()
-    }
+
+def _cost_funcs_dict(cost_funcs_user, external_path):
+    try:
+        return cost_funcs_user.get_cost_funcs_dict_for_mode("numpy", external_path=external_path)
+    except TypeError:
+        return cost_funcs_user.get_cost_funcs_dict_for_mode("numpy")
 
 
 def _introspect_operation_differentiability(op_funcs) -> dict:
@@ -142,15 +139,21 @@ def _introspect_operation_differentiability(op_funcs) -> dict:
     return {name: bool(is_circulatory_differentiable(fn)) for name, fn in op_funcs.items()}
 
 
-def _introspect_cost_func_metadata(cost_funcs_user) -> dict:
+def _introspect_cost_func_metadata(cost_funcs_user, external_path=None) -> dict:
     """Per-cost-function flags (is_MLE / is_combiner / differentiable) from CA's
-    ``cost_func_metadata()``, so the obs-data editor can label cost types without
-    poking at function attributes. Best-effort: an older CA without the accessor
-    (or a partial payload) yields ``{}`` / defaults, leaving the plain cost_types
-    list working.
+    ``cost_func_metadata()`` — including CUFLynx's external cost funcs (CA #303) —
+    so the obs-data editor can label cost types without poking at function
+    attributes. Best-effort: an older CA without the accessor (or the
+    ``external_path`` arg, or a partial payload) yields ``{}`` / defaults, leaving
+    the plain cost_types list working.
     """
     try:
-        raw = cost_funcs_user.cost_func_metadata()
+        raw = cost_funcs_user.cost_func_metadata(external_path=external_path)
+    except TypeError:  # older CA without the external_path parameter
+        try:
+            raw = cost_funcs_user.cost_func_metadata()
+        except Exception:  # noqa: BLE001 - older CA without the accessor
+            return {}
     except Exception:  # noqa: BLE001 - older CA without the accessor
         return {}
     out = {}

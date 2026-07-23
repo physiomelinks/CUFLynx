@@ -125,6 +125,9 @@ def _make_param_id(config, settings, obs_path, *, mcmc, options_key, options):
         DEBUG=bool(settings.get("DEBUG", False)),
         param_id_output_dir=config["output_dir"],
         resources_dir=os.path.dirname(config["params_path"]),
+        # CUFLynx-authored operation/cost funcs loaded from external files (CA #303).
+        operation_funcs_external_path=config.get("operation_funcs_external_path"),
+        cost_funcs_external_path=config.get("cost_funcs_external_path"),
     )
     kwargs[options_key] = options
     return CVS0DParamID(**kwargs)

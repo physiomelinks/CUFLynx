@@ -32,18 +32,16 @@ VALID_COST = (
 @pytest.fixture
 def tmp_cfg(tmp_path, monkeypatch):
     """Point the config dir (where external func files live) at a tmp dir, and
-    pretend CA is configured so ``available`` is True. Env vars are cleaned up."""
+    pretend CA is configured so ``available`` is True."""
     monkeypatch.setattr(uf, "config_dir", lambda: tmp_path)
     monkeypatch.setattr(uf, "_circulatory_autogen_src", lambda: str(tmp_path / "ca" / "src"))
-    for env in ("OPERATION_FUNCS_EXTERNAL_PATH", "COST_FUNCS_EXTERNAL_PATH"):
-        monkeypatch.delenv(env, raising=False)
     return tmp_path
 
 
 # ---------------------------------------------------------------------------
 # save / read / external-file layout
 # ---------------------------------------------------------------------------
-def test_save_operation_writes_external_file_and_sets_env(tmp_cfg):
+def test_save_operation_writes_external_file_and_exposes_path(tmp_cfg):
     result = uf.save_user_func("operation", "spread", VALID_OP)
     assert [f["name"] for f in result["functions"]] == ["spread"]
 
@@ -55,11 +53,12 @@ def test_save_operation_writes_external_file_and_sets_env(tmp_cfg):
     # Imported (not defined) decorators so CA registers only the user func.
     assert "from param_id.differentiable import differentiable" in text
     assert "def differentiable(" not in text
-    # Env var points CA (and the subprocess runners) at the file.
-    assert os.environ["OPERATION_FUNCS_EXTERNAL_PATH"] == str(path)
+    # The path CUFLynx hands CA (config key operation_funcs_external_path; CA #303).
+    assert uf.external_path("operation") == str(path)
+    assert uf.external_paths()["operation_funcs_external_path"] == str(path)
 
 
-def test_save_cost_writes_separate_file_and_env(tmp_cfg):
+def test_save_cost_writes_separate_file_and_path(tmp_cfg):
     result = uf.save_user_func("cost", "my_cost", VALID_COST)
     assert [f["name"] for f in result["functions"]] == ["my_cost"]
 
@@ -68,9 +67,11 @@ def test_save_cost_writes_separate_file_and_env(tmp_cfg):
     text = path.read_text()
     assert 'CUFLYNX_COSTS = ["my_cost"]' in text
     assert "from cost_funcs_user import is_MLE, cost_combiner" in text
-    assert os.environ["COST_FUNCS_EXTERNAL_PATH"] == str(path)
-    # Operation and cost files are independent.
+    assert uf.external_path("cost") == str(path)
+    assert uf.external_paths()["cost_funcs_external_path"] == str(path)
+    # Operation and cost files are independent; no operation file was created.
     assert not (tmp_cfg / "user_funcs" / "operation_funcs_user.py").exists()
+    assert "operation_funcs_external_path" not in uf.external_paths()
 
 
 def test_does_not_write_into_ca_tree(tmp_cfg):
@@ -112,26 +113,17 @@ def test_multiple_preserve_order(tmp_cfg):
     assert [f["name"] for f in result["functions"]] == ["aaa", "bbb"]
 
 
-def test_delete_removes_and_clears_env_when_empty(tmp_cfg):
+def test_delete_removes(tmp_cfg):
     uf.save_user_func("operation", "aaa", VALID_OP.replace("spread", "aaa"))
     uf.save_user_func("operation", "bbb", VALID_OP.replace("spread", "bbb"))
-    assert "OPERATION_FUNCS_EXTERNAL_PATH" in os.environ
     result = uf.delete_user_func("operation", "aaa")
     assert [f["name"] for f in result["functions"]] == ["bbb"]
-    # Still one func left → env stays set (the file exists).
-    assert "OPERATION_FUNCS_EXTERNAL_PATH" in os.environ
     uf.delete_user_func("operation", "bbb")
-    # File is now empty of funcs but still present, so the env var stays pointed
-    # at it (harmless: no funcs to register).
+    # File is now empty of funcs but still present, so the path stays exposed
+    # (harmless: no funcs to register).
     assert (tmp_cfg / "user_funcs" / "operation_funcs_user.py").is_file()
     with pytest.raises(uf.UserFuncError):
         uf.delete_user_func("operation", "aaa")
-
-
-def test_apply_env_removes_var_when_file_absent(tmp_cfg, monkeypatch):
-    monkeypatch.setenv("OPERATION_FUNCS_EXTERNAL_PATH", "/stale/path.py")
-    uf.apply_env()
-    assert "OPERATION_FUNCS_EXTERNAL_PATH" not in os.environ
 
 
 # ---------------------------------------------------------------------------
@@ -196,9 +188,10 @@ def test_read_available_false_when_ca_unconfigured(tmp_cfg, monkeypatch):
     assert result["templates"]
 
 
-def test_external_funcs_empty_when_file_missing(tmp_cfg):
-    assert uf.external_funcs("operation") == {}
-    assert uf.external_funcs("cost") == {}
+def test_external_path_none_when_file_missing(tmp_cfg):
+    assert uf.external_path("operation") is None
+    assert uf.external_path("cost") is None
+    assert uf.external_paths() == {}
 
 
 # ---------------------------------------------------------------------------
@@ -270,9 +263,17 @@ def test_saved_op_appears_in_obs_options(tmp_path, monkeypatch):
     import engine
     import obs_options
 
+    import inspect
+
     real_src = Path(engine._circulatory_autogen_src())
     if not real_src.is_dir() or not _real_ca_importable():
         pytest.skip("real circulatory_autogen not importable")
+    import operation_funcs
+
+    if "external_path" not in inspect.signature(
+        operation_funcs.get_operation_funcs_dict_for_mode
+    ).parameters:
+        pytest.skip("circulatory_autogen lacks external-path support (#303)")
 
     monkeypatch.setattr(uf, "config_dir", lambda: tmp_path)
     purge = ("operation_funcs", "cost_funcs_user")

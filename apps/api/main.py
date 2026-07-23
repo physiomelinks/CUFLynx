@@ -59,8 +59,8 @@ from solver_options import (
 )
 from user_funcs import (
     UserFuncError,
-    apply_env as apply_user_funcs_env,
     delete_user_func,
+    external_path as user_func_path,
     read_user_funcs,
     save_user_func,
 )
@@ -262,10 +262,6 @@ def _restore_persisted_settings() -> None:
     if isinstance(seed, int) and not isinstance(seed, bool):
         global _analysis_seed
         _analysis_seed = seed
-
-    # Point CA at any previously-saved external operation/cost func files so the
-    # subprocess runners (which inherit os.environ) load them (CA #303).
-    apply_user_funcs_env()
 
 
 _restore_persisted_settings()
@@ -982,6 +978,9 @@ def calibration_run(req: CalibrationRequest) -> dict:
         "solver_info": dict(engine.solver_info),
         "obs_path": str(record.obs_path),
         "params_path": str(record.params_path),
+        # CUFLynx-authored operation/cost funcs; CA loads them from these paths (CA #303).
+        "operation_funcs_external_path": user_func_path("operation"),
+        "cost_funcs_external_path": user_func_path("cost"),
         "output_dir": output_dir,
         "file_prefix": record.meta.name or "model",
         "num_cores": int(req.settings.get("num_cores", 1) or 1),
@@ -1151,6 +1150,9 @@ def sensitivity_run(req: SensitivityRequest) -> dict:
         "solver_info": dict(engine.solver_info),
         "obs_path": str(record.obs_path),
         "params_path": str(record.params_path),
+        # CUFLynx-authored operation/cost funcs; CA loads them from these paths (CA #303).
+        "operation_funcs_external_path": user_func_path("operation"),
+        "cost_funcs_external_path": user_func_path("cost"),
         "output_dir": output_dir,
         "file_prefix": record.meta.name or "model",
         "num_cores": num_cores,
@@ -1276,6 +1278,9 @@ def uq_run(req: UQRequest) -> dict:
         "solver_info": dict(engine.solver_info),
         "obs_path": str(record.obs_path),
         "params_path": str(record.params_path),
+        # CUFLynx-authored operation/cost funcs; CA loads them from these paths (CA #303).
+        "operation_funcs_external_path": user_func_path("operation"),
+        "cost_funcs_external_path": user_func_path("cost"),
         "output_dir": output_dir,
         "file_prefix": record.meta.name or "model",
         "num_cores": int(req.settings.get("num_cores", 1) or 1),

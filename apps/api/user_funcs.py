@@ -11,22 +11,19 @@ single CUFLynx-managed file under the user config dir::
     <config_dir>/user_funcs/operation_funcs_user.py
     <config_dir>/user_funcs/cost_funcs_user.py
 
-CUFLynx points CA at these files with two environment variables — mirroring how
-``CIRCULATORY_AUTOGEN_SRC`` already selects the CA source for both the in-process
-engine and the subprocess runners::
+CUFLynx passes the file path to circulatory_autogen through CA's config keys
+``operation_funcs_external_path`` / ``cost_funcs_external_path`` (CA #303): the
+analysis runners include them in the run config (forwarded to ``CVS0DParamID`` /
+``SensitivityAnalysis``), and ``obs_options`` hands the same paths to CA's
+``get_operation_funcs_dict_for_mode`` / ``get_cost_funcs_dict_for_mode`` /
+``cost_func_metadata`` builders so the editor's dropdowns show the merged set.
+:func:`external_path` is the single source of a kind's path.
 
-    OPERATION_FUNCS_EXTERNAL_PATH
-    COST_FUNCS_EXTERNAL_PATH
-
-CA loads the files and registers their top-level funcs alongside its built-ins
-(circulatory_autogen #303). CA's registration only keeps funcs whose
-``__module__`` is the file itself, so the decorators we *import* (``differentiable``
-/ ``series_to_constant`` / ``is_MLE`` / ``cost_combiner``) are auto-excluded — we
-never define fallbacks for them (that would get them registered as funcs).
-
-Until CA #303 lands the *run* path is gated on it, but the obs_data editor's
-dropdowns stay populated because ``obs_options`` merges these external funcs into
-the discoverable options itself (see ``external_funcs``).
+CA loads the files and registers their top-level funcs alongside its built-ins,
+keeping only funcs whose ``__module__`` is the file itself — so the decorators we
+*import* (``differentiable`` / ``series_to_constant`` / ``is_MLE`` /
+``cost_combiner``) are auto-excluded. We never define fallbacks for them (that
+would get them registered as funcs).
 
 Security: this writes and later executes arbitrary user Python inside CA at run
 time. That is inherent to the feature and consistent with CUFLynx's localhost,
@@ -37,10 +34,7 @@ name is a safe identifier and that the code parses, but we do not sandbox.
 from __future__ import annotations
 
 import ast
-import importlib.util
 import keyword
-import os
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -63,7 +57,7 @@ _OPERATION_HEADER = '''"""User-defined observable operations authored via CUFLyn
 
 Each top-level function here is registered as a selectable "operation" in the
 obs_data editor and used by circulatory_autogen during calibration / sensitivity
-/ UQ (loaded via OPERATION_FUNCS_EXTERNAL_PATH; CA #303).
+/ UQ (loaded from CA's operation_funcs_external_path config input; CA #303).
 
 An operation receives the operand array(s) for a data_item and returns a scalar.
 Return the operand series when ``series_output=True`` so the reduction can be
@@ -84,7 +78,7 @@ _COST_HEADER = '''"""User-defined cost functions authored via CUFLynx (issues #5
 
 Each top-level function here is registered as a selectable "cost_type" in the
 obs_data editor and used by circulatory_autogen during calibration / sensitivity
-/ UQ (loaded via COST_FUNCS_EXTERNAL_PATH; CA #303).
+/ UQ (loaded from CA's cost_funcs_external_path config input; CA #303).
 
 A cost func compares a model ``output`` to its target and returns a scalar cost
 (lower = better fit). It must work for both scalars and arrays. ``np`` (numpy) is
@@ -169,7 +163,7 @@ def my_mle_cost(output, desired_mean, std, weight):
 class _Kind:
     key: str  # "operation" | "cost"
     filename: str
-    env_var: str
+    config_key: str  # the CA config key CUFLynx sets to the file path (CA #303)
     list_marker: str  # top-level assignment CUFLynx uses to remember ordering
     header: str
     templates: dict
@@ -180,7 +174,7 @@ _KINDS = {
     "operation": _Kind(
         key="operation",
         filename="operation_funcs_user.py",
-        env_var="OPERATION_FUNCS_EXTERNAL_PATH",
+        config_key="operation_funcs_external_path",
         list_marker="CUFLYNX_OPERATIONS",
         header=_OPERATION_HEADER,
         templates=_OPERATION_TEMPLATES,
@@ -191,7 +185,7 @@ _KINDS = {
     "cost": _Kind(
         key="cost",
         filename="cost_funcs_user.py",
-        env_var="COST_FUNCS_EXTERNAL_PATH",
+        config_key="cost_funcs_external_path",
         list_marker="CUFLYNX_COSTS",
         header=_COST_HEADER,
         templates=_COST_TEMPLATES,
@@ -221,34 +215,26 @@ def _user_file(kind: str) -> Path:
     return _user_dir() / _kind(kind).filename
 
 
-def apply_env() -> None:
-    """Point CA at each external func file via env var, when the file exists.
+def external_path(kind: str) -> str | None:
+    """The external func file path for ``kind`` when it exists, else ``None``.
 
-    Called at startup and after every save/delete. The file location is
-    deterministic (config dir), so no separate persisted path is needed — the env
-    var, which the subprocess runners inherit and CA reads (CA #303), simply
-    tracks whether the file is present.
+    Single source of the path CUFLynx passes to CA — into the analysis run configs
+    (forwarded to ``CVS0DParamID`` / ``SensitivityAnalysis``) and to CA's discovery
+    builders in ``obs_options`` (CA #303).
     """
-    for k in _KINDS.values():
-        path = _user_dir() / k.filename
-        if path.is_file():
-            os.environ[k.env_var] = str(path)
-        else:
-            os.environ.pop(k.env_var, None)
+    path = _user_file(kind)
+    return str(path) if path.is_file() else None
 
 
-def _ca_paths() -> list[str]:
-    src = _circulatory_autogen_src()
-    if not src:
-        return []
-    src_p = Path(src)
-    return [str(src_p), str(src_p / "param_id"), str(src_p.parent / "funcs_user")]
-
-
-def _ensure_ca_on_path() -> None:
-    for p in _ca_paths():
-        if p and p not in sys.path:
-            sys.path.insert(0, p)
+def external_paths() -> dict:
+    """``{ca_config_key: path}`` for every kind whose file exists — splat into a
+    run config so CA loads the user funcs (``operation_funcs_external_path`` /
+    ``cost_funcs_external_path``)."""
+    return {
+        k.config_key: str(_user_dir() / k.filename)
+        for k in _KINDS.values()
+        if (_user_dir() / k.filename).is_file()
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -386,7 +372,6 @@ def save_user_func(kind: str, name: str, source: str) -> dict:
 
     _user_dir().mkdir(parents=True, exist_ok=True)
     _user_file(kind).write_text(_render(kind, order, sources), encoding="utf-8")
-    apply_env()
     _refresh_options()
     return read_user_funcs(kind)
 
@@ -402,42 +387,8 @@ def delete_user_func(kind: str, name: str) -> dict:
     order = [n for n in order if n != name]
     del sources[name]
     _user_file(kind).write_text(_render(kind, order, sources), encoding="utf-8")
-    apply_env()
     _refresh_options()
     return read_user_funcs(kind)
-
-
-# ---------------------------------------------------------------------------
-# In-process discovery (so the editor dropdowns stay populated pre-CA-#303)
-# ---------------------------------------------------------------------------
-def external_funcs(kind: str) -> dict:
-    """Load the external file and return ``{name: func}`` for its user funcs.
-
-    Mirrors CA's registration rule (top-level funcs defined in the file), so
-    ``obs_options`` can merge these into the discoverable operations / cost_types
-    even before CA #303 loads them itself. Best-effort: returns ``{}`` if the file
-    is missing or can't be imported (e.g. CA not on ``sys.path``).
-    """
-    path = _user_file(kind)
-    if not path.is_file():
-        return {}
-    _ensure_ca_on_path()
-    modname = f"_cuflynx_external_{kind}_funcs"
-    try:
-        spec = importlib.util.spec_from_file_location(modname, path)
-        if spec is None or spec.loader is None:
-            return {}
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-    except Exception:  # noqa: BLE001 - broken user file / CA unavailable
-        return {}
-    out: dict = {}
-    for attr, obj in vars(mod).items():
-        if attr.startswith("_") or attr in _kind(kind).reserved:
-            continue
-        if callable(obj) and getattr(obj, "__module__", None) == modname:
-            out[attr] = obj
-    return out
 
 
 def _refresh_options() -> None:
