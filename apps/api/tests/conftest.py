@@ -117,6 +117,9 @@ def reset_app_state():
     # interpreter (directly, or via POST /api/config) would otherwise leak a bogus
     # python into every later test — which spawns runners with it.
     _pythons_before = _analysis_pythons()
+    # The global analysis seed is module-level state on main; reset it so a test
+    # that sets it via POST /api/config can't leak into the next test's run configs.
+    main._analysis_seed = None
     main._models.clear()
     engine_mod.engine.reset()
     engine_mod.engine.helper_factory = engine_mod._default_helper_factory
@@ -137,6 +140,7 @@ def reset_app_state():
     uq_mod.uq.reset()
     uq_mod.uq.runner_path = uq_mod.RUNNER_PATH
     _set_analysis_pythons(_pythons_before)
+    main._analysis_seed = None
     # Restore CIRCULATORY_AUTOGEN_SRC so a /api/config test doesn't leak.
     if _ca_src_before is None:
         os.environ.pop("CIRCULATORY_AUTOGEN_SRC", None)

@@ -170,6 +170,26 @@ class ConfigRequest(BaseModel):
     # The default is the bundled interpreter (packaged) or the serving one (source),
     # so "" lets the user switch back to "Bundled" after picking an external venv.
     python_path: str | None = None
+    # Global random seed for analysis runs (calibration / sensitivity / UQ). When
+    # set, it makes CA's random processes (GA, multi-start sampling, Sobol/SALib
+    # sampling, MCMC) reproducible. Default is no seed (non-deterministic).
+    #   omitted (None) -> leave unchanged   |   "" -> clear (no seed)   |   int -> use it
+    seed: int | str | None = None
+
+
+# Global random seed for analysis runs, or None for non-deterministic (the default).
+# Set via POST /api/config, persisted like ca_dir / python_path, and injected into
+# every calibration / sensitivity / UQ run config so CA's random processes repeat.
+_analysis_seed: int | None = None
+
+
+def _parse_seed(value) -> int | None:
+    """Coerce a seed from the config request. "" (or blank) clears it; an int (or an
+    integer-valued string) sets it. Raises ValueError on anything else."""
+    s = str(value).strip()
+    if s == "":
+        return None
+    return int(s)
 
 
 def _ca_src_from_dir(d: str) -> str:
@@ -231,6 +251,11 @@ def _restore_persisted_settings() -> None:
     if python_path and os.path.isfile(python_path) and os.access(python_path, os.X_OK):
         _set_analysis_python(python_path)
 
+    seed = saved.get("seed")
+    if isinstance(seed, int) and not isinstance(seed, bool):
+        global _analysis_seed
+        _analysis_seed = seed
+
 
 _restore_persisted_settings()
 
@@ -249,6 +274,8 @@ def _config_payload() -> dict:
         "ca_exists": bool(src) and p.is_dir(),
         # Remembered interpreter for analysis runs (blank = none chosen yet).
         "python_path": calibration.python or "",
+        # Global random seed for analysis runs (null = none / non-deterministic).
+        "seed": _analysis_seed,
         # Current backend solver selection (engine is the source of truth). dt is
         # carried in solver_info for the UI but stored separately on the engine.
         "generated_model_format": engine.model_type,
@@ -351,6 +378,20 @@ def set_config(req: ConfigRequest) -> dict:
             _set_analysis_python(python_path)
         else:
             _set_analysis_python(default_python())
+
+    # Global random seed for analysis runs.
+    #   None  -> not in this request, leave unchanged
+    #   ""    -> clear (no seed, non-deterministic)
+    #   int   -> use that seed
+    if req.seed is not None:
+        try:
+            seed = _parse_seed(req.seed)
+        except ValueError:
+            raise HTTPException(
+                status_code=422, detail=f"seed must be an integer, got {req.seed!r}"
+            ) from None
+        global _analysis_seed
+        _analysis_seed = seed
 
     os.environ["CUFLYNX_MODEL_TYPE"] = engine.model_type
     os.environ["CUFLYNX_SOLVER"] = engine.solver
@@ -881,6 +922,8 @@ def calibration_run(req: CalibrationRequest) -> dict:
         "settings": req.settings,
         "current_params": req.current_params,
         "best_fit_params": best_fit_params,
+        # Global random seed (Settings popup); None => non-deterministic run.
+        "seed": _analysis_seed,
     }
     try:
         job_id = calibration.start(config)
@@ -1048,6 +1091,8 @@ def sensitivity_run(req: SensitivityRequest) -> dict:
         "settings": req.settings,
         "best_params": best_params,
         "current_params": req.current_params,
+        # Global random seed (Settings popup); None => non-deterministic run.
+        "seed": _analysis_seed,
     }
     try:
         job_id = sensitivity.start(config)
@@ -1170,6 +1215,8 @@ def uq_run(req: UQRequest) -> dict:
         "python": python_path,
         "settings": req.settings,
         "best_params": best_params,
+        # Global random seed (Settings popup); None => non-deterministic run.
+        "seed": _analysis_seed,
     }
     try:
         job_id = uq.start(config)

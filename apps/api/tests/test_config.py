@@ -279,6 +279,41 @@ def test_unconfigured_ca_is_never_put_on_sys_path(monkeypatch):
     assert sys.path == before
 
 
+# ---------------------------------------------------------------------------
+# Global random seed (Settings popup): repeatable analysis runs, default none.
+# ---------------------------------------------------------------------------
+def test_seed_defaults_to_none(client):
+    assert client.get("/api/config").json()["seed"] is None
+
+
+def test_set_seed_roundtrips(client):
+    body = client.post("/api/config", json={"seed": 42}).json()
+    assert body["seed"] == 42
+    # Persisted, so a fresh GET still sees it.
+    assert client.get("/api/config").json()["seed"] == 42
+
+
+def test_blank_seed_clears_it(client):
+    client.post("/api/config", json={"seed": 7})
+    body = client.post("/api/config", json={"seed": ""}).json()
+    assert body["seed"] is None
+
+
+def test_non_integer_seed_422(client):
+    assert client.post("/api/config", json={"seed": "not-a-number"}).status_code == 422
+
+
+def test_solver_only_post_preserves_the_seed(client):
+    """A config POST that doesn't mention seed must leave it unchanged — the
+    Settings popup saves solver choices with a payload carrying no seed."""
+    client.post("/api/config", json={"seed": 99})
+    body = client.post(
+        "/api/config",
+        json={"generated_model_format": "python", "solver": "solve_ivp"},
+    ).json()
+    assert body["seed"] == 99
+
+
 def test_ca_exists_is_false_when_unconfigured(client, monkeypatch):
     """Regression: frozen + unconfigured, _circulatory_autogen_src() returns "",
     and Path("").is_dir() is True (empty path -> cwd). ca_exists must still be

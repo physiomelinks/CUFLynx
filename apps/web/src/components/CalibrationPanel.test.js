@@ -163,6 +163,35 @@ describe('CalibrationPanel', () => {
     expect(ms.find('[data-testid="calib-opt-num_starts"]').exists()).toBe(true)
   })
 
+  // The random seed is now a single global setting (Settings popup), so the
+  // per-method `seed` option (from CA's multi_start_sp_minimize schema) must be
+  // dropped from the panel — not rendered and not emitted.
+  it('drops the per-method seed option (global seed is the single source)', async () => {
+    const methods = [
+      {
+        value: 'multi_start_sp_minimize', label: 'Multi-start', gradient_based: true,
+        options: [
+          { name: 'num_starts', type: 'int', default: 10 },
+          { name: 'seed', type: 'int', default: 0 },
+        ],
+      },
+    ]
+    const wrapper = mount(CalibrationPanel, {
+      props: {
+        canRun: true,
+        defaults: { methods, param_id_method: 'multi_start_sp_minimize' },
+      },
+      global: { stubs: selectStubs },
+    })
+    expect(wrapper.find('[data-testid="calib-opt-seed"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="calib-opt-num_starts"]').exists()).toBe(true)
+
+    await wrapper.find('[data-testid="run-calibration"]').trigger('click')
+    const payload = wrapper.emitted('run')[0][0]
+    expect(payload).not.toHaveProperty('seed')
+    expect(payload).toHaveProperty('num_starts', 10)
+  })
+
   it("renders a 'str' method option as a text input, not a number input", () => {
     // Regression: str descriptors fell through to InputNumber and displayed NaN.
     const methods = [

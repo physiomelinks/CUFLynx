@@ -30,6 +30,7 @@ PERSISTED_KEYS = (
     "solver",
     "solver_info",
     "python_path",
+    "seed",
 )
 
 CONFIG_FILENAME = "config.json"

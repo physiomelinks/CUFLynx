@@ -35,6 +35,31 @@ os.environ.setdefault("MPLBACKEND", "Agg")
 DONE_MARKER = "__CALIBRATION_DONE__"
 FAIL_MARKER = "__CALIBRATION_FAILED__"
 
+# CUFLynx-level / solver settings that must NOT be forwarded into CA's
+# optimiser_options (the rest are the per-method option values the UI collected
+# from CA's PARAM_ID_METHODS[method]['options'] schema).
+_RESERVED = {
+    "param_id_method", "gradient_method", "methods", "num_cores", "DEBUG",
+    "sim_time", "pre_time", "dt", "solver", "solver_info", "python_path",
+    "config_outputs_dir", "generated_model_format",
+}
+
+
+def _optimiser_options(settings: dict, seed=None) -> dict:
+    """Assemble the CA ``optimiser_options`` from the UI settings.
+
+    Forward each method's own option values as-is (each method consumes only its
+    own keys) rather than hardcoding a fixed set — so, e.g., multi_start_sp_minimize
+    gets num_starts and never a spurious max_patience. When a global random ``seed``
+    is set it lands under ``optimiser_options['seed']`` — the key CA's multi-start
+    start sampler reads (``PrimitiveParsers.PARAM_ID_METHODS``); ``None`` omits it,
+    leaving CA on its own default (non-forced).
+    """
+    opts = {k: v for k, v in settings.items() if k not in _RESERVED and v is not None}
+    if seed is not None:
+        opts["seed"] = int(seed)
+    return opts
+
 
 def _ensure_ca_on_path() -> None:
     src = os.environ.get("CIRCULATORY_AUTOGEN_SRC")
@@ -109,18 +134,17 @@ def run(config: dict) -> dict:
     # FD => finite difference. Ignored by the non-gradient methods.
     do_ad = str(settings.get("gradient_method", "FD")).upper() in ("AD", "FSA")
 
-    # optimiser_options are the per-method settings the UI collected from CA's
-    # PARAM_ID_METHODS[method]['options'] schema. Forward them as-is (each method
-    # consumes only its own keys) rather than hardcoding a fixed set — so, e.g.,
-    # multi_start_sp_minimize gets num_starts and never a spurious max_patience.
-    _RESERVED = {
-        "param_id_method", "gradient_method", "methods", "num_cores", "DEBUG",
-        "sim_time", "pre_time", "dt", "solver", "solver_info", "python_path",
-        "config_outputs_dir", "generated_model_format",
-    }
-    optimiser_options = {
-        k: v for k, v in settings.items() if k not in _RESERVED and v is not None
-    }
+    # Global random seed (Settings popup). When set, seed numpy's legacy global RNG
+    # so the GA (which draws from np.random directly) is repeatable, and forward it
+    # into optimiser_options for the multi-start start sampler. None => leave every
+    # random process non-deterministic (CA's own defaults apply).
+    seed = config.get("seed")
+    if seed is not None:
+        import numpy as np  # noqa: E402
+
+        np.random.seed(int(seed))
+
+    optimiser_options = _optimiser_options(settings, seed)
 
     print(
         f"Starting {settings.get('param_id_method', 'genetic_algorithm')} "

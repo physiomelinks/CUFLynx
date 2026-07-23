@@ -56,6 +56,31 @@ def _ensure_ca_on_path() -> None:
         sys.path.insert(0, src)
 
 
+def _sa_options(settings: dict, output_dir: str, seed=None) -> dict:
+    """Assemble CA's ``sa_options`` from the UI settings.
+
+    sample_type / num_samples are only used by the Sobol engine, but the
+    SensitivityAnalysis constructor needs them present to build its param table;
+    harmless placeholders for the local (finite-difference) path. Any additional
+    CA sensitivity option the UI collected from CA's ANALYSIS_OPTIONS schema is
+    forwarded (forward-compatible: new keys flow through without a runner change);
+    CUFLynx-level / local-path keys stay out. A global random ``seed`` is forwarded
+    under ``sa_options['seed']``; ``None`` omits it.
+    """
+    sa_options = {
+        "method": settings.get("method", "sobol"),
+        "sample_type": settings.get("sample_type", "saltelli"),
+        "num_samples": int(settings.get("num_samples") or 256),
+        "output_dir": output_dir,
+    }
+    for k, v in settings.items():
+        if k not in _SA_RESERVED and k not in sa_options and v is not None:
+            sa_options[k] = v
+    if seed is not None:
+        sa_options["seed"] = int(seed)
+    return sa_options
+
+
 def _indices_to_dict(sa) -> dict:
     """Read the Sobol indices the engine just wrote back into a JSON-friendly dict.
 
@@ -189,21 +214,15 @@ def run(config: dict) -> dict:
 
     model_type = config.get("model_type", "cellml_only")
     solver_info = _solver_info_from_config(config, settings)
-    # sample_type / num_samples are only used by the Sobol engine, but the
-    # SensitivityAnalysis constructor needs them present to build its param
-    # table; harmless placeholders for the local (finite-difference) path.
-    sa_options = {
-        "method": method,
-        "sample_type": settings.get("sample_type", "saltelli"),
-        "num_samples": int(settings.get("num_samples") or 256),
-        "output_dir": output_dir,
-    }
-    # Forward any additional CA sensitivity options the UI collected from CA's
-    # ANALYSIS_OPTIONS schema (forward-compatible: new sa_options keys added to CA
-    # flow through without a runner change). CUFLynx-level / local-path keys stay out.
-    for k, v in settings.items():
-        if k not in _SA_RESERVED and k not in sa_options and v is not None:
-            sa_options[k] = v
+    # Global random seed (Settings popup). When set, seed numpy's legacy global RNG
+    # so Sobol/SALib sampling is repeatable, and forward it into sa_options. None =>
+    # leave the sampling non-deterministic.
+    seed = config.get("seed")
+    if seed is not None:
+        import numpy as np  # noqa: E402
+
+        np.random.seed(int(seed))
+    sa_options = _sa_options(settings, output_dir, seed)
 
     sa = SensitivityAnalysis(
         model_path=config["model_path"],

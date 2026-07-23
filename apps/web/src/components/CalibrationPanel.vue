@@ -87,8 +87,12 @@ const selectedMethod = computed(() =>
   methods.value.find((m) => m.value === settings.param_id_method),
 )
 // The settings CA says this method actually consumes — so gradient-descent methods
-// don't show max_patience, etc.
-const methodOptions = computed(() => selectedMethod.value?.options ?? [])
+// don't show max_patience, etc. The per-method `seed` (currently only on
+// multi_start_sp_minimize) is dropped: the random seed is now a single global
+// setting (Settings popup) covering every analysis, so this is the one source.
+const methodOptions = computed(() =>
+  (selectedMethod.value?.options ?? []).filter((o) => o.name !== 'seed'),
+)
 const isGradientMethod = computed(() => selectedMethod.value?.gradient_based ?? false)
 
 // Seed each option's default when the selected method's options change, keeping any

@@ -51,6 +51,8 @@ export async function setConfig(opts = {}) {
     if (opts.solver != null) body.solver = opts.solver
     if (opts.solverInfo != null) body.solver_info = opts.solverInfo
     if (opts.pythonPath != null) body.python_path = opts.pythonPath
+    // Global random seed: a number sets it, '' clears it; omit to leave unchanged.
+    if (opts.seed !== undefined) body.seed = opts.seed
   }
   const { data } = await axios.post(url('/api/config'), body)
   return data
