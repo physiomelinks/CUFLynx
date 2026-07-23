@@ -249,6 +249,88 @@ watch(
 
 // Left column tab: 'params' | 'sensitivity' | 'calibration' | 'uq'
 const leftTab = ref('params')
+// The right-hand import column is resizable via a draggable vertical divider:
+// drag it left/right to resize, drag it fully to the right edge to hide the column
+// (giving the plots/analysis more room). When hidden, a tab sits on the right edge
+// and can be dragged back out (or double-clicked to restore the default width). The
+// chosen width persists across reloads.
+const RHS_DEFAULT_WIDTH = 300
+const RHS_MIN_WIDTH = 200 // narrowest expanded width
+const RHS_MAX_WIDTH = 640
+const RHS_SNAP_WIDTH = 120 // dragged narrower than this -> collapse to 0
+const rhsWidth = ref(Math.max(0, Number(localStorage.getItem('cuflynx-rhs-width') ?? RHS_DEFAULT_WIDTH)))
+const rhsCollapsed = computed(() => rhsWidth.value <= 0)
+const rhsDragging = ref(false)
+watch(rhsWidth, (w) => localStorage.setItem('cuflynx-rhs-width', String(w)))
+
+function _rhsWidthFromEvent(e) {
+  // Distance from the pointer to the right edge of the viewport = the column width.
+  const w = window.innerWidth - e.clientX
+  if (w < RHS_SNAP_WIDTH) return 0 // snap closed
+  return Math.min(Math.max(w, RHS_MIN_WIDTH), RHS_MAX_WIDTH)
+}
+function onRhsDrag(e) {
+  rhsWidth.value = _rhsWidthFromEvent(e)
+}
+function endRhsDrag() {
+  rhsDragging.value = false
+  window.removeEventListener('mousemove', onRhsDrag)
+  window.removeEventListener('mouseup', endRhsDrag)
+  document.body.style.userSelect = ''
+  document.body.style.cursor = ''
+}
+function startRhsDrag(e) {
+  e.preventDefault()
+  rhsDragging.value = true
+  window.addEventListener('mousemove', onRhsDrag)
+  window.addEventListener('mouseup', endRhsDrag)
+  document.body.style.userSelect = 'none'
+  document.body.style.cursor = 'col-resize'
+}
+function restoreRhs() {
+  rhsWidth.value = RHS_DEFAULT_WIDTH
+}
+
+// The left column (params / sensitivity / calibration / uq) is resizable the same
+// way: a draggable divider on its right edge; drag fully left to hide it, drag the
+// tab (or double-click) to bring it back. Width persists across reloads.
+const LHS_DEFAULT_WIDTH = 320
+const LHS_MIN_WIDTH = 240
+const LHS_MAX_WIDTH = 680
+const LHS_SNAP_WIDTH = 130 // dragged narrower than this -> collapse to 0
+const lhsWidth = ref(Math.max(0, Number(localStorage.getItem('cuflynx-lhs-width') ?? LHS_DEFAULT_WIDTH)))
+const lhsCollapsed = computed(() => lhsWidth.value <= 0)
+const lhsDragging = ref(false)
+watch(lhsWidth, (w) => localStorage.setItem('cuflynx-lhs-width', String(w)))
+
+function _lhsWidthFromEvent(e) {
+  // The left column is flush to the left edge, so its width is the pointer's x.
+  const w = e.clientX
+  if (w < LHS_SNAP_WIDTH) return 0
+  return Math.min(Math.max(w, LHS_MIN_WIDTH), LHS_MAX_WIDTH)
+}
+function onLhsDrag(e) {
+  lhsWidth.value = _lhsWidthFromEvent(e)
+}
+function endLhsDrag() {
+  lhsDragging.value = false
+  window.removeEventListener('mousemove', onLhsDrag)
+  window.removeEventListener('mouseup', endLhsDrag)
+  document.body.style.userSelect = ''
+  document.body.style.cursor = ''
+}
+function startLhsDrag(e) {
+  e.preventDefault()
+  lhsDragging.value = true
+  window.addEventListener('mousemove', onLhsDrag)
+  window.addEventListener('mouseup', endLhsDrag)
+  document.body.style.userSelect = 'none'
+  document.body.style.cursor = 'col-resize'
+}
+function restoreLhs() {
+  lhsWidth.value = LHS_DEFAULT_WIDTH
+}
+
 // Center column tab: 'plots' | 'progress' | 'analysis'
 const centerTab = ref('plots')
 
@@ -841,8 +923,26 @@ watch(
       <Button label="Run" icon="pi pi-play" size="small" @click="runSimulation" />
     </header>
 
-    <main class="columns">
-      <aside class="col col-left">
+    <main
+      class="columns"
+      :class="{ 'rhs-dragging': rhsDragging, 'lhs-dragging': lhsDragging }"
+      :style="{ gridTemplateColumns: `${lhsWidth}px 1fr ${rhsWidth}px` }"
+    >
+      <aside class="col col-left" :class="{ collapsed: lhsCollapsed }" data-testid="lhs-column">
+        <div
+          class="lhs-divider"
+          :class="{ collapsed: lhsCollapsed }"
+          data-testid="lhs-handle"
+          role="separator"
+          aria-orientation="vertical"
+          :aria-label="lhsCollapsed ? 'Drag to show the left panel' : 'Drag to resize or hide the left panel'"
+          :title="lhsCollapsed ? 'Drag right to show the left panel (double-click to restore)' : 'Drag to resize; drag fully left to hide'"
+          @mousedown="startLhsDrag"
+          @dblclick="restoreLhs"
+        >
+          <span class="rhs-grip" />
+        </div>
+        <div class="lhs-content">
         <div class="left-tabs">
           <button
             class="left-tab"
@@ -942,6 +1042,7 @@ watch(
             @change="(s) => (uqSettings = s)"
             @cancel="uq.cancel()"
           />
+        </div>
         </div>
       </aside>
 
@@ -1084,7 +1185,25 @@ watch(
         />
       </section>
 
-      <aside class="col col-right">
+      <aside
+        class="col col-right"
+        :class="{ collapsed: rhsCollapsed }"
+        data-testid="rhs-column"
+      >
+        <div
+          class="rhs-divider"
+          :class="{ collapsed: rhsCollapsed }"
+          data-testid="rhs-handle"
+          role="separator"
+          aria-orientation="vertical"
+          :aria-label="rhsCollapsed ? 'Drag to show the import panel' : 'Drag to resize or hide the import panel'"
+          :title="rhsCollapsed ? 'Drag left to show the import panel (double-click to restore)' : 'Drag to resize; drag fully right to hide'"
+          @mousedown="startRhsDrag"
+          @dblclick="restoreRhs"
+        >
+          <span class="rhs-grip" />
+        </div>
+        <div class="rhs-content">
         <FileImport
           v-model:outputs-dir="outputsDir"
           :model-id="model.modelId.value"
@@ -1112,6 +1231,7 @@ watch(
           :active-keys="Object.keys(sliders.sliders)"
           @add-slider="onAddSlider"
         />
+        </div>
       </aside>
     </main>
 
@@ -1427,9 +1547,14 @@ watch(
 }
 .columns {
   display: grid;
-  grid-template-columns: 320px 1fr 300px;
+  /* grid-template-columns is set inline from rhsWidth (the draggable RHS width). */
   flex: 1;
   min-height: 0;
+  overflow: hidden;
+}
+/* No width transition while actively dragging, so the resize tracks the pointer. */
+.columns:not(.rhs-dragging):not(.lhs-dragging) {
+  transition: grid-template-columns 0.18s ease;
 }
 .col {
   min-height: 0;
@@ -1439,6 +1564,63 @@ watch(
   border-right: 1px solid var(--p-content-border-color, #333);
   display: flex;
   flex-direction: column;
+  position: relative;
+  /* Override .col's overflow:hidden so the drag divider / tab can jut out. */
+  overflow: visible;
+}
+.lhs-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+.col-left.collapsed .lhs-content {
+  display: none;
+}
+/* Draggable divider on the left column's right edge; mirrors .rhs-divider. */
+.lhs-divider {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 0;
+  transform: translateX(50%);
+  width: 9px;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: col-resize;
+  background: transparent;
+}
+.lhs-divider:hover,
+.columns.lhs-dragging .lhs-divider {
+  background: rgba(91, 155, 213, 0.25);
+}
+.lhs-divider:hover .rhs-grip,
+.columns.lhs-dragging .rhs-grip {
+  background: var(--p-primary-color, #5b9bd5);
+}
+/* Collapsed: a grabbable tab pinned to the left edge, jutting right. */
+.lhs-divider.collapsed {
+  top: 50%;
+  bottom: auto;
+  right: 0;
+  transform: translate(100%, -50%);
+  width: 15px;
+  height: 56px;
+  border: 1px solid var(--p-content-border-color, #333);
+  border-left: none;
+  border-radius: 0 6px 6px 0;
+  background: var(--p-content-background, #1e1e1e);
+  opacity: 0.85;
+}
+.lhs-divider.collapsed:hover {
+  opacity: 1;
+}
+.lhs-divider.collapsed .rhs-grip {
+  height: 26px;
 }
 .left-tabs {
   display: flex;
@@ -1542,5 +1724,69 @@ watch(
   border-left: 1px solid var(--p-content-border-color, #333);
   display: flex;
   flex-direction: column;
+  position: relative;
+  /* Override .col's overflow:hidden so the drag divider / tab can jut out over the
+     border (and, when collapsed, sit on the viewport's right edge). */
+  overflow: visible;
+}
+.rhs-content {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+/* Collapsed (width 0): hide the content outright so nothing spills past the edge. */
+.col-right.collapsed .rhs-content {
+  display: none;
+}
+/* The draggable vertical divider, straddling the border between center and RHS. */
+.rhs-divider {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  transform: translateX(-50%);
+  width: 9px;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: col-resize;
+  background: transparent;
+}
+.rhs-divider:hover,
+.columns.rhs-dragging .rhs-divider {
+  background: rgba(91, 155, 213, 0.25);
+}
+/* The little vertical grip line in the middle of the divider. */
+.rhs-grip {
+  width: 2px;
+  height: 42px;
+  border-radius: 2px;
+  background: var(--p-content-border-color, #666);
+}
+.rhs-divider:hover .rhs-grip,
+.columns.rhs-dragging .rhs-grip {
+  background: var(--p-primary-color, #5b9bd5);
+}
+/* Collapsed: the divider becomes a grabbable tab pinned to the right edge. */
+.rhs-divider.collapsed {
+  top: 50%;
+  bottom: auto;
+  transform: translate(-100%, -50%);
+  width: 15px;
+  height: 56px;
+  border: 1px solid var(--p-content-border-color, #333);
+  border-right: none;
+  border-radius: 6px 0 0 6px;
+  background: var(--p-content-background, #1e1e1e);
+  opacity: 0.85;
+}
+.rhs-divider.collapsed:hover {
+  opacity: 1;
+}
+.rhs-divider.collapsed .rhs-grip {
+  height: 26px;
 }
 </style>

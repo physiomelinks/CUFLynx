@@ -1,4 +1,5 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { nextTick } from 'vue'
 import { shallowMount, flushPromises } from '@vue/test-utils'
 
 // Mock the API so the onMounted bootstrap doesn't hit the network. shallowMount
@@ -118,6 +119,97 @@ describe('App.vue', () => {
     })
   })
 
+
+  // The RHS import column (model / obs_data / params uploads) is resized by a
+  // draggable divider: drag it to resize, drag fully right to hide, drag the tab
+  // (or double-click) to bring it back. Frees width for plots/analysis.
+  describe('resizable RHS import column', () => {
+    const dragTo = async (wrapper, clientX) => {
+      await wrapper.find('[data-testid="rhs-handle"]').trigger('mousedown')
+      window.dispatchEvent(new MouseEvent('mousemove', { clientX }))
+      window.dispatchEvent(new MouseEvent('mouseup'))
+      await nextTick()
+    }
+
+    beforeEach(() => localStorage.removeItem('cuflynx-rhs-width'))
+
+    it('starts expanded, and the drag divider is always present', () => {
+      const wrapper = shallowMount(App)
+      expect(wrapper.find('[data-testid="rhs-handle"]').exists()).toBe(true)
+      expect(wrapper.find('[data-testid="rhs-column"]').classes()).not.toContain('collapsed')
+      expect(wrapper.vm.rhsWidth).toBeGreaterThan(0)
+    })
+
+    it('dragging the divider resizes the column width', async () => {
+      const wrapper = shallowMount(App)
+      await dragTo(wrapper, window.innerWidth - 350) // 350px from the right edge
+      expect(wrapper.vm.rhsWidth).toBe(350)
+      expect(wrapper.find('[data-testid="rhs-column"]').classes()).not.toContain('collapsed')
+    })
+
+    it('dragging fully to the right edge collapses (hides) the column', async () => {
+      const wrapper = shallowMount(App)
+      await dragTo(wrapper, window.innerWidth - 10) // past the snap threshold
+      expect(wrapper.vm.rhsWidth).toBe(0)
+      expect(wrapper.vm.rhsCollapsed).toBe(true)
+      expect(wrapper.find('[data-testid="rhs-column"]').classes()).toContain('collapsed')
+    })
+
+    it('the tab drags the hidden column back out, and double-click restores it', async () => {
+      const wrapper = shallowMount(App)
+      await dragTo(wrapper, window.innerWidth - 10) // hide
+      expect(wrapper.vm.rhsCollapsed).toBe(true)
+
+      // drag the tab back out
+      await dragTo(wrapper, window.innerWidth - 300)
+      expect(wrapper.vm.rhsWidth).toBe(300)
+      expect(wrapper.vm.rhsCollapsed).toBe(false)
+
+      // hide again, then double-click the tab to restore the default width
+      await dragTo(wrapper, window.innerWidth - 10)
+      await wrapper.find('[data-testid="rhs-handle"]').trigger('dblclick')
+      expect(wrapper.vm.rhsWidth).toBe(300)
+    })
+  })
+
+  // The left column (params / sensitivity / calibration / uq) resizes the same
+  // way, via a divider on its right edge (width = the pointer's x from the left).
+  describe('resizable LHS column', () => {
+    const dragTo = async (wrapper, clientX) => {
+      await wrapper.find('[data-testid="lhs-handle"]').trigger('mousedown')
+      window.dispatchEvent(new MouseEvent('mousemove', { clientX }))
+      window.dispatchEvent(new MouseEvent('mouseup'))
+      await nextTick()
+    }
+
+    beforeEach(() => localStorage.removeItem('cuflynx-lhs-width'))
+
+    it('starts expanded with the drag divider present', () => {
+      const wrapper = shallowMount(App)
+      expect(wrapper.find('[data-testid="lhs-handle"]').exists()).toBe(true)
+      expect(wrapper.vm.lhsWidth).toBeGreaterThan(0)
+      expect(wrapper.find('[data-testid="lhs-column"]').classes()).not.toContain('collapsed')
+    })
+
+    it('drag resizes; dragging fully left collapses; the tab / dblclick restores', async () => {
+      const wrapper = shallowMount(App)
+      await dragTo(wrapper, 360) // 360px from the left edge
+      expect(wrapper.vm.lhsWidth).toBe(360)
+
+      await dragTo(wrapper, 10) // past the snap threshold -> hide
+      expect(wrapper.vm.lhsWidth).toBe(0)
+      expect(wrapper.vm.lhsCollapsed).toBe(true)
+      expect(wrapper.find('[data-testid="lhs-column"]').classes()).toContain('collapsed')
+
+      await dragTo(wrapper, 320) // drag the tab back out
+      expect(wrapper.vm.lhsWidth).toBe(320)
+      expect(wrapper.vm.lhsCollapsed).toBe(false)
+
+      await dragTo(wrapper, 10)
+      await wrapper.find('[data-testid="lhs-handle"]').trigger('dblclick')
+      expect(wrapper.vm.lhsWidth).toBe(320)
+    })
+  })
 
   // The packaged desktop app has no default interpreter (its own executable is
   // the frozen bundle), so the choice must survive a restart or the user re-picks
