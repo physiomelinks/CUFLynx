@@ -71,6 +71,13 @@ export async function uploadCellML(fileOrFiles) {
   return data
 }
 
+// Fetch a bundled example CellML model as a File, so it can be fed straight
+// through the normal uploadCellML flow (same path as a dropped file).
+export async function fetchExampleModel(name, filename) {
+  const { data } = await axios.get(url(`/api/examples/${name}`), { responseType: 'text' })
+  return new File([data], filename, { type: 'application/xml' })
+}
+
 export async function getVariables(modelId) {
   const { data } = await axios.get(url(`/api/models/${modelId}/variables`))
   return data

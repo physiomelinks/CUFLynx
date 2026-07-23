@@ -95,6 +95,17 @@ def frontend_dist() -> Path:
     return _SOURCE_API_DIR.parent / "web" / "dist"
 
 
+def resources_dir() -> Path:
+    """The bundled ``resources/`` directory (example models, test fixtures).
+
+    Frozen, the spec bundles the repo-root ``resources`` dir as ``resources``.
+    From source it sits at the repo root, i.e. two levels up from ``apps/api``.
+    """
+    if is_frozen():
+        return resource_path("resources")
+    return _SOURCE_API_DIR.parent.parent / "resources"
+
+
 # argv sentinel that makes the frozen exe run an analysis runner in-process
 # instead of launching the GUI. See apps/desktop/app.py.
 RUNNER_MODE_FLAG = "--_cuflynx-run-analysis"

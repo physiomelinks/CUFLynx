@@ -6,10 +6,16 @@ vi.mock('../lib/api', () => ({
   uploadObsData: vi.fn(),
   uploadParamsForId: vi.fn(),
   getObsDataOptions: vi.fn(),
+  fetchExampleModel: vi.fn(),
 }))
 
 import FileImport from './FileImport.vue'
-import { uploadCellML, uploadObsData, uploadParamsForId } from '../lib/api'
+import {
+  uploadCellML,
+  uploadObsData,
+  uploadParamsForId,
+  fetchExampleModel,
+} from '../lib/api'
 
 // Real <button> stub so the Edit button's disabled state + click are observable;
 // EditParamsDialog stub renders only when opened.
@@ -27,6 +33,17 @@ const EditObsStub = {
   props: ['visible'],
   template: '<div v-if="visible" data-testid="edit-obs-dialog">open</div>',
 }
+// Exposes the visible state + a button to emit select-example, so the load flow
+// through FileImport is observable without PrimeVue's Dialog internals.
+const StartDialogStub = {
+  props: ['visible'],
+  emits: ['select-example', 'update:visible'],
+  template:
+    '<div v-if="visible" data-testid="start-dialog">' +
+    '<button data-testid="pick-example" ' +
+    "@click=\"$emit('select-example', { name: '3compartment', label: '3-compartment circulation', filename: '3compartment_flat.cellml' })\">" +
+    'pick</button></div>',
+}
 const stubs = {
   Message: true,
   InputText: true,
@@ -34,6 +51,7 @@ const stubs = {
   FileBrowserDialog: true,
   EditParamsDialog: EditParamsStub,
   EditObsDataDialog: EditObsStub,
+  StartDialog: StartDialogStub,
 }
 
 // jsdom's File has no .text(); browsers do. Stub it for obs_data JSON reads.
@@ -47,6 +65,7 @@ beforeEach(() => {
   uploadCellML.mockReset()
   uploadObsData.mockReset()
   uploadParamsForId.mockReset()
+  fetchExampleModel.mockReset()
 })
 
 describe('FileImport', () => {
@@ -196,6 +215,52 @@ describe('FileImport', () => {
     expect(edit.attributes('disabled')).toBeUndefined()
     await edit.trigger('click')
     expect(wrapper.find('[data-testid="edit-obs-dialog"]').exists()).toBe(true)
+  })
+
+  // Issue #91: the box beside the CellML dropzone reads "Create" until a model
+  // is loaded, then "Edit".
+  it('shows Create with no model and Edit with a model', async () => {
+    const wrapper = mount(FileImport, { global: { stubs } }) // no modelId
+    const btn = wrapper.find('[data-testid="start-edit"]')
+    expect(btn.exists()).toBe(true)
+    expect(btn.text()).toBe('Create')
+    await wrapper.setProps({ modelId: 'abc' })
+    expect(wrapper.find('[data-testid="start-edit"]').text()).toBe('Edit')
+  })
+
+  it('Create opens the dialog, and picking the example runs the load flow', async () => {
+    const file = new File(['<model/>'], '3compartment_flat.cellml', {
+      type: 'application/xml',
+    })
+    fetchExampleModel.mockResolvedValue(file)
+    uploadCellML.mockResolvedValue({ model_id: 'ex', name: 'CardiovascularSystem' })
+    const wrapper = mount(FileImport, { global: { stubs } }) // no modelId
+
+    // Dialog closed until Start is clicked.
+    expect(wrapper.find('[data-testid="start-dialog"]').exists()).toBe(false)
+    await wrapper.find('[data-testid="start-edit"]').trigger('click')
+    expect(wrapper.find('[data-testid="start-dialog"]').exists()).toBe(true)
+
+    // Choosing the example fetches it and feeds it through the upload flow.
+    await wrapper.find('[data-testid="pick-example"]').trigger('click')
+    await flushPromises()
+    expect(fetchExampleModel).toHaveBeenCalledWith('3compartment', '3compartment_flat.cellml')
+    expect(uploadCellML).toHaveBeenCalledOnce()
+    expect(uploadCellML.mock.calls[0][0]).toEqual([file])
+    expect(wrapper.emitted('model-loaded')[0][0]).toEqual({
+      model_id: 'ex',
+      name: 'CardiovascularSystem',
+      filename: '3compartment_flat.cellml',
+    })
+  })
+
+  it('Edit opens PhLynx instead of the Start dialog when a model is loaded', async () => {
+    const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null)
+    const wrapper = mount(FileImport, { props: { modelId: 'abc' }, global: { stubs } })
+    await wrapper.find('[data-testid="start-edit"]').trigger('click')
+    expect(wrapper.find('[data-testid="start-dialog"]').exists()).toBe(false)
+    expect(openSpy).toHaveBeenCalledOnce()
+    openSpy.mockRestore()
   })
 
   it('export buttons are disabled until a model is loaded', () => {
