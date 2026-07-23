@@ -290,6 +290,47 @@ function startRhsDrag(e) {
 function restoreRhs() {
   rhsWidth.value = RHS_DEFAULT_WIDTH
 }
+
+// The left column (params / sensitivity / calibration / uq) is resizable the same
+// way: a draggable divider on its right edge; drag fully left to hide it, drag the
+// tab (or double-click) to bring it back. Width persists across reloads.
+const LHS_DEFAULT_WIDTH = 320
+const LHS_MIN_WIDTH = 240
+const LHS_MAX_WIDTH = 680
+const LHS_SNAP_WIDTH = 130 // dragged narrower than this -> collapse to 0
+const lhsWidth = ref(Math.max(0, Number(localStorage.getItem('cuflynx-lhs-width') ?? LHS_DEFAULT_WIDTH)))
+const lhsCollapsed = computed(() => lhsWidth.value <= 0)
+const lhsDragging = ref(false)
+watch(lhsWidth, (w) => localStorage.setItem('cuflynx-lhs-width', String(w)))
+
+function _lhsWidthFromEvent(e) {
+  // The left column is flush to the left edge, so its width is the pointer's x.
+  const w = e.clientX
+  if (w < LHS_SNAP_WIDTH) return 0
+  return Math.min(Math.max(w, LHS_MIN_WIDTH), LHS_MAX_WIDTH)
+}
+function onLhsDrag(e) {
+  lhsWidth.value = _lhsWidthFromEvent(e)
+}
+function endLhsDrag() {
+  lhsDragging.value = false
+  window.removeEventListener('mousemove', onLhsDrag)
+  window.removeEventListener('mouseup', endLhsDrag)
+  document.body.style.userSelect = ''
+  document.body.style.cursor = ''
+}
+function startLhsDrag(e) {
+  e.preventDefault()
+  lhsDragging.value = true
+  window.addEventListener('mousemove', onLhsDrag)
+  window.addEventListener('mouseup', endLhsDrag)
+  document.body.style.userSelect = 'none'
+  document.body.style.cursor = 'col-resize'
+}
+function restoreLhs() {
+  lhsWidth.value = LHS_DEFAULT_WIDTH
+}
+
 // Center column tab: 'plots' | 'progress' | 'analysis'
 const centerTab = ref('plots')
 
@@ -884,10 +925,24 @@ watch(
 
     <main
       class="columns"
-      :class="{ 'rhs-dragging': rhsDragging }"
-      :style="{ gridTemplateColumns: `320px 1fr ${rhsWidth}px` }"
+      :class="{ 'rhs-dragging': rhsDragging, 'lhs-dragging': lhsDragging }"
+      :style="{ gridTemplateColumns: `${lhsWidth}px 1fr ${rhsWidth}px` }"
     >
-      <aside class="col col-left">
+      <aside class="col col-left" :class="{ collapsed: lhsCollapsed }" data-testid="lhs-column">
+        <div
+          class="lhs-divider"
+          :class="{ collapsed: lhsCollapsed }"
+          data-testid="lhs-handle"
+          role="separator"
+          aria-orientation="vertical"
+          :aria-label="lhsCollapsed ? 'Drag to show the left panel' : 'Drag to resize or hide the left panel'"
+          :title="lhsCollapsed ? 'Drag right to show the left panel (double-click to restore)' : 'Drag to resize; drag fully left to hide'"
+          @mousedown="startLhsDrag"
+          @dblclick="restoreLhs"
+        >
+          <span class="rhs-grip" />
+        </div>
+        <div class="lhs-content">
         <div class="left-tabs">
           <button
             class="left-tab"
@@ -987,6 +1042,7 @@ watch(
             @change="(s) => (uqSettings = s)"
             @cancel="uq.cancel()"
           />
+        </div>
         </div>
       </aside>
 
@@ -1497,7 +1553,7 @@ watch(
   overflow: hidden;
 }
 /* No width transition while actively dragging, so the resize tracks the pointer. */
-.columns:not(.rhs-dragging) {
+.columns:not(.rhs-dragging):not(.lhs-dragging) {
   transition: grid-template-columns 0.18s ease;
 }
 .col {
@@ -1508,6 +1564,63 @@ watch(
   border-right: 1px solid var(--p-content-border-color, #333);
   display: flex;
   flex-direction: column;
+  position: relative;
+  /* Override .col's overflow:hidden so the drag divider / tab can jut out. */
+  overflow: visible;
+}
+.lhs-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+.col-left.collapsed .lhs-content {
+  display: none;
+}
+/* Draggable divider on the left column's right edge; mirrors .rhs-divider. */
+.lhs-divider {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 0;
+  transform: translateX(50%);
+  width: 9px;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: col-resize;
+  background: transparent;
+}
+.lhs-divider:hover,
+.columns.lhs-dragging .lhs-divider {
+  background: rgba(91, 155, 213, 0.25);
+}
+.lhs-divider:hover .rhs-grip,
+.columns.lhs-dragging .rhs-grip {
+  background: var(--p-primary-color, #5b9bd5);
+}
+/* Collapsed: a grabbable tab pinned to the left edge, jutting right. */
+.lhs-divider.collapsed {
+  top: 50%;
+  bottom: auto;
+  right: 0;
+  transform: translate(100%, -50%);
+  width: 15px;
+  height: 56px;
+  border: 1px solid var(--p-content-border-color, #333);
+  border-left: none;
+  border-radius: 0 6px 6px 0;
+  background: var(--p-content-background, #1e1e1e);
+  opacity: 0.85;
+}
+.lhs-divider.collapsed:hover {
+  opacity: 1;
+}
+.lhs-divider.collapsed .rhs-grip {
+  height: 26px;
 }
 .left-tabs {
   display: flex;

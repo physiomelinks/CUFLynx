@@ -172,6 +172,45 @@ describe('App.vue', () => {
     })
   })
 
+  // The left column (params / sensitivity / calibration / uq) resizes the same
+  // way, via a divider on its right edge (width = the pointer's x from the left).
+  describe('resizable LHS column', () => {
+    const dragTo = async (wrapper, clientX) => {
+      await wrapper.find('[data-testid="lhs-handle"]').trigger('mousedown')
+      window.dispatchEvent(new MouseEvent('mousemove', { clientX }))
+      window.dispatchEvent(new MouseEvent('mouseup'))
+      await nextTick()
+    }
+
+    beforeEach(() => localStorage.removeItem('cuflynx-lhs-width'))
+
+    it('starts expanded with the drag divider present', () => {
+      const wrapper = shallowMount(App)
+      expect(wrapper.find('[data-testid="lhs-handle"]').exists()).toBe(true)
+      expect(wrapper.vm.lhsWidth).toBeGreaterThan(0)
+      expect(wrapper.find('[data-testid="lhs-column"]').classes()).not.toContain('collapsed')
+    })
+
+    it('drag resizes; dragging fully left collapses; the tab / dblclick restores', async () => {
+      const wrapper = shallowMount(App)
+      await dragTo(wrapper, 360) // 360px from the left edge
+      expect(wrapper.vm.lhsWidth).toBe(360)
+
+      await dragTo(wrapper, 10) // past the snap threshold -> hide
+      expect(wrapper.vm.lhsWidth).toBe(0)
+      expect(wrapper.vm.lhsCollapsed).toBe(true)
+      expect(wrapper.find('[data-testid="lhs-column"]').classes()).toContain('collapsed')
+
+      await dragTo(wrapper, 320) // drag the tab back out
+      expect(wrapper.vm.lhsWidth).toBe(320)
+      expect(wrapper.vm.lhsCollapsed).toBe(false)
+
+      await dragTo(wrapper, 10)
+      await wrapper.find('[data-testid="lhs-handle"]').trigger('dblclick')
+      expect(wrapper.vm.lhsWidth).toBe(320)
+    })
+  })
+
   // The packaged desktop app has no default interpreter (its own executable is
   // the frozen bundle), so the choice must survive a restart or the user re-picks
   // it on every launch.
