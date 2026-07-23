@@ -1,7 +1,6 @@
-// PhLynx — the sibling model-builder web app. "Start" links here to build a
+// PhLynx — the sibling model-builder web app. "Create" links here to build a
 // model from scratch; "Edit" opens the current model there.
-// TODO(#91): replace with the real PhLynx deployment URL once it is known.
-export const PHLYNX_URL = 'https://github.com/physiomelinks/PhLynx'
+export const PHLYNX_URL = 'https://www.phlynx.com'
 
 // Example CellML models the "Start" dialog offers. Data-driven so PMR models
 // (and other bundled examples) slot in later without touching the UI. Each
