@@ -94,6 +94,14 @@ const methodOptions = computed(() =>
   (selectedMethod.value?.options ?? []).filter((o) => o.name !== 'seed'),
 )
 const isGradientMethod = computed(() => selectedMethod.value?.gradient_based ?? false)
+// Multi-start methods draw their own starting points by sampling (schema signal:
+// a num_starts / start_sampling option), so a single "Start from" point doesn't
+// apply to them.
+const isMultiStart = computed(() =>
+  methodOptions.value.some((o) => o.name === 'num_starts' || o.name === 'start_sampling'),
+)
+// The single start point only applies to single-start gradient descent.
+const showStartFrom = computed(() => isGradientMethod.value && !isMultiStart.value)
 
 // Seed each option's default when the selected method's options change, keeping any
 // value the user already set for a like-named option.
@@ -148,12 +156,8 @@ function buildSettings() {
     num_cores: settings.num_cores,
     dt: settings.dt,
     DEBUG: settings.DEBUG,
-    ...(isGradientMethod.value
-      ? {
-          gradient_method: settings.gradient_method,
-          start_from: settings.start_from,
-        }
-      : {}),
+    ...(isGradientMethod.value ? { gradient_method: settings.gradient_method } : {}),
+    ...(showStartFrom.value ? { start_from: settings.start_from } : {}),
     ...opts,
   }
 }
@@ -217,7 +221,7 @@ function onRun() {
           data-testid="calib-gradient-method"
         />
       </label>
-      <label v-if="isGradientMethod" class="field">
+      <label v-if="showStartFrom" class="field">
         <span title="Where gradient descent starts: the model's initial values, the current slider values, or the previous completed calibration's best fit (to continue a stopped run).">Start from</span>
         <Select
           v-model="settings.start_from"
