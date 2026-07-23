@@ -54,6 +54,12 @@ export function itemToRow(item) {
     variable: item.variable ?? '',
     name_for_plotting: item.name_for_plotting ?? item.variable ?? '',
     operation: item.operation ?? '',
+    // Per-data_item values for the operation's keyword args (e.g. threshold,
+    // window). Cloned so edits don't mutate the source; round-tripped on save.
+    operation_kwargs:
+      item.operation_kwargs && typeof item.operation_kwargs === 'object'
+        ? { ...item.operation_kwargs }
+        : {},
     operands: Array.isArray(item.operands) ? [...item.operands] : [],
     unit: item.unit ?? 'dimensionless',
     value: item.value ?? null,
@@ -78,6 +84,7 @@ export function newRow(experimentIdx = 0) {
     variable: '',
     name_for_plotting: '',
     operation: 'max',
+    operation_kwargs: {},
     operands: [],
     unit: 'dimensionless',
     value: 0,
@@ -111,6 +118,11 @@ export function rowToItem(row) {
   out.plot_type = row.plot_type || 'None'
   if (row.operation) out.operation = row.operation
   else delete out.operation
+  // Persist the operation's keyword-arg values (threaded to CA at run time). Drop
+  // when there are none, or when no operation is selected (kwargs have no meaning).
+  const kw = row.operation_kwargs && typeof row.operation_kwargs === 'object' ? row.operation_kwargs : {}
+  if (row.operation && Object.keys(kw).length) out.operation_kwargs = { ...kw }
+  else delete out.operation_kwargs
   if (row.cost_type) out.cost_type = row.cost_type
   else delete out.cost_type
   // Write the text source, but never clobber a legacy dict source (file paths).
