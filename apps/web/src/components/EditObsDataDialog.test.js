@@ -133,6 +133,20 @@ describe('EditObsDataDialog', () => {
     expect(wrapper.find('[data-testid="eo-nondiff-warn"]').exists()).toBe(false)
   })
 
+  it('colours non-differentiable operation options in the operation dropdown', async () => {
+    getObsDataOptions.mockResolvedValueOnce({
+      ...FETCH,
+      operations: ['', 'max', 'calc_spike_period'],
+      differentiable_operations: { max: true, calc_spike_period: false },
+    })
+    const wrapper = mountDialog()
+    await flushPromises()
+    const options = wrapper.findAll('[data-testid="eo-row"] select option')
+    const byValue = (v) => options.find((o) => o.attributes('value') === v)
+    expect(byValue('calc_spike_period').classes()).toContain('non-diff-option')
+    expect(byValue('max').classes()).not.toContain('non-diff-option')
+  })
+
   it('falls back when getObsDataOptions rejects', async () => {
     getObsDataOptions.mockRejectedValueOnce(new Error('offline'))
     const wrapper = mountDialog()
