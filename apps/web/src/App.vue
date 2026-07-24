@@ -1069,6 +1069,7 @@ watch(
             :state="calib.state.value"
             :cost="calib.cost.value"
             :error="calib.error.value"
+            :calibrated-model-url="calib.calibratedModelUrl.value"
             @run="onRunCalibration"
             @change="(s) => (calibSettings = s)"
             @cancel="calib.cancel()"

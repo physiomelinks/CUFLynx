@@ -1004,6 +1004,9 @@ def calibration_run(req: CalibrationRequest) -> dict:
         "num_cores": int(req.settings.get("num_cores", 1) or 1),
         "python": python_path,
         "settings": req.settings,
+        # The original uploaded CellML, so the runner can save a calibrated copy
+        # with best-fit values baked in (issue #114), independent of model_type.
+        "cellml_path": str(record.path),
         "current_params": req.current_params,
         "best_fit_params": best_fit_params,
         # Global random seed (Settings popup); None => non-deterministic run.
@@ -1022,6 +1025,19 @@ def calibration_status(job_id: str, offset: int = 0) -> dict:
     if status is None:
         raise HTTPException(status_code=404, detail="calibration job not found")
     return status
+
+
+@app.get("/api/calibration/{job_id}/calibrated_model")
+def download_calibrated_model(job_id: str) -> FileResponse:
+    """Download the calibrated CellML saved when the run finished (issue #114) —
+    the best-fit values baked into the uploaded flat model, for reloading."""
+    status = calibration.status(job_id)
+    if status is None:
+        raise HTTPException(status_code=404, detail="calibration job not found")
+    path = status.get("calibrated_model_path")
+    if not path or not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail="no calibrated model for this job")
+    return FileResponse(path, media_type="application/xml", filename=os.path.basename(path))
 
 
 @app.get("/api/calibration/{job_id}/progress")

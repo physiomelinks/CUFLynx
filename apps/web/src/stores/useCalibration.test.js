@@ -4,7 +4,9 @@ import { watch, nextTick } from 'vue'
 vi.mock('../lib/api', () => ({
   startCalibration: vi.fn(),
   getCalibrationStatus: vi.fn(),
+  getCalibrationProgress: vi.fn(),
   cancelCalibration: vi.fn(),
+  calibratedModelUrl: vi.fn((id) => `/api/calibration/${id}/calibrated_model`),
 }))
 
 import { startCalibration, getCalibrationStatus } from '../lib/api'
@@ -57,6 +59,33 @@ describe('useCalibration', () => {
     expect(c.state.value).toBe('done')
     expect(c.bestParams.value).toEqual({ 'a/x': 1.5 })
     expect(c.lines.value).toEqual(['generation 0', 'best cost: 0.25'])
+  })
+
+  it('exposes a calibrated-model download URL when the run saved one (#114)', async () => {
+    startCalibration.mockResolvedValue({ job_id: 'jcal' })
+    getCalibrationStatus.mockResolvedValue({
+      state: 'done',
+      lines: [],
+      next_offset: 0,
+      best_params: { 'a/x': 1.5 },
+      cost: 0.25,
+      calibrated_model_path: '/out/model_calibrated.cellml',
+      error: null,
+    })
+    const c = useCalibration()
+    await c.start('m1', { param_id_method: 'genetic_algorithm' })
+    expect(c.calibratedModelPath.value).toBe('/out/model_calibrated.cellml')
+    expect(c.calibratedModelUrl.value).toBe('/api/calibration/jcal/calibrated_model')
+  })
+
+  it('has no download URL when the run saved no calibrated model', async () => {
+    startCalibration.mockResolvedValue({ job_id: 'j0' })
+    getCalibrationStatus.mockResolvedValue({
+      state: 'done', lines: [], next_offset: 0, best_params: {}, cost: 1, error: null,
+    })
+    const c = useCalibration()
+    await c.start('m1', { param_id_method: 'genetic_algorithm' })
+    expect(c.calibratedModelUrl.value).toBeNull()
   })
 
   it('accumulates lines across running -> done polls', async () => {

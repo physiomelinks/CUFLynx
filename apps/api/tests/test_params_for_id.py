@@ -150,3 +150,66 @@ def test_simulate_bg_model_alpha_o2_slider(client, requires_simulation):
         return float(np.mean(r.json()["outputs"]["main/c_o2"]))
 
     assert mean_c_o2(0.005) != pytest.approx(mean_c_o2(0.05), rel=1e-3)
+
+
+# ---------------------------------------------------------------------------
+# Flat-model initial-value resolution (issue #114, DEFCON 1)
+# ---------------------------------------------------------------------------
+def test_flat_model_initial_values_resolve_via_gen_name():
+    """A circulatory_autogen *flat* model renames constants (e.g. params_for_id
+    `aortic_root/C` -> the model's `parameters/C_aortic_root`), so the direct
+    `vessel/param` qname isn't in the model. The slider initial_value must still be
+    the model's real value, not None (which the UI would replace with the range
+    midpoint -> wrong sim, issue #114)."""
+    from cellml_meta import parse_cellml
+    from params_for_id import parse_params_for_id
+    from conftest import RESOURCES_DIR
+
+    meta = parse_cellml((RESOURCES_DIR / "3compartment_flat.cellml").read_bytes())
+    csv = (RESOURCES_DIR / "3compartment_params_for_id.csv").read_bytes()
+    entries = {e.qname: e.initial_value for e in parse_params_for_id(csv, meta.initial_values)}
+
+    # global vessel -> bare gen name; other vessels -> param_vessel; both live in
+    # the flat model's parameters* components.
+    assert entries["global/q_lv_init"] == pytest.approx(0.00071536680911)
+    assert entries["aortic_root/C"] == pytest.approx(1.674986287e-08)
+    assert entries["global/E_lv_A"] == pytest.approx(248523797.83)
+    assert entries["global/E_lv_B"] == pytest.approx(10268533.558)
+    # None of them fell through to the "no value" case.
+    assert all(v is not None for v in entries.values())
+
+
+def test_direct_qname_still_wins_over_gen_name():
+    """Non-flat models (Lotka-Volterra) name the constant `vessel/param` directly;
+    that must resolve without the flat-model fallback kicking in."""
+    from cellml_meta import parse_cellml
+    from params_for_id import parse_params_for_id
+    from conftest import RESOURCES_DIR
+
+    meta = parse_cellml(LV_MODEL_PATH.read_bytes())
+    csv = LV_PARAMS_CSV_PATH.read_bytes()
+    entries = {e.qname: e.initial_value for e in parse_params_for_id(csv, meta.initial_values)}
+    assert entries["Lotka_Volterra_module/alpha"] == pytest.approx(5.0)
+    assert entries["Lotka_Volterra_module/beta"] == pytest.approx(0.2)
+
+
+def test_gen_name_fallback_skips_ambiguous_bare_names():
+    """If a bare gen name maps to multiple non-parameters components (a real clash),
+    resolution returns None rather than guessing a wrong value."""
+    from params_for_id import _resolve_initial_value, _build_gen_index
+
+    initial = {"aortic_root_module/v": 0.0, "pvn_module/v": 1.0}  # bare 'v' clashes
+    idx = _build_gen_index(initial)
+    # vessel 'module' + param 'v'? gen name 'v_module' -> not present; but test the
+    # ambiguous bare-name path directly with a gen name that clashes.
+    assert _resolve_initial_value("global", "v", initial, idx) is None
+
+
+def test_gen_name_fallback_prefers_parameters_component():
+    """When the bare name clashes but exactly one hit is in a parameters* component,
+    that one wins (the flat model's canonical source of the value)."""
+    from params_for_id import _resolve_initial_value, _build_gen_index
+
+    initial = {"parameters/R_x": 42.0, "some_module/R_x": 7.0}
+    idx = _build_gen_index(initial)
+    assert _resolve_initial_value("x", "R", initial, idx) == 42.0

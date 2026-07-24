@@ -563,6 +563,8 @@ class CalibrationJob:
         self.state = "running"  # running | done | error | cancelled
         self.best_params: dict | None = None
         self.cost = None
+        # Calibrated CellML saved on finish (best-fit values baked in, issue #114).
+        self.calibrated_model_path: str | None = None
         # Post-calibration per-observable fit errors (Analysis-tab bar charts).
         self.percent_error: list | None = None
         self.std_error: list | None = None
@@ -686,6 +688,7 @@ class CalibrationManager:
                     data = json.loads(Path(results).read_text())
                     job.best_params = data.get("params", {})
                     job.cost = data.get("cost")
+                    job.calibrated_model_path = data.get("calibrated_model_path")
                     job.percent_error = data.get("percent_error")
                     job.std_error = data.get("std_error")
                     job.error_labels = data.get("error_labels") or []
@@ -710,6 +713,7 @@ class CalibrationManager:
                 "next_offset": offset + len(lines),
                 "best_params": job.best_params,
                 "cost": job.cost,
+                "calibrated_model_path": job.calibrated_model_path,
                 "percent_error": job.percent_error,
                 "std_error": job.std_error,
                 "error_labels": job.error_labels,

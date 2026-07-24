@@ -13,6 +13,8 @@ import time
 import pytest
 
 import calibration as calibration_mod
+from pathlib import Path
+
 from conftest import (
     LV_MODEL_PATH,
     LV_OBS_DATA_PATH,
@@ -800,6 +802,65 @@ def test_calibration_3compartment_genetic_algorithm(client, requires_simulation)
     assert status["cost"] is not None and math.isfinite(status["cost"])
 
 
+@pytest.mark.integration
+def test_calibration_saves_calibrated_model_that_reloads_with_best_fit(
+    client, requires_simulation
+):
+    """#114 end-to-end: after a real calibration, the saved calibrated CellML has the
+    best-fit values baked in, and re-uploading it (a "new window") reloads slider
+    initial values equal to the best fit — the exact scenario that was broken."""
+    from cellml_meta import parse_cellml
+    from params_for_id import parse_params_for_id
+
+    model_id = _setup_model_obs_params(
+        client, C3_MODEL_PATH, C3_OBS_DATA_PATH, C3_PARAMS_CSV_PATH
+    )
+    settings = {
+        "param_id_method": "genetic_algorithm",
+        "num_calls_to_function": 30,
+        "DEBUG": True,
+        "dt": 0.01,
+    }
+    resp = client.post(
+        "/api/calibration/run", json={"model_id": model_id, "settings": settings}
+    )
+    assert resp.status_code == 200, resp.text
+    status, lines = _wait(client, resp.json()["job_id"], timeout=600)
+    assert status["state"] == "done", "\n".join(lines)
+    best = status["best_params"]
+
+    # 1. The calibrated CellML was saved on finish.
+    cal_path = status["calibrated_model_path"]
+    assert cal_path and Path(cal_path).is_file(), "calibrated model was not saved"
+
+    # 2. Its parameter values equal the best fit (values baked into the model).
+    meta = parse_cellml(Path(cal_path).read_bytes())
+    csv = C3_PARAMS_CSV_PATH.read_bytes()
+    in_saved = {e.qname: e.initial_value for e in parse_params_for_id(csv, meta.initial_values)}
+    for name, val in best.items():
+        assert in_saved[name] == pytest.approx(val, rel=1e-6), name
+
+    # 3. "Load in a new window": upload the calibrated model + params fresh, and the
+    #    slider initial values come back as the best fit (was the range midpoint).
+    with open(cal_path, "rb") as fh:
+        r = client.post(
+            "/api/models/upload",
+            files={"file": ("model_calibrated.cellml", fh, "application/xml")},
+        )
+    assert r.status_code == 200, r.text
+    new_id = r.json()["model_id"]
+    with open(C3_PARAMS_CSV_PATH, "rb") as fh:
+        r = client.post(
+            f"/api/params_for_id/upload?model_id={new_id}",
+            files={"file": (C3_PARAMS_CSV_PATH.name, fh, "text/csv")},
+        )
+    assert r.status_code == 200, r.text
+    reloaded = {p["qname"]: p["initial_value"] for p in r.json()["params"]}
+    for name, val in best.items():
+        assert reloaded[name] is not None
+        assert reloaded[name] == pytest.approx(val, rel=1e-6), name
+
+
 # --- issues #65 / #83: gradient descent can start from a chosen point ---
 def test_apply_start_point_overrides_param_init():
     """_apply_start_point replaces CA's param_init (the sp_minimize x0, seeded from
@@ -978,3 +1039,31 @@ def test_cancelled_run_best_is_captured_and_reusable(tmp_path):
     assert job.best_params == {"global/a": 1.5, "aortic/b": 2.0}  # ...but best recovered
     assert mgr.last_completed_best_params("m") == {"global/a": 1.5, "aortic/b": 2.0}
     assert mgr.last_completed_best_params("other-model") is None
+
+
+# ---------------------------------------------------------------------------
+# Download of the saved calibrated model (issue #114)
+# ---------------------------------------------------------------------------
+def test_download_calibrated_model_404_for_unknown_job(client):
+    assert client.get("/api/calibration/nope/calibrated_model").status_code == 404
+
+
+def test_download_calibrated_model_404_when_none_saved(client, monkeypatch):
+    monkeypatch.setattr(
+        calibration_mod.calibration, "status",
+        lambda job_id, offset=0: {"state": "done", "calibrated_model_path": None},
+    )
+    assert client.get("/api/calibration/j1/calibrated_model").status_code == 404
+
+
+def test_download_calibrated_model_returns_the_saved_file(client, monkeypatch, tmp_path):
+    model = tmp_path / "m_calibrated.cellml"
+    model.write_text('<?xml version="1.0"?><model xmlns="http://www.cellml.org/cellml/1.1#"/>')
+    monkeypatch.setattr(
+        calibration_mod.calibration, "status",
+        lambda job_id, offset=0: {"state": "done", "calibrated_model_path": str(model)},
+    )
+    resp = client.get("/api/calibration/j1/calibrated_model")
+    assert resp.status_code == 200, resp.text
+    assert resp.content == model.read_bytes()
+    assert "m_calibrated.cellml" in resp.headers.get("content-disposition", "")

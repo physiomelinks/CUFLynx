@@ -206,15 +206,53 @@ def run(config: dict) -> dict:
             for qname in name_list:
                 params[qname] = float(best_vals[i])
         cost = getattr(getattr(param_id, "param_id", None), "best_cost", None)
+        # Save the calibrated CellML (best-fit values baked into the flat model) so
+        # it can be reloaded and reproduce the calibrated simulation (issue #114).
+        calibrated_path = _write_calibrated_cellml(config, params, output_dir)
         payload = {
             "params": params,
             "cost": None if cost is None else float(cost),
+            "calibrated_model_path": calibrated_path,
             **errors,
         }
         result = {**payload, "rank": rank}
         with open(os.path.join(output_dir, "results.json"), "w") as fh:
             json.dump(payload, fh)
     return result
+
+
+def _write_calibrated_cellml(config: dict, params: dict, output_dir: str) -> str | None:
+    """Bake the best-fit values into the uploaded flat CellML and save it beside
+    the results (issue #114). Best-effort: never fails the calibration.
+
+    Returns the written path, or None if there's no CellML to update or nothing
+    resolved. The source is ``config["cellml_path"]`` (the original uploaded model,
+    regardless of the generated_model_format used for the run)."""
+    cellml_path = config.get("cellml_path")
+    if not cellml_path or not str(cellml_path).endswith(".cellml") or not params:
+        return None
+    try:
+        from calibrated_model import calibrated_cellml  # local import: pure-XML
+
+        text = Path(cellml_path).read_text(encoding="utf-8")
+        new_text, report = calibrated_cellml(text, params)
+        if not report["updated"]:
+            return None
+        prefix = config.get("file_prefix") or Path(cellml_path).stem
+        out_path = os.path.join(output_dir, f"{prefix}_calibrated.cellml")
+        Path(out_path).write_text(new_text, encoding="utf-8")
+        if report["unresolved"]:
+            print(
+                f"calibrated model: {len(report['updated'])} params written, "
+                f"{len(report['unresolved'])} unresolved: {report['unresolved']}",
+                flush=True,
+            )
+        else:
+            print(f"Saved calibrated model: {out_path}", flush=True)
+        return out_path
+    except Exception as exc:  # noqa: BLE001 - saving the model must not fail the run
+        print(f"WARNING: could not save calibrated model: {exc}", flush=True)
+        return None
 
 
 def _generate_error_vectors(param_id, output_dir: str) -> dict:
