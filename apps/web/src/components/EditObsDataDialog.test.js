@@ -1,10 +1,18 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 
-vi.mock('../lib/api', () => ({ uploadObsData: vi.fn(), getObsDataOptions: vi.fn() }))
+vi.mock('../lib/api', () => ({
+  uploadObsData: vi.fn(),
+  getObsDataOptions: vi.fn(),
+  // Used by the embedded EditOperationFuncsDialog ("Custom funcs").
+  getUserFuncs: vi.fn(),
+  saveUserFunc: vi.fn(),
+  deleteUserFunc: vi.fn(),
+}))
 
 import EditObsDataDialog from './EditObsDataDialog.vue'
-import { uploadObsData, getObsDataOptions } from '../lib/api'
+import EditOperationFuncsDialog from './EditOperationFuncsDialog.vue'
+import { uploadObsData, getObsDataOptions, getUserFuncs } from '../lib/api'
 
 const DialogStub = {
   props: ['visible'],
@@ -24,10 +32,19 @@ const ProtocolEditorStub = {
   emits: ['update:activeExp'],
   template: '<div class="pie-stub" />',
 }
+// The embedded EditOperationFuncsDialog uses InputText; stub it so it renders
+// without the PrimeVue plugin.
+const InputTextStub = {
+  props: ['modelValue', 'invalid'],
+  emits: ['update:modelValue'],
+  template:
+    '<input :value="modelValue" @input="$emit(\'update:modelValue\', $event.target.value)" />',
+}
 const stubs = {
   Dialog: DialogStub,
   Button: ButtonStub,
   Message: MessageStub,
+  InputText: InputTextStub,
   ProtocolInfoEditor: ProtocolEditorStub,
 }
 
@@ -59,6 +76,7 @@ function mountDialog(props = {}) {
 
 beforeEach(() => {
   uploadObsData.mockReset()
+  getUserFuncs.mockReset().mockResolvedValue({ kind: 'operation', functions: [], templates: { basic: 'def f(x):\n    return x\n' }, template: 'def f(x):\n    return x\n', available: true })
   getObsDataOptions.mockReset().mockResolvedValue(FETCH)
   globalThis.URL.createObjectURL = vi.fn(() => 'blob:mock')
   globalThis.URL.revokeObjectURL = vi.fn()
@@ -297,5 +315,20 @@ describe('EditObsDataDialog', () => {
     expect(Array.isArray(obsArg)).toBe(false) // object form now
     expect(obsArg.protocol_info).toMatchObject({ pre_times: [0], sim_times: [[1]] })
     clickSpy.mockRestore()
+  })
+
+  it('opens the custom-funcs dialog and re-introspects options after a save', async () => {
+    const wrapper = mountDialog()
+    await flushPromises()
+    // The "Custom funcs" affordance opens the authoring dialog.
+    await wrapper.find('[data-testid="eo-add-op-func"]').trigger('click')
+    await flushPromises()
+    expect(getUserFuncs).toHaveBeenCalled()
+
+    // When a custom func is saved, the operation options are refreshed (refresh=true).
+    getObsDataOptions.mockClear()
+    wrapper.findComponent(EditOperationFuncsDialog).vm.$emit('saved', { kind: 'operation', functions: [] })
+    await flushPromises()
+    expect(getObsDataOptions).toHaveBeenCalledWith(true, '')
   })
 })

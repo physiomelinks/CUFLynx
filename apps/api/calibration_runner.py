@@ -168,6 +168,9 @@ def run(config: dict) -> dict:
         DEBUG=bool(settings.get("DEBUG", False)),
         param_id_output_dir=output_dir,
         resources_dir=os.path.dirname(config["params_path"]),
+        # CUFLynx-authored operation/cost funcs loaded from external files (CA #303).
+        operation_funcs_external_path=config.get("operation_funcs_external_path"),
+        cost_funcs_external_path=config.get("cost_funcs_external_path"),
     )
 
     # Gradient descent (sp_minimize) starts from param_init, which CA seeds from the

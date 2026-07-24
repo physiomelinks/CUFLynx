@@ -34,12 +34,14 @@ FALLBACK_DATA_TYPES = ["constant", "series", "frequency", "prob_dist"]
 FALLBACK_PLOT_TYPES = ["", "horizontal", "vertical", "horizontal_from_min", "series", "frequency"]
 
 _cache: dict | None = None
+_cache_output_dir: str | None = None
 
 
 def reset_cache() -> None:
     """Drop the cached options (call when the CA directory changes)."""
-    global _cache
+    global _cache, _cache_output_dir
     _cache = None
+    _cache_output_dir = None
 
 
 def _ca_paths() -> list[str]:
@@ -67,20 +69,23 @@ def _introspect_schema() -> tuple[list, list]:
         return list(FALLBACK_DATA_TYPES), list(FALLBACK_PLOT_TYPES)
 
 
-def _introspect() -> dict:
+def _introspect(output_dir: str | None = None) -> dict:
     for p in _ca_paths():
         if p not in sys.path:
             sys.path.insert(0, p)
     import operation_funcs  # noqa: E402 (CA module, resolved via sys.path)
     import cost_funcs_user  # noqa: E402
 
-    # numpy mode keeps this light (no casadi/myokit). The op dict includes the
-    # user operations registered from funcs_user/operation_funcs_user.py.
-    op_funcs = operation_funcs.get_operation_funcs_dict_for_mode("numpy")
+    # numpy mode keeps this light (no casadi/myokit). CUFLynx-authored funcs live
+    # in external files (issue #104); hand their paths to CA's builders so the
+    # merged set — user funcs included, with correct @differentiable / @is_MLE
+    # flags — is discovered by CA itself (CA #303).
+    op_path, cost_path = _external_func_paths(output_dir)
+    op_funcs = _op_funcs_dict(operation_funcs, op_path)
     operations = sorted(op_funcs)
     if "" not in operations:
         operations = [""] + operations  # allow "no operation"
-    cost_types = sorted(cost_funcs_user.get_cost_funcs_dict_for_mode("numpy"))
+    cost_types = sorted(_cost_funcs_dict(cost_funcs_user, cost_path))
     # Defensive: some CA builds also enumerate the ``cost_func_metadata`` accessor
     # itself as if it were a cost function — it isn't, so keep it out of the
     # dropdown (and its self-referential metadata entry never renders).
@@ -89,13 +94,44 @@ def _introspect() -> dict:
     return {
         "operations": operations,
         "cost_types": cost_types,
-        "cost_func_metadata": _introspect_cost_func_metadata(cost_funcs_user),
+        "cost_func_metadata": _introspect_cost_func_metadata(cost_funcs_user, cost_path),
         # op name -> @differentiable, so the editor can flag data_items whose
         # operation blocks AD gradients. Empty on an older CA without the marker.
         "differentiable_operations": _introspect_operation_differentiability(op_funcs),
         "data_types": data_types,
         "plot_types": plot_types,
     }
+
+
+def _external_func_paths(output_dir: str | None = None) -> tuple:
+    """(operation path, cost path) for the CUFLynx-authored external files under
+    ``output_dir``, or (None, None) — passed to CA's builders so it registers the
+    user funcs."""
+    try:
+        import user_funcs
+
+        return (
+            user_funcs.external_path("operation", output_dir),
+            user_funcs.external_path("cost", output_dir),
+        )
+    except Exception:  # noqa: BLE001 - external paths are best-effort
+        return None, None
+
+
+def _op_funcs_dict(operation_funcs, external_path):
+    """CA's operation dict incl. the external file. Falls back to the built-ins on
+    an older CA whose builder predates the ``external_path`` arg (CA #303)."""
+    try:
+        return operation_funcs.get_operation_funcs_dict_for_mode("numpy", external_path=external_path)
+    except TypeError:  # older CA without the external_path parameter
+        return operation_funcs.get_operation_funcs_dict_for_mode("numpy")
+
+
+def _cost_funcs_dict(cost_funcs_user, external_path):
+    try:
+        return cost_funcs_user.get_cost_funcs_dict_for_mode("numpy", external_path=external_path)
+    except TypeError:
+        return cost_funcs_user.get_cost_funcs_dict_for_mode("numpy")
 
 
 def _introspect_operation_differentiability(op_funcs) -> dict:
@@ -109,15 +145,21 @@ def _introspect_operation_differentiability(op_funcs) -> dict:
     return {name: bool(is_circulatory_differentiable(fn)) for name, fn in op_funcs.items()}
 
 
-def _introspect_cost_func_metadata(cost_funcs_user) -> dict:
+def _introspect_cost_func_metadata(cost_funcs_user, external_path=None) -> dict:
     """Per-cost-function flags (is_MLE / is_combiner / differentiable) from CA's
-    ``cost_func_metadata()``, so the obs-data editor can label cost types without
-    poking at function attributes. Best-effort: an older CA without the accessor
-    (or a partial payload) yields ``{}`` / defaults, leaving the plain cost_types
-    list working.
+    ``cost_func_metadata()`` — including CUFLynx's external cost funcs (CA #303) —
+    so the obs-data editor can label cost types without poking at function
+    attributes. Best-effort: an older CA without the accessor (or the
+    ``external_path`` arg, or a partial payload) yields ``{}`` / defaults, leaving
+    the plain cost_types list working.
     """
     try:
-        raw = cost_funcs_user.cost_func_metadata()
+        raw = cost_funcs_user.cost_func_metadata(external_path=external_path)
+    except TypeError:  # older CA without the external_path parameter
+        try:
+            raw = cost_funcs_user.cost_func_metadata()
+        except Exception:  # noqa: BLE001 - older CA without the accessor
+            return {}
     except Exception:  # noqa: BLE001 - older CA without the accessor
         return {}
     out = {}
@@ -131,17 +173,19 @@ def _introspect_cost_func_metadata(cost_funcs_user) -> dict:
     return out
 
 
-def get_obs_data_options(refresh: bool = False) -> dict:
-    """Return ``{"operations": [...], "cost_types": [...]}`` from CA.
+def get_obs_data_options(refresh: bool = False, output_dir: str | None = None) -> dict:
+    """Return ``{"operations": [...], "cost_types": [...]}`` from CA, including the
+    user's custom funcs under ``output_dir``.
 
-    Caches a successful introspection; returns fallbacks (uncached) when CA is
-    unavailable so a later CA-dir change can still succeed.
+    Caches a successful introspection (keyed on ``output_dir``); returns fallbacks
+    (uncached) when CA is unavailable so a later CA-dir change can still succeed.
     """
-    global _cache
-    if _cache is not None and not refresh:
+    global _cache, _cache_output_dir
+    if _cache is not None and not refresh and _cache_output_dir == output_dir:
         return _cache
     try:
-        _cache = _introspect()
+        _cache = _introspect(output_dir)
+        _cache_output_dir = output_dir
         return _cache
     except Exception:  # noqa: BLE001 - CA missing / import failure → fallbacks
         return {

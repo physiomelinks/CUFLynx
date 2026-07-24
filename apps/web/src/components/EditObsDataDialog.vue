@@ -17,6 +17,7 @@ import {
 } from '../lib/obsDataJson'
 import { uploadObsData, getObsDataOptions } from '../lib/api'
 import ProtocolInfoEditor from './ProtocolInfoEditor.vue'
+import EditOperationFuncsDialog from './EditOperationFuncsDialog.vue'
 import {
   protocolToModel,
   buildProtocolInfo,
@@ -62,6 +63,29 @@ const highlightExp = ref(null)
 const selectedRow = ref(null)
 const saving = ref(false)
 const error = ref('')
+// "Custom operations" authoring dialog (issue #58).
+const opFuncsOpen = ref(false)
+
+// Fetch the CA-sourced option lists (pass refresh=true to re-introspect CA after
+// a custom operation is added, so the new op appears in the dropdown).
+async function loadOptions(refresh = false) {
+  try {
+    // Pass the output dir so the user's custom funcs (stored there) show up.
+    const opts = await getObsDataOptions(refresh, localStorage.getItem('cuflynx-outputs-dir') || '')
+    if (opts?.operations?.length) operations.value = opts.operations
+    if (opts?.differentiable_operations) diffOps.value = opts.differentiable_operations
+    if (opts?.cost_types?.length) costTypes.value = opts.cost_types
+    if (opts?.cost_func_metadata) costMeta.value = opts.cost_func_metadata
+    if (opts?.plot_types?.length) plotTypes.value = opts.plot_types
+  } catch {
+    /* keep fallbacks — editor still works offline */
+  }
+}
+
+// Re-introspect CA after a custom operation is saved so it shows in the dropdown.
+async function onOpFuncsSaved() {
+  await loadOptions(true)
+}
 
 // Rebuild on open: fetch the CA-sourced option lists FIRST, then split the
 // loaded items against the live operations so user-op constants stay editable.
@@ -70,16 +94,7 @@ watch(
   async (v) => {
     if (!v) return
     error.value = ''
-    try {
-      const opts = await getObsDataOptions()
-      if (opts?.operations?.length) operations.value = opts.operations
-      if (opts?.differentiable_operations) diffOps.value = opts.differentiable_operations
-      if (opts?.cost_types?.length) costTypes.value = opts.cost_types
-      if (opts?.cost_func_metadata) costMeta.value = opts.cost_func_metadata
-      if (opts?.plot_types?.length) plotTypes.value = opts.plot_types
-    } catch {
-      /* keep fallbacks — editor still works offline */
-    }
+    await loadOptions()
     const { editable, preserved } = splitItems(props.currentDataItems, operations.value)
     editableRows.value = editable
     preservedItems.value = preserved
@@ -311,7 +326,18 @@ async function onSave() {
       {{ modelErrors.join('; ') }}
     </Message>
 
-    <h3 class="eo-section">data_items</h3>
+    <div class="eo-section-row">
+      <h3 class="eo-section">data_items</h3>
+      <Button
+        label="Custom funcs"
+        icon="pi pi-code"
+        size="small"
+        text
+        data-testid="eo-add-op-func"
+        title="Write your own operation or cost function in Python"
+        @click="opFuncsOpen = true"
+      />
+    </div>
     <div class="eo-head">
       <span>Variable</span>
       <span>value</span>
@@ -499,6 +525,8 @@ async function onSave() {
         @click="onSave"
       />
     </template>
+
+    <EditOperationFuncsDialog v-model:visible="opFuncsOpen" @saved="onOpFuncsSaved" />
   </Dialog>
 </template>
 
@@ -511,6 +539,12 @@ async function onSave() {
 .eo-section {
   margin: 0.75rem 0 0.35rem;
   font-size: 0.9rem;
+}
+.eo-section-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
 }
 .eo-head,
 .eo-main {
