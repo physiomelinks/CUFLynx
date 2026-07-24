@@ -27,6 +27,7 @@ def test_obs_data_options_fallback_when_ca_unavailable(monkeypatch):
     assert opts["cost_types"] == obs_options.FALLBACK_COST_TYPES
     assert opts["cost_func_metadata"] == {}
     assert opts["differentiable_operations"] == {}
+    assert opts["operation_kwargs_schema"] == {}
     assert opts["data_types"] == obs_options.FALLBACK_DATA_TYPES
     assert opts["plot_types"] == obs_options.FALLBACK_PLOT_TYPES
     obs_options.reset_cache()
@@ -100,3 +101,49 @@ def test_cost_func_metadata_empty_on_older_ca():
 
     fake = types.SimpleNamespace(cost_func_metadata=_boom)
     assert obs_options._introspect_cost_func_metadata(fake) == {}
+
+
+def test_operation_kwargs_schema_parses_signature():
+    """An operation's keyword args are surfaced (name/default/inferred type),
+    excluding the positional operand(s) and the reserved series_output flag."""
+    import obs_options
+
+    def peak_above(x, threshold=0.5, window=10, invert=False, label="p", series_output=False):
+        return x
+
+    def addition(x1, x2):  # operands only, no tunable kwargs
+        return x1 + x2
+
+    schema = obs_options._introspect_operation_kwargs(
+        {"peak_above": peak_above, "addition": addition, "max": max}
+    )
+    # addition/max have no tunable kwargs -> omitted entirely.
+    assert "addition" not in schema
+    assert "max" not in schema
+    kwargs = schema["peak_above"]
+    # operand `x` and reserved `series_output` are excluded; the rest surface in order.
+    assert [k["name"] for k in kwargs] == ["threshold", "window", "invert", "label"]
+    by_name = {k["name"]: k for k in kwargs}
+    assert by_name["threshold"] == {"name": "threshold", "default": 0.5, "type": "number"}
+    assert by_name["window"] == {"name": "window", "default": 10, "type": "integer"}
+    assert by_name["invert"] == {"name": "invert", "default": False, "type": "boolean"}
+    assert by_name["label"] == {"name": "label", "default": "p", "type": "string"}
+
+
+def test_operation_kwargs_schema_handles_uninspectable_and_varargs():
+    """Callables without a usable signature are skipped (not fatal); *args/**kwargs
+    are ignored, and a None default falls back to a free-text string input."""
+    import obs_options
+
+    def with_star(x, *args, scale=None, **kwargs):
+        return x
+
+    schema = obs_options._introspect_operation_kwargs({"with_star": with_star})
+    assert schema["with_star"] == [{"name": "scale", "default": None, "type": "string"}]
+
+
+def test_operation_kwargs_schema_exposed_via_endpoint(client):
+    """GET /api/obs_data/options carries the operation_kwargs_schema map (a dict,
+    present whether sourced from CA or the fallback)."""
+    body = client.get("/api/obs_data/options").json()
+    assert isinstance(body["operation_kwargs_schema"], dict)

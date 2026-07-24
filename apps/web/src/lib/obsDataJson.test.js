@@ -56,6 +56,32 @@ describe('itemToRow / rowToItem round-trip', () => {
     expect(back.operation).toBe('max')
   })
 
+  it('round-trips operation_kwargs and reflects edited values', () => {
+    const row = itemToRow({
+      variable: 'a', data_type: 'constant', operation: 'peak_above', operands: ['m/x'],
+      value: 1, std: 0.1, operation_kwargs: { threshold: 0.5, window: 10 },
+    })
+    expect(row.operation_kwargs).toEqual({ threshold: 0.5, window: 10 })
+    row.operation_kwargs.threshold = 0.9 // edit persists on save
+    expect(rowToItem(row).operation_kwargs).toEqual({ threshold: 0.9, window: 10 })
+  })
+
+  it('drops operation_kwargs when empty or when the operation is cleared', () => {
+    const row = itemToRow({
+      variable: 'a', data_type: 'constant', operation: 'peak_above', operands: ['m/x'],
+      value: 1, std: 0.1, operation_kwargs: { threshold: 0.5 },
+    })
+    row.operation_kwargs = {}
+    expect('operation_kwargs' in rowToItem(row)).toBe(false)
+    row.operation_kwargs = { threshold: 0.5 }
+    row.operation = '' // no operation -> kwargs have no meaning
+    expect('operation_kwargs' in rowToItem(row)).toBe(false)
+  })
+
+  it('newRow has an empty operation_kwargs map', () => {
+    expect(newRow().operation_kwargs).toEqual({})
+  })
+
   it('drops blank operation/cost_type instead of emitting empty strings', () => {
     const row = newRow()
     row.operation = ''

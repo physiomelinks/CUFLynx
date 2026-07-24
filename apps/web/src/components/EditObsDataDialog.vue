@@ -47,6 +47,10 @@ const operations = ref(FALLBACK_OPERATIONS)
 // operation name -> @differentiable (from CA); empty when CA can't report it, in
 // which case no row is flagged (avoids false "not differentiable" warnings).
 const diffOps = ref({})
+// operation name -> [{name, default, type}] tunable keyword args (from CA), used
+// to render an editable input per kwarg on each data_item. Empty when CA can't
+// report it (older CA / offline), in which case no kwarg inputs show.
+const opKwargsSchema = ref({})
 const costTypes = ref(FALLBACK_COST_TYPES)
 // Per-cost-function flags (is_MLE / is_combiner / differentiable) from CA, used
 // only to annotate the cost_type options; empty when CA doesn't expose them.
@@ -74,6 +78,7 @@ async function loadOptions(refresh = false) {
     const opts = await getObsDataOptions(refresh, localStorage.getItem('cuflynx-outputs-dir') || '')
     if (opts?.operations?.length) operations.value = opts.operations
     if (opts?.differentiable_operations) diffOps.value = opts.differentiable_operations
+    if (opts?.operation_kwargs_schema) opKwargsSchema.value = opts.operation_kwargs_schema
     if (opts?.cost_types?.length) costTypes.value = opts.cost_types
     if (opts?.cost_func_metadata) costMeta.value = opts.cost_func_metadata
     if (opts?.plot_types?.length) plotTypes.value = opts.plot_types
@@ -182,6 +187,36 @@ function isNonDifferentiable(operation) {
   const op = operation
   if (!op || !Object.keys(diffOps.value).length) return false
   return diffOps.value[op] !== true
+}
+
+// The tunable keyword args (name/default/type) for a row's current operation, or
+// [] when the operation has none / CA didn't report a schema.
+function kwargsForRow(row) {
+  return opKwargsSchema.value[row.operation] ?? []
+}
+// The stored value for a kwarg, falling back to its default when unset, so every
+// input renders prefilled with the operation's default.
+function kwargVal(row, kw) {
+  const stored = row.operation_kwargs?.[kw.name]
+  return stored === undefined ? kw.default : stored
+}
+// Persist an edited kwarg value on the row (coerced to the kwarg's type).
+function onKwarg(row, kw, raw) {
+  if (!row.operation_kwargs || typeof row.operation_kwargs !== 'object') row.operation_kwargs = {}
+  let val = raw
+  if (kw.type === 'boolean') val = !!raw
+  else if (kw.type === 'integer' || kw.type === 'number') val = raw === '' || raw == null ? null : Number(raw)
+  row.operation_kwargs[kw.name] = val
+}
+// Change a row's operation and drop any stored kwargs that don't belong to the new
+// operation, so stale values from a previous operation never leak into the save.
+function onOperationChange(row, operation) {
+  row.operation = operation
+  const valid = new Set(kwargsForRow(row).map((kw) => kw.name))
+  const kw = row.operation_kwargs
+  if (kw && typeof kw === 'object') {
+    for (const key of Object.keys(kw)) if (!valid.has(key)) delete kw[key]
+  }
 }
 
 const canSave = computed(
@@ -377,7 +412,7 @@ async function onSave() {
             :value="row.std"
             @input="onNum(row, 'std', $event.target.value)"
           />
-          <select :value="row.operation" @focus="selectRow(row)" @change="row.operation = $event.target.value">
+          <select :value="row.operation" @focus="selectRow(row)" @change="onOperationChange(row, $event.target.value)">
             <option
               v-for="op in operations"
               :key="op"
@@ -465,6 +500,28 @@ async function onSave() {
             <select :value="row.plot_type" @change="row.plot_type = $event.target.value">
               <option v-for="pt in plotTypes" :key="pt" :value="pt">{{ pt || '(none)' }}</option>
             </select>
+          </label>
+          <label
+            v-for="kw in kwargsForRow(row)"
+            :key="kw.name"
+            :data-testid="`eo-kwarg-${kw.name}`"
+            :title="`operation kwarg (default ${kw.default})`"
+          >
+            {{ kw.name }}
+            <input
+              v-if="kw.type === 'boolean'"
+              type="checkbox"
+              class="eo-kwarg-bool"
+              :checked="!!kwargVal(row, kw)"
+              @change="onKwarg(row, kw, $event.target.checked)"
+            />
+            <input
+              v-else
+              :type="kw.type === 'number' || kw.type === 'integer' ? 'number' : 'text'"
+              :step="kw.type === 'integer' ? 1 : 'any'"
+              :value="kwargVal(row, kw)"
+              @input="onKwarg(row, kw, $event.target.value)"
+            />
           </label>
           <label class="eo-wide">source — where this data came from (e.g. paper / dataset / DOI)
             <textarea
@@ -645,6 +702,12 @@ async function onSave() {
   outline: none;
   border-color: var(--p-primary-color, #5b9bd5);
   box-shadow: 0 0 0 2px rgba(91, 155, 213, 0.2);
+}
+/* A kwarg boolean is a checkbox, not a full-width field. */
+.eo-detail .eo-kwarg-bool {
+  width: auto;
+  height: auto;
+  align-self: start;
 }
 .eo-operands {
   display: flex;

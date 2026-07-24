@@ -68,6 +68,13 @@ const FETCH = {
   cost_types: ['MSE', 'gaussian_MLE', 'my_custom_cost'],
   data_types: ['constant', 'series', 'frequency', 'prob_dist'],
   plot_types: ['', 'horizontal', 'pulse_plot'],
+  operation_kwargs_schema: {
+    peak_above: [
+      { name: 'threshold', default: 0.5, type: 'number' },
+      { name: 'window', default: 10, type: 'integer' },
+      { name: 'invert', default: false, type: 'boolean' },
+    ],
+  },
 }
 
 function mountDialog(props = {}) {
@@ -172,6 +179,70 @@ describe('EditObsDataDialog', () => {
     const opSelect = wrapper.find('[data-testid="eo-row"] select')
     expect(opSelect.text()).toContain('max') // fallback list
     expect(opSelect.text()).not.toContain('calc_spike_frequency_windowed')
+  })
+
+  const KWARG_FETCH = {
+    ...FETCH,
+    operations: ['', 'max', 'peak_above'],
+  }
+  const kwargItem = {
+    variable: 'p', data_type: 'constant', operation: 'peak_above', operands: ['m/x'],
+    unit: 'dimensionless', value: 1, std: 0.1, experiment_idx: 0, plot_type: 'horizontal',
+  }
+
+  it('renders an input per operation kwarg, prefilled with its default', async () => {
+    getObsDataOptions.mockResolvedValueOnce(KWARG_FETCH)
+    const wrapper = mountDialog({ currentDataItems: [kwargItem] })
+    await flushPromises()
+    await wrapper.find('button[aria-label="details"]').trigger('click') // expand detail
+    const threshold = wrapper.find('[data-testid="eo-kwarg-threshold"] input')
+    const window = wrapper.find('[data-testid="eo-kwarg-window"] input')
+    const invert = wrapper.find('[data-testid="eo-kwarg-invert"] input')
+    expect(threshold.element.value).toBe('0.5')
+    expect(window.element.value).toBe('10')
+    expect(invert.element.type).toBe('checkbox')
+    expect(invert.element.checked).toBe(false)
+  })
+
+  it('persists edited kwarg values into the saved obs_data', async () => {
+    getObsDataOptions.mockResolvedValueOnce(KWARG_FETCH)
+    uploadObsData.mockResolvedValue({})
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+    const wrapper = mountDialog({ currentDataItems: [kwargItem] })
+    await flushPromises()
+    await wrapper.find('button[aria-label="details"]').trigger('click')
+    await wrapper.find('[data-testid="eo-kwarg-threshold"] input').setValue('0.9')
+    await wrapper.find('[data-testid="eo-kwarg-invert"] input').setValue(true)
+    await wrapper.find('[data-testid="eo-save"]').trigger('click')
+    await flushPromises()
+    const obsArg = uploadObsData.mock.calls[0][1]
+    expect(obsArg.data_items[0].operation_kwargs).toEqual({ threshold: 0.9, invert: true })
+  })
+
+  it('shows no kwarg inputs for an operation without kwargs', async () => {
+    getObsDataOptions.mockResolvedValueOnce(KWARG_FETCH)
+    const wrapper = mountDialog({
+      currentDataItems: [{ ...kwargItem, operation: 'max' }],
+    })
+    await flushPromises()
+    await wrapper.find('button[aria-label="details"]').trigger('click')
+    expect(wrapper.find('[data-testid="eo-kwarg-threshold"]').exists()).toBe(false)
+  })
+
+  it('drops stale kwargs when the operation changes away', async () => {
+    getObsDataOptions.mockResolvedValueOnce(KWARG_FETCH)
+    uploadObsData.mockResolvedValue({})
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+    const wrapper = mountDialog({
+      currentDataItems: [{ ...kwargItem, operation_kwargs: { threshold: 0.7 } }],
+    })
+    await flushPromises()
+    // switch peak_above -> max (no kwargs): the stored threshold must not persist
+    await wrapper.find('[data-testid="eo-row"] select').setValue('max')
+    await wrapper.find('[data-testid="eo-save"]').trigger('click')
+    await flushPromises()
+    const obsArg = uploadObsData.mock.calls[0][1]
+    expect('operation_kwargs' in obsArg.data_items[0]).toBe(false)
   })
 
   it('adds a data item row', async () => {

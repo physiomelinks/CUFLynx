@@ -9,10 +9,15 @@ deps), and caches a successful introspection.
 
 from __future__ import annotations
 
+import inspect
 import sys
 from pathlib import Path
 
 from engine import _circulatory_autogen_src
+
+# Keyword arguments that are part of the operation-calling machinery rather than
+# user-tunable knobs, so they're never surfaced as editable per-data_item inputs.
+_RESERVED_OP_KWARGS = frozenset({"series_output"})
 
 # Used only when CA can't be introspected (kept intentionally small).
 FALLBACK_OPERATIONS = [
@@ -98,6 +103,9 @@ def _introspect(output_dir: str | None = None) -> dict:
         # op name -> @differentiable, so the editor can flag data_items whose
         # operation blocks AD gradients. Empty on an older CA without the marker.
         "differentiable_operations": _introspect_operation_differentiability(op_funcs),
+        # op name -> [{name, default, type}] tunable keyword args, so the editor
+        # can render an input per kwarg on each data_item that selects that op.
+        "operation_kwargs_schema": _introspect_operation_kwargs(op_funcs),
         "data_types": data_types,
         "plot_types": plot_types,
     }
@@ -132,6 +140,65 @@ def _cost_funcs_dict(cost_funcs_user, external_path):
         return cost_funcs_user.get_cost_funcs_dict_for_mode("numpy", external_path=external_path)
     except TypeError:
         return cost_funcs_user.get_cost_funcs_dict_for_mode("numpy")
+def _infer_kwarg_type(default) -> str:
+    """Map a keyword-arg default to an input type the editor can render.
+
+    ``bool`` is checked before ``int`` because ``bool`` subclasses ``int``.
+    Unknown / ``None`` defaults fall back to a free-text ``string`` input.
+    """
+    if isinstance(default, bool):
+        return "boolean"
+    if isinstance(default, int):
+        return "integer"
+    if isinstance(default, float):
+        return "number"
+    if isinstance(default, str):
+        return "string"
+    return "string"
+
+
+def _jsonable_default(default):
+    """The kwarg default as a JSON-serialisable value (else ``None``)."""
+    if isinstance(default, (bool, int, float, str)) or default is None:
+        return default
+    return None
+
+
+def _introspect_operation_kwargs(op_funcs) -> dict:
+    """Map each operation name -> its list of tunable keyword args.
+
+    Parses each operation func's signature. Operands are *positional* args (passed
+    as ``*operands_outputs``) and carry no default, so they're skipped; the
+    reserved ``series_output`` flag is skipped by name; ``*args`` / ``**kwargs``
+    are skipped. Only parameters that carry a default (the real tunables) surface,
+    each as ``{"name", "default", "type"}``. Ops with no tunable kwargs are
+    omitted, keeping the payload small (the editor treats a missing entry as []).
+    Best-effort per func: an un-introspectable callable is skipped, not fatal.
+    """
+    out: dict[str, list] = {}
+    for name, fn in op_funcs.items():
+        try:
+            params = inspect.signature(fn).parameters
+        except (ValueError, TypeError):  # C funcs / builtins without signatures
+            continue
+        kwargs = []
+        for pname, p in params.items():
+            if pname in _RESERVED_OP_KWARGS:
+                continue
+            if p.kind in (p.VAR_POSITIONAL, p.VAR_KEYWORD):
+                continue
+            if p.default is inspect.Parameter.empty:
+                continue  # positional operand, not a tunable kwarg
+            kwargs.append(
+                {
+                    "name": pname,
+                    "default": _jsonable_default(p.default),
+                    "type": _infer_kwarg_type(p.default),
+                }
+            )
+        if kwargs:
+            out[name] = kwargs
+    return out
 
 
 def _introspect_operation_differentiability(op_funcs) -> dict:
@@ -193,6 +260,7 @@ def get_obs_data_options(refresh: bool = False, output_dir: str | None = None) -
             "cost_types": list(FALLBACK_COST_TYPES),
             "cost_func_metadata": {},
             "differentiable_operations": {},
+            "operation_kwargs_schema": {},
             "data_types": list(FALLBACK_DATA_TYPES),
             "plot_types": list(FALLBACK_PLOT_TYPES),
         }
