@@ -74,4 +74,46 @@ describe('ControlPanel', () => {
     await wrapper.find('[data-testid="reset-best"]').trigger('click')
     expect(wrapper.emitted('reset-best')).toBeTruthy()
   })
+
+  it('test_save_snapshot_emits', async () => {
+    const wrapper = mount(ControlPanel, {
+      props: { sliders: sliderState(1) },
+      global: { stubs: { ...stubs, Button: false } },
+    })
+    await wrapper.find('[data-testid="save-snapshot"]').trigger('click')
+    expect(wrapper.emitted('save-snapshot')).toBeTruthy()
+  })
+
+  it('test_reset_saved_and_export_gated_on_hasSaved', async () => {
+    const wrapper = mount(ControlPanel, {
+      props: { sliders: sliderState(1), hasSaved: false },
+      global: { stubs: { ...stubs, Button: false } },
+    })
+    // No saved snapshot yet -> both gated buttons disabled.
+    expect(
+      wrapper.find('[data-testid="reset-saved"]').attributes('disabled'),
+    ).toBeDefined()
+    expect(
+      wrapper.find('[data-testid="export-snapshot"]').attributes('disabled'),
+    ).toBeDefined()
+
+    await wrapper.setProps({ hasSaved: true })
+    expect(
+      wrapper.find('[data-testid="reset-saved"]').attributes('disabled'),
+    ).toBeUndefined()
+    await wrapper.find('[data-testid="reset-saved"]').trigger('click')
+    expect(wrapper.emitted('reset-saved')).toBeTruthy()
+    await wrapper.find('[data-testid="export-snapshot"]').trigger('click')
+    expect(wrapper.emitted('export-snapshot')).toBeTruthy()
+  })
+
+  it('test_save_snapshot_disabled_without_sliders', () => {
+    const wrapper = mount(ControlPanel, {
+      props: { sliders: {} },
+      global: { stubs: { ...stubs, Button: false } },
+    })
+    expect(
+      wrapper.find('[data-testid="save-snapshot"]').attributes('disabled'),
+    ).toBeDefined()
+  })
 })

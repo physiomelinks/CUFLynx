@@ -9,6 +9,8 @@ const props = defineProps({
   sliders: { type: Object, default: () => ({}) },
   // Whether a calibration best-fit is available (gates "Reset to best fit").
   hasBestFit: { type: Boolean, default: false },
+  // Whether a user-saved snapshot exists (gates "Reset to saved" / "Export").
+  hasSaved: { type: Boolean, default: false },
 })
 const emit = defineEmits([
   'update',
@@ -16,6 +18,9 @@ const emit = defineEmits([
   'import-csv',
   'reset-init',
   'reset-best',
+  'save-snapshot',
+  'reset-saved',
+  'export-snapshot',
 ])
 
 const entries = computed(() => Object.values(props.sliders))
@@ -56,6 +61,36 @@ function onValue(qname, value) {
           title="Reset all parameter values to the latest calibration best-fit"
           :disabled="!hasBestFit || entries.length === 0"
           @click="emit('reset-best')"
+        />
+        <Button
+          label="Save current"
+          icon="pi pi-bookmark"
+          size="small"
+          text
+          data-testid="save-snapshot"
+          title="Lock in the current parameter values as a saved snapshot"
+          :disabled="entries.length === 0"
+          @click="emit('save-snapshot')"
+        />
+        <Button
+          label="Reset to saved"
+          icon="pi pi-history"
+          size="small"
+          text
+          data-testid="reset-saved"
+          title="Reset all parameter values to the saved snapshot"
+          :disabled="!hasSaved || entries.length === 0"
+          @click="emit('reset-saved')"
+        />
+        <Button
+          label="Export values"
+          icon="pi pi-download"
+          size="small"
+          text
+          data-testid="export-snapshot"
+          title="Download the saved parameter values as a CSV"
+          :disabled="!hasSaved"
+          @click="emit('export-snapshot')"
         />
         <Button
           label="Import CSV"

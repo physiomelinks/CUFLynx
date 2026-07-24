@@ -83,4 +83,70 @@ describe('useSliders', () => {
     expect(s.sliders['a/x'].value).toBe(3)
     expect(s.sliders['a/y'].value).toBe(7)
   })
+
+  describe('saved snapshot (issue #106)', () => {
+    it('starts with no saved snapshot', () => {
+      const s = useSliders()
+      expect(s.hasSaved.value).toBe(false)
+      expect(s.saved.value).toBeNull()
+    })
+
+    it('saveSnapshot locks in the current values and reports hasSaved', () => {
+      const s = useSliders()
+      s.addSlider('a/x', { min: 0, max: 10, value: 3 })
+      s.addSlider('a/y', { min: 0, max: 10, value: 7 })
+      const snap = s.saveSnapshot()
+      expect(snap).toEqual({ 'a/x': 3, 'a/y': 7 })
+      expect(s.saved.value).toEqual({ 'a/x': 3, 'a/y': 7 })
+      expect(s.hasSaved.value).toBe(true)
+    })
+
+    it('resetToSaved restores the locked values after perturbation', () => {
+      const s = useSliders()
+      s.addSlider('a/x', { min: 0, max: 10, value: 3 })
+      s.addSlider('a/y', { min: 0, max: 10, value: 7 })
+      s.saveSnapshot()
+      s.setValue('a/x', 9)
+      s.setValue('a/y', 1)
+      s.resetToSaved()
+      expect(s.sliders['a/x'].value).toBe(3)
+      expect(s.sliders['a/y'].value).toBe(7)
+    })
+
+    it('resetToSaved clamps to range and ignores missing sliders', () => {
+      const s = useSliders()
+      s.addSlider('a/x', { min: 0, max: 10, value: 5 })
+      s.setSaved({ 'a/x': 999, 'a/gone': 4 })
+      s.resetToSaved()
+      expect(s.sliders['a/x'].value).toBe(10) // clamped
+      expect(s.sliders['a/gone']).toBeUndefined() // no-op, no throw
+    })
+
+    it('resetToSaved is a no-op without a snapshot', () => {
+      const s = useSliders()
+      s.addSlider('a/x', { min: 0, max: 10, value: 5 })
+      s.setValue('a/x', 8)
+      s.resetToSaved()
+      expect(s.sliders['a/x'].value).toBe(8)
+    })
+
+    it('setSaved(empty) and clearSaved drop the snapshot', () => {
+      const s = useSliders()
+      s.setSaved({ 'a/x': 1 })
+      expect(s.hasSaved.value).toBe(true)
+      s.setSaved({})
+      expect(s.hasSaved.value).toBe(false)
+      s.setSaved({ 'a/x': 1 })
+      s.clearSaved()
+      expect(s.saved.value).toBeNull()
+    })
+
+    it('clear() forgets the saved snapshot', () => {
+      const s = useSliders()
+      s.addSlider('a/x', { min: 0, max: 10, value: 3 })
+      s.saveSnapshot()
+      s.clear()
+      expect(s.hasSaved.value).toBe(false)
+    })
+  })
 })
