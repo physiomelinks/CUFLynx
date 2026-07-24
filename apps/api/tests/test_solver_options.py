@@ -369,6 +369,52 @@ def test_gradient_sources_fallback_mirrors_get_gradient(monkeypatch):
     assert fsa["do_ad"] is True and fsa["requires_all_differentiable"] is False
 
 
+def test_gradient_sources_gated_by_integrator_suitability(monkeypatch):
+    """An analytic source (AD/FSA) is dropped when the selected integrator can't
+    produce it: CasADi AD with the SUNDIALS adjoint integrators (cvodes/idas), or
+    FSA with a non-CVODE integrator (CA issue #298). method=None doesn't gate."""
+    monkeypatch.setattr(so, "_introspect_gradient_sources", _boom_gradient_sources)
+    monkeypatch.setattr(so, "get_solver_options", lambda refresh=False: {
+        "ad_suitable_methods": so._FALLBACK_AD_SUITABLE,
+        "fsa_suitable_methods": so._FALLBACK_FSA_SUITABLE,
+    })
+
+    # casadi AD: gated out for cvodes/idas, kept for the symbolic integrators.
+    assert _values(so.gradient_sources("casadi_python", "casadi_integrator", True, "cvodes")) == ["FD"]
+    assert _values(so.gradient_sources("casadi_python", "casadi_integrator", True, "idas")) == ["FD"]
+    assert _values(so.gradient_sources("casadi_python", "casadi_integrator", True, "bdf")) == ["FD", "AD"]
+    assert _values(so.gradient_sources("casadi_python", "casadi_integrator", True, "semi_implicit_euler")) == ["FD", "AD"]
+    # No method given -> not gated (source still offered).
+    assert _values(so.gradient_sources("casadi_python", "casadi_integrator", True, None)) == ["FD", "AD"]
+    # FSA: kept for CVODE, dropped for anything else.
+    assert _values(so.gradient_sources("cellml_only", "CVODE_myokit", True, "CVODE")) == ["FD", "FSA"]
+    assert _values(so.gradient_sources("cellml_only", "CVODE_myokit", True, "other")) == ["FD"]
+
+
+def test_solver_options_expose_suitability_and_default_method():
+    """The options payload carries the per-integrator suitability maps + the
+    preferred default integrator, and casadi_integrator's method field defaults to
+    bdf (AD-suitable) rather than the first (cvodes)."""
+    opts = so._build_options(so.FALLBACK_SOLVER_SCHEMA, {"max": True})
+    assert opts["ad_suitable_methods"]["casadi_integrator"] == ["collocation", "rk", "semi_implicit_euler", "bdf"]
+    assert opts["fsa_suitable_methods"]["CVODE_myokit"] == ["CVODE"]
+    assert opts["default_method_by_solver"]["casadi_integrator"] == "bdf"
+    method_field = next(f for f in opts["solver_info_schema"]["casadi_integrator"] if f["key"] == "method")
+    assert method_field["default"] == "bdf"
+
+
+def test_suitability_from_ca_schema_when_present():
+    """When CA's schema declares the suitability maps, they win over the fallback."""
+    schema = dict(so.FALLBACK_SOLVER_SCHEMA)
+    schema["ad_suitable_methods"] = {"casadi_integrator": ["bdf"]}
+    schema["default_method_by_solver"] = {"casadi_integrator": "semi_implicit_euler"}
+    opts = so._build_options(schema, {"max": True})
+    assert opts["ad_suitable_methods"]["casadi_integrator"] == ["bdf"]
+    assert opts["default_method_by_solver"]["casadi_integrator"] == "semi_implicit_euler"
+    method_field = next(f for f in opts["solver_info_schema"]["casadi_integrator"] if f["key"] == "method")
+    assert method_field["default"] == "semi_implicit_euler"
+
+
 def test_gradient_sources_introspects_ca_accessor(monkeypatch):
     """When CA exposes a `gradient_sources` accessor, its descriptors are used
     verbatim (not the hand-coded mirror), with the all_differentiable gate applied
@@ -393,6 +439,61 @@ def test_gradient_sources_introspects_ca_accessor(monkeypatch):
     assert calls["args"] == ("casadi_python", "casadi_integrator")
     # ...and drops it otherwise.
     assert _values(so.gradient_sources("casadi_python", "casadi_integrator", False)) == ["FD"]
+
+
+def test_gradient_sources_delegates_method_gate_to_ca(monkeypatch):
+    """CA's accessor owns the per-integrator gate (CA #298 landed), so CUFLynx hands
+    it ``method`` and uses CA's answer verbatim instead of re-applying its local
+    mirror — the two rules can't drift. A local table that would gate everything out
+    proves CA's answer is the one that wins."""
+    calls = {}
+
+    def fake_gradient_sources(model_type, solver=None, method=None):
+        calls["args"] = (model_type, solver, method)
+        srcs = [{"value": "FD", "label": "FD", "do_ad": False,
+                 "requires_all_differentiable": False, "description": ""}]
+        if method != "cvodes":  # CA's own per-integrator gate
+            srcs.append({"value": "AD", "label": "AD (CasADi)", "do_ad": True,
+                         "requires_all_differentiable": False, "description": ""})
+        return srcs
+
+    monkeypatch.setitem(sys.modules, "parsers.PrimitiveParsers",
+                        types.SimpleNamespace(gradient_sources=fake_gradient_sources))
+    monkeypatch.setattr(so, "_ensure_ca_path", lambda: None)
+    monkeypatch.setattr(so, "get_solver_options", lambda refresh=False: {
+        "ad_suitable_methods": {"casadi_integrator": []},  # would gate AD out entirely
+        "fsa_suitable_methods": {},
+    })
+
+    # method is forwarded, and CA's verdict (AD allowed for bdf) stands.
+    assert _values(so.gradient_sources("casadi_python", "casadi_integrator", True, "bdf")) == ["FD", "AD"]
+    assert calls["args"] == ("casadi_python", "casadi_integrator", "bdf")
+    # CA gates AD out for the adjoint integrator.
+    assert _values(so.gradient_sources("casadi_python", "casadi_integrator", True, "cvodes")) == ["FD"]
+
+
+def test_gradient_sources_local_gate_when_ca_accessor_lacks_method(monkeypatch):
+    """An older CA whose ``gradient_sources`` predates the ``method`` parameter can't
+    gate per integrator, so CUFLynx's local mirror does it instead."""
+
+    def fake_gradient_sources(model_type, solver=None):  # no `method` parameter
+        return [
+            {"value": "FD", "label": "FD", "do_ad": False,
+             "requires_all_differentiable": False, "description": ""},
+            {"value": "AD", "label": "AD (CasADi)", "do_ad": True,
+             "requires_all_differentiable": False, "description": ""},
+        ]
+
+    monkeypatch.setitem(sys.modules, "parsers.PrimitiveParsers",
+                        types.SimpleNamespace(gradient_sources=fake_gradient_sources))
+    monkeypatch.setattr(so, "_ensure_ca_path", lambda: None)
+    monkeypatch.setattr(so, "get_solver_options", lambda refresh=False: {
+        "ad_suitable_methods": {"casadi_integrator": ["bdf"]},
+        "fsa_suitable_methods": {},
+    })
+
+    assert _values(so.gradient_sources("casadi_python", "casadi_integrator", True, "bdf")) == ["FD", "AD"]
+    assert _values(so.gradient_sources("casadi_python", "casadi_integrator", True, "cvodes")) == ["FD"]
 
 
 # ---------------------------------------------------------------------------

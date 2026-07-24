@@ -347,3 +347,41 @@ describe('App.vue sensitivity gradient sources track the backend (#84)', () => {
     expect(wrapper.vm.gradientSources.map((s) => s.value)).toEqual(['FD', 'FSA'])
   })
 })
+
+// #298: warn (orange) when the selected integrator can't produce the backend's
+// analytic gradient (AD/FSA), and drop that source from the menus.
+describe('App.vue gradient integrator suitability warning (#298)', () => {
+  const base = {
+    ca_dir: '', ca_exists: true, differentiable_operations: {},
+    model_formats: ['cellml_only', 'casadi_python'],
+    ad_suitable_methods: { casadi_integrator: ['collocation', 'rk', 'semi_implicit_euler', 'bdf'] },
+    fsa_suitable_methods: { CVODE_myokit: ['CVODE'] },
+    default_method_by_solver: { casadi_integrator: 'bdf' },
+  }
+
+  it('warns for an AD-unsuitable integrator (cvodes) and not for a suitable one (bdf)', async () => {
+    getConfig.mockResolvedValue({
+      ...base, generated_model_format: 'casadi_python', solver: 'casadi_integrator',
+      solver_info: { method: 'cvodes' },
+    })
+    const wrapper = shallowMount(App)
+    await flushPromises()
+    expect(wrapper.vm.gradientIntegratorWarning).toContain('not available')
+    expect(wrapper.vm.gradientIntegratorWarning).toContain('cvodes')
+
+    // switching the integrator to a suitable one clears the warning
+    wrapper.vm.solverInfo.method = 'bdf'
+    await wrapper.vm.$nextTick()
+    expect(wrapper.vm.gradientIntegratorWarning).toBe('')
+  })
+
+  it('warns for FSA-unsuitable cellml_only integrators', async () => {
+    getConfig.mockResolvedValue({
+      ...base, generated_model_format: 'cellml_only', solver: 'CVODE_myokit',
+      solver_info: { method: 'other' },
+    })
+    const wrapper = shallowMount(App)
+    await flushPromises()
+    expect(wrapper.vm.gradientIntegratorWarning).toContain('FSA')
+  })
+})

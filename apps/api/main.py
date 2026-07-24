@@ -299,7 +299,11 @@ def _config_payload() -> dict:
         # through with their flags and the client gates them against its in-use
         # differentiability (App.vue `adAvailable`). Passing True keeps those sources
         # in the list rather than dropping them on the coarse whole-registry flag.
-        "gradient_sources": gradient_sources(engine.model_type, engine.solver, True),
+        # ...and the per-integrator suitability gate IS applied here (the selected
+        # integrator is known): AD/FSA drop out for an unsuitable integrator (#298).
+        "gradient_sources": gradient_sources(
+            engine.model_type, engine.solver, True, engine.solver_info.get("method"),
+        ),
         # Myokit JIT-compiles models, so a missing C compiler breaks every
         # simulation. Surfaced here so the UI can warn up front rather than
         # letting the first run fail with an opaque 500 (matters most in the
@@ -1087,7 +1091,9 @@ def sensitivity_defaults() -> dict:
     # FSA surfaces for cellml_only + CVODE_myokit and AD for casadi_python. The
     # requires_all_differentiable (CasADi AD) gate is applied client-side against
     # the in-use differentiability (SensitivityPanel adAvailable), so pass True here.
-    grad = gradient_sources(engine.model_type, engine.solver, True)
+    grad = gradient_sources(
+        engine.model_type, engine.solver, True, engine.solver_info.get("method"),
+    )
     gradient_methods = [
         {"value": g["value"], "label": g["label"],
          "requires_all_differentiable": bool(g.get("requires_all_differentiable"))}
