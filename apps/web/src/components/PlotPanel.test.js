@@ -79,4 +79,34 @@ describe('PlotPanel', () => {
     await btn.trigger('click')
     expect(wrapper.emitted('remove')).toHaveLength(1)
   })
+
+  // Individual-plot maximize (issue #115)
+  it('shows a maximize button only when maximizable', () => {
+    const off = mount(PlotPanel, { props: { simResult, title: 'x' }, global: { stubs } })
+    expect(off.find('[data-testid="plot-maximize"]').exists()).toBe(false)
+    const on = mount(PlotPanel, {
+      props: { simResult, title: 'x', maximizable: true },
+      global: { stubs },
+    })
+    expect(on.find('[data-testid="plot-maximize"]').exists()).toBe(true)
+  })
+
+  it('emits toggle-maximize and reflects the maximized state in the button', async () => {
+    const wrapper = mount(PlotPanel, {
+      props: { simResult, title: 'x', maximizable: true, maximized: false },
+      global: { stubs },
+    })
+    const btn = wrapper.find('[data-testid="plot-maximize"]')
+    expect(btn.attributes('aria-pressed')).toBe('false')
+    expect(btn.attributes('title')).toBe('Maximize plot')
+    expect(btn.find('.pi-window-maximize').exists()).toBe(true)
+
+    await btn.trigger('click')
+    expect(wrapper.emitted('toggle-maximize')).toHaveLength(1)
+
+    await wrapper.setProps({ maximized: true })
+    expect(btn.attributes('aria-pressed')).toBe('true')
+    expect(btn.attributes('title')).toBe('Restore plot')
+    expect(btn.find('.pi-window-minimize').exists()).toBe(true)
+  })
 })
