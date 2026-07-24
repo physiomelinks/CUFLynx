@@ -13,6 +13,8 @@ const props = defineProps({
   state: { type: String, default: 'idle' },
   cost: { type: Number, default: null },
   error: { type: String, default: '' },
+  // URL to download the calibrated CellML saved on finish, or null (issue #114).
+  calibratedModelUrl: { type: String, default: null },
   adAvailable: { type: Boolean, default: false },
   // Gradient sources available for the current model (FD / AD / FSA), from the
   // backend's /api/config -> gradient_sources.
@@ -310,6 +312,11 @@ function onRun() {
       />
       <span v-if="cost != null" class="cal-cost">cost: {{ cost.toPrecision(4) }}</span>
     </div>
+    <p v-if="state === 'done' && calibratedModelUrl" class="cal-download">
+      <a :href="calibratedModelUrl" download data-testid="cal-download-model">
+        <i class="pi pi-download" /> Download calibrated model
+      </a>
+    </p>
     <p v-if="!canRun" class="hint">
       Load a model, an obs_data.json and a params_for_id.csv to calibrate.
     </p>
@@ -373,6 +380,17 @@ function onRun() {
 .cal-cost {
   font-size: 0.8rem;
   color: #70ad47;
+}
+.cal-download {
+  font-size: 0.8rem;
+  margin: 0.4rem 0 0;
+}
+.cal-download a {
+  color: var(--p-primary-color, #5b9bd5);
+  text-decoration: none;
+}
+.cal-download a:hover {
+  text-decoration: underline;
 }
 .hint,
 .cal-error {

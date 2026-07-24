@@ -408,4 +408,30 @@ describe('CalibrationPanel start-from selector (#65 / #83)', () => {
     await wrapper.find('[data-testid="run-calibration"]').trigger('click')
     expect('start_from' in wrapper.emitted('run').at(-1)[0]).toBe(false)
   })
+
+  it('shows a calibrated-model download link only when done and a URL exists (#114)', () => {
+    const url = '/api/calibration/j1/calibrated_model'
+    // done + url -> link present, points at the download URL.
+    let wrapper = mount(CalibrationPanel, {
+      props: { state: 'done', calibratedModelUrl: url },
+      global: { stubs },
+    })
+    const link = wrapper.find('[data-testid="cal-download-model"]')
+    expect(link.exists()).toBe(true)
+    expect(link.attributes('href')).toBe(url)
+
+    // done but no url (older run / nothing saved) -> no link.
+    wrapper = mount(CalibrationPanel, {
+      props: { state: 'done', calibratedModelUrl: null },
+      global: { stubs },
+    })
+    expect(wrapper.find('[data-testid="cal-download-model"]').exists()).toBe(false)
+
+    // url present but still running -> no link yet.
+    wrapper = mount(CalibrationPanel, {
+      props: { state: 'running', calibratedModelUrl: url },
+      global: { stubs },
+    })
+    expect(wrapper.find('[data-testid="cal-download-model"]').exists()).toBe(false)
+  })
 })

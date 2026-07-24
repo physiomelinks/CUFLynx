@@ -16,9 +16,73 @@ import pandas as pd
 
 REQUIRED_COLUMNS = ("vessel_name", "param_name", "min", "max")
 
+# Components a circulatory_autogen *flat* model puts its constants in. When a
+# params_for_id row's ``vessel/param`` name doesn't exist directly (flat models
+# rename constants), the value lives here under the CA "gen name".
+_PARAM_COMPONENTS = ("parameters", "parameters_global")
+
 
 class ParamsForIdError(ValueError):
     """Raised for a malformed params_for_id CSV (maps to HTTP 422)."""
+
+
+def _gen_name(vessel: str, param_name: str) -> str:
+    """CA's ``param_names_for_gen`` name for a ``vessel``/``param`` pair — the bare
+    constant name a flat model uses. Mirrors ``PrimitiveParsers`` #298 exactly:
+    ``global`` -> just ``param``; otherwise ``param_vessel``."""
+    return param_name if vessel == "global" else f"{param_name}_{vessel}"
+
+
+def _build_gen_index(initial_values: dict[str, float]) -> dict[str, dict[str, float]]:
+    """Index the model's initial values by *bare* variable name (last path segment)
+    so a flat model's ``parameters/<gen>`` constants can be found by ``<gen>``."""
+    idx: dict[str, dict[str, float]] = {}
+    for qname, val in initial_values.items():
+        idx.setdefault(qname.rsplit("/", 1)[-1], {})[qname] = val
+    return idx
+
+
+def resolve_model_qname(
+    vessel: str,
+    param_name: str,
+    initial_values: dict[str, float],
+    gen_index: dict[str, dict[str, float]],
+) -> str | None:
+    """The model variable qname (``component/variable``) a params_for_id
+    ``vessel``/``param`` entry refers to, or None if it can't be resolved.
+
+    Tries the direct ``vessel/param`` name first (non-flat models, e.g.
+    Lotka-Volterra). If that isn't in the model, falls back to CA's flat-model
+    convention: the constant is named ``_gen_name(vessel, param)`` and lives in a
+    ``parameters`` component (issue #114). The fallback is only used when it
+    resolves unambiguously, so a coincidental bare-name clash never picks a wrong
+    variable — for both reading the loaded value and writing a calibrated one.
+    """
+    direct = f"{vessel}/{param_name}"
+    if direct in initial_values:
+        return direct
+
+    hits = gen_index.get(_gen_name(vessel, param_name))
+    if not hits:
+        return None
+    if len(hits) == 1:
+        return next(iter(hits))
+    # Ambiguous bare name -> prefer the flat model's parameters component.
+    preferred = [q for q in hits if q.split("/", 1)[0] in _PARAM_COMPONENTS]
+    if len(preferred) == 1:
+        return preferred[0]
+    return None
+
+
+def _resolve_initial_value(
+    vessel: str,
+    param_name: str,
+    initial_values: dict[str, float],
+    gen_index: dict[str, dict[str, float]],
+) -> float | None:
+    """The model's initial value for a params_for_id ``vessel``/``param`` entry."""
+    key = resolve_model_qname(vessel, param_name, initial_values, gen_index)
+    return None if key is None else initial_values[key]
 
 
 @dataclass
@@ -73,6 +137,7 @@ def parse_params_for_id(
     has_type = "param_type" in df.columns
     has_comment = "comment" in df.columns
     initial_values = initial_values or {}
+    gen_index = _build_gen_index(initial_values)
 
     entries: list[ParamEntry] = []
     for idx, row in df.iterrows():
@@ -112,7 +177,9 @@ def parse_params_for_id(
                     max=pmax,
                     name_for_plotting=name_for_plotting,
                     param_type=param_type,
-                    initial_value=initial_values.get(qname),
+                    initial_value=_resolve_initial_value(
+                        vessel, param_name, initial_values, gen_index
+                    ),
                     comment=comment,
                 )
             )

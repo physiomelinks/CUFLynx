@@ -203,6 +203,11 @@ export async function cancelCalibration(jobId) {
   return data
 }
 
+// Direct URL to download the calibrated CellML saved when a run finishes (#114).
+export function calibratedModelUrl(jobId) {
+  return url(`/api/calibration/${encodeURIComponent(jobId)}/calibrated_model`)
+}
+
 export async function getSensitivityDefaults() {
   const { data } = await axios.get(url('/api/sensitivity/defaults'))
   return data

@@ -4,6 +4,7 @@ import {
   getCalibrationStatus,
   getCalibrationProgress,
   cancelCalibration,
+  calibratedModelUrl as apiCalibratedModelUrl,
 } from '../lib/api'
 
 /**
@@ -35,6 +36,9 @@ export function useCalibration(options = {}) {
   const bestParams = ref(null)
   const cost = ref(null)
   const error = ref('')
+  // Path (server-side) of the calibrated CellML saved on finish (issue #114); a
+  // truthy value means a downloadable model exists for this job.
+  const calibratedModelPath = ref(null)
   // Live per-generation history for the Progress tab charts.
   const costHistory = ref([]) // [[best, …top-10], …] one row per generation
   const paramHistory = ref({ paramNames: [], generations: [] })
@@ -56,6 +60,7 @@ export function useCalibration(options = {}) {
   const errorLabels = ref([]) // display names, one per observable
 
   let jobId = null
+  const jobIdRef = ref(null) // reactive mirror of jobId for computed URLs
   let offset = 0
   let timer = null
 
@@ -63,11 +68,13 @@ export function useCalibration(options = {}) {
     if (timer) clearTimeout(timer)
     timer = null
     jobId = null
+    jobIdRef.value = null
     offset = 0
     state.value = 'idle'
     lines.value = []
     bestParams.value = null
     cost.value = null
+    calibratedModelPath.value = null
     error.value = ''
     costHistory.value = []
     startCosts.value = []
@@ -104,6 +111,7 @@ export function useCalibration(options = {}) {
     try {
       const { job_id } = await startCalibration(modelId, settings, currentParams)
       jobId = job_id
+      jobIdRef.value = job_id
       await poll()
     } catch (e) {
       state.value = 'error'
@@ -131,6 +139,7 @@ export function useCalibration(options = {}) {
         // and the sliders never update.
         bestParams.value = s.best_params
         cost.value = s.cost
+        calibratedModelPath.value = s.calibrated_model_path || null
         percentError.value = s.percent_error
         stdError.value = s.std_error
         errorLabels.value = s.error_labels ?? []
@@ -157,12 +166,20 @@ export function useCalibration(options = {}) {
   }
 
   const running = computed(() => state.value === 'running')
+  // Download URL for the saved calibrated model, or null when none exists (#114).
+  const calibratedModelUrl = computed(() =>
+    jobIdRef.value && calibratedModelPath.value
+      ? apiCalibratedModelUrl(jobIdRef.value)
+      : null,
+  )
 
   return {
     state,
     lines,
     bestParams,
     cost,
+    calibratedModelPath,
+    calibratedModelUrl,
     error,
     costHistory,
     startCosts,
