@@ -109,4 +109,22 @@ describe('PlotPanel', () => {
     expect(btn.attributes('title')).toBe('Restore plot')
     expect(btn.find('.pi-window-minimize').exists()).toBe(true)
   })
+
+  it('remounts the chart when maximize toggles so Chart.js resizes (issue #115)', async () => {
+    // Chart.js keeps the enlarged canvas on restore, leaving the axis stretched;
+    // a key tied to `maximized` forces a fresh chart. Assert the Line instance is
+    // recreated (new vm) each time the maximize state flips.
+    const wrapper = mount(PlotPanel, {
+      props: { simResult, title: 'x', maximizable: true, maximized: false },
+      global: { stubs },
+    })
+    const uid = () => wrapper.findComponent({ name: 'Line' }).vm.$.uid
+    const before = uid()
+    await wrapper.setProps({ maximized: true }) // maximize -> remount
+    const maximized = uid()
+    await wrapper.setProps({ maximized: false }) // restore -> remount again
+    const restored = uid()
+    expect(maximized).not.toBe(before)
+    expect(restored).not.toBe(maximized)
+  })
 })

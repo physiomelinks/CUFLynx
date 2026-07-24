@@ -96,7 +96,19 @@ defineExpose({ chartData })
       </button>
     </div>
     <div class="chart-wrap">
-      <Line :data="chartData" :options="chartOptions" />
+      <!--
+        Remount the chart when the maximize state changes (issue #115): Chart.js
+        with maintainAspectRatio:false grows the canvas to fill the maximized
+        window but doesn't shrink it back on restore (the enlarged canvas keeps
+        inflating its auto-height container), leaving the y-axis stretched. A key
+        tied to `maximized` destroys the stale canvas so a fresh one sizes to the
+        restored cell.
+      -->
+      <Line
+        :key="maximized ? 'maximized' : 'normal'"
+        :data="chartData"
+        :options="chartOptions"
+      />
     </div>
     <ul class="legend" data-testid="legend">
       <li v-for="(d, i) in chartData.datasets" :key="i" class="legend-item">
