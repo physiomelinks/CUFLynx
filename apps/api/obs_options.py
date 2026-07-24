@@ -240,6 +240,28 @@ def _introspect_cost_func_metadata(cost_funcs_user, external_path=None) -> dict:
     return out
 
 
+def get_operation_funcs(output_dir: str | None = None):
+    """CA's numpy observable-operation registry (built-ins + user + external
+    funcs under ``output_dir``), or ``None`` when CA can't be imported.
+
+    Unlike :func:`get_obs_data_options` this returns the *callables* themselves,
+    so the Output plots overlay can apply a data_item's operation to a simulated
+    trace and plot its ``series_output`` (transformed) series (issue #111). Not
+    cached: it's called per run, and the registry is cheap to rebuild in numpy
+    mode (no casadi/myokit).
+    """
+    try:
+        for p in _ca_paths():
+            if p not in sys.path:
+                sys.path.insert(0, p)
+        import operation_funcs  # noqa: E402 (CA module, resolved via sys.path)
+
+        op_path, _ = _external_func_paths(output_dir)
+        return _op_funcs_dict(operation_funcs, op_path)
+    except Exception:  # noqa: BLE001 - CA missing / import failure
+        return None
+
+
 def get_obs_data_options(refresh: bool = False, output_dir: str | None = None) -> dict:
     """Return ``{"operations": [...], "cost_types": [...]}`` from CA, including the
     user's custom funcs under ``output_dir``.

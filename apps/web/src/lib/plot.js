@@ -220,6 +220,23 @@ export function overlayItemsFor(obsData, expIdx, qname) {
   )
 }
 
+/**
+ * Attach each overlay item's backend-computed series_output (transformed) series,
+ * so buildChartData plots the operation's result instead of the raw operand
+ * (issue #111). `seriesByIndex` maps a global data_item index (as returned by the
+ * simulate / protocol response `output_series`) to the transformed series; items
+ * are matched by their position in `allItems`. Items with no transformed series
+ * are returned unchanged.
+ */
+export function attachOutputSeries(items, seriesByIndex, allItems) {
+  if (!seriesByIndex || !allItems) return items
+  return items.map((it) => {
+    const idx = allItems.indexOf(it)
+    const s = idx >= 0 ? seriesByIndex[idx] : undefined
+    return Array.isArray(s) && s.length ? { ...it, output_series: s } : it
+  })
+}
+
 function refLine({ name, op, role, dashed, kind, color: c, data }) {
   return {
     label: `${name} (${role}${op ? ' ' + op : ''})`,
@@ -258,22 +275,36 @@ export function buildChartData(simResult, options = {}) {
   const time = simResult?.time ?? []
   const outputs = simResult?.outputs ?? {}
 
+  // A data_item whose operation defines a series_output branch supplies a
+  // transformed model series (e.g. 60/x) that replaces the raw operand as the
+  // plotted waveform — matching CA's saved figures (issue #111).
+  const overrideByVar = new Map()
+  for (const item of dataItems) {
+    if (Array.isArray(item.output_series) && item.output_series.length) {
+      const v = obsModelVar(item)
+      if (!overrideByVar.has(v)) overrideByVar.set(v, [])
+      overrideByVar.get(v).push(item)
+    }
+  }
+
   let colorIdx = 0
   let yMin = Infinity
   let yMax = -Infinity
-  for (const qname of Object.keys(outputs)) {
-    const series = outputs[qname] ?? []
-    for (const v of series) {
+  const accumulate = (values) => {
+    for (const v of values) {
       if (v < yMin) yMin = v
       if (v > yMax) yMax = v
     }
+  }
+  const pushLine = (labelName, mathName, values) => {
+    accumulate(values)
     datasets.push({
-      label: qname,
-      mathLabel: varLabel || qname,
+      label: labelName,
+      mathLabel: mathName,
       suffix: '',
       legendStyle: 'line',
       kind: 'simulation',
-      data: toXY(time, series),
+      data: toXY(time, values),
       borderColor: color(colorIdx),
       backgroundColor: color(colorIdx),
       borderWidth: 1.5,
@@ -281,6 +312,18 @@ export function buildChartData(simResult, options = {}) {
       tension,
     })
     colorIdx += 1
+  }
+  for (const qname of Object.keys(outputs)) {
+    const overrides = overrideByVar.get(qname)
+    if (overrides && overrides.length) {
+      // Plot the operation's transformed series instead of the raw operand.
+      for (const item of overrides) {
+        const name = item.name_for_plotting ?? item.variable ?? qname
+        pushLine(name, varLabel || name, item.output_series)
+      }
+      continue
+    }
+    pushLine(qname, varLabel || qname, outputs[qname] ?? [])
   }
 
   const xMin = time.length ? time[0] : 0
