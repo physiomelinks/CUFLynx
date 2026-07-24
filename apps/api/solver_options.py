@@ -70,10 +70,11 @@ _FALLBACK_DIFFERENTIABLE = {
     "addition": True, "subtraction": True, "multiplication": True, "division": True,
 }
 
-# Per-integrator suitability for the backend's *analytic* gradient, used until CA's
-# SOLVER_SCHEMA exposes these (CA issue #298). CasADi AD works with the symbolic
-# integrators but NOT the SUNDIALS adjoint ones (cvodes/idas), whose adjoint
-# sensitivity fails (CV_TOO_MUCH_WORK); Myokit FSA works with the CVODE integrator.
+# Per-integrator suitability for the backend's *analytic* gradient. CA's
+# SOLVER_SCHEMA now exposes these (CA #298 landed), so these are the older-CA
+# fallback only. CasADi AD works with the symbolic integrators but NOT the SUNDIALS
+# adjoint ones (cvodes/idas), whose adjoint sensitivity fails (CV_TOO_MUCH_WORK);
+# Myokit FSA works with the CVODE integrator.
 _FALLBACK_AD_SUITABLE = {
     "casadi_integrator": ["collocation", "rk", "semi_implicit_euler", "bdf"],
 }
@@ -440,7 +441,7 @@ def _build_options(schema: dict, differentiable: dict[str, bool]) -> dict:
         default_solver_by_format[m] = d
     all_diff = bool(differentiable) and all(differentiable.values())
     # Per-integrator gradient suitability + preferred default method: from CA's
-    # schema when present (CA issue #298), else the built-in fallbacks.
+    # schema (CA #298, landed), else the built-in fallbacks on an older CA.
     ad_suitable = schema.get("ad_suitable_methods") or dict(_FALLBACK_AD_SUITABLE)
     fsa_suitable = schema.get("fsa_suitable_methods") or dict(_FALLBACK_FSA_SUITABLE)
     default_method = schema.get("default_method_by_solver") or dict(_FALLBACK_DEFAULT_METHOD)
@@ -544,19 +545,31 @@ def analysis_mode_options(mode: str) -> list[dict]:
     return get_analysis_options().get(mode, {}).get("options", [])
 
 
-def _introspect_gradient_sources(model_type: str, solver: str | None) -> list[dict]:
-    """The gradient sources CA reports for ``model_type`` + ``solver``, from its
-    discoverable ``gradient_sources`` accessor (single source of truth for the
-    AD/FSA/FD dispatch, matching ``get_gradient``).
+def _introspect_gradient_sources(
+    model_type: str, solver: str | None, method: str | None = None
+) -> tuple[list[dict], bool]:
+    """The gradient sources CA reports for ``model_type`` + ``solver`` (+ integrator
+    ``method``), from its discoverable ``gradient_sources`` accessor — the single
+    source of truth for the AD/FSA/FD dispatch, matching ``get_gradient``.
+
+    Returns ``(descriptors, method_gated_by_ca)``. CA's accessor gained the
+    per-integrator ``method`` gate in issue #298; when it accepts ``method`` we hand
+    it over so the rule lives in exactly one place, and the caller skips its local
+    mirror. On an older CA (no ``method`` parameter) we call the two-arg form and
+    report False so the caller applies :func:`_method_supports_analytic_gradient`.
 
     Raises (ImportError/AttributeError) on an older CA that has no such accessor,
     so the caller degrades to :func:`_fallback_gradient_sources`. Same "introspect
     CA, never hardcode" pattern as the solver/param_id/analysis schemas.
     """
+    import inspect  # noqa: E402 - only needed for the capability probe
+
     _ensure_ca_path()
     from parsers.PrimitiveParsers import gradient_sources as ca_gradient_sources  # noqa: E402
 
-    return [dict(d) for d in ca_gradient_sources(model_type, solver)]
+    if "method" in inspect.signature(ca_gradient_sources).parameters:
+        return [dict(d) for d in ca_gradient_sources(model_type, solver, method)], True
+    return [dict(d) for d in ca_gradient_sources(model_type, solver)], False
 
 
 def _fallback_gradient_sources(model_type: str, solver: str | None) -> list[dict]:
@@ -598,7 +611,10 @@ def _fallback_gradient_sources(model_type: str, solver: str | None) -> list[dict
 def _method_supports_analytic_gradient(solver: str | None, method: str | None, value: str) -> bool:
     """Whether the selected integrator (``method``) supports the analytic gradient
     source ``value`` (AD/FSA) for ``solver`` — the per-integrator gate from CA's
-    ad_suitable_methods / fsa_suitable_methods (fallback until CA exposes them, #298).
+    ad_suitable_methods / fsa_suitable_methods (CA #298).
+
+    Only used when CA's ``gradient_sources`` accessor can't do the gate itself
+    (older CA); a current CA is handed ``method`` and gates it at the source.
 
     A solver absent from the suitability table isn't gated (e.g. AADC AD) → suitable.
     ``method`` None (unknown/not yet chosen) → suitable, so the source still shows.
@@ -618,24 +634,29 @@ def gradient_sources(
     sensitivity gradient-source menus.
 
     Introspects CA's discoverable ``gradient_sources`` accessor (falling back to a
-    hand-coded mirror of ``get_gradient`` on an older CA), then applies two gates CA
-    can't know statically:
-      * the runtime ``all_differentiable`` gate — any source flagged
-        ``requires_all_differentiable`` (CasADi AD) is dropped when not every
-        operation is @differentiable;
-      * the per-integrator suitability gate — an analytic source (AD/FSA) is dropped
-        when the selected ``method`` (integrator) doesn't support it, e.g. CasADi AD
-        with the SUNDIALS adjoint integrators cvodes/idas (CA issue #298).
+    hand-coded mirror of ``get_gradient`` on an older CA), passing the selected
+    integrator ``method`` so CA applies its own per-integrator suitability gate —
+    an analytic source (AD/FSA) is dropped when the integrator can't produce it,
+    e.g. CasADi AD with the SUNDIALS adjoint integrators cvodes/idas (CA #298).
+    Only when CA can't do that gate (older CA) do we apply our local mirror, so the
+    rule is never duplicated against a CA that owns it.
+
+    On top we apply the one gate CA can't know statically: the runtime
+    ``all_differentiable`` gate — any source flagged ``requires_all_differentiable``
+    (CasADi AD) is dropped when not every operation is @differentiable.
+
     Each descriptor carries ``value``/``label``/``do_ad``/``requires_all_differentiable``/
     ``description``.
     """
-    descriptors, ok = _safe(lambda: _introspect_gradient_sources(model_type, solver), None)
-    if not ok or descriptors is None:
-        descriptors = _fallback_gradient_sources(model_type, solver)
+    result, ok = _safe(lambda: _introspect_gradient_sources(model_type, solver, method), None)
+    if not ok or result is None:
+        descriptors, gated_by_ca = _fallback_gradient_sources(model_type, solver), False
+    else:
+        descriptors, gated_by_ca = result
     return [
         d for d in descriptors
         if (all_differentiable or not d.get("requires_all_differentiable"))
-        and _method_supports_analytic_gradient(solver, method, d["value"])
+        and (gated_by_ca or _method_supports_analytic_gradient(solver, method, d["value"]))
     ]
 
 

@@ -441,6 +441,61 @@ def test_gradient_sources_introspects_ca_accessor(monkeypatch):
     assert _values(so.gradient_sources("casadi_python", "casadi_integrator", False)) == ["FD"]
 
 
+def test_gradient_sources_delegates_method_gate_to_ca(monkeypatch):
+    """CA's accessor owns the per-integrator gate (CA #298 landed), so CUFLynx hands
+    it ``method`` and uses CA's answer verbatim instead of re-applying its local
+    mirror — the two rules can't drift. A local table that would gate everything out
+    proves CA's answer is the one that wins."""
+    calls = {}
+
+    def fake_gradient_sources(model_type, solver=None, method=None):
+        calls["args"] = (model_type, solver, method)
+        srcs = [{"value": "FD", "label": "FD", "do_ad": False,
+                 "requires_all_differentiable": False, "description": ""}]
+        if method != "cvodes":  # CA's own per-integrator gate
+            srcs.append({"value": "AD", "label": "AD (CasADi)", "do_ad": True,
+                         "requires_all_differentiable": False, "description": ""})
+        return srcs
+
+    monkeypatch.setitem(sys.modules, "parsers.PrimitiveParsers",
+                        types.SimpleNamespace(gradient_sources=fake_gradient_sources))
+    monkeypatch.setattr(so, "_ensure_ca_path", lambda: None)
+    monkeypatch.setattr(so, "get_solver_options", lambda refresh=False: {
+        "ad_suitable_methods": {"casadi_integrator": []},  # would gate AD out entirely
+        "fsa_suitable_methods": {},
+    })
+
+    # method is forwarded, and CA's verdict (AD allowed for bdf) stands.
+    assert _values(so.gradient_sources("casadi_python", "casadi_integrator", True, "bdf")) == ["FD", "AD"]
+    assert calls["args"] == ("casadi_python", "casadi_integrator", "bdf")
+    # CA gates AD out for the adjoint integrator.
+    assert _values(so.gradient_sources("casadi_python", "casadi_integrator", True, "cvodes")) == ["FD"]
+
+
+def test_gradient_sources_local_gate_when_ca_accessor_lacks_method(monkeypatch):
+    """An older CA whose ``gradient_sources`` predates the ``method`` parameter can't
+    gate per integrator, so CUFLynx's local mirror does it instead."""
+
+    def fake_gradient_sources(model_type, solver=None):  # no `method` parameter
+        return [
+            {"value": "FD", "label": "FD", "do_ad": False,
+             "requires_all_differentiable": False, "description": ""},
+            {"value": "AD", "label": "AD (CasADi)", "do_ad": True,
+             "requires_all_differentiable": False, "description": ""},
+        ]
+
+    monkeypatch.setitem(sys.modules, "parsers.PrimitiveParsers",
+                        types.SimpleNamespace(gradient_sources=fake_gradient_sources))
+    monkeypatch.setattr(so, "_ensure_ca_path", lambda: None)
+    monkeypatch.setattr(so, "get_solver_options", lambda refresh=False: {
+        "ad_suitable_methods": {"casadi_integrator": ["bdf"]},
+        "fsa_suitable_methods": {},
+    })
+
+    assert _values(so.gradient_sources("casadi_python", "casadi_integrator", True, "bdf")) == ["FD", "AD"]
+    assert _values(so.gradient_sources("casadi_python", "casadi_integrator", True, "cvodes")) == ["FD"]
+
+
 # ---------------------------------------------------------------------------
 # Calibration (param_id) methods — introspected from CA, with a fallback.
 # ---------------------------------------------------------------------------
