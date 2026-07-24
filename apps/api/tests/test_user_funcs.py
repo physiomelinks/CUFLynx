@@ -345,3 +345,93 @@ def test_saved_op_appears_in_obs_options(tmp_path, monkeypatch):
                 sys.modules.pop(m, None)
         sys.path[:] = saved_path
         obs_options.reset_cache()
+
+
+# ---------------------------------------------------------------------------
+# integration: a custom operation's kwargs actually change the computed value
+# ---------------------------------------------------------------------------
+KWARG_OP = (
+    "def scaled_max(x, factor=1.0, series_output=False):\n"
+    "    if series_output:\n"
+    "        return x\n"
+    "    return float(np.max(x) * factor)\n"
+)
+
+
+@pytest.mark.integration
+def test_custom_operation_kwargs_change_the_computed_value(tmp_path, monkeypatch):
+    """End-to-end for the kwargs feature (#112/#113) on a CUFLynx-authored op (#104).
+
+    Proves the whole chain does something, not just that values are carried:
+      1. the op's kwarg is discoverable for the editor (operation_kwargs_schema),
+      2. circulatory_autogen parses our obs_data.json and keeps operation_kwargs,
+      3. calling the registered op the way CA does yields a *different* value for a
+         different kwarg — i.e. the inputs the editor collects have an effect.
+    """
+    import inspect
+    import json
+
+    import numpy as np
+
+    import engine
+    import obs_options
+
+    real_src = Path(engine._circulatory_autogen_src())
+    if not real_src.is_dir() or not _real_ca_importable():
+        pytest.skip("real circulatory_autogen not importable")
+    import operation_funcs
+
+    if "external_path" not in inspect.signature(
+        operation_funcs.get_operation_funcs_dict_for_mode
+    ).parameters:
+        pytest.skip("circulatory_autogen lacks external-path support (#303)")
+
+    out = tmp_path / "outputs"
+    monkeypatch.setattr(uf, "config_dir", lambda: tmp_path / "cfg")
+    uf.save_user_func("operation", "scaled_max", KWARG_OP, base_dir=str(out))
+    ext = uf.external_path("operation", str(out))
+
+    # 1) Discoverable: the op AND its tunable kwarg reach the editor's schema.
+    obs_options.reset_cache()
+    try:
+        opts = obs_options.get_obs_data_options(refresh=True, output_dir=str(out))
+        assert "scaled_max" in opts["operations"]
+        # `series_output` is reserved and must not be offered as a tunable.
+        assert opts["operation_kwargs_schema"]["scaled_max"] == [
+            {"name": "factor", "default": 1.0, "type": "number"}
+        ]
+    finally:
+        obs_options.reset_cache()
+
+    # 2) CA parses a CUFLynx-shaped obs_data.json and keeps the kwargs.
+    from parsers.PrimitiveParsers import ObsAndParamDataParser
+
+    obs = {
+        "protocol_info": {"pre_times": [0.0], "sim_times": [[5]], "params_to_change": {}},
+        "prediction_items": [],
+        "data_items": [
+            {"variable": "x_max", "name_for_plotting": "x_max", "data_type": "constant",
+             "operation": "scaled_max", "operands": ["m/x"], "unit": "dimensionless",
+             "weight": 1.0, "value": 30, "std": 3, "experiment_idx": 0,
+             "subexperiment_idx": 0, "operation_kwargs": {"factor": 2.0}},
+        ],
+    }
+    obs_path = tmp_path / "obs_data.json"
+    obs_path.write_text(json.dumps(obs))
+
+    parser = ObsAndParamDataParser()
+    parsed = parser.parse_obs_data_json(
+        param_id_obs_path=str(obs_path), pre_time=0.0, sim_time=5.0,
+        model_type="cellml_only",
+    )
+    obs_info = parser.process_obs_info(parsed["gt_df"], str(tmp_path), 0.01)
+    assert obs_info["operations"][0] == "scaled_max"
+    assert obs_info["operation_kwargs"][0] == {"factor": 2.0}
+
+    # 3) The kwarg changes the result — CA invokes func(*operands, **kwargs).
+    op_funcs = operation_funcs.get_operation_funcs_dict_for_mode("numpy", external_path=ext)
+    fn = op_funcs["scaled_max"]
+    series = np.array([1.0, 3.0, 2.0])
+    assert fn(series, **obs_info["operation_kwargs"][0]) == pytest.approx(6.0)
+    assert fn(series, **{"factor": 4.0}) == pytest.approx(12.0)
+    assert fn(series) == pytest.approx(3.0)  # the op's own default

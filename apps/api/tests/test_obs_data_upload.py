@@ -173,3 +173,39 @@ def test_protocol_run_bg_model_with_minimal_obs_data(client, requires_simulation
     )
     assert resp.status_code == 200, resp.text
     assert "main/p_o2" in resp.json()["experiments"][0]["outputs"]
+
+
+# ---------------------------------------------------------------------------
+# operation_kwargs survive the upload (regression: they must reach CA)
+# ---------------------------------------------------------------------------
+def test_upload_preserves_operation_kwargs_in_stored_file(client):
+    """Per-data_item ``operation_kwargs`` (#112/#113) must survive the upload into
+    the obs_data.json handed to circulatory_autogen.
+
+    The editor writes the values, but they only *do* anything if they reach CA's
+    parser, which reads the field off the stored file. A whitelist-style refactor
+    of the data_item parsing would silently drop them and every other kwargs test
+    would still pass, so pin it here: response payload *and* file on disk.
+    """
+    import main
+
+    model_id = upload_model(client, LV_MODEL_PATH)["model_id"]
+    obs = json.loads(LV_OBS_DATA_PATH.read_text())
+    obs["data_items"][0]["operation"] = "peak_above"
+    obs["data_items"][0]["operation_kwargs"] = {"threshold": 0.9, "invert": True}
+
+    resp = client.post(f"/api/obs_data/upload?model_id={model_id}", json=obs)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["data_items"][0]["operation_kwargs"] == {
+        "threshold": 0.9,
+        "invert": True,
+    }
+
+    # The file CA actually reads.
+    stored = json.loads(main._models[model_id].obs_path.read_text())
+    assert stored["data_items"][0]["operation_kwargs"] == {
+        "threshold": 0.9,
+        "invert": True,
+    }
+    # An item without kwargs stays clean (no empty map injected).
+    assert "operation_kwargs" not in stored["data_items"][1]

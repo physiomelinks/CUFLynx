@@ -108,3 +108,70 @@ def test_resolve_nominal_current_partial_override():
     nominal, source = _resolve({"a/x": 5.0})  # only a/x provided
     assert list(nominal) == [5.0, 2.0]
     assert "sliders" in source
+
+
+# ---------------------------------------------------------------------------
+# operation_kwargs actually reach the operation call (#112/#113)
+# ---------------------------------------------------------------------------
+class _FakeExecutor:
+    """Stands in for the protocol executor: returns canned operand outputs."""
+
+    def __init__(self, outputs):
+        self.outputs = outputs
+
+    def run_protocol(self, _protocol_info, **_kwargs):
+        return True, self.outputs, None, None
+
+
+class _FakeFeatureSM:
+    def __init__(self, obs_info, outputs):
+        self.obs_info = obs_info
+        self.protocol_info = {}
+        self.param_id_info = {"param_names": ["p"]}
+        self._protocol_executor = _FakeExecutor(outputs)
+
+
+def _feature_sm(kwargs_list, n=1, names=None):
+    obs = {
+        "operations": ["scaled_max"] * n,
+        "operands": [["m/x"]] * n,
+        "experiment_idxs": [0] * n,
+        "subexperiment_idxs": [0] * n,
+        "operation_kwargs": kwargs_list,
+        "names_for_plotting": names or [f"f{i}" for i in range(n)],
+    }
+    # operands_outputs[j] is the operand tuple for observable j.
+    outputs = {(0, 0): [(np.array([1.0, 3.0, 2.0]),)] * n}
+    return _FakeFeatureSM(obs, outputs)
+
+
+def _scaled_max(x, factor=1.0):
+    return float(np.max(x) * factor)
+
+
+@pytest.mark.parametrize("factor,expected", [(1.0, 3.0), (2.0, 6.0), (4.0, 12.0)])
+def test_evaluate_features_passes_operation_kwargs_to_the_op(factor, expected):
+    """The per-data_item kwarg changes the computed feature — i.e. the inputs the
+    obs_data editor collects actually do something."""
+    sm = _feature_sm([{"factor": factor}])
+    out = ls._evaluate_features(sm, np.array([1.0]), {"scaled_max": _scaled_max})
+    assert out[0] == pytest.approx(expected)
+
+
+def test_evaluate_features_uses_the_op_default_without_kwargs():
+    """No kwargs -> the func's own default applies (max * 1.0)."""
+    for empty in ({}, None):
+        sm = _feature_sm([empty])
+        out = ls._evaluate_features(sm, np.array([1.0]), {"scaled_max": _scaled_max})
+        assert out[0] == pytest.approx(3.0)
+
+
+def test_evaluate_features_substitutes_a_kwarg_naming_an_earlier_feature():
+    """A string kwarg matching an earlier observable's name_for_plotting is
+    replaced by that feature's value before the call."""
+    sm = _feature_sm(
+        [{}, {"factor": "base"}], n=2, names=["base", "derived"]
+    )
+    out = ls._evaluate_features(sm, np.array([1.0]), {"scaled_max": _scaled_max})
+    assert out[0] == pytest.approx(3.0)        # base = max = 3
+    assert out[1] == pytest.approx(9.0)        # factor <- 3  => 3 * 3
