@@ -119,6 +119,37 @@ export function buildParamsCsv(rows) {
   return lines.join('\n') + '\n'
 }
 
+/**
+ * Build a "parameter values" CSV from a saved slider snapshot. Columns are
+ * `vessel_name,param_name,value,name_for_plotting` — the qname is split the same
+ * way as params_for_id (last slash), so the file reads like a params_for_id CSV
+ * but records the locked-in values instead of ranges (issue #106).
+ *
+ * @param {Array<{qname: string, value: number, name_for_plotting?: string}>} rows
+ * @returns {string}
+ */
+export function buildParamValuesCsv(rows) {
+  const header = ['vessel_name', 'param_name', 'value', 'name_for_plotting']
+  const lines = [header.join(',')]
+  for (const r of rows) {
+    const { vessel_name, param_name } = splitQname(r.qname)
+    lines.push(
+      [
+        csvField(vessel_name),
+        csvField(param_name),
+        numField(r.value),
+        csvField(r.name_for_plotting ?? r.qname),
+      ].join(','),
+    )
+  }
+  return lines.join('\n') + '\n'
+}
+
+/** `<modelName>_param_values_<yymmdd>.csv` for a saved-snapshot export. */
+export function snapshotFilename(modelName, date = new Date()) {
+  return `${modelName ?? 'model'}_param_values_${yymmdd(date)}.csv`
+}
+
 /** yymmdd for the current local date. */
 function yymmdd(date = new Date()) {
   const yy = String(date.getFullYear()).slice(-2)

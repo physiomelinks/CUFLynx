@@ -4,6 +4,8 @@ import {
   mergedRows,
   splitQname,
   buildParamsCsv,
+  buildParamValuesCsv,
+  snapshotFilename,
   versionedFilename,
 } from './paramsCsv'
 
@@ -151,5 +153,36 @@ describe('versionedFilename', () => {
 
   it('falls back to <model>_params_for_id when no CSV was loaded', () => {
     expect(versionedFilename(null, 'LV', d)).toBe('LV_params_for_id_260615.csv')
+  })
+})
+
+describe('buildParamValuesCsv (saved snapshot export, issue #106)', () => {
+  it('writes vessel_name,param_name,value,name_for_plotting rows', () => {
+    const csv = buildParamValuesCsv([
+      { qname: 'v/a', value: 1.5, name_for_plotting: 'alpha' },
+      { qname: 'v/b', value: 2 },
+    ])
+    const lines = csv.trim().split('\n')
+    expect(lines[0]).toBe('vessel_name,param_name,value,name_for_plotting')
+    expect(lines[1]).toBe('v,a,1.5,alpha')
+    // name_for_plotting falls back to the qname when absent.
+    expect(lines[2]).toBe('v,b,2,v/b')
+  })
+
+  it('leaves the value blank for non-finite numbers', () => {
+    const csv = buildParamValuesCsv([{ qname: 'v/a', value: NaN }])
+    expect(csv.trim().split('\n')[1]).toBe('v,a,,v/a')
+  })
+})
+
+describe('snapshotFilename', () => {
+  const d = new Date(2026, 5, 15) // 2026-06-15 -> 260615
+
+  it('is <model>_param_values_yymmdd.csv', () => {
+    expect(snapshotFilename('LV', d)).toBe('LV_param_values_260615.csv')
+  })
+
+  it('falls back to model when no name is given', () => {
+    expect(snapshotFilename(null, d)).toBe('model_param_values_260615.csv')
   })
 })
