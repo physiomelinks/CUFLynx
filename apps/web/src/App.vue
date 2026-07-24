@@ -45,6 +45,7 @@ import {
   controlledSeries,
   buildExtraPlotCells,
 } from './lib/plot'
+import { buildParamValuesCsv, snapshotFilename } from './lib/paramsCsv'
 import {
   solversForFormat,
   defaultSolverFor,
@@ -745,6 +746,68 @@ function onResetBest() {
   runSimulation()
 }
 
+// --- Saved-snapshot ("lock" arbitrary slider values) — issue #106 -----------
+// Persisted per-model so a locked snapshot survives a reload.
+const savedParamsKey = computed(
+  () => `cuflynx-saved-params:${model.filePrefix.value || 'default'}`,
+)
+
+// Restore this model's saved snapshot (if any) whenever the model changes.
+watch(
+  () => model.filePrefix.value,
+  () => {
+    try {
+      const raw = localStorage.getItem(savedParamsKey.value)
+      sliders.setSaved(raw ? JSON.parse(raw) : null)
+    } catch {
+      sliders.setSaved(null)
+    }
+  },
+  { immediate: true },
+)
+
+const hasSaved = computed(() => sliders.hasSaved.value)
+
+// Lock in the current slider values as the saved snapshot (and persist them).
+function onSaveSnapshot() {
+  const snap = sliders.saveSnapshot()
+  try {
+    localStorage.setItem(savedParamsKey.value, JSON.stringify(snap))
+  } catch {
+    /* localStorage unavailable — the in-memory snapshot still works. */
+  }
+}
+
+// Reset all parameter values back to the saved snapshot.
+function onResetSaved() {
+  if (!sliders.hasSaved.value) return
+  sliders.resetToSaved()
+  runSimulation()
+}
+
+// Download the saved parameter values as a CSV (issue #106).
+function onExportSnapshot() {
+  const snap = sliders.saved.value
+  if (!snap) return
+  const rows = Object.entries(snap).map(([qname, value]) => ({
+    qname,
+    value,
+    name_for_plotting:
+      sliders.sliders[qname]?.name_for_plotting ?? qname,
+  }))
+  const csv = buildParamValuesCsv(rows)
+  const filename = snapshotFilename(model.filePrefix.value)
+  if (typeof URL === 'undefined' || !URL.createObjectURL) return
+  const href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }))
+  const a = document.createElement('a')
+  a.href = href
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  URL.revokeObjectURL(href)
+}
+
 function onParamsLoaded(data) {
   paramsForId.importParams(data.params, data.filename)
   // Keep the raw entries (with param_type) + filename for the Edit dialog.
@@ -1054,10 +1117,14 @@ watch(
           <ControlPanel
             :sliders="sliders.sliders"
             :has-best-fit="hasBestFit"
+            :has-saved="hasSaved"
             @update="onSliderUpdate"
             @remove="({ qname }) => sliders.removeSlider(qname)"
             @reset-init="onResetInit"
             @reset-best="onResetBest"
+            @save-snapshot="onSaveSnapshot"
+            @reset-saved="onResetSaved"
+            @export-snapshot="onExportSnapshot"
           />
         </div>
         <div v-show="leftTab === 'sensitivity'" class="left-pane left-pane-scroll">
