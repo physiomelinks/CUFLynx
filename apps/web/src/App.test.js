@@ -384,4 +384,30 @@ describe('App.vue gradient integrator suitability warning (#298)', () => {
     await flushPromises()
     expect(wrapper.vm.gradientIntegratorWarning).toContain('FSA')
   })
+  // Individual-plot maximize (issue #115): a per-plot button expands one output
+  // plot to fill the middle window; a stale key (removed/regenerated plot) falls
+  // back to the normal grid.
+  describe('individual plot maximize', () => {
+    it('toggles the maximized plot key on and off', () => {
+      const wrapper = shallowMount(App)
+      expect(wrapper.vm.maximizedPlot).toBe(null)
+      wrapper.vm.toggleMaximizePlot('exp0:x')
+      expect(wrapper.vm.maximizedPlot).toBe('exp0:x')
+      // clicking the same plot restores the grid
+      wrapper.vm.toggleMaximizePlot('exp0:x')
+      expect(wrapper.vm.maximizedPlot).toBe(null)
+      // switching directly to another plot
+      wrapper.vm.toggleMaximizePlot('exp0:x')
+      wrapper.vm.toggleMaximizePlot('exp0:y')
+      expect(wrapper.vm.maximizedPlot).toBe('exp0:y')
+    })
+
+    it('effectiveMaximized ignores a key with no matching plot cell', () => {
+      const wrapper = shallowMount(App)
+      // No sim has run, so there are no plot cells: a set key must not blank the view.
+      wrapper.vm.toggleMaximizePlot('does-not-exist')
+      expect(wrapper.vm.maximizedPlot).toBe('does-not-exist')
+      expect(wrapper.vm.effectiveMaximized).toBe(null)
+    })
+  })
 })
