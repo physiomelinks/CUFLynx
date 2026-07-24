@@ -21,9 +21,11 @@ Deliberately dependency-free so the unit tier imports it without FastAPI/Myokit.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import sys
 from pathlib import Path
+from typing import Mapping, Optional
 
 _SOURCE_API_DIR = Path(__file__).resolve().parent
 
@@ -174,4 +176,124 @@ def subprocess_env() -> dict:
             env[var] = original
         else:
             env.pop(var, None)
+    return env
+
+
+# ---------------------------------------------------------------------------
+# Onefile extraction relocation (issue #67)
+#
+# In the packaged app a multi-core analysis is launched as
+# ``mpiexec -n N <bundle> --_cuflynx-run-analysis ...``. Each of the N ranks is a
+# fresh copy of the PyInstaller *onefile* executable, and each one unpacks its own
+# ``_MEIxxxxxx`` tree on startup. By default that lands in the system ``$TMPDIR``,
+# so a full/small ``$TMPDIR`` turns into an opaque rank crash before any Python
+# runs ("[PYI-...:ERROR] Could not create temporary directory!").
+#
+# We can't fix this in the spec: PyInstaller 6.x's ``runtime_tmpdir`` does NOT do
+# environment-variable/``~`` expansion on POSIX, and the spec runs on the *build*
+# machine, so any absolute path baked there points at the CI runner's home, not the
+# user's. So we do it at *launch* time, where a real per-user path is available:
+# set ``TMPDIR`` / ``TMP`` / ``TEMP`` to a roomy, predictable per-build cache dir,
+# relocating every rank's extraction off the volatile system temp.
+#
+# Scope note (why this is relocation, not de-duplication). An earlier version also
+# tried to make the ranks *share* one extraction via PyInstaller's ``_MEIPASS2``
+# "already unpacked here" signal. That signal does not exist in PyInstaller 6.x
+# (the shipped toolchain, >=6.0): the bootloader was rewritten and the parent->child
+# reuse is now an internal ``_PYI_APPLICATION_HOME_DIR`` / ``_PYI_PARENT_PROCESS_LEVEL``
+# protocol that independent ``mpiexec`` ranks can't opt into from the environment
+# (verified against a real 6.21 onefile build -- see packaging/README.md). So each
+# rank still extracts its own copy; this change only *relocates* those extractions
+# to a location that won't run the system temp out of space. The N x on-disk cost
+# during a run is unchanged.
+#
+# The cache directory is keyed by the executable's identity (path + size + mtime)
+# so different builds don't pile transient extractions into one directory; a
+# rebuilt/redownloaded exe gets a fresh sub-dir without parsing a version string.
+# ---------------------------------------------------------------------------
+
+_APP_CACHE_NAME = "CUFLynx"
+
+
+def user_cache_base(platform_name: str, environ: Mapping[str, str], home: str) -> Optional[Path]:
+    """OS-conventional per-user cache root, or None if it can't be determined.
+
+    Pure (all inputs injected) so it's unit-testable without touching the real
+    environment: Windows -> ``%LOCALAPPDATA%``; macOS -> ``~/Library/Caches``;
+    Linux/other POSIX -> ``$XDG_CACHE_HOME`` or ``~/.cache``.
+    """
+    if platform_name == "win32":
+        base = environ.get("LOCALAPPDATA") or (
+            str(Path(home) / "AppData" / "Local") if home else None
+        )
+    elif platform_name == "darwin":
+        base = str(Path(home) / "Library" / "Caches") if home else None
+    else:  # linux and other POSIX
+        base = environ.get("XDG_CACHE_HOME") or (str(Path(home) / ".cache") if home else None)
+    return Path(base) if base else None
+
+
+def extraction_cache_key(exe_path: str, size: int, mtime: float) -> str:
+    """Short, stable-per-build key for the onefile extraction directory.
+
+    Derived from the executable's identity, so all ranks of one launch (same exe)
+    share one parent dir, while a rebuilt/redownloaded exe (different size/mtime)
+    gets a fresh sub-dir rather than mixing with an old build's extractions.
+    """
+    raw = f"{exe_path}|{size}|{int(mtime)}".encode("utf-8", "surrogatepass")
+    return hashlib.blake2b(raw, digest_size=8).hexdigest()
+
+
+def extraction_cache_dir(base: Path, key: str) -> Path:
+    """The versioned onefile extraction dir under a cache ``base`` for ``key``."""
+    return base / _APP_CACHE_NAME / "onefile-cache" / key
+
+
+def _ensure_extraction_cache_dir() -> Optional[Path]:
+    """Create (if needed) and return the per-build extraction cache dir, or None.
+
+    Best-effort: any failure (no home, unwritable cache, odd platform) returns
+    None so the caller leaves the environment untouched and the bundle falls back
+    to its normal ``$TMPDIR`` behaviour -- never a regression.
+    """
+    try:
+        base = user_cache_base(sys.platform, os.environ, os.path.expanduser("~"))
+        if base is None:
+            return None
+        st = os.stat(sys.executable)
+        target = extraction_cache_dir(base, extraction_cache_key(
+            sys.executable, st.st_size, st.st_mtime))
+        target.mkdir(parents=True, exist_ok=True)
+        return target
+    except OSError:
+        return None
+
+
+def _relocate_bundle_extraction_env(env: dict) -> None:
+    """Point the onefile extraction temp (``TMPDIR``/``TMP``/``TEMP``) at the roomy
+    per-build cache dir, for a bundle-re-invocation launch.
+
+    Mutates ``env`` in place. Only meaningful when the child processes are this
+    same frozen executable (see :func:`runner_launch_env`). No-op if the cache dir
+    can't be created, leaving the bundle's default ``$TMPDIR`` behaviour intact.
+    """
+    cache = _ensure_extraction_cache_dir()
+    if cache is not None:
+        cache_str = str(cache)
+        for var in ("TMPDIR", "TMP", "TEMP"):
+            env[var] = cache_str
+
+
+def runner_launch_env(python: Optional[str]) -> dict:
+    """Environment for spawning an analysis runner (calibration/sensitivity/UQ).
+
+    Starts from :func:`subprocess_env`. When the runner is the *bundle itself*
+    re-invoked in runner mode (``python is None`` and frozen -- see
+    :func:`runner_command`), also relocate the onefile extraction temp onto a roomy
+    per-build cache dir so N MPI ranks don't exhaust the system ``$TMPDIR`` (issue
+    #67). For an external interpreter this is irrelevant, so it's omitted.
+    """
+    env = subprocess_env()
+    if python is None and is_frozen():
+        _relocate_bundle_extraction_env(env)
     return env
