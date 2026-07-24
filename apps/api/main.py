@@ -46,6 +46,7 @@ import export_pipeline
 from model_codegen import resolve_model_path, reset_cache as reset_codegen
 from obs_data import ObsData, ObsDataError, parse_obs_data
 from obs_options import get_obs_data_options, reset_cache as reset_obs_options
+from obs_series import compute_output_series
 from params_for_id import ParamsForIdError, parse_params_for_id
 from runtime_paths import default_python, frontend_dist, is_frozen, resources_dir
 import settings_store
@@ -136,6 +137,10 @@ class SimulateRequest(BaseModel):
     sim_time: float = 10.0
     pre_time: float = 0.0
     outputs: list[str] | None = None
+    # Where the user's custom operation funcs live, so a data_item's operation can
+    # be applied to produce its series_output overlay (issue #111). Empty -> only
+    # CA's built-in operations are available.
+    config_outputs_dir: str = ""
 
 
 class ProtocolRunRequest(BaseModel):
@@ -143,6 +148,7 @@ class ProtocolRunRequest(BaseModel):
     protocol_info: dict | None = None
     params: dict[str, float] = Field(default_factory=dict)
     outputs: list[str] | None = None
+    config_outputs_dir: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -705,6 +711,14 @@ def simulate(req: SimulateRequest) -> dict:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     except (KeyError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    # Per data_item, the operation's series_output (transformed) series so the
+    # Output plots overlay matches CA's saved figures (issue #111).
+    if record.obs_data is not None:
+        output_dir = _user_func_base_dir(req.config_outputs_dir)
+        result["output_series"] = compute_output_series(
+            record.obs_data.data_items, result.get("outputs", {}), output_dir
+        )
     return result
 
 
@@ -736,6 +750,23 @@ def protocol_run(req: ProtocolRunRequest) -> dict:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     except (KeyError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    # Per experiment, the series_output (transformed) series for each data_item
+    # scoped to that experiment, keyed by its global data_item index so the
+    # frontend can attach it to the matching overlay (issue #111).
+    if record.obs_data is not None:
+        output_dir = _user_func_base_dir(req.config_outputs_dir)
+        items = record.obs_data.data_items
+        for e, exp in enumerate(result.get("experiments", [])):
+            scoped = [
+                (idx, it)
+                for idx, it in enumerate(items)
+                if isinstance(it, dict) and it.get("experiment_idx", 0) == e
+            ]
+            local = compute_output_series(
+                [it for _, it in scoped], exp.get("outputs", {}), output_dir
+            )
+            exp["output_series"] = {scoped[k][0]: v for k, v in local.items()}
     return result
 
 

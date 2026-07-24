@@ -39,7 +39,12 @@ import {
   exportPipeline,
   exportPlotting,
 } from './lib/api'
-import { overlayItemsFor, controlledSeries, buildExtraPlotCells } from './lib/plot'
+import {
+  overlayItemsFor,
+  attachOutputSeries,
+  controlledSeries,
+  buildExtraPlotCells,
+} from './lib/plot'
 import {
   solversForFormat,
   defaultSolverFor,
@@ -779,6 +784,7 @@ async function runSimulation() {
       ]
       const data = await runProtocol(model.modelId.value, sliders.paramDict.value, {
         outputs,
+        outputsDir: outputsDir.value.trim() || undefined,
       })
       sim.setExperiments(data.experiments, data.warnings, performance.now() - started)
     } else if (obs.hasObsData.value) {
@@ -793,6 +799,7 @@ async function runSimulation() {
       ]
       const data = await simulate(model.modelId.value, sliders.paramDict.value, {
         outputs,
+        outputsDir: outputsDir.value.trim() || undefined,
       })
       sim.setResult(data, performance.now() - started)
     } else {
@@ -833,6 +840,7 @@ const plotGroups = computed(() => {
           dataItems: [],
         })
       }
+      const allItems = obs.obsData.value?.data_items ?? []
       for (const v of vars) {
         cells.push({
           key: `${e}:${v.qname}`,
@@ -840,7 +848,11 @@ const plotGroups = computed(() => {
           varLabel: v.label,
           controlled: false,
           simResult: { time: exp.time, outputs: { [v.qname]: exp.outputs?.[v.qname] ?? [] } },
-          dataItems: overlayItemsFor(obs.obsData.value, e, v.qname),
+          dataItems: attachOutputSeries(
+            overlayItemsFor(obs.obsData.value, e, v.qname),
+            exp.output_series,
+            allItems,
+          ),
         })
       }
       cells.push(...extraCellsFor(`exp${e}`, exp.time, exp.outputs))
@@ -853,13 +865,18 @@ const plotGroups = computed(() => {
   // Data-only obs_data: one group, no heading, one plot per referenced variable.
   if (obs.hasObsData.value && obs.plotVariables.value.length && sim.result.value) {
     const out = sim.result.value.outputs ?? {}
+    const allItems = obs.obsData.value?.data_items ?? []
     const cells = obs.plotVariables.value.map((v) => ({
       key: v.qname,
       title: v.label,
       varLabel: v.label,
       controlled: false,
       simResult: { time: sim.result.value.time, outputs: { [v.qname]: out[v.qname] ?? [] } },
-      dataItems: overlayItemsFor(obs.obsData.value, 0, v.qname),
+      dataItems: attachOutputSeries(
+        overlayItemsFor(obs.obsData.value, 0, v.qname),
+        sim.result.value.output_series,
+        allItems,
+      ),
     }))
     cells.push(...extraCellsFor('data-only', sim.result.value.time, out))
     return [{ key: 'data-only', expIdx: 0, label: '', cells }]

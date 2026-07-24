@@ -4,6 +4,7 @@ import {
   isPlottableOverlay,
   derivePlotVariables,
   overlayItemsFor,
+  attachOutputSeries,
   buildChartData,
   computeFeature,
   controlledSeries,
@@ -200,6 +201,62 @@ describe('buildChartData reference lines', () => {
       dataItems: [{ name_for_plotting: 'V_max', plot_type: 'horizontal', value: 20, data_type: 'constant' }],
     })
     expect(datasets.some((d) => d.kind === 'obs-constant' && Array.isArray(d.borderDash))).toBe(true)
+  })
+})
+
+describe('series_output overlay (issue #111)', () => {
+  it('attachOutputSeries attaches the transformed series by data_item index', () => {
+    const allItems = [
+      { variable: 'a', operands: ['m/a'] },
+      { variable: 'b', operands: ['m/b'] },
+    ]
+    const seriesByIndex = { 1: [60, 30, 20] } // only the 2nd item has one
+    const attached = attachOutputSeries([allItems[1], allItems[0]], seriesByIndex, allItems)
+    expect(attached[0].output_series).toEqual([60, 30, 20])
+    expect(attached[1].output_series).toBeUndefined()
+    // originals untouched (clones only when a series is attached)
+    expect(allItems[1].output_series).toBeUndefined()
+  })
+
+  it('attachOutputSeries is a no-op without a series map', () => {
+    const items = [{ variable: 'a' }]
+    expect(attachOutputSeries(items, undefined, items)).toBe(items)
+  })
+
+  it('plots the operation series_output series in place of the raw operand', () => {
+    // Raw operand is the period; the operation transforms it to 60/period.
+    const sim = { time: [0, 1, 2, 3], outputs: { 'heart/period': [1, 2, 3, 4] } }
+    const item = {
+      name_for_plotting: 'HR',
+      data_type: 'constant',
+      operation: 'mean_heart_rate_bpm_in_range',
+      operands: ['heart/period'],
+      plot_type: 'horizontal',
+      value: 60,
+      output_series: [60, 30, 20, 15],
+    }
+    const { datasets } = buildChartData(sim, { dataItems: [item], varLabel: 'HR' })
+    const lines = datasets.filter((d) => d.kind === 'simulation')
+    // Exactly one model line, and it carries the transformed series, not the raw.
+    expect(lines).toHaveLength(1)
+    expect(lines[0].data.map((p) => p.y)).toEqual([60, 30, 20, 15])
+    expect(lines[0].data.map((p) => p.y)).not.toEqual([1, 2, 3, 4])
+    expect(lines[0].mathLabel).toBe('HR')
+  })
+
+  it('falls back to the raw operand when no series_output is attached', () => {
+    const sim = { time: [0, 1, 2, 3], outputs: { 'heart/period': [1, 2, 3, 4] } }
+    const item = {
+      name_for_plotting: 'HR',
+      data_type: 'constant',
+      operation: 'mean_heart_rate_bpm_in_range',
+      operands: ['heart/period'],
+      plot_type: 'horizontal',
+      value: 60,
+    }
+    const { datasets } = buildChartData(sim, { dataItems: [item], varLabel: 'HR' })
+    const line = datasets.find((d) => d.kind === 'simulation')
+    expect(line.data.map((p) => p.y)).toEqual([1, 2, 3, 4])
   })
 })
 

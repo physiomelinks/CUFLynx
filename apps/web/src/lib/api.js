@@ -90,6 +90,9 @@ export async function simulate(modelId, params, options = {}) {
   if (options.simTime != null) body.sim_time = options.simTime
   if (options.preTime != null) body.pre_time = options.preTime
   if (options.outputs != null) body.outputs = options.outputs
+  // Locates the user's custom operation funcs so a data_item's series_output
+  // overlay can be computed (issue #111).
+  if (options.outputsDir) body.config_outputs_dir = options.outputsDir
   const { data } = await axios.post(url('/api/simulate'), body)
   return data
 }
@@ -98,6 +101,7 @@ export async function runProtocol(modelId, params, options = {}) {
   const body = { model_id: modelId, params }
   if (options.protocolInfo != null) body.protocol_info = options.protocolInfo
   if (options.outputs != null) body.outputs = options.outputs
+  if (options.outputsDir) body.config_outputs_dir = options.outputsDir
   const { data } = await axios.post(url('/api/protocol/run'), body)
   return data
 }
