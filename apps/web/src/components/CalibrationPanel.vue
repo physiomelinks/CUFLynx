@@ -295,7 +295,15 @@ function onRun() {
         </label>
         <label v-else class="field">
           <span :title="opt.description">{{ optionLabel(opt.name) }}</span>
+          <!--
+            PrimeVue InputNumber binds its <input> via `defaultValue` (uncontrolled):
+            it reflects the model on mount but NOT on a later programmatic change.
+            Toggling DEBUG swaps the value in place, so remount the field (key on the
+            DEBUG state) for options that have a debug_default, or the displayed
+            number wouldn't change (issue: DEBUG "doesn't toggle").
+          -->
           <InputNumber
+            :key="opt.name + (settings.DEBUG && opt.debug_default != null ? '-debug' : '')"
             v-model="optionValues[opt.name]"
             :min-fraction-digits="opt.type === 'float' ? 1 : undefined"
             :max-fraction-digits="opt.type === 'float' ? 10 : undefined"

@@ -488,6 +488,38 @@ describe('CalibrationPanel start-from selector (#65 / #83)', () => {
     expect(wrapper.vm.optionValues.num_elite).toBe(20) // restored, not the schema default
   })
 
+  it('remounts a debug-defaulted number field on DEBUG toggle (so its display refreshes)', async () => {
+    // PrimeVue InputNumber is uncontrolled (binds via `defaultValue`), so a
+    // programmatic value change doesn't refresh the visible input — only a remount
+    // does. Assert the debug-defaulted field remounts on toggle, while a field
+    // without a debug_default does not.
+    const mounts = {}
+    const CountingInput = {
+      props: ['modelValue'],
+      emits: ['update:modelValue'],
+      mounted() {
+        const id = this.$attrs['data-testid']
+        mounts[id] = (mounts[id] || 0) + 1
+      },
+      template: '<input :value="modelValue" :data-testid="$attrs[\'data-testid\']" />',
+    }
+    const wrapper = mount(CalibrationPanel, {
+      props: { defaults: { methods: GA_DEBUG, param_id_method: 'genetic_algorithm' } },
+      global: { stubs: { ...selectStubs, InputNumber: CountingInput } },
+    })
+    const eliteBefore = mounts['calib-opt-num_elite']
+    const callsBefore = mounts['calib-opt-num_calls_to_function']
+
+    wrapper.vm.settings.DEBUG = true
+    await wrapper.vm.$nextTick()
+    expect(mounts['calib-opt-num_elite']).toBe(eliteBefore + 1) // remounted -> display refreshes
+    expect(mounts['calib-opt-num_calls_to_function']).toBe(callsBefore) // no debug_default -> untouched
+
+    wrapper.vm.settings.DEBUG = false
+    await wrapper.vm.$nextTick()
+    expect(mounts['calib-opt-num_elite']).toBe(eliteBefore + 2) // remounts again on restore
+  })
+
   it('leaves fields unchanged under DEBUG when CA advertises no debug_default (older CA)', async () => {
     const OLD_GA = [
       { value: 'genetic_algorithm', label: 'GA', gradient_based: false,
