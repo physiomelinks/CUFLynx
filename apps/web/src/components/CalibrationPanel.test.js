@@ -434,4 +434,71 @@ describe('CalibrationPanel start-from selector (#65 / #83)', () => {
     })
     expect(wrapper.find('[data-testid="cal-download-model"]').exists()).toBe(false)
   })
+
+  // DEBUG swaps the GA population fields to CA's advertised debug_default (CA #313)
+  const GA_DEBUG = [
+    {
+      value: 'genetic_algorithm', label: 'GA', gradient_based: false,
+      options: [
+        { name: 'num_calls_to_function', type: 'int', default: 100 }, // no debug_default
+        { name: 'num_elite', type: 'int', default: 12, debug_default: 4 },
+        { name: 'num_survivors', type: 'int', default: 48, debug_default: 6 },
+      ],
+    },
+  ]
+
+  it('swaps population fields to debug_default when DEBUG is toggled, and restores them', async () => {
+    const wrapper = mount(CalibrationPanel, {
+      props: { canRun: true, defaults: { methods: GA_DEBUG, param_id_method: 'genetic_algorithm' } },
+      global: { stubs: selectStubs },
+    })
+    expect(wrapper.vm.optionValues.num_elite).toBe(12)
+
+    wrapper.vm.settings.DEBUG = true
+    await wrapper.vm.$nextTick()
+    // Fields with a debug_default switch; one without is untouched.
+    expect(wrapper.vm.optionValues.num_elite).toBe(4)
+    expect(wrapper.vm.optionValues.num_survivors).toBe(6)
+    expect(wrapper.vm.optionValues.num_calls_to_function).toBe(100)
+    // ...and the emitted run payload carries the debug values.
+    await wrapper.find('[data-testid="run-calibration"]').trigger('click')
+    const payload = wrapper.emitted('run').at(-1)[0]
+    expect(payload.num_elite).toBe(4)
+    expect(payload.DEBUG).toBe(true)
+
+    // Turning DEBUG off restores the pre-debug values.
+    wrapper.vm.settings.DEBUG = false
+    await wrapper.vm.$nextTick()
+    expect(wrapper.vm.optionValues.num_elite).toBe(12)
+    expect(wrapper.vm.optionValues.num_survivors).toBe(48)
+  })
+
+  it('preserves a user-edited value across a DEBUG on/off cycle', async () => {
+    const wrapper = mount(CalibrationPanel, {
+      props: { canRun: true, defaults: { methods: GA_DEBUG, param_id_method: 'genetic_algorithm' } },
+      global: { stubs: selectStubs },
+    })
+    wrapper.vm.optionValues.num_elite = 20 // user override
+    await wrapper.vm.$nextTick()
+    wrapper.vm.settings.DEBUG = true
+    await wrapper.vm.$nextTick()
+    expect(wrapper.vm.optionValues.num_elite).toBe(4)
+    wrapper.vm.settings.DEBUG = false
+    await wrapper.vm.$nextTick()
+    expect(wrapper.vm.optionValues.num_elite).toBe(20) // restored, not the schema default
+  })
+
+  it('leaves fields unchanged under DEBUG when CA advertises no debug_default (older CA)', async () => {
+    const OLD_GA = [
+      { value: 'genetic_algorithm', label: 'GA', gradient_based: false,
+        options: [{ name: 'num_elite', type: 'int', default: 12 }] },
+    ]
+    const wrapper = mount(CalibrationPanel, {
+      props: { defaults: { methods: OLD_GA, param_id_method: 'genetic_algorithm' } },
+      global: { stubs: selectStubs },
+    })
+    wrapper.vm.settings.DEBUG = true
+    await wrapper.vm.$nextTick()
+    expect(wrapper.vm.optionValues.num_elite).toBe(12)
+  })
 })

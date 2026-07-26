@@ -105,6 +105,30 @@ const isMultiStart = computed(() =>
 // The single start point only applies to single-start gradient descent.
 const showStartFrom = computed(() => isGradientMethod.value && !isMultiStart.value)
 
+// Under DEBUG the genetic algorithm runs a small "quick-run" population. CA
+// advertises those per-option in the schema as `debug_default` (never hardcoded
+// here); toggling DEBUG swaps the affected fields to them and restores the prior
+// values when it's turned off. Options without a `debug_default` (every non-GA
+// setting, and any CA that predates the field) are left untouched — DEBUG then
+// simply has no visible effect, as before.
+const preDebugValues = {}
+function applyDebugDefaults(on) {
+  if (on) {
+    for (const o of methodOptions.value) {
+      if (o.debug_default == null) continue
+      if (!(o.name in preDebugValues)) preDebugValues[o.name] = optionValues[o.name]
+      optionValues[o.name] = o.debug_default
+    }
+  } else {
+    // Restore every snapshot (across methods), so switching method under DEBUG
+    // and toggling off can't leave a stale debug value behind.
+    for (const name of Object.keys(preDebugValues)) {
+      optionValues[name] = preDebugValues[name]
+      delete preDebugValues[name]
+    }
+  }
+}
+
 // Seed each option's default when the selected method's options change, keeping any
 // value the user already set for a like-named option.
 watch(
@@ -113,8 +137,17 @@ watch(
     for (const o of opts) {
       if (optionValues[o.name] === undefined) optionValues[o.name] = o.default
     }
+    // Keep DEBUG's quick-run values applied to a newly-selected method's options.
+    if (settings.DEBUG) applyDebugDefaults(true)
   },
   { immediate: true },
+)
+
+watch(
+  () => settings.DEBUG,
+  (dbg, was) => {
+    if (dbg !== was) applyDebugDefaults(dbg)
+  },
 )
 
 // Gradient sources (FD / AD / FSA) come from the backend, derived from the current
