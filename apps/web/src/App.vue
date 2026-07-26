@@ -383,6 +383,22 @@ function restoreLhs() {
 // Center column tab: 'plots' | 'progress' | 'analysis'
 const centerTab = ref('plots')
 
+// Individual-plot maximize (issue #115): the key of the output plot expanded to
+// fill the middle window, or null for the normal grid. Toggled per plot.
+const maximizedPlot = ref(null)
+function toggleMaximizePlot(key) {
+  maximizedPlot.value = maximizedPlot.value === key ? null : key
+}
+// Self-correcting: if the maximized plot disappears (removed, or the sim
+// regenerates cells) fall back to the normal grid instead of showing nothing.
+// (Getter is lazy, so referencing plotGroups declared later is safe.)
+const effectiveMaximized = computed(() =>
+  maximizedPlot.value &&
+  plotGroups.value.some((g) => g.cells.some((c) => c.key === maximizedPlot.value))
+    ? maximizedPlot.value
+    : null,
+)
+
 // User-added output plots. Each plot is scoped to one experiment group via
 // `groupKey` (e.g. 'exp0', 'data-only', 'single') so the "+ Add plot" button at
 // the bottom of an experiment creates a plot for that experiment's run only.
@@ -1172,17 +1188,26 @@ watch(
         >
           {{ sim.warnings.value.join(' ') }}
         </Message>
-        <div v-show="centerTab === 'plots'" class="plot-groups">
+        <div
+          v-show="centerTab === 'plots'"
+          class="plot-groups"
+          :class="{ 'has-maximized': effectiveMaximized }"
+        >
           <section
             v-for="g in plotGroups"
+            v-show="!effectiveMaximized || g.cells.some((c) => c.key === effectiveMaximized)"
             :key="g.key"
             class="exp-group"
             data-testid="exp-group"
           >
-            <h2 v-if="g.label" class="exp-heading">{{ g.label }}</h2>
-            <div class="plot-grid" :class="{ single: g.cells.length <= 1 }">
+            <h2 v-if="g.label && !effectiveMaximized" class="exp-heading">{{ g.label }}</h2>
+            <div
+              class="plot-grid"
+              :class="{ single: g.cells.length <= 1, maximized: !!effectiveMaximized }"
+            >
               <PlotPanel
                 v-for="cell in g.cells"
+                v-show="!effectiveMaximized || effectiveMaximized === cell.key"
                 :key="cell.key"
                 class="plot-cell"
                 :title="cell.title"
@@ -1192,10 +1217,13 @@ watch(
                 :sim-result="cell.simResult"
                 :data-items="cell.dataItems"
                 :removable="!!cell.removeId"
+                maximizable
+                :maximized="effectiveMaximized === cell.key"
+                @toggle-maximize="toggleMaximizePlot(cell.key)"
                 @remove="removeExtraPlot(cell.removeId)"
               />
             </div>
-            <div v-if="plottableVariables.length" class="add-plot-row">
+            <div v-if="plottableVariables.length && !effectiveMaximized" class="add-plot-row">
               <Button
                 label="Add plot"
                 icon="pi pi-plus"
@@ -1794,6 +1822,21 @@ watch(
   min-height: 240px;
   border: 1px solid var(--p-content-border-color, #333);
   border-radius: 6px;
+}
+/* Individual-plot maximize (#115): the one visible plot fills the middle window. */
+.plot-groups.has-maximized {
+  overflow: hidden;
+}
+.plot-groups.has-maximized .exp-group,
+.plot-grid.maximized {
+  height: 100%;
+}
+.plot-grid.maximized {
+  display: block;
+}
+.plot-grid.maximized .plot-cell {
+  height: 100%;
+  min-height: 0;
 }
 .empty-hint {
   opacity: 0.6;

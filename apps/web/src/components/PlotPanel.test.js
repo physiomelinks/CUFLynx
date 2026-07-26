@@ -79,4 +79,52 @@ describe('PlotPanel', () => {
     await btn.trigger('click')
     expect(wrapper.emitted('remove')).toHaveLength(1)
   })
+
+  // Individual-plot maximize (issue #115)
+  it('shows a maximize button only when maximizable', () => {
+    const off = mount(PlotPanel, { props: { simResult, title: 'x' }, global: { stubs } })
+    expect(off.find('[data-testid="plot-maximize"]').exists()).toBe(false)
+    const on = mount(PlotPanel, {
+      props: { simResult, title: 'x', maximizable: true },
+      global: { stubs },
+    })
+    expect(on.find('[data-testid="plot-maximize"]').exists()).toBe(true)
+  })
+
+  it('emits toggle-maximize and reflects the maximized state in the button', async () => {
+    const wrapper = mount(PlotPanel, {
+      props: { simResult, title: 'x', maximizable: true, maximized: false },
+      global: { stubs },
+    })
+    const btn = wrapper.find('[data-testid="plot-maximize"]')
+    expect(btn.attributes('aria-pressed')).toBe('false')
+    expect(btn.attributes('title')).toBe('Maximize plot')
+    expect(btn.find('.pi-window-maximize').exists()).toBe(true)
+
+    await btn.trigger('click')
+    expect(wrapper.emitted('toggle-maximize')).toHaveLength(1)
+
+    await wrapper.setProps({ maximized: true })
+    expect(btn.attributes('aria-pressed')).toBe('true')
+    expect(btn.attributes('title')).toBe('Restore plot')
+    expect(btn.find('.pi-window-minimize').exists()).toBe(true)
+  })
+
+  it('remounts the chart when maximize toggles so Chart.js resizes (issue #115)', async () => {
+    // Chart.js keeps the enlarged canvas on restore, leaving the axis stretched;
+    // a key tied to `maximized` forces a fresh chart. Assert the Line instance is
+    // recreated (new vm) each time the maximize state flips.
+    const wrapper = mount(PlotPanel, {
+      props: { simResult, title: 'x', maximizable: true, maximized: false },
+      global: { stubs },
+    })
+    const uid = () => wrapper.findComponent({ name: 'Line' }).vm.$.uid
+    const before = uid()
+    await wrapper.setProps({ maximized: true }) // maximize -> remount
+    const maximized = uid()
+    await wrapper.setProps({ maximized: false }) // restore -> remount again
+    const restored = uid()
+    expect(maximized).not.toBe(before)
+    expect(restored).not.toBe(maximized)
+  })
 })

@@ -30,9 +30,13 @@ const props = defineProps({
   tag: { type: String, default: '' },
   stepped: { type: Boolean, default: false },
   removable: { type: Boolean, default: false },
+  // When true this plot is expanded to fill the middle window (issue #115); the
+  // button then offers to restore. `maximizable` gates the affordance entirely.
+  maximizable: { type: Boolean, default: false },
+  maximized: { type: Boolean, default: false },
 })
 
-defineEmits(['remove'])
+defineEmits(['remove', 'toggle-maximize'])
 
 const chartData = computed(() =>
   buildChartData(props.simResult, {
@@ -59,7 +63,7 @@ defineExpose({ chartData })
 
 <template>
   <section class="plot-panel">
-    <div v-if="tag || title || removable" class="plot-head">
+    <div v-if="tag || title || removable || maximizable" class="plot-head">
       <span v-if="tag" class="plot-tag" data-testid="plot-tag">{{ tag }}</span>
       <h3
         v-if="title"
@@ -67,6 +71,18 @@ defineExpose({ chartData })
         data-testid="plot-title"
         v-html="renderMath(title)"
       />
+      <button
+        v-if="maximizable"
+        type="button"
+        class="plot-maximize"
+        :title="maximized ? 'Restore plot' : 'Maximize plot'"
+        :aria-label="maximized ? 'Restore plot' : 'Maximize plot'"
+        :aria-pressed="maximized"
+        data-testid="plot-maximize"
+        @click="$emit('toggle-maximize')"
+      >
+        <i :class="maximized ? 'pi pi-window-minimize' : 'pi pi-window-maximize'" />
+      </button>
       <button
         v-if="removable"
         type="button"
@@ -80,7 +96,19 @@ defineExpose({ chartData })
       </button>
     </div>
     <div class="chart-wrap">
-      <Line :data="chartData" :options="chartOptions" />
+      <!--
+        Remount the chart when the maximize state changes (issue #115): Chart.js
+        with maintainAspectRatio:false grows the canvas to fill the maximized
+        window but doesn't shrink it back on restore (the enlarged canvas keeps
+        inflating its auto-height container), leaving the y-axis stretched. A key
+        tied to `maximized` destroys the stale canvas so a fresh one sizes to the
+        restored cell.
+      -->
+      <Line
+        :key="maximized ? 'maximized' : 'normal'"
+        :data="chartData"
+        :options="chartOptions"
+      />
     </div>
     <ul class="legend" data-testid="legend">
       <li v-for="(d, i) in chartData.datasets" :key="i" class="legend-item">
@@ -138,6 +166,20 @@ defineExpose({ chartData })
   font-weight: 600;
   opacity: 0.85;
 }
+.plot-maximize {
+  margin-left: auto;
+  border: none;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  opacity: 0.5;
+  font-size: 0.8rem;
+  line-height: 1;
+  padding: 0.1rem 0.25rem;
+}
+.plot-maximize:hover {
+  opacity: 1;
+}
 .plot-remove {
   margin-left: auto;
   border: none;
@@ -148,6 +190,10 @@ defineExpose({ chartData })
   font-size: 0.85rem;
   line-height: 1;
   padding: 0.1rem 0.25rem;
+}
+/* When a maximize button precedes it, sit next to it rather than re-pushing right. */
+.plot-maximize + .plot-remove {
+  margin-left: 0;
 }
 .plot-remove:hover {
   opacity: 1;
