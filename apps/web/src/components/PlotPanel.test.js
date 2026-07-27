@@ -102,6 +102,17 @@ describe('PlotPanel', () => {
       expect(x.ticks.callback(1.5e6)).toBe('1.5e6')
     })
 
+    it('reports the nearest sample without requiring the cursor to hit it', () => {
+      // Hit-testing is per sample, not per segment, so on a steep stretch (worse
+      // on a maximized plot) the gap between consecutive samples is dead space
+      // however wide hitRadius is. intersect:false makes Chart.js fall back to
+      // plain nearest-by-distance, so the tooltip tracks the curve continuously.
+      expect(optionsOf().interaction).toMatchObject({
+        mode: 'nearest',
+        intersect: false,
+      })
+    })
+
     it('widens the point hit radius so the cursor need not be exactly on the line', () => {
       // Traces draw with pointRadius 0 and Chart.js hit-tests with
       // distance^2 < (hitRadius + radius)^2, so the stock hitRadius of 1 gives a

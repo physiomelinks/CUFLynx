@@ -52,12 +52,18 @@ const chartData = computed(() =>
 // and on the ticks. Format both with the shared fmtSci/fmtAxis (issue #107).
 const sciTicks = { callback: (v) => fmtAxis(v) }
 
-// Chart.js hit-tests a point with `distance^2 < (hitRadius + radius)^2`, and the
-// traces draw with pointRadius 0, so the stock hitRadius of 1 leaves a 1px target
-// around each sample — the cursor had to land almost exactly on the line to read
-// a value. Widen it so hovering near the trace is enough. Kept modest on purpose:
-// large values start capturing whichever line happens to be nearest rather than
-// the one under the cursor.
+// Reading a value off a trace should not require aiming. Chart.js hit-tests each
+// *sample* with `distance^2 < (hitRadius + radius)^2` and the traces draw with
+// pointRadius 0, so by default the cursor had to land inside a 1px circle around
+// a sample. Widening that radius alone isn't enough: hit-testing is per point,
+// not per line segment, so on a steep stretch consecutive samples sit far apart
+// vertically and the gap between them stays dead — and maximizing the plot
+// (issue #115) stretches those gaps further, which is where it was worst.
+//
+// `intersect: false` drops the containment test altogether: Chart.js then reports
+// the nearest sample by distance wherever the cursor is in the plot area, so the
+// tooltip tracks the curve continuously. hitRadius still governs the inRange path
+// used for hover styling, so it stays widened.
 const HIT_RADIUS = 12
 
 // Custom HTML legend (below) renders LaTeX labels, so disable the canvas one.
@@ -65,6 +71,7 @@ const chartOptions = {
   responsive: true,
   maintainAspectRatio: false,
   animation: false,
+  interaction: { mode: 'nearest', axis: 'xy', intersect: false },
   elements: { point: { hitRadius: HIT_RADIUS } },
   scales: {
     x: { type: 'linear', title: { display: true, text: 'time' }, ticks: sciTicks },
