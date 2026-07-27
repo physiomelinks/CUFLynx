@@ -52,11 +52,20 @@ const chartData = computed(() =>
 // and on the ticks. Format both with the shared fmtSci/fmtAxis (issue #107).
 const sciTicks = { callback: (v) => fmtAxis(v) }
 
+// Chart.js hit-tests a point with `distance^2 < (hitRadius + radius)^2`, and the
+// traces draw with pointRadius 0, so the stock hitRadius of 1 leaves a 1px target
+// around each sample — the cursor had to land almost exactly on the line to read
+// a value. Widen it so hovering near the trace is enough. Kept modest on purpose:
+// large values start capturing whichever line happens to be nearest rather than
+// the one under the cursor.
+const HIT_RADIUS = 12
+
 // Custom HTML legend (below) renders LaTeX labels, so disable the canvas one.
 const chartOptions = {
   responsive: true,
   maintainAspectRatio: false,
   animation: false,
+  elements: { point: { hitRadius: HIT_RADIUS } },
   scales: {
     x: { type: 'linear', title: { display: true, text: 'time' }, ticks: sciTicks },
     y: { type: 'linear', ticks: sciTicks },

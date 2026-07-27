@@ -101,6 +101,15 @@ describe('PlotPanel', () => {
       expect(y.ticks.callback(2.5)).toBe('2.5')
       expect(x.ticks.callback(1.5e6)).toBe('1.5e6')
     })
+
+    it('widens the point hit radius so the cursor need not be exactly on the line', () => {
+      // Traces draw with pointRadius 0 and Chart.js hit-tests with
+      // distance^2 < (hitRadius + radius)^2, so the stock hitRadius of 1 gives a
+      // 1px target. Anything meaningfully larger makes the value easy to read off.
+      const hit = optionsOf().elements.point.hitRadius
+      expect(hit).toBeGreaterThan(1)
+      expect(hit).toBeLessThanOrEqual(20)
+    })
   })
 
   it('shows no remove button by default', () => {
