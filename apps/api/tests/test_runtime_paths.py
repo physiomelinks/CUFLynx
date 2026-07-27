@@ -298,6 +298,26 @@ def test_runner_launch_env_relocates_extraction_for_the_bundle(frozen, monkeypat
     assert os.path.isdir(extraction)  # created, so the ranks can extract there
 
 
+def test_runner_launch_env_does_not_relocate_on_windows(frozen, monkeypatch, tmp_path):
+    """On Windows the extraction temp is left as the default %TEMP%: relocating it
+    to the long per-build cache path makes Myokit's MSVC link blow past MAX_PATH
+    (LNK1104), breaking calibration/sensitivity in the packaged app. The
+    $TMPDIR-exhaustion crash the relocation guards against is POSIX-only."""
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "cache"))
+    exe = tmp_path / "CUFLynx.exe"
+    exe.write_bytes(b"x" * 16)
+    monkeypatch.setattr(sys, "executable", str(exe))
+    base = runtime_paths.subprocess_env()
+
+    env = runtime_paths.runner_launch_env(None)
+
+    # No onefile-cache TMPDIR/TMP/TEMP forced — the bundle keeps the default temp.
+    for var in ("TMPDIR", "TMP", "TEMP"):
+        assert "onefile-cache" not in env.get(var, "")
+        assert env.get(var) == base.get(var)
+
+
 def test_runner_launch_env_survives_an_uncreatable_cache(frozen, monkeypatch):
     """If the cache dir can't be made, leave the env untouched (no regression):
     no bogus TMPDIR is forced, and the bundle falls back to its default temp."""
