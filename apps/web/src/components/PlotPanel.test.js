@@ -23,18 +23,12 @@ const InputTextStub = {
   template:
     '<input v-bind="$attrs" :value="modelValue" @input="$emit(\'update:modelValue\', $event.target.value)" />',
 }
-const InputNumberStub = {
-  props: ['modelValue'],
-  emits: ['update:modelValue'],
-  template:
-    '<input v-bind="$attrs" type="number" :value="modelValue" @input="$emit(\'update:modelValue\', Number($event.target.value))" />',
-}
 const stubs = {
   Select: true,
   Dialog: DialogStub,
   Button: ButtonStub,
   InputText: InputTextStub,
-  InputNumber: InputNumberStub,
+  // SciNumberInput is a plain local <input>, so it is exercised for real.
 }
 
 const simResult = {
@@ -355,7 +349,17 @@ describe('PlotPanel', () => {
       await wrapper.find('[data-testid="convert-unit-apply"]').trigger('click')
       await wrapper.find('[data-testid="plot-unit"]').trigger('click')
       expect(wrapper.find('[data-testid="convert-current-summary"]').text()).toBe(
-        '1 J_per_m3 = 0.0075 mmHg',
+        '1 J_per_m3 = 7.5e-3 mmHg',
+      )
+    })
+
+    it('accepts a factor typed in scientific notation', async () => {
+      const wrapper = mountWithUnit()
+      const original = wrapper.vm.displayData.datasets[0].data.map((p) => p.y)
+      await convert(wrapper, 'mmHg', '7.5e-3')
+      expect(wrapper.vm.conversion.factor).toBe(0.0075)
+      expect(wrapper.vm.displayData.datasets[0].data.map((p) => p.y)).toEqual(
+        original.map((y) => y * 0.0075),
       )
     })
 

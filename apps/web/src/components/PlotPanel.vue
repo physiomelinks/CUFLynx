@@ -4,7 +4,7 @@ import { Line } from 'vue-chartjs'
 import Dialog from 'primevue/dialog'
 import Button from 'primevue/button'
 import InputText from 'primevue/inputtext'
-import InputNumber from 'primevue/inputnumber'
+import SciNumberInput from './SciNumberInput.vue'
 import {
   Chart as ChartJS,
   LinearScale,
@@ -140,13 +140,12 @@ function applyConvert() {
 }
 
 // The conversion in force, phrased as an equivalence: 1 <model unit> = f <shown>.
-// Deliberately not fmtSigFigs: typical factors (0.0075) fall in its scientific
-// branch, and `7.5e-3` reads worse than the decimal the user actually typed.
+// Formatted with fmtSci — the same formatter SciNumberInput displays with — so
+// the factor in the summary and the factor in the field always read identically.
 const conversionSummary = computed(() => {
   if (!conversion.value) return ''
   const from = originalUnit.value || 'model units'
-  const f = String(Number(conversion.value.factor.toPrecision(6)))
-  return `1 ${from} = ${f} ${conversion.value.unit}`
+  return `1 ${from} = ${fmtSci(conversion.value.factor)} ${conversion.value.unit}`
 })
 
 // Back to the model's own unit.
@@ -298,18 +297,17 @@ defineExpose({
         </label>
         <label class="convert-row">
           <span>Multiply {{ originalUnit || 'model' }} values by</span>
-          <InputNumber
+          <SciNumberInput
             v-model="newFactor"
-            :min-fraction-digits="1"
-            :max-fraction-digits="12"
-            size="small"
+            class="convert-factor"
             data-testid="convert-unit-factor"
           />
         </label>
         <p class="convert-hint">
-          The factor always applies to the model's own values, so it replaces the
-          current conversion rather than compounding on it. Display only — the
-          simulation, obs_data and exported pipeline keep the model's units.
+          Scientific notation is accepted (e.g. <code>7.5e-3</code>). The factor
+          always applies to the model's own values, so it replaces the current
+          conversion rather than compounding on it. Display only — the simulation,
+          obs_data and exported pipeline keep the model's units.
         </p>
       </div>
       <template #footer>
@@ -425,6 +423,10 @@ defineExpose({
   margin: 0;
   font-size: 0.78rem;
   opacity: 0.85;
+}
+.convert-factor {
+  width: 9rem;
+  text-align: right;
 }
 .convert-sep {
   border: none;
