@@ -128,6 +128,137 @@ def test_export_pipeline_writes_self_contained_folder(client, tmp_path):
     assert os.path.isfile(os.path.join(res, "params_for_id.csv"))
 
 
+# ---------------------------------------------------------------------------
+# Null option values (issue #133)
+#
+# The analysis panels populate their fields from CA's *discovered* option schema
+# and copy each option's `default` into its value. CA declares `default: null`
+# for `num_calls_to_function` (genetic_algorithm) and `num_walkers` (mcmc), and
+# JSON preserves null (an undefined would have been dropped), so the export
+# payload arrives with those keys present and null. `int(None)` then raised
+# TypeError and the route answered a bare 500 with no detail.
+#
+# Note the CA-less fallback schema used by the unit tier declares *non-null*
+# defaults, so a purely schema-driven test passes here and only fails with a real
+# CA present. These cases therefore assert the null contract directly.
+# ---------------------------------------------------------------------------
+NULLABLE_NUMERIC_SETTINGS = [
+    ("calibration", "num_calls_to_function", ("optimiser_options", "num_calls_to_function"), 100),
+    ("calibration", "cost_convergence", ("optimiser_options", "cost_convergence"), 0.0001),
+    ("calibration", "max_patience", ("optimiser_options", "max_patience"), 10),
+    ("sensitivity", "num_samples", ("sa_options", "num_samples"), 256),
+    ("uq", "num_steps", ("mcmc_options", "num_steps"), 1000),
+    ("uq", "num_walkers", ("mcmc_options", "num_walkers"), 64),
+]
+
+
+@pytest.mark.parametrize("group,key,path,expected", NULLABLE_NUMERIC_SETTINGS)
+def test_null_setting_falls_back_to_default(group, key, path, expected):
+    ui = _ui(**{group: {key: None}})
+    section, field = path
+    assert ui[section][field] == expected
+
+
+@pytest.mark.parametrize("group,key,path,expected", NULLABLE_NUMERIC_SETTINGS)
+def test_blank_setting_falls_back_to_default(group, key, path, expected):
+    # A cleared PrimeVue InputNumber can also serialise as an empty string.
+    ui = _ui(**{group: {key: ""}})
+    section, field = path
+    assert ui[section][field] == expected
+
+
+def test_null_settings_still_yaml_serialisable():
+    ui = _ui(
+        calibration={"num_calls_to_function": None, "param_id_method": None},
+        sensitivity={"num_samples": None, "method": None},
+        uq={"num_walkers": None, "cost_type": None},
+    )
+    # Nulls must not leak through into the yaml CA reads back.
+    assert ui["param_id_method"] == "genetic_algorithm"
+    assert ui["sa_options"]["method"] == "sobol"
+    assert ui["mcmc_options"]["cost_type"] == "gaussian_MLE"
+    yaml.safe_dump(ui)
+
+
+def test_malformed_number_raises_a_typed_error_not_a_bare_crash():
+    with pytest.raises(ep.ExportPipelineError) as exc:
+        _ui(calibration={"num_calls_to_function": "abc"})
+    assert "num_calls_to_function" in str(exc.value)
+
+
+def test_export_route_accepts_null_option_values(client, tmp_path):
+    # The end-to-end shape of #133: the payload the UI sends before the user has
+    # typed into a required field whose CA default is null.
+    model_id = _setup_lv(client)
+    resp = client.post("/api/export/pipeline", json={
+        "model_id": model_id,
+        "file_prefix": "lotka_volterra",
+        "sim_time": 2.0,
+        "calibration": {"param_id_method": "genetic_algorithm",
+                        "num_calls_to_function": None, "cost_convergence": None},
+        "uq": {"num_walkers": None},
+        "enabled": {"do_simulation": True, "do_calibration": True},
+        "config_outputs_dir": str(tmp_path),
+    })
+    assert resp.status_code == 200, resp.text
+    import os
+    export_dir = resp.json()["export_dir"]
+    name = [f for f in os.listdir(export_dir) if f.startswith("user_inputs_")][0]
+    ui = yaml.safe_load(open(os.path.join(export_dir, name)))
+    assert ui["optimiser_options"]["num_calls_to_function"] == 100
+    assert ui["mcmc_options"]["num_walkers"] == 64
+
+
+def test_export_route_reports_a_malformed_number_as_422(client, tmp_path):
+    # Not a 500: the client gets a `detail` it can show the user.
+    model_id = _setup_lv(client)
+    resp = client.post("/api/export/pipeline", json={
+        "model_id": model_id,
+        "calibration": {"num_calls_to_function": "abc"},
+        "config_outputs_dir": str(tmp_path),
+    })
+    assert resp.status_code == 422, resp.text
+    assert "num_calls_to_function" in resp.json()["detail"]
+
+
+@pytest.mark.integration
+def test_export_accepts_every_default_from_the_real_ca_schema(
+    client, requires_simulation, tmp_path
+):
+    """Drive the export with the payload the panels build from CA's own schema.
+
+    This is the test that would have caught #133: it walks the *discovered*
+    option schemas and mirrors CalibrationPanel's `buildSettings()` — each
+    option's value starts as its `default`, nulls included. Schema-driven, so a
+    future CA option with a null default is caught without editing this test.
+    """
+    model_id = _setup_lv(client)
+
+    cal = client.get("/api/calibration/defaults").json()
+    uq_d = client.get("/api/uq/defaults").json()
+    sa_d = client.get("/api/sensitivity/defaults").json()
+
+    def opts(schema):
+        return {o["name"]: o.get("default") for o in schema}
+
+    for method in cal.get("methods", []):
+        calibration = {"param_id_method": method["value"], **opts(method.get("options", []))}
+        resp = client.post("/api/export/pipeline", json={
+            "model_id": model_id,
+            "file_prefix": "lotka_volterra",
+            "sim_time": 2.0,
+            "calibration": calibration,
+            "sensitivity": opts(sa_d.get("options", [])),
+            "uq": opts(uq_d.get("mcmc_options", [])),
+            "enabled": {"do_simulation": True, "do_calibration": True,
+                        "do_sensitivity": True, "do_mcmc": True},
+            "config_outputs_dir": str(tmp_path),
+        })
+        assert resp.status_code == 200, (
+            f"export rejected CA's own defaults for {method['value']}: {resp.text}"
+        )
+
+
 def test_export_pipeline_rejects_relative_outputs_dir(client):
     model_id = upload_model(client, LV_MODEL_PATH)["model_id"]
     resp = client.post("/api/export/pipeline", json={

@@ -23,6 +23,38 @@ def dated_suffix() -> str:
     return date.today().strftime("%y%m%d")
 
 
+class ExportPipelineError(ValueError):
+    """Bad export settings supplied by the client (maps to HTTP 422)."""
+
+
+def _num(value, default, cast, field: str):
+    """Coerce a client-supplied setting, treating "not set" as absent.
+
+    The analysis panels populate their fields from CA's *discovered* option
+    schema, and CA declares ``default: null`` for some of them —
+    ``num_calls_to_function`` (genetic_algorithm) and ``num_walkers`` (mcmc).
+    The panel copies that null into its value, and JSON preserves null (unlike
+    an undefined, which would be dropped), so the export payload arrives with
+    the key **present and null**. A bare ``int(None)`` then raised TypeError and
+    the route returned an unhandled 500 with no detail (issue #133). Clearing a
+    numeric field in the UI produces the same shape, since PrimeVue's InputNumber
+    models an empty field as null.
+
+    A null/blank value therefore means "unset" and falls back to ``default`` —
+    the same result as omitting the key. A genuinely malformed value is reported
+    as :class:`ExportPipelineError` so the client gets a usable message rather
+    than an opaque 500.
+    """
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return cast(default)
+    try:
+        return cast(value)
+    except (TypeError, ValueError) as exc:
+        raise ExportPipelineError(
+            f"{field}: expected a number, got {value!r}"
+        ) from exc
+
+
 def build_user_inputs(
     *,
     file_prefix: str,
@@ -53,9 +85,13 @@ def build_user_inputs(
     enabled = enabled or {}
 
     optimiser_options = {
-        "num_calls_to_function": int(calibration.get("num_calls_to_function", 100)),
-        "cost_convergence": float(calibration.get("cost_convergence", 0.0001)),
-        "max_patience": int(calibration.get("max_patience", 10)),
+        "num_calls_to_function": _num(
+            calibration.get("num_calls_to_function"), 100, int, "num_calls_to_function"
+        ),
+        "cost_convergence": _num(
+            calibration.get("cost_convergence"), 0.0001, float, "cost_convergence"
+        ),
+        "max_patience": _num(calibration.get("max_patience"), 10, int, "max_patience"),
     }
     if calibration.get("cost_type"):
         optimiser_options["cost_type"] = calibration["cost_type"]
@@ -77,20 +113,20 @@ def build_user_inputs(
         "params_for_id_file": params_for_id_file,
         "param_id_obs_path": f"resources/{obs_file}" if obs_file else None,
         # --- parameter identification (calibration) ---
-        "param_id_method": calibration.get("param_id_method", "genetic_algorithm"),
+        "param_id_method": calibration.get("param_id_method") or "genetic_algorithm",
         "do_ad": str(calibration.get("gradient_method", "FD")).upper() == "AD",
         "optimiser_options": optimiser_options,
         # --- sensitivity ---
         "sa_options": {
-            "method": sensitivity.get("method", "sobol"),
-            "sample_type": sensitivity.get("sample_type", "saltelli"),
-            "num_samples": int(sensitivity.get("num_samples", 256)),
+            "method": sensitivity.get("method") or "sobol",
+            "sample_type": sensitivity.get("sample_type") or "saltelli",
+            "num_samples": _num(sensitivity.get("num_samples"), 256, int, "num_samples"),
         },
         # --- UQ / mcmc ---
         "mcmc_options": {
-            "num_steps": int(uq.get("num_steps", 1000)),
-            "num_walkers": int(uq.get("num_walkers", 64)),
-            "cost_type": uq.get("cost_type", "gaussian_MLE"),
+            "num_steps": _num(uq.get("num_steps"), 1000, int, "num_steps"),
+            "num_walkers": _num(uq.get("num_walkers"), 64, int, "num_walkers"),
+            "cost_type": uq.get("cost_type") or "gaussian_MLE",
         },
         # --- CUFLynx enablement flags (gate the pipeline-script stages) ---
         "do_simulation": bool(enabled.get("do_simulation", True)),
