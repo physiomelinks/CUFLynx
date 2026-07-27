@@ -484,22 +484,28 @@ def export_pipeline_route(req: ExportPipelineRequest) -> dict:
         params_file = "params_for_id.csv"
         shutil.copyfile(record.params_path, resources / params_file)
 
-    user_inputs = export_pipeline.build_user_inputs(
-        file_prefix=file_prefix,
-        model_type=engine.model_type,
-        solver=engine.solver,
-        solver_info=dict(engine.solver_info),
-        dt=engine.dt,
-        pre_time=req.pre_time,
-        sim_time=req.sim_time,
-        model_file=model_file,
-        obs_file=obs_file,
-        params_for_id_file=params_file,
-        calibration=req.calibration,
-        sensitivity=req.sensitivity,
-        uq=req.uq,
-        enabled=req.enabled,
-    )
+    try:
+        user_inputs = export_pipeline.build_user_inputs(
+            file_prefix=file_prefix,
+            model_type=engine.model_type,
+            solver=engine.solver,
+            solver_info=dict(engine.solver_info),
+            dt=engine.dt,
+            pre_time=req.pre_time,
+            sim_time=req.sim_time,
+            model_file=model_file,
+            obs_file=obs_file,
+            params_for_id_file=params_file,
+            calibration=req.calibration,
+            sensitivity=req.sensitivity,
+            uq=req.uq,
+            enabled=req.enabled,
+        )
+    except export_pipeline.ExportPipelineError as exc:
+        # A malformed setting is the client's to fix, so report it as such: an
+        # unhandled error here surfaces as a bare 500 with no detail, which is
+        # all the user saw in issue #133.
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     yaml_name = f"user_inputs_{suffix}.yaml"
     with open(export_dir / yaml_name, "w") as fh:
         yaml.safe_dump(user_inputs, fh, default_flow_style=False, sort_keys=False)
