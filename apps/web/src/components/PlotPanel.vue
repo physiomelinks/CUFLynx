@@ -1,6 +1,10 @@
 <script setup>
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { Line } from 'vue-chartjs'
+import Dialog from 'primevue/dialog'
+import Button from 'primevue/button'
+import InputText from 'primevue/inputtext'
+import InputNumber from 'primevue/inputnumber'
 import {
   Chart as ChartJS,
   LinearScale,
@@ -77,13 +81,63 @@ function shown(unit) {
   return u && u !== 'dimensionless' ? u : ''
 }
 
-// Axis titles are plain canvas text (no LaTeX), so they use the plain label.
-const xTitle = computed(() => (shown(props.xUnit) ? `time (${shown(props.xUnit)})` : 'time'))
-const yTitle = computed(() => {
-  const u = shown(props.yUnit)
-  if (!u) return { display: false }
-  return { display: true, text: props.varLabel ? `${props.varLabel} (${u})` : u }
+// Unit conversion (#125). `null` = show the model's own unit; otherwise
+// { unit, factor } and every plotted y value is multiplied by `factor`. Display
+// only — the simulation, obs_data and exported pipeline keep the model's units.
+const conversion = ref(null)
+
+// The unit the plot is currently displayed in.
+const displayUnit = computed(() => conversion.value?.unit || shown(props.yUnit))
+
+// Values as displayed. Scaling here rather than in buildChartData keeps the
+// conversion a presentation concern and leaves the shared plot lib untouched.
+// Obs overlays are in the model's units too, so they scale with the traces —
+// otherwise a converted plot would compare against an unconverted target.
+const displayData = computed(() => {
+  const f = conversion.value?.factor
+  const base = chartData.value
+  if (!f || f === 1) return base
+  return {
+    ...base,
+    datasets: base.datasets.map((d) => ({
+      ...d,
+      data: d.data.map((p) => ({ ...p, y: p.y * f })),
+    })),
+  }
 })
+
+// The y axis carries no title: the variable is already named above the plot in
+// LaTeX, and repeating it in plain canvas text was redundant. The unit lives in
+// the header instead, where it can be clicked to convert.
+const xTitle = computed(() => (shown(props.xUnit) ? `time [${shown(props.xUnit)}]` : 'time'))
+
+// --- convert-unit dialog ---------------------------------------------------
+const convertOpen = ref(false)
+const newUnit = ref('')
+const newFactor = ref(1)
+
+function openConvert() {
+  newUnit.value = displayUnit.value
+  newFactor.value = 1
+  convertOpen.value = true
+}
+
+// The factor is relative to what is on screen, so converting twice composes
+// rather than resetting to the model's units each time.
+function applyConvert() {
+  const unit = String(newUnit.value ?? '').trim()
+  const factor = Number(newFactor.value)
+  if (!unit || !Number.isFinite(factor) || factor === 0) return
+  const prev = conversion.value?.factor ?? 1
+  conversion.value = { unit, factor: prev * factor }
+  convertOpen.value = false
+}
+
+// Back to the model's own unit.
+function resetConvert() {
+  conversion.value = null
+  convertOpen.value = false
+}
 
 // Custom HTML legend (below) renders LaTeX labels, so disable the canvas one.
 const chartOptions = computed(() => ({
@@ -94,7 +148,7 @@ const chartOptions = computed(() => ({
   elements: { point: { hitRadius: HIT_RADIUS } },
   scales: {
     x: { type: 'linear', title: { display: true, text: xTitle.value }, ticks: sciTicks },
-    y: { type: 'linear', title: yTitle.value, ticks: sciTicks },
+    y: { type: 'linear', ticks: sciTicks },
   },
   plugins: {
     legend: { display: false },
@@ -115,7 +169,7 @@ const chartOptions = computed(() => ({
   },
 }))
 
-defineExpose({ chartData, chartOptions })
+defineExpose({ chartData, displayData, chartOptions, displayUnit, conversion })
 </script>
 
 <template>
@@ -128,6 +182,27 @@ defineExpose({ chartData, chartOptions })
         data-testid="plot-title"
         v-html="renderMath(title)"
       />
+      <!--
+        The unit sits beside the variable (named above in LaTeX) rather than on
+        the y axis, where repeating the variable name was redundant. It is a
+        button because clicking it converts the plot to another unit (#125) —
+        a canvas axis title could not have been clicked.
+      -->
+      <button
+        v-if="displayUnit"
+        type="button"
+        class="plot-unit"
+        :class="{ converted: !!conversion }"
+        :title="
+          conversion
+            ? `Displayed in ${conversion.unit} (model unit: ${yUnit}). Click to convert.`
+            : 'Click to convert this plot to another unit'
+        "
+        data-testid="plot-unit"
+        @click="openConvert"
+      >
+        [{{ displayUnit }}]
+      </button>
       <button
         v-if="maximizable"
         type="button"
@@ -163,12 +238,56 @@ defineExpose({ chartData, chartOptions })
       -->
       <Line
         :key="maximized ? 'maximized' : 'normal'"
-        :data="chartData"
+        :data="displayData"
         :options="chartOptions"
       />
     </div>
+    <Dialog
+      v-model:visible="convertOpen"
+      modal
+      header="Convert unit"
+      :style="{ width: '22rem' }"
+      data-testid="convert-unit-dialog"
+    >
+      <div class="convert-form">
+        <label class="convert-row">
+          <span>New unit</span>
+          <InputText v-model="newUnit" size="small" data-testid="convert-unit-name" />
+        </label>
+        <label class="convert-row">
+          <span>Multiply by</span>
+          <InputNumber
+            v-model="newFactor"
+            :min-fraction-digits="1"
+            :max-fraction-digits="12"
+            size="small"
+            data-testid="convert-unit-factor"
+          />
+        </label>
+        <p class="convert-hint">
+          Applied to the values on screen, so conversions compose. Display only —
+          the simulation, obs_data and exported pipeline keep the model's units.
+        </p>
+      </div>
+      <template #footer>
+        <Button
+          v-if="conversion"
+          label="Reset"
+          text
+          size="small"
+          data-testid="convert-unit-reset"
+          @click="resetConvert"
+        />
+        <Button
+          label="Apply"
+          size="small"
+          data-testid="convert-unit-apply"
+          @click="applyConvert"
+        />
+      </template>
+    </Dialog>
     <ul class="legend" data-testid="legend">
-      <li v-for="(d, i) in chartData.datasets" :key="i" class="legend-item">
+      <li v-for="(d, i) in displayData.datasets" :key="i" class="legend-item">
         <svg class="swatch" width="22" height="10" aria-hidden="true">
           <circle
             v-if="d.legendStyle === 'point'"
@@ -222,6 +341,42 @@ defineExpose({ chartData, chartOptions })
   font-size: 0.8rem;
   font-weight: 600;
   opacity: 0.85;
+}
+.plot-unit {
+  border: none;
+  background: none;
+  padding: 0 0.15rem;
+  font: inherit;
+  font-size: 0.78rem;
+  color: inherit;
+  opacity: 0.65;
+  cursor: pointer;
+}
+.plot-unit:hover {
+  opacity: 1;
+  text-decoration: underline;
+}
+/* Converted away from the model's own unit: flag it so a rescaled axis is never
+   mistaken for the model's values. */
+.plot-unit.converted {
+  opacity: 1;
+  font-style: italic;
+}
+.convert-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+.convert-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+}
+.convert-hint {
+  margin: 0;
+  font-size: 0.75rem;
+  opacity: 0.7;
 }
 .plot-maximize {
   margin-left: auto;

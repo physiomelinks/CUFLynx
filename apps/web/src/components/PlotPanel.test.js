@@ -6,7 +6,36 @@ vi.mock('vue-chartjs', () => ({ Line: { name: 'Line', render: () => null } }))
 
 import PlotPanel from './PlotPanel.vue'
 
-const stubs = { Select: true }
+// PrimeVue components need the plugin installed; stub them the way the other
+// dialog tests do so the convert-unit dialog can be driven through the DOM.
+const DialogStub = {
+  props: ['visible'],
+  template: '<div v-if="visible"><slot /><slot name="footer" /></div>',
+}
+const ButtonStub = {
+  props: ['label', 'text'],
+  emits: ['click'],
+  template: '<button v-bind="$attrs" @click="$emit(\'click\')">{{ label }}</button>',
+}
+const InputTextStub = {
+  props: ['modelValue'],
+  emits: ['update:modelValue'],
+  template:
+    '<input v-bind="$attrs" :value="modelValue" @input="$emit(\'update:modelValue\', $event.target.value)" />',
+}
+const InputNumberStub = {
+  props: ['modelValue'],
+  emits: ['update:modelValue'],
+  template:
+    '<input v-bind="$attrs" type="number" :value="modelValue" @input="$emit(\'update:modelValue\', Number($event.target.value))" />',
+}
+const stubs = {
+  Select: true,
+  Dialog: DialogStub,
+  Button: ButtonStub,
+  InputText: InputTextStub,
+  InputNumber: InputNumberStub,
+}
 
 const simResult = {
   time: [0, 1, 2],
@@ -193,30 +222,33 @@ describe('PlotPanel', () => {
     const opts = (props) =>
       mount(PlotPanel, { props: { simResult, ...props }, global: { stubs } }).vm.chartOptions
 
-    it('labels the y-axis with the variable name and its units', () => {
-      const y = opts({ varLabel: 'p_o2', yUnit: 'kPa' }).scales.y.title
-      expect(y.display).toBe(true)
-      expect(y.text).toBe('p_o2 (kPa)')
+    const chip = (props) =>
+      mount(PlotPanel, {
+        props: { simResult, title: 'p_o2', ...props },
+        global: { stubs },
+      })
+
+    it('never titles the y-axis: the variable is already named above in LaTeX', () => {
+      expect(opts({ varLabel: 'p_o2', yUnit: 'kPa' }).scales.y.title).toBeUndefined()
     })
 
-    it('shows the units alone when there is no variable label', () => {
-      const y = opts({ varLabel: '', yUnit: 'mmHg' }).scales.y.title
-      expect(y.display).toBe(true)
-      expect(y.text).toBe('mmHg')
+    it('shows the unit beside the variable in square brackets', () => {
+      const unit = chip({ varLabel: 'p_o2', yUnit: 'kPa' }).find('[data-testid="plot-unit"]')
+      expect(unit.exists()).toBe(true)
+      expect(unit.text()).toBe('[kPa]')
     })
 
-    it('falls back to an unlabelled y-axis when the units are unknown', () => {
-      expect(opts({ varLabel: 'x' }).scales.y.title.display).toBe(false)
-    })
-
-    it('suppresses the y-axis title for dimensionless variables', () => {
-      expect(opts({ varLabel: 'x', yUnit: 'dimensionless' }).scales.y.title.display).toBe(
-        false,
-      )
+    it('shows no unit chip when the units are unknown or dimensionless', () => {
+      expect(chip({ varLabel: 'x' }).find('[data-testid="plot-unit"]').exists()).toBe(false)
+      expect(
+        chip({ varLabel: 'x', yUnit: 'dimensionless' })
+          .find('[data-testid="plot-unit"]')
+          .exists(),
+      ).toBe(false)
     })
 
     it('labels the time axis with the model time units', () => {
-      expect(opts({ xUnit: 'second' }).scales.x.title.text).toBe('time (second)')
+      expect(opts({ xUnit: 'second' }).scales.x.title.text).toBe('time [second]')
     })
 
     it('keeps the bare time label when the time units are unknown', () => {
@@ -225,13 +257,111 @@ describe('PlotPanel', () => {
     })
 
     it('reacts to a units change', async () => {
-      const wrapper = mount(PlotPanel, {
-        props: { simResult, varLabel: 'x' },
+      const wrapper = chip({ varLabel: 'x' })
+      expect(wrapper.find('[data-testid="plot-unit"]').exists()).toBe(false)
+      await wrapper.setProps({ yUnit: 'mM' })
+      expect(wrapper.find('[data-testid="plot-unit"]').text()).toBe('[mM]')
+    })
+  })
+
+  // Clicking the unit converts the plot (issue #125)
+  describe('unit conversion', () => {
+    const mountWithUnit = (props) =>
+      mount(PlotPanel, {
+        props: { simResult, title: 'p', varLabel: 'p', yUnit: 'J_per_m3', ...props },
         global: { stubs },
       })
-      expect(wrapper.vm.chartOptions.scales.y.title.display).toBe(false)
-      await wrapper.setProps({ yUnit: 'mM' })
-      expect(wrapper.vm.chartOptions.scales.y.title.text).toBe('x (mM)')
+
+    // Drive the real controls: click the unit, fill the dialog, press Apply.
+    const convert = async (wrapper, unit, factor) => {
+      await wrapper.find('[data-testid="plot-unit"]').trigger('click')
+      await wrapper.find('[data-testid="convert-unit-name"]').setValue(unit)
+      await wrapper.find('[data-testid="convert-unit-factor"]').setValue(factor)
+      await wrapper.find('[data-testid="convert-unit-apply"]').trigger('click')
+    }
+
+    it('opens the dialog when the unit is clicked', async () => {
+      const wrapper = mountWithUnit()
+      expect(wrapper.find('[data-testid="convert-unit-dialog"]').exists()).toBe(false)
+      await wrapper.find('[data-testid="plot-unit"]').trigger('click')
+      expect(wrapper.find('[data-testid="convert-unit-dialog"]').exists()).toBe(true)
+    })
+
+    it('closes the dialog on apply', async () => {
+      const wrapper = mountWithUnit()
+      await convert(wrapper, 'mmHg', 0.0075)
+      expect(wrapper.find('[data-testid="convert-unit-dialog"]').exists()).toBe(false)
+    })
+
+    it('scales every plotted value and relabels the chip', async () => {
+      const wrapper = mountWithUnit()
+      const before = wrapper.vm.displayData.datasets[0].data.map((p) => p.y)
+      await convert(wrapper, 'mmHg', 0.0075)
+      expect(wrapper.vm.displayUnit).toBe('mmHg')
+      expect(wrapper.find('[data-testid="plot-unit"]').text()).toBe('[mmHg]')
+      expect(wrapper.vm.displayData.datasets[0].data.map((p) => p.y)).toEqual(
+        before.map((y) => y * 0.0075),
+      )
+    })
+
+    it('converts the obs overlays too, so the comparison stays valid', async () => {
+      const wrapper = mountWithUnit({
+        dataItems: [
+          { variable: 'x_max', name_for_plotting: 'x', data_type: 'constant', value: 30 },
+        ],
+      })
+      const before = wrapper.vm.displayData.datasets.map((d) => d.data.map((p) => p.y))
+      await convert(wrapper, 'kPa', 2)
+      const after = wrapper.vm.displayData.datasets.map((d) => d.data.map((p) => p.y))
+      expect(after.length).toBe(before.length)
+      after.forEach((ys, i) => expect(ys).toEqual(before[i].map((y) => y * 2)))
+    })
+
+    it('leaves the x values alone', async () => {
+      const wrapper = mountWithUnit()
+      const xs = wrapper.vm.displayData.datasets[0].data.map((p) => p.x)
+      await convert(wrapper, 'mmHg', 0.0075)
+      expect(wrapper.vm.displayData.datasets[0].data.map((p) => p.x)).toEqual(xs)
+    })
+
+    it('composes successive conversions rather than restarting from the model unit', async () => {
+      const wrapper = mountWithUnit()
+      const before = wrapper.vm.displayData.datasets[0].data.map((p) => p.y)
+      await convert(wrapper, 'a', 2)
+      await convert(wrapper, 'b', 5)
+      expect(wrapper.vm.conversion.factor).toBe(10)
+      expect(wrapper.vm.displayData.datasets[0].data.map((p) => p.y)).toEqual(
+        before.map((y) => y * 10),
+      )
+    })
+
+    it('resets to the model unit', async () => {
+      const wrapper = mountWithUnit()
+      const before = wrapper.vm.displayData.datasets[0].data.map((p) => p.y)
+      await convert(wrapper, 'mmHg', 0.0075)
+      await wrapper.find('[data-testid="plot-unit"]').trigger('click')
+      await wrapper.find('[data-testid="convert-unit-reset"]').trigger('click')
+      expect(wrapper.vm.conversion).toBe(null)
+      expect(wrapper.vm.displayUnit).toBe('J_per_m3')
+      expect(wrapper.vm.displayData.datasets[0].data.map((p) => p.y)).toEqual(before)
+    })
+
+    it('ignores a blank unit or a zero / non-numeric factor', async () => {
+      const wrapper = mountWithUnit()
+      await convert(wrapper, '', 2)
+      expect(wrapper.vm.conversion).toBe(null)
+      await convert(wrapper, 'mmHg', 0)
+      expect(wrapper.vm.conversion).toBe(null)
+      await convert(wrapper, 'mmHg', NaN)
+      expect(wrapper.vm.conversion).toBe(null)
+    })
+
+    it('leaves the underlying chartData in the model units', async () => {
+      // The conversion is display-only: exports and the sim keep model units.
+      const wrapper = mountWithUnit()
+      const raw = wrapper.vm.chartData.datasets[0].data.map((p) => p.y)
+      await convert(wrapper, 'mmHg', 0.0075)
+      expect(wrapper.vm.chartData.datasets[0].data.map((p) => p.y)).toEqual(raw)
     })
   })
 
