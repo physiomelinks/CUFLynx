@@ -95,6 +95,22 @@ describe('PlotPanel', () => {
       expect(title([])).toBe('')
     })
 
+    it('shows the time to 3 significant figures, unlike the y-value', () => {
+      const options = optionsOf()
+      const title = options.plugins.tooltip.callbacks.title
+      // The time only has to locate the sample, so it is cut short...
+      expect(title([{ parsed: { x: 0.123456, y: 1 } }])).toBe('0.123')
+      expect(title([{ parsed: { x: 1.23456e-9, y: 1 } }])).toBe('1.23e-9')
+      expect(title([{ parsed: { x: 0.35000000000000003, y: 1 } }])).toBe('0.35')
+      // ...while the y-value it sits above keeps fmtSci's fuller precision.
+      expect(
+        options.plugins.tooltip.callbacks.label({
+          dataset: { label: '' },
+          parsed: { x: 0, y: 1.23456e-9 },
+        }),
+      ).toBe('1.2346e-9')
+    })
+
     it('formats both axis ticks with the concise scientific formatter', () => {
       const { x, y } = optionsOf().scales
       expect(y.ticks.callback(1.5e-9)).toBe('1.5e-9')

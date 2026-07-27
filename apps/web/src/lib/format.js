@@ -32,3 +32,28 @@ export function fmtSci(v, digits = 4) {
 export function fmtAxis(v) {
   return fmtSci(v, 1)
 }
+
+/**
+ * Format to a fixed number of *significant figures*, in the same scientific/plain
+ * split as fmtSci. Unlike fmtSci — whose `digits` counts mantissa decimals and
+ * whose plain branch prints the number in full — this bounds the precision on
+ * both branches, so a float artefact like 0.35000000000000003 reads as 0.35.
+ * Used for the cursor's time value, where a handful of figures is plenty.
+ * @param {number|string|null} v
+ * @param {number} sf significant figures
+ */
+export function fmtSigFigs(v, sf = 3) {
+  if (v === null || v === undefined || v === '') return ''
+  const n = Number(v)
+  if (!Number.isFinite(n)) return ''
+  const a = Math.abs(n)
+  if (a !== 0 && (a >= BIG || a < SMALL)) {
+    return n
+      .toExponential(sf - 1)
+      .replace(/\.?0+e/, 'e')
+      .replace('e+', 'e')
+  }
+  // Round to sf, then re-parse so trailing zeros collapse: 2.50 -> 2.5, 1230 stays
+  // 1230 (toPrecision would render it as 1.23e+3).
+  return String(Number(n.toPrecision(sf)))
+}

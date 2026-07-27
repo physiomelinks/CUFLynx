@@ -12,7 +12,7 @@ import {
 } from 'chart.js'
 import { buildChartData } from '../lib/plot'
 import { renderMath } from '../lib/math'
-import { fmtSci, fmtAxis } from '../lib/format'
+import { fmtSci, fmtAxis, fmtSigFigs } from '../lib/format'
 
 ChartJS.register(
   LinearScale,
@@ -81,8 +81,10 @@ const chartOptions = {
     legend: { display: false },
     tooltip: {
       callbacks: {
-        // Title is the shared x value of the hovered points.
-        title: (items) => (items.length ? fmtSci(items[0].parsed.x) : ''),
+        // Title is the shared x value of the hovered points. The time only needs
+        // enough figures to locate the sample, so 3 s.f. rather than fmtSci's
+        // fuller precision — it also keeps it visually distinct from the y value.
+        title: (items) => (items.length ? fmtSigFigs(items[0].parsed.x, 3) : ''),
         // The canvas tooltip can't render LaTeX, so use the plain `label`.
         label: (ctx) => {
           const value = fmtSci(ctx.parsed.y)
