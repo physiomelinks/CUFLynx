@@ -50,6 +50,8 @@ import {
   timeUnit,
 } from './lib/plot'
 import SaveParamsDialog from './components/SaveParamsDialog.vue'
+import { requestNotificationPermission } from './lib/notify'
+import { useRunNotifications } from './stores/useRunNotifications'
 import {
   solversForFormat,
   defaultSolverFor,
@@ -311,6 +313,34 @@ watch(
     localStorage.setItem('cuflynx-theme', t)
   },
   { immediate: true },
+)
+
+// Browser notification when a long run (calibration / sensitivity / UQ) finishes
+// (#105). Opt-in and default OFF per the issue discussion — it only pays off for
+// runs long enough that the user walks away. Client-side preference, so it lives
+// in localStorage like the theme rather than in the backend settings store
+// (whose PERSISTED_KEYS are machine-level: ca_dir, python_path, …).
+const notifyOnFinish = ref(localStorage.getItem('cuflynx-notify-on-finish') === '1')
+// Non-empty when the toggle is on but can't actually deliver, so the Settings row
+// says why instead of leaving a switch that silently does nothing.
+const notifyWarning = ref('')
+watch(notifyOnFinish, async (on) => {
+  localStorage.setItem('cuflynx-notify-on-finish', on ? '1' : '0')
+  notifyWarning.value = ''
+  if (!on) return
+  // Browsers only honour a permission request from a user gesture — this switch is it.
+  const perm = await requestNotificationPermission()
+  if (perm === 'unsupported') notifyWarning.value = 'This browser does not support notifications.'
+  else if (perm !== 'granted')
+    notifyWarning.value = 'Notifications are blocked — allow them for this site in your browser settings.'
+})
+useRunNotifications(
+  [
+    { kind: 'calibration', state: calib.state, detail: () => ({ cost: calib.cost.value }) },
+    { kind: 'sensitivity', state: sa.state },
+    { kind: 'uq', state: uq.state },
+  ],
+  notifyOnFinish,
 )
 
 // Left column tab: 'params' | 'sensitivity' | 'calibration' | 'uq'
@@ -1662,6 +1692,31 @@ watch(
         <p class="settings-hint">
           Set a seed to make calibration / sensitivity / UQ runs repeatable. Leave
           blank (clear it) for non-deterministic runs.
+        </p>
+
+        <hr class="settings-sep" />
+
+        <!-- Optional desktop notification when a long run ends (#105). Off by default. -->
+        <label class="settings-row">
+          <span
+            class="settings-label"
+            title="Show a browser notification when a calibration / sensitivity / UQ run finishes, fails or is cancelled"
+          >
+            Notify when long runs finish
+          </span>
+          <Checkbox
+            v-model="notifyOnFinish"
+            :binary="true"
+            data-testid="notify-on-finish"
+          />
+        </label>
+        <p class="settings-hint">
+          Off by default. When on, a browser notification appears as soon as a
+          calibration, sensitivity or UQ run ends — useful for runs long enough to
+          walk away from.
+        </p>
+        <p v-if="notifyWarning" class="settings-warn" data-testid="notify-warning">
+          ⚠ {{ notifyWarning }}
         </p>
       </div>
     </Dialog>

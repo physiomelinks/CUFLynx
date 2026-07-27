@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { nextTick } from 'vue'
 import { shallowMount, flushPromises } from '@vue/test-utils'
 
@@ -27,6 +27,7 @@ vi.mock('./lib/api', () => ({
 }))
 
 import { getConfig, setConfig, getCalibrationPythons } from './lib/api'
+import { setNotificationCtor } from './lib/notify'
 import App from './App.vue'
 
 describe('App.vue', () => {
@@ -696,5 +697,85 @@ describe('App.vue interpreter MPI marker', () => {
       expect(labelFor(wrapper, '')).toBe('Server default')
       expect(wrapper.find('[data-testid="python-mpi"]').exists()).toBe(false)
     })
+  })
+})
+
+// Issue #105: a Settings toggle (default OFF, per the issue discussion) that pops
+// a browser notification when a calibration / sensitivity / UQ run ends. The
+// preference is client-side only, so it lives in localStorage like the theme.
+describe('App.vue notify-when-long-runs-finish setting (#105)', () => {
+  beforeEach(() => {
+    localStorage.removeItem('cuflynx-notify-on-finish')
+    setNotificationCtor(undefined)
+  })
+  afterEach(() => setNotificationCtor(undefined))
+
+  it('defaults to OFF for a fresh user', async () => {
+    const wrapper = shallowMount(App)
+    await flushPromises()
+    expect(wrapper.vm.notifyOnFinish).toBe(false)
+    // …and nothing is written to localStorage just by mounting.
+    expect(localStorage.getItem('cuflynx-notify-on-finish')).toBe(null)
+  })
+
+  it('restores a remembered "on" from localStorage', async () => {
+    localStorage.setItem('cuflynx-notify-on-finish', '1')
+    const wrapper = shallowMount(App)
+    await flushPromises()
+    expect(wrapper.vm.notifyOnFinish).toBe(true)
+  })
+
+  it('persists the choice and requests permission when switched on', async () => {
+    const Ctor = function () {}
+    Ctor.permission = 'default'
+    Ctor.requestPermission = vi.fn().mockResolvedValue('granted')
+    setNotificationCtor(Ctor)
+
+    const wrapper = shallowMount(App)
+    await flushPromises()
+    wrapper.vm.notifyOnFinish = true
+    await flushPromises()
+
+    expect(Ctor.requestPermission).toHaveBeenCalled()
+    expect(localStorage.getItem('cuflynx-notify-on-finish')).toBe('1')
+    expect(wrapper.vm.notifyWarning).toBe('')
+  })
+
+  it('surfaces a denial inline instead of leaving a dead toggle', async () => {
+    const Ctor = function () {}
+    Ctor.permission = 'default'
+    Ctor.requestPermission = vi.fn().mockResolvedValue('denied')
+    setNotificationCtor(Ctor)
+
+    const wrapper = shallowMount(App)
+    await flushPromises()
+    wrapper.vm.notifyOnFinish = true
+    await flushPromises()
+
+    // notifyWarning drives the [data-testid="notify-warning"] row in Settings.
+    expect(wrapper.vm.notifyWarning).toContain('blocked')
+    // The toggle itself stays on — the user asked for it; we just say why it can't work.
+    expect(wrapper.vm.notifyOnFinish).toBe(true)
+  })
+
+  it('explains an unsupported browser (no Notification API)', async () => {
+    setNotificationCtor(null)
+    const wrapper = shallowMount(App)
+    await flushPromises()
+    wrapper.vm.notifyOnFinish = true
+    await flushPromises()
+    expect(wrapper.vm.notifyWarning).toContain('does not support')
+  })
+
+  it('clears the warning and persists "off" when switched back off', async () => {
+    setNotificationCtor(null)
+    const wrapper = shallowMount(App)
+    await flushPromises()
+    wrapper.vm.notifyOnFinish = true
+    await flushPromises()
+    wrapper.vm.notifyOnFinish = false
+    await flushPromises()
+    expect(wrapper.vm.notifyWarning).toBe('')
+    expect(localStorage.getItem('cuflynx-notify-on-finish')).toBe('0')
   })
 })
