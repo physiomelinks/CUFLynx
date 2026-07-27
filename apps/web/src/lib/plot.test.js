@@ -304,6 +304,55 @@ describe('buildExtraPlotCells', () => {
     expect(cell.yUnit).toBe('mM')
     expect(buildExtraPlotCells(extras, 'exp1', time, outputs)[0].yUnit).toBe('')
   })
+
+  // Issue #124: an extra plot may set `xqname` to plot y against another
+  // variable (a PV loop) instead of against time.
+  it('wires outputs[xqname] in as the x series when set', () => {
+    const [cell] = buildExtraPlotCells(
+      [{ id: 4, groupKey: 'exp0', qname: 'm/y', xqname: 'm/x', label: 'm/y vs m/x' }],
+      'exp0',
+      time,
+      outputs,
+    )
+    expect(cell.simResult).toEqual({
+      time,
+      outputs: { 'm/y': [4, 5, 6] },
+      xValues: [1, 2, 3],
+    })
+    expect(cell.xLabel).toBe('m/x')
+    expect(cell.title).toBe('m/y vs m/x')
+  })
+
+  // The x axis of a phase-plane cell is a model variable, so it takes that
+  // variable's unit -- not the time unit the caller would otherwise supply.
+  it('takes the x-axis units from the x variable (issues #124 + #125)', () => {
+    const [cell] = buildExtraPlotCells(
+      [{ id: 4, groupKey: 'exp0', qname: 'm/y', xqname: 'm/x', label: 'm/y vs m/x' }],
+      'exp0',
+      time,
+      outputs,
+      { 'm/x': 'mL', 'm/y': 'mmHg' },
+    )
+    expect(cell.xUnit).toBe('mL')
+    expect(cell.yUnit).toBe('mmHg')
+  })
+
+  it('leaves a time-series cell untouched (no x series, no x label)', () => {
+    const [cell] = buildExtraPlotCells(extras, 'exp1', time, outputs)
+    expect('xValues' in cell.simResult).toBe(false)
+    expect('xLabel' in cell).toBe(false)
+    expect('xUnit' in cell).toBe(false)
+  })
+
+  it('falls back to an empty x series when the x variable is absent', () => {
+    const [cell] = buildExtraPlotCells(
+      [{ id: 5, groupKey: 'exp0', qname: 'm/y', xqname: 'm/z', label: 'm/y vs m/z' }],
+      'exp0',
+      time,
+      outputs,
+    )
+    expect(cell.simResult.xValues).toEqual([])
+  })
 })
 
 describe('unitForVars / timeUnit (issue #125)', () => {
@@ -337,6 +386,82 @@ describe('unitForVars / timeUnit (issue #125)', () => {
     expect(timeUnit({ 'environment/time': 'ms', 'm/x': 'mM' })).toBe('ms')
     expect(timeUnit({ 'm/x': 'mM' })).toBe('')
     expect(timeUnit(undefined)).toBe('')
+  })
+})
+
+// Issue #124: phase-plane plots — y against any other variable, not time.
+describe('buildChartData with a non-time x axis', () => {
+  const sim = {
+    time: [0, 1, 2, 3],
+    outputs: { 'heart/P_lv': [10, 40, 30, 10] },
+    xValues: [5, 9, 7, 5],
+  }
+
+  it('plots against simResult.xValues instead of time', () => {
+    const { datasets } = buildChartData(sim)
+    expect(datasets[0].data).toEqual([
+      { x: 5, y: 10 },
+      { x: 9, y: 40 },
+      { x: 7, y: 30 },
+      { x: 5, y: 10 },
+    ])
+  })
+
+  it('accepts an xSource option too, taking precedence over time', () => {
+    const { datasets } = buildChartData(
+      { time: [0, 1], outputs: { 'm/y': [3, 4] } },
+      { xSource: [8, 9] },
+    )
+    expect(datasets[0].data).toEqual([
+      { x: 8, y: 3 },
+      { x: 9, y: 4 },
+    ])
+  })
+
+  it('truncates to the shorter of the x and y series', () => {
+    const { datasets } = buildChartData({
+      time: [0, 1, 2],
+      outputs: { 'm/y': [1, 2, 3] },
+      xValues: [7, 8],
+    })
+    expect(datasets[0].data).toEqual([
+      { x: 7, y: 1 },
+      { x: 8, y: 2 },
+    ])
+  })
+
+  it('does not smooth the loop (tension 0, like stepped series)', () => {
+    expect(buildChartData(sim).datasets[0].tension).toBe(0)
+  })
+
+  // Reference lines span/cross the time axis, so they are meaningless here —
+  // drop them rather than draw them at the wrong x.
+  it('drops obs overlays instead of drawing them against the wrong axis', () => {
+    const { datasets } = buildChartData(sim, {
+      dataItems: [
+        {
+          variable: 'heart/P_lv',
+          operands: ['heart/P_lv'],
+          data_type: 'constant',
+          plot_type: 'horizontal',
+          operation: 'max',
+          value: 42,
+        },
+      ],
+    })
+    expect(datasets).toHaveLength(1)
+    expect(datasets[0].kind).toBe('simulation')
+  })
+
+  it('keeps the default time path unchanged when no x series is given', () => {
+    const plain = { time: [0, 1, 2], outputs: { 'm/y': [1, 2, 3] } }
+    const { datasets } = buildChartData(plain)
+    expect(datasets[0].data).toEqual([
+      { x: 0, y: 1 },
+      { x: 1, y: 2 },
+      { x: 2, y: 3 },
+    ])
+    expect(datasets[0].tension).toBe(0.15)
   })
 })
 

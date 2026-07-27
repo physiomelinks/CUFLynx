@@ -32,11 +32,15 @@ const props = defineProps({
   dataItems: { type: Array, default: () => [] },
   title: { type: String, default: '' },
   varLabel: { type: String, default: '' },
-  // CellML units for the plotted variable and for the time axis (#125), shown
+  // CellML units for the plotted variable and for the x axis (#125), shown
   // verbatim (they are identifiers such as `mmHg` / `per_second`, not typeset
   // expressions). Empty or `dimensionless` suppresses the annotation.
   yUnit: { type: String, default: '' },
   xUnit: { type: String, default: '' },
+  // x-axis title. Defaults to time; a phase-plane cell (issue #124) names the
+  // variable whose series `simResult.xValues` carries — and then `xUnit` is that
+  // variable's unit rather than the time unit.
+  xLabel: { type: String, default: 'time' },
   tag: { type: String, default: '' },
   stepped: { type: Boolean, default: false },
   removable: { type: Boolean, default: false },
@@ -114,7 +118,14 @@ const displayData = computed(() => {
 // The y axis carries no title: the variable is already named above the plot in
 // LaTeX, and repeating it in plain canvas text was redundant. The unit lives in
 // the header instead, where it can be clicked to convert.
-const xTitle = computed(() => (shown(props.xUnit) ? `time [${shown(props.xUnit)}]` : 'time'))
+//
+// The x axis does carry one, because nothing else names it: `time`, or the x
+// variable of a phase-plane cell (#124), suffixed with its unit (#125).
+const xTitle = computed(() => {
+  const label = props.xLabel || 'time'
+  const unit = shown(props.xUnit)
+  return unit ? `${label} [${unit}]` : label
+})
 
 // --- convert-unit dialog ---------------------------------------------------
 const convertOpen = ref(false)
@@ -169,9 +180,9 @@ const chartOptions = computed(() => ({
     legend: { display: false },
     tooltip: {
       callbacks: {
-        // Title is the shared x value of the hovered points. The time only needs
-        // enough figures to locate the sample, so 3 s.f. rather than fmtSci's
-        // fuller precision — it also keeps it visually distinct from the y value.
+        // Title is the shared x value of the hovered points. On a phase-plane
+        // cell that x is another variable rather than the time, but it wants the
+        // same brief 3 s.f. treatment either way.
         title: (items) => (items.length ? fmtSigFigs(items[0].parsed.x, 3) : ''),
         // The canvas tooltip can't render LaTeX, so use the plain `label`.
         label: (ctx) => {

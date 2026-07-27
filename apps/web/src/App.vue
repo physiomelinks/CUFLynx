@@ -407,7 +407,9 @@ const effectiveMaximized = computed(() =>
 // User-added output plots. Each plot is scoped to one experiment group via
 // `groupKey` (e.g. 'exp0', 'data-only', 'single') so the "+ Add plot" button at
 // the bottom of an experiment creates a plot for that experiment's run only.
-// { id, groupKey, expIdx, qname, label }
+// { id, groupKey, expIdx, qname, xqname, label }
+// `xqname` (issue #124) is the variable on the x axis; null/absent means time,
+// which is the plain time-series plot.
 const extraPlots = ref([])
 let nextPlotId = 1
 
@@ -424,26 +426,41 @@ const modelUnits = computed(() => model.variables.value.units ?? {})
 const timeUnitLabel = computed(() => timeUnit(modelUnits.value))
 
 // Extra-plot qnames to append to a run's requested outputs so the chosen
-// variables come back from the engine.
+// variables come back from the engine — the x variable of a phase-plane plot
+// included, else the engine never returns that series.
 const extraOutputNames = computed(() => [
-  ...new Set(extraPlots.value.map((p) => p.qname)),
+  ...new Set(
+    extraPlots.value.flatMap((p) => (p.xqname ? [p.qname, p.xqname] : [p.qname])),
+  ),
 ])
 
-// Add-plot dialog state.
+// Add-plot dialog state. `addPlotXVar` is the x axis: 'time' (the default) for a
+// time series, or another variable for a phase-plane plot (issue #124).
 const addPlotOpen = ref(false)
 const addPlotTarget = ref({ groupKey: null, expIdx: 0, label: '' })
 const addPlotVar = ref(null)
+const addPlotXVar = ref('time')
+
+// x-axis choices: time plus every plottable variable (a variable already on a
+// y axis is still a valid x axis).
+const addPlotXChoices = computed(() => [
+  { label: 'time', value: 'time' },
+  ...plottableVariables.value.map((q) => ({ label: q, value: q })),
+])
 
 // Variables offered in the dialog: plottable vars not already shown in the
-// target group (neither an obs-derived nor an already-added plot).
+// target group (neither an obs-derived nor an already-added plot). "Already
+// shown" is per x axis — the same y against a different x is a different plot.
 const addPlotChoices = computed(() => {
   const key = addPlotTarget.value.groupKey
+  const xq = addPlotXVar.value || 'time'
   const taken = new Set(
-    extraPlots.value.filter((p) => p.groupKey === key).map((p) => p.qname),
+    extraPlots.value
+      .filter((p) => p.groupKey === key && (p.xqname || 'time') === xq)
+      .map((p) => p.qname),
   )
-  if (key && key.startsWith('exp')) {
-    for (const v of obs.plotVariables.value) taken.add(v.qname)
-  } else if (key === 'data-only') {
+  if (xq === 'time' && (key === 'data-only' || (key && key.startsWith('exp')))) {
+    // Obs-derived cells are time series, so they only collide on the time axis.
     for (const v of obs.plotVariables.value) taken.add(v.qname)
   }
   return plottableVariables.value
@@ -458,18 +475,21 @@ function openAddPlot(group) {
     label: group.label || '',
   }
   addPlotVar.value = null
+  addPlotXVar.value = 'time'
   addPlotOpen.value = true
 }
 
 function confirmAddPlot() {
   const qname = addPlotVar.value
   if (!qname) return
+  const xqname = addPlotXVar.value && addPlotXVar.value !== 'time' ? addPlotXVar.value : null
   extraPlots.value.push({
     id: nextPlotId++,
     groupKey: addPlotTarget.value.groupKey,
     expIdx: addPlotTarget.value.expIdx,
     qname,
-    label: qname,
+    xqname,
+    label: xqname ? `${qname} vs ${xqname}` : qname,
   })
   addPlotOpen.value = false
   // Re-run so the newly requested variable is fetched for this experiment.
@@ -1276,7 +1296,8 @@ watch(
                 :title="cell.title"
                 :var-label="cell.varLabel"
                 :y-unit="cell.yUnit ?? ''"
-                :x-unit="timeUnitLabel"
+                :x-label="cell.xLabel || 'time'"
+                :x-unit="cell.xUnit ?? timeUnitLabel"
                 :tag="cell.controlled ? 'controlled' : ''"
                 :stepped="cell.controlled"
                 :sim-result="cell.simResult"
@@ -1594,7 +1615,7 @@ watch(
       :style="{ width: '24rem' }"
     >
       <div class="add-plot-dialog">
-        <label class="add-plot-label" for="add-plot-var">Variable</label>
+        <label class="add-plot-label" for="add-plot-var">Variable (y)</label>
         <Select
           id="add-plot-var"
           v-model="addPlotVar"
@@ -1604,6 +1625,18 @@ watch(
           placeholder="Select a variable"
           filter
           data-testid="add-plot-select"
+          class="add-plot-select"
+        />
+        <label class="add-plot-label" for="add-plot-x-var">Against (x)</label>
+        <Select
+          id="add-plot-x-var"
+          v-model="addPlotXVar"
+          :options="addPlotXChoices"
+          option-label="label"
+          option-value="value"
+          placeholder="time"
+          filter
+          data-testid="add-plot-x-select"
           class="add-plot-select"
         />
         <p v-if="!addPlotChoices.length" class="empty-hint">

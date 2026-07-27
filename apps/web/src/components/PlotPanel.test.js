@@ -250,6 +250,14 @@ describe('PlotPanel', () => {
       expect(opts({ xUnit: 'dimensionless' }).scales.x.title.text).toBe('time')
     })
 
+    // On a phase-plane cell (issue #124) the x axis is a variable, not the time,
+    // so the unit annotates whatever that axis is named.
+    it('annotates a phase-plane x label with its own units', () => {
+      const o = opts({ xLabel: 'heart/V_lv', xUnit: 'mL' })
+      expect(o.scales.x.title.text).toBe('heart/V_lv [mL]')
+      expect(opts({ xLabel: 'heart/V_lv' }).scales.x.title.text).toBe('heart/V_lv')
+    })
+
     it('reacts to a units change', async () => {
       const wrapper = chip({ varLabel: 'x' })
       expect(wrapper.find('[data-testid="plot-unit"]').exists()).toBe(false)

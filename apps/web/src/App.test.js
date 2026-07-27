@@ -411,3 +411,92 @@ describe('App.vue gradient integrator suitability warning (#298)', () => {
     })
   })
 })
+
+// Issue #124: "Add plot" can put another variable on the x axis instead of time
+// (the PV-loop use case), so a phase-plane cell renders and both variables are
+// requested from the engine.
+describe('App.vue plot one variable against another (#124)', () => {
+  const VARS = {
+    params: [],
+    odes: ['heart/V_lv', 'heart/P_lv'],
+    algebraic: [],
+    all_names: [],
+  }
+
+  // No model id: runSimulation() short-circuits, so the seeded result survives.
+  const mountWithResult = async () => {
+    const wrapper = shallowMount(App)
+    await flushPromises()
+    wrapper.vm.model.variables.value = { ...VARS }
+    wrapper.vm.sim.setResult({
+      time: [0, 1, 2],
+      outputs: { 'heart/V_lv': [1, 2, 3], 'heart/P_lv': [4, 5, 6] },
+    })
+    await nextTick()
+    return wrapper
+  }
+
+  const addPlot = async (wrapper, qname, xqname) => {
+    wrapper.vm.openAddPlot({ key: 'single', expIdx: 0, label: '' })
+    wrapper.vm.addPlotVar = qname
+    wrapper.vm.addPlotXVar = xqname
+    await nextTick()
+    wrapper.vm.confirmAddPlot()
+    await flushPromises()
+  }
+
+  it('requests both variables and renders a "y vs x" cell', async () => {
+    const wrapper = await mountWithResult()
+    await addPlot(wrapper, 'heart/P_lv', 'heart/V_lv')
+
+    // Both axes must be requested, else the engine never returns the x series.
+    expect([...wrapper.vm.extraOutputNames].sort()).toEqual([
+      'heart/P_lv',
+      'heart/V_lv',
+    ])
+
+    const cell = wrapper.vm.plotGroups[0].cells.find((c) => c.removeId)
+    expect(cell.title).toBe('heart/P_lv vs heart/V_lv')
+    expect(cell.xLabel).toBe('heart/V_lv')
+    expect(cell.simResult.xValues).toEqual([1, 2, 3])
+
+    const panel = wrapper
+      .findAllComponents({ name: 'PlotPanel' })
+      .find((p) => p.props('title') === 'heart/P_lv vs heart/V_lv')
+    expect(panel).toBeTruthy()
+    expect(panel.props('xLabel')).toBe('heart/V_lv')
+  })
+
+  it('defaults the x axis to time, keeping the plain time-series plot', async () => {
+    const wrapper = await mountWithResult()
+    wrapper.vm.openAddPlot({ key: 'single', expIdx: 0, label: '' })
+    expect(wrapper.vm.addPlotXVar).toBe('time')
+    expect(wrapper.vm.addPlotXChoices.map((c) => c.value)).toEqual([
+      'time',
+      'heart/V_lv',
+      'heart/P_lv',
+    ])
+
+    await addPlot(wrapper, 'heart/P_lv', 'time')
+    expect(wrapper.vm.extraOutputNames).toEqual(['heart/P_lv'])
+    const cell = wrapper.vm.plotGroups[0].cells.find((c) => c.removeId)
+    expect(cell.title).toBe('heart/P_lv')
+    expect(cell.xLabel).toBeUndefined()
+    expect(cell.simResult.xValues).toBeUndefined()
+  })
+
+  it('still offers the same y against a different x axis', async () => {
+    const wrapper = await mountWithResult()
+    await addPlot(wrapper, 'heart/P_lv', 'heart/V_lv')
+
+    wrapper.vm.openAddPlot({ key: 'single', expIdx: 0, label: '' })
+    // Same x axis: that plot already exists.
+    wrapper.vm.addPlotXVar = 'heart/V_lv'
+    await nextTick()
+    expect(wrapper.vm.addPlotChoices.map((c) => c.value)).not.toContain('heart/P_lv')
+    // Against time it is a different plot, so it is offered again.
+    wrapper.vm.addPlotXVar = 'time'
+    await nextTick()
+    expect(wrapper.vm.addPlotChoices.map((c) => c.value)).toContain('heart/P_lv')
+  })
+})
