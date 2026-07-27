@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 import numpy as np
 import pytest
 
@@ -24,7 +26,7 @@ def test_format_for():
 
 def test_npy_round_trip_preserves_order(tmp_path):
     path = save_param_values(VALUES, ORDER, str(tmp_path), "manual_params.npy")
-    assert path.endswith("/manual_params.npy")
+    assert os.path.basename(path) == "manual_params.npy"  # cross-platform (Windows \)
     # Bare array in ORDER, matching CA's best_param_vals.npy convention.
     arr = np.load(path)
     assert list(arr) == [1.5, 2.0e-8, 3.3e8]
