@@ -194,6 +194,14 @@ describe('SensitivityPanel cores gating (no MPI launcher)', () => {
     expect(runBtn(w).attributes('disabled')).toBeDefined()
   })
 
+  // Saying it is unavailable is not enough: the message has to name the fix
+  // (pick an MPI-capable Python interpreter; on Windows install MS-MPI), #75.
+  it('points at the fix: an MPI-marked Python interpreter, or MS-MPI on Windows', () => {
+    const text = msg(mountPanel(false, 4)).text().replace(/\s+/g, ' ')
+    expect(text).toContain('Python interpreter marked MPI ✓')
+    expect(text).toContain('Microsoft MPI')
+  })
+
   it('does not emit run while Cores is invalid', async () => {
     const w = mountPanel(false, 4)
     await runBtn(w).trigger('click')

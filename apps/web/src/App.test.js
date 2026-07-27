@@ -26,7 +26,7 @@ vi.mock('./lib/api', () => ({
   setConfig: vi.fn().mockResolvedValue({}),
 }))
 
-import { getConfig, setConfig } from './lib/api'
+import { getConfig, setConfig, getCalibrationPythons } from './lib/api'
 import App from './App.vue'
 
 describe('App.vue', () => {
@@ -555,5 +555,70 @@ describe('App.vue plot one variable against another (#124)', () => {
       expect(cell.title).toBe('heart/P_lv')
       expect(cell.xLabel).toBeUndefined()
     })
+  })
+})
+
+// Multi-core runs need an MPI launcher from the selected interpreter's own env
+// (#75). Nothing used to say which interpreter provides one, so the capability
+// was undiscoverable — the picker now marks the ones that enable Cores > 1.
+describe('App.vue interpreter MPI marker', () => {
+  const CONFIG = {
+    ca_dir: '',
+    ca_exists: true,
+    generated_model_format: 'cellml_only',
+    solver: 'CVODE_myokit',
+    solver_info: {},
+    differentiable_operations: {},
+  }
+  const MPI_PY = {
+    path: '/venv/bin/python',
+    version: '3.11.4',
+    ready: true,
+    missing: [],
+    mpi: true,
+    mpiexec: '/venv/bin/mpiexec',
+  }
+  const PLAIN_PY = {
+    path: '/usr/bin/python3',
+    version: '3.10.6',
+    ready: true,
+    missing: [],
+    mpi: false,
+    mpiexec: null,
+  }
+
+  const mountWith = async (pythons, selected) => {
+    getCalibrationPythons.mockResolvedValueOnce({ pythons })
+    getConfig.mockResolvedValueOnce({ ...CONFIG, python_path: selected })
+    const wrapper = shallowMount(App)
+    await flushPromises()
+    return wrapper
+  }
+  const labelFor = (wrapper, path) =>
+    wrapper.vm.pythonOptions.find((o) => o.value === path).label
+
+  it('marks only the MPI-capable interpreter in the picker', async () => {
+    const wrapper = await mountWith([MPI_PY, PLAIN_PY], '')
+    expect(labelFor(wrapper, MPI_PY.path)).toContain('MPI ✓')
+    expect(labelFor(wrapper, PLAIN_PY.path)).not.toContain('MPI')
+  })
+
+  it('shows the launcher path in the chip tooltip for the selected interpreter', async () => {
+    const wrapper = await mountWith([MPI_PY, PLAIN_PY], MPI_PY.path)
+    const chip = wrapper.find('[data-testid="python-mpi"]')
+    expect(chip.text()).toContain('MPI ✓')
+    expect(chip.attributes('title')).toContain('/venv/bin/mpiexec')
+  })
+
+  it('flags an interpreter without a launcher of its own', async () => {
+    const wrapper = await mountWith([MPI_PY, PLAIN_PY], PLAIN_PY.path)
+    const chip = wrapper.find('[data-testid="python-mpi"]')
+    expect(chip.text()).toContain('MPI ✗')
+    expect(chip.attributes('title')).toContain('Cores > 1 unavailable')
+  })
+
+  it('says nothing about MPI for an unprobed interpreter (server default)', async () => {
+    const wrapper = await mountWith([MPI_PY], '')
+    expect(wrapper.find('[data-testid="python-mpi"]').exists()).toBe(false)
   })
 })

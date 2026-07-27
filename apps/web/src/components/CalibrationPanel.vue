@@ -324,7 +324,8 @@ function onRun() {
           data-testid="calib-cores"
         />
         <small v-if="coresInvalid" class="cores-invalid" data-testid="calib-cores-invalid">
-          Cores &gt; 1 not available (no MPI launcher). Set to 1 to run.
+          Cores &gt; 1 not available (no MPI launcher). Set to 1, or pick a Python
+          interpreter marked MPI ✓ in the top bar (Windows: install Microsoft MPI).
         </small>
       </label>
       <label class="field checkbox">

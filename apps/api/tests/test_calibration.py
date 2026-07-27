@@ -363,7 +363,87 @@ def test_calibration_pythons_lists_interpreters(client):
     assert "default" in body
     assert isinstance(body["pythons"], list)
     for p in body["pythons"]:
-        assert {"path", "version", "ready", "missing"} <= set(p)
+        assert {"path", "version", "ready", "missing", "mpi", "mpiexec"} <= set(p)
+        assert isinstance(p["mpi"], bool)
+        assert p["mpiexec"] is None or isinstance(p["mpiexec"], str)
+
+
+def _stub_probe_subprocess(monkeypatch, *, missing=""):
+    """Make _probe_python's two subprocess calls answer without a real
+    interpreter: a version, then the comma-joined missing-module list."""
+
+    class _R:
+        def __init__(self, stdout):
+            self.returncode = 0
+            self.stdout = stdout
+
+    outs = iter(["3.11.4", missing])
+    monkeypatch.setattr(
+        calibration_mod.subprocess, "run", lambda *a, **k: _R(next(outs))
+    )
+
+
+def test_probe_python_reports_the_interpreters_own_mpi_launcher(tmp_path, monkeypatch):
+    """The picker has to say which interpreter enables multi-core, so the probe
+    must report the launcher living in that interpreter's own environment."""
+    _stub_probe_subprocess(monkeypatch)
+    python = _fake_env(tmp_path, "venv", with_mpiexec=True)
+    info = calibration_mod._probe_python(python)
+    assert info["mpi"] is True
+    assert os.path.samefile(info["mpiexec"], _own_mpiexec(tmp_path, "venv"))
+
+
+def test_probe_python_does_not_claim_mpi_for_a_path_only_launcher(tmp_path, monkeypatch):
+    """resolve_mpiexec falls back to a PATH launcher, but that says nothing about
+    *this* interpreter -- it would badge every interpreter identically. Only a
+    launcher from the interpreter's own env counts as mpi=True; the fallback is
+    still reported in `mpiexec` so the UI can name it."""
+    _stub_probe_subprocess(monkeypatch)
+    python = _fake_env(tmp_path, "plain", with_mpiexec=False)
+    monkeypatch.setattr(
+        calibration_mod.shutil,
+        "which",
+        # path=<bindir> is the interpreter-relative lookup: nothing there.
+        lambda name, *a, path=None, **k: (
+            "/usr/bin/mpiexec" if name == "mpiexec" and path is None else None
+        ),
+    )
+    info = calibration_mod._probe_python(python)
+    assert info["mpi"] is False
+    assert info["mpiexec"] == "/usr/bin/mpiexec"
+
+
+def test_probe_python_reports_no_mpi_when_no_launcher_exists(tmp_path, monkeypatch):
+    _stub_probe_subprocess(monkeypatch)
+    python = _fake_env(tmp_path, "plain", with_mpiexec=False)
+    monkeypatch.setattr(calibration_mod.shutil, "which", lambda name, *a, **k: None)
+    info = calibration_mod._probe_python(python)
+    assert info["mpi"] is False
+    assert info["mpiexec"] is None
+
+
+def test_calibration_pythons_passes_mpi_fields_through(client, monkeypatch):
+    """The endpoint must carry the probe's MPI fields to the client (the picker
+    label/tooltip is built from them)."""
+    import main as main_mod
+
+    monkeypatch.setattr(
+        main_mod,
+        "list_python_interpreters",
+        lambda refresh=False: [
+            {
+                "path": "/venv/bin/python",
+                "version": "3.11.4",
+                "ready": True,
+                "missing": [],
+                "mpi": True,
+                "mpiexec": "/venv/bin/mpiexec",
+            }
+        ],
+    )
+    p = client.get("/api/calibration/pythons").json()["pythons"][0]
+    assert p["mpi"] is True
+    assert p["mpiexec"] == "/venv/bin/mpiexec"
 
 
 def test_calibration_invalid_python_returns_422(client, tmp_path):

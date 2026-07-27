@@ -565,9 +565,13 @@ const pythonOptions = computed(() => {
     : 'Server default'
   const opts = [
     { label: defaultLabel, value: '' },
+    // "MPI ✓" marks the interpreters whose own environment ships an MPI
+    // launcher, i.e. the ones that un-gate Cores > 1 — otherwise nothing tells
+    // the user which interpreter to pick for a multi-core run.
     ...calibPythons.value.map((p) => ({
       label:
         `Python ${p.version} — ${p.path}` +
+        (p.mpi ? ' — MPI ✓' : '') +
         (p.ready ? '' : ` (missing: ${(p.missing || []).join(', ')})`),
       value: p.path,
     })),
@@ -583,6 +587,22 @@ const pythonOptions = computed(() => {
 const pythonNotReady = computed(() => {
   const p = calibPythons.value.find((x) => x.path === pythonPath.value)
   return p && !p.ready ? p.missing : null
+})
+
+// The chosen interpreter's MPI launcher status, so the bar says whether this
+// pick enables Cores > 1 (and, in the tooltip, which launcher it would use).
+// Null for the server default / a browsed path: those weren't probed, so we
+// don't know — say nothing rather than imply "no MPI".
+const pythonMpi = computed(() => {
+  const p = calibPythons.value.find((x) => x.path === pythonPath.value)
+  if (!p) return null
+  return {
+    mpi: !!p.mpi,
+    label: p.mpi ? 'MPI ✓' : 'MPI ✗',
+    title: p.mpi
+      ? `MPI launcher in this environment (${p.mpiexec}): Cores > 1 available`
+      : 'No MPI launcher in this environment: Cores > 1 unavailable',
+  }
 })
 
 // Keep the top bar compact by showing only the tail of a long path.
@@ -1066,6 +1086,15 @@ watch(
           :title="'Selected interpreter is missing: ' + pythonNotReady.join(', ')"
         >
           ⚠
+        </span>
+        <span
+          v-if="pythonMpi"
+          class="py-mpi"
+          :class="{ off: !pythonMpi.mpi }"
+          data-testid="python-mpi"
+          :title="pythonMpi.title"
+        >
+          {{ pythonMpi.label }}
         </span>
       </div>
       <Button
@@ -1736,6 +1765,13 @@ watch(
 .python-bar .py-warn {
   color: #ffc000;
   cursor: help;
+}
+.python-bar .py-mpi {
+  cursor: help;
+  white-space: nowrap;
+}
+.python-bar .py-mpi.off {
+  opacity: 0.5;
 }
 .settings-form {
   display: flex;
