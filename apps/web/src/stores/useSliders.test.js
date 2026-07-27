@@ -83,4 +83,31 @@ describe('useSliders', () => {
     expect(s.sliders['a/x'].value).toBe(3)
     expect(s.sliders['a/y'].value).toBe(7)
   })
+
+  describe('load saved values (issue #106)', () => {
+    it('order reflects the current sliders (the .npy save/load order)', () => {
+      const s = useSliders()
+      s.addSlider('a/x', { min: 0, max: 10, value: 3 })
+      s.addSlider('a/y', { min: 0, max: 10, value: 7 })
+      expect(s.order.value).toEqual(['a/x', 'a/y'])
+    })
+
+    it('applyValues sets existing sliders, clamped, and ignores unknown qnames', () => {
+      const s = useSliders()
+      s.addSlider('a/x', { min: 0, max: 10, value: 5 })
+      s.addSlider('a/y', { min: 0, max: 10, value: 5 })
+      s.applyValues({ 'a/x': 999, 'a/y': 2, 'a/gone': 4 })
+      expect(s.sliders['a/x'].value).toBe(10) // clamped to max
+      expect(s.sliders['a/y'].value).toBe(2)
+      expect(s.sliders['a/gone']).toBeUndefined() // unknown -> ignored, no throw
+    })
+
+    it('applyValues tolerates empty/undefined input', () => {
+      const s = useSliders()
+      s.addSlider('a/x', { min: 0, max: 10, value: 5 })
+      s.applyValues(undefined)
+      s.applyValues({})
+      expect(s.sliders['a/x'].value).toBe(5)
+    })
+  })
 })

@@ -48,6 +48,7 @@ from obs_data import ObsData, ObsDataError, parse_obs_data
 from obs_options import get_obs_data_options, reset_cache as reset_obs_options
 from obs_series import compute_output_series
 from params_for_id import ParamsForIdError, parse_params_for_id
+from param_io import ParamIOError, load_param_values, save_param_values
 from runtime_paths import default_python, frontend_dist, is_frozen, resources_dir
 import settings_store
 from solver_options import (
@@ -894,6 +895,44 @@ def delete_cost_func(name: str, output_dir: str = "") -> dict:
         return delete_user_func("cost", name, _user_func_base_dir(output_dir))
     except UserFuncError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+class SaveParamsRequest(BaseModel):
+    values: dict[str, float]  # {qname: value} — the current slider values
+    order: list[str] = Field(default_factory=list)  # qname order for the npy array
+    filename: str = "manual_params.npy"
+    output_dir: str = ""  # where to save; empty -> the uploads dir
+
+
+class LoadParamsRequest(BaseModel):
+    path: str
+    order: list[str] = Field(default_factory=list)  # current qnames, to name npy values
+
+
+@app.post("/api/params/save")
+def save_params(req: SaveParamsRequest) -> dict:
+    """Save the current slider values to a named file (issue #106). Format follows
+    the extension: ``.csv`` -> CSV, else numpy ``.npy`` (default). Saved under the
+    user's output directory, falling back to the uploads dir."""
+    out_dir = _user_func_base_dir(req.output_dir) or str(UPLOAD_DIR)
+    try:
+        path = save_param_values(req.values, req.order, out_dir, req.filename)
+    except ParamIOError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"could not write file: {exc}") from exc
+    return {"path": path}
+
+
+@app.post("/api/params/load")
+def load_params(req: LoadParamsRequest) -> dict:
+    """Load slider values from a ``.npy`` or ``.csv`` file (issue #106). For npy,
+    ``order`` (the current qnames) names the bare array; csv carries its own names."""
+    try:
+        values = load_param_values(req.path, req.order)
+    except ParamIOError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"values": values}
 
 
 @app.post("/api/params_for_id/upload")

@@ -90,6 +90,18 @@ export function useSliders() {
     for (const key of Object.keys(sliders)) sliders[key].value = sliders[key].init
   }
 
+  /**
+   * Apply loaded values ({ qname: value }) onto the sliders, clamped to each
+   * slider's range. Only touches sliders that exist (unknown qnames are ignored);
+   * used by "Reset to saved" after loading an .npy/.csv file (issue #106).
+   */
+  function applyValues(values) {
+    for (const [qname, value] of Object.entries(values || {})) {
+      const slider = sliders[qname]
+      if (slider) slider.value = clamp(value, slider.min, slider.max)
+    }
+  }
+
   function clear() {
     for (const key of Object.keys(sliders)) delete sliders[key]
   }
@@ -101,6 +113,9 @@ export function useSliders() {
     return out
   })
 
+  /** Current qname order — the order an .npy vector is saved/loaded in (#106). */
+  const order = computed(() => Object.keys(sliders))
+
   const count = computed(() => Object.keys(sliders).length)
 
   return {
@@ -109,8 +124,10 @@ export function useSliders() {
     removeSlider,
     setValue,
     resetToInit,
+    applyValues,
     clear,
     paramDict,
+    order,
     count,
   }
 }

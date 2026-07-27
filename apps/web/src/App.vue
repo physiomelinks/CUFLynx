@@ -38,6 +38,8 @@ import {
   setConfig,
   exportPipeline,
   exportPlotting,
+  saveParams,
+  loadParams,
 } from './lib/api'
 import {
   overlayItemsFor,
@@ -45,6 +47,7 @@ import {
   controlledSeries,
   buildExtraPlotCells,
 } from './lib/plot'
+import SaveParamsDialog from './components/SaveParamsDialog.vue'
 import {
   solversForFormat,
   defaultSolverFor,
@@ -761,6 +764,52 @@ function onResetBest() {
   runSimulation()
 }
 
+// --- Save / load slider values to a file (.npy default, .csv) — issue #106 ---
+const saveParamsOpen = ref(false)
+const savedParamsBrowserOpen = ref(false)
+// The last file "Save current" wrote, so "Reset to saved" defaults to it. Persisted
+// so it survives a reload.
+const lastSavedParamsPath = ref(localStorage.getItem('cuflynx-last-saved-params') || '')
+// Where the "Reset to saved" browser opens + pre-selects: the last saved file, or
+// the default manual_params.npy in the output dir.
+const savedParamsStart = computed(
+  () =>
+    lastSavedParamsPath.value ||
+    (outputsDir.value.trim() ? `${outputsDir.value.trim()}/manual_params.npy` : ''),
+)
+
+// "Save current" -> name+format dialog -> write the file (npy in the slider order,
+// or a self-describing csv) under the output directory.
+async function onSaveParams({ filename }) {
+  try {
+    const { path } = await saveParams(
+      sliders.paramDict.value,
+      sliders.order.value,
+      filename,
+      outputsDir.value.trim(),
+    )
+    if (path) {
+      lastSavedParamsPath.value = path
+      localStorage.setItem('cuflynx-last-saved-params', path)
+    }
+  } catch (e) {
+    sim.setError(e?.response?.data?.detail || String(e))
+  }
+}
+
+// "Reset to saved" -> browse for a .npy/.csv -> apply onto the sliders.
+async function onPickSavedParams(path) {
+  savedParamsBrowserOpen.value = false
+  if (!path) return
+  try {
+    const { values } = await loadParams(path, sliders.order.value)
+    sliders.applyValues(values)
+    runSimulation()
+  } catch (e) {
+    sim.setError(e?.response?.data?.detail || String(e))
+  }
+}
+
 function onParamsLoaded(data) {
   paramsForId.importParams(data.params, data.filename)
   // Keep the raw entries (with param_type) + filename for the Edit dialog.
@@ -1074,6 +1123,8 @@ watch(
             @remove="({ qname }) => sliders.removeSlider(qname)"
             @reset-init="onResetInit"
             @reset-best="onResetBest"
+            @save-current="saveParamsOpen = true"
+            @reset-saved="savedParamsBrowserOpen = true"
           />
         </div>
         <div v-show="leftTab === 'sensitivity'" class="left-pane left-pane-scroll">
@@ -1505,6 +1556,21 @@ watch(
       mode="dir"
       title="Where should outputs be saved?"
       @select="(d) => (outputsDir = d)"
+    />
+
+    <!-- Save / load slider values to a file (issue #106). -->
+    <SaveParamsDialog
+      v-model:visible="saveParamsOpen"
+      :output-dir="outputsDir"
+      @save="onSaveParams"
+    />
+    <FileBrowserDialog
+      v-model:visible="savedParamsBrowserOpen"
+      mode="file"
+      title="Load saved parameter values (.npy or .csv)"
+      :start-path="savedParamsStart"
+      :start-dir="outputsDir"
+      @select="onPickSavedParams"
     />
 
     <Dialog

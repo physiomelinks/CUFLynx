@@ -10,6 +10,11 @@ const props = defineProps({
   visible: { type: Boolean, default: false },
   mode: { type: String, default: 'file' }, // 'file' picks a file, 'dir' a folder
   title: { type: String, default: 'Browse' },
+  // Absolute file path to open at (its folder) and pre-select in 'file' mode —
+  // e.g. default "Reset to saved" to the last-saved params file (#106).
+  startPath: { type: String, default: '' },
+  // Absolute folder to open when there's no startPath (else the home dir).
+  startDir: { type: String, default: '' },
 })
 const emit = defineEmits(['update:visible', 'select'])
 
@@ -48,15 +53,21 @@ async function load(p) {
   }
 }
 
-// Open at the user's home dir each time the dialog is shown.
+// Open the folder of `startPath` (pre-selecting that file), else `startDir`, else
+// the user's home dir — each time the dialog is shown.
+function _dirOf(p) {
+  return p.replace(/[/\\][^/\\]*$/, '') || p
+}
 watch(
   () => props.visible,
-  (v) => {
-    if (v) {
-      creatingFolder.value = false
-      newFolderName.value = ''
-      load(null)
-    }
+  async (v) => {
+    if (!v) return
+    creatingFolder.value = false
+    newFolderName.value = ''
+    const openAt = props.startPath ? _dirOf(props.startPath) : props.startDir || null
+    await load(openAt)
+    // load() clears selectedFile; restore the pre-selection afterwards.
+    if (props.mode === 'file' && props.startPath) selectedFile.value = props.startPath
   },
   { immediate: true },
 )
