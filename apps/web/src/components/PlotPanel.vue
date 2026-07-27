@@ -12,6 +12,7 @@ import {
 } from 'chart.js'
 import { buildChartData } from '../lib/plot'
 import { renderMath } from '../lib/math'
+import { fmtSci, fmtAxis } from '../lib/format'
 
 ChartJS.register(
   LinearScale,
@@ -46,19 +47,38 @@ const chartData = computed(() =>
   }),
 )
 
+// Model values span a huge range (compliances ~1e-9, large resistances), so raw
+// JS numbers like 0.0000000015 or 1500000 are unreadable in the cursor tooltip
+// and on the ticks. Format both with the shared fmtSci/fmtAxis (issue #107).
+const sciTicks = { callback: (v) => fmtAxis(v) }
+
 // Custom HTML legend (below) renders LaTeX labels, so disable the canvas one.
 const chartOptions = {
   responsive: true,
   maintainAspectRatio: false,
   animation: false,
   scales: {
-    x: { type: 'linear', title: { display: true, text: 'time' } },
-    y: { type: 'linear' },
+    x: { type: 'linear', title: { display: true, text: 'time' }, ticks: sciTicks },
+    y: { type: 'linear', ticks: sciTicks },
   },
-  plugins: { legend: { display: false } },
+  plugins: {
+    legend: { display: false },
+    tooltip: {
+      callbacks: {
+        // Title is the shared x value of the hovered points.
+        title: (items) => (items.length ? fmtSci(items[0].parsed.x) : ''),
+        // The canvas tooltip can't render LaTeX, so use the plain `label`.
+        label: (ctx) => {
+          const value = fmtSci(ctx.parsed.y)
+          const name = ctx.dataset?.label
+          return name ? `${name}: ${value}` : value
+        },
+      },
+    },
+  },
 }
 
-defineExpose({ chartData })
+defineExpose({ chartData, chartOptions })
 </script>
 
 <template>

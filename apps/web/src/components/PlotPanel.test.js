@@ -61,6 +61,48 @@ describe('PlotPanel', () => {
     expect(sim[0].label).toBe('Lotka_Volterra_module/x')
   })
 
+  // Scientific notation in the cursor tooltips (issue #107)
+  describe('tooltip formatting', () => {
+    const optionsOf = () =>
+      mount(PlotPanel, { props: { simResult }, global: { stubs } }).vm.chartOptions
+
+    const labelFor = (y, label = 'x') =>
+      optionsOf().plugins.tooltip.callbacks.label({
+        dataset: { label },
+        parsed: { x: 0, y },
+      })
+
+    it('formats tiny and huge y-values in scientific notation', () => {
+      expect(labelFor(1.5e-9)).toBe('x: 1.5e-9')
+      expect(labelFor(1.5e6)).toBe('x: 1.5e6')
+    })
+
+    it('leaves mid-range y-values plain', () => {
+      expect(labelFor(2.5)).toBe('x: 2.5')
+    })
+
+    it('keeps the plain dataset label, falling back to the bare value', () => {
+      expect(labelFor(2.5, 'Lotka_Volterra_module/x')).toBe(
+        'Lotka_Volterra_module/x: 2.5',
+      )
+      expect(labelFor(2.5, '')).toBe('2.5')
+    })
+
+    it('formats the hovered x-value in the tooltip title', () => {
+      const title = optionsOf().plugins.tooltip.callbacks.title
+      expect(title([{ parsed: { x: 1.5e-9, y: 1 } }])).toBe('1.5e-9')
+      expect(title([{ parsed: { x: 2.5, y: 1 } }])).toBe('2.5')
+      expect(title([])).toBe('')
+    })
+
+    it('formats both axis ticks with the concise scientific formatter', () => {
+      const { x, y } = optionsOf().scales
+      expect(y.ticks.callback(1.5e-9)).toBe('1.5e-9')
+      expect(y.ticks.callback(2.5)).toBe('2.5')
+      expect(x.ticks.callback(1.5e6)).toBe('1.5e6')
+    })
+  })
+
   it('shows no remove button by default', () => {
     const wrapper = mount(PlotPanel, {
       props: { simResult, title: 'x' },
