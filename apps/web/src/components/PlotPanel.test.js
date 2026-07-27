@@ -61,6 +61,84 @@ describe('PlotPanel', () => {
     expect(sim[0].label).toBe('Lotka_Volterra_module/x')
   })
 
+  // Scientific notation in the cursor tooltips (issue #107)
+  describe('tooltip formatting', () => {
+    const optionsOf = () =>
+      mount(PlotPanel, { props: { simResult }, global: { stubs } }).vm.chartOptions
+
+    const labelFor = (y, label = 'x') =>
+      optionsOf().plugins.tooltip.callbacks.label({
+        dataset: { label },
+        parsed: { x: 0, y },
+      })
+
+    it('formats tiny and huge y-values in scientific notation', () => {
+      expect(labelFor(1.5e-9)).toBe('x: 1.5e-9')
+      expect(labelFor(1.5e6)).toBe('x: 1.5e6')
+    })
+
+    it('leaves mid-range y-values plain', () => {
+      expect(labelFor(2.5)).toBe('x: 2.5')
+    })
+
+    it('keeps the plain dataset label, falling back to the bare value', () => {
+      expect(labelFor(2.5, 'Lotka_Volterra_module/x')).toBe(
+        'Lotka_Volterra_module/x: 2.5',
+      )
+      expect(labelFor(2.5, '')).toBe('2.5')
+    })
+
+    it('formats the hovered x-value in the tooltip title', () => {
+      const title = optionsOf().plugins.tooltip.callbacks.title
+      expect(title([{ parsed: { x: 1.5e-9, y: 1 } }])).toBe('1.5e-9')
+      expect(title([{ parsed: { x: 2.5, y: 1 } }])).toBe('2.5')
+      expect(title([])).toBe('')
+    })
+
+    it('shows the time to 3 significant figures, unlike the y-value', () => {
+      const options = optionsOf()
+      const title = options.plugins.tooltip.callbacks.title
+      // The time only has to locate the sample, so it is cut short...
+      expect(title([{ parsed: { x: 0.123456, y: 1 } }])).toBe('0.123')
+      expect(title([{ parsed: { x: 1.23456e-9, y: 1 } }])).toBe('1.23e-9')
+      expect(title([{ parsed: { x: 0.35000000000000003, y: 1 } }])).toBe('0.35')
+      // ...while the y-value it sits above keeps fmtSci's fuller precision.
+      expect(
+        options.plugins.tooltip.callbacks.label({
+          dataset: { label: '' },
+          parsed: { x: 0, y: 1.23456e-9 },
+        }),
+      ).toBe('1.2346e-9')
+    })
+
+    it('formats both axis ticks with the concise scientific formatter', () => {
+      const { x, y } = optionsOf().scales
+      expect(y.ticks.callback(1.5e-9)).toBe('1.5e-9')
+      expect(y.ticks.callback(2.5)).toBe('2.5')
+      expect(x.ticks.callback(1.5e6)).toBe('1.5e6')
+    })
+
+    it('reports the nearest sample without requiring the cursor to hit it', () => {
+      // Hit-testing is per sample, not per segment, so on a steep stretch (worse
+      // on a maximized plot) the gap between consecutive samples is dead space
+      // however wide hitRadius is. intersect:false makes Chart.js fall back to
+      // plain nearest-by-distance, so the tooltip tracks the curve continuously.
+      expect(optionsOf().interaction).toMatchObject({
+        mode: 'nearest',
+        intersect: false,
+      })
+    })
+
+    it('widens the point hit radius so the cursor need not be exactly on the line', () => {
+      // Traces draw with pointRadius 0 and Chart.js hit-tests with
+      // distance^2 < (hitRadius + radius)^2, so the stock hitRadius of 1 gives a
+      // 1px target. Anything meaningfully larger makes the value easy to read off.
+      const hit = optionsOf().elements.point.hitRadius
+      expect(hit).toBeGreaterThan(1)
+      expect(hit).toBeLessThanOrEqual(20)
+    })
+  })
+
   it('shows no remove button by default', () => {
     const wrapper = mount(PlotPanel, {
       props: { simResult, title: 'x' },

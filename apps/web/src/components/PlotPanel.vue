@@ -12,6 +12,7 @@ import {
 } from 'chart.js'
 import { buildChartData } from '../lib/plot'
 import { renderMath } from '../lib/math'
+import { fmtSci, fmtAxis, fmtSigFigs } from '../lib/format'
 
 ChartJS.register(
   LinearScale,
@@ -46,19 +47,56 @@ const chartData = computed(() =>
   }),
 )
 
+// Model values span a huge range (compliances ~1e-9, large resistances), so raw
+// JS numbers like 0.0000000015 or 1500000 are unreadable in the cursor tooltip
+// and on the ticks. Format both with the shared fmtSci/fmtAxis (issue #107).
+const sciTicks = { callback: (v) => fmtAxis(v) }
+
+// Reading a value off a trace should not require aiming. Chart.js hit-tests each
+// *sample* with `distance^2 < (hitRadius + radius)^2` and the traces draw with
+// pointRadius 0, so by default the cursor had to land inside a 1px circle around
+// a sample. Widening that radius alone isn't enough: hit-testing is per point,
+// not per line segment, so on a steep stretch consecutive samples sit far apart
+// vertically and the gap between them stays dead — and maximizing the plot
+// (issue #115) stretches those gaps further, which is where it was worst.
+//
+// `intersect: false` drops the containment test altogether: Chart.js then reports
+// the nearest sample by distance wherever the cursor is in the plot area, so the
+// tooltip tracks the curve continuously. hitRadius still governs the inRange path
+// used for hover styling, so it stays widened.
+const HIT_RADIUS = 12
+
 // Custom HTML legend (below) renders LaTeX labels, so disable the canvas one.
 const chartOptions = {
   responsive: true,
   maintainAspectRatio: false,
   animation: false,
+  interaction: { mode: 'nearest', axis: 'xy', intersect: false },
+  elements: { point: { hitRadius: HIT_RADIUS } },
   scales: {
-    x: { type: 'linear', title: { display: true, text: 'time' } },
-    y: { type: 'linear' },
+    x: { type: 'linear', title: { display: true, text: 'time' }, ticks: sciTicks },
+    y: { type: 'linear', ticks: sciTicks },
   },
-  plugins: { legend: { display: false } },
+  plugins: {
+    legend: { display: false },
+    tooltip: {
+      callbacks: {
+        // Title is the shared x value of the hovered points. The time only needs
+        // enough figures to locate the sample, so 3 s.f. rather than fmtSci's
+        // fuller precision — it also keeps it visually distinct from the y value.
+        title: (items) => (items.length ? fmtSigFigs(items[0].parsed.x, 3) : ''),
+        // The canvas tooltip can't render LaTeX, so use the plain `label`.
+        label: (ctx) => {
+          const value = fmtSci(ctx.parsed.y)
+          const name = ctx.dataset?.label
+          return name ? `${name}: ${value}` : value
+        },
+      },
+    },
+  },
 }
 
-defineExpose({ chartData })
+defineExpose({ chartData, chartOptions })
 </script>
 
 <template>
