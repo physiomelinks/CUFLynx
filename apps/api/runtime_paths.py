@@ -276,7 +276,18 @@ def _relocate_bundle_extraction_env(env: dict) -> None:
     Mutates ``env`` in place. Only meaningful when the child processes are this
     same frozen executable (see :func:`runner_launch_env`). No-op if the cache dir
     can't be created, leaving the bundle's default ``$TMPDIR`` behaviour intact.
+
+    **Not on Windows.** The exhausted-``$TMPDIR`` crash this guards against is a
+    POSIX/HPC concern, and TEMP also drives where Myokit JIT-compiles each model.
+    The per-build cache path (``%LOCALAPPDATA%\\CUFLynx\\onefile-cache\\<key>``) is
+    long and un-shortened, and distutils mirrors that absolute path under
+    ``build\\temp\\Release\\…`` — which blows past Windows MAX_PATH and fails the
+    MSVC link with ``LNK1104: cannot open … source.exp`` (calibration/sensitivity
+    die in the packaged app). The default ``%TEMP%`` is short (8.3) and shallow, so
+    leave it alone on Windows.
     """
+    if sys.platform == "win32":
+        return
     cache = _ensure_extraction_cache_dir()
     if cache is not None:
         cache_str = str(cache)

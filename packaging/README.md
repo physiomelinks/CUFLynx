@@ -24,6 +24,16 @@ sets **`TMPDIR` / `TMP` / `TEMP` to a roomy per-build user-cache dir** in the
 rank environment, relocating every rank's extraction off the volatile system temp
 onto a predictable location that won't run out of space.
 
+**POSIX only — never on Windows.** TEMP also drives where Myokit JIT-compiles each
+model, and the per-build cache path (`%LOCALAPPDATA%\CUFLynx\onefile-cache\<key>`)
+is long and un-shortened. distutils mirrors that absolute path under
+`build\temp\Release\…`, which blows past Windows MAX_PATH and fails the MSVC link
+with `LNK1104: cannot open … source.exp` — breaking calibration/sensitivity in the
+packaged app (caught by the Windows analysis-e2e on the v0.1.6 tag). The
+exhausted-`$TMPDIR` crash this guards against is a POSIX/HPC concern anyway, and
+Windows's default `%TEMP%` is short (8.3) and shallow, so it's left untouched
+there.
+
 **Cache dir + version keying.** The dir is
 `<user-cache>/CUFLynx/onefile-cache/<key>`, where `<user-cache>` is the OS
 convention (`$XDG_CACHE_HOME`/`~/.cache`, `~/Library/Caches`,
