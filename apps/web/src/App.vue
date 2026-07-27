@@ -46,6 +46,8 @@ import {
   attachOutputSeries,
   controlledSeries,
   buildExtraPlotCells,
+  unitForVars,
+  timeUnit,
 } from './lib/plot'
 import SaveParamsDialog from './components/SaveParamsDialog.vue'
 import {
@@ -416,6 +418,11 @@ const plottableVariables = computed(() => {
   return [...(v.odes ?? []), ...(v.algebraic ?? [])]
 })
 
+// CellML units per variable (qname -> units identifier), used to label plot
+// axes (#125). The x-axis unit is the model's time variable's unit.
+const modelUnits = computed(() => model.variables.value.units ?? {})
+const timeUnitLabel = computed(() => timeUnit(modelUnits.value))
+
 // Extra-plot qnames to append to a run's requested outputs so the chosen
 // variables come back from the engine.
 const extraOutputNames = computed(() => [
@@ -476,7 +483,7 @@ function removeExtraPlot(id) {
 // Extra-plot cells for a group, each a single-variable plot built from that
 // group's own simulation outputs.
 function extraCellsFor(groupKey, time, outputs) {
-  return buildExtraPlotCells(extraPlots.value, groupKey, time, outputs)
+  return buildExtraPlotCells(extraPlots.value, groupKey, time, outputs, modelUnits.value)
 }
 
 // Calibration / sensitivity
@@ -900,6 +907,7 @@ const plotGroups = computed(() => {
           key: `${e}:ctrl:${c.qname}`,
           title: c.label,
           varLabel: c.label,
+          yUnit: unitForVars(modelUnits.value, [c.qname]),
           controlled: true,
           simResult: { time: c.time, outputs: { [c.qname]: c.values } },
           dataItems: [],
@@ -911,6 +919,7 @@ const plotGroups = computed(() => {
           key: `${e}:${v.qname}`,
           title: v.label,
           varLabel: v.label,
+          yUnit: unitForVars(modelUnits.value, [v.qname]),
           controlled: false,
           simResult: { time: exp.time, outputs: { [v.qname]: exp.outputs?.[v.qname] ?? [] } },
           dataItems: attachOutputSeries(
@@ -935,6 +944,7 @@ const plotGroups = computed(() => {
       key: v.qname,
       title: v.label,
       varLabel: v.label,
+      yUnit: unitForVars(modelUnits.value, [v.qname]),
       controlled: false,
       simResult: { time: sim.result.value.time, outputs: { [v.qname]: out[v.qname] ?? [] } },
       dataItems: attachOutputSeries(
@@ -961,6 +971,8 @@ const plotGroups = computed(() => {
         key: 'single',
         title: model.name.value ?? '',
         varLabel: '',
+        // Combined plot: only annotated when every trace shares one unit.
+        yUnit: unitForVars(modelUnits.value, Object.keys(mainOutputs)),
         controlled: false,
         simResult: { time: sim.result.value.time, outputs: mainOutputs },
         dataItems: [],
@@ -1263,6 +1275,8 @@ watch(
                 class="plot-cell"
                 :title="cell.title"
                 :var-label="cell.varLabel"
+                :y-unit="cell.yUnit ?? ''"
+                :x-unit="timeUnitLabel"
                 :tag="cell.controlled ? 'controlled' : ''"
                 :stepped="cell.controlled"
                 :sim-result="cell.simResult"

@@ -28,6 +28,11 @@ const props = defineProps({
   dataItems: { type: Array, default: () => [] },
   title: { type: String, default: '' },
   varLabel: { type: String, default: '' },
+  // CellML units for the plotted variable and for the time axis (#125), shown
+  // verbatim (they are identifiers such as `mmHg` / `per_second`, not typeset
+  // expressions). Empty or `dimensionless` suppresses the annotation.
+  yUnit: { type: String, default: '' },
+  xUnit: { type: String, default: '' },
   tag: { type: String, default: '' },
   stepped: { type: Boolean, default: false },
   removable: { type: Boolean, default: false },
@@ -66,16 +71,30 @@ const sciTicks = { callback: (v) => fmtAxis(v) }
 // used for hover styling, so it stays widened.
 const HIT_RADIUS = 12
 
+// A unit worth showing: blank and `dimensionless` annotate nothing.
+function shown(unit) {
+  const u = (unit ?? '').trim()
+  return u && u !== 'dimensionless' ? u : ''
+}
+
+// Axis titles are plain canvas text (no LaTeX), so they use the plain label.
+const xTitle = computed(() => (shown(props.xUnit) ? `time (${shown(props.xUnit)})` : 'time'))
+const yTitle = computed(() => {
+  const u = shown(props.yUnit)
+  if (!u) return { display: false }
+  return { display: true, text: props.varLabel ? `${props.varLabel} (${u})` : u }
+})
+
 // Custom HTML legend (below) renders LaTeX labels, so disable the canvas one.
-const chartOptions = {
+const chartOptions = computed(() => ({
   responsive: true,
   maintainAspectRatio: false,
   animation: false,
   interaction: { mode: 'nearest', axis: 'xy', intersect: false },
   elements: { point: { hitRadius: HIT_RADIUS } },
   scales: {
-    x: { type: 'linear', title: { display: true, text: 'time' }, ticks: sciTicks },
-    y: { type: 'linear', ticks: sciTicks },
+    x: { type: 'linear', title: { display: true, text: xTitle.value }, ticks: sciTicks },
+    y: { type: 'linear', title: yTitle.value, ticks: sciTicks },
   },
   plugins: {
     legend: { display: false },
@@ -94,7 +113,7 @@ const chartOptions = {
       },
     },
   },
-}
+}))
 
 defineExpose({ chartData, chartOptions })
 </script>

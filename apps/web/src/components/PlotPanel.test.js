@@ -188,6 +188,53 @@ describe('PlotPanel', () => {
     expect(btn.find('.pi-window-minimize').exists()).toBe(true)
   })
 
+  // Axis units (issue #125)
+  describe('axis units', () => {
+    const opts = (props) =>
+      mount(PlotPanel, { props: { simResult, ...props }, global: { stubs } }).vm.chartOptions
+
+    it('labels the y-axis with the variable name and its units', () => {
+      const y = opts({ varLabel: 'p_o2', yUnit: 'kPa' }).scales.y.title
+      expect(y.display).toBe(true)
+      expect(y.text).toBe('p_o2 (kPa)')
+    })
+
+    it('shows the units alone when there is no variable label', () => {
+      const y = opts({ varLabel: '', yUnit: 'mmHg' }).scales.y.title
+      expect(y.display).toBe(true)
+      expect(y.text).toBe('mmHg')
+    })
+
+    it('falls back to an unlabelled y-axis when the units are unknown', () => {
+      expect(opts({ varLabel: 'x' }).scales.y.title.display).toBe(false)
+    })
+
+    it('suppresses the y-axis title for dimensionless variables', () => {
+      expect(opts({ varLabel: 'x', yUnit: 'dimensionless' }).scales.y.title.display).toBe(
+        false,
+      )
+    })
+
+    it('labels the time axis with the model time units', () => {
+      expect(opts({ xUnit: 'second' }).scales.x.title.text).toBe('time (second)')
+    })
+
+    it('keeps the bare time label when the time units are unknown', () => {
+      expect(opts({}).scales.x.title.text).toBe('time')
+      expect(opts({ xUnit: 'dimensionless' }).scales.x.title.text).toBe('time')
+    })
+
+    it('reacts to a units change', async () => {
+      const wrapper = mount(PlotPanel, {
+        props: { simResult, varLabel: 'x' },
+        global: { stubs },
+      })
+      expect(wrapper.vm.chartOptions.scales.y.title.display).toBe(false)
+      await wrapper.setProps({ yUnit: 'mM' })
+      expect(wrapper.vm.chartOptions.scales.y.title.text).toBe('x (mM)')
+    })
+  })
+
   it('remounts the chart when maximize toggles so Chart.js resizes (issue #115)', async () => {
     // Chart.js keeps the enlarged canvas on restore, leaving the axis stretched;
     // a key tied to `maximized` forces a fresh chart. Assert the Line instance is

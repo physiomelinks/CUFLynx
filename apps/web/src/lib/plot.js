@@ -195,18 +195,46 @@ export function controlledSeries(protocolInfo, expIdx) {
  * those whose `groupKey` matches build a single-variable cell from this group's
  * own `outputs`/`time`.
  */
-export function buildExtraPlotCells(extraPlots, groupKey, time, outputs) {
+export function buildExtraPlotCells(extraPlots, groupKey, time, outputs, units) {
   return (extraPlots ?? [])
     .filter((p) => p.groupKey === groupKey)
     .map((p) => ({
       key: `extra:${p.id}`,
       title: p.label,
       varLabel: p.label,
+      yUnit: unitForVars(units, [p.qname]),
       controlled: false,
       removeId: p.id,
       simResult: { time, outputs: { [p.qname]: outputs?.[p.qname] ?? [] } },
       dataItems: [],
     }))
+}
+
+/**
+ * The units to annotate a plot's y-axis with, given the model's qname -> units
+ * map and the model variables drawn in that cell (#125).
+ *
+ * The first variable is the primary one. A cell showing several variables is
+ * only annotated when they all share the same units — mixing (say) mM and kPa
+ * under one axis label would be worse than no label at all. Returns '' when the
+ * units are unknown, so the caller can fall back to an unlabelled axis.
+ */
+export function unitForVars(units, qnames) {
+  const names = (qnames ?? []).filter(Boolean)
+  if (!units || !names.length) return ''
+  const first = units[names[0]] ?? ''
+  if (!first) return ''
+  for (const n of names.slice(1)) if ((units[n] ?? '') !== first) return ''
+  return first
+}
+
+/** The model's time units, looked up from whichever variable is named time/t. */
+export function timeUnit(units) {
+  if (!units) return ''
+  for (const [qname, u] of Object.entries(units)) {
+    if (u && TIME_NAMES.has(String(qname).split('/').pop())) return u
+  }
+  return ''
 }
 
 /** data_items overlaying a given (experiment, variable) plot cell. */

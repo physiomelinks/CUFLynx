@@ -11,6 +11,8 @@ import {
   buildExtraPlotCells,
   lighten,
   shadeForStart,
+  unitForVars,
+  timeUnit,
 } from './plot'
 
 // Mirrors the SN_simple obs_data shape (3 experiments, predictions + overlays).
@@ -294,6 +296,47 @@ describe('buildExtraPlotCells', () => {
   it('returns nothing when no extras match', () => {
     expect(buildExtraPlotCells(extras, 'data-only', time, outputs)).toEqual([])
     expect(buildExtraPlotCells(undefined, 'exp0', time, outputs)).toEqual([])
+  })
+
+  it('carries the plotted variable units onto the cell (issue #125)', () => {
+    const units = { 'm/x': 'mmHg', 'm/y': 'mM' }
+    const [cell] = buildExtraPlotCells(extras, 'exp1', time, outputs, units)
+    expect(cell.yUnit).toBe('mM')
+    expect(buildExtraPlotCells(extras, 'exp1', time, outputs)[0].yUnit).toBe('')
+  })
+})
+
+describe('unitForVars / timeUnit (issue #125)', () => {
+  const units = {
+    'main/t': 'second',
+    'main/p_o2': 'kPa',
+    'main/c_o2': 'mM',
+    'main/other': 'mM',
+  }
+
+  it('returns the units of the primary variable', () => {
+    expect(unitForVars(units, ['main/p_o2'])).toBe('kPa')
+  })
+
+  it('returns the shared units when every plotted variable agrees', () => {
+    expect(unitForVars(units, ['main/c_o2', 'main/other'])).toBe('mM')
+  })
+
+  it('returns nothing when the plotted variables have mixed units', () => {
+    expect(unitForVars(units, ['main/p_o2', 'main/c_o2'])).toBe('')
+  })
+
+  it('degrades gracefully with unknown variables or no units map', () => {
+    expect(unitForVars(units, ['main/nope'])).toBe('')
+    expect(unitForVars(units, [])).toBe('')
+    expect(unitForVars(undefined, ['main/p_o2'])).toBe('')
+  })
+
+  it('finds the time units from a variable named time or t', () => {
+    expect(timeUnit(units)).toBe('second')
+    expect(timeUnit({ 'environment/time': 'ms', 'm/x': 'mM' })).toBe('ms')
+    expect(timeUnit({ 'm/x': 'mM' })).toBe('')
+    expect(timeUnit(undefined)).toBe('')
   })
 })
 

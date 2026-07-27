@@ -7,7 +7,7 @@ export function useModel() {
   // Prefix of the uploaded .cellml filename (extension stripped), shown in the
   // top bar; falls back to the model name when no filename is available.
   const filePrefix = ref(null)
-  const variables = ref({ params: [], odes: [], algebraic: [], all_names: [] })
+  const variables = ref({ params: [], odes: [], algebraic: [], all_names: [], units: {} })
 
   function setModel({ model_id, name: modelName, filename }) {
     modelId.value = model_id
@@ -22,6 +22,8 @@ export function useModel() {
       algebraic: vars.algebraic ?? [],
       all_names: vars.all_names ?? [],
       initial_values: vars.initial_values ?? {},
+      // qname -> CellML units identifier, used to annotate plot axes (#125).
+      units: vars.units ?? {},
     }
   }
 

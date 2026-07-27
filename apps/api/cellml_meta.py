@@ -34,6 +34,12 @@ class CellMLModel:
     algebraic: list[str] = field(default_factory=list)
     all_names: list[str] = field(default_factory=list)
     initial_values: dict[str, float] = field(default_factory=dict)
+    # qname -> the CellML ``units`` identifier declared on the <variable>
+    # (e.g. "mmHg", "per_second", "dimensionless"). Variables that declare no
+    # units attribute are simply absent. Names are reported verbatim: CellML
+    # unit names are identifiers, not typeset expressions, so no pretty-printing
+    # or unit algebra is attempted here.
+    units: dict[str, str] = field(default_factory=dict)
 
     @property
     def variable_count(self) -> int:
@@ -47,6 +53,7 @@ class CellMLModel:
             "algebraic": self.algebraic,
             "all_names": self.all_names,
             "initial_values": self.initial_values,
+            "units": self.units,
             "variable_count": self.variable_count,
         }
 
@@ -136,6 +143,10 @@ def parse_cellml(data: bytes | str) -> CellMLModel:
                 continue
             qname = f"{comp_name}/{var_name}"
             model.all_names.append(qname)
+
+            units = var.get("units")
+            if units:
+                model.units[qname] = units
 
             init = var.get("initial_value")
             if init is not None:
