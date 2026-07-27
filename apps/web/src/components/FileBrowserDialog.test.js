@@ -131,4 +131,32 @@ describe('FileBrowserDialog', () => {
     await wrapper.find('[data-testid="fb-confirm"]').trigger('click')
     expect(wrapper.emitted('select')[0]).toEqual(['/data/runs'])
   })
+
+  it('opens at startPath\'s folder and pre-selects that file (#106)', async () => {
+    listDir.mockResolvedValue({
+      path: '/out',
+      parent: '/',
+      entries: [{ name: 'manual_params.npy', path: '/out/manual_params.npy', is_dir: false }],
+    })
+    const wrapper = mount(FileBrowserDialog, {
+      props: { visible: true, mode: 'file', startPath: '/out/manual_params.npy' },
+      global: { stubs },
+    })
+    await flushPromises()
+    // Opened the file's folder, not the home dir.
+    expect(listDir).toHaveBeenCalledWith('/out', false)
+    // Confirm without clicking anything -> the pre-selected file is returned.
+    await wrapper.find('[data-testid="fb-confirm"]').trigger('click')
+    expect(wrapper.emitted('select')[0]).toEqual(['/out/manual_params.npy'])
+  })
+
+  it('falls back to startDir when no startPath, else home', async () => {
+    listDir.mockResolvedValue({ path: '/out', parent: '/', entries: [] })
+    mount(FileBrowserDialog, {
+      props: { visible: true, mode: 'file', startDir: '/out' },
+      global: { stubs },
+    })
+    await flushPromises()
+    expect(listDir).toHaveBeenCalledWith('/out', false)
+  })
 })

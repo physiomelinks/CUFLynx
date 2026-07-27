@@ -767,17 +767,31 @@ function onResetBest() {
 // --- Save / load slider values to a file (.npy default, .csv) — issue #106 ---
 const saveParamsOpen = ref(false)
 const savedParamsBrowserOpen = ref(false)
+// The last file "Save current" wrote, so "Reset to saved" defaults to it. Persisted
+// so it survives a reload.
+const lastSavedParamsPath = ref(localStorage.getItem('cuflynx-last-saved-params') || '')
+// Where the "Reset to saved" browser opens + pre-selects: the last saved file, or
+// the default manual_params.npy in the output dir.
+const savedParamsStart = computed(
+  () =>
+    lastSavedParamsPath.value ||
+    (outputsDir.value.trim() ? `${outputsDir.value.trim()}/manual_params.npy` : ''),
+)
 
 // "Save current" -> name+format dialog -> write the file (npy in the slider order,
 // or a self-describing csv) under the output directory.
 async function onSaveParams({ filename }) {
   try {
-    await saveParams(
+    const { path } = await saveParams(
       sliders.paramDict.value,
       sliders.order.value,
       filename,
       outputsDir.value.trim(),
     )
+    if (path) {
+      lastSavedParamsPath.value = path
+      localStorage.setItem('cuflynx-last-saved-params', path)
+    }
   } catch (e) {
     sim.setError(e?.response?.data?.detail || String(e))
   }
@@ -1554,6 +1568,8 @@ watch(
       v-model:visible="savedParamsBrowserOpen"
       mode="file"
       title="Load saved parameter values (.npy or .csv)"
+      :start-path="savedParamsStart"
+      :start-dir="outputsDir"
       @select="onPickSavedParams"
     />
 
