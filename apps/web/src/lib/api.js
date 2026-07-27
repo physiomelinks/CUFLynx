@@ -169,6 +169,26 @@ export async function uploadParamsForId(file, modelId) {
   return data
 }
 
+// Save the current slider values to a named file (issue #106). Format follows the
+// filename extension: `.csv` -> CSV, else numpy `.npy` (default). `order` is the
+// qname order for the npy array. Returns { path }.
+export async function saveParams(values, order, filename, outputDir = '') {
+  const { data } = await axios.post(url('/api/params/save'), {
+    values,
+    order,
+    filename,
+    output_dir: outputDir || '',
+  })
+  return data
+}
+
+// Load slider values from a .npy or .csv file. For npy, `order` (the current
+// qnames) names the bare array. Returns { values: { qname: value } }.
+export async function loadParams(path, order = []) {
+  const { data } = await axios.post(url('/api/params/load'), { path, order })
+  return data
+}
+
 export async function getCalibrationDefaults() {
   const { data } = await axios.get(url('/api/calibration/defaults'))
   return data

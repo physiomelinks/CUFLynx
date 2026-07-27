@@ -1,4 +1,4 @@
-import { reactive, ref, computed } from 'vue'
+import { reactive, computed } from 'vue'
 
 const LOG_RANGE_THRESHOLD = 1e4
 const LOG_MIN_THRESHOLD = 1e-3
@@ -57,10 +57,6 @@ export function sliderToValue(s, pos) {
  */
 export function useSliders() {
   const sliders = reactive({})
-  // A user-locked snapshot of slider values ({ qname: value }), or null when
-  // none has been saved. Lets users "lock in" arbitrary values they were testing
-  // and jump back to them after further manual perturbation (issue #106).
-  const saved = ref(null)
 
   function addSlider(qname, opts = {}) {
     const min = opts.min ?? 0
@@ -94,39 +90,20 @@ export function useSliders() {
     for (const key of Object.keys(sliders)) sliders[key].value = sliders[key].init
   }
 
-  /** Lock in the current slider values as the saved snapshot. */
-  function saveSnapshot() {
-    const snap = {}
-    for (const key of Object.keys(sliders)) snap[key] = sliders[key].value
-    saved.value = snap
-    return snap
-  }
-
   /**
-   * Restore slider values from the saved snapshot (clamped to each slider's
-   * range). Only touches sliders that still exist. No-op without a snapshot.
+   * Apply loaded values ({ qname: value }) onto the sliders, clamped to each
+   * slider's range. Only touches sliders that exist (unknown qnames are ignored);
+   * used by "Reset to saved" after loading an .npy/.csv file (issue #106).
    */
-  function resetToSaved() {
-    if (!saved.value) return
-    for (const [qname, value] of Object.entries(saved.value)) {
+  function applyValues(values) {
+    for (const [qname, value] of Object.entries(values || {})) {
       const slider = sliders[qname]
       if (slider) slider.value = clamp(value, slider.min, slider.max)
     }
   }
 
-  /** Set (or restore, e.g. from localStorage) the saved snapshot. */
-  function setSaved(snap) {
-    saved.value = snap && Object.keys(snap).length ? { ...snap } : null
-  }
-
-  /** Forget the saved snapshot. */
-  function clearSaved() {
-    saved.value = null
-  }
-
   function clear() {
     for (const key of Object.keys(sliders)) delete sliders[key]
-    saved.value = null
   }
 
   /** Param dict ({ qname: value }) for /simulate and /protocol/run. */
@@ -136,27 +113,21 @@ export function useSliders() {
     return out
   })
 
-  const count = computed(() => Object.keys(sliders).length)
+  /** Current qname order — the order an .npy vector is saved/loaded in (#106). */
+  const order = computed(() => Object.keys(sliders))
 
-  /** Whether a saved snapshot exists (gates "Reset to saved" / "Export"). */
-  const hasSaved = computed(
-    () => saved.value != null && Object.keys(saved.value).length > 0,
-  )
+  const count = computed(() => Object.keys(sliders).length)
 
   return {
     sliders,
-    saved,
     addSlider,
     removeSlider,
     setValue,
     resetToInit,
-    saveSnapshot,
-    resetToSaved,
-    setSaved,
-    clearSaved,
+    applyValues,
     clear,
     paramDict,
+    order,
     count,
-    hasSaved,
   }
 }

@@ -9,18 +9,14 @@ const props = defineProps({
   sliders: { type: Object, default: () => ({}) },
   // Whether a calibration best-fit is available (gates "Reset to best fit").
   hasBestFit: { type: Boolean, default: false },
-  // Whether a user-saved snapshot exists (gates "Reset to saved" / "Export").
-  hasSaved: { type: Boolean, default: false },
 })
 const emit = defineEmits([
   'update',
   'remove',
-  'import-csv',
   'reset-init',
   'reset-best',
-  'save-snapshot',
+  'save-current',
   'reset-saved',
-  'export-snapshot',
 ])
 
 const entries = computed(() => Object.values(props.sliders))
@@ -41,66 +37,6 @@ function onValue(qname, value) {
   <section class="control-panel">
     <header class="panel-header">
       <h2>Parameters</h2>
-      <div class="panel-actions">
-        <Button
-          label="Reset to init"
-          icon="pi pi-undo"
-          size="small"
-          text
-          data-testid="reset-init"
-          title="Reset all parameter values to their initial values"
-          :disabled="entries.length === 0"
-          @click="emit('reset-init')"
-        />
-        <Button
-          label="Reset to best fit"
-          icon="pi pi-star"
-          size="small"
-          text
-          data-testid="reset-best"
-          title="Reset all parameter values to the latest calibration best-fit"
-          :disabled="!hasBestFit || entries.length === 0"
-          @click="emit('reset-best')"
-        />
-        <Button
-          label="Save current"
-          icon="pi pi-bookmark"
-          size="small"
-          text
-          data-testid="save-snapshot"
-          title="Lock in the current parameter values as a saved snapshot"
-          :disabled="entries.length === 0"
-          @click="emit('save-snapshot')"
-        />
-        <Button
-          label="Reset to saved"
-          icon="pi pi-history"
-          size="small"
-          text
-          data-testid="reset-saved"
-          title="Reset all parameter values to the saved snapshot"
-          :disabled="!hasSaved || entries.length === 0"
-          @click="emit('reset-saved')"
-        />
-        <Button
-          label="Export values"
-          icon="pi pi-download"
-          size="small"
-          text
-          data-testid="export-snapshot"
-          title="Download the saved parameter values as a CSV"
-          :disabled="!hasSaved"
-          @click="emit('export-snapshot')"
-        />
-        <Button
-          label="Import CSV"
-          icon="pi pi-upload"
-          size="small"
-          text
-          data-testid="import-csv"
-          @click="emit('import-csv')"
-        />
-      </div>
     </header>
 
     <p v-if="entries.length === 0" class="empty-hint">
@@ -145,6 +81,50 @@ function onValue(qname, value) {
       </div>
       <div class="range-hint">[{{ s.min }}, {{ s.max }}]</div>
     </div>
+
+    <!-- Commands below the parameters, two per row (issue #106). -->
+    <div class="param-commands" data-testid="param-commands">
+      <Button
+        label="Reset to init"
+        icon="pi pi-undo"
+        size="small"
+        outlined
+        data-testid="reset-init"
+        title="Reset all parameter values to their initial values"
+        :disabled="entries.length === 0"
+        @click="emit('reset-init')"
+      />
+      <Button
+        label="Reset to best fit"
+        icon="pi pi-star"
+        size="small"
+        outlined
+        data-testid="reset-best"
+        title="Reset all parameter values to the latest calibration best-fit"
+        :disabled="!hasBestFit || entries.length === 0"
+        @click="emit('reset-best')"
+      />
+      <Button
+        label="Save current"
+        icon="pi pi-save"
+        size="small"
+        outlined
+        data-testid="save-current"
+        title="Save the current parameter values to a file (.npy or .csv)"
+        :disabled="entries.length === 0"
+        @click="emit('save-current')"
+      />
+      <Button
+        label="Reset to saved"
+        icon="pi pi-folder-open"
+        size="small"
+        outlined
+        data-testid="reset-saved"
+        title="Load parameter values from a saved .npy or .csv file"
+        :disabled="entries.length === 0"
+        @click="emit('reset-saved')"
+      />
+    </div>
   </section>
 </template>
 
@@ -162,12 +142,12 @@ function onValue(qname, value) {
   justify-content: space-between;
   gap: 0.5rem;
 }
-.panel-actions {
-  display: flex;
-  align-items: center;
-  gap: 0.25rem;
-  flex-wrap: wrap;
-  justify-content: flex-end;
+/* Two commands per row, below the parameter list (issue #106). */
+.param-commands {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.4rem;
+  margin-top: 0.25rem;
 }
 .slider-row {
   border: 1px solid var(--p-content-border-color, #333);

@@ -38,6 +38,8 @@ import {
   setConfig,
   exportPipeline,
   exportPlotting,
+  saveParams,
+  loadParams,
 } from './lib/api'
 import {
   overlayItemsFor,
@@ -45,7 +47,7 @@ import {
   controlledSeries,
   buildExtraPlotCells,
 } from './lib/plot'
-import { buildParamValuesCsv, snapshotFilename } from './lib/paramsCsv'
+import SaveParamsDialog from './components/SaveParamsDialog.vue'
 import {
   solversForFormat,
   defaultSolverFor,
@@ -762,66 +764,36 @@ function onResetBest() {
   runSimulation()
 }
 
-// --- Saved-snapshot ("lock" arbitrary slider values) — issue #106 -----------
-// Persisted per-model so a locked snapshot survives a reload.
-const savedParamsKey = computed(
-  () => `cuflynx-saved-params:${model.filePrefix.value || 'default'}`,
-)
+// --- Save / load slider values to a file (.npy default, .csv) — issue #106 ---
+const saveParamsOpen = ref(false)
+const savedParamsBrowserOpen = ref(false)
 
-// Restore this model's saved snapshot (if any) whenever the model changes.
-watch(
-  () => model.filePrefix.value,
-  () => {
-    try {
-      const raw = localStorage.getItem(savedParamsKey.value)
-      sliders.setSaved(raw ? JSON.parse(raw) : null)
-    } catch {
-      sliders.setSaved(null)
-    }
-  },
-  { immediate: true },
-)
-
-const hasSaved = computed(() => sliders.hasSaved.value)
-
-// Lock in the current slider values as the saved snapshot (and persist them).
-function onSaveSnapshot() {
-  const snap = sliders.saveSnapshot()
+// "Save current" -> name+format dialog -> write the file (npy in the slider order,
+// or a self-describing csv) under the output directory.
+async function onSaveParams({ filename }) {
   try {
-    localStorage.setItem(savedParamsKey.value, JSON.stringify(snap))
-  } catch {
-    /* localStorage unavailable — the in-memory snapshot still works. */
+    await saveParams(
+      sliders.paramDict.value,
+      sliders.order.value,
+      filename,
+      outputsDir.value.trim(),
+    )
+  } catch (e) {
+    sim.setError(e?.response?.data?.detail || String(e))
   }
 }
 
-// Reset all parameter values back to the saved snapshot.
-function onResetSaved() {
-  if (!sliders.hasSaved.value) return
-  sliders.resetToSaved()
-  runSimulation()
-}
-
-// Download the saved parameter values as a CSV (issue #106).
-function onExportSnapshot() {
-  const snap = sliders.saved.value
-  if (!snap) return
-  const rows = Object.entries(snap).map(([qname, value]) => ({
-    qname,
-    value,
-    name_for_plotting:
-      sliders.sliders[qname]?.name_for_plotting ?? qname,
-  }))
-  const csv = buildParamValuesCsv(rows)
-  const filename = snapshotFilename(model.filePrefix.value)
-  if (typeof URL === 'undefined' || !URL.createObjectURL) return
-  const href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }))
-  const a = document.createElement('a')
-  a.href = href
-  a.download = filename
-  document.body.appendChild(a)
-  a.click()
-  a.remove()
-  URL.revokeObjectURL(href)
+// "Reset to saved" -> browse for a .npy/.csv -> apply onto the sliders.
+async function onPickSavedParams(path) {
+  savedParamsBrowserOpen.value = false
+  if (!path) return
+  try {
+    const { values } = await loadParams(path, sliders.order.value)
+    sliders.applyValues(values)
+    runSimulation()
+  } catch (e) {
+    sim.setError(e?.response?.data?.detail || String(e))
+  }
 }
 
 function onParamsLoaded(data) {
@@ -1133,14 +1105,12 @@ watch(
           <ControlPanel
             :sliders="sliders.sliders"
             :has-best-fit="hasBestFit"
-            :has-saved="hasSaved"
             @update="onSliderUpdate"
             @remove="({ qname }) => sliders.removeSlider(qname)"
             @reset-init="onResetInit"
             @reset-best="onResetBest"
-            @save-snapshot="onSaveSnapshot"
-            @reset-saved="onResetSaved"
-            @export-snapshot="onExportSnapshot"
+            @save-current="saveParamsOpen = true"
+            @reset-saved="savedParamsBrowserOpen = true"
           />
         </div>
         <div v-show="leftTab === 'sensitivity'" class="left-pane left-pane-scroll">
@@ -1572,6 +1542,19 @@ watch(
       mode="dir"
       title="Where should outputs be saved?"
       @select="(d) => (outputsDir = d)"
+    />
+
+    <!-- Save / load slider values to a file (issue #106). -->
+    <SaveParamsDialog
+      v-model:visible="saveParamsOpen"
+      :output-dir="outputsDir"
+      @save="onSaveParams"
+    />
+    <FileBrowserDialog
+      v-model:visible="savedParamsBrowserOpen"
+      mode="file"
+      title="Load saved parameter values (.npy or .csv)"
+      @select="onPickSavedParams"
     />
 
     <Dialog
