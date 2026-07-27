@@ -324,15 +324,49 @@ describe('PlotPanel', () => {
       expect(wrapper.vm.displayData.datasets[0].data.map((p) => p.x)).toEqual(xs)
     })
 
-    it('composes successive conversions rather than restarting from the model unit', async () => {
+    it('applies the factor to the original unit, replacing rather than compounding', async () => {
       const wrapper = mountWithUnit()
-      const before = wrapper.vm.displayData.datasets[0].data.map((p) => p.y)
+      const original = wrapper.vm.displayData.datasets[0].data.map((p) => p.y)
       await convert(wrapper, 'a', 2)
       await convert(wrapper, 'b', 5)
-      expect(wrapper.vm.conversion.factor).toBe(10)
+      // 5x the model's values, not 5x the already-doubled ones.
+      expect(wrapper.vm.conversion.factor).toBe(5)
       expect(wrapper.vm.displayData.datasets[0].data.map((p) => p.y)).toEqual(
-        before.map((y) => y * 10),
+        original.map((y) => y * 5),
       )
+    })
+
+    it('names the original unit and the unit on screen', async () => {
+      const wrapper = mountWithUnit()
+      await convert(wrapper, 'mmHg', 0.0075)
+      await wrapper.find('[data-testid="plot-unit"]').trigger('click')
+      expect(wrapper.find('[data-testid="convert-original-unit"]').text()).toBe('J_per_m3')
+      expect(wrapper.find('[data-testid="convert-current-unit"]').text()).toBe('mmHg')
+    })
+
+    it('states the conversion between the original and displayed units', async () => {
+      const wrapper = mountWithUnit()
+      await wrapper.find('[data-testid="plot-unit"]').trigger('click')
+      expect(wrapper.find('[data-testid="convert-current-summary"]').text()).toContain(
+        'No conversion applied',
+      )
+      await wrapper.find('[data-testid="convert-unit-name"]').setValue('mmHg')
+      await wrapper.find('[data-testid="convert-unit-factor"]').setValue(0.0075)
+      await wrapper.find('[data-testid="convert-unit-apply"]').trigger('click')
+      await wrapper.find('[data-testid="plot-unit"]').trigger('click')
+      expect(wrapper.find('[data-testid="convert-current-summary"]').text()).toBe(
+        '1 J_per_m3 = 0.0075 mmHg',
+      )
+    })
+
+    it('reopens prefilled with the conversion in force', async () => {
+      const wrapper = mountWithUnit()
+      await convert(wrapper, 'mmHg', 0.0075)
+      await wrapper.find('[data-testid="plot-unit"]').trigger('click')
+      expect(wrapper.find('[data-testid="convert-unit-name"]').element.value).toBe('mmHg')
+      expect(
+        Number(wrapper.find('[data-testid="convert-unit-factor"]').element.value),
+      ).toBe(0.0075)
     })
 
     it('resets to the model unit', async () => {

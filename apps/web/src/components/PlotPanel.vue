@@ -82,12 +82,17 @@ function shown(unit) {
 }
 
 // Unit conversion (#125). `null` = show the model's own unit; otherwise
-// { unit, factor } and every plotted y value is multiplied by `factor`. Display
-// only — the simulation, obs_data and exported pipeline keep the model's units.
+// { unit, factor } where `factor` converts **from the model's unit** — it is
+// always absolute, never relative to whatever is currently on screen, so the
+// displayed scale can be read straight off it. Display only — the simulation,
+// obs_data and exported pipeline keep the model's units.
 const conversion = ref(null)
 
+// The model's own unit, i.e. what the values mean before any conversion.
+const originalUnit = computed(() => shown(props.yUnit))
+
 // The unit the plot is currently displayed in.
-const displayUnit = computed(() => conversion.value?.unit || shown(props.yUnit))
+const displayUnit = computed(() => conversion.value?.unit || originalUnit.value)
 
 // Values as displayed. Scaling here rather than in buildChartData keeps the
 // conversion a presentation concern and leaves the shared plot lib untouched.
@@ -116,22 +121,33 @@ const convertOpen = ref(false)
 const newUnit = ref('')
 const newFactor = ref(1)
 
+// Prefill with the conversion in force, so the dialog shows what is currently
+// applied and an edit adjusts it rather than starting from a blank slate.
 function openConvert() {
   newUnit.value = displayUnit.value
-  newFactor.value = 1
+  newFactor.value = conversion.value?.factor ?? 1
   convertOpen.value = true
 }
 
-// The factor is relative to what is on screen, so converting twice composes
-// rather than resetting to the model's units each time.
+// The factor always multiplies the model's own values, so re-applying replaces
+// the conversion instead of compounding on top of the displayed one.
 function applyConvert() {
   const unit = String(newUnit.value ?? '').trim()
   const factor = Number(newFactor.value)
   if (!unit || !Number.isFinite(factor) || factor === 0) return
-  const prev = conversion.value?.factor ?? 1
-  conversion.value = { unit, factor: prev * factor }
+  conversion.value = { unit, factor }
   convertOpen.value = false
 }
+
+// The conversion in force, phrased as an equivalence: 1 <model unit> = f <shown>.
+// Deliberately not fmtSigFigs: typical factors (0.0075) fall in its scientific
+// branch, and `7.5e-3` reads worse than the decimal the user actually typed.
+const conversionSummary = computed(() => {
+  if (!conversion.value) return ''
+  const from = originalUnit.value || 'model units'
+  const f = String(Number(conversion.value.factor.toPrecision(6)))
+  return `1 ${from} = ${f} ${conversion.value.unit}`
+})
 
 // Back to the model's own unit.
 function resetConvert() {
@@ -169,7 +185,14 @@ const chartOptions = computed(() => ({
   },
 }))
 
-defineExpose({ chartData, displayData, chartOptions, displayUnit, conversion })
+defineExpose({
+  chartData,
+  displayData,
+  chartOptions,
+  originalUnit,
+  displayUnit,
+  conversion,
+})
 </script>
 
 <template>
@@ -250,12 +273,31 @@ defineExpose({ chartData, displayData, chartOptions, displayUnit, conversion })
       data-testid="convert-unit-dialog"
     >
       <div class="convert-form">
+        <div class="convert-row">
+          <span>Original unit</span>
+          <code data-testid="convert-original-unit">{{ originalUnit || '(none)' }}</code>
+        </div>
+        <div class="convert-row">
+          <span>Currently shown in</span>
+          <code data-testid="convert-current-unit">{{ displayUnit || '(none)' }}</code>
+        </div>
+        <p
+          v-if="conversionSummary"
+          class="convert-current"
+          data-testid="convert-current-summary"
+        >
+          {{ conversionSummary }}
+        </p>
+        <p v-else class="convert-current" data-testid="convert-current-summary">
+          No conversion applied — values are in the model's own unit.
+        </p>
+        <hr class="convert-sep" />
         <label class="convert-row">
           <span>New unit</span>
           <InputText v-model="newUnit" size="small" data-testid="convert-unit-name" />
         </label>
         <label class="convert-row">
-          <span>Multiply by</span>
+          <span>Multiply {{ originalUnit || 'model' }} values by</span>
           <InputNumber
             v-model="newFactor"
             :min-fraction-digits="1"
@@ -265,8 +307,9 @@ defineExpose({ chartData, displayData, chartOptions, displayUnit, conversion })
           />
         </label>
         <p class="convert-hint">
-          Applied to the values on screen, so conversions compose. Display only —
-          the simulation, obs_data and exported pipeline keep the model's units.
+          The factor always applies to the model's own values, so it replaces the
+          current conversion rather than compounding on it. Display only — the
+          simulation, obs_data and exported pipeline keep the model's units.
         </p>
       </div>
       <template #footer>
@@ -377,6 +420,16 @@ defineExpose({ chartData, displayData, chartOptions, displayUnit, conversion })
   margin: 0;
   font-size: 0.75rem;
   opacity: 0.7;
+}
+.convert-current {
+  margin: 0;
+  font-size: 0.78rem;
+  opacity: 0.85;
+}
+.convert-sep {
+  border: none;
+  border-top: 1px solid var(--p-content-border-color, #ddd);
+  margin: 0.1rem 0;
 }
 .plot-maximize {
   margin-left: auto;
