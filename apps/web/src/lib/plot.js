@@ -191,9 +191,13 @@ export function controlledSeries(protocolInfo, expIdx) {
 
 /**
  * Plot cells for user-added ("Add plot") outputs scoped to one experiment
- * group. Each entry of `extraPlots` is { id, groupKey, qname, label }; only
- * those whose `groupKey` matches build a single-variable cell from this group's
- * own `outputs`/`time`.
+ * group. Each entry of `extraPlots` is { id, groupKey, qname, xqname, label };
+ * only those whose `groupKey` matches build a single-variable cell from this
+ * group's own `outputs`/`time`.
+ *
+ * `xqname` (issue #124) makes the cell a phase-plane plot: the named variable's
+ * series becomes the x axis instead of time (e.g. a PV loop). Unset (the
+ * default) keeps the plain time-series cell.
  */
 export function buildExtraPlotCells(extraPlots, groupKey, time, outputs, units) {
   return (extraPlots ?? [])
@@ -205,7 +209,14 @@ export function buildExtraPlotCells(extraPlots, groupKey, time, outputs, units) 
       yUnit: unitForVars(units, [p.qname]),
       controlled: false,
       removeId: p.id,
-      simResult: { time, outputs: { [p.qname]: outputs?.[p.qname] ?? [] } },
+      simResult: {
+        time,
+        outputs: { [p.qname]: outputs?.[p.qname] ?? [] },
+        ...(p.xqname ? { xValues: outputs?.[p.xqname] ?? [] } : {}),
+      },
+      // A phase-plane cell's x axis is a model variable, so it takes that
+      // variable's unit (#125) rather than the caller's time unit.
+      ...(p.xqname ? { xLabel: p.xqname, xUnit: unitForVars(units, [p.xqname]) } : {}),
       dataItems: [],
     }))
 }
@@ -293,15 +304,24 @@ function refLine({ name, op, role, dashed, kind, color: c, data }) {
  * legend in PlotPanel.
  */
 export function buildChartData(simResult, options = {}) {
-  const dataItems = options.dataItems ?? []
-  const varLabel = options.varLabel ?? ''
-  // Step series (e.g. controlled params_to_change inputs) must not be smoothed,
-  // otherwise the bezier overshoots the risers.
-  const tension = options.stepped ? 0 : 0.15
-  const datasets = []
-
   const time = simResult?.time ?? []
   const outputs = simResult?.outputs ?? {}
+  // Phase-plane plots (issue #124): an explicit x series — another variable's
+  // trace — replaces the time axis (e.g. a PV loop). Samples keep their time
+  // ordering, which is what makes the loop close.
+  const xSource = options.xSource ?? simResult?.xValues ?? null
+  const xAxis = xSource ?? time
+  const phasePlane = !!xSource
+  // Obs overlays are reference lines spanning/crossing the *time* axis, so they
+  // mean nothing against another variable's axis: drop them rather than draw
+  // them in the wrong place. (Extra plots pass dataItems: [] anyway.)
+  const dataItems = phasePlane ? [] : (options.dataItems ?? [])
+  const varLabel = options.varLabel ?? ''
+  // Step series (e.g. controlled params_to_change inputs) must not be smoothed,
+  // otherwise the bezier overshoots the risers. A phase-plane trace loops back
+  // on itself, where the same smoothing overshoots the turns — so also 0.
+  const tension = options.stepped || phasePlane ? 0 : 0.15
+  const datasets = []
 
   // A data_item whose operation defines a series_output branch supplies a
   // transformed model series (e.g. 60/x) that replaces the raw operand as the
@@ -332,7 +352,7 @@ export function buildChartData(simResult, options = {}) {
       suffix: '',
       legendStyle: 'line',
       kind: 'simulation',
-      data: toXY(time, values),
+      data: toXY(xAxis, values),
       borderColor: color(colorIdx),
       backgroundColor: color(colorIdx),
       borderWidth: 1.5,
@@ -354,8 +374,8 @@ export function buildChartData(simResult, options = {}) {
     pushLine(qname, varLabel || qname, outputs[qname] ?? [])
   }
 
-  const xMin = time.length ? time[0] : 0
-  const xMax = time.length ? time[time.length - 1] : 1
+  const xMin = xAxis.length ? xAxis[0] : 0
+  const xMax = xAxis.length ? xAxis[xAxis.length - 1] : 1
   if (!Number.isFinite(yMin)) {
     yMin = 0
     yMax = 1
