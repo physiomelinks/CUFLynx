@@ -127,3 +127,73 @@ def test_3compartment_protocol_respects_pre_and_sim_time(client, requires_simula
         assert arr.size > 0
         assert np.all(np.isfinite(arr))
         assert np.ptp(arr) > 0  # self-oscillating after warm-up
+
+
+# Issue #138: a failed simulation reported nothing but "Request failed with
+# status code 500".
+#
+# A large MaximumStep on its own does *not* fail here — CVODE adapts its own
+# step down and Myokit's log_times don't force steps, so 3compartment runs fine
+# at MaximumStep=1e9. What does fail is a tolerance the solver cannot hold, so
+# that is what these provoke; MaximumStep still rides along in the settings,
+# because "which step size was I running at?" is exactly what the message has to
+# answer when a user suspects it.
+UNSOLVABLE_SOLVER_INFO = {"MaximumStep": 100.0, "rtol": 1e-30, "atol": 1e-30}
+
+
+def _assert_informative(detail: str) -> None:
+    # Not the bare "simulation failed" this issue started from.
+    assert detail.strip().lower() not in {"simulation failed", "internal server error"}
+    # The solver's own words, recovered from the output CA prints and swallows.
+    assert "CVode" in detail or "CV_" in detail
+    # The settings it failed under, so a bad MaximumStep is distinguishable from
+    # a bad model.
+    assert "CVODE_myokit" in detail
+    assert "MaximumStep=100.0" in detail
+    # Something to do about it.
+    assert "Settings" in detail
+
+
+@pytest.mark.integration
+def test_simulate_failure_detail_is_informative(client, requires_simulation):
+    model_id = upload_model(client, C3_MODEL_PATH)["model_id"]
+    cfg = client.post("/api/config", json={"solver_info": UNSOLVABLE_SOLVER_INFO})
+    assert cfg.status_code == 200, cfg.text
+
+    resp = client.post(
+        "/api/simulate",
+        json={
+            "model_id": model_id,
+            "params": {},
+            "sim_time": 2.0,
+            "pre_time": 10.0,
+            "outputs": ["aortic_root/v"],
+        },
+    )
+    assert resp.status_code == 500, resp.text
+    _assert_informative(resp.json()["detail"])
+
+
+@pytest.mark.integration
+def test_protocol_failure_detail_is_informative(client, requires_simulation):
+    """The protocol path is the one issue #138 was reported against.
+
+    ``run_protocols`` raises a bare "Protocol simulation failed." while the
+    helper prints the real cause, and nothing caught it — so FastAPI returned a
+    body-less 500 and the frontend's `detail` lookup fell through to
+    "AxiosError: Request failed with status code 500"."""
+    model_id = upload_model(client, C3_MODEL_PATH)["model_id"]
+    obj = json.loads(C3_OBS_DATA_PATH.read_text())
+    up = client.post("/api/obs_data/upload", json={"model_id": model_id, "obs_data": obj})
+    assert up.status_code == 200, up.text
+    cfg = client.post("/api/config", json={"solver_info": UNSOLVABLE_SOLVER_INFO})
+    assert cfg.status_code == 200, cfg.text
+
+    resp = client.post(
+        "/api/protocol/run",
+        json={"model_id": model_id, "params": {}, "outputs": ["aortic_root/v"]},
+    )
+    assert resp.status_code == 500, resp.text
+    body = resp.json()
+    assert "detail" in body, body  # a body at all, unlike before
+    _assert_informative(body["detail"])

@@ -20,7 +20,18 @@ defineProps({
     <span v-else-if="status === 'ok'" class="ok">
       Done<span v-if="lastRunMs != null"> in {{ Math.round(lastRunMs) }} ms</span>
     </span>
-    <Message v-else-if="status === 'error'" severity="error" :closable="false">
+    <!--
+      A simulation failure is several lines now (issue #138): the solver's
+      reason, the settings it failed under, then what to change. `pre-line`
+      keeps those breaks instead of running them into one wall of text.
+    -->
+    <Message
+      v-else-if="status === 'error'"
+      severity="error"
+      :closable="false"
+      class="status-error"
+      data-testid="status-error"
+    >
       {{ message }}
     </Message>
     <span v-else class="idle">Ready</span>
@@ -35,6 +46,17 @@ defineProps({
   padding: 0.4rem 0.75rem;
   border-top: 1px solid var(--p-content-border-color, #333);
   font-size: 0.85rem;
+}
+/* A multi-line failure must stay readable: keep its breaks, let it wrap rather
+   than stretch the bar, and cap the height so a long solver dump can't push the
+   plots off screen. */
+.status-error {
+  flex: 1;
+  min-width: 0;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+  max-height: 8rem;
+  overflow-y: auto;
 }
 .ok {
   color: #70ad47;

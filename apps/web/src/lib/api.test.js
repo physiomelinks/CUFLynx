@@ -12,6 +12,7 @@ import {
   uploadParamsForId,
   startCalibration,
   startSensitivity,
+  errorMessage,
 } from './api'
 
 beforeEach(() => {
@@ -75,5 +76,51 @@ describe('api client', () => {
     await startSensitivity('mid', { method: 'local', nominal: 'current' }, cur)
     const [, body] = axios.post.mock.calls[0]
     expect(body.current_params).toEqual(cur)
+  })
+})
+
+// Issue #138: a failed simulation showed only "AxiosError: Request failed with
+// status code 500" — the server's own explanation never made it to the user.
+describe('errorMessage', () => {
+  const axiosError = (response) =>
+    Object.assign(new Error('Request failed with status code 500'), {
+      name: 'AxiosError',
+      response,
+    })
+
+  it('prefers the detail the backend sent', () => {
+    const detail = 'Simulation failed: CV_TOO_MUCH_ACC\nSettings in force: ...'
+    expect(errorMessage(axiosError({ status: 500, data: { detail } }))).toBe(detail)
+  })
+
+  it('accepts a plain-text body too', () => {
+    expect(errorMessage(axiosError({ status: 500, data: 'boom' }))).toBe('boom')
+  })
+
+  it('joins the list FastAPI sends for a validation error', () => {
+    const detail = [{ loc: ['body', 'sim_time'], msg: 'must be > 0' }, { msg: 'and this' }]
+    expect(errorMessage(axiosError({ status: 422, data: { detail } }))).toBe(
+      'must be > 0; and this',
+    )
+  })
+
+  // The reported symptom: an unhandled server error has no body at all, so
+  // there is no `detail` to read and String(e) is the bare Axios text.
+  it('attributes a body-less failure instead of parroting Axios', () => {
+    const msg = errorMessage(axiosError({ status: 500, statusText: 'Internal Server Error' }))
+    expect(msg).toContain('HTTP 500')
+    expect(msg).toContain('server log')
+    expect(msg).not.toContain('AxiosError')
+  })
+
+  it('ignores an empty detail rather than showing a blank error', () => {
+    expect(errorMessage(axiosError({ status: 500, data: { detail: '   ' } }))).toContain(
+      'HTTP 500',
+    )
+  })
+
+  // No response at all: the server is down / the request never left.
+  it('falls back to the error text when there was no response', () => {
+    expect(errorMessage(new Error('Network Error'))).toBe('Network Error')
   })
 })

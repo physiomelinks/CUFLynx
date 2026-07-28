@@ -727,6 +727,10 @@ def simulate(req: SimulateRequest) -> dict:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     except (KeyError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001 - anything else still owes a reason
+        raise HTTPException(
+            status_code=500, detail=engine.describe_exception(exc)
+        ) from exc
 
     # Per data_item, the operation's series_output (transformed) series so the
     # Output plots overlay matches CA's saved figures (issue #111).
@@ -766,6 +770,13 @@ def protocol_run(req: ProtocolRunRequest) -> dict:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     except (KeyError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001 - anything else still owes a reason
+        # Model compilation, unit conversion and CA-internal failures all land
+        # here. Left uncaught they became a bodyless 500, which is how issue
+        # #138's "Request failed with status code 500" reached the browser.
+        raise HTTPException(
+            status_code=500, detail=engine.describe_exception(exc)
+        ) from exc
 
     # Per experiment, the series_output (transformed) series for each data_item
     # scoped to that experiment, keyed by its global data_item index so the
