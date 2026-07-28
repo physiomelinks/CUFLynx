@@ -696,6 +696,8 @@ def get_variables(model_id: str) -> dict:
         "algebraic": m.algebraic,
         "all_names": m.all_names,
         "initial_values": m.initial_values,
+        # qname -> CellML units identifier, used to label plot axes (#125).
+        "units": m.units,
     }
 
 
