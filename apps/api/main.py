@@ -53,6 +53,8 @@ from runtime_paths import default_python, frontend_dist, is_frozen, resources_di
 import settings_store
 from solver_options import (
     ad_available,
+    check_solver_info,
+    filter_solver_info,
     get_analysis_options,
     get_param_id_methods,
     gradient_sources,
@@ -255,7 +257,10 @@ def _restore_persisted_settings() -> None:
                 engine.dt = float(si.pop("dt"))
             except (TypeError, ValueError):
                 si.pop("dt", None)
-        engine.solver_info = si
+        # Drop, don't reject: a config saved before a key became unsupported (or
+        # before the solver was switched) must not stop the app from starting.
+        # Rejection is for a *new* choice, in POST /api/config.
+        engine.solver_info = filter_solver_info(engine.solver, si)
     if fmt or solver or solver_info:
         os.environ["CUFLYNX_MODEL_TYPE"] = engine.model_type
         os.environ["CUFLYNX_SOLVER"] = engine.solver
@@ -387,6 +392,13 @@ def set_config(req: ConfigRequest) -> dict:
                 engine.dt = float(si.pop("dt"))
             except (TypeError, ValueError):
                 si.pop("dt", None)
+        # Reject a setting this backend cannot honour rather than storing it to be
+        # silently ignored at run time. Checked against the same schema that drives
+        # the Settings form, so the form and the validation cannot disagree.
+        try:
+            check_solver_info(engine.solver, si)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         engine.solver_info = si
     # Interpreter for analysis runs. Shared by all three job managers.
     #   None  -> not in this request, leave unchanged

@@ -23,7 +23,12 @@ from runtime_paths import is_frozen
 DEFAULT_DT = 0.01
 DEFAULT_MODEL_TYPE = "cellml_only"
 DEFAULT_SOLVER = "CVODE_myokit"
-DEFAULT_SOLVER_INFO = {"MaximumStep": 0.001, "MaximumNumberOfSteps": 5000}
+# Only settings DEFAULT_SOLVER (Myokit's CVODE) actually honours. It used to also
+# carry MaximumNumberOfSteps, which myokit_helper never reads — myokit.Simulation
+# has no max-step-count knob — so every run was seeded with an inert setting that
+# the Settings form then displayed as if it did something. See
+# solver_options.UNSUPPORTED_SOLVER_INFO_KEYS.
+DEFAULT_SOLVER_INFO = {"MaximumStep": 0.001}
 
 
 class SimulationError(RuntimeError):
@@ -109,8 +114,10 @@ _HINTS = (
     ),
     (
         ("cv_too_much_work", "mxstep", "maximum number of steps"),
-        "The solver hit its step budget — lower MaximumStep, or raise "
-        "MaximumNumberOfSteps, in Settings.",
+        # Not "raise MaximumNumberOfSteps": Myokit's integrator has no such knob,
+        # so on the default backend that would send the user to an inert control.
+        "The solver hit its step budget before reaching the next output point — "
+        "lower MaximumStep in Settings, or shorten the simulation time.",
     ),
     (
         ("cv_conv_failure", "cv_err_failure", "convergence"),

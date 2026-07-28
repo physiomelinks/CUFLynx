@@ -95,7 +95,9 @@ def test_failure_detail_suggests_what_to_change(client):
 @pytest.mark.parametrize(
     "printed,expected",
     [
-        ("Myokit simulation failed: CV_TOO_MUCH_WORK at t = 0.5", "MaximumNumberOfSteps"),
+        # Not "raise MaximumNumberOfSteps": Myokit has no such knob, so that
+        # would point the user at a control that does nothing.
+        ("Myokit simulation failed: CV_TOO_MUCH_WORK at t = 0.5", "lower MaximumStep"),
         ("Myokit simulation failed: CV_CONV_FAILURE", "converge"),
         ("Myokit simulation failed: CV_RHSFUNC_FAIL, nan in rhs", "non-finite"),
         ("Error: units conversion between mmHg and J_per_m3 failed", "unit/conversion"),

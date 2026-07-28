@@ -42,6 +42,89 @@ SUPPORTED_FORMATS = ("cellml_only", "python", "casadi_python")
 # every payload (both the CA-introspected schema and the fallback below).
 UNSUPPORTED_SOLVERS = ("CVODE_opencor",)
 
+# solver_info keys CA advertises for a solver whose backend cannot honour them.
+#
+# CA's SOLVER_INFO_FIELDS gives CVODE_myokit the shared CVODE-family field list,
+# which carries MaximumNumberOfSteps. That is right for CVODE_opencor / CVODE /
+# RK4 / PETSC, but Myokit's Simulation exposes only set_max_step_size,
+# set_min_step_size and set_tolerance — there is no max-step-count knob, and
+# myokit_helper accordingly never reads the key. Offering it renders a control
+# that silently does nothing, which is the very thing CA's own comment on
+# aadc_semi_implicit warns against.
+#
+# This is a CA schema bug (CVODE_myokit needs its own field list); the exclusion
+# here is the same shape as UNSUPPORTED_SOLVERS above — it composes with the
+# introspection instead of replacing it, so it becomes a no-op the moment CA
+# stops advertising the key. Remove it then.
+UNSUPPORTED_SOLVER_INFO_KEYS: dict[str, frozenset[str]] = {
+    "CVODE_myokit": frozenset({"MaximumNumberOfSteps"}),
+}
+
+# solver_info keys that are framework metadata rather than integrator settings.
+# CA keeps these out of SOLVER_INFO_FIELDS and allows them separately.
+FRAMEWORK_SOLVER_INFO_KEYS = frozenset({"solver", "method", "dt_solver", "dt"})
+
+
+def unsupported_solver_info_keys(solver: str) -> frozenset[str]:
+    """Keys to drop for ``solver`` even though CA advertises them."""
+    return UNSUPPORTED_SOLVER_INFO_KEYS.get(solver, frozenset())
+
+
+def accepted_solver_info_keys(solver: str) -> frozenset[str] | None:
+    """The solver_info keys ``solver`` actually honours, or None if unknown.
+
+    Introspected from the same schema that drives the Settings form, so the
+    validation and the offered controls cannot disagree. None (rather than an
+    empty set) for a solver absent from the schema: unknown must not be treated
+    as "accepts nothing", which would reject every setting.
+    """
+    schema = get_solver_options().get("solver_info_schema") or {}
+    fields = schema.get(solver)
+    if not fields:
+        return None
+    keys = {f["key"] for f in fields if f.get("key")}
+    return frozenset(keys | FRAMEWORK_SOLVER_INFO_KEYS) - unsupported_solver_info_keys(solver)
+
+
+def check_solver_info(solver: str, solver_info: dict) -> None:
+    """Raise ValueError if ``solver_info`` carries a key ``solver`` cannot honour.
+
+    A setting that is quietly ignored is worse than a rejected one: the user
+    changes it, nothing happens, and nothing says why. Unknown solvers pass
+    through — better to run than to block on a schema we couldn't read.
+    """
+    allowed = accepted_solver_info_keys(solver)
+    if allowed is None:
+        return
+    unsupported = sorted(k for k in solver_info if k not in allowed)
+    if not unsupported:
+        return
+    inert = sorted(set(unsupported) & unsupported_solver_info_keys(solver))
+    hint = ""
+    if inert:
+        hint = (
+            f" {', '.join(inert)} is accepted by other CVODE backends but not by this one"
+            " — Myokit's integrator has no such setting."
+        )
+    raise ValueError(
+        f"solver_info contains key(s) that solver {solver!r} does not support: "
+        f"{unsupported}. Supported keys: {sorted(allowed)}.{hint}"
+    )
+
+
+def filter_solver_info(solver: str, solver_info: dict) -> dict:
+    """``solver_info`` with anything ``solver`` cannot honour removed.
+
+    Used on values arriving from persisted settings or a runner config, where
+    rejecting outright would strand a user whose saved config predates the
+    solver switch.
+    """
+    allowed = accepted_solver_info_keys(solver)
+    if allowed is None:
+        return dict(solver_info)
+    return {k: v for k, v in solver_info.items() if k in allowed}
+
+
 # Used only when CA's SOLVER_SCHEMA can't be imported (mirrors it).
 FALLBACK_SOLVER_SCHEMA = {
     "model_types": ["cellml_only", "python", "cpp", "casadi_python"],
@@ -382,7 +465,6 @@ def _solver_info_schema(methods_by_solver: dict, default_method_by_solver: dict 
         return [
             _dt_field(),
             {"key": "MaximumStep", "label": "Max step", "type": _NUM, "default": 0.001},
-            {"key": "MaximumNumberOfSteps", "label": "Max # steps", "type": _NUM, "default": 5000},
             {"key": "rtol", "label": "Rel. tol", "type": _NUM, "default": None},
             {"key": "atol", "label": "Abs. tol", "type": _NUM, "default": None},
         ]
@@ -462,9 +544,12 @@ def _build_options(schema: dict, differentiable: dict[str, bool]) -> dict:
         },
         # Filter the CA-introspected schema (not a rebuilt one) so the OpenCOR
         # exclusion composes with SOLVER_INFO_FIELDS introspection rather than
-        # discarding it.
+        # discarding it. Per-key exclusion rides along the same way, so the form
+        # and check_solver_info can never disagree about what a solver accepts.
         "solver_info_schema": {
-            s: fields for s, fields in solver_info_schema.items() if s not in UNSUPPORTED_SOLVERS
+            s: [f for f in fields if f.get("key") not in unsupported_solver_info_keys(s)]
+            for s, fields in solver_info_schema.items()
+            if s not in UNSUPPORTED_SOLVERS
         },
         "differentiable_operations": dict(differentiable),
         "all_differentiable": all_diff,

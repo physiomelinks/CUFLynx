@@ -89,7 +89,10 @@ def _solver_info(config: dict, settings: dict) -> dict:
     si = dict(config.get("solver_info") or {})
     si.setdefault("solver", config.get("solver") or settings.get("solver", "CVODE_myokit"))
     si.setdefault("MaximumStep", settings.get("MaximumStep", 0.0001))
-    si.setdefault("MaximumNumberOfSteps", settings.get("MaximumNumberOfSteps", 5000))
+    # No MaximumNumberOfSteps default: myokit_helper never reads it (myokit's
+    # Simulation has no max-step-count knob), CA's migrate_legacy_solver_info_keys
+    # pops it for solve_ivp/casadi, and CA fills its own default for the backends
+    # that do use it. Injecting it here only seeded an inert setting.
     return si
 
 
