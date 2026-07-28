@@ -493,8 +493,37 @@ def _candidate_python_paths() -> list[str]:
     return out
 
 
+def _interpreter_mpi(path: str) -> tuple[bool, str | None]:
+    """Whether ``path``'s *own* environment provides an MPI launcher, plus the
+    launcher :func:`resolve_mpiexec` would actually use for it.
+
+    Used to tell the user which interpreter to pick for multi-core runs, so the
+    boolean must describe the *interpreter*: ``resolve_mpiexec`` falls back to a
+    PATH ``mpiexec`` when the environment ships none, and that fallback is a
+    property of the machine, not of this interpreter -- flagging it would mark
+    every interpreter equally and answer nothing. So resolve once (filesystem
+    only, no subprocess -- this runs inside the cached probe) and then ask
+    whether the launcher came out of the interpreter's own bindirs. Deriving it
+    from ``resolve_mpiexec``'s result rather than re-implementing the lookup
+    keeps that function the single source of truth for the run path.
+    """
+    launcher = resolve_mpiexec(path)
+    if not launcher:
+        return False, None
+    exe = path if os.sep in path else (shutil.which(path) or path)
+    own = {os.path.normcase(str(d)) for d in _interpreter_bindirs(exe)}
+    matched = os.path.normcase(os.path.dirname(os.path.abspath(launcher))) in own
+    return matched, launcher
+
+
 def _probe_python(path: str) -> dict | None:
-    """Return {path, version, ready, missing} for an interpreter, or None."""
+    """Return {path, version, ready, missing, mpi, mpiexec} for an interpreter,
+    or None.
+
+    ``mpi`` is True when the interpreter's own environment provides a matched
+    MPI launcher (see :func:`_interpreter_mpi`), i.e. picking it enables
+    multi-core runs; ``mpiexec`` is the launcher path that would be used.
+    """
     try:
         ver = subprocess.run(
             [path, "-c", "import sys;print('.'.join(map(str, sys.version_info[:3])))"],
@@ -523,7 +552,15 @@ def _probe_python(path: str) -> dict | None:
             else mods
         )
         ready = all(m not in missing for m in REQUIRED_MODULES)
-        return {"path": path, "version": version, "ready": ready, "missing": missing}
+        mpi, mpiexec = _interpreter_mpi(path)
+        return {
+            "path": path,
+            "version": version,
+            "ready": ready,
+            "missing": missing,
+            "mpi": mpi,
+            "mpiexec": mpiexec,
+        }
     except Exception:  # noqa: BLE001 - a bad interpreter just gets skipped
         return None
 
