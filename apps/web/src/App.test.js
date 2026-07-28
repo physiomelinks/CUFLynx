@@ -501,4 +501,59 @@ describe('App.vue plot one variable against another (#124)', () => {
     await nextTick()
     expect(wrapper.vm.addPlotChoices.map((c) => c.value)).toContain('heart/P_lv')
   })
+
+  describe('switching the axes', () => {
+    it('swaps which variable is on which axis', async () => {
+      const wrapper = await mountWithResult()
+      await addPlot(wrapper, 'heart/P_lv', 'heart/V_lv')
+      const id = wrapper.vm.plotGroups[0].cells.find((c) => c.removeId).removeId
+
+      wrapper.vm.switchExtraPlotAxes(id)
+      await nextTick()
+
+      const cell = wrapper.vm.plotGroups[0].cells.find((c) => c.removeId)
+      expect(cell.title).toBe('heart/V_lv')
+      expect(cell.xLabel).toBe('heart/P_lv')
+      expect(cell.simResult.outputs).toEqual({ 'heart/V_lv': [1, 2, 3] })
+      expect(cell.simResult.xValues).toEqual([4, 5, 6])
+    })
+
+    it('is its own inverse', async () => {
+      const wrapper = await mountWithResult()
+      await addPlot(wrapper, 'heart/P_lv', 'heart/V_lv')
+      const id = wrapper.vm.plotGroups[0].cells.find((c) => c.removeId).removeId
+      wrapper.vm.switchExtraPlotAxes(id)
+      wrapper.vm.switchExtraPlotAxes(id)
+      await nextTick()
+      const cell = wrapper.vm.plotGroups[0].cells.find((c) => c.removeId)
+      expect(cell.title).toBe('heart/P_lv')
+      expect(cell.xLabel).toBe('heart/V_lv')
+    })
+
+    // Both series were already requested for the phase-plane plot, so swapping
+    // them is a relabelling — it must not need another run.
+    it('needs no re-run, since both series are already requested', async () => {
+      const wrapper = await mountWithResult()
+      await addPlot(wrapper, 'heart/P_lv', 'heart/V_lv')
+      const id = wrapper.vm.plotGroups[0].cells.find((c) => c.removeId).removeId
+      wrapper.vm.switchExtraPlotAxes(id)
+      await nextTick()
+      expect([...wrapper.vm.extraOutputNames].sort()).toEqual([
+        'heart/P_lv',
+        'heart/V_lv',
+      ])
+    })
+
+    // A time series has nothing to swap in for time, so it is not offered.
+    it('does nothing for a plain time-series plot', async () => {
+      const wrapper = await mountWithResult()
+      await addPlot(wrapper, 'heart/P_lv', 'time')
+      const id = wrapper.vm.plotGroups[0].cells.find((c) => c.removeId).removeId
+      wrapper.vm.switchExtraPlotAxes(id)
+      await nextTick()
+      const cell = wrapper.vm.plotGroups[0].cells.find((c) => c.removeId)
+      expect(cell.title).toBe('heart/P_lv')
+      expect(cell.xLabel).toBeUndefined()
+    })
+  })
 })

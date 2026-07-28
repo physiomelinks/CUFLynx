@@ -44,13 +44,16 @@ const props = defineProps({
   tag: { type: String, default: '' },
   stepped: { type: Boolean, default: false },
   removable: { type: Boolean, default: false },
+  // Offer to swap the axes. Only a phase-plane cell (issue #124) can: a time
+  // series has nothing to put on the y axis in time's place.
+  switchable: { type: Boolean, default: false },
   // When true this plot is expanded to fill the middle window (issue #115); the
   // button then offers to restore. `maximizable` gates the affordance entirely.
   maximizable: { type: Boolean, default: false },
   maximized: { type: Boolean, default: false },
 })
 
-defineEmits(['remove', 'toggle-maximize'])
+const emit = defineEmits(['remove', 'toggle-maximize', 'switch-axes'])
 
 const chartData = computed(() =>
   buildChartData(props.simResult, {
@@ -183,6 +186,17 @@ function applyConvert() {
 function resetConvert() {
   editing.value.conversion.value = null
   convertOpen.value = false
+}
+
+// Swap the axes (issue #124). The parent owns the variables, so it does the
+// actual swap; the conversions are ours and travel with the variable they were
+// set on — otherwise the factor chosen for the y variable would silently
+// rescale whatever took its place.
+function switchAxes() {
+  const y = yAxis.conversion.value
+  yAxis.conversion.value = xAxis.conversion.value
+  xAxis.conversion.value = y
+  emit('switch-axes')
 }
 
 // Custom HTML legend (below) renders LaTeX labels, so disable the canvas one.
@@ -320,6 +334,17 @@ defineExpose({
       >
         [{{ xDisplayUnit }}]
       </button>
+      <button
+        v-if="switchable"
+        type="button"
+        class="plot-switch"
+        title="Switch axes"
+        aria-label="Switch axes"
+        data-testid="plot-switch-axes"
+        @click="switchAxes"
+      >
+        <i class="pi pi-sort-alt" />
+      </button>
     </div>
     <Dialog
       v-model:visible="convertOpen"
@@ -444,12 +469,30 @@ defineExpose({
   font-weight: 600;
   opacity: 0.85;
 }
+/* The label stays centred under the plot whether or not the switch button is
+   there, so the button is taken out of the flow rather than sharing the row. */
 .plot-foot {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 0.15rem;
   margin: 0.15rem 0 0;
+}
+.plot-switch {
+  position: absolute;
+  right: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  opacity: 0.5;
+  font-size: 0.8rem;
+  line-height: 1;
+  padding: 0.1rem 0.25rem;
+}
+.plot-switch:hover {
+  opacity: 1;
 }
 .plot-unit {
   border: none;

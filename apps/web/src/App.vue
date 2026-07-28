@@ -502,6 +502,18 @@ function removeExtraPlot(id) {
   extraPlots.value = extraPlots.value.filter((p) => p.id !== id)
 }
 
+// Swap a phase-plane plot's axes (issue #124): the y variable goes on the x
+// axis and vice versa. Both series are already requested from the engine, so
+// this is a relabelling — no re-run.
+function switchExtraPlotAxes(id) {
+  const p = extraPlots.value.find((e) => e.id === id)
+  if (!p?.xqname) return
+  const qname = p.xqname
+  p.xqname = p.qname
+  p.qname = qname
+  p.label = qname
+}
+
 // Extra-plot cells for a group, each a single-variable plot built from that
 // group's own simulation outputs.
 function extraCellsFor(groupKey, time, outputs) {
@@ -1305,10 +1317,12 @@ watch(
                 :sim-result="cell.simResult"
                 :data-items="cell.dataItems"
                 :removable="!!cell.removeId"
+                :switchable="!!cell.xLabel"
                 maximizable
                 :maximized="effectiveMaximized === cell.key"
                 @toggle-maximize="toggleMaximizePlot(cell.key)"
                 @remove="removeExtraPlot(cell.removeId)"
+                @switch-axes="switchExtraPlotAxes(cell.removeId)"
               />
             </div>
             <div v-if="plottableVariables.length && !effectiveMaximized" class="add-plot-row">

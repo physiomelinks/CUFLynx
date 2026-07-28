@@ -509,6 +509,32 @@ describe('PlotPanel', () => {
       )
     })
 
+    // Switching axes (issue #124): the parent owns the variables, so the panel
+    // only asks — but the conversions are the panel's and must follow the
+    // variable they were set on.
+    it('offers a switch-axes button only on a phase-plane plot', () => {
+      expect(
+        mountWithUnits({ switchable: true }).find('[data-testid="plot-switch-axes"]').exists(),
+      ).toBe(true)
+      expect(mountWithUnits().find('[data-testid="plot-switch-axes"]').exists()).toBe(false)
+    })
+
+    it('emits switch-axes when the button is clicked', async () => {
+      const wrapper = mountWithUnits({ switchable: true })
+      await wrapper.find('[data-testid="plot-switch-axes"]').trigger('click')
+      expect(wrapper.emitted('switch-axes')).toHaveLength(1)
+    })
+
+    it('carries each conversion across to the axis its variable moved to', async () => {
+      const wrapper = mountWithUnits({ switchable: true })
+      await convertX(wrapper, 'mL', 1e6)
+      await wrapper.find('[data-testid="plot-switch-axes"]').trigger('click')
+      // The factor set for the x variable now applies to the y axis, where that
+      // variable went — it must not stay behind rescaling the incoming one.
+      expect(wrapper.vm.conversion).toEqual({ unit: 'mL', factor: 1e6 })
+      expect(wrapper.vm.xConversion).toBe(null)
+    })
+
     it('resets the x axis without touching the y axis', async () => {
       const wrapper = mountWithUnits()
       const before = wrapper.vm.displayData.datasets[0].data.map((p) => p.x)
