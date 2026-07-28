@@ -92,6 +92,9 @@ const loadedObsFilename = ref(null)
 // bundle, not a Python), so there the choice is required. Hydrated from, and
 // persisted back to, /api/config so it survives a restart.
 const pythonPath = ref('')
+// What the server's "" (default) choice resolves to, so the picker can name it
+// and report its MPI support like any other interpreter.
+const pythonDefault = ref('')
 const pythonBrowserOpen = ref(false)
 // True in the packaged desktop app; drives the "Bundled (CUFLynx)" default label.
 const packaged = ref(false)
@@ -149,7 +152,13 @@ function applyConfigPayload(c) {
   solver.value = c.solver ?? ''
   solverInfo.value = { ...(c.solver_info ?? {}) }
   cppCompiler.value = c.cpp_compiler ?? { present: true, hint: '' }
-  pythonPath.value = c.python_path ?? ''
+  pythonDefault.value = c.python_default ?? ''
+  // The server resolves "" to a concrete interpreter and reports *that*, so
+  // taking python_path verbatim silently moved the picker off "Server default"
+  // onto the path it resolves to (from source, the serving interpreter). Map it
+  // back: an interpreter that *is* the default is the default choice.
+  const p = c.python_path ?? ''
+  pythonPath.value = p && p === pythonDefault.value ? '' : p
   serverPythonPath = pythonPath.value
   seed.value = c.seed ?? null
   serverSeed = seed.value
@@ -164,7 +173,10 @@ watch(pythonPath, async (p) => {
   if (p === serverPythonPath) return
   try {
     serverPythonPath = p
-    await setConfig({ pythonPath: p })
+    // Apply the response: it carries the interpreter the server actually
+    // settled on and whether a launcher resolves for it, so the MPI/Cores
+    // chips reflect the new pick instead of the one loaded at startup.
+    applyConfigPayload(await setConfig({ pythonPath: p }))
   } catch {
     /* keep the in-session choice even if persisting fails */
   }
@@ -560,9 +572,15 @@ const pythonOptions = computed(() => {
   // interpreter (analysis runs in-app, no external Python needed); from source
   // it's the serving interpreter. Switching to a discovered/browsed Python is for
   // pointing at a local circulatory_autogen checkout during CA development.
+  // Name the interpreter the default resolves to, and mark its MPI support the
+  // same way as the rest: "Server default" alone said nothing about either, so
+  // choosing it looked like losing MPI even when it is the same interpreter.
+  const defaultProbe = calibPythons.value.find((x) => x.path === pythonDefault.value)
   const defaultLabel = packaged.value
     ? 'Bundled (CUFLynx) — runs analysis in-app'
-    : 'Server default'
+    : 'Server default' +
+      (pythonDefault.value ? ` — ${pythonDefault.value}` : '') +
+      (defaultProbe?.mpi ? ' — MPI ✓' : '')
   const opts = [
     { label: defaultLabel, value: '' },
     // "MPI ✓" marks the interpreters whose own environment ships an MPI
@@ -583,25 +601,54 @@ const pythonOptions = computed(() => {
   return opts
 })
 
+// The interpreter the runners will actually use: an explicit pick, else
+// whatever the server's default resolves to. The default is a real interpreter,
+// so it gets the same probe-backed chips as any other choice.
+const selectedPython = computed(() =>
+  calibPythons.value.find((x) => x.path === (pythonPath.value || pythonDefault.value)),
+)
+
 // Missing required deps for the chosen interpreter (shown as a warning chip).
 const pythonNotReady = computed(() => {
-  const p = calibPythons.value.find((x) => x.path === pythonPath.value)
+  const p = selectedPython.value
   return p && !p.ready ? p.missing : null
 })
 
 // The chosen interpreter's MPI launcher status, so the bar says whether this
 // pick enables Cores > 1 (and, in the tooltip, which launcher it would use).
-// Null for the server default / a browsed path: those weren't probed, so we
-// don't know — say nothing rather than imply "no MPI".
+// Null only for a browsed path we never probed — say nothing rather than imply
+// "no MPI".
+//
+// Three states, not two: a launcher found on PATH rather than in the
+// interpreter's own environment still runs (resolve_mpiexec falls back to it),
+// so calling that "MPI ✗ / unavailable" contradicts a machine where multi-core
+// demonstrably works. It is flagged separately instead, because it is the
+// configuration that can mismatch mpi4py's runtime.
 const pythonMpi = computed(() => {
-  const p = calibPythons.value.find((x) => x.path === pythonPath.value)
+  const p = selectedPython.value
   if (!p) return null
+  if (p.mpi) {
+    return {
+      mpi: true,
+      label: 'MPI ✓',
+      title: `MPI launcher in this environment (${p.mpiexec}): Cores > 1 available`,
+    }
+  }
+  if (p.mpiexec) {
+    return {
+      mpi: true,
+      label: 'MPI (system)',
+      title:
+        `No launcher in this interpreter's own environment; runs would use ${p.mpiexec} ` +
+        'from PATH. Cores > 1 works when that MPI matches the mpi4py this ' +
+        'interpreter imports — install mpi4py + an MPI into the environment itself ' +
+        'to be sure.',
+    }
+  }
   return {
-    mpi: !!p.mpi,
-    label: p.mpi ? 'MPI ✓' : 'MPI ✗',
-    title: p.mpi
-      ? `MPI launcher in this environment (${p.mpiexec}): Cores > 1 available`
-      : 'No MPI launcher in this environment: Cores > 1 unavailable',
+    mpi: false,
+    label: 'MPI ✗',
+    title: 'No MPI launcher in this environment or on PATH: Cores > 1 unavailable',
   }
 })
 

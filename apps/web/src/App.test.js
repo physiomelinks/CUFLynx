@@ -587,9 +587,20 @@ describe('App.vue interpreter MPI marker', () => {
     mpiexec: null,
   }
 
-  const mountWith = async (pythons, selected) => {
+  // A launcher on PATH but not in the interpreter's own environment: runs still
+  // work (resolve_mpiexec falls back), so this is neither ✓ nor ✗.
+  const PATH_PY = {
+    path: '/usr/bin/python3.12',
+    version: '3.12.1',
+    ready: true,
+    missing: [],
+    mpi: false,
+    mpiexec: '/usr/bin/mpiexec',
+  }
+
+  const mountWith = async (pythons, selected, extra = {}) => {
     getCalibrationPythons.mockResolvedValueOnce({ pythons })
-    getConfig.mockResolvedValueOnce({ ...CONFIG, python_path: selected })
+    getConfig.mockResolvedValueOnce({ ...CONFIG, python_path: selected, ...extra })
     const wrapper = shallowMount(App)
     await flushPromises()
     return wrapper
@@ -617,8 +628,73 @@ describe('App.vue interpreter MPI marker', () => {
     expect(chip.attributes('title')).toContain('Cores > 1 unavailable')
   })
 
-  it('says nothing about MPI for an unprobed interpreter (server default)', async () => {
-    const wrapper = await mountWith([MPI_PY], '')
+  it('says nothing about MPI for an interpreter that was never probed', async () => {
+    // A browsed path the server didn't discover: unknown, not "no MPI".
+    const wrapper = await mountWith([MPI_PY], '/elsewhere/python')
     expect(wrapper.find('[data-testid="python-mpi"]').exists()).toBe(false)
+  })
+
+  // A PATH launcher still runs (resolve_mpiexec falls back to it), so reporting
+  // "Cores > 1 unavailable" would contradict a machine where multi-core works.
+  // It is a distinct state because it is the one that can mismatch mpi4py.
+  it('distinguishes a PATH launcher from one in the interpreter itself', async () => {
+    const wrapper = await mountWith([PATH_PY], PATH_PY.path)
+    const chip = wrapper.find('[data-testid="python-mpi"]')
+    expect(chip.text()).toContain('MPI (system)')
+    expect(chip.attributes('title')).toContain('/usr/bin/mpiexec')
+    expect(chip.attributes('title')).toContain('PATH')
+    // Not offered as the recommended pick in the dropdown, though.
+    expect(labelFor(wrapper, PATH_PY.path)).not.toContain('MPI ✓')
+  })
+
+  it('says Cores > 1 is unavailable only when no launcher resolves at all', async () => {
+    const wrapper = await mountWith([PLAIN_PY], PLAIN_PY.path)
+    expect(wrapper.find('[data-testid="python-mpi"]').attributes('title')).toContain(
+      'Cores > 1 unavailable',
+    )
+  })
+
+  // Regression (#75 follow-up): the server resolves "" to a concrete
+  // interpreter and reports that path back, so choosing "Server default" used
+  // to (a) bounce the picker onto that path on the next load and (b) drop the
+  // MPI chip, making an MPI-capable default look like it had lost MPI.
+  describe('server default', () => {
+    it('stays selected when the server reports the path it resolves to', async () => {
+      const wrapper = await mountWith([MPI_PY], MPI_PY.path, {
+        python_default: MPI_PY.path,
+      })
+      expect(wrapper.vm.pythonPath).toBe('')
+    })
+
+    it('keeps an explicit pick that is not the default', async () => {
+      const wrapper = await mountWith([MPI_PY, PLAIN_PY], MPI_PY.path, {
+        python_default: PLAIN_PY.path,
+      })
+      expect(wrapper.vm.pythonPath).toBe(MPI_PY.path)
+    })
+
+    it('reports the MPI support of the default interpreter, not silence', async () => {
+      const wrapper = await mountWith([MPI_PY], MPI_PY.path, {
+        python_default: MPI_PY.path,
+      })
+      const chip = wrapper.find('[data-testid="python-mpi"]')
+      expect(chip.exists()).toBe(true)
+      expect(chip.text()).toContain('MPI ✓')
+      expect(chip.attributes('title')).toContain('/venv/bin/mpiexec')
+    })
+
+    it('names the interpreter the default resolves to, and marks its MPI', async () => {
+      const wrapper = await mountWith([MPI_PY], '', { python_default: MPI_PY.path })
+      const label = labelFor(wrapper, '')
+      expect(label).toContain('Server default')
+      expect(label).toContain(MPI_PY.path)
+      expect(label).toContain('MPI ✓')
+    })
+
+    it('stays a bare label when the default is unknown (packaged: no external)', async () => {
+      const wrapper = await mountWith([MPI_PY], '', { python_default: '' })
+      expect(labelFor(wrapper, '')).toBe('Server default')
+      expect(wrapper.find('[data-testid="python-mpi"]').exists()).toBe(false)
+    })
   })
 })

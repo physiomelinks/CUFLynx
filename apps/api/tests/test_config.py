@@ -325,3 +325,33 @@ def test_ca_exists_is_false_when_unconfigured(client, monkeypatch):
     body = client.get("/api/config").json()
     assert body["ca_src"] == ""
     assert body["ca_exists"] is False
+
+
+def test_config_reports_what_the_default_interpreter_resolves_to(client):
+    """The client has to be able to tell "" (server default) apart from the path
+    it resolves to.
+
+    ``_set_analysis_python(default_python())`` turns a "" choice into a concrete
+    interpreter, and the payload then reports that path — so without a separate
+    `python_default` the picker read the reply as an explicit pick and jumped off
+    "Server default", and could say nothing about the default's MPI support."""
+    assert "python_default" in client.get("/api/config").json()
+
+    # Choosing "" resolves to the default, and the payload names both, so the
+    # client can see that the resolved path *is* the default rather than an
+    # explicit pick that overrode it.
+    body = client.post("/api/config", json={"python_path": ""}).json()
+    assert body["python_default"]
+    assert body["python_path"] == body["python_default"]
+
+
+def test_default_interpreter_is_the_serving_one_from_source(client):
+    """From source the default is the interpreter serving the API, which is what
+    the picker must name so "Server default" isn't an opaque choice."""
+    import sys
+
+    import runtime_paths
+
+    if runtime_paths.is_frozen():  # pragma: no cover - not the test environment
+        return
+    assert client.get("/api/config").json()["python_default"] == sys.executable

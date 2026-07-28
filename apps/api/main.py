@@ -288,6 +288,13 @@ def _config_payload() -> dict:
         "ca_exists": bool(src) and p.is_dir(),
         # Remembered interpreter for analysis runs (blank = none chosen yet).
         "python_path": calibration.python or "",
+        # The interpreter "server default" actually resolves to (blank when
+        # frozen: analysis then runs in the bundle, there is no external one).
+        # Without this the client cannot tell that its "" choice came back as a
+        # concrete path, so the picker jumped off "Server default" on reload —
+        # and could say nothing about the default's MPI support, though it is as
+        # probeable as any other interpreter.
+        "python_default": default_python() or "",
         # Global random seed for analysis runs (null = none / non-deterministic).
         "seed": _analysis_seed,
         # Current backend solver selection (engine is the source of truth). dt is
