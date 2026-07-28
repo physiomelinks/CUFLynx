@@ -85,58 +85,87 @@ function shown(unit) {
   return u && u !== 'dimensionless' ? u : ''
 }
 
-// Unit conversion (#125). `null` = show the model's own unit; otherwise
-// { unit, factor } where `factor` converts **from the model's unit** — it is
-// always absolute, never relative to whatever is currently on screen, so the
-// displayed scale can be read straight off it. Display only — the simulation,
-// obs_data and exported pipeline keep the model's units.
-const conversion = ref(null)
+// Unit conversion (#125), tracked per axis: both axes can carry a model
+// variable (a phase-plane cell, #124), so both are convertible. `null` = show
+// the model's own unit; otherwise { unit, factor } where `factor` converts
+// **from the model's unit** — it is always absolute, never relative to whatever
+// is currently on screen, so the displayed scale can be read straight off it.
+// Display only — the simulation, obs_data and exported pipeline keep the
+// model's units.
+function useAxisUnit(modelUnit) {
+  const conversion = ref(null)
+  // The model's own unit, i.e. what the values mean before any conversion.
+  const original = computed(() => shown(modelUnit()))
+  // The unit the axis is currently displayed in.
+  const display = computed(() => conversion.value?.unit || original.value)
+  // The conversion in force as an equivalence: 1 <model unit> = f <shown>.
+  // Formatted with fmtSci — the same formatter SciNumberInput displays with —
+  // so the factor in the summary and in the field always read identically.
+  const summary = computed(() =>
+    conversion.value
+      ? `1 ${original.value || 'model units'} = ${fmtSci(conversion.value.factor)} ${conversion.value.unit}`
+      : '',
+  )
+  return { conversion, original, display, summary }
+}
 
-// The model's own unit, i.e. what the values mean before any conversion.
-const originalUnit = computed(() => shown(props.yUnit))
+const yAxis = useAxisUnit(() => props.yUnit)
+const xAxis = useAxisUnit(() => props.xUnit)
 
-// The unit the plot is currently displayed in.
-const displayUnit = computed(() => conversion.value?.unit || originalUnit.value)
+const originalUnit = computed(() => yAxis.original.value)
+const displayUnit = computed(() => yAxis.display.value)
+const conversion = computed(() => yAxis.conversion.value)
+const xDisplayUnit = computed(() => xAxis.display.value)
+const xConversion = computed(() => xAxis.conversion.value)
 
 // Values as displayed. Scaling here rather than in buildChartData keeps the
 // conversion a presentation concern and leaves the shared plot lib untouched.
 // Obs overlays are in the model's units too, so they scale with the traces —
-// otherwise a converted plot would compare against an unconverted target.
+// otherwise a converted plot would compare against an unconverted target. The
+// x factor scales reference lines with them, since those are drawn at x values
+// taken from the same series.
 const displayData = computed(() => {
-  const f = conversion.value?.factor
+  const fy = yAxis.conversion.value?.factor || 1
+  const fx = xAxis.conversion.value?.factor || 1
   const base = chartData.value
-  if (!f || f === 1) return base
+  if (fx === 1 && fy === 1) return base
   return {
     ...base,
     datasets: base.datasets.map((d) => ({
       ...d,
-      data: d.data.map((p) => ({ ...p, y: p.y * f })),
+      data: d.data.map((p) => ({ ...p, x: p.x * fx, y: p.y * fy })),
     })),
   }
 })
 
-// The y axis carries no title: the variable is already named above the plot in
-// LaTeX, and repeating it in plain canvas text was redundant. The unit lives in
-// the header instead, where it can be clicked to convert.
-//
-// The x axis does carry one, because nothing else names it: `time`, or the x
-// variable of a phase-plane cell (#124), suffixed with its unit (#125).
-const xTitle = computed(() => {
-  const label = props.xLabel || 'time'
-  const unit = shown(props.xUnit)
-  return unit ? `${label} [${unit}]` : label
-})
+// Neither axis carries a canvas title. The y variable is named above the plot
+// in LaTeX and the x variable below it, both as HTML — which lets them share
+// the heading type and, more to the point, lets the unit beside each be a
+// button that opens the converter. A canvas axis title could not be clicked.
+const xLabelText = computed(() => props.xLabel || 'time')
 
 // --- convert-unit dialog ---------------------------------------------------
+// One dialog serves both axes; `convertAxis` says which one it is editing.
 const convertOpen = ref(false)
+const convertAxis = ref('y')
 const newUnit = ref('')
 const newFactor = ref(1)
 
+const editing = computed(() => (convertAxis.value === 'x' ? xAxis : yAxis))
+const editOriginalUnit = computed(() => editing.value.original.value)
+const editDisplayUnit = computed(() => editing.value.display.value)
+const editConversion = computed(() => editing.value.conversion.value)
+const conversionSummary = computed(() => editing.value.summary.value)
+const convertHeader = computed(() =>
+  convertAxis.value === 'x' ? `Convert ${xLabelText.value} unit` : 'Convert unit',
+)
+
 // Prefill with the conversion in force, so the dialog shows what is currently
 // applied and an edit adjusts it rather than starting from a blank slate.
-function openConvert() {
-  newUnit.value = displayUnit.value
-  newFactor.value = conversion.value?.factor ?? 1
+function openConvert(axis = 'y') {
+  convertAxis.value = axis === 'x' ? 'x' : 'y'
+  newUnit.value = editing.value.display.value
+  newFactor.value = editing.value.conversion.value?.factor ?? 1
   convertOpen.value = true
 }
 
@@ -146,22 +175,13 @@ function applyConvert() {
   const unit = String(newUnit.value ?? '').trim()
   const factor = Number(newFactor.value)
   if (!unit || !Number.isFinite(factor) || factor === 0) return
-  conversion.value = { unit, factor }
+  editing.value.conversion.value = { unit, factor }
   convertOpen.value = false
 }
 
-// The conversion in force, phrased as an equivalence: 1 <model unit> = f <shown>.
-// Formatted with fmtSci — the same formatter SciNumberInput displays with — so
-// the factor in the summary and the factor in the field always read identically.
-const conversionSummary = computed(() => {
-  if (!conversion.value) return ''
-  const from = originalUnit.value || 'model units'
-  return `1 ${from} = ${fmtSci(conversion.value.factor)} ${conversion.value.unit}`
-})
-
 // Back to the model's own unit.
 function resetConvert() {
-  conversion.value = null
+  editing.value.conversion.value = null
   convertOpen.value = false
 }
 
@@ -173,7 +193,7 @@ const chartOptions = computed(() => ({
   interaction: { mode: 'nearest', axis: 'xy', intersect: false },
   elements: { point: { hitRadius: HIT_RADIUS } },
   scales: {
-    x: { type: 'linear', title: { display: true, text: xTitle.value }, ticks: sciTicks },
+    x: { type: 'linear', ticks: sciTicks },
     y: { type: 'linear', ticks: sciTicks },
   },
   plugins: {
@@ -202,6 +222,9 @@ defineExpose({
   originalUnit,
   displayUnit,
   conversion,
+  xLabelText,
+  xDisplayUnit,
+  xConversion,
 })
 </script>
 
@@ -232,7 +255,7 @@ defineExpose({
             : 'Click to convert this plot to another unit'
         "
         data-testid="plot-unit"
-        @click="openConvert"
+        @click="openConvert('y')"
       >
         [{{ displayUnit }}]
       </button>
@@ -275,21 +298,44 @@ defineExpose({
         :options="chartOptions"
       />
     </div>
+    <!--
+      The x-axis label is HTML rather than a canvas axis title, so it can be
+      typeset like the plot heading (which reads as the y-axis label) and so its
+      unit can be clicked to convert, exactly as the y unit is.
+    -->
+    <div class="plot-foot">
+      <span class="plot-xlabel" data-testid="plot-xlabel" v-html="renderMath(xLabelText)" />
+      <button
+        v-if="xDisplayUnit"
+        type="button"
+        class="plot-unit"
+        :class="{ converted: !!xConversion }"
+        :title="
+          xConversion
+            ? `Displayed in ${xConversion.unit} (model unit: ${xUnit}). Click to convert.`
+            : 'Click to convert this axis to another unit'
+        "
+        data-testid="plot-x-unit"
+        @click="openConvert('x')"
+      >
+        [{{ xDisplayUnit }}]
+      </button>
+    </div>
     <Dialog
       v-model:visible="convertOpen"
       modal
-      header="Convert unit"
+      :header="convertHeader"
       :style="{ width: '22rem' }"
       data-testid="convert-unit-dialog"
     >
       <div class="convert-form">
         <div class="convert-row">
           <span>Original unit</span>
-          <code data-testid="convert-original-unit">{{ originalUnit || '(none)' }}</code>
+          <code data-testid="convert-original-unit">{{ editOriginalUnit || '(none)' }}</code>
         </div>
         <div class="convert-row">
           <span>Currently shown in</span>
-          <code data-testid="convert-current-unit">{{ displayUnit || '(none)' }}</code>
+          <code data-testid="convert-current-unit">{{ editDisplayUnit || '(none)' }}</code>
         </div>
         <p
           v-if="conversionSummary"
@@ -307,7 +353,7 @@ defineExpose({
           <InputText v-model="newUnit" size="small" data-testid="convert-unit-name" />
         </label>
         <label class="convert-row">
-          <span>Multiply {{ originalUnit || 'model' }} values by</span>
+          <span>Multiply {{ editOriginalUnit || 'model' }} values by</span>
           <SciNumberInput
             v-model="newFactor"
             class="convert-factor"
@@ -323,7 +369,7 @@ defineExpose({
       </div>
       <template #footer>
         <Button
-          v-if="conversion"
+          v-if="editConversion"
           label="Reset"
           text
           size="small"
@@ -388,11 +434,22 @@ defineExpose({
   border-radius: 3px;
   padding: 0.05rem 0.35rem;
 }
-.plot-title {
+/* The heading reads as the y-axis label and the foot as the x-axis one, so they
+   share a type: heavier and closer to the panel foreground than Chart.js's own
+   grey axis titles, which looked like a caption next to the LaTeX heading. */
+.plot-title,
+.plot-xlabel {
   margin: 0;
   font-size: 0.8rem;
   font-weight: 600;
   opacity: 0.85;
+}
+.plot-foot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.15rem;
+  margin: 0.15rem 0 0;
 }
 .plot-unit {
   border: none;

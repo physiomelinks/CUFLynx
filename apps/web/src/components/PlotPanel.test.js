@@ -241,21 +241,41 @@ describe('PlotPanel', () => {
       ).toBe(false)
     })
 
-    it('labels the time axis with the model time units', () => {
-      expect(opts({ xUnit: 'second' }).scales.x.title.text).toBe('time [second]')
+    // The x label is HTML, not a canvas axis title, so it can be typeset like
+    // the heading and its unit can be clicked.
+    it('never titles the x-axis on the canvas either', () => {
+      expect(opts({ xUnit: 'second' }).scales.x.title).toBeUndefined()
     })
 
-    it('keeps the bare time label when the time units are unknown', () => {
-      expect(opts({}).scales.x.title.text).toBe('time')
-      expect(opts({ xUnit: 'dimensionless' }).scales.x.title.text).toBe('time')
+    it('labels the time axis below the plot with the model time units', () => {
+      const w = chip({ xUnit: 'second' })
+      expect(w.find('[data-testid="plot-xlabel"]').text()).toBe('time')
+      expect(w.find('[data-testid="plot-x-unit"]').text()).toBe('[second]')
+    })
+
+    it('shows no x unit chip when the time units are unknown or dimensionless', () => {
+      expect(chip({}).find('[data-testid="plot-x-unit"]').exists()).toBe(false)
+      expect(
+        chip({ xUnit: 'dimensionless' }).find('[data-testid="plot-x-unit"]').exists(),
+      ).toBe(false)
+      // The label itself still names the axis.
+      expect(chip({}).find('[data-testid="plot-xlabel"]').text()).toBe('time')
     })
 
     // On a phase-plane cell (issue #124) the x axis is a variable, not the time,
     // so the unit annotates whatever that axis is named.
-    it('annotates a phase-plane x label with its own units', () => {
-      const o = opts({ xLabel: 'heart/V_lv', xUnit: 'mL' })
-      expect(o.scales.x.title.text).toBe('heart/V_lv [mL]')
-      expect(opts({ xLabel: 'heart/V_lv' }).scales.x.title.text).toBe('heart/V_lv')
+    it('names a phase-plane x variable with its own units', () => {
+      const w = chip({ xLabel: 'heart/V_lv', xUnit: 'mL' })
+      expect(w.find('[data-testid="plot-xlabel"]').text()).toBe('heart/V_lv')
+      expect(w.find('[data-testid="plot-x-unit"]').text()).toBe('[mL]')
+    })
+
+    // Both labels are the same heading type: the title reads as the y-axis
+    // label, the foot as the x-axis one.
+    it('gives the x label the same class-driven type as the title', () => {
+      const w = chip({ varLabel: 'p_o2', xLabel: 'heart/V_lv' })
+      expect(w.find('[data-testid="plot-title"]').classes()).toContain('plot-title')
+      expect(w.find('[data-testid="plot-xlabel"]').classes()).toContain('plot-xlabel')
     })
 
     it('reacts to a units change', async () => {
@@ -408,6 +428,96 @@ describe('PlotPanel', () => {
       const raw = wrapper.vm.chartData.datasets[0].data.map((p) => p.y)
       await convert(wrapper, 'mmHg', 0.0075)
       expect(wrapper.vm.chartData.datasets[0].data.map((p) => p.y)).toEqual(raw)
+    })
+  })
+
+  // The x axis converts the same way — on a phase-plane cell it carries a model
+  // variable just as the y axis does (issues #124 + #125).
+  describe('x-axis unit conversion', () => {
+    const mountWithUnits = (props) =>
+      mount(PlotPanel, {
+        props: {
+          simResult,
+          title: 'p',
+          varLabel: 'p',
+          yUnit: 'J_per_m3',
+          xLabel: 'heart/V_lv',
+          xUnit: 'm3',
+          ...props,
+        },
+        global: { stubs },
+      })
+
+    const convertX = async (wrapper, unit, factor) => {
+      await wrapper.find('[data-testid="plot-x-unit"]').trigger('click')
+      await wrapper.find('[data-testid="convert-unit-name"]').setValue(unit)
+      await wrapper.find('[data-testid="convert-unit-factor"]').setValue(factor)
+      await wrapper.find('[data-testid="convert-unit-apply"]').trigger('click')
+    }
+
+    it('scales every x value and relabels the x chip', async () => {
+      const wrapper = mountWithUnits()
+      const before = wrapper.vm.displayData.datasets[0].data.map((p) => p.x)
+      await convertX(wrapper, 'mL', '1e6')
+      expect(wrapper.vm.xDisplayUnit).toBe('mL')
+      expect(wrapper.find('[data-testid="plot-x-unit"]').text()).toBe('[mL]')
+      expect(wrapper.vm.displayData.datasets[0].data.map((p) => p.x)).toEqual(
+        before.map((x) => x * 1e6),
+      )
+    })
+
+    it('leaves the y values alone', async () => {
+      const wrapper = mountWithUnits()
+      const ys = wrapper.vm.displayData.datasets[0].data.map((p) => p.y)
+      await convertX(wrapper, 'mL', 1e6)
+      expect(wrapper.vm.displayData.datasets[0].data.map((p) => p.y)).toEqual(ys)
+      expect(wrapper.vm.displayUnit).toBe('J_per_m3')
+    })
+
+    // One dialog serves both axes, so it must report the axis it is editing
+    // rather than whichever was converted last.
+    it('reports the x axis units, not the y axis ones', async () => {
+      const wrapper = mountWithUnits()
+      await wrapper.find('[data-testid="plot-x-unit"]').trigger('click')
+      expect(wrapper.find('[data-testid="convert-original-unit"]').text()).toBe('m3')
+      await wrapper.find('[data-testid="convert-unit-name"]').setValue('mL')
+      await wrapper.find('[data-testid="convert-unit-factor"]').setValue('1e6')
+      await wrapper.find('[data-testid="convert-unit-apply"]').trigger('click')
+      await wrapper.find('[data-testid="plot-x-unit"]').trigger('click')
+      expect(wrapper.find('[data-testid="convert-current-summary"]').text()).toBe(
+        '1 m3 = 1e6 mL',
+      )
+      // Reopening on the y axis shows the y axis's own (unconverted) state.
+      await wrapper.find('[data-testid="convert-unit-apply"]').trigger('click')
+      await wrapper.find('[data-testid="plot-unit"]').trigger('click')
+      expect(wrapper.find('[data-testid="convert-original-unit"]').text()).toBe('J_per_m3')
+      expect(wrapper.find('[data-testid="convert-current-summary"]').text()).toContain(
+        'No conversion applied',
+      )
+    })
+
+    it('converts each axis independently', async () => {
+      const wrapper = mountWithUnits()
+      const raw = wrapper.vm.chartData.datasets[0].data.map((p) => ({ ...p }))
+      await convertX(wrapper, 'mL', 1e6)
+      await wrapper.find('[data-testid="plot-unit"]').trigger('click')
+      await wrapper.find('[data-testid="convert-unit-name"]').setValue('mmHg')
+      await wrapper.find('[data-testid="convert-unit-factor"]').setValue(0.0075)
+      await wrapper.find('[data-testid="convert-unit-apply"]').trigger('click')
+      expect(wrapper.vm.displayData.datasets[0].data).toEqual(
+        raw.map((p) => ({ ...p, x: p.x * 1e6, y: p.y * 0.0075 })),
+      )
+    })
+
+    it('resets the x axis without touching the y axis', async () => {
+      const wrapper = mountWithUnits()
+      const before = wrapper.vm.displayData.datasets[0].data.map((p) => p.x)
+      await convertX(wrapper, 'mL', 1e6)
+      await wrapper.find('[data-testid="plot-x-unit"]').trigger('click')
+      await wrapper.find('[data-testid="convert-unit-reset"]').trigger('click')
+      expect(wrapper.vm.xConversion).toBe(null)
+      expect(wrapper.vm.xDisplayUnit).toBe('m3')
+      expect(wrapper.vm.displayData.datasets[0].data.map((p) => p.x)).toEqual(before)
     })
   })
 

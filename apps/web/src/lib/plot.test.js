@@ -309,7 +309,7 @@ describe('buildExtraPlotCells', () => {
   // variable (a PV loop) instead of against time.
   it('wires outputs[xqname] in as the x series when set', () => {
     const [cell] = buildExtraPlotCells(
-      [{ id: 4, groupKey: 'exp0', qname: 'm/y', xqname: 'm/x', label: 'm/y vs m/x' }],
+      [{ id: 4, groupKey: 'exp0', qname: 'm/y', xqname: 'm/x', label: 'm/y' }],
       'exp0',
       time,
       outputs,
@@ -320,14 +320,15 @@ describe('buildExtraPlotCells', () => {
       xValues: [1, 2, 3],
     })
     expect(cell.xLabel).toBe('m/x')
-    expect(cell.title).toBe('m/y vs m/x')
+    // The title is the y variable alone; the x one is named under the x axis.
+    expect(cell.title).toBe('m/y')
   })
 
   // The x axis of a phase-plane cell is a model variable, so it takes that
   // variable's unit -- not the time unit the caller would otherwise supply.
   it('takes the x-axis units from the x variable (issues #124 + #125)', () => {
     const [cell] = buildExtraPlotCells(
-      [{ id: 4, groupKey: 'exp0', qname: 'm/y', xqname: 'm/x', label: 'm/y vs m/x' }],
+      [{ id: 4, groupKey: 'exp0', qname: 'm/y', xqname: 'm/x', label: 'm/y' }],
       'exp0',
       time,
       outputs,
@@ -346,7 +347,7 @@ describe('buildExtraPlotCells', () => {
 
   it('falls back to an empty x series when the x variable is absent', () => {
     const [cell] = buildExtraPlotCells(
-      [{ id: 5, groupKey: 'exp0', qname: 'm/y', xqname: 'm/z', label: 'm/y vs m/z' }],
+      [{ id: 5, groupKey: 'exp0', qname: 'm/y', xqname: 'm/z', label: 'm/y' }],
       'exp0',
       time,
       outputs,

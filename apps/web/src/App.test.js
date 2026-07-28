@@ -455,16 +455,18 @@ describe('App.vue plot one variable against another (#124)', () => {
       'heart/V_lv',
     ])
 
+    // The title names the y variable only — it reads as the y-axis label, and
+    // the x variable is named under the x axis instead.
     const cell = wrapper.vm.plotGroups[0].cells.find((c) => c.removeId)
-    expect(cell.title).toBe('heart/P_lv vs heart/V_lv')
+    expect(cell.title).toBe('heart/P_lv')
     expect(cell.xLabel).toBe('heart/V_lv')
     expect(cell.simResult.xValues).toEqual([1, 2, 3])
 
     const panel = wrapper
       .findAllComponents({ name: 'PlotPanel' })
-      .find((p) => p.props('title') === 'heart/P_lv vs heart/V_lv')
+      .find((p) => p.props('xLabel') === 'heart/V_lv')
     expect(panel).toBeTruthy()
-    expect(panel.props('xLabel')).toBe('heart/V_lv')
+    expect(panel.props('title')).toBe('heart/P_lv')
   })
 
   it('defaults the x axis to time, keeping the plain time-series plot', async () => {

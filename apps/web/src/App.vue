@@ -489,7 +489,9 @@ function confirmAddPlot() {
     expIdx: addPlotTarget.value.expIdx,
     qname,
     xqname,
-    label: xqname ? `${qname} vs ${xqname}` : qname,
+    // The title names the y variable only — it reads as the y-axis label, and
+    // the x variable is named under the x axis (#124/#125).
+    label: qname,
   })
   addPlotOpen.value = false
   // Re-run so the newly requested variable is fetched for this experiment.
