@@ -1713,7 +1713,9 @@ watch(
         <p class="settings-hint">
           Off by default. When on, a browser notification appears as soon as a
           calibration, sensitivity or UQ run ends — useful for runs long enough to
-          walk away from.
+          walk away from. It asks to stay on screen until dismissed, and the tab
+          title is flagged too, since some desktops hide notifications after a few
+          seconds regardless.
         </p>
         <p v-if="notifyWarning" class="settings-warn" data-testid="notify-warning">
           ⚠ {{ notifyWarning }}

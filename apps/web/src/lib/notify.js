@@ -55,17 +55,70 @@ export async function requestNotificationPermission() {
 /**
  * Show a notification. Silently does nothing when disabled, unsupported, or not
  * granted. Returns true only if one was actually constructed (handy in tests).
+ *
+ * `requireInteraction` keeps it on screen until dismissed rather than letting it
+ * auto-hide after a few seconds — the whole point is that the user walked away,
+ * so a toast that expires before they look back tells them nothing. It is a
+ * hint, not a guarantee: Firefox and Safari ignore it, and a Linux desktop's
+ * notification daemon may expire it anyway, which is why the caller also flags
+ * the tab (see `setTitleAlert`).
+ *
+ * `tag` collapses repeat runs of the same kind onto one notification instead of
+ * stacking them; `renotify` makes that replacement still alert rather than
+ * swapping silently. Passing renotify without a tag throws in some browsers, so
+ * it is only set alongside one.
  */
-export function notify(title, body, { enabled = false } = {}) {
+export function notify(title, body, { enabled = false, tag = '' } = {}) {
   if (!enabled) return false
   const Ctor = notificationCtor()
   if (!Ctor || Ctor.permission !== 'granted') return false
   try {
-    new Ctor(title, { body })
+    new Ctor(title, {
+      body,
+      requireInteraction: true,
+      ...(tag ? { tag, renotify: true } : {}),
+    })
     return true
   } catch {
     return false
   }
+}
+
+// Set once per alert run, so several alerts before the user returns don't stack
+// up and lose the real title.
+let savedTitle = null
+
+/**
+ * Flag the browser tab so a finished run is noticeable even when the OS hid the
+ * notification (or never showed one — permission denied, unsupported webview).
+ *
+ * Only fires when the user is actually away: hidden tab, or a visible window
+ * that doesn't have focus. If they are looking at CUFLynx the panel already
+ * shows the run state and rewriting the title would just be noise.
+ *
+ * Returns true when the title was changed.
+ */
+export function setTitleAlert(text) {
+  if (typeof document === 'undefined' || typeof window === 'undefined') return false
+  const away = document.hidden || !document.hasFocus?.()
+  if (!away || !text) return false
+
+  if (savedTitle === null) savedTitle = document.title
+  document.title = `● ${text}`
+
+  const restore = () => {
+    // visibilitychange also fires on the way *out*; only restore on return.
+    if (document.hidden) return
+    if (savedTitle !== null) {
+      document.title = savedTitle
+      savedTitle = null
+    }
+    window.removeEventListener('focus', restore)
+    document.removeEventListener('visibilitychange', restore)
+  }
+  window.addEventListener('focus', restore)
+  document.addEventListener('visibilitychange', restore)
+  return true
 }
 
 // Human labels for the three long-running jobs.
@@ -98,5 +151,7 @@ export function runNotification(kind, state, detail = {}) {
         ? `${label} stopped with an error.`
         : `${label} was cancelled.`
   if (state === 'done' && Number.isFinite(detail?.cost)) body += ` Final cost: ${detail.cost}.`
-  return { title, body }
+  // `tab` drops the "CUFLynx — " prefix: the tab is already CUFLynx, and the
+  // browser truncates a tab title hard, so the words that matter go first.
+  return { title, body, tab: `${label} ${TERMINAL_WORD[state]}`, tag: kind }
 }

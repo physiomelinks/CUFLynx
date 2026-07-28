@@ -127,3 +127,53 @@ describe('useRunNotifications (#105)', () => {
     expect(Ctor.shown[0].title).toBe('CUFLynx — Sensitivity analysis finished')
   })
 })
+
+// The OS decides how long its own notification lives; the tab title is the part
+// that waits for the user however long they are away (#105 follow-up).
+describe('useRunNotifications tab-title fallback', () => {
+  let Ctor
+  let calib
+  let enabled
+  const original = 'CUFLynx'
+
+  beforeEach(() => {
+    Ctor = fakeNotification()
+    setNotificationCtor(Ctor)
+    calib = ref('idle')
+    enabled = ref(true)
+    document.title = original
+    // Simulate the user being on another tab, which is when this matters.
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => true })
+  })
+  afterEach(() => {
+    setNotificationCtor(undefined)
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => false })
+    document.title = original
+  })
+
+  const run = async () => {
+    harness([{ kind: 'calibration', state: calib }], enabled)
+    calib.value = 'running'
+    await nextTick()
+    calib.value = 'done'
+    await nextTick()
+  }
+
+  it('flags the tab when a run finishes while the user is away', async () => {
+    await run()
+    expect(document.title).toContain('Calibration finished')
+  })
+
+  it('stays quiet when the toggle is off, like the notification itself', async () => {
+    enabled.value = false
+    await run()
+    expect(document.title).toBe(original)
+    expect(Ctor.shown).toHaveLength(0)
+  })
+
+  it('tags the notification by run kind so repeats replace rather than stack', async () => {
+    await run()
+    expect(Ctor.shown[0].tag).toBe('calibration')
+    expect(Ctor.shown[0].requireInteraction).toBe(true)
+  })
+})

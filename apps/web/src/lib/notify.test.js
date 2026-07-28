@@ -7,6 +7,7 @@ import {
   notify,
   runNotification,
   isTerminalRunState,
+  setTitleAlert,
 } from './notify'
 
 // Fake Notification constructor: records every notification constructed, and
@@ -47,7 +48,11 @@ describe('notify (Web Notifications wrapper, #105)', () => {
       enabled: true,
     })).toBe(true)
     expect(Ctor.shown).toEqual([
-      { title: 'CUFLynx — Calibration finished', body: 'Calibration completed successfully.' },
+      {
+        title: 'CUFLynx — Calibration finished',
+        body: 'Calibration completed successfully.',
+        requireInteraction: true,
+      },
     ])
   })
 
@@ -142,5 +147,112 @@ describe('runNotification message content', () => {
     expect(isTerminalRunState('done')).toBe(true)
     expect(isTerminalRunState('error')).toBe(true)
     expect(isTerminalRunState('cancelled')).toBe(true)
+  })
+})
+
+// A notification that auto-hides after a few seconds is useless to someone who
+// walked away, which is the entire use case (#105 follow-up).
+describe('staying visible', () => {
+  it('asks the browser to keep the notification up until dismissed', () => {
+    const Ctor = fakeNotification('granted')
+    setNotificationCtor(Ctor)
+    notify('t', 'b', { enabled: true })
+    expect(Ctor.shown[0].requireInteraction).toBe(true)
+  })
+
+  it('collapses repeat runs of one kind onto a single re-alerting notification', () => {
+    const Ctor = fakeNotification('granted')
+    setNotificationCtor(Ctor)
+    notify('t', 'b', { enabled: true, tag: 'calibration' })
+    expect(Ctor.shown[0].tag).toBe('calibration')
+    expect(Ctor.shown[0].renotify).toBe(true)
+  })
+
+  it('omits renotify without a tag, which throws in some browsers', () => {
+    const Ctor = fakeNotification('granted')
+    setNotificationCtor(Ctor)
+    notify('t', 'b', { enabled: true })
+    expect('renotify' in Ctor.shown[0]).toBe(false)
+    expect('tag' in Ctor.shown[0]).toBe(false)
+  })
+
+  it('offers a short tab-title form alongside the notification text', () => {
+    const msg = runNotification('calibration', 'done')
+    expect(msg.tab).toBe('Calibration finished')
+    expect(msg.tag).toBe('calibration')
+    // The full title keeps the app prefix; the tab is already CUFLynx.
+    expect(msg.title).toContain('CUFLynx')
+  })
+})
+
+// The tab title outlasts any OS notification, so it is the fallback when the
+// desktop expires (or never shows) one.
+describe('setTitleAlert', () => {
+  const original = 'CUFLynx'
+  let hidden = false
+  let focused = true
+
+  beforeEach(() => {
+    document.title = original
+    hidden = false
+    focused = true
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => hidden })
+    vi.spyOn(document, 'hasFocus').mockImplementation(() => focused)
+  })
+  afterEach(() => vi.restoreAllMocks())
+
+  it('flags the title when the tab is hidden', () => {
+    hidden = true
+    expect(setTitleAlert('Calibration finished')).toBe(true)
+    expect(document.title).toContain('Calibration finished')
+  })
+
+  it('flags it for a visible window that does not have focus', () => {
+    focused = false
+    expect(setTitleAlert('Calibration finished')).toBe(true)
+    expect(document.title).toContain('Calibration finished')
+  })
+
+  // Looking at the app already shows the run state; rewriting the title is noise.
+  it('leaves the title alone when the user is right there', () => {
+    expect(setTitleAlert('Calibration finished')).toBe(false)
+    expect(document.title).toBe(original)
+  })
+
+  it('restores the real title once the user comes back', () => {
+    hidden = true
+    setTitleAlert('Calibration finished')
+    hidden = false
+    document.dispatchEvent(new Event('visibilitychange'))
+    expect(document.title).toBe(original)
+  })
+
+  it('restores on window focus too, for a merely unfocused window', () => {
+    focused = false
+    setTitleAlert('Calibration finished')
+    focused = true
+    window.dispatchEvent(new Event('focus'))
+    expect(document.title).toBe(original)
+  })
+
+  // visibilitychange fires on the way out as well; that must not "restore" the
+  // alert away while the user is still gone.
+  it('keeps the flag when the tab is hidden again before the user returns', () => {
+    hidden = true
+    setTitleAlert('Calibration finished')
+    document.dispatchEvent(new Event('visibilitychange'))
+    expect(document.title).toContain('Calibration finished')
+  })
+
+  // Two runs finishing while away must not leave the flagged title saved as the
+  // "real" one, which would make it permanent.
+  it('survives a second alert before the user returns', () => {
+    hidden = true
+    setTitleAlert('Calibration finished')
+    setTitleAlert('Sensitivity analysis finished')
+    expect(document.title).toContain('Sensitivity analysis finished')
+    hidden = false
+    document.dispatchEvent(new Event('visibilitychange'))
+    expect(document.title).toBe(original)
   })
 })

@@ -1,5 +1,10 @@
 import { watch, unref } from 'vue'
-import { notify, runNotification, isTerminalRunState } from '../lib/notify'
+import {
+  notify,
+  runNotification,
+  isTerminalRunState,
+  setTitleAlert,
+} from '../lib/notify'
 
 /**
  * Fire a browser notification when a long run leaves 'running' for a terminal
@@ -20,7 +25,13 @@ export function useRunNotifications(runs, enabled) {
       // and not repeated writes of the same terminal value.
       if (prev !== 'running' || !isTerminalRunState(next)) return
       const msg = runNotification(kind, next, detail ? detail() : {})
-      if (msg) notify(msg.title, msg.body, { enabled: !!unref(enabled) })
+      if (!msg) return
+      const on = !!unref(enabled)
+      notify(msg.title, msg.body, { enabled: on, tag: msg.tag })
+      // Belt and braces: OS notifications expire on their own schedule (and may
+      // not appear at all), whereas a flagged tab title waits however long the
+      // user is away. Same toggle governs both.
+      if (on) setTitleAlert(msg.tab)
     })
   }
 }
