@@ -130,6 +130,25 @@ const solverInfo = ref({})
 // warn up front — it's the most likely first-run stumble in the packaged app,
 // which has no compiler of its own to fall back on.
 const cppCompiler = ref({ present: true, hint: '' })
+// AADC (Matlogica) availability, so Settings can explain a missing aadc_python
+// format rather than leaving a silent gap in the menu (#122).
+const aadc = ref(null)
+const aadcNotice = computed(() => {
+  const a = aadc.value
+  if (!a) return '' // older API said nothing; don't invent a status
+  if (!a.available) {
+    return `aadc_python is not listed: AADC is not installed. ${a.hint || ''}`.trim()
+  }
+  // Analysis runs happen in the user's own Python, so having it only in the app
+  // is a run waiting to fail.
+  if (a.in_analysis_python === false) {
+    return (
+      'aadc_python is available, but AADC was not found in the interpreter chosen ' +
+      'for analysis runs — install it there too or those runs will fail.'
+    )
+  }
+  return 'aadc_python is available (AADC found).'
+})
 
 // "Python (scipy solve_ivp) or CasADi" — the compiler-free backends, named by the
 // server so the UI can't drift from CA's solver schema.
@@ -157,6 +176,7 @@ function applyConfigPayload(c) {
   solver.value = c.solver ?? ''
   solverInfo.value = { ...(c.solver_info ?? {}) }
   cppCompiler.value = c.cpp_compiler ?? { present: true, hint: '' }
+  aadc.value = c.aadc ?? null
   pythonDefault.value = c.python_default ?? ''
   // The server resolves "" to a concrete interpreter and reports *that*, so
   // taking python_path verbatim silently moved the picker off "Server default"
@@ -1845,6 +1865,15 @@ watch(
             @update:model-value="onFormatChange"
           />
         </label>
+        <!--
+          aadc_python is only in that list when Matlogica's AADC is importable
+          (#122) — offering a format that cannot run is what the OpenCOR
+          exclusion exists to avoid. When it is missing, say so and how to get
+          it, rather than leaving a silent gap in the menu.
+        -->
+        <p v-if="aadcNotice" class="settings-hint" data-testid="aadc-hint">
+          {{ aadcNotice }}
+        </p>
         <label class="settings-row">
           <span class="settings-label" title="Solver wrapper, gated by the model format">Solver</span>
           <Select

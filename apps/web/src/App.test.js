@@ -1151,3 +1151,64 @@ describe('App.vue time unit (#27)', () => {
     expect(wrapper.vm.timeUnitLabel).toBe('')
   })
 })
+
+// Issue #122: aadc_python is only offered when Matlogica's AADC is importable,
+// so Settings must explain a missing format rather than leaving a silent gap.
+describe('App.vue AADC availability (#122)', () => {
+  const CONFIG = {
+    ca_dir: '',
+    ca_exists: true,
+    generated_model_format: 'cellml_only',
+    solver: 'CVODE_myokit',
+    solver_info: {},
+    differentiable_operations: {},
+  }
+
+  const mountWith = async (aadc) => {
+    getConfig.mockResolvedValueOnce({ ...CONFIG, aadc })
+    const wrapper = shallowMount(App)
+    await flushPromises()
+    return wrapper
+  }
+
+  it('says why the format is missing, and how to get it', async () => {
+    const wrapper = await mountWith({
+      available: false,
+      in_app: false,
+      in_analysis_python: null,
+      hint: 'Request a licence at https://matlogica.com/',
+      licence_url: 'https://matlogica.com/',
+    })
+    expect(wrapper.vm.aadcNotice).toContain('not installed')
+    expect(wrapper.vm.aadcNotice).toContain('matlogica.com')
+  })
+
+  it('confirms it when the library is there', async () => {
+    const wrapper = await mountWith({
+      available: true,
+      in_app: true,
+      in_analysis_python: true,
+      hint: '',
+      licence_url: '',
+    })
+    expect(wrapper.vm.aadcNotice).toContain('available')
+  })
+
+  // Analysis runs happen in the user's own Python, so having it in only the app
+  // is a run waiting to fail.
+  it('warns when it is missing from the analysis interpreter', async () => {
+    const wrapper = await mountWith({
+      available: true,
+      in_app: true,
+      in_analysis_python: false,
+      hint: '',
+      licence_url: '',
+    })
+    expect(wrapper.vm.aadcNotice).toContain('analysis runs')
+  })
+
+  it('stays quiet when the backend says nothing about AADC (older API)', async () => {
+    const wrapper = await mountWith(undefined)
+    expect(wrapper.vm.aadcNotice).toBe('')
+  })
+})

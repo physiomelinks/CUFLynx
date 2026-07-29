@@ -110,6 +110,26 @@ warning and you simply pick one of the other two backends. To enable
 
 (Sundials/CVODE itself is bundled — you do *not* need to install it separately.)
 
+### Optional: AADC (a fourth backend, licensed separately)
+
+`aadc_python` records the forward integration on a tape and replays it, giving an
+exact gradient from a single evaluation — useful for gradient-based calibration.
+It needs [AADC](https://matlogica.com/) from Matlogica, which is proprietary
+software, **free for academic use**.
+
+CUFLynx only lists `aadc_python` in **Settings → Generated model format** when the
+library can actually be imported; offering a backend that can't run would just
+move the failure to your first calibration. Settings says whether it was found and
+what to do if not.
+
+To enable it:
+
+1. Request an academic licence at <https://matlogica.com/>.
+2. Install the wheel they provide **into the Python you use for analysis runs**
+   (Settings → Python) — that is where calibration, sensitivity and UQ execute.
+   Installing it only into the app's own environment leaves those runs failing.
+3. Restart CUFLynx. `aadc_python` appears in the format list.
+
 ## Install from source
 
 One-time setup (installs the backend + frontend and builds the UI). Works on

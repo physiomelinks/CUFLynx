@@ -44,6 +44,7 @@ from cellml_meta import CellMLModel, CellMLParseError, parse_cellml
 import mmt_protocol
 import myokit_import
 import omex_import
+from aadc_check import aadc_status
 from version import __version__
 from compiler_check import compiler_status
 from engine import SimulationError, engine, _circulatory_autogen_src
@@ -338,6 +339,10 @@ def _config_payload() -> dict:
         # letting the first run fail with an opaque 500 (matters most in the
         # packaged desktop build, which can't ship a compiler).
         "cpp_compiler": compiler_status(),
+        # AADC (Matlogica) is optional, proprietary and licensed; the aadc_python
+        # format is only offered when it is importable, so the UI needs to be
+        # able to say why it is missing and how to get it (#122).
+        "aadc": aadc_status(calibration.python),
         "packaged": is_frozen(),
         # Whether a matching MPI launcher is available for the current interpreter,
         # so the UI can warn *before* a num_cores>1 run silently drops to a single
