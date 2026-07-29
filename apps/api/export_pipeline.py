@@ -421,22 +421,67 @@ def _color(i):
     return PALETTE[i % len(PALETTE)]
 
 
+# One variable per panel, and at most this many panels per PNG. The pipeline
+# logs *every* model variable, so a single axes would be unreadable and a single
+# figure of 456 panels unusable.
+PANELS_PER_PAGE = 12
+PANEL_COLS = 3
+
+
+def _plot_panels(t, outputs, stem, title_suffix=""):
+    """Draw `outputs` as a grid of one-variable panels, paginated.
+
+    A panel each, not one shared axes: model variables span wildly different
+    scales -- pressures ~1e4, flows ~1e-4, valve states 0/1 -- so on a common
+    linear axis all but the largest collapse onto zero. This mirrors how CUFLynx
+    plots them (one cell per variable), which is the point of the export.
+    """
+    names = list(outputs)
+    if not names:
+        return []
+    written = []
+    pages = (len(names) + PANELS_PER_PAGE - 1) // PANELS_PER_PAGE
+    for page in range(pages):
+        chunk = names[page * PANELS_PER_PAGE : (page + 1) * PANELS_PER_PAGE]
+        rows = (len(chunk) + PANEL_COLS - 1) // PANEL_COLS
+        fig, axes = plt.subplots(
+            rows, PANEL_COLS, figsize=(4.2 * PANEL_COLS, 2.4 * rows), squeeze=False
+        )
+        for i, name in enumerate(chunk):
+            ax = axes[i // PANEL_COLS][i % PANEL_COLS]
+            series = outputs[name]
+            n = min(len(t), len(series))
+            ax.plot(t[:n], series[:n], color=_color(page * PANELS_PER_PAGE + i), lw=1.2)
+            # The variable names the panel; no legend to cover the trace.
+            ax.set_title(name, fontsize=7)
+            ax.set_xlabel("time", fontsize=7)
+            ax.tick_params(labelsize=6)
+        # Blank any unused cells so a part-full page has no empty axes frames.
+        for j in range(len(chunk), rows * PANEL_COLS):
+            axes[j // PANEL_COLS][j % PANEL_COLS].axis("off")
+        suffix = f"{title_suffix}" + (f"_p{page + 1}" if pages > 1 else "")
+        out_path = os.path.join(OUT, f"{stem}{suffix}.png")
+        fig.tight_layout()
+        fig.savefig(out_path, dpi=150)
+        plt.close(fig)
+        written.append(out_path)
+    return written
+
+
 def plot_outputs():
     path = os.path.join(OUT, "simulation.json")
     if not os.path.exists(path):
         return
     data = json.load(open(path))
-    t = data["time"]
-    fig, ax = plt.subplots(figsize=(7, 4))
-    for i, (name, series) in enumerate(data["outputs"].items()):
-        n = min(len(t), len(series))
-        ax.plot(t[:n], series[:n], color=_color(i), lw=1.3, label=name)
-    ax.set_xlabel("time")
-    ax.set_ylabel("output")
-    ax.legend(fontsize=6, ncol=2)
-    fig.tight_layout()
-    fig.savefig(os.path.join(OUT, "output_plot.png"), dpi=150)
-    plt.close(fig)
+    # A protocol run records one entry per experiment rather than a single
+    # time/outputs pair; plotting them together would put experiment 1's trace on
+    # experiment 0's axes.
+    experiments = data.get("experiments")
+    if isinstance(experiments, list) and experiments:
+        for e, exp in enumerate(experiments):
+            _plot_panels(exp.get("time", []), exp.get("outputs", {}), "output_plot", f"_exp{e}")
+        return
+    _plot_panels(data.get("time", []), data.get("outputs", {}), "output_plot")
 
 
 def _read_cost_history():
@@ -462,9 +507,17 @@ def _read_param_history():
     lines = [ln.strip() for ln in open(path) if ln.strip()]
     if not lines:
         return None, []
-    names = [c.strip() for c in lines[0].split(",")]
+    # A header is optional: CA writes one, but a bare numeric file must not have
+    # its first row of data eaten as column names.
+    first = [c.strip() for c in lines[0].split(",")]
+    try:
+        [float(c) for c in first]
+        has_header = False
+    except ValueError:
+        has_header = True
+    names = first if has_header else [f"p{i}" for i in range(len(first))]
     rows = []
-    for line in lines[1:]:
+    for line in lines[0 if not has_header else 1 :]:
         try:
             row = [float(x) for x in line.split(",")]
         except ValueError:
@@ -485,7 +538,10 @@ def plot_progress():
         best = [row[0] for row in costs]
         fig, ax = plt.subplots(figsize=(6, 4))
         ax.plot(range(len(best)), best, color=PALETTE[0], marker="o", ms=3)
-        ax.set_yscale("log")
+        # Log only when it is defined: a zero or negative cost (a perfect fit, or
+        # a cost function that can go negative) would silently drop points.
+        if all(v > 0 for v in best):
+            ax.set_yscale("log")
         ax.set_xlabel("generation")
         ax.set_ylabel("cost")
         ax.set_title("Cost vs generation")
@@ -554,10 +610,17 @@ def plot_analysis():
 def main():
     if not os.path.isdir(OUT):
         raise SystemExit(f"No output dir at {OUT} — run run_pipeline.py first.")
-    plot_outputs()
-    plot_progress()
-    plot_analysis()
+    # Each section is independent: a malformed results.json should not cost you
+    # the simulation plots that rendered perfectly well.
+    failures = []
+    for step in (plot_outputs, plot_progress, plot_analysis):
+        try:
+            step()
+        except Exception as exc:  # noqa: BLE001 - report and carry on
+            failures.append(f"{step.__name__}: {exc}")
     print(f"Plots written to {OUT}")
+    for failure in failures:
+        print(f"WARNING: {failure}")
 
 
 if __name__ == "__main__":
