@@ -24,9 +24,22 @@ vi.mock('./lib/api', () => ({
     differentiable_operations: {},
   }),
   setConfig: vi.fn().mockResolvedValue({}),
+  saveParams: vi.fn().mockResolvedValue({ path: '/out/run_a.npy', outputs_path: null }),
+  loadParams: vi.fn().mockResolvedValue({ values: {} }),
+  listSavedRuns: vi.fn().mockResolvedValue({ runs: [] }),
+  loadSavedRun: vi.fn().mockResolvedValue({}),
+  exportPipeline: vi.fn().mockResolvedValue({}),
+  exportPlotting: vi.fn().mockResolvedValue({}),
 }))
 
-import { getConfig, setConfig, getCalibrationPythons } from './lib/api'
+import {
+  getConfig,
+  setConfig,
+  getCalibrationPythons,
+  saveParams,
+  listSavedRuns,
+  loadSavedRun,
+} from './lib/api'
 import { setNotificationCtor } from './lib/notify'
 import App from './App.vue'
 
@@ -777,5 +790,108 @@ describe('App.vue notify-when-long-runs-finish setting (#105)', () => {
     await flushPromises()
     expect(wrapper.vm.notifyWarning).toBe('')
     expect(localStorage.getItem('cuflynx-notify-on-finish')).toBe('0')
+  })
+})
+
+// Issue #126: "Save current" also stores the traces those values produced, and
+// the saved runs can be ticked back on to compare against the live one.
+describe('App.vue saved-run overlays (#126)', () => {
+  const VARS = { params: [], odes: ['m/x'], algebraic: [], all_names: [] }
+  const RUN = {
+    prefix: 'run_a',
+    path: '/out/run_a_outputs.json',
+    saved_at: '2026-01-02T00:00:00+00:00',
+    params: { 'm/x': 1 },
+    variables: ['m/x'],
+  }
+
+  const mountWithResult = async () => {
+    const wrapper = shallowMount(App)
+    await flushPromises()
+    wrapper.vm.model.variables.value = { ...VARS }
+    wrapper.vm.sim.setResult({ time: [0, 1, 2], outputs: { 'm/x': [1, 2, 3] } })
+    await nextTick()
+    return wrapper
+  }
+
+  it('saves the traces alongside the parameters', async () => {
+    const wrapper = await mountWithResult()
+    await wrapper.vm.onSaveParams({ filename: 'run_a.npy' })
+    await flushPromises()
+
+    const [, , filename, , result] = saveParams.mock.calls.at(-1)
+    expect(filename).toBe('run_a.npy')
+    expect(result.outputs['m/x']).toEqual([1, 2, 3])
+  })
+
+  it('saves a protocol run as its experiments, not a flattened trace', async () => {
+    const wrapper = await mountWithResult()
+    wrapper.vm.sim.setExperiments([
+      { time: [0, 1], outputs: { 'm/x': [1, 2] } },
+      { time: [0, 1], outputs: { 'm/x': [3, 4] } },
+    ])
+    await nextTick()
+    await wrapper.vm.onSaveParams({ filename: 'run_a.npy' })
+    await flushPromises()
+
+    const result = saveParams.mock.calls.at(-1)[4]
+    expect(result.experiments).toHaveLength(2)
+  })
+
+  // The parameters are what the user asked to save; the traces ride along.
+  it('reports a failed outputs write without pretending nothing saved', async () => {
+    saveParams.mockResolvedValueOnce({
+      path: '/out/run_a.npy',
+      outputs_path: null,
+      outputs_error: 'could not write the saved outputs to /out: disk full',
+    })
+    const wrapper = await mountWithResult()
+    await wrapper.vm.onSaveParams({ filename: 'run_a.npy' })
+    await flushPromises()
+    expect(wrapper.vm.sim.message.value).toContain('Parameters saved, but')
+    expect(wrapper.vm.sim.message.value).toContain('disk full')
+  })
+
+  it('refreshes the saved list after a save', async () => {
+    listSavedRuns.mockResolvedValue({ runs: [RUN] })
+    const wrapper = await mountWithResult()
+    await wrapper.vm.onSaveParams({ filename: 'run_a.npy' })
+    await flushPromises()
+    expect(wrapper.vm.savedRuns.items.value.map((r) => r.prefix)).toEqual(['run_a'])
+  })
+
+  it('a ticked run reaches the plot cell as an overlay', async () => {
+    listSavedRuns.mockResolvedValue({ runs: [RUN] })
+    loadSavedRun.mockResolvedValue({
+      prefix: 'run_a',
+      params: { 'm/x': 1 },
+      time: [0, 1, 2],
+      outputs: { 'm/x': [9, 9, 9] },
+    })
+    const wrapper = await mountWithResult()
+    await wrapper.vm.savedRuns.refresh('/out')
+    await wrapper.vm.onToggleSavedRun('run_a')
+    await nextTick()
+
+    const cell = wrapper.vm.plotGroups[0].cells[0]
+    expect(cell.savedSeries).toHaveLength(1)
+    expect(cell.savedSeries[0]).toMatchObject({ prefix: 'run_a', values: [9, 9, 9] })
+    expect(cell.savedSeries[0].color).toBeTruthy()
+  })
+
+  it('unticking it removes the overlay again', async () => {
+    listSavedRuns.mockResolvedValue({ runs: [RUN] })
+    loadSavedRun.mockResolvedValue({
+      prefix: 'run_a',
+      params: {},
+      time: [0],
+      outputs: { 'm/x': [9] },
+    })
+    const wrapper = await mountWithResult()
+    await wrapper.vm.savedRuns.refresh('/out')
+    await wrapper.vm.onToggleSavedRun('run_a')
+    await wrapper.vm.onToggleSavedRun('run_a')
+    await nextTick()
+    expect(wrapper.vm.plotGroups[0].cells[0].savedSeries).toEqual([])
   })
 })

@@ -485,3 +485,101 @@ describe('lighten / shadeForStart', () => {
     expect(parseInt(last.slice(1, 3), 16)).toBeGreaterThan(parseInt(mid.slice(1, 3), 16))
   })
 })
+
+// Saved runs overlaid for comparison (issue #126).
+describe('buildChartData with saved-run overlays', () => {
+  const sim = { time: [0, 1, 2], outputs: { 'm/x': [1, 2, 3] } }
+  const saved = [{ prefix: 'run_a', color: '#70ad47', time: [0, 1, 2], values: [4, 5, 6] }]
+
+  it('adds one dataset per shown run, in that run colour', () => {
+    const { datasets } = buildChartData(sim, { savedSeries: saved })
+    const overlay = datasets.filter((d) => d.kind === 'saved')
+    expect(overlay).toHaveLength(1)
+    expect(overlay[0].borderColor).toBe('#70ad47')
+    expect(overlay[0].data).toEqual([
+      { x: 0, y: 4 },
+      { x: 1, y: 5 },
+      { x: 2, y: 6 },
+    ])
+  })
+
+  it('labels it with the file prefix, so the legend names the run', () => {
+    const { datasets } = buildChartData(sim, { savedSeries: saved })
+    const overlay = datasets.find((d) => d.kind === 'saved')
+    expect(overlay.label).toBe('run_a')
+    expect(overlay.mathLabel).toBe('run_a')
+  })
+
+  // The live trace is the one being read; a saved run is a backdrop.
+  it('draws it dashed and thinner than the live trace', () => {
+    const { datasets } = buildChartData(sim, { savedSeries: saved })
+    const live = datasets.find((d) => d.kind === 'simulation')
+    const overlay = datasets.find((d) => d.kind === 'saved')
+    expect(overlay.borderDash).toBeTruthy()
+    expect(overlay.borderWidth).toBeLessThan(live.borderWidth)
+  })
+
+  // It was recorded from a different run, whose sampling need not match.
+  it('plots it against its own time base', () => {
+    const { datasets } = buildChartData(sim, {
+      savedSeries: [{ prefix: 'r', color: '#000', time: [10, 20], values: [1, 2] }],
+    })
+    const overlay = datasets.find((d) => d.kind === 'saved')
+    expect(overlay.data).toEqual([
+      { x: 10, y: 1 },
+      { x: 20, y: 2 },
+    ])
+  })
+
+  it('falls back to this run x when the saved one has no time', () => {
+    const { datasets } = buildChartData(sim, {
+      savedSeries: [{ prefix: 'r', color: '#000', values: [7, 8, 9] }],
+    })
+    expect(datasets.find((d) => d.kind === 'saved').data[0]).toEqual({ x: 0, y: 7 })
+  })
+
+  it('skips an empty saved series rather than drawing nothing visible', () => {
+    const { datasets } = buildChartData(sim, {
+      savedSeries: [{ prefix: 'r', color: '#000', values: [] }],
+    })
+    expect(datasets.some((d) => d.kind === 'saved')).toBe(false)
+  })
+
+  it('leaves the live trace untouched', () => {
+    const plain = buildChartData(sim).datasets.find((d) => d.kind === 'simulation')
+    const withSaved = buildChartData(sim, { savedSeries: saved }).datasets.find(
+      (d) => d.kind === 'simulation',
+    )
+    expect(withSaved.data).toEqual(plain.data)
+    expect(withSaved.borderColor).toBe(plain.borderColor)
+  })
+
+  // A phase-plane x is another variable's trace, which the saved run has no
+  // counterpart for -- overlaying would pair unrelated samples.
+  it('drops overlays on a phase-plane cell, as obs overlays are', () => {
+    const { datasets } = buildChartData(
+      { ...sim, xValues: [5, 6, 7] },
+      { savedSeries: saved },
+    )
+    expect(datasets.some((d) => d.kind === 'saved')).toBe(false)
+  })
+
+  it('is a no-op when nothing is shown', () => {
+    expect(buildChartData(sim, { savedSeries: [] }).datasets).toEqual(
+      buildChartData(sim).datasets,
+    )
+  })
+})
+
+// Issue #126: callers look up per-variable extras by qname.
+describe('buildExtraPlotCells qname', () => {
+  it('exposes the model variable the cell draws', () => {
+    const [cell] = buildExtraPlotCells(
+      [{ id: 1, groupKey: 'exp0', qname: 'm/y', label: 'm/y' }],
+      'exp0',
+      [0, 1],
+      { 'm/y': [1, 2] },
+    )
+    expect(cell.qname).toBe('m/y')
+  })
+})

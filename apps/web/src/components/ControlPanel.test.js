@@ -119,3 +119,97 @@ describe('ControlPanel', () => {
     expect(lastRow.compareDocumentPosition(cmds.element) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 })
+
+// Saved runs, ticked to overlay them on the plots (issue #126). The tick box
+// carries that run's trace colour, so the list doubles as the legend, and each
+// shown run marks where it had every parameter.
+describe('ControlPanel saved runs (#126)', () => {
+  const RUNS = [
+    { prefix: 'run_a', shown: false, color: '', params: { 'm/p0': 2.5 } },
+    { prefix: 'run_b', shown: true, color: '#70ad47', params: { 'm/p0': 7.5 } },
+  ]
+
+  const mountWith = (savedRuns, sliders = sliderState(1)) =>
+    mount(ControlPanel, { props: { sliders, savedRuns }, global: { stubs } })
+
+  it('shows nothing when nothing has been saved', () => {
+    expect(mountWith([]).find('[data-testid="saved-runs"]').exists()).toBe(false)
+  })
+
+  it('lists one tick box per saved run, ticked when shown', () => {
+    const boxes = mountWith(RUNS).findAll('[data-testid="saved-run-check"]')
+    expect(boxes).toHaveLength(2)
+    expect(boxes[0].element.checked).toBe(false)
+    expect(boxes[1].element.checked).toBe(true)
+  })
+
+  it('emits toggle-saved with the prefix when a box is clicked', async () => {
+    const wrapper = mountWith(RUNS)
+    await wrapper.findAll('[data-testid="saved-run-check"]')[0].setValue(true)
+    expect(wrapper.emitted('toggle-saved')[0]).toEqual(['run_a'])
+  })
+
+  it('colours a shown box with that run trace colour', () => {
+    const boxes = mountWith(RUNS).findAll('[data-testid="saved-run-check"]')
+    expect(boxes[1].attributes('style')).toContain('#70ad47')
+    // An unshown run has no trace, so no colour to borrow.
+    expect(boxes[0].attributes('style') ?? '').not.toContain('#')
+  })
+
+  it('reveals the file prefix on hover', () => {
+    const rows = mountWith(RUNS).findAll('[data-testid="saved-run"]')
+    expect(rows[0].attributes('title')).toBe('run_a')
+  })
+
+  describe('slider markers', () => {
+    it('marks only the shown runs, in their colour', () => {
+      const marks = mountWith(RUNS).findAll('[data-testid="saved-marker"]')
+      expect(marks).toHaveLength(1)
+      // jsdom normalises the hex to rgb() in the style attribute.
+      expect(marks[0].attributes('style')).toContain('rgb(112, 173, 71)')
+      expect(marks[0].text()).toBe('×')
+    })
+
+    it('places the mark where the handle would sit for that value', () => {
+      // 7.5 on a [0, 10] linear slider -> 75%.
+      const mark = mountWith(RUNS).find('[data-testid="saved-marker"]')
+      expect(mark.attributes('style')).toContain('75%')
+    })
+
+    it('uses the log mapping on a log slider, not a linear one', () => {
+      const sliders = {
+        'm/p0': { qname: 'm/p0', min: 1, max: 1000, value: 10, log: true, name_for_plotting: 'p' },
+      }
+      const runs = [{ prefix: 'r', shown: true, color: '#000', params: { 'm/p0': 10 } }]
+      // log: 10 is one third of the way from 1 to 1000; linear would be ~1%.
+      const style = mountWith(runs, sliders).find('[data-testid="saved-marker"]').attributes('style')
+      expect(style).toMatch(/left: 33\./)
+    })
+
+    it('names the run and value on hover', () => {
+      const mark = mountWith(RUNS).find('[data-testid="saved-marker"]')
+      expect(mark.attributes('title')).toBe('run_b: 7.5')
+    })
+
+    it('flags a saved value that lies outside the current range', () => {
+      const runs = [{ prefix: 'r', shown: true, color: '#000', params: { 'm/p0': 99 } }]
+      const mark = mountWith(runs).find('[data-testid="saved-marker"]')
+      expect(mark.classes()).toContain('out-of-range')
+      expect(mark.attributes('title')).toContain('outside the current range')
+      // Pinned to the end it lies beyond rather than drawn off-track.
+      expect(mark.attributes('style')).toContain('100%')
+    })
+
+    it('skips a parameter the run has no value for', () => {
+      const runs = [{ prefix: 'r', shown: true, color: '#000', params: {} }]
+      expect(mountWith(runs).findAll('[data-testid="saved-marker"]')).toHaveLength(0)
+    })
+
+    // It records where a run *was*; dragging it would imply it could be edited.
+    it('does not let the marker intercept drags aimed at the handle', () => {
+      const marker = mountWith(RUNS).find('[data-testid="saved-marker"]')
+      expect(marker.attributes('aria-hidden')).toBe('true')
+      expect(marker.classes()).toContain('saved-marker')
+    })
+  })
+})
