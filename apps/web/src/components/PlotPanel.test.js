@@ -608,3 +608,50 @@ describe('plot height across legend changes', () => {
     expect(uid()).toBe(before)
   })
 })
+
+// Issue #145: Chart.js sizes each y axis to its own tick labels, so plots in a
+// grid start their plot areas at different x and traces sharing a time axis fail
+// to line up.
+describe('shared y-axis width', () => {
+  const panel = (props = {}) =>
+    mount(PlotPanel, { props: { simResult, title: 'x', ...props }, global: { stubs } })
+
+  const fitWith = (wrapper, scale) => {
+    wrapper.vm.chartOptions.scales.y.afterFit(scale)
+    return scale
+  }
+
+  it('reports the width its own labels need', () => {
+    const wrapper = panel()
+    fitWith(wrapper, { width: 47 })
+    expect(wrapper.emitted('axis-width').at(-1)).toEqual([47])
+  })
+
+  it('widens to the shared width', () => {
+    const wrapper = panel({ alignWidth: 62 })
+    expect(fitWith(wrapper, { width: 47 }).width).toBe(62)
+  })
+
+  // Squeezing a plot below what its labels need would clip them.
+  it('never narrows below its own natural width', () => {
+    const wrapper = panel({ alignWidth: 30 })
+    expect(fitWith(wrapper, { width: 47 }).width).toBe(47)
+  })
+
+  // The override must not be read back as the natural width on the next layout,
+  // or each pass would widen from the last and ratchet upward.
+  it('keeps reporting its natural width after being widened', () => {
+    const wrapper = panel({ alignWidth: 62 })
+    fitWith(wrapper, { width: 47 })
+    // Chart.js re-fits, now seeing the width we forced.
+    fitWith(wrapper, { width: 62 })
+    expect(wrapper.emitted('axis-width').at(-1)).toEqual([47])
+  })
+
+  it('goes back to its natural width when alignment is switched off', async () => {
+    const wrapper = panel({ alignWidth: 62 })
+    fitWith(wrapper, { width: 47 })
+    await wrapper.setProps({ alignWidth: 0 })
+    expect(fitWith(wrapper, { width: 47 }).width).toBe(47)
+  })
+})

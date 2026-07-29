@@ -54,9 +54,12 @@ const props = defineProps({
   // button then offers to restore. `maximizable` gates the affordance entirely.
   maximizable: { type: Boolean, default: false },
   maximized: { type: Boolean, default: false },
+  // Shared y-axis width so plots in a window line up (#145). 0 = align nothing.
+  // Only ever widens: a plot is never squeezed below what its own labels need.
+  alignWidth: { type: Number, default: 0 },
 })
 
-const emit = defineEmits(['remove', 'toggle-maximize', 'switch-axes'])
+const emit = defineEmits(['remove', 'toggle-maximize', 'switch-axes', 'axis-width'])
 
 const chartData = computed(() =>
   buildChartData(props.simResult, {
@@ -203,6 +206,31 @@ function switchAxes() {
   emit('switch-axes')
 }
 
+// The last width we forced on the y axis, so the next fit can tell our own
+// override apart from the width Chart.js sized from the labels. Without this the
+// override would be read back as the natural width and ratchet upward.
+let appliedWidth = null
+let naturalWidth = 0
+
+/**
+ * Report this plot's natural y-axis width and adopt the shared one (#145).
+ *
+ * Chart.js sizes the axis to its own tick labels, so a plot showing `1.5e-9`
+ * reserves more left margin than one showing `20`; side by side, their plot
+ * areas start at different x and traces sharing a time axis fail to line up.
+ */
+function fitYAxis(scale) {
+  if (scale.width !== appliedWidth) naturalWidth = scale.width
+  emit('axis-width', naturalWidth)
+  // Widen only. Never below what this plot's own labels need, or they clip.
+  if (props.alignWidth > naturalWidth) {
+    scale.width = props.alignWidth
+    appliedWidth = props.alignWidth
+  } else {
+    appliedWidth = null
+  }
+}
+
 // Custom HTML legend (below) renders LaTeX labels, so disable the canvas one.
 const chartOptions = computed(() => ({
   responsive: true,
@@ -212,7 +240,7 @@ const chartOptions = computed(() => ({
   elements: { point: { hitRadius: HIT_RADIUS } },
   scales: {
     x: { type: 'linear', ticks: sciTicks },
-    y: { type: 'linear', ticks: sciTicks },
+    y: { type: 'linear', ticks: sciTicks, afterFit: fitYAxis },
   },
   plugins: {
     legend: { display: false },
