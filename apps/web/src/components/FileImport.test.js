@@ -277,3 +277,66 @@ describe('FileImport', () => {
     expect(wrapper.emitted('export-plotting')).toHaveLength(1)
   })
 })
+
+// Issue #137: nothing visibly happened when a file was dragged over or dropped,
+// and the dropzone went on claiming most of the row long after it had said all
+// it had to say.
+describe('FileImport drop feedback (#137)', () => {
+  const mountImport = (props = {}) =>
+    mount(FileImport, { props, global: { stubs } })
+  const zone = (w, id) => w.find(`[data-testid="${id}"]`)
+
+  it('highlights the zone a file is dragged over, and only that one', async () => {
+    const wrapper = mountImport()
+    await zone(wrapper, 'obs-drop').trigger('dragover')
+    expect(zone(wrapper, 'obs-drop').classes()).toContain('drag-over')
+    expect(zone(wrapper, 'cellml-drop').classes()).not.toContain('drag-over')
+  })
+
+  it('clears the highlight when the file leaves again', async () => {
+    const wrapper = mountImport()
+    await zone(wrapper, 'obs-drop').trigger('dragover')
+    await zone(wrapper, 'obs-drop').trigger('dragleave')
+    expect(zone(wrapper, 'obs-drop').classes()).not.toContain('drag-over')
+  })
+
+  // A highlight left behind after the drop would say a drag was still in flight.
+  it('clears the highlight on drop', async () => {
+    const wrapper = mountImport()
+    await zone(wrapper, 'obs-drop').trigger('dragover')
+    await zone(wrapper, 'obs-drop').trigger('drop')
+    expect(zone(wrapper, 'obs-drop').classes()).not.toContain('drag-over')
+  })
+
+  describe('once something is loaded', () => {
+    it('stays full size while empty', () => {
+      const wrapper = mountImport()
+      expect(zone(wrapper, 'cellml-drop').classes()).not.toContain('compact')
+      expect(zone(wrapper, 'obs-drop').classes()).not.toContain('compact')
+      expect(zone(wrapper, 'params-drop').classes()).not.toContain('compact')
+    })
+
+    it('shrinks the zone whose file is in, leaving the others alone', () => {
+      const wrapper = mountImport({ loadedObsFilename: 'obs_data.json' })
+      expect(zone(wrapper, 'obs-drop').classes()).toContain('compact')
+      expect(zone(wrapper, 'cellml-drop').classes()).not.toContain('compact')
+    })
+
+    it('names what is loaded instead of repeating the instructions', () => {
+      const wrapper = mountImport({ loadedObsFilename: 'obs_data.json' })
+      expect(wrapper.find('[data-testid="obs-loaded"]').text()).toBe('obs_data.json')
+      expect(zone(wrapper, 'obs-drop').text()).not.toContain('or click to browse')
+    })
+
+    it('names the model for the CellML zone', () => {
+      const wrapper = mountImport({ modelId: 'abc', modelName: '3compartment' })
+      expect(wrapper.find('[data-testid="cellml-loaded"]').text()).toBe('3compartment')
+    })
+
+    it('still accepts a replacement', () => {
+      const wrapper = mountImport({ loadedFilename: 'params.csv' })
+      expect(zone(wrapper, 'params-drop').text()).toContain('drop another to replace')
+      expect(zone(wrapper, 'params-drop').find('input[type="file"]').exists()).toBe(true)
+    })
+  })
+})
