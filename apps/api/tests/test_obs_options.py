@@ -147,3 +147,33 @@ def test_operation_kwargs_schema_exposed_via_endpoint(client):
     present whether sourced from CA or the fallback)."""
     body = client.get("/api/obs_data/options").json()
     assert isinstance(body["operation_kwargs_schema"], dict)
+
+
+# Issue #147: the editor should offer as many operand fields as the operation
+# consumes, rather than leaving the user to add them by hand and guess.
+def test_operation_operands_reports_the_arity_of_each_operation(client):
+    opts = client.get("/api/obs_data/options").json()
+    spec = opts["operation_operands"]
+    assert spec["max"]["count"] == 1
+    assert spec["addition"]["count"] == 2
+    assert spec["division"]["count"] == 2
+    # The parameter names come with it, so a two-operand row can say which is which.
+    assert spec["addition"]["names"] == ["x1", "x2"]
+
+
+def test_operation_operands_excludes_the_tunable_kwargs(client):
+    """Only the parameters CA fills from `operands` count; a keyword with a
+    default is a setting, not an operand."""
+    opts = client.get("/api/obs_data/options").json()
+    spec = opts["operation_operands"]
+    # `series_output` has a default and is reserved machinery, not an operand.
+    assert "series_output" not in spec["max"]["names"]
+
+
+def test_operation_operands_marks_a_variadic_operation(client):
+    """A `*args` / `**kwargs` operation has no fixed count, so the editor must
+    keep letting the user manage the fields by hand."""
+    opts = client.get("/api/obs_data/options").json()
+    for entry in opts["operation_operands"].values():
+        assert isinstance(entry["variadic"], bool)
+        assert entry["count"] == len(entry["names"])

@@ -106,6 +106,9 @@ def _introspect(output_dir: str | None = None) -> dict:
         # op name -> [{name, default, type}] tunable keyword args, so the editor
         # can render an input per kwarg on each data_item that selects that op.
         "operation_kwargs_schema": _introspect_operation_kwargs(op_funcs),
+        # How many operands each operation consumes, so the editor can offer the
+        # right number of fields instead of leaving the user to guess (#147).
+        "operation_operands": _introspect_operation_operands(op_funcs),
         "data_types": data_types,
         "plot_types": plot_types,
     }
@@ -162,6 +165,54 @@ def _jsonable_default(default):
     if isinstance(default, (bool, int, float, str)) or default is None:
         return default
     return None
+
+
+def _introspect_operation_operands(op_funcs) -> dict:
+    """Map each operation name -> how many operands it consumes.
+
+    ``{"count": int, "names": [...], "variadic": bool}``. `count` is the number of
+    operand fields the editor should show; `variadic` means the operation takes
+    ``*args`` and the count is a minimum, not a limit.
+
+    CA already derives this in ``get_operation_kwarg_spec`` (the ``from_operands``
+    list it uses to validate operation_kwargs against the operands), so prefer
+    that over a second signature parse that could disagree with the validation the
+    user's config will actually be checked against. Fall back to parsing here for
+    an older CA without the helper.
+    """
+    try:
+        from operation_funcs import get_operation_kwarg_spec  # noqa: PLC0415
+    except Exception:  # noqa: BLE001 - older CA; parse the signature ourselves
+        get_operation_kwarg_spec = None
+
+    out: dict[str, dict] = {}
+    for name, fn in op_funcs.items():
+        if get_operation_kwarg_spec is not None:
+            try:
+                _accepted, from_operands, accepts_any = get_operation_kwarg_spec(fn)
+                out[name] = {
+                    "count": len(from_operands),
+                    "names": list(from_operands),
+                    "variadic": bool(accepts_any),
+                }
+                continue
+            except Exception:  # noqa: BLE001 - fall through to the local parse
+                pass
+        try:
+            params = inspect.signature(fn).parameters
+        except (ValueError, TypeError):
+            continue
+        names = []
+        variadic = False
+        for pname, p in params.items():
+            if p.kind == p.VAR_POSITIONAL:
+                variadic = True
+            elif p.kind == p.VAR_KEYWORD:
+                variadic = True
+            elif pname not in _RESERVED_OP_KWARGS and p.default is inspect.Parameter.empty:
+                names.append(pname)
+        out[name] = {"count": len(names), "names": names, "variadic": variadic}
+    return out
 
 
 def _introspect_operation_kwargs(op_funcs) -> dict:

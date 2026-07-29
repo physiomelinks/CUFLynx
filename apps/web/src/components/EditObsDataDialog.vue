@@ -44,6 +44,9 @@ const editableRows = ref([])
 const preservedItems = ref([])
 const predRows = ref([])
 const operations = ref(FALLBACK_OPERATIONS)
+// operation name -> {count, names, variadic}: how many operands it consumes,
+// introspected from CA so the editor offers the right number of fields (#147).
+const opOperands = ref({})
 // operation name -> @differentiable (from CA); empty when CA can't report it, in
 // which case no row is flagged (avoids false "not differentiable" warnings).
 const diffOps = ref({})
@@ -79,6 +82,7 @@ async function loadOptions(refresh = false) {
     if (opts?.operations?.length) operations.value = opts.operations
     if (opts?.differentiable_operations) diffOps.value = opts.differentiable_operations
     if (opts?.operation_kwargs_schema) opKwargsSchema.value = opts.operation_kwargs_schema
+    if (opts?.operation_operands) opOperands.value = opts.operation_operands
     if (opts?.cost_types?.length) costTypes.value = opts.cost_types
     if (opts?.cost_func_metadata) costMeta.value = opts.cost_func_metadata
     if (opts?.plot_types?.length) plotTypes.value = opts.plot_types
@@ -217,6 +221,8 @@ function onOperationChange(row, operation) {
   if (kw && typeof kw === 'object') {
     for (const key of Object.keys(kw)) if (!valid.has(key)) delete kw[key]
   }
+  // The operand count belongs to the operation too (#147).
+  syncOperands(row)
 }
 
 const canSave = computed(
@@ -259,6 +265,45 @@ function onOperandChange(row, i, val) {
   row.operands[i] = val
   if (!row.variable && row.operands[0]) row.variable = row.operands[0]
 }
+
+/** What CA says this operation consumes; null when we have no schema for it. */
+function operandSpec(row) {
+  return opOperands.value?.[row.operation] ?? null
+}
+
+/**
+ * The operand count is a property of the operation, not something to guess
+ * (#147): `division` takes two, `max` takes one. A variadic operation has no
+ * fixed count, so its fields stay hand-managed.
+ */
+function operandCountFor(row) {
+  const spec = operandSpec(row)
+  return spec && !spec.variadic ? spec.count : null
+}
+
+function operandsAreFixed(row) {
+  return operandCountFor(row) !== null
+}
+
+/** Label an operand field with the parameter it fills, e.g. x1 / x2. */
+function operandLabel(row, i) {
+  return operandSpec(row)?.names?.[i] ?? ''
+}
+
+/**
+ * Resize a row's operands to what its operation takes. Values already entered
+ * are kept positionally -- switching max -> division should keep the operand you
+ * chose as x1 rather than clearing the row.
+ */
+function syncOperands(row) {
+  const want = operandCountFor(row)
+  if (want === null) return
+  const ops = row.operands ?? (row.operands = [])
+  while (ops.length < want) ops.push('')
+  if (ops.length > want) ops.splice(want)
+}
+
+
 function addOperand(row) {
   row.operands.push('')
 }
@@ -470,15 +515,45 @@ async function onSave() {
 
         <div v-if="row._expanded" class="eo-detail">
           <label>operands
-            <span class="eo-operands">
+            <span class="eo-operands" data-testid="eo-operands">
               <span v-for="(op, oi) in row.operands" :key="oi" class="eo-operand">
-                <select :value="op" @change="onOperandChange(row, oi, $event.target.value)">
+                <!--
+                  A fixed-arity operation names what each field fills (x1 / x2),
+                  so a two-operand operation says which is which rather than
+                  leaving the order to be inferred (#147).
+                -->
+                <span v-if="operandLabel(row, oi)" class="eo-operand-name">
+                  {{ operandLabel(row, oi) }}
+                </span>
+                <select
+                  :value="op"
+                  data-testid="eo-operand"
+                  @change="onOperandChange(row, oi, $event.target.value)"
+                >
                   <option value="">—</option>
                   <option v-for="name in operandOptions" :key="name" :value="name">{{ name }}</option>
                 </select>
-                <Button icon="pi pi-minus" text size="small" @click="removeOperand(row, oi)" />
+                <!-- Removing one from a fixed-arity operation would just make the
+                     row invalid, so the control is only offered when the count is
+                     genuinely the user's to choose. -->
+                <Button
+                  v-if="!operandsAreFixed(row)"
+                  icon="pi pi-minus"
+                  text
+                  size="small"
+                  data-testid="eo-operand-remove"
+                  @click="removeOperand(row, oi)"
+                />
               </span>
-              <Button icon="pi pi-plus" label="operand" text size="small" @click="addOperand(row)" />
+              <Button
+                v-if="!operandsAreFixed(row)"
+                icon="pi pi-plus"
+                label="operand"
+                text
+                size="small"
+                data-testid="eo-operand-add"
+                @click="addOperand(row)"
+              />
             </span>
           </label>
           <label>plot label
@@ -708,6 +783,11 @@ async function onSave() {
   width: auto;
   height: auto;
   align-self: start;
+}
+.eo-operand-name {
+  font-size: 0.7rem;
+  opacity: 0.6;
+  min-width: 1.2rem;
 }
 .eo-operands {
   display: flex;
