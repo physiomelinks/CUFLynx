@@ -147,6 +147,10 @@ class SimulateRequest(BaseModel):
     # CA's built-in operations are available.
     config_outputs_dir: str = ""
 
+    # "Give me every output you can" rather than a specific list: unresolvable
+    # names are skipped instead of failing the run (#150). Used when saving a run
+    # so it covers plots that do not exist yet.
+    best_effort_outputs: bool = False
 
 class ProtocolRunRequest(BaseModel):
     model_id: str
@@ -798,6 +802,7 @@ def simulate(req: SimulateRequest) -> dict:
             sim_time=req.sim_time,
             pre_time=req.pre_time,
             outputs=outputs,
+            best_effort_outputs=req.best_effort_outputs,
         )
     except SimulationError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc

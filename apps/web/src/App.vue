@@ -565,10 +565,10 @@ function extraCellsFor(groupKey, time, outputs, expIdx = null) {
     extraPlots.value, groupKey, time, outputs, modelUnits.value,
   ).map((cell) => ({
     // Single-variable cells, so each takes the shown runs' trace for its own
-    // variable (#126). A phase-plane cell's overlays are dropped downstream —
-    // a saved run has no counterpart for the x variable.
+    // variable (#126). A phase-plane cell also asks for the run's own x series,
+    // so it is drawn against that rather than dropped (#150).
     ...cell,
-    savedSeries: savedRuns.seriesFor(cell.qname, expIdx),
+    savedSeries: savedRuns.seriesFor(cell.qname, expIdx, cell.xqname),
   }))
 }
 
@@ -1068,6 +1068,12 @@ function scheduleRun() {
  * vs single-run choice — instead of by a second, drifting copy of these rules.
  */
 async function runWithParams(params, { allOutputs = false } = {}) {
+  // Asking for every plottable variable means asking for some the solver cannot
+  // resolve -- the CellML parser classifies variables the engine has no output
+  // for (3compartment's pvn_module.R_v among them). Strict validation then
+  // failed the whole request, so the wider save silently fell back to the
+  // on-screen run and only one saved run ever covered an added plot (#150).
+  const best = allOutputs ? { bestEffortOutputs: true } : {}
   // `allOutputs` widens the request to every plottable variable. A live run asks
   // only for what is on screen, because every slider drag pays for it — but a
   // saved run has to answer plots that do not exist yet (#148).
@@ -1097,10 +1103,11 @@ async function runWithParams(params, { allOutputs = false } = {}) {
     const data = await simulate(model.modelId.value, params, {
       outputs,
       outputsDir: outputsDir.value.trim() || undefined,
+      ...best,
     })
     return { time: data.time, outputs: data.outputs }
   }
-  const opts = { simTime: simTime.value, preTime: preTime.value }
+  const opts = { simTime: simTime.value, preTime: preTime.value, ...best }
   if (extraOutputNames.value.length || everything.length) {
     opts.outputs = [
       ...new Set([

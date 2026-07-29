@@ -554,14 +554,45 @@ describe('buildChartData with saved-run overlays', () => {
     expect(withSaved.borderColor).toBe(plain.borderColor)
   })
 
-  // A phase-plane x is another variable's trace, which the saved run has no
-  // counterpart for -- overlaying would pair unrelated samples.
-  it('drops overlays on a phase-plane cell, as obs overlays are', () => {
+  // A saved run carries its own x series now (#150), so a phase-plane cell can
+  // overlay it -- against that x, never against this run's.
+  it('plots a phase-plane overlay against the saved run own x series', () => {
+    const { datasets } = buildChartData(
+      { ...sim, xValues: [5, 6, 7] },
+      {
+        savedSeries: [
+          { prefix: 'r', color: '#000', time: [0, 1, 2], values: [4, 5, 6], xValues: [9, 8, 7] },
+        ],
+      },
+    )
+    const overlay = datasets.find((d) => d.kind === 'saved')
+    expect(overlay.data).toEqual([
+      { x: 9, y: 4 },
+      { x: 8, y: 5 },
+      { x: 7, y: 6 },
+    ])
+  })
+
+  // Pairing this run's x with a saved run's y would draw a curve neither of
+  // them followed.
+  it('drops a phase-plane overlay that has no x series of its own', () => {
     const { datasets } = buildChartData(
       { ...sim, xValues: [5, 6, 7] },
       { savedSeries: saved },
     )
     expect(datasets.some((d) => d.kind === 'saved')).toBe(false)
+  })
+
+  // The regression the user hit: several ticked runs, one trace.
+  it('draws every shown run, not just one', () => {
+    const { datasets } = buildChartData(sim, {
+      savedSeries: [
+        { prefix: 'a', color: '#111', time: [0, 1, 2], values: [4, 5, 6] },
+        { prefix: 'b', color: '#222', time: [0, 1, 2], values: [7, 8, 9] },
+        { prefix: 'c', color: '#333', time: [0, 1, 2], values: [1, 1, 1] },
+      ],
+    })
+    expect(datasets.filter((d) => d.kind === 'saved')).toHaveLength(3)
   })
 
   it('is a no-op when nothing is shown', () => {
@@ -581,5 +612,23 @@ describe('buildExtraPlotCells qname', () => {
       { 'm/y': [1, 2] },
     )
     expect(cell.qname).toBe('m/y')
+  })
+
+  it('exposes the x variable of a phase-plane cell (#150)', () => {
+    const [cell] = buildExtraPlotCells(
+      [{ id: 1, groupKey: 'exp0', qname: 'm/y', xqname: 'm/x', label: 'm/y' }],
+      'exp0',
+      [0, 1],
+      { 'm/y': [1, 2], 'm/x': [3, 4] },
+    )
+    expect(cell.xqname).toBe('m/x')
+    // A time-series cell has none, which is what marks it as one.
+    const [plain] = buildExtraPlotCells(
+      [{ id: 2, groupKey: 'exp0', qname: 'm/y', label: 'm/y' }],
+      'exp0',
+      [0, 1],
+      { 'm/y': [1, 2] },
+    )
+    expect(plain.xqname).toBeNull()
   })
 })

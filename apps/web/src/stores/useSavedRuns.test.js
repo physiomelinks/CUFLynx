@@ -331,3 +331,56 @@ describe('useSavedRuns virtual runs (best fit)', () => {
     ])
   })
 })
+
+// Issue #150: a saved run has its own x series, so a phase-plane cell overlays
+// it against that -- and every ticked run must be drawn, not just one.
+describe('useSavedRuns phase-plane overlays (#150)', () => {
+  const RECORD = (prefix) => ({
+    prefix,
+    params: {},
+    time: [0, 1, 2],
+    outputs: { 'm/y': [1, 2, 3], 'm/x': [7, 8, 9] },
+  })
+
+  const withTwoShown = async () => {
+    const s = useSavedRuns()
+    await s.refresh('/out')
+    loadSavedRun.mockImplementation(async () => RECORD('r'))
+    await s.toggle('run_a')
+    await s.toggle('run_b')
+    return s
+  }
+
+  it('returns every shown run for a variable', async () => {
+    const s = await withTwoShown()
+    expect(s.seriesFor('m/y')).toHaveLength(2)
+  })
+
+  it('returns the run own x series when asked for a phase-plane cell', async () => {
+    const s = await withTwoShown()
+    const series = s.seriesFor('m/y', null, 'm/x')
+    expect(series).toHaveLength(2)
+    expect(series[0].xValues).toEqual([7, 8, 9])
+  })
+
+  // Better nothing than a curve pinned to another run's x.
+  it('omits a run with no x series for that cell', async () => {
+    const s = useSavedRuns()
+    await s.refresh('/out')
+    loadSavedRun.mockResolvedValue({
+      prefix: 'run_a',
+      params: {},
+      time: [0, 1],
+      outputs: { 'm/y': [1, 2] },
+    })
+    await s.toggle('run_a')
+    expect(s.seriesFor('m/y', null, 'm/x')).toEqual([])
+    // ...but it is still fine as a time series.
+    expect(s.seriesFor('m/y')).toHaveLength(1)
+  })
+
+  it('leaves xValues off a plain time-series lookup', async () => {
+    const s = await withTwoShown()
+    expect('xValues' in s.seriesFor('m/y')[0]).toBe(false)
+  })
+})

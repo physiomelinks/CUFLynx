@@ -133,8 +133,11 @@ export function useSavedRuns() {
    * `expIdx` selects the experiment for a protocol run. A saved run recorded
    * with fewer experiments than are now on screen simply contributes nothing to
    * the extra ones, rather than borrowing experiment 0's trace for them.
+   *
+   * `xqname` makes it a phase-plane lookup: the run's own x series comes back
+   * alongside, so it is drawn against its own x rather than this run's.
    */
-  function seriesFor(qname, expIdx = null) {
+  function seriesFor(qname, expIdx = null, xqname = null) {
     const out = []
     for (const prefix of shown.value) {
       const rec = series.value[prefix]
@@ -146,11 +149,16 @@ export function useSavedRuns() {
       }
       const values = source?.outputs?.[qname]
       if (!values?.length) continue
+      // A phase-plane cell needs the saved run's own x series (#150): pairing
+      // this run's x with a saved run's y would draw a curve neither followed.
+      const xValues = xqname ? (source?.outputs?.[xqname] ?? []) : null
+      if (xqname && !xValues.length) continue
       out.push({
         prefix,
         color: colorFor(prefix),
         time: source.time ?? [],
         values,
+        ...(xValues ? { xValues } : {}),
       })
     }
     return out

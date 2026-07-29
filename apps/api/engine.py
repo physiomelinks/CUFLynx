@@ -323,6 +323,7 @@ class SimulationEngine:
         sim_time: float,
         pre_time: float,
         outputs: list[str],
+        best_effort_outputs: bool = False,
     ) -> dict:
         with self._lock:
             helper = self._helpers.get(model_id)
@@ -375,7 +376,20 @@ class SimulationEngine:
                 time = [float(t) for t in helper.get_results(["time"], flatten=True)[0]]
             out: dict[str, list[float]] = {}
             for var in outputs:
-                series = helper.get_results([var], flatten=True)[0]
+                try:
+                    series = helper.get_results([var], flatten=True)[0]
+                except (KeyError, ValueError, IndexError):
+                    # `best_effort_outputs` means "everything you can give me"
+                    # rather than a specific list (saving a run, #148/#150). Some
+                    # variables the CellML parser classifies as algebraic are not
+                    # resolvable outputs in the solver -- 3compartment's
+                    # pvn_module.R_v among them -- and failing the whole request
+                    # for one of those turned the wider save into no save at all.
+                    # An explicit request still fails loudly: a typo there is a
+                    # mistake worth reporting.
+                    if best_effort_outputs:
+                        continue
+                    raise
                 out[var] = [float(v) for v in series]
 
         return {"time": time, "outputs": out}

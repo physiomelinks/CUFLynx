@@ -226,9 +226,12 @@ export function buildExtraPlotCells(extraPlots, groupKey, time, outputs, units) 
       key: `extra:${p.id}`,
       title: p.label,
       varLabel: p.label,
-      // The model variable this cell draws, so callers can look up per-variable
+      // The model variables this cell draws, so callers can look up per-variable
       // extras (saved-run overlays, #126) without parsing the label back.
       qname: p.qname,
+      // The x variable of a phase-plane cell, so a saved run can be overlaid
+      // against its own x rather than dropped (#150).
+      xqname: p.xqname ?? null,
       yUnit: unitForVars(units, [p.qname]),
       controlled: false,
       removeId: p.id,
@@ -402,12 +405,15 @@ export function buildChartData(simResult, options = {}) {
   // since it was recorded from a different run whose sampling need not match.
   // Dashed and thinner so the live trace stays the one being read; a saved run
   // is a backdrop, not a peer.
-  // A phase-plane cell's x is another variable's trace, which a saved run has
-  // no counterpart for — overlaying its values against this run's x would pair
-  // unrelated samples. Dropped for the same reason obs overlays are.
-  for (const saved of phasePlane ? [] : (options.savedSeries ?? [])) {
+  // On a phase-plane cell a saved run is plotted against *its own* x series, not
+  // this run's: pairing one run's y with another's x would draw a curve neither
+  // of them followed. A saved run that has no x series for this cell contributes
+  // nothing rather than being pinned to the wrong axis.
+  for (const saved of options.savedSeries ?? []) {
     const values = saved.values ?? []
     if (!values.length) continue
+    const savedX = phasePlane ? (saved.xValues ?? []) : (saved.time ?? [])
+    if (phasePlane && !savedX.length) continue
     accumulate(values)
     datasets.push({
       label: saved.prefix,
@@ -415,10 +421,9 @@ export function buildChartData(simResult, options = {}) {
       suffix: 'saved',
       legendStyle: 'dash',
       kind: 'saved',
-      // Against its own x where it has one: a saved run's samples are its own.
-      // On a phase-plane cell there is no saved x series, so it is skipped
-      // above by the caller rather than drawn against the wrong axis.
-      data: toXY(saved.time?.length ? saved.time : xAxis, values),
+      // Against its own x: a saved run's samples are its own, recorded from a
+      // run whose sampling need not match this one's.
+      data: toXY(savedX.length ? savedX : xAxis, values),
       borderColor: saved.color,
       backgroundColor: saved.color,
       borderWidth: 1,
