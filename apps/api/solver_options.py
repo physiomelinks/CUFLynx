@@ -42,20 +42,23 @@ SUPPORTED_FORMATS = ("cellml_only", "python", "casadi_python")
 # every payload (both the CA-introspected schema and the fallback below).
 UNSUPPORTED_SOLVERS = ("CVODE_opencor",)
 
-# solver_info keys CA advertises for a solver whose backend cannot honour them.
+# solver_info keys an older CA advertises for a solver whose backend cannot
+# honour them.
 #
-# CA's SOLVER_INFO_FIELDS gives CVODE_myokit the shared CVODE-family field list,
-# which carries MaximumNumberOfSteps. That is right for CVODE_opencor / CVODE /
-# RK4 / PETSC, but Myokit's Simulation exposes only set_max_step_size,
-# set_min_step_size and set_tolerance — there is no max-step-count knob, and
-# myokit_helper accordingly never reads the key. Offering it renders a control
-# that silently does nothing, which is the very thing CA's own comment on
-# aadc_semi_implicit warns against.
+# CA used to give CVODE_myokit the shared CVODE-family field list, which carries
+# MaximumNumberOfSteps. That is right for CVODE_opencor / CVODE / RK4 / PETSC,
+# but Myokit's Simulation exposes only set_max_step_size, set_min_step_size and
+# set_tolerance — there is no max-step-count knob, and myokit_helper never reads
+# the key. Offering it renders a control that silently does nothing.
 #
-# This is a CA schema bug (CVODE_myokit needs its own field list); the exclusion
-# here is the same shape as UNSUPPORTED_SOLVERS above — it composes with the
-# introspection instead of replacing it, so it becomes a no-op the moment CA
-# stops advertising the key. Remove it then.
+# Fixed upstream in CA #329, so against a current CA this is already a no-op.
+# It is kept because the CA directory is user-selectable (Settings → CA dir):
+# someone pointed at a pre-#329 checkout would otherwise get the dead control
+# back. Retire it once CUFLynx requires a CA new enough to be certain.
+#
+# Shape follows UNSUPPORTED_SOLVERS above: it composes with the introspection
+# rather than replacing it, so it can only ever remove a key CA offers — never
+# add or rename one.
 UNSUPPORTED_SOLVER_INFO_KEYS: dict[str, frozenset[str]] = {
     "CVODE_myokit": frozenset({"MaximumNumberOfSteps"}),
 }

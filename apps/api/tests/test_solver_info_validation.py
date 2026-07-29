@@ -38,6 +38,44 @@ def test_runners_do_not_seed_the_inert_key(runner):
     assert 'si.setdefault("MaximumNumberOfSteps"' not in src
 
 
+def test_the_installed_ca_no_longer_advertises_it():
+    """CA #329 fixed the schema, so the exclusion below should be redundant here.
+
+    Asserting it directly means a CA regression shows up as this test failing
+    rather than being masked by our own filtering. Skipped without CA — this is
+    a statement about the CA on the path, not about CUFLynx.
+    """
+    so.get_solver_options()  # puts CA's src on sys.path if it is configured
+    ca = pytest.importorskip(
+        "parsers.PrimitiveParsers", reason="circulatory_autogen not on the path"
+    )
+
+    names = {f["name"] for f in ca.SOLVER_INFO_FIELDS["CVODE_myokit"]}
+    assert "MaximumNumberOfSteps" not in names
+    # ...and it is still right for the backends that do honour it.
+    assert "MaximumNumberOfSteps" in {
+        f["name"] for f in ca.SOLVER_INFO_FIELDS["CVODE_opencor"]
+    }
+
+
+def test_the_exclusion_still_covers_an_older_ca():
+    """The CA dir is user-selectable, so a pre-#329 checkout is a live case: the
+    key must be filtered out of the form even when CA offers it."""
+    stale = {
+        "CVODE_myokit": [
+            {"key": "MaximumStep", "label": "Max step", "type": "number", "default": 0.001},
+            {"key": "MaximumNumberOfSteps", "label": "Max # steps", "type": "number",
+             "default": 5000},
+        ]
+    }
+    kept = [
+        f["key"]
+        for f in stale["CVODE_myokit"]
+        if f["key"] not in so.unsupported_solver_info_keys("CVODE_myokit")
+    ]
+    assert kept == ["MaximumStep"]
+
+
 def test_the_offline_fallback_form_does_not_offer_it_either():
     """The fallback schema is what a CA-less install shows; it must agree."""
     schema = so._solver_info_schema(so.FALLBACK_SOLVER_SCHEMA["methods_by_solver"])
