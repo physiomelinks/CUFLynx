@@ -43,6 +43,7 @@ from cellml_flatten import (
 from cellml_meta import CellMLModel, CellMLParseError, parse_cellml
 import mmt_protocol
 import myokit_import
+import omex_import
 from version import __version__
 from compiler_check import compiler_status
 from engine import SimulationError, engine, _circulatory_autogen_src
@@ -860,6 +861,109 @@ async def upload_model(
         # protocol cannot be converted -- in which case `reason` says why.
         "protocol_obs_data": protocol,
     }
+
+
+@app.post("/api/omex/upload")
+async def upload_omex(
+    file: UploadFile = File(...),
+    output_dir: str | None = Query(default=None),
+) -> dict:
+    """Load a whole COMBINE archive: model + obs_data + params_for_id (#149).
+
+    Dropped on any of the import boxes, because an archive is not "an obs_data
+    file" or "a params file" -- it is the study, and making the user unzip it and
+    drop three files in the right order is the thing this removes.
+
+    Each part is loaded through the same code path a dropped file would take, so
+    an archive cannot behave differently from its own contents.
+    """
+    data = await file.read()
+    try:
+        parts = omex_import.unpack(data)
+    except omex_import.OmexImportError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    out_dir = _user_func_base_dir(output_dir or "")
+
+    # The model first: obs_data and params attach to it.
+    raw_by_name = parts["cellml"]
+    if len(raw_by_name) == 1 and not has_imports(next(iter(raw_by_name.values()))):
+        raw = next(iter(raw_by_name.values()))
+    else:
+        try:
+            main_name = parts["master"] or pick_main_cellml(raw_by_name)
+            with tempfile.TemporaryDirectory() as td:
+                for name, blob in raw_by_name.items():
+                    (Path(td) / os.path.basename(name)).write_bytes(blob)
+                raw = flatten_cellml(
+                    str(Path(td) / os.path.basename(main_name)), td
+                ).encode("utf-8")
+        except CellMLFlattenError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    try:
+        meta = parse_cellml(raw)
+    except CellMLParseError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    model_id = uuid.uuid4().hex
+    path = UPLOAD_DIR / f"{model_id}.cellml"
+    path.write_bytes(raw)
+    _models[model_id] = _ModelRecord(model_id, path, meta)
+
+    result = {
+        "model_id": model_id,
+        "name": meta.name,
+        "variable_count": meta.variable_count,
+        "params": meta.params,
+        "odes": meta.odes,
+        "model_filename": parts["master"],
+        "obs_data": None,
+        "params_for_id": None,
+        # Where PhLynx's editor state was kept, so the archive round-trips (#149).
+        "module_config_path": None,
+    }
+
+    # obs_data and params_for_id are optional: an archive with only a model is a
+    # perfectly good archive, and refusing it would be worse than loading what is
+    # there. A part that fails to parse is reported without losing the rest.
+    if parts["obs"]:
+        name, blob = parts["obs"]
+        try:
+            parsed = parse_obs_data(json.loads(blob))
+            _models[model_id].obs_data = parsed
+            obs_path = UPLOAD_DIR / f"{model_id}_obs_data.json"
+            obs_path.write_bytes(blob)
+            _models[model_id].obs_path = obs_path
+            result["obs_data"] = {
+                "filename": name,
+                **parsed.summary(),
+                "data_items": parsed.data_items,
+                "prediction_items": parsed.prediction_items,
+                "protocol_info": parsed.protocol_info,
+            }
+        except (ValueError, ObsDataError) as exc:
+            result["obs_data"] = {"filename": name, "error": str(exc)}
+
+    if parts["params"]:
+        name, blob = parts["params"]
+        try:
+            entries = parse_params_for_id(blob, meta.initial_values)
+            params_path = UPLOAD_DIR / f"{model_id}_params_for_id.csv"
+            params_path.write_bytes(blob)
+            _models[model_id].params_path = params_path
+            result["params_for_id"] = {
+                "filename": name,
+                "params": [e.as_dict() for e in entries],
+            }
+        except ParamsForIdError as exc:
+            result["params_for_id"] = {"filename": name, "error": str(exc)}
+
+    if parts["module_config"]:
+        _name, blob = parts["module_config"]
+        result["module_config_path"] = omex_import.save_module_config(blob, out_dir)
+
+    return result
 
 
 @app.get("/api/models/{model_id}/variables")

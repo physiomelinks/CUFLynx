@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 
 vi.mock('../lib/api', () => ({
+  uploadOmex: vi.fn(),
   uploadCellML: vi.fn(),
   uploadObsData: vi.fn(),
   uploadParamsForId: vi.fn(),
@@ -15,6 +16,7 @@ import {
   uploadObsData,
   uploadParamsForId,
   fetchExampleModel,
+  uploadOmex,
 } from '../lib/api'
 
 // Real <button> stub so the Edit button's disabled state + click are observable;
@@ -355,7 +357,10 @@ describe('FileImport accepts .mmt (#27)', () => {
     return wrapper
   }
 
-  beforeEach(() => uploadCellML.mockReset().mockResolvedValue({ model_id: 'abc', name: 'm' }))
+  beforeEach(() => {
+    uploadCellML.mockReset().mockResolvedValue({ model_id: 'abc', name: 'm' })
+    uploadOmex.mockReset()
+  })
 
   it('uploads a dropped .mmt instead of rejecting it', async () => {
     const wrapper = await drop('br-1977.mmt')
@@ -368,6 +373,13 @@ describe('FileImport accepts .mmt (#27)', () => {
     expect(uploadCellML).toHaveBeenCalledTimes(1)
   })
 
+  // A .mmt is a loose file, not an archive: the omex path must let it through
+  // rather than swallowing every drop now that both features share the zone.
+  it('does not mistake a .mmt for an archive', async () => {
+    await drop('br-1977.mmt')
+    expect(uploadOmex).not.toHaveBeenCalled()
+  })
+
   // The guard and the file picker must agree, or one path works and the other
   // does not — which is exactly how this slipped through.
   it('offers the same extensions the drop handler accepts', () => {
@@ -375,7 +387,7 @@ describe('FileImport accepts .mmt (#27)', () => {
     const accept = wrapper
       .find('[data-testid="cellml-drop"] input[type="file"]')
       .attributes('accept')
-    for (const ext of ['.cellml', '.mmt']) expect(accept).toContain(ext)
+    for (const ext of ['.cellml', '.mmt', '.omex']) expect(accept).toContain(ext)
   })
 
   it('still rejects an unrelated file, naming what it wanted', async () => {
@@ -488,5 +500,69 @@ describe('FileImport adopts the .mmt protocol as obs_data (#27)', () => {
     await wrapper.setProps({ modelId: 'def' })
     await flushPromises()
     expect(uploadObsData).toHaveBeenCalledTimes(1)
+  })
+})
+
+// Issue #149: a COMBINE archive is the study, not any one of its files, so it is
+// accepted on every import box rather than making the user unzip it.
+describe('FileImport omex (#149)', () => {
+  const omexFile = () => new File(['PK'], 'study.omex', { type: 'application/zip' })
+  const RESPONSE = {
+    model_id: 'abc',
+    name: 'CardiovascularSystem',
+    model_filename: '3compartment_flat.cellml',
+    obs_data: { filename: 'obs.json', data_items: [{}], protocol_info: null },
+    params_for_id: { filename: 'params.csv', params: [{ qname: 'a/b' }] },
+    module_config_path: '/out/module_config.json',
+  }
+
+  const dropOn = async (testid, file = omexFile()) => {
+    const wrapper = mount(FileImport, { global: { stubs } })
+    await wrapper
+      .find(`[data-testid="${testid}"]`)
+      .trigger('drop', { dataTransfer: { files: [file] } })
+    await flushPromises()
+    return wrapper
+  }
+
+  beforeEach(() => uploadOmex.mockReset().mockResolvedValue(RESPONSE))
+
+  it.each(['cellml-drop', 'obs-drop', 'params-drop'])(
+    'accepts an archive dropped on %s',
+    async (testid) => {
+      const wrapper = await dropOn(testid)
+      expect(uploadOmex).toHaveBeenCalledTimes(1)
+      expect(wrapper.emitted('model-loaded')).toBeTruthy()
+    },
+  )
+
+  it('loads all three parts from one drop', async () => {
+    const wrapper = await dropOn('cellml-drop')
+    expect(wrapper.emitted('model-loaded')[0][0].model_id).toBe('abc')
+    expect(wrapper.emitted('obs-data-loaded')[0][0].data_items).toHaveLength(1)
+    expect(wrapper.emitted('params-loaded')[0][0].params).toHaveLength(1)
+  })
+
+  it('says the PhLynx layout was kept, so the archive round-trips', async () => {
+    const wrapper = await dropOn('cellml-drop')
+    expect(wrapper.vm.notice).toContain('PhLynx layout kept')
+  })
+
+  // An archive with a bad obs_data still gave us a model worth having.
+  it('reports a bad part without losing the rest', async () => {
+    uploadOmex.mockResolvedValue({
+      ...RESPONSE,
+      obs_data: { filename: 'obs.json', error: 'invalid JSON' },
+    })
+    const wrapper = await dropOn('obs-drop')
+    expect(wrapper.emitted('model-loaded')).toBeTruthy()
+    expect(wrapper.emitted('obs-data-loaded')).toBeFalsy()
+    expect(wrapper.vm.notice).toContain('invalid JSON')
+  })
+
+  it('leaves an ordinary file to its own dropzone', async () => {
+    const json = new File(['{}'], 'obs_data.json', { type: 'application/json' })
+    await dropOn('obs-drop', json)
+    expect(uploadOmex).not.toHaveBeenCalled()
   })
 })
