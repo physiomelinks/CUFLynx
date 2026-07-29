@@ -194,7 +194,8 @@ function onValue(qname, value) {
         v-for="run in savedRuns"
         :key="run.prefix"
         class="saved-run"
-        :title="run.prefix"
+        :class="{ virtual: run.virtual }"
+        :title="run.title || run.prefix"
         data-testid="saved-run"
       >
         <input
@@ -207,6 +208,11 @@ function onValue(qname, value) {
           @change="emit('toggle-saved', run.prefix)"
         />
         <span class="saved-run-name">{{ run.prefix }}</span>
+        <!--
+          The best fit is derived, not a file: it has to be simulated when first
+          ticked, so say it is live rather than let it read as another save.
+        -->
+        <span v-if="run.virtual" class="saved-run-tag" data-testid="saved-run-tag">live</span>
       </label>
     </div>
   </section>
@@ -307,6 +313,16 @@ function onValue(qname, value) {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.saved-run.virtual .saved-run-name {
+  font-style: italic;
+}
+.saved-run-tag {
+  flex: 0 0 auto;
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.55;
 }
 .value-input {
   flex: 0 0 5.5rem;

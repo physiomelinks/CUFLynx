@@ -961,6 +961,41 @@ async function onSaveParams({ filename }) {
 // read once at startup for whatever was saved in a previous session.
 watch(outputsDir, (v) => savedRuns.refresh((v || '').trim()), { immediate: true })
 
+// The calibration best fit as a tickable overlay (#126). Its parameter values
+// exist the moment a calibration finishes, but its *traces* do not — nothing has
+// run the model at them — so they are produced on demand when it is ticked,
+// rather than costing a run nobody asked for.
+const BEST_FIT_PREFIX = 'best fit'
+
+async function loadBestFitRun() {
+  const best = calib.bestParams.value
+  if (!best || !model.hasModel.value) return null
+  // The fit only names the calibrated parameters; everything else stays where
+  // the sliders are, so the comparison isolates what calibration changed.
+  const params = { ...sliders.paramDict.value, ...best }
+  const data = await runWithParams(params)
+  return { prefix: BEST_FIT_PREFIX, params, ...data }
+}
+
+// Keep the entry in step with the latest fit. setVirtualRun drops any cached
+// traces, so a re-tick re-runs at the new values instead of showing the old.
+watch(
+  () => calib.bestParams.value,
+  (best) => {
+    if (best && Object.keys(best).length) {
+      savedRuns.setVirtualRun({
+        prefix: BEST_FIT_PREFIX,
+        title: 'Latest calibration best fit',
+        params: best,
+        load: loadBestFitRun,
+      })
+    } else {
+      savedRuns.removeVirtualRun(BEST_FIT_PREFIX)
+    }
+  },
+  { immediate: true },
+)
+
 // Tick / untick a saved run: loads its traces on first show.
 async function onToggleSavedRun(prefix) {
   await savedRuns.toggle(prefix)
@@ -1003,6 +1038,49 @@ function scheduleRun() {
   if (!model.hasModel.value) return
   clearTimeout(timer)
   timer = setTimeout(runSimulation, 300)
+}
+
+/**
+ * Run the model at `params` and return the raw result, without touching the
+ * displayed run. Shared with runSimulation so an overlay (the best fit, #126)
+ * is produced exactly the way the live trace is — same outputs, same protocol
+ * vs single-run choice — instead of by a second, drifting copy of these rules.
+ */
+async function runWithParams(params) {
+  if (obs.hasProtocol.value) {
+    const outputs = [
+      ...new Set([
+        ...obs.plotVariables.value.map((v) => v.qname),
+        ...extraOutputNames.value,
+      ]),
+    ]
+    const data = await runProtocol(model.modelId.value, params, {
+      outputs,
+      outputsDir: outputsDir.value.trim() || undefined,
+    })
+    return { experiments: data.experiments }
+  }
+  if (obs.hasObsData.value) {
+    const outputs = [
+      ...new Set([
+        ...obs.plotVariables.value.map((v) => v.qname),
+        ...extraOutputNames.value,
+      ]),
+    ]
+    const data = await simulate(model.modelId.value, params, {
+      outputs,
+      outputsDir: outputsDir.value.trim() || undefined,
+    })
+    return { time: data.time, outputs: data.outputs }
+  }
+  const opts = { simTime: simTime.value, preTime: preTime.value }
+  if (extraOutputNames.value.length) {
+    opts.outputs = [
+      ...new Set([...model.defaultOutputs.value, ...extraOutputNames.value]),
+    ]
+  }
+  const data = await simulate(model.modelId.value, params, opts)
+  return { time: data.time, outputs: data.outputs }
 }
 
 async function runSimulation() {

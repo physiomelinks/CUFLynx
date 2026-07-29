@@ -7,6 +7,26 @@ export const PALETTE = [
   '#e84a5f',
 ]
 
+/**
+ * Colours for saved-run overlays (#126), deliberately disjoint from PALETTE.
+ *
+ * Saved runs used to take a PALETTE colour at an offset, which meant they
+ * collided with whatever obs/calc reference lines the same cell had drawn —
+ * a saved trace came out the same green as a `max` measurement, so the colour
+ * stopped identifying anything. These hues appear nowhere in PALETTE, so a
+ * colour on a plot answers "live trace or obs?" vs "saved run?" on its own.
+ *
+ * Grey leads: the first saved run is the common case, and a neutral reads as
+ * "an earlier version of this" rather than as another measurement.
+ */
+export const SAVED_PALETTE = [
+  '#7f7f7f', // grey
+  '#e377c2', // pink
+  '#8c564b', // brown
+  '#17becf', // cyan
+  '#414487', // dark indigo
+]
+
 const TIME_NAMES = new Set(['time', 't'])
 
 function color(i) {

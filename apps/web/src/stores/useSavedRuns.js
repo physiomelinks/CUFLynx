@@ -1,6 +1,6 @@
 import { ref, computed } from 'vue'
 import { listSavedRuns, loadSavedRun } from '../lib/api'
-import { PALETTE } from '../lib/plot'
+import { SAVED_PALETTE } from '../lib/plot'
 
 /**
  * Saved runs the user can overlay on the plots (issue #126).
@@ -14,13 +14,14 @@ import { PALETTE } from '../lib/plot'
  * render checkboxes, and a run holds every plotted trace.
  */
 
-// Saved runs are offset in the palette so they don't open on the same hue as
-// the live trace they are being compared against.
-const SAVED_COLOR_OFFSET = 2
-
 export function useSavedRuns() {
   // Metadata for every saved run in the output dir, newest first.
   const runs = ref([])
+  // Runs not backed by a file — currently the live calibration best fit (#126).
+  // Each is {prefix, params, load}: `load` produces the record on demand,
+  // because a best fit is a set of parameter values with no traces until
+  // something runs the model at them.
+  const virtual = ref([])
   // prefix -> the loaded record ({params, time, outputs} or {experiments}).
   const series = ref({})
   // Prefixes currently ticked, in tick order — the order fixes the colours, so
@@ -31,31 +32,71 @@ export function useSavedRuns() {
   function colorFor(prefix) {
     const i = shown.value.indexOf(prefix)
     if (i < 0) return ''
-    return PALETTE[(i + SAVED_COLOR_OFFSET) % PALETTE.length]
+    return SAVED_PALETTE[i % SAVED_PALETTE.length]
   }
 
   const isShown = (prefix) => shown.value.includes(prefix)
 
-  /** Saved runs with their display state, for the checkbox list. */
+  /**
+   * Everything tickable, for the checkbox list. Virtual runs lead: the best fit
+   * is the one most often compared against, and it stays put while the file
+   * list changes underneath.
+   */
   const items = computed(() =>
-    runs.value.map((r) => ({
+    [
+      ...virtual.value.map((v) => ({
+        prefix: v.prefix,
+        params: v.params,
+        virtual: true,
+        title: v.title || v.prefix,
+      })),
+      ...runs.value,
+    ].map((r) => ({
       ...r,
       shown: isShown(r.prefix),
       color: colorFor(r.prefix),
     })),
   )
 
+  const isVirtual = (prefix) => virtual.value.some((v) => v.prefix === prefix)
+
+  /**
+   * Register (or replace) a virtual run. Replacing one drops its cached record,
+   * so a re-tick re-derives it — a new calibration best fit is a different run
+   * under the same name, and serving the old traces would be a lie.
+   */
+  function setVirtualRun(entry) {
+    const rest = virtual.value.filter((v) => v.prefix !== entry.prefix)
+    virtual.value = [entry, ...rest]
+    if (series.value[entry.prefix]) {
+      const { [entry.prefix]: _dropped, ...keep } = series.value
+      series.value = keep
+      // It was on screen showing the previous fit; take it down rather than
+      // leave a stale trace labelled "best fit".
+      shown.value = shown.value.filter((p) => p !== entry.prefix)
+    }
+  }
+
+  function removeVirtualRun(prefix) {
+    virtual.value = virtual.value.filter((v) => v.prefix !== prefix)
+    shown.value = shown.value.filter((p) => p !== prefix)
+  }
+
   /** Re-read the output directory. Never throws: an unreadable dir just lists nothing. */
   async function refresh(outputDir = '') {
     try {
       const { runs: found } = await listSavedRuns(outputDir)
       runs.value = found ?? []
-      // Drop ticks whose file has gone, so a stale tick can't hold a colour.
-      const alive = new Set(runs.value.map((r) => r.prefix))
-      shown.value = shown.value.filter((p) => alive.has(p))
     } catch {
       runs.value = []
     }
+    // Drop ticks whose file has gone, so a stale tick can't hold a colour.
+    // Virtual runs have no file to disappear, so they survive a refresh.
+    const alive = new Set([
+      ...runs.value.map((r) => r.prefix),
+      ...virtual.value.map((v) => v.prefix),
+    ])
+    shown.value = shown.value.filter((p) => alive.has(p))
   }
 
   /**
@@ -68,12 +109,17 @@ export function useSavedRuns() {
       return false
     }
     if (!series.value[prefix]) {
-      const run = runs.value.find((r) => r.prefix === prefix)
-      if (!run) return false
+      const entry = virtual.value.find((v) => v.prefix === prefix)
+      const run = entry ? null : runs.value.find((r) => r.prefix === prefix)
+      if (!entry && !run) return false
       try {
-        series.value = { ...series.value, [prefix]: await loadSavedRun(run.path) }
+        // A virtual run derives its record (the best fit has to be simulated);
+        // a saved one reads it off disk.
+        const record = entry ? await entry.load() : await loadSavedRun(run.path)
+        if (!record) return false
+        series.value = { ...series.value, [prefix]: record }
       } catch (e) {
-        error.value = `Could not load saved run ${prefix}: ${e?.message || e}`
+        error.value = `Could not load ${prefix}: ${e?.message || e}`
         return false
       }
     }
@@ -124,6 +170,7 @@ export function useSavedRuns() {
   /** Forget everything — a new model's saved runs are a different set. */
   function clear() {
     runs.value = []
+    virtual.value = []
     series.value = {}
     shown.value = []
     error.value = ''
@@ -131,12 +178,16 @@ export function useSavedRuns() {
 
   return {
     runs,
+    virtual,
     items,
     shown,
     series,
     error,
     colorFor,
     isShown,
+    isVirtual,
+    setVirtualRun,
+    removeVirtualRun,
     refresh,
     toggle,
     seriesFor,

@@ -7,7 +7,7 @@ vi.mock('../lib/api', () => ({
 
 import { listSavedRuns, loadSavedRun } from '../lib/api'
 import { useSavedRuns } from './useSavedRuns'
-import { PALETTE } from '../lib/plot'
+import { PALETTE, SAVED_PALETTE } from '../lib/plot'
 
 const RUN_A = {
   prefix: 'run_a',
@@ -77,7 +77,23 @@ describe('useSavedRuns (#126)', () => {
       await s.refresh('/out')
       expect(s.colorFor('run_a')).toBe('')
       await s.toggle('run_a')
-      expect(PALETTE).toContain(s.colorFor('run_a'))
+      expect(SAVED_PALETTE).toContain(s.colorFor('run_a'))
+    })
+
+    // A saved trace once came out the same green as a `max` obs line, so the
+    // colour stopped telling you which kind of series you were looking at.
+    it('never reuses a colour the live traces or obs overlays draw with', async () => {
+      for (const c of SAVED_PALETTE) expect(PALETTE).not.toContain(c)
+    })
+
+    it('walks its own palette, so a second run is not the first colour again', async () => {
+      const s = useSavedRuns()
+      await s.refresh('/out')
+      loadSavedRun.mockResolvedValue({ ...RECORD_A, prefix: 'run_b' })
+      await s.toggle('run_a')
+      await s.toggle('run_b')
+      expect(s.colorFor('run_a')).toBe(SAVED_PALETTE[0])
+      expect(s.colorFor('run_b')).toBe(SAVED_PALETTE[1])
     })
 
     it('gives two shown runs different colours', async () => {
@@ -203,5 +219,115 @@ describe('useSavedRuns (#126)', () => {
     s.clear()
     expect(s.runs.value).toEqual([])
     expect(s.shown.value).toEqual([])
+  })
+})
+
+// The calibration best fit is tickable alongside the saved files (#126), but it
+// is not a file: its parameter values exist as soon as a calibration finishes,
+// while its traces have to be produced by running the model at them.
+describe('useSavedRuns virtual runs (best fit)', () => {
+  const BEST = {
+    prefix: 'best fit',
+    title: 'Latest calibration best fit',
+    params: { 'm/alpha': 9 },
+  }
+  const record = { prefix: 'best fit', params: { 'm/alpha': 9 }, time: [0, 1], outputs: { 'm/x': [7, 8] } }
+
+  const withBestFit = async (load = vi.fn().mockResolvedValue(record)) => {
+    const s = useSavedRuns()
+    await s.refresh('/out')
+    s.setVirtualRun({ ...BEST, load })
+    return { s, load }
+  }
+
+  it('appears in the list, ahead of the files, flagged as virtual', async () => {
+    const { s } = await withBestFit()
+    expect(s.items.value[0]).toMatchObject({ prefix: 'best fit', virtual: true })
+    expect(s.items.value.map((r) => r.prefix)).toEqual(['best fit', 'run_a', 'run_b'])
+  })
+
+  it('offers its parameters before anything has been run', async () => {
+    const { s } = await withBestFit()
+    expect(s.items.value[0].params).toEqual({ 'm/alpha': 9 })
+  })
+
+  it('runs the model only when it is first ticked', async () => {
+    const { s, load } = await withBestFit()
+    expect(load).not.toHaveBeenCalled()
+    await s.toggle('best fit')
+    expect(load).toHaveBeenCalledTimes(1)
+    expect(s.seriesFor('m/x')[0].values).toEqual([7, 8])
+  })
+
+  it('does not re-run it on a re-tick', async () => {
+    const { s, load } = await withBestFit()
+    await s.toggle('best fit')
+    await s.toggle('best fit')
+    await s.toggle('best fit')
+    expect(load).toHaveBeenCalledTimes(1)
+  })
+
+  it('never asks the file endpoint for it', async () => {
+    const { s } = await withBestFit()
+    await s.toggle('best fit')
+    expect(loadSavedRun).not.toHaveBeenCalled()
+  })
+
+  it('takes a colour from the saved palette like any other run', async () => {
+    const { s } = await withBestFit()
+    await s.toggle('best fit')
+    expect(SAVED_PALETTE).toContain(s.colorFor('best fit'))
+  })
+
+  // A new calibration under the same name is a different run.
+  it('drops the old traces when the fit is replaced', async () => {
+    const { s, load } = await withBestFit()
+    await s.toggle('best fit')
+    expect(s.isShown('best fit')).toBe(true)
+
+    s.setVirtualRun({ ...BEST, params: { 'm/alpha': 11 }, load })
+    // Taken down rather than left showing traces from the previous fit.
+    expect(s.isShown('best fit')).toBe(false)
+    expect(s.series.value['best fit']).toBeUndefined()
+
+    await s.toggle('best fit')
+    expect(load).toHaveBeenCalledTimes(2)
+  })
+
+  it('survives a refresh, having no file to disappear', async () => {
+    const { s } = await withBestFit()
+    await s.toggle('best fit')
+    await s.refresh('/out')
+    expect(s.isShown('best fit')).toBe(true)
+    expect(s.items.value[0].prefix).toBe('best fit')
+  })
+
+  it('is removed when the calibration is cleared', async () => {
+    const { s } = await withBestFit()
+    await s.toggle('best fit')
+    s.removeVirtualRun('best fit')
+    expect(s.items.value.map((r) => r.prefix)).toEqual(['run_a', 'run_b'])
+    expect(s.isShown('best fit')).toBe(false)
+  })
+
+  it('reports a failed run instead of showing an empty overlay', async () => {
+    const { s } = await withBestFit(vi.fn().mockRejectedValue(new Error('solver failed')))
+    expect(await s.toggle('best fit')).toBe(false)
+    expect(s.isShown('best fit')).toBe(false)
+    expect(s.error.value).toContain('best fit')
+  })
+
+  it('stays unticked when the loader yields nothing (no model loaded)', async () => {
+    const { s } = await withBestFit(vi.fn().mockResolvedValue(null))
+    expect(await s.toggle('best fit')).toBe(false)
+    expect(s.isShown('best fit')).toBe(false)
+  })
+
+  it('marks the sliders with the fitted values', async () => {
+    const { s } = await withBestFit()
+    await s.toggle('best fit')
+    expect(s.markersFor('m/alpha')).toEqual([
+      { prefix: 'best fit', color: s.colorFor('best fit'), value: 9 },
+    ])
   })
 })

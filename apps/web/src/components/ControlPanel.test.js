@@ -213,3 +213,47 @@ describe('ControlPanel saved runs (#126)', () => {
     })
   })
 })
+
+// The best fit rides in the same list but is derived, not saved (#126).
+describe('ControlPanel virtual (best fit) run', () => {
+  const RUNS = [
+    {
+      prefix: 'best fit',
+      title: 'Latest calibration best fit',
+      virtual: true,
+      shown: true,
+      color: '#7f7f7f',
+      params: { 'm/p0': 4 },
+    },
+    { prefix: 'run_a', shown: false, color: '', params: { 'm/p0': 2 } },
+  ]
+
+  const mountWith = () =>
+    mount(ControlPanel, {
+      props: { sliders: sliderState(1), savedRuns: RUNS },
+      global: { stubs },
+    })
+
+  it('is flagged live, since ticking it runs the model', () => {
+    const rows = mountWith().findAll('[data-testid="saved-run"]')
+    expect(rows[0].find('[data-testid="saved-run-tag"]').text()).toBe('live')
+    expect(rows[1].find('[data-testid="saved-run-tag"]').exists()).toBe(false)
+  })
+
+  it('explains itself on hover rather than showing a bare prefix', () => {
+    const rows = mountWith().findAll('[data-testid="saved-run"]')
+    expect(rows[0].attributes('title')).toBe('Latest calibration best fit')
+  })
+
+  it('marks the sliders exactly as a saved run does', () => {
+    const mark = mountWith().find('[data-testid="saved-marker"]')
+    expect(mark.attributes('title')).toBe('best fit: 4')
+    expect(mark.attributes('style')).toContain('40%')
+  })
+
+  it('toggles through the same event', async () => {
+    const wrapper = mountWith()
+    await wrapper.findAll('[data-testid="saved-run-check"]')[0].setValue(false)
+    expect(wrapper.emitted('toggle-saved')[0]).toEqual(['best fit'])
+  })
+})
