@@ -2246,8 +2246,9 @@ watch(
 .plot-grid.single {
   grid-template-columns: 1fr;
 }
+/* No fixed height: the cell is its plot area (pinned in PlotPanel) plus header
+   and legend, so a legend row moves only the legend (#146). */
 .plot-cell {
-  min-height: 240px;
   border: 1px solid var(--p-content-border-color, #333);
   border-radius: 6px;
 }
