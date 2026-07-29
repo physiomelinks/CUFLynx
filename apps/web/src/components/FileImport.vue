@@ -185,7 +185,7 @@ async function onCellmlDrop(event) {
   // The main file (for the display name) is the one importing sisters, if any.
   const main = files.find((f) => f.name.toLowerCase().endsWith('.cellml')) ?? files[0]
   try {
-    const data = await uploadCellML(files)
+    const data = await uploadCellML(files, props.outputsDir)
     emit('model-loaded', { ...data, filename: main.name })
   } catch (e) {
     error.value = e?.response?.data?.detail || String(e)
@@ -268,10 +268,11 @@ async function onParamsDrop(event) {
           <small>drop another to replace</small>
         </template>
         <template v-else>
-          <i class="pi pi-file" /> Drop <strong>CellML</strong> (.cellml)
+          <i class="pi pi-file" /> Drop <strong>CellML</strong> (.cellml) or
+          <strong>Myokit</strong> (.mmt)
           <small>one file, or a non-flattened model with its sister files</small>
         </template>
-        <input type="file" accept=".cellml,.xml" multiple @change="onCellmlDrop" />
+        <input type="file" accept=".cellml,.xml,.mmt" multiple @change="onCellmlDrop" />
       </label>
       <Button
         :label="modelId ? 'Edit' : 'Create'"
