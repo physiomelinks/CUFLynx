@@ -53,6 +53,7 @@ import {
 import SaveParamsDialog from './components/SaveParamsDialog.vue'
 import { requestNotificationPermission } from './lib/notify'
 import { useRunNotifications } from './stores/useRunNotifications'
+import { useSavedRuns } from './stores/useSavedRuns'
 import {
   solversForFormat,
   defaultSolverFor,
@@ -559,8 +560,16 @@ function switchExtraPlotAxes(id) {
 
 // Extra-plot cells for a group, each a single-variable plot built from that
 // group's own simulation outputs.
-function extraCellsFor(groupKey, time, outputs) {
-  return buildExtraPlotCells(extraPlots.value, groupKey, time, outputs, modelUnits.value)
+function extraCellsFor(groupKey, time, outputs, expIdx = null) {
+  return buildExtraPlotCells(
+    extraPlots.value, groupKey, time, outputs, modelUnits.value,
+  ).map((cell) => ({
+    // Single-variable cells, so each takes the shown runs' trace for its own
+    // variable (#126). A phase-plane cell's overlays are dropped downstream —
+    // a saved run has no counterpart for the x variable.
+    ...cell,
+    savedSeries: savedRuns.seriesFor(cell.qname, expIdx),
+  }))
 }
 
 // Calibration / sensitivity
@@ -917,22 +926,82 @@ const savedParamsStart = computed(
     (outputsDir.value.trim() ? `${outputsDir.value.trim()}/manual_params.npy` : ''),
 )
 
+// Saved runs available to overlay on the plots (issue #126).
+const savedRuns = useSavedRuns()
+
 // "Save current" -> name+format dialog -> write the file (npy in the slider order,
-// or a self-describing csv) under the output directory.
+// or a self-describing csv) under the output directory, plus the traces those
+// values produced under the same prefix (#126).
 async function onSaveParams({ filename }) {
   try {
-    const { path } = await saveParams(
+    const { path, outputs_error: outputsError } = await saveParams(
       sliders.paramDict.value,
       sliders.order.value,
       filename,
       outputsDir.value.trim(),
+      // Whatever is on screen: a protocol run's experiments, or a single run.
+      sim.experiments.value.length
+        ? { experiments: sim.experiments.value }
+        : sim.result.value,
     )
     if (path) {
       lastSavedParamsPath.value = path
       localStorage.setItem('cuflynx-last-saved-params', path)
     }
+    // The parameters saved; only the traces alongside them failed, so say so
+    // rather than letting the run silently not be there to tick later.
+    if (outputsError) sim.setError(`Parameters saved, but ${outputsError}`)
+    await savedRuns.refresh(outputsDir.value.trim())
   } catch (e) {
     sim.setError(errorMessage(e))
+  }
+}
+
+// The saved runs live in the output directory, so the list follows it — and is
+// read once at startup for whatever was saved in a previous session.
+watch(outputsDir, (v) => savedRuns.refresh((v || '').trim()), { immediate: true })
+
+// The calibration best fit as a tickable overlay (#126). Its parameter values
+// exist the moment a calibration finishes, but its *traces* do not — nothing has
+// run the model at them — so they are produced on demand when it is ticked,
+// rather than costing a run nobody asked for.
+const BEST_FIT_PREFIX = 'best fit'
+
+async function loadBestFitRun() {
+  const best = calib.bestParams.value
+  if (!best || !model.hasModel.value) return null
+  // The fit only names the calibrated parameters; everything else stays where
+  // the sliders are, so the comparison isolates what calibration changed.
+  const params = { ...sliders.paramDict.value, ...best }
+  const data = await runWithParams(params)
+  return { prefix: BEST_FIT_PREFIX, params, ...data }
+}
+
+// Keep the entry in step with the latest fit. setVirtualRun drops any cached
+// traces, so a re-tick re-runs at the new values instead of showing the old.
+watch(
+  () => calib.bestParams.value,
+  (best) => {
+    if (best && Object.keys(best).length) {
+      savedRuns.setVirtualRun({
+        prefix: BEST_FIT_PREFIX,
+        title: 'Latest calibration best fit',
+        params: best,
+        load: loadBestFitRun,
+      })
+    } else {
+      savedRuns.removeVirtualRun(BEST_FIT_PREFIX)
+    }
+  },
+  { immediate: true },
+)
+
+// Tick / untick a saved run: loads its traces on first show.
+async function onToggleSavedRun(prefix) {
+  await savedRuns.toggle(prefix)
+  if (savedRuns.error.value) {
+    sim.setError(savedRuns.error.value)
+    savedRuns.error.value = ''
   }
 }
 
@@ -969,6 +1038,49 @@ function scheduleRun() {
   if (!model.hasModel.value) return
   clearTimeout(timer)
   timer = setTimeout(runSimulation, 300)
+}
+
+/**
+ * Run the model at `params` and return the raw result, without touching the
+ * displayed run. Shared with runSimulation so an overlay (the best fit, #126)
+ * is produced exactly the way the live trace is — same outputs, same protocol
+ * vs single-run choice — instead of by a second, drifting copy of these rules.
+ */
+async function runWithParams(params) {
+  if (obs.hasProtocol.value) {
+    const outputs = [
+      ...new Set([
+        ...obs.plotVariables.value.map((v) => v.qname),
+        ...extraOutputNames.value,
+      ]),
+    ]
+    const data = await runProtocol(model.modelId.value, params, {
+      outputs,
+      outputsDir: outputsDir.value.trim() || undefined,
+    })
+    return { experiments: data.experiments }
+  }
+  if (obs.hasObsData.value) {
+    const outputs = [
+      ...new Set([
+        ...obs.plotVariables.value.map((v) => v.qname),
+        ...extraOutputNames.value,
+      ]),
+    ]
+    const data = await simulate(model.modelId.value, params, {
+      outputs,
+      outputsDir: outputsDir.value.trim() || undefined,
+    })
+    return { time: data.time, outputs: data.outputs }
+  }
+  const opts = { simTime: simTime.value, preTime: preTime.value }
+  if (extraOutputNames.value.length) {
+    opts.outputs = [
+      ...new Set([...model.defaultOutputs.value, ...extraOutputNames.value]),
+    ]
+  }
+  const data = await simulate(model.modelId.value, params, opts)
+  return { time: data.time, outputs: data.outputs }
 }
 
 async function runSimulation() {
@@ -1054,6 +1166,7 @@ const plotGroups = computed(() => {
           yUnit: unitForVars(modelUnits.value, [v.qname]),
           controlled: false,
           simResult: { time: exp.time, outputs: { [v.qname]: exp.outputs?.[v.qname] ?? [] } },
+          savedSeries: savedRuns.seriesFor(v.qname, e),
           dataItems: attachOutputSeries(
             overlayItemsFor(obs.obsData.value, e, v.qname),
             exp.output_series,
@@ -1061,7 +1174,7 @@ const plotGroups = computed(() => {
           ),
         })
       }
-      cells.push(...extraCellsFor(`exp${e}`, exp.time, exp.outputs))
+      cells.push(...extraCellsFor(`exp${e}`, exp.time, exp.outputs, e))
       const label = labels[e]
         ? `Experiment ${e}: ${labels[e]}`
         : `Experiment ${e}`
@@ -1079,6 +1192,7 @@ const plotGroups = computed(() => {
       yUnit: unitForVars(modelUnits.value, [v.qname]),
       controlled: false,
       simResult: { time: sim.result.value.time, outputs: { [v.qname]: out[v.qname] ?? [] } },
+      savedSeries: savedRuns.seriesFor(v.qname),
       dataItems: attachOutputSeries(
         overlayItemsFor(obs.obsData.value, 0, v.qname),
         sim.result.value.output_series,
@@ -1107,6 +1221,9 @@ const plotGroups = computed(() => {
         yUnit: unitForVars(modelUnits.value, Object.keys(mainOutputs)),
         controlled: false,
         simResult: { time: sim.result.value.time, outputs: mainOutputs },
+        // The combined cell draws several variables, so it takes each shown
+        // run's trace for every one of them.
+        savedSeries: Object.keys(mainOutputs).flatMap((q) => savedRuns.seriesFor(q)),
         dataItems: [],
       },
     ]
@@ -1276,8 +1393,10 @@ watch(
             @remove="({ qname }) => sliders.removeSlider(qname)"
             @reset-init="onResetInit"
             @reset-best="onResetBest"
+            :saved-runs="savedRuns.items.value"
             @save-current="saveParamsOpen = true"
             @reset-saved="savedParamsBrowserOpen = true"
+            @toggle-saved="onToggleSavedRun"
           />
         </div>
         <div v-show="leftTab === 'sensitivity'" class="left-pane left-pane-scroll">
@@ -1423,6 +1542,7 @@ watch(
                 :stepped="cell.controlled"
                 :sim-result="cell.simResult"
                 :data-items="cell.dataItems"
+                :saved-series="cell.savedSeries ?? []"
                 :removable="!!cell.removeId"
                 :switchable="!!cell.xLabel"
                 maximizable

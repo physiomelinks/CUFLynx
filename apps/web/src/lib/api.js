@@ -196,13 +196,30 @@ export async function uploadParamsForId(file, modelId) {
 // Save the current slider values to a named file (issue #106). Format follows the
 // filename extension: `.csv` -> CSV, else numpy `.npy` (default). `order` is the
 // qname order for the npy array. Returns { path }.
-export async function saveParams(values, order, filename, outputDir = '') {
+export async function saveParams(values, order, filename, outputDir = '', result = null) {
   const { data } = await axios.post(url('/api/params/save'), {
     values,
     order,
     filename,
     output_dir: outputDir || '',
+    // The traces these values produced, stored under the same prefix so the run
+    // can be shown again later without re-running it (#126).
+    ...(result ? { result } : {}),
   })
+  return data
+}
+
+// Saved runs in an output directory (metadata only — no series). Issue #126.
+export async function listSavedRuns(outputDir = '') {
+  const { data } = await axios.get(url('/api/runs'), {
+    params: outputDir ? { dir: outputDir } : {},
+  })
+  return data
+}
+
+// One saved run, with its series, to overlay on the plots.
+export async function loadSavedRun(path) {
+  const { data } = await axios.get(url('/api/runs/load'), { params: { path } })
   return data
 }
 

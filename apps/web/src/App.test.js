@@ -24,9 +24,23 @@ vi.mock('./lib/api', () => ({
     differentiable_operations: {},
   }),
   setConfig: vi.fn().mockResolvedValue({}),
+  saveParams: vi.fn().mockResolvedValue({ path: '/out/run_a.npy', outputs_path: null }),
+  loadParams: vi.fn().mockResolvedValue({ values: {} }),
+  listSavedRuns: vi.fn().mockResolvedValue({ runs: [] }),
+  loadSavedRun: vi.fn().mockResolvedValue({}),
+  exportPipeline: vi.fn().mockResolvedValue({}),
+  exportPlotting: vi.fn().mockResolvedValue({}),
 }))
 
-import { getConfig, setConfig, getCalibrationPythons } from './lib/api'
+import {
+  getConfig,
+  setConfig,
+  getCalibrationPythons,
+  saveParams,
+  listSavedRuns,
+  loadSavedRun,
+  simulate,
+} from './lib/api'
 import { setNotificationCtor } from './lib/notify'
 import App from './App.vue'
 
@@ -777,5 +791,179 @@ describe('App.vue notify-when-long-runs-finish setting (#105)', () => {
     await flushPromises()
     expect(wrapper.vm.notifyWarning).toBe('')
     expect(localStorage.getItem('cuflynx-notify-on-finish')).toBe('0')
+  })
+})
+
+// Issue #126: "Save current" also stores the traces those values produced, and
+// the saved runs can be ticked back on to compare against the live one.
+describe('App.vue saved-run overlays (#126)', () => {
+  const VARS = { params: [], odes: ['m/x'], algebraic: [], all_names: [] }
+  const RUN = {
+    prefix: 'run_a',
+    path: '/out/run_a_outputs.json',
+    saved_at: '2026-01-02T00:00:00+00:00',
+    params: { 'm/x': 1 },
+    variables: ['m/x'],
+  }
+
+  const mountWithResult = async () => {
+    const wrapper = shallowMount(App)
+    await flushPromises()
+    wrapper.vm.model.variables.value = { ...VARS }
+    wrapper.vm.sim.setResult({ time: [0, 1, 2], outputs: { 'm/x': [1, 2, 3] } })
+    await nextTick()
+    return wrapper
+  }
+
+  it('saves the traces alongside the parameters', async () => {
+    const wrapper = await mountWithResult()
+    await wrapper.vm.onSaveParams({ filename: 'run_a.npy' })
+    await flushPromises()
+
+    const [, , filename, , result] = saveParams.mock.calls.at(-1)
+    expect(filename).toBe('run_a.npy')
+    expect(result.outputs['m/x']).toEqual([1, 2, 3])
+  })
+
+  it('saves a protocol run as its experiments, not a flattened trace', async () => {
+    const wrapper = await mountWithResult()
+    wrapper.vm.sim.setExperiments([
+      { time: [0, 1], outputs: { 'm/x': [1, 2] } },
+      { time: [0, 1], outputs: { 'm/x': [3, 4] } },
+    ])
+    await nextTick()
+    await wrapper.vm.onSaveParams({ filename: 'run_a.npy' })
+    await flushPromises()
+
+    const result = saveParams.mock.calls.at(-1)[4]
+    expect(result.experiments).toHaveLength(2)
+  })
+
+  // The parameters are what the user asked to save; the traces ride along.
+  it('reports a failed outputs write without pretending nothing saved', async () => {
+    saveParams.mockResolvedValueOnce({
+      path: '/out/run_a.npy',
+      outputs_path: null,
+      outputs_error: 'could not write the saved outputs to /out: disk full',
+    })
+    const wrapper = await mountWithResult()
+    await wrapper.vm.onSaveParams({ filename: 'run_a.npy' })
+    await flushPromises()
+    expect(wrapper.vm.sim.message.value).toContain('Parameters saved, but')
+    expect(wrapper.vm.sim.message.value).toContain('disk full')
+  })
+
+  it('refreshes the saved list after a save', async () => {
+    listSavedRuns.mockResolvedValue({ runs: [RUN] })
+    const wrapper = await mountWithResult()
+    await wrapper.vm.onSaveParams({ filename: 'run_a.npy' })
+    await flushPromises()
+    expect(wrapper.vm.savedRuns.items.value.map((r) => r.prefix)).toEqual(['run_a'])
+  })
+
+  it('a ticked run reaches the plot cell as an overlay', async () => {
+    listSavedRuns.mockResolvedValue({ runs: [RUN] })
+    loadSavedRun.mockResolvedValue({
+      prefix: 'run_a',
+      params: { 'm/x': 1 },
+      time: [0, 1, 2],
+      outputs: { 'm/x': [9, 9, 9] },
+    })
+    const wrapper = await mountWithResult()
+    await wrapper.vm.savedRuns.refresh('/out')
+    await wrapper.vm.onToggleSavedRun('run_a')
+    await nextTick()
+
+    const cell = wrapper.vm.plotGroups[0].cells[0]
+    expect(cell.savedSeries).toHaveLength(1)
+    expect(cell.savedSeries[0]).toMatchObject({ prefix: 'run_a', values: [9, 9, 9] })
+    expect(cell.savedSeries[0].color).toBeTruthy()
+  })
+
+  it('unticking it removes the overlay again', async () => {
+    listSavedRuns.mockResolvedValue({ runs: [RUN] })
+    loadSavedRun.mockResolvedValue({
+      prefix: 'run_a',
+      params: {},
+      time: [0],
+      outputs: { 'm/x': [9] },
+    })
+    const wrapper = await mountWithResult()
+    await wrapper.vm.savedRuns.refresh('/out')
+    await wrapper.vm.onToggleSavedRun('run_a')
+    await wrapper.vm.onToggleSavedRun('run_a')
+    await nextTick()
+    expect(wrapper.vm.plotGroups[0].cells[0].savedSeries).toEqual([])
+  })
+})
+
+// The calibration best fit is tickable in the same list (#126): its values are
+// known as soon as calibration finishes, its traces only once the model is run
+// at them.
+describe('App.vue best-fit overlay (#126)', () => {
+  const VARS = { params: [], odes: ['m/x'], algebraic: [], all_names: [] }
+
+  const mountWithFit = async (best = { 'm/alpha': 9 }) => {
+    listSavedRuns.mockResolvedValue({ runs: [] })
+    const wrapper = shallowMount(App)
+    await flushPromises()
+    // A model id is what makes hasModel true; the best fit has to be simulated,
+    // so without one there is nothing to run it against.
+    wrapper.vm.model.modelId.value = 'model-1'
+    wrapper.vm.model.variables.value = { ...VARS }
+    wrapper.vm.sim.setResult({ time: [0, 1], outputs: { 'm/x': [1, 2] } })
+    wrapper.vm.calib.bestParams.value = best
+    await flushPromises()
+    return wrapper
+  }
+
+  it('offers the best fit as soon as a calibration produces one', async () => {
+    const wrapper = await mountWithFit()
+    const items = wrapper.vm.savedRuns.items.value
+    expect(items[0]).toMatchObject({ prefix: 'best fit', virtual: true })
+    expect(items[0].params).toEqual({ 'm/alpha': 9 })
+  })
+
+  it('offers nothing before a calibration has run', async () => {
+    listSavedRuns.mockResolvedValue({ runs: [] })
+    const wrapper = shallowMount(App)
+    await flushPromises()
+    expect(wrapper.vm.savedRuns.items.value).toEqual([])
+  })
+
+  it('runs the model at the fitted values only when ticked', async () => {
+    const wrapper = await mountWithFit()
+    simulate.mockClear()
+    simulate.mockResolvedValue({ time: [0, 1], outputs: { 'm/x': [5, 6] } })
+
+    await wrapper.vm.onToggleSavedRun('best fit')
+    await flushPromises()
+
+    expect(simulate).toHaveBeenCalledTimes(1)
+    // The fit only names calibrated params; the rest stay where the sliders are.
+    expect(simulate.mock.calls[0][1]).toMatchObject({ 'm/alpha': 9 })
+  })
+
+  it('the fitted trace reaches the plot cell as an overlay', async () => {
+    const wrapper = await mountWithFit()
+    simulate.mockResolvedValue({ time: [0, 1], outputs: { 'm/x': [5, 6] } })
+    await wrapper.vm.onToggleSavedRun('best fit')
+    await nextTick()
+
+    const cell = wrapper.vm.plotGroups[0].cells[0]
+    expect(cell.savedSeries[0]).toMatchObject({ prefix: 'best fit', values: [5, 6] })
+  })
+
+  // A second calibration under the same name is a different run.
+  it('takes down a shown best fit when a new one arrives', async () => {
+    const wrapper = await mountWithFit()
+    simulate.mockResolvedValue({ time: [0, 1], outputs: { 'm/x': [5, 6] } })
+    await wrapper.vm.onToggleSavedRun('best fit')
+    expect(wrapper.vm.savedRuns.isShown('best fit')).toBe(true)
+
+    wrapper.vm.calib.bestParams.value = { 'm/alpha': 12 }
+    await flushPromises()
+    expect(wrapper.vm.savedRuns.isShown('best fit')).toBe(false)
+    expect(wrapper.vm.savedRuns.items.value[0].params).toEqual({ 'm/alpha': 12 })
   })
 })

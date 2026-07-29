@@ -30,6 +30,9 @@ ChartJS.register(
 const props = defineProps({
   simResult: { type: Object, default: null },
   dataItems: { type: Array, default: () => [] },
+  // Saved runs shown for comparison (#126): [{prefix, color, time, values}],
+  // each already narrowed to this cell's variable and experiment.
+  savedSeries: { type: Array, default: () => [] },
   title: { type: String, default: '' },
   varLabel: { type: String, default: '' },
   // CellML units for the plotted variable and for the x axis (#125), shown
@@ -60,6 +63,7 @@ const chartData = computed(() =>
     dataItems: props.dataItems,
     varLabel: props.varLabel,
     stepped: props.stepped,
+    savedSeries: props.savedSeries,
   }),
 )
 

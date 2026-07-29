@@ -7,6 +7,26 @@ export const PALETTE = [
   '#e84a5f',
 ]
 
+/**
+ * Colours for saved-run overlays (#126), deliberately disjoint from PALETTE.
+ *
+ * Saved runs used to take a PALETTE colour at an offset, which meant they
+ * collided with whatever obs/calc reference lines the same cell had drawn —
+ * a saved trace came out the same green as a `max` measurement, so the colour
+ * stopped identifying anything. These hues appear nowhere in PALETTE, so a
+ * colour on a plot answers "live trace or obs?" vs "saved run?" on its own.
+ *
+ * Grey leads: the first saved run is the common case, and a neutral reads as
+ * "an earlier version of this" rather than as another measurement.
+ */
+export const SAVED_PALETTE = [
+  '#7f7f7f', // grey
+  '#e377c2', // pink
+  '#8c564b', // brown
+  '#17becf', // cyan
+  '#414487', // dark indigo
+]
+
 const TIME_NAMES = new Set(['time', 't'])
 
 function color(i) {
@@ -206,6 +226,9 @@ export function buildExtraPlotCells(extraPlots, groupKey, time, outputs, units) 
       key: `extra:${p.id}`,
       title: p.label,
       varLabel: p.label,
+      // The model variable this cell draws, so callers can look up per-variable
+      // extras (saved-run overlays, #126) without parsing the label back.
+      qname: p.qname,
       yUnit: unitForVars(units, [p.qname]),
       controlled: false,
       removeId: p.id,
@@ -372,6 +395,37 @@ export function buildChartData(simResult, options = {}) {
       continue
     }
     pushLine(qname, varLabel || qname, outputs[qname] ?? [])
+  }
+
+  // Saved runs shown for comparison (issue #126). Each carries its own colour —
+  // the same one its tick box and slider markers use — and its own time base,
+  // since it was recorded from a different run whose sampling need not match.
+  // Dashed and thinner so the live trace stays the one being read; a saved run
+  // is a backdrop, not a peer.
+  // A phase-plane cell's x is another variable's trace, which a saved run has
+  // no counterpart for — overlaying its values against this run's x would pair
+  // unrelated samples. Dropped for the same reason obs overlays are.
+  for (const saved of phasePlane ? [] : (options.savedSeries ?? [])) {
+    const values = saved.values ?? []
+    if (!values.length) continue
+    accumulate(values)
+    datasets.push({
+      label: saved.prefix,
+      mathLabel: saved.prefix,
+      suffix: 'saved',
+      legendStyle: 'dash',
+      kind: 'saved',
+      // Against its own x where it has one: a saved run's samples are its own.
+      // On a phase-plane cell there is no saved x series, so it is skipped
+      // above by the caller rather than drawn against the wrong axis.
+      data: toXY(saved.time?.length ? saved.time : xAxis, values),
+      borderColor: saved.color,
+      backgroundColor: saved.color,
+      borderWidth: 1,
+      borderDash: [5, 3],
+      pointRadius: 0,
+      tension,
+    })
   }
 
   const xMin = xAxis.length ? xAxis[0] : 0

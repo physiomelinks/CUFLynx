@@ -49,6 +49,7 @@ from obs_data import ObsData, ObsDataError, parse_obs_data
 from obs_options import get_obs_data_options, reset_cache as reset_obs_options
 from obs_series import compute_output_series
 from params_for_id import ParamsForIdError, parse_params_for_id
+import saved_runs
 from param_io import ParamIOError, load_param_values, save_param_values
 from runtime_paths import default_python, frontend_dist, is_frozen, resources_dir
 import settings_store
@@ -1003,6 +1004,9 @@ class SaveParamsRequest(BaseModel):
     order: list[str] = Field(default_factory=list)  # qname order for the npy array
     filename: str = "manual_params.npy"
     output_dir: str = ""  # where to save; empty -> the uploads dir
+    # The traces those values produced, saved under the same prefix so the run
+    # can be overlaid later without re-running it (#126). Omitted -> params only.
+    result: dict | None = None
 
 
 class LoadParamsRequest(BaseModel):
@@ -1022,7 +1026,37 @@ def save_params(req: SaveParamsRequest) -> dict:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except OSError as exc:
         raise HTTPException(status_code=500, detail=f"could not write file: {exc}") from exc
-    return {"path": path}
+
+    # The traces alongside the values, under the same prefix (#126). Saving the
+    # parameters is the user's action; the outputs riding along must not be able
+    # to fail it, so a write error here is reported without losing the params.
+    outputs_path = None
+    outputs_error = None
+    if req.result:
+        try:
+            outputs_path = saved_runs.save_run(path, req.values, req.result)
+        except OSError as exc:
+            outputs_error = _fs_error_detail(exc, "write the saved outputs to", Path(path))
+    return {"path": path, "outputs_path": outputs_path, "outputs_error": outputs_error}
+
+
+@app.get("/api/runs")
+def list_saved_runs(dir: str | None = Query(default=None)) -> dict:
+    """Saved runs in an output directory, for the "show saved" list (#126).
+
+    Metadata only — the traces are fetched per run when one is shown.
+    """
+    base = _user_func_base_dir(dir or "") or str(UPLOAD_DIR)
+    return {"dir": base, "runs": saved_runs.list_runs(base)}
+
+
+@app.get("/api/runs/load")
+def load_saved_run(path: str = Query(...)) -> dict:
+    """One saved run, with its series, to overlay on the plots (#126)."""
+    try:
+        return saved_runs.load_run(path)
+    except saved_runs.SavedRunError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @app.post("/api/params/load")

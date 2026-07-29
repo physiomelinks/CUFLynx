@@ -28,16 +28,28 @@ function isLogSlider(s) {
   return s.log && s.min > 0 && s.max > 0
 }
 
-/** Map a slider's current value to its [0, SLIDER_STEPS] track position. */
-export function valueToSlider(s) {
+/**
+ * Map an arbitrary value to its [0, SLIDER_STEPS] position on ``s``'s track.
+ *
+ * Split out from valueToSlider so a saved run's parameter can be marked on the
+ * slider (#126) using the very same log/linear mapping the handle uses — a
+ * second implementation would drift and put the marker somewhere the handle
+ * never sits.
+ */
+export function positionFor(s, value) {
   if (s.max === s.min) return 0
-  const v = clamp(s.value, s.min, s.max)
+  const v = clamp(value, s.min, s.max)
   if (isLogSlider(s)) {
     const lo = Math.log(s.min)
     const hi = Math.log(s.max)
     return Math.round((SLIDER_STEPS * (Math.log(v) - lo)) / (hi - lo))
   }
   return Math.round((SLIDER_STEPS * (v - s.min)) / (s.max - s.min))
+}
+
+/** Map a slider's current value to its [0, SLIDER_STEPS] track position. */
+export function valueToSlider(s) {
+  return positionFor(s, s.value)
 }
 
 /** Map a [0, SLIDER_STEPS] track position back to a value (log or linear). */
