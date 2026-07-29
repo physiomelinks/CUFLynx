@@ -17,6 +17,7 @@ work (and are unit-tested) without Myokit installed.
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import shutil
@@ -474,6 +475,52 @@ def _export_base_dir(configured: str) -> Path:
     return UPLOAD_DIR
 
 
+# What each common errno means for someone staring at a failed export. Keyed on
+# errno rather than the message text, which is OS- and locale-dependent.
+_FS_HINTS = {
+    errno.EACCES: "The outputs directory is not writable — pick another, or change its permissions.",
+    errno.EPERM: "The outputs directory is not writable — pick another, or change its permissions.",
+    errno.EROFS: "That filesystem is read-only — pick an outputs directory you can write to.",
+    errno.ENOSPC: "The disk is full.",
+    errno.ENAMETOOLONG: (
+        "The path is too long — pick a shorter outputs directory (the export folder name "
+        "adds a dated suffix)."
+    ),
+    errno.ENOENT: "A parent directory does not exist.",
+    errno.ENOTDIR: "A component of that path is a file, not a directory.",
+    errno.EDQUOT: "The disk quota for that location is exhausted.",
+}
+
+
+def _fs_error_detail(exc: OSError, action: str, fallback: Path) -> str:
+    """A failed filesystem operation, said in terms the user can act on.
+
+    Names the path that actually failed (``OSError.filename``, which open/mkdir/
+    copyfile all set) rather than the path we asked for, since with
+    ``parents=True`` they differ — the failure is usually a parent. Issue #135:
+    unhandled, these produced a body-less 500 whose only symptom was
+    "AxiosError: Request failed with status code 500".
+    """
+    path = exc.filename or getattr(exc, "filename2", None) or str(fallback)
+    reason = exc.strerror or str(exc) or type(exc).__name__
+    hint = _FS_HINTS.get(exc.errno)
+    detail = f"could not {action} {path}: {reason}"
+    return f"{detail}. {hint}" if hint else f"{detail}."
+
+
+def _fs_error(exc: OSError, action: str, fallback: Path, *, user_dir: bool) -> HTTPException:
+    """Map an OSError to an HTTP error carrying the path and the OS message.
+
+    422 when the client chose the location (its own ``config_outputs_dir`` is
+    what needs changing), 500 when we picked it — the server's temp dir failing
+    is not the client's to fix.
+    """
+    return HTTPException(
+        status_code=422 if user_dir else 500,
+        detail=_fs_error_detail(exc, action, fallback),
+    )
+
+
 @app.post("/api/export/pipeline")
 def export_pipeline_route(req: ExportPipelineRequest) -> dict:
     """Write a self-contained, reproducible export folder: the dated
@@ -481,9 +528,9 @@ def export_pipeline_route(req: ExportPipelineRequest) -> dict:
     obs / params, all referenced by relative paths."""
     record = _get_model(req.model_id)
     suffix = export_pipeline.dated_suffix()
+    user_dir = bool((req.config_outputs_dir or "").strip())
     export_dir = _export_base_dir(req.config_outputs_dir) / f"export_{suffix}"
     resources = export_dir / "resources"
-    resources.mkdir(parents=True, exist_ok=True)
 
     # Use the loaded CellML file's prefix (e.g. "3compartment"), not the internal
     # <model name> (often a generic "cardiovascularSystem"). The client passes it.
@@ -492,16 +539,23 @@ def export_pipeline_route(req: ExportPipelineRequest) -> dict:
     # generated_models/<prefix>/<prefix>.cellml. obs/params go in resources/.
     model_file = f"{file_prefix}.cellml"
     model_dir = export_dir / "generated_models" / file_prefix
-    model_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(record.path, model_dir / model_file)
+
+    # An unwritable outputs dir, a full disk or a too-long path must say which
+    # path failed and why, not become a body-less 500 (issue #135).
     obs_file = None
-    if record.obs_path is not None:
-        obs_file = "obs_data.json"
-        shutil.copyfile(record.obs_path, resources / obs_file)
     params_file = None
-    if record.params_path is not None:
-        params_file = "params_for_id.csv"
-        shutil.copyfile(record.params_path, resources / params_file)
+    try:
+        resources.mkdir(parents=True, exist_ok=True)
+        model_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(record.path, model_dir / model_file)
+        if record.obs_path is not None:
+            obs_file = "obs_data.json"
+            shutil.copyfile(record.obs_path, resources / obs_file)
+        if record.params_path is not None:
+            params_file = "params_for_id.csv"
+            shutil.copyfile(record.params_path, resources / params_file)
+    except OSError as exc:
+        raise _fs_error(exc, "write the export to", export_dir, user_dir=user_dir) from exc
 
     try:
         user_inputs = export_pipeline.build_user_inputs(
@@ -526,10 +580,13 @@ def export_pipeline_route(req: ExportPipelineRequest) -> dict:
         # all the user saw in issue #133.
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     yaml_name = f"user_inputs_{suffix}.yaml"
-    with open(export_dir / yaml_name, "w") as fh:
-        yaml.safe_dump(user_inputs, fh, default_flow_style=False, sort_keys=False)
-    (export_dir / "run_pipeline.py").write_text(export_pipeline.render_pipeline_script())
-    (export_dir / "plot_outputs.py").write_text(export_pipeline.render_plotting_script())
+    try:
+        with open(export_dir / yaml_name, "w") as fh:
+            yaml.safe_dump(user_inputs, fh, default_flow_style=False, sort_keys=False)
+        (export_dir / "run_pipeline.py").write_text(export_pipeline.render_pipeline_script())
+        (export_dir / "plot_outputs.py").write_text(export_pipeline.render_plotting_script())
+    except OSError as exc:
+        raise _fs_error(exc, "write the export to", export_dir, user_dir=user_dir) from exc
 
     files = [
         yaml_name, "run_pipeline.py", "plot_outputs.py",
@@ -547,9 +604,15 @@ def export_plotting_route(req: ExportPlottingRequest) -> dict:
     """Write just the plotting script (regenerates output/progress/analysis plots
     from a pipeline's output data)."""
     base = _export_base_dir(req.config_outputs_dir)
-    base.mkdir(parents=True, exist_ok=True)
     path = base / "plot_outputs.py"
-    path.write_text(export_pipeline.render_plotting_script())
+    try:
+        base.mkdir(parents=True, exist_ok=True)
+        path.write_text(export_pipeline.render_plotting_script())
+    except OSError as exc:
+        raise _fs_error(
+            exc, "write the plotting script to", path,
+            user_dir=bool((req.config_outputs_dir or "").strip()),
+        ) from exc
     return {"path": str(path)}
 
 
