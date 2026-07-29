@@ -9,6 +9,30 @@ function url(path) {
   return `${baseURL}${path}`
 }
 
+/**
+ * The most informative text available for a failed request (issue #138).
+ *
+ * The backend puts the real reason in `detail`, but an unhandled server error
+ * has no JSON body at all — and `String(e)` then yields "AxiosError: Request
+ * failed with status code 500", which is what the issue was about. Fall through
+ * the body shapes FastAPI can produce before giving up on Axios's own text, and
+ * keep the status alongside it so a bare failure is at least attributable.
+ */
+export function errorMessage(e) {
+  const res = e?.response
+  const data = res?.data
+  const detail = typeof data === 'string' ? data : data?.detail
+  if (typeof detail === 'string' && detail.trim()) return detail
+  // 422s from FastAPI validation arrive as a list of {loc, msg} objects.
+  if (Array.isArray(detail) && detail.length) {
+    return detail.map((d) => d?.msg || JSON.stringify(d)).join('; ')
+  }
+  if (res?.status) {
+    return `Request failed (HTTP ${res.status}${res.statusText ? ` ${res.statusText}` : ''}). The server did not say why — check the server log.`
+  }
+  return String(e?.message || e)
+}
+
 export async function checkHealth() {
   const { data } = await axios.get(url('/api/health'))
   return data.status === 'ok'

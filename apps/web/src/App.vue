@@ -40,6 +40,7 @@ import {
   exportPlotting,
   saveParams,
   loadParams,
+  errorMessage,
 } from './lib/api'
 import {
   overlayItemsFor,
@@ -771,7 +772,7 @@ async function confirmExportPipeline() {
     const res = await exportPipeline(exportPayload())
     exportNotice.value = `Exported pipeline to ${res.export_dir}`
   } catch (e) {
-    exportNotice.value = `Export failed: ${e?.response?.data?.detail || String(e)}`
+    exportNotice.value = `Export failed: ${errorMessage(e)}`
   }
 }
 
@@ -783,7 +784,7 @@ async function onExportPlotting() {
     })
     exportNotice.value = `Exported plotting script to ${res.path}`
   } catch (e) {
-    exportNotice.value = `Export failed: ${e?.response?.data?.detail || String(e)}`
+    exportNotice.value = `Export failed: ${errorMessage(e)}`
   }
 }
 
@@ -931,7 +932,7 @@ async function onSaveParams({ filename }) {
       localStorage.setItem('cuflynx-last-saved-params', path)
     }
   } catch (e) {
-    sim.setError(e?.response?.data?.detail || String(e))
+    sim.setError(errorMessage(e))
   }
 }
 
@@ -944,7 +945,7 @@ async function onPickSavedParams(path) {
     sliders.applyValues(values)
     runSimulation()
   } catch (e) {
-    sim.setError(e?.response?.data?.detail || String(e))
+    sim.setError(errorMessage(e))
   }
 }
 
@@ -1018,7 +1019,7 @@ async function runSimulation() {
       sim.setResult(data, performance.now() - started)
     }
   } catch (e) {
-    sim.setError(e?.response?.data?.detail || String(e))
+    sim.setError(errorMessage(e))
   }
 }
 

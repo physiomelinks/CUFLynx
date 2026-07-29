@@ -11,6 +11,8 @@ singleton (see ``tests/conftest.py``); no Myokit required for the unit tier.
 
 from __future__ import annotations
 
+import contextlib
+import io
 import os
 import sys
 import threading
@@ -21,11 +23,139 @@ from runtime_paths import is_frozen
 DEFAULT_DT = 0.01
 DEFAULT_MODEL_TYPE = "cellml_only"
 DEFAULT_SOLVER = "CVODE_myokit"
-DEFAULT_SOLVER_INFO = {"MaximumStep": 0.001, "MaximumNumberOfSteps": 5000}
+# Only settings DEFAULT_SOLVER (Myokit's CVODE) actually honours. It used to also
+# carry MaximumNumberOfSteps, which myokit_helper never reads — myokit.Simulation
+# has no max-step-count knob — so every run was seeded with an inert setting that
+# the Settings form then displayed as if it did something. See
+# solver_options.UNSUPPORTED_SOLVER_INFO_KEYS.
+DEFAULT_SOLVER_INFO = {"MaximumStep": 0.001}
 
 
 class SimulationError(RuntimeError):
     """Raised when the underlying solver fails (maps to HTTP 500)."""
+
+
+# ---------------------------------------------------------------------------
+# Failure reporting (issue #138)
+#
+# A failed run used to reach the browser as "Request failed with status code
+# 500" and nothing else, which says neither what broke nor what to change. The
+# reason does exist, but not where an exception can find it: CA's
+# ``myokit_helper.run()`` catches the solver error, *prints* it, and returns
+# False, and ``ProtocolRunner.run_protocols`` then raises a bare "Protocol
+# simulation failed." So the reason is recovered by watching stdout across the
+# call, and the settings that produced it are attached from our own state.
+# ---------------------------------------------------------------------------
+class _Tee(io.TextIOBase):
+    """Records everything written to it while still passing it through.
+
+    A plain ``redirect_stdout`` would swallow CA's progress lines ("Running
+    experiments...", per-experiment completion), which are the only feedback a
+    long protocol run gives on the console. Teeing keeps them.
+    """
+
+    def __init__(self, target):
+        self._target = target
+        self._chunks: list[str] = []
+
+    def write(self, s):  # noqa: D102 - TextIOBase interface
+        self._chunks.append(s)
+        try:
+            return self._target.write(s)
+        except Exception:  # noqa: BLE001 - a closed/absent stdout must not fail a run
+            return len(s)
+
+    def flush(self):  # noqa: D102 - TextIOBase interface
+        with contextlib.suppress(Exception):
+            self._target.flush()
+
+    def getvalue(self) -> str:
+        return "".join(self._chunks)
+
+
+@contextlib.contextmanager
+def _tee_stdout():
+    """Yield a recorder of everything printed inside the block."""
+    tee = _Tee(sys.stdout)
+    with contextlib.redirect_stdout(tee):
+        yield tee
+
+
+# Lines worth quoting back: CA prefixes its swallowed solver errors this way,
+# and CVODE's own flags are the actionable part.
+_FAILURE_MARKERS = ("failed", "error", "exception", "cvode", "traceback")
+
+# Enough for a CVODE flag plus its sentence, without pasting a whole run log
+# into a browser toast.
+_MAX_REASON_CHARS = 600
+
+
+def _solver_reason(captured: str) -> str:
+    """The solver's own words for a failure, pulled out of `captured` stdout.
+
+    Returns "" when nothing there looks like a failure, so the caller can say so
+    rather than quoting an unrelated progress line as if it were the cause.
+    """
+    lines = [ln.strip() for ln in (captured or "").splitlines() if ln.strip()]
+    hits = [ln for ln in lines if any(m in ln.lower() for m in _FAILURE_MARKERS)]
+    if not hits:
+        return ""
+    reason = "\n".join(hits[-4:])  # the last failure block, not the whole log
+    return reason[:_MAX_REASON_CHARS] + ("..." if len(reason) > _MAX_REASON_CHARS else "")
+
+
+# Actionable follow-ups keyed by what CVODE actually said. Matching on the flag
+# rather than the prose keeps these stable across Sundials wordings.
+_HINTS = (
+    (
+        ("cv_too_much_acc", "too much accuracy"),
+        "The requested tolerance is tighter than the solver can hold — raise rtol/atol "
+        "in Settings.",
+    ),
+    (
+        ("cv_too_much_work", "mxstep", "maximum number of steps"),
+        # Not "raise MaximumNumberOfSteps": Myokit's integrator has no such knob,
+        # so on the default backend that would send the user to an inert control.
+        "The solver hit its step budget before reaching the next output point — "
+        "lower MaximumStep in Settings, or shorten the simulation time.",
+    ),
+    (
+        ("cv_conv_failure", "cv_err_failure", "convergence"),
+        "The solver could not converge — a smaller MaximumStep, or looser rtol/atol, "
+        "usually helps; a parameter far outside its physiological range can also make "
+        "the model unsolvable.",
+    ),
+    (
+        ("cv_rhsfunc_fail", "nan", "inf", "overflow", "division"),
+        "The model produced a non-finite value — check for a parameter at or near "
+        "zero (divisions) or otherwise outside its intended range.",
+    ),
+    (
+        ("units", "conversion", "incompatible"),
+        "This looks like a unit/conversion problem in the model rather than a solver "
+        "setting — check the units of the connected variables.",
+    ),
+)
+
+
+def _n_experiments(protocol_info) -> int | None:
+    """How many experiments a protocol run was attempting, for the message."""
+    try:
+        pre = protocol_info.get("pre_times") if hasattr(protocol_info, "get") else None
+        return len(pre) if pre is not None else None
+    except Exception:  # noqa: BLE001 - context only; never fail the failure path
+        return None
+
+
+def _failure_hint(reason: str) -> str:
+    low = (reason or "").lower()
+    for needles, hint in _HINTS:
+        if any(n in low for n in needles):
+            return hint
+    return (
+        "Try a smaller MaximumStep or looser rtol/atol in Settings, and check that no "
+        "parameter has been driven outside its intended range."
+    )
 
 
 def _circulatory_autogen_src() -> str:
@@ -144,6 +274,45 @@ class SimulationEngine:
             self._runner_protocol_info.clear()
 
     # ------------------------------------------------------------------
+    # Failure reporting (issue #138)
+    # ------------------------------------------------------------------
+    def settings_summary(self, **extra) -> str:
+        """The backend settings a failure should be read against.
+
+        Named explicitly because the same model succeeds or fails depending on
+        them: without this the user cannot tell "my MaximumStep is wrong" from
+        "my model is wrong".
+        """
+        bits = [f"solver={self.solver}", f"model format={self.model_type}", f"dt={self.dt}"]
+        bits += [f"{k}={v}" for k, v in sorted(self.solver_info.items()) if k != "dt"]
+        bits += [f"{k}={v}" for k, v in extra.items() if v is not None]
+        return ", ".join(bits)
+
+    def failure_message(self, reason: str, **extra) -> str:
+        """Compose the user-facing message for a failed run."""
+        head = f"Simulation failed: {reason}" if reason else "Simulation failed."
+        parts = [head, f"Settings in force: {self.settings_summary(**extra)}."]
+        if not reason:
+            parts.insert(
+                1,
+                "The solver gave no reason — check the server log for output from the "
+                "simulation backend.",
+            )
+        parts.append(_failure_hint(reason))
+        return "\n".join(parts)
+
+    def describe_exception(self, exc: BaseException, captured: str = "", **extra) -> str:
+        """Message for a run that raised rather than returning a failure flag.
+
+        The exception text alone is often uninformative ("Protocol simulation
+        failed."), because CA prints the real cause and raises a summary, so any
+        solver output captured alongside it is preferred and the exception is
+        kept as a fallback.
+        """
+        reason = _solver_reason(captured) or f"{type(exc).__name__}: {exc}"
+        return self.failure_message(reason, **extra)
+
+    # ------------------------------------------------------------------
     # Single run
     # ------------------------------------------------------------------
     def simulate(
@@ -177,9 +346,26 @@ class SimulationEngine:
                 vals = [params[n] for n in names]
                 helper.set_param_vals(names, vals)
 
-            ok = helper.run()
+            # CA's helper swallows the solver error and returns False, so the
+            # only record of *why* is what it printed (issue #138).
+            tee = _Tee(sys.stdout)
+            try:
+                with contextlib.redirect_stdout(tee):
+                    ok = helper.run()
+            except Exception as exc:  # noqa: BLE001 - re-raised with context below
+                raise SimulationError(
+                    self.describe_exception(
+                        exc, tee.getvalue(), sim_time=sim_time, pre_time=pre_time
+                    )
+                ) from exc
             if ok is False:
-                raise SimulationError("simulation failed")
+                raise SimulationError(
+                    self.failure_message(
+                        _solver_reason(tee.getvalue()),
+                        sim_time=sim_time,
+                        pre_time=pre_time,
+                    )
+                )
 
             # Myokit/OpenCOR/python helpers expose get_time; the CasADi helper
             # doesn't, but resolves the logged time vector as the 'time' variable.
@@ -229,12 +415,24 @@ class SimulationEngine:
             names = list(params.keys()) if params else None
             vals = [params[n] for n in names] if names else None
 
-            t_list, res_list, _sim_times = runner.run_protocols(
-                str(model_path),
-                protocol_info=protocol_info,
-                id_param_names=names,
-                id_param_vals=vals,
-            )
+            # run_protocols raises a bare "Protocol simulation failed." while the
+            # helper prints the actual solver error, so without capturing stdout
+            # this reached the browser as a bodyless 500 (issue #138).
+            tee = _Tee(sys.stdout)
+            try:
+                with contextlib.redirect_stdout(tee):
+                    t_list, res_list, _sim_times = runner.run_protocols(
+                        str(model_path),
+                        protocol_info=protocol_info,
+                        id_param_names=names,
+                        id_param_vals=vals,
+                    )
+            except Exception as exc:  # noqa: BLE001 - re-raised with context below
+                raise SimulationError(
+                    self.describe_exception(
+                        exc, tee.getvalue(), experiments=_n_experiments(protocol_info)
+                    )
+                ) from exc
             var2idx = runner.get_var2idx_dict()
 
         # Resolve each requested output name once against var2idx.
