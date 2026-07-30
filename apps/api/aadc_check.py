@@ -68,6 +68,23 @@ def _importable_in(python_path: str | None, module: str = "aadc") -> bool | None
         return None
 
 
+def _configured_analysis_python() -> str | None:
+    """The interpreter analysis runs use, when the caller did not name one.
+
+    Read lazily from the job managers rather than taken as a required argument:
+    the model-format gate has no reason to know about interpreters, but the
+    answer it needs depends on the one the user chose. Getting this wrong is what
+    hid aadc_python from a user who had AADC installed in exactly that
+    interpreter -- the gate only ever probed the app's own.
+    """
+    try:
+        import calibration  # noqa: PLC0415 - avoid an import cycle at module load
+
+        return calibration.calibration.python
+    except Exception:  # noqa: BLE001 - no manager yet; fall back to in-app only
+        return None
+
+
 def aadc_status(python_path: str | None = None) -> dict:
     """AADC availability for the Settings UI and the model-format gating.
 
@@ -75,9 +92,12 @@ def aadc_status(python_path: str | None = None) -> dict:
     when either interpreter can import it, because the live engine runs in-process
     while analysis runs in the user's Python and a user may reasonably have it in
     only one.
+
+    ``python_path`` defaults to the configured analysis interpreter, so a caller
+    that does not track interpreters still gets the right answer.
     """
     here = _importable()
-    there = _importable_in(python_path)
+    there = _importable_in(python_path if python_path is not None else _configured_analysis_python())
     return {
         "available": bool(here or there),
         "in_app": here,

@@ -93,3 +93,32 @@ def test_the_format_appears_when_the_library_is_there(client, monkeypatch):
 def test_config_reports_the_status_either_way(client):
     status = client.get("/api/config").json()["aadc"]
     assert set(status) >= {"available", "hint", "licence_url", "in_app"}
+
+
+# The reports that found these: AADC pip-installed in a venv, selected as the
+# analysis interpreter, and the format still absent -- and that venv showing no
+# MPI status at all.
+def test_the_format_gate_consults_the_analysis_interpreter(client, monkeypatch):
+    """The gate probed only the app's own interpreter, so AADC installed in the
+    interpreter that actually runs the analysis counted for nothing."""
+    import calibration as calib_mod
+
+    monkeypatch.setattr(aadc_check, "_importable", lambda module="aadc": False)
+    monkeypatch.setattr(
+        aadc_check, "_importable_in", lambda p, module="aadc": p == "/venv/bin/python"
+    )
+    monkeypatch.setattr(calib_mod.calibration, "python", "/venv/bin/python")
+    so.reset_cache()
+
+    status = aadc_check.aadc_status()  # no path given: must find the configured one
+    assert status["available"] is True
+    assert status["in_analysis_python"] is True
+
+
+def test_the_gate_falls_back_to_in_app_when_no_interpreter_is_configured(client, monkeypatch):
+    import calibration as calib_mod
+
+    monkeypatch.setattr(aadc_check, "_importable", lambda module="aadc": True)
+    monkeypatch.setattr(aadc_check, "_importable_in", lambda p, module="aadc": None)
+    monkeypatch.setattr(calib_mod.calibration, "python", None)
+    assert aadc_check.aadc_status()["available"] is True

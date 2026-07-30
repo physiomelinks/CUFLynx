@@ -202,6 +202,14 @@ watch(pythonPath, async (p) => {
     // settled on and whether a launcher resolves for it, so the MPI/Cores
     // chips reflect the new pick instead of the one loaded at startup.
     applyConfigPayload(await setConfig({ pythonPath: p }))
+    // Re-read the interpreters too: the list includes the configured one, so a
+    // browsed venv only gains its version / readiness / MPI status once it has
+    // been probed as the current choice (#122 follow-up).
+    try {
+      calibPythons.value = (await getCalibrationPythons()).pythons ?? []
+    } catch {
+      /* keep the list we have; the chips just stay as they were */
+    }
   } catch {
     /* keep the in-session choice even if persisting fails */
   }

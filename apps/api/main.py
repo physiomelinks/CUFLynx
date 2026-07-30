@@ -33,7 +33,12 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from calibration import calibration, list_python_interpreters, resolve_mpiexec
+from calibration import (
+    calibration,
+    list_python_interpreters,
+    reset_python_cache,
+    resolve_mpiexec,
+)
 from cellml_flatten import (
     CellMLFlattenError,
     flatten_cellml,
@@ -232,10 +237,18 @@ def _set_analysis_python(path: str) -> None:
     All three spawn a runner script the same way, so they share one interpreter
     choice; keeping them in lockstep here avoids a per-manager setting the UI
     would have to expose three times.
+
+    Both caches are invalidated afterwards, because both answers depend on which
+    interpreter this is: the interpreter list now always includes (and probes)
+    the configured one, and the model formats include aadc_python only when AADC
+    is importable *there*. Leaving either cached meant switching interpreters
+    changed nothing visible until a restart.
     """
     calibration.python = path
     sensitivity.python = path
     uq.python = path
+    reset_python_cache()
+    reset_solver_options()
 
 
 def _restore_persisted_settings() -> None:
