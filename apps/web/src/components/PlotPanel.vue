@@ -247,7 +247,7 @@ defineExpose({
 </script>
 
 <template>
-  <section class="plot-panel">
+  <section class="plot-panel" :class="{ maximized }" data-testid="plot-panel">
     <div v-if="tag || title || removable || maximizable" class="plot-head">
       <span v-if="tag" class="plot-tag" data-testid="plot-tag">{{ tag }}</span>
       <h3
@@ -580,10 +580,28 @@ defineExpose({
 .plot-remove:hover {
   opacity: 1;
 }
+/* The plot area is a fixed height, not flex:1 (issue #146).
+ *
+ * The cell has no definite height, so a flex:1 chart resolved against content:
+ * anything that changed the legend's height changed the plot's. Ticking a saved
+ * run adds a legend row, which grew the cell — and Chart.js with
+ * maintainAspectRatio:false enlarges its canvas to fill but never shrinks it
+ * back, so unticking left the plot permanently taller than it started.
+ *
+ * Pinning the plot area means the legend adds only its own height: the plot is
+ * its original size plus whatever the legend needs, and the canvas is never
+ * asked to shrink. */
 .chart-wrap {
   position: relative;
-  flex: 1;
+  flex: 0 0 var(--plot-chart-height, 220px);
+  height: var(--plot-chart-height, 220px);
   min-height: 160px;
+}
+/* Maximized, the cell *does* have a definite height (100% of the window), so the
+   plot area goes back to filling whatever the legend leaves. */
+.plot-panel.maximized .chart-wrap {
+  flex: 1 1 auto;
+  height: auto;
 }
 .legend {
   list-style: none;

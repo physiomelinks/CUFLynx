@@ -565,3 +565,46 @@ describe('PlotPanel', () => {
     expect(restored).not.toBe(maximized)
   })
 })
+
+// Issue #146: ticking a saved run adds a legend row. That used to grow the cell,
+// and Chart.js (maintainAspectRatio:false) enlarges its canvas to fill but never
+// shrinks it back — so unticking left the plot permanently taller.
+describe('plot height across legend changes', () => {
+  const withSaved = (savedSeries) =>
+    mount(PlotPanel, {
+      props: { simResult, title: 'x', savedSeries },
+      global: { stubs },
+    })
+
+  it('a saved overlay adds a legend entry', () => {
+    const before = withSaved([]).findAll('.legend-item').length
+    const after = withSaved([
+      { prefix: 'run_a', color: '#7f7f7f', time: [0, 1, 2], values: [4, 5, 6] },
+    ]).findAll('.legend-item').length
+    expect(after).toBe(before + 1)
+  })
+
+  // The plot area is pinned in CSS so the legend can only move itself; the class
+  // is what switches that off when the cell does have a definite height.
+  it('only takes the flexible plot area when maximized', async () => {
+    const wrapper = mount(PlotPanel, {
+      props: { simResult, title: 'x', maximizable: true, maximized: false },
+      global: { stubs },
+    })
+    expect(wrapper.find('[data-testid="plot-panel"]').classes()).not.toContain('maximized')
+    await wrapper.setProps({ maximized: true })
+    expect(wrapper.find('[data-testid="plot-panel"]').classes()).toContain('maximized')
+  })
+
+  it('keeps the chart wrapper a single element as the legend changes', () => {
+    // Remounting the canvas on a legend change would reset zoom/state; only the
+    // maximize toggle is allowed to do that.
+    const wrapper = withSaved([])
+    const uid = () => wrapper.findComponent({ name: 'Line' }).vm.$.uid
+    const before = uid()
+    wrapper.setProps({
+      savedSeries: [{ prefix: 'r', color: '#000', time: [0], values: [1] }],
+    })
+    expect(uid()).toBe(before)
+  })
+})
