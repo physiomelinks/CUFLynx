@@ -115,3 +115,43 @@ def test_simulate_different_alpha_gives_different_lv_traces(client, requires_sim
 
     low, high = max_x(2.0), max_x(6.0)
     assert abs(high - low) / abs(low) > 0.01
+
+
+# Issue #150: saving a run asks for every plottable variable so it can answer a
+# plot added later. Some variables the CellML parser classifies as algebraic are
+# not resolvable outputs in the solver, and failing the whole request for one of
+# those turned the wider save into no save at all.
+@pytest.mark.integration
+def test_best_effort_outputs_skips_what_the_solver_cannot_resolve(
+    client, requires_simulation
+):
+    from conftest import RESOURCES_DIR
+
+    model_id = upload_model(client, RESOURCES_DIR / "3compartment_flat.cellml")["model_id"]
+    variables = client.get(f"/api/models/{model_id}/variables").json()
+    every = variables["odes"] + variables["algebraic"]
+
+    body = {
+        "model_id": model_id,
+        "params": {},
+        "sim_time": 2.0,
+        "pre_time": 10.0,
+        "outputs": every,
+    }
+    # Strict (the default) still fails loudly: a typo in an explicit request is a
+    # mistake worth reporting.
+    assert client.post("/api/simulate", json=body).status_code == 422
+
+    resp = client.post("/api/simulate", json={**body, "best_effort_outputs": True})
+    assert resp.status_code == 200, resp.text
+    got = resp.json()["outputs"]
+    assert 0 < len(got) < len(every)  # most of them, not all, and not a failure
+
+
+def test_best_effort_is_off_by_default(client, fake_helper):
+    """An explicit output list keeps its strict validation."""
+    model_id = upload_model(client, LV_MODEL_PATH)["model_id"]
+    resp = client.post(
+        "/api/simulate", json={"model_id": model_id, "params": {}, "sim_time": 1}
+    )
+    assert resp.status_code == 200

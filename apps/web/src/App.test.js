@@ -817,12 +817,72 @@ describe('App.vue saved-run overlays (#126)', () => {
 
   it('saves the traces alongside the parameters', async () => {
     const wrapper = await mountWithResult()
+    wrapper.vm.model.modelId.value = 'model-1'
+    simulate.mockResolvedValue({ time: [0, 1, 2], outputs: { 'm/x': [1, 2, 3] } })
     await wrapper.vm.onSaveParams({ filename: 'run_a.npy' })
     await flushPromises()
 
     const [, , filename, , result] = saveParams.mock.calls.at(-1)
     expect(filename).toBe('run_a.npy')
     expect(result.outputs['m/x']).toEqual([1, 2, 3])
+  })
+
+  // Issue #148: the displayed run only holds what was on screen, so a saved run
+  // built from it has nothing to show on a plot added afterwards.
+  describe('covering plots that do not exist yet', () => {
+    const ALL_VARS = { params: [], odes: ['m/x'], algebraic: ['m/y'], all_names: [] }
+
+    const mountForSave = async () => {
+      const wrapper = shallowMount(App)
+      await flushPromises()
+      wrapper.vm.model.modelId.value = 'model-1'
+      wrapper.vm.model.variables.value = { ...ALL_VARS }
+      // On screen: states only, which is what a live run asks for.
+      wrapper.vm.sim.setResult({ time: [0, 1], outputs: { 'm/x': [1, 2] } })
+      await nextTick()
+      return wrapper
+    }
+
+    it('re-runs asking for every plottable variable', async () => {
+      const wrapper = await mountForSave()
+      simulate.mockClear()
+      simulate.mockResolvedValue({
+        time: [0, 1],
+        outputs: { 'm/x': [1, 2], 'm/y': [3, 4] },
+      })
+
+      await wrapper.vm.onSaveParams({ filename: 'run_a.npy' })
+      await flushPromises()
+
+      expect(simulate).toHaveBeenCalledTimes(1)
+      expect(simulate.mock.calls[0][2].outputs).toEqual(
+        expect.arrayContaining(['m/x', 'm/y']),
+      )
+      // ...and the algebraic variable, absent from the displayed run, is saved.
+      expect(saveParams.mock.calls.at(-1)[4].outputs['m/y']).toEqual([3, 4])
+    })
+
+    // A solver failure while widening the outputs must not cost the save.
+    it('falls back to the displayed run when the wider run fails', async () => {
+      const wrapper = await mountForSave()
+      simulate.mockRejectedValue(new Error('solver failed'))
+
+      await wrapper.vm.onSaveParams({ filename: 'run_a.npy' })
+      await flushPromises()
+
+      expect(saveParams).toHaveBeenCalled()
+      expect(saveParams.mock.calls.at(-1)[4].outputs['m/x']).toEqual([1, 2])
+    })
+
+    it('saves the displayed run when no model is loaded', async () => {
+      const wrapper = shallowMount(App)
+      await flushPromises()
+      wrapper.vm.sim.setResult({ time: [0], outputs: { 'm/x': [1] } })
+      simulate.mockClear()
+      await wrapper.vm.onSaveParams({ filename: 'run_a.npy' })
+      await flushPromises()
+      expect(simulate).not.toHaveBeenCalled()
+    })
   })
 
   it('saves a protocol run as its experiments, not a flattened trace', async () => {

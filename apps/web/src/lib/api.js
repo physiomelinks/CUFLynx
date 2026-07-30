@@ -117,6 +117,9 @@ export async function simulate(modelId, params, options = {}) {
   // Locates the user's custom operation funcs so a data_item's series_output
   // overlay can be computed (issue #111).
   if (options.outputsDir) body.config_outputs_dir = options.outputsDir
+  // "Everything you can" rather than a specific list: unresolvable names are
+  // skipped instead of failing the run (#150).
+  if (options.bestEffortOutputs) body.best_effort_outputs = true
   const { data } = await axios.post(url('/api/simulate'), body)
   return data
 }

@@ -565,10 +565,10 @@ function extraCellsFor(groupKey, time, outputs, expIdx = null) {
     extraPlots.value, groupKey, time, outputs, modelUnits.value,
   ).map((cell) => ({
     // Single-variable cells, so each takes the shown runs' trace for its own
-    // variable (#126). A phase-plane cell's overlays are dropped downstream —
-    // a saved run has no counterpart for the x variable.
+    // variable (#126). A phase-plane cell also asks for the run's own x series,
+    // so it is drawn against that rather than dropped (#150).
     ...cell,
-    savedSeries: savedRuns.seriesFor(cell.qname, expIdx),
+    savedSeries: savedRuns.seriesFor(cell.qname, expIdx, cell.xqname),
   }))
 }
 
@@ -929,6 +929,30 @@ const savedParamsStart = computed(
 // Saved runs available to overlay on the plots (issue #126).
 const savedRuns = useSavedRuns()
 
+/**
+ * The traces to store with a saved parameter set (#148).
+ *
+ * The displayed run only holds the variables that were on screen when it ran, so
+ * a saved run built from it has nothing to show on a plot added later — which is
+ * exactly what the user hits: overlays appear on the original plots and not on
+ * new ones. Re-run once at save time asking for every plottable variable, so the
+ * saved run can answer any plot.
+ *
+ * Falls back to the displayed run if that fails: a solver failure while widening
+ * the outputs must not cost the user the save they asked for.
+ */
+async function savedRunResult() {
+  const onScreen = sim.experiments.value.length
+    ? { experiments: sim.experiments.value }
+    : sim.result.value
+  if (!model.hasModel.value) return onScreen
+  try {
+    return await runWithParams(sliders.paramDict.value, { allOutputs: true })
+  } catch {
+    return onScreen
+  }
+}
+
 // "Save current" -> name+format dialog -> write the file (npy in the slider order,
 // or a self-describing csv) under the output directory, plus the traces those
 // values produced under the same prefix (#126).
@@ -939,10 +963,7 @@ async function onSaveParams({ filename }) {
       sliders.order.value,
       filename,
       outputsDir.value.trim(),
-      // Whatever is on screen: a protocol run's experiments, or a single run.
-      sim.experiments.value.length
-        ? { experiments: sim.experiments.value }
-        : sim.result.value,
+      await savedRunResult(),
     )
     if (path) {
       lastSavedParamsPath.value = path
@@ -1046,12 +1067,23 @@ function scheduleRun() {
  * is produced exactly the way the live trace is — same outputs, same protocol
  * vs single-run choice — instead of by a second, drifting copy of these rules.
  */
-async function runWithParams(params) {
+async function runWithParams(params, { allOutputs = false } = {}) {
+  // Asking for every plottable variable means asking for some the solver cannot
+  // resolve -- the CellML parser classifies variables the engine has no output
+  // for (3compartment's pvn_module.R_v among them). Strict validation then
+  // failed the whole request, so the wider save silently fell back to the
+  // on-screen run and only one saved run ever covered an added plot (#150).
+  const best = allOutputs ? { bestEffortOutputs: true } : {}
+  // `allOutputs` widens the request to every plottable variable. A live run asks
+  // only for what is on screen, because every slider drag pays for it — but a
+  // saved run has to answer plots that do not exist yet (#148).
+  const everything = allOutputs ? plottableVariables.value : []
   if (obs.hasProtocol.value) {
     const outputs = [
       ...new Set([
         ...obs.plotVariables.value.map((v) => v.qname),
         ...extraOutputNames.value,
+        ...everything,
       ]),
     ]
     const data = await runProtocol(model.modelId.value, params, {
@@ -1065,18 +1097,24 @@ async function runWithParams(params) {
       ...new Set([
         ...obs.plotVariables.value.map((v) => v.qname),
         ...extraOutputNames.value,
+        ...everything,
       ]),
     ]
     const data = await simulate(model.modelId.value, params, {
       outputs,
       outputsDir: outputsDir.value.trim() || undefined,
+      ...best,
     })
     return { time: data.time, outputs: data.outputs }
   }
-  const opts = { simTime: simTime.value, preTime: preTime.value }
-  if (extraOutputNames.value.length) {
+  const opts = { simTime: simTime.value, preTime: preTime.value, ...best }
+  if (extraOutputNames.value.length || everything.length) {
     opts.outputs = [
-      ...new Set([...model.defaultOutputs.value, ...extraOutputNames.value]),
+      ...new Set([
+        ...model.defaultOutputs.value,
+        ...extraOutputNames.value,
+        ...everything,
+      ]),
     ]
   }
   const data = await simulate(model.modelId.value, params, opts)
