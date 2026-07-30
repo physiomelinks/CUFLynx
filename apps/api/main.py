@@ -1058,7 +1058,12 @@ def simulate(req: SimulateRequest) -> dict:
     _validate_param_keys(req.params)
     outputs = req.outputs or record.meta.odes
     try:
-        model_path = resolve_model_path(str(record.path), engine.model_type, model_id=req.model_id)
+        # Resolve the path for the backend the *live* run will actually use: the
+        # engine falls back when the configured format cannot run in-process
+        # (#122), and a model generated for one backend is not readable by
+        # another -- a generated .py handed to Myokit fails as invalid XML.
+        live_type, _live_solver, _fell_back = engine.live_backend()
+        model_path = resolve_model_path(str(record.path), live_type, model_id=req.model_id)
         result = engine.simulate(
             model_id=req.model_id,
             model_path=model_path,
@@ -1103,7 +1108,8 @@ def protocol_run(req: ProtocolRunRequest) -> dict:
 
     outputs = req.outputs or (record.meta.odes + record.meta.algebraic)
     try:
-        model_path = resolve_model_path(str(record.path), engine.model_type, model_id=req.model_id)
+        live_type, _live_solver, _fell_back = engine.live_backend()
+        model_path = resolve_model_path(str(record.path), live_type, model_id=req.model_id)
         result = engine.run_protocol(
             model_id=req.model_id,
             model_path=model_path,

@@ -160,3 +160,60 @@ def test_other_solvers_ad_methods_are_untouched(client):
     casadi = opts["ad_suitable_methods"].get("casadi_integrator")
     if casadi:
         assert "collocation" in casadi or "bdf" in casadi
+
+
+# Reported after picking aadc_python: every live simulation failed, including
+# the first one after a restart, because the choice is persisted. The app was
+# unusable on open until the format was changed back by hand.
+def test_a_backend_this_process_cannot_run_falls_back_for_live_plots(monkeypatch):
+    import engine as engine_mod
+
+    monkeypatch.setattr(engine_mod, "backend_importable", lambda fmt: fmt != "aadc_python")
+    eng = engine_mod.SimulationEngine()
+    eng.model_type, eng.solver = "aadc_python", "aadc_semi_implicit"
+
+    model_type, solver, fell_back = eng.live_backend()
+    assert model_type != "aadc_python"
+    assert solver != "aadc_semi_implicit"
+    # Named, so the caller can tell the user rather than quietly substituting.
+    assert fell_back == "aadc_python"
+
+
+def test_a_runnable_backend_is_left_alone(monkeypatch):
+    import engine as engine_mod
+
+    monkeypatch.setattr(engine_mod, "backend_importable", lambda fmt: True)
+    eng = engine_mod.SimulationEngine()
+    eng.model_type, eng.solver = "casadi_python", "casadi_integrator"
+    assert eng.live_backend() == ("casadi_python", "casadi_integrator", None)
+
+
+def test_nothing_importable_keeps_the_configured_choice(monkeypatch):
+    """So the failure names the real problem rather than a substitute we also
+    cannot run."""
+    import engine as engine_mod
+
+    monkeypatch.setattr(engine_mod, "backend_importable", lambda fmt: False)
+    eng = engine_mod.SimulationEngine()
+    eng.model_type, eng.solver = "aadc_python", "aadc_semi_implicit"
+    assert eng.live_backend() == ("aadc_python", "aadc_semi_implicit", None)
+
+
+def test_the_helper_cache_is_keyed_on_the_backend_actually_used(client, fake_helper, monkeypatch):
+    """Falling back must not hand back a helper compiled for the format we could
+    not run."""
+    import engine as engine_mod
+
+    assert isinstance(engine_mod.engine._helpers, dict)
+    # Keys are (model_id, model_type, solver) tuples, not bare model ids.
+    eng = engine_mod.SimulationEngine()
+    eng._helpers[("m", "cellml_only", "CVODE_myokit")] = object()
+    assert ("m", "cellml_only", "CVODE_myokit") in eng._helpers
+
+
+def test_backend_importable_does_not_import_the_library():
+    """Probing must not pull a heavy or licensed library into the API process."""
+    import engine as engine_mod
+
+    assert engine_mod.backend_importable("python") is True
+    assert engine_mod.backend_importable("no_such_format") is True  # unknown: assume fine

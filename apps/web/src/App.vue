@@ -1006,6 +1006,21 @@ async function savedRunResult() {
   }
 }
 
+// When the configured model format cannot run in this process (its library is
+// only in the analysis interpreter), live plots fall back to one that can. The
+// analysis runs still use the chosen format, so the difference has to be
+// visible rather than silently shown as if it were the configured backend.
+const backendFallback = ref(null)
+const backendFallbackNotice = computed(() => {
+  const f = backendFallback.value
+  if (!f) return ''
+  return (
+    `Live plots are using ${f.used} (${f.solver}): ${f.requested} needs a library ` +
+    `that is not installed in the app’s own Python. Calibration / sensitivity / UQ ` +
+    `still use ${f.requested}.`
+  )
+})
+
 // Shared y-axis width so the plots in the window line up (#145). Only cells with
 // a time x axis take part: a phase-plane cell's x is another variable, so
 // aligning it against time plots would line up unrelated axes.
@@ -1207,6 +1222,7 @@ async function runSimulation() {
         outputs,
         outputsDir: outputsDir.value.trim() || undefined,
       })
+      backendFallback.value = data.backend_fallback ?? null
       sim.setExperiments(data.experiments, data.warnings, performance.now() - started)
     } else if (obs.hasObsData.value) {
       // Data-only obs_data: overlays only, no protocol. The manual t1/pre are
@@ -1222,6 +1238,7 @@ async function runSimulation() {
         outputs,
         outputsDir: outputsDir.value.trim() || undefined,
       })
+      backendFallback.value = data.backend_fallback ?? null
       sim.setResult(data, performance.now() - started)
     } else {
       // No obs_data: manual t1/pre drive the single run. Default outputs are the
@@ -1233,6 +1250,7 @@ async function runSimulation() {
         ]
       }
       const data = await simulate(model.modelId.value, sliders.paramDict.value, opts)
+      backendFallback.value = data.backend_fallback ?? null
       sim.setResult(data, performance.now() - started)
     }
   } catch (e) {
@@ -1722,6 +1740,7 @@ watch(
           :status="sim.status.value"
           :message="sim.message.value"
           :last-run-ms="sim.lastRunMs.value"
+          :notice="backendFallbackNotice"
         />
       </section>
 

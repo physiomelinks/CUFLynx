@@ -6,6 +6,10 @@ defineProps({
   status: { type: String, default: 'idle' },
   message: { type: String, default: '' },
   lastRunMs: { type: Number, default: null },
+  // A standing caveat about the run rather than a failure — e.g. live plots
+  // falling back to a backend this process can actually run (#122). Shown
+  // alongside the status, not instead of it: the run did succeed.
+  notice: { type: String, default: '' },
 })
 </script>
 
@@ -35,6 +39,15 @@ defineProps({
       {{ message }}
     </Message>
     <span v-else class="idle">Ready</span>
+    <Message
+      v-if="notice"
+      severity="warn"
+      :closable="false"
+      class="status-notice"
+      data-testid="status-notice"
+    >
+      {{ notice }}
+    </Message>
   </footer>
 </template>
 
@@ -50,6 +63,11 @@ defineProps({
 /* A multi-line failure must stay readable: keep its breaks, let it wrap rather
    than stretch the bar, and cap the height so a long solver dump can't push the
    plots off screen. */
+.status-notice {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.78rem;
+}
 .status-error {
   flex: 1;
   min-width: 0;
