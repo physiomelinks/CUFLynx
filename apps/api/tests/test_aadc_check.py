@@ -122,3 +122,41 @@ def test_the_gate_falls_back_to_in_app_when_no_interpreter_is_configured(client,
     monkeypatch.setattr(aadc_check, "_importable_in", lambda p, module="aadc": None)
     monkeypatch.setattr(calib_mod.calibration, "python", None)
     assert aadc_check.aadc_status()["available"] is True
+
+
+# Found by running 3compartment with aadc_python + AD: calibration failed with
+# "solver method 'adaptive_rk45' cannot be recorded on an AADC tape". CA lists
+# adaptive_rk45 first, so that is what CUFLynx defaulted to -- a default the AD
+# path can never use.
+def test_aadc_ad_methods_are_limited_to_what_the_tape_can_record(client):
+    opts = so.get_solver_options()
+    methods = opts["methods_by_solver"].get("aadc_semi_implicit")
+    if not methods:
+        return  # CA without AADC support; nothing to constrain
+    try:
+        from param_id.aadc_backend import TAPE_CONSISTENT_METHODS
+    except Exception:  # pragma: no cover - older CA
+        return
+    suitable = opts["ad_suitable_methods"].get("aadc_semi_implicit")
+    assert suitable, "AADC advertises no AD-suitable methods"
+    assert set(suitable) <= set(TAPE_CONSISTENT_METHODS)
+    # An adaptive integrator picks its steps from the state, so the recorded
+    # operation sequence does not replay -- it must never be offered for AD.
+    assert "adaptive_rk45" not in suitable
+
+
+def test_the_aadc_default_method_is_one_the_tape_can_record(client):
+    opts = so.get_solver_options()
+    if not opts["methods_by_solver"].get("aadc_semi_implicit"):
+        return
+    default = opts["default_method_by_solver"].get("aadc_semi_implicit")
+    suitable = opts["ad_suitable_methods"].get("aadc_semi_implicit") or []
+    assert default in suitable, "the default method cannot be used with AD"
+
+
+def test_other_solvers_ad_methods_are_untouched(client):
+    """The constraint is AADC's; nothing else should be narrowed by it."""
+    opts = so.get_solver_options()
+    casadi = opts["ad_suitable_methods"].get("casadi_integrator")
+    if casadi:
+        assert "collocation" in casadi or "bdf" in casadi
