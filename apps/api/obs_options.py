@@ -31,6 +31,24 @@ FALLBACK_OPERATIONS = [
     "multiplication",
     "division",
 ]
+# Operand arity for the operations FALLBACK_OPERATIONS lists, used when CA can't
+# be introspected. The fallback already carries its own copy of the operation
+# *names* for exactly that case, so their arity belongs with them -- otherwise a
+# CA-less install silently loses the operand-count feature (#147) and every
+# editor row goes back to being hand-managed.
+#
+# "" (no operation chosen) is deliberately absent: with no operation there is no
+# arity to enforce, and the editor treats a missing entry as "manage by hand".
+FALLBACK_OPERATION_OPERANDS = {
+    "max": {"count": 1, "names": ["x"], "variadic": False},
+    "min": {"count": 1, "names": ["x"], "variadic": False},
+    "mean": {"count": 1, "names": ["x"], "variadic": False},
+    "max_minus_min": {"count": 1, "names": ["x"], "variadic": False},
+    "addition": {"count": 2, "names": ["x1", "x2"], "variadic": False},
+    "subtraction": {"count": 2, "names": ["x1", "x2"], "variadic": False},
+    "multiplication": {"count": 2, "names": ["x1", "x2"], "variadic": False},
+    "division": {"count": 2, "names": ["x1", "x2"], "variadic": False},
+}
 FALLBACK_COST_TYPES = ["MSE", "AE", "gaussian_MLE"]
 # Accessor/helper names that CA's cost-func registry may enumerate but which are
 # not selectable cost functions.
@@ -334,6 +352,7 @@ def get_obs_data_options(refresh: bool = False, output_dir: str | None = None) -
             "cost_func_metadata": {},
             "differentiable_operations": {},
             "operation_kwargs_schema": {},
+            "operation_operands": {k: dict(v) for k, v in FALLBACK_OPERATION_OPERANDS.items()},
             "data_types": list(FALLBACK_DATA_TYPES),
             "plot_types": list(FALLBACK_PLOT_TYPES),
         }

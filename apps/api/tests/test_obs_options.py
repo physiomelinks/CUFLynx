@@ -177,3 +177,25 @@ def test_operation_operands_marks_a_variadic_operation(client):
     for entry in opts["operation_operands"].values():
         assert isinstance(entry["variadic"], bool)
         assert entry["count"] == len(entry["names"])
+
+
+def test_the_fallback_covers_every_operation_it_offers(client, monkeypatch):
+    """CI and a CA-less install take the fallback path, where the operand counts
+    must still be there -- otherwise the editor silently loses the feature.
+
+    Also pins the two lists together: an operation added to FALLBACK_OPERATIONS
+    without its arity would leave that row hand-managed for no visible reason.
+    """
+    import obs_options as oo
+
+    monkeypatch.setattr(oo, "_introspect", lambda *a, **k: (_ for _ in ()).throw(ImportError))
+    oo.reset_cache()
+    try:
+        opts = client.get("/api/obs_data/options").json()
+        spec = opts["operation_operands"]
+        assert spec["max"]["count"] == 1
+        assert spec["division"]["count"] == 2
+        offered = {op for op in opts["operations"] if op}
+        assert offered == set(spec), "FALLBACK_OPERATIONS and its arities have drifted"
+    finally:
+        oo.reset_cache()
