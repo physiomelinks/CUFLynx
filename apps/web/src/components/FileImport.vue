@@ -472,9 +472,10 @@ async function onParamsDrop(event) {
   border-style: solid;
   background: color-mix(in srgb, var(--p-primary-color, #5b9bd5) 12%, transparent);
 }
-/* Loaded: the zone has said what it needed to say. It shrinks to one line naming
-   the file, and stops claiming the row so the Edit button -- now the useful
-   control -- takes the space (#137). */
+/* Loaded: the zone has said what it needed to say, so it shrinks to one line
+   naming the file (#137). The Edit button beside it keeps its own size -- the
+   shrunken box is the improvement, and stretching the button to fill the row
+   just made it a different odd shape. */
 .dropzone.compact {
   flex: 0 1 auto;
   padding: 0.35rem 0.6rem;
@@ -493,10 +494,6 @@ async function onParamsDrop(event) {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-/* Beside a compact zone the button is the main affordance, so let it grow. */
-.params-row .dropzone.compact + .params-edit-btn {
-  flex: 1 1 auto;
 }
 .params-row {
   display: flex;
