@@ -1027,3 +1027,67 @@ describe('App.vue best-fit overlay (#126)', () => {
     expect(wrapper.vm.savedRuns.items.value[0].params).toEqual({ 'm/alpha': 12 })
   })
 })
+
+// Issue #145: plots in a window should share a y-axis width so they line up.
+describe('App.vue shared plot alignment (#145)', () => {
+  const VARS = { params: [], odes: ['m/x', 'm/y'], algebraic: [], all_names: [] }
+
+  const mountWithPlots = async () => {
+    listSavedRuns.mockResolvedValue({ runs: [] })
+    const wrapper = shallowMount(App)
+    await flushPromises()
+    wrapper.vm.model.variables.value = { ...VARS }
+    wrapper.vm.sim.setResult({
+      time: [0, 1],
+      outputs: { 'm/x': [1, 2], 'm/y': [3, 4] },
+    })
+    await nextTick()
+    return wrapper
+  }
+
+  it('shares the widest reported width across the window', async () => {
+    const wrapper = await mountWithPlots()
+    wrapper.vm.axisAlign.report('single', 47)
+    wrapper.vm.axisAlign.report('other', 62)
+    await nextTick()
+    expect(wrapper.vm.sharedAxisWidth).toBe(62)
+  })
+
+  // A maximized plot is alone in the window: nothing to line it up with, and
+  // forcing the shared width on it would only waste margin.
+  it('aligns nothing while a plot is maximized', async () => {
+    const wrapper = await mountWithPlots()
+    wrapper.vm.axisAlign.report('single', 62)
+    await nextTick()
+    expect(wrapper.vm.sharedAxisWidth).toBe(62)
+
+    wrapper.vm.toggleMaximizePlot('single')
+    await nextTick()
+    expect(wrapper.vm.sharedAxisWidth).toBe(0)
+  })
+
+  // A phase-plane cell's x is another variable, so aligning it against time
+  // plots would line up axes that have nothing to do with each other.
+  it('excludes phase-plane cells', async () => {
+    const wrapper = await mountWithPlots()
+    expect(wrapper.vm.alignsWithTime({ key: 'a' })).toBe(true)
+    expect(wrapper.vm.alignsWithTime({ key: 'b', xLabel: 'm/y' })).toBe(false)
+
+    wrapper.vm.onAxisWidth({ key: 'b', xLabel: 'm/y' }, 99)
+    await nextTick()
+    expect(wrapper.vm.sharedAxisWidth).toBe(0)
+  })
+
+  it('forgets a plot that has gone, so it stops padding the rest', async () => {
+    const wrapper = await mountWithPlots()
+    wrapper.vm.axisAlign.report('single', 40)
+    wrapper.vm.axisAlign.report('removed-cell', 90)
+    await nextTick()
+    expect(wrapper.vm.sharedAxisWidth).toBe(90)
+
+    // The pruning watch fires on the set of live cell keys.
+    wrapper.vm.sim.setResult({ time: [0, 1], outputs: { 'm/x': [1, 2] } })
+    await nextTick()
+    expect(wrapper.vm.axisAlign.widths['removed-cell']).toBeUndefined()
+  })
+})

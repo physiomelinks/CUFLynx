@@ -54,6 +54,7 @@ import SaveParamsDialog from './components/SaveParamsDialog.vue'
 import { requestNotificationPermission } from './lib/notify'
 import { useRunNotifications } from './stores/useRunNotifications'
 import { useSavedRuns } from './stores/useSavedRuns'
+import { useAxisAlign } from './stores/useAxisAlign'
 import {
   solversForFormat,
   defaultSolverFor,
@@ -953,6 +954,20 @@ async function savedRunResult() {
   }
 }
 
+// Shared y-axis width so the plots in the window line up (#145). Only cells with
+// a time x axis take part: a phase-plane cell's x is another variable, so
+// aligning it against time plots would line up unrelated axes.
+const axisAlign = useAxisAlign()
+const alignsWithTime = (cell) => !cell.xLabel
+function onAxisWidth(cell, width) {
+  if (alignsWithTime(cell)) axisAlign.report(cell.key, width)
+}
+// A maximized plot is alone in the window, so there is nothing to line it up
+// with — and forcing the shared width on it would waste margin.
+const sharedAxisWidth = computed(() =>
+  effectiveMaximized.value ? 0 : axisAlign.maxWidth.value,
+)
+
 // "Save current" -> name+format dialog -> write the file (npy in the slider order,
 // or a self-describing csv) under the output directory, plus the traces those
 // values produced under the same prefix (#126).
@@ -1271,6 +1286,18 @@ const plotGroups = computed(() => {
   return []
 })
 
+// Drop widths for cells that are gone: a removed plot must not go on holding the
+// maximum and padding everything else out to a width nothing needs any more.
+watch(
+  () => plotGroups.value.flatMap((g) => g.cells.map((c) => c.key)),
+  (keys) => {
+    const alive = new Set(keys)
+    for (const key of Object.keys(axisAlign.widths)) {
+      if (!alive.has(key)) axisAlign.forget(key)
+    }
+  },
+)
+
 watch(
   () => ({ ...sliders.paramDict.value, _t: simTime.value, _p: preTime.value }),
   scheduleRun,
@@ -1583,6 +1610,8 @@ watch(
                 :saved-series="cell.savedSeries ?? []"
                 :removable="!!cell.removeId"
                 :switchable="!!cell.xLabel"
+                :align-width="alignsWithTime(cell) ? sharedAxisWidth : 0"
+                @axis-width="(w) => onAxisWidth(cell, w)"
                 maximizable
                 :maximized="effectiveMaximized === cell.key"
                 @toggle-maximize="toggleMaximizePlot(cell.key)"
