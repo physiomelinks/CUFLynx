@@ -53,6 +53,7 @@ from aadc_check import aadc_status
 from version import __version__
 from compiler_check import compiler_status
 from engine import SimulationError, engine, _circulatory_autogen_src
+from local_sensitivity import local_gradient_sources
 import export_pipeline
 from model_codegen import resolve_model_path, reset_cache as reset_codegen
 from obs_data import ObsData, ObsDataError, parse_obs_data
@@ -344,6 +345,16 @@ def _config_payload() -> dict:
         # in the list rather than dropping them on the coarse whole-registry flag.
         # ...and the per-integrator suitability gate IS applied here (the selected
         # integrator is known): AD/FSA drop out for an unsuitable integrator (#298).
+        # Local sensitivity implements its own gradients, and its AD path is
+        # CasADi-specific -- so the calibration list above is not the right menu
+        # for it. Offering AD for a backend whose AD this path cannot do meant
+        # the run started and then refused (#122).
+        "local_gradient_sources": local_gradient_sources(
+            gradient_sources(
+                engine.model_type, engine.solver, True, engine.solver_info.get("method"),
+            ),
+            engine.model_type,
+        ),
         "gradient_sources": gradient_sources(
             engine.model_type, engine.solver, True, engine.solver_info.get("method"),
         ),

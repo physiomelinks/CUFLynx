@@ -289,6 +289,13 @@ const adAvailable = computed(
 // Gradient sources (FD / AD / FSA) for the current model, from /api/config; the
 // calibration panel's gradient menu is populated from this, not hardcoded.
 const gradientSources = computed(() => solverOpts.value.gradient_sources ?? [])
+// Local sensitivity implements its own gradients — its AD path is CasADi-specific
+// — so it gets a list narrowed to what that path can actually do, rather than
+// the calibration list, which legitimately includes backends (AADC) whose AD
+// only calibration can use.
+const localGradientSources = computed(
+  () => solverOpts.value.local_gradient_sources ?? gradientSources.value,
+)
 
 // Some integrators can't produce their backend's analytic gradient — CasADi AD
 // fails with the SUNDIALS adjoint integrators (cvodes/idas); Myokit FSA needs the
@@ -1540,7 +1547,7 @@ watch(
             :can-run="canCalibrate"
             :mpiexec-available="mpiexecAvailable"
             :ad-available="adAvailable"
-            :gradient-sources="gradientSources"
+            :gradient-sources="localGradientSources"
             :lines="sa.lines.value"
             :state="sa.state.value"
             :error="sa.error.value"

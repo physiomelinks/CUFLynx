@@ -175,3 +175,54 @@ def test_evaluate_features_substitutes_a_kwarg_naming_an_earlier_feature():
     out = ls._evaluate_features(sm, np.array([1.0]), {"scaled_max": _scaled_max})
     assert out[0] == pytest.approx(3.0)        # base = max = 3
     assert out[1] == pytest.approx(9.0)        # factor <- 3  => 3 * 3
+
+
+# Reported running local SA with AADC + AD: the option was offered, the run
+# started, and then refused. CA does offer AD for aadc_python -- but that is a
+# tape, and this module's AD builds a CasADi SX jacobian, so only casadi_python
+# works here.
+def test_local_ad_is_offered_only_where_this_path_implements_it():
+    from local_sensitivity import local_gradient_sources
+
+    sources = [
+        {"value": "FD", "label": "Finite difference"},
+        {"value": "AD", "label": "Automatic differentiation (AADC)"},
+    ]
+    offered = {s["value"]: s for s in local_gradient_sources(sources, "aadc_python")}
+    assert offered["FD"]["disabled_here"] is False
+    assert offered["AD"]["disabled_here"] is True
+    # Says why, and names the format that would work.
+    assert "casadi_python" in offered["AD"]["reason"]
+
+
+def test_local_ad_is_offered_for_casadi():
+    from local_sensitivity import local_gradient_sources
+
+    sources = [{"value": "AD", "label": "Automatic differentiation (CasADi)"}]
+    assert local_gradient_sources(sources, "casadi_python")[0]["disabled_here"] is False
+
+
+def test_fd_works_on_every_backend():
+    """It only runs forward simulations, so nothing gates it."""
+    from local_sensitivity import local_gradient_sources
+
+    for fmt in ("aadc_python", "cellml_only", "python", "casadi_python"):
+        got = local_gradient_sources([{"value": "FD", "label": "FD"}], fmt)
+        assert got[0]["disabled_here"] is False
+
+
+def test_an_unsupported_source_is_marked_not_dropped():
+    """Dropping it would read as "this backend has no AD at all", which is wrong
+    -- calibration can use AADC's."""
+    from local_sensitivity import local_gradient_sources
+
+    got = local_gradient_sources([{"value": "AD", "label": "AD"}], "aadc_python")
+    assert len(got) == 1 and got[0]["value"] == "AD"
+
+
+def test_the_refusal_message_explains_the_distinction():
+    """The old message said AD "requires casadi_python", implying AADC has no AD."""
+    import local_sensitivity as ls
+
+    assert ls.LOCAL_GRADIENT_SUPPORT["AD"] == ("casadi_python",)
+    assert ls.LOCAL_GRADIENT_SUPPORT["FD"] is None
