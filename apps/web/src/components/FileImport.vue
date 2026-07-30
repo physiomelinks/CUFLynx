@@ -1,5 +1,5 @@
 <script setup>
-import { ref, watch } from 'vue'
+import { ref, computed, watch } from 'vue'
 import Message from 'primevue/message'
 import InputText from 'primevue/inputtext'
 import Button from 'primevue/button'
@@ -44,6 +44,23 @@ const outputsBrowserOpen = ref(false)
 const editParamsOpen = ref(false)
 const editObsOpen = ref(false)
 const startOpen = ref(false)
+
+// Drag feedback (#137): a dropzone highlights while a file is over it, so the
+// user can see the drop will land somewhere rather than guessing.
+const dragOver = ref('')
+function onDragEnter(zone) {
+  dragOver.value = zone
+}
+function onDragLeave(zone) {
+  if (dragOver.value === zone) dragOver.value = ''
+}
+
+// Once a file is in, the dropzone stops needing to explain itself: it shrinks to
+// a single line naming what is loaded, and the Edit button beside it -- now the
+// thing the user actually wants -- takes the space (#137).
+const cellmlLoaded = computed(() => !!props.modelId)
+const obsLoaded = computed(() => !!props.loadedObsFilename)
+const paramsLoaded = computed(() => !!props.loadedFilename)
 
 // The box beside the CellML dropzone: "Start" (no model yet) opens the Start
 // dialog to pick an example or link to PhLynx; "Edit" (a model is loaded) opens
@@ -239,12 +256,21 @@ async function onParamsDrop(event) {
     <div class="params-row">
       <label
         class="dropzone"
+        :class="{ compact: cellmlLoaded, 'drag-over': dragOver === 'cellml' }"
         data-testid="cellml-drop"
-        @dragover.prevent
-        @drop="onCellmlDrop"
+        @dragover.prevent="onDragEnter('cellml')"
+        @dragleave="onDragLeave('cellml')"
+        @drop="onDragLeave('cellml'); onCellmlDrop($event)"
       >
-        <i class="pi pi-file" /> Drop <strong>CellML</strong> (.cellml)
-        <small>one file, or a non-flattened model with its sister files</small>
+        <template v-if="cellmlLoaded">
+          <i class="pi pi-check" />
+          <span class="dz-loaded" data-testid="cellml-loaded">{{ modelName || 'CellML loaded' }}</span>
+          <small>drop another to replace</small>
+        </template>
+        <template v-else>
+          <i class="pi pi-file" /> Drop <strong>CellML</strong> (.cellml)
+          <small>one file, or a non-flattened model with its sister files</small>
+        </template>
         <input type="file" accept=".cellml,.xml" multiple @change="onCellmlDrop" />
       </label>
       <Button
@@ -265,12 +291,21 @@ async function onParamsDrop(event) {
     <div class="params-row">
       <label
         class="dropzone"
+        :class="{ compact: obsLoaded, 'drag-over': dragOver === 'obs' }"
         data-testid="obs-drop"
-        @dragover.prevent
-        @drop="onObsDrop"
+        @dragover.prevent="onDragEnter('obs')"
+        @dragleave="onDragLeave('obs')"
+        @drop="onDragLeave('obs'); onObsDrop($event)"
       >
-        <i class="pi pi-chart-line" /> Drop <strong>obs_data.json</strong>
-        <small>or click to browse</small>
+        <template v-if="obsLoaded">
+          <i class="pi pi-check" />
+          <span class="dz-loaded" data-testid="obs-loaded">{{ loadedObsFilename }}</span>
+          <small>drop another to replace</small>
+        </template>
+        <template v-else>
+          <i class="pi pi-chart-line" /> Drop <strong>obs_data.json</strong>
+          <small>or click to browse</small>
+        </template>
         <input type="file" accept=".json" @change="onObsDrop" />
       </label>
       <Button
@@ -288,12 +323,21 @@ async function onParamsDrop(event) {
     <div class="params-row">
       <label
         class="dropzone"
+        :class="{ compact: paramsLoaded, 'drag-over': dragOver === 'params' }"
         data-testid="params-drop"
-        @dragover.prevent
-        @drop="onParamsDrop"
+        @dragover.prevent="onDragEnter('params')"
+        @dragleave="onDragLeave('params')"
+        @drop="onDragLeave('params'); onParamsDrop($event)"
       >
-        <i class="pi pi-sliders-h" /> Drop <strong>params_for_id.csv</strong>
-        <small>or click to browse</small>
+        <template v-if="paramsLoaded">
+          <i class="pi pi-check" />
+          <span class="dz-loaded" data-testid="params-loaded">{{ loadedFilename }}</span>
+          <small>drop another to replace</small>
+        </template>
+        <template v-else>
+          <i class="pi pi-sliders-h" /> Drop <strong>params_for_id.csv</strong>
+          <small>or click to browse</small>
+        </template>
         <input type="file" accept=".csv" @change="onParamsDrop" />
       </label>
       <Button
@@ -421,6 +465,35 @@ async function onParamsDrop(event) {
 }
 .dropzone:hover {
   border-color: var(--p-primary-color, #5b9bd5);
+}
+/* A file is over the zone: say so, so the drop is visibly going to land (#137). */
+.dropzone.drag-over {
+  border-color: var(--p-primary-color, #5b9bd5);
+  border-style: solid;
+  background: color-mix(in srgb, var(--p-primary-color, #5b9bd5) 12%, transparent);
+}
+/* Loaded: the zone has said what it needed to say, so it shrinks to one line
+   naming the file (#137). The Edit button beside it keeps its own size -- the
+   shrunken box is the improvement, and stretching the button to fill the row
+   just made it a different odd shape. */
+.dropzone.compact {
+  flex: 0 1 auto;
+  padding: 0.35rem 0.6rem;
+  text-align: left;
+  display: flex;
+  align-items: baseline;
+  gap: 0.35rem;
+  min-width: 0;
+  overflow: hidden;
+}
+.dropzone.compact small {
+  margin-top: 0;
+}
+.dz-loaded {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .params-row {
   display: flex;
