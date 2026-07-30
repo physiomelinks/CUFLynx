@@ -403,3 +403,84 @@ describe('EditObsDataDialog', () => {
     expect(getObsDataOptions).toHaveBeenCalledWith(true, '')
   })
 })
+
+// Issue #147: the number of operand fields is a property of the operation --
+// `division` takes two, `max` takes one -- not something the user should have to
+// add by hand and get right.
+describe('EditObsDataDialog operand count (#147)', () => {
+  const OPERANDS = {
+    max: { count: 1, names: ['x'], variadic: false },
+    division: { count: 2, names: ['x1', 'x2'], variadic: false },
+    spread: { count: 1, names: ['x'], variadic: true },
+  }
+
+  const mountWithOperands = async (props = {}) => {
+    getObsDataOptions.mockResolvedValue({
+      ...FETCH,
+      operations: ['', 'max', 'division', 'spread'],
+      operation_operands: OPERANDS,
+    })
+    const wrapper = mountDialog(props)
+    await flushPromises()
+    await wrapper.find('button[aria-label="details"]').trigger('click')
+    return wrapper
+  }
+
+  const operandFields = (w) => w.findAll('[data-testid="eo-operand"]')
+  const setOperation = async (w, value) => {
+    const select = w.find('[data-testid="eo-row"] select')
+    await select.setValue(value)
+  }
+
+  it('grows the fields when switching to a two-operand operation', async () => {
+    const wrapper = await mountWithOperands()
+    expect(operandFields(wrapper)).toHaveLength(1)
+
+    await setOperation(wrapper, 'division')
+    expect(operandFields(wrapper)).toHaveLength(2)
+  })
+
+  // Switching operation should not throw away the operand already chosen.
+  it('keeps the operand already entered when the count grows', async () => {
+    const wrapper = await mountWithOperands()
+    await setOperation(wrapper, 'division')
+    expect(operandFields(wrapper)[0].element.value).toBe('m/x')
+  })
+
+  it('shrinks back when switching to a one-operand operation', async () => {
+    const wrapper = await mountWithOperands()
+    await setOperation(wrapper, 'division')
+    await setOperation(wrapper, 'max')
+    expect(operandFields(wrapper)).toHaveLength(1)
+  })
+
+  // Removing one would just make the row invalid, so the control is only offered
+  // where the count is genuinely the user's to choose.
+  it('hides add/remove for a fixed-arity operation', async () => {
+    const wrapper = await mountWithOperands()
+    expect(wrapper.find('[data-testid="eo-operand-add"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="eo-operand-remove"]').exists()).toBe(false)
+  })
+
+  it('keeps add/remove for a variadic operation, which has no fixed count', async () => {
+    const wrapper = await mountWithOperands()
+    await setOperation(wrapper, 'spread')
+    expect(wrapper.find('[data-testid="eo-operand-add"]').exists()).toBe(true)
+  })
+
+  it('names what each field fills, so a two-operand row says which is which', async () => {
+    const wrapper = await mountWithOperands()
+    await setOperation(wrapper, 'division')
+    const names = wrapper.findAll('.eo-operand-name').map((n) => n.text())
+    expect(names).toEqual(['x1', 'x2'])
+  })
+
+  // An older CA without the introspection must not lock the fields down.
+  it('leaves the fields hand-managed when the schema is unavailable', async () => {
+    getObsDataOptions.mockResolvedValue({ ...FETCH, operation_operands: undefined })
+    const wrapper = mountDialog()
+    await flushPromises()
+    await wrapper.find('button[aria-label="details"]').trigger('click')
+    expect(wrapper.find('[data-testid="eo-operand-add"]').exists()).toBe(true)
+  })
+})

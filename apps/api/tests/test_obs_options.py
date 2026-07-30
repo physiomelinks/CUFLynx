@@ -147,3 +147,55 @@ def test_operation_kwargs_schema_exposed_via_endpoint(client):
     present whether sourced from CA or the fallback)."""
     body = client.get("/api/obs_data/options").json()
     assert isinstance(body["operation_kwargs_schema"], dict)
+
+
+# Issue #147: the editor should offer as many operand fields as the operation
+# consumes, rather than leaving the user to add them by hand and guess.
+def test_operation_operands_reports_the_arity_of_each_operation(client):
+    opts = client.get("/api/obs_data/options").json()
+    spec = opts["operation_operands"]
+    assert spec["max"]["count"] == 1
+    assert spec["addition"]["count"] == 2
+    assert spec["division"]["count"] == 2
+    # The parameter names come with it, so a two-operand row can say which is which.
+    assert spec["addition"]["names"] == ["x1", "x2"]
+
+
+def test_operation_operands_excludes_the_tunable_kwargs(client):
+    """Only the parameters CA fills from `operands` count; a keyword with a
+    default is a setting, not an operand."""
+    opts = client.get("/api/obs_data/options").json()
+    spec = opts["operation_operands"]
+    # `series_output` has a default and is reserved machinery, not an operand.
+    assert "series_output" not in spec["max"]["names"]
+
+
+def test_operation_operands_marks_a_variadic_operation(client):
+    """A `*args` / `**kwargs` operation has no fixed count, so the editor must
+    keep letting the user manage the fields by hand."""
+    opts = client.get("/api/obs_data/options").json()
+    for entry in opts["operation_operands"].values():
+        assert isinstance(entry["variadic"], bool)
+        assert entry["count"] == len(entry["names"])
+
+
+def test_the_fallback_covers_every_operation_it_offers(client, monkeypatch):
+    """CI and a CA-less install take the fallback path, where the operand counts
+    must still be there -- otherwise the editor silently loses the feature.
+
+    Also pins the two lists together: an operation added to FALLBACK_OPERATIONS
+    without its arity would leave that row hand-managed for no visible reason.
+    """
+    import obs_options as oo
+
+    monkeypatch.setattr(oo, "_introspect", lambda *a, **k: (_ for _ in ()).throw(ImportError))
+    oo.reset_cache()
+    try:
+        opts = client.get("/api/obs_data/options").json()
+        spec = opts["operation_operands"]
+        assert spec["max"]["count"] == 1
+        assert spec["division"]["count"] == 2
+        offered = {op for op in opts["operations"] if op}
+        assert offered == set(spec), "FALLBACK_OPERATIONS and its arities have drifted"
+    finally:
+        oo.reset_cache()

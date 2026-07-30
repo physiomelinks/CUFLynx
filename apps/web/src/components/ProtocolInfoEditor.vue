@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import Button from 'primevue/button'
 import SciNumberInput from './SciNumberInput.vue'
 import ParamInputPlot, { AXIS_W, RIGHT_PAD, PRE_FRAC } from './ParamInputPlot.vue'
@@ -35,8 +35,11 @@ const props = defineProps({
 })
 const emit = defineEmits(['update:activeExp'])
 
-const newParam = ref('')
 const paramSearch = ref('')
+// Which match the keyboard is on. -1 = none highlighted yet, so Enter with a
+// single match still adds it without an explicit arrow press.
+const paramHighlight = ref(-1)
+const paramFocused = ref(false)
 
 const activeExperiment = computed(() => props.model.experiments[props.activeExp] ?? null)
 const subexpCount = computed(() => activeExperiment.value?.subexps.length ?? 0)
@@ -94,12 +97,50 @@ function onRemoveExperiment(e) {
     setActive(Math.max(0, props.model.experiments.length - 1))
   }
 }
-function onAddParam() {
-  if (!newParam.value) return
+/**
+ * Add a controlled parameter by name.
+ *
+ * The picker was a search box *beside* a dropdown, so you typed blind and then
+ * had to open the select to find out what matched. Now the matches are listed
+ * as you type and one click adds -- searching and seeing the results are the
+ * same act.
+ */
+function onAddParam(qname) {
+  const name = qname || paramSearch.value.trim()
+  if (!name || !availableNames.value.includes(name)) return
   // Seed the baseline with the parameter's uploaded value, so the user starts
   // from the real value and only changes what to set it to.
-  addParam(props.model, newParam.value, props.initialValues[newParam.value])
-  newParam.value = ''
+  addParam(props.model, name, props.initialValues[name])
+  // Clear the search: the parameter just added has left the candidate list, and
+  // leaving a stale query would hide the rest behind a filter for something no
+  // longer there.
+  paramSearch.value = ''
+  paramHighlight.value = -1
+}
+
+// Keep the highlight inside the (shrinking) result list as the query narrows.
+watch(filteredAvailableNames, (list) => {
+  if (paramHighlight.value >= list.length) paramHighlight.value = list.length - 1
+})
+
+function onParamKey(event) {
+  const list = filteredAvailableNames.value
+  if (event.key === 'ArrowDown') {
+    event.preventDefault()
+    paramHighlight.value = Math.min(paramHighlight.value + 1, list.length - 1)
+  } else if (event.key === 'ArrowUp') {
+    event.preventDefault()
+    paramHighlight.value = Math.max(paramHighlight.value - 1, 0)
+  } else if (event.key === 'Enter') {
+    event.preventDefault()
+    // Nothing highlighted but exactly one match: that is unambiguous, so add it
+    // rather than making the user arrow down to the only option there is.
+    if (paramHighlight.value >= 0) onAddParam(list[paramHighlight.value])
+    else if (list.length === 1) onAddParam(list[0])
+  } else if (event.key === 'Escape') {
+    paramSearch.value = ''
+    paramHighlight.value = -1
+  }
 }
 function onNum(obj, field, value) {
   obj[field] = value === '' ? null : Number(value)
@@ -228,14 +269,45 @@ function shapeIcon(cell) {
           v-model="paramSearch"
           type="text"
           class="pie-param-search"
-          placeholder="search…"
+          placeholder="add controlled parameter — type to search…"
           data-testid="param-search"
+          @focus="paramFocused = true"
+          @blur="paramFocused = false"
+          @keydown="onParamKey"
         />
-        <select v-model="newParam" data-testid="param-select">
-          <option value="">add controlled parameter…</option>
-          <option v-for="n in filteredAvailableNames" :key="n" :value="n">{{ n }}</option>
-        </select>
-        <Button label="Add" size="small" data-testid="add-param" :disabled="!newParam" @click="onAddParam" />
+        <span class="pie-param-count" data-testid="param-count">
+          {{ filteredAvailableNames.length }} of {{ availableNames.length }}
+        </span>
+        <!--
+          The matches, listed as you type. Shown while searching or focused, so
+          the list is not permanently in the way once a parameter is chosen.
+          mousedown rather than click: blur fires first on click and would close
+          the list before the selection landed.
+        -->
+        <ul
+          v-if="(paramSearch || paramFocused) && filteredAvailableNames.length"
+          class="pie-param-options"
+          data-testid="param-options"
+        >
+          <li
+            v-for="(n, i) in filteredAvailableNames"
+            :key="n"
+            class="pie-param-option"
+            :class="{ active: i === paramHighlight }"
+            data-testid="param-option"
+            @mousedown.prevent="onAddParam(n)"
+            @mouseenter="paramHighlight = i"
+          >
+            {{ n }}
+          </li>
+        </ul>
+        <p
+          v-else-if="paramSearch && !filteredAvailableNames.length"
+          class="pie-param-empty"
+          data-testid="param-empty"
+        >
+          No parameter matches “{{ paramSearch }}”.
+        </p>
       </div>
 
       <div class="pie-plotwrap">
@@ -433,6 +505,50 @@ function shapeIcon(cell) {
 }
 .pie-add-param {
   align-items: flex-end;
+}
+/* The matches, listed under the search box so typing and seeing the results are
+   one act rather than two controls (#147 follow-up). Absolute so the list floats
+   over the timeline instead of shoving it down as you type. */
+.pie-add-param {
+  position: relative;
+}
+.pie-param-options {
+  position: absolute;
+  z-index: 20;
+  top: 100%;
+  left: 0;
+  min-width: 16rem;
+  max-height: 14rem;
+  overflow-y: auto;
+  margin: 0.15rem 0 0;
+  padding: 0.15rem;
+  list-style: none;
+  background: var(--p-content-background, #1e1e1e);
+  border: 1px solid var(--p-content-border-color, #444);
+  border-radius: 4px;
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.3);
+}
+.pie-param-option {
+  padding: 0.15rem 0.4rem;
+  border-radius: 3px;
+  cursor: pointer;
+  white-space: nowrap;
+  font-size: 0.8rem;
+}
+.pie-param-option.active,
+.pie-param-option:hover {
+  background: var(--p-primary-color, #5b9bd5);
+  color: #fff;
+}
+.pie-param-count {
+  font-size: 0.7rem;
+  opacity: 0.6;
+  margin-left: 0.35rem;
+}
+.pie-param-empty {
+  margin: 0.15rem 0 0;
+  font-size: 0.75rem;
+  opacity: 0.7;
 }
 .pie-param-search {
   font-size: 0.8rem;
