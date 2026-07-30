@@ -35,12 +35,22 @@ describe('ProtocolInfoEditor', () => {
     expect(model.experiments[0].subexps).toHaveLength(1)
   })
 
+  // The picker is a search box whose matches are listed as you type; clicking a
+  // match adds it. (#147 follow-up: it used to be a search box beside a separate
+  // dropdown, so you typed blind and then opened the select to see what matched.)
+  const addParamByName = async (wrapper, name) => {
+    await wrapper.find('[data-testid="param-search"]').setValue(name)
+    const option = wrapper
+      .findAll('[data-testid="param-option"]')
+      .find((o) => o.text() === name)
+    await option.trigger('mousedown')
+  }
+
   it('adds a controlled param and switches a cell shape', async () => {
     const model = reactive(emptyModel())
     const wrapper = mountEditor(model)
 
-    await wrapper.find('[data-testid="param-select"]').setValue('a/x')
-    await wrapper.find('[data-testid="add-param"]').trigger('click')
+    await addParamByName(wrapper, 'a/x')
     expect(model.params['a/x']).toBeTruthy()
     expect(model.params['a/x'][0][0]).toEqual({ shape: 'constant', value: 0 })
 
@@ -48,31 +58,77 @@ describe('ProtocolInfoEditor', () => {
     expect(model.params['a/x'][0][0].shape).toBe('ramp')
   })
 
-  it('filters the controlled-parameter picker options by the search box', async () => {
+  it('lists the matches as you type, and one click adds', async () => {
     const model = reactive(emptyModel())
     const wrapper = mountEditor(model, { allNames: ['a/x', 'a/y', 'b/z'] })
 
-    // all candidates offered (plus the placeholder option) when search is empty
-    let opts = wrapper.find('[data-testid="param-select"]').findAll('option')
-    expect(opts.map((o) => o.element.value)).toEqual(['', 'a/x', 'a/y', 'b/z'])
-
-    // typing filters, case-insensitively, by qname substring
+    // Typing filters, case-insensitively, by qname substring — and the matches
+    // are visible without opening anything.
     await wrapper.find('[data-testid="param-search"]').setValue('B/')
-    opts = wrapper.find('[data-testid="param-select"]').findAll('option')
-    expect(opts.map((o) => o.element.value)).toEqual(['', 'b/z'])
+    const names = wrapper.findAll('[data-testid="param-option"]').map((o) => o.text())
+    expect(names).toEqual(['b/z'])
 
-    // the filtered option can still be picked and added
-    await wrapper.find('[data-testid="param-select"]').setValue('b/z')
-    await wrapper.find('[data-testid="add-param"]').trigger('click')
+    await wrapper.findAll('[data-testid="param-option"]')[0].trigger('mousedown')
     expect(model.params['b/z']).toBeTruthy()
+  })
+
+  it('says how many of the parameters match', async () => {
+    const wrapper = mountEditor(reactive(emptyModel()), { allNames: ['a/x', 'a/y', 'b/z'] })
+    expect(wrapper.find('[data-testid="param-count"]').text()).toBe('3 of 3')
+    await wrapper.find('[data-testid="param-search"]').setValue('a/')
+    expect(wrapper.find('[data-testid="param-count"]').text()).toBe('2 of 3')
+  })
+
+  it('says so when nothing matches, rather than showing an empty list', async () => {
+    const wrapper = mountEditor(reactive(emptyModel()), { allNames: ['a/x'] })
+    await wrapper.find('[data-testid="param-search"]').setValue('zzz')
+    expect(wrapper.find('[data-testid="param-options"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="param-empty"]').text()).toContain('zzz')
+  })
+
+  it('adds the only match on Enter, without arrowing to it first', async () => {
+    const model = reactive(emptyModel())
+    const wrapper = mountEditor(model, { allNames: ['a/x', 'b/z'] })
+    const search = wrapper.find('[data-testid="param-search"]')
+    await search.setValue('b/')
+    await search.trigger('keydown', { key: 'Enter' })
+    expect(model.params['b/z']).toBeTruthy()
+  })
+
+  it('arrows through the matches and adds the highlighted one', async () => {
+    const model = reactive(emptyModel())
+    const wrapper = mountEditor(model, { allNames: ['a/x', 'a/y'] })
+    const search = wrapper.find('[data-testid="param-search"]')
+    await search.setValue('a/')
+    await search.trigger('keydown', { key: 'ArrowDown' })
+    await search.trigger('keydown', { key: 'ArrowDown' })
+    await search.trigger('keydown', { key: 'Enter' })
+    expect(model.params['a/y']).toBeTruthy()
+  })
+
+  // Leaving a stale query would hide the rest behind a filter for something that
+  // is no longer a candidate.
+  it('clears the search once a parameter is added', async () => {
+    const model = reactive(emptyModel())
+    const wrapper = mountEditor(model, { allNames: ['a/x', 'a/y'] })
+    await addParamByName(wrapper, 'a/x')
+    expect(wrapper.find('[data-testid="param-search"]').element.value).toBe('')
+  })
+
+  it('drops a parameter from the candidates once it is controlled', async () => {
+    const model = reactive(emptyModel())
+    const wrapper = mountEditor(model, { allNames: ['a/x', 'a/y'] })
+    await addParamByName(wrapper, 'a/x')
+    await wrapper.find('[data-testid="param-search"]').setValue('a/')
+    const names = wrapper.findAll('[data-testid="param-option"]').map((o) => o.text())
+    expect(names).toEqual(['a/y'])
   })
 
   it('seeds a newly added param with its uploaded value as the baseline', async () => {
     const model = reactive(emptyModel())
     const wrapper = mountEditor(model, { initialValues: { 'a/x': 1.5e-8 } })
 
-    await wrapper.find('[data-testid="param-select"]').setValue('a/x')
-    await wrapper.find('[data-testid="add-param"]').trigger('click')
+    await addParamByName(wrapper, 'a/x')
     // baseline = the uploaded value, not 0.
     expect(model.params['a/x'][0][0]).toEqual({ shape: 'constant', value: 1.5e-8 })
     // and it shows in scientific notation in the value field.
@@ -89,8 +145,7 @@ describe('ProtocolInfoEditor', () => {
   it('renders one plot per controlled param', async () => {
     const model = reactive(emptyModel())
     const wrapper = mountEditor(model)
-    await wrapper.find('[data-testid="param-select"]').setValue('a/x')
-    await wrapper.find('[data-testid="add-param"]').trigger('click')
+    await addParamByName(wrapper, 'a/x')
     expect(wrapper.findAllComponents(PlotStub)).toHaveLength(1)
     expect(wrapper.findAllComponents(PlotStub)[0].props('title')).toBe('a/x')
   })
@@ -107,8 +162,7 @@ describe('ProtocolInfoEditor', () => {
     addSubexp(model, 0) // now 2 subexps
     // add a controlled param so the value-row .tt-seg cells render too
     const wrapper = mountEditor(model, { highlightSubexp: 1 })
-    await wrapper.find('[data-testid="param-select"]').setValue('a/x')
-    await wrapper.find('[data-testid="add-param"]').trigger('click')
+    await addParamByName(wrapper, 'a/x')
 
     const highlighted = wrapper.findAll('.tt-seg.tt-highlight')
     // one in the duration header + one in the value row
