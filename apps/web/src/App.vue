@@ -139,15 +139,26 @@ const aadcNotice = computed(() => {
   if (!a.available) {
     return `aadc_python is not listed: AADC is not installed. ${a.hint || ''}`.trim()
   }
-  // Analysis runs happen in the user's own Python, so having it only in the app
-  // is a run waiting to fail.
-  if (a.in_analysis_python === false) {
+  // The two tiers use different interpreters, so AADC in one and not the other
+  // half-works — and which half breaks depends on which one is missing it.
+  // Saying "available" flatly is what let a user pick the format and hit
+  // "aadc is not installed" on the very next simulation.
+  if (!a.in_app) {
     return (
-      'aadc_python is available, but AADC was not found in the interpreter chosen ' +
-      'for analysis runs — install it there too or those runs will fail.'
+      'aadc_python: AADC is installed in the interpreter used for calibration / ' +
+      'sensitivity / UQ, so those runs will work — but not in the app’s own ' +
+      'Python, which runs the live plots, so simulating with this format will ' +
+      'fail. Install aadc alongside the app to plot with it.'
     )
   }
-  return 'aadc_python is available (AADC found).'
+  if (a.in_analysis_python === false) {
+    return (
+      'aadc_python: AADC is installed for the live plots, but not in the ' +
+      'interpreter chosen for analysis runs — calibration / sensitivity / UQ ' +
+      'with this format will fail until it is installed there too.'
+    )
+  }
+  return 'aadc_python is available (AADC found in both interpreters).'
 })
 
 // "Python (scipy solve_ivp) or CasADi" — the compiler-free backends, named by the

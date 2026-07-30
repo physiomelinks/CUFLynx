@@ -391,6 +391,28 @@ def set_config(req: ConfigRequest) -> dict:
         else:
             os.environ.pop("CIRCULATORY_AUTOGEN_SRC", None)
 
+
+    # Interpreter for analysis runs. Shared by all three job managers.
+    #   None  -> not in this request, leave unchanged
+    #   ""    -> reset to the default (bundled when packaged, serving when source)
+    #   path  -> validate + use that external interpreter
+    if req.python_path is not None:
+        python_path = req.python_path.strip()
+        if python_path:
+            if not (os.path.isfile(python_path) and os.access(python_path, os.X_OK)):
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"python interpreter not found or not executable: {python_path}",
+                )
+            _set_analysis_python(python_path)
+        else:
+            _set_analysis_python(default_python())
+
+    # Solver selection is validated *after* the interpreter, because which model
+    # formats exist depends on it: aadc_python is only offered when AADC can be
+    # imported. Validating first meant a single request that set both the
+    # interpreter and the format was checked against the previous interpreter and
+    # rejected the format it had just enabled.
     # Backend solver selection. Validate against CA's schema (re-read against the
     # possibly-new CA dir), then store on the engine (the live-sim source of truth)
     # and export to env so subprocess runs inherit it.
@@ -428,21 +450,6 @@ def set_config(req: ConfigRequest) -> dict:
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         engine.solver_info = si
-    # Interpreter for analysis runs. Shared by all three job managers.
-    #   None  -> not in this request, leave unchanged
-    #   ""    -> reset to the default (bundled when packaged, serving when source)
-    #   path  -> validate + use that external interpreter
-    if req.python_path is not None:
-        python_path = req.python_path.strip()
-        if python_path:
-            if not (os.path.isfile(python_path) and os.access(python_path, os.X_OK)):
-                raise HTTPException(
-                    status_code=422,
-                    detail=f"python interpreter not found or not executable: {python_path}",
-                )
-            _set_analysis_python(python_path)
-        else:
-            _set_analysis_python(default_python())
 
     # Global random seed for analysis runs.
     #   None  -> not in this request, leave unchanged

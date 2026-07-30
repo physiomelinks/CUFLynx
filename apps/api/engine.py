@@ -108,6 +108,20 @@ def _solver_reason(captured: str) -> str:
 # rather than the prose keeps these stable across Sundials wordings.
 _HINTS = (
     (
+        # A missing backend library is not a solver-settings problem, and the
+        # generic "try a smaller MaximumStep" advice sent users to fiddle with
+        # numbers that could never have helped. It matters *which* interpreter is
+        # missing it: live simulation runs in the app's own Python, while
+        # calibration / sensitivity / UQ run in the one chosen in Settings, so a
+        # library present in only one gives exactly this -- analysis runs that
+        # work and a live plot that does not.
+        ("is not installed", "no module named", "importerror", "modulenotfounderror"),
+        "That backend's library is missing from the interpreter running live "
+        "simulations (the app's own Python) — Settings → Python only affects "
+        "calibration / sensitivity / UQ, which run separately. Install it there "
+        "too, or pick a model format whose backend is available for live plotting.",
+    ),
+    (
         ("cv_too_much_acc", "too much accuracy"),
         "The requested tolerance is tighter than the solver can hold — raise rtol/atol "
         "in Settings.",
