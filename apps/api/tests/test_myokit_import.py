@@ -379,3 +379,67 @@ def test_the_calibration_parameter_actually_moves_the_observable(client, require
 
     # Sodium conductance drives the upstroke, so the peak moves a long way.
     assert peak(param["min"]) < peak(param["initial_value"]) - 10
+
+
+# ---------------------------------------------------------------------------
+# Every .mmt in resources/, so a model dropped in later is covered without
+# anyone remembering to write a test for it.
+# ---------------------------------------------------------------------------
+def _all_mmt():
+    from conftest import RESOURCES_DIR
+
+    return sorted(RESOURCES_DIR.glob("*.mmt"))
+
+
+def test_there_is_at_least_one_mmt_fixture():
+    """Otherwise the parametrised tests below would silently cover nothing."""
+    assert _all_mmt()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("path", _all_mmt(), ids=lambda p: p.name)
+def test_every_mmt_fixture_converts_to_readable_cellml(path, requires_simulation, tmp_path):
+    from cellml_meta import parse_cellml
+
+    cellml, saved = myokit_import.cellml_from_myokit(
+        path.read_bytes(), filename=path.name, out_dir=str(tmp_path)
+    )
+    meta = parse_cellml(cellml)
+    assert meta.variable_count > 0
+    assert meta.odes, "a model with no states is not a usable model"
+    assert Path(saved).is_file()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("path", _all_mmt(), ids=lambda p: p.name)
+def test_every_mmt_fixture_loads_through_the_upload_route(path, client, requires_simulation):
+    with open(path, "rb") as fh:
+        resp = client.post(
+            "/api/models/upload", files={"file": (path.name, fh, "text/plain")}
+        )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["converted_from"] == path.name
+    assert body["odes"]
+    # ...and the model is usable, not merely parseable.
+    assert client.get(f"/api/models/{body['model_id']}/variables").status_code == 200
+
+
+@pytest.mark.integration
+def test_a_voltage_clamp_model_converts_as_well_as_a_stimulus_one(requires_simulation, tmp_path):
+    """hh-1952d drives its membrane with a voltage clamp gated on `pace` rather
+    than a stimulus current, so it exercises a different shape of protocol
+    binding from br-1977."""
+    from conftest import RESOURCES_DIR
+
+    path = RESOURCES_DIR / "hh-1952d.mmt"
+    if not path.is_file():
+        pytest.skip("hh-1952d.mmt not present")
+    cellml, _ = myokit_import.cellml_from_myokit(
+        path.read_bytes(), filename=path.name, out_dir=str(tmp_path)
+    )
+    from cellml_meta import parse_cellml
+
+    meta = parse_cellml(cellml)
+    # Hodgkin-Huxley 1952: membrane potential plus the m/h/n gates.
+    assert len(meta.odes) == 4
