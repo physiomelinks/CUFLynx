@@ -87,6 +87,22 @@ def cellml_from_myokit(data: bytes, *, filename: str, out_dir: str | None = None
             raise MyokitImportError(
                 "that .mmt file has no [[model]] section, so there is nothing to convert."
             )
+        # Myokit's example set includes files whose [[model]] is a stub -- just a
+        # time variable -- because the file exists to demonstrate a protocol or a
+        # script (fink-2009-protocol.mmt is one). Those import "successfully" as a
+        # model with nothing to integrate, and the emptiness only shows up later
+        # as a simulation with no outputs. Say so at the door instead.
+        try:
+            n_states = model.count_states()
+        except Exception:  # noqa: BLE001 - odd model object; let the export decide
+            n_states = None
+        if n_states == 0:
+            raise MyokitImportError(
+                "that .mmt has no state variables, so there is nothing to simulate. "
+                "Myokit ships protocol- and script-demonstration files whose "
+                "[[model]] section is only a stub -- this looks like one of those "
+                "rather than a model."
+            )
 
         out_path = Path(td) / f"{stem}.cellml"
         try:

@@ -1,0 +1,109 @@
+[[model]]
+name: HodgkinHuxley1952d_Modern
+desc: """
+    Myokit implementation of the model described in Hodgkin and Huxley's 1952
+    paper [1], updated to use modern conventions.
+
+    The modernization consisted of mirroring the gate functions around the
+    point V=-75 to obtain the usual direction of depolarization. Additionally,
+    the formulation V = E - Er was dropped and V is taken to be the action
+    potential, not the difference in action potential.
+
+    [1] A quantitative description of membrane current and its application to
+    conduction and excitation in nerve.
+    Hodgkin, Huxley, 1952d, Journal of Physiology
+    """
+author: Michael Clerx
+# Initial values
+membrane.V  = -75.0
+potassium.n = 0.317
+sodium.m    = 0.05
+sodium.h    = 0.595
+
+[engine]
+time = 0 bind time
+pace = 0 bind pace : A dimensionless pacing variable
+
+#
+# Membrane potential
+#
+[membrane]
+dot(V) = -(1/C) * (sodium.i + potassium.i + leak.i + i_stim)
+    in [mV]
+    desc: The membrane potential
+C = 1 [uF/cm^2] : The membrane capacity per unit area (See table 3 in HH1952d)
+Vhold = -60 [mV] : A temporary holding potential
+A = 100 : An amplification factor for the holding current
+i_stim = (V - Vhold) * A * engine.pace
+
+#
+# Potassium current
+#
+[potassium]
+use membrane.V
+Ek = -87 [mV]
+g_max = 36 [mS/cm^2]
+i = g_max * n^4 * (V - Ek)
+    desc: Current carried by potassium ions
+    in [uA/cm^2]
+dot(n) = a * (1 - n) - b * n
+    a = 0.01 * (-V - 65) / (exp((-V - 65) / 10) - 1)
+    b = 0.125 * exp((-V - 75) / 80)
+
+#
+# Sodium current
+#
+[sodium]
+use membrane.V
+ENa = 40 [mV]
+g_max = 120 [mS/cm^2]
+i = g_max * m^3 * h * (V - ENa)
+    desc: Current carried by Sodium ions
+    in [uA/cm^2]
+dot(m) = a * (1 - m) - b * m
+    a = 0.1 * (-V - 50) / (exp((-V - 50) / 10) - 1)
+    b = 4 * exp((-V - 75) / 18)
+dot(h) = a * (1 - h) - b * h
+    a = 0.07 * exp((-V - 75) / 20)
+    b = 1 / (exp((-V - 45) / 10) + 1)
+
+#
+# Leak current
+#
+[leak]
+use membrane.V
+Eleak = -64.387
+g_max = 0.3 [mS/cm^2]
+i = g_max * (V - Eleak)
+
+[[protocol]]
+# Level  Start    Length   Period   Multiplier
+1.0      5        0.03     30     0
+
+[[script]]
+import matplotlib.pyplot as plt
+import myokit
+
+#
+# This example file shows a single firing of a squid giant axon, displayed
+# using modern conventions (where a depolarization is displayed as a rise in
+# membrane potential).
+#
+
+# Create simulation
+m = get_model()
+p = get_protocol()
+s = myokit.Simulation(m, p)
+
+# Selected variables
+t = 'engine.time'
+v = 'membrane.V'
+
+# Run simulation
+d = s.run(35, log=[t, v])
+
+# Display the result
+plt.plot(d[t], d[v])
+plt.title('Membrane potential')
+plt.show()
+

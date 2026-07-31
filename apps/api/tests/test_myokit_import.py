@@ -386,9 +386,12 @@ def test_the_calibration_parameter_actually_moves_the_observable(client, require
 # anyone remembering to write a test for it.
 # ---------------------------------------------------------------------------
 def _all_mmt():
+    """Every .mmt fixture: the two kept at the top of resources/ plus the
+    third-party example set. rglob rather than a fixed list, so a model dropped
+    in later is covered without editing a test."""
     from conftest import RESOURCES_DIR
 
-    return sorted(RESOURCES_DIR.glob("*.mmt"))
+    return sorted(RESOURCES_DIR.rglob("*.mmt"))
 
 
 def test_there_is_at_least_one_mmt_fixture():
@@ -398,15 +401,26 @@ def test_there_is_at_least_one_mmt_fixture():
 
 @pytest.mark.integration
 @pytest.mark.parametrize("path", _all_mmt(), ids=lambda p: p.name)
-def test_every_mmt_fixture_converts_to_readable_cellml(path, requires_simulation, tmp_path):
+def test_every_mmt_fixture_converts_or_is_refused_clearly(path, requires_simulation, tmp_path):
+    """Either it yields a usable model, or it is refused with a reason.
+
+    Myokit's example set includes files whose [[model]] is a stub, because they
+    exist to demonstrate a protocol or a script. Silently accepting one gives a
+    model with nothing to integrate, so refusal is the correct outcome -- but it
+    has to say why.
+    """
     from cellml_meta import parse_cellml
 
-    cellml, saved = myokit_import.cellml_from_myokit(
-        path.read_bytes(), filename=path.name, out_dir=str(tmp_path)
-    )
+    try:
+        cellml, saved = myokit_import.cellml_from_myokit(
+            path.read_bytes(), filename=path.name, out_dir=str(tmp_path)
+        )
+    except myokit_import.MyokitImportError as exc:
+        assert "no state variables" in str(exc)
+        return
     meta = parse_cellml(cellml)
     assert meta.variable_count > 0
-    assert meta.odes, "a model with no states is not a usable model"
+    assert meta.odes
     assert Path(saved).is_file()
 
 
@@ -417,12 +431,33 @@ def test_every_mmt_fixture_loads_through_the_upload_route(path, client, requires
         resp = client.post(
             "/api/models/upload", files={"file": (path.name, fh, "text/plain")}
         )
+    if resp.status_code == 422:
+        # A stub model, refused at the door -- see the test above.
+        assert "no state variables" in resp.json()["detail"]
+        return
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["converted_from"] == path.name
     assert body["odes"]
     # ...and the model is usable, not merely parseable.
     assert client.get(f"/api/models/{body['model_id']}/variables").status_code == 200
+
+
+@pytest.mark.integration
+def test_a_stub_model_is_refused_rather_than_imported_empty(client, requires_simulation):
+    """It used to import with zero ODEs, so the emptiness only surfaced later as
+    a simulation with no outputs."""
+    from conftest import RESOURCES_DIR
+
+    path = RESOURCES_DIR / "models" / "third_party" / "fink-2009-protocol.mmt"
+    if not path.is_file():
+        pytest.skip("fink-2009-protocol.mmt not present")
+    with open(path, "rb") as fh:
+        resp = client.post(
+            "/api/models/upload", files={"file": (path.name, fh, "text/plain")}
+        )
+    assert resp.status_code == 422
+    assert "nothing to simulate" in resp.json()["detail"]
 
 
 @pytest.mark.integration
