@@ -12,3 +12,17 @@ def test_a_trace_on_a_backend_that_cannot_drive_one_points_at_the_solver():
     )
     assert "CVODE_myokit" in message
     assert "rtol" not in message
+
+
+def test_a_solver_plugin_that_will_not_load_is_not_a_tolerance_problem():
+    """CasADi ships its integrators as separate shared libraries, so a build
+    without libcasadi_integrator_CVODE.so fails whatever the tolerances are.
+    Telling the user to lower MaximumStep sends them round a loop with no exit."""
+    from engine import _failure_hint
+
+    message = _failure_hint(
+        'Assertion "handle!=nullptr" failed: PluginInterface::load_plugin: Cannot '
+        "load shared library 'libcasadi_integrator_CVODE.so'"
+    )
+    assert "cellml_only" in message
+    assert "MaximumStep" not in message and "rtol" not in message

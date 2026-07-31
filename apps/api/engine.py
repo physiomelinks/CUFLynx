@@ -136,6 +136,18 @@ _HINTS = (
         "setting — check the units of the connected variables.",
     ),
     (
+        # A solver plugin that will not load is an installation problem, not a
+        # numerical one. CasADi ships its integrators as separate shared
+        # libraries, and a wheel without libcasadi_integrator_CVODE.so fails here
+        # whatever the tolerances are.
+        ("cannot load shared library", "load_plugin", "cannot open shared object"),
+        "That solver's plugin library could not be loaded, so this backend is not "
+        "usable in the Python this app is running — nothing in Settings will fix "
+        "it. Switch the model format to cellml_only with solver CVODE_myokit, or "
+        "reinstall the backend's package (for CasADi, a build that includes its "
+        "CVODE integrator plugin).",
+    ),
+    (
         # circulatory_autogen refuses a time-varying protocol input on the CasADi,
         # AADC and solve_ivp backends; only CVODE_myokit can drive a variable from
         # a trace. Without this the generic tail advised tightening tolerances,
