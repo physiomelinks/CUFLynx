@@ -267,26 +267,22 @@ def test_the_companion_fixtures_exist():
 def test_the_obs_protocol_matches_the_mmt_protocol():
     """The .mmt says: level 1.0, start 100, length 2, period 1000.
 
-    protocol_info has no notion of a repeating pulse, so the schedule becomes
-    sub-experiments holding engine/pace at each level for the right duration.
-    This pins the arithmetic: stimuli must begin at t=100 and t=1100.
+    The companion obs_data carries those five numbers under those five names, so
+    what the file says and what Myokit said are the same statement rather than
+    two encodings of it that have to be kept in step by hand.
     """
     import json
 
     obs_path, _ = _companions()
     pi = json.loads(obs_path.read_text())["protocol_info"]
-    durations = pi["sim_times"][0]
-    levels = pi["params_to_change"]["engine/pace"][0]
-    assert len(durations) == len(levels)
 
-    starts, t = [], 0.0
-    for duration, level in zip(durations, levels):
-        if level:
-            starts.append(t)
-        t += duration
-    assert starts == [100.0, 1100.0]          # period 1000, first at 100
-    assert durations[1] == durations[3] == 2.0  # length 2
-    assert set(levels) == {0.0, 1.0}            # level 1.0
+    (name,) = pi["protocol_shapes"]
+    assert pi["params_to_change"]["engine/pace"] == [[name]]
+    assert pi["protocol_shapes"][name]["events"] == [
+        {"level": 1.0, "start": 100.0, "length": 2.0, "period": 1000.0, "multiplier": 0}
+    ]
+    # Two beats of that period, so stimuli at 100 and 1100.
+    assert pi["sim_times"] == [[2000.0]]
 
 
 @pytest.mark.integration

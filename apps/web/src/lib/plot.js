@@ -1,3 +1,5 @@
+import { expandShape } from './protocolInfo'
+
 export const PALETTE = [
   '#5b9bd5',
   '#ed7d31',
@@ -160,14 +162,16 @@ export function derivePlotVariables(obsData) {
 /**
  * Build a time series for each controlled parameter (protocol_info
  * params_to_change) in an experiment. Numeric sub-values render as a step held
- * over each sub-experiment; a string sub-value references a protocol_traces key
- * and is plotted as that trace, offset to the sub-experiment start.
+ * over each sub-experiment; a string sub-value names either a protocol_traces
+ * point table or a protocol_shapes declaration, and is plotted as that
+ * waveform, offset to the sub-experiment start.
  * Returns [{ qname, label, time, values }].
  */
 export function controlledSeries(protocolInfo, expIdx) {
   if (!protocolInfo) return []
   const ptc = protocolInfo.params_to_change ?? {}
   const traces = protocolInfo.protocol_traces ?? {}
+  const shapes = protocolInfo.protocol_shapes ?? {}
   const durations = (protocolInfo.sim_times ?? [])[expIdx] ?? []
 
   const starts = []
@@ -190,7 +194,10 @@ export function controlledSeries(protocolInfo, expIdx) {
       const dur = durations[k] ?? 0
       const val = subVals[k]
       if (typeof val === 'string') {
-        const tr = traces[val]
+        // A name resolves to a point table (protocol_traces) or to a declared
+        // shape (protocol_shapes), which is expanded to the same thing here so
+        // the plot draws either without caring which the file used.
+        const tr = traces[val] ?? expandShape(shapes[val], dur)
         if (tr && Array.isArray(tr.t) && Array.isArray(tr.values)) {
           const m = Math.min(tr.t.length, tr.values.length)
           for (let i = 0; i < m; i++) {
