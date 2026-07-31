@@ -195,3 +195,177 @@ def test_a_non_archive_is_a_422_not_a_crash(client):
     )
     assert resp.status_code == 422
     assert "readable" in resp.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# An archive whose model is a Myokit .mmt (#27 + #149)
+# ---------------------------------------------------------------------------
+MMT_EXAMPLE = RESOURCES_DIR / "br-1977.omex"
+
+
+def test_the_myokit_example_archive_exists():
+    assert MMT_EXAMPLE.is_file(), "resources/br-1977.omex is missing"
+
+
+def test_the_myokit_archive_holds_a_model_and_a_params_file():
+    """No obs_data in it, deliberately: the protocol comes from the .mmt itself,
+    which is the case this archive exists to cover."""
+    with zipfile.ZipFile(MMT_EXAMPLE) as zf:
+        names = sorted(Path(n).name for n in zf.namelist())
+    assert names == ["br-1977.mmt", "br-1977_params_for_id.csv", "manifest.xml"]
+
+
+def test_an_mmt_is_recognised_as_an_archives_model():
+    data = _zip({"manifest.xml": MANIFEST, "model.mmt": b"[[model]]\n"})
+    assert omex_import.looks_like_omex(data)
+    assert omex_import.unpack(data)["master"] == "model.mmt"
+
+
+def test_a_cellml_wins_when_an_archive_carries_both():
+    """An archive shipping both has presumably already been converted, and the
+    CellML is the copy its author chose to ship."""
+    data = _zip({"model.mmt": b"[[model]]\n", "model.cellml": b"<model/>"})
+    assert omex_import.unpack(data)["master"] == "model.cellml"
+
+
+def test_an_archive_with_neither_says_what_it_wanted():
+    data = _zip({"notes.txt": b"hello"})
+    with pytest.raises(omex_import.OmexImportError, match=r"\.cellml or \.mmt"):
+        omex_import.unpack(data)
+
+
+@pytest.mark.integration
+def test_the_myokit_archive_loads_model_and_params_in_one_drop(
+    client, requires_simulation, tmp_path
+):
+    with open(MMT_EXAMPLE, "rb") as fh:
+        resp = client.post(
+            "/api/omex/upload",
+            params={"output_dir": str(tmp_path)},
+            files={"file": (MMT_EXAMPLE.name, fh, "application/zip")},
+        )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+
+    # Converted on the way in, so the rest of the app sees CellML as usual.
+    assert body["converted_from"] == "br-1977.mmt"
+    assert body["model_filename"] == "br-1977.cellml"
+    assert len(body["odes"]) == 8  # Beeler-Reuter: m, h, j, d, f, x1, Cai, V
+    assert [p["qname"] for p in body["params_for_id"]["params"]] == ["ina/gNaBar"]
+
+
+@pytest.mark.integration
+def test_the_archives_protocol_comes_from_the_mmt(client, requires_simulation):
+    """The archive carries no obs_data. Without this the study would load unpaced
+    -- a model and a parameter to fit, and nothing driving it."""
+    with open(MMT_EXAMPLE, "rb") as fh:
+        body = client.post(
+            "/api/omex/upload", files={"file": (MMT_EXAMPLE.name, fh, "application/zip")}
+        ).json()
+
+    obs = body["obs_data"]
+    assert obs is not None and obs.get("derived_from_mmt") is True
+    assert obs["filename"] == "br-1977_obs_data.json"
+    protocol = obs["protocol_info"]
+    assert protocol["experiment_labels"] == ["pacing, period 1000"]
+    # No data_items: what to measure is not in a .mmt.
+    assert obs["data_items"] == []
+
+    # As a declared pacing shape, not as sub-experiments holding levels: the
+    # archive has to produce what a dropped .mmt produces, and an expansion
+    # would still run correctly while losing the period the .mmt stated.
+    assert protocol["sim_times"] == [[2000.0]]
+    assert protocol["params_to_change"] == {"engine/pace": [["engine_pace"]]}
+    assert protocol["protocol_shapes"]["engine_pace"]["events"] == [
+        {"level": 1.0, "start": 100.0, "length": 2.0, "period": 1000.0, "multiplier": 0}
+    ]
+
+
+@pytest.mark.integration
+def test_the_archive_and_the_bare_mmt_give_the_same_protocol(client, requires_simulation):
+    """Two routes into the same conversion, so they must not drift apart. The
+    archive path is easy to leave behind: it has its own upload route, and this
+    is the assertion that notices."""
+    with open(MMT_EXAMPLE, "rb") as fh:
+        from_archive = client.post(
+            "/api/omex/upload", files={"file": (MMT_EXAMPLE.name, fh, "application/zip")}
+        ).json()["obs_data"]["protocol_info"]
+
+    with open(RESOURCES_DIR / "br-1977.mmt", "rb") as fh:
+        from_file = client.post(
+            "/api/models/upload", files={"file": ("br-1977.mmt", fh, "text/plain")}
+        ).json()["protocol_obs_data"]["obs_data"]["protocol_info"]
+
+    assert from_archive == from_file
+
+
+@pytest.mark.integration
+def test_an_obs_data_in_the_archive_beats_the_mmts_own_protocol(client, requires_simulation):
+    """The author's file is the author's intent; a derived protocol must not
+    displace one they shipped."""
+    mine = {
+        "protocol_info": {
+            "pre_times": [0.0],
+            "sim_times": [[500.0]],
+            "params_to_change": {"engine/pace": [[0.0]]},
+            "experiment_labels": ["mine"],
+        },
+        "data_items": [],
+    }
+    with zipfile.ZipFile(MMT_EXAMPLE) as src:
+        members = {n: src.read(n) for n in src.namelist()}
+    members["br-1977_obs_data.json"] = json.dumps(mine).encode()
+
+    resp = client.post(
+        "/api/omex/upload", files={"file": ("mixed.omex", _zip(members), "application/zip")}
+    )
+    assert resp.status_code == 200, resp.text
+    obs = resp.json()["obs_data"]
+    assert obs.get("derived_from_mmt") is not True
+    assert obs["protocol_info"]["experiment_labels"] == ["mine"]
+
+
+@pytest.mark.integration
+def test_the_whole_archive_simulates_as_dropped(client, requires_simulation):
+    """The point of the archive: drop it, and the study runs. Two stimuli in the
+    .mmt's protocol, so two action potentials."""
+    with open(MMT_EXAMPLE, "rb") as fh:
+        body = client.post(
+            "/api/omex/upload", files={"file": (MMT_EXAMPLE.name, fh, "application/zip")}
+        ).json()
+
+    resp = client.post(
+        "/api/protocol/run",
+        json={"model_id": body["model_id"], "params": {}, "outputs": ["membrane/V"]},
+    )
+    assert resp.status_code == 200, resp.text
+    exp = resp.json()["experiments"][0]
+    v = exp["outputs"]["membrane/V"]
+    assert exp["time"][-1] == pytest.approx(2000, abs=1)
+    assert sum(1 for a, b in zip(v, v[1:]) if a <= 0 < b) == 2
+
+
+@pytest.mark.integration
+def test_the_calibration_parameter_from_the_archive_moves_the_model(client, requires_simulation):
+    """params_for_id and the protocol have to reach the same model: a parameter
+    loaded against a model the protocol does not drive would look fine and fit
+    nothing."""
+    with open(MMT_EXAMPLE, "rb") as fh:
+        body = client.post(
+            "/api/omex/upload", files={"file": (MMT_EXAMPLE.name, fh, "application/zip")}
+        ).json()
+    model_id = body["model_id"]
+
+    def peak(gna):
+        r = client.post(
+            "/api/protocol/run",
+            json={
+                "model_id": model_id,
+                "params": {"ina/gNaBar": gna},
+                "outputs": ["membrane/V"],
+            },
+        )
+        assert r.status_code == 200, r.text
+        return max(r.json()["experiments"][0]["outputs"]["membrane/V"])
+
+    assert peak(1.0) != pytest.approx(peak(8.0), abs=1e-3)

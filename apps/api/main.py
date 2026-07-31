@@ -887,6 +887,27 @@ async def upload_omex(
 
     # The model first: obs_data and params attach to it.
     raw_by_name = parts["cellml"]
+
+    # A Myokit model in the archive goes through the same conversion a dropped
+    # .mmt does (#27), including the offer of its [[protocol]] as an obs_data --
+    # so an archive built around a .mmt behaves like the file it contains rather
+    # than like a lesser kind of study.
+    converted_from = None
+    protocol = None
+    if len(raw_by_name) == 1 and myokit_import.is_myokit_filename(parts["master"] or ""):
+        only_name = parts["master"]
+        mmt_bytes = raw_by_name[only_name]
+        try:
+            cellml_bytes, _saved = myokit_import.cellml_from_myokit(
+                mmt_bytes, filename=only_name, out_dir=out_dir
+            )
+        except myokit_import.MyokitImportError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        converted_from = only_name
+        protocol = _protocol_from_mmt(mmt_bytes, only_name, out_dir)
+        raw_by_name = {Path(only_name).stem + ".cellml": cellml_bytes}
+        parts = {**parts, "master": Path(only_name).stem + ".cellml"}
+
     if len(raw_by_name) == 1 and not has_imports(next(iter(raw_by_name.values()))):
         raw = next(iter(raw_by_name.values()))
     else:
@@ -922,6 +943,10 @@ async def upload_omex(
         "params_for_id": None,
         # Where PhLynx's editor state was kept, so the archive round-trips (#149).
         "module_config_path": None,
+        # Set when the archive's model was a .mmt (#27), same fields the
+        # single-file upload returns so the UI needs no second code path.
+        "converted_from": converted_from,
+        "protocol_obs_data": protocol,
     }
 
     # obs_data and params_for_id are optional: an archive with only a model is a
@@ -962,6 +987,27 @@ async def upload_omex(
     if parts["module_config"]:
         _name, blob = parts["module_config"]
         result["module_config_path"] = omex_import.save_module_config(blob, out_dir)
+
+    # An obs_data in the archive is the author's own and always wins; only when
+    # there is none does the .mmt's protocol become the study's protocol.
+    if result["obs_data"] is None and protocol and protocol.get("obs_data"):
+        try:
+            parsed = parse_obs_data(protocol["obs_data"])
+        except (ValueError, ObsDataError):
+            parsed = None
+        if parsed is not None:
+            _models[model_id].obs_data = parsed
+            obs_path = UPLOAD_DIR / f"{model_id}_obs_data.json"
+            obs_path.write_text(json.dumps(protocol["obs_data"], indent=4))
+            _models[model_id].obs_path = obs_path
+            result["obs_data"] = {
+                "filename": protocol["filename"],
+                **parsed.summary(),
+                "data_items": parsed.data_items,
+                "prediction_items": parsed.prediction_items,
+                "protocol_info": parsed.protocol_info,
+                "derived_from_mmt": True,
+            }
 
     return result
 

@@ -31,6 +31,11 @@ MODULE_CONFIG_NAME = "module_config.json"
 
 OMEX_SUFFIXES = (".omex",)
 
+# The model formats an archive may carry. A .mmt is converted to CellML on the
+# way in exactly as a dropped one is (#27), so an archive built around a Myokit
+# model is not a second kind of study.
+MODEL_SUFFIXES = (".cellml", ".mmt")
+
 
 class OmexImportError(ValueError):
     """A COMBINE archive that could not be read (surface as HTTP 422)."""
@@ -53,7 +58,7 @@ def looks_like_omex(data: bytes) -> bool:
             names = [n.lower() for n in zf.namelist()]
     except zipfile.BadZipFile:
         return False
-    return any(n.endswith(".cellml") for n in names) or any(
+    return any(n.endswith(MODEL_SUFFIXES) for n in names) or any(
         n.endswith("manifest.xml") for n in names
     )
 
@@ -77,7 +82,7 @@ def _master_from_manifest(zf: zipfile.ZipFile) -> str | None:
             if str(entry.get("master", "")).lower() != "true":
                 continue
             loc = (entry.get("location") or "").lstrip("./")
-            if loc.lower().endswith(".cellml"):
+            if loc.lower().endswith(MODEL_SUFFIXES):
                 return loc
     return None
 
@@ -85,6 +90,7 @@ def _master_from_manifest(zf: zipfile.ZipFile) -> str | None:
 def _classify(names: list[str]) -> dict:
     """Sort archive members into the roles CUFLynx imports."""
     cellml = [n for n in names if n.lower().endswith(".cellml")]
+    myokit = [n for n in names if n.lower().endswith(".mmt")]
     csvs = [n for n in names if n.lower().endswith(".csv")]
     jsons = [n for n in names if n.lower().endswith(".json")]
 
@@ -96,7 +102,11 @@ def _classify(names: list[str]) -> dict:
     obs = obs_named or [n for n in jsons if n not in module_config]
 
     return {
-        "cellml": cellml,
+        # A .mmt only counts when there is no CellML: an archive holding both has
+        # presumably already been converted, and the CellML is the authoritative
+        # copy -- re-converting would silently prefer the source over the file the
+        # author chose to ship.
+        "cellml": cellml or myokit,
         "params": params or csvs,
         "obs": obs,
         "module_config": module_config,
@@ -108,7 +118,8 @@ def unpack(data: bytes) -> dict:
 
     ``cellml`` keeps *every* CellML in the archive, with the master first: a
     non-flattened model needs its sister files, and the existing upload path
-    already knows how to flatten a bundle.
+    already knows how to flatten a bundle. An archive whose model is a Myokit
+    ``.mmt`` yields that instead, for the caller to convert.
     """
     try:
         zf = zipfile.ZipFile(io.BytesIO(data))
@@ -122,7 +133,8 @@ def unpack(data: bytes) -> dict:
         roles = _classify(names)
         if not roles["cellml"]:
             raise OmexImportError(
-                "the archive contains no .cellml file, so there is no model to load."
+                "the archive contains no .cellml or .mmt file, so there is no model "
+                "to load."
             )
 
         master = _master_from_manifest(zf)
