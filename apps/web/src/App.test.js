@@ -1091,3 +1091,63 @@ describe('App.vue shared plot alignment (#145)', () => {
     expect(wrapper.vm.axisAlign.widths['removed-cell']).toBeUndefined()
   })
 })
+
+// Issue #27: a Myokit .mmt with a bare `time = 0 bind time` declares no time
+// unit, so the converted CellML reports `dimensionless` and the time axis had
+// nothing to label itself with.
+describe('App.vue time unit (#27)', () => {
+  const withUnits = async (units) => {
+    listSavedRuns.mockResolvedValue({ runs: [] })
+    const wrapper = shallowMount(App)
+    await flushPromises()
+    wrapper.vm.model.variables.value = {
+      params: [], odes: ['m/x'], algebraic: [], all_names: [], units,
+    }
+    await nextTick()
+    return wrapper
+  }
+
+  beforeEach(() => localStorage.removeItem('cuflynx-time-unit'))
+
+  it('takes the unit the model declares', async () => {
+    const wrapper = await withUnits({ 'environment/time': 'second', 'm/x': 'mM' })
+    expect(wrapper.vm.modelTimeUnit).toBe('second')
+    expect(wrapper.vm.timeUnitLabel).toBe('second')
+  })
+
+  // `dimensionless` is what "never declared" looks like — not a unit, so the
+  // axis must not be labelled with it.
+  it('treats dimensionless as undeclared', async () => {
+    const wrapper = await withUnits({ 'engine/time': 'dimensionless', 'm/x': 'mV' })
+    expect(wrapper.vm.modelTimeUnit).toBe('')
+    expect(wrapper.vm.timeUnitLabel).toBe('')
+  })
+
+  it('uses the user unit when the model declares none', async () => {
+    const wrapper = await withUnits({ 'engine/time': 'dimensionless' })
+    wrapper.vm.timeUnitOverride = 'ms'
+    await nextTick()
+    expect(wrapper.vm.timeUnitLabel).toBe('ms')
+  })
+
+  // The model is the authority: a user unit must not be able to make the axis
+  // disagree with the equations.
+  it('never lets a user unit override the model own', async () => {
+    const wrapper = await withUnits({ 'environment/time': 'second' })
+    wrapper.vm.timeUnitOverride = 'ms'
+    await nextTick()
+    expect(wrapper.vm.timeUnitLabel).toBe('second')
+  })
+
+  it('remembers the unit across sessions', async () => {
+    const wrapper = await withUnits({ 'engine/time': 'dimensionless' })
+    wrapper.vm.timeUnitOverride = 'ms'
+    await nextTick()
+    expect(localStorage.getItem('cuflynx-time-unit')).toBe('ms')
+  })
+
+  it('nothing is guessed when neither supplies one', async () => {
+    const wrapper = await withUnits({ 'engine/time': 'dimensionless' })
+    expect(wrapper.vm.timeUnitLabel).toBe('')
+  })
+})

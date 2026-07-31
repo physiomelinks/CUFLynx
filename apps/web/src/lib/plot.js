@@ -269,7 +269,13 @@ export function unitForVars(units, qnames) {
 export function timeUnit(units) {
   if (!units) return ''
   for (const [qname, u] of Object.entries(units)) {
-    if (u && TIME_NAMES.has(String(qname).split('/').pop())) return u
+    // `dimensionless` is what a model that never declares a time unit reports
+    // (a Myokit .mmt with a bare `time = 0 bind time`, for instance). It is not
+    // a unit, so treat it as "unknown" and let the caller supply one rather than
+    // labelling the axis with it.
+    if (u && u !== 'dimensionless' && TIME_NAMES.has(String(qname).split('/').pop())) {
+      return u
+    }
   }
   return ''
 }

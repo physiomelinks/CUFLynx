@@ -468,7 +468,20 @@ const plottableVariables = computed(() => {
 // CellML units per variable (qname -> units identifier), used to label plot
 // axes (#125). The x-axis unit is the model's time variable's unit.
 const modelUnits = computed(() => model.variables.value.units ?? {})
-const timeUnitLabel = computed(() => timeUnit(modelUnits.value))
+// The unit the model declares for its time variable, when it declares one. A
+// Myokit .mmt with a bare `time = 0 bind time` declares none, and a CellML
+// converted from it reports `dimensionless` — so this is often empty (#27).
+const modelTimeUnit = computed(() => timeUnit(modelUnits.value))
+// User-supplied time unit, for a model that does not state its own. Persisted,
+// because it is a property of the model the user is working on rather than a
+// per-session choice. Guessing (ms for electrophysiology, s for haemodynamics)
+// would be putting a unit on the user's model that the model never claimed.
+const timeUnitOverride = ref(localStorage.getItem('cuflynx-time-unit') || '')
+watch(timeUnitOverride, (v) => localStorage.setItem('cuflynx-time-unit', (v || '').trim()))
+// What the model says, else what the user told us.
+const timeUnitLabel = computed(
+  () => modelTimeUnit.value || timeUnitOverride.value.trim(),
+)
 
 // Extra-plot qnames to append to a run's requested outputs so the chosen
 // variables come back from the engine — the x variable of a phase-plane plot
@@ -1776,6 +1789,47 @@ watch(
 
         <hr class="settings-sep" />
 
+        <!--
+          dt, pre-time and sim-time are all in the model's time units, so the
+          unit belongs here beside them. Highlighted when the model does not
+          declare one — a Myokit .mmt with a bare `time = 0 bind time` says
+          nothing, and an unlabelled axis is the visible symptom (#27).
+        -->
+        <label class="settings-row" :class="{ 'needs-attention': !timeUnitLabel }">
+          <span
+            class="settings-label"
+            title="The unit of the model's time variable. dt, pre-time and sim-time are all in these units, and it labels the plots' time axis."
+          >
+            Time unit
+          </span>
+          <InputText
+            v-if="!modelTimeUnit"
+            v-model="timeUnitOverride"
+            size="small"
+            placeholder="e.g. ms"
+            data-testid="time-unit-input"
+          />
+          <code v-else class="settings-derived" data-testid="time-unit-derived">
+            {{ modelTimeUnit }}
+          </code>
+        </label>
+        <p class="settings-hint" data-testid="time-unit-hint">
+          <template v-if="modelTimeUnit">
+            From the model's own time variable. dt, pre-time and sim-time are in
+            these units.
+          </template>
+          <template v-else-if="timeUnitOverride.trim()">
+            This model does not declare a time unit, so this one is yours — it
+            labels the time axis and is what dt, pre-time and sim-time are in.
+          </template>
+          <template v-else>
+            <strong>This model does not declare a time unit</strong>, so the time
+            axis is unlabelled and dt / pre-time / sim-time have no stated units.
+            Set it here. Nothing is guessed for you: a wrong unit would be worse
+            than none.
+          </template>
+        </p>
+
         <label class="settings-row">
           <span
             class="settings-label"
@@ -2064,6 +2118,17 @@ watch(
 }
 .python-bar .py-mpi.off {
   opacity: 0.5;
+}
+/* A setting the model could not supply and the user has not either: worth
+   pointing at, since its absence shows up as an unlabelled axis rather than as
+   an error (#27). */
+.settings-row.needs-attention .settings-label::after {
+  content: ' ●';
+  color: var(--p-primary-color, #5b9bd5);
+}
+.settings-derived {
+  opacity: 0.8;
+  font-size: 0.8rem;
 }
 .settings-form {
   display: flex;
