@@ -383,3 +383,116 @@ def test_a_generated_protocol_info_runs_and_paces_the_model(client, requires_sim
     assert exp["time"][-1] == pytest.approx(2000, abs=1)
     upstrokes = sum(1 for a, b in zip(exp["outputs"]["membrane/V"], exp["outputs"]["membrane/V"][1:]) if a <= 0 < b)
     assert upstrokes == 2, f"expected two paced action potentials, saw {upstrokes}"
+
+
+# ---------------------------------------------------------------------------
+# The in-app hook: dropping a .mmt offers its protocol as a new obs_data
+# ---------------------------------------------------------------------------
+def _upload_mmt(client, path: Path, out_dir: str | None = None):
+    url = "/api/models/upload" + (f"?output_dir={out_dir}" if out_dir else "")
+    with open(path, "rb") as fh:
+        return client.post(url, files={"file": (path.name, fh, "text/plain")})
+
+
+@pytest.mark.integration
+def test_uploading_a_mmt_offers_its_protocol_as_obs_data(client, requires_simulation, tmp_path):
+    r = _upload_mmt(client, RESOURCES_DIR / "br-1977.mmt", str(tmp_path))
+    assert r.status_code == 200, r.text
+    offered = r.json()["protocol_obs_data"]
+    assert offered["reason"] is None
+    assert offered["filename"] == "br-1977_obs_data.json"
+    assert offered["obs_data"]["protocol_info"]["sim_times"] == [[100.0, 2.0, 998.0, 2.0, 898.0]]
+    # data_items are the user's to write: what to measure is not in the .mmt.
+    assert offered["obs_data"]["data_items"] == []
+
+
+@pytest.mark.integration
+def test_the_offered_obs_data_is_written_beside_the_converted_cellml(
+    client, requires_simulation, tmp_path
+):
+    r = _upload_mmt(client, RESOURCES_DIR / "br-1977.mmt", str(tmp_path))
+    offered = r.json()["protocol_obs_data"]
+    written = Path(offered["path"])
+    assert written.is_file()
+    assert json.loads(written.read_text())["protocol_info"]["sim_times"]
+
+
+@pytest.mark.integration
+def test_an_existing_obs_data_on_disk_is_never_overwritten(client, requires_simulation, tmp_path):
+    """It may hold hand-written data_items that nothing here could reconstruct."""
+    existing = tmp_path / "br-1977_obs_data.json"
+    existing.write_text('{"mine": true}')
+
+    r = _upload_mmt(client, RESOURCES_DIR / "br-1977.mmt", str(tmp_path))
+    offered = r.json()["protocol_obs_data"]
+    assert existing.read_text() == '{"mine": true}'
+    assert offered["path"] is None
+    assert any("left alone" in n for n in offered["notes"])
+    # Still offered in the response, so the user can adopt it if they want to.
+    assert offered["obs_data"]["protocol_info"]["sim_times"]
+
+
+@pytest.mark.integration
+def test_the_offered_obs_data_is_accepted_and_paces_the_model(client, requires_simulation):
+    """End to end through the routes a drop actually goes through."""
+    r = _upload_mmt(client, RESOURCES_DIR / "br-1977.mmt")
+    body = r.json()
+    model_id, offered = body["model_id"], body["protocol_obs_data"]
+
+    r = client.post(
+        "/api/obs_data/upload", json={"model_id": model_id, "obs_data": offered["obs_data"]}
+    )
+    assert r.status_code == 200, r.text
+
+    r = client.post(
+        "/api/protocol/run",
+        json={"model_id": model_id, "params": {}, "outputs": ["membrane/V"]},
+    )
+    assert r.status_code == 200, r.text
+    v = r.json()["experiments"][0]["outputs"]["membrane/V"]
+    assert sum(1 for a, b in zip(v, v[1:]) if a <= 0 < b) == 2
+
+
+@pytest.mark.integration
+def test_a_model_whose_protocol_cannot_be_converted_still_uploads(client, requires_simulation):
+    """The protocol is a bonus. Losing it must not cost the user the model."""
+    path = next(p for p in all_mmt_fixtures() if p.name == "stewart-2009.mmt")
+    r = _upload_mmt(client, path)
+    assert r.status_code == 200, r.text
+    offered = r.json()["protocol_obs_data"]
+    assert offered["obs_data"] is None
+    assert "no [[protocol]] events" in offered["reason"]
+
+
+@pytest.mark.integration
+def test_a_cellml_upload_offers_nothing(client, requires_simulation):
+    from conftest import LV_MODEL_PATH
+
+    with open(LV_MODEL_PATH, "rb") as fh:
+        r = client.post(
+            "/api/models/upload", files={"file": (LV_MODEL_PATH.name, fh, "text/xml")}
+        )
+    assert r.status_code == 200, r.text
+    assert r.json()["protocol_obs_data"] is None
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("path", all_mmt_fixtures(), ids=lambda p: p.name)
+def test_every_mmt_upload_either_offers_a_usable_protocol_or_says_why(
+    path, client, requires_simulation
+):
+    upload = _upload_mmt(client, path)
+    if upload.status_code == 422:
+        pytest.skip("stub model, refused by the importer")
+    offered = upload.json()["protocol_obs_data"]
+    assert offered is not None
+    if offered["obs_data"] is None:
+        assert offered["reason"]
+        return
+    # Offered protocols must survive the obs_data validator, or the UI would
+    # adopt something the next request rejects.
+    r = client.post(
+        "/api/obs_data/upload",
+        json={"model_id": upload.json()["model_id"], "obs_data": offered["obs_data"]},
+    )
+    assert r.status_code == 200, r.text

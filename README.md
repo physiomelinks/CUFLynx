@@ -137,7 +137,15 @@ in. Only the `[[model]]` section is imported: in CUFLynx the protocol lives in
 `obs_data.json`, so baking Myokit's stimulus into the CellML would give the model
 two sources of pacing that disagree.
 
-To carry the protocol across too, rather than retyping it as `sim_times`:
+The `[[protocol]]` section is carried across for you: if you have no obs_data
+loaded, dropping the `.mmt` creates `<model>_obs_data.json` from it, saves it to
+the outputs directory and loads it, so the model is paced as Myokit paced it. An
+obs_data you dropped yourself is never replaced by a derived one. It arrives with
+no `data_items` — what the model should be measured against isn't in the `.mmt` —
+so add those via **Edit**.
+
+The same conversion is available from the command line, which is the way to
+re-derive a protocol into an obs_data you have already written:
 
 ```bash
 python scripts/mmt_to_obs_data.py resources/br-1977.mmt

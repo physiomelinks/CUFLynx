@@ -106,6 +106,12 @@ function onObsEditSaved(payload) {
 const pendingObs = ref(null) // parsed obs_data object
 const pendingParams = ref(null) // params_for_id File
 
+// A dropped .mmt carries a [[protocol]] the model import leaves behind, since
+// the protocol belongs in obs_data. The server converts it and hands it back
+// here; it is adopted only when the user has no obs_data of their own, so a
+// hand-written one is never overwritten by a derived one. See #27.
+const derivedObs = ref(null)
+
 function extOk(filename, exts) {
   return exts.some((e) => filename.toLowerCase().endsWith(e))
 }
@@ -131,11 +137,36 @@ watch(
       if (pendingObs.value) await attachObs(pendingObs.value.obsData, pendingObs.value.filename)
       if (pendingParams.value) await attachParams(pendingParams.value)
       notice.value = ''
+      // After the pending flush, so an obs_data the user dropped always wins
+      // over one derived from the .mmt's protocol.
+      await adoptDerivedObs()
     } catch (e) {
       error.value = e?.response?.data?.detail || String(e)
     }
   },
 )
+
+// Create an obs_data from the .mmt's protocol, but only if there isn't one
+// already: the point is to save retyping a protocol, not to replace anything.
+async function adoptDerivedObs() {
+  const derived = derivedObs.value
+  derivedObs.value = null
+  if (!derived) return
+  if (!derived.obs_data) {
+    // It could not be converted. Say why rather than leaving the user to wonder
+    // where their protocol went — the reason is usually a fact about the file.
+    if (derived.reason) notice.value = `No protocol taken from the .mmt: ${derived.reason}`
+    return
+  }
+  if (pendingObs.value) return // the user dropped their own
+  await attachObs(derived.obs_data, derived.filename)
+  const notes = (derived.notes || []).join(' ')
+  notice.value =
+    `Created ${derived.filename} from the .mmt's protocol` +
+    (derived.path ? ` (saved to ${derived.path})` : '') +
+    `. It has no data_items yet — add what to measure via Edit.` +
+    (notes ? ` ${notes}` : '')
+}
 
 function filesFrom(event) {
   if (event.dataTransfer?.files?.length) return Array.from(event.dataTransfer.files)
@@ -189,6 +220,9 @@ async function onCellmlDrop(event) {
   const main = files.find((f) => f.name.toLowerCase().endsWith('.cellml')) ?? files[0]
   try {
     const data = await uploadCellML(files, props.outputsDir)
+    // Picked up by the modelId watcher, which runs after the parent has cleared
+    // its obs store and after any pending obs_data has been re-attached.
+    derivedObs.value = data.protocol_obs_data || null
     emit('model-loaded', { ...data, filename: main.name })
   } catch (e) {
     error.value = e?.response?.data?.detail || String(e)
