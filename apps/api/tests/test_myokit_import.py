@@ -147,3 +147,94 @@ def test_a_cellml_upload_is_untouched_by_the_myokit_path(client):
     body = upload_model(client, LV_MODEL_PATH)
     assert body["converted_from"] is None
     assert body["converted_cellml_path"] is None
+
+
+# ---------------------------------------------------------------------------
+# The shipped .mmt fixture
+# ---------------------------------------------------------------------------
+MMT_FIXTURE = None  # resolved lazily so a CA-less run can still collect
+
+
+def _fixture_paths():
+    from conftest import RESOURCES_DIR
+
+    return (
+        RESOURCES_DIR / "3compartment.mmt",
+        RESOURCES_DIR / "3compartment_mmt_params_for_id.csv",
+        RESOURCES_DIR / "3compartment_mmt_obs_data.json",
+    )
+
+
+def test_the_mmt_fixture_and_its_companions_exist():
+    for path in _fixture_paths():
+        assert path.is_file(), f"missing fixture: {path}"
+
+
+def test_the_mmt_fixture_is_our_own_model_not_a_vendored_one():
+    """It is derived from this repo's 3compartment_flat.cellml, so it carries our
+    licence. Myokit's own sample models embed third-party (GPL) notices that
+    would not be compatible with this repository's Apache-2.0 licence."""
+    mmt, _params, _obs = _fixture_paths()
+    text = mmt.read_text()
+    assert "3compartment_flat.cellml" in text
+    assert "GNU General Public License" not in text
+
+
+def test_the_obs_fixture_is_the_data_only_shape():
+    """A bare list, which is what "no protocol" means -- the dict form requires
+    protocol_info and would be rejected."""
+    import json
+
+    _mmt, _params, obs = _fixture_paths()
+    items = json.loads(obs.read_text())
+    assert isinstance(items, list) and items
+    assert all("operands" in item for item in items)
+
+
+@pytest.mark.integration
+def test_the_fixture_set_loads_and_runs_together(client, requires_simulation, tmp_path):
+    """Dropping the .mmt gives the same model as the CellML, and the companion
+    params / obs attach to it."""
+    import json
+
+    mmt, params, obs = _fixture_paths()
+    with open(mmt, "rb") as fh:
+        body = client.post(
+            "/api/models/upload",
+            params={"output_dir": str(tmp_path)},
+            files={"file": (mmt.name, fh, "text/plain")},
+        ).json()
+    model_id = body["model_id"]
+    assert body["converted_from"] == "3compartment.mmt"
+    # Same model as the CellML fixture: 27 states.
+    assert len(body["odes"]) == 27
+
+    with open(params, "rb") as fh:
+        r = client.post(
+            "/api/params_for_id/upload",
+            params={"model_id": model_id},
+            files={"file": (params.name, fh, "text/csv")},
+        )
+    assert r.status_code == 200, r.text
+    assert [p["qname"] for p in r.json()["params"]] == ["aortic_root/C", "global/E_lv_A"]
+
+    r = client.post(
+        "/api/obs_data/upload",
+        json={"model_id": model_id, "obs_data": json.loads(obs.read_text())},
+    )
+    assert r.status_code == 200, r.text
+    assert len(r.json()["data_items"]) == 2
+    assert r.json()["has_protocol"] is False
+
+    r = client.post(
+        "/api/simulate",
+        json={
+            "model_id": model_id,
+            "params": {},
+            "sim_time": 2.0,
+            "pre_time": 5.0,
+            "outputs": ["aortic_root/u", "aortic_root/v"],
+        },
+    )
+    assert r.status_code == 200, r.text
+    assert len(r.json()["time"]) > 0

@@ -1,0 +1,30 @@
+[
+  {
+    "variable": "pressure aortic root",
+    "name_for_plotting": "u_{ao}",
+    "operands": [
+      "aortic_root/u"
+    ],
+    "operation": "max",
+    "data_type": "constant",
+    "plot_type": "horizontal",
+    "unit": "J_per_m3",
+    "value": 16000,
+    "std": 800,
+    "weight": 1
+  },
+  {
+    "variable": "flow aortic root",
+    "name_for_plotting": "v_{ao}",
+    "operands": [
+      "aortic_root/v"
+    ],
+    "operation": "mean",
+    "data_type": "constant",
+    "plot_type": "horizontal",
+    "unit": "m3_per_s",
+    "value": 0.0001,
+    "std": 1e-05,
+    "weight": 1
+  }
+]

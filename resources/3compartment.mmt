@@ -1,0 +1,426 @@
+[[model]]
+mmt_authors: Myokit CellML 2 API
+name: CardiovascularSystem
+desc: """
+Myokit (.mmt) form of this repository's own 3compartment_flat.cellml, produced
+with Myokit's CellML importer. Test fixture for the .mmt import path (issue #27):
+dropping this must yield the same model as dropping the CellML.
+
+Derived from a CUFLynx resource, so it carries this repository's licence -- no
+third-party model is vendored here.
+"""
+# Initial values
+pvn_module.q_C_change        = parameters.q_C_init_pvn
+pvn_module.v                 = 0 [m^3/s]
+par_module.q_C               = 0 [m^3]
+par_module.v                 = 0 [m^3/s]
+heart_module.s               = 0
+heart_module.v_trv           = 0 [m^3/s]
+heart_module.v_puv           = 0 [m^3/s]
+heart_module.v_miv           = 0 [m^3/s]
+heart_module.v_aov           = 0 [m^3/s]
+heart_module.zeta_trv_pre    = 0
+heart_module.zeta_puv_pre    = 0
+heart_module.zeta_miv_pre    = 0
+heart_module.zeta_aov_pre    = 0
+heart_module.q_lv            = parameters_global.q_lv_init
+heart_module.q_rv            = parameters_global.q_rv_init
+heart_module.q_la            = parameters_global.q_la_init
+heart_module.q_ra            = parameters_global.q_ra_init
+heart_module.chi_a           = 0
+heart_module.chi_v           = 0
+aortic_root_module.v         = 0 [m^3/s]
+aortic_root_module.q_C       = 0 [m^3]
+aortic_root_module.q_C_d     = 0 [m^3]
+systemic_T_module.v          = 0 [m^3/s]
+systemic_T_module.v_T        = 0 [m^3/s]
+systemic_T_module.q          = parameters.q_init_systemic_T
+venous_svc_module.q_C_change = parameters.q_C_init_venous_svc
+venous_svc_module.v          = 0 [m^3/s]
+
+[aortic_root]
+
+[aortic_root_module]
+R_v = 0.01 [s] / parameters.C_aortic_root
+    in [g/m^4/s (1000)]
+q = q_C + q_C_d + parameters.q_0_aortic_root
+    in [m^3]
+dot(q_C) = heart_module.v_aov - v
+    in [m^3]
+dot(q_C_d) = v - systemic_T_module.v
+    in [m^3]
+u = parameters.u_0_aortic_root + u_C + parameters.u_ext_aortic_root + 2 * R_v * (heart_module.v_aov - v)
+    in [Pa]
+u_C = q_C / (parameters.C_aortic_root / 2)
+    in [Pa]
+u_C_d = q_C_d / (parameters.C_aortic_root / 2)
+    in [Pa]
+u_d = parameters.u_0_aortic_root + u_C_d + parameters.u_ext_aortic_root + 2 * R_v * (v - systemic_T_module.v)
+    in [Pa]
+dot(v) = (u - u_d - parameters.R_aortic_root * v) / parameters.I_aortic_root
+    in [m^3/s]
+
+[environment]
+
+[generic_junction_connection]
+
+[global]
+
+[heart]
+
+[heart_module]
+A_eff_aov = (parameters_global.M_st_aov * parameters_global.A_nn_aov - parameters_global.M_rg_aov * parameters_global.A_nn_aov) * zeta_aov + parameters_global.M_rg_aov * parameters_global.A_nn_aov
+    in [m^2]
+A_eff_miv = (parameters_global.M_st_miv * parameters_global.A_nn_miv - parameters_global.M_rg_miv * parameters_global.A_nn_miv) * zeta_miv + parameters_global.M_rg_miv * parameters_global.A_nn_miv
+    in [m^2]
+A_eff_puv = (parameters_global.M_st_puv * parameters_global.A_nn_puv - parameters_global.M_rg_puv * parameters_global.A_nn_puv) * zeta_puv + parameters_global.M_rg_puv * parameters_global.A_nn_puv
+    in [m^2]
+A_eff_trv = (parameters_global.M_st_trv * parameters_global.A_nn_trv - parameters_global.M_rg_trv * parameters_global.A_nn_trv) * zeta_trv + parameters_global.M_rg_trv * parameters_global.A_nn_trv
+    in [m^2]
+B_aov = parameters_global.rho / (2 * A_eff_aov^2 + eps_m4)
+    in [g/m^7 (1000)]
+B_miv = parameters_global.rho / (2 * A_eff_miv^2 + eps_m4)
+    in [g/m^7 (1000)]
+B_puv = parameters_global.rho / (2 * A_eff_puv^2 + eps_m4)
+    in [g/m^7 (1000)]
+B_trv = parameters_global.rho / (2 * A_eff_trv^2 + eps_m4)
+    in [g/m^7 (1000)]
+L_aov = parameters_global.rho * parameters_global.l_eff / (A_eff_aov + eps_m2)
+    in [g/m^4 (1000)]
+L_miv = parameters_global.rho * parameters_global.l_eff / (A_eff_miv + eps_m2)
+    in [g/m^4 (1000)]
+L_puv = parameters_global.rho * parameters_global.l_eff / (A_eff_puv + eps_m2)
+    in [g/m^4 (1000)]
+L_trv = parameters_global.rho * parameters_global.l_eff / (A_eff_trv + eps_m2)
+    in [g/m^4 (1000)]
+dot(chi_a) = piecewise(mt >= t_astart_norm and mt <= t_astart_norm + eps_1 and chi_afloor <= 0.25, 0.25 / parameters_global.T_ac, t_astart_norm + eps_1 > 1 and mt <= t_astart_norm + eps_1 - 1 and chi_afloor <= 0.25, 0.25 / parameters_global.T_ac, chi_afloor > eps_2 and chi_afloor <= 0.25, 0.25 / parameters_global.T_ac, chi_afloor >= 0.25 and chi_afloor < 0.5, 0.25 / parameters_global.T_ar, chi_afloor >= 0.5, 0.5 / (parameters_global.T - parameters_global.T_ac - parameters_global.T_ar), 0 [S/F])
+    in [1]
+chi_afloor = chi_a - floor(chi_a)
+    in [1]
+chi_afloor_final = piecewise(chi_afloor <= 0.5, chi_afloor * 2, 0)
+    in [1]
+dot(chi_v) = piecewise(mt >= t_vstart_norm and mt <= t_vstart_norm + eps_1 and chi_vfloor <= 0.25, 0.25 / parameters_global.T_vc, t_vstart_norm + eps_1 > 1 and mt <= t_vstart_norm + eps_1 - 1 and chi_vfloor <= 0.25, 0.25 / parameters_global.T_vc, chi_vfloor > eps_2 and chi_vfloor <= 0.25, 0.25 / parameters_global.T_vc, chi_vfloor > 0.25 and chi_vfloor < 0.5, 0.25 / parameters_global.T_vr, chi_vfloor > 0.5, 0.5 / (parameters_global.T - parameters_global.T_vc - parameters_global.T_vr), 0 [S/F])
+    in [1]
+chi_vfloor = chi_v - floor(chi_v)
+    in [1]
+chi_vfloor_final = piecewise(chi_vfloor <= 0.5, chi_vfloor * 2, 0)
+    in [1]
+e_a = 0.5 * (1 - cos(2 *  3.14159265358979312 * chi_afloor_final))
+    in [1]
+e_v = 0.5 * (1 - cos(2 *  3.14159265358979312 * chi_vfloor_final))
+    in [1]
+eps_1 = 0.07
+    in [1]
+eps_2 = 0.02
+    in [1]
+eps_m2 = 1e-14 [m^2]
+    in [m^2]
+eps_m4 = 1e-14 [m^4]
+    in [m^4]
+mt = s - floor(s)
+    in [1]
+q_heart = q_ra + q_rv + q_la + q_lv
+    in [m^3]
+dot(q_la) = pvn_module.v - v_miv
+    in [m^3]
+dot(q_lv) = v_miv - v_aov
+    in [m^3]
+dot(q_ra) = venous_svc_module.v + zero_flow_module.v_zero - v_trv
+    in [m^3]
+dot(q_rv) = v_trv - v_puv
+    in [m^3]
+dot(s) = 1 / parameters_global.T
+    in [1]
+t_astart_norm = parameters_global.t_astart / parameters_global.T
+    in [1]
+t_vstart_norm = parameters_global.t_vstart / parameters_global.T
+    in [1]
+u_la = (e_a * parameters_global.E_la_A + parameters_global.E_la_B) * (q_la - parameters_global.q_la_us)
+    in [Pa]
+u_lv = (e_v * parameters_global.E_lv_A + parameters_global.E_lv_B) * (q_lv - parameters_global.q_lv_us)
+    in [Pa]
+u_ra = (e_a * parameters_global.E_ra_A + parameters_global.E_ra_B) * (q_ra - parameters_global.q_ra_us)
+    in [Pa]
+u_rv = (e_v * parameters_global.E_rv_A + parameters_global.E_rv_B) * (q_rv - parameters_global.q_rv_us)
+    in [Pa]
+dot(v_aov) = (-B_aov * v_aov * abs(v_aov) + u_lv - aortic_root_module.u) / L_aov
+    in [m^3/s]
+dot(v_miv) = (-B_miv * v_miv * abs(v_miv) + u_la - u_lv) / L_miv
+    in [m^3/s]
+dot(v_puv) = (-B_puv * v_puv * abs(v_puv) + u_rv - par_module.u) / L_puv
+    in [m^3/s]
+dot(v_trv) = (-B_trv * v_trv * abs(v_trv) + u_ra - u_rv) / L_trv
+    in [m^3/s]
+zeta_aov = if(zeta_aov_pre > 0, zeta_aov_pre, 0)
+    in [1]
+dot(zeta_aov_pre) = piecewise(u_lv >= aortic_root_module.u, (1 - zeta_aov_pre) * parameters_global.K_vo_aov * (u_lv - aortic_root_module.u), zeta_aov_pre * parameters_global.K_vc_aov * (u_lv - aortic_root_module.u))
+    in [1]
+zeta_miv = if(zeta_miv_pre > 0, zeta_miv_pre, 0)
+    in [1]
+dot(zeta_miv_pre) = piecewise(u_la >= u_lv, (1 - zeta_miv_pre) * parameters_global.K_vo_miv * (u_la - u_lv), zeta_miv_pre * parameters_global.K_vc_miv * (u_la - u_lv))
+    in [1]
+zeta_puv = if(zeta_puv_pre > 0, zeta_puv_pre, 0)
+    in [1]
+dot(zeta_puv_pre) = piecewise(u_rv >= par_module.u, (1 - zeta_puv_pre) * parameters_global.K_vo_puv * (u_rv - par_module.u), zeta_puv_pre * parameters_global.K_vc_puv * (u_rv - par_module.u))
+    in [1]
+zeta_trv = if(zeta_trv_pre > 0, zeta_trv_pre, 0)
+    in [1]
+dot(zeta_trv_pre) = piecewise(u_ra >= u_rv, (1 - zeta_trv_pre) * parameters_global.K_vo_trv * (u_ra - u_rv), zeta_trv_pre * parameters_global.K_vc_trv * (u_ra - u_rv))
+    in [1]
+
+[par]
+
+[par_module]
+R_v = 0.01 [s] / parameters.C_par
+    in [g/m^4/s (1000)]
+q = q_C + parameters.q_0_par
+    in [m^3]
+dot(q_C) = heart_module.v_puv - v
+    in [m^3]
+u = parameters.u_0_par + u_C + parameters.u_ext_par + R_v * (heart_module.v_puv - v)
+    in [Pa]
+u_C = q_C / parameters.C_par
+    in [Pa]
+dot(v) = (u - pvn_module.u - parameters.R_par * v) / parameters.I_par
+    in [m^3/s]
+
+[parameters]
+C_T_systemic_T = 1e-7 [m^4*s^2/g (0.001)]
+    in [m^4*s^2/g (0.001)]
+C_aortic_root =  1.67498628700000009e-8 [m^4*s^2/g (0.001)]
+    in [m^4*s^2/g (0.001)]
+C_par =  3.09077000000000007e-10 [m^4*s^2/g (0.001)]
+    in [m^4*s^2/g (0.001)]
+C_pvn =  6.00150000000000001e-9 [m^4*s^2/g (0.001)]
+    in [m^4*s^2/g (0.001)]
+C_venous_svc = 1e-6 [m^4*s^2/g (0.001)]
+    in [m^4*s^2/g (0.001)]
+Delta_C_pvn = 0
+    in [1]
+Delta_C_venous_svc = 0
+    in [1]
+Delta_q_us_pvn = 0
+    in [1]
+Delta_q_us_venous_svc = 0
+    in [1]
+I_aortic_root = 10000 [g/m^4 (1000)]
+    in [g/m^4 (1000)]
+I_par = 1e-6 [g/m^4 (1000)]
+    in [g/m^4 (1000)]
+I_pvn = 1e-6 [g/m^4 (1000)]
+    in [g/m^4 (1000)]
+I_venous_svc = 0.01 [g/m^4 (1000)]
+    in [g/m^4 (1000)]
+R_T_systemic_T =  1.10000000000000000e8 [g/m^4/s (1000)]
+    in [g/m^4/s (1000)]
+R_aortic_root = 1000000 [g/m^4/s (1000)]
+    in [g/m^4/s (1000)]
+R_par =  1.06640000000000000e7 [g/m^4/s (1000)]
+    in [g/m^4/s (1000)]
+R_pvn = 1333000 [g/m^4/s (1000)]
+    in [g/m^4/s (1000)]
+R_venous_svc = 1114600 [g/m^4/s (1000)]
+    in [g/m^4/s (1000)]
+q_0_aortic_root = 6.94e-6 [m^3]
+    in [m^3]
+q_0_par = 0 [m^3]
+    in [m^3]
+q_C_init_pvn = 0.0001 [m^3]
+    in [m^3]
+q_C_init_venous_svc = 0.0013 [m^3]
+    in [m^3]
+q_init_systemic_T = 0.00245 [m^3]
+    in [m^3]
+q_us_0_pvn = 0 [m^3]
+    in [m^3]
+q_us_0_venous_svc = 0 [m^3]
+    in [m^3]
+q_us_systemic_T = 0.00245 [m^3]
+    in [m^3]
+u_0_aortic_root = 13300 [Pa]
+    in [Pa]
+u_0_par = 1463 [Pa]
+    in [Pa]
+u_ext_aortic_root = 0 [Pa]
+    in [Pa]
+u_ext_par = 0 [Pa]
+    in [Pa]
+u_ext_pvn = 0 [Pa]
+    in [Pa]
+u_ext_systemic_T = 0 [Pa]
+    in [Pa]
+u_ext_venous_svc = 0 [Pa]
+    in [Pa]
+
+[parameters_global]
+A_nn_aov = 0.000314 [m^2]
+    in [m^2]
+A_nn_miv = 0.0006 [m^2]
+    in [m^2]
+A_nn_puv = 0.0004 [m^2]
+    in [m^2]
+A_nn_trv = 0.0009 [m^2]
+    in [m^2]
+E_la_A = 9331000 [g/m^4/s^2 (1000)]
+    in [g/m^4/s^2 (1000)]
+E_la_B =  1.19970000000000000e7 [g/m^4/s^2 (1000)]
+    in [g/m^4/s^2 (1000)]
+E_lv_A =  2.48523797830000013e8 [g/m^4/s^2 (1000)]
+    in [g/m^4/s^2 (1000)]
+E_lv_B =  1.02685335580000002e7 [g/m^4/s^2 (1000)]
+    in [g/m^4/s^2 (1000)]
+E_ra_A = 7998000 [g/m^4/s^2 (1000)]
+    in [g/m^4/s^2 (1000)]
+E_ra_B = 9331000 [g/m^4/s^2 (1000)]
+    in [g/m^4/s^2 (1000)]
+E_rv_A =  7.33150000000000000e7 [g/m^4/s^2 (1000)]
+    in [g/m^4/s^2 (1000)]
+E_rv_B = 6665000 [g/m^4/s^2 (1000)]
+    in [g/m^4/s^2 (1000)]
+K_vc_aov = 0.04 [m*s/g (0.001)]
+    in [m*s/g (0.001)]
+K_vc_miv = 0.4 [m*s/g (0.001)]
+    in [m*s/g (0.001)]
+K_vc_puv = 0.2 [m*s/g (0.001)]
+    in [m*s/g (0.001)]
+K_vc_trv = 0.4 [m*s/g (0.001)]
+    in [m*s/g (0.001)]
+K_vo_aov = 0.04 [m*s/g (0.001)]
+    in [m*s/g (0.001)]
+K_vo_miv = 0.3 [m*s/g (0.001)]
+    in [m*s/g (0.001)]
+K_vo_puv = 0.2 [m*s/g (0.001)]
+    in [m*s/g (0.001)]
+K_vo_trv = 0.3 [m*s/g (0.001)]
+    in [m*s/g (0.001)]
+M_rg_aov = 0
+    in [1]
+M_rg_miv = 0
+    in [1]
+M_rg_puv = 0
+    in [1]
+M_rg_trv = 0
+    in [1]
+M_st_aov = 1
+    in [1]
+M_st_miv = 1
+    in [1]
+M_st_puv = 1
+    in [1]
+M_st_trv = 1
+    in [1]
+T = 1 [s]
+    in [s]
+T_ac = 0.17 [s]
+    in [s]
+T_ar = 0.17 [s]
+    in [s]
+T_vc = 0.3 [s]
+    in [s]
+T_vr = 0.15 [s]
+    in [s]
+l_eff = 0.01 [m]
+    in [m]
+q_la_init = 4e-6 [m^3]
+    in [m^3]
+q_la_us = 4e-6 [m^3]
+    in [m^3]
+q_lv_init =  7.15366809109999969e-4 [m^3]
+    in [m^3]
+q_lv_us = 5e-6 [m^3]
+    in [m^3]
+q_ra_init = 4e-6 [m^3]
+    in [m^3]
+q_ra_us = 4e-6 [m^3]
+    in [m^3]
+q_rv_init = 1e-5 [m^3]
+    in [m^3]
+q_rv_us = 1e-5 [m^3]
+    in [m^3]
+rho = 1050 [g/m^3 (1000)]
+    in [g/m^3 (1000)]
+t_astart = 0.8 [s]
+    in [s]
+t_vstart = 0 [s]
+    in [s]
+
+[pvn]
+
+[pvn_module]
+C_wCont = parameters.C_pvn * (1 - parameters.Delta_C_pvn)
+    in [m^4*s^2/g (0.001)]
+R_v = 0.01 [s] / parameters.C_pvn
+    in [g/m^4/s (1000)]
+q = q_C + q_us_wCont
+    in [m^3]
+q_C = q_C_change + parameters.q_us_0_pvn - q_us_wCont
+    in [m^3]
+dot(q_C_change) = par_module.v - v
+    in [m^3]
+q_us_wCont = parameters.q_us_0_pvn * (1 - parameters.Delta_q_us_pvn)
+    in [m^3]
+u = u_C + parameters.u_ext_pvn + R_v * (par_module.v - v)
+    in [Pa]
+u_C = q_C / C_wCont
+    in [Pa]
+dot(v) = (u - heart_module.u_la - parameters.R_pvn * v) / parameters.I_pvn
+    in [m^3/s]
+
+[sum_blood_volume]
+q_volume_sum_sum = pvn_module.q + par_module.q + heart_module.q_heart + aortic_root_module.q + systemic_T_module.q + venous_svc_module.q
+    in [m^3]
+
+[systemic_T]
+
+[systemic_T_module]
+I_T = 1e-6 [g/m^4 (1000)]
+    in [g/m^4 (1000)]
+R_v = 0.01 [s] / parameters.C_T_systemic_T
+    in [g/m^4/s (1000)]
+dot(q) = v - v_T
+    in [m^3]
+u = u_C + parameters.u_ext_systemic_T + R_v * (v - v_T)
+    in [Pa]
+u_C = (q - parameters.q_us_systemic_T) / parameters.C_T_systemic_T
+    in [Pa]
+dot(v) = (aortic_root_module.u_d - u - v * parameters.R_T_systemic_T / 2) / I_T
+    in [m^3/s]
+dot(v_T) = (u - venous_svc_module.u - v_T * parameters.R_T_systemic_T / 2) / I_T
+    in [m^3/s]
+
+[terminal_venous_connection]
+v_venous_svc = systemic_T_module.v_T
+    in [m^3/s]
+
+[venous_svc]
+
+[venous_svc_module]
+C_wCont = parameters.C_venous_svc * (1 - parameters.Delta_C_venous_svc)
+    in [m^4*s^2/g (0.001)]
+R_v = 0.01 [s] / parameters.C_venous_svc
+    in [g/m^4/s (1000)]
+q = q_C + q_us_wCont
+    in [m^3]
+q_C = q_C_change + parameters.q_us_0_venous_svc - q_us_wCont
+    in [m^3]
+dot(q_C_change) = terminal_venous_connection.v_venous_svc - v
+    in [m^3]
+q_us_wCont = parameters.q_us_0_venous_svc * (1 - parameters.Delta_q_us_venous_svc)
+    in [m^3]
+u = u_C + parameters.u_ext_venous_svc + R_v * (terminal_venous_connection.v_venous_svc - v)
+    in [Pa]
+u_C = q_C / C_wCont
+    in [Pa]
+dot(v) = (u - heart_module.u_ra - parameters.R_venous_svc * v) / parameters.I_venous_svc
+    in [m^3/s]
+
+[volume_sum]
+
+[volume_sum_module]
+t = 0 [s] bind time
+    in [s]
+
+[zero_flow_module]
+v_zero = 0 [m^3/s]
+    in [m^3/s]
+
