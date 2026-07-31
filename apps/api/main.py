@@ -43,6 +43,7 @@ from cellml_flatten import (
 from cellml_meta import CellMLModel, CellMLParseError, parse_cellml
 import mmt_protocol
 import myokit_import
+from version import __version__
 from compiler_check import compiler_status
 from engine import SimulationError, engine, _circulatory_autogen_src
 import export_pipeline
@@ -75,7 +76,7 @@ from user_funcs import (
 from sensitivity import sensitivity
 from uq import uq
 
-app = FastAPI(title="CUFLynx API", version="0.1.0")
+app = FastAPI(title="CUFLynx API", version=__version__)
 
 app.add_middleware(
     CORSMiddleware,
