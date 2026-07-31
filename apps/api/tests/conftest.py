@@ -40,6 +40,16 @@ SN_OBS_DATA_PATH = RESOURCES_DIR / "SN_simple_obs_data.json"
 SN_PARAMS_CSV_PATH = RESOURCES_DIR / "SN_simple_params_for_id.csv"
 
 
+def all_mmt_fixtures():
+    """Every .mmt under resources/: the two at the top plus the third-party set.
+
+    rglob rather than a fixed list, so a model dropped in later is covered by the
+    parametrised sweeps without anyone remembering to extend them. Shared so the
+    import tests and the protocol tests cannot drift onto different model sets.
+    """
+    return sorted(RESOURCES_DIR.rglob("*.mmt"))
+
+
 # ---------------------------------------------------------------------------
 # Simulation-dependency gating
 # ---------------------------------------------------------------------------
