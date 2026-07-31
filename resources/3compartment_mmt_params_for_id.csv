@@ -1,3 +1,0 @@
-vessel_name,   param_name,  param_type, min,    max,     name_for_plotting
-aortic_root,   C,           const,      1e-9,   5e-8,    C_{ao}
-global,        E_lv_A,      const,      1e8,    5e8,     E_{lvA}

@@ -150,91 +150,98 @@ def test_a_cellml_upload_is_untouched_by_the_myokit_path(client):
 
 
 # ---------------------------------------------------------------------------
-# The shipped .mmt fixture
+# The shipped .mmt fixture (Beeler-Reuter 1977)
 # ---------------------------------------------------------------------------
-MMT_FIXTURE = None  # resolved lazily so a CA-less run can still collect
-
-
-def _fixture_paths():
+def _mmt_fixture():
     from conftest import RESOURCES_DIR
 
-    return (
-        RESOURCES_DIR / "3compartment.mmt",
-        RESOURCES_DIR / "3compartment_mmt_params_for_id.csv",
-        RESOURCES_DIR / "3compartment_mmt_obs_data.json",
-    )
+    return RESOURCES_DIR / "br-1977.mmt"
 
 
-def test_the_mmt_fixture_and_its_companions_exist():
-    for path in _fixture_paths():
-        assert path.is_file(), f"missing fixture: {path}"
-
-
-def test_the_mmt_fixture_is_our_own_model_not_a_vendored_one():
-    """It is derived from this repo's 3compartment_flat.cellml, so it carries our
-    licence. Myokit's own sample models embed third-party (GPL) notices that
-    would not be compatible with this repository's Apache-2.0 licence."""
-    mmt, _params, _obs = _fixture_paths()
-    text = mmt.read_text()
-    assert "3compartment_flat.cellml" in text
-    assert "GNU General Public License" not in text
-
-
-def test_the_obs_fixture_is_the_data_only_shape():
-    """A bare list, which is what "no protocol" means -- the dict form requires
-    protocol_info and would be rejected."""
-    import json
-
-    _mmt, _params, obs = _fixture_paths()
-    items = json.loads(obs.read_text())
-    assert isinstance(items, list) and items
-    assert all("operands" in item for item in items)
+def test_the_mmt_fixture_exists_and_has_all_three_sections():
+    """It is a whole .mmt -- model, protocol and script -- which is the point:
+    only the model must come through."""
+    path = _mmt_fixture()
+    assert path.is_file(), "resources/br-1977.mmt is missing"
+    text = path.read_text()
+    for section in ("[[model]]", "[[protocol]]", "[[script]]"):
+        assert section in text
 
 
 @pytest.mark.integration
-def test_the_fixture_set_loads_and_runs_together(client, requires_simulation, tmp_path):
-    """Dropping the .mmt gives the same model as the CellML, and the companion
-    params / obs attach to it."""
-    import json
+def test_only_the_model_section_is_imported(requires_simulation, tmp_path):
+    """The pacing events belong to the .mmt's [[protocol]], not to the model.
 
-    mmt, params, obs = _fixture_paths()
-    with open(mmt, "rb") as fh:
+    CUFLynx gets its protocol from obs_data's protocol_info, so importing
+    Myokit's own stimulus schedule would give the model two sources of pacing
+    that disagree. The stimulus *component* is part of the model and stays; only
+    the events that drive it are dropped.
+    """
+    cellml, _saved = myokit_import.cellml_from_myokit(
+        _mmt_fixture().read_bytes(), filename="br-1977.mmt", out_dir=str(tmp_path)
+    )
+    text = cellml.decode("utf-8")
+    # The model's own stimulus component survives -- IStim is part of the model.
+    assert "stimulus" in text
+    # But `pace` is left a plain constant rather than a schedule: the protocol's
+    # events are what would have made it vary with time.
+    assert "pace" in text
+    assert "piecewise" not in text.lower()
+
+
+@pytest.mark.integration
+def test_the_fixture_imports_and_simulates(client, requires_simulation, tmp_path):
+    with open(_mmt_fixture(), "rb") as fh:
         body = client.post(
             "/api/models/upload",
             params={"output_dir": str(tmp_path)},
-            files={"file": (mmt.name, fh, "text/plain")},
+            files={"file": ("br-1977.mmt", fh, "text/plain")},
         ).json()
-    model_id = body["model_id"]
-    assert body["converted_from"] == "3compartment.mmt"
-    # Same model as the CellML fixture: 27 states.
-    assert len(body["odes"]) == 27
-
-    with open(params, "rb") as fh:
-        r = client.post(
-            "/api/params_for_id/upload",
-            params={"model_id": model_id},
-            files={"file": (params.name, fh, "text/csv")},
-        )
-    assert r.status_code == 200, r.text
-    assert [p["qname"] for p in r.json()["params"]] == ["aortic_root/C", "global/E_lv_A"]
-
-    r = client.post(
-        "/api/obs_data/upload",
-        json={"model_id": model_id, "obs_data": json.loads(obs.read_text())},
-    )
-    assert r.status_code == 200, r.text
-    assert len(r.json()["data_items"]) == 2
-    assert r.json()["has_protocol"] is False
+    assert body["converted_from"] == "br-1977.mmt"
+    # Beeler-Reuter 1977: 8 states (m, h, j, d, f, x1, Cai, V).
+    assert len(body["odes"]) == 8
+    assert "membrane/V" in body["odes"]
 
     r = client.post(
         "/api/simulate",
         json={
-            "model_id": model_id,
+            "model_id": body["model_id"],
             "params": {},
-            "sim_time": 2.0,
-            "pre_time": 5.0,
-            "outputs": ["aortic_root/u", "aortic_root/v"],
+            "sim_time": 0.5,
+            "pre_time": 0.0,
+            "outputs": ["membrane/V"],
         },
     )
     assert r.status_code == 200, r.text
     assert len(r.json()["time"]) > 0
+
+
+@pytest.mark.integration
+def test_the_pacing_becomes_a_parameter_to_drive(client, requires_simulation):
+    """Without the protocol the model rests, and `pace` is exposed as a
+    parameter -- so the stimulus is CUFLynx's to supply, from a slider or from
+    obs_data's params_to_change."""
+    with open(_mmt_fixture(), "rb") as fh:
+        body = client.post(
+            "/api/models/upload", files={"file": ("br-1977.mmt", fh, "text/plain")}
+        ).json()
+    assert "engine/pace" in body["params"]
+
+    def span(pace):
+        r = client.post(
+            "/api/simulate",
+            json={
+                "model_id": body["model_id"],
+                "params": {"engine/pace": pace},
+                "sim_time": 0.5,
+                "pre_time": 0.0,
+                "outputs": ["membrane/V"],
+            },
+        )
+        v = r.json()["outputs"]["membrane/V"]
+        return max(v) - min(v)
+
+    # Unstimulated the model sits at its resting potential (a little numerical
+    # drift, not an action potential); driving pace depolarises it by volts.
+    assert span(0) < 0.01
+    assert span(1) > 1.0

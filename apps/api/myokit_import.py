@@ -72,10 +72,15 @@ def cellml_from_myokit(data: bytes, *, filename: str, out_dir: str | None = None
         mmt_path = Path(td) / f"{stem}.mmt"
         mmt_path.write_bytes(data)
         try:
-            # load() rather than load_model(): a .mmt carries model, protocol and
-            # script, and the exporter takes the protocol too -- dropping it would
-            # silently discard the stimulus the model is written around.
-            model, protocol, _script = myokit.load(str(mmt_path))
+            # Only the [[model]] section is imported. A .mmt also carries a
+            # [[protocol]] (a pacing stimulus) and a [[script]], and neither
+            # belongs in a CUFLynx model: the protocol here comes from
+            # obs_data's protocol_info, so baking Myokit's own stimulus into the
+            # CellML would give the model two sources of pacing that disagree.
+            # load() rather than load_model() so a malformed protocol/script
+            # section still yields a clear error rather than a parse failure
+            # attributed to the model.
+            model, _protocol, _script = myokit.load(str(mmt_path))
         except Exception as exc:  # noqa: BLE001 - myokit raises several types
             raise MyokitImportError(f"could not read the Myokit model: {exc}") from exc
         if model is None:
@@ -85,7 +90,8 @@ def cellml_from_myokit(data: bytes, *, filename: str, out_dir: str | None = None
 
         out_path = Path(td) / f"{stem}.cellml"
         try:
-            CellML2Exporter().model(str(out_path), model, protocol)
+            # No protocol argument: the exported CellML is the model alone.
+            CellML2Exporter().model(str(out_path), model)
         except Exception as exc:  # noqa: BLE001 - export failures are varied
             raise MyokitImportError(f"could not export the Myokit model to CellML: {exc}") from exc
         cellml = out_path.read_bytes()
