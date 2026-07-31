@@ -340,3 +340,47 @@ describe('FileImport drop feedback (#137)', () => {
     })
   })
 })
+
+// Issue #27: the CellML zone accepts a Myokit .mmt, converted server-side. The
+// `accept` attribute alone was not enough — the drop handler had its own
+// extension guard, which rejected the file before the upload was ever attempted.
+describe('FileImport accepts .mmt (#27)', () => {
+  const drop = async (name) => {
+    const wrapper = mount(FileImport, { global: { stubs } })
+    const file = new File(['[[model]]\n'], name, { type: 'text/plain' })
+    await wrapper
+      .find('[data-testid="cellml-drop"]')
+      .trigger('drop', { dataTransfer: { files: [file] } })
+    await flushPromises()
+    return wrapper
+  }
+
+  beforeEach(() => uploadCellML.mockReset().mockResolvedValue({ model_id: 'abc', name: 'm' }))
+
+  it('uploads a dropped .mmt instead of rejecting it', async () => {
+    const wrapper = await drop('br-1977.mmt')
+    expect(uploadCellML).toHaveBeenCalledTimes(1)
+    expect(wrapper.emitted('model-loaded')).toBeTruthy()
+  })
+
+  it('still uploads a .cellml', async () => {
+    await drop('model.cellml')
+    expect(uploadCellML).toHaveBeenCalledTimes(1)
+  })
+
+  // The guard and the file picker must agree, or one path works and the other
+  // does not — which is exactly how this slipped through.
+  it('offers the same extensions the drop handler accepts', () => {
+    const wrapper = mount(FileImport, { global: { stubs } })
+    const accept = wrapper
+      .find('[data-testid="cellml-drop"] input[type="file"]')
+      .attributes('accept')
+    for (const ext of ['.cellml', '.mmt']) expect(accept).toContain(ext)
+  })
+
+  it('still rejects an unrelated file, naming what it wanted', async () => {
+    const wrapper = await drop('notes.txt')
+    expect(uploadCellML).not.toHaveBeenCalled()
+    expect(wrapper.vm.error).toContain('.mmt')
+  })
+})

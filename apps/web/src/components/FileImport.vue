@@ -172,9 +172,11 @@ async function onCellmlDrop(event) {
   const files = filesFrom(event)
   resetPicker(event)
   if (!files.length) return
-  const bad = files.find((f) => !extOk(f.name, ['.cellml', '.xml']))
+  // .mmt is accepted here and converted to CellML server-side (#27). A Myokit
+  // model is a single file, so it never takes part in a sister-file bundle.
+  const bad = files.find((f) => !extOk(f.name, ['.cellml', '.xml', '.mmt']))
   if (bad) {
-    error.value = `Expected .cellml files, got "${bad.name}"`
+    error.value = `Expected a .cellml or .mmt file, got "${bad.name}"`
     return
   }
   const unreadable = files.map(unreadableDrop).find(Boolean)
@@ -182,7 +184,8 @@ async function onCellmlDrop(event) {
     error.value = unreadable
     return
   }
-  // The main file (for the display name) is the one importing sisters, if any.
+  // The main file (for the display name) is the one importing sisters, if any;
+  // a dropped .mmt is on its own, so it is simply the file itself.
   const main = files.find((f) => f.name.toLowerCase().endsWith('.cellml')) ?? files[0]
   try {
     const data = await uploadCellML(files, props.outputsDir)
