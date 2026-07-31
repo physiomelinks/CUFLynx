@@ -144,6 +144,25 @@ obs_data you dropped yourself is never replaced by a derived one. It arrives wit
 no `data_items` — what the model should be measured against isn't in the `.mmt` —
 so add those via **Edit**.
 
+The events cross over unchanged, under Myokit's own names, as a `protocol_shapes`
+entry:
+
+```json
+"sim_times": [[2000.0]],
+"params_to_change": {"engine/pace": [["engine_pace"]]},
+"protocol_shapes": {
+  "engine_pace": {"events": [{"level": 1.0, "start": 100.0, "length": 2.0,
+                              "period": 1000.0, "multiplier": 0}]}
+}
+```
+
+so the file still says "1 Hz" after it is written, and the period can be edited
+rather than recomputed. The obs_data editor writes every time-varying input this
+way — constant, ramp, step, pulse and paced — and reads them back as the fields
+you typed. **This needs a circulatory_autogen with `protocol_shapes` support**
+(physiomelinks/circulatory_autogen#339); hand-written `protocol_traces` point
+tables are still accepted and preserved untouched.
+
 The same conversion is available from the command line, which is the way to
 re-derive a protocol into an obs_data you have already written:
 

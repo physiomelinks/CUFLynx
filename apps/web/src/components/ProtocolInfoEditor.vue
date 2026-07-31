@@ -218,6 +218,8 @@ function shapeIcon(cell) {
       return '0,9 6,9 6,1 12,1'
     case 'pulse':
       return '0,9 3,9 3,1 7,1 7,9 12,9'
+    case 'paced':
+      return '0,9 2,9 2,1 3,1 3,9 6,9 6,1 7,1 7,9 10,9 10,1 11,1 11,9 12,9'
     default:
       return null
   }
@@ -451,6 +453,29 @@ function shapeIcon(cell) {
                 </label>
                 <label class="tt-field"><span class="tt-cap">t end</span>
                   <input type="number" step="0.1" min="0" :max="activeExperiment.subexps[s - 1].duration" title="pulse end time within the sub-experiment" :value="model.params[qname][activeExp][s - 1].te" @input="onTimeNum(model.params[qname][activeExp][s - 1], 'te', $event.target.value, activeExperiment.subexps[s - 1].duration)" />
+                </label>
+              </template>
+              <template v-else-if="model.params[qname][activeExp][s - 1].shape === 'paced'">
+                <!-- The five columns of a Myokit [[protocol]] line, in that
+                     order and under those names, so a protocol read off a .mmt
+                     transcribes straight across. -->
+                <label class="tt-field"><span class="tt-cap">level</span>
+                  <SciNumberInput data-testid="pc-level" title="value during each stimulus" :model-value="model.params[qname][activeExp][s - 1].level" @update:model-value="model.params[qname][activeExp][s - 1].level = $event" />
+                </label>
+                <label class="tt-field"><span class="tt-cap">start</span>
+                  <SciNumberInput data-testid="pc-start" title="time of the first stimulus, within the sub-experiment" :model-value="model.params[qname][activeExp][s - 1].start" @update:model-value="model.params[qname][activeExp][s - 1].start = $event" />
+                </label>
+                <label class="tt-field"><span class="tt-cap">length</span>
+                  <SciNumberInput data-testid="pc-length" title="how long each stimulus lasts" :model-value="model.params[qname][activeExp][s - 1].length" @update:model-value="model.params[qname][activeExp][s - 1].length = $event" />
+                </label>
+                <label class="tt-field"><span class="tt-cap">period</span>
+                  <SciNumberInput data-testid="pc-period" title="time between stimuli; 0 for a single stimulus" :model-value="model.params[qname][activeExp][s - 1].period" @update:model-value="model.params[qname][activeExp][s - 1].period = $event" />
+                </label>
+                <label class="tt-field"><span class="tt-cap">repeats</span>
+                  <input type="number" step="1" min="0" data-testid="pc-multiplier" title="how many stimuli; 0 means keep pacing for the whole sub-experiment" :value="model.params[qname][activeExp][s - 1].multiplier" @input="model.params[qname][activeExp][s - 1].multiplier = Number($event.target.value)" />
+                </label>
+                <label class="tt-field"><span class="tt-cap">baseline</span>
+                  <SciNumberInput title="value between stimuli" :model-value="model.params[qname][activeExp][s - 1].baseline" @update:model-value="model.params[qname][activeExp][s - 1].baseline = $event" />
                 </label>
               </template>
               <template v-else>
