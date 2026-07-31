@@ -130,6 +130,33 @@ This opens the app at **http://localhost:8000**.
 Calibration / sensitivity / UQ runs use the Python interpreter you pick in the
 top bar — point it at your `circulatory_autogen` virtual environment.
 
+## Myokit models
+
+Drop a Myokit `.mmt` on the model box and it is converted to CellML on the way
+in. Only the `[[model]]` section is imported: in CUFLynx the protocol lives in
+`obs_data.json`, so baking Myokit's stimulus into the CellML would give the model
+two sources of pacing that disagree.
+
+The `[[protocol]]` section is carried across for you: if you have no obs_data
+loaded, dropping the `.mmt` creates `<model>_obs_data.json` from it, saves it to
+the outputs directory and loads it, so the model is paced as Myokit paced it. An
+obs_data you dropped yourself is never replaced by a derived one. It arrives with
+no `data_items` — what the model should be measured against isn't in the `.mmt` —
+so add those via **Edit**.
+
+The same conversion is available from the command line, which is the way to
+re-derive a protocol into an obs_data you have already written:
+
+```bash
+python scripts/mmt_to_obs_data.py resources/br-1977.mmt
+```
+
+That writes (or updates) `br-1977_obs_data.json`, filling in `protocol_info` from
+the `[[protocol]]` section. Updating keeps everything else in the file, so
+hand-written `data_items` survive. A Myokit protocol usually repeats forever
+while a CUFLynx experiment is a finite list of durations, so it takes `--beats`
+(default 2) or an explicit `--duration`.
+
 ## Build the desktop app yourself
 
 ```bash

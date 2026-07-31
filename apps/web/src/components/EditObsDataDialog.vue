@@ -105,6 +105,9 @@ watch(
     error.value = ''
     await loadOptions()
     const { editable, preserved } = splitItems(props.currentDataItems, operations.value)
+    // A hand-written obs_data can carry fewer operands than its operation takes;
+    // grow-only, so opening a file never drops operands the user wrote.
+    editable.forEach((row) => syncOperands(row, { growOnly: true }))
     editableRows.value = editable
     preservedItems.value = preserved
     predRows.value = (props.currentPredictionItems ?? []).map(predToRow)
@@ -256,7 +259,13 @@ function toggleRow(row) {
 }
 
 function addRow() {
-  editableRows.value.push(newRow(0))
+  const row = newRow(0)
+  // A new row starts on the default operation with no operands. That operation
+  // has a fixed arity, so the add/remove controls are hidden -- leaving a row
+  // with zero operand fields and no way to make one. Give it the fields its
+  // operation takes, the same way changing the operation does.
+  syncOperands(row)
+  editableRows.value.push(row)
 }
 function removeRow(i) {
   editableRows.value.splice(i, 1)
@@ -295,12 +304,15 @@ function operandLabel(row, i) {
  * are kept positionally -- switching max -> division should keep the operand you
  * chose as x1 rather than clearing the row.
  */
-function syncOperands(row) {
+function syncOperands(row, { growOnly = false } = {}) {
   const want = operandCountFor(row)
   if (want === null) return
   const ops = row.operands ?? (row.operands = [])
   while (ops.length < want) ops.push('')
-  if (ops.length > want) ops.splice(want)
+  // Truncating is right when the user picks a different operation, and wrong
+  // when a file is merely opened: an obs_data carrying more operands than CA's
+  // spec says is the user's to keep, not ours to quietly rewrite.
+  if (!growOnly && ops.length > want) ops.splice(want)
 }
 
 

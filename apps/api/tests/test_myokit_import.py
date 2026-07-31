@@ -387,11 +387,11 @@ def test_the_calibration_parameter_actually_moves_the_observable(client, require
 # ---------------------------------------------------------------------------
 def _all_mmt():
     """Every .mmt fixture: the two kept at the top of resources/ plus the
-    third-party example set. rglob rather than a fixed list, so a model dropped
-    in later is covered without editing a test."""
-    from conftest import RESOURCES_DIR
+    third-party example set. Shared with the protocol-conversion tests so the
+    two sweeps cannot end up covering different model sets."""
+    from conftest import all_mmt_fixtures
 
-    return sorted(RESOURCES_DIR.rglob("*.mmt"))
+    return all_mmt_fixtures()
 
 
 def test_there_is_at_least_one_mmt_fixture():

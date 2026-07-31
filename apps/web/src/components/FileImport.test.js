@@ -384,3 +384,109 @@ describe('FileImport accepts .mmt (#27)', () => {
     expect(wrapper.vm.error).toContain('.mmt')
   })
 })
+
+// Issue #27: a .mmt carries a [[protocol]] that the model import leaves behind,
+// because in CUFLynx the protocol lives in obs_data. The server converts it and
+// the UI adopts it — but only when the user has none of their own, since a
+// derived protocol replacing a hand-written one would be worse than no
+// conversion at all.
+describe('FileImport adopts the .mmt protocol as obs_data (#27)', () => {
+  const DERIVED = {
+    filename: 'br-1977_obs_data.json',
+    obs_data: { protocol_info: { sim_times: [[100, 2, 898]] }, data_items: [] },
+    notes: ['the protocol repeats indefinitely, so it was cut to 2 beat(s).'],
+    path: '/out/br-1977_obs_data.json',
+    reason: null,
+  }
+
+  const dropMmt = async (payload = { model_id: 'abc', name: 'm', protocol_obs_data: DERIVED }) => {
+    uploadCellML.mockResolvedValue(payload)
+    const wrapper = mount(FileImport, { global: { stubs } }) // no model yet
+    const file = new File(['[[model]]\n'], 'br-1977.mmt', { type: 'text/plain' })
+    await wrapper
+      .find('[data-testid="cellml-drop"]')
+      .trigger('drop', { dataTransfer: { files: [file] } })
+    await flushPromises()
+    await wrapper.setProps({ modelId: 'abc' }) // what the parent does on model-loaded
+    await flushPromises()
+    return wrapper
+  }
+
+  beforeEach(() => {
+    uploadCellML.mockReset()
+    uploadObsData.mockReset().mockResolvedValue({ model_id: 'abc', experiment_count: 1 })
+  })
+
+  it('creates an obs_data from the protocol when there is none', async () => {
+    const wrapper = await dropMmt()
+    expect(uploadObsData).toHaveBeenCalledWith('abc', DERIVED.obs_data)
+    expect(wrapper.emitted('obs-data-loaded')[0][0]).toMatchObject({
+      filename: 'br-1977_obs_data.json',
+    })
+  })
+
+  it('says what it made, where it went, and what is still missing', async () => {
+    const wrapper = await dropMmt()
+    expect(wrapper.vm.notice).toContain('br-1977_obs_data.json')
+    expect(wrapper.vm.notice).toContain('/out/br-1977_obs_data.json')
+    expect(wrapper.vm.notice).toContain('no data_items')
+    // The truncation of an endless protocol is a choice, so it has to be shown.
+    expect(wrapper.vm.notice).toContain('repeats indefinitely')
+  })
+
+  // The one that matters: a protocol the user wrote must survive.
+  it('never overwrites an obs_data the user dropped', async () => {
+    uploadCellML.mockResolvedValue({
+      model_id: 'abc',
+      name: 'm',
+      protocol_obs_data: DERIVED,
+    })
+    const wrapper = mount(FileImport, { global: { stubs } })
+    const obs = jsonFile('mine.json', '{"protocol_info":{"sim_times":[[1]]}}')
+    await wrapper
+      .find('[data-testid="obs-drop"]')
+      .trigger('drop', { dataTransfer: { files: [obs] } })
+    await flushPromises()
+
+    const mmt = new File(['[[model]]\n'], 'br-1977.mmt', { type: 'text/plain' })
+    await wrapper
+      .find('[data-testid="cellml-drop"]')
+      .trigger('drop', { dataTransfer: { files: [mmt] } })
+    await flushPromises()
+    await wrapper.setProps({ modelId: 'abc' })
+    await flushPromises()
+
+    expect(uploadObsData).toHaveBeenCalledTimes(1)
+    expect(uploadObsData).toHaveBeenCalledWith('abc', { protocol_info: { sim_times: [[1]] } })
+  })
+
+  it('says why when the protocol could not be converted', async () => {
+    const wrapper = await dropMmt({
+      model_id: 'abc',
+      name: 'm',
+      protocol_obs_data: {
+        filename: 'x_obs_data.json',
+        obs_data: null,
+        notes: [],
+        reason: 'no variable in that .mmt is bound to `pace`',
+      },
+    })
+    expect(uploadObsData).not.toHaveBeenCalled()
+    expect(wrapper.vm.notice).toContain('bound to `pace`')
+  })
+
+  it('does nothing for a model that carries no protocol', async () => {
+    const wrapper = await dropMmt({ model_id: 'abc', name: 'm', protocol_obs_data: null })
+    expect(uploadObsData).not.toHaveBeenCalled()
+    expect(wrapper.vm.notice).toBe('')
+  })
+
+  // A second model must not re-adopt the first one's protocol.
+  it('does not re-apply the protocol on the next model load', async () => {
+    const wrapper = await dropMmt()
+    expect(uploadObsData).toHaveBeenCalledTimes(1)
+    await wrapper.setProps({ modelId: 'def' })
+    await flushPromises()
+    expect(uploadObsData).toHaveBeenCalledTimes(1)
+  })
+})

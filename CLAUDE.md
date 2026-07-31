@@ -51,6 +51,12 @@ so developers can point at a local checkout. (See issue #18.)
 - `apps/web/src/App.vue` — main UI (tabs: Parameters · Sensitivity · Calibration · UQ; center: Output plots · Progress · Analysis)
 - `apps/api/main.py` — FastAPI app: `/api/*` routes + serves the built frontend
 - `scripts/install.py`, `scripts/run.py` — cross-platform setup + single-server launcher
+- `apps/api/myokit_import.py` — `.mmt` → CellML at upload (model section only);
+  `apps/api/mmt_protocol.py` + `scripts/mmt_to_obs_data.py` — the other half: the
+  `[[protocol]]` section → obs_data `protocol_info`, since the protocol belongs in
+  obs_data rather than in the CellML. `/api/models/upload` returns it as
+  `protocol_obs_data`; `FileImport.vue` adopts it only when the user has no
+  obs_data of their own, so a hand-written one is never replaced by a derived one
 - `scripts/package.py` — build the single-file desktop executable (see below)
 - `apps/desktop/app.py` — pywebview shell; `packaging/cuflynx.spec` — PyInstaller spec
 - `README.md` — user-facing quick start

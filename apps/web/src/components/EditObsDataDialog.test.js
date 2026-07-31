@@ -475,6 +475,59 @@ describe('EditObsDataDialog operand count (#147)', () => {
     expect(names).toEqual(['x1', 'x2'])
   })
 
+  // A row added from scratch starts on the default operation with no operands.
+  // Because that operation has a fixed arity, the add/remove controls are hidden
+  // -- so an unsynced new row rendered ZERO operand fields and no way to make
+  // one, and the item could not be filled in at all. Reachable on any model, but
+  // it became the first thing you hit once a .mmt's protocol produced an
+  // obs_data with no data_items to copy from.
+  // Starts empty, as an obs_data derived from a .mmt protocol does, so the row
+  // under test is one the user added rather than one loaded from a file.
+  const mountEmptyThenAddRow = async () => {
+    getObsDataOptions.mockResolvedValue({
+      ...FETCH,
+      operations: ['', 'max', 'division', 'spread'],
+      operation_operands: OPERANDS,
+    })
+    const wrapper = mountDialog({ currentDataItems: [] })
+    await flushPromises()
+    await wrapper.find('[data-testid="obs-add-row"]').trigger('click')
+    await wrapper.find('button[aria-label="details"]').trigger('click')
+    return wrapper
+  }
+
+  it('gives a newly added data item its operand field', async () => {
+    const wrapper = await mountEmptyThenAddRow()
+    expect(operandFields(wrapper)).toHaveLength(1)
+  })
+
+  it('offers the model variables in a new row, so it can actually be set', async () => {
+    const wrapper = await mountEmptyThenAddRow()
+    const options = operandFields(wrapper)[0].findAll('option').map((o) => o.element.value)
+    expect(options).toContain('m/x')
+  })
+
+  // A hand-written obs_data can carry fewer operands than the operation takes;
+  // the row still has to be completable.
+  it('grows a loaded row that is short of operands', async () => {
+    const wrapper = await mountWithOperands({
+      currentDataItems: [{ data_type: 'constant', operation: 'division', operands: ['m/x'], value: 1 }],
+    })
+    expect(operandFields(wrapper)).toHaveLength(2)
+    expect(operandFields(wrapper)[0].element.value).toBe('m/x')
+  })
+
+  // ...but never by silently dropping operands the user wrote. Truncation is
+  // right when they change the operation, not when the file is merely opened.
+  it('does not drop extra operands from a loaded row', async () => {
+    const wrapper = await mountWithOperands({
+      currentDataItems: [
+        { data_type: 'constant', operation: 'max', operands: ['m/x', 'm/y'], value: 1 },
+      ],
+    })
+    expect(operandFields(wrapper)).toHaveLength(2)
+  })
+
   // An older CA without the introspection must not lock the fields down.
   it('leaves the fields hand-managed when the schema is unavailable', async () => {
     getObsDataOptions.mockResolvedValue({ ...FETCH, operation_operands: undefined })

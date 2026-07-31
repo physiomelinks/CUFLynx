@@ -41,6 +41,7 @@ from cellml_flatten import (
     pick_main_cellml,
 )
 from cellml_meta import CellMLModel, CellMLParseError, parse_cellml
+import mmt_protocol
 import myokit_import
 from compiler_check import compiler_status
 from engine import SimulationError, engine, _circulatory_autogen_src
@@ -717,6 +718,56 @@ def get_example_model(name: str) -> FileResponse:
     return FileResponse(path, media_type="application/xml", filename=filename)
 
 
+def _protocol_from_mmt(data: bytes, filename: str, out_dir: str) -> dict:
+    """The .mmt's ``[[protocol]]`` as an obs_data document, ready to adopt.
+
+    The model import takes the ``[[model]]`` section alone, on purpose: the
+    protocol belongs in obs_data, and baking Myokit's stimulus into the exported
+    CellML would give the model two sources of pacing that disagree. That left
+    the user retyping a protocol they had already written, so it is converted
+    here and offered to the client.
+
+    Offered, not applied. A model is often dropped alongside an obs_data the user
+    wrote themselves, and silently replacing that would be worse than not
+    converting at all -- so the decision is the client's, and this only reports
+    what is available. A protocol that cannot be converted returns its reason
+    rather than nothing: "no protocol appeared" is a question, and the answer is
+    usually a one-line fact about the file.
+    """
+    stem = Path(filename).stem or "model"
+    obs_name = f"{stem}_obs_data.json"
+    try:
+        info, notes = mmt_protocol.protocol_info_from_mmt(data, filename=filename)
+    except mmt_protocol.MmtProtocolError as exc:
+        return {"filename": obs_name, "obs_data": None, "notes": [], "reason": str(exc)}
+
+    # data_items are the user's to write -- what the model should be measured
+    # against is not in the .mmt. An empty list is a valid obs_data document, and
+    # is enough to run the protocol.
+    obs_data = {"protocol_info": info, "data_items": []}
+
+    # Keep a file beside the converted CellML, for the same reason: a conversion
+    # that existed only in memory would be invisible and unreproducible. Never
+    # overwrite -- an obs_data already on disk may hold hand-written data_items
+    # that nothing here could reconstruct.
+    saved = None
+    if out_dir:
+        try:
+            target = Path(out_dir) / obs_name
+            if target.exists():
+                notes = [*notes, f"{target} already exists and was left alone."]
+            else:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(json.dumps(obs_data, indent=4) + "\n")
+                saved = str(target)
+        except OSError:
+            # Keeping a copy is a convenience; failing to is no reason to
+            # withhold a protocol that converted.
+            saved = None
+
+    return {"filename": obs_name, "obs_data": obs_data, "notes": notes, "path": saved, "reason": None}
+
+
 @app.post("/api/models/upload")
 async def upload_model(
     file: UploadFile | None = None,
@@ -745,19 +796,26 @@ async def upload_model(
     # pipeline, CA itself -- keeps seeing the CellML it already expects.
     converted_from = None
     converted_path = None
+    protocol: dict | None = None
     if single and (
         myokit_import.is_myokit_filename(only_name) or myokit_import.looks_like_myokit(only_bytes)
     ):
+        out_base = _user_func_base_dir(output_dir or "")
+        mmt_bytes = only_bytes
         try:
             only_bytes, converted_path = myokit_import.cellml_from_myokit(
                 only_bytes,
                 filename=only_name,
-                out_dir=_user_func_base_dir(output_dir or ""),
+                out_dir=out_base,
             )
         except myokit_import.MyokitImportError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         converted_from = only_name
         raw_by_name = {Path(only_name).stem + ".cellml": only_bytes}
+        # The [[protocol]] section the model import deliberately leaves behind.
+        # Offered rather than applied: the client decides, because a model
+        # dropped alongside an obs_data the user wrote must not be overridden.
+        protocol = _protocol_from_mmt(mmt_bytes, only_name, out_base)
 
     if single and not has_imports(only_bytes):
         # Self-contained single file: save as-is (unchanged behaviour).
@@ -796,6 +854,10 @@ async def upload_model(
         # say the model it is showing is not the file that was dropped.
         "converted_from": converted_from,
         "converted_cellml_path": converted_path,
+        # The .mmt's [[protocol]] section as obs_data, for the client to adopt if
+        # it has no obs_data of its own. None for CellML, and for a .mmt whose
+        # protocol cannot be converted -- in which case `reason` says why.
+        "protocol_obs_data": protocol,
     }
 
 
