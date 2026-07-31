@@ -117,13 +117,29 @@ def _validate_protocol_info(protocol_info: dict) -> None:
 
 
 def _validate_traces(protocol_info: dict) -> None:
+    """A params_to_change string has to name something that exists.
+
+    Two things it can name. ``protocol_traces`` is a point table -- fully
+    general, and what circulatory_autogen ultimately runs. ``protocol_shapes``
+    declares the same waveform as Myokit-style events and CA expands it into a
+    trace when it reads the file, which is what the editor writes because a
+    declaration can be read back and a point table cannot. Either resolves.
+    """
     params_to_change = protocol_info.get("params_to_change", {}) or {}
     traces = protocol_info.get("protocol_traces", {}) or {}
+    shapes = protocol_info.get("protocol_shapes", {}) or {}
+    both = sorted(set(traces) & set(shapes))
+    if both:
+        raise ObsDataError(
+            f"{both} defined in both protocol_traces and protocol_shapes; "
+            "they are alternatives, so define each name in one or the other"
+        )
     for pname, pval in params_to_change.items():
         for key in _string_trace_keys(pval):
-            if key not in traces:
+            if key not in traces and key not in shapes:
                 raise ObsDataError(
-                    f"trace key '{key}' for param '{pname}' not found in protocol_traces"
+                    f"trace key '{key}' for param '{pname}' not found in "
+                    f"protocol_traces or protocol_shapes"
                 )
 
 

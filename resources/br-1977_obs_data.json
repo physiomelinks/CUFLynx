@@ -1,80 +1,85 @@
 {
-  "protocol_info": {
-    "pre_times": [
-      0.0
-    ],
-    "sim_times": [
-      [
-        100.0,
-        2.0,
-        998.0,
-        2.0,
-        898.0
-      ]
-    ],
-    "params_to_change": {
-      "engine/pace": [
-        [
-          0.0,
-          1.0,
-          0.0,
-          1.0,
-          0.0
+    "protocol_info": {
+        "pre_times": [
+            0.0
+        ],
+        "sim_times": [
+            [
+                2000.0
+            ]
+        ],
+        "params_to_change": {
+            "engine/pace": [
+                [
+                    "engine_pace"
+                ]
+            ]
+        },
+        "protocol_shapes": {
+            "engine_pace": {
+                "events": [
+                    {
+                        "level": 1.0,
+                        "start": 100.0,
+                        "length": 2.0,
+                        "period": 1000.0,
+                        "multiplier": 0
+                    }
+                ]
+            }
+        },
+        "experiment_labels": [
+            "1 Hz pacing"
+        ],
+        "experiment_colors": [
+            "r"
         ]
-      ]
     },
-    "experiment_labels": [
-      "1 Hz pacing"
-    ],
-    "experiment_colors": [
-      "r"
+    "data_items": [
+        {
+            "variable": "peak membrane potential",
+            "name_for_plotting": "V_{peak}",
+            "operands": [
+                "membrane/V"
+            ],
+            "operation": "max",
+            "data_type": "constant",
+            "plot_type": "horizontal",
+            "unit": "mV",
+            "value": 32.7,
+            "std": 1.5,
+            "weight": 1,
+            "experiment_idx": 0
+        },
+        {
+            "variable": "resting membrane potential",
+            "name_for_plotting": "V_{rest}",
+            "operands": [
+                "membrane/V"
+            ],
+            "operation": "min",
+            "data_type": "constant",
+            "plot_type": "horizontal",
+            "unit": "mV",
+            "value": -84.63,
+            "std": 1.0,
+            "weight": 1,
+            "experiment_idx": 0
+        },
+        {
+            "variable": "peak intracellular calcium",
+            "name_for_plotting": "Ca_{i,peak}",
+            "operands": [
+                "isi/Cai"
+            ],
+            "operation": "max",
+            "data_type": "constant",
+            "plot_type": "horizontal",
+            "unit": "mM",
+            "value": 6.178e-06,
+            "std": 5e-07,
+            "weight": 1,
+            "experiment_idx": 0
+        }
     ]
-  },
-  "data_items": [
-    {
-      "variable": "peak membrane potential",
-      "name_for_plotting": "V_{peak}",
-      "operands": [
-        "membrane/V"
-      ],
-      "operation": "max",
-      "data_type": "constant",
-      "plot_type": "horizontal",
-      "unit": "mV",
-      "value": 32.7,
-      "std": 1.5,
-      "weight": 1,
-      "experiment_idx": 0
-    },
-    {
-      "variable": "resting membrane potential",
-      "name_for_plotting": "V_{rest}",
-      "operands": [
-        "membrane/V"
-      ],
-      "operation": "min",
-      "data_type": "constant",
-      "plot_type": "horizontal",
-      "unit": "mV",
-      "value": -84.63,
-      "std": 1.0,
-      "weight": 1,
-      "experiment_idx": 0
-    },
-    {
-      "variable": "peak intracellular calcium",
-      "name_for_plotting": "Ca_{i,peak}",
-      "operands": [
-        "isi/Cai"
-      ],
-      "operation": "max",
-      "data_type": "constant",
-      "plot_type": "horizontal",
-      "unit": "mM",
-      "value": 6.178e-06,
-      "std": 5e-07,
-      "weight": 1,
-      "experiment_idx": 0
-    }
-  ]
 }

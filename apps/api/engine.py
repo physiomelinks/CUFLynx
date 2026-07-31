@@ -135,6 +135,17 @@ _HINTS = (
         "This looks like a unit/conversion problem in the model rather than a solver "
         "setting — check the units of the connected variables.",
     ),
+    (
+        # circulatory_autogen refuses a time-varying protocol input on the CasADi,
+        # AADC and solve_ivp backends; only CVODE_myokit can drive a variable from
+        # a trace. Without this the generic tail advised tightening tolerances,
+        # which cannot possibly help and sends the user to the wrong dial.
+        ("cannot drive a variable from a time series", "protocol trace name"),
+        "This protocol drives a variable over time, which only the CVODE_myokit "
+        "solver can do — switch the backend to cellml_only / CVODE_myokit in "
+        "Settings, or replace the time-varying input with a constant per "
+        "sub-experiment in the obs_data protocol.",
+    ),
 )
 
 
