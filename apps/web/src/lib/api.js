@@ -137,6 +137,17 @@ export async function runProtocol(modelId, params, options = {}) {
   return data
 }
 
+// Load a whole COMBINE archive (.omex): model + obs_data + params_for_id (#149).
+// One request, because an archive is the study rather than any one of its files.
+export async function uploadOmex(file, outputDir = '') {
+  const form = new FormData()
+  form.append('file', file)
+  const { data } = await axios.post(url('/api/omex/upload'), form, {
+    params: outputDir ? { output_dir: outputDir } : {},
+  })
+  return data
+}
+
 export async function uploadObsData(modelId, obsData) {
   const { data } = await axios.post(url('/api/obs_data/upload'), {
     model_id: modelId,

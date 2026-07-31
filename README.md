@@ -163,6 +163,12 @@ you typed. **This needs a circulatory_autogen with `protocol_shapes` support**
 (physiomelinks/circulatory_autogen#339); hand-written `protocol_traces` point
 tables are still accepted and preserved untouched.
 
+An archive can be built around a `.mmt` instead of a CellML — see
+`resources/br-1977.omex`, which holds the Myokit model and a `params_for_id`
+and no obs_data at all. Dropping it converts the model, loads the parameter and
+takes the protocol from the `.mmt`, so the study runs from one drop. An obs_data
+*in* the archive always wins over the model's own protocol.
+
 The same conversion is available from the command line, which is the way to
 re-derive a protocol into an obs_data you have already written:
 

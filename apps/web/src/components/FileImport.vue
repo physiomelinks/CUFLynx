@@ -7,7 +7,13 @@ import FileBrowserDialog from './FileBrowserDialog.vue'
 import EditParamsDialog from './EditParamsDialog.vue'
 import EditObsDataDialog from './EditObsDataDialog.vue'
 import StartDialog from './StartDialog.vue'
-import { uploadCellML, uploadObsData, uploadParamsForId, fetchExampleModel } from '../lib/api'
+import {
+  uploadCellML,
+  uploadObsData,
+  uploadParamsForId,
+  fetchExampleModel,
+  uploadOmex,
+} from '../lib/api'
 import { PHLYNX_URL } from '../lib/examples'
 
 const props = defineProps({
@@ -194,6 +200,49 @@ function unreadableDrop(file) {
   )
 }
 
+/**
+ * A COMBINE archive is the whole study, not any one of its files, so it is
+ * accepted on *every* dropzone (#149) -- making the user unzip it and drop three
+ * files in the right order is the thing this removes.
+ *
+ * Returns true when the drop was an archive and has been handled.
+ */
+async function handleOmex(files) {
+  const omex = files.find((f) => isOmexName(f.name))
+  if (!omex) return false
+  error.value = ''
+  try {
+    const data = await uploadOmex(omex, props.outputsDir)
+    // The model first: obs_data and params attach to it.
+    emit('model-loaded', { ...data, filename: data.model_filename || omex.name })
+    if (data.obs_data && !data.obs_data.error) {
+      emit('obs-data-loaded', { ...data.obs_data, model_id: data.model_id })
+    }
+    if (data.params_for_id && !data.params_for_id.error) {
+      emit('params-loaded', {
+        params: data.params_for_id.params,
+        filename: data.params_for_id.filename,
+      })
+    }
+    // A part that failed to parse is reported without losing the rest -- an
+    // archive with a bad obs_data still gave us a model worth having.
+    const failed = [data.obs_data, data.params_for_id]
+      .filter((p) => p?.error)
+      .map((p) => `${p.filename}: ${p.error}`)
+    notice.value = failed.length
+      ? `Loaded ${omex.name}, but ${failed.join('; ')}`
+      : `Loaded ${omex.name}` +
+        (data.module_config_path ? ' (PhLynx layout kept)' : '')
+  } catch (e) {
+    error.value = e?.response?.data?.detail || String(e)
+  }
+  return true
+}
+
+function isOmexName(name) {
+  return /\.omex$/i.test(String(name || ''))
+}
+
 async function onCellmlDrop(event) {
   event.preventDefault?.()
   error.value = ''
@@ -203,11 +252,13 @@ async function onCellmlDrop(event) {
   const files = filesFrom(event)
   resetPicker(event)
   if (!files.length) return
-  // .mmt is accepted here and converted to CellML server-side (#27). A Myokit
-  // model is a single file, so it never takes part in a sister-file bundle.
+  // An archive is taken whole and returns early; what follows is the loose-file
+  // path. .mmt is accepted there and converted to CellML server-side (#27) -- a
+  // Myokit model is a single file, so it never joins a sister-file bundle.
+  if (await handleOmex(files)) return
   const bad = files.find((f) => !extOk(f.name, ['.cellml', '.xml', '.mmt']))
   if (bad) {
-    error.value = `Expected a .cellml or .mmt file, got "${bad.name}"`
+    error.value = `Expected a .cellml, .mmt or .omex file, got "${bad.name}"`
     return
   }
   const unreadable = files.map(unreadableDrop).find(Boolean)
@@ -235,6 +286,7 @@ async function onObsDrop(event) {
   const [file] = filesFrom(event)
   resetPicker(event)
   if (!file) return
+  if (await handleOmex([file])) return
   if (!extOk(file.name, ['.json'])) {
     error.value = `Expected a .json file, got "${file.name}"`
     return
@@ -263,6 +315,7 @@ async function onParamsDrop(event) {
   const [file] = filesFrom(event)
   resetPicker(event)
   if (!file) return
+  if (await handleOmex([file])) return
   if (!extOk(file.name, ['.csv'])) {
     error.value = `Expected a .csv file, got "${file.name}"`
     return
@@ -307,9 +360,9 @@ async function onParamsDrop(event) {
         <template v-else>
           <i class="pi pi-file" /> Drop <strong>CellML</strong> (.cellml) or
           <strong>Myokit</strong> (.mmt)
-          <small>one file, or a non-flattened model with its sister files</small>
+          <small>one file, a non-flattened model with its sisters, or a .omex archive</small>
         </template>
-        <input type="file" accept=".cellml,.xml,.mmt" multiple @change="onCellmlDrop" />
+        <input type="file" accept=".cellml,.xml,.mmt,.omex" multiple @change="onCellmlDrop" />
       </label>
       <Button
         :label="modelId ? 'Edit' : 'Create'"
@@ -344,7 +397,7 @@ async function onParamsDrop(event) {
           <i class="pi pi-chart-line" /> Drop <strong>obs_data.json</strong>
           <small>or click to browse</small>
         </template>
-        <input type="file" accept=".json" @change="onObsDrop" />
+        <input type="file" accept=".json,.omex" @change="onObsDrop" />
       </label>
       <Button
         label="Edit"
@@ -376,7 +429,7 @@ async function onParamsDrop(event) {
           <i class="pi pi-sliders-h" /> Drop <strong>params_for_id.csv</strong>
           <small>or click to browse</small>
         </template>
-        <input type="file" accept=".csv" @change="onParamsDrop" />
+        <input type="file" accept=".csv,.omex" @change="onParamsDrop" />
       </label>
       <Button
         label="Edit"
