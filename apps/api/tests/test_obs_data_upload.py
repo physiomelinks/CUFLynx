@@ -209,3 +209,74 @@ def test_upload_preserves_operation_kwargs_in_stored_file(client):
     }
     # An item without kwargs stays clean (no empty map injected).
     assert "operation_kwargs" not in stored["data_items"][1]
+
+
+# Issue #27 / CA#339: the editor writes protocol_shapes -- Myokit-style event
+# declarations -- rather than expanded point tables, because a declaration can be
+# read back and edited and a table cannot. Either must be accepted.
+def test_a_protocol_shape_is_accepted_in_place_of_a_trace(client):
+    obs = {
+        "protocol_info": {
+            "pre_times": [0.0],
+            "sim_times": [[2000.0]],
+            "params_to_change": {"engine/pace": [["stim"]]},
+            "protocol_shapes": {
+                "stim": {
+                    "events": [
+                        {"level": 1.0, "start": 100, "length": 2, "period": 1000, "multiplier": 0}
+                    ]
+                }
+            },
+        },
+        "data_items": [],
+    }
+    resp = client.post("/api/obs_data/upload", json=obs)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["n_experiments"] == 1
+
+
+def test_shapes_and_traces_can_be_mixed_across_parameters(client):
+    obs = {
+        "protocol_info": {
+            "pre_times": [0.0],
+            "sim_times": [[5.0]],
+            "params_to_change": {"m/I": [["by_shape"]], "m/g": [["by_table"]]},
+            "protocol_shapes": {"by_shape": {"type": "ramp", "from": 0, "to": 1}},
+            "protocol_traces": {"by_table": {"t": [0, 5], "values": [0, 1]}},
+        },
+        "data_items": [],
+    }
+    assert client.post("/api/obs_data/upload", json=obs).status_code == 200
+
+
+def test_a_name_in_both_is_refused_as_ambiguous(client):
+    obs = {
+        "protocol_info": {
+            "pre_times": [0.0],
+            "sim_times": [[5.0]],
+            "params_to_change": {"m/I": [["both"]]},
+            "protocol_shapes": {"both": {"type": "ramp", "from": 0, "to": 1}},
+            "protocol_traces": {"both": {"t": [0, 5], "values": [0, 1]}},
+        },
+        "data_items": [],
+    }
+    resp = client.post("/api/obs_data/upload", json=obs)
+    assert resp.status_code == 422
+    assert "both" in resp.json()["detail"]
+
+
+def test_a_dangling_name_still_says_where_it_was_looked_for(client):
+    obs = {
+        "protocol_info": {
+            "pre_times": [0.0],
+            "sim_times": [[5.0]],
+            "params_to_change": {"m/I": [["typo"]]},
+            "protocol_shapes": {"stim": {"type": "ramp", "from": 0, "to": 1}},
+        },
+        "data_items": [],
+    }
+    resp = client.post("/api/obs_data/upload", json=obs)
+    assert resp.status_code == 422
+    detail = resp.json()["detail"]
+    assert "typo" in detail
+    assert "protocol_shapes" in detail

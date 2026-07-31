@@ -9,39 +9,31 @@ This module reads it back out and writes it where CUFLynx expects it.
 
 The two formats say the same thing in different shapes:
 
-    Myokit   a list of events: (level, start, duration, period, multiplier),
+    Myokit   a list of events: (level, start, length, period, multiplier),
              i.e. a stimulus waveform defined by when it fires.
-    CA       sim_times[exp][sub] -- the *duration* of each sub-experiment -- with
-             params_to_change[name][exp][sub] holding the value of each changed
-             parameter over that sub-experiment.
+    CA       one sub-experiment, with ``protocol_shapes`` holding those same five
+             fields under those same names, which CA expands into the point
+             table its solvers want.
 
-So the conversion is: flatten the events into the piecewise-constant function of
-time they describe, then emit one sub-experiment per constant segment. Myokit's
-own ``log_for_interval`` does the flattening, so overlapping or oddly-phased
-events resolve exactly as they would in a Myokit simulation rather than as this
-module's re-reading of the rules.
+So the events copy across unchanged. The alternative -- slicing the run into a
+sub-experiment per constant stretch of the waveform -- describes the same
+stimulus, but describes it in a form that cannot be read back: five durations
+and five levels do not announce that they are a 1 Hz stimulus, so the period
+cannot be edited afterwards, only recomputed.
 
 A periodic Myokit protocol usually runs forever (``multiplier=0``), while a CA
-experiment is a finite list of durations -- so an indefinite protocol needs a
-number of beats, which is a choice and not a conversion. It defaults to 2: one
-beat cannot show that a model returns to its diastolic state, and two can.
+experiment has a finite length -- so an indefinite protocol still needs a number
+of beats, which is a choice and not a conversion. It defaults to 2: one beat
+cannot show that a model returns to its diastolic state, and two can. The events
+keep their own ``multiplier``, so it is the sub-experiment's length that decides
+how many stimuli land.
 """
 
 from __future__ import annotations
 
-import math
 import tempfile
 from pathlib import Path
 from typing import Any
-
-# Sub-experiments shorter than this are dropped rather than emitted. Myokit
-# protocols are written in whole units of time, so a segment this short is
-# floating-point debris from the event arithmetic, not something the user asked
-# to simulate -- and CA turns each one into at least one solver step.
-MIN_SEGMENT = 1e-9
-
-# Enough to hold what a .mmt actually contains without inventing precision.
-ROUND_TO = 9
 
 DEFAULT_BEATS = 2
 
@@ -103,30 +95,6 @@ def pace_variable(model) -> str:
     return var.qname().replace(".", "/")
 
 
-def _segments(protocol, duration: float) -> list[tuple[float, float]]:
-    """``(length, level)`` for each constant stretch of the protocol in [0, duration]."""
-    # log_for_interval is the current name; create_log_for_interval is the same
-    # method under the name older Myokit used, and warns on newer ones.
-    log_for_interval = getattr(protocol, "log_for_interval", None) or protocol.create_log_for_interval
-    log = log_for_interval(0, duration, for_drawing=False)
-    times = list(log["time"])
-    levels = list(log["pace"])
-
-    segments: list[tuple[float, float]] = []
-    for start, end, level in zip(times, times[1:], levels):
-        length = round(end - start, ROUND_TO)
-        if length <= MIN_SEGMENT:
-            continue
-        level = round(float(level), ROUND_TO)
-        # Myokit emits a change point per event edge; two adjacent stretches at
-        # the same level are one sub-experiment, not two.
-        if segments and math.isclose(segments[-1][1], level, rel_tol=0, abs_tol=10**-ROUND_TO):
-            segments[-1] = (round(segments[-1][0] + length, ROUND_TO), segments[-1][1])
-        else:
-            segments.append((length, level))
-    return segments
-
-
 def _duration(protocol, beats: int, duration: float | None) -> tuple[float, list[str]]:
     notes: list[str] = []
     if duration is not None:
@@ -177,43 +145,62 @@ def protocol_info_from_mmt(
 
     name = pace_variable(model)
     total, notes = _duration(protocol, beats, duration)
-    segments = _segments(protocol, total)
-    if not segments:
-        raise MmtProtocolError(
-            "that protocol covers no time at all, so there are no sub-experiments "
-            "to make from it."
+    return _as_shape(protocol, name, total, notes, pre_time, label)
+
+
+def _as_shape(protocol, name, total, notes, pre_time, label):
+    """One sub-experiment driving ``name`` with the .mmt's own events.
+
+    The alternative -- slicing the run into a sub-experiment per constant
+    stretch -- says the same thing, but says it in a form that cannot be read
+    back: five durations and five levels do not announce that they are a 1 Hz
+    stimulus, so the period cannot be edited, only recomputed. Declaring the
+    events keeps the numbers the user wrote in the .mmt.
+    """
+    events = []
+    for event in protocol.events():
+        events.append(
+            {
+                "level": float(event.level()),
+                "start": float(event.start()),
+                "length": float(event.duration()),
+                "period": float(event.period() or 0),
+                "multiplier": int(event.multiplier() or 0),
+            }
         )
-    if len(segments) == 1:
-        # One segment means the level never changes. At zero that is a protocol
-        # that does nothing -- dn-1985-if-gna.mmt declares `0 10 0.5 1000 0`,
-        # a stimulus of amplitude zero, because the example is about the model's
-        # own currents rather than about pacing. Converting it would produce a
-        # protocol_info that looks like a stimulus and applies none.
-        level = segments[0][1]
-        if level == 0:
-            raise MmtProtocolError(
-                "that protocol's only stimulus has amplitude 0, so it never "
-                "changes anything -- the model is effectively unpaced and there "
-                "is no protocol worth converting."
-            )
-        notes.append(
-            f"the protocol holds {name} at {level:g} for the whole run, so the "
-            "experiment has a single sub-experiment."
+
+    # Myokit ships examples whose stimulus has amplitude zero because the file is
+    # about the model's own currents rather than about pacing -- dn-1985-if-gna
+    # declares `0 10 0.5 1000 0`. Converting one gives a protocol_info that looks
+    # like a stimulus and applies none.
+    if all(e["level"] == 0 for e in events):
+        raise MmtProtocolError(
+            "that protocol's only stimulus has amplitude 0, so it never changes "
+            "anything -- the model is effectively unpaced and there is no "
+            "protocol worth converting."
+        )
+    if all(e["start"] >= total for e in events):
+        raise MmtProtocolError(
+            f"that protocol fires nothing within the {total:g} it would be run "
+            f"over -- its first event starts later than that."
         )
 
     if label is None:
-        first = protocol.events()[0]
-        period = float(first.period() or 0)
+        period = events[0]["period"]
         label = f"pacing, period {period:g}" if period else "protocol"
 
-    info: dict[str, Any] = {
-        "pre_times": [float(pre_time)],
-        "sim_times": [[length for length, _ in segments]],
-        "params_to_change": {name: [[level for _, level in segments]]},
-        "experiment_labels": [label],
-        "experiment_colors": ["r"],
-    }
-    return info, notes
+    trace_name = name.replace("/", "_")
+    return (
+        {
+            "pre_times": [float(pre_time)],
+            "sim_times": [[total]],
+            "params_to_change": {name: [[trace_name]]},
+            "protocol_shapes": {trace_name: {"events": events}},
+            "experiment_labels": [label],
+            "experiment_colors": ["r"],
+        },
+        notes,
+    )
 
 
 def fill_protocol_info(obs_data: dict[str, Any], protocol_info: dict[str, Any]) -> dict[str, Any]:

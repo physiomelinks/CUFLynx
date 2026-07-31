@@ -4,8 +4,8 @@ import {
   buildProtocolInfo,
   emptyModel,
   traceName,
-  rampTrace,
-  pulseTrace,
+  shapeToCell,
+  expandShape,
   subexpBoundaries,
   validateModel,
   makeCell,
@@ -69,7 +69,7 @@ describe('buildProtocolInfo', () => {
     expect(back.protocol_traces.ramp_port).toEqual({ t: [0, 1], values: [0, -0.3] })
   })
 
-  it('generates a ramp trace from a ramp cell', () => {
+  it('declares a ramp rather than expanding it into points', () => {
     const m = emptyModel()
     addParam(m, 'a/x')
     m.experiments[0].subexps[0].duration = 4
@@ -77,53 +77,106 @@ describe('buildProtocolInfo', () => {
     const pi = buildProtocolInfo(m, null)
     const key = traceName('a/x', 0, 0)
     expect(pi.params_to_change['a/x'][0][0]).toBe(key)
-    expect(pi.protocol_traces[key]).toEqual({ t: [0, 4], values: [1, 5] })
+    expect(pi.protocol_shapes[key]).toEqual({ type: 'ramp', from: 1, to: 5 })
+    expect(pi.protocol_traces).toBeUndefined()
   })
 
-  it('generates a step trace that jumps to the level and holds', () => {
+  // A step is a single pacing event that runs to the end of the subexperiment,
+  // so it needs no type of its own.
+  it('declares a step as one event lasting to the end', () => {
     const m = emptyModel()
     addParam(m, 'a/x')
     m.experiments[0].subexps[0].duration = 10
     m.params['a/x'][0][0] = { shape: 'step', baseline: 0, level: 3, ts: 4 }
     const pi = buildProtocolInfo(m, null)
-    const tr = pi.protocol_traces[traceName('a/x', 0, 0)]
-    for (let i = 1; i < tr.t.length; i++) expect(tr.t[i]).toBeGreaterThan(tr.t[i - 1])
-    expect(tr.values[0]).toBe(0) // baseline first
-    expect(tr.values[tr.values.length - 1]).toBe(3) // holds the level to the end
-    expect(tr.t[tr.t.length - 1]).toBe(10)
+    expect(pi.protocol_shapes[traceName('a/x', 0, 0)]).toEqual({
+      baseline: 0,
+      events: [{ level: 3, start: 4, length: 6, period: 0, multiplier: 0 }],
+    })
   })
 
-  it('generates a strictly-increasing pulse trace reaching the peak', () => {
+  it('declares a pulse as one event that stops before the end', () => {
     const m = emptyModel()
     addParam(m, 'a/y')
     m.experiments[0].subexps[0].duration = 10
     m.params['a/y'][0][0] = { shape: 'pulse', baseline: 0, peak: 2, ts: 3, te: 7 }
     const pi = buildProtocolInfo(m, null)
-    const tr = pi.protocol_traces[traceName('a/y', 0, 0)]
-    for (let i = 1; i < tr.t.length; i++) expect(tr.t[i]).toBeGreaterThan(tr.t[i - 1])
-    expect(tr.t[0]).toBe(0)
-    expect(tr.t[tr.t.length - 1]).toBe(10)
-    expect(Math.max(...tr.values)).toBe(2)
-    expect(tr.values[0]).toBe(0)
+    expect(pi.protocol_shapes[traceName('a/y', 0, 0)]).toEqual({
+      baseline: 0,
+      events: [{ level: 2, start: 3, length: 4, period: 0, multiplier: 0 }],
+    })
   })
 
-  it('emits no protocol_traces when there are no generated/referenced traces', () => {
+  it('declares pacing in the five fields a .mmt protocol line uses', () => {
+    const m = emptyModel()
+    addParam(m, 'engine/pace')
+    m.experiments[0].subexps[0].duration = 2000
+    m.params['engine/pace'][0][0] = {
+      shape: 'paced', baseline: 0, level: 1, start: 100, length: 2, period: 1000, multiplier: 0,
+    }
+    const pi = buildProtocolInfo(m, null)
+    expect(pi.protocol_shapes[traceName('engine/pace', 0, 0)]).toEqual({
+      baseline: 0,
+      events: [{ level: 1, start: 100, length: 2, period: 1000, multiplier: 0 }],
+    })
+  })
+
+  // The reason for declaring rather than expanding: what you typed comes back.
+  it.each([
+    ['ramp', { shape: 'ramp', from: 1, to: 5 }],
+    ['step', { shape: 'step', baseline: 0, level: 3, ts: 4 }],
+    ['pulse', { shape: 'pulse', baseline: 0, peak: 2, ts: 3, te: 7 }],
+    ['paced', { shape: 'paced', baseline: 0, level: 1, start: 1, length: 0.5, period: 2, multiplier: 0 }],
+  ])('round-trips a %s cell through protocol_info', (_name, cell) => {
+    const m = emptyModel()
+    addParam(m, 'a/x')
+    m.experiments[0].subexps[0].duration = 10
+    m.params['a/x'][0][0] = { ...cell }
+    const reopened = protocolToModel(buildProtocolInfo(m, null))
+    expect(reopened.params['a/x'][0][0]).toEqual(cell)
+  })
+
+  // A .mmt protocol table can have several lines; the editor has no form for
+  // that, so it must be preserved rather than mangled.
+  it('preserves a shape it has no form for, and writes it back unchanged', () => {
+    const rich = {
+      baseline: 0,
+      events: [
+        { level: 1, start: 1, length: 1, period: 0, multiplier: 0 },
+        { level: 2, start: 5, length: 1, period: 0, multiplier: 0 },
+      ],
+    }
+    const pi = {
+      pre_times: [0],
+      sim_times: [[10]],
+      params_to_change: { 'a/x': [['rich']] },
+      protocol_shapes: { rich: rich },
+    }
+    const model = protocolToModel(pi)
+    expect(model.params['a/x'][0][0]).toEqual({ shape: 'trace', key: 'rich' })
+    expect(buildProtocolInfo(model, pi).protocol_shapes.rich).toEqual(rich)
+  })
+
+  it('preserves a hand-written protocol_trace', () => {
+    const def = { t: [0, 5, 10], values: [0, 1, 0] }
+    const pi = {
+      pre_times: [0],
+      sim_times: [[10]],
+      params_to_change: { 'a/x': [['mine']] },
+      protocol_traces: { mine: def },
+    }
+    const out = buildProtocolInfo(protocolToModel(pi), pi)
+    expect(out.protocol_traces.mine).toEqual(def)
+    expect(out.protocol_shapes).toBeUndefined()
+  })
+
+  it('emits neither traces nor shapes when there are none', () => {
     const pi = buildProtocolInfo(emptyModel(), null)
     expect(pi.protocol_traces).toBeUndefined()
+    expect(pi.protocol_shapes).toBeUndefined()
     expect(pi.params_to_change).toEqual({})
     expect(pi.pre_times).toEqual([0])
     expect(pi.sim_times).toEqual([[1]])
-  })
-})
-
-describe('trace generators', () => {
-  it('rampTrace is two points', () => {
-    expect(rampTrace(2, 8, 5)).toEqual({ t: [0, 5], values: [2, 8] })
-  })
-  it('pulseTrace clamps ts>te and stays strictly increasing', () => {
-    const tr = pulseTrace(0, 1, 8, 3, 10) // ts>te
-    for (let i = 1; i < tr.t.length; i++) expect(tr.t[i]).toBeGreaterThan(tr.t[i - 1])
-    expect(tr.t[tr.t.length - 1]).toBe(10)
   })
 })
 
@@ -168,5 +221,73 @@ describe('makeCell', () => {
     expect(makeCell('ramp')).toEqual({ shape: 'ramp', from: 0, to: 0 })
     expect(makeCell('step', 4)).toEqual({ shape: 'step', baseline: 0, level: 1, ts: 2 })
     expect(makeCell('pulse', 4)).toEqual({ shape: 'pulse', baseline: 0, peak: 1, ts: 0, te: 4 })
+  })
+})
+
+// The editor writes declarations, but the plots draw waveforms — so the same
+// expansion circulatory_autogen does on read has to exist here too, and mean the
+// same thing. Myokit's rules in both.
+describe('expandShape', () => {
+  const paced = (over = {}) => ({
+    baseline: 0,
+    events: [{ level: 1, start: 100, length: 2, period: 1000, multiplier: 0, ...over }],
+  })
+  const at = (tr, times) =>
+    times.map((x) => {
+      for (let i = 1; i < tr.t.length; i++) {
+        if (x <= tr.t[i]) {
+          const f = (x - tr.t[i - 1]) / (tr.t[i] - tr.t[i - 1] || 1)
+          return tr.values[i - 1] + f * (tr.values[i] - tr.values[i - 1])
+        }
+      }
+      return tr.values[tr.values.length - 1]
+    })
+
+  it('repeats for as long as the sub-experiment runs when the multiplier is 0', () => {
+    expect(at(expandShape(paced(), 2000), [50, 101, 500, 1101, 1500])).toEqual([0, 1, 0, 1, 0])
+  })
+
+  it('stops after the multiplier says to', () => {
+    expect(at(expandShape(paced({ multiplier: 1 }), 2000), [101, 1101])).toEqual([1, 0])
+  })
+
+  it('fires once when there is no period', () => {
+    expect(at(expandShape(paced({ period: 0 }), 2000), [101, 1101])).toEqual([1, 0])
+  })
+
+  it('holds the baseline between stimuli', () => {
+    expect(at(expandShape({ ...paced(), baseline: -80 }, 2000), [50, 101])).toEqual([-80, 1])
+  })
+
+  it('expands a ramp across the sub-experiment', () => {
+    expect(expandShape({ type: 'ramp', from: 1, to: 5 }, 4)).toEqual({ t: [0, 4], values: [1, 5] })
+  })
+
+  it('keeps a brief stimulus sharp inside a long beat', () => {
+    // 2 units of stimulus in 2000: a proportional edge would erase it.
+    expect(at(expandShape(paced(), 2000), [100.1, 101.9])).toEqual([1, 1])
+  })
+
+  it('never emits a duplicate instant', () => {
+    const tr = expandShape(paced(), 2000)
+    for (let i = 1; i < tr.t.length; i++) expect(tr.t[i]).toBeGreaterThan(tr.t[i - 1])
+  })
+
+  it('covers the whole sub-experiment', () => {
+    const tr = expandShape(paced(), 2000)
+    expect(tr.t[0]).toBe(0)
+    expect(tr.t[tr.t.length - 1]).toBe(2000)
+  })
+
+  it('returns null for a shape it does not understand, rather than a wrong line', () => {
+    expect(expandShape({ type: 'sine', amplitude: 1 }, 10)).toBeNull()
+    expect(expandShape(null, 10)).toBeNull()
+  })
+
+  // A period small enough to fill the run with millions of beats would hang the
+  // browser; the plot is not worth that.
+  it('does not hang on a pathological period', () => {
+    const tr = expandShape(paced({ start: 0, length: 1e-9, period: 1e-9 }), 1e6)
+    expect(tr.t.length).toBeLessThan(1e6)
   })
 })

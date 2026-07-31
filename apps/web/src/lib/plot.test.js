@@ -119,6 +119,39 @@ describe('controlledSeries (params_to_change)', () => {
     expect(iin.values).toEqual([0, 0, 0, -0.15, -0.3])
   })
 
+  // The controlled-variable plot is where a user checks that the protocol is
+  // what they meant, so a declared shape has to draw the same as the point table
+  // it replaces -- otherwise the plot silently stops showing the pacing.
+  it('draws a protocol_shapes entry as its waveform', () => {
+    const shaped = {
+      pre_times: [0],
+      sim_times: [[2000]],
+      params_to_change: { 'engine/pace': [['stim']] },
+      protocol_shapes: {
+        stim: { events: [{ level: 1, start: 100, length: 2, period: 1000, multiplier: 0 }] },
+      },
+    }
+    const s = controlledSeries(shaped, 0)[0]
+    expect(s.qname).toBe('engine/pace')
+    // Two beats: up at 100 and again at 1100, back down each time.
+    const highs = s.time.filter((_t, i) => s.values[i] === 1)
+    expect(highs.length).toBe(4) // rise and fall points of two stimuli
+    expect(Math.min(...highs)).toBeCloseTo(100, 1)
+    expect(s.time[s.time.length - 1]).toBe(2000)
+  })
+
+  it('offsets a shape to the start of its sub-experiment', () => {
+    const shaped = {
+      pre_times: [0],
+      sim_times: [[10, 10]],
+      params_to_change: { 'a/x': [[0, 'stim']] },
+      protocol_shapes: { stim: { events: [{ level: 1, start: 2, length: 1, period: 0 }] } },
+    }
+    const s = controlledSeries(shaped, 0)[0]
+    const highs = s.time.filter((_t, i) => s.values[i] === 1)
+    expect(Math.min(...highs)).toBeCloseTo(12, 1) // 10 (sub start) + 2
+  })
+
   it('returns one series per controlled parameter', () => {
     expect(controlledSeries(pi, 0).map((s) => s.qname)).toEqual([
       'soma_SN/I_in',
