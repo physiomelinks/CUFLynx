@@ -245,3 +245,137 @@ def test_the_pacing_becomes_a_parameter_to_drive(client, requires_simulation):
     # drift, not an action potential); driving pace depolarises it by volts.
     assert span(0) < 0.01
     assert span(1) > 1.0
+
+
+# ---------------------------------------------------------------------------
+# Companion fixtures: the .mmt's own protocol, expressed as protocol_info
+# ---------------------------------------------------------------------------
+def _companions():
+    from conftest import RESOURCES_DIR
+
+    return (
+        RESOURCES_DIR / "br-1977_obs_data.json",
+        RESOURCES_DIR / "br-1977_params_for_id.csv",
+    )
+
+
+def test_the_companion_fixtures_exist():
+    for path in _companions():
+        assert path.is_file(), f"missing fixture: {path}"
+
+
+def test_the_obs_protocol_matches_the_mmt_protocol():
+    """The .mmt says: level 1.0, start 100, length 2, period 1000.
+
+    protocol_info has no notion of a repeating pulse, so the schedule becomes
+    sub-experiments holding engine/pace at each level for the right duration.
+    This pins the arithmetic: stimuli must begin at t=100 and t=1100.
+    """
+    import json
+
+    obs_path, _ = _companions()
+    pi = json.loads(obs_path.read_text())["protocol_info"]
+    durations = pi["sim_times"][0]
+    levels = pi["params_to_change"]["engine/pace"][0]
+    assert len(durations) == len(levels)
+
+    starts, t = [], 0.0
+    for duration, level in zip(durations, levels):
+        if level:
+            starts.append(t)
+        t += duration
+    assert starts == [100.0, 1100.0]          # period 1000, first at 100
+    assert durations[1] == durations[3] == 2.0  # length 2
+    assert set(levels) == {0.0, 1.0}            # level 1.0
+
+
+@pytest.mark.integration
+def test_the_protocol_paces_the_model(client, requires_simulation):
+    """Two stimuli, so two action potentials -- the point of replicating it."""
+    import json
+
+    obs_path, _ = _companions()
+    with open(_mmt_fixture(), "rb") as fh:
+        model_id = client.post(
+            "/api/models/upload", files={"file": ("br-1977.mmt", fh, "text/plain")}
+        ).json()["model_id"]
+    client.post(
+        "/api/obs_data/upload",
+        json={"model_id": model_id, "obs_data": json.loads(obs_path.read_text())},
+    )
+    r = client.post(
+        "/api/protocol/run",
+        json={"model_id": model_id, "params": {}, "outputs": ["membrane/V"]},
+    )
+    assert r.status_code == 200, r.text
+    exp = r.json()["experiments"][0]
+    t, v = exp["time"], exp["outputs"]["membrane/V"]
+    assert t[-1] == pytest.approx(2000, abs=1)
+
+    # Count upstrokes: crossings of 0 mV going up.
+    crossings = sum(1 for a, b in zip(v, v[1:]) if a <= 0 < b)
+    assert crossings == 2, f"expected two paced APs, saw {crossings}"
+
+
+@pytest.mark.integration
+def test_the_obs_targets_are_the_model_own_features(client, requires_simulation):
+    """So the cost sits near zero at the defaults and a calibration over gNaBar
+    should recover ~4 -- which makes the fixture self-checking."""
+    import json
+
+    obs_path, _ = _companions()
+    with open(_mmt_fixture(), "rb") as fh:
+        model_id = client.post(
+            "/api/models/upload", files={"file": ("br-1977.mmt", fh, "text/plain")}
+        ).json()["model_id"]
+    items = json.loads(obs_path.read_text())["data_items"]
+    client.post(
+        "/api/obs_data/upload",
+        json={"model_id": model_id, "obs_data": json.loads(obs_path.read_text())},
+    )
+    exp = client.post(
+        "/api/protocol/run",
+        json={"model_id": model_id, "params": {}, "outputs": ["membrane/V", "isi/Cai"]},
+    ).json()["experiments"][0]
+
+    by_op = {(i["operands"][0], i["operation"]): i["value"] for i in items}
+    v = exp["outputs"]["membrane/V"]
+    assert max(v) == pytest.approx(by_op[("membrane/V", "max")], abs=0.5)
+    assert min(v) == pytest.approx(by_op[("membrane/V", "min")], abs=0.5)
+
+
+@pytest.mark.integration
+def test_the_calibration_parameter_actually_moves_the_observable(client, requires_simulation):
+    """A parameter the observables are insensitive to would make the fixture
+    useless for testing calibration."""
+    import json
+
+    obs_path, params_path = _companions()
+    with open(_mmt_fixture(), "rb") as fh:
+        model_id = client.post(
+            "/api/models/upload", files={"file": ("br-1977.mmt", fh, "text/plain")}
+        ).json()["model_id"]
+    client.post(
+        "/api/obs_data/upload",
+        json={"model_id": model_id, "obs_data": json.loads(obs_path.read_text())},
+    )
+    with open(params_path, "rb") as fh:
+        r = client.post(
+            "/api/params_for_id/upload",
+            params={"model_id": model_id},
+            files={"file": ("p.csv", fh, "text/csv")},
+        )
+    assert r.status_code == 200, r.text
+    (param,) = r.json()["params"]
+    assert param["qname"] == "ina/gNaBar"
+    assert param["min"] < param["initial_value"] < param["max"]
+
+    def peak(g):
+        exp = client.post(
+            "/api/protocol/run",
+            json={"model_id": model_id, "params": {"ina/gNaBar": g}, "outputs": ["membrane/V"]},
+        ).json()["experiments"][0]
+        return max(exp["outputs"]["membrane/V"])
+
+    # Sodium conductance drives the upstroke, so the peak moves a long way.
+    assert peak(param["min"]) < peak(param["initial_value"]) - 10
