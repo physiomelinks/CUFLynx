@@ -4,7 +4,9 @@ build-backend = "hatchling.build"
 
 [project]
 name = "cuflynx-api"
-version = "0.1.0"
+# Single-sourced from version.py (see [tool.hatch.version] below) so a release
+# cannot bump one copy of the number and leave the others behind.
+dynamic = ["version"]
 description = "FastAPI backend for the CellML slider-visualisation app"
 readme = "../../README.md"
 requires-python = ">=3.10"
@@ -80,9 +82,13 @@ analysis = [
     "mpich>=4.0; platform_system != 'Windows'",
 ]
 
+[tool.hatch.version]
+path = "version.py"
+
 [tool.hatch.build.targets.wheel]
 only-include = [
     "main.py",
+    "version.py",
     "engine.py",
     "cellml_meta.py",
     "obs_data.py",
