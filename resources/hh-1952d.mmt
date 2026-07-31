@@ -1,0 +1,114 @@
+[[model]]
+name: HodgkinHuxley1952d
+desc: """
+    Myokit implementation of the model described in Hodgkin & Huxley's original
+    publication [1].
+
+    This model describes a giant axon found in the squid genus Loligo.
+
+    Instead of pacing, Hodgkin and Huxley start the membrane potential off at
+    different values and see what happens. This is implemented in this
+    translation by setting a voltage clamp that only activates when engine.pace
+    is high.
+
+    [1] A quantitative description of membrane current and its application to
+    conduction and excitation in nerve.
+    Hodgkin, Huxley, 1952d, Journal of Physiology
+    """
+author: Michael Clerx
+# Initial values
+membrane.E  = -75.0
+potassium.n = 0.317
+sodium.m    = 0.05
+sodium.h    = 0.595
+
+[engine]
+time = 0 bind time
+pace = 0 bind pace
+
+#
+# Membrane potential
+#
+[membrane]
+E_rest = -75
+dot(E) = if(engine.pace > 0,
+        (Vshock - (E - E_rest)) * 100,
+        -(1/C) * (sodium.i + potassium.i + leak.i))
+    desc: The membrane potential
+    in [mV]
+V = E - E_rest
+    desc: The displacement of the membrane potential from its resting potential
+    in [mV]
+C = 1 [uF/cm^2] : The membrane capacity per unit area (See table 3 in HH1952d)
+Vshock = -15 [mV] : A temporary holding potential
+
+#
+# Potassium current
+#
+[potassium]
+use membrane.V
+Vk = 12 [mV] : See table 3 in HH1952d
+g_max = 36 [mS/cm^2]    # The paper uses "mho" (ohm inverted) instead of S
+i = g_max * n^4 * (V - Vk)
+    desc: Current carried by potassium ions
+    in [uA/cm^2]
+dot(n) = a * (1 - n) - b * n
+    a = 0.01 * (V + 10) / (exp((V + 10) / 10) - 1)
+    b = 0.125 * exp(V / 80)
+
+#
+# Sodium current
+#
+[sodium]
+use membrane.V
+VNa = -115 [mV] : See table 3 in HH1952d
+g_max = 120 [mS/cm^2]
+i = g_max * m^3 * h * (V - VNa)
+    desc: Current carried by Sodium ions
+    in [uA/cm^2]
+dot(m) = a * (1 - m) - b * m
+    a = 0.1 * (V + 25) / (exp((V + 25) / 10) - 1)
+    b = 4 * exp(V / 18)
+dot(h) = a * (1 - h) - b * h
+    a = 0.07 * exp(V / 20)
+    b = 1 / (exp((V + 30) / 10) + 1)
+
+#
+# Leak current
+#
+[leak]
+use membrane.V
+Vleak = -10.613 : See table 3 in HH1952d
+g_max = 0.3 [mS/cm^2]
+i = g_max * (V - Vleak)
+
+[[protocol]]
+# Level  Start    Length   Period   Multiplier
+1.0      10       0.03     30       0
+
+[[script]]
+import matplotlib.pyplot as plt
+import myokit
+
+#
+# This example file shows a single firing of a squid giant axon obtained from
+# Hodgkin & Huxley's 1952 equations.
+#
+
+# Create simulation
+m = get_model()
+p = get_protocol()
+s = myokit.Simulation(m, p)
+
+# Selected variables
+t = 'engine.time'
+v = 'membrane.V'
+
+# Run simulation
+d = s.run(35, log=[t, v])
+
+# Display the result
+plt.plot(d[t], d[v])
+plt.title('Membrane potential')
+plt.show()
+

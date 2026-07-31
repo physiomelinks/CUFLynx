@@ -172,9 +172,11 @@ async function onCellmlDrop(event) {
   const files = filesFrom(event)
   resetPicker(event)
   if (!files.length) return
-  const bad = files.find((f) => !extOk(f.name, ['.cellml', '.xml']))
+  // .mmt is accepted here and converted to CellML server-side (#27). A Myokit
+  // model is a single file, so it never takes part in a sister-file bundle.
+  const bad = files.find((f) => !extOk(f.name, ['.cellml', '.xml', '.mmt']))
   if (bad) {
-    error.value = `Expected .cellml files, got "${bad.name}"`
+    error.value = `Expected a .cellml or .mmt file, got "${bad.name}"`
     return
   }
   const unreadable = files.map(unreadableDrop).find(Boolean)
@@ -182,10 +184,11 @@ async function onCellmlDrop(event) {
     error.value = unreadable
     return
   }
-  // The main file (for the display name) is the one importing sisters, if any.
+  // The main file (for the display name) is the one importing sisters, if any;
+  // a dropped .mmt is on its own, so it is simply the file itself.
   const main = files.find((f) => f.name.toLowerCase().endsWith('.cellml')) ?? files[0]
   try {
-    const data = await uploadCellML(files)
+    const data = await uploadCellML(files, props.outputsDir)
     emit('model-loaded', { ...data, filename: main.name })
   } catch (e) {
     error.value = e?.response?.data?.detail || String(e)
@@ -268,10 +271,11 @@ async function onParamsDrop(event) {
           <small>drop another to replace</small>
         </template>
         <template v-else>
-          <i class="pi pi-file" /> Drop <strong>CellML</strong> (.cellml)
+          <i class="pi pi-file" /> Drop <strong>CellML</strong> (.cellml) or
+          <strong>Myokit</strong> (.mmt)
           <small>one file, or a non-flattened model with its sister files</small>
         </template>
-        <input type="file" accept=".cellml,.xml" multiple @change="onCellmlDrop" />
+        <input type="file" accept=".cellml,.xml,.mmt" multiple @change="onCellmlDrop" />
       </label>
       <Button
         :label="modelId ? 'Edit' : 'Create'"

@@ -85,7 +85,7 @@ export async function setConfig(opts = {}) {
 // Accepts a single File or an array of Files (a non-flattened model + its sister
 // files). Multiple files go under the `files` field, which the server flattens
 // to one CellML 2.0 model; a single file uses `file` (back-compatible).
-export async function uploadCellML(fileOrFiles) {
+export async function uploadCellML(fileOrFiles, outputDir = '') {
   const files = Array.isArray(fileOrFiles) ? fileOrFiles : [fileOrFiles]
   const form = new FormData()
   if (files.length === 1) {
@@ -93,7 +93,11 @@ export async function uploadCellML(fileOrFiles) {
   } else {
     for (const f of files) form.append('files', f)
   }
-  const { data } = await axios.post(url('/api/models/upload'), form)
+  // A dropped Myokit model is converted to CellML server-side (#27); the output
+  // dir is where the converted file is kept for the user.
+  const { data } = await axios.post(url('/api/models/upload'), form, {
+    params: outputDir ? { output_dir: outputDir } : {},
+  })
   return data
 }
 

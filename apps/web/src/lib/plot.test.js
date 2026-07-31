@@ -632,3 +632,21 @@ describe('buildExtraPlotCells qname', () => {
     expect(plain.xqname).toBeNull()
   })
 })
+
+// Issue #27: a model that never declares a time unit reports `dimensionless`
+// (a Myokit .mmt with a bare `time = 0 bind time`, converted to CellML).
+describe('timeUnit with an undeclared unit', () => {
+  it('treats dimensionless as no unit at all', () => {
+    expect(timeUnit({ 'engine/time': 'dimensionless', 'm/x': 'mV' })).toBe('')
+  })
+
+  it('still finds a real declared unit', () => {
+    expect(timeUnit({ 'environment/time': 'ms' })).toBe('ms')
+  })
+
+  it('skips a dimensionless time in favour of a declared one', () => {
+    expect(timeUnit({ 'engine/time': 'dimensionless', 'environment/t': 'second' })).toBe(
+      'second',
+    )
+  })
+})

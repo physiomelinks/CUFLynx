@@ -41,6 +41,7 @@ from cellml_flatten import (
     pick_main_cellml,
 )
 from cellml_meta import CellMLModel, CellMLParseError, parse_cellml
+import myokit_import
 from compiler_check import compiler_status
 from engine import SimulationError, engine, _circulatory_autogen_src
 import export_pipeline
@@ -720,6 +721,7 @@ def get_example_model(name: str) -> FileResponse:
 async def upload_model(
     file: UploadFile | None = None,
     files: list[UploadFile] = File(default_factory=list),
+    output_dir: str | None = Query(default=None),
 ) -> dict:
     """Upload a CellML model. Accepts either a single self-contained ``.cellml``
     (``file``, back-compatible) or a bundle of files (``files``): a non-flattened
@@ -737,6 +739,26 @@ async def upload_model(
 
     single = len(raw_by_name) == 1
     only_name, only_bytes = next(iter(raw_by_name.items()))
+
+    # A Myokit model is converted to CellML on the way in (#27), so everything
+    # downstream -- the metadata parser, params_for_id naming, the exported
+    # pipeline, CA itself -- keeps seeing the CellML it already expects.
+    converted_from = None
+    converted_path = None
+    if single and (
+        myokit_import.is_myokit_filename(only_name) or myokit_import.looks_like_myokit(only_bytes)
+    ):
+        try:
+            only_bytes, converted_path = myokit_import.cellml_from_myokit(
+                only_bytes,
+                filename=only_name,
+                out_dir=_user_func_base_dir(output_dir or ""),
+            )
+        except myokit_import.MyokitImportError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        converted_from = only_name
+        raw_by_name = {Path(only_name).stem + ".cellml": only_bytes}
+
     if single and not has_imports(only_bytes):
         # Self-contained single file: save as-is (unchanged behaviour).
         raw = only_bytes
@@ -770,6 +792,10 @@ async def upload_model(
         "variable_count": meta.variable_count,
         "params": meta.params,
         "odes": meta.odes,
+        # Set when a Myokit model was converted on the way in (#27), so the UI can
+        # say the model it is showing is not the file that was dropped.
+        "converted_from": converted_from,
+        "converted_cellml_path": converted_path,
     }
 
 
