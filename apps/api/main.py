@@ -226,15 +226,22 @@ def _ca_src_from_dir(d: str) -> str:
 
 
 def _set_analysis_python(path: str) -> None:
-    """Point every analysis job manager at ``path``.
+    """Point every analysis job manager -- and live simulation -- at ``path``.
 
-    All three spawn a runner script the same way, so they share one interpreter
-    choice; keeping them in lockstep here avoids a per-manager setting the UI
-    would have to expose three times.
+    All three analysis managers spawn a runner script the same way, so they share
+    one interpreter choice; keeping them in lockstep here avoids a per-manager
+    setting the UI would have to expose three times.
+
+    Live simulation is set from the same value (#167). It used to be the
+    exception -- it ran in-process, in whatever interpreter started the app --
+    which made "switch Python" true of analysis and false of the sliders. The
+    engine restarts its worker when this changes, so the choice takes effect
+    without a restart.
     """
     calibration.python = path
     sensitivity.python = path
     uq.python = path
+    engine.worker_python = path
 
 
 def _restore_persisted_settings() -> None:
