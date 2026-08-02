@@ -68,6 +68,8 @@ for runner in (
     "calibration_runner.py",
     "sensitivity_runner.py",
     "uq_runner.py",
+    # Live simulation runs here too when the user picks an interpreter (#167).
+    "sim_worker_runner.py",
     "local_sensitivity.py",
     # calibration_runner -> calibrated_model -> cellml_meta / params_for_id, to
     # save a calibrated CellML when a run finishes (issue #114).
