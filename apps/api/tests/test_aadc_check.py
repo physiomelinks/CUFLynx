@@ -134,12 +134,25 @@ def test_aadc_ad_methods_are_limited_to_what_the_tape_can_record(client):
     if not methods:
         return  # CA without AADC support; nothing to constrain
     try:
-        from param_id.aadc_backend import TAPE_CONSISTENT_METHODS
+        from param_id import aadc_backend as ab
     except Exception:  # pragma: no cover - older CA
         return
     suitable = opts["ad_suitable_methods"].get("aadc_semi_implicit")
     assert suitable, "AADC advertises no AD-suitable methods"
-    assert set(suitable) <= set(TAPE_CONSISTENT_METHODS)
+
+    # Tape-consistent, OR one of the stiff BDF methods. Those are AD-capable
+    # without being tape-consistent: cost_and_grad dispatches each to its own
+    # gradient implementation *before* the tape check, which CA says in as many
+    # words beside the constant. An earlier version of this test required
+    # everything to be tape-consistent -- true when CA had no BDF gradients, and
+    # since then it has grown three.
+    allowed = set(ab.TAPE_CONSISTENT_METHODS)
+    for name in ("BDF_NEWTON_METHOD", "BDF_TAPE_METHOD", "BDF_KERNEL_METHOD"):
+        method = getattr(ab, name, None)
+        if method:
+            allowed.add(method)
+    assert set(suitable) <= allowed, f"{sorted(set(suitable) - allowed)} have no AD path in CA"
+
     # An adaptive integrator picks its steps from the state, so the recorded
     # operation sequence does not replay -- it must never be offered for AD.
     assert "adaptive_rk45" not in suitable
@@ -211,9 +224,53 @@ def test_the_helper_cache_is_keyed_on_the_backend_actually_used(client, fake_hel
     assert ("m", "cellml_only", "CVODE_myokit") in eng._helpers
 
 
-def test_backend_importable_does_not_import_the_library():
-    """Probing must not pull a heavy or licensed library into the API process."""
+def test_backend_importable_does_not_import_the_library(tmp_path, monkeypatch):
+    """Probing must not pull a heavy or licensed library into the API process.
+
+    Tested with a module that explodes if imported, rather than by naming a real
+    backend: the first version asserted `backend_importable("python") is True`,
+    which is a fact about whether scipy happens to be installed. CI's unit job
+    installs no scipy, so it failed there while passing everywhere scipy exists
+    -- and it never checked the thing the docstring promises.
+    """
+    import sys
+
     import engine as engine_mod
 
-    assert engine_mod.backend_importable("python") is True
-    assert engine_mod.backend_importable("no_such_format") is True  # unknown: assume fine
+    canary = tmp_path / "cuflynx_probe_canary.py"
+    canary.write_text("raise RuntimeError('backend_importable imported me')\n")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.setitem(engine_mod._BACKEND_MODULE, "canary_format", "cuflynx_probe_canary")
+
+    # Found on the path...
+    assert engine_mod.backend_importable("canary_format") is True
+    # ...and never executed. Importing it would raise, and the caller swallows
+    # ImportError, so a probe that imports shows up as either an error or a
+    # False -- both of which fail this.
+    assert "cuflynx_probe_canary" not in sys.modules
+
+
+def test_an_unknown_format_is_assumed_runnable():
+    """We do not have a module name for it, so refusing would block a backend
+    circulatory_autogen supports and we simply have not heard of."""
+    import engine as engine_mod
+
+    assert engine_mod.backend_importable("no_such_format") is True
+
+
+def test_a_backend_whose_library_is_absent_is_reported_absent(monkeypatch):
+    import engine as engine_mod
+
+    monkeypatch.setitem(
+        engine_mod._BACKEND_MODULE, "canary_format", "cuflynx_no_such_module_anywhere"
+    )
+    assert engine_mod.backend_importable("canary_format") is False
+
+
+def test_a_backend_whose_library_is_present_is_reported_present(monkeypatch):
+    """Pinned to the standard library, so the answer does not depend on what the
+    machine running the tests happens to have installed."""
+    import engine as engine_mod
+
+    monkeypatch.setitem(engine_mod._BACKEND_MODULE, "canary_format", "json")
+    assert engine_mod.backend_importable("canary_format") is True
