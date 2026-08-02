@@ -406,14 +406,32 @@ import glob
 import json
 import os
 
-import matplotlib
-
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-import numpy as np
-
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(HERE, "output")
+
+# matplotlib and numpy are imported in main(), after the checks there -- not at
+# module level. Running this script before run_pipeline.py, or from the wrong
+# directory, is a far more common mistake than a missing matplotlib, and an
+# import error at line 17 buries the message that would have said so.
+plt = None
+np = None
+
+
+def _load_plotting_libs():
+    global plt, np
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as _plt
+        import numpy as _np
+    except ImportError as exc:
+        raise SystemExit(
+            "This script needs matplotlib and numpy, and could not import them "
+            f"({exc}). Install them into the Python you are running this with: "
+            "python -m pip install matplotlib numpy"
+        )
+    plt, np = _plt, _np
 PALETTE = ["#5b9bd5", "#ed7d31", "#70ad47", "#ffc000", "#a142f4", "#e84a5f"]
 
 
@@ -610,6 +628,7 @@ def plot_analysis():
 def main():
     if not os.path.isdir(OUT):
         raise SystemExit(f"No output dir at {OUT} — run run_pipeline.py first.")
+    _load_plotting_libs()
     # Each section is independent: a malformed results.json should not cost you
     # the simulation plots that rendered perfectly well.
     failures = []

@@ -104,7 +104,7 @@ def _mle_obs_path(config, cost_type: str) -> str:
     for item in obs.get("data_items", []):
         item["cost_type"] = cost_type
     out = os.path.join(config["output_dir"], "uq_obs_data.json")
-    Path(out).write_text(json.dumps(obs))
+    Path(out).write_text(json.dumps(obs), encoding="utf-8")
     return out
 
 

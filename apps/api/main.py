@@ -635,8 +635,12 @@ def export_pipeline_route(req: ExportPipelineRequest) -> dict:
     try:
         with open(export_dir / yaml_name, "w") as fh:
             yaml.safe_dump(user_inputs, fh, default_flow_style=False, sort_keys=False)
-        (export_dir / "run_pipeline.py").write_text(export_pipeline.render_pipeline_script())
-        (export_dir / "plot_outputs.py").write_text(export_pipeline.render_plotting_script())
+        (export_dir / "run_pipeline.py").write_text(
+            export_pipeline.render_pipeline_script(), encoding="utf-8"
+        )
+        (export_dir / "plot_outputs.py").write_text(
+            export_pipeline.render_plotting_script(), encoding="utf-8"
+        )
     except OSError as exc:
         raise _fs_error(exc, "write the export to", export_dir, user_dir=user_dir) from exc
 
@@ -659,7 +663,7 @@ def export_plotting_route(req: ExportPlottingRequest) -> dict:
     path = base / "plot_outputs.py"
     try:
         base.mkdir(parents=True, exist_ok=True)
-        path.write_text(export_pipeline.render_plotting_script())
+        path.write_text(export_pipeline.render_plotting_script(), encoding="utf-8")
     except OSError as exc:
         raise _fs_error(
             exc, "write the plotting script to", path,
@@ -803,7 +807,7 @@ def _protocol_from_mmt(data: bytes, filename: str, out_dir: str) -> dict:
                 notes = [*notes, f"{target} already exists and was left alone."]
             else:
                 target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_text(json.dumps(obs_data, indent=4) + "\n")
+                target.write_text(json.dumps(obs_data, indent=4) + "\n", encoding="utf-8")
                 saved = str(target)
         except OSError:
             # Keeping a copy is a convenience; failing to is no reason to
@@ -1041,7 +1045,7 @@ async def upload_omex(
         if parsed is not None:
             _models[model_id].obs_data = parsed
             obs_path = UPLOAD_DIR / f"{model_id}_obs_data.json"
-            obs_path.write_text(json.dumps(protocol["obs_data"], indent=4))
+            obs_path.write_text(json.dumps(protocol["obs_data"], indent=4), encoding="utf-8")
             _models[model_id].obs_path = obs_path
             result["obs_data"] = {
                 "filename": protocol["filename"],
@@ -1199,7 +1203,7 @@ async def upload_obs_data(
     if model_id and model_id in _models:
         _models[model_id].obs_data = parsed
         obs_path = UPLOAD_DIR / f"{model_id}_obs_data.json"
-        obs_path.write_text(json.dumps(obj))
+        obs_path.write_text(json.dumps(obj), encoding="utf-8")
         _models[model_id].obs_path = obs_path
 
     return {

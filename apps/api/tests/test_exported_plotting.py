@@ -25,7 +25,10 @@ pytestmark = pytest.mark.filterwarnings("ignore")
 
 def _write_script(tmp_path: Path) -> Path:
     script = tmp_path / "plot_outputs.py"
-    script.write_text(export_pipeline.render_plotting_script())
+    # utf-8 explicitly, as the app now does: the script contains an em dash, and
+    # on a Windows runner the default locale encoding writes it as a cp1252 byte
+    # that Python then refuses to parse.
+    script.write_text(export_pipeline.render_plotting_script(), encoding="utf-8")
     return script
 
 
@@ -58,6 +61,45 @@ def test_it_refuses_politely_with_no_output_dir(tmp_path):
     result = _run(_write_script(tmp_path))
     assert result.returncode != 0
     assert "run_pipeline.py first" in (result.stdout + result.stderr)
+
+
+def _block_import(tmp_path: Path, module: str) -> None:
+    """Make `import <module>` fail for a script run from tmp_path.
+
+    The script's own directory leads sys.path, so a stub there shadows the real
+    package. This reproduces a machine without the plotting stack -- which is
+    what CI is, and is the environment this script most needs to behave in.
+    """
+    (tmp_path / f"{module}.py").write_text('raise ImportError("no %s here")' % module)
+
+
+def test_the_missing_output_dir_is_reported_even_with_no_matplotlib(tmp_path):
+    """The regression that broke CI. The script imported matplotlib at module
+    level, so on a machine without it every run died at line 17 -- including the
+    runs whose actual problem was that the pipeline had not been run yet. The
+    message a user needs was unreachable exactly where it was needed most."""
+    script = _write_script(tmp_path)
+    _block_import(tmp_path, "matplotlib")
+
+    result = _run(script)
+    assert result.returncode != 0
+    combined = result.stdout + result.stderr
+    assert "run_pipeline.py first" in combined
+    assert "Traceback" not in combined
+
+
+def test_a_missing_matplotlib_says_what_to_install(tmp_path):
+    """A user runs this in whichever Python they have. Telling them the name of
+    the package beats a ModuleNotFoundError from inside a generated file."""
+    script = _write_script(tmp_path)
+    _sim(tmp_path / "output", TRACES)
+    _block_import(tmp_path, "matplotlib")
+
+    result = _run(script)
+    assert result.returncode != 0
+    combined = result.stdout + result.stderr
+    assert "pip install matplotlib" in combined
+    assert "Traceback" not in combined
 
 
 @pytest.mark.integration
@@ -202,3 +244,32 @@ def test_it_is_silent_and_successful_with_nothing_to_plot(tmp_path):
     result = _run(_write_script(tmp_path))
     assert result.returncode == 0, result.stderr
     assert not list((tmp_path / "output").glob("*.png"))
+
+
+# ---------------------------------------------------------------------------
+# Encoding: the artefact has to survive being written on the user's machine
+# ---------------------------------------------------------------------------
+def test_the_exported_scripts_are_written_as_utf8(client, tmp_path):
+    """Both scripts contain non-ASCII (an em dash in a message). Written with the
+    locale encoding -- which is what Path.write_text does by default -- a Windows
+    box emits cp1252 bytes, and the script the user is handed does not parse at
+    all: `SyntaxError: Non-UTF-8 code starting with '\x97'`. It broke CI first,
+    but a Windows user would have hit it for real."""
+    resp = client.post(
+        "/api/export/plotting", json={"model_id": None, "output_dir": str(tmp_path)}
+    )
+    assert resp.status_code == 200, resp.text
+    written = Path(resp.json()["path"])
+    assert written.is_file()
+
+    raw = written.read_bytes()
+    text = raw.decode("utf-8")  # must not raise
+    ast.parse(text)  # and must still be a valid script
+    assert "—" in text, "the em dash this guards is gone; keep or drop the test with it"
+
+
+def test_the_rendered_script_has_no_characters_that_need_a_declaration():
+    """Python 3 assumes UTF-8 source, so non-ASCII is fine -- as long as what
+    reaches disk really is UTF-8. This pins the pairing."""
+    text = export_pipeline.render_plotting_script()
+    assert text.encode("utf-8").decode("utf-8") == text
