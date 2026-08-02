@@ -368,19 +368,34 @@ def test_calibration_pythons_lists_interpreters(client):
         assert p["mpiexec"] is None or isinstance(p["mpiexec"], str)
 
 
-def _stub_probe_subprocess(monkeypatch, *, missing=""):
-    """Make _probe_python's two subprocess calls answer without a real
-    interpreter: a version, then the comma-joined missing-module list."""
+def _stub_probe_subprocess(monkeypatch, *, missing="", runtime_mpi="", launcher_mpi=""):
+    """Make _probe_python's subprocess calls answer without a real interpreter.
+
+    Answers by what is being asked rather than by call order: the probe grew a
+    pair of MPI questions, and a fixed sequence of canned replies simply ran out
+    -- which surfaced as the probe returning None rather than as anything about
+    MPI.
+    """
 
     class _R:
-        def __init__(self, stdout):
-            self.returncode = 0
+        def __init__(self, stdout="", returncode=0):
+            self.returncode = returncode
             self.stdout = stdout
+            self.stderr = ""
 
-    outs = iter(["3.11.4", missing])
-    monkeypatch.setattr(
-        calibration_mod.subprocess, "run", lambda *a, **k: _R(next(outs))
-    )
+    def fake_run(cmd, *a, **k):
+        joined = " ".join(str(c) for c in cmd)
+        if "version_info" in joined:
+            return _R("3.11.4")
+        if "find_spec" in joined:
+            return _R(missing)
+        if "Get_library_version" in joined:
+            return _R(runtime_mpi)
+        if "--version" in joined:
+            return _R(launcher_mpi)
+        return _R("")
+
+    monkeypatch.setattr(calibration_mod.subprocess, "run", fake_run)
 
 
 def test_probe_python_reports_the_interpreters_own_mpi_launcher(tmp_path, monkeypatch):
@@ -393,12 +408,16 @@ def test_probe_python_reports_the_interpreters_own_mpi_launcher(tmp_path, monkey
     assert os.path.samefile(info["mpiexec"], _own_mpiexec(tmp_path, "venv"))
 
 
-def test_probe_python_does_not_claim_mpi_for_a_path_only_launcher(tmp_path, monkeypatch):
-    """resolve_mpiexec falls back to a PATH launcher, but that says nothing about
-    *this* interpreter -- it would badge every interpreter identically. Only a
-    launcher from the interpreter's own env counts as mpi=True; the fallback is
-    still reported in `mpiexec` so the UI can name it."""
-    _stub_probe_subprocess(monkeypatch)
+def test_probe_python_claims_mpi_for_a_matching_path_launcher(tmp_path, monkeypatch):
+    """A PATH launcher used to be dismissed as saying nothing about *this*
+    interpreter. It says everything, when its MPI is the one this interpreter's
+    mpi4py is bound to -- which is the ordinary Linux case: apt-installed Open
+    MPI, pip-installed mpi4py, no launcher inside the venv at all. That
+    combination runs multi-core and was being reported as having no MPI.
+    """
+    _stub_probe_subprocess(
+        monkeypatch, runtime_mpi="Open MPI v4.1.2", launcher_mpi="mpiexec (OpenRTE) 4.1.2"
+    )
     python = _fake_env(tmp_path, "plain", with_mpiexec=False)
     monkeypatch.setattr(
         calibration_mod.shutil,
@@ -409,8 +428,39 @@ def test_probe_python_does_not_claim_mpi_for_a_path_only_launcher(tmp_path, monk
         ),
     )
     info = calibration_mod._probe_python(python)
+    assert info["mpi"] is True
+    assert info["mpiexec"] == "/usr/bin/mpiexec"
+
+
+def test_probe_python_does_not_claim_mpi_for_a_launcher_from_a_different_mpi(
+    tmp_path, monkeypatch
+):
+    """The hazard that made the old location rule look right: an Open MPI
+    launcher starting ranks whose mpi4py bound MPICH aborts every one of them at
+    MPI_Init. The launcher is still reported so the UI can name it."""
+    _stub_probe_subprocess(
+        monkeypatch, runtime_mpi="MPICH Version: 4.0.2", launcher_mpi="mpiexec (OpenRTE) 4.1.2"
+    )
+    python = _fake_env(tmp_path, "plain", with_mpiexec=False)
+    monkeypatch.setattr(
+        calibration_mod.shutil,
+        "which",
+        lambda name, *a, path=None, **k: (
+            "/usr/bin/mpiexec" if name == "mpiexec" and path is None else None
+        ),
+    )
+    info = calibration_mod._probe_python(python)
     assert info["mpi"] is False
     assert info["mpiexec"] == "/usr/bin/mpiexec"
+
+
+def test_probe_python_reports_no_mpi_without_mpi4py(tmp_path, monkeypatch):
+    """A launcher beside the interpreter is not multi-core if nothing can use
+    it. This used to tick."""
+    _stub_probe_subprocess(monkeypatch, missing="mpi4py")
+    python = _fake_env(tmp_path, "venv", with_mpiexec=True)
+    info = calibration_mod._probe_python(python)
+    assert info["mpi"] is False
 
 
 def test_probe_python_reports_no_mpi_when_no_launcher_exists(tmp_path, monkeypatch):
@@ -1199,3 +1249,90 @@ def test_one_environment_is_not_listed_twice(monkeypatch):
     monkeypatch.setattr(calib_mod.calibration, "python", "/usr/bin/python3")
     calib_mod.reset_python_cache()
     assert len(calib_mod.list_python_interpreters(refresh=True)) == 1
+
+# ---------------------------------------------------------------------------
+# The MPI tick: does picking this interpreter actually enable multi-core?
+# ---------------------------------------------------------------------------
+def _mpi_families(monkeypatch, runtime: str, launcher: str) -> None:
+    """Pretend the interpreter's mpi4py and the launcher report these MPIs."""
+    monkeypatch.setattr(calibration_mod, "_runtime_family", lambda _p: runtime)
+    monkeypatch.setattr(calibration_mod, "_launcher_family", lambda _l: launcher)
+
+
+def test_a_venv_using_the_system_mpi_is_reported_as_having_mpi(tmp_path, monkeypatch):
+    """The bug. The commonest Linux arrangement there is -- a venv whose mpi4py
+    was built against the system MPI, with no launcher of its own -- runs
+    multi-core perfectly and was reported as having none, because the old test
+    asked where the launcher lived rather than which MPI it was.
+    """
+    python = _fake_env(tmp_path, "venv", with_mpiexec=False)
+    system = tmp_path / "sysbin"
+    system.mkdir()
+    launcher = system / "mpiexec"
+    launcher.write_text("#!/bin/sh\n")
+    launcher.chmod(0o755)
+    monkeypatch.setattr(calibration_mod.shutil, "which", lambda n, path=None: str(launcher))
+    _mpi_families(monkeypatch, runtime="openmpi", launcher="openmpi")
+
+    has_mpi, found = calibration_mod._interpreter_mpi(python)
+    assert has_mpi is True
+    assert os.path.samefile(found, launcher)
+
+
+def test_a_mismatched_launcher_and_runtime_is_not_reported_as_mpi(tmp_path, monkeypatch):
+    """The hazard the old location test was protecting against, and which the
+    new one detects directly: a system Open MPI launcher starting ranks whose
+    mpi4py bound MPICH aborts every one of them at MPI_Init."""
+    python = _fake_env(tmp_path, "venv", with_mpiexec=False)
+    launcher = tmp_path / "mpiexec"
+    launcher.write_text("#!/bin/sh\n")
+    launcher.chmod(0o755)
+    monkeypatch.setattr(calibration_mod.shutil, "which", lambda n, path=None: str(launcher))
+    _mpi_families(monkeypatch, runtime="mpich", launcher="openmpi")
+
+    has_mpi, _found = calibration_mod._interpreter_mpi(python)
+    assert has_mpi is False
+
+
+def test_an_interpreter_without_mpi4py_has_no_mpi(tmp_path, monkeypatch):
+    """Whatever launchers are lying around. Previously a bare environment that
+    happened to ship an mpiexec would tick while being unable to run a single
+    rank."""
+    python = _fake_env(tmp_path, "venv", with_mpiexec=True)
+    has_mpi, _found = calibration_mod._interpreter_mpi(python, has_mpi4py=False)
+    assert has_mpi is False
+
+
+def test_an_unreadable_pair_falls_back_to_the_location_test(tmp_path, monkeypatch):
+    """When neither side will say which MPI it is, the old proxy is still a
+    reasonable guess -- and it was the whole answer before."""
+    python = _fake_env(tmp_path, "venv", with_mpiexec=True)
+    _mpi_families(monkeypatch, runtime="", launcher="")
+    has_mpi, _found = calibration_mod._interpreter_mpi(python)
+    assert has_mpi is True, "a launcher in the interpreter's own bindir should still count"
+
+
+def test_no_launcher_at_all_is_not_mpi(tmp_path, monkeypatch):
+    python = _fake_env(tmp_path, "venv", with_mpiexec=False)
+    monkeypatch.setattr(calibration_mod.shutil, "which", lambda n, path=None: None)
+    assert calibration_mod._interpreter_mpi(python) == (False, None)
+
+
+@pytest.mark.parametrize(
+    "banner,family",
+    [
+        ("Open MPI v4.1.2, package: Debian OpenMPI", "openmpi"),
+        ("mpiexec (OpenRTE) 4.1.2", "openmpi"),
+        ("HYDRA build details:\n    Version: 4.1", "mpich"),
+        ("MPICH Version: 4.0.2", "mpich"),
+        ("Intel(R) MPI Library for Linux OS, Version 2021.9", "intelmpi"),
+        ("Microsoft MPI Startup Program [Version 10.1.12498.18]", "msmpi"),
+        ("some launcher nobody has heard of", ""),
+        ("", ""),
+    ],
+)
+def test_version_banners_are_read_as_the_mpi_they_name(banner, family):
+    """These are the strings real launchers and runtimes print. `mpiexec
+    (OpenRTE)` is the one that matters most here: it is what Open MPI's launcher
+    calls itself, and it shares no word with what its own runtime reports."""
+    assert calibration_mod._mpi_family(banner) == family
