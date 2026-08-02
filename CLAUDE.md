@@ -97,6 +97,43 @@ local filesystem/backend. `--browser` runs server-only and opens a normal browse
 → CA dir). When CA becomes pip-installable, add it to the build env and it gets
 collected like any other package; no change to this split. (Issue #18.)
 
+**The split is the app's biggest structural flaw, and we want it gone.** The two
+tiers do not merely have different *dependencies* — they run in **different Python
+interpreters**, and only the subprocess tier honours the one the user picks in
+Settings. So "switch Python" only ever switches half the app:
+
+- The interpreter picker is a **half-truth**. Choosing a venv that has `aadc` (or a
+  patched CA, or a different numpy) changes calibration/SA/UQ and leaves live
+  simulation on the app's own interpreter, which does not have it. That is the
+  whole of issue #122's failure mode: the user selected the right environment and
+  the live engine kept saying "aadc is not installed".
+- The CA dir has the **same asymmetry**. Subprocess runs pick it up on their next
+  launch; the in-process engine caches CA's modules after its first simulation, so
+  a mid-session switch only fully re-points it after a restart.
+- A user editing CA cannot see their edits in the sliders without restarting, only
+  in analysis runs.
+
+**Target:** one interpreter for everything — the one chosen in Settings — so live
+simulation, calibration, sensitivity and UQ all run the same CA with the same
+packages. The intended shape is a **persistent simulation worker**: a long-lived
+child process launched with the selected interpreter, holding the compiled-model
+cache (currently `engine._helpers`/`_runners`, keyed on
+`(model_id, model_type, solver)`), talking over a deliberately narrow protocol
+(`load` / `set_params` / `run` / `results`). Persistent, not per-request: the
+expensive thing is the model compile, and a fresh subprocess per slider drag would
+recompile every time. Changing interpreter / CA dir / solver kills the worker and
+starts a new one — no restart, and `engine._circulatory_autogen_src()`'s caching
+caveat disappears with it.
+
+Constraints when building it: keep the in-process path as the fallback when no
+interpreter is configured (the frozen app's default, so nothing regresses for
+users who never open Settings); route the worker launch through
+`runtime_paths.default_python()` and **never** `sys.executable` (in a bundle that
+relaunches the GUI); and surface a dead worker's stderr through the existing
+`failure_message` / `describe_exception` path. Until this exists, treat any bug of
+the form "I chose interpreter X and behaviour Y did not change" as this flaw
+rather than as a new defect.
+
 **Frozen-app hazards — all fixed; do not regress:**
 
 - **`sys.executable` is the bundle, not a Python.** A naive
