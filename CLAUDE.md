@@ -50,6 +50,8 @@ so developers can point at a local checkout. (See issue #18.)
 
 - `apps/web/src/App.vue` — main UI (tabs: Parameters · Sensitivity · Calibration · UQ; center: Output plots · Progress · Analysis)
 - `apps/api/main.py` — FastAPI app: `/api/*` routes + serves the built frontend
+- `apps/api/engine.py` — live simulation; delegates to `sim_worker.py` /
+  `sim_worker_runner.py` when an interpreter is chosen (#167), else runs in-process
 - `scripts/install.py`, `scripts/run.py` — cross-platform setup + single-server launcher
 - `apps/api/myokit_import.py` — `.mmt` → CellML at upload (model section only);
   `apps/api/mmt_protocol.py` + `scripts/mmt_to_obs_data.py` — the other half: the
@@ -113,26 +115,48 @@ Settings. So "switch Python" only ever switches half the app:
 - A user editing CA cannot see their edits in the sliders without restarting, only
   in analysis runs.
 
-**Target:** one interpreter for everything — the one chosen in Settings — so live
-simulation, calibration, sensitivity and UQ all run the same CA with the same
-packages. The intended shape is a **persistent simulation worker**: a long-lived
-child process launched with the selected interpreter, holding the compiled-model
-cache (currently `engine._helpers`/`_runners`, keyed on
-`(model_id, model_type, solver)`), talking over a deliberately narrow protocol
-(`load` / `set_params` / `run` / `results`). Persistent, not per-request: the
-expensive thing is the model compile, and a fresh subprocess per slider drag would
-recompile every time. Changing interpreter / CA dir / solver kills the worker and
-starts a new one — no restart, and `engine._circulatory_autogen_src()`'s caching
-caveat disappears with it.
+**Fixed by the simulation worker** — `sim_worker.py` (parent) +
+`sim_worker_runner.py` (child), issue #167. Live simulation now runs in the
+interpreter chosen in Settings, so one choice governs both tiers.
+`_set_analysis_python()` sets `engine.worker_python` alongside the three analysis
+managers; there is deliberately no separate setting for it.
 
-Constraints when building it: keep the in-process path as the fallback when no
-interpreter is configured (the frozen app's default, so nothing regresses for
-users who never open Settings); route the worker launch through
-`runtime_paths.default_python()` and **never** `sys.executable` (in a bundle that
-relaunches the GUI); and surface a dead worker's stderr through the existing
-`failure_message` / `describe_exception` path. Until this exists, treat any bug of
-the form "I chose interpreter X and behaviour Y did not change" as this flaw
-rather than as a new defect.
+Persistent, not per-request: the expensive thing is the model compile, and the
+worker holds the same helper/runner caches the engine used to. Changing
+interpreter, CA dir, solver, dt or solver_info **restarts** it rather than
+reconfiguring it — CA caches its modules on first import, so a mid-life change
+could not fully take effect, which is the bug being removed.
+
+Rules it follows, and must keep following:
+
+- **In-process stays the fallback** when no interpreter is chosen — the frozen
+  app's default, so a user who never opens Settings sees no change.
+- **The worker is skipped when the chosen interpreter is the environment already
+  running**, because it would cost a process and a compile and change nothing
+  importable. "Same environment" is judged by **`sys.prefix`, never by resolved
+  executable path**: a venv's `bin/python` is usually a symlink to its base
+  interpreter, so realpath makes a venv look identical to the interpreter it was
+  created from — the same mistake that once hid venvs from the picker.
+- **A worker that will not start is an error, not a silent fallback.** Running
+  somewhere other than where the user asked is precisely the confusion this
+  removes.
+- Launch through `runtime_paths.runner_command()` + `subprocess_env()`. Never a
+  bare `sys.executable` (in a bundle that relaunches the GUI), and never inherit
+  the bundle's loader vars (an external Python then imports the bundle's numpy).
+- `sim_worker_runner.py` ships as **data** in the `runners/` subdir, because an
+  external interpreter executes it as a file — and it must stay free of imports
+  from the app, whose modules are frozen into the bundle and unreachable from
+  outside it. `_resolve_output_key` is duplicated there for that reason; keep the
+  two in step.
+- The worker returns the **captured solver output plus a fallback reason**, and
+  the parent composes the message through `failure_message` — so the issue #138
+  error quality lives in one place rather than on both sides of a pipe.
+- **Four verbs** (`configure` / `simulate` / `run_protocol` / `ping`). The failure
+  mode for this design is a second API growing beside the first.
+
+Its stderr is mirrored to the server log with a `[sim-worker]` prefix and the tail
+is kept, so a worker that dies on `import myokit` says so instead of presenting as
+an empty pipe.
 
 **Frozen-app hazards — all fixed; do not regress:**
 
