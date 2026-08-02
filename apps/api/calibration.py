@@ -493,23 +493,82 @@ def _candidate_python_paths() -> list[str]:
     return out
 
 
-def _interpreter_mpi(path: str) -> tuple[bool, str | None]:
-    """Whether ``path``'s *own* environment provides an MPI launcher, plus the
-    launcher :func:`resolve_mpiexec` would actually use for it.
+# MPI families, by the words their version banners use. Launcher and runtime
+# have to come from the same one; which one it is does not otherwise matter.
+_MPI_FAMILIES = (
+    ("openmpi", ("open mpi", "openrte", "open-rte", "ompi")),
+    ("mpich", ("mpich", "hydra")),
+    ("intelmpi", ("intel(r) mpi", "intel mpi")),
+    ("msmpi", ("microsoft mpi", "msmpi")),
+)
 
-    Used to tell the user which interpreter to pick for multi-core runs, so the
-    boolean must describe the *interpreter*: ``resolve_mpiexec`` falls back to a
-    PATH ``mpiexec`` when the environment ships none, and that fallback is a
-    property of the machine, not of this interpreter -- flagging it would mark
-    every interpreter equally and answer nothing. So resolve once (filesystem
-    only, no subprocess -- this runs inside the cached probe) and then ask
-    whether the launcher came out of the interpreter's own bindirs. Deriving it
-    from ``resolve_mpiexec``'s result rather than re-implementing the lookup
-    keeps that function the single source of truth for the run path.
+
+def _mpi_family(banner: str) -> str:
+    """The MPI implementation a version banner describes, or "" if unrecognised."""
+    low = (banner or "").lower()
+    for family, needles in _MPI_FAMILIES:
+        if any(n in low for n in needles):
+            return family
+    return ""
+
+
+def _launcher_family(launcher: str) -> str:
+    try:
+        out = subprocess.run(
+            [launcher, "--version"], capture_output=True, text=True, timeout=10
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return _mpi_family(out.stdout + out.stderr)
+
+
+def _runtime_family(path: str) -> str:
+    """The MPI ``mpi4py`` is bound to in ``path``'s environment."""
+    try:
+        out = subprocess.run(
+            [path, "-c", "from mpi4py import MPI;print(MPI.Get_library_version())"],
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return _mpi_family(out.stdout) if out.returncode == 0 else ""
+
+
+def _interpreter_mpi(path: str, has_mpi4py: bool = True) -> tuple[bool, str | None]:
+    """Whether picking ``path`` actually enables multi-core runs, plus the
+    launcher :func:`resolve_mpiexec` would use for it.
+
+    The question the tick answers is "will multi-core work if I choose this?",
+    and the only thing that decides it is whether the launcher and ``mpi4py``
+    come from the *same MPI*: mismatch them and every rank aborts at MPI_Init
+    with "unsupported PMI version PMIx".
+
+    This used to be approximated by asking whether the launcher sat inside the
+    interpreter's own bindirs. That proxy is right for a self-contained
+    environment (``pip install mpi4py mpich`` puts both in ``<sys.prefix>/bin``)
+    and wrong for the commonest Linux arrangement there is: a venv whose mpi4py
+    was built against the system MPI, with no launcher of its own. Such a venv
+    runs multi-core perfectly and was reported as having no MPI.
+
+    So ask the two of them directly, and compare. Only when neither can say --
+    an unrecognised banner, a launcher that will not report -- fall back to the
+    old location test, which is a reasonable guess and was the whole answer
+    before.
     """
+    if not has_mpi4py:
+        # No mpi4py, no multi-core, whatever launchers are lying around.
+        return False, resolve_mpiexec(path)
     launcher = resolve_mpiexec(path)
     if not launcher:
         return False, None
+
+    runtime = _runtime_family(path)
+    launcher_family = _launcher_family(launcher)
+    if runtime and launcher_family:
+        return runtime == launcher_family, launcher
+
     exe = path if os.sep in path else (shutil.which(path) or path)
     own = {os.path.normcase(str(d)) for d in _interpreter_bindirs(exe)}
     matched = os.path.normcase(os.path.dirname(os.path.abspath(launcher))) in own
@@ -557,7 +616,7 @@ def _probe_python(path: str) -> dict | None:
             else mods
         )
         ready = all(m not in missing for m in REQUIRED_MODULES)
-        mpi, mpiexec = _interpreter_mpi(path)
+        mpi, mpiexec = _interpreter_mpi(path, has_mpi4py="mpi4py" not in missing)
         return {
             "path": path,
             "version": version,
