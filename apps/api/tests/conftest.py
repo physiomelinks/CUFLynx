@@ -102,10 +102,18 @@ def _reset_backend_solver():
 
 
 def _analysis_pythons() -> tuple:
+    """Every place the chosen interpreter is stored.
+
+    engine.worker_python belongs here: live simulation is set from the same
+    choice as the three analysis managers (#167), so a test that changes the
+    interpreter would otherwise leave the *engine* pointed at it and send every
+    later test's simulate through a worker.
+    """
     return (
         calibration_mod.calibration.python,
         sensitivity_mod.sensitivity.python,
         uq_mod.uq.python,
+        engine_mod.engine.worker_python,
     )
 
 
@@ -114,6 +122,7 @@ def _set_analysis_pythons(pythons: tuple) -> None:
         calibration_mod.calibration.python,
         sensitivity_mod.sensitivity.python,
         uq_mod.uq.python,
+        engine_mod.engine.worker_python,
     ) = pythons
 
 

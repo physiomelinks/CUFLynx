@@ -14,6 +14,7 @@ from __future__ import annotations
 import contextlib
 import io
 import os
+import subprocess
 import sys
 import threading
 from pathlib import Path
@@ -306,6 +307,48 @@ def _default_runner_factory(
     )
 
 
+# path -> sys.prefix, so the probe below costs one subprocess per interpreter
+# rather than one per settings change.
+_PREFIX_CACHE: dict[str, str] = {}
+
+
+def _interpreter_prefix(python: str) -> str:
+    """``sys.prefix`` of another interpreter, or "" if it cannot be asked."""
+    cached = _PREFIX_CACHE.get(python)
+    if cached is not None:
+        return cached
+    try:
+        out = subprocess.run(
+            [python, "-c", "import sys;print(sys.prefix)"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        prefix = out.stdout.strip() if out.returncode == 0 else ""
+    except (OSError, subprocess.SubprocessError):
+        prefix = ""
+    _PREFIX_CACHE[python] = prefix
+    return prefix
+
+
+def _is_this_interpreter(python: str) -> bool:
+    """Whether ``python`` is the *environment* already serving the API.
+
+    Compared by ``sys.prefix``, not by executable path. A venv's ``bin/python``
+    is usually a symlink to the base interpreter, so realpath makes a venv look
+    identical to the interpreter it was created from -- and the venv is the whole
+    point, since that is where the user installed the packages they picked it
+    for. The same mistake once made venvs vanish from the interpreter picker.
+
+    Never true in the packaged app: ``sys.executable`` there is the bundle, not
+    a Python, so an external choice always differs and always gets a worker.
+    """
+    if is_frozen():
+        return False
+    prefix = _interpreter_prefix(python)
+    return bool(prefix) and prefix == sys.prefix
+
+
 def _resolve_output_key(var2idx, name):
     """Resolve an output name against var2idx across CA backends.
 
@@ -346,6 +389,11 @@ class SimulationEngine:
         self.solver_info = dict(DEFAULT_SOLVER_INFO)
         self.helper_factory = _default_helper_factory
         self.runner_factory = _default_runner_factory
+        # The interpreter live simulation should run in (#167). None/"" keeps the
+        # old in-process path, which is the frozen app's default and what a user
+        # who never opens Settings gets.
+        self.worker_python: str | None = None
+        self._worker = None
         self._helpers: dict[str, object] = {}
         self._runners: dict[str, object] = {}
         # model_id -> last protocol_info object whose pace binding is active on
@@ -370,11 +418,99 @@ class SimulationEngine:
         return self.model_type, self.solver, None
 
     def reset(self) -> None:
-        """Drop all cached helpers/runners (used between tests)."""
+        """Drop all cached helpers/runners (used between tests).
+
+        Stops the worker too: its caches are the same caches, and it holds an
+        imported copy of CA that a reset is usually trying to be rid of.
+        """
         with self._lock:
             self._helpers.clear()
             self._runners.clear()
             self._runner_protocol_info.clear()
+            worker, self._worker = self._worker, None
+        if worker is not None:
+            worker.stop()
+
+    # ------------------------------------------------------------------
+    # Worker delegation (#167)
+    # ------------------------------------------------------------------
+    def _worker_settings(self) -> dict:
+        from sim_worker import worker_settings  # noqa: PLC0415 - optional path
+
+        return worker_settings(
+            ca_src=_circulatory_autogen_src(),
+            dt=self.dt,
+            model_type=self.model_type,
+            solver=self.solver,
+            solver_info=self.solver_info,
+        )
+
+    def _acquire_worker(self):
+        """The live worker for the current settings, starting it if needed.
+
+        Returns None when live simulation should stay in-process: no interpreter
+        chosen. Any *failure* to start one is raised rather than silently falling
+        back -- a user who picked an interpreter and quietly got a different one
+        is exactly the confusion this exists to end.
+        """
+        python = (self.worker_python or "").strip()
+        if not python:
+            return None
+        if _is_this_interpreter(python):
+            # The split only exists when the two tiers differ. Running a worker
+            # to reach the interpreter already running costs a process and a
+            # model compile and changes nothing about what is importable.
+            return None
+
+        from sim_worker import SimWorker, WorkerError  # noqa: PLC0415
+
+        settings = self._worker_settings()
+        worker = self._worker
+        if worker is not None and (not worker.alive or not worker.matches(python, settings)):
+            worker.stop()
+            worker = self._worker = None
+            # A settings change invalidates the parent's mirror of the caches too.
+            self._helpers.clear()
+            self._runners.clear()
+            self._runner_protocol_info.clear()
+        if worker is None:
+            worker = SimWorker(python, settings)
+            try:
+                worker.start()
+            except WorkerError as exc:
+                raise SimulationError(
+                    self.failure_message(
+                        str(exc)
+                        + "\n(Live simulation runs in the interpreter chosen in Settings. "
+                        "Pick one that can import circulatory_autogen's simulation stack, "
+                        "or clear it to run in the app's own interpreter.)"
+                    )
+                ) from exc
+            self._worker = worker
+        return worker
+
+    def _worker_call(self, op: str, extra: dict, **payload) -> dict:
+        """One request, with the reply turned back into today's error text.
+
+        The worker returns the captured solver output and a fallback reason and
+        leaves the wording here, so the issue #138 error quality lives in one
+        place rather than being reimplemented on the far side of a pipe.
+        """
+        from sim_worker import WorkerError  # noqa: PLC0415
+
+        worker = self._acquire_worker()
+        if worker is None:
+            return {}
+        try:
+            reply = worker.call(op, **payload)
+        except WorkerError as exc:
+            self._worker = None
+            raise SimulationError(self.failure_message(str(exc), **extra)) from exc
+
+        if reply.get("ok"):
+            return {"result": reply.get("result") or {}}
+        reason = _solver_reason(reply.get("captured") or "") or (reply.get("reason") or "")
+        raise SimulationError(self.failure_message(reason, **extra))
 
     # ------------------------------------------------------------------
     # Failure reporting (issue #138)
@@ -428,6 +564,25 @@ class SimulationEngine:
         outputs: list[str],
         best_effort_outputs: bool = False,
     ) -> dict:
+        # The worker first, and without live_backend(): its fallback answers
+        # "what can *this* process import", which is the wrong question once the
+        # model runs somewhere else. The worker gets the configured backend and
+        # fails loudly if its interpreter cannot run it -- which is the whole
+        # reason for choosing that interpreter.
+        remote = self._worker_call(
+            "simulate",
+            {"sim_time": sim_time, "pre_time": pre_time},
+            model_id=model_id,
+            model_path=str(model_path),
+            params=params or {},
+            sim_time=float(sim_time),
+            pre_time=float(pre_time),
+            outputs=list(outputs or []),
+            best_effort_outputs=bool(best_effort_outputs),
+        )
+        if remote:
+            return remote["result"]
+
         model_type, solver, fell_back = self.live_backend()
         with self._lock:
             # Key the cache on the backend too: falling back must not hand back a
@@ -519,6 +674,20 @@ class SimulationEngine:
         params: dict[str, float],
         outputs: list[str],
     ) -> dict:
+        # See simulate(): the worker runs the configured backend, and the
+        # in-process fallback below is for when there is no worker.
+        remote = self._worker_call(
+            "run_protocol",
+            {"experiments": _n_experiments(protocol_info)},
+            model_id=model_id,
+            model_path=str(model_path),
+            protocol_info=protocol_info,
+            params=params or {},
+            outputs=list(outputs or []),
+        )
+        if remote:
+            return remote["result"]
+
         model_type, solver, fell_back = self.live_backend()
         with self._lock:
             cache_key = (model_id, model_type, solver)
