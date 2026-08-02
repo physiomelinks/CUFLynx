@@ -354,3 +354,102 @@ def test_the_worker_script_runs_standalone():
     assert proc.returncode == 0, proc.stderr
     reply = json.loads(proc.stdout.strip().splitlines()[0])
     assert reply["ok"] is True and reply["id"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Hung, as opposed to dead
+# ---------------------------------------------------------------------------
+def test_a_worker_that_stops_responding_is_killed_rather_than_waited_on(tmp_path, monkeypatch):
+    """A worker can hang without dying -- an AADC licence check that cannot reach
+    the network sits at 0% CPU indefinitely, which is how this was found. A
+    blocking read would hold the engine lock with it and take every later
+    simulation down too, so the read has a deadline and the worker is stopped.
+    """
+    script = tmp_path / "sim_worker_runner.py"
+    script.write_text(
+        textwrap.dedent(
+            '''
+            import json, os, sys, time
+            wire = os.fdopen(os.dup(sys.stdout.fileno()), "w")
+            sys.stdout = sys.stderr
+            line = sys.stdin.readline()          # configure
+            msg = json.loads(line)
+            wire.write(json.dumps({"id": msg.get("id"), "ok": True, "result": {}}) + "\\n")
+            wire.flush()
+            sys.stderr.write("about to hang\\n")
+            sys.stderr.flush()
+            time.sleep(300)                      # never replies
+            '''
+        )
+    )
+    monkeypatch.setattr(sim_worker, "runner_path", lambda name: script)
+
+    worker = SimWorker(sys.executable, SETTINGS, timeout=2.0)
+    worker.start()
+    try:
+        with pytest.raises(WorkerError, match="stopped responding"):
+            worker.call("simulate", model_id="m")
+        assert not worker.alive, "a hung worker must be stopped, not left running"
+    finally:
+        worker.stop()
+
+
+def test_the_hang_message_carries_what_the_worker_last_said(tmp_path, monkeypatch):
+    script = tmp_path / "sim_worker_runner.py"
+    script.write_text(
+        textwrap.dedent(
+            '''
+            import json, os, sys, time
+            wire = os.fdopen(os.dup(sys.stdout.fileno()), "w")
+            sys.stdout = sys.stderr
+            msg = json.loads(sys.stdin.readline())
+            wire.write(json.dumps({"id": msg.get("id"), "ok": True, "result": {}}) + "\\n")
+            wire.flush()
+            sys.stderr.write("AADC License check: contacting server\\n")
+            sys.stderr.flush()
+            time.sleep(300)
+            '''
+        )
+    )
+    monkeypatch.setattr(sim_worker, "runner_path", lambda name: script)
+
+    worker = SimWorker(sys.executable, SETTINGS, timeout=2.0)
+    worker.start()
+    try:
+        with pytest.raises(WorkerError, match="License check"):
+            worker.call("simulate", model_id="m")
+    finally:
+        worker.stop()
+
+
+def test_a_slow_but_answering_worker_is_not_killed(tmp_path, monkeypatch):
+    """The timeout is a "something is stuck" bound, not a performance one: a
+    first compile is legitimately slow and must not be cut off."""
+    script = tmp_path / "sim_worker_runner.py"
+    script.write_text(
+        textwrap.dedent(
+            '''
+            import json, os, sys, time
+            wire = os.fdopen(os.dup(sys.stdout.fileno()), "w")
+            sys.stdout = sys.stderr
+            for line in sys.stdin:
+                if not line.strip():
+                    continue
+                msg = json.loads(line)
+                if msg.get("op") == "shutdown":
+                    break
+                time.sleep(0.4)
+                wire.write(json.dumps({"id": msg.get("id"), "ok": True, "result": {}}) + "\\n")
+                wire.flush()
+            '''
+        )
+    )
+    monkeypatch.setattr(sim_worker, "runner_path", lambda name: script)
+
+    worker = SimWorker(sys.executable, SETTINGS, timeout=5.0)
+    worker.start()
+    try:
+        assert worker.call("simulate", model_id="m")["ok"] is True
+        assert worker.alive
+    finally:
+        worker.stop()

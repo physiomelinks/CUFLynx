@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import queue
 import subprocess
 import threading
 from collections import deque
@@ -27,9 +28,16 @@ RUNNER_NAME = "sim_worker_runner.py"
 # is chatty and this is a diagnostic, not a log.
 STDERR_LINES = 60
 
-# A model can legitimately take a long time to compile on first use, so this is
-# a "something is wrong" bound rather than a performance one.
+# A model can legitimately take a long time to compile on first use -- Myokit
+# builds a C extension, AADC records a tape -- so this is a "something is wrong"
+# bound rather than a performance one. It exists because a worker CAN hang
+# without dying: an AADC licence check that cannot reach the network sits at 0%
+# CPU forever, and a blocking read would hold the engine lock with it, taking
+# every later simulation down too.
 DEFAULT_TIMEOUT = 900.0
+
+# Put on the reply queue by the reader thread when the worker's stdout closes.
+_EOF = object()
 
 
 class WorkerError(RuntimeError):
@@ -52,6 +60,8 @@ class SimWorker:
         self._proc: subprocess.Popen | None = None
         self._stderr: deque = deque(maxlen=STDERR_LINES)
         self._stderr_thread: threading.Thread | None = None
+        self._replies: queue.Queue = queue.Queue()
+        self._stdout_thread: threading.Thread | None = None
         self._next_id = 0
         self._lock = threading.Lock()
 
@@ -91,12 +101,29 @@ class SimWorker:
             ) from exc
 
         self._stderr.clear()
+        self._replies = queue.Queue()
         self._stderr_thread = threading.Thread(target=self._drain_stderr, daemon=True)
         self._stderr_thread.start()
+        self._stdout_thread = threading.Thread(target=self._read_replies, daemon=True)
+        self._stdout_thread.start()
 
         reply = self.call("configure", **self.settings)
         if not reply.get("ok"):
             raise WorkerError(f"the simulation worker refused its settings: {reply.get('reason')}")
+
+    def _read_replies(self) -> None:
+        """Move replies off the pipe on a thread, so a read can have a deadline.
+
+        ``stdout.readline()`` cannot be given a timeout portably, and select()
+        does not work on pipes on Windows -- a queue does, everywhere.
+        """
+        proc = self._proc
+        if proc is None or proc.stdout is None:
+            return
+        for line in proc.stdout:
+            if line.strip():
+                self._replies.put(line)
+        self._replies.put(_EOF)
 
     def _drain_stderr(self) -> None:
         """Mirror the worker's stderr to ours, keeping the tail for diagnosis.
@@ -151,8 +178,21 @@ class SimWorker:
             except (BrokenPipeError, OSError, ValueError) as exc:
                 raise WorkerError(self._died_message()) from exc
 
-            line = proc.stdout.readline()
-            if not line:
+            try:
+                line = self._replies.get(timeout=self.timeout)
+            except queue.Empty:
+                # Hung rather than dead. Kill it: its state is unknown, and the
+                # alternative is holding this lock until the process is reaped by
+                # something else.
+                tail = "\n".join(self._stderr)
+                self.stop()
+                raise WorkerError(
+                    f"the simulation worker stopped responding after {self.timeout:g}s "
+                    f"and was stopped. It runs in {self.python or 'this interpreter'}; "
+                    f"a first compile can be slow, but this is long enough that "
+                    f"something is stuck." + (f"\n{tail}" if tail else "")
+                ) from None
+            if line is _EOF:
                 raise WorkerError(self._died_message())
             try:
                 return json.loads(line)
