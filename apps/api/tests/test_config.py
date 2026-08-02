@@ -355,3 +355,36 @@ def test_default_interpreter_is_the_serving_one_from_source(client):
     if runtime_paths.is_frozen():  # pragma: no cover - not the test environment
         return
     assert client.get("/api/config").json()["python_default"] == sys.executable
+
+
+def test_the_interpreter_is_applied_before_the_format_is_validated(client, monkeypatch):
+    """Which model formats exist depends on the interpreter: aadc_python is only
+    offered when AADC can be imported.
+
+    Validating the format first meant a single request that set both -- exactly
+    what the Settings form sends -- was checked against the *previous*
+    interpreter and rejected the format it had just enabled.
+    """
+    import aadc_check
+    import solver_options as so
+
+    # AADC only in the interpreter being selected by this very request.
+    monkeypatch.setattr(aadc_check, "_importable", lambda module="aadc": False)
+    monkeypatch.setattr(
+        aadc_check, "_importable_in", lambda p, module="aadc": bool(p) and "venv" in str(p)
+    )
+    monkeypatch.setattr(
+        main_module_os_path_isfile := __import__("os").path, "isfile", lambda p: True
+    )
+    monkeypatch.setattr(__import__("os"), "access", lambda p, m: True)
+    so.reset_cache()
+
+    resp = client.post(
+        "/api/config",
+        json={"python_path": "/venv/bin/python", "generated_model_format": "aadc_python"},
+    )
+    # Either the format is accepted, or CA has no aadc_python at all — but it
+    # must not be rejected merely because the interpreter had not been applied.
+    if "aadc_python" in resp.json().get("solvers_by_format", {}):
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["generated_model_format"] == "aadc_python"

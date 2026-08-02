@@ -122,9 +122,17 @@ const gradientMethods = computed(() => {
   const base = props.gradientSources?.length
     ? props.gradientSources
     : props.defaults.gradient_methods ?? [{ value: 'FD', label: 'Finite difference' }]
-  return base.map((o) =>
-    o.requires_all_differentiable ? { ...o, disabled: !props.adAvailable } : { ...o, disabled: false },
-  )
+  return base.map((o) => {
+    // `disabled_here` marks a gradient the *local* path cannot do for the
+    // current backend (its AD is CasADi-specific), with a reason — the option
+    // stays visible so the menu does not read as "this backend has no AD".
+    if (o.disabled_here) {
+      return { ...o, disabled: true, label: `${o.label} — ${o.reason ?? 'not available here'}` }
+    }
+    return o.requires_all_differentiable
+      ? { ...o, disabled: !props.adAvailable }
+      : { ...o, disabled: false }
+  })
 })
 
 // If the current gradient source isn't offered/enabled for this model (backend

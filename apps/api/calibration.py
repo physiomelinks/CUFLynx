@@ -526,14 +526,19 @@ def _probe_python(path: str) -> dict | None:
     """
     try:
         ver = subprocess.run(
-            [path, "-c", "import sys;print('.'.join(map(str, sys.version_info[:3])))"],
+            [path, "-c", "import sys;print('.'.join(map(str, sys.version_info[:3])));print(sys.prefix)"],
             capture_output=True,
             text=True,
             timeout=10,
         )
         if ver.returncode != 0:
             return None
-        version = ver.stdout.strip()
+        # version on the first line, sys.prefix on the second (see the -c above).
+        lines = ver.stdout.strip().splitlines()
+        version = lines[0].strip() if lines else ""
+        prefix = lines[1].strip() if len(lines) > 1 else ""
+
+
         mods = REQUIRED_MODULES + OPTIONAL_MODULES
         check = subprocess.run(
             [
@@ -556,6 +561,12 @@ def _probe_python(path: str) -> dict | None:
         return {
             "path": path,
             "version": version,
+            # The environment this interpreter belongs to. Two interpreters are
+            # the same *environment* only when their sys.prefix matches -- a
+            # venv's bin/python is a symlink to the interpreter it was built
+            # from, so comparing resolved binaries collapses every venv onto its
+            # base and hides it from the picker entirely.
+            "prefix": prefix,
             "ready": ready,
             "missing": missing,
             "mpi": mpi,
@@ -568,6 +579,16 @@ def _probe_python(path: str) -> dict | None:
 _python_cache: list[dict] | None = None
 
 
+def reset_python_cache() -> None:
+    """Forget the probed interpreters, so the next list re-probes.
+
+    Called when the configured interpreter changes: the list now includes that
+    interpreter, and its readiness/MPI status is what the picker shows.
+    """
+    global _python_cache
+    _python_cache = None
+
+
 def list_python_interpreters(refresh: bool = False) -> list[dict]:
     """Discover + probe available interpreters (cached for the process)."""
     global _python_cache
@@ -575,14 +596,24 @@ def list_python_interpreters(refresh: bool = False) -> list[dict]:
         return _python_cache
     result = []
     seen: set[str] = set()
-    for path in _candidate_python_paths():
-        real = os.path.realpath(path)
-        if real in seen:
-            continue
-        seen.add(real)
+    # The interpreter the user actually chose comes first and is always probed,
+    # even when discovery would never have found it: a browsed venv otherwise
+    # appeared as a bare "Custom" entry with no version, no readiness and no MPI
+    # status, because nothing had looked at it.
+    configured = (calibration.python or "").strip()
+    candidates = ([configured] if configured else []) + _candidate_python_paths()
+    for path in candidates:
         info = _probe_python(path)
-        if info:
-            result.append(info)
+        if not info:
+            continue
+        # De-duplicate by environment rather than by resolved binary: a venv
+        # shares its binary with the interpreter it was created from but has its
+        # own site-packages, so realpath de-duplication dropped it silently.
+        key = info.get("prefix") or os.path.realpath(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(info)
     _python_cache = result
     return result
 

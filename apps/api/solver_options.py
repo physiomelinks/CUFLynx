@@ -34,6 +34,29 @@ from engine import _circulatory_autogen_src
 # CA's schema lists it.
 SUPPORTED_FORMATS = ("cellml_only", "python", "casadi_python")
 
+# Formats CUFLynx can run, but only when an optional third-party library is
+# present (#122). aadc_python needs Matlogica's AADC, which is proprietary and
+# licensed; CA imports it lazily, so without this gate the format would appear on
+# the menu and fail at run time -- the same mistake UNSUPPORTED_SOLVERS avoids for
+# OpenCOR. The format's solvers and methods still come from CA's schema; only
+# whether it is offered at all is decided here.
+#
+# AADC loads a generated *python* model (aadc_python_solver_helper does
+# spec_from_file_location on model_path), which resolve_model_path already
+# produces for any non-cellml_only format -- so nothing else is needed to run it.
+CONDITIONAL_FORMATS = ("aadc_python",)
+
+
+def _available_formats() -> tuple:
+    """SUPPORTED_FORMATS plus any conditional format whose library is present."""
+    try:
+        from aadc_check import aadc_status  # noqa: PLC0415
+
+        extra = ("aadc_python",) if aadc_status().get("available") else ()
+    except Exception:  # noqa: BLE001 - a probe failure must not lose the base list
+        extra = ()
+    return SUPPORTED_FORMATS + extra
+
 # Solvers CUFLynx must NOT surface because it does **not** bundle OpenCOR (see
 # CLAUDE.md — no OpenCOR dependency is shipped). CA's schema lists CVODE_opencor as
 # a cellml_only solver (and its default), but that backend needs an OpenCOR runtime
@@ -506,8 +529,40 @@ def _solver_info_schema(methods_by_solver: dict, default_method_by_solver: dict 
     }
 
 
+def _apply_aadc_tape_constraint(ad_suitable: dict, methods_by_solver: dict) -> tuple:
+    """Narrow AADC's AD-suitable methods to the ones its tape can record.
+
+    ``aadc_backend`` refuses any method outside TAPE_CONSISTENT_METHODS -- an
+    adaptive integrator picks its steps from the state, so the recorded sequence
+    of operations does not replay -- but SOLVER_SCHEMA does not carry that, and
+    CA lists ``adaptive_rk45`` first, which is what CUFLynx defaulted to.
+
+    Returns ``(ad_suitable, default_method_additions)``. Both are left untouched
+    when CA already advertises AADC's AD methods, or when the constraint cannot
+    be read: guessing would be worse than the status quo.
+    """
+    ad_suitable = dict(ad_suitable)
+    defaults: dict[str, str] = {}
+    for solver, methods in methods_by_solver.items():
+        if not str(solver).startswith("aadc") or ad_suitable.get(solver):
+            continue
+        try:
+            from param_id.aadc_backend import TAPE_CONSISTENT_METHODS  # noqa: PLC0415
+        except Exception:  # noqa: BLE001 - older CA / no AADC support
+            continue
+        allowed = [m for m in methods if m in TAPE_CONSISTENT_METHODS]
+        if not allowed:
+            continue
+        ad_suitable[solver] = allowed
+        # Default to a method that works for both a plain run and the AD path,
+        # so the gradient source does not have to be chosen before the method.
+        defaults[solver] = allowed[0]
+    return ad_suitable, defaults
+
+
 def _build_options(schema: dict, differentiable: dict[str, bool]) -> dict:
-    formats = [m for m in schema.get("model_types", []) if m in SUPPORTED_FORMATS]
+    supported = _available_formats()
+    formats = [m for m in schema.get("model_types", []) if m in supported]
     solvers_by_model_type = schema.get("solvers_by_model_type", {})
     defaults = schema.get("default_solver_by_model_type", {})
     methods_by_solver = schema.get("methods_by_solver", {})
@@ -528,8 +583,18 @@ def _build_options(schema: dict, differentiable: dict[str, bool]) -> dict:
     # Per-integrator gradient suitability + preferred default method: from CA's
     # schema (CA #298, landed), else the built-in fallbacks on an older CA.
     ad_suitable = schema.get("ad_suitable_methods") or dict(_FALLBACK_AD_SUITABLE)
+    # CA enforces a tape constraint for AADC that its schema does not advertise:
+    # aadc_backend.TAPE_CONSISTENT_METHODS. Without it we defaulted to the first
+    # method CA lists, adaptive_rk45, which can never be taped -- so choosing
+    # AADC + AD failed with "cannot be recorded on an AADC tape" every time.
+    # Read the constraint from CA rather than restating it here, so it cannot
+    # drift from what CA actually enforces.
+    ad_suitable, default_method_extra = _apply_aadc_tape_constraint(ad_suitable, methods_by_solver)
     fsa_suitable = schema.get("fsa_suitable_methods") or dict(_FALLBACK_FSA_SUITABLE)
     default_method = schema.get("default_method_by_solver") or dict(_FALLBACK_DEFAULT_METHOD)
+    # A default the AD path cannot use is not a usable default.
+    for solver, method in default_method_extra.items():
+        default_method.setdefault(solver, method)
     # Prefer CA's SOLVER_INFO_FIELDS (single source of truth) when present; an older
     # CA (or the offline fallback schema) has no such key, so degrade to the curated
     # built-in form.

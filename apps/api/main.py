@@ -33,7 +33,12 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from calibration import calibration, list_python_interpreters, resolve_mpiexec
+from calibration import (
+    calibration,
+    list_python_interpreters,
+    reset_python_cache,
+    resolve_mpiexec,
+)
 from cellml_flatten import (
     CellMLFlattenError,
     flatten_cellml,
@@ -44,9 +49,11 @@ from cellml_meta import CellMLModel, CellMLParseError, parse_cellml
 import mmt_protocol
 import myokit_import
 import omex_import
+from aadc_check import aadc_status
 from version import __version__
 from compiler_check import compiler_status
 from engine import SimulationError, engine, _circulatory_autogen_src
+from local_sensitivity import local_gradient_sources
 import export_pipeline
 from model_codegen import resolve_model_path, reset_cache as reset_codegen
 from obs_data import ObsData, ObsDataError, parse_obs_data
@@ -231,10 +238,18 @@ def _set_analysis_python(path: str) -> None:
     All three spawn a runner script the same way, so they share one interpreter
     choice; keeping them in lockstep here avoids a per-manager setting the UI
     would have to expose three times.
+
+    Both caches are invalidated afterwards, because both answers depend on which
+    interpreter this is: the interpreter list now always includes (and probes)
+    the configured one, and the model formats include aadc_python only when AADC
+    is importable *there*. Leaving either cached meant switching interpreters
+    changed nothing visible until a restart.
     """
     calibration.python = path
     sensitivity.python = path
     uq.python = path
+    reset_python_cache()
+    reset_solver_options()
 
 
 def _restore_persisted_settings() -> None:
@@ -330,6 +345,16 @@ def _config_payload() -> dict:
         # in the list rather than dropping them on the coarse whole-registry flag.
         # ...and the per-integrator suitability gate IS applied here (the selected
         # integrator is known): AD/FSA drop out for an unsuitable integrator (#298).
+        # Local sensitivity implements its own gradients, and its AD path is
+        # CasADi-specific -- so the calibration list above is not the right menu
+        # for it. Offering AD for a backend whose AD this path cannot do meant
+        # the run started and then refused (#122).
+        "local_gradient_sources": local_gradient_sources(
+            gradient_sources(
+                engine.model_type, engine.solver, True, engine.solver_info.get("method"),
+            ),
+            engine.model_type,
+        ),
         "gradient_sources": gradient_sources(
             engine.model_type, engine.solver, True, engine.solver_info.get("method"),
         ),
@@ -338,6 +363,10 @@ def _config_payload() -> dict:
         # letting the first run fail with an opaque 500 (matters most in the
         # packaged desktop build, which can't ship a compiler).
         "cpp_compiler": compiler_status(),
+        # AADC (Matlogica) is optional, proprietary and licensed; the aadc_python
+        # format is only offered when it is importable, so the UI needs to be
+        # able to say why it is missing and how to get it (#122).
+        "aadc": aadc_status(calibration.python),
         "packaged": is_frozen(),
         # Whether a matching MPI launcher is available for the current interpreter,
         # so the UI can warn *before* a num_cores>1 run silently drops to a single
@@ -373,6 +402,28 @@ def set_config(req: ConfigRequest) -> dict:
         else:
             os.environ.pop("CIRCULATORY_AUTOGEN_SRC", None)
 
+
+    # Interpreter for analysis runs. Shared by all three job managers.
+    #   None  -> not in this request, leave unchanged
+    #   ""    -> reset to the default (bundled when packaged, serving when source)
+    #   path  -> validate + use that external interpreter
+    if req.python_path is not None:
+        python_path = req.python_path.strip()
+        if python_path:
+            if not (os.path.isfile(python_path) and os.access(python_path, os.X_OK)):
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"python interpreter not found or not executable: {python_path}",
+                )
+            _set_analysis_python(python_path)
+        else:
+            _set_analysis_python(default_python())
+
+    # Solver selection is validated *after* the interpreter, because which model
+    # formats exist depends on it: aadc_python is only offered when AADC can be
+    # imported. Validating first meant a single request that set both the
+    # interpreter and the format was checked against the previous interpreter and
+    # rejected the format it had just enabled.
     # Backend solver selection. Validate against CA's schema (re-read against the
     # possibly-new CA dir), then store on the engine (the live-sim source of truth)
     # and export to env so subprocess runs inherit it.
@@ -410,21 +461,6 @@ def set_config(req: ConfigRequest) -> dict:
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         engine.solver_info = si
-    # Interpreter for analysis runs. Shared by all three job managers.
-    #   None  -> not in this request, leave unchanged
-    #   ""    -> reset to the default (bundled when packaged, serving when source)
-    #   path  -> validate + use that external interpreter
-    if req.python_path is not None:
-        python_path = req.python_path.strip()
-        if python_path:
-            if not (os.path.isfile(python_path) and os.access(python_path, os.X_OK)):
-                raise HTTPException(
-                    status_code=422,
-                    detail=f"python interpreter not found or not executable: {python_path}",
-                )
-            _set_analysis_python(python_path)
-        else:
-            _set_analysis_python(default_python())
 
     # Global random seed for analysis runs.
     #   None  -> not in this request, leave unchanged
@@ -1033,7 +1069,12 @@ def simulate(req: SimulateRequest) -> dict:
     _validate_param_keys(req.params)
     outputs = req.outputs or record.meta.odes
     try:
-        model_path = resolve_model_path(str(record.path), engine.model_type, model_id=req.model_id)
+        # Resolve the path for the backend the *live* run will actually use: the
+        # engine falls back when the configured format cannot run in-process
+        # (#122), and a model generated for one backend is not readable by
+        # another -- a generated .py handed to Myokit fails as invalid XML.
+        live_type, _live_solver, _fell_back = engine.live_backend()
+        model_path = resolve_model_path(str(record.path), live_type, model_id=req.model_id)
         result = engine.simulate(
             model_id=req.model_id,
             model_path=model_path,
@@ -1078,7 +1119,8 @@ def protocol_run(req: ProtocolRunRequest) -> dict:
 
     outputs = req.outputs or (record.meta.odes + record.meta.algebraic)
     try:
-        model_path = resolve_model_path(str(record.path), engine.model_type, model_id=req.model_id)
+        live_type, _live_solver, _fell_back = engine.live_backend()
+        model_path = resolve_model_path(str(record.path), live_type, model_id=req.model_id)
         result = engine.run_protocol(
             model_id=req.model_id,
             model_path=model_path,

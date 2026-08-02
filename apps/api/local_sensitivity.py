@@ -439,6 +439,46 @@ def _ca_analytic_local_sensitivity(pid, param_names, nominal, mins, maxs):
     return local, output_names
 
 
+#: Which model formats each gradient method supports **in this module**.
+#:
+#: Not a statement about the backends' capabilities: circulatory_autogen offers
+#: AD for aadc_python too (a tape, not a CasADi graph), and calibration uses it.
+#: This path builds the jacobian from CasADi SX expressions, so only
+#: casadi_python works *here*. Kept beside the implementation whose limitation it
+#: describes, and surfaced to the UI so the option is not offered and then
+#: refused.
+LOCAL_GRADIENT_SUPPORT = {
+    "FD": None,  # any backend: it just runs forward simulations
+    "AD": ("casadi_python",),
+    "FSA": ("cellml_only",),
+}
+
+
+def local_gradient_sources(sources, model_type: str) -> list:
+    """``sources`` (CA's gradient_sources) narrowed to what local SA implements.
+
+    Unsupported entries are marked rather than dropped, so the menu still shows
+    that a gradient exists for this backend and says why it is unavailable
+    *here* -- dropping it silently would read as "this backend has no AD".
+    """
+    out = []
+    for src in sources or []:
+        value = str(src.get("value", "")).upper()
+        allowed = LOCAL_GRADIENT_SUPPORT.get(value)
+        if allowed is None or model_type in allowed:
+            out.append({**src, "disabled_here": False})
+            continue
+        out.append({
+            **src,
+            "disabled_here": True,
+            "reason": (
+                f"local sensitivity's {value} path needs generated_model_format "
+                f"{' or '.join(allowed)}; the current format is {model_type}"
+            ),
+        })
+    return out
+
+
 def compute_local_sensitivity(
     sa, settings: dict, best_vals=None, best_params=None,
     model_type: str = "cellml_only", engine=None, current_params=None,
@@ -467,12 +507,16 @@ def compute_local_sensitivity(
             f"gradient_method '{gradient_method}' is not available; use 'FD' (finite "
             "difference), 'AD' (casadi_python), or 'FSA' (cellml_only + CVODE_myokit)."
         )
-    if gradient_method == "AD" and model_type != "casadi_python":
+    if gradient_method == "AD" and model_type not in LOCAL_GRADIENT_SUPPORT["AD"]:
         raise NotImplementedError(
-            "AD gradients require generated_model_format 'casadi_python' (set it in "
-            f"the Settings popup); current format is {model_type!r}."
+            "Local sensitivity's AD path is CasADi-specific -- it builds the jacobian "
+            "from CasADi SX expressions -- so it needs generated_model_format "
+            f"'casadi_python'; current format is {model_type!r}. Other backends' AD "
+            "(AADC's tape, for instance) is a different mechanism this path does not "
+            "implement, though calibration can use it. Use 'FD' here, or switch the "
+            "format to casadi_python in Settings."
         )
-    if gradient_method == "FSA" and model_type != "cellml_only":
+    if gradient_method == "FSA" and model_type not in LOCAL_GRADIENT_SUPPORT["FSA"]:
         raise NotImplementedError(
             "FSA (Myokit CVODES forward sensitivities) requires generated_model_format "
             f"'cellml_only' with solver 'CVODE_myokit'; current format is {model_type!r}."

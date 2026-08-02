@@ -130,6 +130,36 @@ const solverInfo = ref({})
 // warn up front — it's the most likely first-run stumble in the packaged app,
 // which has no compiler of its own to fall back on.
 const cppCompiler = ref({ present: true, hint: '' })
+// AADC (Matlogica) availability, so Settings can explain a missing aadc_python
+// format rather than leaving a silent gap in the menu (#122).
+const aadc = ref(null)
+const aadcNotice = computed(() => {
+  const a = aadc.value
+  if (!a) return '' // older API said nothing; don't invent a status
+  if (!a.available) {
+    return `aadc_python is not listed: AADC is not installed. ${a.hint || ''}`.trim()
+  }
+  // The two tiers use different interpreters, so AADC in one and not the other
+  // half-works — and which half breaks depends on which one is missing it.
+  // Saying "available" flatly is what let a user pick the format and hit
+  // "aadc is not installed" on the very next simulation.
+  if (!a.in_app) {
+    return (
+      'aadc_python: AADC is installed in the interpreter used for calibration / ' +
+      'sensitivity / UQ, so those runs will work — but not in the app’s own ' +
+      'Python, which runs the live plots, so simulating with this format will ' +
+      'fail. Install aadc alongside the app to plot with it.'
+    )
+  }
+  if (a.in_analysis_python === false) {
+    return (
+      'aadc_python: AADC is installed for the live plots, but not in the ' +
+      'interpreter chosen for analysis runs — calibration / sensitivity / UQ ' +
+      'with this format will fail until it is installed there too.'
+    )
+  }
+  return 'aadc_python is available (AADC found in both interpreters).'
+})
 
 // "Python (scipy solve_ivp) or CasADi" — the compiler-free backends, named by the
 // server so the UI can't drift from CA's solver schema.
@@ -157,6 +187,7 @@ function applyConfigPayload(c) {
   solver.value = c.solver ?? ''
   solverInfo.value = { ...(c.solver_info ?? {}) }
   cppCompiler.value = c.cpp_compiler ?? { present: true, hint: '' }
+  aadc.value = c.aadc ?? null
   pythonDefault.value = c.python_default ?? ''
   // The server resolves "" to a concrete interpreter and reports *that*, so
   // taking python_path verbatim silently moved the picker off "Server default"
@@ -182,6 +213,14 @@ watch(pythonPath, async (p) => {
     // settled on and whether a launcher resolves for it, so the MPI/Cores
     // chips reflect the new pick instead of the one loaded at startup.
     applyConfigPayload(await setConfig({ pythonPath: p }))
+    // Re-read the interpreters too: the list includes the configured one, so a
+    // browsed venv only gains its version / readiness / MPI status once it has
+    // been probed as the current choice (#122 follow-up).
+    try {
+      calibPythons.value = (await getCalibrationPythons()).pythons ?? []
+    } catch {
+      /* keep the list we have; the chips just stay as they were */
+    }
   } catch {
     /* keep the in-session choice even if persisting fails */
   }
@@ -250,6 +289,13 @@ const adAvailable = computed(
 // Gradient sources (FD / AD / FSA) for the current model, from /api/config; the
 // calibration panel's gradient menu is populated from this, not hardcoded.
 const gradientSources = computed(() => solverOpts.value.gradient_sources ?? [])
+// Local sensitivity implements its own gradients — its AD path is CasADi-specific
+// — so it gets a list narrowed to what that path can actually do, rather than
+// the calibration list, which legitimately includes backends (AADC) whose AD
+// only calibration can use.
+const localGradientSources = computed(
+  () => solverOpts.value.local_gradient_sources ?? gradientSources.value,
+)
 
 // Some integrators can't produce their backend's analytic gradient — CasADi AD
 // fails with the SUNDIALS adjoint integrators (cvodes/idas); Myokit FSA needs the
@@ -967,6 +1013,21 @@ async function savedRunResult() {
   }
 }
 
+// When the configured model format cannot run in this process (its library is
+// only in the analysis interpreter), live plots fall back to one that can. The
+// analysis runs still use the chosen format, so the difference has to be
+// visible rather than silently shown as if it were the configured backend.
+const backendFallback = ref(null)
+const backendFallbackNotice = computed(() => {
+  const f = backendFallback.value
+  if (!f) return ''
+  return (
+    `Live plots are using ${f.used} (${f.solver}): ${f.requested} needs a library ` +
+    `that is not installed in the app’s own Python. Calibration / sensitivity / UQ ` +
+    `still use ${f.requested}.`
+  )
+})
+
 // Shared y-axis width so the plots in the window line up (#145). Only cells with
 // a time x axis take part: a phase-plane cell's x is another variable, so
 // aligning it against time plots would line up unrelated axes.
@@ -1168,6 +1229,7 @@ async function runSimulation() {
         outputs,
         outputsDir: outputsDir.value.trim() || undefined,
       })
+      backendFallback.value = data.backend_fallback ?? null
       sim.setExperiments(data.experiments, data.warnings, performance.now() - started)
     } else if (obs.hasObsData.value) {
       // Data-only obs_data: overlays only, no protocol. The manual t1/pre are
@@ -1183,6 +1245,7 @@ async function runSimulation() {
         outputs,
         outputsDir: outputsDir.value.trim() || undefined,
       })
+      backendFallback.value = data.backend_fallback ?? null
       sim.setResult(data, performance.now() - started)
     } else {
       // No obs_data: manual t1/pre drive the single run. Default outputs are the
@@ -1194,6 +1257,7 @@ async function runSimulation() {
         ]
       }
       const data = await simulate(model.modelId.value, sliders.paramDict.value, opts)
+      backendFallback.value = data.backend_fallback ?? null
       sim.setResult(data, performance.now() - started)
     }
   } catch (e) {
@@ -1483,7 +1547,7 @@ watch(
             :can-run="canCalibrate"
             :mpiexec-available="mpiexecAvailable"
             :ad-available="adAvailable"
-            :gradient-sources="gradientSources"
+            :gradient-sources="localGradientSources"
             :lines="sa.lines.value"
             :state="sa.state.value"
             :error="sa.error.value"
@@ -1683,6 +1747,7 @@ watch(
           :status="sim.status.value"
           :message="sim.message.value"
           :last-run-ms="sim.lastRunMs.value"
+          :notice="backendFallbackNotice"
         />
       </section>
 
@@ -1845,6 +1910,15 @@ watch(
             @update:model-value="onFormatChange"
           />
         </label>
+        <!--
+          aadc_python is only in that list when Matlogica's AADC is importable
+          (#122) — offering a format that cannot run is what the OpenCOR
+          exclusion exists to avoid. When it is missing, say so and how to get
+          it, rather than leaving a silent gap in the menu.
+        -->
+        <p v-if="aadcNotice" class="settings-hint" data-testid="aadc-hint">
+          {{ aadcNotice }}
+        </p>
         <label class="settings-row">
           <span class="settings-label" title="Solver wrapper, gated by the model format">Solver</span>
           <Select

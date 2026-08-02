@@ -1147,3 +1147,55 @@ def test_download_calibrated_model_returns_the_saved_file(client, monkeypatch, t
     assert resp.status_code == 200, resp.text
     assert resp.content == model.read_bytes()
     assert "m_calibrated.cellml" in resp.headers.get("content-disposition", "")
+
+
+# A venv's bin/python is a symlink to the interpreter it was built from, so
+# de-duplicating by resolved binary collapsed every venv onto its base and hid it
+# from the picker entirely -- no version, no readiness, no MPI status.
+def test_two_environments_sharing_a_binary_are_listed_separately(monkeypatch):
+    import calibration as calib_mod
+
+    probed = {
+        "/venv/bin/python": {"path": "/venv/bin/python", "version": "3.10.6", "prefix": "/venv",
+                             "ready": True, "missing": [], "mpi": True, "mpiexec": "/venv/bin/mpiexec"},
+        "/usr/bin/python3": {"path": "/usr/bin/python3", "version": "3.10.6", "prefix": "/usr",
+                             "ready": True, "missing": [], "mpi": False, "mpiexec": None},
+    }
+    monkeypatch.setattr(calib_mod, "_probe_python", lambda p: probed.get(p))
+    monkeypatch.setattr(calib_mod, "_candidate_python_paths", lambda: ["/usr/bin/python3"])
+    monkeypatch.setattr(calib_mod.calibration, "python", "/venv/bin/python")
+    calib_mod.reset_python_cache()
+
+    paths = [p["path"] for p in calib_mod.list_python_interpreters(refresh=True)]
+    assert paths == ["/venv/bin/python", "/usr/bin/python3"]
+
+
+def test_the_configured_interpreter_is_probed_even_if_undiscovered(monkeypatch):
+    """A browsed venv appeared as a bare "Custom" entry because nothing had
+    looked at it."""
+    import calibration as calib_mod
+
+    info = {"path": "/elsewhere/python", "version": "3.12.1", "prefix": "/elsewhere",
+            "ready": True, "missing": [], "mpi": True, "mpiexec": "/elsewhere/bin/mpiexec"}
+    monkeypatch.setattr(calib_mod, "_probe_python", lambda p: info if p == "/elsewhere/python" else None)
+    monkeypatch.setattr(calib_mod, "_candidate_python_paths", lambda: [])
+    monkeypatch.setattr(calib_mod.calibration, "python", "/elsewhere/python")
+    calib_mod.reset_python_cache()
+
+    listed = calib_mod.list_python_interpreters(refresh=True)
+    assert [p["path"] for p in listed] == ["/elsewhere/python"]
+    assert listed[0]["mpi"] is True
+
+
+def test_one_environment_is_not_listed_twice(monkeypatch):
+    """The configured interpreter is prepended, so it must not also appear from
+    discovery."""
+    import calibration as calib_mod
+
+    info = {"path": "/usr/bin/python3", "version": "3.10.6", "prefix": "/usr",
+            "ready": True, "missing": [], "mpi": False, "mpiexec": None}
+    monkeypatch.setattr(calib_mod, "_probe_python", lambda p: dict(info, path=p))
+    monkeypatch.setattr(calib_mod, "_candidate_python_paths", lambda: ["/usr/bin/python3"])
+    monkeypatch.setattr(calib_mod.calibration, "python", "/usr/bin/python3")
+    calib_mod.reset_python_cache()
+    assert len(calib_mod.list_python_interpreters(refresh=True)) == 1

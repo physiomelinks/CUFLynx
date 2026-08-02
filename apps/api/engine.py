@@ -36,6 +36,56 @@ class SimulationError(RuntimeError):
 
 
 # ---------------------------------------------------------------------------
+# Live-simulation backend availability
+#
+# Live plots run *in this process*, while calibration / sensitivity / UQ run as
+# subprocesses in the interpreter chosen in Settings. So a backend library the
+# user installed for analysis is not necessarily importable here -- and picking
+# such a format used to make every live simulation fail, including the first one
+# after a restart, because the choice is persisted.
+#
+# The chosen format still governs analysis, which is where it matters. The live
+# preview falls back to a backend this process can actually run, and says so, so
+# the app stays usable instead of failing on open.
+#
+# The modules named here are what *this process* must import to run each format;
+# that is CUFLynx's own concern (which deps the app bundles), not CA data, so it
+# is not introspected from CA.
+# ---------------------------------------------------------------------------
+_BACKEND_MODULE = {
+    "cellml_only": "myokit",
+    "python": "scipy",
+    "casadi_python": "casadi",
+    "aadc_python": "aadc",
+}
+
+# Tried in order when the chosen format cannot run here. python/solve_ivp last:
+# it needs no compiler, so it is the one that works when nothing else does.
+_LIVE_FALLBACKS = (
+    ("cellml_only", "CVODE_myokit"),
+    ("casadi_python", "casadi_integrator"),
+    ("python", "solve_ivp"),
+)
+
+
+def backend_importable(model_type: str) -> bool:
+    """Whether *this* process can run ``model_type``.
+
+    find_spec rather than import: probing must not pull a heavy (or licensed)
+    library into the API process as a side effect.
+    """
+    module = _BACKEND_MODULE.get(model_type)
+    if not module:
+        return True  # unknown format: assume the caller knows better than us
+    try:
+        import importlib.util  # noqa: PLC0415
+
+        return importlib.util.find_spec(module) is not None
+    except (ImportError, ValueError):
+        return False
+
+
+# ---------------------------------------------------------------------------
 # Failure reporting (issue #138)
 #
 # A failed run used to reach the browser as "Request failed with status code
@@ -107,6 +157,20 @@ def _solver_reason(captured: str) -> str:
 # Actionable follow-ups keyed by what CVODE actually said. Matching on the flag
 # rather than the prose keeps these stable across Sundials wordings.
 _HINTS = (
+    (
+        # A missing backend library is not a solver-settings problem, and the
+        # generic "try a smaller MaximumStep" advice sent users to fiddle with
+        # numbers that could never have helped. It matters *which* interpreter is
+        # missing it: live simulation runs in the app's own Python, while
+        # calibration / sensitivity / UQ run in the one chosen in Settings, so a
+        # library present in only one gives exactly this -- analysis runs that
+        # work and a live plot that does not.
+        ("is not installed", "no module named", "importerror", "modulenotfounderror"),
+        "That backend's library is missing from the interpreter running live "
+        "simulations (the app's own Python) — Settings → Python only affects "
+        "calibration / sensitivity / UQ, which run separately. Install it there "
+        "too, or pick a model format whose backend is available for live plotting.",
+    ),
     (
         ("cv_too_much_acc", "too much accuracy"),
         "The requested tolerance is tighter than the solver can hold — raise rtol/atol "
@@ -289,6 +353,22 @@ class SimulationEngine:
         self._runner_protocol_info: dict[str, object] = {}
         self._lock = threading.Lock()
 
+    def live_backend(self) -> tuple:
+        """``(model_type, solver, fell_back_from)`` for a live simulation.
+
+        ``fell_back_from`` is None when the configured format runs here, and the
+        configured format otherwise -- so the caller can tell the user the plot
+        is a preview from a different backend rather than silently showing one.
+        """
+        if backend_importable(self.model_type):
+            return self.model_type, self.solver, None
+        for fmt, solver in _LIVE_FALLBACKS:
+            if backend_importable(fmt):
+                return fmt, solver, self.model_type
+        # Nothing importable at all: keep the configured choice so the failure
+        # names the real problem rather than a substitute we also cannot run.
+        return self.model_type, self.solver, None
+
     def reset(self) -> None:
         """Drop all cached helpers/runners (used between tests)."""
         with self._lock:
@@ -348,8 +428,12 @@ class SimulationEngine:
         outputs: list[str],
         best_effort_outputs: bool = False,
     ) -> dict:
+        model_type, solver, fell_back = self.live_backend()
         with self._lock:
-            helper = self._helpers.get(model_id)
+            # Key the cache on the backend too: falling back must not hand back a
+            # helper compiled for the format we could not run.
+            cache_key = (model_id, model_type, solver)
+            helper = self._helpers.get(cache_key)
             if helper is None:
                 helper = self.helper_factory(
                     model_path=str(model_path),
@@ -357,10 +441,10 @@ class SimulationEngine:
                     sim_time=float(sim_time),
                     pre_time=float(pre_time),
                     solver_info=self.solver_info,
-                    model_type=self.model_type,
-                    solver=self.solver,
+                    model_type=model_type,
+                    solver=solver,
                 )
-                self._helpers[model_id] = helper
+                self._helpers[cache_key] = helper
 
             helper.reset_and_clear()
             helper.update_times(self.dt, 0.0, float(sim_time), float(pre_time))
@@ -415,7 +499,14 @@ class SimulationEngine:
                     raise
                 out[var] = [float(v) for v in series]
 
-        return {"time": time, "outputs": out}
+        result = {"time": time, "outputs": out}
+        if fell_back:
+            result["backend_fallback"] = {
+                "requested": fell_back,
+                "used": model_type,
+                "solver": solver,
+            }
+        return result
 
     # ------------------------------------------------------------------
     # Multi-experiment protocol
@@ -428,26 +519,28 @@ class SimulationEngine:
         params: dict[str, float],
         outputs: list[str],
     ) -> dict:
+        model_type, solver, fell_back = self.live_backend()
         with self._lock:
-            runner = self._runners.get(model_id)
+            cache_key = (model_id, model_type, solver)
+            runner = self._runners.get(cache_key)
             if runner is None:
                 runner = self.runner_factory(
                     model_path=str(model_path),
                     dt=self.dt,
                     solver_info=self.solver_info,
-                    model_type=self.model_type,
-                    solver=self.solver,
+                    model_type=model_type,
+                    solver=solver,
                 )
-                self._runners[model_id] = runner
+                self._runners[cache_key] = runner
 
             # Bind any time-varying protocol traces onto the helper before the
             # run. set_protocol_info recreates the simulation with the `pace`
             # binding, so only call it when the protocol actually changed.
             helper = getattr(runner, "sim_helper", None)
             if helper is not None and hasattr(helper, "set_protocol_info"):
-                if self._runner_protocol_info.get(model_id) is not protocol_info:
+                if self._runner_protocol_info.get(cache_key) is not protocol_info:
                     helper.set_protocol_info(protocol_info)
-                    self._runner_protocol_info[model_id] = protocol_info
+                    self._runner_protocol_info[cache_key] = protocol_info
 
             names = list(params.keys()) if params else None
             vals = [params[n] for n in names] if names else None
@@ -490,7 +583,14 @@ class SimulationEngine:
             time = [float(v) for v in t] if t is not None else []
             experiments.append({"time": time, "outputs": exp_outputs})
 
-        return {"experiments": experiments}
+        out: dict = {"experiments": experiments}
+        if fell_back:
+            out["backend_fallback"] = {
+                "requested": fell_back,
+                "used": model_type,
+                "solver": solver,
+            }
+        return out
 
 
 # Module-level singleton shared by the FastAPI routes.
