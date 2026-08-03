@@ -18,6 +18,12 @@ const props = defineProps({
   percentError: { type: Array, default: null },
   stdError: { type: Array, default: null },
   errorLabels: { type: Array, default: () => [] },
+  // Issue #159: the cost and per-observable errors of whatever the sliders
+  // currently say, and a baseline to compare them against (the calibration best
+  // fit, or a pinned parameter set). Both {cost, items:[{label, percent_error,
+  // std_error, cost}]}; null when unknown, which is not the same as zero.
+  currentCost: { type: Object, default: null },
+  baselineCost: { type: Object, default: null },
   // UQ: per-parameter posteriors [{qname, mean, std, q05, q50, q95, bins, counts}].
   uqParams: { type: Array, default: () => [] },
   uqMethod: { type: String, default: null },
@@ -190,6 +196,63 @@ function errorBars(values, hi, fmt) {
 const percentBars = computed(() => errorBars(props.percentError, 20, (v) => `${v.toFixed(1)}%`))
 const stdBars = computed(() => errorBars(props.stdError, 3, (v) => `${v.toFixed(2)}σ`))
 
+// ---- Current parameters vs the best fit (#159) -----------------------------
+// Off by default: a second set of bars on every chart is a comparison when you
+// asked for one and clutter when you did not.
+const compare = ref(false)
+
+const hasCurrentCost = computed(() => !!props.currentCost?.items?.length)
+const comparable = computed(() => hasCurrentCost.value || !!props.baselineCost?.items?.length)
+
+function formatCost(value) {
+  if (value == null || !Number.isFinite(value)) return '—'
+  const abs = Math.abs(value)
+  if (abs !== 0 && (abs < 1e-3 || abs >= 1e5)) return value.toExponential(3)
+  return value.toPrecision(4).replace(/\.?0+$/, '')
+}
+
+/**
+ * Bars for a cost payload's errors, in one flat colour.
+ *
+ * Deliberately not the green->red scale the calibration bars use: those encode
+ * *how bad* an error is, and reusing them here would make two series that must
+ * be told apart look like one series in two moods. A comparison needs identity,
+ * so each set gets a colour of its own.
+ */
+function costBars(payload, field, fmt, color) {
+  const items = payload?.items ?? []
+  const values = items.map((i) => i[field]).filter((v) => v != null)
+  const maxAbs = Math.max(1e-9, ...values.map((v) => Math.abs(v)))
+  return items
+    .filter((i) => i[field] != null)
+    .map((i) => {
+      const halfPct = (Math.min(1, Math.abs(i[field]) / maxAbs) * 50).toFixed(2)
+      return {
+        label: i.label,
+        color,
+        width: `${halfPct}%`,
+        left: i[field] >= 0 ? '50%' : `${(50 - Number(halfPct)).toFixed(2)}%`,
+        text: fmt(i[field]),
+      }
+    })
+}
+
+const CURRENT_COLOUR = '#5b9bd5'
+const BASELINE_COLOUR = '#a142f4'
+
+const currentPercentBars = computed(() =>
+  costBars(props.currentCost, 'percent_error', (v) => `${v.toFixed(1)}%`, CURRENT_COLOUR),
+)
+const currentStdBars = computed(() =>
+  costBars(props.currentCost, 'std_error', (v) => `${v.toFixed(2)}σ`, CURRENT_COLOUR),
+)
+const baselinePercentBars = computed(() =>
+  costBars(props.baselineCost, 'percent_error', (v) => `${v.toFixed(1)}%`, BASELINE_COLOUR),
+)
+const baselineStdBars = computed(() =>
+  costBars(props.baselineCost, 'std_error', (v) => `${v.toFixed(2)}σ`, BASELINE_COLOUR),
+)
+
 // ---- UQ posterior densities ------------------------------------------------
 const PLOT_W = 260
 const PLOT_H = 60
@@ -349,10 +412,86 @@ const uqMethodLabel = computed(() =>
     <!-- Calibration --------------------------------------------------------->
     <section class="analysis-section">
       <h2>Calibration</h2>
-      <p v-if="!hasCalibration" class="empty-hint">
+
+      <!--
+        The cost of the current parameters, in the tab where fit is judged
+        (#159). Shown whether or not a calibration has run: a manual
+        perturbation has a cost too, and that was the whole gap.
+      -->
+      <div v-if="comparable" class="cost-summary" data-testid="analysis-cost">
+        <div class="cost-figure">
+          <span class="cost-caption">current parameters</span>
+          <strong class="cost-number" data-testid="analysis-cost-current">
+            {{ formatCost(currentCost?.cost) }}
+          </strong>
+        </div>
+        <div v-if="baselineCost" class="cost-figure">
+          <span class="cost-caption">{{ baselineCost.label ?? 'baseline' }}</span>
+          <strong class="cost-number" data-testid="analysis-cost-baseline">
+            {{ formatCost(baselineCost.cost) }}
+          </strong>
+        </div>
+        <label v-if="baselineCost" class="cost-compare">
+          <input v-model="compare" type="checkbox" data-testid="compare-costs" />
+          compare on the charts
+        </label>
+      </div>
+
+      <p v-if="!hasCalibration && !comparable" class="empty-hint">
         Run a calibration to see per-observable fit errors.
       </p>
-      <template v-else>
+      <template v-if="comparable && compare">
+        <section class="error-chart">
+          <h3>Percentage error — current vs {{ baselineCost?.label ?? 'baseline' }}</h3>
+          <div class="bar-list" data-testid="compare-percent-chart">
+            <div v-for="(b, i) in currentPercentBars" :key="`c${i}`" class="bar-row">
+              <span class="bar-label" v-html="renderMath(b.label)" />
+              <div class="bar-track">
+                <span class="bar-zero" />
+                <span class="bar-fill" :style="{ left: b.left, width: b.width, background: b.color }" />
+                <span
+                  v-if="baselinePercentBars[i]"
+                  class="bar-fill bar-fill-baseline"
+                  :style="{
+                    left: baselinePercentBars[i].left,
+                    width: baselinePercentBars[i].width,
+                    background: baselinePercentBars[i].color,
+                  }"
+                />
+              </div>
+              <span class="bar-value">{{ b.text }}</span>
+            </div>
+          </div>
+        </section>
+        <section class="error-chart">
+          <h3>Error in standard deviations — current vs {{ baselineCost?.label ?? 'baseline' }}</h3>
+          <div class="bar-list" data-testid="compare-std-chart">
+            <div v-for="(b, i) in currentStdBars" :key="`s${i}`" class="bar-row">
+              <span class="bar-label" v-html="renderMath(b.label)" />
+              <div class="bar-track">
+                <span class="bar-zero" />
+                <span class="bar-fill" :style="{ left: b.left, width: b.width, background: b.color }" />
+                <span
+                  v-if="baselineStdBars[i]"
+                  class="bar-fill bar-fill-baseline"
+                  :style="{
+                    left: baselineStdBars[i].left,
+                    width: baselineStdBars[i].width,
+                    background: baselineStdBars[i].color,
+                  }"
+                />
+              </div>
+              <span class="bar-value">{{ b.text }}</span>
+            </div>
+          </div>
+        </section>
+      </template>
+      <!--
+        v-else-if: the comparison *replaces* these rather than adding to them.
+        Ticked, the comparison charts already carry the best fit as their second
+        series, so leaving these below would plot the same numbers twice.
+      -->
+      <template v-else-if="hasCalibration">
         <section class="error-chart">
           <h3>Percentage error per observable</h3>
           <div class="bar-list" data-testid="percent-error-chart">
@@ -706,5 +845,46 @@ const uqMethodLabel = computed(() =>
   stroke: #ffc000;
   stroke-width: 1.5;
   vector-effect: non-scaling-stroke;
+}
+
+/* Cost summary and the current-vs-baseline comparison (#159). */
+.cost-summary {
+  display: flex;
+  align-items: flex-end;
+  gap: 1.5rem;
+  margin-bottom: 0.75rem;
+  padding: 0.45rem 0.6rem;
+  border: 1px solid var(--p-content-border-color, #d5d5d5);
+  border-radius: 4px;
+}
+.cost-figure {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+.cost-caption {
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  opacity: 0.7;
+}
+.cost-number {
+  font-variant-numeric: tabular-nums;
+  font-size: 1.05rem;
+}
+.cost-compare {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+/* The baseline bar sits over the current one, half height, so both are readable
+   where they overlap. */
+.bar-fill-baseline {
+  height: 45%;
+  top: 27%;
+  opacity: 0.95;
 }
 </style>

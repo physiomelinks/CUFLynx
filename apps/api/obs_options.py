@@ -331,6 +331,25 @@ def get_operation_funcs(output_dir: str | None = None):
         return None
 
 
+def get_cost_funcs(output_dir: str | None = None):
+    """CA's cost-function registry (built-ins + the user's), or None without CA.
+
+    The callables, not the names: scoring the current sliders has to use the
+    same ``gaussian_MLE`` a calibration minimises (#159). One written here that
+    disagreed would look authoritative while ranking parameter sets differently.
+    """
+    try:
+        for p in _ca_paths():
+            if p not in sys.path:
+                sys.path.insert(0, p)
+        import cost_funcs_user  # noqa: E402 (CA module, resolved via sys.path)
+
+        _, cost_path = _external_func_paths(output_dir)
+        return _cost_funcs_dict(cost_funcs_user, cost_path)
+    except Exception:  # noqa: BLE001 - CA missing / import failure
+        return None
+
+
 def get_obs_data_options(refresh: bool = False, output_dir: str | None = None) -> dict:
     """Return ``{"operations": [...], "cost_types": [...]}`` from CA, including the
     user's custom funcs under ``output_dir``.
