@@ -101,7 +101,7 @@ UNSUPPORTED_SOLVER_INFO_KEYS: dict[str, frozenset[str]] = {
 # one. Note this also withdraws them as calibration gradient strategies, since one
 # solver_info['method'] serves both tiers -- the alternative is offering a setting
 # that breaks every live plot. Retire it once CA separates forward integrators
-# from gradient strategies (CA issue linked from #175), which is the real fix.
+# from gradient strategies (circulatory_autogen#346), which is the real fix.
 UNSUPPORTED_METHODS: dict[str, frozenset[str]] = {
     "aadc_semi_implicit": frozenset({"bdf_tape", "bdf_kernel"}),
 }
