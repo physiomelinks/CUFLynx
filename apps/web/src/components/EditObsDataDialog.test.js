@@ -1,4 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { nextTick } from 'vue'
 import { flushPromises, mount } from '@vue/test-utils'
 
 vi.mock('../lib/api', () => ({
@@ -96,19 +97,29 @@ beforeEach(() => {
 async function openSelect(wrapper, testid, index = 0) {
   const triggers = wrapper.findAll(`[data-testid="${testid}"]`)
   await triggers[index].trigger('click')
-  return wrapper.findAll(`[data-testid="${testid}-option"]`)
+  // Teleported to <body>, so it is outside the wrapper -- read it where it is.
+  return Array.from(document.querySelectorAll(`[data-testid="${testid}-option"]`))
 }
 
 async function chooseIn(wrapper, testid, value, index = 0) {
   const options = await openSelect(wrapper, testid, index)
-  const target = options.find((o) => o.text() === value)
-  if (!target) throw new Error(`no option "${value}" in ${testid}: ${options.map((o) => o.text())}`)
-  await target.trigger('mousedown')
+  const target = options.find((o) => o.textContent.trim() === value)
+  if (!target) {
+    throw new Error(`no option "${value}" in ${testid}: ${options.map((o) => o.textContent.trim())}`)
+  }
+  target.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+  await nextTick()
 }
 
 function selectedValue(wrapper, testid, index = 0) {
   return wrapper.findAll(`[data-testid="${testid}"]`)[index].text()
 }
+
+// Teleported dropdowns outlive their wrapper; a leftover would be found by the
+// next test.
+afterEach(() => {
+  document.body.innerHTML = ''
+})
 
 describe('EditObsDataDialog', () => {
   it('splits items: one editable constant row, the series preserved', async () => {
@@ -122,7 +133,7 @@ describe('EditObsDataDialog', () => {
     const wrapper = mountDialog()
     await flushPromises()
     const options = await openSelect(wrapper, 'eo-operation')
-    expect(options.map((o) => o.text())).toContain('calc_spike_frequency_windowed') // CA user op
+    expect(options.map((o) => o.textContent.trim())).toContain('calc_spike_frequency_windowed') // CA user op
   })
 
   it('plot_type select uses the fetched (CA) plot_types', async () => {
@@ -188,16 +199,16 @@ describe('EditObsDataDialog', () => {
     const wrapper = mountDialog()
     await flushPromises()
     const options = await openSelect(wrapper, 'eo-operation')
-    const byText = (v) => options.find((o) => o.text() === v)
-    expect(byText('calc_spike_period').classes()).toContain('non-diff-option')
-    expect(byText('max').classes()).not.toContain('non-diff-option')
+    const byText = (v) => options.find((o) => o.textContent.trim() === v)
+    expect(byText('calc_spike_period').className).toContain('non-diff-option')
+    expect(byText('max').className).not.toContain('non-diff-option')
   })
 
   it('falls back when getObsDataOptions rejects', async () => {
     getObsDataOptions.mockRejectedValueOnce(new Error('offline'))
     const wrapper = mountDialog()
     await flushPromises()
-    const options = (await openSelect(wrapper, 'eo-operation')).map((o) => o.text())
+    const options = (await openSelect(wrapper, 'eo-operation')).map((o) => o.textContent.trim())
     expect(options).toContain('max') // fallback list
     expect(options).not.toContain('calc_spike_frequency_windowed')
   })
@@ -522,7 +533,7 @@ describe('EditObsDataDialog operand count (#147)', () => {
   it('offers the model variables in a new row, so it can actually be set', async () => {
     const wrapper = await mountEmptyThenAddRow()
     const options = await openSelect(wrapper, 'eo-operand')
-    expect(options.map((o) => o.text())).toContain('m/x')
+    expect(options.map((o) => o.textContent.trim())).toContain('m/x')
   })
 
   // A hand-written obs_data can carry fewer operands than the operation takes;
@@ -593,9 +604,9 @@ describe('EditObsDataDialog operand field (#160)', () => {
     // follow. The list is positioned from the trigger's own rect instead.
     const wrapper = await mountRow()
     await wrapper.find('[data-testid="eo-operand"]').trigger('click')
-    const list = wrapper.find('[data-testid="eo-operand-options"]')
-    expect(list.exists()).toBe(true)
-    expect(list.attributes('style')).toContain('left')
-    expect(list.attributes('style')).toContain('top')
+    const list = document.querySelector('[data-testid="eo-operand-options"]')
+    expect(list).toBeTruthy()
+    expect(list.getAttribute('style')).toContain('left')
+    expect(list.getAttribute('style')).toContain('top')
   })
 })

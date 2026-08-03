@@ -795,15 +795,27 @@ async function onSave() {
   opacity: 0.6;
   min-width: 1.2rem;
 }
+/* One operand per line, each stretched to the field width.
+   Previously a wrapping row of shrink-to-fit flex items, which is why the
+   picker came out narrower than the fields beside it however it was styled:
+   `width: 100%` on the control resolved against a parent that was itself only
+   as wide as its content. */
 .eo-operands {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
+  flex-direction: column;
+  align-items: stretch;
   gap: 0.25rem;
 }
 .eo-operand {
   display: flex;
   align-items: center;
+  gap: 0.3rem;
+}
+/* The picker takes the room the row has; min-width:0 lets it shrink rather
+   than forcing the row wider than the grid cell. */
+.eo-operand :deep(.ss) {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 .eo-pred {
   display: grid;

@@ -1445,7 +1445,16 @@ watch(
         data-testid="settings-open"
         @click="settingsOpen = true"
       />
-      <div v-if="!obs.hasObsData.value" class="time-controls" data-testid="time-controls">
+      <!--
+        Only once there is a model to run. They set the length of a plain manual
+        run, which is meaningless before anything is loaded, and on an empty app
+        they were two spinners in the top bar asking to be filled in.
+      -->
+      <div
+        v-if="model.hasModel.value && !obs.hasObsData.value"
+        class="time-controls"
+        data-testid="time-controls"
+      >
         <label>t₁ <InputNumber v-model="simTime" :min="0" show-buttons size="small" /></label>
         <label>pre <InputNumber v-model="preTime" :min="0" show-buttons size="small" /></label>
       </div>

@@ -133,9 +133,16 @@ function onKey(event) {
         @blur="open = false"
       />
       <!--
+        Teleported to <body>, and positioned from the trigger's own rect. The
+        widget sits inside a PrimeVue dialog, and `position: fixed` inside any
+        ancestor carrying a transform is positioned against *that* ancestor
+        rather than the viewport -- which is why the list landed in places that
+        had nothing to do with the field. <body> carries no transform.
+
         mousedown, not click: blur fires first on click and would close the list
         before the selection landed.
       -->
+      <Teleport to="body">
       <ul
         v-if="matches.length"
         class="ss-options"
@@ -162,6 +169,7 @@ function onKey(event) {
       >
         Nothing matches “{{ query }}”.
       </p>
+      </Teleport>
     </template>
   </span>
 </template>
@@ -199,6 +207,17 @@ function onKey(event) {
 .ss-disabled .ss-value {
   cursor: not-allowed;
 }
+/* Teleported out of the component, so these two are global by necessity --
+   a scoped rule would not reach them. Named distinctively for that reason. */
+
+
+
+
+</style>
+
+<!-- The list is teleported to <body>, so it is outside this component's scope
+     and its styles have to be global. -->
+<style>
 .ss-options {
   position: fixed;
   z-index: 3000;
@@ -237,3 +256,4 @@ function onKey(event) {
   white-space: nowrap;
 }
 </style>
+
