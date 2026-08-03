@@ -18,6 +18,7 @@ import {
 import { uploadObsData, getObsDataOptions } from '../lib/api'
 import ProtocolInfoEditor from './ProtocolInfoEditor.vue'
 import EditOperationFuncsDialog from './EditOperationFuncsDialog.vue'
+import SearchableSelect from './SearchableSelect.vue'
 import {
   protocolToModel,
   buildProtocolInfo,
@@ -469,14 +470,16 @@ async function onSave() {
             :value="row.std"
             @input="onNum(row, 'std', $event.target.value)"
           />
-          <select :value="row.operation" @focus="selectRow(row)" @change="onOperationChange(row, $event.target.value)">
-            <option
-              v-for="op in operations"
-              :key="op"
-              :value="op"
-              :class="{ 'non-diff-option': isNonDifferentiable(op) }"
-            >{{ op || '(none)' }}</option>
-          </select>
+          <SearchableSelect
+            :model-value="row.operation"
+            :options="operations"
+            placeholder="(none)"
+            :label-for="(op) => op || '(none)'"
+            :class-for="(op) => (isNonDifferentiable(op) ? 'non-diff-option' : '')"
+            testid="eo-operation"
+            @focus="selectRow(row)"
+            @update:model-value="onOperationChange(row, $event)"
+          />
           <select
             :value="row.experiment_idx"
             @focus="selectRow(row)"
@@ -537,14 +540,12 @@ async function onSave() {
                 <span v-if="operandLabel(row, oi)" class="eo-operand-name">
                   {{ operandLabel(row, oi) }}
                 </span>
-                <select
-                  :value="op"
-                  data-testid="eo-operand"
-                  @change="onOperandChange(row, oi, $event.target.value)"
-                >
-                  <option value="">—</option>
-                  <option v-for="name in operandOptions" :key="name" :value="name">{{ name }}</option>
-                </select>
+                <SearchableSelect
+                  :model-value="op"
+                  :options="operandOptions"
+                  testid="eo-operand"
+                  @update:model-value="onOperandChange(row, oi, $event)"
+                />
                 <!-- Removing one from a fixed-arity operation would just make the
                      row invalid, so the control is only offered when the count is
                      genuinely the user's to choose. -->
