@@ -395,6 +395,10 @@ PLOTTING_SCRIPT = '''#!/usr/bin/env python3
 
 Reproduces:
   - output plots   : simulation traces (output/simulation.json)
+  - best-fit plots : calibrated traces with the observations drawn on them
+                     (all_outputs_with_best_param_vals_exp_*.npz + obs_data.json)
+  - error bars     : how far each observable ended up from its target
+                     (percent_error_vec.npy, std_error_vec.npy)
   - progress plots : cost vs generation (log y) + parameters vs generation
                      (output/best_cost_history.csv, best_param_vals_history.csv)
   - analysis plots : sensitivity heatmap and/or UQ posteriors (output/results.json)
@@ -477,7 +481,7 @@ PANELS_PER_PAGE = 12
 PANEL_COLS = 3
 
 
-def _plot_panels(t, outputs, stem, title_suffix=""):
+def _plot_panels(t, outputs, stem, name_suffix=""):
     """Draw `outputs` as a grid of one-variable panels, paginated.
 
     A panel each, not one shared axes: model variables span wildly different
@@ -508,7 +512,7 @@ def _plot_panels(t, outputs, stem, title_suffix=""):
         # Blank any unused cells so a part-full page has no empty axes frames.
         for j in range(len(chunk), rows * PANEL_COLS):
             axes[j // PANEL_COLS][j % PANEL_COLS].axis("off")
-        suffix = f"{title_suffix}" + (f"_p{page + 1}" if pages > 1 else "")
+        suffix = f"{name_suffix}" + (f"_p{page + 1}" if pages > 1 else "")
         out_path = os.path.join(PLOTS, f"{stem}{suffix}.png")
         fig.tight_layout()
         fig.savefig(out_path, dpi=150)
@@ -663,6 +667,7 @@ INPUTS = (
     "best_cost_history.csv",
     "best_param_vals_history.csv",
     "results.json",
+    "percent_error_vec.npy",
 )
 
 
@@ -670,7 +675,191 @@ def _nothing_to_plot():
     """The inputs, if none of them are anywhere under OUT; else an empty list."""
     if any(_find(name) for name in INPUTS):
         return []
+    if glob.glob(os.path.join(OUT, "**", "all_outputs_with_best_param_vals_exp_*.npz"),
+                 recursive=True):
+        return []
     return list(INPUTS)
+
+
+# ---------------------------------------------------------------------------
+# Best-fit plots, from what a calibration leaves on disk
+#
+# circulatory_autogen draws these itself, but only from a live paramID object --
+# it re-runs the model to get the traces. Everything those figures show is
+# already saved, so this reads the artefacts instead: the npz holds every
+# variable's best-fit series, obs_data.json says which of them were fitted and
+# to what, and the error vectors are the bars. No model, no solver, no CA.
+# ---------------------------------------------------------------------------
+def _latest_obs_data():
+    """The obs_data.json belonging to this run, or None.
+
+    A run directory keeps a dated copy per attempt; the newest is the one the
+    saved vectors came from.
+    """
+    matches = sorted(
+        glob.glob(os.path.join(OUT, "**", "*obs_data*.json"), recursive=True),
+        key=os.path.getmtime,
+    )
+    for path in reversed(matches):
+        try:
+            with open(path, encoding="utf-8-sig") as fh:
+                doc = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        items = doc.get("data_items") if isinstance(doc, dict) else None
+        if items:
+            return doc
+    return None
+
+
+def _observed(doc):
+    """(model_variable, label, value, experiment) for each fitted data_item.
+
+    The operation goes in the label. One variable is commonly fitted several
+    times under different operations -- a pressure's mean, its max and its min
+    are three targets on one trace -- and without it the panels and the bars read
+    as three identical entries with different numbers.
+    """
+    out = []
+    for item in doc.get("data_items", []):
+        operands = item.get("operands") or []
+        variable = operands[0] if operands else item.get("variable")
+        label = item.get("name_for_plotting") or item.get("variable") or variable
+        operation = item.get("operation")
+        if operation:
+            label = f"{label}\\ ({operation.replace('_', chr(92) + '_')})"
+        out.append((variable, label, item.get("value"), int(item.get("experiment_idx", 0) or 0)))
+    return out
+
+
+def _resolve_name(names, wanted):
+    """Find `wanted` among npz keys across the naming conventions in play.
+
+    Three differences, all cosmetic and all fatal if ignored: obs_data writes
+    ``aortic_root/v`` with a slash, the npz writes a dot, and circulatory_autogen's
+    flat CellML calls the component ``aortic_root_module``. The app resolves
+    exactly this in engine._resolve_output_key; kept in step with it.
+    """
+    if wanted in names:
+        return wanted
+    text = str(wanted)
+    for sep in ("/", "."):
+        if sep not in text:
+            continue
+        comp, var = text.split(sep, 1)
+        bare = comp[:-7] if comp.endswith("_module") else comp
+        for candidate_comp in (comp, bare, bare + "_module"):
+            for out_sep in (".", "/"):
+                candidate = f"{candidate_comp}{out_sep}{var}"
+                if candidate in names:
+                    return candidate
+        if var in names:
+            return var
+    return None
+
+
+def _npz_series(path):
+    """{name: array} from a saved outputs npz, plus its time vector."""
+    data = np.load(path, allow_pickle=True)
+    names = list(data.keys())
+    time_key = next((n for n in names if n.endswith("time")), None)
+    time = data[time_key] if time_key else np.arange(len(data[names[0]]))
+    return time, {n: data[n] for n in names if n != time_key}
+
+
+def plot_best_fit():
+    """One panel per fitted observable, with the observation drawn on it.
+
+    The npz names variables with a dot (``aortic_root.v``) and obs_data with a
+    slash (``aortic_root/v``); same variable, two spellings, so both are tried.
+    """
+    files = sorted(glob.glob(os.path.join(OUT, "**", "all_outputs_with_best_param_vals_exp_*.npz"),
+                             recursive=True))
+    files = [f for f in files if not f.endswith("_plot.npz")] or files
+    if not files:
+        return
+    doc = _latest_obs_data()
+    observed = _observed(doc) if doc else []
+
+    for path in files:
+        stem = os.path.basename(path)
+        exp = "".join(c for c in stem.split("exp_")[-1] if c.isdigit()) or "0"
+        time, series = _npz_series(path)
+
+        wanted = [o for o in observed if o[3] == int(exp)] or observed
+        panels = []
+        for variable, label, value, _exp in wanted:
+            key = _resolve_name(series, variable)
+            if key is None:
+                continue
+            panels.append((label, series[key], value))
+        if not panels:
+            # Nothing was fitted, or nothing matched: the traces are still worth
+            # having, so fall back to the full set the pagination already handles.
+            _plot_panels(time, series, f"best_fit_exp{exp}")
+            continue
+
+        rows = int(np.ceil(len(panels) / PANEL_COLS))
+        fig, axes = plt.subplots(rows, min(PANEL_COLS, len(panels)),
+                                 figsize=(5 * min(PANEL_COLS, len(panels)), 3 * rows),
+                                 squeeze=False)
+        for ax in axes.flat[len(panels):]:
+            ax.axis("off")
+        for i, (label, values, value) in enumerate(panels):
+            ax = axes.flat[i]
+            ax.plot(time[: len(values)], values[: len(time)], color=_color(i), lw=1.4,
+                    label="best fit")
+            if isinstance(value, (int, float)):
+                ax.axhline(value, color="#444", ls="--", lw=1.2, label="observed")
+            ax.set_title(f"${label}$", fontsize=10)
+            ax.set_xlabel("time")
+            ax.grid(alpha=0.25)
+            if i == 0:
+                ax.legend(fontsize=8)
+        fig.tight_layout()
+        fig.savefig(os.path.join(PLOTS, f"best_fit_exp{exp}.png"), dpi=150)
+        plt.close(fig)
+
+
+def _error_bar_figure(values, labels, title, filename, unit):
+    order = np.argsort(values)
+    fig, ax = plt.subplots(figsize=(max(6, 0.5 * len(values) + 3), 4))
+    colors = ["#c0504d" if v < 0 else "#5b9bd5" for v in np.asarray(values)[order]]
+    ax.barh(range(len(values)), np.asarray(values)[order], color=colors)
+    ax.set_yticks(range(len(values)))
+    ax.set_yticklabels([f"${labels[i]}$" for i in order], fontsize=9)
+    ax.axvline(0, color="#333", lw=1)
+    ax.set_xlabel(unit)
+    ax.set_title(title)
+    ax.grid(axis="x", alpha=0.25)
+    fig.tight_layout()
+    fig.savefig(os.path.join(PLOTS, filename), dpi=150)
+    plt.close(fig)
+
+
+def plot_error_bars():
+    """How far each fitted observable ended up from its target.
+
+    Sorted, and signed, because "which of these is worst and in which direction"
+    is the question these answer.
+    """
+    doc = _latest_obs_data()
+    labels = [label for _v, label, _val, _e in _observed(doc)] if doc else []
+    for name, title, unit, filename in (
+        ("percent_error_vec.npy", "Best fit: error per observable", "error (%)",
+         "calibration_percent_error.png"),
+        ("std_error_vec.npy", "Best fit: error in standard deviations", "error (std)",
+         "calibration_std_error.png"),
+    ):
+        path = _find(name)
+        if not path:
+            continue
+        values = np.load(path, allow_pickle=True)
+        values = np.asarray(values, dtype=float).ravel()
+        if not len(values):
+            continue
+        names = labels if len(labels) == len(values) else [str(i) for i in range(len(values))]
+        _error_bar_figure(values, names, title, filename, unit)
 
 
 def main():
@@ -703,7 +892,7 @@ def main():
     # Each section is independent: a malformed results.json should not cost you
     # the simulation plots that rendered perfectly well.
     failures = []
-    for step in (plot_outputs, plot_progress, plot_analysis):
+    for step in (plot_outputs, plot_best_fit, plot_progress, plot_error_bars, plot_analysis):
         try:
             step()
         except Exception as exc:  # noqa: BLE001 - report and carry on

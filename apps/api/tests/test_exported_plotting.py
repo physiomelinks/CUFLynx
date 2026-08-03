@@ -373,3 +373,111 @@ def test_the_refusal_says_how_to_point_it_somewhere(tmp_path):
     assert result.returncode != 0
     combined = result.stdout + result.stderr
     assert "--output-dir" in combined
+
+
+# ---------------------------------------------------------------------------
+# Best-fit and error-bar plots, from what a calibration leaves behind
+# ---------------------------------------------------------------------------
+def _calibration_run(run: Path, *, module_suffix=True):
+    """A run directory shaped like circulatory_autogen leaves one."""
+    import numpy as np
+
+    run.mkdir(parents=True, exist_ok=True)
+    comp = "aortic_root_module" if module_suffix else "aortic_root"
+    t = np.linspace(0, 2, 50)
+    np.savez(
+        run / "all_outputs_with_best_param_vals_exp_0.npz",
+        **{
+            "environment.time": t,
+            f"{comp}.v": 1e-4 * (1 + np.sin(2 * np.pi * t)),
+            f"{comp}.u": 12000 + 3000 * np.sin(2 * np.pi * t),
+            "heart_module.q_lv": 1e-4 * np.ones_like(t),
+        },
+    )
+    np.save(run / "percent_error_vec.npy", np.array([0.96, 4.34, -2.87]))
+    np.save(run / "std_error_vec.npy", np.array([0.09, 0.43, -0.28]))
+    (run / "run_obs_data_260716_105442.json").write_text(
+        json.dumps(
+            {
+                "data_items": [
+                    {"variable": "flow", "name_for_plotting": "v_{AR}", "operation": "mean",
+                     "operands": ["aortic_root/v"], "value": 1e-4, "data_type": "constant"},
+                    {"variable": "flow", "name_for_plotting": "v_{AR}", "operation": "max",
+                     "operands": ["aortic_root/v"], "value": 5e-4, "data_type": "constant"},
+                    {"variable": "pressure", "name_for_plotting": "u_{AR}", "operation": "mean",
+                     "operands": ["aortic_root/u"], "value": 12000.0, "data_type": "constant"},
+                ]
+            }
+        )
+    )
+
+
+@pytest.mark.integration
+def test_it_plots_the_best_fit_against_the_observations(tmp_path):
+    """The plots a calibration is actually judged by, drawn from the files it
+    leaves behind rather than by re-running the model: the npz holds every
+    variable's best-fit trace and obs_data.json says which were fitted."""
+    pytest.importorskip("matplotlib")
+    _calibration_run(tmp_path / "genetic_algorithm_run")
+
+    result = _run(_write_script(tmp_path))
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (tmp_path / "pyscript_plots" / "best_fit_exp0.png").is_file()
+
+
+@pytest.mark.integration
+def test_it_plots_the_calibration_error_bars(tmp_path):
+    pytest.importorskip("matplotlib")
+    _calibration_run(tmp_path / "genetic_algorithm_run")
+
+    _run(_write_script(tmp_path))
+    plots = tmp_path / "pyscript_plots"
+    assert (plots / "calibration_percent_error.png").is_file()
+    assert (plots / "calibration_std_error.png").is_file()
+
+
+@pytest.mark.integration
+def test_the_module_suffix_convention_does_not_hide_the_observables(tmp_path):
+    """obs_data says `aortic_root/v`; the saved npz says `aortic_root_module.v`.
+    Same variable, and if the two are not reconciled every fitted observable
+    silently falls out of the plot -- which is what happened first time."""
+    pytest.importorskip("matplotlib")
+    run = tmp_path / "genetic_algorithm_run"
+    _calibration_run(run, module_suffix=True)
+
+    _run(_write_script(tmp_path))
+    # One figure for the three fitted observables, not the paginated fallback
+    # that draws every variable in the file.
+    assert (tmp_path / "pyscript_plots" / "best_fit_exp0.png").is_file()
+    assert not list((tmp_path / "pyscript_plots").glob("best_fit_exp0_p*.png"))
+
+
+@pytest.mark.integration
+def test_an_unfitted_run_still_gets_its_traces(tmp_path):
+    """No obs_data, or nothing matching: the traces are worth having anyway, so
+    it falls back to the paginated all-variables view rather than drawing
+    nothing."""
+    pytest.importorskip("matplotlib")
+    import numpy as np
+
+    run = tmp_path / "run"
+    run.mkdir()
+    np.savez(
+        run / "all_outputs_with_best_param_vals_exp_0.npz",
+        **{"environment.time": np.linspace(0, 1, 20), "a.x": np.ones(20)},
+    )
+    result = _run(_write_script(tmp_path))
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert list((tmp_path / "pyscript_plots").glob("best_fit_exp0*.png"))
+
+
+def test_the_operation_is_part_of_the_label(tmp_path):
+    """A pressure's mean, max and min are three targets on one trace. Without the
+    operation the panels and bars read as three identical entries carrying
+    different numbers."""
+    import export_pipeline as ep
+
+    script = ep.render_plotting_script()
+    assert "_observed" in script
+    # Rendered rather than executed: this is about what the label is built from.
+    assert 'item.get("operation")' in script
