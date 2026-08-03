@@ -294,7 +294,37 @@ def run(config: dict) -> dict:
         result.update(payload)
         with open(os.path.join(output_dir, "results.json"), "w") as fh:
             json.dump(payload, fh)
+        _collect_plots(output_dir)
     return result
+
+
+SA_PLOTS_DIRNAME = "SA_plots"
+
+
+def _collect_plots(output_dir: str) -> None:
+    """Move the figures circulatory_autogen drew into ``SA_plots/``.
+
+    CA writes its Sobol figures straight into the run directory, beside the
+    indices, the samples and the npy files -- so a directory of results
+    gradually becomes a directory of results and pictures of results, and the
+    plots are the part a user goes looking for.
+
+    Moved after the fact rather than by pointing CA at another directory,
+    because ``sa_options['output_dir']`` is where CA puts *everything*, plots
+    and data alike. Never fatal: the analysis is done and its numbers are
+    written, and failing the run over where a PNG sits would be absurd.
+    """
+    try:
+        pngs = [p for p in Path(output_dir).glob("*.png") if p.is_file()]
+        if not pngs:
+            return
+        target = Path(output_dir) / SA_PLOTS_DIRNAME
+        target.mkdir(parents=True, exist_ok=True)
+        for png in pngs:
+            png.replace(target / png.name)
+        print(f"Plots moved to {target}", flush=True)
+    except OSError as exc:
+        print(f"warning: could not collect the SA plots: {exc}", flush=True)
 
 
 def main(argv: list[str]) -> int:

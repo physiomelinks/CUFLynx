@@ -76,13 +76,22 @@ def test_pipeline_script_is_valid_python_and_gates_each_stage():
     assert "ensure_mle_cost_type_for_bayesian_inner" in src
 
 
-def test_plotting_script_is_valid_python_with_three_plot_kinds():
+def test_plotting_script_is_valid_python_with_every_plot_kind():
+    """Renamed from "three plot kinds": there are five now, and each is drawn by
+    its own function in the file the user edits."""
     src = ep.render_plotting_script()
     ast.parse(src)
-    assert "def plot_outputs" in src  # output traces
+    assert "def plot_simulation_outputs" in src  # output traces
+    assert "def plot_best_fit" in src  # calibrated traces vs their targets
     assert "def plot_progress" in src  # cost/param vs generation
+    assert "def plot_error_bars" in src  # per-observable error
     assert "def plot_analysis" in src  # sensitivity / UQ
     assert "set_yscale" in src  # log-y cost, mirrors ProgressPanel
+
+
+def test_the_plotting_utilities_are_a_separate_file():
+    ast.parse(ep.render_plot_utilities())
+    assert "import plot_utilities as util" in ep.render_plotting_script()
 
 
 def _setup_lv(client):
@@ -113,6 +122,9 @@ def test_export_pipeline_writes_self_contained_folder(client, tmp_path):
     # The bundle is self-contained: script(s), dated yaml, and copied resources.
     assert os.path.isfile(os.path.join(export_dir, "run_pipeline.py"))
     assert os.path.isfile(os.path.join(export_dir, "plot_outputs.py"))
+    # plot_outputs imports plot_utilities, so the bundle needs both or the
+    # plotting half of it cannot start.
+    assert os.path.isfile(os.path.join(export_dir, "plot_utilities.py"))
     yaml_files = [f for f in os.listdir(export_dir) if f.startswith("user_inputs_") and f.endswith(".yaml")]
     assert yaml_files, "dated user_inputs yaml missing"
     ui = yaml.safe_load(open(os.path.join(export_dir, yaml_files[0])))

@@ -850,6 +850,9 @@ async function onExportPlotting() {
   try {
     const res = await exportPlotting({
       config_outputs_dir: outputsDir.value.trim() || undefined,
+      // Names the panels after the loaded obs_data, so the script is something
+      // you edit rather than something you read around (#144).
+      model_id: model.modelId.value || undefined,
     })
     exportNotice.value = `Exported plotting script to ${res.path}`
   } catch (e) {

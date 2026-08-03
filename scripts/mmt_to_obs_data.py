@@ -115,7 +115,7 @@ def main(argv: list[str] | None = None) -> int:
 
     document = fill_protocol_info(existing, info)
     try:
-        out.write_text(json.dumps(document, indent=4) + "\n")
+        out.write_text(json.dumps(document, indent=4) + "\n", encoding="utf-8")
     except OSError as exc:
         print(f"could not write {out}: {exc}", file=sys.stderr)
         return 2

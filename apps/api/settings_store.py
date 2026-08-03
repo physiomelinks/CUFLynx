@@ -83,6 +83,6 @@ def save(settings: dict) -> None:
     merged = {**load(), **{k: v for k, v in settings.items() if k in PERSISTED_KEYS}}
     try:
         config_dir().mkdir(parents=True, exist_ok=True)
-        config_path().write_text(json.dumps(merged, indent=2))
+        config_path().write_text(json.dumps(merged, indent=2), encoding="utf-8")
     except OSError:
         pass

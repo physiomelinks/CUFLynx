@@ -26,3 +26,7 @@ apps/web/package-lock.json
 .vscode/
 *.swp
 *.swo
+
+# Plots produced for review by the exported-plotting check (#144); regenerate
+# with `python plot_outputs.py` inside an exported pipeline's folder.
+test_outputs/
