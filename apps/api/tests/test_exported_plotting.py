@@ -28,12 +28,19 @@ def _mkdir(p: Path) -> Path:
     return p
 
 
-def _write_script(tmp_path: Path) -> Path:
-    script = tmp_path / "plot_outputs.py"
-    # utf-8 explicitly, as the app now does: the script contains an em dash, and
-    # on a Windows runner the default locale encoding writes it as a cp1252 byte
-    # that Python then refuses to parse.
-    script.write_text(export_pipeline.render_plotting_script(), encoding="utf-8")
+def _write_script(tmp_path: Path, obs_data=None) -> Path:
+    """Both files. plot_outputs imports plot_utilities, so one alone cannot run.
+
+    utf-8 explicitly, as the app does: the scripts contain an em dash, and on a
+    Windows runner the default locale encoding writes it as a cp1252 byte that
+    Python then refuses to parse.
+    """
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    (tmp_path / export_pipeline.PLOT_UTILITIES_NAME).write_text(
+        export_pipeline.render_plot_utilities(), encoding="utf-8"
+    )
+    script = tmp_path / export_pipeline.PLOTTING_SCRIPT_NAME
+    script.write_text(export_pipeline.render_plotting_script(obs_data), encoding="utf-8")
     return script
 
 
@@ -477,31 +484,37 @@ def test_the_operation_is_part_of_the_label(tmp_path):
     different numbers."""
     import export_pipeline as ep
 
-    script = ep.render_plotting_script()
-    assert "_observed" in script
-    # Rendered rather than executed: this is about what the label is built from.
-    assert 'item.get("operation")' in script
+    # The bars are labelled from what obs_data says, so the operation has to
+    # survive into the reading half...
+    assert 'item.get("operation")' in ep.render_plot_utilities()
+    # ...and into the labels the editable half builds.
+    assert 'util.tex(o["label"], o["operation"])' in ep.render_plotting_script()
 
 
 # ---------------------------------------------------------------------------
 # One panel per series, not per data_item
 # ---------------------------------------------------------------------------
-def _script_ns(tmp_path):
-    """The generated script's namespace, so its helpers can be tested directly.
+def _utilities(tmp_path):
+    """The exported plot_utilities module, loaded so its helpers can be tested.
 
-    It is a standalone artefact rather than a module, so there is nothing to
-    import; exec'ing it is how its internals become testable at all.
+    Loaded from the written file rather than exec'd from a string, because that
+    is how plot_outputs.py reaches it -- an import that works here is an import
+    that works for the user.
     """
-    src = export_pipeline.render_plotting_script()
-    ns = {"__name__": "plot_outputs_under_test", "__file__": str(tmp_path / "plot_outputs.py")}
-    exec(compile(src, "plot_outputs.py", "exec"), ns)
-    return ns
+    import importlib.util as importlib_util
+
+    _write_script(tmp_path)
+    path = tmp_path / export_pipeline.PLOT_UTILITIES_NAME
+    spec = importlib_util.spec_from_file_location("plot_utilities_under_test", path)
+    module = importlib_util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def test_the_same_series_under_several_operations_is_one_panel(tmp_path):
     """Fitting a trace's mean, its max and its min is three targets on one curve.
     Drawing the curve three times says there are three of them."""
-    ns = _script_ns(tmp_path)
+    util = _utilities(tmp_path)
     doc = {
         "data_items": [
             {"operands": ["a/u"], "operation": "mean", "value": 1, "name_for_plotting": "u"},
@@ -509,31 +522,31 @@ def test_the_same_series_under_several_operations_is_one_panel(tmp_path):
             {"operands": ["a/u"], "operation": "min", "value": 0, "name_for_plotting": "u"},
         ]
     }
-    assert len({o["series"] for o in ns["_observed"](doc)}) == 1
+    assert len({o["series"] for o in util.observed(doc)}) == 1
 
 
 def test_a_time_operand_does_not_split_the_series(tmp_path):
     """`x` and `x, t` are the same trace: the time operand says which axis to
     read it against, not which curve it is."""
-    ns = _script_ns(tmp_path)
+    util = _utilities(tmp_path)
     doc = {
         "data_items": [
             {"operands": ["a/u"], "operation": "max", "value": 2},
             {"operands": ["a/u", "environment/time"], "operation": "time_at_max", "value": 0.3},
         ]
     }
-    assert len({o["series"] for o in ns["_observed"](doc)}) == 1
+    assert len({o["series"] for o in util.observed(doc)}) == 1
 
 
 def test_different_variables_stay_separate(tmp_path):
-    ns = _script_ns(tmp_path)
+    util = _utilities(tmp_path)
     doc = {
         "data_items": [
             {"operands": ["a/u"], "operation": "mean", "value": 1},
             {"operands": ["a/v"], "operation": "mean", "value": 2},
         ]
     }
-    assert len({o["series"] for o in ns["_observed"](doc)}) == 2
+    assert len({o["series"] for o in util.observed(doc)}) == 2
 
 
 @pytest.mark.parametrize(
@@ -542,8 +555,8 @@ def test_different_variables_stay_separate(tmp_path):
      ("t", True), ("a/u", False), ("heart/time_constant", False)],
 )
 def test_time_operands_are_recognised(tmp_path, operand, is_time):
-    ns = _script_ns(tmp_path)
-    assert ns["_is_time"](operand) is is_time
+    util = _utilities(tmp_path)
+    assert util.is_time(operand) is is_time
 
 
 @pytest.mark.integration
@@ -661,9 +674,7 @@ def test_the_generated_panels_draw_the_same_figure(tmp_path):
                 "aortic_root_module.v": 1e-4 * (1 + np.sin(t)),
                 "heart_module.q_lv": 1e-4 * np.ones_like(t)})
 
-    script = tmp_path / "plot_outputs.py"
-    script.write_text(export_pipeline.render_plotting_script(OBS_DOC), encoding="utf-8")
-    result = _run(script)
+    result = _run(_write_script(tmp_path, OBS_DOC))
     assert result.returncode == 0, result.stdout + result.stderr
     assert (tmp_path / "pyscript_plots" / "best_fit_exp0.png").is_file()
 
@@ -684,14 +695,93 @@ def test_dropping_a_panel_drops_it_from_the_figure(tmp_path):
                 "aortic_root_module.v": 1e-4 * (1 + np.sin(t)),
                 "heart_module.q_lv": 1e-4 * np.ones_like(t)})
 
-    src = export_pipeline.render_plotting_script(OBS_DOC)
-    (tmp_path / "plot_outputs.py").write_text(src, encoding="utf-8")
-    _run(tmp_path / "plot_outputs.py")
+    script = _write_script(tmp_path, OBS_DOC)
+    _run(script)
     both = (tmp_path / "pyscript_plots" / "best_fit_exp0.png").stat().st_size
 
-    edited = src.replace("    panel_q_lv,\n", "")
-    (tmp_path / "plot_outputs.py").write_text(edited, encoding="utf-8")
-    result = _run(tmp_path / "plot_outputs.py")
+    edited = script.read_text(encoding="utf-8").replace("    panel_q_lv,\n", "")
+    script.write_text(edited, encoding="utf-8")
+    result = _run(script)
     assert result.returncode == 0, result.stdout + result.stderr
     one = (tmp_path / "pyscript_plots" / "best_fit_exp0.png").stat().st_size
     assert one != both
+
+
+# ---------------------------------------------------------------------------
+# Two files: the one you edit, and the one you do not
+# ---------------------------------------------------------------------------
+def test_both_files_are_valid_python():
+    ast.parse(export_pipeline.render_plot_utilities())
+    ast.parse(export_pipeline.render_plotting_script(OBS_DOC))
+
+
+def test_the_editable_file_is_the_one_you_run():
+    """main() stays at the bottom of plot_outputs.py, so there is one file to
+    call and it is the same one you edit."""
+    src = export_pipeline.render_plotting_script(OBS_DOC)
+    assert 'if __name__ == "__main__":' in src
+    assert "def main():" in src
+    assert 'if __name__ == "__main__":' not in export_pipeline.render_plot_utilities()
+
+
+def test_every_figure_has_its_own_editable_function():
+    """Not just the best-fit panels: each figure is drawn by a function in the
+    file the user owns, so any of them can be changed or dropped."""
+    src = export_pipeline.render_plotting_script(OBS_DOC)
+    for name in (
+        "def plot_best_fit():",
+        "def plot_error_bars():",
+        "def plot_progress():",
+        "def plot_analysis():",
+        "def plot_simulation_outputs():",
+    ):
+        assert name in src, name
+    assert "FIGURES = [" in src
+
+
+def test_the_utilities_file_draws_nothing():
+    """It finds and loads; how anything looks lives in plot_outputs.py. A
+    savefig here would be a decision made where nobody will look for it."""
+    utilities = export_pipeline.render_plot_utilities()
+    assert "set_title" not in utilities
+    assert "ax.plot" not in utilities
+    assert "cmap" not in utilities
+
+
+def test_the_editable_file_does_not_restate_the_machinery():
+    """The split is only worth having if the reading half really is elsewhere."""
+    src = export_pipeline.render_plotting_script(OBS_DOC)
+    assert "import plot_utilities as util" in src
+    assert "glob.glob" not in src
+    assert "def resolve_name" not in src
+
+
+def test_the_two_files_are_written_together(client, tmp_path):
+    """plot_outputs imports plot_utilities, so one without the other is a script
+    that cannot start."""
+    resp = client.post(
+        "/api/export/plotting", json={"config_outputs_dir": str(tmp_path)}
+    )
+    assert resp.status_code == 200, resp.text
+    assert (tmp_path / "plot_outputs.py").is_file()
+    assert (tmp_path / "plot_utilities.py").is_file()
+
+
+@pytest.mark.integration
+def test_editing_the_style_changes_every_figure(tmp_path):
+    """STYLE is one place, and it has to actually reach the figures."""
+    pytest.importorskip("matplotlib")
+    out = tmp_path / "output"
+    out.mkdir(parents=True)
+    (out / "best_cost_history.csv").write_text("1.0\n0.4\n0.2\n")
+
+    script = _write_script(tmp_path)
+    _run(script)
+    before = (out / "pyscript_plots" / "progress_cost.png").stat().st_size
+
+    edited = script.read_text(encoding="utf-8").replace('"dpi": 150,', '"dpi": 40,')
+    script.write_text(edited, encoding="utf-8")
+    result = _run(script)
+    assert result.returncode == 0, result.stdout + result.stderr
+    after = (out / "pyscript_plots" / "progress_cost.png").stat().st_size
+    assert after < before

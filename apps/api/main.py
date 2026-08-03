@@ -642,7 +642,10 @@ def export_pipeline_route(req: ExportPipelineRequest) -> dict:
         (export_dir / "run_pipeline.py").write_text(
             export_pipeline.render_pipeline_script(), encoding="utf-8"
         )
-        (export_dir / "plot_outputs.py").write_text(
+        (export_dir / export_pipeline.PLOT_UTILITIES_NAME).write_text(
+            export_pipeline.render_plot_utilities(), encoding="utf-8"
+        )
+        (export_dir / export_pipeline.PLOTTING_SCRIPT_NAME).write_text(
             export_pipeline.render_plotting_script(
                 {"data_items": record.obs_data.data_items} if record.obs_data else None
             ),
@@ -667,13 +670,17 @@ def export_plotting_route(req: ExportPlottingRequest) -> dict:
     """Write just the plotting script (regenerates output/progress/analysis plots
     from a pipeline's output data)."""
     base = _export_base_dir(req.config_outputs_dir)
-    path = base / "plot_outputs.py"
+    path = base / export_pipeline.PLOTTING_SCRIPT_NAME
+    utilities = base / export_pipeline.PLOT_UTILITIES_NAME
     obs_doc = None
     record = _models.get(req.model_id) if req.model_id else None
     if record is not None and record.obs_data is not None:
         obs_doc = {"data_items": record.obs_data.data_items}
     try:
         base.mkdir(parents=True, exist_ok=True)
+        # Both, always: plot_outputs imports plot_utilities, so one without the
+        # other is a script that cannot start.
+        utilities.write_text(export_pipeline.render_plot_utilities(), encoding="utf-8")
         path.write_text(export_pipeline.render_plotting_script(obs_doc), encoding="utf-8")
     except OSError as exc:
         raise _fs_error(

@@ -390,27 +390,17 @@ if __name__ == "__main__":
 '''
 
 
-PLOTTING_SCRIPT = '''#!/usr/bin/env python3
-"""Regenerate CUFLynx-equivalent plots from the exported pipeline's output data.
+PLOT_UTILITIES_SCRIPT = '''#!/usr/bin/env python3
+"""Finding and loading a CUFLynx run's data. Machinery for plot_outputs.py.
 
-Reproduces:
-  - output plots   : simulation traces (output/simulation.json)
-  - best-fit plots : calibrated traces with the observations drawn on them
-                     (all_outputs_with_best_param_vals_exp_*.npz + obs_data.json)
-  - error bars     : how far each observable ended up from its target
-                     (percent_error_vec.npy, std_error_vec.npy)
-  - progress plots : cost vs generation (log y) + parameters vs generation
-                     (output/best_cost_history.csv, best_param_vals_history.csv)
-  - analysis plots : sensitivity heatmap and/or UQ posteriors (output/results.json)
+Nothing here decides how anything *looks*. It locates the run directory, reads
+the files a run leaves behind, and lays panels out on a grid; every colour,
+label, axis and limit lives in plot_outputs.py, which is the file to edit.
 
-Writes PNGs into a `pyscript_plots/` folder beside the data.
-
-Usage:
-    python plot_outputs.py                        # output/ beside this script,
-                                                  # or this script's own folder
-    python plot_outputs.py --output-dir <dir>     # a specific run directory
-    CUFLYNX_OUTPUT_DIR=<dir> python plot_outputs.py
+Kept separate so that editing a plot never means reading past code that has
+nothing to do with plots. You should not need to open this file.
 """
+
 import csv
 import glob
 import json
@@ -419,16 +409,22 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
+# Filled in by load_plotting_libs(), so importing this module stays cheap and a
+# missing matplotlib is reported by plot_outputs rather than at import time.
+plt = None
+np = None
+
+PLOTS_DIRNAME = "pyscript_plots"
+
 
 def _default_out():
     """Where to look for run data, when nobody says.
 
     Two layouts reach this script. run_pipeline.py writes into `output/` beside
-    it, so that is preferred. But CUFLynx also drops this script straight into
-    the outputs directory the user chose in the app, where the run data is in
+    it, so that is preferred. But CUFLynx also drops these scripts straight into
+    the outputs directory the user chose, where the run data is in
     circulatory_autogen's own `<method>_<model>_<hash>_obs_data/` folders and
-    there is no `output/` at all -- which used to fail with "run run_pipeline.py
-    first" after a perfectly good calibration.
+    there is no `output/` at all.
     """
     from_env = os.environ.get("CUFLYNX_OUTPUT_DIR")
     if from_env:
@@ -438,28 +434,30 @@ def _default_out():
 
 
 OUT = _default_out()
-# Plots are written here rather than among the data, so a directory holding one
-# run's results does not gradually become a directory holding results and
-# pictures of results.
-PLOTS_DIRNAME = "pyscript_plots"
 PLOTS = os.path.join(OUT, PLOTS_DIRNAME)
 
-# --- Style, in one place ---------------------------------------------------
-FIG_W, FIG_H = 5.0, 3.4   # inches per panel
-DPI = 150
-TARGET_COLOUR = "#333333"
-# Dash patterns for the observed-value lines, one per target on a panel.
-TARGET_DASHES = [(4, 2), (1, 1.6), (6, 2, 1, 2), (3, 1, 1, 1), (8, 3)]
 
-# matplotlib and numpy are imported in main(), after the checks there -- not at
-# module level. Running this script before run_pipeline.py, or from the wrong
-# directory, is a far more common mistake than a missing matplotlib, and an
-# import error at line 17 buries the message that would have said so.
-plt = None
-np = None
+def set_output_dir(path):
+    """Point everything at another run directory."""
+    global OUT, PLOTS
+    OUT = os.path.abspath(path)
+    PLOTS = os.path.join(OUT, PLOTS_DIRNAME)
+    return OUT
 
 
-def _load_plotting_libs():
+def output_dir_from_argv(argv):
+    """The directory named on the command line, or None."""
+    args = [a for a in argv if not a.startswith("-")]
+    flagged = [a.split("=", 1)[1] for a in argv if a.startswith("--output-dir=")]
+    if "--output-dir" in argv:
+        idx = argv.index("--output-dir")
+        flagged += argv[idx + 1 : idx + 2]
+    chosen = (flagged or args or [None])[0]
+    return chosen
+
+
+def load_plotting_libs():
+    """Import matplotlib and numpy, or explain what to install."""
     global plt, np
     try:
         import matplotlib
@@ -474,258 +472,24 @@ def _load_plotting_libs():
             "python -m pip install matplotlib numpy"
         )
     plt, np = _plt, _np
-PALETTE = ["#5b9bd5", "#ed7d31", "#70ad47", "#ffc000", "#a142f4", "#e84a5f"]
+    return plt, np
 
 
-def _color(i):
-    return PALETTE[i % len(PALETTE)]
-
-
-# One variable per panel, and at most this many panels per PNG. The pipeline
-# logs *every* model variable, so a single axes would be unreadable and a single
-# figure of 456 panels unusable.
-PANELS_PER_PAGE = 12
-PANEL_COLS = 3
-
-
-def _plot_panels(t, outputs, stem, name_suffix=""):
-    """Draw `outputs` as a grid of one-variable panels, paginated.
-
-    A panel each, not one shared axes: model variables span wildly different
-    scales -- pressures ~1e4, flows ~1e-4, valve states 0/1 -- so on a common
-    linear axis all but the largest collapse onto zero. This mirrors how CUFLynx
-    plots them (one cell per variable), which is the point of the export.
-    """
-    names = list(outputs)
-    if not names:
-        return []
-    written = []
-    pages = (len(names) + PANELS_PER_PAGE - 1) // PANELS_PER_PAGE
-    for page in range(pages):
-        chunk = names[page * PANELS_PER_PAGE : (page + 1) * PANELS_PER_PAGE]
-        rows = (len(chunk) + PANEL_COLS - 1) // PANEL_COLS
-        fig, axes = plt.subplots(
-            rows, PANEL_COLS, figsize=(4.2 * PANEL_COLS, 2.4 * rows), squeeze=False
-        )
-        for i, name in enumerate(chunk):
-            ax = axes[i // PANEL_COLS][i % PANEL_COLS]
-            series = outputs[name]
-            n = min(len(t), len(series))
-            ax.plot(t[:n], series[:n], color=_color(page * PANELS_PER_PAGE + i), lw=1.2)
-            # The variable names the panel; no legend to cover the trace.
-            ax.set_title(name, fontsize=7)
-            ax.set_xlabel("time", fontsize=7)
-            ax.tick_params(labelsize=6)
-        # Blank any unused cells so a part-full page has no empty axes frames.
-        for j in range(len(chunk), rows * PANEL_COLS):
-            axes[j // PANEL_COLS][j % PANEL_COLS].axis("off")
-        suffix = f"{name_suffix}" + (f"_p{page + 1}" if pages > 1 else "")
-        out_path = os.path.join(PLOTS, f"{stem}{suffix}.png")
-        fig.tight_layout()
-        fig.savefig(out_path, dpi=150)
-        plt.close(fig)
-        written.append(out_path)
-    return written
-
-
-def plot_outputs():
-    path = os.path.join(OUT, "simulation.json")
-    if not os.path.exists(path):
-        return
-    data = json.load(open(path))
-    # A protocol run records one entry per experiment rather than a single
-    # time/outputs pair; plotting them together would put experiment 1's trace on
-    # experiment 0's axes.
-    experiments = data.get("experiments")
-    if isinstance(experiments, list) and experiments:
-        for e, exp in enumerate(experiments):
-            _plot_panels(exp.get("time", []), exp.get("outputs", {}), "output_plot", f"_exp{e}")
-        return
-    _plot_panels(data.get("time", []), data.get("outputs", {}), "output_plot")
-
-
-def _read_cost_history():
-    path = _find("best_cost_history.csv")
-    if not path:
-        return None
-    rows = []
-    for line in open(path):
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            rows.append([float(x) for x in line.split(",")])
-        except ValueError:
-            continue
-    return rows
-
-
-def _read_param_history():
-    path = _find("best_param_vals_history.csv")
-    if not path:
-        return None, []
-    lines = [ln.strip() for ln in open(path) if ln.strip()]
-    if not lines:
-        return None, []
-    # A header is optional: CA writes one, but a bare numeric file must not have
-    # its first row of data eaten as column names.
-    first = [c.strip() for c in lines[0].split(",")]
-    try:
-        [float(c) for c in first]
-        has_header = False
-    except ValueError:
-        has_header = True
-    names = first if has_header else [f"p{i}" for i in range(len(first))]
-    rows = []
-    for line in lines[0 if not has_header else 1 :]:
-        try:
-            row = [float(x) for x in line.split(",")]
-        except ValueError:
-            continue
-        if len(row) == len(names):
-            rows.append(row)
-    return rows, names
-
-
-def _find(name):
+# ---------------------------------------------------------------------------
+# Finding things
+# ---------------------------------------------------------------------------
+def find(name):
+    """The first file called `name` anywhere under the run directory."""
     matches = glob.glob(os.path.join(OUT, "**", name), recursive=True)
     return matches[0] if matches else None
 
 
-def plot_progress():
-    costs = _read_cost_history()
-    if costs:
-        best = [row[0] for row in costs]
-        fig, ax = plt.subplots(figsize=(6, 4))
-        ax.plot(range(len(best)), best, color=PALETTE[0], marker="o", ms=3)
-        # Log only when it is defined: a zero or negative cost (a perfect fit, or
-        # a cost function that can go negative) would silently drop points.
-        if all(v > 0 for v in best):
-            ax.set_yscale("log")
-        ax.set_xlabel("generation")
-        ax.set_ylabel("cost")
-        ax.set_title("Cost vs generation")
-        fig.tight_layout()
-        fig.savefig(os.path.join(PLOTS, "progress_cost.png"), dpi=150)
-        plt.close(fig)
-
-    params, names = _read_param_history()
-    if params:
-        arr = np.array(params)
-        fig, ax = plt.subplots(figsize=(6, 4))
-        for j, name in enumerate(names):
-            ax.plot(range(arr.shape[0]), arr[:, j], color=_color(j), label=name)
-        ax.set_xlabel("generation")
-        ax.set_ylabel("normalised value")
-        ax.set_title("Parameters vs generation")
-        ax.legend(fontsize=6)
-        fig.tight_layout()
-        fig.savefig(os.path.join(PLOTS, "progress_params.png"), dpi=150)
-        plt.close(fig)
-
-
-def plot_analysis():
-    path = _find("results.json")
-    if not path:
-        return
-    res = json.load(open(path))
-    # Sensitivity heatmap (indices: {kind: {output: {param: value}}}).
-    indices = res.get("indices")
-    if indices:
-        kind = "local" if "local" in indices else ("ST" if "ST" in indices else next(iter(indices)))
-        by_out = indices[kind]
-        outs = res.get("output_names") or list(by_out.keys())
-        params = res.get("param_names") or sorted({p for o in by_out.values() for p in o})
-        mat = np.array([[by_out.get(o, {}).get(p, np.nan) for o in outs] for p in params], dtype=float)
-        signed = kind == "local"
-        vmax = np.nanmax(np.abs(mat)) or 1.0
-        fig, ax = plt.subplots(figsize=(1.2 + 0.5 * len(outs), 1 + 0.4 * len(params)))
-        im = ax.imshow(mat, aspect="auto", cmap="coolwarm" if signed else "viridis",
-                       vmin=-vmax if signed else 0, vmax=vmax)
-        ax.set_xticks(range(len(outs))); ax.set_xticklabels(outs, rotation=90, fontsize=6)
-        ax.set_yticks(range(len(params))); ax.set_yticklabels(params, fontsize=6)
-        ax.set_title(f"Sensitivity ({kind})")
-        fig.colorbar(im, ax=ax)
-        fig.tight_layout()
-        fig.savefig(os.path.join(PLOTS, "analysis_sensitivity.png"), dpi=150)
-        plt.close(fig)
-    # UQ posteriors (params: [{qname, mean, std, q05, q95, bins, counts}]).
-    uq_params = res.get("params") if isinstance(res.get("params"), list) else None
-    if uq_params and all("counts" in p for p in uq_params):
-        n = len(uq_params)
-        fig, axes = plt.subplots(n, 1, figsize=(5, 2 * n), squeeze=False)
-        for i, p in enumerate(uq_params):
-            ax = axes[i][0]
-            edges = np.array(p["bins"]); counts = np.array(p["counts"])
-            centers = 0.5 * (edges[:-1] + edges[1:]) if len(edges) == len(counts) + 1 else np.arange(len(counts))
-            ax.bar(centers, counts, width=(centers[1] - centers[0]) if len(centers) > 1 else 1,
-                   color=PALETTE[0], alpha=0.6)
-            ax.axvline(p["mean"], color=PALETTE[5])
-            ax.set_title(p.get("qname", f"param {i}"), fontsize=7)
-        fig.tight_layout()
-        fig.savefig(os.path.join(PLOTS, "analysis_uq.png"), dpi=150)
-        plt.close(fig)
-
-
-# What this script can draw, and therefore what it looks for before claiming
-# there is nothing to do.
-INPUTS = (
-    "simulation.json",
-    "best_cost_history.csv",
-    "best_param_vals_history.csv",
-    "results.json",
-    "percent_error_vec.npy",
-)
-
-
-def _nothing_to_plot():
-    """The inputs, if none of them are anywhere under OUT; else an empty list."""
-    if any(_find(name) for name in INPUTS):
-        return []
-    if glob.glob(os.path.join(OUT, "**", "all_outputs_with_best_param_vals_exp_*.npz"),
-                 recursive=True):
-        return []
-    return list(INPUTS)
-
-
-# ---------------------------------------------------------------------------
-# Best-fit plots, from what a calibration leaves on disk
-#
-# circulatory_autogen draws these itself, but only from a live paramID object --
-# it re-runs the model to get the traces. Everything those figures show is
-# already saved, so this reads the artefacts instead: the npz holds every
-# variable's best-fit series, obs_data.json says which of them were fitted and
-# to what, and the error vectors are the bars. No model, no solver, no CA.
-# ---------------------------------------------------------------------------
-def _latest_obs_data():
-    """The obs_data.json belonging to this run, or None.
-
-    A run directory keeps a dated copy per attempt; the newest is the one the
-    saved vectors came from.
-    """
-    matches = sorted(
-        glob.glob(os.path.join(OUT, "**", "*obs_data*.json"), recursive=True),
-        key=os.path.getmtime,
-    )
-    for path in reversed(matches):
-        try:
-            with open(path, encoding="utf-8-sig") as fh:
-                doc = json.load(fh)
-        except (OSError, ValueError):
-            continue
-        items = doc.get("data_items") if isinstance(doc, dict) else None
-        if items:
-            return doc
-    return None
-
-
-def _resolve_name(names, wanted):
-    """Find `wanted` among npz keys across the naming conventions in play.
+def resolve_name(names, wanted):
+    """Find `wanted` among a run's variable names, whichever way it is spelled.
 
     Three differences, all cosmetic and all fatal if ignored: obs_data writes
-    ``aortic_root/v`` with a slash, the npz writes a dot, and circulatory_autogen's
-    flat CellML calls the component ``aortic_root_module``. The app resolves
-    exactly this in engine._resolve_output_key; kept in step with it.
+    ``aortic_root/v`` with a slash, the saved npz writes a dot, and
+    circulatory_autogen's flat CellML calls the component ``aortic_root_module``.
     """
     if wanted in names:
         return wanted
@@ -745,25 +509,126 @@ def _resolve_name(names, wanted):
     return None
 
 
-def _is_time(operand):
+def pick(series, name):
+    """The array for `name`, or None if this run did not record it."""
+    key = resolve_name(series, name)
+    return series[key] if key else None
+
+
+def is_time(operand):
     """Whether an operand names the time axis rather than a fitted series."""
     tail = str(operand).replace("/", ".").split(".")[-1].strip().lower()
     return tail in ("time", "t")
 
 
-def _observed(doc):
-    """One entry per fitted data_item, with what to draw and where it belongs.
+def tex(label, operation=""):
+    """A panel or bar label, with the operation kept out of maths mode's way."""
+    if not operation:
+        return f"${label}$"
+    return f"${label}$ ({operation.replace('_', ' ')})"
 
-    ``series`` is the operands with any time operand removed: two data_items that
-    reduce to the same series are two targets on one trace, not two traces. A
-    pressure's mean, max and min are the usual case, and `time_at_max`-style
-    operations add a time operand to the same series -- so time is dropped rather
-    than treated as part of the identity.
+
+# ---------------------------------------------------------------------------
+# Reading what a run leaves behind
+# ---------------------------------------------------------------------------
+def simulation():
+    """``(time, {variable: series})`` from an exported pipeline run, or None."""
+    path = os.path.join(OUT, "simulation.json")
+    if not os.path.isfile(path):
+        return None
+    with open(path, encoding="utf-8") as fh:
+        data = json.load(fh)
+    if isinstance(data.get("experiments"), list):
+        return [(e.get("time", []), e.get("outputs", {})) for e in data["experiments"]]
+    return [(data.get("time", []), data.get("outputs", {}))]
+
+
+def cost_history():
+    """Rows of the cost history, newest column first, or []."""
+    path = find("best_cost_history.csv")
+    if not path:
+        return []
+    rows = []
+    with open(path, newline="", encoding="utf-8") as fh:
+        for row in csv.reader(fh):
+            values = []
+            for cell in row:
+                try:
+                    values.append(float(cell))
+                except ValueError:
+                    values = []
+                    break
+            if values:
+                rows.append(values)
+    return rows
+
+
+def param_history():
+    """``(generations, [(name, values), ...])`` for the fitted parameters."""
+    path = find("best_param_vals_history.csv")
+    if not path:
+        return [], []
+    rows = []
+    header = []
+    with open(path, newline="", encoding="utf-8") as fh:
+        for i, row in enumerate(csv.reader(fh)):
+            try:
+                rows.append([float(c) for c in row])
+            except ValueError:
+                if i == 0:
+                    header = row
+    if not rows:
+        return [], []
+    columns = list(zip(*rows))
+    names = header if len(header) == len(columns) else [f"p{i}" for i in range(len(columns))]
+    return list(range(len(rows))), list(zip(names, columns))
+
+
+def results():
+    """The analysis payload (sensitivity indices / UQ samples), or None."""
+    path = find("results.json")
+    if not path:
+        return None
+    # Deliberately not swallowing a parse error: a corrupt results.json is worth
+    # a warning, and run_sections turns the exception into one without costing
+    # the figures that rendered perfectly well.
+    with open(path, encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+def latest_obs_data():
+    """The obs_data.json belonging to this run, or None.
+
+    A run directory keeps a dated copy per attempt; the newest is the one the
+    saved vectors came from.
     """
+    matches = sorted(
+        glob.glob(os.path.join(OUT, "**", "*obs_data*.json"), recursive=True),
+        key=os.path.getmtime,
+    )
+    for path in reversed(matches):
+        try:
+            with open(path, encoding="utf-8-sig") as fh:
+                doc = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        if isinstance(doc, dict) and doc.get("data_items"):
+            return doc
+    return None
+
+
+def observed(doc=None):
+    """One entry per fitted data_item: variable, label, operation, value, series.
+
+    ``series`` is the operands with any time operand removed, so two data_items
+    that reduce to the same trace are two targets on one curve rather than two
+    curves.
+    """
+    doc = doc if doc is not None else latest_obs_data()
     out = []
-    for item in doc.get("data_items", []):
-        operands = [o for o in (item.get("operands") or [])]
-        series = tuple(o for o in operands if not _is_time(o))
+    for item in (doc or {}).get("data_items", []):
+        operands = list(item.get("operands") or [])
+        series = tuple(o for o in operands if not is_time(o))
         variable = series[0] if series else (operands[0] if operands else item.get("variable"))
         out.append(
             {
@@ -778,225 +643,416 @@ def _observed(doc):
     return out
 
 
-def _tex(label, operation=""):
-    """A panel/bar label, with the operation kept out of maths mode's way."""
-    if not operation:
-        return f"${label}$"
-    return f"${label}$ ({operation.replace('_', ' ')})"
+def best_fit_runs():
+    """``[(experiment, time, {variable: series}), ...]`` from the saved npz files."""
+    files = sorted(
+        glob.glob(
+            os.path.join(OUT, "**", "all_outputs_with_best_param_vals_exp_*.npz"), recursive=True
+        )
+    )
+    files = [f for f in files if not f.endswith("_plot.npz")] or files
+    runs = []
+    for path in files:
+        stem = os.path.basename(path)
+        exp = "".join(c for c in stem.split("exp_")[-1] if c.isdigit()) or "0"
+        data = np.load(path, allow_pickle=True)
+        names = list(data.keys())
+        time_key = next((n for n in names if n.endswith("time")), None)
+        time = data[time_key] if time_key else np.arange(len(data[names[0]]))
+        runs.append((exp, time, {n: data[n] for n in names if n != time_key}))
+    return runs
 
 
-def _npz_series(path):
-    """{name: array} from a saved outputs npz, plus its time vector."""
-    data = np.load(path, allow_pickle=True)
-    names = list(data.keys())
-    time_key = next((n for n in names if n.endswith("time")), None)
-    time = data[time_key] if time_key else np.arange(len(data[names[0]]))
-    return time, {n: data[n] for n in names if n != time_key}
+def error_vector(name):
+    """A saved error vector as a flat array, or None."""
+    path = find(name)
+    if not path:
+        return None
+    values = np.asarray(np.load(path, allow_pickle=True), dtype=float).ravel()
+    return values if len(values) else None
 
 
-# ===========================================================================
-# THE BEST-FIT PANELS — this is the part to edit
-#
-# One function per panel, generated from your obs_data.json with the variable
-# names filled in. Each is independent and ordinary matplotlib:
-#
-#   * change a colour, a line style, an axis label   -> edit that function
-#   * drop a panel                                   -> remove it from PANELS
-#   * reorder the figure                             -> reorder PANELS
-#   * add your own                                   -> write a function taking
-#                                                       (ax, t, series) and add it
-#
-# `series` is {variable_name: array} straight out of the run's npz, and `pick`
-# finds a variable whichever way it is spelled (obs_data says "aortic_root/v",
-# the npz says "aortic_root_module.v").
-# ===========================================================================
+# ---------------------------------------------------------------------------
+# Layout
+# ---------------------------------------------------------------------------
+def save(fig, filename, dpi=150):
+    """Write a figure into the plots directory and close it."""
+    os.makedirs(PLOTS, exist_ok=True)
+    path = os.path.join(PLOTS, filename)
+    fig.savefig(path, dpi=dpi)
+    plt.close(fig)
+    return path
+
+
+def grid(n, cols=3, fig_w=5.0, fig_h=3.4):
+    """A figure with `n` axes laid out in a grid; unused axes are hidden."""
+    cols = max(1, min(cols, n))
+    rows = int(np.ceil(n / cols))
+    fig, axes = plt.subplots(rows, cols, figsize=(fig_w * cols, fig_h * rows), squeeze=False)
+    for ax in axes.flat[n:]:
+        ax.axis("off")
+    return fig, list(axes.flat[:n])
+
+
+def paginate(items, per_page):
+    """`items` split into pages, so a 456-variable model is readable."""
+    return [items[i : i + per_page] for i in range(0, len(items), per_page)]
+
+
+# What this script can draw, and therefore what it looks for before claiming
+# there is nothing to do.
+INPUTS = (
+    "simulation.json",
+    "best_cost_history.csv",
+    "best_param_vals_history.csv",
+    "results.json",
+    "percent_error_vec.npy",
+)
+
+
+def nothing_to_plot():
+    """The inputs, if none of them are anywhere under OUT; else an empty list."""
+    if any(find(name) for name in INPUTS):
+        return []
+    if glob.glob(
+        os.path.join(OUT, "**", "all_outputs_with_best_param_vals_exp_*.npz"), recursive=True
+    ):
+        return []
+    return list(INPUTS)
+
+
+def run_sections(sections):
+    """Draw each section, reporting failures without losing the others.
+
+    A malformed results.json should not cost you the simulation plots that
+    rendered perfectly well.
+    """
+    failures = []
+    for section in sections:
+        try:
+            section()
+        except Exception as exc:  # noqa: BLE001 - report and carry on
+            failures.append(f"{getattr(section, '__name__', section)}: {exc}")
+    return failures
+'''
+
+
+PLOTTING_SCRIPT = '''#!/usr/bin/env python3
+"""Plots from a CUFLynx run — yours to edit.
+
+    python plot_outputs.py                       # find the run data automatically
+    python plot_outputs.py --output-dir <dir>    # a specific run directory
+    CUFLYNX_OUTPUT_DIR=<dir> python plot_outputs.py
+
+Every figure is drawn by a function in this file, and each one is ordinary
+matplotlib. Finding and loading the data is `plot_utilities.py`, which you
+should not need to open.
+
+WHAT TO EDIT
+    STYLE                one place for colours, sizes and dpi
+    panel_*              one function per fitted observable, named after it
+    PANELS               which of those panels appear, and in what order
+    plot_*               one function per figure -- best fit, progress,
+                         error bars, analysis, simulation traces
+    FIGURES              which figures get drawn at all
+
+To change one plot, edit its function. To drop it, remove it from FIGURES.
+To add one, write a function and add it.
+"""
+
+import os
+import sys
+
+import plot_utilities as util
+
+# ---------------------------------------------------------------------------
+# STYLE — shared by every figure below
+# ---------------------------------------------------------------------------
+STYLE = {
+    "palette": ["#5b9bd5", "#ed7d31", "#70ad47", "#ffc000", "#a142f4", "#e84a5f"],
+    "target_colour": "#333333",
+    # Dash patterns for observed-value lines, so several on one axes stay
+    # tellable apart in grey scale as well as in colour.
+    "target_dashes": [(4, 2), (1, 1.6), (6, 2, 1, 2), (3, 1, 1, 1), (8, 3)],
+    "panel_cols": 3,
+    "panel_size": (5.0, 3.4),   # inches, per panel
+    "dpi": 150,
+    # The pipeline logs every model variable, so one figure of 456 panels is
+    # unusable. Traces are paginated at this many per page.
+    "panels_per_page": 12,
+}
+
+PALETTE = STYLE["palette"]
+TARGET_COLOUR = STYLE["target_colour"]
+TARGET_DASHES = STYLE["target_dashes"]
+
+# Bound to matplotlib/numpy in main(), so this file reads like a normal script.
+plt = None
+np = None
+
+
+def colour(i):
+    return PALETTE[i % len(PALETTE)]
+
+
 def pick(series, name):
-    """The array for `name`, or None if this run did not record it."""
-    key = _resolve_name(series, name)
-    return series[key] if key else None
+    """The array recorded for `name`, or None. Spelling differences handled."""
+    return util.pick(series, name)
 
 
 # <<PANELS>>
 
 
+# ---------------------------------------------------------------------------
+# BEST FIT — the calibrated traces, with what they were fitted to
+# ---------------------------------------------------------------------------
 def plot_best_fit():
-    """One panel per fitted observable, with the observation drawn on it.
-
-    The npz names variables with a dot (``aortic_root.v``) and obs_data with a
-    slash (``aortic_root/v``); same variable, two spellings, so both are tried.
-    """
-    files = sorted(glob.glob(os.path.join(OUT, "**", "all_outputs_with_best_param_vals_exp_*.npz"),
-                             recursive=True))
-    files = [f for f in files if not f.endswith("_plot.npz")] or files
-    if not files:
-        return
-    doc = _latest_obs_data()
-    observed = _observed(doc) if doc else []
-
-    for path in files:
-        stem = os.path.basename(path)
-        exp = "".join(c for c in stem.split("exp_")[-1] if c.isdigit()) or "0"
-        time, series = _npz_series(path)
-
-        if PANELS:
-            _draw_panel_grid(PANELS, time, series, f"best_fit_exp{exp}")
-            continue
-
-        # No generated panels (exported without an obs_data.json): fall back to
-        # discovering them from whatever obs_data is in the run directory.
-        wanted = [o for o in observed if o["experiment"] == int(exp)] or observed
-
-        # One panel per distinct series, not per data_item: fitting a trace's
-        # mean and its max is two targets on one curve, and drawing the curve
-        # twice says there are two of them.
-        panels = []
-        by_series = {}
-        for item in wanted:
-            key = _resolve_name(series, item["variable"])
-            if key is None:
-                continue
-            if key not in by_series:
-                by_series[key] = {"label": item["label"], "targets": []}
-                panels.append(key)
-            by_series[key]["targets"].append(item)
-
+    """One figure per experiment, one panel per entry in PANELS."""
+    for exp, t, series in util.best_fit_runs():
+        panels = PANELS or _discovered_panels(exp, series)
         if not panels:
-            # Nothing was fitted, or nothing matched: the traces are still worth
-            # having, so fall back to the full set the pagination already handles.
-            _plot_panels(time, series, f"best_fit_exp{exp}")
+            _plot_all_traces(t, series, f"best_fit_exp{exp}")
             continue
-
-        cols = min(PANEL_COLS, len(panels))
-        rows = int(np.ceil(len(panels) / cols))
-        fig, axes = plt.subplots(rows, cols, figsize=(5 * cols, 3.4 * rows), squeeze=False)
-        for ax in axes.flat[len(panels):]:
-            ax.axis("off")
-
-        # Each target gets its own dash pattern so several on one axes stay
-        # tellable apart in grey scale as well as in colour.
-        dashes = [(4, 2), (1, 1.6), (6, 2, 1, 2), (3, 1, 1, 1), (8, 3)]
-        for i, key in enumerate(panels):
-            ax = axes.flat[i]
-            values = series[key]
-            ax.plot(time[: len(values)], values[: len(time)], color=_color(i), lw=1.4,
-                    label="best fit")
-            for j, target in enumerate(by_series[key]["targets"]):
-                value = target["value"]
-                if not isinstance(value, (int, float)):
-                    continue
-                ax.axhline(value, color="#333", lw=1.1, dashes=dashes[j % len(dashes)],
-                           label=f"{target['operation'] or 'observed'} = {value:.4g}")
-            ax.set_title(_tex(by_series[key]["label"]), fontsize=10)
-            ax.set_xlabel("time")
-            ax.grid(alpha=0.25)
-            ax.legend(fontsize=7, loc="best")
+        fig, axes = util.grid(
+            len(panels), STYLE["panel_cols"], *STYLE["panel_size"]
+        )
+        for ax, panel in zip(axes, panels):
+            panel(ax, t, series)
         fig.tight_layout()
-        fig.savefig(os.path.join(PLOTS, f"best_fit_exp{exp}.png"), dpi=150)
-        plt.close(fig)
+        util.save(fig, f"best_fit_exp{exp}.png", STYLE["dpi"])
 
 
-def _draw_panel_grid(panels, t, series, stem):
-    """Lay the panel functions out in a grid and save the figure.
-
-    Deliberately dumb: it arranges axes and calls each function. Everything that
-    decides how a panel *looks* lives in the panel functions above, where it can
-    be edited without reading this.
-    """
-    drawn = list(panels)
-    cols = min(PANEL_COLS, len(drawn))
-    rows = int(np.ceil(len(drawn) / cols))
-    fig, axes = plt.subplots(rows, cols, figsize=(FIG_W * cols, FIG_H * rows), squeeze=False)
-    for ax in axes.flat[len(drawn):]:
-        ax.axis("off")
-    for ax, panel in zip(axes.flat, drawn):
-        panel(ax, t, series)
-    fig.tight_layout()
-    out_path = os.path.join(PLOTS, f"{stem}.png")
-    fig.savefig(out_path, dpi=DPI)
-    plt.close(fig)
-    return out_path
-
-
-def _error_bar_figure(values, labels, title, filename, unit):
-    order = np.argsort(values)
-    fig, ax = plt.subplots(figsize=(max(6, 0.5 * len(values) + 3), 4))
-    colors = ["#c0504d" if v < 0 else "#5b9bd5" for v in np.asarray(values)[order]]
-    ax.barh(range(len(values)), np.asarray(values)[order], color=colors)
-    ax.set_yticks(range(len(values)))
-    # Already TeX-wrapped by _tex; wrapping again gives "$$x$ (max)$".
-    ax.set_yticklabels([labels[i] for i in order], fontsize=9)
-    ax.axvline(0, color="#333", lw=1)
-    ax.set_xlabel(unit)
-    ax.set_title(title)
-    ax.grid(axis="x", alpha=0.25)
-    fig.tight_layout()
-    fig.savefig(os.path.join(PLOTS, filename), dpi=150)
-    plt.close(fig)
-
-
+# ---------------------------------------------------------------------------
+# ERROR BARS — how far each observable ended up from its target
+# ---------------------------------------------------------------------------
 def plot_error_bars():
-    """How far each fitted observable ended up from its target.
-
-    Sorted, and signed, because "which of these is worst and in which direction"
-    is the question these answer.
-    """
-    doc = _latest_obs_data()
-    # One bar per data_item, unlike the panels: each has its own error, so the
-    # operation is what distinguishes them and belongs in the label.
-    labels = [_tex(o["label"], o["operation"]) for o in _observed(doc)] if doc else []
+    """Sorted and signed: "which is worst, and in which direction"."""
+    labels = [util.tex(o["label"], o["operation"]) for o in util.observed()]
     for name, title, unit, filename in (
         ("percent_error_vec.npy", "Best fit: error per observable", "error (%)",
          "calibration_percent_error.png"),
         ("std_error_vec.npy", "Best fit: error in standard deviations", "error (std)",
          "calibration_std_error.png"),
     ):
-        path = _find(name)
-        if not path:
-            continue
-        values = np.load(path, allow_pickle=True)
-        values = np.asarray(values, dtype=float).ravel()
-        if not len(values):
+        values = util.error_vector(name)
+        if values is None:
             continue
         names = labels if len(labels) == len(values) else [str(i) for i in range(len(values))]
-        _error_bar_figure(values, names, title, filename, unit)
+        order = np.argsort(values)
+        fig, ax = plt.subplots(figsize=(max(6, 0.5 * len(values) + 3), 4))
+        ax.barh(
+            range(len(values)),
+            values[order],
+            color=["#c0504d" if v < 0 else PALETTE[0] for v in values[order]],
+        )
+        ax.set_yticks(range(len(values)))
+        ax.set_yticklabels([names[i] for i in order], fontsize=9)
+        ax.axvline(0, color="#333", lw=1)
+        ax.set_xlabel(unit)
+        ax.set_title(title)
+        ax.grid(axis="x", alpha=0.25)
+        fig.tight_layout()
+        util.save(fig, filename, STYLE["dpi"])
+
+
+# ---------------------------------------------------------------------------
+# PROGRESS — how the calibration got there
+# ---------------------------------------------------------------------------
+def plot_progress():
+    costs = util.cost_history()
+    if costs:
+        best = [row[0] for row in costs]
+        fig, ax = plt.subplots(figsize=(6, 4))
+        ax.plot(range(len(best)), best, color=PALETTE[0], lw=1.6)
+        ax.set_yscale("log")
+        ax.set_xlabel("generation")
+        ax.set_ylabel("best cost")
+        ax.set_title("Cost")
+        ax.grid(alpha=0.25)
+        fig.tight_layout()
+        util.save(fig, "progress_cost.png", STYLE["dpi"])
+
+    generations, params = util.param_history()
+    if params:
+        fig, axes = util.grid(len(params), STYLE["panel_cols"], 4.5, 3.0)
+        for i, (ax, (name, values)) in enumerate(zip(axes, params)):
+            ax.plot(generations, values, color=colour(i), lw=1.4)
+            ax.set_title(name, fontsize=8)
+            ax.set_xlabel("generation")
+            ax.grid(alpha=0.25)
+        fig.tight_layout()
+        util.save(fig, "progress_params.png", STYLE["dpi"])
+
+
+# ---------------------------------------------------------------------------
+# ANALYSIS — sensitivity indices and UQ posteriors
+# ---------------------------------------------------------------------------
+def plot_analysis():
+    """Sensitivity heatmap and UQ posteriors, from the analysis results.json."""
+    res = util.results()
+    if not res:
+        return
+
+    # Sensitivity: indices are {kind: {output: {param: value}}}.
+    indices = res.get("indices")
+    if indices:
+        kind = "local" if "local" in indices else ("ST" if "ST" in indices else next(iter(indices)))
+        by_out = indices[kind]
+        outs = res.get("output_names") or list(by_out.keys())
+        params = res.get("param_names") or sorted({p for o in by_out.values() for p in o})
+        mat = np.array(
+            [[by_out.get(o, {}).get(p, np.nan) for o in outs] for p in params], dtype=float
+        )
+        # A local index is signed -- which way a parameter pushes an output is
+        # half the answer -- so it gets a diverging map centred on zero.
+        signed = kind == "local"
+        vmax = np.nanmax(np.abs(mat)) or 1.0
+        fig, ax = plt.subplots(figsize=(1.2 + 0.5 * len(outs), 1 + 0.4 * len(params)))
+        im = ax.imshow(
+            mat, aspect="auto", cmap="coolwarm" if signed else "viridis",
+            vmin=-vmax if signed else 0, vmax=vmax,
+        )
+        ax.set_xticks(range(len(outs)))
+        ax.set_xticklabels(outs, rotation=90, fontsize=6)
+        ax.set_yticks(range(len(params)))
+        ax.set_yticklabels(params, fontsize=6)
+        ax.set_title(f"Sensitivity ({kind})")
+        fig.colorbar(im, ax=ax)
+        fig.tight_layout()
+        util.save(fig, "analysis_sensitivity.png", STYLE["dpi"])
+
+    # UQ posteriors: [{qname, mean, std, q05, q95, bins, counts}].
+    uq_params = res.get("params") if isinstance(res.get("params"), list) else None
+    if uq_params and all("counts" in p for p in uq_params):
+        n = len(uq_params)
+        fig, axes = plt.subplots(n, 1, figsize=(5, 2 * n), squeeze=False)
+        for i, param in enumerate(uq_params):
+            ax = axes[i][0]
+            edges = np.array(param["bins"])
+            counts = np.array(param["counts"])
+            centres = (
+                0.5 * (edges[:-1] + edges[1:])
+                if len(edges) == len(counts) + 1
+                else np.arange(len(counts))
+            )
+            width = (centres[1] - centres[0]) if len(centres) > 1 else 1
+            ax.bar(centres, counts, width=width, color=PALETTE[0], alpha=0.6)
+            ax.axvline(param["mean"], color=PALETTE[5])
+            ax.set_title(param.get("qname", f"param {i}"), fontsize=7)
+        fig.tight_layout()
+        util.save(fig, "analysis_uq.png", STYLE["dpi"])
+
+
+# ---------------------------------------------------------------------------
+# SIMULATION TRACES — every logged variable, from an exported pipeline run
+# ---------------------------------------------------------------------------
+def plot_simulation_outputs():
+    runs = util.simulation()
+    if not runs:
+        return
+    for e, (t, outputs) in enumerate(runs):
+        suffix = f"_exp{e}" if len(runs) > 1 else ""
+        _plot_all_traces(t, outputs, f"output_plot{suffix}")
+
+
+def _plot_all_traces(t, outputs, stem):
+    """A panel per variable, paginated.
+
+    A panel each, not one shared axes: model variables span wildly different
+    scales -- pressures ~1e4, flows ~1e-4, valve states 0/1 -- so on a common
+    linear axis all but the largest collapse onto zero.
+    """
+    names = list(outputs)
+    if not names:
+        return
+    pages = util.paginate(names, STYLE["panels_per_page"])
+    for page_no, page in enumerate(pages, start=1):
+        fig, axes = util.grid(len(page), STYLE["panel_cols"], 4.5, 2.6)
+        for i, (ax, name) in enumerate(zip(axes, page)):
+            values = outputs[name]
+            ax.plot(t[: len(values)], values[: len(t)], color=colour(i), lw=1.1)
+            ax.set_title(name, fontsize=7)
+            ax.tick_params(labelsize=6)
+            ax.grid(alpha=0.25)
+        fig.tight_layout()
+        page_suffix = f"_p{page_no}" if len(pages) > 1 else ""
+        util.save(fig, f"{stem}{page_suffix}.png", STYLE["dpi"])
+
+
+def _discovered_panels(exp, series):
+    """Panels built at run time, when this script was written without obs_data.
+
+    Grouped by series, so a trace fitted on its mean and its max is one panel
+    with two targets rather than two panels of the same curve.
+    """
+    wanted = [o for o in util.observed() if o["experiment"] == int(exp)] or util.observed()
+    order, by_series = [], {}
+    for item in wanted:
+        key = util.resolve_name(series, item["variable"])
+        if key is None:
+            continue
+        if key not in by_series:
+            by_series[key] = {"label": item["label"], "targets": []}
+            order.append(key)
+        by_series[key]["targets"].append(item)
+
+    def make(key, i):
+        def panel(ax, t, series_):
+            group = by_series[key]
+            values = series_[key]
+            ax.plot(t[: len(values)], values[: len(t)], color=colour(i), lw=1.4, label="best fit")
+            for j, target in enumerate(group["targets"]):
+                value = target["value"]
+                if isinstance(value, (int, float)):
+                    ax.axhline(
+                        value, color=TARGET_COLOUR, lw=1.1,
+                        dashes=TARGET_DASHES[j % len(TARGET_DASHES)],
+                        label=f"{target['operation'] or 'observed'} = {value:.4g}",
+                    )
+            ax.set_title(util.tex(group["label"]), fontsize=10)
+            ax.set_xlabel("time")
+            ax.grid(alpha=0.25)
+            ax.legend(fontsize=7, loc="best")
+
+        return panel
+
+    return [make(key, i) for i, key in enumerate(order)]
+
+
+# ---------------------------------------------------------------------------
+# The figures, in order. Comment one out to stop drawing it.
+# ---------------------------------------------------------------------------
+FIGURES = [
+    plot_simulation_outputs,
+    plot_best_fit,
+    plot_progress,
+    plot_error_bars,
+    plot_analysis,
+]
 
 
 def main():
-    global OUT, PLOTS
-    args = [a for a in sys.argv[1:] if not a.startswith("-")]
-    flagged = [a.split("=", 1)[1] for a in sys.argv[1:] if a.startswith("--output-dir=")]
-    if "--output-dir" in sys.argv[1:]:
-        idx = sys.argv[1:].index("--output-dir")
-        flagged += sys.argv[1 + idx + 1 : 1 + idx + 2]
-    chosen = (flagged or args or [None])[0]
-    if chosen:
-        OUT = os.path.abspath(chosen)
-        PLOTS = os.path.join(OUT, PLOTS_DIRNAME)
+    global plt, np
 
-    if not os.path.isdir(OUT):
-        raise SystemExit(f"No such directory: {OUT}")
-    # "Does a directory called output/ exist" used to stand in for "is there
-    # anything to plot". It cannot any more -- the default now falls back to this
-    # script's own folder, which always exists -- and it was the wrong question
-    # anyway: a directory can be there and hold nothing this script can draw.
-    missing = _nothing_to_plot()
+    chosen = util.output_dir_from_argv(sys.argv[1:])
+    if chosen:
+        util.set_output_dir(chosen)
+
+    if not os.path.isdir(util.OUT):
+        raise SystemExit(f"No such directory: {util.OUT}")
+    missing = util.nothing_to_plot()
     if missing:
         raise SystemExit(
-            f"Nothing to plot in {OUT} — found none of {', '.join(missing)}. "
+            f"Nothing to plot in {util.OUT} — found none of {', '.join(missing)}. "
             f"Run run_pipeline.py first, or point this at a run directory: "
             f"python plot_outputs.py --output-dir <dir>"
         )
-    _load_plotting_libs()
-    os.makedirs(PLOTS, exist_ok=True)
-    # Each section is independent: a malformed results.json should not cost you
-    # the simulation plots that rendered perfectly well.
-    failures = []
-    for step in (plot_outputs, plot_best_fit, plot_progress, plot_error_bars, plot_analysis):
-        try:
-            step()
-        except Exception as exc:  # noqa: BLE001 - report and carry on
-            failures.append(f"{step.__name__}: {exc}")
-    print(f"Plots written to {PLOTS}")
+
+    plt, np = util.load_plotting_libs()
+    os.makedirs(util.PLOTS, exist_ok=True)
+
+    failures = util.run_sections(FIGURES)
+    print(f"Plots written to {util.PLOTS}")
     for failure in failures:
         print(f"WARNING: {failure}")
 
@@ -1004,11 +1060,6 @@ def main():
 if __name__ == "__main__":
     main()
 '''
-
-
-def render_pipeline_script() -> str:
-    """The standalone pipeline driver (reads the sibling dated yaml)."""
-    return PIPELINE_SCRIPT
 
 
 def _identifier(text: str) -> str:
@@ -1037,8 +1088,9 @@ def _panel_functions(obs_data: dict | None) -> str:
     if not items:
         return (
             "# No obs_data was available when this script was written, so there are\n"
-            "# no generated panels. The best-fit section falls back to discovering\n"
-            "# them from the obs_data.json in the run directory.\n"
+            "# no generated panels here. plot_best_fit() falls back to discovering\n"
+            "# them from the obs_data.json in the run directory. Re-export with a\n"
+            "# model loaded to get one named function per observable instead.\n"
             "PANELS = []"
         )
 
@@ -1117,8 +1169,26 @@ def _panel_functions(obs_data: dict | None) -> str:
     return "\n\n\n".join(blocks)
 
 
+def render_pipeline_script() -> str:
+    """The standalone pipeline driver (reads the sibling dated yaml)."""
+    return PIPELINE_SCRIPT
+
+
+PLOT_UTILITIES_NAME = "plot_utilities.py"
+PLOTTING_SCRIPT_NAME = "plot_outputs.py"
+
+
+def render_plot_utilities() -> str:
+    """The machinery half: finding the run, reading its files, laying out axes.
+
+    Split from the script the user edits so that changing a plot never means
+    reading past code that has nothing to do with plots.
+    """
+    return PLOT_UTILITIES_SCRIPT
+
+
 def render_plotting_script(obs_data: dict | None = None) -> str:
-    """The standalone plotting script.
+    """The half the user edits, and the one they run.
 
     With an ``obs_data`` document, the best-fit panels are generated as named
     functions with the variables written in, so the script is something a user
