@@ -23,6 +23,11 @@ import pytest
 pytestmark = pytest.mark.filterwarnings("ignore")
 
 
+def _mkdir(p: Path) -> Path:
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
 def _write_script(tmp_path: Path) -> Path:
     script = tmp_path / "plot_outputs.py"
     # utf-8 explicitly, as the app now does: the script contains an em dash, and
@@ -61,6 +66,7 @@ def test_it_refuses_politely_with_no_output_dir(tmp_path):
     result = _run(_write_script(tmp_path))
     assert result.returncode != 0
     assert "run_pipeline.py first" in (result.stdout + result.stderr)
+    assert "Nothing to plot" in (result.stdout + result.stderr)
 
 
 def _block_import(tmp_path: Path, module: str) -> None:
@@ -108,7 +114,7 @@ def test_it_plots_a_simulation(tmp_path):
     _sim(tmp_path / "output", TRACES)
     result = _run(_write_script(tmp_path))
     assert result.returncode == 0, result.stderr
-    assert list((tmp_path / "output").glob("output_plot*.png"))
+    assert list((tmp_path / "output" / "pyscript_plots").glob("output_plot*.png"))
 
 
 @pytest.mark.integration
@@ -126,7 +132,7 @@ def test_each_variable_gets_its_own_panel(tmp_path):
     many.update(TRACES)
     _sim(tmp_path / "output", many)
     assert _run(_write_script(tmp_path)).returncode == 0
-    pages = sorted((tmp_path / "output").glob("output_plot*.png"))
+    pages = sorted((tmp_path / "output" / "pyscript_plots").glob("output_plot*.png"))
     assert pages
     img = mpimg.imread(pages[0])
     assert img.shape[0] > 1000, "expected a multi-row grid, not one shared axes"
@@ -139,7 +145,7 @@ def test_many_variables_are_paginated(tmp_path):
     pytest.importorskip("matplotlib")
     _sim(tmp_path / "output", {f"m/v{i}": [float(i)] * 50 for i in range(30)})
     assert _run(_write_script(tmp_path)).returncode == 0
-    assert len(list((tmp_path / "output").glob("output_plot*.png"))) > 1
+    assert len(list((tmp_path / "output" / "pyscript_plots").glob("output_plot*.png"))) > 1
 
 
 @pytest.mark.integration
@@ -161,8 +167,8 @@ def test_a_protocol_run_plots_each_experiment_separately(tmp_path):
         )
     )
     assert _run(_write_script(tmp_path)).returncode == 0
-    assert (out / "output_plot_exp0.png").is_file()
-    assert (out / "output_plot_exp1.png").is_file()
+    assert (out / "pyscript_plots" / "output_plot_exp0.png").is_file()
+    assert (out / "pyscript_plots" / "output_plot_exp1.png").is_file()
 
 
 @pytest.mark.integration
@@ -177,8 +183,8 @@ def test_it_plots_calibration_progress(tmp_path):
         "a/b,c/d\n" + "\n".join(f"{0.1 * g},{1 - 0.01 * g}" for g in range(10))
     )
     assert _run(_write_script(tmp_path)).returncode == 0
-    assert (out / "progress_cost.png").is_file()
-    assert (out / "progress_params.png").is_file()
+    assert (out / "pyscript_plots" / "progress_cost.png").is_file()
+    assert (out / "pyscript_plots" / "progress_params.png").is_file()
 
 
 @pytest.mark.integration
@@ -190,7 +196,7 @@ def test_a_zero_cost_does_not_silently_drop_points(tmp_path):
     out.mkdir(parents=True)
     (out / "best_cost_history.csv").write_text("1.0\n0.5\n0.0\n")
     assert _run(_write_script(tmp_path)).returncode == 0
-    assert (out / "progress_cost.png").is_file()
+    assert (out / "pyscript_plots" / "progress_cost.png").is_file()
 
 
 @pytest.mark.integration
@@ -201,7 +207,7 @@ def test_a_param_history_without_a_header_keeps_its_first_row(tmp_path):
     out.mkdir(parents=True)
     (out / "best_param_vals_history.csv").write_text("0.1,0.2\n0.3,0.4\n0.5,0.6\n")
     assert _run(_write_script(tmp_path)).returncode == 0
-    assert (out / "progress_params.png").is_file()
+    assert (out / "pyscript_plots" / "progress_params.png").is_file()
 
 
 @pytest.mark.integration
@@ -219,7 +225,7 @@ def test_it_plots_a_sensitivity_heatmap(tmp_path):
         )
     )
     assert _run(_write_script(tmp_path)).returncode == 0
-    assert (out / "analysis_sensitivity.png").is_file()
+    assert (out / "pyscript_plots" / "analysis_sensitivity.png").is_file()
 
 
 @pytest.mark.integration
@@ -232,18 +238,38 @@ def test_one_bad_section_does_not_lose_the_others(tmp_path):
     (out / "results.json").write_text("{not json")
     result = _run(_write_script(tmp_path))
     assert result.returncode == 0, result.stderr
-    assert list(out.glob("output_plot*.png"))
+    assert list((out / "pyscript_plots").glob("output_plot*.png"))
     assert "WARNING" in result.stdout
 
 
 @pytest.mark.integration
-def test_it_is_silent_and_successful_with_nothing_to_plot(tmp_path):
-    """An output dir from a run that produced none of these is not an error."""
+def test_an_empty_directory_is_an_error_that_says_so(tmp_path):
+    """This used to succeed silently, which tells a user staring at an empty
+    plots folder nothing at all. An empty run directory means either the run did
+    not happen or the script is pointed at the wrong place, and both are worth
+    saying."""
     pytest.importorskip("matplotlib")
     (tmp_path / "output").mkdir(parents=True)
     result = _run(_write_script(tmp_path))
-    assert result.returncode == 0, result.stderr
-    assert not list((tmp_path / "output").glob("*.png"))
+    assert result.returncode != 0
+    combined = result.stdout + result.stderr
+    assert "Nothing to plot" in combined
+    assert "--output-dir" in combined
+
+
+@pytest.mark.integration
+def test_partial_data_plots_what_it_can_without_complaining(tmp_path):
+    """A run that produced a cost history but no simulation is not an error --
+    it is a calibration. Only *nothing* is a problem."""
+    pytest.importorskip("matplotlib")
+    out = tmp_path / "output"
+    out.mkdir(parents=True)
+    (out / "best_cost_history.csv").write_text("cost\n1.0\n0.4\n")
+
+    result = _run(_write_script(tmp_path))
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (out / "pyscript_plots" / "progress_cost.png").is_file()
+    assert not (out / "pyscript_plots" / "output_plot_exp0.png").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -273,3 +299,77 @@ def test_the_rendered_script_has_no_characters_that_need_a_declaration():
     reaches disk really is UTF-8. This pins the pairing."""
     text = export_pipeline.render_plotting_script()
     assert text.encode("utf-8").decode("utf-8") == text
+
+
+# ---------------------------------------------------------------------------
+# Finding the run data, and where the plots go
+# ---------------------------------------------------------------------------
+def test_it_plots_a_cuflynx_run_directory_it_was_dropped_into(tmp_path):
+    """The reported failure. CUFLynx writes this script into the outputs
+    directory the user chose, where circulatory_autogen's run data sits in its
+    own `<method>_<model>_<hash>_obs_data/` folder and there is no `output/` at
+    all -- so a perfectly good calibration was met with "run run_pipeline.py
+    first".
+    """
+    run_dir = tmp_path / "genetic_algorithm_Model_abc_obs_data"
+    run_dir.mkdir()
+    (run_dir / "best_cost_history.csv").write_text("cost\n1.0\n0.5\n0.2\n")
+
+    result = _run(_write_script(tmp_path))
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (tmp_path / "pyscript_plots" / "progress_cost.png").is_file()
+
+
+def test_output_beside_the_script_still_wins(tmp_path):
+    """An exported pipeline writes into `output/`, and that layout must keep
+    working exactly as it did."""
+    _sim(tmp_path / "output", TRACES)
+    result = _run(_write_script(tmp_path))
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (tmp_path / "output" / "pyscript_plots").is_dir()
+    assert not (tmp_path / "pyscript_plots").exists()
+
+
+def test_a_run_directory_can_be_named_on_the_command_line(tmp_path):
+    script = _write_script(tmp_path)
+    elsewhere = tmp_path / "some_run"
+    _sim(elsewhere, TRACES)
+
+    result = subprocess.run(
+        [sys.executable, str(script), "--output-dir", str(elsewhere)],
+        capture_output=True, text=True, timeout=180,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert list((elsewhere / "pyscript_plots").glob("*.png"))
+
+
+def test_a_run_directory_can_come_from_the_environment(tmp_path):
+    script = _write_script(tmp_path)
+    elsewhere = tmp_path / "some_run"
+    _sim(elsewhere, TRACES)
+
+    env = {**os.environ, "CUFLYNX_OUTPUT_DIR": str(elsewhere)}
+    result = subprocess.run(
+        [sys.executable, str(script)], capture_output=True, text=True, timeout=180, env=env
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert list((elsewhere / "pyscript_plots").glob("*.png"))
+
+
+def test_the_plots_do_not_land_among_the_data(tmp_path):
+    """A directory of results should not gradually become a directory of results
+    and pictures of results."""
+    out = tmp_path / "output"
+    _sim(out, TRACES)
+    _run(_write_script(tmp_path))
+    assert not list(out.glob("*.png")), "plots were written beside the data"
+    assert list((out / "pyscript_plots").glob("*.png"))
+
+
+def test_the_refusal_says_how_to_point_it_somewhere(tmp_path):
+    """There is nowhere to look, so the message has to offer the way out rather
+    than only naming the directory that is missing."""
+    result = _run(_write_script(_mkdir(tmp_path / "empty")))
+    assert result.returncode != 0
+    combined = result.stdout + result.stderr
+    assert "--output-dir" in combined

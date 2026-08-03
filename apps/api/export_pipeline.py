@@ -399,15 +399,46 @@ Reproduces:
                      (output/best_cost_history.csv, best_param_vals_history.csv)
   - analysis plots : sensitivity heatmap and/or UQ posteriors (output/results.json)
 
-Writes PNGs next to the data. Usage: python plot_outputs.py
+Writes PNGs into a `pyscript_plots/` folder beside the data.
+
+Usage:
+    python plot_outputs.py                        # output/ beside this script,
+                                                  # or this script's own folder
+    python plot_outputs.py --output-dir <dir>     # a specific run directory
+    CUFLYNX_OUTPUT_DIR=<dir> python plot_outputs.py
 """
 import csv
 import glob
 import json
 import os
+import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-OUT = os.path.join(HERE, "output")
+
+
+def _default_out():
+    """Where to look for run data, when nobody says.
+
+    Two layouts reach this script. run_pipeline.py writes into `output/` beside
+    it, so that is preferred. But CUFLynx also drops this script straight into
+    the outputs directory the user chose in the app, where the run data is in
+    circulatory_autogen's own `<method>_<model>_<hash>_obs_data/` folders and
+    there is no `output/` at all -- which used to fail with "run run_pipeline.py
+    first" after a perfectly good calibration.
+    """
+    from_env = os.environ.get("CUFLYNX_OUTPUT_DIR")
+    if from_env:
+        return from_env
+    beside = os.path.join(HERE, "output")
+    return beside if os.path.isdir(beside) else HERE
+
+
+OUT = _default_out()
+# Plots are written here rather than among the data, so a directory holding one
+# run's results does not gradually become a directory holding results and
+# pictures of results.
+PLOTS_DIRNAME = "pyscript_plots"
+PLOTS = os.path.join(OUT, PLOTS_DIRNAME)
 
 # matplotlib and numpy are imported in main(), after the checks there -- not at
 # module level. Running this script before run_pipeline.py, or from the wrong
@@ -478,7 +509,7 @@ def _plot_panels(t, outputs, stem, title_suffix=""):
         for j in range(len(chunk), rows * PANEL_COLS):
             axes[j // PANEL_COLS][j % PANEL_COLS].axis("off")
         suffix = f"{title_suffix}" + (f"_p{page + 1}" if pages > 1 else "")
-        out_path = os.path.join(OUT, f"{stem}{suffix}.png")
+        out_path = os.path.join(PLOTS, f"{stem}{suffix}.png")
         fig.tight_layout()
         fig.savefig(out_path, dpi=150)
         plt.close(fig)
@@ -564,7 +595,7 @@ def plot_progress():
         ax.set_ylabel("cost")
         ax.set_title("Cost vs generation")
         fig.tight_layout()
-        fig.savefig(os.path.join(OUT, "progress_cost.png"), dpi=150)
+        fig.savefig(os.path.join(PLOTS, "progress_cost.png"), dpi=150)
         plt.close(fig)
 
     params, names = _read_param_history()
@@ -578,7 +609,7 @@ def plot_progress():
         ax.set_title("Parameters vs generation")
         ax.legend(fontsize=6)
         fig.tight_layout()
-        fig.savefig(os.path.join(OUT, "progress_params.png"), dpi=150)
+        fig.savefig(os.path.join(PLOTS, "progress_params.png"), dpi=150)
         plt.close(fig)
 
 
@@ -605,7 +636,7 @@ def plot_analysis():
         ax.set_title(f"Sensitivity ({kind})")
         fig.colorbar(im, ax=ax)
         fig.tight_layout()
-        fig.savefig(os.path.join(OUT, "analysis_sensitivity.png"), dpi=150)
+        fig.savefig(os.path.join(PLOTS, "analysis_sensitivity.png"), dpi=150)
         plt.close(fig)
     # UQ posteriors (params: [{qname, mean, std, q05, q95, bins, counts}]).
     uq_params = res.get("params") if isinstance(res.get("params"), list) else None
@@ -621,14 +652,54 @@ def plot_analysis():
             ax.axvline(p["mean"], color=PALETTE[5])
             ax.set_title(p.get("qname", f"param {i}"), fontsize=7)
         fig.tight_layout()
-        fig.savefig(os.path.join(OUT, "analysis_uq.png"), dpi=150)
+        fig.savefig(os.path.join(PLOTS, "analysis_uq.png"), dpi=150)
         plt.close(fig)
 
 
+# What this script can draw, and therefore what it looks for before claiming
+# there is nothing to do.
+INPUTS = (
+    "simulation.json",
+    "best_cost_history.csv",
+    "best_param_vals_history.csv",
+    "results.json",
+)
+
+
+def _nothing_to_plot():
+    """The inputs, if none of them are anywhere under OUT; else an empty list."""
+    if any(_find(name) for name in INPUTS):
+        return []
+    return list(INPUTS)
+
+
 def main():
+    global OUT, PLOTS
+    args = [a for a in sys.argv[1:] if not a.startswith("-")]
+    flagged = [a.split("=", 1)[1] for a in sys.argv[1:] if a.startswith("--output-dir=")]
+    if "--output-dir" in sys.argv[1:]:
+        idx = sys.argv[1:].index("--output-dir")
+        flagged += sys.argv[1 + idx + 1 : 1 + idx + 2]
+    chosen = (flagged or args or [None])[0]
+    if chosen:
+        OUT = os.path.abspath(chosen)
+        PLOTS = os.path.join(OUT, PLOTS_DIRNAME)
+
     if not os.path.isdir(OUT):
-        raise SystemExit(f"No output dir at {OUT} — run run_pipeline.py first.")
+        raise SystemExit(f"No such directory: {OUT}")
+    # "Does a directory called output/ exist" used to stand in for "is there
+    # anything to plot". It cannot any more -- the default now falls back to this
+    # script's own folder, which always exists -- and it was the wrong question
+    # anyway: a directory can be there and hold nothing this script can draw.
+    missing = _nothing_to_plot()
+    if missing:
+        raise SystemExit(
+            f"Nothing to plot in {OUT} — found none of {', '.join(missing)}. "
+            f"Run run_pipeline.py first, or point this at a run directory: "
+            f"python plot_outputs.py --output-dir <dir>"
+        )
     _load_plotting_libs()
+    os.makedirs(PLOTS, exist_ok=True)
     # Each section is independent: a malformed results.json should not cost you
     # the simulation plots that rendered perfectly well.
     failures = []
@@ -637,7 +708,7 @@ def main():
             step()
         except Exception as exc:  # noqa: BLE001 - report and carry on
             failures.append(f"{step.__name__}: {exc}")
-    print(f"Plots written to {OUT}")
+    print(f"Plots written to {PLOTS}")
     for failure in failures:
         print(f"WARNING: {failure}")
 

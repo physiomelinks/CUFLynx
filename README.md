@@ -202,6 +202,26 @@ hand-written `data_items` survive. A Myokit protocol usually repeats forever
 while a CUFLynx experiment is a finite list of durations, so it takes `--beats`
 (default 2) or an explicit `--duration`.
 
+## Plots from the exported script
+
+`plot_outputs.py` regenerates the app's plots from a run's data, and writes them
+into a **`pyscript_plots/`** folder so a directory of results does not gradually
+become a directory of results and pictures of results.
+
+It finds the data on its own: `output/` beside the script when an exported
+pipeline made one, otherwise the script's own folder — which is where CUFLynx
+puts it, alongside circulatory_autogen's run directories. So after a calibration
+or sensitivity run in the app, **Export plotting script** then
+`python plot_outputs.py` just works.
+
+```bash
+python plot_outputs.py                       # find the data automatically
+python plot_outputs.py --output-dir <dir>    # a specific run directory
+```
+
+Sensitivity plots drawn by the app itself land in **`SA_plots/`** inside the run
+directory, for the same reason.
+
 ## Build the desktop app yourself
 
 ```bash
