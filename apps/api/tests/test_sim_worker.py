@@ -532,3 +532,57 @@ def test_a_native_write_to_the_descriptor_cannot_reach_the_wire():
     assert "REPLY" in proc.stdout, proc.stderr
     assert "BANNER" not in proc.stdout  # the wire stayed clean
     assert "BANNER" in proc.stderr  # and the banner was not simply lost
+
+
+# ---------------------------------------------------------------------------
+# The fallback is about *this* process, so it must not apply to the worker
+# ---------------------------------------------------------------------------
+def test_the_configured_backend_survives_when_a_worker_will_run_it(monkeypatch):
+    """`live_backend` swaps to a format this process can import. With a worker
+    that is the wrong question -- the model runs in the chosen interpreter, and
+    the swap also reaches resolve_model_path, which then generates a model for a
+    format the worker was not configured to read.
+
+    That is how selecting aadc_python produced "'NoneType' object has no
+    attribute 'loader'": a .cellml path handed to a helper that imports Python.
+    """
+    eng = engine_mod.SimulationEngine()
+    eng.model_type, eng.solver = "aadc_python", "aadc_semi_implicit"
+    eng.worker_python = "/some/venv/bin/python"
+    monkeypatch.setattr(engine_mod, "_interpreter_prefix", lambda _p: "/some/venv")
+    # cellml_only IS importable here: with nothing importable the fallback loop
+    # falls through to the configured choice anyway, and the test would pass
+    # with or without the fix. A live fallback is what makes it discriminating.
+    monkeypatch.setattr(
+        engine_mod, "backend_importable", lambda fmt: fmt == "cellml_only"
+    )
+
+    assert eng.live_backend() == ("aadc_python", "aadc_semi_implicit", None)
+
+
+def test_without_a_worker_the_fallback_still_applies(monkeypatch):
+    """In-process, what this interpreter can import is exactly the question."""
+    eng = engine_mod.SimulationEngine()
+    eng.model_type, eng.solver = "aadc_python", "aadc_semi_implicit"
+    eng.worker_python = None
+    monkeypatch.setattr(
+        engine_mod, "backend_importable", lambda fmt: fmt == "cellml_only"
+    )
+
+    model_type, solver, fell_back = eng.live_backend()
+    assert (model_type, solver) == ("cellml_only", "CVODE_myokit")
+    assert fell_back == "aadc_python"
+
+
+def test_the_same_interpreter_is_not_a_worker(monkeypatch):
+    """Choosing the environment already running changes nothing importable, so
+    the fallback is still the right answer."""
+    eng = engine_mod.SimulationEngine()
+    eng.model_type, eng.solver = "aadc_python", "aadc_semi_implicit"
+    eng.worker_python = sys.executable
+    monkeypatch.setattr(engine_mod, "_interpreter_prefix", lambda _p: sys.prefix)
+    monkeypatch.setattr(
+        engine_mod, "backend_importable", lambda fmt: fmt == "cellml_only"
+    )
+
+    assert eng.live_backend()[0] == "cellml_only"
