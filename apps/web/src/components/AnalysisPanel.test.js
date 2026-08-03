@@ -236,7 +236,7 @@ describe('AnalysisPanel comparison (#159 follow-up)', () => {
     items: [{ label: 'u', percent_error: 0.9, std_error: 0.09 }],
   }
 
-  it('keeps the calibration charts when the comparison is turned on', async () => {
+  it('replaces the calibration charts rather than adding below them', async () => {
     const w = mount(AnalysisPanel, {
       props: {
         percentError: [1.2],
@@ -248,9 +248,27 @@ describe('AnalysisPanel comparison (#159 follow-up)', () => {
     })
     expect(w.find('[data-testid="percent-error-chart"]').exists()).toBe(true)
     await w.find('[data-testid="compare-costs"]').setValue(true)
-    // Both: the calibration's own errors, and the comparison beside them.
-    expect(w.find('[data-testid="percent-error-chart"]').exists()).toBe(true)
+    // The comparison already carries the best fit as its second series, so
+    // keeping the originals below would plot the same numbers twice.
     expect(w.find('[data-testid="compare-percent-chart"]').exists()).toBe(true)
+    expect(w.find('[data-testid="percent-error-chart"]').exists()).toBe(false)
+  })
+
+  it('goes back to the best-fit bars alone when unticked', async () => {
+    const w = mount(AnalysisPanel, {
+      props: {
+        percentError: [1.2],
+        stdError: [0.12],
+        errorLabels: ['u'],
+        currentCost: CURRENT,
+        baselineCost: BASELINE,
+      },
+    })
+    const box = w.find('[data-testid="compare-costs"]')
+    await box.setValue(true)
+    await box.setValue(false)
+    expect(w.find('[data-testid="percent-error-chart"]').exists()).toBe(true)
+    expect(w.find('[data-testid="compare-percent-chart"]').exists()).toBe(false)
   })
 
   it('shows the best fit as a number, not a dash', () => {
