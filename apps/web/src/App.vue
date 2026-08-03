@@ -517,6 +517,61 @@ const modelUnits = computed(() => model.variables.value.units ?? {})
 // The unit the model declares for its time variable, when it declares one. A
 // Myokit .mmt with a bare `time = 0 bind time` declares none, and a CellML
 // converted from it reports `dimensionless` — so this is often empty (#27).
+// Issue #159: the cost of whatever the sliders currently say, computed by the
+// backend from the run it already did. null when it cannot be known -- no
+// obs_data, no CA -- which must not read as a perfect fit of zero.
+const currentCost = computed(() => sim.result.value?.cost ?? null)
+// A snapshot to compare against: the calibration best fit if there is one, else
+// whatever the user pinned. The comparison is the point -- a cost alone says
+// little, a cost next to the one you started from says whether you are winning.
+const costBaseline = ref(null)
+const compareCosts = ref(false)
+
+// A cost spans orders of magnitude between models, so a fixed number of decimal
+// places is either noise or nothing. Significant figures read the same either way.
+function formatCost(value) {
+  if (value == null || !Number.isFinite(value)) return '—'
+  const abs = Math.abs(value)
+  if (abs !== 0 && (abs < 1e-3 || abs >= 1e5)) return value.toExponential(3)
+  return value.toPrecision(4).replace(/\.?0+$/, '')
+}
+
+// How many observables actually contributed. An unscored one -- an operand the
+// run did not record, an operation that returns a series -- is not a zero, and
+// saying "6 of 8" is the difference between a cost and a misleading one.
+function scoredCount(cost) {
+  return (cost?.items ?? []).filter((i) => i.cost != null).length
+}
+
+function pinCurrentCost() {
+  costBaseline.value = currentCost.value
+    ? { ...currentCost.value, label: 'pinned parameters' }
+    : null
+}
+
+// The calibration's own error vectors, offered as the baseline once a run has
+// produced them, so "current vs best fit" needs no extra simulation. Reads the
+// composable's refs rather than a result object -- that is the shape the
+// Analysis panel is already given.
+const bestFitBaseline = computed(() => {
+  const labels = calib.errorLabels.value ?? []
+  const percent = calib.percentError.value
+  if (!percent?.length) return null
+  return {
+    label: 'calibration best fit',
+    cost: null,
+    items: labels.map((label, i) => ({
+      label,
+      percent_error: percent[i] ?? null,
+      std_error: calib.stdError.value?.[i] ?? null,
+    })),
+  }
+})
+
+// The baseline the Analysis tab compares against: whatever was pinned, else the
+// best fit if a calibration has produced one.
+const activeBaseline = computed(() => costBaseline.value ?? bestFitBaseline.value)
+
 const modelTimeUnit = computed(() => timeUnit(modelUnits.value))
 // User-supplied time unit, for a model that does not state its own. Persisted,
 // because it is a property of the model the user is working on rather than a
@@ -1665,6 +1720,32 @@ watch(
         >
           {{ sim.warnings.value.join(' ') }}
         </Message>
+        <!--
+          The cost of the current parameters, where the parameters are being
+          changed (#159). Manual exploration had a picture and no number: you
+          moved a slider, the trace moved, and whether it moved *towards* the
+          data was left to the eye.
+        -->
+        <div
+          v-if="centerTab === 'plots' && currentCost"
+          class="cost-line"
+          data-testid="cost-line"
+        >
+          <span class="cost-label">cost</span>
+          <span class="cost-value" data-testid="cost-value">{{ formatCost(currentCost.cost) }}</span>
+          <span class="cost-note">
+            {{ scoredCount(currentCost) }} of {{ currentCost.items.length }} observables
+          </span>
+          <button
+            type="button"
+            class="cost-pin"
+            data-testid="cost-pin"
+            title="remember these parameters, to compare against in the Analysis tab"
+            @click="pinCurrentCost"
+          >
+            pin
+          </button>
+        </div>
         <div
           v-show="centerTab === 'plots'"
           class="plot-groups"
@@ -1748,6 +1829,8 @@ watch(
             :percent-error="calib.percentError.value"
             :std-error="calib.stdError.value"
             :error-labels="calib.errorLabels.value"
+            :current-cost="currentCost"
+            :baseline-cost="activeBaseline"
             :uq-params="uq.params.value"
             :uq-method="uq.method.value"
             @select-result="sa.selectResult"
@@ -2536,5 +2619,48 @@ watch(
 }
 .rhs-divider.collapsed .rhs-grip {
   height: 26px;
+}
+
+/* The cost line above the plots (#159): quiet, but the first thing on the panel
+   where parameters are being changed. */
+.cost-line {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  padding: 0.3rem 0.55rem;
+  margin-bottom: 0.4rem;
+  border: 1px solid var(--p-content-border-color, #d5d5d5);
+  border-radius: 4px;
+  background: var(--p-content-background, #fff);
+  font-size: 0.85rem;
+}
+.cost-label {
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 0.68rem;
+  opacity: 0.7;
+}
+.cost-value {
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  font-size: 1rem;
+}
+.cost-note {
+  opacity: 0.65;
+  font-size: 0.75rem;
+}
+.cost-pin {
+  margin-left: auto;
+  font: inherit;
+  font-size: 0.75rem;
+  padding: 0.05rem 0.45rem;
+  cursor: pointer;
+  border: 1px solid var(--p-content-border-color, #d5d5d5);
+  border-radius: 3px;
+  background: transparent;
+  color: inherit;
+}
+.cost-pin:hover {
+  background: var(--p-highlight-background, #eef3fb);
 }
 </style>

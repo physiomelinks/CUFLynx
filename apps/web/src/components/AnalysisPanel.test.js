@@ -135,3 +135,89 @@ describe('AnalysisPanel nominal (local SA)', () => {
     expect(wrapper.find('[data-testid="nominal-row"]').exists()).toBe(false)
   })
 })
+
+
+// Issue #159: manual exploration had a picture and no number. The cost of the
+// current parameters belongs where fit is judged, and next to the best fit so
+// "am I winning" is answerable.
+describe('AnalysisPanel cost (#159)', () => {
+  const CURRENT = {
+    cost: 1363.2,
+    items: [
+      { label: 'u_{AR}', percent_error: 5.4, std_error: 0.54, cost: 900 },
+      { label: 'v_{AR}', percent_error: -2.9, std_error: -0.29, cost: 463.2 },
+    ],
+  }
+  const BASELINE = {
+    label: 'calibration best fit',
+    cost: 12.5,
+    items: [
+      { label: 'u_{AR}', percent_error: 0.9, std_error: 0.09 },
+      { label: 'v_{AR}', percent_error: -0.4, std_error: -0.04 },
+    ],
+  }
+
+  const mountIt = (props = {}) => mount(AnalysisPanel, { props: { ...props } })
+
+  it('shows the current cost even with no calibration to compare against', () => {
+    const w = mountIt({ currentCost: CURRENT })
+    expect(w.find('[data-testid="analysis-cost-current"]').text()).toBe('1363')
+  })
+
+  it('shows the baseline beside it once there is one', () => {
+    const w = mountIt({ currentCost: CURRENT, baselineCost: BASELINE })
+    expect(w.find('[data-testid="analysis-cost-baseline"]').text()).toBe('12.5')
+    expect(w.text()).toContain('calibration best fit')
+  })
+
+  it('offers no comparison when there is nothing to compare with', () => {
+    const w = mountIt({ currentCost: CURRENT })
+    expect(w.find('[data-testid="compare-costs"]').exists()).toBe(false)
+  })
+
+  it('keeps the comparison charts off until asked', () => {
+    const w = mountIt({ currentCost: CURRENT, baselineCost: BASELINE })
+    expect(w.find('[data-testid="compare-percent-chart"]').exists()).toBe(false)
+  })
+
+  it('draws both series once the box is ticked', async () => {
+    const w = mountIt({ currentCost: CURRENT, baselineCost: BASELINE })
+    await w.find('[data-testid="compare-costs"]').setValue(true)
+    const rows = w.findAll('[data-testid="compare-percent-chart"] .bar-row')
+    expect(rows).toHaveLength(2)
+    // Two fills per row: the current parameters and the baseline.
+    expect(rows[0].findAll('.bar-fill')).toHaveLength(2)
+  })
+
+  it('gives the two series different colours, since they must be told apart', async () => {
+    const w = mountIt({ currentCost: CURRENT, baselineCost: BASELINE })
+    await w.find('[data-testid="compare-costs"]').setValue(true)
+    const fills = w.findAll('[data-testid="compare-percent-chart"] .bar-fill')
+    expect(fills[0].attributes('style')).not.toBe(fills[1].attributes('style'))
+  })
+
+  it('says nothing rather than zero when the cost is unknown', () => {
+    const w = mountIt({ currentCost: { cost: null, items: [{ label: 'x', percent_error: 1 }] } })
+    expect(w.find('[data-testid="analysis-cost-current"]').text()).toBe('—')
+  })
+
+  it('shows a cost spanning orders of magnitude without losing it to rounding', () => {
+    const w = mountIt({ currentCost: { cost: 0.000123, items: CURRENT.items } })
+    expect(w.find('[data-testid="analysis-cost-current"]').text()).toContain('e-4')
+  })
+
+  it('skips an observable that could not be scored rather than drawing it at zero', async () => {
+    const w = mountIt({
+      currentCost: {
+        cost: 5,
+        items: [
+          { label: 'a', percent_error: 5, cost: 5 },
+          { label: 'b', percent_error: null, cost: null },
+        ],
+      },
+      baselineCost: BASELINE,
+    })
+    await w.find('[data-testid="compare-costs"]').setValue(true)
+    expect(w.findAll('[data-testid="compare-percent-chart"] .bar-row')).toHaveLength(1)
+  })
+})

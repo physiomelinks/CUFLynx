@@ -58,6 +58,7 @@ import export_pipeline
 from model_codegen import resolve_model_path, reset_cache as reset_codegen
 from obs_data import ObsData, ObsDataError, parse_obs_data
 from obs_options import get_obs_data_options, reset_cache as reset_obs_options
+import obs_cost
 from obs_series import compute_output_series
 from params_for_id import ParamsForIdError, parse_params_for_id
 import saved_runs
@@ -785,6 +786,23 @@ def get_example_model(name: str) -> FileResponse:
     return FileResponse(path, media_type="application/xml", filename=filename)
 
 
+def _with_obs_operands(outputs: list[str], record) -> list[str]:
+    """``outputs`` plus every operand the loaded obs_data scores on."""
+    obs = getattr(record, "obs_data", None)
+    if obs is None:
+        return outputs
+    wanted = list(outputs)
+    seen = set(wanted)
+    for item in obs.data_items:
+        if not isinstance(item, dict):
+            continue
+        for operand in item.get("operands") or []:
+            if operand not in seen:
+                seen.add(operand)
+                wanted.append(operand)
+    return wanted
+
+
 def _protocol_from_mmt(data: bytes, filename: str, out_dir: str) -> dict:
     """The .mmt's ``[[protocol]]`` as an obs_data document, ready to adopt.
 
@@ -1129,6 +1147,11 @@ def simulate(req: SimulateRequest) -> dict:
         result["output_series"] = compute_output_series(
             record.obs_data.data_items, result.get("outputs", {}), output_dir
         )
+        result["cost"] = obs_cost.evaluate(
+            record.obs_data.data_items,
+            {0: {**result.get("outputs", {}), "time": result.get("time", [])}},
+            output_dir,
+        )
     return result
 
 
@@ -1147,6 +1170,11 @@ def protocol_run(req: ProtocolRunRequest) -> dict:
         )
 
     outputs = req.outputs or (record.meta.odes + record.meta.algebraic)
+    # Every operand an obs_data item scores on, so the cost is over all of them
+    # and not only the ones that happen to be plotted (#159). Asking for a few
+    # extra series is cheap; a cost that silently omits half the observables
+    # looks like a better fit than it is.
+    outputs = _with_obs_operands(outputs, record)
     try:
         live_type, _live_solver, _fell_back = engine.live_backend()
         model_path = resolve_model_path(str(record.path), live_type, model_id=req.model_id)
@@ -1185,6 +1213,20 @@ def protocol_run(req: ProtocolRunRequest) -> dict:
                 [it for _, it in scoped], exp.get("outputs", {}), output_dir
             )
             exp["output_series"] = {scoped[k][0]: v for k, v in local.items()}
+        # What these parameters cost against the loaded data (#159). From this
+        # run, not another: scoring a slider move must not double the work it
+        # already took to draw it.
+        # `time` is an operand of any windowed or peak-timing operation, and it
+        # is returned beside the outputs rather than in them -- so it is folded
+        # in here, or every such observable goes unscored.
+        result["cost"] = obs_cost.evaluate(
+            items,
+            {
+                e: {**exp.get("outputs", {}), "time": exp.get("time", [])}
+                for e, exp in enumerate(result.get("experiments", []))
+            },
+            output_dir,
+        )
     return result
 
 

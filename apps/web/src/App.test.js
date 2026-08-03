@@ -1229,3 +1229,38 @@ describe('App.vue time controls', () => {
     expect(wrapper.find('[data-testid="time-controls"]').exists()).toBe(true)
   })
 })
+
+// Issue #159: the cost belongs at the top of the panel where the parameters are
+// being changed, not only in the Analysis tab.
+describe('App.vue cost line (#159)', () => {
+  // shallowMount, like every other test here: the cost line is App's own markup,
+  // so the child components are noise.
+  const withCost = async (cost) => {
+    const wrapper = shallowMount(App)
+    await flushPromises()
+    wrapper.vm.sim.result.value = { time: [0, 1], outputs: { 'a/x': [1, 2] }, cost }
+    await nextTick()
+    return wrapper
+  }
+
+  it('shows the cost of the current parameters above the plots', async () => {
+    const wrapper = await withCost({
+      cost: 1363.2,
+      items: [{ label: 'u', cost: 900 }, { label: 'v', cost: 463.2 }],
+    })
+    expect(wrapper.find('[data-testid="cost-value"]').text()).toBe('1363')
+  })
+
+  it('says how many observables it could score, not just the total', async () => {
+    const wrapper = await withCost({
+      cost: 900,
+      items: [{ label: 'u', cost: 900 }, { label: 'v', cost: null }],
+    })
+    expect(wrapper.find('[data-testid="cost-line"]').text()).toContain('1 of 2')
+  })
+
+  it('shows nothing at all when there is no cost to show', async () => {
+    const wrapper = await withCost(null)
+    expect(wrapper.find('[data-testid="cost-line"]').exists()).toBe(false)
+  })
+})
