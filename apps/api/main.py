@@ -516,6 +516,10 @@ class ExportPipelineRequest(BaseModel):
 class ExportPlottingRequest(BaseModel):
     # Where to write plot_outputs.py; blank => the temp uploads dir.
     config_outputs_dir: str = ""
+    # The model whose obs_data names the panels. Optional: without it the script
+    # still works, discovering its panels from the run directory at draw time --
+    # it is just less pleasant to edit, which is the point of naming them.
+    model_id: str | None = None
 
 
 def _export_base_dir(configured: str) -> Path:
@@ -639,7 +643,10 @@ def export_pipeline_route(req: ExportPipelineRequest) -> dict:
             export_pipeline.render_pipeline_script(), encoding="utf-8"
         )
         (export_dir / "plot_outputs.py").write_text(
-            export_pipeline.render_plotting_script(), encoding="utf-8"
+            export_pipeline.render_plotting_script(
+                {"data_items": record.obs_data.data_items} if record.obs_data else None
+            ),
+            encoding="utf-8",
         )
     except OSError as exc:
         raise _fs_error(exc, "write the export to", export_dir, user_dir=user_dir) from exc
@@ -661,9 +668,13 @@ def export_plotting_route(req: ExportPlottingRequest) -> dict:
     from a pipeline's output data)."""
     base = _export_base_dir(req.config_outputs_dir)
     path = base / "plot_outputs.py"
+    obs_doc = None
+    record = _models.get(req.model_id) if req.model_id else None
+    if record is not None and record.obs_data is not None:
+        obs_doc = {"data_items": record.obs_data.data_items}
     try:
         base.mkdir(parents=True, exist_ok=True)
-        path.write_text(export_pipeline.render_plotting_script(), encoding="utf-8")
+        path.write_text(export_pipeline.render_plotting_script(obs_doc), encoding="utf-8")
     except OSError as exc:
         raise _fs_error(
             exc, "write the plotting script to", path,

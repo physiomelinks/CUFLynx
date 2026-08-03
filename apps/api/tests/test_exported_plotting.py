@@ -567,3 +567,131 @@ def test_one_figure_carries_every_target_for_its_series(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
     figures = list((tmp_path / "pyscript_plots").glob("best_fit_exp0*.png"))
     assert len(figures) == 1, [f.name for f in figures]
+
+
+# ---------------------------------------------------------------------------
+# The generated script is meant to be edited
+# ---------------------------------------------------------------------------
+OBS_DOC = {
+    "data_items": [
+        {"operands": ["aortic_root/v"], "operation": "mean", "value": 1e-4,
+         "name_for_plotting": "v_{AR}", "variable": "flow aortic root"},
+        {"operands": ["aortic_root/v"], "operation": "max", "value": 5e-4,
+         "name_for_plotting": "v_{AR}", "variable": "flow aortic root"},
+        {"operands": ["heart/q_lv"], "operation": "max_minus_min", "value": 1.04e-4,
+         "name_for_plotting": "q_{lv}", "variable": "stroke volume"},
+    ]
+}
+
+
+def test_each_panel_is_its_own_named_function():
+    """The point of generating rather than looping: to change one panel you edit
+    one function, instead of understanding the loop that draws all of them."""
+    src = export_pipeline.render_plotting_script(OBS_DOC)
+    assert "def panel_v_AR(ax, t, series):" in src
+    assert "def panel_q_lv(ax, t, series):" in src
+
+
+def test_the_variables_are_written_into_the_panel():
+    """Named, not discovered: the reader can see which series a panel draws
+    without running anything."""
+    src = export_pipeline.render_plotting_script(OBS_DOC)
+    assert "pick(series, 'aortic_root/v')" in src
+    assert "pick(series, 'heart/q_lv')" in src
+
+
+def test_the_targets_are_written_in_with_their_operations():
+    src = export_pipeline.render_plotting_script(OBS_DOC)
+    assert 'label="mean = 0.0001"' in src
+    assert 'label="max = 0.0005"' in src
+    assert 'label="max minus min = 0.000104"' in src
+
+
+def test_the_panels_are_listed_so_one_can_be_dropped():
+    src = export_pipeline.render_plotting_script(OBS_DOC)
+    assert "PANELS = [" in src
+    assert "    panel_v_AR," in src
+
+
+def test_the_observable_description_becomes_the_docstring():
+    """`variable` is the user's own name for the thing; it belongs where someone
+    editing the panel will read it."""
+    src = export_pipeline.render_plotting_script(OBS_DOC)
+    assert "flow aortic root — from aortic_root/v" in src
+
+
+def test_one_function_per_series_not_per_operation():
+    src = export_pipeline.render_plotting_script(OBS_DOC)
+    assert src.count("def panel_") == 2  # v_AR (mean+max) and q_lv
+
+
+def test_a_name_collision_does_not_produce_two_functions_alike():
+    doc = {"data_items": [
+        {"operands": ["a/u"], "operation": "mean", "value": 1, "name_for_plotting": "u"},
+        {"operands": ["b/u"], "operation": "mean", "value": 2, "name_for_plotting": "u"},
+    ]}
+    src = export_pipeline.render_plotting_script(doc)
+    assert "def panel_u(ax, t, series):" in src
+    assert "def panel_u_2(ax, t, series):" in src
+
+
+def test_without_obs_data_it_still_works_and_says_why_there_are_no_panels():
+    src = export_pipeline.render_plotting_script(None)
+    ast.parse(src)
+    assert "PANELS = []" in src
+    assert "No obs_data was available" in src
+
+
+def test_the_generated_script_is_valid_python():
+    ast.parse(export_pipeline.render_plotting_script(OBS_DOC))
+
+
+@pytest.mark.integration
+def test_the_generated_panels_draw_the_same_figure(tmp_path):
+    """Generated or discovered, the figure is the same -- the difference is
+    whether the file can be edited."""
+    pytest.importorskip("matplotlib")
+    import numpy as np
+
+    run = tmp_path / "run"
+    run.mkdir()
+    t = np.linspace(0, 2, 40)
+    np.savez(run / "all_outputs_with_best_param_vals_exp_0.npz",
+             **{"environment.time": t,
+                "aortic_root_module.v": 1e-4 * (1 + np.sin(t)),
+                "heart_module.q_lv": 1e-4 * np.ones_like(t)})
+
+    script = tmp_path / "plot_outputs.py"
+    script.write_text(export_pipeline.render_plotting_script(OBS_DOC), encoding="utf-8")
+    result = _run(script)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (tmp_path / "pyscript_plots" / "best_fit_exp0.png").is_file()
+
+
+@pytest.mark.integration
+def test_dropping_a_panel_drops_it_from_the_figure(tmp_path):
+    """The edit the whole design is for: remove a line from PANELS, get one
+    fewer panel. Checked by file size, which is crude but real -- the figure has
+    to actually change."""
+    pytest.importorskip("matplotlib")
+    import numpy as np
+
+    run = tmp_path / "run"
+    run.mkdir()
+    t = np.linspace(0, 2, 40)
+    np.savez(run / "all_outputs_with_best_param_vals_exp_0.npz",
+             **{"environment.time": t,
+                "aortic_root_module.v": 1e-4 * (1 + np.sin(t)),
+                "heart_module.q_lv": 1e-4 * np.ones_like(t)})
+
+    src = export_pipeline.render_plotting_script(OBS_DOC)
+    (tmp_path / "plot_outputs.py").write_text(src, encoding="utf-8")
+    _run(tmp_path / "plot_outputs.py")
+    both = (tmp_path / "pyscript_plots" / "best_fit_exp0.png").stat().st_size
+
+    edited = src.replace("    panel_q_lv,\n", "")
+    (tmp_path / "plot_outputs.py").write_text(edited, encoding="utf-8")
+    result = _run(tmp_path / "plot_outputs.py")
+    assert result.returncode == 0, result.stdout + result.stderr
+    one = (tmp_path / "pyscript_plots" / "best_fit_exp0.png").stat().st_size
+    assert one != both

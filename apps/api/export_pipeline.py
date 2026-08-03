@@ -444,6 +444,13 @@ OUT = _default_out()
 PLOTS_DIRNAME = "pyscript_plots"
 PLOTS = os.path.join(OUT, PLOTS_DIRNAME)
 
+# --- Style, in one place ---------------------------------------------------
+FIG_W, FIG_H = 5.0, 3.4   # inches per panel
+DPI = 150
+TARGET_COLOUR = "#333333"
+# Dash patterns for the observed-value lines, one per target on a panel.
+TARGET_DASHES = [(4, 2), (1, 1.6), (6, 2, 1, 2), (3, 1, 1, 1), (8, 3)]
+
 # matplotlib and numpy are imported in main(), after the checks there -- not at
 # module level. Running this script before run_pipeline.py, or from the wrong
 # directory, is a far more common mistake than a missing matplotlib, and an
@@ -787,6 +794,31 @@ def _npz_series(path):
     return time, {n: data[n] for n in names if n != time_key}
 
 
+# ===========================================================================
+# THE BEST-FIT PANELS — this is the part to edit
+#
+# One function per panel, generated from your obs_data.json with the variable
+# names filled in. Each is independent and ordinary matplotlib:
+#
+#   * change a colour, a line style, an axis label   -> edit that function
+#   * drop a panel                                   -> remove it from PANELS
+#   * reorder the figure                             -> reorder PANELS
+#   * add your own                                   -> write a function taking
+#                                                       (ax, t, series) and add it
+#
+# `series` is {variable_name: array} straight out of the run's npz, and `pick`
+# finds a variable whichever way it is spelled (obs_data says "aortic_root/v",
+# the npz says "aortic_root_module.v").
+# ===========================================================================
+def pick(series, name):
+    """The array for `name`, or None if this run did not record it."""
+    key = _resolve_name(series, name)
+    return series[key] if key else None
+
+
+# <<PANELS>>
+
+
 def plot_best_fit():
     """One panel per fitted observable, with the observation drawn on it.
 
@@ -806,6 +838,12 @@ def plot_best_fit():
         exp = "".join(c for c in stem.split("exp_")[-1] if c.isdigit()) or "0"
         time, series = _npz_series(path)
 
+        if PANELS:
+            _draw_panel_grid(PANELS, time, series, f"best_fit_exp{exp}")
+            continue
+
+        # No generated panels (exported without an obs_data.json): fall back to
+        # discovering them from whatever obs_data is in the run directory.
         wanted = [o for o in observed if o["experiment"] == int(exp)] or observed
 
         # One panel per distinct series, not per data_item: fitting a trace's
@@ -855,6 +893,28 @@ def plot_best_fit():
         fig.tight_layout()
         fig.savefig(os.path.join(PLOTS, f"best_fit_exp{exp}.png"), dpi=150)
         plt.close(fig)
+
+
+def _draw_panel_grid(panels, t, series, stem):
+    """Lay the panel functions out in a grid and save the figure.
+
+    Deliberately dumb: it arranges axes and calls each function. Everything that
+    decides how a panel *looks* lives in the panel functions above, where it can
+    be edited without reading this.
+    """
+    drawn = list(panels)
+    cols = min(PANEL_COLS, len(drawn))
+    rows = int(np.ceil(len(drawn) / cols))
+    fig, axes = plt.subplots(rows, cols, figsize=(FIG_W * cols, FIG_H * rows), squeeze=False)
+    for ax in axes.flat[len(drawn):]:
+        ax.axis("off")
+    for ax, panel in zip(axes.flat, drawn):
+        panel(ax, t, series)
+    fig.tight_layout()
+    out_path = os.path.join(PLOTS, f"{stem}.png")
+    fig.savefig(out_path, dpi=DPI)
+    plt.close(fig)
+    return out_path
 
 
 def _error_bar_figure(values, labels, title, filename, unit):
@@ -951,6 +1011,118 @@ def render_pipeline_script() -> str:
     return PIPELINE_SCRIPT
 
 
-def render_plotting_script() -> str:
-    """The standalone plotting script (reads the pipeline's output dir)."""
-    return PLOTTING_SCRIPT
+def _identifier(text: str) -> str:
+    """A readable Python identifier from a label like ``v_{AR}``."""
+    cleaned = []
+    for ch in str(text):
+        cleaned.append(ch if (ch.isalnum() or ch == "_") else "_")
+    name = "".join(cleaned).strip("_")
+    while "__" in name:
+        name = name.replace("__", "_")
+    if not name or name[0].isdigit():
+        name = f"panel_{name}" if name else "panel"
+    return name
+
+
+def _panel_functions(obs_data: dict | None) -> str:
+    """Generate one named panel function per fitted series.
+
+    The alternative -- a loop over whatever obs_data happens to be next to the
+    data -- produces a script that works and cannot be edited: to change one
+    panel you have to understand the loop that draws all of them. Here each
+    panel is a few lines of ordinary matplotlib with the variable names already
+    written in, so changing one is changing one.
+    """
+    items = (obs_data or {}).get("data_items") or []
+    if not items:
+        return (
+            "# No obs_data was available when this script was written, so there are\n"
+            "# no generated panels. The best-fit section falls back to discovering\n"
+            "# them from the obs_data.json in the run directory.\n"
+            "PANELS = []"
+        )
+
+    # Group exactly as the drawing code does: one panel per series, with a time
+    # operand ignored, so several operations on one trace share an axes.
+    groups: list[dict] = []
+    index: dict[tuple, dict] = {}
+    for item in items:
+        operands = list(item.get("operands") or [])
+        series = tuple(
+            o for o in operands
+            if str(o).replace("/", ".").split(".")[-1].strip().lower() not in ("time", "t")
+        )
+        variable = series[0] if series else (operands[0] if operands else item.get("variable"))
+        if not variable:
+            continue
+        key = series or (variable,)
+        group = index.get(key)
+        if group is None:
+            group = {
+                "variable": variable,
+                "label": item.get("name_for_plotting") or item.get("variable") or variable,
+                "described": item.get("variable") or "",
+                "targets": [],
+            }
+            index[key] = group
+            groups.append(group)
+        group["targets"].append(item)
+
+    used: set[str] = set()
+    blocks: list[str] = []
+    names: list[str] = []
+    for panel_idx, group in enumerate(groups):
+        name = f"panel_{_identifier(group['label'])}"
+        suffix = 2
+        while name in used:
+            name = f"panel_{_identifier(group['label'])}_{suffix}"
+            suffix += 1
+        used.add(name)
+        names.append(name)
+
+        described = group["described"]
+        title = f"${group['label']}$"
+        lines = [
+            f"def {name}(ax, t, series):",
+            f'    """{described or group["label"]} — from {group["variable"]}."""',
+            f'    y = pick(series, {group["variable"]!r})',
+            "    if y is None:",
+            f'        ax.set_title({title!r} + " (not recorded)")',
+            "        return",
+            f"    ax.plot(t[: len(y)], y[: len(t)], color=PALETTE[{panel_idx % 6}], "
+            f'lw=1.4, label="best fit")',
+        ]
+        for i, target in enumerate(group["targets"]):
+            value = target.get("value")
+            operation = (target.get("operation") or "observed").replace("_", " ")
+            if isinstance(value, (int, float)):
+                lines.append(
+                    f"    ax.axhline({value!r}, color=TARGET_COLOUR, lw=1.1, "
+                    f"dashes=TARGET_DASHES[{i % 5}], "
+                    f'label="{operation} = {value:.4g}")'
+                )
+        lines += [
+            f"    ax.set_title({title!r}, fontsize=10)",
+            '    ax.set_xlabel("time")',
+            "    ax.grid(alpha=0.25)",
+            '    ax.legend(fontsize=7, loc="best")',
+        ]
+        blocks.append("\n".join(lines))
+
+    listing = "\n".join(f"    {n}," for n in names)
+    blocks.append(
+        "# The figure, in order. Comment a line out to drop that panel.\n"
+        f"PANELS = [\n{listing}\n]"
+    )
+    return "\n\n\n".join(blocks)
+
+
+def render_plotting_script(obs_data: dict | None = None) -> str:
+    """The standalone plotting script.
+
+    With an ``obs_data`` document, the best-fit panels are generated as named
+    functions with the variables written in, so the script is something a user
+    edits rather than something they read around. Without one it still works,
+    discovering the panels from the run directory at draw time.
+    """
+    return PLOTTING_SCRIPT.replace("# <<PANELS>>", _panel_functions(obs_data))
