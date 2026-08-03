@@ -311,6 +311,7 @@ def test_the_rendered_script_has_no_characters_that_need_a_declaration():
 # ---------------------------------------------------------------------------
 # Finding the run data, and where the plots go
 # ---------------------------------------------------------------------------
+@pytest.mark.integration
 def test_it_plots_a_cuflynx_run_directory_it_was_dropped_into(tmp_path):
     """The reported failure. CUFLynx writes this script into the outputs
     directory the user chose, where circulatory_autogen's run data sits in its
@@ -318,6 +319,7 @@ def test_it_plots_a_cuflynx_run_directory_it_was_dropped_into(tmp_path):
     all -- so a perfectly good calibration was met with "run run_pipeline.py
     first".
     """
+    pytest.importorskip("matplotlib")
     run_dir = tmp_path / "genetic_algorithm_Model_abc_obs_data"
     run_dir.mkdir()
     (run_dir / "best_cost_history.csv").write_text("cost\n1.0\n0.5\n0.2\n")
@@ -327,9 +329,11 @@ def test_it_plots_a_cuflynx_run_directory_it_was_dropped_into(tmp_path):
     assert (tmp_path / "pyscript_plots" / "progress_cost.png").is_file()
 
 
+@pytest.mark.integration
 def test_output_beside_the_script_still_wins(tmp_path):
     """An exported pipeline writes into `output/`, and that layout must keep
     working exactly as it did."""
+    pytest.importorskip("matplotlib")
     _sim(tmp_path / "output", TRACES)
     result = _run(_write_script(tmp_path))
     assert result.returncode == 0, result.stdout + result.stderr
@@ -337,7 +341,9 @@ def test_output_beside_the_script_still_wins(tmp_path):
     assert not (tmp_path / "pyscript_plots").exists()
 
 
+@pytest.mark.integration
 def test_a_run_directory_can_be_named_on_the_command_line(tmp_path):
+    pytest.importorskip("matplotlib")
     script = _write_script(tmp_path)
     elsewhere = tmp_path / "some_run"
     _sim(elsewhere, TRACES)
@@ -350,7 +356,9 @@ def test_a_run_directory_can_be_named_on_the_command_line(tmp_path):
     assert list((elsewhere / "pyscript_plots").glob("*.png"))
 
 
+@pytest.mark.integration
 def test_a_run_directory_can_come_from_the_environment(tmp_path):
+    pytest.importorskip("matplotlib")
     script = _write_script(tmp_path)
     elsewhere = tmp_path / "some_run"
     _sim(elsewhere, TRACES)
@@ -363,9 +371,11 @@ def test_a_run_directory_can_come_from_the_environment(tmp_path):
     assert list((elsewhere / "pyscript_plots").glob("*.png"))
 
 
+@pytest.mark.integration
 def test_the_plots_do_not_land_among_the_data(tmp_path):
     """A directory of results should not gradually become a directory of results
     and pictures of results."""
+    pytest.importorskip("matplotlib")
     out = tmp_path / "output"
     _sim(out, TRACES)
     _run(_write_script(tmp_path))
