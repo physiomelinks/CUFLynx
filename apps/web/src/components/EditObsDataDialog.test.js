@@ -555,3 +555,47 @@ describe('EditObsDataDialog operand count (#147)', () => {
     expect(wrapper.find('[data-testid="eo-operand-add"]').exists()).toBe(true)
   })
 })
+
+
+// Follow-ups from testing #160: the picker sat behind the fields after it, was
+// a different size from them, and carried a remove button beside every operand.
+describe('EditObsDataDialog operand field (#160)', () => {
+  const OPERANDS = { max: { count: 1, names: ['x'], variadic: false } }
+
+  const mountRow = async () => {
+    getObsDataOptions.mockResolvedValue({
+      ...FETCH,
+      operations: ['', 'max'],
+      operation_operands: OPERANDS,
+    })
+    const wrapper = mountDialog()
+    await flushPromises()
+    await wrapper.find('button[aria-label="details"]').trigger('click')
+    return wrapper
+  }
+
+  it('has no remove button beside the operand', async () => {
+    // It sat between the operand and the next field and made the row read as a
+    // toolbar. Clearing the field removes the operand instead.
+    const wrapper = await mountRow()
+    expect(wrapper.find('[data-testid="eo-operand-remove"]').exists()).toBe(false)
+  })
+
+  it('clears an operand through the picker itself', async () => {
+    const wrapper = await mountRow()
+    await chooseIn(wrapper, 'eo-operand', '—')
+    expect(selectedValue(wrapper, 'eo-operand')).toBe('—')
+  })
+
+  it('draws the list outside the scrolling row list, not clipped by it', async () => {
+    // The data_items list is `overflow-y: auto`, so an absolutely positioned
+    // dropdown is cut off by it as well as painted under the fields that
+    // follow. The list is positioned from the trigger's own rect instead.
+    const wrapper = await mountRow()
+    await wrapper.find('[data-testid="eo-operand"]').trigger('click')
+    const list = wrapper.find('[data-testid="eo-operand-options"]')
+    expect(list.exists()).toBe(true)
+    expect(list.attributes('style')).toContain('left')
+    expect(list.attributes('style')).toContain('top')
+  })
+})

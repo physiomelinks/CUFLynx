@@ -34,6 +34,13 @@ const open = ref(false)
 const query = ref('')
 const highlight = ref(-1)
 const input = ref(null)
+const trigger = ref(null)
+// Where to draw the list. Fixed, not absolute: this widget lives inside a
+// scrolling list of data_items, and an absolutely positioned dropdown is
+// *clipped* by that container's overflow — as well as painting under the
+// fields that follow it. Fixed coordinates escape both, at the cost of having
+// to measure the trigger when the list opens.
+const anchor = ref({ left: 0, top: 0, width: 0 })
 
 const label = (value) => (props.labelFor ? props.labelFor(value) : value || props.placeholder)
 
@@ -53,8 +60,15 @@ watch(matches, (list) => {
   if (highlight.value >= list.length) highlight.value = list.length - 1
 })
 
-function show() {
+function measure(el) {
+  const rect = el?.getBoundingClientRect?.()
+  if (!rect) return
+  anchor.value = { left: rect.left, top: rect.bottom, width: rect.width }
+}
+
+function show(event) {
   if (props.disabled) return
+  measure(event?.currentTarget ?? trigger.value)
   open.value = true
   query.value = ''
   highlight.value = -1
@@ -94,6 +108,7 @@ function onKey(event) {
     <!-- Closed: reads as the current value, like the select it replaces. -->
     <button
       v-if="!open"
+      ref="trigger"
       type="button"
       class="ss-value"
       :class="{ 'ss-unset': !modelValue }"
@@ -121,7 +136,12 @@ function onKey(event) {
         mousedown, not click: blur fires first on click and would close the list
         before the selection landed.
       -->
-      <ul v-if="matches.length" class="ss-options" :data-testid="`${testid}-options`">
+      <ul
+        v-if="matches.length"
+        class="ss-options"
+        :style="{ left: `${anchor.left}px`, top: `${anchor.top}px`, minWidth: `${anchor.width}px` }"
+        :data-testid="`${testid}-options`"
+      >
         <li
           v-for="(option, i) in matches"
           :key="option || '(empty)'"
@@ -134,7 +154,12 @@ function onKey(event) {
           {{ label(option) }}
         </li>
       </ul>
-      <p v-else class="ss-empty" :data-testid="`${testid}-empty`">
+      <p
+        v-else
+        class="ss-empty"
+        :style="{ left: `${anchor.left}px`, top: `${anchor.top}px` }"
+        :data-testid="`${testid}-empty`"
+      >
         Nothing matches “{{ query }}”.
       </p>
     </template>
@@ -150,9 +175,11 @@ function onKey(event) {
 .ss-value,
 .ss-search {
   font: inherit;
+  /* No intrinsic size: the host decides, so this sits in a form grid at the
+     same height and width as the inputs beside it. */
   width: 100%;
-  min-width: 6rem;
   max-width: 100%;
+  box-sizing: border-box;
   padding: 0.15rem 0.35rem;
   border: 1px solid var(--p-content-border-color, #ccc);
   border-radius: 3px;
@@ -173,11 +200,8 @@ function onKey(event) {
   cursor: not-allowed;
 }
 .ss-options {
-  position: absolute;
-  z-index: 20;
-  top: 100%;
-  left: 0;
-  min-width: 100%;
+  position: fixed;
+  z-index: 3000;
   max-width: 26rem;
   max-height: 14rem;
   overflow-y: auto;
@@ -201,10 +225,8 @@ function onKey(event) {
   background: var(--p-highlight-background, #e8f0fe);
 }
 .ss-empty {
-  position: absolute;
-  z-index: 20;
-  top: 100%;
-  left: 0;
+  position: fixed;
+  z-index: 3000;
   margin: 0.15rem 0 0;
   padding: 0.2rem 0.45rem;
   font-size: 0.8rem;

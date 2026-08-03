@@ -320,9 +320,6 @@ function syncOperands(row, { growOnly = false } = {}) {
 function addOperand(row) {
   row.operands.push('')
 }
-function removeOperand(row, i) {
-  row.operands.splice(i, 1)
-}
 function addPred() {
   predRows.value.push(newPredRow(0))
 }
@@ -546,17 +543,13 @@ async function onSave() {
                   testid="eo-operand"
                   @update:model-value="onOperandChange(row, oi, $event)"
                 />
-                <!-- Removing one from a fixed-arity operation would just make the
-                     row invalid, so the control is only offered when the count is
-                     genuinely the user's to choose. -->
-                <Button
-                  v-if="!operandsAreFixed(row)"
-                  icon="pi pi-minus"
-                  text
-                  size="small"
-                  data-testid="eo-operand-remove"
-                  @click="removeOperand(row, oi)"
-                />
+                <!--
+                  No remove button beside the field. It sat between the operand
+                  and the next one and made the row read as a toolbar; and it is
+                  no longer needed, because choosing the picker's own empty entry
+                  clears the operand and rowToItem drops empties on save. One
+                  affordance, in the place you are already looking.
+                -->
               </span>
               <Button
                 v-if="!operandsAreFixed(row)"
@@ -830,7 +823,12 @@ async function onSave() {
 .eo-list input,
 .eo-list select,
 .eo-detail input,
-.eo-detail select {
+.eo-detail select,
+/* The operand picker is a SearchableSelect, not an <input>; sized by the same
+   rule as its neighbours so "the same box" is true by construction rather than
+   by two numbers that happen to agree. */
+.eo-detail :deep(.ss-value),
+.eo-detail :deep(.ss-search) {
   width: 100%;
   height: 1.75rem;
   box-sizing: border-box;
@@ -844,7 +842,9 @@ async function onSave() {
 .eo-list input:focus,
 .eo-list select:focus,
 .eo-detail input:focus,
-.eo-detail select:focus {
+.eo-detail select:focus,
+.eo-detail :deep(.ss-value):focus,
+.eo-detail :deep(.ss-search):focus {
   outline: none;
   border-color: var(--p-primary-color, #5b9bd5);
   box-shadow: 0 0 0 2px rgba(91, 155, 213, 0.2);
