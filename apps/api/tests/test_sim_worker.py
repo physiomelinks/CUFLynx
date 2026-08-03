@@ -453,3 +453,82 @@ def test_a_slow_but_answering_worker_is_not_killed(tmp_path, monkeypatch):
         assert worker.alive
     finally:
         worker.stop()
+
+
+# ---------------------------------------------------------------------------
+# Stray output on the wire (issue #175)
+#
+# The child claims fd 1 for the protocol and points sys.stdout at stderr, which
+# stops CA's *Python* prints reaching the wire. It does not stop a native
+# library: AADC writes "AADC LicenseSpring exception encountered: ..." to the
+# descriptor, it landed between the request and the reply, and the run failed
+# with "sent something that is not a reply" while the real reply sat behind it.
+# ---------------------------------------------------------------------------
+def _chatty_worker(tmp_path, monkeypatch, noise: str):
+    """A worker that prints ``noise`` on the wire before every reply."""
+    script = tmp_path / "sim_worker_runner.py"
+    script.write_text(
+        textwrap.dedent(
+            f'''
+            import json, os, sys
+            wire = os.fdopen(os.dup(sys.stdout.fileno()), "w")
+            sys.stdout = sys.stderr
+            for line in sys.stdin:
+                if not line.strip():
+                    continue
+                msg = json.loads(line)
+                if msg.get("op") == "shutdown":
+                    break
+                wire.write({noise!r} + "\\n")
+                wire.write(json.dumps({{
+                    "id": msg.get("id"), "ok": True, "result": {{"ran": True}},
+                }}) + "\\n")
+                wire.flush()
+            '''
+        )
+    )
+    monkeypatch.setattr(sim_worker, "runner_path", lambda name: script)
+    return script
+
+
+def test_a_library_banner_on_the_wire_does_not_lose_the_reply(tmp_path, monkeypatch):
+    _chatty_worker(tmp_path, monkeypatch, "AADC LicenseSpring exception encountered: no seat")
+    worker = SimWorker(sys.executable, SETTINGS)
+    worker.start()  # the configure reply already had to survive the banner
+    try:
+        assert worker.call("ping")["result"] == {"ran": True}
+    finally:
+        worker.stop()
+
+
+def test_stray_output_is_kept_for_diagnosis_rather_than_dropped(tmp_path, monkeypatch):
+    """Skipping it silently would trade one undiagnosable failure for another."""
+    _chatty_worker(tmp_path, monkeypatch, "AADC LicenseSpring exception encountered: no seat")
+    worker = SimWorker(sys.executable, SETTINGS)
+    worker.start()
+    try:
+        worker.call("ping")
+        assert any("LicenseSpring" in line for line in worker._stderr)
+    finally:
+        worker.stop()
+
+
+def test_a_native_write_to_the_descriptor_cannot_reach_the_wire():
+    """The cause rather than the symptom. Reassigning sys.stdout only redirects
+    Python writes; a C library writes to file descriptor 1 and lands on the wire
+    regardless, which is how AADC's banner got in. os.write bypasses Python's
+    stream objects the same way, so it stands in for the native call.
+
+    In a subprocess because the module claims fd 1 at import: importing it here
+    would redirect pytest's own stdout."""
+    api_dir = str(Path(__file__).resolve().parents[1])
+    probe = (
+        "import os, sys; sys.path.insert(0, {!r}); import sim_worker_runner as r; "
+        "os.write(1, b'BANNER\\n'); r._WIRE.write('REPLY\\n'); r._WIRE.flush()"
+    ).format(api_dir)
+    proc = subprocess.run(
+        [sys.executable, "-c", probe], capture_output=True, text=True, timeout=60
+    )
+    assert "REPLY" in proc.stdout, proc.stderr
+    assert "BANNER" not in proc.stdout  # the wire stayed clean
+    assert "BANNER" in proc.stderr  # and the banner was not simply lost

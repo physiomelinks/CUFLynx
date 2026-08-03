@@ -13,10 +13,12 @@ from __future__ import annotations
 
 import contextlib
 import io
+import math
 import os
 import subprocess
 import sys
 import threading
+import warnings as _warnings
 from pathlib import Path
 
 from runtime_paths import is_frozen
@@ -34,6 +36,116 @@ DEFAULT_SOLVER_INFO = {"MaximumStep": 0.001}
 
 class SimulationError(RuntimeError):
     """Raised when the underlying solver fails (maps to HTTP 500)."""
+
+
+# ---------------------------------------------------------------------------
+# Divergence (issue #175)
+# ---------------------------------------------------------------------------
+# A solver that diverges does not always raise or return False. AADC's rk4 on a
+# stiff model walks off to 1e138 and then to NaN, and the helper hands the NaNs
+# back as an ordinary result: the API answered 200 with 1998 of 2001 samples
+# serialised as JSON null, and the user got an empty plot and no reason for it.
+# Whether a run produced numbers is something we can check ourselves, so we do.
+
+
+def nonfinite_counts(outputs: dict) -> dict:
+    """``{variable: (nonfinite, total)}`` for every series with a bad sample."""
+    counts = {}
+    for name, series in (outputs or {}).items():
+        total = len(series or [])
+        if not total:
+            continue
+        bad = sum(1 for v in series if v is None or not math.isfinite(v))
+        if bad:
+            counts[name] = (bad, total)
+    return counts
+
+
+def divergence_report(outputs: dict) -> tuple:
+    """``(fatal, message)`` for a run's outputs; ``(False, "")`` when all finite.
+
+    Fatal only when *nothing* finite came back: a run that diverges partway
+    still shows the user where it went wrong, and truncating it for them would
+    hide that. A wholly non-finite result has nothing to show and must not be
+    reported as a success.
+    """
+    counts = nonfinite_counts(outputs)
+    if not counts:
+        return False, ""
+    named = sorted(outputs or {})
+    total_all = sum(len(outputs[n] or []) for n in named)
+    bad_all = sum(bad for bad, _ in counts.values())
+    every_series = len(counts) == len([n for n in named if outputs[n]])
+    if every_series and bad_all == total_all:
+        return True, (
+            f"the solver returned no finite values — all {total_all} samples of every "
+            f"output are NaN or infinite, so the integration diverged"
+        )
+    worst = ", ".join(
+        f"{name} ({bad} of {total})" for name, (bad, total) in sorted(counts.items())[:4]
+    )
+    more = "" if len(counts) <= 4 else f", and {len(counts) - 4} more"
+    return False, (
+        f"The solver returned NaN or infinite values: {worst}{more}. "
+        "The integration diverged partway; the plotted trace is incomplete."
+    )
+
+
+def _series_of(result: dict) -> dict:
+    """Every series a run produced, whether it was a single run or a protocol.
+
+    A protocol run keeps its outputs per experiment; a diverged experiment is
+    just as unplottable as a diverged single run, so both are checked.
+    """
+    if result.get("outputs") is not None:
+        return result.get("outputs") or {}
+    series = {}
+    for idx, exp in enumerate(result.get("experiments") or []):
+        for name, values in (exp.get("outputs") or {}).items():
+            series[f"{name} (experiment {idx + 1})"] = values
+    return series
+
+
+# The warning categories a solver uses to say something about the run: CA's
+# stiffness check (UserWarning) and numpy's overflow/invalid-value notices
+# (RuntimeWarning), which are the first sign of a diverging integration.
+#
+# Deliberately not every category. A blanket simplefilter("always") also
+# un-ignores DeprecationWarning and ResourceWarning, which are ignored by default
+# for good reason -- an unclosed-file notice from a dependency would land in the
+# user's plot banner next to the reason their model is wrong.
+SOLVER_WARNING_CATEGORIES = (UserWarning, RuntimeWarning)
+
+
+def _force_solver_warnings() -> None:
+    """Show solver warnings whatever filters the environment installed.
+
+    Filters are ambient state: CA sets its own, and the app can be started under
+    PYTHONWARNINGS=ignore. Neither should decide whether the user can be told
+    that their trace is wrong.
+    """
+    for category in SOLVER_WARNING_CATEGORIES:
+        _warnings.simplefilter("always", category)
+
+
+def _warning_texts(caught) -> list:
+    """The distinct warning messages from one run, in the order raised.
+
+    Duplicated as ``sim_worker_runner._warning_texts`` — that file is executed by
+    an external interpreter and cannot import this one. Keep the two in step.
+    """
+    texts: list[str] = []
+    for entry in caught or []:
+        # By category, not by filter. Which warnings are *raised* depends on
+        # ambient state (pytest shows deprecations, a plain run does not), and
+        # what the user is shown must not.
+        category = getattr(entry, "category", None)
+        if not (isinstance(category, type) and issubclass(category, SOLVER_WARNING_CATEGORIES)):
+            continue
+        text = " ".join(str(entry.message).split())
+        if text and text not in texts:
+            texts.append(text)
+    return texts
 
 
 # ---------------------------------------------------------------------------
@@ -508,7 +620,10 @@ class SimulationEngine:
             raise SimulationError(self.failure_message(str(exc), **extra)) from exc
 
         if reply.get("ok"):
-            return {"result": reply.get("result") or {}}
+            return {
+                "result": reply.get("result") or {},
+                "warnings": list(reply.get("warnings") or []),
+            }
         reason = _solver_reason(reply.get("captured") or "") or (reply.get("reason") or "")
         raise SimulationError(self.failure_message(reason, **extra))
 
@@ -539,6 +654,26 @@ class SimulationEngine:
             )
         parts.append(_failure_hint(reason))
         return "\n".join(parts)
+
+    def finish_run(self, result: dict, warned: list, **extra) -> dict:
+        """Attach a run's warnings and refuse a result that is entirely NaN.
+
+        One place for both paths: the worker collects warnings in the child and
+        the in-process path collects them here, but what they *mean* -- and what
+        counts as a run worth returning -- must not differ by which interpreter
+        happened to run it (#175).
+        """
+        messages = list(warned or [])
+        fatal, note = divergence_report(_series_of(result))
+        if fatal:
+            raise SimulationError(self.failure_message(note, **extra))
+        if note:
+            # First: it is the finding about *this* run, and a real one came back
+            # behind six lines of AADC licence notice and stiffness detail.
+            messages.insert(0, note)
+        if messages:
+            result["warnings"] = messages
+        return result
 
     def describe_exception(self, exc: BaseException, captured: str = "", **extra) -> str:
         """Message for a run that raised rather than returning a failure flag.
@@ -581,7 +716,10 @@ class SimulationEngine:
             best_effort_outputs=bool(best_effort_outputs),
         )
         if remote:
-            return remote["result"]
+            return self.finish_run(
+                remote["result"], remote.get("warnings"),
+                sim_time=sim_time, pre_time=pre_time,
+            )
 
         model_type, solver, fell_back = self.live_backend()
         with self._lock:
@@ -613,8 +751,13 @@ class SimulationEngine:
             # only record of *why* is what it printed (issue #138).
             tee = _Tee(sys.stdout)
             try:
-                with contextlib.redirect_stdout(tee):
-                    ok = helper.run()
+                # Warnings are the other half of what CA has to say -- the
+                # stiffness check that names a wrong-looking trace as wrong is a
+                # warning, not a print (#175).
+                with _warnings.catch_warnings(record=True) as caught:
+                    _force_solver_warnings()
+                    with contextlib.redirect_stdout(tee):
+                        ok = helper.run()
             except Exception as exc:  # noqa: BLE001 - re-raised with context below
                 raise SimulationError(
                     self.describe_exception(
@@ -661,7 +804,9 @@ class SimulationEngine:
                 "used": model_type,
                 "solver": solver,
             }
-        return result
+        return self.finish_run(
+            result, _warning_texts(caught), sim_time=sim_time, pre_time=pre_time
+        )
 
     # ------------------------------------------------------------------
     # Multi-experiment protocol
@@ -686,7 +831,10 @@ class SimulationEngine:
             outputs=list(outputs or []),
         )
         if remote:
-            return remote["result"]
+            return self.finish_run(
+                remote["result"], remote.get("warnings"),
+                experiments=_n_experiments(protocol_info),
+            )
 
         model_type, solver, fell_back = self.live_backend()
         with self._lock:
@@ -719,13 +867,16 @@ class SimulationEngine:
             # this reached the browser as a bodyless 500 (issue #138).
             tee = _Tee(sys.stdout)
             try:
-                with contextlib.redirect_stdout(tee):
-                    t_list, res_list, _sim_times = runner.run_protocols(
-                        str(model_path),
-                        protocol_info=protocol_info,
-                        id_param_names=names,
-                        id_param_vals=vals,
-                    )
+                # See simulate(): CA's stiffness check is a warning, not a print.
+                with _warnings.catch_warnings(record=True) as caught:
+                    _force_solver_warnings()
+                    with contextlib.redirect_stdout(tee):
+                        t_list, res_list, _sim_times = runner.run_protocols(
+                            str(model_path),
+                            protocol_info=protocol_info,
+                            id_param_names=names,
+                            id_param_vals=vals,
+                        )
             except Exception as exc:  # noqa: BLE001 - re-raised with context below
                 raise SimulationError(
                     self.describe_exception(
@@ -759,7 +910,9 @@ class SimulationEngine:
                 "used": model_type,
                 "solver": solver,
             }
-        return out
+        return self.finish_run(
+            out, _warning_texts(caught), experiments=_n_experiments(protocol_info)
+        )
 
 
 # Module-level singleton shared by the FastAPI routes.

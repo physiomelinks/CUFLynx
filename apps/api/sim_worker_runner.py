@@ -34,11 +34,24 @@ import json
 import os
 import sys
 import traceback
+import warnings
 
 # stdout is the wire. Anything that writes to it -- CA's own prints, a library's
 # banner -- would corrupt a response, so the real stdout is claimed here and
 # sys.stdout is pointed at stderr for the rest of the process's life.
 _WIRE = os.fdopen(os.dup(sys.stdout.fileno()), "w", encoding="utf-8", newline="\n")
+# Reassigning sys.stdout only redirects *Python* writes. A native library writes
+# to file descriptor 1 directly and lands on the wire regardless -- AADC prints
+# "AADC LicenseSpring exception encountered: ..." that way, and the parent failed
+# the run with "sent something that is not a reply" while the real reply sat
+# behind it in the pipe. Point the descriptor itself at stderr, so there is no
+# route to the wire left except _WIRE.
+try:
+    os.dup2(sys.stderr.fileno(), 1)
+except (OSError, ValueError, AttributeError):
+    # No usable stderr descriptor (an odd embedding, a frozen GUI with no
+    # console). The Python-level redirect below still covers CA's own prints.
+    pass
 sys.stdout = sys.stderr
 
 
@@ -244,6 +257,29 @@ class Worker:
         return {"experiments": experiments}
 
 
+def _warning_texts(caught) -> list:
+    """The distinct warning messages from one run, in the order raised.
+
+    Duplicated as ``engine._warning_texts`` for the in-process path: this file is
+    executed by an *external* interpreter and cannot import the app's modules
+    (same reason as ``_resolve_output_key``). Keep the two in step.
+    """
+    texts: list[str] = []
+    for entry in caught or []:
+        # Only what a solver speaks in -- see engine.SOLVER_WARNING_CATEGORIES.
+        # By category rather than by filter, because which warnings are raised
+        # depends on ambient state and what the user is shown must not.
+        category = getattr(entry, "category", None)
+        if not (isinstance(category, type) and issubclass(category, (UserWarning, RuntimeWarning))):
+            continue
+        # A stiff model raises the same warning on every step; the user needs to
+        # read it once, not several hundred times.
+        text = " ".join(str(entry.message).split())
+        if text and text not in texts:
+            texts.append(text)
+    return texts
+
+
 def _handle(worker, msg):
     op = msg.get("op")
     tee = _Tee(sys.stderr)
@@ -252,12 +288,24 @@ def _handle(worker, msg):
             return {"ok": True, "result": {"pid": os.getpid()}}
         if op == "configure":
             return {"ok": True, "result": worker.configure(msg)}
-        if op == "simulate":
-            result = worker.simulate(msg, tee)
-        elif op == "run_protocol":
-            result = worker.run_protocol(msg, tee)
-        else:
-            return {"ok": False, "reason": f"unknown op {op!r}", "captured": ""}
+        # CA warns about things the run cannot tell you itself -- above all that a
+        # model is too stiff for the chosen integrator, which is the difference
+        # between "this trace is wrong" and "this trace is wrong *and here is why,
+        # and here are two solvers that work*". It reaches the server log and
+        # stopped there; collected here it can reach the user (#175).
+        with warnings.catch_warnings(record=True) as caught:
+            # Only the categories a solver speaks in -- see
+            # engine.SOLVER_WARNING_CATEGORIES, kept in step with this. A blanket
+            # "always" would also surface ResourceWarning/DeprecationWarning noise
+            # from dependencies, in the same banner as the real reason.
+            for category in (UserWarning, RuntimeWarning):
+                warnings.simplefilter("always", category)
+            if op == "simulate":
+                result = worker.simulate(msg, tee)
+            elif op == "run_protocol":
+                result = worker.run_protocol(msg, tee)
+            else:
+                return {"ok": False, "reason": f"unknown op {op!r}", "captured": ""}
     except Exception as exc:  # noqa: BLE001 - every failure owes the parent a reason
         traceback.print_exc(file=sys.stderr)
         return {
@@ -269,7 +317,12 @@ def _handle(worker, msg):
         # The solver reported failure without raising. An empty reason tells the
         # parent to fall back to whatever CA printed.
         return {"ok": False, "reason": "", "captured": tee.getvalue()}
-    return {"ok": True, "result": result, "captured": tee.getvalue()}
+    return {
+        "ok": True,
+        "result": result,
+        "captured": tee.getvalue(),
+        "warnings": _warning_texts(caught),
+    }
 
 
 def main() -> int:

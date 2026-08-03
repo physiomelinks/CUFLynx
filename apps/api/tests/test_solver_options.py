@@ -605,3 +605,87 @@ def test_uq_defaults_route_exposes_ca_mcmc_options(client, monkeypatch):
     so.reset_cache()
     body = client.get("/api/uq/defaults").json()
     assert body["mcmc_options"] == [{"name": "num_steps", "type": "int", "default": 3000}]
+
+
+# ---------------------------------------------------------------------------
+# Methods CA advertises that cannot forward-solve (issue #175)
+#
+# CA's methods_by_solver mixes forward integrators with calibration gradient
+# strategies. 'bdf_tape' and 'bdf_kernel' are the latter: they live in
+# param_id/aadc_backend.py and have no branch in the AADC helper's run(), so
+# choosing one and moving a slider always raised "Unknown AADC solver_info
+# method 'bdf_tape'".
+# ---------------------------------------------------------------------------
+AADC_SCHEMA = {
+    "model_types": ["cellml_only", "aadc_python"],
+    "solvers_by_model_type": {
+        "cellml_only": ["CVODE_myokit"],
+        "aadc_python": ["aadc_semi_implicit"],
+    },
+    "methods_by_solver": {
+        "aadc_semi_implicit": [
+            "bdf_tape", "bdf_kernel", "semi_implicit", "implicit_newton", "rk4",
+        ],
+    },
+    "ad_suitable_methods": {"aadc_semi_implicit": ["bdf_tape", "rk4"]},
+    "default_solver_by_model_type": {"aadc_python": "aadc_semi_implicit"},
+    # The default CA ships is itself one CUFLynx cannot forward-solve here, so
+    # this also covers the substitution.
+    "default_method_by_solver": {"aadc_semi_implicit": "bdf_tape"},
+    # Present so the CA-introspected form builder runs, which is the one that
+    # renders the method dropdown from methods_by_solver.
+    "solver_info_fields_by_solver": {
+        "aadc_semi_implicit": [
+            {"name": "tol", "type": "float", "default": 1e-8},
+            {"name": "threads", "type": "int", "default": 4},
+        ],
+    },
+}
+
+
+def test_a_gradient_strategy_is_not_offered_as_an_integrator():
+    opts = so._build_options(AADC_SCHEMA, {"max": True})
+    methods = opts["methods_by_solver"]["aadc_semi_implicit"]
+    assert "bdf_tape" not in methods and "bdf_kernel" not in methods
+    # Only those two: the rest of CA's list is untouched.
+    assert methods == ["semi_implicit", "implicit_newton", "rk4"]
+
+
+def test_the_withdrawn_methods_leave_the_ad_lists_too():
+    """One list saying a method exists and another saying it is AD-suitable is
+    how a dead setting survives a filter."""
+    opts = so._build_options(AADC_SCHEMA, {"max": True})
+    assert opts["ad_suitable_methods"]["aadc_semi_implicit"] == ["rk4"]
+
+
+def test_a_withdrawn_default_is_replaced_by_one_that_runs():
+    """CA defaults aadc_semi_implicit to a method CUFLynx has just removed;
+    leaving it would make the *default* configuration the broken one."""
+    opts = so._build_options(AADC_SCHEMA, {"max": True})
+    assert opts["default_method_by_solver"]["aadc_semi_implicit"] == "semi_implicit"
+
+
+def test_the_dropdown_and_the_method_list_agree():
+    opts = so._build_options(AADC_SCHEMA, {"max": True})
+    assert (
+        _method_options(opts, "aadc_semi_implicit")
+        == opts["methods_by_solver"]["aadc_semi_implicit"]
+    )
+
+
+def test_only_the_named_solver_is_filtered():
+    """The exclusion is per solver: it must not reach into another solver that
+    happens to have a method of the same name."""
+    assert so.supported_methods("casadi_integrator", ["bdf_tape", "bdf"]) == ["bdf_tape", "bdf"]
+    assert so.supported_methods("aadc_semi_implicit", ["bdf_tape", "rk4"]) == ["rk4"]
+
+
+@BOTH_SCHEMAS
+def test_the_exclusion_does_not_disturb_the_ordinary_schemas(schema):
+    """It can only ever remove a method CA offers -- never rename or add one."""
+    before = {s: list(m) for s, m in schema.get("methods_by_solver", {}).items()}
+    opts = so._build_options(schema, {"max": True})
+    for solver, methods in before.items():
+        if solver in so.UNSUPPORTED_SOLVERS:
+            continue  # dropped wholesale for its own reason (no OpenCOR bundled)
+        assert opts["methods_by_solver"][solver] == methods
