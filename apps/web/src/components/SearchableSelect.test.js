@@ -155,3 +155,38 @@ describe('SearchableSelect', () => {
     expect(w.find('[data-testid="searchable-select-search"]').exists()).toBe(false)
   })
 })
+
+// Found by using it: the list reopened the moment it closed, and opened in
+// places unrelated to the field.
+describe('SearchableSelect opening', () => {
+  it('does not reopen when focus returns after choosing', async () => {
+    const w = mountIt()
+    await open(w)
+    await chooseNode(optionNodes().find((n) => n.textContent.trim() === 'heart/q_lv'))
+    // Choosing hands focus back to the trigger; opening on focus made the list
+    // reappear immediately, so a click read as "nothing happened".
+    await w.find('[data-testid="searchable-select"]').trigger('focus')
+    expect(optionNodes()).toHaveLength(0)
+  })
+
+  it('does not open merely by being tabbed to', async () => {
+    const w = mountIt()
+    await w.find('[data-testid="searchable-select"]').trigger('focus')
+    expect(optionNodes()).toHaveLength(0)
+  })
+
+  it('still opens from the keyboard, since Enter on a button clicks it', async () => {
+    const w = mountIt()
+    await w.find('[data-testid="searchable-select"]').trigger('click')
+    expect(optionNodes().length).toBeGreaterThan(0)
+  })
+
+  it('positions the list from the widget, however it was opened', async () => {
+    // Measured from the component root rather than the click target: the field
+    // sits inside a <label>, so clicking the caption beside it activates the
+    // button with an origin that is not the button.
+    const w = await open(mountIt())
+    const list = document.querySelector('[data-testid="searchable-select-options"]')
+    expect(list.getAttribute('style')).toContain('left')
+  })
+})

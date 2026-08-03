@@ -34,7 +34,7 @@ const open = ref(false)
 const query = ref('')
 const highlight = ref(-1)
 const input = ref(null)
-const trigger = ref(null)
+const root = ref(null)
 // Where to draw the list. Fixed, not absolute: this widget lives inside a
 // scrolling list of data_items, and an absolutely positioned dropdown is
 // *clipped* by that container's overflow — as well as painting under the
@@ -60,15 +60,17 @@ watch(matches, (list) => {
   if (highlight.value >= list.length) highlight.value = list.length - 1
 })
 
-function measure(el) {
-  const rect = el?.getBoundingClientRect?.()
-  if (!rect) return
+function measure() {
+  // The root, not the button: the button is replaced by the search input when
+  // the list opens, so measuring it leaves nothing to re-measure against.
+  const rect = root.value?.getBoundingClientRect?.()
+  if (!rect || (!rect.width && !rect.height)) return
   anchor.value = { left: rect.left, top: rect.bottom, width: rect.width }
 }
 
-function show(event) {
+function show() {
   if (props.disabled) return
-  measure(event?.currentTarget ?? trigger.value)
+  measure()
   open.value = true
   query.value = ''
   highlight.value = -1
@@ -104,11 +106,18 @@ function onKey(event) {
 </script>
 
 <template>
-  <span class="ss" :class="{ 'ss-disabled': disabled }">
-    <!-- Closed: reads as the current value, like the select it replaces. -->
+  <span ref="root" class="ss" :class="{ 'ss-disabled': disabled }">
+    <!--
+      Closed: reads as the current value, like the select it replaces.
+
+      Click only, deliberately not focus. Focus reopened it the instant it
+      closed -- choosing an option or pressing Escape hands focus back to this
+      button, which opened the list again -- and tabbing through the form opened
+      every picker on the way past. Enter and Space on a focused button fire a
+      click, so the keyboard still opens it.
+    -->
     <button
       v-if="!open"
-      ref="trigger"
       type="button"
       class="ss-value"
       :class="{ 'ss-unset': !modelValue }"
@@ -116,7 +125,6 @@ function onKey(event) {
       :title="modelValue || placeholder"
       :data-testid="testid"
       @click="show"
-      @focus="show"
     >
       {{ label(modelValue) }}
     </button>
