@@ -108,7 +108,9 @@ export function rowToItem(row) {
   out.data_type = SCALAR_DATA_TYPE
   out.variable = row.variable
   out.name_for_plotting = row.name_for_plotting || row.variable
-  out.operands = [...(row.operands ?? [])]
+  // Empties dropped: clearing an operand in the editor is how one is removed,
+  // so a blank must not survive into the file as a nameless operand.
+  out.operands = (row.operands ?? []).filter((o) => o)
   out.unit = row.unit
   out.value = num(row.value, 0)
   out.std = num(row.std, 0)

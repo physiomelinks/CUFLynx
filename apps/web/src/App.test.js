@@ -1212,3 +1212,20 @@ describe('App.vue AADC availability (#122)', () => {
     expect(wrapper.vm.aadcNotice).toBe('')
   })
 })
+
+// Follow-up from testing #160: two spinners in the top bar on an empty app.
+describe('App.vue time controls', () => {
+  it('does not offer t1/pre before a model is loaded', async () => {
+    const wrapper = shallowMount(App)
+    await flushPromises()
+    expect(wrapper.find('[data-testid="time-controls"]').exists()).toBe(false)
+  })
+
+  it('offers them once there is a model to run', async () => {
+    const wrapper = shallowMount(App)
+    await flushPromises()
+    wrapper.vm.model.modelId.value = 'abc'
+    await nextTick()
+    expect(wrapper.find('[data-testid="time-controls"]').exists()).toBe(true)
+  })
+})

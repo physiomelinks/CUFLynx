@@ -183,3 +183,17 @@ describe('experimentIdxMax', () => {
     expect(experimentIdxMax(0)).toBe(0)
   })
 })
+
+describe('operands on save (#160)', () => {
+  it('drops an operand that was cleared rather than writing a blank one', () => {
+    // Clearing the field is how an operand is removed in the editor, so a blank
+    // must not survive into the file as a nameless operand.
+    const row = { ...newRow(0), operands: ['a/x', '', 'b/y'] }
+    expect(rowToItem(row).operands).toEqual(['a/x', 'b/y'])
+  })
+
+  it('keeps a fully-filled operand list untouched', () => {
+    const row = { ...newRow(0), operands: ['a/x', 'b/y'] }
+    expect(rowToItem(row).operands).toEqual(['a/x', 'b/y'])
+  })
+})

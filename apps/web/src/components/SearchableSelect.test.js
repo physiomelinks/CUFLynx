@@ -1,0 +1,192 @@
+import { describe, it, expect, afterEach } from 'vitest'
+import { nextTick } from 'vue'
+import { mount } from '@vue/test-utils'
+import SearchableSelect from './SearchableSelect.vue'
+
+// Issue #160: the operand and operation lists are too long to scroll. A model's
+// operand list is every variable it has; scrolling to find `aortic_root/v`
+// among hundreds is the problem, typing three characters is the fix.
+
+const OPTIONS = ['aortic_root/v', 'aortic_root/u', 'heart/q_lv', 'pvn_module/u']
+
+const mountIt = (props = {}) =>
+  mount(SearchableSelect, { props: { options: OPTIONS, ...props } })
+
+const open = async (w) => {
+  await w.find('[data-testid="searchable-select"]').trigger('click')
+  return w
+}
+
+// The list is teleported to <body> so a dialog's transform cannot displace it,
+// which also puts it outside the wrapper -- these read it where it really is.
+const optionNodes = () =>
+  Array.from(document.querySelectorAll('[data-testid="searchable-select-option"]'))
+const optionTexts = () => optionNodes().map((n) => n.textContent.trim())
+const emptyNote = () => document.querySelector('[data-testid="searchable-select-empty"]')
+
+const chooseNode = async (node) => {
+  node.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+  await nextTick()
+}
+
+// Teleported nodes outlive their wrapper, so a leftover list would be found by
+// the next test.
+afterEach(() => {
+  document.body.innerHTML = ''
+})
+
+describe('SearchableSelect', () => {
+  it('shows the current value when closed, like the select it replaces', () => {
+    const w = mountIt({ modelValue: 'heart/q_lv' })
+    expect(w.find('[data-testid="searchable-select"]').text()).toBe('heart/q_lv')
+  })
+
+  it('shows the placeholder when nothing is chosen', () => {
+    expect(mountIt({ modelValue: '' }).find('[data-testid="searchable-select"]').text()).toBe('—')
+  })
+
+  it('lists every option when opened', async () => {
+    const w = await open(mountIt())
+    // The empty choice plus the four real ones.
+    expect(optionTexts()).toHaveLength(OPTIONS.length + 1)
+  })
+
+  it('narrows the list as you type', async () => {
+    const w = await open(mountIt())
+    await w.find('[data-testid="searchable-select-search"]').setValue('aortic')
+    expect(optionTexts()).toEqual(['aortic_root/v', 'aortic_root/u'])
+  })
+
+  it('matches anywhere in the name, not just the start', async () => {
+    // A user thinks in variable names, not in component prefixes.
+    const w = await open(mountIt())
+    await w.find('[data-testid="searchable-select-search"]').setValue('q_lv')
+    expect(optionTexts()).toEqual(['heart/q_lv'])
+  })
+
+  it('ignores case', async () => {
+    const w = await open(mountIt())
+    await w.find('[data-testid="searchable-select-search"]').setValue('HEART')
+    expect(optionTexts()).toEqual(['heart/q_lv'])
+  })
+
+  it('emits the chosen value and closes', async () => {
+    const w = await open(mountIt())
+    await chooseNode(optionNodes().find((n) => n.textContent.trim() === 'heart/q_lv'))
+    expect(w.emitted('update:modelValue')[0]).toEqual(['heart/q_lv'])
+    expect(w.find('[data-testid="searchable-select"]').exists()).toBe(true)
+  })
+
+  it('always offers the empty choice, so a field can be cleared', async () => {
+    const w = await open(mountIt({ modelValue: 'heart/q_lv' }))
+    expect(optionTexts()).toContain('—')
+  })
+
+  it('says so when nothing matches, rather than showing an empty box', async () => {
+    const w = await open(mountIt())
+    await w.find('[data-testid="searchable-select-search"]').setValue('zzz')
+    expect(emptyNote().textContent).toContain('zzz')
+  })
+
+  it('starts each search fresh rather than keeping the last query', async () => {
+    const w = await open(mountIt())
+    await w.find('[data-testid="searchable-select-search"]').setValue('heart')
+    await w.find('[data-testid="searchable-select-search"]').trigger('keydown', { key: 'Enter' })
+    await open(w)
+    expect(optionTexts()).toHaveLength(OPTIONS.length + 1)
+  })
+
+  // Keyboard: the list is navigable without reaching for the mouse.
+  it('takes the highlighted option on Enter', async () => {
+    const w = await open(mountIt())
+    const search = w.find('[data-testid="searchable-select-search"]')
+    await search.setValue('aortic')
+    await search.trigger('keydown', { key: 'ArrowDown' })
+    await search.trigger('keydown', { key: 'Enter' })
+    expect(w.emitted('update:modelValue')[0]).toEqual(['aortic_root/v'])
+  })
+
+  it('takes a single match on Enter without arrowing to it', async () => {
+    const w = await open(mountIt())
+    const search = w.find('[data-testid="searchable-select-search"]')
+    await search.setValue('q_lv')
+    await search.trigger('keydown', { key: 'Enter' })
+    expect(w.emitted('update:modelValue')[0]).toEqual(['heart/q_lv'])
+  })
+
+  it('does not guess when several match and none is highlighted', async () => {
+    const w = await open(mountIt())
+    const search = w.find('[data-testid="searchable-select-search"]')
+    await search.setValue('aortic')
+    await search.trigger('keydown', { key: 'Enter' })
+    expect(w.emitted('update:modelValue')).toBeFalsy()
+  })
+
+  it('closes on Escape without choosing anything', async () => {
+    const w = await open(mountIt({ modelValue: 'heart/q_lv' }))
+    await w.find('[data-testid="searchable-select-search"]').trigger('keydown', { key: 'Escape' })
+    expect(w.emitted('update:modelValue')).toBeFalsy()
+    expect(w.find('[data-testid="searchable-select"]').text()).toBe('heart/q_lv')
+  })
+
+  it('renders labels through labelFor, so a value can read differently', async () => {
+    const w = await open(
+      mountIt({ options: ['', 'max'], labelFor: (v) => v || '(none)' }),
+    )
+    expect(optionTexts()).toContain('(none)')
+  })
+
+  it('lets the caller mark options, e.g. as non-differentiable', async () => {
+    const w = await open(
+      mountIt({ options: ['max', 'spike'], classFor: (v) => (v === 'spike' ? 'flagged' : '') }),
+    )
+    const flagged = optionNodes().find((n) => n.textContent.trim() === 'spike')
+    expect(flagged.className).toContain('flagged')
+  })
+
+  it('uses the caller test id, so two on one row are distinguishable', () => {
+    const w = mountIt({ testid: 'eo-operand' })
+    expect(w.find('[data-testid="eo-operand"]').exists()).toBe(true)
+  })
+
+  it('does not open when disabled', async () => {
+    const w = mountIt({ disabled: true })
+    await w.find('[data-testid="searchable-select"]').trigger('click')
+    expect(w.find('[data-testid="searchable-select-search"]').exists()).toBe(false)
+  })
+})
+
+// Found by using it: the list reopened the moment it closed, and opened in
+// places unrelated to the field.
+describe('SearchableSelect opening', () => {
+  it('does not reopen when focus returns after choosing', async () => {
+    const w = mountIt()
+    await open(w)
+    await chooseNode(optionNodes().find((n) => n.textContent.trim() === 'heart/q_lv'))
+    // Choosing hands focus back to the trigger; opening on focus made the list
+    // reappear immediately, so a click read as "nothing happened".
+    await w.find('[data-testid="searchable-select"]').trigger('focus')
+    expect(optionNodes()).toHaveLength(0)
+  })
+
+  it('does not open merely by being tabbed to', async () => {
+    const w = mountIt()
+    await w.find('[data-testid="searchable-select"]').trigger('focus')
+    expect(optionNodes()).toHaveLength(0)
+  })
+
+  it('still opens from the keyboard, since Enter on a button clicks it', async () => {
+    const w = mountIt()
+    await w.find('[data-testid="searchable-select"]').trigger('click')
+    expect(optionNodes().length).toBeGreaterThan(0)
+  })
+
+  it('positions the list from the widget, however it was opened', async () => {
+    // Measured from the component root rather than the click target: the field
+    // sits inside a <label>, so clicking the caption beside it activates the
+    // button with an origin that is not the button.
+    const w = await open(mountIt())
+    const list = document.querySelector('[data-testid="searchable-select-options"]')
+    expect(list.getAttribute('style')).toContain('left')
+  })
+})
