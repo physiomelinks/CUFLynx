@@ -712,26 +712,6 @@ def _latest_obs_data():
     return None
 
 
-def _observed(doc):
-    """(model_variable, label, value, experiment) for each fitted data_item.
-
-    The operation goes in the label. One variable is commonly fitted several
-    times under different operations -- a pressure's mean, its max and its min
-    are three targets on one trace -- and without it the panels and the bars read
-    as three identical entries with different numbers.
-    """
-    out = []
-    for item in doc.get("data_items", []):
-        operands = item.get("operands") or []
-        variable = operands[0] if operands else item.get("variable")
-        label = item.get("name_for_plotting") or item.get("variable") or variable
-        operation = item.get("operation")
-        if operation:
-            label = f"{label}\\ ({operation.replace('_', chr(92) + '_')})"
-        out.append((variable, label, item.get("value"), int(item.get("experiment_idx", 0) or 0)))
-    return out
-
-
 def _resolve_name(names, wanted):
     """Find `wanted` among npz keys across the naming conventions in play.
 
@@ -756,6 +736,46 @@ def _resolve_name(names, wanted):
         if var in names:
             return var
     return None
+
+
+def _is_time(operand):
+    """Whether an operand names the time axis rather than a fitted series."""
+    tail = str(operand).replace("/", ".").split(".")[-1].strip().lower()
+    return tail in ("time", "t")
+
+
+def _observed(doc):
+    """One entry per fitted data_item, with what to draw and where it belongs.
+
+    ``series`` is the operands with any time operand removed: two data_items that
+    reduce to the same series are two targets on one trace, not two traces. A
+    pressure's mean, max and min are the usual case, and `time_at_max`-style
+    operations add a time operand to the same series -- so time is dropped rather
+    than treated as part of the identity.
+    """
+    out = []
+    for item in doc.get("data_items", []):
+        operands = [o for o in (item.get("operands") or [])]
+        series = tuple(o for o in operands if not _is_time(o))
+        variable = series[0] if series else (operands[0] if operands else item.get("variable"))
+        out.append(
+            {
+                "variable": variable,
+                "series": series or (variable,),
+                "label": item.get("name_for_plotting") or item.get("variable") or variable,
+                "operation": item.get("operation") or "",
+                "value": item.get("value"),
+                "experiment": int(item.get("experiment_idx", 0) or 0),
+            }
+        )
+    return out
+
+
+def _tex(label, operation=""):
+    """A panel/bar label, with the operation kept out of maths mode's way."""
+    if not operation:
+        return f"${label}$"
+    return f"${label}$ ({operation.replace('_', ' ')})"
 
 
 def _npz_series(path):
@@ -786,36 +806,52 @@ def plot_best_fit():
         exp = "".join(c for c in stem.split("exp_")[-1] if c.isdigit()) or "0"
         time, series = _npz_series(path)
 
-        wanted = [o for o in observed if o[3] == int(exp)] or observed
+        wanted = [o for o in observed if o["experiment"] == int(exp)] or observed
+
+        # One panel per distinct series, not per data_item: fitting a trace's
+        # mean and its max is two targets on one curve, and drawing the curve
+        # twice says there are two of them.
         panels = []
-        for variable, label, value, _exp in wanted:
-            key = _resolve_name(series, variable)
+        by_series = {}
+        for item in wanted:
+            key = _resolve_name(series, item["variable"])
             if key is None:
                 continue
-            panels.append((label, series[key], value))
+            if key not in by_series:
+                by_series[key] = {"label": item["label"], "targets": []}
+                panels.append(key)
+            by_series[key]["targets"].append(item)
+
         if not panels:
             # Nothing was fitted, or nothing matched: the traces are still worth
             # having, so fall back to the full set the pagination already handles.
             _plot_panels(time, series, f"best_fit_exp{exp}")
             continue
 
-        rows = int(np.ceil(len(panels) / PANEL_COLS))
-        fig, axes = plt.subplots(rows, min(PANEL_COLS, len(panels)),
-                                 figsize=(5 * min(PANEL_COLS, len(panels)), 3 * rows),
-                                 squeeze=False)
+        cols = min(PANEL_COLS, len(panels))
+        rows = int(np.ceil(len(panels) / cols))
+        fig, axes = plt.subplots(rows, cols, figsize=(5 * cols, 3.4 * rows), squeeze=False)
         for ax in axes.flat[len(panels):]:
             ax.axis("off")
-        for i, (label, values, value) in enumerate(panels):
+
+        # Each target gets its own dash pattern so several on one axes stay
+        # tellable apart in grey scale as well as in colour.
+        dashes = [(4, 2), (1, 1.6), (6, 2, 1, 2), (3, 1, 1, 1), (8, 3)]
+        for i, key in enumerate(panels):
             ax = axes.flat[i]
+            values = series[key]
             ax.plot(time[: len(values)], values[: len(time)], color=_color(i), lw=1.4,
                     label="best fit")
-            if isinstance(value, (int, float)):
-                ax.axhline(value, color="#444", ls="--", lw=1.2, label="observed")
-            ax.set_title(f"${label}$", fontsize=10)
+            for j, target in enumerate(by_series[key]["targets"]):
+                value = target["value"]
+                if not isinstance(value, (int, float)):
+                    continue
+                ax.axhline(value, color="#333", lw=1.1, dashes=dashes[j % len(dashes)],
+                           label=f"{target['operation'] or 'observed'} = {value:.4g}")
+            ax.set_title(_tex(by_series[key]["label"]), fontsize=10)
             ax.set_xlabel("time")
             ax.grid(alpha=0.25)
-            if i == 0:
-                ax.legend(fontsize=8)
+            ax.legend(fontsize=7, loc="best")
         fig.tight_layout()
         fig.savefig(os.path.join(PLOTS, f"best_fit_exp{exp}.png"), dpi=150)
         plt.close(fig)
@@ -827,7 +863,8 @@ def _error_bar_figure(values, labels, title, filename, unit):
     colors = ["#c0504d" if v < 0 else "#5b9bd5" for v in np.asarray(values)[order]]
     ax.barh(range(len(values)), np.asarray(values)[order], color=colors)
     ax.set_yticks(range(len(values)))
-    ax.set_yticklabels([f"${labels[i]}$" for i in order], fontsize=9)
+    # Already TeX-wrapped by _tex; wrapping again gives "$$x$ (max)$".
+    ax.set_yticklabels([labels[i] for i in order], fontsize=9)
     ax.axvline(0, color="#333", lw=1)
     ax.set_xlabel(unit)
     ax.set_title(title)
@@ -844,7 +881,9 @@ def plot_error_bars():
     is the question these answer.
     """
     doc = _latest_obs_data()
-    labels = [label for _v, label, _val, _e in _observed(doc)] if doc else []
+    # One bar per data_item, unlike the panels: each has its own error, so the
+    # operation is what distinguishes them and belongs in the label.
+    labels = [_tex(o["label"], o["operation"]) for o in _observed(doc)] if doc else []
     for name, title, unit, filename in (
         ("percent_error_vec.npy", "Best fit: error per observable", "error (%)",
          "calibration_percent_error.png"),

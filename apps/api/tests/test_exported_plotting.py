@@ -481,3 +481,89 @@ def test_the_operation_is_part_of_the_label(tmp_path):
     assert "_observed" in script
     # Rendered rather than executed: this is about what the label is built from.
     assert 'item.get("operation")' in script
+
+
+# ---------------------------------------------------------------------------
+# One panel per series, not per data_item
+# ---------------------------------------------------------------------------
+def _script_ns(tmp_path):
+    """The generated script's namespace, so its helpers can be tested directly.
+
+    It is a standalone artefact rather than a module, so there is nothing to
+    import; exec'ing it is how its internals become testable at all.
+    """
+    src = export_pipeline.render_plotting_script()
+    ns = {"__name__": "plot_outputs_under_test", "__file__": str(tmp_path / "plot_outputs.py")}
+    exec(compile(src, "plot_outputs.py", "exec"), ns)
+    return ns
+
+
+def test_the_same_series_under_several_operations_is_one_panel(tmp_path):
+    """Fitting a trace's mean, its max and its min is three targets on one curve.
+    Drawing the curve three times says there are three of them."""
+    ns = _script_ns(tmp_path)
+    doc = {
+        "data_items": [
+            {"operands": ["a/u"], "operation": "mean", "value": 1, "name_for_plotting": "u"},
+            {"operands": ["a/u"], "operation": "max", "value": 2, "name_for_plotting": "u"},
+            {"operands": ["a/u"], "operation": "min", "value": 0, "name_for_plotting": "u"},
+        ]
+    }
+    assert len({o["series"] for o in ns["_observed"](doc)}) == 1
+
+
+def test_a_time_operand_does_not_split_the_series(tmp_path):
+    """`x` and `x, t` are the same trace: the time operand says which axis to
+    read it against, not which curve it is."""
+    ns = _script_ns(tmp_path)
+    doc = {
+        "data_items": [
+            {"operands": ["a/u"], "operation": "max", "value": 2},
+            {"operands": ["a/u", "environment/time"], "operation": "time_at_max", "value": 0.3},
+        ]
+    }
+    assert len({o["series"] for o in ns["_observed"](doc)}) == 1
+
+
+def test_different_variables_stay_separate(tmp_path):
+    ns = _script_ns(tmp_path)
+    doc = {
+        "data_items": [
+            {"operands": ["a/u"], "operation": "mean", "value": 1},
+            {"operands": ["a/v"], "operation": "mean", "value": 2},
+        ]
+    }
+    assert len({o["series"] for o in ns["_observed"](doc)}) == 2
+
+
+@pytest.mark.parametrize(
+    "operand,is_time",
+    [("environment/time", True), ("environment.time", True), ("time", True),
+     ("t", True), ("a/u", False), ("heart/time_constant", False)],
+)
+def test_time_operands_are_recognised(tmp_path, operand, is_time):
+    ns = _script_ns(tmp_path)
+    assert ns["_is_time"](operand) is is_time
+
+
+@pytest.mark.integration
+def test_one_figure_carries_every_target_for_its_series(tmp_path):
+    """End to end: three operations on one variable produce one panel whose
+    legend names all three."""
+    pytest.importorskip("matplotlib")
+    import numpy as np
+
+    run = tmp_path / "run"
+    run.mkdir()
+    t = np.linspace(0, 1, 30)
+    np.savez(run / "all_outputs_with_best_param_vals_exp_0.npz",
+             **{"environment.time": t, "a_module.u": np.sin(t)})
+    (run / "x_obs_data_1.json").write_text(json.dumps({"data_items": [
+        {"operands": ["a/u"], "operation": op, "value": v, "name_for_plotting": "u"}
+        for op, v in (("mean", 0.5), ("max", 0.9), ("min", 0.0))
+    ]}))
+
+    result = _run(_write_script(tmp_path))
+    assert result.returncode == 0, result.stdout + result.stderr
+    figures = list((tmp_path / "pyscript_plots").glob("best_fit_exp0*.png"))
+    assert len(figures) == 1, [f.name for f in figures]
