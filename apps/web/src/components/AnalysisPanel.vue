@@ -486,7 +486,13 @@ const uqMethodLabel = computed(() =>
           </div>
         </section>
       </template>
-      <template v-else>
+      <!--
+        v-if, not v-else. As v-else it bound to the comparison block above
+        rather than to the "run a calibration" hint, so ticking the box *hid*
+        the calibration bars instead of adding a series beside them. The two are
+        independent: the calibration's own errors show whenever there are any.
+      -->
+      <template v-if="hasCalibration">
         <section class="error-chart">
           <h3>Percentage error per observable</h3>
           <div class="bar-list" data-testid="percent-error-chart">

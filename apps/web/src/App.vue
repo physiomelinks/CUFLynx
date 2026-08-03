@@ -520,7 +520,7 @@ const modelUnits = computed(() => model.variables.value.units ?? {})
 // Issue #159: the cost of whatever the sliders currently say, computed by the
 // backend from the run it already did. null when it cannot be known -- no
 // obs_data, no CA -- which must not read as a perfect fit of zero.
-const currentCost = computed(() => sim.result.value?.cost ?? null)
+const currentCost = computed(() => sim.cost.value ?? null)
 // A snapshot to compare against: the calibration best fit if there is one, else
 // whatever the user pinned. The comparison is the point -- a cost alone says
 // little, a cost next to the one you started from says whether you are winning.
@@ -557,9 +557,13 @@ const bestFitBaseline = computed(() => {
   const labels = calib.errorLabels.value ?? []
   const percent = calib.percentError.value
   if (!percent?.length) return null
+  const history = calib.costHistory.value ?? []
+  const last = history[history.length - 1]
   return {
     label: 'calibration best fit',
-    cost: null,
+    // The best cost of the final generation. Left null, both figures read "—"
+    // and the comparison said nothing at all.
+    cost: Array.isArray(last) ? last[0] : null,
     items: labels.map((label, i) => ({
       label,
       percent_error: percent[i] ?? null,
@@ -1288,7 +1292,9 @@ async function runSimulation() {
         outputsDir: outputsDir.value.trim() || undefined,
       })
       backendFallback.value = data.backend_fallback ?? null
-      sim.setExperiments(data.experiments, data.warnings, performance.now() - started)
+      sim.setExperiments(
+        data.experiments, data.warnings, performance.now() - started, data.cost ?? null,
+      )
     } else if (obs.hasObsData.value) {
       // Data-only obs_data: overlays only, no protocol. The manual t1/pre are
       // not used; run with backend defaults and plot the referenced variables

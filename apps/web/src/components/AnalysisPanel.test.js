@@ -221,3 +221,40 @@ describe('AnalysisPanel cost (#159)', () => {
     expect(w.findAll('[data-testid="compare-percent-chart"] .bar-row')).toHaveLength(1)
   })
 })
+
+
+// Found by using it: ticking the box hid the calibration bars instead of adding
+// a series beside them, and the best fit's own cost read as a dash.
+describe('AnalysisPanel comparison (#159 follow-up)', () => {
+  const CURRENT = {
+    cost: 1363,
+    items: [{ label: 'u', percent_error: 5.4, std_error: 0.54, cost: 900 }],
+  }
+  const BASELINE = {
+    label: 'calibration best fit',
+    cost: 12.5,
+    items: [{ label: 'u', percent_error: 0.9, std_error: 0.09 }],
+  }
+
+  it('keeps the calibration charts when the comparison is turned on', async () => {
+    const w = mount(AnalysisPanel, {
+      props: {
+        percentError: [1.2],
+        stdError: [0.12],
+        errorLabels: ['u'],
+        currentCost: CURRENT,
+        baselineCost: BASELINE,
+      },
+    })
+    expect(w.find('[data-testid="percent-error-chart"]').exists()).toBe(true)
+    await w.find('[data-testid="compare-costs"]').setValue(true)
+    // Both: the calibration's own errors, and the comparison beside them.
+    expect(w.find('[data-testid="percent-error-chart"]').exists()).toBe(true)
+    expect(w.find('[data-testid="compare-percent-chart"]').exists()).toBe(true)
+  })
+
+  it('shows the best fit as a number, not a dash', () => {
+    const w = mount(AnalysisPanel, { props: { currentCost: CURRENT, baselineCost: BASELINE } })
+    expect(w.find('[data-testid="analysis-cost-baseline"]').text()).toBe('12.5')
+  })
+})

@@ -6,6 +6,10 @@ export function useSimResult() {
   const result = shallowRef(null)
   // protocol runs: [{ time, outputs }] per experiment
   const experiments = shallowRef([])
+  // What the run's parameters cost against the loaded obs_data (#159), or null.
+  // Its own ref because the two setters below are exclusive -- a protocol run
+  // nulls `result` -- and the cost belongs to the run either way.
+  const cost = shallowRef(null)
   const warnings = ref([])
   const status = ref('idle') // idle | running | ok | error
   const message = ref('')
@@ -19,13 +23,15 @@ export function useSimResult() {
 
   function setResult(data, elapsedMs = null) {
     result.value = data
+    cost.value = data?.cost ?? null
     experiments.value = []
     status.value = 'ok'
     lastRunMs.value = elapsedMs
   }
 
-  function setExperiments(exps, warns = [], elapsedMs = null) {
+  function setExperiments(exps, warns = [], elapsedMs = null, runCost = null) {
     experiments.value = exps ?? []
+    cost.value = runCost
     result.value = null
     warnings.value = warns ?? []
     status.value = 'ok'
@@ -48,5 +54,6 @@ export function useSimResult() {
     setResult,
     setExperiments,
     setError,
+    cost,
   }
 }

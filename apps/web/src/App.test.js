@@ -1233,12 +1233,18 @@ describe('App.vue time controls', () => {
 // Issue #159: the cost belongs at the top of the panel where the parameters are
 // being changed, not only in the Analysis tab.
 describe('App.vue cost line (#159)', () => {
-  // shallowMount, like every other test here: the cost line is App's own markup,
-  // so the child components are noise.
-  const withCost = async (cost) => {
+  // Through the store's own setters, not by assigning `sim.result` -- which is
+  // how the first version of these tests passed while the feature did not.
+  // setExperiments (the protocol path, and the only path that has a cost worth
+  // showing) nulls `result`, so a cost read from there was always null.
+  const withCost = async (cost, { protocol = true } = {}) => {
     const wrapper = shallowMount(App)
     await flushPromises()
-    wrapper.vm.sim.result.value = { time: [0, 1], outputs: { 'a/x': [1, 2] }, cost }
+    if (protocol) {
+      wrapper.vm.sim.setExperiments([{ time: [0, 1], outputs: { 'a/x': [1, 2] } }], [], 1, cost)
+    } else {
+      wrapper.vm.sim.setResult({ time: [0, 1], outputs: { 'a/x': [1, 2] }, cost })
+    }
     await nextTick()
     return wrapper
   }
@@ -1262,5 +1268,13 @@ describe('App.vue cost line (#159)', () => {
   it('shows nothing at all when there is no cost to show', async () => {
     const wrapper = await withCost(null)
     expect(wrapper.find('[data-testid="cost-line"]').exists()).toBe(false)
+  })
+
+  it('shows the cost of a plain run too, not only a protocol one', async () => {
+    const wrapper = await withCost(
+      { cost: 42, items: [{ label: 'u', cost: 42 }] },
+      { protocol: false },
+    )
+    expect(wrapper.find('[data-testid="cost-value"]').text()).toBe('42')
   })
 })
