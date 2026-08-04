@@ -101,11 +101,14 @@ export async function uploadCellML(fileOrFiles, outputDir = '') {
   return data
 }
 
-// Fetch a bundled example CellML model as a File, so it can be fed straight
-// through the normal uploadCellML flow (same path as a dropped file).
+// Fetch a bundled example as a File, so it can be fed straight through the
+// normal upload flow (same path as a dropped file).
+//
+// As a blob, not text: an example ships as a .omex, and decoding a zip through
+// the text codec mangles every byte of it.
 export async function fetchExampleModel(name, filename) {
-  const { data } = await axios.get(url(`/api/examples/${name}`), { responseType: 'text' })
-  return new File([data], filename, { type: 'application/xml' })
+  const { data } = await axios.get(url(`/api/examples/${name}`), { responseType: 'blob' })
+  return new File([data], filename, { type: data?.type || 'application/octet-stream' })
 }
 
 export async function getVariables(modelId) {

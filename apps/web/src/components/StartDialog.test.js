@@ -38,7 +38,7 @@ describe('StartDialog', () => {
     await wrapper.find('[data-testid="start-example-3compartment"]').trigger('click')
     expect(wrapper.emitted('select-example')[0][0]).toMatchObject({
       name: '3compartment',
-      filename: '3compartment_flat.cellml',
+      filename: '3compartment.omex',
     })
     expect(wrapper.emitted('update:visible')[0][0]).toBe(false)
   })

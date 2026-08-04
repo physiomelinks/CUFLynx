@@ -79,6 +79,17 @@ for runner in (
 ):
     datas.append((str(API_DIR / runner), "runners"))
 
+# The bundled example studies the "Start" dialog offers. Their filenames come
+# from apps/api/examples.py -- the same manifest the route serves from -- because
+# a hand-maintained copy here is exactly how issue #180 happened: the route read
+# resources/, nothing collected it, and the packaged app 404'd with "example
+# model file missing" while source ran fine. example_datas() raises if a listed
+# example is absent, so the mismatch fails the build instead of the user.
+sys.path.insert(0, str(API_DIR))
+import examples  # noqa: E402 - needs API_DIR on sys.path
+
+datas += examples.example_datas()
+
 # CPython's development headers. Myokit compiles a *CPython extension module* at
 # run time, inside this frozen process — so the bundle has to carry Python.h and
 # friends. distutils finds them via sysconfig's include path, and that path differs

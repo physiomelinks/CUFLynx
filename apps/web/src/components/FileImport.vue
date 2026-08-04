@@ -82,11 +82,15 @@ function onStartEdit() {
 }
 
 // The Start dialog chose an example: fetch it and feed it through the normal
-// CellML upload flow, so a loaded example is indistinguishable from a drop.
+// upload flow, so a loaded example is indistinguishable from a drop.
 async function onSelectExample(example) {
   error.value = ''
   try {
     const file = await fetchExampleModel(example.name, example.filename)
+    // Examples ship as archives so one click loads the whole study — model,
+    // obs_data and params_for_id (#180). A plain .cellml example would still
+    // work, hence the fallback rather than a hard assumption.
+    if (await handleOmex([file])) return
     const data = await uploadCellML([file])
     emit('model-loaded', { ...data, filename: example.filename })
   } catch (e) {
