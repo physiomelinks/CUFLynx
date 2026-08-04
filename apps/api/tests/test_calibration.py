@@ -1336,3 +1336,49 @@ def test_version_banners_are_read_as_the_mpi_they_name(banner, family):
     (OpenRTE)` is the one that matters most here: it is what Open MPI's launcher
     calls itself, and it shares no word with what its own runtime reports."""
     assert calibration_mod._mpi_family(banner) == family
+
+
+@pytest.mark.integration
+def test_the_output_plots_cost_matches_the_calibrations_own(client, requires_simulation):
+    """Issue #181, end to end on the model it was reported against.
+
+    After a calibration, "Reset to best fit" puts CA's own best parameters on
+    the sliders and reruns. The cost shown beside the output plots is computed
+    by us (obs_cost) and the one in the calibration panel comes from CA, so the
+    same parameters against the same data must produce the same number. They
+    did not: we summed the per-observable costs where CA takes the mean over
+    weighted observables, so ours was larger by exactly the observable count.
+
+    This is the check the unit tests cannot make -- they encode our *reading* of
+    paramID.get_cost_obs_and_pred_from_params, and this compares against what it
+    actually computes.
+    """
+    model_id = _setup_model_obs_params(
+        client, C3_MODEL_PATH, C3_OBS_DATA_PATH, C3_PARAMS_CSV_PATH
+    )
+    settings = {
+        "param_id_method": "genetic_algorithm",
+        "num_calls_to_function": 30,
+        "DEBUG": True,
+        "dt": 0.01,
+    }
+    resp = client.post(
+        "/api/calibration/run", json={"model_id": model_id, "settings": settings}
+    )
+    assert resp.status_code == 200, resp.text
+    status, lines = _wait(client, resp.json()["job_id"], timeout=600)
+    assert status["state"] == "done", "\n".join(lines)
+
+    ca_cost = status["cost"]
+    assert ca_cost is not None and math.isfinite(ca_cost)
+
+    # What "Reset to best fit" does: CA's best parameters, rerun through the
+    # protocol, scored by us.
+    run = client.post(
+        "/api/protocol/run", json={"model_id": model_id, "params": status["best_params"]}
+    )
+    assert run.status_code == 200, run.text
+    ours = run.json().get("cost")
+    assert ours is not None, "the run reported no cost to compare"
+    assert ours["incomplete"] is False, "some observable went unscored; the comparison would be vacuous"
+    assert ours["cost"] == pytest.approx(ca_cost, rel=1e-6)

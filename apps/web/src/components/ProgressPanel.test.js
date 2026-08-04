@@ -237,3 +237,104 @@ describe('ProgressPanel', () => {
     expect(set.data).toEqual([1.2, 1.0])
   })
 })
+
+// ---------------------------------------------------------------------------
+// Data cursor (issue #179)
+//
+// Tooltip was registered but unreachable: the lines are drawn with
+// pointRadius: 0 and Chart.js's default hover requires the pointer to intersect
+// a point, so there was nothing to hover. The callbacks are asserted directly —
+// they are where the reading happens, and they need no canvas.
+// ---------------------------------------------------------------------------
+describe('ProgressPanel data cursor', () => {
+  const SPECS = { 'aortic_root/C': { min: 1, max: 5 }, 'global/E_lv_A': { min: 0, max: 10 } }
+
+  const ga = () =>
+    mount(ProgressPanel, {
+      props: {
+        costHistory: [[0.9], [0.4]],
+        paramNames: ['aortic_root C', 'global E_lv_A'],
+        paramHistory: [
+          [0.25, 0.5],
+          [0.75, 0.1],
+        ],
+        paramSpecs: SPECS,
+      },
+    })
+
+  it('reads values by hovering anywhere, not only on a point', () => {
+    const vm = ga().vm
+    for (const opts of [vm.costOptions, vm.paramOptions, vm.startParamOptions]) {
+      expect(opts.interaction.mode).toBe('index')
+      expect(opts.interaction.intersect).toBe(false)
+    }
+  })
+
+  it('shows the cost exactly rather than rounded to nothing', () => {
+    const { label } = ga().vm.costOptions.plugins.tooltip.callbacks
+    const text = label({ dataset: { label: 'best cost' }, parsed: { y: 1.2345678e-7 } })
+    // toLocaleString would render this as "0" — which answers nothing.
+    expect(text).toBe('best cost: 1.2346e-7')
+  })
+
+  it('lists the parameters that produced the cost at the cursor', () => {
+    const { afterBody } = ga().vm.costOptions.plugins.tooltip.callbacks
+    const lines = afterBody([{ dataIndex: 1 }])
+    // Generation 1: 0.75 of [1, 5] = 4, and 0.1 of [0, 10] = 1.
+    expect(lines).toContain('aortic_root C: 4 (0.750 of range)')
+    expect(lines).toContain('global E_lv_A: 1 (0.100 of range)')
+  })
+
+  it('does not guess a parameter set when there are several starts', () => {
+    // A generation does not identify one parameter set in a multi-start run,
+    // and the per-start parameter chart answers it without guessing.
+    const wrapper = mount(ProgressPanel, {
+      props: {
+        costHistory: [],
+        startCosts: [[1.0], [2.0]],
+        paramNames: ['aortic_root C'],
+        paramHistory: [[0.25]],
+        paramSpecs: SPECS,
+      },
+    })
+    expect(wrapper.vm.costOptions.plugins.tooltip.callbacks.afterBody([{ dataIndex: 0 }])).toEqual([])
+  })
+
+  it('shows a parameter’s own value, not the normalised one on the axis', () => {
+    const { label } = ga().vm.paramOptions.plugins.tooltip.callbacks
+    expect(label({ dataset: { label: 'aortic_root C' }, parsed: { y: 0.25 } })).toBe(
+      'aortic_root C: 2 (0.250 of range)',
+    )
+  })
+
+  it('falls back to the normalised value when the range is unknown', () => {
+    // Inventing a value from a range we do not have would be worse than showing
+    // the one the axis already shows.
+    const { label } = ga().vm.paramOptions.plugins.tooltip.callbacks
+    expect(label({ dataset: { label: 'not/in/params_for_id' }, parsed: { y: 0.25 } })).toBe(
+      'not/in/params_for_id: 0.25',
+    )
+  })
+
+  it('draws a crosshair at the hovered point', () => {
+    const ctx = {
+      save: vi.fn(), beginPath: vi.fn(), moveTo: vi.fn(), lineTo: vi.fn(),
+      stroke: vi.fn(), restore: vi.fn(), setLineDash: vi.fn(),
+    }
+    const chart = {
+      ctx,
+      chartArea: { top: 0, bottom: 100 },
+      tooltip: { getActiveElements: () => [{ element: { x: 42 } }] },
+    }
+    ga().vm.crosshair.afterDatasetsDraw(chart)
+    expect(ctx.moveTo).toHaveBeenCalledWith(42, 0)
+    expect(ctx.lineTo).toHaveBeenCalledWith(42, 100)
+  })
+
+  it('draws nothing when the pointer is off the plot', () => {
+    const ctx = { save: vi.fn(), beginPath: vi.fn(), moveTo: vi.fn(), stroke: vi.fn() }
+    const chart = { ctx, chartArea: { top: 0, bottom: 100 }, tooltip: { getActiveElements: () => [] } }
+    ga().vm.crosshair.afterDatasetsDraw(chart)
+    expect(ctx.moveTo).not.toHaveBeenCalled()
+  })
+})

@@ -1265,6 +1265,30 @@ describe('App.vue cost line (#159)', () => {
     expect(wrapper.find('[data-testid="cost-line"]').text()).toContain('1 of 2')
   })
 
+  // Issue #181: the cost is a mean over *weighted* observables, so the note has
+  // to count the same ones -- a weight-0 item is switched off, not unscored.
+  it('counts weighted observables, not every data_item', async () => {
+    const wrapper = await withCost({
+      cost: 4,
+      n_weighted: 2,
+      incomplete: false,
+      items: [{ label: 'a', cost: 4 }, { label: 'b', cost: 4 }, { label: 'off', cost: null }],
+    })
+    expect(wrapper.find('[data-testid="cost-line"]').text()).toContain('2 of 2')
+  })
+
+  it('says when the number is not comparable with the calibration', async () => {
+    // A weighted observable we could not score leaves the numerator short of
+    // CA's, so the mean is lower -- flattering, and silently so.
+    const wrapper = await withCost({
+      cost: 2,
+      n_weighted: 2,
+      incomplete: true,
+      items: [{ label: 'a', cost: 4 }, { label: 'b', cost: null }],
+    })
+    expect(wrapper.find('[data-testid="cost-line"]').text()).toContain('not comparable')
+  })
+
   it('shows nothing at all when there is no cost to show', async () => {
     const wrapper = await withCost(null)
     expect(wrapper.find('[data-testid="cost-line"]').exists()).toBe(false)

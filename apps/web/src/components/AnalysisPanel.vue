@@ -443,6 +443,16 @@ const uqMethodLabel = computed(() =>
       <template v-if="comparable && compare">
         <section class="error-chart">
           <h3>Percentage error — current vs {{ baselineCost?.label ?? 'baseline' }}</h3>
+          <div class="chart-legend" data-testid="compare-legend">
+            <span class="legend-item">
+              <span class="legend-swatch" :style="{ background: CURRENT_COLOUR }" />
+              current parameters
+            </span>
+            <span class="legend-item">
+              <span class="legend-swatch" :style="{ background: BASELINE_COLOUR }" />
+              {{ baselineCost?.label ?? 'baseline' }}
+            </span>
+          </div>
           <div class="bar-list" data-testid="compare-percent-chart">
             <div v-for="(b, i) in currentPercentBars" :key="`c${i}`" class="bar-row">
               <span class="bar-label" v-html="renderMath(b.label)" />
@@ -465,6 +475,16 @@ const uqMethodLabel = computed(() =>
         </section>
         <section class="error-chart">
           <h3>Error in standard deviations — current vs {{ baselineCost?.label ?? 'baseline' }}</h3>
+          <div class="chart-legend" data-testid="compare-legend">
+            <span class="legend-item">
+              <span class="legend-swatch" :style="{ background: CURRENT_COLOUR }" />
+              current parameters
+            </span>
+            <span class="legend-item">
+              <span class="legend-swatch" :style="{ background: BASELINE_COLOUR }" />
+              {{ baselineCost?.label ?? 'baseline' }}
+            </span>
+          </div>
           <div class="bar-list" data-testid="compare-std-chart">
             <div v-for="(b, i) in currentStdBars" :key="`s${i}`" class="bar-row">
               <span class="bar-label" v-html="renderMath(b.label)" />
@@ -871,6 +891,26 @@ const uqMethodLabel = computed(() =>
 .cost-number {
   font-variant-numeric: tabular-nums;
   font-size: 1.05rem;
+}
+.chart-legend {
+  display: flex;
+  gap: 1rem;
+  align-items: center;
+  margin: 0 0 0.35rem 0;
+  font-size: 0.78rem;
+  color: var(--text-color-secondary, #666);
+}
+.legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+.legend-swatch {
+  width: 0.85rem;
+  height: 0.55rem;
+  border-radius: 2px;
+  display: inline-block;
+  flex: none;
 }
 .cost-compare {
   margin-left: auto;

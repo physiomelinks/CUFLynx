@@ -84,7 +84,9 @@ def test_an_unrecorded_operand_leaves_that_item_unscored(monkeypatch):
     _funcs(monkeypatch)
     out = obs_cost.evaluate([_item(), _item(operands=["a/missing"])], {0: {"a/u": [9.0]}})
     assert [i["cost"] is None for i in out["items"]] == [False, True]
-    assert out["cost"] == pytest.approx(1.0)
+    # 1.0 over the two weighted observables: the unscorable one still counts in
+    # the denominator, because CA scores it (#181).
+    assert out["cost"] == pytest.approx(0.5)
 
 
 def test_nothing_scorable_is_none_not_zero(monkeypatch):
@@ -112,7 +114,7 @@ def test_a_cost_func_that_raises_does_not_lose_the_others(monkeypatch):
 
     _funcs(monkeypatch, costs={"MSE": lambda o, d, s, w: 1.0, "bad": angry})
     out = obs_cost.evaluate([_item(), _item(cost_type="bad")], {0: {"a/u": [9.0]}})
-    assert out["cost"] == pytest.approx(1.0)
+    assert out["cost"] == pytest.approx(0.5)  # 1.0 / 2 weighted observables (#181)
     assert out["items"][1]["cost"] is None
 
 
@@ -181,3 +183,85 @@ def test_moving_a_parameter_moves_the_cost(client, requires_simulation):
     # the first version of this test read that as "the cost does not respond".
     moved = cost_for({"soma_SN/g_Na": 6.0})
     assert moved != pytest.approx(base)
+
+
+# ---------------------------------------------------------------------------
+# The number must be the same number the calibration reports (issue #181)
+#
+# Reported as: after a calibration, "Reset to best fit" puts the calibration's
+# own parameters on the sliders, and the output-plots cost still disagrees with
+# the calibration panel's. Same parameters, same data, two different numbers --
+# so one of them is computed differently, and it was this one.
+#
+# circulatory_autogen aggregates in paramID.get_cost_obs_and_pred_from_params:
+#
+#     cost += sub_cost                       # over experiments x subexperiments
+#     ...
+#     cost = cost / float(weighted_obs_denominator)
+#
+# i.e. the *mean* contribution per weighted observable, where the denominator
+# counts every observable with a non-zero weight. This summed instead, so it was
+# larger by exactly the number of observables -- which is why it looked like a
+# plausible cost rather than an obviously broken one.
+# ---------------------------------------------------------------------------
+def test_the_cost_is_the_mean_per_observable_not_the_sum(monkeypatch):
+    """The reported mismatch, at its smallest: two observables, each off by 2."""
+    _funcs(monkeypatch)
+    items = [_item(value=10.0), _item(value=10.0, operands=["a/v"])]
+    out = obs_cost.evaluate(items, {0: {"a/u": [8.0], "a/v": [8.0]}})
+    # Each contributes (8-10)^2 = 4. CA divides by the 2 weighted observables.
+    assert out["cost"] == pytest.approx(4.0)
+    assert [e["cost"] for e in out["items"]] == [pytest.approx(4.0)] * 2
+
+
+def test_one_observable_is_unaffected_by_the_normalisation(monkeypatch):
+    """Which is why the bug survived: the single-observable case is exact, and
+    every hand-checked example was a single observable."""
+    _funcs(monkeypatch)
+    out = obs_cost.evaluate([_item(value=10.0)], {0: {"a/u": [8.0]}})
+    assert out["cost"] == pytest.approx(4.0)
+
+
+def test_a_zero_weighted_observable_is_excluded_entirely(monkeypatch):
+    """CA skips weight == 0 rather than scoring it: `if weight_entry != 0`. It
+    must leave the denominator too, or turning an observable off would change
+    the cost of the ones left on."""
+    _funcs(monkeypatch)
+    items = [_item(value=10.0), _item(value=0.0, weight=0.0, operands=["a/v"])]
+    out = obs_cost.evaluate(items, {0: {"a/u": [8.0], "a/v": [1e6]}})
+    assert out["cost"] == pytest.approx(4.0)
+    assert out["items"][1]["cost"] is None
+
+
+def test_a_zero_weight_is_not_read_as_a_default(monkeypatch):
+    """`item.get("weight") or 1.0` turns a deliberate 0 into a 1 -- the one
+    coercion that silently reverses the user's intent."""
+    _funcs(monkeypatch)
+    out = obs_cost.evaluate([_item(value=10.0, weight=0.0)], {0: {"a/u": [8.0]}})
+    assert out is None  # nothing weighted, so nothing to report
+
+
+def test_the_denominator_spans_experiments(monkeypatch):
+    """CA's denominator is global -- summed over every experiment and
+    subexperiment -- not per experiment."""
+    _funcs(monkeypatch)
+    items = [_item(value=10.0), _item(value=10.0, experiment_idx=1)]
+    out = obs_cost.evaluate(items, {0: {"a/u": [8.0]}, 1: {"a/u": [8.0]}})
+    assert out["cost"] == pytest.approx(4.0)
+
+
+def test_an_unscorable_observable_still_counts_against_the_mean(monkeypatch):
+    """It counts in CA's denominator, because CA scores it. Dropping it from
+    ours as well would report a *better* cost than the calibration for the same
+    parameters -- the same class of disagreement, in the flattering direction."""
+    _funcs(monkeypatch)
+    items = [_item(value=10.0), _item(value=10.0, operands=["not/recorded"])]
+    out = obs_cost.evaluate(items, {0: {"a/u": [8.0]}})
+    assert out["cost"] == pytest.approx(2.0)  # 4 / 2, not 4 / 1
+    assert out["incomplete"] is True
+
+
+def test_a_complete_score_is_not_flagged_incomplete(monkeypatch):
+    _funcs(monkeypatch)
+    out = obs_cost.evaluate([_item(value=10.0)], {0: {"a/u": [8.0]}})
+    assert out["incomplete"] is False

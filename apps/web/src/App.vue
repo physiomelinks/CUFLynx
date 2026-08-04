@@ -543,6 +543,13 @@ function scoredCount(cost) {
   return (cost?.items ?? []).filter((i) => i.cost != null).length
 }
 
+// The observables the cost is a mean over: weight-0 items are switched off, and
+// counting them here would read as a failure to score rather than a choice
+// (#181). Falls back to the item count for a payload from an older backend.
+function weightedCount(cost) {
+  return cost?.n_weighted ?? (cost?.items ?? []).length
+}
+
 function pinCurrentCost() {
   costBaseline.value = currentCost.value
     ? { ...currentCost.value, label: 'pinned parameters' }
@@ -1739,8 +1746,11 @@ watch(
         >
           <span class="cost-label">cost</span>
           <span class="cost-value" data-testid="cost-value">{{ formatCost(currentCost.cost) }}</span>
-          <span class="cost-note">
-            {{ scoredCount(currentCost) }} of {{ currentCost.items.length }} observables
+          <span class="cost-note" data-testid="cost-note">
+            {{ scoredCount(currentCost) }} of {{ weightedCount(currentCost) }} observables
+            <template v-if="currentCost.incomplete">
+              — not comparable with the calibration cost
+            </template>
           </span>
           <button
             type="button"

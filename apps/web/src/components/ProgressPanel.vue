@@ -25,6 +25,52 @@ ChartJS.register(
   Tooltip,
 )
 
+// ---------------------------------------------------------------------------
+// Data cursor (issue #179)
+//
+// The lines are drawn with pointRadius: 0, and Chart.js's default hover mode
+// requires the pointer to intersect a point -- so there was nothing to hover
+// and the tooltips, though registered, were effectively unreachable. Every
+// chart below therefore uses index mode without intersection: hover anywhere
+// and you get the values at that generation/iteration.
+// ---------------------------------------------------------------------------
+const CURSOR_INTERACTION = { mode: 'index', intersect: false }
+
+// The vertical line that makes it a cursor rather than a floating box. Chart.js
+// ships no crosshair, and it is a few lines to draw one against the active
+// element's x.
+const crosshair = {
+  id: 'cuflynx-crosshair',
+  afterDatasetsDraw(chart) {
+    const active = chart.tooltip?.getActiveElements?.() ?? []
+    if (!active.length) return
+    const { ctx, chartArea } = chart
+    const x = active[0].element.x
+    ctx.save()
+    ctx.beginPath()
+    ctx.moveTo(x, chartArea.top)
+    ctx.lineTo(x, chartArea.bottom)
+    ctx.lineWidth = 1
+    ctx.setLineDash([4, 3])
+    ctx.strokeStyle = 'rgba(120, 120, 120, 0.9)'
+    ctx.stroke()
+    ctx.restore()
+  },
+}
+
+/**
+ * A number as a reader needs it, not as toLocaleString gives it.
+ *
+ * The whole point of the cursor is reading an *exact* value: a cost of 1.2e-7
+ * rendered as "0" answers nothing, and Chart.js's default formatting does that.
+ */
+function exact(v) {
+  if (v == null || !Number.isFinite(v)) return '—'
+  const abs = Math.abs(v)
+  if (abs !== 0 && (abs < 1e-4 || abs >= 1e6)) return v.toExponential(4)
+  return String(Number(v.toPrecision(6)))
+}
+
 const props = defineProps({
   // [[best, …up to top-10], …] one row per generation
   costHistory: { type: Array, default: () => [] },
@@ -254,6 +300,38 @@ const startParamData = computed(() => {
   return { labels: Array.from({ length: maxLen }, (_, i) => i), datasets }
 })
 
+// The actual parameter value behind a normalised one. CA normalises linearly
+// (utility_funcs.Normalise_class: y = x*(max-min) + min), so this inverts it;
+// without a known range there is nothing to invert and the normalised value is
+// all we can honestly show.
+function actualValue(norm, range) {
+  if (norm == null || !Number.isFinite(norm) || !range) return null
+  const span = range.max - range.min
+  if (!(span > 0)) return null
+  return range.min + norm * span
+}
+
+// "name: 1.234e-3 (0.42 of range)" -- the exact value the user asked for, with
+// the normalised one kept because that is what the y axis shows.
+function paramReadout(name, norm, ranges) {
+  const actual = actualValue(norm, ranges[name])
+  if (actual == null) return `${name}: ${exact(norm)}`
+  return `${name}: ${exact(actual)} (${Number(norm).toFixed(3)} of range)`
+}
+
+// CA writes best_param_vals_history.csv normalised, with its qname '/' replaced
+// by a space, so index the ranges the same way the multi-start plot does.
+const rangesByGaLabel = computed(() => {
+  const out = {}
+  for (const [qname, spec] of Object.entries(props.paramSpecs ?? {})) {
+    if (spec && Number.isFinite(spec.min) && Number.isFinite(spec.max)) {
+      out[String(qname).replaceAll('/', ' ')] = spec
+      out[String(qname)] = spec
+    }
+  }
+  return out
+})
+
 const paramData = computed(() => ({
   labels: props.paramHistory.map((_, i) => i),
   datasets: props.paramNames.map((name, i) => ({
@@ -289,7 +367,28 @@ const costOptions = computed(() => ({
       },
     },
   },
-  plugins: { legend: { display: true, position: 'bottom' } },
+  interaction: CURSOR_INTERACTION,
+  plugins: {
+    legend: { display: true, position: 'bottom' },
+    tooltip: {
+      callbacks: {
+        title: (items) => `${xLabel.value} ${items[0]?.label ?? ''}`,
+        label: (item) => `${item.dataset.label}: ${exact(item.parsed.y)}`,
+        // Issue #179: the parameters that produced this cost, at the point the
+        // cursor is on. Only for a single-start run -- with several starts a
+        // generation does not identify one parameter set, and the per-start
+        // parameter chart below answers it without guessing.
+        afterBody: (items) => {
+          if (multiStart.value) return []
+          const gen = items[0]?.dataIndex
+          const row = props.paramHistory[gen]
+          if (!Array.isArray(row)) return []
+          const ranges = rangesByGaLabel.value
+          return ['', ...props.paramNames.map((n, i) => paramReadout(n, row[i], ranges))]
+        },
+      },
+    },
+  },
 }))
 
 // Heading + axis wording for the top chart, tracking the cost/gradient toggle.
@@ -315,11 +414,21 @@ const startParamOptions = {
       title: { display: true, text: 'normalised value' },
     },
   },
+  interaction: CURSOR_INTERACTION,
   plugins: {
     legend: {
       display: true,
       position: 'bottom',
       labels: { filter: (item, data) => data.datasets[item.datasetIndex]?._legend !== false },
+    },
+    tooltip: {
+      callbacks: {
+        title: (items) => `iteration ${items[0]?.label ?? ''}`,
+        // The axis is normalised, so the raw y is 0..1; the value the user
+        // wants to read is the parameter's own.
+        label: (item) =>
+          paramReadout(item.dataset.label, item.parsed.y, rangesByLabel.value),
+      },
     },
   },
 }
@@ -342,7 +451,17 @@ const paramOptions = {
       title: { display: true, text: 'normalised value' },
     },
   },
-  plugins: { legend: { display: true, position: 'bottom' } },
+  interaction: CURSOR_INTERACTION,
+  plugins: {
+    legend: { display: true, position: 'bottom' },
+    tooltip: {
+      callbacks: {
+        title: (items) => `generation ${items[0]?.label ?? ''}`,
+        label: (item) =>
+          paramReadout(item.dataset.label, item.parsed.y, rangesByGaLabel.value),
+      },
+    },
+  },
 }
 </script>
 
@@ -396,19 +515,19 @@ const paramOptions = {
           </div>
         </div>
         <div class="chart-box">
-          <Line :data="displayData" :options="costOptions" />
+          <Line :data="displayData" :options="costOptions" :plugins="[crosshair]" />
         </div>
       </section>
       <section v-if="hasStartParams" class="progress-chart">
         <h3>Normalised parameter values vs iteration (per start)</h3>
         <div class="chart-box">
-          <Line :data="startParamData" :options="startParamOptions" />
+          <Line :data="startParamData" :options="startParamOptions" :plugins="[crosshair]" />
         </div>
       </section>
       <section v-if="paramHistory.length" class="progress-chart">
         <h3>Best parameter values vs generation</h3>
         <div class="chart-box">
-          <Line :data="paramData" :options="paramOptions" />
+          <Line :data="paramData" :options="paramOptions" :plugins="[crosshair]" />
         </div>
       </section>
     </template>
