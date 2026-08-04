@@ -149,6 +149,151 @@ def _warning_texts(caught) -> list:
 
 
 # ---------------------------------------------------------------------------
+# Sub-experiments (issue #181, second half)
+#
+# An obs_data data_item names both an experiment *and* a subexperiment, and CA
+# scores it against that subexperiment's own trace -- it indexes a flat list
+# built as sum(num_sub_per_exp[:exp]) + sub. CUFLynx returned one trace per
+# experiment, with the subexperiments concatenated, so every item past the first
+# subexperiment was scored against the wrong segment. On SN_simple that put a
+# spike-frequency observable expecting 4.0 against the 0.0-spiking segment.
+#
+# The per-subexperiment results come from CA's own ProtocolExecutor, exactly as
+# paramID gets them. Only the *join* is ported, for the plot payload, which
+# still shows one trace per experiment.
+# ---------------------------------------------------------------------------
+def _sub_counts(protocol_info: dict) -> list:
+    """num_sub_per_exp, defaulted the way CA defaults it."""
+    sim_times = protocol_info.get("sim_times") or []
+    n_exp = protocol_info.get("num_experiments") or len(sim_times)
+    return protocol_info.get("num_sub_per_exp") or [
+        len(sim_times[i]) if i < len(sim_times) else 1 for i in range(n_exp)
+    ]
+
+
+def _subexperiment_outputs(results_by_sub, protocol_info, outputs, key_for, var2idx, time_by_sub=None):
+    """``[{experiment_idx, subexperiment_idx, outputs}]`` in CA's flat order."""
+    subs = []
+    # `time` is an operand of every windowed or peak-timing observable. CA gets
+    # it per segment from the helper like any other variable, so it is resolved
+    # here the same way -- taking the whole run's time vector instead (which is
+    # what the per-experiment payload does) would hand a segment the wrong clock.
+    subs = []
+    for exp_idx, n_sub in enumerate(_sub_counts(protocol_info)):
+        for sub_idx in range(n_sub):
+            res = results_by_sub.get((exp_idx, sub_idx))
+            values: dict = {}
+            for var in outputs:
+                key = key_for.get(var)
+                if key is None or res is None:
+                    continue
+                idx = var2idx[key]
+                if idx >= len(res):
+                    continue
+                series = res[idx]
+                # A constant subexperiment result is a scalar; the cost's
+                # operations expect a series either way.
+                values[var] = (
+                    [float(v) for v in series]
+                    if hasattr(series, "__len__")
+                    else [float(series)]
+                )
+            t_seg = (time_by_sub or {}).get((exp_idx, sub_idx))
+            if t_seg is not None and len(t_seg):
+                # get_results returns one entry per requested variable; ravel
+                # because a helper may hand back a column rather than a row.
+                import numpy as _np  # noqa: PLC0415
+
+                values["time"] = [float(v) for v in _np.asarray(t_seg[0]).ravel()]
+            subs.append(
+                {
+                    "experiment_idx": exp_idx,
+                    "subexperiment_idx": sub_idx,
+                    "outputs": values,
+                }
+            )
+    return subs
+
+
+def _run_protocol_by_sub(runner, protocol_info, names, vals):
+    """Run the protocol through CA's ProtocolExecutor, keeping the segments.
+
+    ``ProtocolRunner`` builds one of these internally and then throws the
+    segments away; this is the same public class, on the same helper, called the
+    way paramID calls it.
+    """
+    try:
+        from protocol_runners.protocol_executor import ProtocolExecutor  # noqa: PLC0415
+    except ImportError:
+        # An older CA without the executor. The joined traces are still right;
+        # only the per-subexperiment cost is unavailable, and obs_cost falls
+        # back to scoring per experiment as it did before.
+        return None, None, None
+    helper = getattr(runner, "sim_helper", None)
+    if helper is None:
+        return None, None, None
+
+    executor = ProtocolExecutor(helper)
+    success, results_by_sub, extra_by_sub, t_by_exp = executor.run_protocol(
+        protocol_info,
+        result_variables=None,
+        # `time` is an operand of every windowed or peak-timing observable, and
+        # it is not a model variable in var2idx -- the per-experiment payload
+        # takes it from t_list, which is the *joined* clock and would put a
+        # segment's window in the wrong place. CA reads it per segment through
+        # get_results; extra_result_variables collects it in the same pass.
+        extra_result_variables=["time"],
+        id_param_names=names,
+        id_param_vals=vals,
+    )
+    if not success:
+        # Same failure run_protocols raises, so the message the user sees, and
+        # the stdout capture that explains it, are unchanged (#138).
+        raise RuntimeError("Protocol simulation failed.")
+    return results_by_sub, t_by_exp, extra_by_sub
+
+
+def join_subexperiments(results_by_sub, t_by_exp, protocol_info, dt):
+    """One result vector per experiment, subexperiments joined end to end.
+
+    A port of ``ProtocolRunner.run_protocols``'s join -- scalar results padded to
+    the segment length, and the repeated first sample dropped where segments
+    meet. Ported rather than called because run_protocols returns only the joined
+    form, and the cost needs the segments; ``test_subexperiment_cost`` asserts
+    this agrees with CA's own output so the two cannot drift (CA issue filed to
+    return both, after which this goes).
+    """
+    import numpy as np  # noqa: PLC0415 - only on the simulation path
+
+    sim_times = protocol_info.get("sim_times") or []
+    num_sub_per_exp = _sub_counts(protocol_info)
+    res_list = []
+    for exp_idx in range(len(t_by_exp)):
+        res_vec = None
+        for sub_idx in range(num_sub_per_exp[exp_idx]):
+            sub_res = results_by_sub.get((exp_idx, sub_idx))
+            if sub_res is None:
+                continue
+            if res_vec is None:
+                res_vec = list(sub_res)
+                for var_idx in range(len(res_vec)):
+                    if not hasattr(res_vec[var_idx], "__len__"):
+                        n = len(t_by_exp[exp_idx]) if t_by_exp[exp_idx] is not None else 1
+                        res_vec[var_idx] = np.ones(n) * res_vec[var_idx]
+            else:
+                for var_idx in range(len(res_vec)):
+                    new_data = sub_res[var_idx]
+                    if not hasattr(new_data, "__len__"):
+                        n_sub = round(sim_times[exp_idx][sub_idx] / dt)
+                        new_data = np.ones(n_sub) * new_data
+                    else:
+                        new_data = new_data[1:]
+                    res_vec[var_idx] = np.concatenate([res_vec[var_idx], new_data])
+        res_list.append(res_vec)
+    return res_list
+
+
+# ---------------------------------------------------------------------------
 # Live-simulation backend availability
 #
 # Live plots run *in this process*, while calibration / sensitivity / UQ run as
@@ -882,12 +1027,23 @@ class SimulationEngine:
                 with _warnings.catch_warnings(record=True) as caught:
                     _force_solver_warnings()
                     with contextlib.redirect_stdout(tee):
-                        t_list, res_list, _sim_times = runner.run_protocols(
-                            str(model_path),
-                            protocol_info=protocol_info,
-                            id_param_names=names,
-                            id_param_vals=vals,
+                        # CA's own executor rather than run_protocols: it is what
+                        # paramID scores from, and it keeps the subexperiments
+                        # apart instead of joining them (#181).
+                        results_by_sub, t_list, time_by_sub = _run_protocol_by_sub(
+                            runner, protocol_info, names, vals
                         )
+                        if results_by_sub is None:
+                            t_list, res_list, _sim_times = runner.run_protocols(
+                                str(model_path),
+                                protocol_info=protocol_info,
+                                id_param_names=names,
+                                id_param_vals=vals,
+                            )
+                        else:
+                            res_list = join_subexperiments(
+                                results_by_sub, t_list, protocol_info, self.dt
+                            )
             except Exception as exc:  # noqa: BLE001 - re-raised with context below
                 raise SimulationError(
                     self.describe_exception(
@@ -914,7 +1070,19 @@ class SimulationEngine:
             time = [float(v) for v in t] if t is not None else []
             experiments.append({"time": time, "outputs": exp_outputs})
 
+        # The segments, for scoring. The plots still get one trace per
+        # experiment; a data_item is scored against the subexperiment it names.
+        subexperiments = (
+            _subexperiment_outputs(
+                results_by_sub, protocol_info, outputs, key_for, var2idx, time_by_sub
+            )
+            if results_by_sub is not None
+            else []
+        )
+
         out: dict = {"experiments": experiments}
+        if subexperiments:
+            out["subexperiments"] = subexperiments
         if fell_back:
             out["backend_fallback"] = {
                 "requested": fell_back,

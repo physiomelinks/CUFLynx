@@ -229,12 +229,20 @@ class Worker:
         vals = [params[n] for n in names] if names else None
 
         with contextlib.redirect_stdout(tee):
-            t_list, res_list, _sim_times = runner.run_protocols(
-                str(msg["model_path"]),
-                protocol_info=protocol_info,
-                id_param_names=names,
-                id_param_vals=vals,
+            results_by_sub, t_list, time_by_sub = _run_protocol_by_sub(
+                runner, protocol_info, names, vals
             )
+            if results_by_sub is None:
+                t_list, res_list, _sim_times = runner.run_protocols(
+                    str(msg["model_path"]),
+                    protocol_info=protocol_info,
+                    id_param_names=names,
+                    id_param_vals=vals,
+                )
+            else:
+                res_list = _join_subexperiments(
+                    results_by_sub, t_list, protocol_info, self.dt
+                )
         var2idx = runner.get_var2idx_dict()
 
         outputs = msg.get("outputs") or []
@@ -254,7 +262,118 @@ class Worker:
             experiments.append(
                 {"time": [float(v) for v in t] if t is not None else [], "outputs": exp_outputs}
             )
-        return {"experiments": experiments}
+        result = {"experiments": experiments}
+        if results_by_sub is not None:
+            result["subexperiments"] = _subexperiment_outputs(
+                results_by_sub, protocol_info, outputs, key_for, var2idx, time_by_sub
+            )
+        return result
+
+
+# ---------------------------------------------------------------------------
+# Sub-experiments (issue #181)
+#
+# Duplicated from engine.py -- an *external* interpreter executes this file and
+# cannot import the app's modules (the same reason _resolve_output_key is
+# duplicated). Keep the two in step; test_subexperiment_cost asserts the joined
+# traces still match CA's own on both paths.
+# ---------------------------------------------------------------------------
+def _sub_counts(protocol_info):
+    sim_times = protocol_info.get("sim_times") or []
+    n_exp = protocol_info.get("num_experiments") or len(sim_times)
+    return protocol_info.get("num_sub_per_exp") or [
+        len(sim_times[i]) if i < len(sim_times) else 1 for i in range(n_exp)
+    ]
+
+
+def _run_protocol_by_sub(runner, protocol_info, names, vals):
+    """CA's ProtocolExecutor, which keeps the segments run_protocols joins."""
+    try:
+        from protocol_runners.protocol_executor import ProtocolExecutor
+    except ImportError:
+        return None, None, None
+    helper = getattr(runner, "sim_helper", None)
+    if helper is None:
+        return None, None, None
+    success, results_by_sub, extra_by_sub, t_by_exp = ProtocolExecutor(helper).run_protocol(
+        protocol_info,
+        result_variables=None,
+        # `time` is an operand of every windowed or peak-timing observable, and
+        # it is not a model variable in var2idx -- the per-experiment payload
+        # takes it from t_list, which is the *joined* clock and would put a
+        # segment's window in the wrong place. CA reads it per segment through
+        # get_results; extra_result_variables collects it in the same pass.
+        extra_result_variables=["time"],
+        id_param_names=names,
+        id_param_vals=vals,
+    )
+    if not success:
+        raise RuntimeError("Protocol simulation failed.")
+    return results_by_sub, t_by_exp, extra_by_sub
+
+
+def _join_subexperiments(results_by_sub, t_by_exp, protocol_info, dt):
+    import numpy as np
+
+    sim_times = protocol_info.get("sim_times") or []
+    num_sub_per_exp = _sub_counts(protocol_info)
+    res_list = []
+    for exp_idx in range(len(t_by_exp)):
+        res_vec = None
+        for sub_idx in range(num_sub_per_exp[exp_idx]):
+            sub_res = results_by_sub.get((exp_idx, sub_idx))
+            if sub_res is None:
+                continue
+            if res_vec is None:
+                res_vec = list(sub_res)
+                for var_idx in range(len(res_vec)):
+                    if not hasattr(res_vec[var_idx], "__len__"):
+                        n = len(t_by_exp[exp_idx]) if t_by_exp[exp_idx] is not None else 1
+                        res_vec[var_idx] = np.ones(n) * res_vec[var_idx]
+            else:
+                for var_idx in range(len(res_vec)):
+                    new_data = sub_res[var_idx]
+                    if not hasattr(new_data, "__len__"):
+                        new_data = np.ones(round(sim_times[exp_idx][sub_idx] / dt)) * new_data
+                    else:
+                        new_data = new_data[1:]
+                    res_vec[var_idx] = np.concatenate([res_vec[var_idx], new_data])
+        res_list.append(res_vec)
+    return res_list
+
+
+def _subexperiment_outputs(results_by_sub, protocol_info, outputs, key_for, var2idx, time_by_sub=None):
+    subs = []
+    for exp_idx, n_sub in enumerate(_sub_counts(protocol_info)):
+        for sub_idx in range(n_sub):
+            res = results_by_sub.get((exp_idx, sub_idx))
+            values = {}
+            for var in outputs:
+                key = key_for.get(var)
+                if key is None or res is None:
+                    continue
+                idx = var2idx[key]
+                if idx >= len(res):
+                    continue
+                series = res[idx]
+                values[var] = (
+                    [float(v) for v in series] if hasattr(series, "__len__") else [float(series)]
+                )
+            t_seg = (time_by_sub or {}).get((exp_idx, sub_idx))
+            if t_seg is not None and len(t_seg):
+                # get_results returns one entry per requested variable; ravel
+                # because a helper may hand back a column rather than a row.
+                import numpy as _np  # noqa: PLC0415
+
+                values["time"] = [float(v) for v in _np.asarray(t_seg[0]).ravel()]
+            subs.append(
+                {
+                    "experiment_idx": exp_idx,
+                    "subexperiment_idx": sub_idx,
+                    "outputs": values,
+                }
+            )
+    return subs
 
 
 def _warning_texts(caught) -> list:
