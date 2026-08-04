@@ -86,9 +86,35 @@ UNSUPPORTED_SOLVER_INFO_KEYS: dict[str, frozenset[str]] = {
     "CVODE_myokit": frozenset({"MaximumNumberOfSteps"}),
 }
 
+# Methods CA advertises for a solver that cannot perform a *forward solve* (#175).
+#
+# CA's methods_by_solver mixes two kinds of thing under one key. For AADC, most
+# entries name an integrator in aadc_python_solver_helper.run(); 'bdf_tape' and
+# 'bdf_kernel' name neither -- they exist only in param_id/aadc_backend.py as
+# _cost_and_grad_bdf_tape / _cost_and_grad_bdf_kernel, which are *gradient
+# strategies* for calibration and do their own stepping. Selecting one and moving
+# a slider therefore always fails with "Unknown AADC solver_info method", because
+# the forward dispatch has no branch for it.
+#
+# Same shape and same rule as UNSUPPORTED_SOLVERS: it composes with the
+# introspection and can only ever remove a method CA offers, never add or rename
+# one. Note this also withdraws them as calibration gradient strategies, since one
+# solver_info['method'] serves both tiers -- the alternative is offering a setting
+# that breaks every live plot. Retire it once CA separates forward integrators
+# from gradient strategies (circulatory_autogen#346), which is the real fix.
+UNSUPPORTED_METHODS: dict[str, frozenset[str]] = {
+    "aadc_semi_implicit": frozenset({"bdf_tape", "bdf_kernel"}),
+}
+
 # solver_info keys that are framework metadata rather than integrator settings.
 # CA keeps these out of SOLVER_INFO_FIELDS and allows them separately.
 FRAMEWORK_SOLVER_INFO_KEYS = frozenset({"solver", "method", "dt_solver", "dt"})
+
+
+def supported_methods(solver: str, methods) -> list:
+    """``methods`` less any CA advertises for ``solver`` but cannot forward-solve."""
+    excluded = UNSUPPORTED_METHODS.get(solver, frozenset())
+    return [m for m in methods if m not in excluded]
 
 
 def unsupported_solver_info_keys(solver: str) -> frozenset[str]:
@@ -565,7 +591,13 @@ def _build_options(schema: dict, differentiable: dict[str, bool]) -> dict:
     formats = [m for m in schema.get("model_types", []) if m in supported]
     solvers_by_model_type = schema.get("solvers_by_model_type", {})
     defaults = schema.get("default_solver_by_model_type", {})
-    methods_by_solver = schema.get("methods_by_solver", {})
+    # Filtered once, here, so every consumer below -- the method dropdown, the
+    # solver_info form's per-method gating, the AD-suitability lists -- agrees
+    # about which methods exist. A method offered by one and not another is how
+    # a dead setting survives.
+    methods_by_solver = {
+        s: supported_methods(s, m) for s, m in schema.get("methods_by_solver", {}).items()
+    }
 
     def _supported(solvers):
         return [s for s in solvers if s not in UNSUPPORTED_SOLVERS]
@@ -582,7 +614,10 @@ def _build_options(schema: dict, differentiable: dict[str, bool]) -> dict:
     all_diff = bool(differentiable) and all(differentiable.values())
     # Per-integrator gradient suitability + preferred default method: from CA's
     # schema (CA #298, landed), else the built-in fallbacks on an older CA.
-    ad_suitable = schema.get("ad_suitable_methods") or dict(_FALLBACK_AD_SUITABLE)
+    ad_suitable = {
+        s: supported_methods(s, m)
+        for s, m in (schema.get("ad_suitable_methods") or dict(_FALLBACK_AD_SUITABLE)).items()
+    }
     # CA enforces a tape constraint for AADC that its schema does not advertise:
     # aadc_backend.TAPE_CONSISTENT_METHODS. Without it we defaulted to the first
     # method CA lists, adaptive_rk45, which can never be taped -- so choosing
@@ -590,8 +625,16 @@ def _build_options(schema: dict, differentiable: dict[str, bool]) -> dict:
     # Read the constraint from CA rather than restating it here, so it cannot
     # drift from what CA actually enforces.
     ad_suitable, default_method_extra = _apply_aadc_tape_constraint(ad_suitable, methods_by_solver)
-    fsa_suitable = schema.get("fsa_suitable_methods") or dict(_FALLBACK_FSA_SUITABLE)
-    default_method = schema.get("default_method_by_solver") or dict(_FALLBACK_DEFAULT_METHOD)
+    fsa_suitable = {
+        s: supported_methods(s, m)
+        for s, m in (schema.get("fsa_suitable_methods") or dict(_FALLBACK_FSA_SUITABLE)).items()
+    }
+    default_method = dict(schema.get("default_method_by_solver") or _FALLBACK_DEFAULT_METHOD)
+    # A default CUFLynx has just withdrawn is not a usable default either.
+    for solver, method in list(default_method.items()):
+        if method not in supported_methods(solver, [method]):
+            offered = methods_by_solver.get(solver) or []
+            default_method[solver] = offered[0] if offered else ""
     # A default the AD path cannot use is not a usable default.
     for solver, method in default_method_extra.items():
         default_method.setdefault(solver, method)

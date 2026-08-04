@@ -24,6 +24,11 @@ export function useSimResult() {
   function setResult(data, elapsedMs = null) {
     result.value = data
     cost.value = data?.cost ?? null
+    // Read off the payload rather than taken as an argument, like `cost` above:
+    // a single run can now carry warnings too (the backend forwards CA's
+    // stiffness check, and flags a partly-NaN trace, #175), and a caller that
+    // forgot to pass them would silently drop the only explanation the user gets.
+    warnings.value = data?.warnings ?? []
     experiments.value = []
     status.value = 'ok'
     lastRunMs.value = elapsedMs

@@ -121,8 +121,21 @@ class SimWorker:
         if proc is None or proc.stdout is None:
             return
         for line in proc.stdout:
-            if line.strip():
-                self._replies.put(line)
+            if not line.strip():
+                continue
+            try:
+                json.loads(line)
+            except ValueError:
+                # Not a reply. The child points fd 1 at stderr so nothing else
+                # should reach this pipe, but a library that reopens or inherits
+                # the descriptor another way still could -- and losing the run
+                # over a stray banner (AADC printed one) is a worse outcome than
+                # logging it and reading on. Mirrored like stderr so it is not
+                # simply swallowed.
+                self._stderr.append(line.rstrip("\n"))
+                print(f"[sim-worker] {line}", end="")
+                continue
+            self._replies.put(line)
         self._replies.put(_EOF)
 
     def _drain_stderr(self) -> None:
