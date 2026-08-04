@@ -520,7 +520,13 @@ class SimulationEngine:
         configured format otherwise -- so the caller can tell the user the plot
         is a preview from a different backend rather than silently showing one.
         """
-        if backend_importable(self.model_type):
+        # With a worker, what this process can import is beside the point: the
+        # model runs in the chosen interpreter, and the fallback below would
+        # swap the backend -- and, through resolve_model_path, hand the worker a
+        # model generated for a format it was not configured to read. That is
+        # how selecting aadc_python produced "'NoneType' object has no attribute
+        # 'loader'": a .cellml path passed to a helper that imports Python.
+        if self.uses_worker() or backend_importable(self.model_type):
             return self.model_type, self.solver, None
         for fmt, solver in _LIVE_FALLBACKS:
             if backend_importable(fmt):
@@ -528,6 +534,11 @@ class SimulationEngine:
         # Nothing importable at all: keep the configured choice so the failure
         # names the real problem rather than a substitute we also cannot run.
         return self.model_type, self.solver, None
+
+    def uses_worker(self) -> bool:
+        """Whether live simulation will run in a worker rather than here (#167)."""
+        python = (self.worker_python or "").strip()
+        return bool(python) and not _is_this_interpreter(python)
 
     def reset(self) -> None:
         """Drop all cached helpers/runners (used between tests).
