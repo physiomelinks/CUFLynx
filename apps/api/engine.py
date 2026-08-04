@@ -233,7 +233,10 @@ def _run_protocol_by_sub(runner, protocol_info, names, vals):
     if helper is None:
         return None, None, None
 
-    executor = ProtocolExecutor(helper)
+    # The runner's own executor, not a fresh one: ProtocolRunner builds it once
+    # at construction and reuses it, and a second executor over the same helper
+    # made repeated runs non-reproducible (run 3 diverged from run 1 by 145 mV).
+    executor = getattr(runner, "_executor", None) or ProtocolExecutor(helper)
     success, results_by_sub, extra_by_sub, t_by_exp = executor.run_protocol(
         protocol_info,
         result_variables=None,

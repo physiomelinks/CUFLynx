@@ -295,7 +295,8 @@ def _run_protocol_by_sub(runner, protocol_info, names, vals):
     helper = getattr(runner, "sim_helper", None)
     if helper is None:
         return None, None, None
-    success, results_by_sub, extra_by_sub, t_by_exp = ProtocolExecutor(helper).run_protocol(
+    executor = getattr(runner, "_executor", None) or ProtocolExecutor(helper)
+    success, results_by_sub, extra_by_sub, t_by_exp = executor.run_protocol(
         protocol_info,
         result_variables=None,
         # `time` is an operand of every windowed or peak-timing observable, and

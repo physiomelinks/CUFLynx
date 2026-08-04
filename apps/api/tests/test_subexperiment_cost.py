@@ -134,7 +134,10 @@ def test_the_joined_traces_match_cas_own(client, requires_simulation, tmp_path):
     model_id, obs = _sn(client)
     protocol_info = obs["protocol_info"]
 
-    r = client.post("/api/protocol/run", json={"model_id": model_id, "params": {}})
+    r = client.post(
+        "/api/protocol/run",
+        json={"model_id": model_id, "params": {}, "outputs": ["soma_SN/V"]},
+    )
     assert r.status_code == 200, r.text
     ours = r.json()["experiments"]
 
