@@ -13,6 +13,7 @@ import {
   startCalibration,
   startSensitivity,
   errorMessage,
+  fetchExampleModel,
 } from './api'
 
 beforeEach(() => {
@@ -26,6 +27,16 @@ describe('api client', () => {
     const ok = await checkHealth()
     expect(ok).toBe(true)
     expect(axios.get).toHaveBeenCalledOnce()
+  })
+
+  it('fetches an example as a blob, so a .omex survives the trip', async () => {
+    // Text would run the zip through a character codec and corrupt it (#180).
+    const blob = new Blob([new Uint8Array([0x50, 0x4b, 3, 4])], { type: 'application/zip' })
+    axios.get.mockResolvedValue({ data: blob })
+    const file = await fetchExampleModel('3compartment', '3compartment.omex')
+    expect(axios.get.mock.calls[0][1]).toMatchObject({ responseType: 'blob' })
+    expect(file.name).toBe('3compartment.omex')
+    expect(file.type).toBe('application/zip')
   })
 
   it('test_upload_cellml_resolves_model_id', async () => {

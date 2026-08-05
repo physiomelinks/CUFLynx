@@ -53,6 +53,7 @@ from aadc_check import aadc_status
 from version import __version__
 from compiler_check import compiler_status
 from engine import SimulationError, engine, _circulatory_autogen_src
+from examples import EXAMPLE_MODELS, media_type as example_media_type
 from local_sensitivity import local_gradient_sources
 import export_pipeline
 from model_codegen import resolve_model_path, reset_cache as reset_codegen
@@ -761,21 +762,13 @@ def fs_mkdir(req: MkdirRequest) -> dict:
     return {"path": str(target)}
 
 
-# Example CellML models offered by the "Start" dialog. Data-driven so more
-# examples (e.g. PMR models) slot in later without touching the route. Each
-# value is a filename under the bundled ``resources/`` dir. The frontend fetches
-# one of these and feeds it through the normal upload flow.
-EXAMPLE_MODELS: dict[str, str] = {
-    "3compartment": "3compartment_flat.cellml",
-}
-
-
 @app.get("/api/examples/{name}")
 def get_example_model(name: str) -> FileResponse:
-    """Serve a bundled example CellML model by its logical name.
+    """Serve a bundled example study by its logical name.
 
-    The Start dialog loads the returned file through the normal upload flow, so
-    no separate ingest path is needed.
+    The Start dialog loads the returned archive through the normal .omex upload
+    flow, so no separate ingest path is needed -- and the example arrives with
+    its obs_data and params_for_id, which a loose CellML could not carry.
     """
     filename = EXAMPLE_MODELS.get(name)
     if filename is None:
@@ -783,7 +776,7 @@ def get_example_model(name: str) -> FileResponse:
     path = resources_dir() / filename
     if not path.is_file():
         raise HTTPException(status_code=404, detail=f"example model file missing: {filename}")
-    return FileResponse(path, media_type="application/xml", filename=filename)
+    return FileResponse(path, media_type=example_media_type(filename), filename=filename)
 
 
 def _with_obs_operands(outputs: list[str], record) -> list[str]:

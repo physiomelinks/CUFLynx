@@ -43,7 +43,7 @@ const StartDialogStub = {
   template:
     '<div v-if="visible" data-testid="start-dialog">' +
     '<button data-testid="pick-example" ' +
-    "@click=\"$emit('select-example', { name: '3compartment', label: '3-compartment circulation', filename: '3compartment_flat.cellml' })\">" +
+    "@click=\"$emit('select-example', { name: '3compartment', label: '3-compartment circulation', filename: '3compartment.omex' })\">" +
     'pick</button></div>',
 }
 const stubs = {
@@ -68,6 +68,7 @@ beforeEach(() => {
   uploadObsData.mockReset()
   uploadParamsForId.mockReset()
   fetchExampleModel.mockReset()
+  uploadOmex.mockReset()
 })
 
 describe('FileImport', () => {
@@ -230,12 +231,18 @@ describe('FileImport', () => {
     expect(wrapper.find('[data-testid="start-edit"]').text()).toBe('Edit')
   })
 
-  it('Create opens the dialog, and picking the example runs the load flow', async () => {
-    const file = new File(['<model/>'], '3compartment_flat.cellml', {
-      type: 'application/xml',
-    })
+  it('Create opens the dialog, and picking the example loads the whole study', async () => {
+    // The example ships as a COMBINE archive, so one click brings the model,
+    // its obs_data and its params_for_id (#180).
+    const file = new File(['PK'], '3compartment.omex', { type: 'application/zip' })
     fetchExampleModel.mockResolvedValue(file)
-    uploadCellML.mockResolvedValue({ model_id: 'ex', name: 'CardiovascularSystem' })
+    uploadOmex.mockResolvedValue({
+      model_id: 'ex',
+      name: 'CardiovascularSystem',
+      model_filename: '3compartment_flat.cellml',
+      obs_data: { data_items: [{ name: 'x' }] },
+      params_for_id: { params: [{ name: 'p' }], filename: '3compartment_params_for_id.csv' },
+    })
     const wrapper = mount(FileImport, { global: { stubs } }) // no modelId
 
     // Dialog closed until Start is clicked.
@@ -243,17 +250,35 @@ describe('FileImport', () => {
     await wrapper.find('[data-testid="start-edit"]').trigger('click')
     expect(wrapper.find('[data-testid="start-dialog"]').exists()).toBe(true)
 
-    // Choosing the example fetches it and feeds it through the upload flow.
+    // Choosing the example fetches it and feeds it through the archive flow.
     await wrapper.find('[data-testid="pick-example"]').trigger('click')
     await flushPromises()
-    expect(fetchExampleModel).toHaveBeenCalledWith('3compartment', '3compartment_flat.cellml')
-    expect(uploadCellML).toHaveBeenCalledOnce()
-    expect(uploadCellML.mock.calls[0][0]).toEqual([file])
-    expect(wrapper.emitted('model-loaded')[0][0]).toEqual({
+    expect(fetchExampleModel).toHaveBeenCalledWith('3compartment', '3compartment.omex')
+    expect(uploadOmex).toHaveBeenCalledOnce()
+    expect(uploadOmex.mock.calls[0][0]).toBe(file)
+    expect(uploadCellML).not.toHaveBeenCalled()
+    expect(wrapper.emitted('model-loaded')[0][0]).toMatchObject({
       model_id: 'ex',
-      name: 'CardiovascularSystem',
       filename: '3compartment_flat.cellml',
     })
+    expect(wrapper.emitted('obs-data-loaded')[0][0]).toMatchObject({ model_id: 'ex' })
+    expect(wrapper.emitted('params-loaded')[0][0]).toMatchObject({
+      filename: '3compartment_params_for_id.csv',
+    })
+  })
+
+  it('a non-archive example still loads through the plain CellML flow', async () => {
+    // The archive is what examples ship as, not a requirement of the mechanism.
+    const file = new File(['<model/>'], 'example.cellml', { type: 'application/xml' })
+    fetchExampleModel.mockResolvedValue(file)
+    uploadCellML.mockResolvedValue({ model_id: 'ex', name: 'm' })
+    const wrapper = mount(FileImport, { global: { stubs } })
+
+    await wrapper.find('[data-testid="start-edit"]').trigger('click')
+    await wrapper.find('[data-testid="pick-example"]').trigger('click')
+    await flushPromises()
+    expect(uploadOmex).not.toHaveBeenCalled()
+    expect(uploadCellML).toHaveBeenCalledOnce()
   })
 
   it('Edit opens PhLynx instead of the Start dialog when a model is loaded', async () => {

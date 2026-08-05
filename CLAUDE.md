@@ -179,6 +179,14 @@ an empty pipe.
     which the spec bundles at `include/python<X.Y>`.
   - **Sundials/CVODE headers + libs are bundled** and the hook repoints
     `myokit.SUNDIALS_INC` / `SUNDIALS_LIB`, so users needn't install Sundials.
+- **`resources/` is not in the bundle — only what is listed is.** The "Start"
+  dialog's examples are served from `resources/`, and nothing collected that dir,
+  so the example 404'd with "example model file missing" in the packaged app only
+  (issue #180). `apps/api/examples.py` now holds the manifest and the spec imports
+  it (`datas += examples.example_datas()`), so route and bundle cannot drift; a
+  listed file that is missing fails the *build*. Examples ship as **`.omex`**, not
+  loose CellML, because an example is a study — model + obs_data + params_for_id —
+  and the frontend loads it through the existing archive path.
 - **A C compiler cannot be bundled away — but it is only needed for one backend.**
   Of CA's `src/solver_wrappers/*`, **only `myokit_helper.py` compiles anything**;
   `python` (scipy `solve_ivp`) and `casadi_python` (`casadi_integrator`) are
