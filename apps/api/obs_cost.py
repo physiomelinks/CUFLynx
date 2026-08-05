@@ -14,6 +14,17 @@ would look authoritative while ranking parameter sets differently.
 Both errors mirror what a calibration writes to percent_error_vec.npy and
 std_error_vec.npy, so a manual perturbation and a best fit can be put on the
 same axes.
+
+The *aggregation* is CA's too, and has to be (#181): CA takes the mean
+contribution per weighted observable, not the sum --
+
+    paramID.get_cost_obs_and_pred_from_params:
+        cost += sub_cost                       # over experiments x subexperiments
+        cost = cost / float(weighted_obs_denominator)
+
+-- so summing here reported a number larger by exactly the observable count.
+Same parameters, same data, two different costs, with nothing on screen to say
+which was which.
 """
 
 from __future__ import annotations
@@ -25,6 +36,28 @@ from obs_options import get_cost_funcs, get_operation_funcs
 # The cost when a data_item names none. CA's own default for a data_item with no
 # cost_type; kept here so a file written before cost_type existed still scores.
 DEFAULT_COST_TYPE = "MSE"
+
+
+def _weight_of(item: dict) -> float:
+    """The item's weight, with a *deliberate* zero preserved.
+
+    ``item.get("weight") or 1.0`` reads a 0 as "unset" and substitutes 1.0 --
+    the one coercion that reverses what the user asked for, since 0 is how an
+    observable is switched off.
+    """
+    weight = item.get("weight")
+    if not isinstance(weight, (int, float)):
+        return 1.0
+    return float(weight)
+
+
+def _std_of(item: dict) -> float:
+    """The item's std; 1.0 when absent. A std of 0 would divide by zero, so it
+    is treated as absent rather than passed to the cost func."""
+    std = item.get("std")
+    if not isinstance(std, (int, float)) or not std:
+        return 1.0
+    return float(std)
 
 
 def _model_value(item: dict, outputs: dict, op_funcs) -> float | None:
@@ -89,8 +122,15 @@ def evaluate(data_items, outputs_by_experiment, output_dir: str | None = None) -
     scored = []
     total = 0.0
     any_scored = False
+    # CA's denominator: every observable with a non-zero weight, across all
+    # experiments and subexperiments. Counted even when we cannot score it --
+    # CA can, so leaving it out would report a *better* cost than the
+    # calibration for the same parameters.
+    weighted = 0
+    unscored = 0
     for item in items:
         exp = int(item.get("experiment_idx", 0) or 0)
+        weight = _weight_of(item)
         outputs = outputs_by_experiment.get(exp) or {}
         label = item.get("name_for_plotting") or item.get("variable") or ""
         entry = {
@@ -103,6 +143,14 @@ def evaluate(data_items, outputs_by_experiment, output_dir: str | None = None) -
             "std_error": None,
             "cost": None,
         }
+
+        if weight == 0.0:
+            # CA skips these (`if weight_entry != 0`), and so must the
+            # denominator: switching an observable off would otherwise change
+            # the cost of the ones left on.
+            scored.append(entry)
+            continue
+        weighted += 1
 
         model = _model_value(item, outputs, op_funcs)
         observed = item.get("value")
@@ -119,17 +167,25 @@ def evaluate(data_items, outputs_by_experiment, output_dir: str | None = None) -
             func = cost_funcs.get(item.get("cost_type") or DEFAULT_COST_TYPE)
             if func is not None:
                 try:
-                    cost = float(
-                        func(model, observed, item.get("std") or 1.0, item.get("weight") or 1.0)
-                    )
+                    cost = float(func(model, observed, _std_of(item), weight))
                 except Exception:  # noqa: BLE001 - a cost func that cannot score this item
                     cost = None
                 if cost is not None and math.isfinite(cost):
                     entry["cost"] = cost
                     total += cost
                     any_scored = True
+        if entry["cost"] is None:
+            unscored += 1
         scored.append(entry)
 
     if not any_scored:
         return None
-    return {"cost": total, "items": scored}
+    return {
+        "cost": total / float(weighted or 1),
+        "items": scored,
+        "n_weighted": weighted,
+        # Some weighted observable had no number behind it, so this is the mean
+        # over a numerator CA would have filled in -- lower than CA's, and worth
+        # saying so rather than presenting it as the same figure.
+        "incomplete": unscored > 0,
+    }

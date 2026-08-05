@@ -276,3 +276,63 @@ describe('AnalysisPanel comparison (#159 follow-up)', () => {
     expect(w.find('[data-testid="analysis-cost-baseline"]').text()).toBe('12.5')
   })
 })
+
+// ---------------------------------------------------------------------------
+// Legend for the comparison bars (issue #178)
+//
+// Ticking "compare" draws two bars per observable in two colours, and nothing
+// on screen said which colour was which. The bars are the only thing telling
+// the current parameters from the best fit, so an unlabelled colour makes the
+// chart unreadable rather than merely terse.
+// ---------------------------------------------------------------------------
+describe('AnalysisPanel comparison legend (#178)', () => {
+  const CURRENT = {
+    cost: 1363.2,
+    items: [{ label: 'u_{AR}', percent_error: 5.4, std_error: 0.54, cost: 900 }],
+  }
+  const BASELINE = {
+    label: 'calibration best fit',
+    cost: 12.5,
+    items: [{ label: 'u_{AR}', percent_error: 0.9, std_error: 0.09 }],
+  }
+  const mountIt = (props = {}) => mount(AnalysisPanel, { props: { ...props } })
+
+  it('names both series once the charts are comparing', async () => {
+    const w = mountIt({ currentCost: CURRENT, baselineCost: BASELINE })
+    await w.find('[data-testid="compare-costs"]').setValue(true)
+    const legends = w.findAll('[data-testid="compare-legend"]')
+    // One per chart: the two charts scroll independently, so a single legend at
+    // the top is off screen exactly when it is needed.
+    expect(legends).toHaveLength(2)
+    expect(legends[0].text()).toContain('current parameters')
+    expect(legends[0].text()).toContain('calibration best fit')
+  })
+
+  it('uses the same colours as the bars it explains', async () => {
+    const w = mountIt({ currentCost: CURRENT, baselineCost: BASELINE })
+    await w.find('[data-testid="compare-costs"]').setValue(true)
+    const swatches = w.find('[data-testid="compare-legend"]').findAll('.legend-swatch')
+    const bars = w.find('[data-testid="compare-percent-chart"]').findAll('.bar-fill')
+    // Bound from the same constants as the bars, so the two cannot drift.
+    expect(swatches[0].attributes('style')).toContain(
+      bars[0].attributes('style').match(/background:[^;]+/)[0],
+    )
+    expect(swatches[1].attributes('style')).toContain(
+      bars[1].attributes('style').match(/background:[^;]+/)[0],
+    )
+  })
+
+  it('is not shown when there is nothing to compare against', () => {
+    const w = mountIt({ currentCost: CURRENT })
+    expect(w.find('[data-testid="compare-legend"]').exists()).toBe(false)
+  })
+
+  it('takes the baseline’s own name, so it is not always “baseline”', async () => {
+    const w = mountIt({
+      currentCost: CURRENT,
+      baselineCost: { ...BASELINE, label: 'bounds centre' },
+    })
+    await w.find('[data-testid="compare-costs"]').setValue(true)
+    expect(w.find('[data-testid="compare-legend"]').text()).toContain('bounds centre')
+  })
+})
