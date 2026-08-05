@@ -215,6 +215,24 @@ def _subexperiment_outputs(results_by_sub, protocol_info, outputs, key_for, var2
     return subs
 
 
+def bind_protocol(runner, protocol_info):
+    """Bind the protocol onto the helper, then re-read the variable order.
+
+    Binding `pace` rebuilds the simulation, and the rebuilt model has one more
+    variable, so every result row shifts: `soma_SN/V` read back as its neighbour
+    `E_Na`, 145 mV out. `ProtocolRunner.run_protocols` refreshes `variable_names`
+    for exactly this reason -- calling the executor directly means doing it here.
+    `_applied_protocol_info` is CA's own marker, set so a later `run_protocols`
+    on this runner does not rebuild the simulation again to bind what is bound.
+    """
+    helper = getattr(runner, "sim_helper", None)
+    if helper is None or not hasattr(helper, "set_protocol_info"):
+        return
+    helper.set_protocol_info(protocol_info)
+    runner._applied_protocol_info = protocol_info
+    runner.variable_names = helper.get_all_variable_names()
+
+
 def _run_protocol_by_sub(runner, protocol_info, names, vals):
     """Run the protocol through CA's ProtocolExecutor, keeping the segments.
 
@@ -222,21 +240,15 @@ def _run_protocol_by_sub(runner, protocol_info, names, vals):
     segments away; this is the same public class, on the same helper, called the
     way paramID calls it.
     """
-    try:
-        from protocol_runners.protocol_executor import ProtocolExecutor  # noqa: PLC0415
-    except ImportError:
-        # An older CA without the executor. The joined traces are still right;
-        # only the per-subexperiment cost is unavailable, and obs_cost falls
-        # back to scoring per experiment as it did before.
-        return None, None, None
-    helper = getattr(runner, "sim_helper", None)
-    if helper is None:
-        return None, None, None
-
-    # The runner's own executor, not a fresh one: ProtocolRunner builds it once
+    # The runner's own executor, never a fresh one: ProtocolRunner builds it once
     # at construction and reuses it, and a second executor over the same helper
     # made repeated runs non-reproducible (run 3 diverged from run 1 by 145 mV).
-    executor = getattr(runner, "_executor", None) or ProtocolExecutor(helper)
+    # So its absence means a CA too old to have one, and the answer is to fall
+    # back to run_protocols -- the joined traces are still right, and obs_cost
+    # scores per experiment as it did before -- not to build one here.
+    executor = getattr(runner, "_executor", None)
+    if executor is None:
+        return None, None, None
     success, results_by_sub, extra_by_sub, t_by_exp = executor.run_protocol(
         protocol_info,
         result_variables=None,
@@ -1012,11 +1024,9 @@ class SimulationEngine:
             # Bind any time-varying protocol traces onto the helper before the
             # run. set_protocol_info recreates the simulation with the `pace`
             # binding, so only call it when the protocol actually changed.
-            helper = getattr(runner, "sim_helper", None)
-            if helper is not None and hasattr(helper, "set_protocol_info"):
-                if self._runner_protocol_info.get(cache_key) is not protocol_info:
-                    helper.set_protocol_info(protocol_info)
-                    self._runner_protocol_info[cache_key] = protocol_info
+            if self._runner_protocol_info.get(cache_key) is not protocol_info:
+                bind_protocol(runner, protocol_info)
+                self._runner_protocol_info[cache_key] = protocol_info
 
             names = list(params.keys()) if params else None
             vals = [params[n] for n in names] if names else None

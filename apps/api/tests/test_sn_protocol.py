@@ -21,11 +21,19 @@ class _FakeHelper:
     def set_protocol_info(self, protocol_info):
         self.protocol_infos.append(protocol_info)
 
+    def get_all_variable_names(self):
+        return ["comp.x"]
+
 
 class _FakeRunner:
     def __init__(self, **_kwargs):
         self.sim_helper = _FakeHelper()
         self.run_calls = []
+        # A real ProtocolRunner reads the names once at construction and
+        # re-reads them whenever the protocol is bound, because binding can
+        # reorder them; get_var2idx_dict is derived rather than fixed so that
+        # coupling is modelled here too.
+        self.variable_names = self.sim_helper.get_all_variable_names()
 
     def run_protocols(self, model_path, protocol_info=None, id_param_names=None, id_param_vals=None):
         self.run_calls.append(protocol_info)
@@ -33,7 +41,7 @@ class _FakeRunner:
         return [np.array([0.0, 1.0, 2.0])], [[np.array([10.0, 11.0, 12.0])]], [[3]]
 
     def get_var2idx_dict(self):
-        return {"comp.x": 0}
+        return {name: idx for idx, name in enumerate(self.variable_names)}
 
 
 def test_protocol_run_binds_protocol_info_with_trace(client):

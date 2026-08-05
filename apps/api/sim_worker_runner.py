@@ -218,11 +218,9 @@ class Worker:
         # Binding `pace` recreates the simulation, so only do it when the
         # protocol actually changed. Compared by value here, not identity: the
         # parent's dict crossed a process boundary and is a new object each time.
-        helper = getattr(runner, "sim_helper", None)
-        if helper is not None and hasattr(helper, "set_protocol_info"):
-            if self._runner_protocol_info.get(model_id) != protocol_info:
-                helper.set_protocol_info(protocol_info)
-                self._runner_protocol_info[model_id] = json.loads(json.dumps(protocol_info))
+        if self._runner_protocol_info.get(model_id) != protocol_info:
+            _bind_protocol(runner, protocol_info)
+            self._runner_protocol_info[model_id] = json.loads(json.dumps(protocol_info))
 
         params = msg.get("params") or {}
         names = list(params.keys()) if params else None
@@ -286,16 +284,29 @@ def _sub_counts(protocol_info):
     ]
 
 
+def _bind_protocol(runner, protocol_info):
+    """Bind the protocol, then re-read the variable order. See engine.bind_protocol.
+
+    Binding `pace` rebuilds the simulation with one more variable, so every
+    result row shifts and each variable reads as its neighbour unless the map is
+    refreshed -- which run_protocols did for us and the executor does not.
+    """
+    helper = getattr(runner, "sim_helper", None)
+    if helper is None or not hasattr(helper, "set_protocol_info"):
+        return
+    helper.set_protocol_info(protocol_info)
+    runner._applied_protocol_info = protocol_info
+    runner.variable_names = helper.get_all_variable_names()
+
+
 def _run_protocol_by_sub(runner, protocol_info, names, vals):
     """CA's ProtocolExecutor, which keeps the segments run_protocols joins."""
-    try:
-        from protocol_runners.protocol_executor import ProtocolExecutor
-    except ImportError:
+    # The runner's own executor, never a fresh one -- a second executor over the
+    # same helper made repeated runs non-reproducible. Absent means a CA too old
+    # to have one, so fall back to run_protocols. See engine._run_protocol_by_sub.
+    executor = getattr(runner, "_executor", None)
+    if executor is None:
         return None, None, None
-    helper = getattr(runner, "sim_helper", None)
-    if helper is None:
-        return None, None, None
-    executor = getattr(runner, "_executor", None) or ProtocolExecutor(helper)
     success, results_by_sub, extra_by_sub, t_by_exp = executor.run_protocol(
         protocol_info,
         result_variables=None,

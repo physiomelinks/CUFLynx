@@ -89,6 +89,58 @@ def test_a_run_without_segments_still_scores(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Binding the protocol reorders the result rows
+# ---------------------------------------------------------------------------
+class _Helper:
+    """A helper whose variable order changes when the protocol is bound, which
+    is what Myokit's does: binding `pace` rebuilds the model with the paced
+    variable added, so every later row shifts by one."""
+
+    def __init__(self):
+        self.names = ["environment/time", "a/E_Na", "a/V"]
+        self.bound = 0
+
+    def set_protocol_info(self, protocol_info):
+        self.bound += 1
+        self.names = ["parameters/I_in", *self.names]
+
+    def get_all_variable_names(self):
+        return list(self.names)
+
+
+class _Runner:
+    def __init__(self):
+        self.sim_helper = _Helper()
+        self.variable_names = self.sim_helper.get_all_variable_names()
+
+    def get_var2idx_dict(self):
+        return {name: idx for idx, name in enumerate(self.variable_names)}
+
+
+def test_binding_the_protocol_refreshes_the_variable_map():
+    """Without the refresh every variable reads as its neighbour: on SN_simple
+    `soma_SN/V` came back as `E_Na`, 145 mV out, and the joined traces did not
+    match CA's own. run_protocols refreshes it; the executor cannot."""
+    runner = _Runner()
+    engine_mod.bind_protocol(runner, {"sim_times": [[1.0]]})
+
+    assert runner.get_var2idx_dict()["a/V"] == 3, (
+        "the variable map still indexes the pre-binding row order"
+    )
+
+
+def test_binding_marks_the_protocol_as_applied():
+    """CA's own marker, so a later run_protocols on this runner does not rebuild
+    the simulation to bind what is already bound."""
+    runner = _Runner()
+    protocol_info = {"sim_times": [[1.0]]}
+    engine_mod.bind_protocol(runner, protocol_info)
+
+    assert runner._applied_protocol_info is protocol_info
+    assert runner.sim_helper.bound == 1
+
+
+# ---------------------------------------------------------------------------
 # End to end, on the fixture that shows it
 # ---------------------------------------------------------------------------
 @pytest.mark.integration
@@ -109,16 +161,27 @@ def test_sn_subexperiments_are_scored_separately(client, requires_simulation):
         (0, 0), (0, 1), (1, 0), (1, 1), (2, 0), (2, 1),
     ]
 
+    segs = {(s["experiment_idx"], s["subexperiment_idx"]): s["outputs"] for s in body["subexperiments"]}
     by_key = {(i["experiment_idx"], i["subexperiment_idx"], i["operation"]): i
               for i in body["cost"]["items"]}
-    a = by_key[(0, 0, "calc_spike_frequency_windowed")]
-    b = by_key[(0, 1, "calc_spike_frequency_windowed")]
-    # The bug, exactly: both read the same number from the same trace while
-    # expecting different things from different segments.
-    assert a["observed"] != b["observed"]
-    assert a["model"] != b["model"], (
-        "both subexperiments of experiment 0 produced the same value, so they "
-        "are still being scored against one trace"
+
+    # The two segments of experiment 0 differ -- params_to_change steps
+    # soma_SN/I_in from 0 to -0.15 between them -- so scoring against the wrong
+    # one is observable at all.
+    assert max(segs[(0, 0)]["soma_SN/V"]) != max(segs[(0, 1)]["soma_SN/V"])
+
+    # Each item reads the segment it names, not the joined experiment trace.
+    item = by_key[(0, 1, "max")]
+    assert item["model"] == pytest.approx(max(segs[(0, 1)]["soma_SN/V"]))
+
+    # `time` is the segment's own clock. Keyed on the experiment, this item was
+    # scored against the joined clock -- which starts a whole pre_time earlier,
+    # putting the peak an experiment-length away from the 2.02 s expected.
+    peak = by_key[(0, 1, "first_peak_time")]["model"]
+    t = segs[(0, 1)]["time"]
+    assert t[0] <= peak <= t[-1], (
+        f"first peak at {peak} lies outside its own segment's window "
+        f"[{t[0]}, {t[-1]}], so the operand clock is still the joined one"
     )
 
 
