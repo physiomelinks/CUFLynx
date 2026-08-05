@@ -102,8 +102,11 @@ def _model_value(item: dict, outputs: dict, op_funcs) -> float | None:
 def evaluate(data_items, outputs_by_experiment, output_dir: str | None = None) -> dict | None:
     """Score the current run against the data_items.
 
-    ``outputs_by_experiment`` is ``{experiment_idx: {variable: series}}``; a
-    single-experiment run passes ``{0: outputs}``.
+    ``outputs_by_experiment`` is keyed by ``(experiment_idx, subexperiment_idx)``
+    or, for a run with no subexperiments, by ``experiment_idx`` alone; a single
+    run passes ``{0: outputs}``. A data_item names both, and CA scores it against
+    that subexperiment's own segment (#181) -- keying on the experiment alone put
+    every item past the first subexperiment against the wrong trace.
 
     Returns ``{"cost", "items": [...]}`` or None when nothing could be scored --
     no CA, no data_items, or a run that recorded none of the operands. None
@@ -130,13 +133,21 @@ def evaluate(data_items, outputs_by_experiment, output_dir: str | None = None) -
     unscored = 0
     for item in items:
         exp = int(item.get("experiment_idx", 0) or 0)
+        sub = int(item.get("subexperiment_idx", 0) or 0)
         weight = _weight_of(item)
-        outputs = outputs_by_experiment.get(exp) or {}
+        # (exp, sub) when the run kept its segments; the experiment alone when
+        # it did not, so a plain simulate still scores.
+        outputs = (
+            outputs_by_experiment.get((exp, sub))
+            if (exp, sub) in outputs_by_experiment
+            else outputs_by_experiment.get(exp)
+        ) or {}
         label = item.get("name_for_plotting") or item.get("variable") or ""
         entry = {
             "label": label,
             "operation": item.get("operation") or "",
             "experiment_idx": exp,
+            "subexperiment_idx": sub,
             "observed": item.get("value"),
             "model": None,
             "percent_error": None,

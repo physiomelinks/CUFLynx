@@ -146,8 +146,10 @@ Rules it follows, and must keep following:
 - `sim_worker_runner.py` ships as **data** in the `runners/` subdir, because an
   external interpreter executes it as a file — and it must stay free of imports
   from the app, whose modules are frozen into the bundle and unreachable from
-  outside it. `_resolve_output_key` is duplicated there for that reason; keep the
-  two in step.
+  outside it. `_resolve_output_key`, `bind_protocol` and the sub-experiment
+  helpers (`_sub_counts`, `_run_protocol_by_sub`, `_subexperiment_outputs`, the
+  join) are duplicated there for that reason; keep each pair in step, or the
+  cost silently depends on whether an interpreter is configured in Settings.
 - The worker returns the **captured solver output plus a fallback reason**, and
   the parent composes the message through `failure_message` — so the issue #138
   error quality lives in one place rather than on both sides of a pipe.

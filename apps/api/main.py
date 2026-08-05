@@ -1212,14 +1212,18 @@ def protocol_run(req: ProtocolRunRequest) -> dict:
         # `time` is an operand of any windowed or peak-timing operation, and it
         # is returned beside the outputs rather than in them -- so it is folded
         # in here, or every such observable goes unscored.
-        result["cost"] = obs_cost.evaluate(
-            items,
-            {
-                e: {**exp.get("outputs", {}), "time": exp.get("time", [])}
-                for e, exp in enumerate(result.get("experiments", []))
-            },
-            output_dir,
-        )
+        # Keyed by (experiment, subexperiment) where the run kept its segments,
+        # which is what a data_item names and what CA scores against (#181). The
+        # per-experiment traces stay as a fallback for a payload without them.
+        scored_by = {
+            e: {**exp.get("outputs", {}), "time": exp.get("time", [])}
+            for e, exp in enumerate(result.get("experiments", []))
+        }
+        for sub in result.get("subexperiments") or []:
+            scored_by[(sub["experiment_idx"], sub["subexperiment_idx"])] = sub.get(
+                "outputs", {}
+            )
+        result["cost"] = obs_cost.evaluate(items, scored_by, output_dir)
     return result
 
 
