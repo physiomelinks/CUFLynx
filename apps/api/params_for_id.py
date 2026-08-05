@@ -94,6 +94,7 @@ class ParamEntry:
     param_type: str | None
     initial_value: float | None = None
     comment: str | None = None
+    prior: str | None = None
 
     def as_dict(self) -> dict:
         return {
@@ -104,6 +105,7 @@ class ParamEntry:
             "param_type": self.param_type,
             "initial_value": self.initial_value,
             "comment": self.comment,
+            "prior": self.prior,
         }
 
 
@@ -136,6 +138,7 @@ def parse_params_for_id(
     has_plotting = "name_for_plotting" in df.columns
     has_type = "param_type" in df.columns
     has_comment = "comment" in df.columns
+    has_prior = "prior" in df.columns
     initial_values = initial_values or {}
     gen_index = _build_gen_index(initial_values)
 
@@ -165,6 +168,16 @@ def parse_params_for_id(
             comment_str = str(row["comment"]).strip()
             comment = comment_str or None
 
+        # `prior` selects the MCMC/UQ prior for this parameter (CA's
+        # PARAM_PRIOR_TYPES). Carried through rather than dropped: the editor used
+        # to rewrite the CSV without this column, which silently reverted every
+        # non-uniform prior to uniform. Left verbatim -- CA canonicalises and
+        # validates it, and duplicating that here is how the two drift apart.
+        prior = None
+        if has_prior and not pd.isna(row["prior"]):
+            prior_str = str(row["prior"]).strip()
+            prior = prior_str or None
+
         vessels = str(row["vessel_name"]).split()
         if not vessels:
             raise ParamsForIdError(f"row {idx}: empty vessel_name")
@@ -181,6 +194,7 @@ def parse_params_for_id(
                         vessel, param_name, initial_values, gen_index
                     ),
                     comment=comment,
+                    prior=prior,
                 )
             )
 

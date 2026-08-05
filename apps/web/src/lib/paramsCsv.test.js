@@ -153,3 +153,45 @@ describe('versionedFilename', () => {
     expect(versionedFilename(null, 'LV', d)).toBe('LV_params_for_id_260615.csv')
   })
 })
+
+describe('buildParamsCsv — prior column', () => {
+  it('emits the column only when a row carries a prior', () => {
+    const withPrior = buildParamsCsv([{ qname: 'v/a', min: 1, max: 2, prior: 'normal' }])
+    expect(withPrior.split('\n')[0]).toContain('prior')
+    expect(withPrior).toContain('normal')
+
+    const without = buildParamsCsv([{ qname: 'v/a', min: 1, max: 2, prior: '' }])
+    expect(without.split('\n')[0]).not.toContain('prior')
+  })
+
+  it('keeps prior before comment so the column order is stable', () => {
+    const csv = buildParamsCsv([
+      { qname: 'v/a', min: 1, max: 2, prior: 'normal', comment: 'note' },
+    ])
+    const header = csv.split('\n')[0].split(',')
+    expect(header.indexOf('prior')).toBeLessThan(header.indexOf('comment'))
+  })
+
+  it('writes an empty cell for rows without a prior when others have one', () => {
+    const csv = buildParamsCsv([
+      { qname: 'v/a', min: 1, max: 2, prior: 'normal' },
+      { qname: 'v/b', min: 1, max: 2, prior: '' },
+    ])
+    const [, , second] = csv.split('\n')
+    // trailing empty prior cell -> CA reads it as its default, which is what
+    // "not stated" means; it must not inherit the row above.
+    expect(second.endsWith(',')).toBe(true)
+  })
+})
+
+describe('mergedRows — prior', () => {
+  it('carries a loaded prior onto the row', () => {
+    const [row] = mergedRows([{ qname: 'v/a', min: 1, max: 2, prior: 'exponential' }], {})
+    expect(row.prior).toBe('exponential')
+  })
+
+  it('leaves a model param that was never in the CSV without a prior', () => {
+    const rows = mergedRows([], { params: ['v/b'], initial_values: { 'v/b': 2 } })
+    expect(rows[0].prior).toBe('')
+  })
+})

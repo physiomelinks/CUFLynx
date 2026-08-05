@@ -72,6 +72,7 @@ from solver_options import (
     filter_solver_info,
     get_analysis_options,
     get_param_id_methods,
+    get_param_prior_types,
     gradient_sources,
     get_solver_options,
     reset_cache as reset_solver_options,
@@ -384,6 +385,10 @@ def _config_payload() -> dict:
         # Windows without MS-MPI). Tracks the selected interpreter: resolved the
         # same way the run does (see calibration.resolve_mpiexec).
         "mpiexec_available": resolve_mpiexec(calibration.python) is not None,
+        # The params_for_id `prior` vocabulary, from CA's schema, so the params
+        # editor can offer a picker instead of dropping the column (which
+        # silently reverted every non-uniform prior to uniform).
+        "param_prior_types": get_param_prior_types(),
     }
 
 

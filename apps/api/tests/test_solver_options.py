@@ -762,3 +762,58 @@ def test_stiff_filter_is_a_noop_when_ca_cannot_say(monkeypatch):
     })
     assert so.supported_methods(
         "aadc_semi_implicit", ["semi_implicit", "rk4"], stiff=True) == ["semi_implicit", "rk4"]
+
+
+# ---------------------------------------------------------------------------
+# params_for_id `prior` vocabulary
+# ---------------------------------------------------------------------------
+def test_param_prior_types_are_introspected_from_ca(monkeypatch):
+    """CA owns what a prior may be. A prior CA grows must appear here without a
+    change in CUFLynx, which is the whole point of introspecting rather than
+    hardcoding the list."""
+    fake_mod = types.SimpleNamespace(
+        PARAM_PRIOR_TYPES={
+            "uniform": {"label": "Uniform", "description": "flat"},
+            "lognormal": {"label": "Log-normal", "description": "new in CA"},
+        },
+        DEFAULT_PARAM_PRIOR_TYPE="uniform",
+    )
+    monkeypatch.setitem(sys.modules, "parsers.PrimitiveParsers", fake_mod)
+    monkeypatch.setattr(so, "_ensure_ca_path", lambda: None)
+    so.reset_cache()
+
+    priors = so.get_param_prior_types(refresh=True)
+
+    assert priors["default"] == "uniform"
+    assert [p["value"] for p in priors["types"]] == ["uniform", "lognormal"]
+    assert priors["types"][1]["label"] == "Log-normal"
+    # The description travels too: what the distribution *is* was previously only
+    # discoverable by reading CA's likelihood.
+    assert priors["types"][1]["description"] == "new in CA"
+
+
+def test_param_prior_types_fall_back_for_older_ca(monkeypatch):
+    """A CA predating PARAM_PRIOR_TYPES must still get a picker offering the three
+    priors CA has always understood, rather than no picker at all."""
+    def _boom():
+        raise ImportError("cannot import name 'PARAM_PRIOR_TYPES'")
+
+    monkeypatch.setattr(so, "_introspect_param_prior_types", _boom)
+    so.reset_cache()
+    priors = so.get_param_prior_types(refresh=True)
+    assert priors["default"] == "uniform"
+    assert [p["value"] for p in priors["types"]] == ["uniform", "exponential", "normal"]
+
+
+def test_the_config_route_carries_the_prior_vocabulary(client, monkeypatch):
+    """The params editor reads the vocabulary from /api/config; without it there
+    the picker cannot render and the column would be dropped again."""
+    monkeypatch.setattr(
+        so, "_introspect_param_prior_types",
+        lambda: {"default": "uniform",
+                 "types": [{"value": "uniform", "label": "Uniform", "description": ""}]},
+    )
+    so.reset_cache()
+    body = client.get("/api/config").json()
+    assert body["param_prior_types"]["default"] == "uniform"
+    assert body["param_prior_types"]["types"][0]["value"] == "uniform"

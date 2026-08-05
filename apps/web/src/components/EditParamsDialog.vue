@@ -5,7 +5,7 @@ import Button from 'primevue/button'
 import Checkbox from 'primevue/checkbox'
 import Message from 'primevue/message'
 import { mergedRows, buildParamsCsv, versionedFilename } from '../lib/paramsCsv'
-import { uploadParamsForId } from '../lib/api'
+import { uploadParamsForId, getConfig } from '../lib/api'
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
@@ -26,6 +26,27 @@ const search = ref('')
 // qnames whose free-text annotation row is expanded (issue #25).
 const expanded = ref(new Set())
 
+// The prior vocabulary comes from CA (via /api/config), never a hardcoded list
+// here — CA owns what a prior may be, and one it grows should appear without a
+// change in this file. Empty until loaded, and left empty when the backend
+// doesn't report any, which hides the column rather than offering a wrong menu.
+const priorTypes = ref([])
+const priorDefault = ref('')
+
+async function loadPriorTypes() {
+  try {
+    const cfg = await getConfig()
+    const p = cfg?.param_prior_types ?? {}
+    priorTypes.value = Array.isArray(p.types) ? p.types : []
+    priorDefault.value = p.default ?? ''
+  } catch {
+    // An older backend has no vocabulary to offer. The column stays hidden and
+    // each row's prior is still round-tripped untouched, so nothing is lost.
+    priorTypes.value = []
+    priorDefault.value = ''
+  }
+}
+
 // Rebuild the merged row set each time the dialog opens, so it reflects the
 // latest loaded CSV + model params without stale edits leaking between opens.
 watch(
@@ -37,6 +58,7 @@ watch(
       expanded.value = new Set(rows.value.filter((r) => r.comment).map((r) => r.qname))
       error.value = ''
       search.value = ''
+      loadPriorTypes()
     }
   },
   { immediate: true },
@@ -54,6 +76,12 @@ const visibleRows = computed(() => {
       (r.name_for_plotting || '').toLowerCase().includes(q),
   )
 })
+
+/** CA's description of a prior, for the select's tooltip. */
+function priorHint(value) {
+  const hit = priorTypes.value.find((p) => p.value === value)
+  return hit?.description || 'Prior distribution used by MCMC / UQ'
+}
 
 function toggleComment(qname) {
   const next = new Set(expanded.value)
@@ -145,12 +173,15 @@ async function onSave() {
       data-testid="ep-search"
     />
 
-    <div class="ep-head">
+    <div class="ep-head" :class="{ 'has-prior': priorTypes.length }">
       <span class="ep-inc">Use</span>
       <span class="ep-name">Parameter</span>
       <span class="ep-num">min</span>
       <span class="ep-num">max</span>
       <span class="ep-plot">Plot label</span>
+      <span v-if="priorTypes.length" class="ep-prior" title="Prior distribution used by MCMC / UQ">
+        Prior
+      </span>
       <span class="ep-note-col">Note</span>
     </div>
 
@@ -158,7 +189,7 @@ async function onSave() {
       <li
         v-for="row in visibleRows"
         :key="row.qname"
-        :class="{ invalid: rowInvalid(row) }"
+        :class="{ invalid: rowInvalid(row), 'has-prior': priorTypes.length }"
         data-testid="ep-row"
       >
         <span class="ep-inc">
@@ -188,6 +219,23 @@ async function onSave() {
           :disabled="!row.included"
           @input="row.name_for_plotting = $event.target.value"
         />
+        <select
+          v-if="priorTypes.length"
+          class="ep-prior"
+          :value="row.prior || ''"
+          :disabled="!row.included"
+          data-testid="ep-prior"
+          :title="priorHint(row.prior)"
+          @change="row.prior = $event.target.value"
+        >
+          <!-- "not stated" is its own choice, distinct from picking the default
+               explicitly: it leaves the column out of the row entirely, so a CSV
+               that never had a prior does not grow one just by being opened. -->
+          <option value="">— ({{ priorDefault || 'default' }})</option>
+          <option v-for="p in priorTypes" :key="p.value" :value="p.value">
+            {{ p.label }}
+          </option>
+        </select>
         <button
           type="button"
           class="ep-note-btn"
@@ -255,6 +303,19 @@ async function onSave() {
   grid-template-columns: 2.5rem 1fr 6rem 6rem 7rem 2rem;
   align-items: center;
   gap: 0.5rem;
+}
+/* The prior column only exists when the backend reported a vocabulary, so the
+   track list has to match — otherwise the note button lands under "Prior". */
+.ep-head.has-prior,
+.ep-list li.has-prior {
+  grid-template-columns: 2.5rem 1fr 6rem 6rem 7rem 7rem 2rem;
+}
+select.ep-prior {
+  width: 100%;
+  font-size: 0.8rem;
+}
+select:disabled {
+  opacity: 0.4;
 }
 .ep-head {
   font-size: 0.72rem;

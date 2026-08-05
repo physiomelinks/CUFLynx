@@ -1,10 +1,28 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 
-vi.mock('../lib/api', () => ({ uploadParamsForId: vi.fn() }))
+vi.mock('../lib/api', () => ({ uploadParamsForId: vi.fn(), getConfig: vi.fn() }))
 
 import EditParamsDialog from './EditParamsDialog.vue'
-import { uploadParamsForId } from '../lib/api'
+import { uploadParamsForId, getConfig } from '../lib/api'
+
+// The prior vocabulary as CA reports it through /api/config.
+const PRIOR_TYPES = {
+  default: 'uniform',
+  types: [
+    { value: 'uniform', label: 'Uniform', description: 'flat across [min, max]' },
+    { value: 'normal', label: 'Normal', description: 'centred on the range' },
+  ],
+}
+
+/** jsdom's File has no .text(); read it the way the other tests do. */
+function readFile(file) {
+  return new Promise((resolve) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(reader.result)
+    reader.readAsText(file)
+  })
+}
 
 // Inline stubs so the dialog + footer render without teleport.
 const DialogStub = {
@@ -43,6 +61,8 @@ function mountDialog(props = {}) {
 
 beforeEach(() => {
   uploadParamsForId.mockReset()
+  getConfig.mockReset()
+  getConfig.mockResolvedValue({ param_prior_types: PRIOR_TYPES })
   // jsdom lacks createObjectURL; provide a stub so the download path runs.
   globalThis.URL.createObjectURL = vi.fn(() => 'blob:mock')
   globalThis.URL.revokeObjectURL = vi.fn()
@@ -181,5 +201,70 @@ describe('EditParamsDialog', () => {
     const input = wrapper.find('[data-testid="ep-note-input"]')
     expect(input.exists()).toBe(true)
     expect(input.element.value).toBe('preloaded note')
+  })
+})
+
+describe('EditParamsDialog — prior column', () => {
+  it('offers the priors CA reported, not a hardcoded list', async () => {
+    const wrapper = mountDialog()
+    await flushPromises()
+    const select = wrapper.find('[data-testid="ep-prior"]')
+    expect(select.exists()).toBe(true)
+    const labels = select.findAll('option').map((o) => o.text())
+    // The "not stated" choice, then CA's vocabulary verbatim.
+    expect(labels).toEqual(['— (uniform)', 'Uniform', 'Normal'])
+  })
+
+  it('hides the column when the backend reports no vocabulary', async () => {
+    getConfig.mockResolvedValue({})
+    const wrapper = mountDialog()
+    await flushPromises()
+    expect(wrapper.find('[data-testid="ep-prior"]').exists()).toBe(false)
+  })
+
+  it('stays usable when the config request fails', async () => {
+    getConfig.mockRejectedValue(new Error('offline'))
+    const wrapper = mountDialog()
+    await flushPromises()
+    expect(wrapper.find('[data-testid="ep-prior"]').exists()).toBe(false)
+    expect(wrapper.findAll('[data-testid="ep-row"]')).toHaveLength(2)
+  })
+
+  it('shows a loaded prior as the selected value', async () => {
+    const wrapper = mountDialog({
+      currentParams: [{ qname: 'v/a', min: 1, max: 2, prior: 'normal' }],
+    })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="ep-prior"]').element.value).toBe('normal')
+  })
+
+  it('writes the chosen prior into the CSV', async () => {
+    const wrapper = mountDialog({
+      currentParams: [{ qname: 'v/a', min: 1, max: 2, prior: 'normal' }],
+    })
+    await flushPromises()
+    await wrapper.find('[data-testid="ep-save"]').trigger('click')
+    await flushPromises()
+
+    const [file] = uploadParamsForId.mock.calls[0]
+    const text = await readFile(file)
+    expect(text.split('\n')[0]).toContain('prior')
+    expect(text).toContain('normal')
+  })
+
+  it('round-trips a prior the user never touched', async () => {
+    // The regression: opening the dialog and saving used to drop the column, so
+    // every non-uniform prior silently became uniform.
+    const wrapper = mountDialog({
+      currentParams: [
+        { qname: 'v/a', min: 1, max: 2, prior: 'exponential' },
+      ],
+    })
+    await flushPromises()
+    await wrapper.find('[data-testid="ep-save"]').trigger('click')
+    await flushPromises()
+
+    const [file] = uploadParamsForId.mock.calls[0]
+    expect(await readFile(file)).toContain('exponential')
   })
 })

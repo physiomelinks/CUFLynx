@@ -297,6 +297,18 @@ _FALLBACK_PARAM_ID_METHODS = [
      "description": "", "options": [dict(o) for o in _FALLBACK_OPTS]},
 ]
 
+# The params_for_id `prior` vocabulary offered when CA can't be introspected —
+# mirrors PrimitiveParsers.PARAM_PRIOR_TYPES so the params editor still renders a
+# picker on an older CA. `default` is what a blank/absent prior means.
+_FALLBACK_PARAM_PRIOR_TYPES = {
+    "default": "uniform",
+    "types": [
+        {"value": "uniform", "label": "Uniform", "description": ""},
+        {"value": "exponential", "label": "Exponential", "description": ""},
+        {"value": "normal", "label": "Normal", "description": ""},
+    ],
+}
+
 # Option blocks for the non-calibration analysis modes (sensitivity / MCMC /
 # identifiability) offered when CA can't be introspected — mirrors
 # PrimitiveParsers.ANALYSIS_OPTIONS so the SA/UQ panels still render their settings
@@ -344,14 +356,16 @@ _FALLBACK_ANALYSIS_OPTIONS = {
 _cache: dict | None = None
 _param_id_cache: list | None = None
 _analysis_cache: dict | None = None
+_prior_cache: dict | None = None
 
 
 def reset_cache() -> None:
     """Drop the cached options (call when the CA directory changes)."""
-    global _cache, _param_id_cache, _analysis_cache
+    global _cache, _param_id_cache, _analysis_cache, _prior_cache
     _cache = None
     _param_id_cache = None
     _analysis_cache = None
+    _prior_cache = None
 
 
 def _ca_paths() -> list[str]:
@@ -409,6 +423,36 @@ def _introspect_param_id_methods() -> list[dict]:
             "options": [dict(o) for o in (meta.get("options") or [])],
         })
     return methods
+
+
+def _introspect_param_prior_types() -> dict:
+    """The params_for_id ``prior`` vocabulary, from CA's ``PARAM_PRIOR_TYPES``.
+
+    Raises on a CA predating the schema, so the caller degrades to
+    :data:`_FALLBACK_PARAM_PRIOR_TYPES`. Same "introspect CA, never hardcode"
+    pattern as the solver and param_id schemas: CA decides what a prior may be,
+    and a prior it grows shows up in the params editor without a change here.
+    """
+    _ensure_ca_path()
+    from parsers.PrimitiveParsers import (  # noqa: E402
+        DEFAULT_PARAM_PRIOR_TYPE,
+        PARAM_PRIOR_TYPES,
+    )
+
+    return {
+        "default": DEFAULT_PARAM_PRIOR_TYPE,
+        "types": [
+            {
+                "value": name,
+                "label": (meta or {}).get("label", name),
+                # What the distribution actually is (where the normal is centred,
+                # what the exponential's rate is) -- worth surfacing, because it
+                # was previously only discoverable by reading CA's likelihood.
+                "description": (meta or {}).get("description", ""),
+            }
+            for name, meta in PARAM_PRIOR_TYPES.items()
+        ],
+    }
 
 
 def _introspect_analysis_options() -> dict:
@@ -762,6 +806,29 @@ def get_param_id_methods(refresh: bool = False) -> list[dict]:
     if ok:
         _param_id_cache = methods
     return methods
+
+
+def get_param_prior_types(refresh: bool = False) -> dict:
+    """The params_for_id ``prior`` vocabulary from CA's ``PARAM_PRIOR_TYPES``
+    schema (introspected, not hardcoded): ``{default, types: [{value, label,
+    description}]}``.
+
+    Degrades to :data:`_FALLBACK_PARAM_PRIOR_TYPES` on a CA predating the schema,
+    so the params editor still offers the three priors CA has always understood.
+    Caches a successful introspection; returns the fallback uncached so a later
+    CA-dir change can still pick it up.
+    """
+    global _prior_cache
+    if _prior_cache is not None and not refresh:
+        return _prior_cache
+    priors, ok = _safe(
+        _introspect_param_prior_types,
+        {"default": _FALLBACK_PARAM_PRIOR_TYPES["default"],
+         "types": [dict(t) for t in _FALLBACK_PARAM_PRIOR_TYPES["types"]]},
+    )
+    if ok:
+        _prior_cache = priors
+    return priors
 
 
 def get_analysis_options(refresh: bool = False) -> dict:
