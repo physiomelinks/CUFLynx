@@ -689,3 +689,76 @@ def test_the_exclusion_does_not_disturb_the_ordinary_schemas(schema):
         if solver in so.UNSUPPORTED_SOLVERS:
             continue  # dropped wholesale for its own reason (no OpenCOR bundled)
         assert opts["methods_by_solver"][solver] == methods
+
+
+# ---------------------------------------------------------------------------
+# Forward-solvable and stiff-suitable method filtering (#175, #177)
+# ---------------------------------------------------------------------------
+
+def test_forward_filter_prefers_cas_schema_over_the_local_fallback(monkeypatch):
+    """CA #347 publishes forward_methods_by_solver; read it rather than hardcoding.
+
+    methods_by_solver mixes forward integrators with calibration gradient strategies, so a menu
+    built from it offers methods that can only raise (#175). CA's list also moves -- #347 adds
+    semi_implicit_signed, which is gradient-only until its forward integrator lands -- so a copy
+    here would go stale silently.
+    """
+    monkeypatch.setattr(so, "_introspect_solver_schema", lambda: {
+        "methods_by_solver": {"aadc_semi_implicit": [
+            "semi_implicit", "rk4", "semi_implicit_signed", "bdf_tape"]},
+        "forward_methods_by_solver": {"aadc_semi_implicit": ["semi_implicit", "rk4"]},
+    })
+    got = so.supported_methods(
+        "aadc_semi_implicit", ["semi_implicit", "rk4", "semi_implicit_signed", "bdf_tape"])
+    assert got == ["semi_implicit", "rk4"]
+
+
+def test_forward_filter_falls_back_when_ca_is_too_old_or_absent(monkeypatch):
+    """A CA without the key, or none at all, must still lose the two known-bad methods."""
+    older = ["adaptive_rk45", "semi_implicit", "bdf_tape", "bdf_kernel", "rk4"]
+
+    monkeypatch.setattr(so, "_introspect_solver_schema",
+                        lambda: {"methods_by_solver": {}})
+    assert so.supported_methods("aadc_semi_implicit", older) == [
+        "adaptive_rk45", "semi_implicit", "rk4"]
+
+    def boom():
+        raise ImportError("no CA on the path")
+
+    monkeypatch.setattr(so, "_introspect_solver_schema", boom)
+    assert so.supported_methods("aadc_semi_implicit", older) == [
+        "adaptive_rk45", "semi_implicit", "rk4"]
+
+
+def test_stiff_filter_drops_the_method_that_is_wrong_without_failing(monkeypatch):
+    """#177. The excluded methods are not merely slow.
+
+    implicit_euler_ift completes and returns a smooth trace that is 84% low on 3compartment, and
+    it is advertised as AD-suitable -- so a calibration picks it and reports clean convergence.
+    Filtering it is the difference between a wrong answer and no answer.
+    """
+    monkeypatch.setattr(so, "_introspect_solver_schema", lambda: {
+        "methods_by_solver": {
+            "aadc_semi_implicit": ["adaptive_rk45", "semi_implicit",
+                                   "implicit_euler_ift", "implicit_newton", "rk4"]},
+        "forward_methods_by_solver": {
+            "aadc_semi_implicit": ["adaptive_rk45", "semi_implicit",
+                                   "implicit_euler_ift", "implicit_newton", "rk4"]},
+        "stiff_suitable_methods": {
+            "aadc_semi_implicit": ["semi_implicit", "implicit_newton"]},
+    })
+    offered = ["adaptive_rk45", "semi_implicit", "implicit_euler_ift", "implicit_newton", "rk4"]
+
+    assert so.supported_methods("aadc_semi_implicit", offered) == offered
+    assert so.supported_methods("aadc_semi_implicit", offered, stiff=True) == [
+        "semi_implicit", "implicit_newton"]
+
+
+def test_stiff_filter_is_a_noop_when_ca_cannot_say(monkeypatch):
+    """Better to offer everything than to invent a stiff set CA has not published."""
+    monkeypatch.setattr(so, "_introspect_solver_schema", lambda: {
+        "methods_by_solver": {"aadc_semi_implicit": ["semi_implicit", "rk4"]},
+        "forward_methods_by_solver": {"aadc_semi_implicit": ["semi_implicit", "rk4"]},
+    })
+    assert so.supported_methods(
+        "aadc_semi_implicit", ["semi_implicit", "rk4"], stiff=True) == ["semi_implicit", "rk4"]

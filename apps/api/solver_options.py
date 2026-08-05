@@ -111,9 +111,59 @@ UNSUPPORTED_METHODS: dict[str, frozenset[str]] = {
 FRAMEWORK_SOLVER_INFO_KEYS = frozenset({"solver", "method", "dt_solver", "dt"})
 
 
-def supported_methods(solver: str, methods) -> list:
-    """``methods`` less any CA advertises for ``solver`` but cannot forward-solve."""
+def _ca_excluded(key: str, solver: str) -> frozenset[str] | None:
+    """Methods CA advertises for ``solver`` but leaves out of ``key``; None if it cannot say.
+
+    Expressed as an exclusion, not a whitelist, so it keeps the property every filter here has:
+    it can only ever remove a method CA itself offers, never one it does not know about. A
+    whitelist would also strip anything absent from CA's list for unrelated reasons, reaching
+    beyond what CA is actually asserting.
+
+    Reading CA rather than hardcoding is the point of the schema -- the lists move as CA fixes
+    methods (circulatory_autogen#348 will widen the stiff set), and a copy here would go stale
+    silently. None means "this CA is too old to say", and the caller falls back.
+    """
+    try:
+        schema = _introspect_solver_schema()
+    except Exception:  # noqa: BLE001 - a CA that cannot be imported must not lose the menu
+        return None
+    allowed = schema.get(key)
+    offered = schema.get("methods_by_solver")
+    if not isinstance(allowed, dict) or solver not in allowed:
+        return None
+    if not isinstance(offered, dict) or solver not in offered:
+        return None
+    return frozenset(offered[solver]) - frozenset(allowed[solver])
+
+
+def supported_methods(solver: str, methods, stiff: bool = False) -> list:
+    """``methods`` less any that cannot forward-solve, and -- when ``stiff`` -- any that cannot
+    be trusted on a stiff model.
+
+    Two independent filters, both preferring CA's schema over the local fallbacks:
+
+    ``forward_methods_by_solver`` (CA #347) lists what a plain solve can actually run.
+    ``methods_by_solver`` mixes forward integrators with calibration gradient strategies, so
+    without this the menu offers methods that only ever raise (#175). On an older CA the
+    UNSUPPORTED_METHODS fallback covers the two known cases.
+
+    ``stiff_suitable_methods`` (CA #347) lists what is trustworthy on a stiff model, which the
+    cardiovascular models are (#177). This one matters more than it looks: the excluded methods
+    are not merely slow. ``implicit_euler_ift`` completes and returns a smooth trace that is 84%
+    low, and is advertised as AD-suitable, so a calibration would pick it and report clean
+    convergence. Filtering is the difference between a wrong answer and no answer.
+    """
+    # The local list stays an always-applied floor. CA #347 drops bdf_tape/bdf_kernel from
+    # methods_by_solver entirely, so a CA-derived exclusion can no longer name them -- but they
+    # still arrive from configs saved before the rename, and they still cannot forward-solve.
     excluded = UNSUPPORTED_METHODS.get(solver, frozenset())
+    from_ca = _ca_excluded("forward_methods_by_solver", solver)
+    if from_ca:
+        excluded = excluded | from_ca
+    if stiff:
+        not_stiff = _ca_excluded("stiff_suitable_methods", solver)
+        if not_stiff:
+            excluded = excluded | not_stiff
     return [m for m in methods if m not in excluded]
 
 
