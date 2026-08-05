@@ -67,6 +67,7 @@ def build_user_inputs(
     model_file: str,
     obs_file: str | None,
     params_for_id_file: str | None,
+    user_func_files: dict | None = None,
     calibration: dict | None,
     sensitivity: dict | None,
     uq: dict | None,
@@ -112,6 +113,13 @@ def build_user_inputs(
         # --- inputs ---
         "params_for_id_file": params_for_id_file,
         "param_id_obs_path": f"resources/{obs_file}" if obs_file else None,
+        # --- user-authored operation / cost funcs (CA #303) ---
+        # An obs_data data_item names its operation and cost_type by name, so a
+        # study using a func the user wrote in the GUI is not reproducible unless
+        # the func travels with it: CA would fail on an operation it has never
+        # heard of. Relative, like every other resource here, and resolved
+        # against the export folder by build_inp_data_dict.
+        **{key: f"resources/{name}" for key, name in (user_func_files or {}).items()},
         # --- parameter identification (calibration) ---
         "param_id_method": calibration.get("param_id_method") or "genetic_algorithm",
         "do_ad": str(calibration.get("gradient_method", "FD")).upper() == "AD",
@@ -235,6 +243,13 @@ def build_inp_data_dict(cfg, output_dir):
             pass
     if cfg.get("params_for_id_file"):
         inp["params_for_id_path"] = os.path.join(resources, cfg["params_for_id_file"])
+    # User-authored operation/cost funcs travel with the export, so point CA at
+    # the copies in this folder rather than wherever they lived on the machine
+    # that produced it (CA #303). Without these the run dies on the first
+    # data_item naming a func the user wrote.
+    for key in ("operation_funcs_external_path", "cost_funcs_external_path"):
+        if cfg.get(key):
+            inp[key] = os.path.join(HERE, cfg[key])
     return inp
 
 

@@ -80,6 +80,7 @@ from user_funcs import (
     UserFuncError,
     delete_user_func,
     external_path as user_func_path,
+    external_paths as user_func_paths,
     read_user_funcs,
     save_user_func,
 )
@@ -602,6 +603,11 @@ def export_pipeline_route(req: ExportPipelineRequest) -> dict:
     # path failed and why, not become a body-less 500 (issue #135).
     obs_file = None
     params_file = None
+    # Funcs the user wrote in the GUI, by CA config key -> filename in resources/.
+    # An obs_data data_item names its operation and cost_type *by name*, so a
+    # study using one of these is not reproducible unless the func travels with
+    # it — the exported run would die on an operation CA has never heard of.
+    user_func_files: dict[str, str] = {}
     try:
         resources.mkdir(parents=True, exist_ok=True)
         model_dir.mkdir(parents=True, exist_ok=True)
@@ -612,6 +618,12 @@ def export_pipeline_route(req: ExportPipelineRequest) -> dict:
         if record.params_path is not None:
             params_file = "params_for_id.csv"
             shutil.copyfile(record.params_path, resources / params_file)
+        for key, src in user_func_paths(req.config_outputs_dir or None).items():
+            # Keep CA's own filenames: the export is meant to be readable and
+            # handed to circulatory_autogen directly.
+            name = Path(src).name
+            shutil.copyfile(src, resources / name)
+            user_func_files[key] = name
     except OSError as exc:
         raise _fs_error(exc, "write the export to", export_dir, user_dir=user_dir) from exc
 
@@ -627,6 +639,7 @@ def export_pipeline_route(req: ExportPipelineRequest) -> dict:
             model_file=model_file,
             obs_file=obs_file,
             params_for_id_file=params_file,
+            user_func_files=user_func_files,
             calibration=req.calibration,
             sensitivity=req.sensitivity,
             uq=req.uq,
@@ -664,6 +677,7 @@ def export_pipeline_route(req: ExportPipelineRequest) -> dict:
         files.append(f"resources/{obs_file}")
     if params_file:
         files.append(f"resources/{params_file}")
+    files.extend(f"resources/{name}" for name in sorted(user_func_files.values()))
     return {"export_dir": str(export_dir), "files": files}
 
 

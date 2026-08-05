@@ -3,6 +3,8 @@
 import ast
 import json
 import math
+import os
+from pathlib import Path
 
 import export_pipeline as ep
 import pytest
@@ -382,3 +384,102 @@ def test_export_pipeline_simulation_runs_and_honors_obs_protocol(client, require
     # Aortic pressure is a sensible pulsatile trace (max above min).
     u = outputs["aortic_root/u"]
     assert max(u) > min(u), "aortic pressure is flat — simulation did not run a pulse"
+
+
+# ---------------------------------------------------------------------------
+# User-authored funcs travel with the export (CA #303)
+#
+# An obs_data data_item names its operation and cost_type *by name*. A study
+# using a func the user wrote in the GUI is therefore not reproducible unless
+# the func file travels with it: the exported run dies on an operation CA has
+# never heard of. The bundle used to omit them entirely.
+# ---------------------------------------------------------------------------
+_OP_SRC = """
+def my_export_op(x):
+    return max(x)
+"""
+
+_COST_SRC = """
+def my_export_cost(o, d, s, w):
+    return w * (o - d) ** 2
+"""
+
+
+def _save_func(client, kind, name, source, out_dir):
+    r = client.post(
+        f"/api/{kind}_funcs",
+        json={"name": name, "source": source, "output_dir": str(out_dir)},
+    )
+    assert r.status_code == 200, r.text
+
+
+def test_the_export_carries_user_authored_funcs(client, tmp_path):
+    model_id = _setup_lv(client)
+    _save_func(client, "operation", "my_export_op", _OP_SRC, tmp_path)
+    _save_func(client, "cost", "my_export_cost", _COST_SRC, tmp_path)
+
+    resp = client.post("/api/export/pipeline", json={
+        "model_id": model_id,
+        "file_prefix": "lv",
+        "sim_time": 2.0,
+        "enabled": {"do_calibration": True},
+        "config_outputs_dir": str(tmp_path),
+    })
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    export_dir = Path(body["export_dir"])
+
+    # Copied into the bundle under CA's own filenames...
+    op_file = export_dir / "resources" / "operation_funcs_user.py"
+    cost_file = export_dir / "resources" / "cost_funcs_user.py"
+    assert op_file.is_file() and cost_file.is_file()
+    assert "my_export_op" in op_file.read_text()
+    assert "my_export_cost" in cost_file.read_text()
+
+    # ...and pointed at by relative path in the yaml, so the bundle is portable.
+    ui = yaml.safe_load(next(export_dir.glob("user_inputs_*.yaml")).read_text())
+    assert ui["operation_funcs_external_path"] == "resources/operation_funcs_user.py"
+    assert ui["cost_funcs_external_path"] == "resources/cost_funcs_user.py"
+
+    # Reported back, so the user can see what shipped.
+    assert "resources/operation_funcs_user.py" in body["files"]
+    assert "resources/cost_funcs_user.py" in body["files"]
+
+
+def test_the_run_script_resolves_the_func_paths_absolutely(tmp_path):
+    """Relative in the yaml, absolute in the inp_data_dict — CA is given a path
+    inside this export folder, not wherever the funcs lived on the machine that
+    produced it."""
+    # build_inp_data_dict lives in the *generated* script, so exercise it there:
+    # exec the rendered source the way the exported folder would run it.
+    script = tmp_path / "run_pipeline.py"
+    script.write_text(ep.render_pipeline_script(), encoding="utf-8")
+    ns = {"__name__": "exported_pipeline", "__file__": str(script)}
+    exec(compile(script.read_text(), str(script), "exec"), ns)  # noqa: S102
+
+    cfg = {
+        "file_prefix": "m",
+        "model_file": "m.cellml",
+        "operation_funcs_external_path": "resources/operation_funcs_user.py",
+        "cost_funcs_external_path": "resources/cost_funcs_user.py",
+    }
+    inp = ns["build_inp_data_dict"](cfg, str(tmp_path))
+    for key in ("operation_funcs_external_path", "cost_funcs_external_path"):
+        assert os.path.isabs(inp[key]), inp[key]
+        assert inp[key].endswith(cfg[key].replace("/", os.sep))
+
+
+def test_an_export_without_user_funcs_omits_the_keys(client, tmp_path):
+    """A study using only built-in operations must not gain paths to files that
+    do not exist — CA would fail loading them."""
+    model_id = _setup_lv(client)
+    resp = client.post("/api/export/pipeline", json={
+        "model_id": model_id,
+        "file_prefix": "lv",
+        "sim_time": 2.0,
+        "config_outputs_dir": str(tmp_path),
+    })
+    assert resp.status_code == 200, resp.text
+    ui = yaml.safe_load(next(Path(resp.json()["export_dir"]).glob("user_inputs_*.yaml")).read_text())
+    assert "operation_funcs_external_path" not in ui
+    assert "cost_funcs_external_path" not in ui
