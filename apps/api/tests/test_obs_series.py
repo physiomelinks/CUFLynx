@@ -249,6 +249,9 @@ def test_simulate_response_includes_output_series(client, fake_helper, monkeypat
                 "value": 60,
                 "experiment_idx": 0,
                 "plot_type": "horizontal",
+                # REQUIRED by CA, which now vets the document at upload.
+                "unit": "dimensionless",
+                "std": 1.0,
             }
         ],
     }

@@ -77,6 +77,20 @@ def requires_simulation(simulation_deps_available: bool):
 
 
 @pytest.fixture
+def requires_ca():
+    """For assertions about CA's *schema* verdict on an obs_data document.
+
+    Lighter than ``requires_simulation``: CA's parser needs neither Myokit nor
+    libCellML, only a reachable circulatory_autogen. Without one the validation
+    degrades to CUFLynx's structural checks, so these assertions do not apply.
+    """
+    import obs_data as obs_mod
+
+    if obs_mod._ca_parser() is None:
+        pytest.skip("circulatory_autogen not importable; schema validation degrades")
+
+
+@pytest.fixture
 def requires_casadi(requires_simulation):
     """For the casadi_python backend (generated model + CasADi AD)."""
     try:
