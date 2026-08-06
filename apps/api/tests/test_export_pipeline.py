@@ -466,7 +466,15 @@ def test_the_run_script_resolves_the_func_paths_absolutely(tmp_path):
     inp = ns["build_inp_data_dict"](cfg, str(tmp_path))
     for key in ("operation_funcs_external_path", "cost_funcs_external_path"):
         assert os.path.isabs(inp[key]), inp[key]
-        assert inp[key].endswith(cfg[key].replace("/", os.sep))
+        # Compared normalised, not by suffix. os.path.join only inserts the native
+        # separator *between* its arguments, so on Windows the relative part keeps
+        # its forward slashes and the result mixes the two -- which the filesystem
+        # accepts, and which is how the neighbouring param_id_obs_path has always
+        # resolved. What this asserts is the thing that matters: the path names
+        # the file inside this export folder.
+        assert os.path.normpath(inp[key]) == os.path.normpath(
+            os.path.join(str(tmp_path), cfg[key])
+        )
 
 
 def test_an_export_without_user_funcs_omits_the_keys(client, tmp_path):
