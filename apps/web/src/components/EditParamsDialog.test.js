@@ -493,3 +493,42 @@ describe('EditParamsDialog — unbounded parameters', () => {
     expect(wrapper.find('.ep-prior-summary').text()).toBe('unbounded')
   })
 })
+
+describe('EditParamsDialog — placeholder tells the truth', () => {
+  const NORMAL = { qname: 'v/a', min: 1, max: 2, prior: 'normal' }
+
+  it('says a blank value is derived from the range', async () => {
+    const wrapper = mountDialog({ currentParams: [NORMAL] })
+    await flushPromises()
+    await wrapper.find('[data-testid="ep-prior-toggle"]').trigger('click')
+    expect(
+      wrapper.find('[data-testid="ep-prior-param-prior_mean"]').attributes('placeholder'),
+    ).toBe('from min/max')
+  })
+
+  it('says required once the range is derived from it instead', async () => {
+    // Unbounded reverses the relationship: min/max come from the centre and
+    // width, so "from min/max" would be circular -- and these are the one thing
+    // that cannot be left blank.
+    const wrapper = mountDialog({ currentParams: [NORMAL] })
+    await flushPromises()
+    await wrapper.find('[data-testid="ep-unbounded"]').setValue(true)
+
+    for (const f of ['prior_mean', 'prior_std']) {
+      expect(
+        wrapper.find(`[data-testid="ep-prior-param-${f}"]`).attributes('placeholder'),
+      ).toBe('required')
+    }
+  })
+
+  it('leaves a field with a real default showing that default', async () => {
+    const wrapper = mountDialog({
+      currentParams: [{ qname: 'v/a', min: 1, max: 2, prior: 'exponential' }],
+    })
+    await flushPromises()
+    await wrapper.find('[data-testid="ep-prior-toggle"]').trigger('click')
+    expect(
+      wrapper.find('[data-testid="ep-prior-param-prior_lambda"]').attributes('placeholder'),
+    ).toBe('1')
+  })
+})

@@ -121,8 +121,16 @@ function priorFields(row) {
   return priorTypes.value.find((p) => p.value === row.prior)?.params ?? []
 }
 
-/** Placeholder for an unstated value: CA's default, or what it derives instead. */
-function priorFieldPlaceholder(field) {
+/** Placeholder for an unstated value: what CA does when the field is left blank.
+ *
+ *  Unbounded reverses the relationship. Normally a blank centre or width is
+ *  derived from [min, max]; when the range is itself derived from the prior,
+ *  these are the inputs and there is nothing left to derive them from -- so they
+ *  are required, and saying "from min/max" there would be circular and wrong. */
+function priorFieldPlaceholder(field, row) {
+  if (row?.unbounded && (field.role === 'location' || field.role === 'scale')) {
+    return 'required'
+  }
   return field.default == null ? 'from min/max' : String(field.default)
 }
 
@@ -387,7 +395,7 @@ async function onSave() {
                 :id="`${row.qname}-${f.name}`"
                 type="number"
                 step="any"
-                :placeholder="priorFieldPlaceholder(f)"
+                :placeholder="priorFieldPlaceholder(f, row)"
                 :value="(row.priorParams ?? {})[f.name] ?? ''"
                 :data-testid="`ep-prior-param-${f.name}`"
                 @input="setPriorParam(row, f.name, $event.target.value)"
