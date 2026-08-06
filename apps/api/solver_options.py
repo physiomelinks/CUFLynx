@@ -304,15 +304,18 @@ _FALLBACK_PARAM_ID_METHODS = [
 _FALLBACK_PARAM_PRIOR_TYPES = {
     "default": "uniform",
     "types": [
-        {"value": "uniform", "label": "Uniform", "description": "", "params": []},
-        {"value": "exponential", "label": "Exponential", "description": "", "params": [
+        {"value": "uniform", "label": "Uniform", "description": "",
+         "supports_unbounded": False, "params": []},
+        {"value": "exponential", "label": "Exponential", "description": "",
+         "supports_unbounded": False, "params": [
             {"name": "prior_lambda", "type": "float", "default": 1.0,
              "positive": True, "description": ""},
         ]},
-        {"value": "normal", "label": "Normal", "description": "", "params": [
-            {"name": "prior_mean", "type": "float", "default": None,
+        {"value": "normal", "label": "Normal", "description": "",
+         "supports_unbounded": True, "params": [
+            {"name": "prior_mean", "type": "float", "default": None, "role": "location",
              "positive": False, "description": ""},
-            {"name": "prior_std", "type": "float", "default": None,
+            {"name": "prior_std", "type": "float", "default": None, "role": "scale",
              "positive": True, "description": ""},
         ]},
     ],
@@ -448,6 +451,12 @@ def _introspect_param_prior_types() -> dict:
         PARAM_PRIOR_TYPES,
     )
 
+    try:
+        from parsers.PrimitiveParsers import prior_supports_unbounded as supports_unbounded  # noqa: E402
+    except ImportError:  # a CA predating unbounded parameters
+        def supports_unbounded(_name):
+            return False
+
     return {
         "default": DEFAULT_PARAM_PRIOR_TYPE,
         "types": [
@@ -461,9 +470,14 @@ def _introspect_param_prior_types() -> dict:
                 # The values this prior takes, each a params_for_id column. The
                 # editor renders exactly these, so a prior CA grows a knob for
                 # gains the field here without a change in this repo.
+                # Whether this prior can stand in for a parameter's range (it
+                # declares both a centre and a width). CA decides; the editor only
+                # offers the tickbox where CA would accept it.
+                "supports_unbounded": bool(supports_unbounded(name)),
                 "params": [
                     {
                         "name": spec.get("name"),
+                        "role": spec.get("role"),
                         "type": spec.get("type", "float"),
                         "default": spec.get("default"),
                         "positive": bool(spec.get("positive", False)),

@@ -52,7 +52,30 @@ def _prior_param_names() -> tuple:
         return ()
 
 
-def _validate_prior_params(prior: str | None, values: dict, row_idx: int) -> None:
+def _derive_bounds(prior: str | None, values: dict, row_idx: int) -> tuple:
+    """The range an unbounded row gets, from circulatory_autogen.
+
+    CA owns the rule (the prior's centre plus or minus a span of its scale), so
+    the sliders cover exactly the range the calibration will search. A file that
+    uses `unbounded` cannot be interpreted without it, so an absent or too-old CA
+    is an error naming what is missing rather than a guess at the span.
+    """
+    try:
+        from parsers.PrimitiveParsers import derive_bounds_from_prior  # noqa: PLC0415
+    except Exception as exc:  # noqa: BLE001
+        raise ParamsForIdError(
+            f"row {row_idx}: 'unbounded' needs a circulatory_autogen that supports it, "
+            f"so the parameter's range can be derived from its prior. Point the CA "
+            f"directory at a newer checkout, or give min and max."
+        ) from exc
+    try:
+        return derive_bounds_from_prior(prior or "uniform", values, row_idx=row_idx)
+    except ValueError as exc:
+        raise ParamsForIdError(str(exc)) from exc
+
+
+def _validate_prior_params(prior: str | None, values: dict, row_idx: int,
+                           row_min=None, row_max=None) -> None:
     """Let CA judge this row's prior hyper-parameters, if it can.
 
     CA owns the rules -- which prior takes which value, that scales are positive
@@ -64,8 +87,13 @@ def _validate_prior_params(prior: str | None, values: dict, row_idx: int) -> Non
         from parsers.PrimitiveParsers import normalise_prior_params  # noqa: PLC0415
     except Exception:  # noqa: BLE001
         return
+    row = dict(values)
+    if row_min is not None and row_max is not None:
+        # So CA can check a centre against the parameter's own range, which is one
+        # of its rules; without them it runs every other check.
+        row["min"], row["max"] = row_min, row_max
     try:
-        normalise_prior_params(prior or "uniform", values, row_idx=row_idx)
+        normalise_prior_params(prior or "uniform", row, row_idx=row_idx)
     except ValueError as exc:
         raise ParamsForIdError(str(exc)) from exc
     except Exception:  # noqa: BLE001 - a CA problem, not the user's file
@@ -141,6 +169,9 @@ class ParamEntry:
     initial_value: float | None = None
     comment: str | None = None
     prior: str | None = None
+    # No min/max of its own: the prior says where it lives, and CA derives the
+    # range it needs for the search box and normalisation from that prior.
+    unbounded: bool = False
     # The values this row's prior takes (prior_mean, prior_std, prior_lambda...),
     # keyed by CA's column name. A dict rather than fields, because which values
     # exist is CA's vocabulary and grows there.
@@ -156,6 +187,7 @@ class ParamEntry:
             "initial_value": self.initial_value,
             "comment": self.comment,
             "prior": self.prior,
+            "unbounded": self.unbounded,
             "prior_params": self.prior_params or {},
         }
 
@@ -190,6 +222,7 @@ def parse_params_for_id(
     has_type = "param_type" in df.columns
     has_comment = "comment" in df.columns
     has_prior = "prior" in df.columns
+    has_unbounded = "unbounded" in df.columns
     prior_param_columns = [n for n in _prior_param_names() if n in df.columns]
     initial_values = initial_values or {}
     gen_index = _build_gen_index(initial_values)
@@ -197,17 +230,26 @@ def parse_params_for_id(
     entries: list[ParamEntry] = []
     for idx, row in df.iterrows():
         param_name = str(row["param_name"]).strip()
-        try:
-            pmin = float(row["min"])
-            pmax = float(row["max"])
-        except (TypeError, ValueError) as exc:
-            raise ParamsForIdError(
-                f"row {idx}: min/max must be numeric"
-            ) from exc
-        if pmin > pmax:
-            raise ParamsForIdError(
-                f"row {idx} ({param_name}): min ({pmin}) > max ({pmax})"
-            )
+        # Left until the prior is known: an `unbounded` row legitimately leaves
+        # these blank, and its range is derived from the prior further down.
+        raw_min, raw_max = row["min"], row["max"]
+        blank_bounds = (
+            pd.isna(raw_min) or pd.isna(raw_max)
+            or str(raw_min).strip() == "" or str(raw_max).strip() == ""
+        )
+        pmin = pmax = None
+        if not blank_bounds:
+            try:
+                pmin = float(raw_min)
+                pmax = float(raw_max)
+            except (TypeError, ValueError) as exc:
+                raise ParamsForIdError(
+                    f"row {idx}: min/max must be numeric"
+                ) from exc
+            if pmin > pmax:
+                raise ParamsForIdError(
+                    f"row {idx} ({param_name}): min ({pmin}) > max ({pmax})"
+                )
 
         name_for_plotting = (
             str(row["name_for_plotting"]).strip() if has_plotting else None
@@ -240,7 +282,20 @@ def parse_params_for_id(
             text = str(row[name]).strip()
             if text:
                 prior_params[name] = text
-        _validate_prior_params(prior, prior_params, idx)
+        unbounded = False
+        if has_unbounded and not pd.isna(row["unbounded"]):
+            unbounded = str(row["unbounded"]).strip().lower() in ("1", "1.0", "true", "yes", "y")
+        _validate_prior_params(prior, prior_params, idx, row_min=pmin, row_max=pmax)
+
+        if unbounded:
+            # CA owns the derivation (centre +/- a span of the scale) so the
+            # sliders cover the same range the calibration will search.
+            pmin, pmax = _derive_bounds(prior, prior_params, idx)
+        elif pmin is None:
+            raise ParamsForIdError(
+                f"row {idx} ({param_name}): min and max are required unless "
+                f"'unbounded' is set."
+            )
 
         vessels = str(row["vessel_name"]).split()
         if not vessels:
@@ -259,6 +314,7 @@ def parse_params_for_id(
                     ),
                     comment=comment,
                     prior=prior,
+                    unbounded=unbounded,
                     prior_params=dict(prior_params),
                 )
             )

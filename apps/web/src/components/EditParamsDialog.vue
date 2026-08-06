@@ -99,6 +99,23 @@ function priorHint(value) {
   return hit?.description || 'Prior distribution used by MCMC / UQ'
 }
 
+/** Whether the row's prior can stand in for its range (CA decides, not us). */
+function supportsUnbounded(row) {
+  return !!priorTypes.value.find((p) => p.value === row.prior)?.supports_unbounded
+}
+
+/** Ticking it hands the range to the prior; unticking gives the row its bounds back. */
+function onUnboundedChange(row, checked) {
+  row.unbounded = checked
+  if (checked) {
+    // The centre and width must be stated: their usual defaults are computed
+    // *from* the range, so with no range there is nothing to derive them from.
+    const next = new Set(priorOpen.value)
+    next.add(row.qname)
+    priorOpen.value = next
+  }
+}
+
 /** The values the row's chosen prior takes, as CA declares them ([] if none). */
 function priorFields(row) {
   return priorTypes.value.find((p) => p.value === row.prior)?.params ?? []
@@ -140,6 +157,7 @@ function togglePriorPanel(qname) {
 
 /** A short summary for the collapsed panel, so a set value is visible without opening it. */
 function priorSummary(row) {
+  if (row.unbounded) return 'unbounded'
   const set = priorFields(row)
     .map((f) => [f.name, (row.priorParams ?? {})[f.name]])
     .filter(([, v]) => v != null && v !== '')
@@ -157,10 +175,18 @@ function onNum(row, field, value) {
 }
 
 function rowInvalid(row) {
-  return (
-    row.included &&
-    (!Number.isFinite(row.min) || !Number.isFinite(row.max) || row.min >= row.max)
-  )
+  if (!row.included) return false
+  if (row.unbounded) {
+    // CA derives the range from the prior's centre and width, so both must be
+    // given -- their usual defaults come from the range that is no longer there.
+    return priorFields(row)
+      .filter((f) => f.role === 'location' || f.role === 'scale')
+      .some((f) => {
+        const v = (row.priorParams ?? {})[f.name]
+        return v == null || v === '' || !Number.isFinite(Number(v))
+      })
+  }
+  return !Number.isFinite(row.min) || !Number.isFinite(row.max) || row.min >= row.max
 }
 
 const includedCount = computed(() => rows.value.filter((r) => r.included).length)
@@ -264,7 +290,8 @@ async function onSave() {
           step="any"
           class="ep-num"
           :value="row.min"
-          :disabled="!row.included"
+          :disabled="!row.included || row.unbounded"
+          :title="row.unbounded ? 'Derived from the prior' : ''"
           @input="onNum(row, 'min', $event.target.value)"
         />
         <input
@@ -272,7 +299,8 @@ async function onSave() {
           step="any"
           class="ep-num"
           :value="row.max"
-          :disabled="!row.included"
+          :disabled="!row.included || row.unbounded"
+          :title="row.unbounded ? 'Derived from the prior' : ''"
           @input="onNum(row, 'max', $event.target.value)"
         />
         <input
@@ -313,20 +341,40 @@ async function onSave() {
         <!-- The values the chosen prior takes, in their own disclosure rather than
              as extra columns: which values exist differs per prior, so as columns
              they would be blank for most rows and leave the grid ragged. -->
-        <div v-if="row.included && priorFields(row).length" class="ep-prior-block">
-          <button
-            type="button"
-            class="ep-prior-toggle"
-            :aria-expanded="priorOpen.has(row.qname)"
-            data-testid="ep-prior-toggle"
-            @click="togglePriorPanel(row.qname)"
-          >
-            <i :class="priorOpen.has(row.qname) ? 'pi pi-chevron-down' : 'pi pi-chevron-right'" />
-            <span>{{ priorLabel(row.prior) }} prior settings</span>
-            <span v-if="!priorOpen.has(row.qname)" class="ep-prior-summary">
-              {{ priorSummary(row) }}
-            </span>
-          </button>
+        <div
+          v-if="row.included && (priorFields(row).length || supportsUnbounded(row))"
+          class="ep-prior-block"
+        >
+          <div class="ep-prior-head">
+            <button
+              type="button"
+              class="ep-prior-toggle"
+              :aria-expanded="priorOpen.has(row.qname)"
+              data-testid="ep-prior-toggle"
+              @click="togglePriorPanel(row.qname)"
+            >
+              <i :class="priorOpen.has(row.qname) ? 'pi pi-chevron-down' : 'pi pi-chevron-right'" />
+              <span>{{ priorLabel(row.prior) }} prior settings</span>
+              <span v-if="!priorOpen.has(row.qname)" class="ep-prior-summary">
+                {{ priorSummary(row) }}
+              </span>
+            </button>
+            <!-- On the header, not inside the panel: it hands the range to the
+                 prior and greys out min/max, which is too consequential to hide
+                 behind a disclosure. Offered only where CA says the prior has a
+                 centre and a width to derive a range from. -->
+            <label v-if="supportsUnbounded(row)" class="ep-unbounded">
+              <input
+                type="checkbox"
+                :checked="row.unbounded"
+                data-testid="ep-unbounded"
+                @change="onUnboundedChange(row, $event.target.checked)"
+              />
+              <span title="min and max are derived from this prior instead of typed">
+                unbounded
+              </span>
+            </label>
+          </div>
           <div v-if="priorOpen.has(row.qname)" class="ep-prior-params">
             <span
               v-for="f in priorFields(row)"
@@ -471,6 +519,35 @@ select.ep-prior {
 .ep-prior-param input {
   width: 7rem;
   font-size: 0.78rem;
+}
+/* Sits with the prior's own settings because that is what it changes -- it hands
+   the range to the prior -- but reads as a mode rather than a value. */
+.ep-prior-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding-right: 0.6rem;
+}
+.ep-prior-head .ep-prior-toggle {
+  flex: 1;
+  min-width: 0;
+}
+/* Reads as a mode rather than a value, so it sits on the header beside the
+   prior's name rather than among its numbers. */
+.ep-unbounded {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  cursor: pointer;
+  font-size: 0.74rem;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  opacity: 0.8;
+  white-space: nowrap;
+}
+.ep-unbounded input {
+  width: auto;
+  cursor: pointer;
 }
 select:disabled {
   opacity: 0.4;

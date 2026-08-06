@@ -10,18 +10,21 @@ import { uploadParamsForId, getConfig } from '../lib/api'
 const PRIOR_TYPES = {
   default: 'uniform',
   types: [
-    { value: 'uniform', label: 'Uniform', description: 'flat across [min, max]', params: [] },
+    { value: 'uniform', label: 'Uniform', description: 'flat across [min, max]',
+      supports_unbounded: false, params: [] },
     {
       value: 'normal', label: 'Normal', description: 'centred on the range',
+      supports_unbounded: true,
       params: [
-        { name: 'prior_mean', type: 'float', default: null, positive: false,
+        { name: 'prior_mean', type: 'float', default: null, positive: false, role: 'location',
           description: 'Centre of the Gaussian.' },
-        { name: 'prior_std', type: 'float', default: null, positive: true,
+        { name: 'prior_std', type: 'float', default: null, positive: true, role: 'scale',
           description: 'Standard deviation.' },
       ],
     },
     {
       value: 'exponential', label: 'Exponential', description: 'decays',
+      supports_unbounded: false,
       params: [{ name: 'prior_lambda', type: 'float', default: 1.0, positive: true,
                  description: 'Decay rate.' }],
     },
@@ -412,5 +415,81 @@ describe('EditParamsDialog — prior settings disclosure', () => {
 
     await wrapper.find('[data-testid="ep-prior"]').setValue('uniform')
     expect(wrapper.find('.ep-prior-block').exists()).toBe(false)
+  })
+})
+
+describe('EditParamsDialog — unbounded parameters', () => {
+  const NORMAL = { qname: 'v/a', min: 1, max: 2, prior: 'normal' }
+
+  it('is offered only where CA says the prior can derive a range', async () => {
+    const wrapper = mountDialog({ currentParams: [{ ...NORMAL, prior: 'uniform' }] })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="ep-unbounded"]').exists()).toBe(false)
+
+    await wrapper.find('[data-testid="ep-prior"]').setValue('normal')
+    expect(wrapper.find('[data-testid="ep-unbounded"]').exists()).toBe(true)
+  })
+
+  it('makes min and max unenterable', async () => {
+    const wrapper = mountDialog({ currentParams: [NORMAL] })
+    await flushPromises()
+    await wrapper.find('[data-testid="ep-prior-toggle"]').trigger('click')
+
+    const nums = () => wrapper.findAll('input.ep-num')
+    expect(nums()[0].attributes('disabled')).toBeUndefined()
+
+    await wrapper.find('[data-testid="ep-unbounded"]').setValue(true)
+    expect(nums()[0].attributes('disabled')).toBeDefined()
+    expect(nums()[1].attributes('disabled')).toBeDefined()
+  })
+
+  it('writes the flag and no bounds', async () => {
+    // The bounds were derived from the prior; writing them back would freeze a
+    // range that should follow the prior.
+    const wrapper = mountDialog({
+      currentParams: [{ ...NORMAL, prior_params: { prior_mean: '7', prior_std: '1.5' } }],
+    })
+    await flushPromises()
+    await wrapper.find('[data-testid="ep-unbounded"]').setValue(true)
+    await wrapper.find('[data-testid="ep-save"]').trigger('click')
+    await flushPromises()
+
+    const text = await readFile(uploadParamsForId.mock.calls[0][0])
+    const header = text.split('\n')[0].split(',')
+    const row = text.split('\n')[1].split(',')
+    expect(header).toContain('unbounded')
+    expect(row[header.indexOf('unbounded')]).toBe('true')
+    expect(row[header.indexOf('min')]).toBe('')
+    expect(row[header.indexOf('max')]).toBe('')
+  })
+
+  it('refuses to save until the centre and width are given', async () => {
+    // CA derives the range from them, and their usual defaults come from the
+    // range that is no longer there.
+    const wrapper = mountDialog({ currentParams: [NORMAL] })
+    await flushPromises()
+    await wrapper.find('[data-testid="ep-unbounded"]').setValue(true)
+    expect(wrapper.find('[data-testid="ep-save"]').attributes('disabled')).toBeDefined()
+
+    await wrapper.find('[data-testid="ep-prior-param-prior_mean"]').setValue('7')
+    await wrapper.find('[data-testid="ep-prior-param-prior_std"]').setValue('1.5')
+    expect(wrapper.find('[data-testid="ep-save"]').attributes('disabled')).toBeUndefined()
+  })
+
+  it('gives the bounds back when unticked', async () => {
+    const wrapper = mountDialog({ currentParams: [NORMAL] })
+    await flushPromises()
+    await wrapper.find('[data-testid="ep-unbounded"]').setValue(true)
+    await wrapper.find('[data-testid="ep-unbounded"]').setValue(false)
+    expect(wrapper.findAll('input.ep-num')[0].attributes('disabled')).toBeUndefined()
+  })
+
+  it('says so in the collapsed summary', async () => {
+    const wrapper = mountDialog({
+      currentParams: [{ ...NORMAL, unbounded: true, prior_params: { prior_mean: '7' } }],
+    })
+    await flushPromises()
+    await wrapper.find('[data-testid="ep-prior-toggle"]').trigger('click')
+    expect(wrapper.find('.ep-prior-summary').text()).toBe('unbounded')
   })
 })

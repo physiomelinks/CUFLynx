@@ -50,6 +50,9 @@ export function mergedRows(currentParams = [], modelVariables = {}) {
       // than named fields: which values exist is CA's vocabulary, and one it
       // grows should flow through without a change here.
       priorParams: { ...(p.prior_params ?? {}) },
+      // No min/max of its own: the prior says where it lives and CA derives the
+      // range. The min/max on the row are those derived values, shown but not typed.
+      unbounded: !!p.unbounded,
     })
   }
 
@@ -68,6 +71,7 @@ export function mergedRows(currentParams = [], modelVariables = {}) {
       comment: '',
       prior: '',
       priorParams: {},
+      unbounded: false,
     })
   }
 
@@ -115,6 +119,7 @@ export function buildParamsCsv(rows) {
   const withType = rows.some((r) => r.param_type != null && r.param_type !== '')
   const withComment = rows.some((r) => r.comment != null && r.comment !== '')
   const withPrior = rows.some((r) => r.prior != null && r.prior !== '')
+  const withUnbounded = rows.some((r) => r.unbounded)
   // One column per prior hyper-parameter any row actually states, in a stable
   // order. Derived from the rows rather than a list of names held here, so a
   // value CA adds to a prior travels without this file knowing about it.
@@ -131,6 +136,7 @@ export function buildParamsCsv(rows) {
   const header = ['vessel_name', 'param_name', 'min', 'max', 'name_for_plotting']
   if (withType) header.push('param_type')
   if (withPrior) header.push('prior')
+  if (withUnbounded) header.push('unbounded')
   header.push(...priorParamCols)
   if (withComment) header.push('comment')
 
@@ -140,12 +146,15 @@ export function buildParamsCsv(rows) {
     const cells = [
       csvField(vessel_name),
       csvField(param_name),
-      numField(r.min),
-      numField(r.max),
+      // An unbounded row writes no bounds: they were derived from its prior, and
+      // writing them back would freeze a range that should follow the prior.
+      r.unbounded ? '' : numField(r.min),
+      r.unbounded ? '' : numField(r.max),
       csvField(r.name_for_plotting ?? r.qname),
     ]
     if (withType) cells.push(csvField(r.param_type))
     if (withPrior) cells.push(csvField(r.prior))
+    if (withUnbounded) cells.push(r.unbounded ? 'true' : '')
     for (const col of priorParamCols) cells.push(csvField((r.priorParams ?? {})[col]))
     if (withComment) cells.push(csvField(r.comment))
     lines.push(cells.join(','))
