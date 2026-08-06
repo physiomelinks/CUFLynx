@@ -340,3 +340,21 @@ def test_a_file_without_the_columns_is_unaffected(client):
     r = _post_csv_text(client, "vessel_name,param_name,min,max,prior\na,k,0,10,normal\n")
     assert r.status_code == 200, r.text
     assert r.json()["params"][0]["prior_params"] == {}
+
+
+def test_the_columns_are_read_even_without_ca(monkeypatch):
+    """The names decide whether the user's column is read at all. Dropping them
+    when CA is unreachable would silently discard the hyper-parameters -- the same
+    data loss this support exists to fix. Only validation degrades."""
+    import params_for_id as pfi
+    import solver_options as so
+
+    monkeypatch.setattr(so, "_introspect_param_prior_types",
+                        lambda: (_ for _ in ()).throw(ImportError("no CA")))
+    monkeypatch.setattr(pfi, "_validate_prior_params", lambda *a, **k: None)
+    so.reset_cache()
+
+    entries = pfi.parse_params_for_id(
+        "vessel_name,param_name,min,max,prior,prior_std\na,k,0,10,normal,0.5\n"
+    )
+    assert entries[0].prior_params == {"prior_std": "0.5"}

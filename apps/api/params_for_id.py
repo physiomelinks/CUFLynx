@@ -10,7 +10,6 @@ pandas only (no libCellML/Myokit) so the upload path stays in the unit tier.
 from __future__ import annotations
 
 import io
-import sys
 from dataclasses import dataclass
 
 import pandas as pd
@@ -27,24 +26,30 @@ class ParamsForIdError(ValueError):
     """Raised for a malformed params_for_id CSV (maps to HTTP 422)."""
 
 
-def _ca_prior_param_names() -> tuple:
-    """CA's prior hyper-parameter column names, or () when CA can't be reached.
+def _prior_param_names() -> tuple:
+    """The prior hyper-parameter column names to recognise in a params_for_id.
 
-    Introspected rather than listed here: which values a prior takes is CA's
-    vocabulary (``PARAM_PRIOR_PARAM_NAMES``), and one it grows should be carried
-    through without a change in this file. Without CA the columns are simply not
-    recognised, which is the same as the behaviour before they existed.
+    Taken from the same introspect-with-fallback vocabulary the editor renders
+    from, so CA decides what a prior may take and a value it adds is carried
+    through without a change in this file.
+
+    Deliberately *not* conditional on CA being importable. These names decide
+    whether a column in the user's file is read at all, and dropping them when CA
+    is unreachable would silently discard the hyper-parameters -- the same data
+    loss this column support exists to fix. Only the validation below degrades;
+    the values still round-trip.
     """
     try:
-        from obs_options import _ca_paths  # noqa: PLC0415
+        from solver_options import get_param_prior_types  # noqa: PLC0415
 
-        for p in _ca_paths():
-            if p not in sys.path:
-                sys.path.insert(0, p)
-        from parsers.PrimitiveParsers import PARAM_PRIOR_PARAM_NAMES  # noqa: PLC0415
-    except Exception:  # noqa: BLE001 - CA absent or predating the schema
+        return tuple(
+            spec["name"]
+            for t in get_param_prior_types().get("types", [])
+            for spec in (t.get("params") or [])
+            if spec.get("name")
+        )
+    except Exception:  # noqa: BLE001
         return ()
-    return tuple(PARAM_PRIOR_PARAM_NAMES)
 
 
 def _validate_prior_params(prior: str | None, values: dict, row_idx: int) -> None:
@@ -185,7 +190,7 @@ def parse_params_for_id(
     has_type = "param_type" in df.columns
     has_comment = "comment" in df.columns
     has_prior = "prior" in df.columns
-    prior_param_columns = [n for n in _ca_prior_param_names() if n in df.columns]
+    prior_param_columns = [n for n in _prior_param_names() if n in df.columns]
     initial_values = initial_values or {}
     gen_index = _build_gen_index(initial_values)
 
