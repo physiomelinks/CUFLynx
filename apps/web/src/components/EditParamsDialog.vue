@@ -25,6 +25,10 @@ const error = ref('')
 const search = ref('')
 // qnames whose free-text annotation row is expanded (issue #25).
 const expanded = ref(new Set())
+// qnames whose prior-settings panel is open. Its own disclosure rather than
+// extra columns: the values differ per prior, so as columns they would be blank
+// for most rows and make the grid ragged.
+const priorOpen = ref(new Set())
 
 // The prior vocabulary comes from CA (via /api/config), never a hardcoded list
 // here — CA owns what a prior may be, and one it grows should appear without a
@@ -56,6 +60,13 @@ watch(
       rows.value = mergedRows(props.currentParams, props.modelVariables)
       // Auto-expand rows that already carry an annotation so it's visible.
       expanded.value = new Set(rows.value.filter((r) => r.comment).map((r) => r.qname))
+      // Same for prior settings: a row that states one is showing it, a row on
+      // the defaults stays shut and says so in the collapsed summary.
+      priorOpen.value = new Set(
+        rows.value
+          .filter((r) => Object.values(r.priorParams ?? {}).some((v) => v !== '' && v != null))
+          .map((r) => r.qname),
+      )
       error.value = ''
       search.value = ''
       loadPriorTypes()
@@ -76,6 +87,11 @@ const visibleRows = computed(() => {
       (r.name_for_plotting || '').toLowerCase().includes(q),
   )
 })
+
+/** CA's display label for a prior value, for the panel heading. */
+function priorLabel(value) {
+  return priorTypes.value.find((p) => p.value === value)?.label ?? value
+}
 
 /** CA's description of a prior, for the select's tooltip. */
 function priorHint(value) {
@@ -108,6 +124,26 @@ function onPriorChange(row, value) {
   row.priorParams = Object.fromEntries(
     Object.entries(row.priorParams ?? {}).filter(([k]) => keep.has(k)),
   )
+  // Open the panel on a prior that has settings, close it on one that hasn't:
+  // having just chosen Normal, its centre and width are the next thing you want,
+  // and a panel left open on Uniform would be empty.
+  const next = new Set(priorOpen.value)
+  keep.size ? next.add(row.qname) : next.delete(row.qname)
+  priorOpen.value = next
+}
+
+function togglePriorPanel(qname) {
+  const next = new Set(priorOpen.value)
+  next.has(qname) ? next.delete(qname) : next.add(qname)
+  priorOpen.value = next
+}
+
+/** A short summary for the collapsed panel, so a set value is visible without opening it. */
+function priorSummary(row) {
+  const set = priorFields(row)
+    .map((f) => [f.name, (row.priorParams ?? {})[f.name]])
+    .filter(([, v]) => v != null && v !== '')
+  return set.length ? set.map(([k, v]) => `${k} ${v}`).join(', ') : 'defaults'
 }
 
 function toggleComment(qname) {
@@ -274,27 +310,42 @@ async function onSave() {
         >
           <i class="pi pi-comment" />
         </button>
-        <!-- The values the chosen prior takes. Shown whenever that prior declares
-             any, rather than behind a toggle: having picked Normal, its centre and
-             width are the next thing you want, and a hidden field reads as absent. -->
-        <div v-if="row.included && priorFields(row).length" class="ep-prior-params">
-          <span
-            v-for="f in priorFields(row)"
-            :key="f.name"
-            class="ep-prior-param"
-            :title="f.description"
+        <!-- The values the chosen prior takes, in their own disclosure rather than
+             as extra columns: which values exist differs per prior, so as columns
+             they would be blank for most rows and leave the grid ragged. -->
+        <div v-if="row.included && priorFields(row).length" class="ep-prior-block">
+          <button
+            type="button"
+            class="ep-prior-toggle"
+            :aria-expanded="priorOpen.has(row.qname)"
+            data-testid="ep-prior-toggle"
+            @click="togglePriorPanel(row.qname)"
           >
-            <label :for="`${row.qname}-${f.name}`">{{ f.name }}</label>
-            <input
-              :id="`${row.qname}-${f.name}`"
-              type="number"
-              step="any"
-              :placeholder="priorFieldPlaceholder(f)"
-              :value="(row.priorParams ?? {})[f.name] ?? ''"
-              :data-testid="`ep-prior-param-${f.name}`"
-              @input="setPriorParam(row, f.name, $event.target.value)"
-            />
-          </span>
+            <i :class="priorOpen.has(row.qname) ? 'pi pi-chevron-down' : 'pi pi-chevron-right'" />
+            <span>{{ priorLabel(row.prior) }} prior settings</span>
+            <span v-if="!priorOpen.has(row.qname)" class="ep-prior-summary">
+              {{ priorSummary(row) }}
+            </span>
+          </button>
+          <div v-if="priorOpen.has(row.qname)" class="ep-prior-params">
+            <span
+              v-for="f in priorFields(row)"
+              :key="f.name"
+              class="ep-prior-param"
+              :title="f.description"
+            >
+              <label :for="`${row.qname}-${f.name}`">{{ f.name }}</label>
+              <input
+                :id="`${row.qname}-${f.name}`"
+                type="number"
+                step="any"
+                :placeholder="priorFieldPlaceholder(f)"
+                :value="(row.priorParams ?? {})[f.name] ?? ''"
+                :data-testid="`ep-prior-param-${f.name}`"
+                @input="setPriorParam(row, f.name, $event.target.value)"
+              />
+            </span>
+          </div>
         </div>
         <div v-if="expanded.has(row.qname)" class="ep-note">
           <textarea
@@ -363,14 +414,52 @@ select.ep-prior {
   width: 100%;
   font-size: 0.8rem;
 }
-/* Spans the row like the annotation field, so the grid stays the width it was
-   whatever the chosen prior needs. */
-.ep-prior-params {
+/* Its own block, spanning the row, so the grid keeps its column widths whatever
+   the chosen prior needs. Tinted and rule-marked to read as a detail *of* the
+   row rather than another column in it. */
+.ep-prior-block {
   grid-column: 1 / -1;
+  margin: 0.15rem 0 0.1rem 2.9rem;
+  border-left: 2px solid var(--p-primary-color, #5b9bd5);
+  background: color-mix(in srgb, var(--p-primary-color, #5b9bd5) 7%, transparent);
+  border-radius: 0 4px 4px 0;
+}
+.ep-prior-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  width: 100%;
+  padding: 0.25rem 0.5rem;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: inherit;
+  font-size: 0.74rem;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  opacity: 0.7;
+}
+.ep-prior-toggle:hover,
+.ep-prior-toggle[aria-expanded='true'] {
+  opacity: 1;
+}
+.ep-prior-toggle i {
+  font-size: 0.7rem;
+}
+/* The values themselves when the panel is shut, so a set prior is legible
+   without opening every row to find out. */
+.ep-prior-summary {
+  margin-left: auto;
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 0.72rem;
+  opacity: 0.75;
+}
+.ep-prior-params {
   display: flex;
   flex-wrap: wrap;
   gap: 0.75rem;
-  padding: 0.15rem 0.2rem 0.3rem 3rem;
+  padding: 0.1rem 0.6rem 0.45rem 1.5rem;
 }
 .ep-prior-param {
   display: flex;

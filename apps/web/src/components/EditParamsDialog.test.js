@@ -288,6 +288,9 @@ describe('EditParamsDialog — prior hyper-parameters', () => {
       currentParams: [{ qname: 'v/a', min: 1, max: 2, prior: 'normal' }],
     })
     await flushPromises()
+    // Collapsed until asked for, so the row reads like the others.
+    expect(wrapper.find('[data-testid="ep-prior-param-prior_mean"]').exists()).toBe(false)
+    await wrapper.find('[data-testid="ep-prior-toggle"]').trigger('click')
     expect(wrapper.find('[data-testid="ep-prior-param-prior_mean"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="ep-prior-param-prior_std"]').exists()).toBe(true)
     // Belongs to the exponential, not the normal.
@@ -299,7 +302,7 @@ describe('EditParamsDialog — prior hyper-parameters', () => {
       currentParams: [{ qname: 'v/a', min: 1, max: 2, prior: 'uniform' }],
     })
     await flushPromises()
-    expect(wrapper.find('.ep-prior-params').exists()).toBe(false)
+    expect(wrapper.find('.ep-prior-block').exists()).toBe(false)
   })
 
   it('renders a loaded value and writes it into the CSV', async () => {
@@ -309,6 +312,7 @@ describe('EditParamsDialog — prior hyper-parameters', () => {
       ],
     })
     await flushPromises()
+    // A row that already states a value opens showing it, like an annotation does.
     const mean = wrapper.find('[data-testid="ep-prior-param-prior_mean"]')
     expect(mean.element.value).toBe('7')
 
@@ -356,6 +360,57 @@ describe('EditParamsDialog — prior hyper-parameters', () => {
       currentParams: [{ qname: 'v/a', min: 1, max: 2, prior: 'lognormal' }],
     })
     await flushPromises()
+    await wrapper.find('[data-testid="ep-prior-toggle"]').trigger('click')
     expect(wrapper.find('[data-testid="ep-prior-param-prior_sigma"]').exists()).toBe(true)
+  })
+})
+
+describe('EditParamsDialog — prior settings disclosure', () => {
+  it('keeps the settings out of the main columns', async () => {
+    // Their own block spanning the row, not extra grid columns: which values
+    // exist differs per prior, so as columns they would be blank for most rows.
+    const wrapper = mountDialog({
+      currentParams: [{ qname: 'v/a', min: 1, max: 2, prior: 'normal' }],
+    })
+    await flushPromises()
+    const head = wrapper.find('.ep-head').text()
+    expect(head).not.toContain('prior_mean')
+    expect(wrapper.find('.ep-prior-block').exists()).toBe(true)
+  })
+
+  it('names the prior in the panel heading', async () => {
+    const wrapper = mountDialog({
+      currentParams: [{ qname: 'v/a', min: 1, max: 2, prior: 'normal' }],
+    })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="ep-prior-toggle"]').text()).toContain('Normal prior settings')
+  })
+
+  it('summarises a set value while collapsed', async () => {
+    // So a row that departs from the defaults is legible without opening it.
+    const wrapper = mountDialog({
+      currentParams: [{ qname: 'v/a', min: 1, max: 2, prior: 'normal' }],
+    })
+    await flushPromises()
+    expect(wrapper.find('.ep-prior-summary').text()).toBe('defaults')
+
+    await wrapper.find('[data-testid="ep-prior-toggle"]').trigger('click')
+    await wrapper.find('[data-testid="ep-prior-param-prior_std"]').setValue('0.5')
+    await wrapper.find('[data-testid="ep-prior-toggle"]').trigger('click')
+    expect(wrapper.find('.ep-prior-summary').text()).toContain('prior_std 0.5')
+  })
+
+  it('opens when a prior with settings is chosen, and shuts on one without', async () => {
+    const wrapper = mountDialog({
+      currentParams: [{ qname: 'v/a', min: 1, max: 2, prior: 'uniform' }],
+    })
+    await flushPromises()
+    expect(wrapper.find('.ep-prior-block').exists()).toBe(false)
+
+    await wrapper.find('[data-testid="ep-prior"]').setValue('normal')
+    expect(wrapper.find('[data-testid="ep-prior-param-prior_mean"]').exists()).toBe(true)
+
+    await wrapper.find('[data-testid="ep-prior"]').setValue('uniform')
+    expect(wrapper.find('.ep-prior-block').exists()).toBe(false)
   })
 })
