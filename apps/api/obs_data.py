@@ -7,13 +7,20 @@ Two shapes are accepted:
 * a bare **array** of ``data_items`` (the legacy data-only format, e.g.
   ``3compartment_obs_data.json``) — overlays only, run with manual time.
 
-We implement the focused subset the API needs directly rather than importing
-``parsers.PrimitiveParsers.parse_obs_data_json`` (which pulls libCellML at import
-time and would drag the simulation deps into this path).
+The structure above is parsed here directly -- enough to load a protocol and draw
+overlays without the simulation stack. Whether the document is one
+circulatory_autogen can actually *calibrate* is CA's own question, and
+:func:`ca_schema_error` asks it rather than reimplementing the answer: CA marks
+``variable``, ``data_type``, ``unit``, ``operands``, ``value`` and ``std``
+REQUIRED and rejects any key outside its schema, none of which was checked here.
+A typo'd ``opperation`` used to upload cleanly, plot, and show a cost, and only
+fail when a calibration subprocess started.
 """
 
 from __future__ import annotations
 
+import copy
+import sys
 from dataclasses import dataclass
 
 
@@ -98,11 +105,71 @@ def parse_obs_data(obj) -> ObsData:
     if protocol_info is not None:
         _validate_traces(protocol_info)
 
+    # Last, so the structural messages above (which name the offending index)
+    # win when both apply.
+    ca_error = ca_schema_error(obj)
+    if ca_error:
+        raise ObsDataError(f"circulatory_autogen rejected this obs_data: {ca_error}")
+
     return ObsData(
         protocol_info=protocol_info,
         data_items=data_items,
         prediction_items=prediction_items,
     )
+
+
+def _ca_parser():
+    """CA's obs_data parser, or None when CA cannot be reached.
+
+    Imported lazily and through the same sys.path entries the option
+    introspection uses, so this module stays importable -- and the unit test tier
+    stays runnable -- without CA present. CA's parser itself needs neither Myokit
+    nor libCellML, which is why consulting it here does not drag the simulation
+    stack into the upload path.
+    """
+    try:
+        from obs_options import _ca_paths  # noqa: PLC0415
+
+        for p in _ca_paths():
+            if p not in sys.path:
+                sys.path.insert(0, p)
+        from parsers.PrimitiveParsers import ObsAndParamDataParser  # noqa: PLC0415
+    except Exception:  # noqa: BLE001 - CA absent or too old; nothing to ask
+        return None
+    return ObsAndParamDataParser()
+
+
+def ca_schema_error(obj) -> str | None:
+    """circulatory_autogen's verdict on this obs_data, or None if it has none.
+
+    Returns CA's own complaint, so the message the user sees at upload is the
+    message the calibration would have failed with. Never invents a verdict:
+    when CA cannot be imported -- no clone configured, or one predating the
+    schema -- this returns None and the upload proceeds on the structural checks
+    alone, exactly as it did before.
+
+    The document is deep-copied first. CA's parser materialises protocol shapes
+    and normalises series std in place, and validation must not quietly rewrite
+    the obs_data the app then runs and hands back to the editor.
+    """
+    parser = _ca_parser()
+    if parser is None:
+        return None
+
+    try:
+        # pre_time/sim_time are only consulted when protocol_info omits
+        # pre_times/sim_times (the data-only form, which CUFLynx runs with manual
+        # time); they exist to satisfy the parser, not to describe the run.
+        parser.parse_obs_data_json(
+            obs_data_dict=copy.deepcopy(obj), pre_time=0.0, sim_time=1.0
+        )
+    except ValueError as exc:
+        return str(exc)
+    except Exception:  # noqa: BLE001
+        # Something other than a schema complaint -- a CA bug, a missing optional
+        # dependency. Not the user's document to answer for, so don't block them.
+        return None
+    return None
 
 
 def _validate_protocol_info(protocol_info: dict) -> None:

@@ -280,3 +280,94 @@ def test_a_dangling_name_still_says_where_it_was_looked_for(client):
     detail = resp.json()["detail"]
     assert "typo" in detail
     assert "protocol_shapes" in detail
+
+
+# ---------------------------------------------------------------------------
+# CA's schema is consulted at upload, not at calibration time
+#
+# CUFLynx's own checks are structural -- enough to load a protocol and draw
+# overlays. CA's decide whether a calibration can run at all: it marks
+# `variable`, `data_type`, `unit`, `operands`, `value` and `std` REQUIRED and
+# rejects keys outside its schema. A document failing those used to upload
+# cleanly, plot, and show a cost, then fail in the calibration terminal.
+# ---------------------------------------------------------------------------
+def _obs(**item_over):
+    item = {
+        "variable": "a/x",
+        "data_type": "constant",
+        "unit": "dimensionless",
+        "operands": ["a/x"],
+        "value": 1.0,
+        "std": 0.1,
+        "weight": 1.0,
+    }
+    item.update(item_over)
+    return {"protocol_info": {"pre_times": [0.0], "sim_times": [[1.0]]}, "data_items": [item]}
+
+
+def test_a_conforming_document_still_uploads(client, requires_ca):
+    resp = client.post("/api/obs_data/upload", json=_obs())
+    assert resp.status_code == 200, resp.text
+
+
+def test_a_mis_spelled_key_is_rejected_at_upload(client, requires_ca):
+    """The exact shape that used to survive: `opperation` is not a schema key,
+    so CA refuses the document -- but only once a calibration started."""
+    resp = client.post("/api/obs_data/upload", json=_obs(opperation="max"))
+    assert resp.status_code == 422
+    assert "opperation" in resp.json()["detail"]
+
+
+def test_missing_required_keys_are_rejected_at_upload(client, requires_ca):
+    obs = _obs()
+    del obs["data_items"][0]["std"]
+    del obs["data_items"][0]["unit"]
+    resp = client.post("/api/obs_data/upload", json=obs)
+    assert resp.status_code == 422
+    detail = resp.json()["detail"]
+    assert "std" in detail and "unit" in detail
+
+
+def test_the_message_is_cas_own(client, requires_ca):
+    """So what the user reads at upload is what the calibration would have said,
+    rather than a paraphrase that drifts from it."""
+    resp = client.post("/api/obs_data/upload", json=_obs(opperation="max"))
+    assert "circulatory_autogen rejected this obs_data" in resp.json()["detail"]
+
+
+def test_validation_does_not_rewrite_the_document():
+    """CA's parser materialises protocol shapes and normalises series std in
+    place. Validation must not quietly change the obs_data the app then runs."""
+    import copy
+
+    import obs_data as obs_mod
+
+    obs = _obs()
+    before = copy.deepcopy(obs)
+    obs_mod.ca_schema_error(obs)
+    assert obs == before
+
+
+def test_upload_still_works_when_ca_cannot_be_consulted(client, monkeypatch):
+    """No CA clone configured (the frozen app's first run) must not make every
+    obs_data unloadable -- it degrades to the structural checks."""
+    import obs_data as obs_mod
+
+    monkeypatch.setattr(obs_mod, "ca_schema_error", lambda _obj: None)
+    obs = _obs()
+    del obs["data_items"][0]["std"]
+    resp = client.post("/api/obs_data/upload", json=obs)
+    assert resp.status_code == 200, resp.text
+
+
+def test_a_ca_crash_does_not_block_the_upload(monkeypatch):
+    """Only a schema complaint (ValueError) is the user's to answer for; anything
+    else is a CA problem and must not make their document unloadable."""
+    import obs_data as obs_mod
+
+    class _Boom:
+        def parse_obs_data_json(self, **_kw):
+            raise RuntimeError("some CA internal failure")
+
+    monkeypatch.setattr(obs_mod, "_ca_parser", lambda: _Boom())
+    assert obs_mod.ca_schema_error(_obs()) is None
