@@ -797,7 +797,7 @@ def test_param_prior_types_are_introspected_from_ca(monkeypatch):
     # fields CA declares rather than a list held in CUFLynx.
     assert priors["types"][1]["params"] == [
         {"name": "prior_sigma", "type": "float", "default": 1.0, "role": None,
-         "positive": True, "description": "Shape."},
+         "default_expr": None, "positive": True, "description": "Shape."},
     ]
     # A CA predating unbounded parameters has no prior_supports_unbounded to ask,
     # so the tickbox is simply not offered rather than guessed at.

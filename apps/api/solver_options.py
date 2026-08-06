@@ -305,18 +305,22 @@ _FALLBACK_PARAM_PRIOR_TYPES = {
     "default": "uniform",
     "types": [
         {"value": "uniform", "label": "Uniform", "description": "",
-         "supports_unbounded": False, "params": []},
+         "supports_unbounded": False, "support": None, "params": []},
         {"value": "exponential", "label": "Exponential", "description": "",
-         "supports_unbounded": False, "params": [
-            {"name": "prior_lambda", "type": "float", "default": 1.0,
-             "positive": True, "description": ""},
+         "supports_unbounded": True, "support": "one_sided", "params": [
+            {"name": "prior_lambda", "type": "float", "default": 1.0, "role": "rate",
+             "positive": True, "description": "", "default_expr": None},
+            {"name": "prior_origin", "type": "float", "default": 0.0, "role": "location",
+             "positive": False, "description": "", "default_expr": "0"},
+            {"name": "prior_scale", "type": "float", "default": None, "role": "scale",
+             "positive": True, "description": "", "default_expr": "max / prior_lambda"},
         ]},
         {"value": "normal", "label": "Normal", "description": "",
-         "supports_unbounded": True, "params": [
+         "supports_unbounded": True, "support": "symmetric", "params": [
             {"name": "prior_mean", "type": "float", "default": None, "role": "location",
-             "positive": False, "description": ""},
+             "positive": False, "description": "", "default_expr": "(min + max) / 2"},
             {"name": "prior_std", "type": "float", "default": None, "role": "scale",
-             "positive": True, "description": ""},
+             "positive": True, "description": "", "default_expr": "(max - min) / 6"},
         ]},
     ],
 }
@@ -474,10 +478,19 @@ def _introspect_param_prior_types() -> dict:
                 # declares both a centre and a width). CA decides; the editor only
                 # offers the tickbox where CA would accept it.
                 "supports_unbounded": bool(supports_unbounded(name)),
+                # Symmetric priors straddle their centre; one-sided ones decay away
+                # from an origin. The editor does not use it yet, but it travels with
+                # the rest so a consumer need not infer it from the prior's name.
+                "support": (meta or {}).get("support"),
                 "params": [
                     {
                         "name": spec.get("name"),
                         "role": spec.get("role"),
+                        # What a blank field resolves to, as an expression over the
+                        # row's min/max and sibling params. CA states it once and
+                        # computes from it; the editor evaluates the same string to
+                        # show the number, rather than restating the formula.
+                        "default_expr": spec.get("default_expr"),
                         "type": spec.get("type", "float"),
                         "default": spec.get("default"),
                         "positive": bool(spec.get("positive", False)),

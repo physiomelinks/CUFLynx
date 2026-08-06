@@ -17,15 +17,15 @@ const PRIOR_TYPES = {
       supports_unbounded: true,
       params: [
         { name: 'prior_mean', type: 'float', default: null, positive: false, role: 'location',
-          description: 'Centre of the Gaussian.' },
+          default_expr: '(min + max) / 2', description: 'Centre of the Gaussian.' },
         { name: 'prior_std', type: 'float', default: null, positive: true, role: 'scale',
-          description: 'Standard deviation.' },
+          default_expr: '(max - min) / 6', description: 'Standard deviation.' },
       ],
     },
     {
       value: 'exponential', label: 'Exponential', description: 'decays',
       supports_unbounded: false,
-      params: [{ name: 'prior_lambda', type: 'float', default: 1.0, positive: true,
+      params: [{ name: 'prior_lambda', type: 'float', default: 1.0, positive: true, role: 'rate',
                  description: 'Decay rate.' }],
     },
   ],
@@ -501,9 +501,13 @@ describe('EditParamsDialog — placeholder tells the truth', () => {
     const wrapper = mountDialog({ currentParams: [NORMAL] })
     await flushPromises()
     await wrapper.find('[data-testid="ep-prior-toggle"]').trigger('click')
+    // The number CA will actually use for [1, 2], not a description of it.
     expect(
       wrapper.find('[data-testid="ep-prior-param-prior_mean"]').attributes('placeholder'),
-    ).toBe('from min/max')
+    ).toBe('1.5')
+    expect(
+      wrapper.find('[data-testid="ep-prior-param-prior_std"]').attributes('placeholder'),
+    ).toBe('0.1667')
   })
 
   it('says required once the range is derived from it instead', async () => {
@@ -530,5 +534,21 @@ describe('EditParamsDialog — placeholder tells the truth', () => {
     expect(
       wrapper.find('[data-testid="ep-prior-param-prior_lambda"]').attributes('placeholder'),
     ).toBe('1')
+  })
+})
+
+describe('EditParamsDialog — placeholder follows the bounds', () => {
+  it('recomputes when min or max is edited', async () => {
+    const wrapper = mountDialog({
+      currentParams: [{ qname: 'v/a', min: 0, max: 6, prior: 'normal' }],
+    })
+    await flushPromises()
+    await wrapper.find('[data-testid="ep-prior-toggle"]').trigger('click')
+    const std = () => wrapper.find('[data-testid="ep-prior-param-prior_std"]')
+    expect(std().attributes('placeholder')).toBe('1')
+
+    // (max - min) / 6 with max now 12.
+    await wrapper.findAll('input.ep-num')[1].setValue('12')
+    expect(std().attributes('placeholder')).toBe('2')
   })
 })

@@ -5,6 +5,7 @@ import Button from 'primevue/button'
 import Checkbox from 'primevue/checkbox'
 import Message from 'primevue/message'
 import { mergedRows, buildParamsCsv, versionedFilename } from '../lib/paramsCsv'
+import { evalPriorDefault, formatPriorDefault } from '../lib/priorDefaults'
 import { uploadParamsForId, getConfig } from '../lib/api'
 
 const props = defineProps({
@@ -121,17 +122,33 @@ function priorFields(row) {
   return priorTypes.value.find((p) => p.value === row.prior)?.params ?? []
 }
 
-/** Placeholder for an unstated value: what CA does when the field is left blank.
+/** Placeholder for an unstated value: the number CA will actually use.
  *
- *  Unbounded reverses the relationship. Normally a blank centre or width is
- *  derived from [min, max]; when the range is itself derived from the prior,
- *  these are the inputs and there is nothing left to derive them from -- so they
- *  are required, and saying "from min/max" there would be circular and wrong. */
+ *  Computed from CA's own `default_expr` against this row's bounds, so the field
+ *  shows the value rather than a description of it — "1.5", not "from min/max".
+ *
+ *  Unbounded reverses the relationship: the range is derived *from* the centre
+ *  and width, so there is nothing left to derive them from and they are required.
+ *  Falls back to a bare description only when the expression cannot be evaluated
+ *  (a half-typed bound), which is better than showing a stale number. */
 function priorFieldPlaceholder(field, row) {
   if (row?.unbounded && (field.role === 'location' || field.role === 'scale')) {
     return 'required'
   }
-  return field.default == null ? 'from min/max' : String(field.default)
+  const derived = evalPriorDefault(field.default_expr, {
+    min: row?.min,
+    max: row?.max,
+    ...Object.fromEntries(
+      priorFields(row).map((f) => [
+        f.name,
+        (row?.priorParams ?? {})[f.name] ?? f.default,
+      ]),
+    ),
+  })
+  const shown = formatPriorDefault(derived)
+  if (shown != null) return shown
+  if (field.default != null) return String(field.default)
+  return 'from min/max'
 }
 
 function setPriorParam(row, name, value) {
