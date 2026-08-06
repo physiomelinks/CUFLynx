@@ -83,6 +83,33 @@ function priorHint(value) {
   return hit?.description || 'Prior distribution used by MCMC / UQ'
 }
 
+/** The values the row's chosen prior takes, as CA declares them ([] if none). */
+function priorFields(row) {
+  return priorTypes.value.find((p) => p.value === row.prior)?.params ?? []
+}
+
+/** Placeholder for an unstated value: CA's default, or what it derives instead. */
+function priorFieldPlaceholder(field) {
+  return field.default == null ? 'from min/max' : String(field.default)
+}
+
+function setPriorParam(row, name, value) {
+  // Kept as typed text, not coerced: CA parses and validates these, and a
+  // half-typed "-" or "1e" must survive long enough to finish typing.
+  row.priorParams = { ...(row.priorParams ?? {}), [name]: value }
+}
+
+/** Changing the prior drops values the new one does not take — CA rejects a
+ *  hyper-parameter set on a prior that ignores it, so leaving them behind would
+ *  make the file unsavable for a reason the user cannot see. */
+function onPriorChange(row, value) {
+  row.prior = value
+  const keep = new Set(priorFields(row).map((f) => f.name))
+  row.priorParams = Object.fromEntries(
+    Object.entries(row.priorParams ?? {}).filter(([k]) => keep.has(k)),
+  )
+}
+
 function toggleComment(qname) {
   const next = new Set(expanded.value)
   next.has(qname) ? next.delete(qname) : next.add(qname)
@@ -226,7 +253,7 @@ async function onSave() {
           :disabled="!row.included"
           data-testid="ep-prior"
           :title="priorHint(row.prior)"
-          @change="row.prior = $event.target.value"
+          @change="onPriorChange(row, $event.target.value)"
         >
           <!-- "not stated" is its own choice, distinct from picking the default
                explicitly: it leaves the column out of the row entirely, so a CSV
@@ -247,6 +274,28 @@ async function onSave() {
         >
           <i class="pi pi-comment" />
         </button>
+        <!-- The values the chosen prior takes. Shown whenever that prior declares
+             any, rather than behind a toggle: having picked Normal, its centre and
+             width are the next thing you want, and a hidden field reads as absent. -->
+        <div v-if="row.included && priorFields(row).length" class="ep-prior-params">
+          <span
+            v-for="f in priorFields(row)"
+            :key="f.name"
+            class="ep-prior-param"
+            :title="f.description"
+          >
+            <label :for="`${row.qname}-${f.name}`">{{ f.name }}</label>
+            <input
+              :id="`${row.qname}-${f.name}`"
+              type="number"
+              step="any"
+              :placeholder="priorFieldPlaceholder(f)"
+              :value="(row.priorParams ?? {})[f.name] ?? ''"
+              :data-testid="`ep-prior-param-${f.name}`"
+              @input="setPriorParam(row, f.name, $event.target.value)"
+            />
+          </span>
+        </div>
         <div v-if="expanded.has(row.qname)" class="ep-note">
           <textarea
             class="ep-note-input"
@@ -313,6 +362,26 @@ async function onSave() {
 select.ep-prior {
   width: 100%;
   font-size: 0.8rem;
+}
+/* Spans the row like the annotation field, so the grid stays the width it was
+   whatever the chosen prior needs. */
+.ep-prior-params {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  padding: 0.15rem 0.2rem 0.3rem 3rem;
+}
+.ep-prior-param {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.75rem;
+  opacity: 0.85;
+}
+.ep-prior-param input {
+  width: 7rem;
+  font-size: 0.78rem;
 }
 select:disabled {
   opacity: 0.4;

@@ -272,3 +272,71 @@ def test_the_shipped_lotka_volterra_csv_carries_its_priors(client):
     assert r.status_code == 200, r.text
     priors = [p["prior"] for p in r.json()["params"]]
     assert all(p is not None for p in priors), priors
+
+
+# ---------------------------------------------------------------------------
+# The values each prior takes (CA #356)
+# ---------------------------------------------------------------------------
+@pytest.fixture
+def requires_ca_priors():
+    """CA validates the hyper-parameters; without a CA new enough to know them
+    there is no verdict to assert, and the upload passes them through."""
+    try:
+        from parsers.PrimitiveParsers import normalise_prior_params  # noqa: F401
+    except Exception:
+        pytest.skip("circulatory_autogen without the prior hyper-parameter schema")
+
+
+def test_prior_hyperparameters_are_parsed(client):
+    from params_for_id import parse_params_for_id
+
+    entries = parse_params_for_id(
+        "vessel_name,param_name,min,max,prior,prior_mean,prior_std\n"
+        "a,k,0,10,normal,7.0,0.5\n"
+    )
+    assert entries[0].prior_params == {"prior_mean": "7.0", "prior_std": "0.5"}
+
+
+def test_an_unstated_hyperparameter_is_absent_not_defaulted():
+    """CA decides what an unstated value means (the centre of the range, a sixth
+    of it); writing a number here would put one into a file that never had it."""
+    from params_for_id import parse_params_for_id
+
+    entries = parse_params_for_id(
+        "vessel_name,param_name,min,max,prior,prior_mean,prior_std\n"
+        "a,k,0,10,normal,,\n"
+    )
+    assert entries[0].prior_params == {}
+
+
+def test_hyperparameters_reach_the_api_payload(client):
+    r = _post_csv_text(
+        client,
+        "vessel_name,param_name,min,max,prior,prior_mean\na,k,0,10,normal,7.0\n",
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["params"][0]["prior_params"] == {"prior_mean": "7.0"}
+
+
+def test_ca_rejects_a_hyperparameter_the_prior_does_not_take(client, requires_ca_priors):
+    """CA owns the rule; its complaint surfaces at upload rather than when a
+    calibration starts."""
+    r = _post_csv_text(
+        client, "vessel_name,param_name,min,max,prior,prior_std\na,k,0,10,uniform,2.0\n"
+    )
+    assert r.status_code == 422
+    assert "does not use it" in r.json()["detail"]
+
+
+def test_ca_rejects_a_non_positive_scale(client, requires_ca_priors):
+    r = _post_csv_text(
+        client, "vessel_name,param_name,min,max,prior,prior_std\na,k,0,10,normal,0\n"
+    )
+    assert r.status_code == 422
+    assert "greater than zero" in r.json()["detail"]
+
+
+def test_a_file_without_the_columns_is_unaffected(client):
+    r = _post_csv_text(client, "vessel_name,param_name,min,max,prior\na,k,0,10,normal\n")
+    assert r.status_code == 200, r.text
+    assert r.json()["params"][0]["prior_params"] == {}

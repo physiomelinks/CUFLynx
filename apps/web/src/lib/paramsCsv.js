@@ -46,6 +46,10 @@ export function mergedRows(currentParams = [], modelVariables = {}) {
       // as its default — distinct from explicitly choosing that default, so an
       // untouched CSV keeps its column exactly as it was.
       prior: p.prior ?? '',
+      // The values that prior takes, keyed by CA's column name. A bag rather
+      // than named fields: which values exist is CA's vocabulary, and one it
+      // grows should flow through without a change here.
+      priorParams: { ...(p.prior_params ?? {}) },
     })
   }
 
@@ -63,6 +67,7 @@ export function mergedRows(currentParams = [], modelVariables = {}) {
       initial_value: iv,
       comment: '',
       prior: '',
+      priorParams: {},
     })
   }
 
@@ -110,9 +115,23 @@ export function buildParamsCsv(rows) {
   const withType = rows.some((r) => r.param_type != null && r.param_type !== '')
   const withComment = rows.some((r) => r.comment != null && r.comment !== '')
   const withPrior = rows.some((r) => r.prior != null && r.prior !== '')
+  // One column per prior hyper-parameter any row actually states, in a stable
+  // order. Derived from the rows rather than a list of names held here, so a
+  // value CA adds to a prior travels without this file knowing about it.
+  const priorParamCols = [
+    ...new Set(
+      rows.flatMap((r) =>
+        Object.entries(r.priorParams ?? {})
+          .filter(([, v]) => v != null && v !== '')
+          .map(([k]) => k),
+      ),
+    ),
+  ].sort()
+
   const header = ['vessel_name', 'param_name', 'min', 'max', 'name_for_plotting']
   if (withType) header.push('param_type')
   if (withPrior) header.push('prior')
+  header.push(...priorParamCols)
   if (withComment) header.push('comment')
 
   const lines = [header.join(',')]
@@ -127,6 +146,7 @@ export function buildParamsCsv(rows) {
     ]
     if (withType) cells.push(csvField(r.param_type))
     if (withPrior) cells.push(csvField(r.prior))
+    for (const col of priorParamCols) cells.push(csvField((r.priorParams ?? {})[col]))
     if (withComment) cells.push(csvField(r.comment))
     lines.push(cells.join(','))
   }

@@ -773,8 +773,11 @@ def test_param_prior_types_are_introspected_from_ca(monkeypatch):
     hardcoding the list."""
     fake_mod = types.SimpleNamespace(
         PARAM_PRIOR_TYPES={
-            "uniform": {"label": "Uniform", "description": "flat"},
-            "lognormal": {"label": "Log-normal", "description": "new in CA"},
+            "uniform": {"label": "Uniform", "description": "flat", "params": []},
+            "lognormal": {"label": "Log-normal", "description": "new in CA", "params": [
+                {"name": "prior_sigma", "type": "float", "default": 1.0,
+                 "positive": True, "description": "Shape."},
+            ]},
         },
         DEFAULT_PARAM_PRIOR_TYPE="uniform",
     )
@@ -790,6 +793,13 @@ def test_param_prior_types_are_introspected_from_ca(monkeypatch):
     # The description travels too: what the distribution *is* was previously only
     # discoverable by reading CA's likelihood.
     assert priors["types"][1]["description"] == "new in CA"
+    # The values a prior takes travel too, so the editor renders exactly the
+    # fields CA declares rather than a list held in CUFLynx.
+    assert priors["types"][1]["params"] == [
+        {"name": "prior_sigma", "type": "float", "default": 1.0,
+         "positive": True, "description": "Shape."},
+    ]
+    assert priors["types"][0]["params"] == []
 
 
 def test_param_prior_types_fall_back_for_older_ca(monkeypatch):
@@ -803,6 +813,11 @@ def test_param_prior_types_fall_back_for_older_ca(monkeypatch):
     priors = so.get_param_prior_types(refresh=True)
     assert priors["default"] == "uniform"
     assert [p["value"] for p in priors["types"]] == ["uniform", "exponential", "normal"]
+    # The fallback still says what each prior takes, so the fields render on a CA
+    # predating the schema.
+    by_value = {p["value"]: p for p in priors["types"]}
+    assert [f["name"] for f in by_value["normal"]["params"]] == ["prior_mean", "prior_std"]
+    assert by_value["uniform"]["params"] == []
 
 
 def test_the_config_route_carries_the_prior_vocabulary(client, monkeypatch):

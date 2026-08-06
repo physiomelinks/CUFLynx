@@ -24,6 +24,7 @@ and falls back to a built-in copy of the schema when CA can't be imported.
 
 from __future__ import annotations
 
+import copy
 import sys
 from pathlib import Path
 
@@ -303,9 +304,17 @@ _FALLBACK_PARAM_ID_METHODS = [
 _FALLBACK_PARAM_PRIOR_TYPES = {
     "default": "uniform",
     "types": [
-        {"value": "uniform", "label": "Uniform", "description": ""},
-        {"value": "exponential", "label": "Exponential", "description": ""},
-        {"value": "normal", "label": "Normal", "description": ""},
+        {"value": "uniform", "label": "Uniform", "description": "", "params": []},
+        {"value": "exponential", "label": "Exponential", "description": "", "params": [
+            {"name": "prior_lambda", "type": "float", "default": 1.0,
+             "positive": True, "description": ""},
+        ]},
+        {"value": "normal", "label": "Normal", "description": "", "params": [
+            {"name": "prior_mean", "type": "float", "default": None,
+             "positive": False, "description": ""},
+            {"name": "prior_std", "type": "float", "default": None,
+             "positive": True, "description": ""},
+        ]},
     ],
 }
 
@@ -449,6 +458,19 @@ def _introspect_param_prior_types() -> dict:
                 # what the exponential's rate is) -- worth surfacing, because it
                 # was previously only discoverable by reading CA's likelihood.
                 "description": (meta or {}).get("description", ""),
+                # The values this prior takes, each a params_for_id column. The
+                # editor renders exactly these, so a prior CA grows a knob for
+                # gains the field here without a change in this repo.
+                "params": [
+                    {
+                        "name": spec.get("name"),
+                        "type": spec.get("type", "float"),
+                        "default": spec.get("default"),
+                        "positive": bool(spec.get("positive", False)),
+                        "description": spec.get("description", ""),
+                    }
+                    for spec in ((meta or {}).get("params") or [])
+                ],
             }
             for name, meta in PARAM_PRIOR_TYPES.items()
         ],
@@ -823,8 +845,9 @@ def get_param_prior_types(refresh: bool = False) -> dict:
         return _prior_cache
     priors, ok = _safe(
         _introspect_param_prior_types,
-        {"default": _FALLBACK_PARAM_PRIOR_TYPES["default"],
-         "types": [dict(t) for t in _FALLBACK_PARAM_PRIOR_TYPES["types"]]},
+        # Deep, not dict(t): each type now carries a `params` list, and a shallow
+        # copy would hand every caller the same one to mutate.
+        copy.deepcopy(_FALLBACK_PARAM_PRIOR_TYPES),
     )
     if ok:
         _prior_cache = priors

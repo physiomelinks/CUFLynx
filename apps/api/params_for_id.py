@@ -10,6 +10,7 @@ pandas only (no libCellML/Myokit) so the upload path stays in the unit tier.
 from __future__ import annotations
 
 import io
+import sys
 from dataclasses import dataclass
 
 import pandas as pd
@@ -24,6 +25,46 @@ _PARAM_COMPONENTS = ("parameters", "parameters_global")
 
 class ParamsForIdError(ValueError):
     """Raised for a malformed params_for_id CSV (maps to HTTP 422)."""
+
+
+def _ca_prior_param_names() -> tuple:
+    """CA's prior hyper-parameter column names, or () when CA can't be reached.
+
+    Introspected rather than listed here: which values a prior takes is CA's
+    vocabulary (``PARAM_PRIOR_PARAM_NAMES``), and one it grows should be carried
+    through without a change in this file. Without CA the columns are simply not
+    recognised, which is the same as the behaviour before they existed.
+    """
+    try:
+        from obs_options import _ca_paths  # noqa: PLC0415
+
+        for p in _ca_paths():
+            if p not in sys.path:
+                sys.path.insert(0, p)
+        from parsers.PrimitiveParsers import PARAM_PRIOR_PARAM_NAMES  # noqa: PLC0415
+    except Exception:  # noqa: BLE001 - CA absent or predating the schema
+        return ()
+    return tuple(PARAM_PRIOR_PARAM_NAMES)
+
+
+def _validate_prior_params(prior: str | None, values: dict, row_idx: int) -> None:
+    """Let CA judge this row's prior hyper-parameters, if it can.
+
+    CA owns the rules -- which prior takes which value, that scales are positive
+    and finite -- and re-implementing them here is how the two drift apart. Its
+    complaint is raised as-is so the message at upload is the message the
+    calibration would have given. Silent when CA is unreachable.
+    """
+    try:
+        from parsers.PrimitiveParsers import normalise_prior_params  # noqa: PLC0415
+    except Exception:  # noqa: BLE001
+        return
+    try:
+        normalise_prior_params(prior or "uniform", values, row_idx=row_idx)
+    except ValueError as exc:
+        raise ParamsForIdError(str(exc)) from exc
+    except Exception:  # noqa: BLE001 - a CA problem, not the user's file
+        return
 
 
 def _gen_name(vessel: str, param_name: str) -> str:
@@ -95,6 +136,10 @@ class ParamEntry:
     initial_value: float | None = None
     comment: str | None = None
     prior: str | None = None
+    # The values this row's prior takes (prior_mean, prior_std, prior_lambda...),
+    # keyed by CA's column name. A dict rather than fields, because which values
+    # exist is CA's vocabulary and grows there.
+    prior_params: dict | None = None
 
     def as_dict(self) -> dict:
         return {
@@ -106,6 +151,7 @@ class ParamEntry:
             "initial_value": self.initial_value,
             "comment": self.comment,
             "prior": self.prior,
+            "prior_params": self.prior_params or {},
         }
 
 
@@ -139,6 +185,7 @@ def parse_params_for_id(
     has_type = "param_type" in df.columns
     has_comment = "comment" in df.columns
     has_prior = "prior" in df.columns
+    prior_param_columns = [n for n in _ca_prior_param_names() if n in df.columns]
     initial_values = initial_values or {}
     gen_index = _build_gen_index(initial_values)
 
@@ -178,6 +225,18 @@ def parse_params_for_id(
             prior_str = str(row["prior"]).strip()
             prior = prior_str or None
 
+        # The values that prior takes, for the columns CA recognises. Kept as
+        # strings-in / floats-out only where stated: an absent cell means "not
+        # stated", which CA turns into its documented default.
+        prior_params: dict = {}
+        for name in prior_param_columns:
+            if pd.isna(row[name]):
+                continue
+            text = str(row[name]).strip()
+            if text:
+                prior_params[name] = text
+        _validate_prior_params(prior, prior_params, idx)
+
         vessels = str(row["vessel_name"]).split()
         if not vessels:
             raise ParamsForIdError(f"row {idx}: empty vessel_name")
@@ -195,6 +254,7 @@ def parse_params_for_id(
                     ),
                     comment=comment,
                     prior=prior,
+                    prior_params=dict(prior_params),
                 )
             )
 

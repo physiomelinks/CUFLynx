@@ -10,8 +10,21 @@ import { uploadParamsForId, getConfig } from '../lib/api'
 const PRIOR_TYPES = {
   default: 'uniform',
   types: [
-    { value: 'uniform', label: 'Uniform', description: 'flat across [min, max]' },
-    { value: 'normal', label: 'Normal', description: 'centred on the range' },
+    { value: 'uniform', label: 'Uniform', description: 'flat across [min, max]', params: [] },
+    {
+      value: 'normal', label: 'Normal', description: 'centred on the range',
+      params: [
+        { name: 'prior_mean', type: 'float', default: null, positive: false,
+          description: 'Centre of the Gaussian.' },
+        { name: 'prior_std', type: 'float', default: null, positive: true,
+          description: 'Standard deviation.' },
+      ],
+    },
+    {
+      value: 'exponential', label: 'Exponential', description: 'decays',
+      params: [{ name: 'prior_lambda', type: 'float', default: 1.0, positive: true,
+                 description: 'Decay rate.' }],
+    },
   ],
 }
 
@@ -212,7 +225,7 @@ describe('EditParamsDialog — prior column', () => {
     expect(select.exists()).toBe(true)
     const labels = select.findAll('option').map((o) => o.text())
     // The "not stated" choice, then CA's vocabulary verbatim.
-    expect(labels).toEqual(['— (uniform)', 'Uniform', 'Normal'])
+    expect(labels).toEqual(['— (uniform)', 'Uniform', 'Normal', 'Exponential'])
   })
 
   it('hides the column when the backend reports no vocabulary', async () => {
@@ -266,5 +279,83 @@ describe('EditParamsDialog — prior column', () => {
 
     const [file] = uploadParamsForId.mock.calls[0]
     expect(await readFile(file)).toContain('exponential')
+  })
+})
+
+describe('EditParamsDialog — prior hyper-parameters', () => {
+  it('shows only the fields the chosen prior declares', async () => {
+    const wrapper = mountDialog({
+      currentParams: [{ qname: 'v/a', min: 1, max: 2, prior: 'normal' }],
+    })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="ep-prior-param-prior_mean"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="ep-prior-param-prior_std"]').exists()).toBe(true)
+    // Belongs to the exponential, not the normal.
+    expect(wrapper.find('[data-testid="ep-prior-param-prior_lambda"]').exists()).toBe(false)
+  })
+
+  it('shows no fields for a prior that takes none', async () => {
+    const wrapper = mountDialog({
+      currentParams: [{ qname: 'v/a', min: 1, max: 2, prior: 'uniform' }],
+    })
+    await flushPromises()
+    expect(wrapper.find('.ep-prior-params').exists()).toBe(false)
+  })
+
+  it('renders a loaded value and writes it into the CSV', async () => {
+    const wrapper = mountDialog({
+      currentParams: [
+        { qname: 'v/a', min: 1, max: 2, prior: 'normal', prior_params: { prior_mean: '7' } },
+      ],
+    })
+    await flushPromises()
+    const mean = wrapper.find('[data-testid="ep-prior-param-prior_mean"]')
+    expect(mean.element.value).toBe('7')
+
+    await mean.setValue('9.5')
+    await wrapper.find('[data-testid="ep-save"]').trigger('click')
+    await flushPromises()
+
+    const text = await readFile(uploadParamsForId.mock.calls[0][0])
+    expect(text.split('\n')[0]).toContain('prior_mean')
+    expect(text).toContain('9.5')
+  })
+
+  it('drops values the newly chosen prior does not take', async () => {
+    // CA rejects a hyper-parameter set on a prior that ignores it, so leaving it
+    // behind would make the file unsavable for a reason the user cannot see.
+    const wrapper = mountDialog({
+      currentParams: [
+        { qname: 'v/a', min: 1, max: 2, prior: 'normal', prior_params: { prior_std: '0.5' } },
+      ],
+    })
+    await flushPromises()
+    await wrapper.find('[data-testid="ep-prior"]').setValue('uniform')
+    await flushPromises()
+
+    await wrapper.find('[data-testid="ep-save"]').trigger('click')
+    await flushPromises()
+    const text = await readFile(uploadParamsForId.mock.calls[0][0])
+    expect(text).not.toContain('prior_std')
+    expect(text).not.toContain('0.5')
+  })
+
+  it('offers whatever CA declares, without knowing the names', async () => {
+    // A value CA adds to a prior must appear with no change in this repo.
+    getConfig.mockResolvedValue({
+      param_prior_types: {
+        default: 'uniform',
+        types: [{
+          value: 'lognormal', label: 'Log-normal', description: '',
+          params: [{ name: 'prior_sigma', type: 'float', default: 1.0, positive: true,
+                     description: 'Shape.' }],
+        }],
+      },
+    })
+    const wrapper = mountDialog({
+      currentParams: [{ qname: 'v/a', min: 1, max: 2, prior: 'lognormal' }],
+    })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="ep-prior-param-prior_sigma"]').exists()).toBe(true)
   })
 })
