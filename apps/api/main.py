@@ -798,6 +798,25 @@ def get_example_model(name: str) -> FileResponse:
     return FileResponse(path, media_type=example_media_type(filename), filename=filename)
 
 
+def _obs_data_document(record, protocol_info=None) -> dict | None:
+    """The loaded obs_data as CA's parser wants it: one dict with protocol_info.
+
+    obs_cost hands this to CA so the cost is computed by the same code the
+    calibration runs, rather than reproduced from the data_items here.
+    """
+    obs = getattr(record, "obs_data", None)
+    if obs is None:
+        return None
+    proto = protocol_info if protocol_info is not None else obs.protocol_info
+    if proto is None:
+        return None
+    return {
+        "protocol_info": proto,
+        "data_items": obs.data_items,
+        "prediction_items": obs.prediction_items,
+    }
+
+
 def _with_obs_operands(outputs: list[str], record) -> list[str]:
     """``outputs`` plus every operand the loaded obs_data scores on."""
     obs = getattr(record, "obs_data", None)
@@ -1163,6 +1182,8 @@ def simulate(req: SimulateRequest) -> dict:
             record.obs_data.data_items,
             {0: {**result.get("outputs", {}), "time": result.get("time", [])}},
             output_dir,
+            obs_data=_obs_data_document(record),
+            dt=engine.dt,
         )
     return result
 
@@ -1242,7 +1263,11 @@ def protocol_run(req: ProtocolRunRequest) -> dict:
             scored_by[(sub["experiment_idx"], sub["subexperiment_idx"])] = sub.get(
                 "outputs", {}
             )
-        result["cost"] = obs_cost.evaluate(items, scored_by, output_dir)
+        result["cost"] = obs_cost.evaluate(
+            items, scored_by, output_dir,
+            obs_data=_obs_data_document(record, protocol_info),
+            dt=engine.dt,
+        )
     return result
 
 
