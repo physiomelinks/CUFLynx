@@ -42,6 +42,17 @@ export function mergedRows(currentParams = [], modelVariables = {}) {
       initial_value: p.initial_value ?? initials[p.qname] ?? null,
       // free-text annotation/note about this parameter's range.
       comment: p.comment ?? '',
+      // MCMC/UQ prior for this parameter. '' means "not stated", which CA reads
+      // as its default — distinct from explicitly choosing that default, so an
+      // untouched CSV keeps its column exactly as it was.
+      prior: p.prior ?? '',
+      // The values that prior takes, keyed by CA's column name. A bag rather
+      // than named fields: which values exist is CA's vocabulary, and one it
+      // grows should flow through without a change here.
+      priorParams: { ...(p.prior_params ?? {}) },
+      // No min/max of its own: the prior says where it lives and CA derives the
+      // range. The min/max on the row are those derived values, shown but not typed.
+      unbounded: !!p.unbounded,
     })
   }
 
@@ -58,6 +69,9 @@ export function mergedRows(currentParams = [], modelVariables = {}) {
       param_type: null,
       initial_value: iv,
       comment: '',
+      prior: '',
+      priorParams: {},
+      unbounded: false,
     })
   }
 
@@ -86,11 +100,17 @@ function numField(value) {
 
 /**
  * Build params_for_id CSV text from the rows to write (one row per qname). The
- * `param_type` and `comment` columns are only emitted when at least one row
- * carries one. Column order matches the parser's expectations (vessel_name,
- * param_name, min, max, name_for_plotting[, param_type][, comment]).
+ * `param_type`, `prior` and `comment` columns are only emitted when at least one
+ * row carries one. Column order matches the parser's expectations (vessel_name,
+ * param_name, min, max, name_for_plotting[, param_type][, prior][, comment]).
  * circulatory_autogen reads columns by name and ignores unknown ones (like the
  * `comment` annotation), so the CSV stays valid for CA.
+ *
+ * `prior` is emitted for the same reason the others are: dropping a column the
+ * user's CSV carried is data loss. It is the one that bites hardest, because CA
+ * reads a missing prior as `uniform` — so rewriting the file without it silently
+ * replaced every non-uniform prior with a uniform one, and the next MCMC run
+ * sampled a different posterior with nothing said.
  *
  * @param {Array<object>} rows
  * @returns {string}
@@ -98,8 +118,26 @@ function numField(value) {
 export function buildParamsCsv(rows) {
   const withType = rows.some((r) => r.param_type != null && r.param_type !== '')
   const withComment = rows.some((r) => r.comment != null && r.comment !== '')
+  const withPrior = rows.some((r) => r.prior != null && r.prior !== '')
+  const withUnbounded = rows.some((r) => r.unbounded)
+  // One column per prior hyper-parameter any row actually states, in a stable
+  // order. Derived from the rows rather than a list of names held here, so a
+  // value CA adds to a prior travels without this file knowing about it.
+  const priorParamCols = [
+    ...new Set(
+      rows.flatMap((r) =>
+        Object.entries(r.priorParams ?? {})
+          .filter(([, v]) => v != null && v !== '')
+          .map(([k]) => k),
+      ),
+    ),
+  ].sort()
+
   const header = ['vessel_name', 'param_name', 'min', 'max', 'name_for_plotting']
   if (withType) header.push('param_type')
+  if (withPrior) header.push('prior')
+  if (withUnbounded) header.push('unbounded')
+  header.push(...priorParamCols)
   if (withComment) header.push('comment')
 
   const lines = [header.join(',')]
@@ -108,11 +146,16 @@ export function buildParamsCsv(rows) {
     const cells = [
       csvField(vessel_name),
       csvField(param_name),
-      numField(r.min),
-      numField(r.max),
+      // An unbounded row writes no bounds: they were derived from its prior, and
+      // writing them back would freeze a range that should follow the prior.
+      r.unbounded ? '' : numField(r.min),
+      r.unbounded ? '' : numField(r.max),
       csvField(r.name_for_plotting ?? r.qname),
     ]
     if (withType) cells.push(csvField(r.param_type))
+    if (withPrior) cells.push(csvField(r.prior))
+    if (withUnbounded) cells.push(r.unbounded ? 'true' : '')
+    for (const col of priorParamCols) cells.push(csvField((r.priorParams ?? {})[col]))
     if (withComment) cells.push(csvField(r.comment))
     lines.push(cells.join(','))
   }

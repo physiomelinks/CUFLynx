@@ -213,3 +213,148 @@ def test_gen_name_fallback_prefers_parameters_component():
     initial = {"parameters/R_x": 42.0, "some_module/R_x": 7.0}
     idx = _build_gen_index(initial)
     assert _resolve_initial_value("x", "R", initial, idx) == 42.0
+
+
+# ---------------------------------------------------------------------------
+# The `prior` column (MCMC / UQ priors)
+#
+# CA reads a missing prior as `uniform`, so dropping the column is not a lossless
+# simplification -- it silently replaces every non-uniform prior with a uniform
+# one, and the next MCMC run samples a different posterior without saying so.
+# ---------------------------------------------------------------------------
+def test_the_prior_column_is_parsed():
+    from params_for_id import parse_params_for_id
+
+    entries = parse_params_for_id(
+        "vessel_name,param_name,min,max,prior\na,k,1,2,normal\nb,j,1,2,exponential\n"
+    )
+    assert [e.prior for e in entries] == ["normal", "exponential"]
+
+
+def test_a_blank_prior_cell_is_not_stated():
+    """Blank must stay None rather than becoming the string 'nan' or the default:
+    CA decides what an absent prior means, and writing one back would put a prior
+    into a CSV the user never gave one."""
+    from params_for_id import parse_params_for_id
+
+    entries = parse_params_for_id("vessel_name,param_name,min,max,prior\na,k,1,2,\n")
+    assert entries[0].prior is None
+
+
+def test_no_prior_column_leaves_every_entry_unstated():
+    from params_for_id import parse_params_for_id
+
+    entries = parse_params_for_id("vessel_name,param_name,min,max\na,k,1,2\n")
+    assert entries[0].prior is None
+
+
+def test_the_prior_survives_a_multi_vessel_row():
+    """A whitespace-split vessel_name expands to several entries; each keeps the
+    row's prior, or the expansion would drop it for all but the first."""
+    from params_for_id import parse_params_for_id
+
+    entries = parse_params_for_id("vessel_name,param_name,min,max,prior\na b,k,1,2,normal\n")
+    assert [e.prior for e in entries] == ["normal", "normal"]
+
+
+def test_the_prior_reaches_the_api_payload(client):
+    """The editor reads its rows from this payload, so a prior that stops here is
+    a prior the editor cannot round-trip."""
+    r = _post_csv_text(client, "vessel_name,param_name,min,max,prior\na,k,1,2,normal\n")
+    assert r.status_code == 200, r.text
+    assert r.json()["params"][0]["prior"] == "normal"
+
+
+def test_the_shipped_lotka_volterra_csv_carries_its_priors(client):
+    """The fixture that exposed this: it has a prior column, and the editor used
+    to rewrite it without one."""
+    r = _post_csv_file(client, LV_PARAMS_CSV_PATH)
+    assert r.status_code == 200, r.text
+    priors = [p["prior"] for p in r.json()["params"]]
+    assert all(p is not None for p in priors), priors
+
+
+# ---------------------------------------------------------------------------
+# The values each prior takes (CA #356)
+# ---------------------------------------------------------------------------
+@pytest.fixture
+def requires_ca_priors():
+    """CA validates the hyper-parameters; without a CA new enough to know them
+    there is no verdict to assert, and the upload passes them through."""
+    try:
+        from parsers.PrimitiveParsers import normalise_prior_params  # noqa: F401
+    except Exception:
+        pytest.skip("circulatory_autogen without the prior hyper-parameter schema")
+
+
+def test_prior_hyperparameters_are_parsed(client):
+    from params_for_id import parse_params_for_id
+
+    entries = parse_params_for_id(
+        "vessel_name,param_name,min,max,prior,prior_mean,prior_std\n"
+        "a,k,0,10,normal,7.0,0.5\n"
+    )
+    assert entries[0].prior_params == {"prior_mean": "7.0", "prior_std": "0.5"}
+
+
+def test_an_unstated_hyperparameter_is_absent_not_defaulted():
+    """CA decides what an unstated value means (the centre of the range, a sixth
+    of it); writing a number here would put one into a file that never had it."""
+    from params_for_id import parse_params_for_id
+
+    entries = parse_params_for_id(
+        "vessel_name,param_name,min,max,prior,prior_mean,prior_std\n"
+        "a,k,0,10,normal,,\n"
+    )
+    assert entries[0].prior_params == {}
+
+
+def test_hyperparameters_reach_the_api_payload(client):
+    r = _post_csv_text(
+        client,
+        "vessel_name,param_name,min,max,prior,prior_mean\na,k,0,10,normal,7.0\n",
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["params"][0]["prior_params"] == {"prior_mean": "7.0"}
+
+
+def test_ca_rejects_a_hyperparameter_the_prior_does_not_take(client, requires_ca_priors):
+    """CA owns the rule; its complaint surfaces at upload rather than when a
+    calibration starts."""
+    r = _post_csv_text(
+        client, "vessel_name,param_name,min,max,prior,prior_std\na,k,0,10,uniform,2.0\n"
+    )
+    assert r.status_code == 422
+    assert "does not use it" in r.json()["detail"]
+
+
+def test_ca_rejects_a_non_positive_scale(client, requires_ca_priors):
+    r = _post_csv_text(
+        client, "vessel_name,param_name,min,max,prior,prior_std\na,k,0,10,normal,0\n"
+    )
+    assert r.status_code == 422
+    assert "greater than zero" in r.json()["detail"]
+
+
+def test_a_file_without_the_columns_is_unaffected(client):
+    r = _post_csv_text(client, "vessel_name,param_name,min,max,prior\na,k,0,10,normal\n")
+    assert r.status_code == 200, r.text
+    assert r.json()["params"][0]["prior_params"] == {}
+
+
+def test_the_columns_are_read_even_without_ca(monkeypatch):
+    """The names decide whether the user's column is read at all. Dropping them
+    when CA is unreachable would silently discard the hyper-parameters -- the same
+    data loss this support exists to fix. Only validation degrades."""
+    import params_for_id as pfi
+    import solver_options as so
+
+    monkeypatch.setattr(so, "_introspect_param_prior_types",
+                        lambda: (_ for _ in ()).throw(ImportError("no CA")))
+    monkeypatch.setattr(pfi, "_validate_prior_params", lambda *a, **k: None)
+    so.reset_cache()
+
+    entries = pfi.parse_params_for_id(
+        "vessel_name,param_name,min,max,prior,prior_std\na,k,0,10,normal,0.5\n"
+    )
+    assert entries[0].prior_params == {"prior_std": "0.5"}

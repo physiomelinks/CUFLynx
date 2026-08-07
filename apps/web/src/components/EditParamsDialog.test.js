@@ -1,10 +1,44 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 
-vi.mock('../lib/api', () => ({ uploadParamsForId: vi.fn() }))
+vi.mock('../lib/api', () => ({ uploadParamsForId: vi.fn(), getConfig: vi.fn() }))
 
 import EditParamsDialog from './EditParamsDialog.vue'
-import { uploadParamsForId } from '../lib/api'
+import { uploadParamsForId, getConfig } from '../lib/api'
+
+// The prior vocabulary as CA reports it through /api/config.
+const PRIOR_TYPES = {
+  default: 'uniform',
+  types: [
+    { value: 'uniform', label: 'Uniform', description: 'flat across [min, max]',
+      supports_unbounded: false, params: [] },
+    {
+      value: 'normal', label: 'Normal', description: 'centred on the range',
+      supports_unbounded: true,
+      params: [
+        { name: 'prior_mean', type: 'float', default: null, positive: false, role: 'location',
+          default_expr: '(min + max) / 2', description: 'Centre of the Gaussian.' },
+        { name: 'prior_std', type: 'float', default: null, positive: true, role: 'scale',
+          default_expr: '(max - min) / 6', description: 'Standard deviation.' },
+      ],
+    },
+    {
+      value: 'exponential', label: 'Exponential', description: 'decays',
+      supports_unbounded: false,
+      params: [{ name: 'prior_lambda', type: 'float', default: 1.0, positive: true, role: 'rate',
+                 description: 'Decay rate.' }],
+    },
+  ],
+}
+
+/** jsdom's File has no .text(); read it the way the other tests do. */
+function readFile(file) {
+  return new Promise((resolve) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(reader.result)
+    reader.readAsText(file)
+  })
+}
 
 // Inline stubs so the dialog + footer render without teleport.
 const DialogStub = {
@@ -43,6 +77,8 @@ function mountDialog(props = {}) {
 
 beforeEach(() => {
   uploadParamsForId.mockReset()
+  getConfig.mockReset()
+  getConfig.mockResolvedValue({ param_prior_types: PRIOR_TYPES })
   // jsdom lacks createObjectURL; provide a stub so the download path runs.
   globalThis.URL.createObjectURL = vi.fn(() => 'blob:mock')
   globalThis.URL.revokeObjectURL = vi.fn()
@@ -181,5 +217,338 @@ describe('EditParamsDialog', () => {
     const input = wrapper.find('[data-testid="ep-note-input"]')
     expect(input.exists()).toBe(true)
     expect(input.element.value).toBe('preloaded note')
+  })
+})
+
+describe('EditParamsDialog — prior column', () => {
+  it('offers the priors CA reported, not a hardcoded list', async () => {
+    const wrapper = mountDialog()
+    await flushPromises()
+    const select = wrapper.find('[data-testid="ep-prior"]')
+    expect(select.exists()).toBe(true)
+    const labels = select.findAll('option').map((o) => o.text())
+    // The "not stated" choice, then CA's vocabulary verbatim.
+    expect(labels).toEqual(['— (uniform)', 'Uniform', 'Normal', 'Exponential'])
+  })
+
+  it('hides the column when the backend reports no vocabulary', async () => {
+    getConfig.mockResolvedValue({})
+    const wrapper = mountDialog()
+    await flushPromises()
+    expect(wrapper.find('[data-testid="ep-prior"]').exists()).toBe(false)
+  })
+
+  it('stays usable when the config request fails', async () => {
+    getConfig.mockRejectedValue(new Error('offline'))
+    const wrapper = mountDialog()
+    await flushPromises()
+    expect(wrapper.find('[data-testid="ep-prior"]').exists()).toBe(false)
+    expect(wrapper.findAll('[data-testid="ep-row"]')).toHaveLength(2)
+  })
+
+  it('shows a loaded prior as the selected value', async () => {
+    const wrapper = mountDialog({
+      currentParams: [{ qname: 'v/a', min: 1, max: 2, prior: 'normal' }],
+    })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="ep-prior"]').element.value).toBe('normal')
+  })
+
+  it('writes the chosen prior into the CSV', async () => {
+    const wrapper = mountDialog({
+      currentParams: [{ qname: 'v/a', min: 1, max: 2, prior: 'normal' }],
+    })
+    await flushPromises()
+    await wrapper.find('[data-testid="ep-save"]').trigger('click')
+    await flushPromises()
+
+    const [file] = uploadParamsForId.mock.calls[0]
+    const text = await readFile(file)
+    expect(text.split('\n')[0]).toContain('prior')
+    expect(text).toContain('normal')
+  })
+
+  it('round-trips a prior the user never touched', async () => {
+    // The regression: opening the dialog and saving used to drop the column, so
+    // every non-uniform prior silently became uniform.
+    const wrapper = mountDialog({
+      currentParams: [
+        { qname: 'v/a', min: 1, max: 2, prior: 'exponential' },
+      ],
+    })
+    await flushPromises()
+    await wrapper.find('[data-testid="ep-save"]').trigger('click')
+    await flushPromises()
+
+    const [file] = uploadParamsForId.mock.calls[0]
+    expect(await readFile(file)).toContain('exponential')
+  })
+})
+
+describe('EditParamsDialog — prior hyper-parameters', () => {
+  it('shows only the fields the chosen prior declares', async () => {
+    const wrapper = mountDialog({
+      currentParams: [{ qname: 'v/a', min: 1, max: 2, prior: 'normal' }],
+    })
+    await flushPromises()
+    // Collapsed until asked for, so the row reads like the others.
+    expect(wrapper.find('[data-testid="ep-prior-param-prior_mean"]').exists()).toBe(false)
+    await wrapper.find('[data-testid="ep-prior-toggle"]').trigger('click')
+    expect(wrapper.find('[data-testid="ep-prior-param-prior_mean"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="ep-prior-param-prior_std"]').exists()).toBe(true)
+    // Belongs to the exponential, not the normal.
+    expect(wrapper.find('[data-testid="ep-prior-param-prior_lambda"]').exists()).toBe(false)
+  })
+
+  it('shows no fields for a prior that takes none', async () => {
+    const wrapper = mountDialog({
+      currentParams: [{ qname: 'v/a', min: 1, max: 2, prior: 'uniform' }],
+    })
+    await flushPromises()
+    expect(wrapper.find('.ep-prior-block').exists()).toBe(false)
+  })
+
+  it('renders a loaded value and writes it into the CSV', async () => {
+    const wrapper = mountDialog({
+      currentParams: [
+        { qname: 'v/a', min: 1, max: 2, prior: 'normal', prior_params: { prior_mean: '7' } },
+      ],
+    })
+    await flushPromises()
+    // A row that already states a value opens showing it, like an annotation does.
+    const mean = wrapper.find('[data-testid="ep-prior-param-prior_mean"]')
+    expect(mean.element.value).toBe('7')
+
+    await mean.setValue('9.5')
+    await wrapper.find('[data-testid="ep-save"]').trigger('click')
+    await flushPromises()
+
+    const text = await readFile(uploadParamsForId.mock.calls[0][0])
+    expect(text.split('\n')[0]).toContain('prior_mean')
+    expect(text).toContain('9.5')
+  })
+
+  it('drops values the newly chosen prior does not take', async () => {
+    // CA rejects a hyper-parameter set on a prior that ignores it, so leaving it
+    // behind would make the file unsavable for a reason the user cannot see.
+    const wrapper = mountDialog({
+      currentParams: [
+        { qname: 'v/a', min: 1, max: 2, prior: 'normal', prior_params: { prior_std: '0.5' } },
+      ],
+    })
+    await flushPromises()
+    await wrapper.find('[data-testid="ep-prior"]').setValue('uniform')
+    await flushPromises()
+
+    await wrapper.find('[data-testid="ep-save"]').trigger('click')
+    await flushPromises()
+    const text = await readFile(uploadParamsForId.mock.calls[0][0])
+    expect(text).not.toContain('prior_std')
+    expect(text).not.toContain('0.5')
+  })
+
+  it('offers whatever CA declares, without knowing the names', async () => {
+    // A value CA adds to a prior must appear with no change in this repo.
+    getConfig.mockResolvedValue({
+      param_prior_types: {
+        default: 'uniform',
+        types: [{
+          value: 'lognormal', label: 'Log-normal', description: '',
+          params: [{ name: 'prior_sigma', type: 'float', default: 1.0, positive: true,
+                     description: 'Shape.' }],
+        }],
+      },
+    })
+    const wrapper = mountDialog({
+      currentParams: [{ qname: 'v/a', min: 1, max: 2, prior: 'lognormal' }],
+    })
+    await flushPromises()
+    await wrapper.find('[data-testid="ep-prior-toggle"]').trigger('click')
+    expect(wrapper.find('[data-testid="ep-prior-param-prior_sigma"]').exists()).toBe(true)
+  })
+})
+
+describe('EditParamsDialog — prior settings disclosure', () => {
+  it('keeps the settings out of the main columns', async () => {
+    // Their own block spanning the row, not extra grid columns: which values
+    // exist differs per prior, so as columns they would be blank for most rows.
+    const wrapper = mountDialog({
+      currentParams: [{ qname: 'v/a', min: 1, max: 2, prior: 'normal' }],
+    })
+    await flushPromises()
+    const head = wrapper.find('.ep-head').text()
+    expect(head).not.toContain('prior_mean')
+    expect(wrapper.find('.ep-prior-block').exists()).toBe(true)
+  })
+
+  it('names the prior in the panel heading', async () => {
+    const wrapper = mountDialog({
+      currentParams: [{ qname: 'v/a', min: 1, max: 2, prior: 'normal' }],
+    })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="ep-prior-toggle"]').text()).toContain('Normal prior settings')
+  })
+
+  it('summarises a set value while collapsed', async () => {
+    // So a row that departs from the defaults is legible without opening it.
+    const wrapper = mountDialog({
+      currentParams: [{ qname: 'v/a', min: 1, max: 2, prior: 'normal' }],
+    })
+    await flushPromises()
+    expect(wrapper.find('.ep-prior-summary').text()).toBe('defaults')
+
+    await wrapper.find('[data-testid="ep-prior-toggle"]').trigger('click')
+    await wrapper.find('[data-testid="ep-prior-param-prior_std"]').setValue('0.5')
+    await wrapper.find('[data-testid="ep-prior-toggle"]').trigger('click')
+    expect(wrapper.find('.ep-prior-summary').text()).toContain('prior_std 0.5')
+  })
+
+  it('opens when a prior with settings is chosen, and shuts on one without', async () => {
+    const wrapper = mountDialog({
+      currentParams: [{ qname: 'v/a', min: 1, max: 2, prior: 'uniform' }],
+    })
+    await flushPromises()
+    expect(wrapper.find('.ep-prior-block').exists()).toBe(false)
+
+    await wrapper.find('[data-testid="ep-prior"]').setValue('normal')
+    expect(wrapper.find('[data-testid="ep-prior-param-prior_mean"]').exists()).toBe(true)
+
+    await wrapper.find('[data-testid="ep-prior"]').setValue('uniform')
+    expect(wrapper.find('.ep-prior-block').exists()).toBe(false)
+  })
+})
+
+describe('EditParamsDialog — unbounded parameters', () => {
+  const NORMAL = { qname: 'v/a', min: 1, max: 2, prior: 'normal' }
+
+  it('is offered only where CA says the prior can derive a range', async () => {
+    const wrapper = mountDialog({ currentParams: [{ ...NORMAL, prior: 'uniform' }] })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="ep-unbounded"]').exists()).toBe(false)
+
+    await wrapper.find('[data-testid="ep-prior"]').setValue('normal')
+    expect(wrapper.find('[data-testid="ep-unbounded"]').exists()).toBe(true)
+  })
+
+  it('makes min and max unenterable', async () => {
+    const wrapper = mountDialog({ currentParams: [NORMAL] })
+    await flushPromises()
+    await wrapper.find('[data-testid="ep-prior-toggle"]').trigger('click')
+
+    const nums = () => wrapper.findAll('input.ep-num')
+    expect(nums()[0].attributes('disabled')).toBeUndefined()
+
+    await wrapper.find('[data-testid="ep-unbounded"]').setValue(true)
+    expect(nums()[0].attributes('disabled')).toBeDefined()
+    expect(nums()[1].attributes('disabled')).toBeDefined()
+  })
+
+  it('writes the flag and no bounds', async () => {
+    // The bounds were derived from the prior; writing them back would freeze a
+    // range that should follow the prior.
+    const wrapper = mountDialog({
+      currentParams: [{ ...NORMAL, prior_params: { prior_mean: '7', prior_std: '1.5' } }],
+    })
+    await flushPromises()
+    await wrapper.find('[data-testid="ep-unbounded"]').setValue(true)
+    await wrapper.find('[data-testid="ep-save"]').trigger('click')
+    await flushPromises()
+
+    const text = await readFile(uploadParamsForId.mock.calls[0][0])
+    const header = text.split('\n')[0].split(',')
+    const row = text.split('\n')[1].split(',')
+    expect(header).toContain('unbounded')
+    expect(row[header.indexOf('unbounded')]).toBe('true')
+    expect(row[header.indexOf('min')]).toBe('')
+    expect(row[header.indexOf('max')]).toBe('')
+  })
+
+  it('refuses to save until the centre and width are given', async () => {
+    // CA derives the range from them, and their usual defaults come from the
+    // range that is no longer there.
+    const wrapper = mountDialog({ currentParams: [NORMAL] })
+    await flushPromises()
+    await wrapper.find('[data-testid="ep-unbounded"]').setValue(true)
+    expect(wrapper.find('[data-testid="ep-save"]').attributes('disabled')).toBeDefined()
+
+    await wrapper.find('[data-testid="ep-prior-param-prior_mean"]').setValue('7')
+    await wrapper.find('[data-testid="ep-prior-param-prior_std"]').setValue('1.5')
+    expect(wrapper.find('[data-testid="ep-save"]').attributes('disabled')).toBeUndefined()
+  })
+
+  it('gives the bounds back when unticked', async () => {
+    const wrapper = mountDialog({ currentParams: [NORMAL] })
+    await flushPromises()
+    await wrapper.find('[data-testid="ep-unbounded"]').setValue(true)
+    await wrapper.find('[data-testid="ep-unbounded"]').setValue(false)
+    expect(wrapper.findAll('input.ep-num')[0].attributes('disabled')).toBeUndefined()
+  })
+
+  it('says so in the collapsed summary', async () => {
+    const wrapper = mountDialog({
+      currentParams: [{ ...NORMAL, unbounded: true, prior_params: { prior_mean: '7' } }],
+    })
+    await flushPromises()
+    await wrapper.find('[data-testid="ep-prior-toggle"]').trigger('click')
+    expect(wrapper.find('.ep-prior-summary').text()).toBe('unbounded')
+  })
+})
+
+describe('EditParamsDialog — placeholder tells the truth', () => {
+  const NORMAL = { qname: 'v/a', min: 1, max: 2, prior: 'normal' }
+
+  it('says a blank value is derived from the range', async () => {
+    const wrapper = mountDialog({ currentParams: [NORMAL] })
+    await flushPromises()
+    await wrapper.find('[data-testid="ep-prior-toggle"]').trigger('click')
+    // The number CA will actually use for [1, 2], not a description of it.
+    expect(
+      wrapper.find('[data-testid="ep-prior-param-prior_mean"]').attributes('placeholder'),
+    ).toBe('1.5')
+    expect(
+      wrapper.find('[data-testid="ep-prior-param-prior_std"]').attributes('placeholder'),
+    ).toBe('0.1667')
+  })
+
+  it('says required once the range is derived from it instead', async () => {
+    // Unbounded reverses the relationship: min/max come from the centre and
+    // width, so "from min/max" would be circular -- and these are the one thing
+    // that cannot be left blank.
+    const wrapper = mountDialog({ currentParams: [NORMAL] })
+    await flushPromises()
+    await wrapper.find('[data-testid="ep-unbounded"]').setValue(true)
+
+    for (const f of ['prior_mean', 'prior_std']) {
+      expect(
+        wrapper.find(`[data-testid="ep-prior-param-${f}"]`).attributes('placeholder'),
+      ).toBe('required')
+    }
+  })
+
+  it('leaves a field with a real default showing that default', async () => {
+    const wrapper = mountDialog({
+      currentParams: [{ qname: 'v/a', min: 1, max: 2, prior: 'exponential' }],
+    })
+    await flushPromises()
+    await wrapper.find('[data-testid="ep-prior-toggle"]').trigger('click')
+    expect(
+      wrapper.find('[data-testid="ep-prior-param-prior_lambda"]').attributes('placeholder'),
+    ).toBe('1')
+  })
+})
+
+describe('EditParamsDialog — placeholder follows the bounds', () => {
+  it('recomputes when min or max is edited', async () => {
+    const wrapper = mountDialog({
+      currentParams: [{ qname: 'v/a', min: 0, max: 6, prior: 'normal' }],
+    })
+    await flushPromises()
+    await wrapper.find('[data-testid="ep-prior-toggle"]').trigger('click')
+    const std = () => wrapper.find('[data-testid="ep-prior-param-prior_std"]')
+    expect(std().attributes('placeholder')).toBe('1')
+
+    // (max - min) / 6 with max now 12.
+    await wrapper.findAll('input.ep-num')[1].setValue('12')
+    expect(std().attributes('placeholder')).toBe('2')
   })
 })
