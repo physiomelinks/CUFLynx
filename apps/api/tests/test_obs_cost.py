@@ -265,3 +265,112 @@ def test_a_complete_score_is_not_flagged_incomplete(monkeypatch):
     _funcs(monkeypatch)
     out = obs_cost.evaluate([_item(value=10.0)], {0: {"a/u": [8.0]}})
     assert out["incomplete"] is False
+
+
+
+def _lv(client):
+    """The Lotka-Volterra study loaded, returning (model_id, obs_data dict)."""
+    import json
+
+    from conftest import LV_MODEL_PATH, LV_OBS_DATA_PATH, upload_model
+
+    model_id = upload_model(client, LV_MODEL_PATH)["model_id"]
+    obs = json.loads(LV_OBS_DATA_PATH.read_text())
+    assert client.post(
+        "/api/obs_data/upload", json={"model_id": model_id, "obs_data": obs}
+    ).status_code == 200
+    return model_id, obs
+
+
+# ---------------------------------------------------------------------------
+# The number is circulatory_autogen's, not a reproduction of it
+# ---------------------------------------------------------------------------
+@pytest.mark.integration
+def test_the_cost_is_computed_by_ca(client, requires_simulation):
+    """The panel used to reproduce CA's cost by walking the data_items here, which
+    is how the two came to disagree (#181, #182). It now asks CA."""
+    import engine as engine_mod
+
+    engine_mod.engine.reset()
+    engine_mod.engine.model_type, engine_mod.engine.solver = "cellml_only", "CVODE_myokit"
+    model_id, _ = _lv(client)
+
+    r = client.post("/api/protocol/run", json={"model_id": model_id, "params": {}})
+    assert r.status_code == 200, r.text
+    cost = r.json()["cost"]
+    assert cost["computed_by"] == "circulatory_autogen"
+
+
+@pytest.mark.integration
+def test_it_matches_cas_own_cost_path(client, requires_simulation):
+    """Asserted against CA directly, so a divergence shows up here rather than as
+    a calibration panel and an output panel quietly disagreeing."""
+    import numpy as np
+    import tempfile
+    import engine as engine_mod
+    from parsers.PrimitiveParsers import ObsAndParamDataParser, scriptFunctionParser
+    from param_id.paramID import OpencorParamID
+
+    engine_mod.engine.reset()
+    engine_mod.engine.model_type, engine_mod.engine.solver = "cellml_only", "CVODE_myokit"
+    model_id, obs = _lv(client)
+
+    r = client.post("/api/protocol/run", json={"model_id": model_id, "params": {}})
+    body = r.json()
+    ours = body["cost"]["cost"]
+
+    scored_by = {e: {**x.get("outputs", {}), "time": x.get("time", [])}
+                 for e, x in enumerate(body.get("experiments", []))}
+    for s in body.get("subexperiments") or []:
+        scored_by[(s["experiment_idx"], s["subexperiment_idx"])] = s.get("outputs", {})
+
+    parser = ObsAndParamDataParser()
+    parsed = parser.parse_obs_data_json(obs_data_dict=obs, pre_time=0.0, sim_time=1.0)
+    with tempfile.TemporaryDirectory() as d:
+        obs_info = parser.process_obs_info(gt_df=parsed["gt_df"], output_dir=d,
+                                           dt=engine_mod.engine.dt)
+    proto = parser.process_protocol_and_weights(
+        gt_df=parsed["gt_df"], protocol_info=parsed["protocol_info"],
+        dt=engine_mod.engine.dt)
+
+    pid = OpencorParamID.__new__(OpencorParamID)
+    pid.obs_info, pid.protocol_info = obs_info, proto
+    pid.cost_type = obs_info["cost_type"]
+    pid.dt = engine_mod.engine.dt
+    pid.model_type = "cellml_only"
+    sfp = scriptFunctionParser()
+    pid.cost_funcs_dict = pid.cost_funcs_dict_symbolic = sfp.get_cost_funcs_dict("numpy")
+    pid.operation_funcs_dict = pid.operation_funcs_dict_symbolic = \
+        sfp.get_operation_funcs_dict("numpy")
+    pid._num_weighted_obs_by_exp_sub = None
+    pid._refresh_num_weighted_obs_tables()
+
+    total, denom = 0.0, 0
+    for exp in range(len(proto["sim_times"])):
+        for sub in range(proto["num_sub_per_exp"][exp]):
+            seg = scored_by.get((exp, sub)) or scored_by.get(exp) or {}
+            operands = [[np.asarray(seg.get(n, []), dtype=float)
+                         for n in obs_info["operands"][JJ]]
+                        for JJ in range(obs_info["num_obs"])]
+            total += pid.get_cost_from_operands(operands, exp_idx=exp, sub_idx=sub)
+            denom += pid._num_weighted_obs_by_exp_sub[exp][sub]
+
+    assert ours == pytest.approx(total / float(denom))
+
+
+def test_without_ca_the_panel_still_reports(monkeypatch):
+    """A CA that cannot be reached must not lose the panel -- it degrades to the
+    local walk, and says so, rather than showing nothing."""
+    import obs_cost
+
+    monkeypatch.setattr(obs_cost, "_ca_engine", lambda *a, **k: None)
+    monkeypatch.setattr(obs_cost, "get_operation_funcs", lambda _d=None: {"max": max})
+    monkeypatch.setattr(
+        obs_cost, "get_cost_funcs", lambda _d=None: {"MSE": lambda o, d, s, w: w * (o - d) ** 2})
+
+    item = {"variable": "x", "operation": "max", "operands": ["a/u"], "value": 1.0,
+            "std": 1.0, "weight": 1.0, "cost_type": "MSE"}
+    out = obs_cost.evaluate([item], {0: {"a/u": [3.0]}},
+                            obs_data={"protocol_info": {}, "data_items": [item]})
+    assert out["computed_by"] == "cuflynx"
+    assert out["cost"] == pytest.approx(4.0)
