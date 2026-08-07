@@ -140,17 +140,26 @@ def test_aadc_ad_methods_are_limited_to_what_the_tape_can_record(client):
     suitable = opts["ad_suitable_methods"].get("aadc_semi_implicit")
     assert suitable, "AADC advertises no AD-suitable methods"
 
-    # Tape-consistent, OR one of the stiff BDF methods. Those are AD-capable
-    # without being tape-consistent: cost_and_grad dispatches each to its own
-    # gradient implementation *before* the tape check, which CA says in as many
-    # words beside the constant. An earlier version of this test required
-    # everything to be tape-consistent -- true when CA had no BDF gradients, and
-    # since then it has grown three.
+    # Tape-consistent, OR one of the methods that are AD-capable without being so:
+    # cost_and_grad dispatches those to their own gradient implementation *before*
+    # the tape check.
+    #
+    # That second set is read from CA rather than named here. CA keeps it as
+    # AADC_BDF_AD_METHODS beside AADC_TAPE_CONSISTENT_METHODS for exactly this --
+    # naming the members here meant every method CA added to it became a failure
+    # of this test rather than a fact it had learned. 'semi_implicit_signed' was
+    # the second time that happened.
     allowed = set(ab.TAPE_CONSISTENT_METHODS)
-    for name in ("BDF_NEWTON_METHOD", "BDF_TAPE_METHOD", "BDF_KERNEL_METHOD"):
-        method = getattr(ab, name, None)
-        if method:
-            allowed.add(method)
+    try:
+        from parsers.PrimitiveParsers import AADC_BDF_AD_METHODS  # noqa: PLC0415
+
+        allowed |= set(AADC_BDF_AD_METHODS)
+    except ImportError:
+        # A CA predating the tuple: fall back to the constants it did expose.
+        for name in ("BDF_NEWTON_METHOD", "BDF_TAPE_METHOD", "BDF_KERNEL_METHOD"):
+            method = getattr(ab, name, None)
+            if method:
+                allowed.add(method)
     assert set(suitable) <= allowed, f"{sorted(set(suitable) - allowed)} have no AD path in CA"
 
     # An adaptive integrator picks its steps from the state, so the recorded
