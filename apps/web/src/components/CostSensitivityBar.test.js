@@ -1,0 +1,106 @@
+import { describe, it, expect } from 'vitest'
+import { mount } from '@vue/test-utils'
+import CostSensitivityBar from './CostSensitivityBar.vue'
+
+/**
+ * Issue #188: the cost line said what the parameters cost; this says which
+ * parameter the number is about.
+ */
+const payload = (over = {}) => ({
+  cost: 36.8,
+  rel_step: 0.001,
+  method: 'central finite difference',
+  n_simulations: 7,
+  unavailable: null,
+  params: [
+    { name: 'a/alpha', value: 1, derivative: 10, elasticity: 0.5, reason: null },
+    { name: 'a/beta', value: 2, derivative: -1, elasticity: -4, reason: null },
+    { name: 'a/gamma', value: 3, derivative: 0, elasticity: 0.01, reason: null },
+  ],
+  ...over,
+})
+
+const mountBar = (props = {}) =>
+  mount(CostSensitivityBar, { props: { result: payload(), ...props } })
+
+describe('CostSensitivityBar (#188)', () => {
+  it('ranks the parameters by how much the cost cares', () => {
+    // The ordering is the answer to "which one is driving it", so it is the
+    // component's job, not the reader's.
+    const rows = mountBar().findAll('[data-testid="cost-sens-row"]')
+    expect(rows.map((r) => r.find('.cost-sens-name').text())).toEqual([
+      'a/beta',
+      'a/alpha',
+      'a/gamma',
+    ])
+  })
+
+  it('says which way to drag, not only how much', () => {
+    const rows = mountBar().findAll('[data-testid="cost-sens-row"]')
+    // A negative elasticity means the cost falls as the parameter rises.
+    expect(rows[0].text()).toContain('increase to improve')
+    expect(rows[1].text()).toContain('decrease to improve')
+  })
+
+  it('names the quantity and the step it used', () => {
+    // "sensitivity" without units is not a number anyone can act on; a relative
+    // one is comparable across parameters, and the FD step changes the answer.
+    const text = mountBar().find('[data-testid="cost-sens-method"]').text()
+    expect(text).toContain('d ln(cost)/d ln(p)')
+    expect(text).toContain('0.1%')
+  })
+
+  it('prefers a label to a qualified name where one exists', () => {
+    const wrapper = mountBar({ labels: { 'a/alpha': 'α' } })
+    expect(wrapper.text()).toContain('α')
+  })
+
+  it('shows a reason instead of a number when it could not tell', () => {
+    const wrapper = mountBar({
+      result: payload({
+        params: [
+          { name: 'a/alpha', value: 1, derivative: null, elasticity: null,
+            reason: 'the run at a/alpha = 1.001 did not run: CVODE failed' },
+        ],
+      }),
+    })
+    const row = wrapper.find('[data-testid="cost-sens-row"]')
+    expect(row.find('[data-testid="cost-sens-value"]').text()).toBe('—')
+    expect(row.text()).toContain('CVODE failed')
+  })
+
+  it('reports a cost that could not be scored rather than showing zeros', () => {
+    const wrapper = mountBar({
+      result: payload({ cost: null, unavailable: 'no cost to take a gradient of' }),
+    })
+    expect(wrapper.find('[data-testid="cost-sens-unavailable"]').text()).toContain(
+      'no cost to take a gradient of',
+    )
+    expect(wrapper.findAll('[data-testid="cost-sens-row"]')).toHaveLength(0)
+  })
+
+  it('surfaces a failed request', () => {
+    const wrapper = mountBar({ status: 'error', error: 'Simulation failed: boom' })
+    expect(wrapper.find('[data-testid="cost-sens-error"]').text()).toContain('boom')
+  })
+
+  it('keeps the last ranking when the sliders have moved, but marks it stale', () => {
+    // Dropping it would leave the panel emptier the more the user explores; a
+    // stale ranking is usually still the useful one, provided it says so.
+    const wrapper = mountBar({ status: 'stale' })
+    expect(wrapper.findAll('[data-testid="cost-sens-row"]')).toHaveLength(3)
+    expect(wrapper.text()).toContain('measured at the previous parameters')
+    expect(wrapper.find('[data-testid="cost-sens-recompute"]').exists()).toBe(true)
+  })
+
+  it('offers a recompute rather than doing it on every pixel of a drag', async () => {
+    const wrapper = mountBar({ status: 'stale' })
+    await wrapper.find('[data-testid="cost-sens-recompute"]').trigger('click')
+    expect(wrapper.emitted('recompute')).toHaveLength(1)
+  })
+
+  it('says it is working before the first numbers arrive', () => {
+    const wrapper = mountBar({ result: null, status: 'running' })
+    expect(wrapper.find('[data-testid="cost-sens-empty"]').text()).toContain('measuring')
+  })
+})

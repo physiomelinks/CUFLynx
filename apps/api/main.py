@@ -60,6 +60,7 @@ from model_codegen import resolve_model_path, reset_cache as reset_codegen
 from obs_data import ObsData, ObsDataError, parse_obs_data
 from obs_options import get_obs_data_options, reset_cache as reset_obs_options
 import obs_cost
+import cost_sensitivity
 from obs_series import compute_output_series
 from params_for_id import ParamsForIdError, parse_params_for_id
 import saved_runs
@@ -1141,6 +1142,47 @@ def get_variables(model_id: str) -> dict:
     }
 
 
+def _single_run_cost(record, result: dict, output_dir) -> dict | None:
+    """What a single run's parameters cost against the loaded obs_data (#159).
+
+    Its own function because the cost-sensitivity path differences exactly this
+    (#188): a gradient of a cost computed even slightly differently from the one
+    on screen would rank parameters against a number the user cannot see.
+    """
+    return obs_cost.evaluate(
+        record.obs_data.data_items,
+        {0: {**result.get("outputs", {}), "time": result.get("time", [])}},
+        output_dir,
+        obs_data=_obs_data_document(record),
+        dt=engine.dt,
+    )
+
+
+def _protocol_run_cost(record, result: dict, protocol_info, output_dir) -> dict | None:
+    """The same, for a protocol run's per-experiment segments.
+
+    `time` is an operand of any windowed or peak-timing operation, and it is
+    returned beside the outputs rather than in them -- so it is folded in here,
+    or every such observable goes unscored. Keyed by (experiment, subexperiment)
+    where the run kept its segments, which is what a data_item names and what CA
+    scores against (#181); the per-experiment traces stay as a fallback for a
+    payload without them.
+    """
+    scored_by = {
+        e: {**exp.get("outputs", {}), "time": exp.get("time", [])}
+        for e, exp in enumerate(result.get("experiments", []))
+    }
+    for sub in result.get("subexperiments") or []:
+        scored_by[(sub["experiment_idx"], sub["subexperiment_idx"])] = sub.get(
+            "outputs", {}
+        )
+    return obs_cost.evaluate(
+        record.obs_data.data_items, scored_by, output_dir,
+        obs_data=_obs_data_document(record, protocol_info),
+        dt=engine.dt,
+    )
+
+
 @app.post("/api/simulate")
 def simulate(req: SimulateRequest) -> dict:
     record = _get_model(req.model_id)
@@ -1178,13 +1220,7 @@ def simulate(req: SimulateRequest) -> dict:
         result["output_series"] = compute_output_series(
             record.obs_data.data_items, result.get("outputs", {}), output_dir
         )
-        result["cost"] = obs_cost.evaluate(
-            record.obs_data.data_items,
-            {0: {**result.get("outputs", {}), "time": result.get("time", [])}},
-            output_dir,
-            obs_data=_obs_data_document(record),
-            dt=engine.dt,
-        )
+        result["cost"] = _single_run_cost(record, result, output_dir)
     return result
 
 
@@ -1249,26 +1285,103 @@ def protocol_run(req: ProtocolRunRequest) -> dict:
         # What these parameters cost against the loaded data (#159). From this
         # run, not another: scoring a slider move must not double the work it
         # already took to draw it.
-        # `time` is an operand of any windowed or peak-timing operation, and it
-        # is returned beside the outputs rather than in them -- so it is folded
-        # in here, or every such observable goes unscored.
-        # Keyed by (experiment, subexperiment) where the run kept its segments,
-        # which is what a data_item names and what CA scores against (#181). The
-        # per-experiment traces stay as a fallback for a payload without them.
-        scored_by = {
-            e: {**exp.get("outputs", {}), "time": exp.get("time", [])}
-            for e, exp in enumerate(result.get("experiments", []))
-        }
-        for sub in result.get("subexperiments") or []:
-            scored_by[(sub["experiment_idx"], sub["subexperiment_idx"])] = sub.get(
-                "outputs", {}
-            )
-        result["cost"] = obs_cost.evaluate(
-            items, scored_by, output_dir,
-            obs_data=_obs_data_document(record, protocol_info),
-            dt=engine.dt,
-        )
+        result["cost"] = _protocol_run_cost(record, result, protocol_info, output_dir)
     return result
+
+
+class CostSensitivityRequest(BaseModel):
+    model_id: str
+    params: dict[str, float] = Field(default_factory=dict)
+    # Which parameters to differentiate, in the order the rows should come back.
+    # Defaults to every parameter supplied; the client narrows it so a model with
+    # thirty sliders does not pay for sixty simulations it did not ask for.
+    param_names: list[str] | None = None
+    # The slider's [min, max] per parameter. Used only where the parameter sits
+    # at exactly 0, which has no scale of its own to step or normalise by.
+    bounds: dict[str, list[float]] | None = None
+    rel_step: float = cost_sensitivity.DEFAULT_REL_STEP
+    # The same run description the displayed run used, so the base cost here is
+    # the number the panel is showing rather than one from a different run.
+    sim_time: float = 10.0
+    pre_time: float = 0.0
+    outputs: list[str] | None = None
+    protocol_info: dict | None = None
+    config_outputs_dir: str = ""
+
+
+@app.post("/api/cost_sensitivity")
+def cost_sensitivity_route(req: CostSensitivityRequest) -> dict:
+    """``d ln(cost)/d ln(p)`` per parameter, about the current slider values (#188).
+
+    Opt-in, and priced accordingly: 2M+1 simulations for M parameters. The runs
+    go through the *live* engine and are scored by the same two helpers the
+    displayed cost uses, so the gradient is of the cost on screen -- see
+    :mod:`cost_sensitivity` for why this differences rather than calling CA's
+    analytic ``get_gradient``.
+    """
+    record = _get_model(req.model_id)
+    _validate_param_keys(req.params)
+    if record.obs_data is None:
+        raise HTTPException(
+            status_code=422,
+            detail="no obs_data is loaded, so there is no cost to be sensitive to",
+        )
+
+    output_dir = _user_func_base_dir(req.config_outputs_dir)
+    protocol_info = req.protocol_info
+    if protocol_info is None:
+        protocol_info = record.obs_data.protocol_info
+
+    try:
+        live_type, _live_solver, _fell_back = engine.live_backend()
+        model_path = resolve_model_path(str(record.path), live_type, model_id=req.model_id)
+    except Exception as exc:  # noqa: BLE001 - a model that cannot be resolved owes a reason
+        raise HTTPException(
+            status_code=500, detail=engine.describe_exception(exc)
+        ) from exc
+
+    # Deliberately the *same* run each endpoint above makes, down to which
+    # outputs are requested: a superset would score observables the panel's cost
+    # does not, and the gradient would then belong to a different number.
+    def cost_at(params: dict) -> dict | None:
+        if protocol_info is not None:
+            outputs = req.outputs or (record.meta.odes + record.meta.algebraic)
+            result = engine.run_protocol(
+                model_id=req.model_id,
+                model_path=model_path,
+                protocol_info=protocol_info,
+                params=params,
+                outputs=_with_obs_operands(outputs, record),
+            )
+            return _protocol_run_cost(record, result, protocol_info, output_dir)
+        result = engine.simulate(
+            model_id=req.model_id,
+            model_path=model_path,
+            params=params,
+            sim_time=req.sim_time,
+            pre_time=req.pre_time,
+            outputs=req.outputs or record.meta.odes,
+        )
+        return _single_run_cost(record, result, output_dir)
+
+    try:
+        return cost_sensitivity.evaluate(
+            req.params,
+            cost_at,
+            param_names=req.param_names,
+            bounds=req.bounds,
+            rel_step=req.rel_step,
+        )
+    except SimulationError as exc:
+        # Only the *base* run reaches here: a perturbed one that fails is that
+        # parameter's reason, not the whole request's failure.
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001 - anything else still owes a reason
+        raise HTTPException(
+            status_code=500, detail=engine.describe_exception(exc)
+        ) from exc
 
 
 @app.post("/api/obs_data/upload")

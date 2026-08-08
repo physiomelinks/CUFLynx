@@ -69,6 +69,18 @@ so developers can point at a local checkout. (See issue #18.)
 - `apps/api/calibration.py` / `calibration_runner.py` — GA parameter identification; `CalibrationPanel.vue` (also emits live settings reused by local-sensitivity "run calibration first").
 - `apps/api/uq.py` / `uq_runner.py` — uncertainty quantification; `UQPanel.vue`.
 
+One analysis is deliberately **not** in that tier: `apps/api/cost_sensitivity.py`
+(`POST /api/cost_sensitivity`, `CostSensitivityBar.vue`, #188) — `d ln(cost)/d ln(p)`
+per parameter, shown beside the cost while the sliders are being dragged. It runs
+in the **live** tier (`engine`, hence the worker interpreter) because it has to
+answer in the time a drag allows, and it differences the very cost the panel shows
+(`main._single_run_cost` / `_protocol_run_cost` → `obs_cost.evaluate` → CA). Central
+FD, `rel_step` defaulting to CA's `1e-3` **not** local SA's `1e-2` — the two differ
+by up to 48% on a rough functional, and these numbers sit next to CA's. CA's
+analytic `get_gradient` is better and unused: it needs a solver-backed
+`OpencorParamID` (compile per call, casadi/aadc/FSA only), which is the subprocess
+tier this is avoiding. Opt-in and off by default: 2M+1 simulations per settle.
+
 **GUI config editing** (edit CA config files in the browser → download dated copy → apply immediately):
 
 - **obs_data.json** — `EditObsDataDialog.vue` + `apps/web/src/lib/obsDataJson.js`; its operand and operation pickers are `SearchableSelect.vue` (type-to-filter, #160) because those lists are a model's whole variable set and every registered operation; edits `data_items`/`prediction_items` (incl. `source`/`comment` notes) and embeds `ProtocolInfoEditor.vue` (+ `lib/protocolInfo.js`) for `protocol_info` (experiments, params_to_change, constant/ramp/step/pulse/paced inputs, time-view plots). Time-varying inputs are written as **`protocol_shapes`** — declarations in Myokit's `[[protocol]]` vocabulary (`level`/`start`/`length`/`period`/`multiplier`), which CA expands into `protocol_traces` on read (CA#339). Declarations, not expansions, because a point table cannot be read back into the fields that produced it. `expandShape()` in `lib/protocolInfo.js` mirrors CA's expansion for the plots; **the two must agree** — change both. Hand-written `protocol_traces` are still accepted and preserved verbatim, as is any shape the editor has no form for. Dropdown vocabularies come from `apps/api/obs_options.py` (`GET /api/obs_data/options`), which introspects CA registries — **never hardcode** operations/cost_types/data_types/plot_types. A data_item's `operation_kwargs` and `cost_kwargs` (CA#304 / CA#370) are edited the same way: an input per keyword argument, from a schema introspected off the chosen func's signature (`operation_kwargs_schema` / `cost_kwargs_schema`). A stored kwarg is only ever deleted when CA has said the newly chosen func cannot accept it (`cost_kwargs_accepts_any` is a *full* map so "accepts nothing else" is distinguishable from "CA never answered") — otherwise it round-trips untouched, because dropping a key is data loss. `apps/api/obs_cost.py` calls cost funcs through CA's `call_cost_func`, so the panel's cost is the call the calibration makes: `std`/`weight` only when the signature declares them, plus the data_item's `cost_kwargs`.
