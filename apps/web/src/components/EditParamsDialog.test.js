@@ -648,3 +648,80 @@ describe('EditParamsDialog — placeholder follows the bounds', () => {
     expect(std().attributes('placeholder')).toBe('2')
   })
 })
+
+// Issue #198. When the number can be computed the placeholder is the number
+// (above). When it cannot, it used to be the fixed phrase "from min/max", which
+// says neither what the default is nor what to fill in to see it -- and for a
+// formula over something other than the bounds it was simply wrong. The fallback
+// is now CA's own default_expr.
+describe('EditParamsDialog — placeholder when the number cannot be computed (#198)', () => {
+  // CA's real exponential: prior_scale defaults to `max / prior_lambda`, so min
+  // has nothing to do with it.
+  const EXPONENTIAL_WITH_SCALE = {
+    default: 'uniform',
+    types: [
+      { value: 'uniform', label: 'Uniform', description: '', supports_unbounded: false, params: [] },
+      {
+        value: 'exponential', label: 'Exponential', description: 'decays',
+        supports_unbounded: true,
+        params: [
+          { name: 'prior_lambda', type: 'float', default: 1.0, positive: true, role: 'rate',
+            default_expr: null, description: 'Decay rate.' },
+          { name: 'prior_scale', type: 'float', default: null, positive: true, role: 'scale',
+            default_expr: 'max / prior_lambda', description: 'Decay scale.' },
+        ],
+      },
+    ],
+  }
+
+  it('shows the formula, not a phrase, once a bound is cleared', async () => {
+    const wrapper = mountDialog({
+      currentParams: [{ qname: 'v/a', min: 1, max: 2, prior: 'normal' }],
+    })
+    await flushPromises()
+    await wrapper.find('[data-testid="ep-prior-toggle"]').trigger('click')
+    const mean = () => wrapper.find('[data-testid="ep-prior-param-prior_mean"]')
+    expect(mean().attributes('placeholder')).toBe('1.5')
+
+    await wrapper.findAll('input.ep-num')[0].setValue('')
+    expect(mean().attributes('placeholder')).toBe('= (min + max) / 2')
+  })
+
+  it('names the values the formula actually uses', async () => {
+    // prior_scale is `max / prior_lambda`; a prior_lambda of 0 makes it
+    // uncomputable. "from min/max" pointed at a bound the formula never reads.
+    getConfig.mockResolvedValue({ param_prior_types: EXPONENTIAL_WITH_SCALE })
+    const wrapper = mountDialog({
+      currentParams: [{ qname: 'v/a', min: 1, max: 8, prior: 'exponential' }],
+    })
+    await flushPromises()
+    await wrapper.find('[data-testid="ep-prior-toggle"]').trigger('click')
+    const scale = () => wrapper.find('[data-testid="ep-prior-param-prior_scale"]')
+    expect(scale().attributes('placeholder')).toBe('8')
+
+    await wrapper.find('[data-testid="ep-prior-param-prior_lambda"]').setValue('0')
+    expect(scale().attributes('placeholder')).toBe('= max / prior_lambda')
+    expect(scale().attributes('placeholder')).not.toContain('min')
+  })
+
+  it('says required when CA declares no default at all', async () => {
+    getConfig.mockResolvedValue({
+      param_prior_types: {
+        default: 'uniform',
+        types: [{
+          value: 'weird', label: 'Weird', description: '', supports_unbounded: false,
+          params: [{ name: 'prior_k', type: 'float', default: null, positive: false,
+                     role: 'shape', default_expr: null, description: '' }],
+        }],
+      },
+    })
+    const wrapper = mountDialog({
+      currentParams: [{ qname: 'v/a', min: 1, max: 2, prior: 'weird' }],
+    })
+    await flushPromises()
+    await wrapper.find('[data-testid="ep-prior-toggle"]').trigger('click')
+    expect(
+      wrapper.find('[data-testid="ep-prior-param-prior_k"]').attributes('placeholder'),
+    ).toBe('required')
+  })
+})

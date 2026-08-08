@@ -188,8 +188,16 @@ function priorFields(row) {
  *
  *  Unbounded reverses the relationship: the range is derived *from* the centre
  *  and width, so there is nothing left to derive them from and they are required.
- *  Falls back to a bare description only when the expression cannot be evaluated
- *  (a half-typed bound), which is better than showing a stale number. */
+ *
+ *  When the number cannot be computed — a bound cleared or half-typed, a sibling
+ *  hyper-parameter left at something the formula cannot divide by — the fallback
+ *  is CA's own `default_expr`, shown as "= (min + max) / 2". It used to be the
+ *  fixed phrase "from min/max", which said neither what the default is nor which
+ *  field to fill in to get it, and for the exponential's prior_scale (whose
+ *  formula is `max / prior_lambda`) named a bound that plays no part in it (#198).
+ *  Echoing CA's string keeps it true for a formula CA changes, and for one it
+ *  invents, which is the whole reason the expression is published rather than
+ *  restated here. */
 function priorFieldPlaceholder(field, row) {
   if (row?.unbounded && (field.role === 'location' || field.role === 'scale')) {
     return 'required'
@@ -207,7 +215,9 @@ function priorFieldPlaceholder(field, row) {
   const shown = formatPriorDefault(derived)
   if (shown != null) return shown
   if (field.default != null) return String(field.default)
-  return 'from min/max'
+  if (field.default_expr) return `= ${field.default_expr}`
+  // No number, no formula: CA states no default, so the field has to be filled in.
+  return 'required'
 }
 
 function setPriorParam(row, name, value) {
