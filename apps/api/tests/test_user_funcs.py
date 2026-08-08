@@ -145,13 +145,41 @@ def test_operation_templates_have_tabs_and_mention_plotting(tmp_cfg):
 
 def test_cost_templates_present(tmp_cfg):
     result = uf.read_user_funcs("cost")
-    assert set(result["templates"]) == {"basic", "differentiable", "MLE"}
+    assert set(result["templates"]) == {"basic", "kwargs", "differentiable", "MLE"}
     assert "cost_type" in result["templates"]["basic"]
     # The differentiable cost template uses @differentiable + the math backend.
     assert "@differentiable" in result["templates"]["differentiable"]
     assert "mb." in result["templates"]["differentiable"]
     # The old "see CA's cost_funcs_user.py" pointer is gone from every template.
     assert not any("see CA" in t for t in result["templates"].values())
+
+
+def test_cost_kwargs_template_teaches_the_contract(tmp_cfg):
+    """CA #370 (issue #201): a cost func may take its own keyword arguments, filled
+    per data_item from ``cost_kwargs``, and receives std/weight only when it names
+    them. A user authoring a cost from the GUI should meet that in the template
+    rather than in circulatory_autogen's source.
+    """
+    templates = uf.read_user_funcs("cost")["templates"]
+    kwargs = templates["kwargs"]
+    assert "cost_kwargs" in kwargs
+    # The tunables carry defaults (an item that sets none must still score) ...
+    assert "tolerance=0.0" in kwargs and "exponent=2.0" in kwargs
+    # ... and the template demonstrates the other half of the contract: a cost
+    # with no use for `std` simply leaves it out of the signature.
+    signature = kwargs.splitlines()[0]
+    assert "weight" in signature and "std" not in signature
+    # The header the file is written with says the same, so it survives editing.
+    text = " ".join(uf._COST_HEADER.split())
+    assert "cost_kwargs" in text
+    assert "only* when the signature declares them" in text
+
+
+def test_every_cost_template_is_valid_python(tmp_cfg):
+    """A template the user cannot save is worse than no template."""
+    for key, source in uf.read_user_funcs("cost")["templates"].items():
+        name = "my_mle_cost" if key == "MLE" else "my_cost"
+        assert uf._validate_source("cost", name, source), key
 
 
 def test_saves_under_output_directory(tmp_cfg, tmp_path):

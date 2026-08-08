@@ -19,6 +19,11 @@ from engine import _circulatory_autogen_src
 # user-tunable knobs, so they're never surfaced as editable per-data_item inputs.
 _RESERVED_OP_KWARGS = frozenset({"series_output"})
 
+# The same idea for cost funcs (CA #370): circulatory_autogen supplies these from
+# the data_item's own fields, so they are never per-data_item ``cost_kwargs``.
+# Only a fallback -- CA owns the list, and _reserved_cost_kwargs() asks it first.
+FALLBACK_RESERVED_COST_KWARGS = frozenset({"std", "weight"})
+
 # Used only when CA can't be introspected (kept intentionally small).
 FALLBACK_OPERATIONS = [
     "",
@@ -108,16 +113,26 @@ def _introspect(output_dir: str | None = None) -> dict:
     operations = sorted(op_funcs)
     if "" not in operations:
         operations = [""] + operations  # allow "no operation"
-    cost_types = sorted(_cost_funcs_dict(cost_funcs_user, cost_path))
+    cost_funcs = _cost_funcs_dict(cost_funcs_user, cost_path)
+    cost_types = sorted(cost_funcs)
     # Defensive: some CA builds also enumerate the ``cost_func_metadata`` accessor
     # itself as if it were a cost function — it isn't, so keep it out of the
     # dropdown (and its self-referential metadata entry never renders).
     cost_types = [c for c in cost_types if c not in _NON_COST_FUNC_NAMES]
+    cost_kwargs_schema, cost_kwargs_accepts_any = _introspect_cost_kwargs(
+        {n: f for n, f in cost_funcs.items() if n not in _NON_COST_FUNC_NAMES})
     data_types, plot_types = _introspect_schema()
     return {
         "operations": operations,
         "cost_types": cost_types,
         "cost_func_metadata": _introspect_cost_func_metadata(cost_funcs_user, cost_path),
+        # cost name -> [{name, default, type}] tunable keyword args, the cost-func
+        # twin of operation_kwargs_schema (CA #370). Empty on an older CA.
+        "cost_kwargs_schema": cost_kwargs_schema,
+        # cost name -> declares ``**kwargs``. Full map (not just the True entries)
+        # so the editor can tell "CA says this func accepts nothing else" from "CA
+        # never answered" -- only the former justifies deleting a stored kwarg.
+        "cost_kwargs_accepts_any": cost_kwargs_accepts_any,
         # op name -> @differentiable, so the editor can flag data_items whose
         # operation blocks AD gradients. Empty on an older CA without the marker.
         "differentiable_operations": _introspect_operation_differentiability(op_funcs),
@@ -270,6 +285,94 @@ def _introspect_operation_kwargs(op_funcs) -> dict:
     return out
 
 
+def _reserved_cost_kwargs() -> frozenset:
+    """The kwarg names circulatory_autogen fills itself for a cost func (CA #370).
+
+    Asked of CA rather than restated here: the reserved set is what CA *rejects* in
+    a data_item's ``cost_kwargs``, so a local copy that drifted would offer the user
+    an input whose value CA refuses to accept.
+    """
+    try:
+        from param_id.cost_kwargs import RESERVED_COST_KWARGS  # noqa: PLC0415
+
+        return frozenset(RESERVED_COST_KWARGS)
+    except Exception:  # noqa: BLE001 - CA without the contract (pre-#370)
+        return FALLBACK_RESERVED_COST_KWARGS
+
+
+def _local_cost_kwarg_spec(params, reserved) -> tuple[list, list, bool]:
+    """``get_cost_kwarg_spec`` reimplemented for a CA that predates it (CA #370)."""
+    accepted, positional, accepts_any = [], [], False
+    for name, p in params.items():
+        if p.kind in (p.VAR_KEYWORD, p.VAR_POSITIONAL):
+            accepts_any = True
+        elif p.kind == p.POSITIONAL_ONLY:
+            positional.append(name)
+        else:
+            accepted.append(name)
+            if p.default is inspect.Parameter.empty and name not in reserved:
+                positional.append(name)
+    return accepted, positional, accepts_any
+
+
+def _introspect_cost_kwargs(cost_funcs) -> tuple[dict, dict]:
+    """(schema, accepts_any) for every cost func: which keyword args a data_item's
+    ``cost_kwargs`` may set, so the obs_data editor can offer an input per kwarg.
+
+    The cost-func twin of :func:`_introspect_operation_kwargs`, and deliberately
+    the same shape (``{"name", "default", "type"}``) because the two are the same
+    user-extension point on either side of a data_item.
+
+    What is *not* a tunable: the model output and the ground truth (filled
+    positionally), and ``std`` / ``weight``, which CA supplies from the data_item's
+    own fields. CA's ``get_cost_kwarg_spec`` decides which is which -- the same
+    function that validates the user's config at calibration setup -- so an input
+    the editor offers is one CA will accept. A local parse covers a pre-#370 CA.
+
+    Funcs with no tunable kwargs are omitted from the schema (the editor treats a
+    missing entry as ``[]``); ``accepts_any`` is reported for *every* func, since
+    "declares no kwargs" and "was never introspected" must not look the same.
+    """
+    reserved = _reserved_cost_kwargs()
+    try:
+        from param_id.cost_kwargs import get_cost_kwarg_spec  # noqa: PLC0415
+    except Exception:  # noqa: BLE001 - older CA; parse the signature ourselves
+        get_cost_kwarg_spec = None
+
+    schema: dict[str, list] = {}
+    accepts_any_map: dict[str, bool] = {}
+    for name, fn in cost_funcs.items():
+        try:
+            params = inspect.signature(fn).parameters
+        except (ValueError, TypeError):  # C funcs / builtins without signatures
+            continue
+        spec = None
+        if get_cost_kwarg_spec is not None:
+            try:
+                spec = get_cost_kwarg_spec(fn)
+            except Exception:  # noqa: BLE001 - fall through to the local parse
+                spec = None
+        accepted, positional, accepts_any = spec or _local_cost_kwarg_spec(params, reserved)
+        accepts_any_map[name] = bool(accepts_any)
+        kwargs = []
+        for pname in accepted:
+            if pname in positional or pname in reserved:
+                continue
+            default = params[pname].default if pname in params else inspect.Parameter.empty
+            if default is inspect.Parameter.empty:
+                default = None
+            kwargs.append(
+                {
+                    "name": pname,
+                    "default": _jsonable_default(default),
+                    "type": _infer_kwarg_type(default),
+                }
+            )
+        if kwargs:
+            schema[name] = kwargs
+    return schema, accepts_any_map
+
+
 def _introspect_operation_differentiability(op_funcs) -> dict:
     """Map each CA operation name -> whether it's ``@differentiable`` (so AD can use
     it). Best-effort: an older CA without ``is_circulatory_differentiable`` yields
@@ -369,6 +472,8 @@ def get_obs_data_options(refresh: bool = False, output_dir: str | None = None) -
             "operations": list(FALLBACK_OPERATIONS),
             "cost_types": list(FALLBACK_COST_TYPES),
             "cost_func_metadata": {},
+            "cost_kwargs_schema": {},
+            "cost_kwargs_accepts_any": {},
             "differentiable_operations": {},
             "operation_kwargs_schema": {},
             "operation_operands": {k: dict(v) for k, v in FALLBACK_OPERATION_OPERANDS.items()},

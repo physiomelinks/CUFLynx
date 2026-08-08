@@ -95,6 +95,13 @@ available for plain funcs; write the body against the math backend ``mb`` (and a
 ``@differentiable``) for AD gradients. The ``@differentiable`` / ``@is_MLE`` /
 ``@cost_combiner`` markers mirror CA's (imported, never redefined).
 
+The signature is yours to choose (CA #370). CA fills the model output and the
+ground truth positionally, then supplies ``std`` and ``weight`` *only* when the
+signature declares them -- so a cost with no notion of a standard deviation just
+leaves it out. Any further keyword argument (give it a default) is filled per
+data_item from that item's ``cost_kwargs`` in obs_data.json, and the obs_data
+editor offers an input for each one; see the "kwargs" template.
+
 Managed by CUFLynx's "Custom funcs" dialog; the header may be regenerated.
 """
 import numpy as np  # noqa: F401 -- available to user cost funcs
@@ -172,8 +179,30 @@ _COST_TEMPLATES = {
     Must work for scalars and arrays; lower = better fit. Select it as a
     data_item's ``cost_type`` in the obs_data editor. For AD gradients, use the
     Differentiable template instead.
+
+    ``std`` and ``weight`` come from the data_item and are passed only because
+    they are named here — drop either if this cost has no use for it, and add
+    keyword arguments of your own with the Kwargs template.
     """
     return float(np.sum(((output - desired_mean) / std) ** 2 * weight))
+''',
+    "kwargs": '''def my_cost(output, desired_mean, weight, tolerance=0.0, exponent=2.0):
+    """Cost with tunable keyword arguments, set per data_item.
+
+    Every keyword argument circulatory_autogen does not supply itself (here
+    ``tolerance`` and ``exponent``) is parsed from this signature and becomes an
+    editable input on each data_item that selects this cost in the obs_data editor
+    — the values are written to that data_item's ``cost_kwargs`` and passed in per
+    data_item. Give every one a default, so an item that sets none still scores.
+
+    ``std`` and ``weight`` are the arguments CA fills from the data_item's own
+    fields, so they are reserved: name the ones this cost needs (here ``weight``,
+    and deliberately no ``std``) and leave out the rest — CA passes only what the
+    signature has room for. Setting either through ``cost_kwargs`` is an error,
+    because it would shadow the real value and quietly change what is calibrated.
+    """
+    error = np.abs(output - desired_mean)
+    return float(np.sum(np.maximum(error - tolerance, 0.0) ** exponent * weight))
 ''',
     "differentiable": '''@differentiable
 def my_cost(output, desired_mean, std, weight):

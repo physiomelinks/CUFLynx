@@ -181,7 +181,9 @@ async function onDelete(fn) {
       <template v-else>
         Write your own <strong>cost function</strong> — it compares a model output
         to its target and returns a scalar cost (lower = better fit), selectable as
-        a data_item's <code>cost_type</code>.
+        a data_item's <code>cost_type</code>. Give it keyword arguments and each
+        data_item can set them through <code>cost_kwargs</code> in the obs_data
+        editor.
       </template>
       Saved funcs are stored in your output directory and loaded by
       circulatory_autogen at run time.

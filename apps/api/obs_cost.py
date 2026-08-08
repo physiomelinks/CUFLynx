@@ -40,6 +40,47 @@ from obs_options import get_cost_funcs, get_operation_funcs
 DEFAULT_COST_TYPE = "MSE"
 
 
+def _ca_call_cost_func():
+    """CA's ``call_cost_func``, or None on a CA that predates it (CA #370).
+
+    Puts CA on ``sys.path`` itself rather than assuming an earlier call did: this
+    is reached from both the CA path and the local-walk fallback, and a silent
+    ImportError here would look exactly like an older CA and quietly go back to
+    calling every cost func positionally.
+    """
+    try:
+        from obs_options import _ca_paths  # noqa: PLC0415
+
+        for path in _ca_paths():
+            if path not in sys.path:
+                sys.path.insert(0, path)
+        from param_id.cost_kwargs import call_cost_func  # noqa: PLC0415
+
+        return call_cost_func
+    except Exception:  # noqa: BLE001 - older CA without the contract, or no CA
+        return None
+
+
+def _call_cost(func, *positional, std=None, weight=None, cost_kwargs=None):
+    """Call a cost func the way circulatory_autogen calls it (CA #370).
+
+    A cost func no longer has one fixed ``(output, ground_truth, std, weight)``
+    signature: it is handed ``std``/``weight`` only if it declares them, plus the
+    data_item's own ``cost_kwargs``. Routing through CA's own ``call_cost_func``
+    keeps this panel calling the func exactly as the calibration will -- calling it
+    positionally here would silently score a kwarg-taking cost with its defaults,
+    or blow up on a cost that has no ``std`` (``multimodal_gaussian``), while
+    looking authoritative, which is the failure this module exists to avoid (#159).
+
+    Falls back to the old positional call on a pre-#370 CA, where every cost func
+    still had the fixed signature and no cost_kwargs existed to pass.
+    """
+    call = _ca_call_cost_func()
+    if call is None:
+        return func(*positional, std, weight)
+    return call(func, *positional, std=std, weight=weight, cost_kwargs=cost_kwargs)
+
+
 def _weight_of(item: dict) -> float:
     """The item's weight, with a *deliberate* zero preserved.
 
@@ -202,6 +243,8 @@ def _ca_evaluate(obs_data, outputs_by_experiment, output_dir, dt) -> dict | None
         return None
 
     obs_info = pid.obs_info
+    # Absent on a CA that predates cost_kwargs; then no data_item can carry any.
+    kwargs_for = getattr(pid, "_cost_kwargs_for", None)
     num_sub = pid.protocol_info["num_sub_per_exp"]
     total = 0.0
     denom = 0
@@ -243,11 +286,16 @@ def _ca_evaluate(obs_data, outputs_by_experiment, output_dir, dt) -> dict | None
                         if func is None:
                             continue
                         try:
-                            value = float(func(
+                            value = float(_call_cost(
+                                func,
                                 float(const[k]),
                                 float(obs_info["ground_truth_const"][k]),
-                                float(obs_info["std_const_vec"][k]),
-                                weight,
+                                std=float(obs_info["std_const_vec"][k]),
+                                weight=weight,
+                                # The data_item's own cost_kwargs, read through CA's
+                                # accessor so the per-item column indexes them the
+                                # same way cost_calc does (by observable, CA #370).
+                                cost_kwargs=(kwargs_for(obs_idx) if kwargs_for else None),
                             ))
                         except Exception:  # noqa: BLE001 - a func that cannot score it
                             continue
@@ -387,8 +435,13 @@ def evaluate(data_items, outputs_by_experiment, output_dir: str | None = None,
 
             func = cost_funcs.get(item.get("cost_type") or DEFAULT_COST_TYPE)
             if func is not None:
+                item_kwargs = item.get("cost_kwargs")
                 try:
-                    cost = float(func(model, observed, _std_of(item), weight))
+                    cost = float(_call_cost(
+                        func, model, observed,
+                        std=_std_of(item), weight=weight,
+                        cost_kwargs=item_kwargs if isinstance(item_kwargs, dict) else None,
+                    ))
                 except Exception:  # noqa: BLE001 - a cost func that cannot score this item
                     cost = None
                 if cost is not None and math.isfinite(cost):

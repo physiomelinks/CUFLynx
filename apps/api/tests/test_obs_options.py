@@ -28,6 +28,8 @@ def test_obs_data_options_fallback_when_ca_unavailable(monkeypatch):
     assert opts["cost_func_metadata"] == {}
     assert opts["differentiable_operations"] == {}
     assert opts["operation_kwargs_schema"] == {}
+    assert opts["cost_kwargs_schema"] == {}
+    assert opts["cost_kwargs_accepts_any"] == {}
     assert opts["data_types"] == obs_options.FALLBACK_DATA_TYPES
     assert opts["plot_types"] == obs_options.FALLBACK_PLOT_TYPES
     obs_options.reset_cache()
@@ -147,6 +149,93 @@ def test_operation_kwargs_schema_exposed_via_endpoint(client):
     present whether sourced from CA or the fallback)."""
     body = client.get("/api/obs_data/options").json()
     assert isinstance(body["operation_kwargs_schema"], dict)
+
+
+# ---------------------------------------------------------------------------
+# cost_kwargs (CA #370 / issue #201): a data_item may set the cost func's own
+# keyword arguments, so the editor has to know which ones a cost accepts.
+# ---------------------------------------------------------------------------
+def test_cost_kwargs_schema_excludes_the_framework_arguments():
+    """`std` and `weight` come from the data_item's own fields, and the model
+    output / ground truth are filled positionally. None of them is a cost_kwarg,
+    so none may be offered as an editable input."""
+    import obs_options
+
+    def tolerant(output, desired_mean, std, weight, tolerance=0.5, mode="abs"):
+        return 0.0
+
+    schema, accepts_any = obs_options._introspect_cost_kwargs({"tolerant": tolerant})
+    assert [k["name"] for k in schema["tolerant"]] == ["tolerance", "mode"]
+    assert schema["tolerant"][0] == {"name": "tolerance", "default": 0.5, "type": "number"}
+    assert schema["tolerant"][1] == {"name": "mode", "default": "abs", "type": "string"}
+    assert accepts_any == {"tolerant": False}
+
+
+def test_cost_kwargs_schema_omits_a_cost_with_no_tunables():
+    """CA's own costs have none, and an empty list per func would be noise."""
+    import obs_options
+
+    def gaussian_MLE(output, desired_mean, std, weight):
+        return 0.0
+
+    schema, accepts_any = obs_options._introspect_cost_kwargs({"gaussian_MLE": gaussian_MLE})
+    assert schema == {}
+    # ... but it is still *reported on*: "declares no kwargs" and "never
+    # introspected" must not look the same, or the editor cannot tell whether a
+    # stored kwarg is invalid or merely unknown.
+    assert accepts_any == {"gaussian_MLE": False}
+
+
+def test_a_cost_that_takes_star_kwargs_is_marked_accepts_any():
+    """CA validates nothing for such a func (MSE is one), so the editor must not
+    delete a stored kwarg just because it isn't in the schema."""
+    import obs_options
+
+    def MSE(*args, **kwargs):
+        return 0.0
+
+    schema, accepts_any = obs_options._introspect_cost_kwargs({"MSE": MSE})
+    assert schema == {}
+    assert accepts_any == {"MSE": True}
+
+
+def test_cost_kwargs_reserved_names_come_from_ca(monkeypatch):
+    """The reserved set is CA's -- it is what CA *rejects* in a data_item's
+    cost_kwargs, so a local copy that drifted would offer an input CA refuses."""
+    import obs_options
+
+    assert obs_options._reserved_cost_kwargs() >= {"std", "weight"}
+    # A cost func that gives std/weight defaults still must not surface them.
+    def defaulted(output, desired_mean, std=1.0, weight=1.0, scale=2.0):
+        return 0.0
+
+    schema, _ = obs_options._introspect_cost_kwargs({"defaulted": defaulted})
+    assert [k["name"] for k in schema["defaulted"]] == ["scale"]
+
+
+def test_cost_kwargs_schema_survives_a_ca_without_the_contract(monkeypatch):
+    """Pre-#370 CA has no param_id.cost_kwargs; CUFLynx parses the signature
+    itself rather than losing the feature (and the editor keeps working)."""
+    import sys
+    import obs_options
+
+    monkeypatch.setitem(sys.modules, "param_id.cost_kwargs", None)
+
+    def tolerant(output, desired_mean, std, weight, tolerance=0.5):
+        return 0.0
+
+    schema, accepts_any = obs_options._introspect_cost_kwargs({"tolerant": tolerant})
+    assert [k["name"] for k in schema["tolerant"]] == ["tolerance"]
+    assert accepts_any == {"tolerant": False}
+
+
+def test_cost_kwargs_exposed_via_endpoint(client):
+    """GET /api/obs_data/options carries both maps, from CA or the fallback."""
+    body = client.get("/api/obs_data/options").json()
+    assert isinstance(body["cost_kwargs_schema"], dict)
+    assert isinstance(body["cost_kwargs_accepts_any"], dict)
+    # Whatever the schema names must be a cost the editor can select.
+    assert set(body["cost_kwargs_schema"]) <= set(body["cost_types"])
 
 
 # Issue #147: the editor should offer as many operand fields as the operation

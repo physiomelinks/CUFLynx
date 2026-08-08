@@ -25,12 +25,20 @@ def _item(**over):
     return item
 
 
+# A stand-in for CA's MSE. Its parameters are named as CA names them, because
+# that is now load-bearing: since CA #370 a cost func is handed ``std``/``weight``
+# only when its signature declares them by those names, so a fake with
+# abbreviated parameters would not be exercising the call CA makes.
+def _mse(output, desired_mean, std, weight):
+    return weight * (output - desired_mean) ** 2
+
+
 def _funcs(monkeypatch, *, ops=None, costs=None):
     monkeypatch.setattr(obs_cost, "get_operation_funcs", lambda _d=None: ops if ops is not None else {"max": max})
     monkeypatch.setattr(
         obs_cost,
         "get_cost_funcs",
-        lambda _d=None: costs if costs is not None else {"MSE": lambda o, d, s, w: w * (o - d) ** 2},
+        lambda _d=None: costs if costs is not None else {"MSE": _mse},
     )
 
 
@@ -108,11 +116,103 @@ def test_without_ca_there_is_no_cost(monkeypatch):
     assert obs_cost.evaluate([_item()], {0: {"a/u": [9.0]}}) is None
 
 
+# ---------------------------------------------------------------------------
+# cost_kwargs (CA #370 / issue #201). A cost func no longer has one fixed
+# signature: it is handed std/weight only when it declares them, plus whatever the
+# data_item's `cost_kwargs` says. This panel has to call it the way the
+# calibration will, or it goes back to being a second, disagreeing cost (#159).
+# ---------------------------------------------------------------------------
+def _requires_cost_kwargs():
+    if obs_cost._ca_call_cost_func() is None:
+        pytest.skip("circulatory_autogen without the cost_kwargs contract (pre-#370)")
+
+
+def test_a_data_items_cost_kwargs_reach_its_cost_func(monkeypatch):
+    _requires_cost_kwargs()
+    seen = {}
+
+    def tolerant(output, desired_mean, std, weight, tolerance=0.0):
+        seen["tolerance"] = tolerance
+        return abs(output - desired_mean) - tolerance
+
+    _funcs(monkeypatch, costs={"tolerant": tolerant})
+    out = obs_cost.evaluate(
+        [_item(value=10.0, cost_type="tolerant", cost_kwargs={"tolerance": 1.5})],
+        {0: {"a/u": [8.0]}},
+    )
+    assert seen["tolerance"] == 1.5
+    assert out["cost"] == pytest.approx(0.5)
+
+
+def test_a_cost_func_that_takes_no_std_is_not_handed_one(monkeypatch):
+    """`multimodal_gaussian` is CA's example: it has nowhere to put a std, and a
+    fixed four-argument call here would fail on it while the calibration works."""
+    _requires_cost_kwargs()
+
+    def no_std(output, desired_mean, weight):
+        return weight * abs(output - desired_mean)
+
+    _funcs(monkeypatch, costs={"no_std": no_std})
+    out = obs_cost.evaluate([_item(value=10.0, cost_type="no_std")], {0: {"a/u": [8.0]}})
+    assert out["cost"] == pytest.approx(2.0)
+
+
+def _obs_data(**over):
+    item = {
+        "variable": "a/u", "name_for_plotting": "u", "operation": "max",
+        "operands": ["a/u"], "unit": "dimensionless", "value": 10.0, "std": 1.0,
+        "weight": 1.0, "experiment_idx": 0, "subexperiment_idx": 0,
+        "data_type": "constant", "cost_type": "tolerant",
+    }
+    item.update(over)
+    return {"protocol_info": {"pre_times": [0.0], "sim_times": [[1.0]]},
+            "data_items": [item]}
+
+
+def test_cost_kwargs_survive_cas_own_parser_and_change_the_cost(tmp_path):
+    """End to end on the path the panel actually takes: a user cost func with a
+    keyword argument, CA's parser, CA's registry, CA's cost. If the kwarg did not
+    reach the func the editor would be offering an input that changes nothing --
+    the same class of silent no-op as a dropped key on save.
+    """
+    _requires_cost_kwargs()
+    import user_funcs
+
+    out_dir = str(tmp_path)
+    user_funcs.save_user_func(
+        "cost", "tolerant",
+        "def tolerant(output, desired_mean, weight, tolerance=0.0):\n"
+        "    return float(np.abs(output - desired_mean) - tolerance) * weight\n",
+        base_dir=out_dir,
+    )
+    run = {0: {"a/u": [1.0, 8.0]}}  # max -> 8, observed 10, so |err| = 2
+
+    plain = obs_cost._ca_evaluate(_obs_data(), run, out_dir, 0.01)
+    if plain is None:
+        pytest.skip("circulatory_autogen could not be reached")
+    assert plain["cost"] == pytest.approx(2.0)  # the kwarg's default, 0
+
+    tuned = obs_cost._ca_evaluate(
+        _obs_data(cost_kwargs={"tolerance": 1.5}), run, out_dir, 0.01)
+    assert tuned["cost"] == pytest.approx(0.5)
+    # The per-item column is computed from the same call, so it has to move too.
+    assert tuned["items"][0]["cost"] == pytest.approx(0.5)
+
+
+def test_the_positional_call_is_kept_for_a_ca_without_the_contract(monkeypatch):
+    """Pre-#370 every cost func had the fixed (output, gt, std, weight) signature
+    and there were no cost_kwargs to pass, so the panel must still score there."""
+    monkeypatch.setattr(obs_cost, "_ca_call_cost_func", lambda: None)
+    _funcs(monkeypatch)
+    out = obs_cost.evaluate([_item(value=10.0)], {0: {"a/u": [8.0]}})
+    assert out["cost"] == pytest.approx(4.0)
+
+
 def test_a_cost_func_that_raises_does_not_lose_the_others(monkeypatch):
-    def angry(*_a):
+    def angry(*_a, **_k):
         raise ValueError("no")
 
-    _funcs(monkeypatch, costs={"MSE": lambda o, d, s, w: 1.0, "bad": angry})
+    _funcs(monkeypatch, costs={"MSE": lambda output, desired_mean, std, weight: 1.0, "bad": angry})
     out = obs_cost.evaluate([_item(), _item(cost_type="bad")], {0: {"a/u": [9.0]}})
     assert out["cost"] == pytest.approx(0.5)  # 1.0 / 2 weighted observables (#181)
     assert out["items"][1]["cost"] is None
@@ -366,7 +466,7 @@ def test_without_ca_the_panel_still_reports(monkeypatch):
     monkeypatch.setattr(obs_cost, "_ca_engine", lambda *a, **k: None)
     monkeypatch.setattr(obs_cost, "get_operation_funcs", lambda _d=None: {"max": max})
     monkeypatch.setattr(
-        obs_cost, "get_cost_funcs", lambda _d=None: {"MSE": lambda o, d, s, w: w * (o - d) ** 2})
+        obs_cost, "get_cost_funcs", lambda _d=None: {"MSE": _mse})
 
     item = {"variable": "x", "operation": "max", "operands": ["a/u"], "value": 1.0,
             "std": 1.0, "weight": 1.0, "cost_type": "MSE"}
