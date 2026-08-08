@@ -15,7 +15,6 @@
  * in mmHg, seconds and litres per second, the biggest derivative is whichever
  * parameter happens to be smallest in its own units.
  */
-import Button from 'primevue/button'
 import ProgressSpinner from 'primevue/progressspinner'
 import { computed } from 'vue'
 import { renderMath } from '../lib/math'
@@ -26,14 +25,14 @@ const props = defineProps({
   // 'running' | 'stale' | 'ready' | 'error'. `stale` means the sliders have
   // moved since these were measured, so they describe a point that is no longer
   // on screen -- shown, but dimmed and labelled, because the last known ranking
-  // is usually still the useful one and silently wrong numbers are not.
+  // is usually still the useful one and silently wrong numbers are not. It is a
+  // brief state: a settled drag re-measures on its own, so there is nothing to
+  // offer the user to press.
   status: { type: String, default: 'ready' },
   error: { type: String, default: '' },
   // qname -> name_for_plotting, so a row reads like the slider it belongs to.
   labels: { type: Object, default: () => ({}) },
 })
-
-defineEmits(['recompute'])
 
 const rows = computed(() => {
   const params = props.result?.params ?? []
@@ -113,19 +112,6 @@ function direction(value) {
         style="width: 0.9rem; height: 0.9rem"
         stroke-width="7"
         data-testid="cost-sens-running"
-      />
-      <!--
-        Stale is offered as a choice, not fixed automatically: recomputing on
-        every pixel of a drag would queue 2M+1 simulations behind the plot the
-        user is actually watching.
-      -->
-      <Button
-        v-else-if="status === 'stale'"
-        label="recompute"
-        text
-        size="small"
-        data-testid="cost-sens-recompute"
-        @click="$emit('recompute')"
       />
     </div>
 

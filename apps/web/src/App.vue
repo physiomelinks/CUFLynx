@@ -637,13 +637,14 @@ function liveOutputs() {
 }
 
 /**
- * Recompute once the parameters have settled — never during the drag itself.
+ * Re-measure once the parameters have settled — never during the drag itself.
  *
- * Dragging is a pixel-rate event and a gradient is 2M+1 simulations; recomputing
- * per frame would queue minutes of work behind the plot the user is watching.
- * So: the plot run is debounced as before, and this waits again after it, with
- * any in-flight computation aborted the moment a new drag starts. Between the
- * two, the last measured ranking stays on screen, dimmed and labelled stale.
+ * Dragging is a pixel-rate event, and even one solve per frame would queue work
+ * behind the plot the user is watching (and far more than one where the gradient
+ * has to be differenced). So the plot run is debounced as before and this waits
+ * again after it, with any in-flight computation aborted the moment a new drag
+ * starts. Between the two the last measured ranking stays on screen, dimmed and
+ * labelled stale — briefly, since this runs after every completed live run.
  */
 function scheduleCostSensitivity() {
   clearTimeout(costSensTimer)
@@ -2030,7 +2031,6 @@ watch(
           :status="costSensState"
           :error="costSensError"
           :labels="paramLabels"
-          @recompute="runCostSensitivity"
         />
         <div
           v-show="centerTab === 'plots'"

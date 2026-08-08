@@ -116,13 +116,13 @@ describe('CostSensitivityBar (#188)', () => {
     const wrapper = mountBar({ status: 'stale' })
     expect(wrapper.findAll('[data-testid="cost-sens-row"]')).toHaveLength(3)
     expect(wrapper.text()).toContain('measured at the previous parameters')
-    expect(wrapper.find('[data-testid="cost-sens-recompute"]').exists()).toBe(true)
   })
 
-  it('offers a recompute rather than doing it on every pixel of a drag', async () => {
+  it('does not offer a button for something that happens on its own', () => {
+    // A settled drag re-measures after the next live run, so a "recompute"
+    // control only ever asked the user to press for what was already coming.
     const wrapper = mountBar({ status: 'stale' })
-    await wrapper.find('[data-testid="cost-sens-recompute"]').trigger('click')
-    expect(wrapper.emitted('recompute')).toHaveLength(1)
+    expect(wrapper.find('[data-testid="cost-sens-recompute"]').exists()).toBe(false)
   })
 
   it('says it is working before the first numbers arrive', () => {
