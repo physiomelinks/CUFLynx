@@ -2,15 +2,24 @@
 
 Reproduces the subset of
 ``PrimitiveParsers._build_param_id_info_from_df`` that the slider-seeding API
-needs: required-column validation, ``min < max`` checks, and whitespace-split
-multi-vessel expansion into ``vessel/param`` qualified names.  Implemented with
-pandas only (no libCellML/Myokit) so the upload path stays in the unit tier.
+needs: required-column validation, ``min < max`` checks, and the whitespace-split
+``vessel_name`` -> ``vessel/param`` qualified names.  Implemented with pandas only
+(no libCellML/Myokit) so the upload path stays in the unit tier.
+
+One row is one parameter, exactly as CA reads it: its ``param_names`` is a list
+*per row* of that row's qualified names, and its optimiser carries one value for
+the whole list. A row naming several vessels therefore describes one quantity
+that varies in several components at once, not several quantities -- which is why
+this module emits a single :class:`ParamEntry` carrying every member in
+``qnames`` (issue #193). Splitting them apart gave each component its own slider,
+and moving one without the others put the model in a state it never has.
 """
 
 from __future__ import annotations
 
 import io
-from dataclasses import dataclass
+import math
+from dataclasses import dataclass, field
 
 import pandas as pd
 
@@ -159,8 +168,50 @@ def _resolve_initial_value(
     return None if key is None else initial_values[key]
 
 
+def _group_initial_value(
+    vessels: list[str],
+    param_name: str,
+    initial_values: dict[str, float],
+    gen_index: dict[str, dict[str, float]],
+) -> tuple[float | None, str | None]:
+    """The one initial value a grouped row starts from, plus any warning about it.
+
+    The members of a group are the *same* quantity written into several
+    components, so the model should already give them the same number. When it
+    doesn't, the row is asking for a state the model was never in, and the first
+    member's value is a guess -- so it is used (something has to seed the slider)
+    and the disagreement is reported rather than swallowed, because the moment the
+    slider is touched every member is overwritten with it and the evidence is
+    gone. Members the model has no variable for contribute nothing either way:
+    that is the pre-existing "unresolved parameter" case, not a conflict.
+    """
+    resolved: list[tuple[str, float]] = []
+    for vessel in vessels:
+        val = _resolve_initial_value(vessel, param_name, initial_values, gen_index)
+        if val is not None:
+            resolved.append((f"{vessel}/{param_name}", val))
+    if not resolved:
+        return None, None
+
+    value = resolved[0][1]
+    differing = [
+        (q, v)
+        for q, v in resolved
+        if not math.isclose(v, value, rel_tol=1e-9, abs_tol=0.0)
+    ]
+    if not differing:
+        return value, None
+    shown = ", ".join(f"{q} = {v:g}" for q, v in resolved)
+    return value, (
+        f"grouped parameter '{param_name}' starts from different values in its "
+        f"components ({shown}); the slider uses {value:g} and will set them all."
+    )
+
+
 @dataclass
 class ParamEntry:
+    # The group's representative -- the first member -- so a single-vessel row is
+    # the qname it always was and every downstream lookup keeps working.
     qname: str
     min: float
     max: float
@@ -176,10 +227,23 @@ class ParamEntry:
     # keyed by CA's column name. A dict rather than fields, because which values
     # exist is CA's vocabulary and grows there.
     prior_params: dict | None = None
+    # Every qname this row names, in file order, ``qname`` first (issue #193).
+    # A one-vessel row has exactly one, so consumers can treat this as the truth
+    # and never special-case the grouped form.
+    qnames: list[str] = field(default_factory=list)
+    # Something the user should know about this row that is not an error -- so far
+    # only a group whose components disagree on their initial value.
+    warning: str | None = None
+
+    def __post_init__(self) -> None:
+        if not self.qnames:
+            self.qnames = [self.qname]
 
     def as_dict(self) -> dict:
         return {
             "qname": self.qname,
+            "qnames": list(self.qnames),
+            "warning": self.warning,
             "min": self.min,
             "max": self.max,
             "name_for_plotting": self.name_for_plotting,
@@ -196,10 +260,11 @@ def parse_params_for_id(
     data: bytes | str,
     initial_values: dict[str, float] | None = None,
 ) -> list[ParamEntry]:
-    """Parse params_for_id CSV bytes/text into a flat list of slider entries.
+    """Parse params_for_id CSV bytes/text into a list of slider entries.
 
-    One :class:`ParamEntry` is produced per resolved qname, so a row with a
-    space-separated ``vessel_name`` ("a b") expands to multiple entries.
+    One :class:`ParamEntry` per *row*, as CA reads it: a space-separated
+    ``vessel_name`` ("a b") is one parameter present in both components, and its
+    members are listed in ``qnames`` (issue #193).
     """
     if isinstance(data, bytes):
         data = data.decode("utf-8-sig", errors="replace")
@@ -300,24 +365,26 @@ def parse_params_for_id(
         vessels = str(row["vessel_name"]).split()
         if not vessels:
             raise ParamsForIdError(f"row {idx}: empty vessel_name")
-        for vessel in vessels:
-            qname = f"{vessel}/{param_name}"
-            entries.append(
-                ParamEntry(
-                    qname=qname,
-                    min=pmin,
-                    max=pmax,
-                    name_for_plotting=name_for_plotting,
-                    param_type=param_type,
-                    initial_value=_resolve_initial_value(
-                        vessel, param_name, initial_values, gen_index
-                    ),
-                    comment=comment,
-                    prior=prior,
-                    unbounded=unbounded,
-                    prior_params=dict(prior_params),
-                )
+        qnames = [f"{vessel}/{param_name}" for vessel in vessels]
+        initial_value, warning = _group_initial_value(
+            vessels, param_name, initial_values, gen_index
+        )
+        entries.append(
+            ParamEntry(
+                qname=qnames[0],
+                qnames=qnames,
+                min=pmin,
+                max=pmax,
+                name_for_plotting=name_for_plotting,
+                param_type=param_type,
+                initial_value=initial_value,
+                comment=comment,
+                prior=prior,
+                unbounded=unbounded,
+                prior_params=dict(prior_params),
+                warning=warning,
             )
+        )
 
     if not entries:
         raise ParamsForIdError("no parameter rows found")

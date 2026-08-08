@@ -164,9 +164,12 @@ def _read_interrupted_best_params(output_dir: str, params_path: str | None) -> d
     """Best-so-far params of a run that ended early, mapped to ``{qname: value}``.
 
     Reads CA's incrementally-saved :data:`BEST_PARAM_VALS_FILE` (a bare value array,
-    ordered as the params_for_id rows) and pairs it with the qnames parsed from the
-    params CSV. Returns None if the file/params are missing or the counts don't line
-    up (e.g. tied params grouped by CA), so a misaligned guess is never returned.
+    ordered as the params_for_id rows) and pairs it with the entries parsed from the
+    params CSV -- one per row, matching the file's one value per row. A grouped row
+    (several vessels varying together, #193) contributes its one value under every
+    member qname, the same expansion the finished run's results.json gets from CA's
+    list-of-lists ``param_names``. Returns None if the file/params are missing or
+    the counts don't line up, so a misaligned guess is never returned.
     Best-effort — never raises.
     """
     if not params_path:
@@ -179,10 +182,14 @@ def _read_interrupted_best_params(output_dir: str, params_path: str | None) -> d
         from params_for_id import parse_params_for_id  # noqa: E402
 
         vals = np.load(npy).reshape(-1)
-        qnames = [e.qname for e in parse_params_for_id(Path(params_path).read_bytes())]
-        if not qnames or len(qnames) != len(vals):
+        entries = parse_params_for_id(Path(params_path).read_bytes())
+        if not entries or len(entries) != len(vals):
             return None
-        return {q: float(v) for q, v in zip(qnames, vals)}
+        return {
+            qname: float(v)
+            for entry, v in zip(entries, vals)
+            for qname in entry.qnames
+        }
     except Exception:  # noqa: BLE001 - a best-effort recovery must never fail a run
         return None
 

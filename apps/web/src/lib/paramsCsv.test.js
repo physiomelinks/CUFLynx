@@ -5,6 +5,10 @@ import {
   splitQname,
   buildParamsCsv,
   versionedFilename,
+  groupCandidates,
+  addToGroup,
+  removeFromGroup,
+  rowsToSave,
 } from './paramsCsv'
 
 describe('defaultRange (±10% of initial value)', () => {
@@ -193,5 +197,124 @@ describe('mergedRows — prior', () => {
   it('leaves a model param that was never in the CSV without a prior', () => {
     const rows = mergedRows([], { params: ['v/b'], initial_values: { 'v/b': 2 } })
     expect(rows[0].prior).toBe('')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Grouped parameters (issue #193): one row, several vessels, one quantity.
+// ---------------------------------------------------------------------------
+describe('grouped parameters — reading', () => {
+  const groupedParam = {
+    qname: 'ao_A/E',
+    qnames: ['ao_A/E', 'ao_B/E'],
+    min: 3e5,
+    max: 1.3e6,
+    name_for_plotting: 'E_{AR}',
+  }
+
+  it('keeps the row whole instead of one row per vessel', () => {
+    const rows = mergedRows([groupedParam], {})
+    expect(rows).toHaveLength(1)
+    expect(rows[0].qnames).toEqual(['ao_A/E', 'ao_B/E'])
+  })
+
+  it('does not offer a grouped member again as a parameter of its own', () => {
+    // It is already set by the group; a second row for it would be a second way
+    // to set the same variable, and the two would disagree.
+    const rows = mergedRows([groupedParam], {
+      params: ['ao_A/E', 'ao_B/E', 'ao_C/E'],
+      initial_values: {},
+    })
+    expect(rows.map((r) => r.qname)).toEqual(['ao_A/E', 'ao_C/E'])
+  })
+
+  it('gives an ordinary row a one-member group', () => {
+    const rows = mergedRows([{ qname: 'v/a', min: 1, max: 2 }], {})
+    expect(rows[0].qnames).toEqual(['v/a'])
+  })
+})
+
+describe('grouped parameters — writing', () => {
+  it('writes every vessel into the one vessel_name cell', () => {
+    // Writing only the first would dissolve the group on the next save.
+    const csv = buildParamsCsv([
+      {
+        qname: 'ao_A/E',
+        qnames: ['ao_A/E', 'ao_B/E', 'ao_C/E'],
+        min: 3e5,
+        max: 1.3e6,
+        name_for_plotting: 'E_{AR}',
+      },
+    ])
+    const [, row] = csv.trim().split('\n')
+    expect(row).toBe('ao_A ao_B ao_C,E,300000,1300000,E_{AR}')
+  })
+
+  it('round-trips the issue #193 example unchanged', () => {
+    const params = [
+      {
+        qname: 'ascending_aorta_A/E',
+        qnames: [
+          'ascending_aorta_A/E',
+          'ascending_aorta_B/E',
+          'ascending_aorta_C/E',
+          'ascending_aorta_D/E',
+        ],
+        min: 300000,
+        max: 1300000,
+        name_for_plotting: 'E_{AR}',
+      },
+    ]
+    const csv = buildParamsCsv(rowsToSave(mergedRows(params, {})))
+    expect(csv.trim().split('\n')[1]).toBe(
+      'ascending_aorta_A ascending_aorta_B ascending_aorta_C ascending_aorta_D,E,' +
+        '300000,1300000,E_{AR}',
+    )
+  })
+})
+
+describe('grouped parameters — creating one', () => {
+  function fixture() {
+    return mergedRows([], {
+      params: ['ao_A/E', 'ao_B/E', 'ao_C/R'],
+      initial_values: { 'ao_A/E': 1, 'ao_B/E': 1, 'ao_C/R': 2 },
+    })
+  }
+
+  it('only offers variables of the same name — the CSV cannot express any other group', () => {
+    const rows = fixture()
+    const eRow = rows.find((r) => r.qname === 'ao_A/E')
+    expect(groupCandidates(rows, eRow).map((r) => r.qname)).toEqual(['ao_B/E'])
+  })
+
+  it('absorbing a row removes it from the list but keeps its edits', () => {
+    const rows = fixture()
+    const [a, b] = [rows.find((r) => r.qname === 'ao_A/E'), rows.find((r) => r.qname === 'ao_B/E')]
+    b.min = 42
+    addToGroup(a, b)
+    expect(a.qnames).toEqual(['ao_A/E', 'ao_B/E'])
+    expect(b.groupedInto).toBe('ao_A/E')
+    expect(rowsToSave(rows).map((r) => r.qname)).not.toContain('ao_B/E')
+    expect(b.min).toBe(42)
+  })
+
+  it('releasing a row gives it back, with what it had', () => {
+    const rows = fixture()
+    const [a, b] = [rows.find((r) => r.qname === 'ao_A/E'), rows.find((r) => r.qname === 'ao_B/E')]
+    b.included = true
+    b.min = 42
+    addToGroup(a, b)
+    removeFromGroup(a, b)
+    expect(a.qnames).toEqual(['ao_A/E'])
+    expect(b.groupedInto).toBeNull()
+    expect(rowsToSave(rows).map((r) => r.qname)).toContain('ao_B/E')
+    expect(b.min).toBe(42)
+  })
+
+  it('will not offer a row that already belongs to another group', () => {
+    const rows = fixture()
+    rows.push({ qname: 'ao_D/E', qnames: ['ao_D/E'], groupedInto: 'ao_A/E', included: false })
+    const other = { qname: 'ao_Z/E', qnames: ['ao_Z/E'], groupedInto: null }
+    expect(groupCandidates(rows, other).map((r) => r.qname)).not.toContain('ao_D/E')
   })
 })

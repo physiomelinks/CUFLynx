@@ -11,16 +11,27 @@ import {
  * Apply calibrated best-fit values to the slider store: update existing
  * sliders, and add a slider for any calibrated param without one (using its
  * params_for_id min/max when known, else a range around the value).
+ *
+ * CA names every member of a grouped parameter in its best fit (one value, each
+ * member qname), so a group arrives here as several entries that must land on
+ * the one slider (#193). `spec.primary` says which slider that is; the repeated
+ * writes are the same value, so applying them all is harmless.
  */
 export function applyBestParams(slidersStore, paramSpecs, bestParams) {
   for (const [qname, value] of Object.entries(bestParams || {})) {
-    if (slidersStore.sliders[qname]) {
-      slidersStore.setValue(qname, value)
+    const spec = paramSpecs?.[qname]
+    const target = spec?.primary ?? qname
+    if (slidersStore.sliders[target]) {
+      slidersStore.setValue(target, value)
       continue
     }
-    const spec = paramSpecs?.[qname]
     if (spec) {
-      slidersStore.addSlider(qname, { min: spec.min, max: spec.max, value })
+      slidersStore.addSlider(target, {
+        min: spec.min,
+        max: spec.max,
+        value,
+        qnames: spec.qnames,
+      })
     } else {
       const span = Math.abs(value) || 1
       slidersStore.addSlider(qname, { min: value - span, max: value + span, value })

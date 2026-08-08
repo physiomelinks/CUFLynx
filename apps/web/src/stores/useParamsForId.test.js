@@ -45,3 +45,65 @@ describe('useParamsForId', () => {
     expect(sliders.count.value).toBe(0)
   })
 })
+
+describe('useParamsForId — grouped parameters (issue #193)', () => {
+  function grouped() {
+    return [
+      {
+        qname: 'ao_A/E',
+        qnames: ['ao_A/E', 'ao_B/E', 'ao_C/E', 'ao_D/E'],
+        min: 3e5,
+        max: 1.3e6,
+        initial_value: 4e5,
+        name_for_plotting: 'E_{AR}',
+      },
+    ]
+  }
+
+  it('makes one slider for a row naming four vessels, not four', () => {
+    // The bug: four handles for one quantity, so moving one and not the others
+    // put the model in a state it never has.
+    const sliders = useSliders()
+    useParamsForId(sliders).importParams(grouped())
+    expect(sliders.count.value).toBe(1)
+    expect(sliders.sliders['ao_A/E'].qnames).toEqual([
+      'ao_A/E',
+      'ao_B/E',
+      'ao_C/E',
+      'ao_D/E',
+    ])
+  })
+
+  it('sets all four components from the one handle', () => {
+    const sliders = useSliders()
+    useParamsForId(sliders).importParams(grouped())
+    expect(Object.keys(sliders.paramDict.value)).toHaveLength(4)
+    expect(sliders.paramDict.value['ao_D/E']).toBe(4e5)
+  })
+
+  it('indexes every member in paramSpecs, pointing back at the one slider', () => {
+    // CA's best fit names each member separately; without this back-pointer the
+    // write-back would hand each of them a new slider of its own.
+    const sliders = useSliders()
+    const p = useParamsForId(sliders)
+    p.importParams(grouped())
+    expect(p.paramSpecs.value['ao_C/E'].primary).toBe('ao_A/E')
+    expect(p.paramSpecs.value['ao_C/E'].name_for_plotting).toBe('E_{AR}')
+  })
+
+  it('carries the backend warning onto the slider', () => {
+    const sliders = useSliders()
+    useParamsForId(sliders).importParams([
+      { ...grouped()[0], warning: 'components disagree' },
+    ])
+    expect(sliders.sliders['ao_A/E'].warning).toBe('components disagree')
+  })
+
+  it('clearing removes the group by its one key', () => {
+    const sliders = useSliders()
+    const p = useParamsForId(sliders)
+    p.importParams(grouped())
+    p.clear()
+    expect(sliders.count.value).toBe(0)
+  })
+})

@@ -32,7 +32,7 @@ packaging/         PyInstaller spec + runtime hooks (single-file executable)
 **Config formats (circulatory_autogen):**
 
 - `obs_data.json` — `protocol_info` (experiments/subexperiments) + `data_items` (ground truth / comparison targets) + optional `prediction_items`.
-- `*_params_for_id.csv` — columns: `vessel_name`, `param_name`, `param_type`, `min`, `max`, `name_for_plotting`; full Myokit names are `vessel_name/param_name`.
+- `*_params_for_id.csv` — columns: `vessel_name`, `param_name`, `param_type`, `min`, `max`, `name_for_plotting`; full Myokit names are `vessel_name/param_name`. **One row is one parameter**, even when `vessel_name` names several vessels (whitespace-separated): that is CA's notation for one quantity written into several components at once, and CA carries one value for the whole row (`param_id_info["param_names"]` is a list *per row*). CUFLynx mirrors that — one `ParamEntry` per row with every member in `qnames`, one slider, expanded to all members only where the values are handed to the solver (`useSliders.paramDict`). Splitting a row per vessel gives each component its own handle and lets the user build a state the model never has (#193).
 
 Docs: `circulatory_autogen/tutorial/docs/parameter-identification.md`, `circulatory_autogen/claude.md`, `src/utilities/obs_data_helpers.py`.
 
