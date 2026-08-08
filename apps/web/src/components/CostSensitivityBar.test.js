@@ -55,7 +55,8 @@ describe('CostSensitivityBar (#188)', () => {
   it('names the quantity and the step it used', () => {
     // "sensitivity" without units is not a number anyone can act on; a relative
     // one is comparable across parameters, and the FD step changes the answer.
-    const text = mountBar().find('[data-testid="cost-sens-method"]').text()
+    const text = mountBar({ result: payload({ analytic: false }) })
+      .find('[data-testid="cost-sens-method"]').text()
     expect(text).toContain('d ln(cost)/d ln(p)')
     expect(text).toContain('0.1%')
   })
@@ -129,25 +130,31 @@ describe('CostSensitivityBar (#188)', () => {
     expect(wrapper.find('[data-testid="cost-sens-empty"]').text()).toContain('measuring')
   })
 
-  it('flags a backend with no analytic gradients as the slow case (#188)', () => {
-    // Differencing costs the same 2M+1 solves everywhere; only a backend without
-    // AD has no cheaper route in principle, so that is what is worth saying.
-    const wrapper = mountBar({ adAvailable: false })
-    const badge = wrapper.get('[data-testid="cost-sens-no-ad"]')
-    expect(badge.text()).toContain('no AD')
-    // The badge says it is slow; the tooltip says how slow, and what would fix it.
-    expect(badge.attributes('title')).toContain(String(payload().n_simulations))
-    expect(badge.attributes('title')).toContain('casadi_python')
+  it('says when the gradient had to be differenced instead (#188)', () => {
+    // Reported as what happened, not inferred from a capability flag: the
+    // fallback is both slower and less able to resolve a flat parameter.
+    const wrapper = mountBar({
+      result: payload({ analytic: false, fallback_reason: 'no CVODES sensitivities' }),
+    })
+    const badge = wrapper.get('[data-testid="cost-sens-differenced"]')
+    expect(badge.text()).toContain('differenced')
+    expect(badge.attributes('title')).toContain('arbitrary sign')
+    expect(badge.attributes('title')).toContain('no CVODES sensitivities')
   })
 
-  it('says nothing about AD when the backend has it', () => {
-    const wrapper = mountBar({ adAvailable: true })
-    expect(wrapper.find('[data-testid="cost-sens-no-ad"]').exists()).toBe(false)
+  it('says nothing when the sensitivities came from the solve', () => {
+    const wrapper = mountBar({ result: payload({ analytic: true }) })
+    expect(wrapper.find('[data-testid="cost-sens-differenced"]').exists()).toBe(false)
   })
 
-  it('says nothing when the caller does not wire the flag', () => {
-    // Absence is not a claim of slowness -- the prop defaults to available.
-    const wrapper = mountBar()
-    expect(wrapper.find('[data-testid="cost-sens-no-ad"]').exists()).toBe(false)
+  it('names the gradient method and counts one solve when it is analytic', () => {
+    const wrapper = mountBar({
+      result: payload({ analytic: true, method: 'Myokit CVODES FSA', n_simulations: 1 }),
+    })
+    const text = wrapper.get('[data-testid="cost-sens-method"]').text()
+    expect(text).toContain('Myokit CVODES FSA')
+    expect(text).toContain('1 solve')
+    // The FD step is meaningless for an analytic gradient, so it is not shown.
+    expect(text).not.toContain('step')
   })
 })

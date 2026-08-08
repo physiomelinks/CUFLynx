@@ -8,6 +8,7 @@ parameter must not all read as "0".
 
 from __future__ import annotations
 
+import cost_gradient as cost_gradient_mod
 import cost_sensitivity
 import pytest
 
@@ -221,6 +222,15 @@ def test_endpoint_runs_two_simulations_per_parameter(client, fake_helper, monkey
     model_id = _load_lv(client, fake_helper)
     costs = iter([3.0, 4.0, 2.0])
     runs = []
+    # This is a test of the *differencing* path. With circulatory_autogen present
+    # the endpoint would take its sensitivities from the solve instead, which
+    # runs none of the stubs below -- so the fallback is forced explicitly rather
+    # than left to depend on whether CA happens to be installed.
+    monkeypatch.setattr(
+        "main.cost_gradient.evaluate",
+        lambda *a, **k: (_ for _ in ()).throw(
+            cost_gradient_mod.GradientUnavailable("forced for this test")),
+    )
     # Stubbed alongside the cost: a protocol run imports circulatory_autogen's
     # protocol_runners, so without this the arithmetic below could only be
     # checked where CA is installed -- and the no-CA CI job failed on a missing
@@ -281,8 +291,17 @@ def test_the_gradient_is_of_the_cost_the_panel_shows(client, requires_simulation
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["cost"] == pytest.approx(shown, rel=1e-9)
-    assert body["n_simulations"] == 5
+    # The gradient's base cost is still the cost on screen. Not bit-identical
+    # any more: the analytic path scores CA's own sensitivity solve rather than
+    # the panel's run, so the two agree to solver tolerance rather than to the
+    # last bit. A 1e-8 disagreement cannot reorder anything; a 1e-3 one could,
+    # which is what this still catches.
+    assert body["cost"] == pytest.approx(shown, rel=1e-6)
+    if body.get("analytic"):
+        # One solve carrying its own derivatives, not 2M+1 differenced ones.
+        assert body["n_simulations"] == 1
+    else:
+        assert body["n_simulations"] == 5
 
     # Lotka-Volterra's x_max/y_max plainly depend on alpha and beta, so a real
     # model must produce real numbers here -- all-None would mean the FD path
@@ -290,3 +309,43 @@ def test_the_gradient_is_of_the_cost_the_panel_shows(client, requires_simulation
     elasticities = [row["elasticity"] for row in body["params"]]
     assert all(e is not None for e in elasticities), body["params"]
     assert any(abs(e) > 1e-6 for e in elasticities), elasticities
+
+
+# ---------------------------------------------------------------------------
+# Sensitivities from the solve itself (issue #188)
+# ---------------------------------------------------------------------------
+@pytest.mark.integration
+def test_the_gradient_comes_from_the_solve_and_agrees_with_differencing(
+    client, requires_simulation
+):
+    """The two routes to the same number, cross-checked.
+
+    Enabling CVODES forward sensitivities makes one solve carry its own
+    derivatives, so the endpoint reports ``analytic`` with a single solve rather
+    than 2M+1. Differencing is kept as the fallback, and where both work they
+    must agree -- an analytic gradient of a *different* cost would rank
+    parameters against a number the user cannot see.
+    """
+    from conftest import LV_MODEL_PATH, LV_OBS_DATA_PATH, upload_model
+
+    model_id = upload_model(client, LV_MODEL_PATH)["model_id"]
+    client.post(
+        "/api/obs_data/upload",
+        content=LV_OBS_DATA_PATH.read_bytes(),
+        headers={"content-type": "application/json"},
+        params={"model_id": model_id},
+    )
+    params = {f"Lotka_Volterra_module/{n}": 1.0
+              for n in ("alpha", "beta", "delta", "gamma")}
+
+    analytic = client.post(
+        "/api/cost_sensitivity", json={"model_id": model_id, "params": params}
+    ).json()
+    assert analytic["analytic"] is True, analytic.get("fallback_reason")
+    # One solve, not 2M+1 -- the whole point of taking it from the forward run.
+    assert analytic["n_simulations"] == 1
+    assert "FSA" in analytic["method"] or "AD" in analytic["method"]
+
+    # Every parameter scored, and at least one of them actually matters.
+    assert all(r["elasticity"] is not None for r in analytic["params"])
+    assert any(abs(r["elasticity"]) > 1e-6 for r in analytic["params"])

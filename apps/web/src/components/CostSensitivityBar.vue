@@ -31,14 +31,6 @@ const props = defineProps({
   error: { type: String, default: '' },
   // qname -> name_for_plotting, so a row reads like the slider it belongs to.
   labels: { type: Object, default: () => ({}) },
-  // Whether analytic (AD) gradients are available *for this study* — casadi_python
-  // with every operation the loaded obs_data actually uses @differentiable. Passed
-  // in rather than read from the payload because that judgement is per-obs_data,
-  // not per-backend: the global "are all registered operations differentiable"
-  // flag is false for everyone (16 of CA's 38 ops are not), so deciding from it
-  // would warn on every study including the ones where AD demonstrably works.
-  // Defaults to true so a caller that does not wire it makes no claim of slowness.
-  adAvailable: { type: Boolean, default: true },
 })
 
 defineEmits(['recompute'])
@@ -90,29 +82,31 @@ function direction(value) {
     <div class="cost-sens-head">
       <span class="cost-sens-title">cost sensitivity</span>
       <span class="cost-sens-sub" data-testid="cost-sens-method">
-        d ln(cost)/d ln(p)<template v-if="stepLabel">
-          — central differences, step {{ stepLabel }}</template
+        d ln(cost)/d ln(p)<template v-if="result?.method">
+          — {{ result.method }}</template
+        ><template v-if="stepLabel && !result?.analytic">, step {{ stepLabel }}</template
         ><template v-if="result?.n_simulations">
-          ({{ result.n_simulations }} simulations)</template>
+          ({{ result.n_simulations }}
+          {{ result.n_simulations === 1 ? 'solve' : 'simulations' }})</template>
       </span>
       <!--
-        Issue #188: differencing costs the same 2M+1 solves on every backend, but
-        only a backend without analytic (AD) gradients has no cheaper route in
-        principle — so that is where the price is worth flagging rather than
-        letting a drag quietly turn sluggish.
+        Issue #188: when the solve carries its own sensitivities the gradient is
+        one solve and exact. Falling back to differencing is both ~10x slower and
+        less able to resolve a parameter the cost barely depends on, so it is
+        reported as what happened rather than inferred from a capability flag.
       -->
       <span
-        v-if="result && !adAvailable"
+        v-if="result && result.analytic === false"
         class="cost-sens-slow"
-        data-testid="cost-sens-no-ad"
+        data-testid="cost-sens-differenced"
         :title="
-          `No analytic (AD) gradients for this study, so each update runs ` +
-          `${result.n_simulations ?? '2M+1'} simulations. AD needs the ` +
-          `casadi_python model format with every operation this obs_data uses ` +
-          `marked @differentiable.`
+          `This backend cannot produce sensitivities from the solve, so the ` +
+          `gradient is differenced: ${result.n_simulations ?? '2M+1'} simulations, ` +
+          `and a parameter the cost barely depends on may come back with an ` +
+          `arbitrary sign.` + (result.fallback_reason ? ` (${result.fallback_reason})` : '')
         "
       >
-        slow: no AD
+        differenced
       </span>
       <ProgressSpinner
         v-if="status === 'running'"

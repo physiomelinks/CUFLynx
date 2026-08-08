@@ -60,6 +60,7 @@ from model_codegen import resolve_model_path, reset_cache as reset_codegen
 from obs_data import ObsData, ObsDataError, parse_obs_data
 from obs_options import get_obs_data_options, reset_cache as reset_obs_options
 import obs_cost
+import cost_gradient
 import cost_sensitivity
 from obs_series import compute_output_series
 from params_for_id import ParamsForIdError, parse_params_for_id
@@ -1193,7 +1194,7 @@ def simulate(req: SimulateRequest) -> dict:
         # engine falls back when the configured format cannot run in-process
         # (#122), and a model generated for one backend is not readable by
         # another -- a generated .py handed to Myokit fails as invalid XML.
-        live_type, _live_solver, _fell_back = engine.live_backend()
+        live_type, live_solver, _fell_back = engine.live_backend()
         model_path = resolve_model_path(str(record.path), live_type, model_id=req.model_id)
         result = engine.simulate(
             model_id=req.model_id,
@@ -1245,7 +1246,7 @@ def protocol_run(req: ProtocolRunRequest) -> dict:
     # looks like a better fit than it is.
     outputs = _with_obs_operands(outputs, record)
     try:
-        live_type, _live_solver, _fell_back = engine.live_backend()
+        live_type, live_solver, _fell_back = engine.live_backend()
         model_path = resolve_model_path(str(record.path), live_type, model_id=req.model_id)
         result = engine.run_protocol(
             model_id=req.model_id,
@@ -1333,7 +1334,7 @@ def cost_sensitivity_route(req: CostSensitivityRequest) -> dict:
         protocol_info = record.obs_data.protocol_info
 
     try:
-        live_type, _live_solver, _fell_back = engine.live_backend()
+        live_type, live_solver, _fell_back = engine.live_backend()
         model_path = resolve_model_path(str(record.path), live_type, model_id=req.model_id)
     except Exception as exc:  # noqa: BLE001 - a model that cannot be resolved owes a reason
         raise HTTPException(
@@ -1364,6 +1365,33 @@ def cost_sensitivity_route(req: CostSensitivityRequest) -> dict:
         )
         return _single_run_cost(record, result, output_dir)
 
+    # The sensitivity solve first: enabling FSA/AD makes the forward solve carry
+    # its own derivatives, so one run gives the cost and dJ/dp together -- about
+    # ten times cheaper than 2M+1 differenced solves, and resolvable where
+    # differencing is not (a parameter the cost barely depends on comes back with
+    # an arbitrary sign from a difference quotient; see cost_gradient).
+    try:
+        return cost_gradient.evaluate(
+            req.params,
+            model_path=model_path,
+            model_type=live_type,
+            # The chosen solver must ride along: solver_info alone has no
+            # `solver` key, and CA then falls through to its OpenCOR helper --
+            # which is None here, and which this project must never use.
+            solver_info={**(engine.solver_info or {}), "solver": live_solver},
+            dt=engine.dt,
+            obs_data=_obs_data_document(record, protocol_info),
+            sim_time=req.sim_time,
+            pre_time=req.pre_time,
+            param_names=req.param_names,
+            bounds=req.bounds,
+            output_dir=output_dir,
+        )
+    except cost_gradient.GradientUnavailable as exc:
+        # Not an error: differencing works on every backend the sliders work on.
+        # The reason travels with the result so the panel can say which it used.
+        fallback_reason = str(exc)
+
     try:
         result = cost_sensitivity.evaluate(
             req.params,
@@ -1372,6 +1400,8 @@ def cost_sensitivity_route(req: CostSensitivityRequest) -> dict:
             bounds=req.bounds,
             rel_step=req.rel_step,
         )
+        result["analytic"] = False
+        result["fallback_reason"] = fallback_reason
         return result
     except SimulationError as exc:
         # Only the *base* run reaches here: a perturbed one that fails is that

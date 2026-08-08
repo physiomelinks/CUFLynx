@@ -2030,7 +2030,6 @@ watch(
           :status="costSensState"
           :error="costSensError"
           :labels="paramLabels"
-          :ad-available="adAvailable"
           @recompute="runCostSensitivity"
         />
         <div
