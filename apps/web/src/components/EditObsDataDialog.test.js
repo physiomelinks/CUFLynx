@@ -277,6 +277,102 @@ describe('EditObsDataDialog', () => {
     expect('operation_kwargs' in obsArg.data_items[0]).toBe(false)
   })
 
+  // cost_kwargs (CA #370 / issue #201): the cost-func twin of operation_kwargs.
+  const COST_KWARG_FETCH = {
+    ...FETCH,
+    cost_kwargs_schema: {
+      tolerant: [
+        { name: 'tolerance', default: 0.25, type: 'number' },
+        { name: 'squared', default: false, type: 'boolean' },
+      ],
+    },
+    cost_kwargs_accepts_any: { MSE: true, gaussian_MLE: false, tolerant: false },
+    cost_types: ['MSE', 'gaussian_MLE', 'tolerant'],
+  }
+  const costItem = {
+    variable: 'p', data_type: 'constant', operation: 'max', operands: ['m/x'],
+    unit: 'dimensionless', value: 1, std: 0.1, experiment_idx: 0,
+    plot_type: 'horizontal', cost_type: 'tolerant',
+  }
+
+  it('renders an input per cost kwarg, prefilled with its default', async () => {
+    getObsDataOptions.mockResolvedValueOnce(COST_KWARG_FETCH)
+    const wrapper = mountDialog({ currentDataItems: [costItem] })
+    await flushPromises()
+    await wrapper.find('button[aria-label="details"]').trigger('click')
+    const tolerance = wrapper.find('[data-testid="eo-cost-kwarg-tolerance"] input')
+    const squared = wrapper.find('[data-testid="eo-cost-kwarg-squared"] input')
+    expect(tolerance.element.value).toBe('0.25')
+    expect(squared.element.type).toBe('checkbox')
+  })
+
+  it('persists edited cost kwargs into the saved obs_data', async () => {
+    getObsDataOptions.mockResolvedValueOnce(COST_KWARG_FETCH)
+    uploadObsData.mockResolvedValue({})
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+    const wrapper = mountDialog({ currentDataItems: [costItem] })
+    await flushPromises()
+    await wrapper.find('button[aria-label="details"]').trigger('click')
+    await wrapper.find('[data-testid="eo-cost-kwarg-tolerance"] input').setValue('1.5')
+    await wrapper.find('[data-testid="eo-cost-kwarg-squared"] input').setValue(true)
+    await wrapper.find('[data-testid="eo-save"]').trigger('click')
+    await flushPromises()
+    const obsArg = uploadObsData.mock.calls[0][1]
+    expect(obsArg.data_items[0].cost_kwargs).toEqual({ tolerance: 1.5, squared: true })
+  })
+
+  it('round-trips a cost_kwargs value it has no input for', async () => {
+    // A key the editor cannot render must still survive a save: dropping it is
+    // data loss, and CA would then silently score with the func's default.
+    getObsDataOptions.mockResolvedValueOnce(FETCH) // no cost_kwargs_schema at all
+    uploadObsData.mockResolvedValue({})
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+    const wrapper = mountDialog({
+      currentDataItems: [{ ...costItem, cost_type: 'MSE', cost_kwargs: { tolerance: 3 } }],
+    })
+    await flushPromises()
+    await wrapper.find('[data-testid="eo-save"]').trigger('click')
+    await flushPromises()
+    expect(uploadObsData.mock.calls[0][1].data_items[0].cost_kwargs).toEqual({ tolerance: 3 })
+  })
+
+  it('drops stale cost kwargs when the cost func has no parameter for them', async () => {
+    getObsDataOptions.mockResolvedValueOnce(COST_KWARG_FETCH)
+    uploadObsData.mockResolvedValue({})
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+    const wrapper = mountDialog({
+      currentDataItems: [{ ...costItem, cost_kwargs: { tolerance: 0.7 } }],
+    })
+    await flushPromises()
+    await wrapper.find('button[aria-label="details"]').trigger('click')
+    // tolerant -> gaussian_MLE, which CA reports as accepting no further kwargs;
+    // leaving the value would make CA refuse to start the calibration.
+    await wrapper.findAll('select').find((s) => s.element.value === 'tolerant')
+      .setValue('gaussian_MLE')
+    await wrapper.find('[data-testid="eo-save"]').trigger('click')
+    await flushPromises()
+    const item = uploadObsData.mock.calls[0][1].data_items[0]
+    expect(item.cost_type).toBe('gaussian_MLE')
+    expect('cost_kwargs' in item).toBe(false)
+  })
+
+  it('keeps kwargs when switching to a cost func that takes **kwargs', async () => {
+    getObsDataOptions.mockResolvedValueOnce(COST_KWARG_FETCH)
+    uploadObsData.mockResolvedValue({})
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+    const wrapper = mountDialog({
+      currentDataItems: [{ ...costItem, cost_kwargs: { tolerance: 0.7 } }],
+    })
+    await flushPromises()
+    await wrapper.find('button[aria-label="details"]').trigger('click')
+    // MSE accepts anything, so "not in the schema" says nothing about validity.
+    await wrapper.findAll('select').find((s) => s.element.value === 'tolerant')
+      .setValue('MSE')
+    await wrapper.find('[data-testid="eo-save"]').trigger('click')
+    await flushPromises()
+    expect(uploadObsData.mock.calls[0][1].data_items[0].cost_kwargs).toEqual({ tolerance: 0.7 })
+  })
+
   it('adds a data item row', async () => {
     const wrapper = mountDialog()
     await flushPromises()

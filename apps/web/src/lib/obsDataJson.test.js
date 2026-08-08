@@ -82,6 +82,37 @@ describe('itemToRow / rowToItem round-trip', () => {
     expect(newRow().operation_kwargs).toEqual({})
   })
 
+  // cost_kwargs (CA #370): the cost func's own keyword args, per data_item.
+  it('round-trips cost_kwargs and reflects edited values', () => {
+    const row = itemToRow({
+      variable: 'a', data_type: 'constant', operation: 'max', operands: ['m/x'],
+      value: 1, std: 0.1, cost_type: 'tolerant', cost_kwargs: { tolerance: 0.5, mode: 'abs' },
+    })
+    expect(row.cost_kwargs).toEqual({ tolerance: 0.5, mode: 'abs' })
+    row.cost_kwargs.tolerance = 0.9
+    expect(rowToItem(row).cost_kwargs).toEqual({ tolerance: 0.9, mode: 'abs' })
+  })
+
+  it('keeps cost_kwargs when no cost_type is selected', () => {
+    // CA still applies its default cost func, so "no cost_type" is not "no cost
+    // func to pass kwargs to" -- deleting them here would be silent data loss on
+    // a hand-written obs_data that was merely opened in the editor.
+    const row = itemToRow({
+      variable: 'a', data_type: 'constant', operation: 'max', operands: ['m/x'],
+      value: 1, std: 0.1, cost_kwargs: { tolerance: 0.5 },
+    })
+    const back = rowToItem(row)
+    expect('cost_type' in back).toBe(false)
+    expect(back.cost_kwargs).toEqual({ tolerance: 0.5 })
+  })
+
+  it('drops cost_kwargs when there are none', () => {
+    const row = newRow()
+    row.operands = ['m/x']
+    expect(row.cost_kwargs).toEqual({})
+    expect('cost_kwargs' in rowToItem(row)).toBe(false)
+  })
+
   it('drops blank operation/cost_type instead of emitting empty strings', () => {
     const row = newRow()
     row.operation = ''

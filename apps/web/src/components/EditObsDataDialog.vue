@@ -59,6 +59,13 @@ const costTypes = ref(FALLBACK_COST_TYPES)
 // Per-cost-function flags (is_MLE / is_combiner / differentiable) from CA, used
 // only to annotate the cost_type options; empty when CA doesn't expose them.
 const costMeta = ref({})
+// cost name -> [{name, default, type}] tunable keyword args (from CA, #370), the
+// cost-side twin of opKwargsSchema: an input per kwarg on each data_item that
+// selects that cost. Empty on a CA without the contract, so nothing renders.
+const costKwargsSchema = ref({})
+// cost name -> declares **kwargs. Consulted only before deleting a stored kwarg:
+// a func that accepts anything, or one CA never reported on, must keep its keys.
+const costKwargsAcceptAny = ref({})
 const plotTypes = ref(FALLBACK_PLOT_TYPES)
 const protocolModel = ref(null)
 const activeExp = ref(0)
@@ -86,6 +93,8 @@ async function loadOptions(refresh = false) {
     if (opts?.operation_operands) opOperands.value = opts.operation_operands
     if (opts?.cost_types?.length) costTypes.value = opts.cost_types
     if (opts?.cost_func_metadata) costMeta.value = opts.cost_func_metadata
+    if (opts?.cost_kwargs_schema) costKwargsSchema.value = opts.cost_kwargs_schema
+    if (opts?.cost_kwargs_accepts_any) costKwargsAcceptAny.value = opts.cost_kwargs_accepts_any
     if (opts?.plot_types?.length) plotTypes.value = opts.plot_types
   } catch {
     /* keep fallbacks — editor still works offline */
@@ -215,6 +224,39 @@ function onKwarg(row, kw, raw) {
   if (kw.type === 'boolean') val = !!raw
   else if (kw.type === 'integer' || kw.type === 'number') val = raw === '' || raw == null ? null : Number(raw)
   row.operation_kwargs[kw.name] = val
+}
+// The tunable keyword args for a row's current cost func, or [] when it has none
+// / CA didn't report a schema. Same shape as the operation kwargs, so the two
+// render through the same inputs.
+function costKwargsForRow(row) {
+  return costKwargsSchema.value[row.cost_type] ?? []
+}
+function costKwargVal(row, kw) {
+  const stored = row.cost_kwargs?.[kw.name]
+  return stored === undefined ? kw.default : stored
+}
+function onCostKwarg(row, kw, raw) {
+  if (!row.cost_kwargs || typeof row.cost_kwargs !== 'object') row.cost_kwargs = {}
+  let val = raw
+  if (kw.type === 'boolean') val = !!raw
+  else if (kw.type === 'integer' || kw.type === 'number') val = raw === '' || raw == null ? null : Number(raw)
+  row.cost_kwargs[kw.name] = val
+}
+// Change a row's cost_type, dropping kwargs the new cost func has no parameter
+// for — CA rejects those outright at calibration setup (#370), so leaving them
+// would trade an editable field for a run that refuses to start.
+//
+// Only when CA actually said the new func accepts nothing else: `accepts_any`
+// unknown (older CA, offline, or a cost the fallback list invented) or true means
+// "not in the schema" reads as "unknown", not "invalid", and deleting the user's
+// values on that basis is the data loss this editor keeps being bitten by.
+function onCostTypeChange(row, costType) {
+  row.cost_type = costType
+  const kw = row.cost_kwargs
+  if (!kw || typeof kw !== 'object') return
+  if (costKwargsAcceptAny.value[costType] !== false) return
+  const valid = new Set(costKwargsForRow(row).map((k) => k.name))
+  for (const key of Object.keys(kw)) if (!valid.has(key)) delete kw[key]
 }
 // Change a row's operation and drop any stored kwargs that don't belong to the new
 // operation, so stale values from a previous operation never leak into the save.
@@ -572,10 +614,37 @@ async function onSave() {
             <input type="number" step="any" :value="row.weight" @input="onNum(row, 'weight', $event.target.value)" />
           </label>
           <label>cost_type
-            <select :value="row.cost_type" @change="row.cost_type = $event.target.value">
+            <select :value="row.cost_type" @change="onCostTypeChange(row, $event.target.value)">
               <option value="">(default)</option>
               <option v-for="ct in costTypes" :key="ct" :value="ct">{{ costTypeLabel(ct) }}</option>
             </select>
+          </label>
+          <!--
+            One input per keyword argument the chosen cost func declares; written
+            to the data_item's cost_kwargs (CA #370), the same way the operation's
+            kwargs are written to operation_kwargs.
+          -->
+          <label
+            v-for="kw in costKwargsForRow(row)"
+            :key="`cost-${kw.name}`"
+            :data-testid="`eo-cost-kwarg-${kw.name}`"
+            :title="`cost_kwargs (default ${kw.default})`"
+          >
+            {{ kw.name }}
+            <input
+              v-if="kw.type === 'boolean'"
+              type="checkbox"
+              class="eo-kwarg-bool"
+              :checked="!!costKwargVal(row, kw)"
+              @change="onCostKwarg(row, kw, $event.target.checked)"
+            />
+            <input
+              v-else
+              :type="kw.type === 'number' || kw.type === 'integer' ? 'number' : 'text'"
+              :step="kw.type === 'integer' ? 1 : 'any'"
+              :value="costKwargVal(row, kw)"
+              @input="onCostKwarg(row, kw, $event.target.value)"
+            />
           </label>
           <label>plot_type
             <select :value="row.plot_type" @change="row.plot_type = $event.target.value">

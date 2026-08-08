@@ -95,6 +95,13 @@ available for plain funcs; write the body against the math backend ``mb`` (and a
 ``@differentiable``) for AD gradients. The ``@differentiable`` / ``@is_MLE`` /
 ``@cost_combiner`` markers mirror CA's (imported, never redefined).
 
+The signature is yours to choose (CA #370). CA fills the model output and the
+ground truth positionally, then supplies ``std`` and ``weight`` *only* when the
+signature declares them -- so a cost with no notion of a standard deviation just
+leaves it out. Any further keyword argument (give it a default) is filled per
+data_item from that item's ``cost_kwargs`` in obs_data.json, and the obs_data
+editor offers an input for each one; see the "kwargs" template.
+
 Managed by CUFLynx's "Custom funcs" dialog; the header may be regenerated.
 """
 import numpy as np  # noqa: F401 -- available to user cost funcs
@@ -172,8 +179,89 @@ _COST_TEMPLATES = {
     Must work for scalars and arrays; lower = better fit. Select it as a
     data_item's ``cost_type`` in the obs_data editor. For AD gradients, use the
     Differentiable template instead.
+
+    ``std`` and ``weight`` come from the data_item and are passed only because
+    they are named here — drop either if this cost has no use for it, and add
+    keyword arguments of your own with the Kwargs template.
     """
     return float(np.sum(((output - desired_mean) / std) ** 2 * weight))
+''',
+    "kwargs": '''def my_cost(output, desired_mean, weight, tolerance=0.0, exponent=2.0):
+    """Cost with tunable keyword arguments, set per data_item.
+
+    Every keyword argument circulatory_autogen does not supply itself (here
+    ``tolerance`` and ``exponent``) is parsed from this signature and becomes an
+    editable input on each data_item that selects this cost in the obs_data editor
+    — the values are written to that data_item's ``cost_kwargs`` and passed in per
+    data_item. Give every one a default, so an item that sets none still scores.
+
+    ``std`` and ``weight`` are the arguments CA fills from the data_item's own
+    fields, so they are reserved: name the ones this cost needs (here ``weight``,
+    and deliberately no ``std``) and leave out the rest — CA passes only what the
+    signature has room for. Setting either through ``cost_kwargs`` is an error,
+    because it would shadow the real value and quietly change what is calibrated.
+    """
+    error = np.abs(output - desired_mean)
+    return float(np.sum(np.maximum(error - tolerance, 0.0) ** exponent * weight))
+''',
+    "robust": '''@differentiable
+def robust_loss(output, desired_mean, std, weight, alpha=2.0, c=1.0):
+    """Barron's general and adaptive robust loss (CVPR 2019), tuned per data_item.
+
+    One family that contains several familiar losses, chosen by ``alpha``:
+
+    ====== ==========================================================
+    alpha  loss
+    ====== ==========================================================
+    2      squared error — identical to ``MSE`` (see the note below)
+    1      pseudo-Huber (Charbonnier)
+    0      Cauchy / Lorentzian
+    -2     Geman-McClure
+    -inf   Welsch / Leclerc
+    ====== ==========================================================
+
+    Lower ``alpha`` gives outliers progressively less influence, which is the
+    point: a single bad experimental point cannot then drag the whole fit. ``c``
+    sets the residual scale at which that down-weighting starts, in units of
+    ``std`` (residuals much smaller than ``c`` are still scored quadratically).
+
+    Note that ``c`` divides the residual, so it also **rescales the cost by
+    1/c**2**. Two data_items with different ``c`` are therefore on different
+    scales — the same trap as unnormalised weights. Prefer leaving ``c`` at 1 and
+    letting each item's ``std`` carry its scale, unless you mean to reweight.
+
+    **The half is Barron's and is kept.** At ``alpha=2, c=1`` this is exactly
+    ``0.5 * mean(((output - desired_mean)/std)**2 * weight)`` — the L2 /
+    least-squares objective, which is precisely **half of CA's ``MSE``** and
+    bit-identical to CA's ``gaussian_MLE`` (``MSE`` is defined as
+    ``2*gaussian_MLE``). So the default lands on a cost CA already has, rather
+    than on a rescaled variant of one.
+
+    A constant factor cannot move the optimum, so this does not change what a
+    single-observable fit converges to. It *does* change the cost's size relative
+    to other data_items: an item scored with this at ``alpha=2`` contributes half
+    what the same item scored with ``MSE`` would. If you mix the two in one
+    obs_data, either use ``gaussian_MLE`` for the others or raise this item's
+    ``weight`` to compensate.
+
+    Branching on ``alpha`` in Python is safe under AD: it is a keyword argument
+    fixed per data_item, not part of the data, so the branch is taken once when
+    the graph is built. The special cases are not optional — the general form
+    divides by ``alpha`` and by ``|alpha - 2|``.
+    """
+    x = (output - desired_mean) / std
+    sq = mb.power(x / c, 2)
+    if alpha == 2.0:
+        rho = 0.5 * sq
+    elif alpha == 0.0:
+        rho = mb.log(0.5 * sq + 1.0)
+    elif alpha == float("-inf"):
+        rho = 1.0 - mb.exp(-0.5 * sq)
+    else:
+        d = abs(alpha - 2.0)
+        rho = (d / alpha) * (mb.power(sq / d + 1.0, 0.5 * alpha) - 1.0)
+    per = rho * weight
+    return mb.sum(per) / mb.numel(per)
 ''',
     "differentiable": '''@differentiable
 def my_cost(output, desired_mean, std, weight):
@@ -291,6 +379,11 @@ def external_paths(base_dir: str | None = None) -> dict:
 # Validation
 # ---------------------------------------------------------------------------
 def _validate_name(kind: str, name: str) -> str:
+    """Judge the name the ``def`` line gives this func.
+
+    The messages name the ``def`` rather than a form field, because that is now
+    the only place a name is entered.
+    """
     k = _kind(kind)
     name = (name or "").strip()
     if not name:
@@ -298,14 +391,25 @@ def _validate_name(kind: str, name: str) -> str:
     if not name.isidentifier() or keyword.iskeyword(name):
         raise UserFuncError(f"'{name}' is not a valid Python function name")
     if name.startswith("_"):
-        raise UserFuncError(f"{k.key} name must not start with '_'")
+        raise UserFuncError(
+            f"rename the function: a {k.key} name must not start with '_' "
+            f"(found 'def {name}')"
+        )
     if name in k.reserved:
-        raise UserFuncError(f"'{name}' is a reserved name")
+        raise UserFuncError(
+            f"rename the function: '{name}' is a reserved name (found 'def {name}')"
+        )
     return name
 
 
-def _validate_source(kind: str, name: str, source: str) -> str:
-    """Validate ``source`` is a single top-level ``def <name>(...)`` and return it."""
+def _validate_source(kind: str, source: str) -> tuple[str, str]:
+    """Validate ``source`` is one top-level ``def``; return ``(name, source)``.
+
+    **The code names the function, and nothing else does.** There used to be a
+    separate name field that had to agree with the ``def``, which meant the same
+    fact was entered twice and the only feedback for disagreeing was a rejected
+    save. Deriving it removes the disagreement rather than reporting it.
+    """
     k = _kind(kind)
     source = (source or "").strip("\n")
     if not source.strip():
@@ -317,12 +421,12 @@ def _validate_source(kind: str, name: str, source: str) -> str:
     defs = [n for n in tree.body if isinstance(n, ast.FunctionDef)]
     if len(tree.body) != 1 or len(defs) != 1:
         raise UserFuncError("code must be exactly one top-level function definition")
-    if defs[0].name != name:
-        raise UserFuncError(
-            f"the function must be named '{name}' to match the {k.key} name "
-            f"(found 'def {defs[0].name}')"
-        )
-    return source
+    return _validate_name(kind, defs[0].name), source
+
+
+def func_name_from_source(kind: str, source: str) -> str:
+    """The ``def`` name ``source`` would be saved under, or raise UserFuncError."""
+    return _validate_source(kind, source)[0]
 
 
 # ---------------------------------------------------------------------------
@@ -409,16 +513,36 @@ def _render(kind: str, order: list[str], sources: dict[str, str]) -> str:
     return "\n".join(parts).rstrip("\n") + "\n"
 
 
-def save_user_func(kind: str, name: str, source: str, base_dir: str | None = None) -> dict:
-    """Create or update the ``kind`` func ``name`` with body ``source``, under the
-    output directory ``base_dir`` (falling back to the config dir).
+def save_user_func(
+    kind: str,
+    previous_name: str | None,
+    source: str,
+    base_dir: str | None = None,
+) -> dict:
+    """Save the ``kind`` func defined by ``source``, under ``base_dir`` (falling
+    back to the config dir).
+
+    **The name comes from the code**, not from the caller: ``source`` must be one
+    top-level ``def``, and that ``def``'s name is the func's name.
+
+    ``previous_name`` is the entry being edited, or None/"" for a new one. It
+    exists only so that renaming the ``def`` while editing *renames* the func
+    rather than leaving the old name behind as a second, stale copy — which is
+    what a name derived purely from the code would otherwise do.
 
     Raises :class:`UserFuncError` (HTTP 422) on an invalid name or code.
     """
-    name = _validate_name(kind, name)
-    source = _validate_source(kind, name, source)
+    name, source = _validate_source(kind, source)
     order, sources = _parse_existing(kind, base_dir)
-    if name not in sources:
+
+    previous_name = (previous_name or "").strip()
+    if previous_name and previous_name != name and previous_name in sources:
+        # Renamed in place: keep its position in the file so the list does not
+        # reshuffle under the user on a rename.
+        order = [name if n == previous_name else n for n in order]
+        del sources[previous_name]
+
+    if name not in order:
         order.append(name)
     sources[name] = source
 

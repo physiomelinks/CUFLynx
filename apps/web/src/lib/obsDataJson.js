@@ -68,6 +68,10 @@ export function itemToRow(item) {
     experiment_idx: item.experiment_idx ?? 0,
     subexperiment_idx: item.subexperiment_idx ?? 0,
     cost_type: item.cost_type ?? '',
+    // Per-data_item values for the cost func's own keyword args (CA #370) — the
+    // cost-side twin of operation_kwargs. Cloned so edits don't mutate the source.
+    cost_kwargs:
+      item.cost_kwargs && typeof item.cost_kwargs === 'object' ? { ...item.cost_kwargs } : {},
     plot_type: item.plot_type && item.plot_type !== 'None' ? item.plot_type : '',
     // free-text provenance ("where the data came from"). CA's `source` may also be
     // a dict of file paths — only surface/edit the string form here.
@@ -93,6 +97,7 @@ export function newRow(experimentIdx = 0) {
     experiment_idx: experimentIdx,
     subexperiment_idx: 0,
     cost_type: '',
+    cost_kwargs: {},
     plot_type: 'horizontal',
     source: '',
     comment: '',
@@ -127,6 +132,15 @@ export function rowToItem(row) {
   else delete out.operation_kwargs
   if (row.cost_type) out.cost_type = row.cost_type
   else delete out.cost_type
+  // Persist the cost func's keyword-arg values (CA #370). Unlike operation_kwargs
+  // these survive an empty cost_type: CA still applies its default cost func, so
+  // "no cost_type" does not mean "no cost func to pass kwargs to", and deleting a
+  // hand-written cost_kwargs on that basis would be silent data loss. Stale keys
+  // are dropped by the editor when the cost func actually changes, where it knows
+  // what the new one accepts.
+  const ck = row.cost_kwargs && typeof row.cost_kwargs === 'object' ? row.cost_kwargs : {}
+  if (Object.keys(ck).length) out.cost_kwargs = { ...ck }
+  else delete out.cost_kwargs
   // Write the text source, but never clobber a legacy dict source (file paths).
   if (row.source) out.source = row.source
   else if (typeof out.source === 'string') delete out.source

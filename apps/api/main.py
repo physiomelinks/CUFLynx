@@ -1330,7 +1330,11 @@ def obs_data_options(refresh: bool = False, output_dir: str = "") -> dict:
 
 
 class UserFuncRequest(BaseModel):
-    name: str
+    # The func being edited, or "" for a new one. NOT the name it is saved under:
+    # that comes from the `def` in `source`, so the name is entered in one place.
+    # Sent so that renaming the `def` renames the func instead of leaving the old
+    # one behind as a stale copy.
+    name: str = ""
     source: str
     # The user's output directory (config_outputs_dir); funcs are stored there so
     # they travel with the run outputs. Empty falls back to the config dir.
@@ -1357,7 +1361,10 @@ def list_operation_funcs(output_dir: str = "") -> dict:
 
 @app.post("/api/operation_funcs")
 def save_operation_func(req: UserFuncRequest) -> dict:
-    """Create or update a user operation func; then it appears in the options list."""
+    """Create or update a user operation func; then it appears in the options list.
+
+    Named by the ``def`` in ``source``; ``req.name`` is only the entry being edited.
+    """
     try:
         return save_user_func("operation", req.name, req.source, _user_func_base_dir(req.output_dir))
     except UserFuncError as exc:
@@ -1381,7 +1388,10 @@ def list_cost_funcs(output_dir: str = "") -> dict:
 
 @app.post("/api/cost_funcs")
 def save_cost_func(req: UserFuncRequest) -> dict:
-    """Create or update a user cost func; then it appears as a cost_type option."""
+    """Create or update a user cost func; then it appears as a cost_type option.
+
+    Named by the ``def`` in ``source``; ``req.name`` is only the entry being edited.
+    """
     try:
         return save_user_func("cost", req.name, req.source, _user_func_base_dir(req.output_dir))
     except UserFuncError as exc:

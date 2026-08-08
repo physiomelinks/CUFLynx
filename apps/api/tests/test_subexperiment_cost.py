@@ -36,9 +36,13 @@ def _funcs(monkeypatch):
     import obs_cost
 
     monkeypatch.setattr(obs_cost, "get_operation_funcs", lambda _d=None: {"max": max})
-    monkeypatch.setattr(
-        obs_cost, "get_cost_funcs", lambda _d=None: {"MSE": lambda o, d, s, w: w * (o - d) ** 2}
-    )
+    # Parameters named as CA names them: since CA #370 a cost func is handed
+    # `std`/`weight` only when its signature declares them by name, so a stand-in
+    # with abbreviated parameters would be handed neither.
+    def mse(output, desired_mean, std, weight):
+        return weight * (output - desired_mean) ** 2
+
+    monkeypatch.setattr(obs_cost, "get_cost_funcs", lambda _d=None: {"MSE": mse})
     return obs_cost
 
 
