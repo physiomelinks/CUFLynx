@@ -101,13 +101,28 @@ describe('EditOperationFuncsDialog', () => {
     expect(wrapper.get('[data-testid="of-source"]').element.value).toContain('desired_mean')
   })
 
-  it('disables save for an invalid name and enables it for a valid one', async () => {
+  it('takes the name from the def line, with no field to disagree with it', async () => {
+    const wrapper = mountDialog()
+    await flushPromises()
+    // There is exactly one place a name is entered: the code.
+    expect(wrapper.find('[data-testid="of-name-input"]').exists()).toBe(false)
+
+    await wrapper.get('[data-testid="of-source"]').setValue('def barron(x):\n    return x\n')
+    expect(wrapper.get('[data-testid="of-derived-name"]').text()).toBe('barron')
+
+    // Renaming the def renames the func -- the displayed name follows the code.
+    await wrapper.get('[data-testid="of-source"]').setValue('def robust_loss(x):\n    return x\n')
+    expect(wrapper.get('[data-testid="of-derived-name"]').text()).toBe('robust_loss')
+  })
+
+  it('disables save until the code defines a usable function', async () => {
     const wrapper = mountDialog()
     await flushPromises()
     const saveBtn = () => wrapper.get('[data-testid="of-save"]')
-    await wrapper.get('[data-testid="of-name-input"]').setValue('1bad')
+
+    await wrapper.get('[data-testid="of-source"]').setValue('x = 1\n')
     expect(saveBtn().attributes('disabled')).toBeDefined()
-    await wrapper.get('[data-testid="of-name-input"]').setValue('my_op')
+    await wrapper.get('[data-testid="of-source"]').setValue('def my_op(x):\n    return x\n')
     expect(saveBtn().attributes('disabled')).toBeUndefined()
   })
 
@@ -116,11 +131,11 @@ describe('EditOperationFuncsDialog', () => {
     saveUserFunc.mockResolvedValue(updated)
     const wrapper = mountDialog()
     await flushPromises()
-    await wrapper.get('[data-testid="of-name-input"]').setValue('my_op')
     await wrapper.get('[data-testid="of-source"]').setValue('def my_op(x):\n    return x\n')
     await wrapper.get('[data-testid="of-save"]').trigger('click')
     await flushPromises()
-    expect(saveUserFunc).toHaveBeenCalledWith('operation', 'my_op', 'def my_op(x):\n    return x\n', '')
+    // '' is the entry being edited (none -- this is new); the name comes from the code.
+    expect(saveUserFunc).toHaveBeenCalledWith('operation', '', 'def my_op(x):\n    return x\n', '')
     expect(wrapper.emitted('saved')).toBeTruthy()
     expect(wrapper.findAll('[data-testid="of-item"]')).toHaveLength(2)
   })
@@ -131,26 +146,42 @@ describe('EditOperationFuncsDialog', () => {
     await flushPromises()
     await wrapper.get('[data-testid="of-kind-cost"]').trigger('click')
     await flushPromises()
-    await wrapper.get('[data-testid="of-name-input"]').setValue('my_cost2')
     await wrapper.get('[data-testid="of-source"]').setValue('def my_cost2(o, d, s, w):\n    return 0.0\n')
     await wrapper.get('[data-testid="of-save"]').trigger('click')
     await flushPromises()
-    expect(saveUserFunc).toHaveBeenCalledWith('cost', 'my_cost2', 'def my_cost2(o, d, s, w):\n    return 0.0\n', '')
+    expect(saveUserFunc).toHaveBeenCalledWith('cost', '', 'def my_cost2(o, d, s, w):\n    return 0.0\n', '')
   })
 
   it('loads an existing func into the editor when selected', async () => {
     const wrapper = mountDialog()
     await flushPromises()
     await wrapper.get('[data-testid="of-item"]').trigger('click')
-    expect(wrapper.get('[data-testid="of-name-input"]').element.value).toBe('spread')
+    expect(wrapper.get('[data-testid="of-derived-name"]').text()).toBe('spread')
     expect(wrapper.get('[data-testid="of-source"]').element.value).toContain('def spread')
+  })
+
+  it('renaming the def of an existing func sends the old name so it is not duplicated', async () => {
+    saveUserFunc.mockResolvedValue({ ...OP_LISTED })
+    const wrapper = mountDialog()
+    await flushPromises()
+    await wrapper.get('[data-testid="of-item"]').trigger('click')
+
+    await wrapper.get('[data-testid="of-source"]').setValue('def spread2(x):\n    return x\n')
+    await wrapper.get('[data-testid="of-save"]').trigger('click')
+    await flushPromises()
+
+    // The old name goes with it, so the backend renames rather than leaving
+    // 'spread' behind as a stale second copy.
+    expect(saveUserFunc).toHaveBeenCalledWith(
+      'operation', 'spread', 'def spread2(x):\n    return x\n', '',
+    )
   })
 
   it('surfaces the backend error detail on a failed save', async () => {
     saveUserFunc.mockRejectedValue({ response: { data: { detail: "'def' is reserved" } } })
     const wrapper = mountDialog()
     await flushPromises()
-    await wrapper.get('[data-testid="of-name-input"]').setValue('my_op')
+    await wrapper.get('[data-testid="of-source"]').setValue('def my_op(x):\n    return x\n')
     await wrapper.get('[data-testid="of-save"]').trigger('click')
     await flushPromises()
     expect(wrapper.get('[data-testid="of-error"]').text()).toContain("'def' is reserved")

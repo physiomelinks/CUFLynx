@@ -2,7 +2,6 @@
 import { ref, computed, watch } from 'vue'
 import Dialog from 'primevue/dialog'
 import Button from 'primevue/button'
-import InputText from 'primevue/inputtext'
 import Message from 'primevue/message'
 import { getUserFuncs, saveUserFunc, deleteUserFunc } from '../lib/api'
 
@@ -34,7 +33,6 @@ const kind = ref('operation')
 const functions = ref([])
 const templates = ref({})
 const available = ref(true)
-const name = ref('')
 const source = ref('')
 const activeTemplate = ref(null)
 // The name currently being edited (an existing func) vs a brand-new one.
@@ -49,7 +47,15 @@ const outputDir = () => localStorage.getItem('cuflynx-outputs-dir') || ''
 
 const currentKind = computed(() => KINDS.find((k) => k.key === kind.value) || KINDS[0])
 const templateKeys = computed(() => Object.keys(templates.value))
-const nameValid = computed(() => /^[A-Za-z][A-Za-z0-9_]*$/.test(name.value.trim()))
+// The func's name is whatever its `def` says — there is no separate field to
+// disagree with. Mirrors the backend's derivation (user_funcs.func_name_from_source)
+// closely enough to label the button and catch an empty/malformed def early; the
+// backend stays authoritative and its message is what gets shown on save.
+const derivedName = computed(() => {
+  const match = source.value.match(/^[ \t]*def[ \t]+([A-Za-z_][A-Za-z0-9_]*)[ \t]*\(/m)
+  return match ? match[1] : ''
+})
+const nameValid = computed(() => /^[A-Za-z][A-Za-z0-9_]*$/.test(derivedName.value))
 const canSave = computed(() => nameValid.value && source.value.trim().length > 0 && !saving.value)
 
 function templateLabel(key) {
@@ -73,7 +79,6 @@ async function refresh() {
 
 function startNew() {
   editingName.value = null
-  name.value = ''
   const first = templateKeys.value[0]
   activeTemplate.value = first ?? null
   source.value = first ? templates.value[first] : ''
@@ -83,7 +88,6 @@ function startNew() {
 
 function applyTemplate(key) {
   editingName.value = null
-  name.value = ''
   activeTemplate.value = key
   source.value = templates.value[key] || ''
   error.value = ''
@@ -92,7 +96,6 @@ function applyTemplate(key) {
 
 function editFunc(fn) {
   editingName.value = fn.name
-  name.value = fn.name
   source.value = fn.source
   activeTemplate.value = null
   error.value = ''
@@ -122,11 +125,14 @@ async function onSave() {
   error.value = ''
   notice.value = ''
   try {
-    const data = await saveUserFunc(kind.value, name.value.trim(), source.value, outputDir())
+    // `editingName` is the entry being replaced, so renaming the `def` renames
+    // the func instead of leaving the old one behind.
+    const saved = derivedName.value
+    const data = await saveUserFunc(kind.value, editingName.value ?? '', source.value, outputDir())
     functions.value = data.functions ?? []
-    editingName.value = name.value.trim()
+    editingName.value = saved
     activeTemplate.value = null
-    notice.value = `Saved "${name.value.trim()}".`
+    notice.value = `Saved "${saved}".`
     emit('saved', { kind: kind.value, functions: functions.value })
   } catch (e) {
     error.value = e?.response?.data?.detail ?? 'Save failed.'
@@ -257,18 +263,15 @@ async function onDelete(fn) {
             @click="applyTemplate(key)"
           />
         </div>
-        <label class="of-field">
+        <div class="of-field">
           <span>{{ currentKind.label }} name</span>
-          <InputText
-            v-model="name"
-            :placeholder="kind === 'cost' ? 'my_cost' : 'my_operation'"
-            :invalid="name.length > 0 && !nameValid"
-            data-testid="of-name-input"
-          />
-        </label>
-        <small v-if="name.length > 0 && !nameValid" class="of-name-err">
-          Must be a valid Python identifier (letters, digits, underscore; not
-          starting with a digit).
+          <output class="of-derived-name" data-testid="of-derived-name">
+            {{ derivedName || '—' }}
+          </output>
+        </div>
+        <small class="of-name-hint">
+          Taken from the <code>def</code> line below — rename it there and this
+          follows.
         </small>
         <label class="of-field of-code-field">
           <span>Python code</span>
@@ -382,6 +385,21 @@ async function onDelete(fn) {
 }
 .of-name-err {
   color: var(--p-red-400, #e57373);
+  font-size: 0.75rem;
+}
+/* Reads as a value, not a field: nothing here is typeable, because the `def`
+   line below is the only place the name is entered. */
+.of-derived-name {
+  font-family: monospace;
+  font-size: 0.9rem;
+  padding: 0.3rem 0.5rem;
+  border-radius: 4px;
+  background: var(--p-content-hover-background, rgba(255, 255, 255, 0.06));
+  border: 1px dashed var(--p-content-border-color, rgba(255, 255, 255, 0.18));
+  color: var(--p-text-color, inherit);
+}
+.of-name-hint {
+  color: var(--p-text-muted-color, #9e9e9e);
   font-size: 0.75rem;
 }
 .of-code {

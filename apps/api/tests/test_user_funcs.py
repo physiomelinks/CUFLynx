@@ -180,16 +180,15 @@ def test_cost_kwargs_template_teaches_the_contract(tmp_cfg):
 def test_every_cost_template_is_valid_python(tmp_cfg):
     """A template the user cannot save is worse than no template.
 
-    The name is read out of the template rather than listed here: a validator
-    that insists the function match the cost name means a new template with a
-    new name would otherwise fail this test for its name rather than its code.
+    Also pins that the backend derives each template's name from its own ``def``,
+    which is what lets the dialog drop its separate name field.
     """
     import ast
 
     for key, source in uf.read_user_funcs("cost")["templates"].items():
         name = next(n.name for n in ast.parse(source).body
                     if isinstance(n, ast.FunctionDef))
-        assert uf._validate_source("cost", name, source), key
+        assert uf.func_name_from_source("cost", source) == name, key
 
 
 def test_saves_under_output_directory(tmp_cfg, tmp_path):
@@ -218,10 +217,45 @@ def test_differentiable_operation_header_defines_mb(tmp_cfg):
 # ---------------------------------------------------------------------------
 # validation
 # ---------------------------------------------------------------------------
-@pytest.mark.parametrize("bad", ["1bad", "has space", "def", "", "_hidden", "np"])
-def test_invalid_name_rejected(tmp_cfg, bad):
+@pytest.mark.parametrize("bad", ["_hidden", "np"])
+def test_a_def_name_that_parses_but_is_not_allowed_is_rejected(tmp_cfg, bad):
+    """The name comes from the code, so these are rejected on the ``def`` line."""
     with pytest.raises(uf.UserFuncError):
-        uf.save_user_func("operation", bad, VALID_OP.replace("spread", "ok"))
+        uf.save_user_func("operation", "", VALID_OP.replace("spread", bad))
+
+
+@pytest.mark.parametrize("bad", ["1bad", "has space", "def", ""])
+def test_a_def_name_that_is_not_an_identifier_is_rejected(tmp_cfg, bad):
+    """These cannot even parse as a ``def``, so they fail as invalid Python --
+    which is the honest complaint now that the name is the code."""
+    with pytest.raises(uf.UserFuncError):
+        uf.save_user_func("operation", "", VALID_OP.replace("spread", bad))
+
+
+def test_the_name_is_taken_from_the_def_not_the_caller(tmp_cfg):
+    """One place to enter a name. A caller-supplied name used to have to agree
+    with the ``def`` and the only feedback for disagreeing was a rejected save."""
+    result = uf.save_user_func("operation", "", VALID_OP.replace("spread", "barron"))
+
+    assert [f["name"] for f in result["functions"]] == ["barron"]
+
+
+def test_renaming_the_def_renames_the_func_rather_than_duplicating_it(tmp_cfg):
+    """Editing an existing func and changing its ``def`` must not leave the old
+    name behind as a second, stale copy of the same thing."""
+    uf.save_user_func("operation", "", VALID_OP)
+    result = uf.save_user_func("operation", "spread", VALID_OP.replace("spread", "spread2"))
+
+    assert [f["name"] for f in result["functions"]] == ["spread2"]
+
+
+def test_a_rename_keeps_the_funcs_position_in_the_list(tmp_cfg):
+    """So the list does not reshuffle under the user mid-edit."""
+    uf.save_user_func("operation", "", VALID_OP.replace("spread", "aaa"))
+    uf.save_user_func("operation", "", VALID_OP.replace("spread", "bbb"))
+    result = uf.save_user_func("operation", "aaa", VALID_OP.replace("spread", "zzz"))
+
+    assert [f["name"] for f in result["functions"]] == ["zzz", "bbb"]
 
 
 def test_cost_reserved_name_rejected(tmp_cfg):
@@ -232,11 +266,6 @@ def test_cost_reserved_name_rejected(tmp_cfg):
 def test_invalid_syntax_rejected(tmp_cfg):
     with pytest.raises(uf.UserFuncError):
         uf.save_user_func("operation", "spread", "def spread(x)\n    return x\n")
-
-
-def test_name_must_match_def(tmp_cfg):
-    with pytest.raises(uf.UserFuncError):
-        uf.save_user_func("operation", "spread", VALID_OP.replace("def spread", "def other"))
 
 
 def test_multiple_top_level_defs_rejected(tmp_cfg):
@@ -309,7 +338,10 @@ def test_cost_routes_save_list_delete(client, tmp_cfg):
 
 
 def test_route_invalid_returns_422(client, tmp_cfg):
-    resp = client.post("/api/operation_funcs", json={"name": "1bad", "source": VALID_OP})
+    resp = client.post(
+        "/api/operation_funcs",
+        json={"name": "", "source": VALID_OP.replace("spread", "_hidden")},
+    )
     assert resp.status_code == 422
     resp = client.post("/api/cost_funcs", json={"name": "my_cost", "source": "def my_cost(x)\n x"})
     assert resp.status_code == 422
