@@ -220,6 +220,15 @@ def test_endpoint_runs_two_simulations_per_parameter(client, fake_helper, monkey
     base cost is the one the plots panel shows."""
     model_id = _load_lv(client, fake_helper)
     costs = iter([3.0, 4.0, 2.0])
+    runs = []
+    # Stubbed alongside the cost: a protocol run imports circulatory_autogen's
+    # protocol_runners, so without this the arithmetic below could only be
+    # checked where CA is installed -- and the no-CA CI job failed on a missing
+    # module rather than on anything this test is about.
+    monkeypatch.setattr(
+        "main.engine.run_protocol",
+        lambda **kwargs: (runs.append(kwargs), {"time": [0.0], "traces": {}})[1],
+    )
     monkeypatch.setattr(
         "main._protocol_run_cost",
         lambda *_a, **_k: {"cost": next(costs), "n_weighted": 1, "items": [{"cost": 1.0}]},
@@ -239,6 +248,12 @@ def test_endpoint_runs_two_simulations_per_parameter(client, fake_helper, monkey
     # (4 - 2) / (2 * 0.1) = 10, and p/J * 10 = 10/3.
     assert row["derivative"] == pytest.approx(10.0)
     assert row["elasticity"] == pytest.approx(10.0 / 3.0)
+
+    # What the test is named for, and the reason this is opt-in: one base run
+    # plus a central difference per parameter, so 2M+1.
+    assert len(runs) == 3
+    perturbed = [r["params"]["Lotka_Volterra_module/alpha"] for r in runs[1:]]
+    assert perturbed == [pytest.approx(1.1), pytest.approx(0.9)]
 
 
 # ---------------------------------------------------------------------------
