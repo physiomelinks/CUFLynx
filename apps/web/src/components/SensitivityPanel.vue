@@ -118,6 +118,16 @@ const methods = computed(() =>
 // they're gated here against adAvailable — the per-model check the model-agnostic
 // endpoint can't do. FD / FSA are never gated. Re-gating here flips AD as the
 // backend solver toggles without a refetch.
+// Whether the chosen gradient source takes a finite-difference step at all.
+// Derived from the source's own `do_ad` flag rather than from the string 'FD':
+// an analytic source (CasADi AD, AADC, Myokit FSA) has no step to take, and CA
+// is what decides which sources are analytic. Defaults to showing the field, so
+// a payload without the flag never hides a control the run still uses.
+const usesFdStep = computed(() => {
+  const chosen = gradientMethods.value.find((o) => o.value === settings.gradient_method)
+  return chosen?.do_ad !== true
+})
+
 const gradientMethods = computed(() => {
   const base = props.gradientSources?.length
     ? props.gradientSources
@@ -262,7 +272,7 @@ function onRun() {
             data-testid="gradient-method"
           />
         </label>
-        <label class="field">
+        <label v-if="usesFdStep" class="field" data-testid="rel-step-field">
           <span title="Relative central-difference step about the nominal parameter value">Rel. step</span>
           <InputNumber
             v-model="settings.rel_step"
