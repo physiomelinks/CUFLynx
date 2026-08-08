@@ -162,12 +162,16 @@ def _output_names(sm) -> list[str]:
     ]
 
 
-def _relative_coeff(deriv: float, pj: float, denom: float, rng: float) -> float | None:
+def relative_coeff(deriv: float, pj: float, denom: float, rng: float) -> float | None:
     """Dimensionless relative sensitivity from a raw derivative ``dY/dP``.
 
     Shared by the FD and AD paths: ``d ln(Y)/d ln(P) = (dY/dP)·P/Y`` about a
     non-zero nominal; when the nominal is 0 there's no log scale, so normalise by
     the parameter range instead. Returns ``None`` when undefined (Y≈0 / non-finite).
+
+    Public, and shared with :mod:`cost_sensitivity` (#188), which normalises the
+    cost gradient the same way. Two panels reporting "relative sensitivity" have
+    to mean the same thing by it, or a user comparing them is comparing nothing.
     """
     if not (np.isfinite(deriv) and np.isfinite(denom) and abs(denom) > _TINY):
         return None
@@ -259,7 +263,7 @@ def _fd_local_sensitivity(sm, param_names, nominal, mins, maxs, output_names, h)
             coeff = None
             if np.isfinite(yp[i]) and np.isfinite(ym[i]):
                 deriv = (yp[i] - ym[i]) / (2.0 * step)
-                coeff = _relative_coeff(deriv, pj, y0[i], rng)
+                coeff = relative_coeff(deriv, pj, y0[i], rng)
             local[oname][pname] = coeff
     return local
 
@@ -380,7 +384,7 @@ def _ad_local_sensitivity(sm, param_names, nominal, mins, maxs, output_names):
         pj = nominal[k]
         rng = maxs[k] - mins[k]
         for i, oname in enumerate(output_names):
-            local[oname][pname] = _relative_coeff(float(J[i, k]), pj, float(y0[i]), rng)
+            local[oname][pname] = relative_coeff(float(J[i, k]), pj, float(y0[i]), rng)
     return local
 
 
@@ -407,7 +411,7 @@ def _ca_analytic_local_sensitivity(pid, param_names, nominal, mins, maxs):
 
     CA returns the raw ``d(feature)/d(param)`` per const (scalar) observable; we
     normalise to the same dimensionless ``d ln(Y)/d ln(P)`` the FD/AD paths report
-    (via :func:`_relative_coeff`) and label the outputs with
+    (via :func:`relative_coeff`) and label the outputs with
     :func:`format_output_name`, so the payload and heatmap are identical across
     gradient sources. Returns ``(local, output_names)``.
     """
@@ -432,7 +436,7 @@ def _ca_analytic_local_sensitivity(pid, param_names, nominal, mins, maxs):
         row: dict[str, float | None] = {}
         for j, pname in enumerate(param_names):
             rng = maxs[j] - mins[j]
-            row[pname] = _relative_coeff(
+            row[pname] = relative_coeff(
                 float(deriv_map.get(pname, np.nan)), nominal[j], denom, rng
             )
         local[oname] = row

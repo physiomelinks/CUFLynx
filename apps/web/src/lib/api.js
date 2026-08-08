@@ -140,6 +140,30 @@ export async function runProtocol(modelId, params, options = {}) {
   return data
 }
 
+// How sensitive the displayed cost is to each parameter (#188): d ln(cost)/d ln(p),
+// by central differences about the current slider values. Opt-in, because it
+// costs 2M+1 simulations for M parameters — hence `paramNames`, which narrows it
+// to the sliders actually on screen, and `bounds`, which only matters where a
+// parameter sits at exactly 0 and has no scale of its own.
+//
+// The run description (outputs / protocolInfo / times) is the same one the live
+// run used, so the base cost is the number the panel is showing.
+export async function costSensitivity(modelId, params, options = {}) {
+  const body = { model_id: modelId, params }
+  if (options.paramNames != null) body.param_names = options.paramNames
+  if (options.bounds != null) body.bounds = options.bounds
+  if (options.relStep != null) body.rel_step = options.relStep
+  if (options.simTime != null) body.sim_time = options.simTime
+  if (options.preTime != null) body.pre_time = options.preTime
+  if (options.outputs != null) body.outputs = options.outputs
+  if (options.protocolInfo != null) body.protocol_info = options.protocolInfo
+  if (options.outputsDir) body.config_outputs_dir = options.outputsDir
+  const { data } = await axios.post(url('/api/cost_sensitivity'), body, {
+    signal: options.signal,
+  })
+  return data
+}
+
 // Load a whole COMBINE archive (.omex): model + obs_data + params_for_id (#149).
 // One request, because an archive is the study rather than any one of its files.
 export async function uploadOmex(file, outputDir = '') {

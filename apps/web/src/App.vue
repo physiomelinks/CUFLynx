@@ -10,6 +10,7 @@ import ProgressPanel from './components/ProgressPanel.vue'
 import SensitivityPanel from './components/SensitivityPanel.vue'
 import UQPanel from './components/UQPanel.vue'
 import AnalysisPanel from './components/AnalysisPanel.vue'
+import CostSensitivityBar from './components/CostSensitivityBar.vue'
 import InputNumber from 'primevue/inputnumber'
 import Button from 'primevue/button'
 import Message from 'primevue/message'
@@ -30,6 +31,7 @@ import {
   getVariables,
   simulate,
   runProtocol,
+  costSensitivity,
   getCalibrationDefaults,
   getCalibrationPythons,
   getSensitivityDefaults,
@@ -524,10 +526,9 @@ const modelUnits = computed(() => model.variables.value.units ?? {})
 // backend from the run it already did. null when it cannot be known -- no
 // obs_data, no CA -- which must not read as a perfect fit of zero.
 const currentCost = computed(() => sim.cost.value ?? null)
-// A snapshot to compare against: the calibration best fit if there is one, else
-// whatever the user pinned. The comparison is the point -- a cost alone says
-// little, a cost next to the one you started from says whether you are winning.
-const costBaseline = ref(null)
+// A snapshot to compare against. The comparison is the point -- a cost alone
+// says little, a cost next to the one you started from says whether you are
+// winning.
 const compareCosts = ref(false)
 
 // A cost spans orders of magnitude between models, so a fixed number of decimal
@@ -553,12 +554,6 @@ function weightedCount(cost) {
   return cost?.n_weighted ?? (cost?.items ?? []).length
 }
 
-function pinCurrentCost() {
-  costBaseline.value = currentCost.value
-    ? { ...currentCost.value, label: 'pinned parameters' }
-    : null
-}
-
 // The calibration's own error vectors, offered as the baseline once a run has
 // produced them, so "current vs best fit" needs no extra simulation. Reads the
 // composable's refs rather than a result object -- that is the shape the
@@ -582,9 +577,140 @@ const bestFitBaseline = computed(() => {
   }
 })
 
-// The baseline the Analysis tab compares against: whatever was pinned, else the
-// best fit if a calibration has produced one.
-const activeBaseline = computed(() => costBaseline.value ?? bestFitBaseline.value)
+// The baseline the Analysis tab compares against: the best fit, once a
+// calibration has produced one.
+const activeBaseline = computed(() => bestFitBaseline.value)
+
+// ---------------------------------------------------------------------------
+// Cost sensitivities (#188)
+// ---------------------------------------------------------------------------
+// The cost says the parameters are worth 36.8; this says which of them the 36.8
+// is about. Off by default and remembered, because it is not free: 2M+1
+// simulations for M parameters, every time the parameters settle. A user who
+// never asks for it pays nothing, which is the only way this can sit on the
+// panel a slider drag redraws.
+const costSensOn = ref(localStorage.getItem('cuflynx-cost-sensitivity') === '1')
+const costSens = ref(null)
+// 'ready' | 'running' | 'error'; staleness is derived, not stored.
+const costSensStatus = ref('ready')
+const costSensError = ref('')
+// The parameters the shown numbers were measured at, serialised for comparison.
+const costSensAt = ref('')
+let costSensTimer = null
+let costSensAbort = null
+// Discards a reply whose request has been superseded: the run that answers last
+// is not necessarily the run that was asked for last.
+let costSensToken = 0
+
+const costSensAvailable = computed(
+  () => obs.hasObsData.value && sliders.count.value > 0,
+)
+const costSensState = computed(() => {
+  if (costSensStatus.value !== 'ready') return costSensStatus.value
+  if (!costSens.value) return 'ready'
+  return costSensAt.value === paramKey() ? 'ready' : 'stale'
+})
+
+function paramKey() {
+  return JSON.stringify(sliders.paramDict.value)
+}
+
+/** The slider ranges, which matter only where a parameter sits at exactly 0. */
+function costSensBounds() {
+  const out = {}
+  for (const [qname, s] of Object.entries(sliders.sliders)) out[qname] = [s.min, s.max]
+  return out
+}
+
+/**
+ * The outputs a live run asks for, in one place: the sensitivity runs must
+ * request exactly these or they would score a different set of observables, and
+ * the gradient would belong to a number other than the one on the panel.
+ */
+function liveOutputs() {
+  return [
+    ...new Set([
+      ...obs.plotVariables.value.map((v) => v.qname),
+      ...extraOutputNames.value,
+    ]),
+  ]
+}
+
+/**
+ * Re-measure once the parameters have settled — never during the drag itself.
+ *
+ * Dragging is a pixel-rate event, and even one solve per frame would queue work
+ * behind the plot the user is watching (and far more than one where the gradient
+ * has to be differenced). So the plot run is debounced as before and this waits
+ * again after it, with any in-flight computation aborted the moment a new drag
+ * starts. Between the two the last measured ranking stays on screen, dimmed and
+ * labelled stale — briefly, since this runs after every completed live run.
+ */
+function scheduleCostSensitivity() {
+  clearTimeout(costSensTimer)
+  if (!costSensOn.value || !model.hasModel.value || !costSensAvailable.value) return
+  costSensTimer = setTimeout(runCostSensitivity, 600)
+}
+
+function cancelCostSensitivity() {
+  clearTimeout(costSensTimer)
+  costSensToken += 1
+  costSensAbort?.abort()
+  costSensAbort = null
+  if (costSensStatus.value === 'running') costSensStatus.value = 'ready'
+}
+
+async function runCostSensitivity() {
+  if (!costSensOn.value || !model.hasModel.value || !costSensAvailable.value) return
+  const params = { ...sliders.paramDict.value }
+  const key = paramKey()
+  const token = ++costSensToken
+  const controller = new AbortController()
+  costSensAbort = controller
+  costSensStatus.value = 'running'
+  costSensError.value = ''
+  try {
+    // No sim_time/pre_time: the obs_data paths do not send them either, and a
+    // different run length would be a different cost.
+    const data = await costSensitivity(model.modelId.value, params, {
+      paramNames: sliders.order.value,
+      bounds: costSensBounds(),
+      outputs: liveOutputs(),
+      outputsDir: outputsDir.value.trim() || undefined,
+      signal: controller.signal,
+    })
+    if (token !== costSensToken) return
+    costSens.value = data
+    costSensAt.value = key
+    costSensStatus.value = 'ready'
+  } catch (e) {
+    // An abort is this app superseding itself, not a failure to report.
+    if (token !== costSensToken || controller.signal.aborted) return
+    costSensStatus.value = 'error'
+    costSensError.value = errorMessage(e)
+  } finally {
+    if (costSensAbort === controller) costSensAbort = null
+  }
+}
+
+watch(costSensOn, (on) => {
+  localStorage.setItem('cuflynx-cost-sensitivity', on ? '1' : '0')
+  if (on) {
+    scheduleCostSensitivity()
+  } else {
+    cancelCostSensitivity()
+    costSens.value = null
+    costSensError.value = ''
+  }
+})
+
+// A new model or new obs_data is a different cost; the old ranking is about
+// neither of them.
+watch([() => model.modelId.value, () => obs.obsData.value], () => {
+  cancelCostSensitivity()
+  costSens.value = null
+  costSensError.value = ''
+})
 
 const modelTimeUnit = computed(() => timeUnit(modelUnits.value))
 // User-supplied time unit, for a model that does not state its own. Persisted,
@@ -1328,6 +1454,10 @@ let timer = null
 function scheduleRun() {
   if (!model.hasModel.value) return
   clearTimeout(timer)
+  // Drop any pending or in-flight gradient first: the parameters it is about
+  // have just changed, and left running it would hold the engine while the user
+  // waits for the plot (#188).
+  cancelCostSensitivity()
   timer = setTimeout(runSimulation, 300)
 }
 
@@ -1400,12 +1530,7 @@ async function runSimulation() {
       // Protocol run: pre_times/sim_times come from the obs_data protocol_info.
       // Request the obs-referenced variables plus any user-added plots, keep
       // every experiment, and render one plot per (experiment, variable).
-      const outputs = [
-        ...new Set([
-          ...obs.plotVariables.value.map((v) => v.qname),
-          ...extraOutputNames.value,
-        ]),
-      ]
+      const outputs = liveOutputs()
       const data = await runProtocol(model.modelId.value, sliders.paramDict.value, {
         outputs,
         outputsDir: outputsDir.value.trim() || undefined,
@@ -1418,12 +1543,7 @@ async function runSimulation() {
       // Data-only obs_data: overlays only, no protocol. The manual t1/pre are
       // not used; run with backend defaults and plot the referenced variables
       // plus any user-added plots.
-      const outputs = [
-        ...new Set([
-          ...obs.plotVariables.value.map((v) => v.qname),
-          ...extraOutputNames.value,
-        ]),
-      ]
+      const outputs = liveOutputs()
       const data = await simulate(model.modelId.value, sliders.paramDict.value, {
         outputs,
         outputsDir: outputsDir.value.trim() || undefined,
@@ -1443,6 +1563,9 @@ async function runSimulation() {
       backendFallback.value = data.backend_fallback ?? null
       sim.setResult(data, performance.now() - started)
     }
+    // Only once the plot the user is watching is on screen, and only if they
+    // asked for it (#188).
+    scheduleCostSensitivity()
   } catch (e) {
     sim.setError(errorMessage(e))
   }
@@ -1883,16 +2006,32 @@ watch(
               — not comparable with the calibration cost
             </template>
           </span>
+          <!--
+            Opt-in, and priced in the tooltip: a gradient is 2M+1 simulations
+            every time the parameters settle, which is why it is not simply on.
+          -->
           <button
+            v-if="costSensAvailable"
             type="button"
             class="cost-pin"
-            data-testid="cost-pin"
-            title="remember these parameters, to compare against in the Analysis tab"
-            @click="pinCurrentCost"
+            :class="{ on: costSensOn }"
+            :aria-pressed="costSensOn"
+            data-testid="cost-sens-toggle"
+            :title="
+              `show how sensitive the cost is to each parameter — costs ${2 * sliders.count.value + 1} extra simulations each time the parameters settle`
+            "
+            @click="costSensOn = !costSensOn"
           >
-            pin
+            cost sensitivities
           </button>
         </div>
+        <CostSensitivityBar
+          v-if="centerTab === 'plots' && costSensOn && costSensAvailable"
+          :result="costSens"
+          :status="costSensState"
+          :error="costSensError"
+          :labels="paramLabels"
+        />
         <div
           v-show="centerTab === 'plots'"
           class="plot-groups"
@@ -2913,5 +3052,11 @@ watch(
 }
 .cost-pin:hover {
   background: var(--p-highlight-background, #eef3fb);
+}
+/* A toggle, not an action: the pressed state has to be visible, or "is it on?"
+   is answered only by whether the rows below happen to be there yet. */
+.cost-pin.on {
+  background: var(--p-highlight-background, #eef3fb);
+  border-color: var(--p-primary-color, #6f9fd8);
 }
 </style>

@@ -14,6 +14,7 @@ import {
   startSensitivity,
   errorMessage,
   fetchExampleModel,
+  costSensitivity,
 } from './api'
 
 beforeEach(() => {
@@ -55,6 +56,34 @@ describe('api client', () => {
     expect(body.model_id).toBe('mid')
     expect(body.params).toEqual(params)
     expect(body.sim_time).toBe(5)
+  })
+
+  // Issue #188: the gradient must be of the cost the panel is showing, so the
+  // run description travels with it — and the request is cancellable, because a
+  // superseded 2M+1-simulation job otherwise holds the engine during a drag.
+  it('sends the same run description the live run used, and a cancel signal', async () => {
+    axios.post.mockResolvedValue({ data: { cost: 1, params: [] } })
+    const controller = new AbortController()
+    await costSensitivity('mid', { 'a/alpha': 1 }, {
+      paramNames: ['a/alpha'],
+      bounds: { 'a/alpha': [0, 2] },
+      outputs: ['a/x'],
+      relStep: 0.01,
+      signal: controller.signal,
+    })
+    const [url, body, config] = axios.post.mock.calls[0]
+    expect(url).toContain('/api/cost_sensitivity')
+    expect(body).toMatchObject({
+      model_id: 'mid',
+      param_names: ['a/alpha'],
+      bounds: { 'a/alpha': [0, 2] },
+      outputs: ['a/x'],
+      rel_step: 0.01,
+    })
+    // Not sent at all when unset, so the server's default run length applies —
+    // the obs_data paths do not send times either.
+    expect(body.sim_time).toBeUndefined()
+    expect(config.signal).toBe(controller.signal)
   })
 
   it('test_upload_params_for_id_posts_file', async () => {

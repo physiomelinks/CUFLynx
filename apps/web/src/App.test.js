@@ -11,6 +11,13 @@ vi.mock('./lib/api', () => ({
   getVariables: vi.fn().mockResolvedValue({}),
   simulate: vi.fn().mockResolvedValue({ time: [], outputs: {} }),
   runProtocol: vi.fn().mockResolvedValue({ experiments: [] }),
+  costSensitivity: vi.fn().mockResolvedValue({
+    cost: 3,
+    rel_step: 0.001,
+    n_simulations: 3,
+    params: [{ name: 'a/alpha', value: 1, derivative: 2, elasticity: 0.7, reason: null }],
+    unavailable: null,
+  }),
   getCalibrationDefaults: vi.fn().mockResolvedValue({}),
   getCalibrationPythons: vi.fn().mockResolvedValue({ pythons: [] }),
   getSensitivityDefaults: vi.fn().mockResolvedValue({}),
@@ -30,6 +37,9 @@ vi.mock('./lib/api', () => ({
   loadSavedRun: vi.fn().mockResolvedValue({}),
   exportPipeline: vi.fn().mockResolvedValue({}),
   exportPlotting: vi.fn().mockResolvedValue({}),
+  // The real one; a failure path that reports "undefined is not a function"
+  // instead of the server's reason would pass a test and fail a user.
+  errorMessage: (e) => String(e?.response?.data?.detail || e?.message || e),
 }))
 
 import {
@@ -40,6 +50,7 @@ import {
   listSavedRuns,
   loadSavedRun,
   simulate,
+  costSensitivity,
 } from './lib/api'
 import { setNotificationCtor } from './lib/notify'
 import App from './App.vue'
@@ -1489,5 +1500,109 @@ describe('App.vue cost line (#159)', () => {
       { protocol: false },
     )
     expect(wrapper.find('[data-testid="cost-value"]').text()).toBe('42')
+  })
+})
+
+// Issue #188: the cost line says the parameters are worth 36.8; this says which
+// parameter the 36.8 is about, and updates as the sliders settle.
+describe('App.vue cost sensitivities (#188)', () => {
+  beforeEach(() => {
+    localStorage.removeItem('cuflynx-cost-sensitivity')
+    costSensitivity.mockClear()
+  })
+
+  /** A mounted app with a model, obs_data, one slider and a scored run. */
+  const ready = async () => {
+    const wrapper = shallowMount(App)
+    await flushPromises()
+    wrapper.vm.model.modelId.value = 'm1'
+    wrapper.vm.obs.setObsData({ data_items: [{ variable: 'a/x', operands: ['a/x'] }] })
+    wrapper.vm.sliders.addSlider('a/alpha', { min: 0, max: 2, value: 1 })
+    wrapper.vm.sim.setResult({
+      time: [0, 1],
+      outputs: { 'a/x': [1, 2] },
+      cost: { cost: 3, items: [{ label: 'x', cost: 3 }] },
+    })
+    await nextTick()
+    return wrapper
+  }
+
+  it('is off until asked for: a gradient is 2M+1 simulations', async () => {
+    const wrapper = await ready()
+    expect(wrapper.find('[data-testid="cost-sens-toggle"]').exists()).toBe(true)
+    expect(wrapper.findComponent({ name: 'CostSensitivityBar' }).exists()).toBe(false)
+    await wrapper.vm.runCostSensitivity()
+    expect(costSensitivity).not.toHaveBeenCalled()
+  })
+
+  it('measures once the parameters settle, and remembers the choice', async () => {
+    vi.useFakeTimers()
+    try {
+      const wrapper = await ready()
+      await wrapper.find('[data-testid="cost-sens-toggle"]').trigger('click')
+      expect(localStorage.getItem('cuflynx-cost-sensitivity')).toBe('1')
+      // Nothing yet: the debounce is what keeps a drag from queueing gradients.
+      expect(costSensitivity).not.toHaveBeenCalled()
+      vi.advanceTimersByTime(600)
+      await flushPromises()
+      expect(costSensitivity).toHaveBeenCalledTimes(1)
+      const [modelId, params, opts] = costSensitivity.mock.calls[0]
+      expect(modelId).toBe('m1')
+      expect(params).toEqual({ 'a/alpha': 1 })
+      // The slider range travels with it, for a parameter sitting at exactly 0.
+      expect(opts.bounds).toEqual({ 'a/alpha': [0, 2] })
+      expect(wrapper.findComponent({ name: 'CostSensitivityBar' }).exists()).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('drops a pending gradient the moment a slider moves again', async () => {
+    // Otherwise 2M+1 simulations queue ahead of the plot the user is watching.
+    vi.useFakeTimers()
+    try {
+      const wrapper = await ready()
+      await wrapper.find('[data-testid="cost-sens-toggle"]').trigger('click')
+      vi.advanceTimersByTime(400)
+      wrapper.vm.scheduleRun()
+      vi.advanceTimersByTime(400)
+      await flushPromises()
+      expect(costSensitivity).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('marks the ranking stale rather than dropping it when parameters change', async () => {
+    vi.useFakeTimers()
+    try {
+      const wrapper = await ready()
+      await wrapper.find('[data-testid="cost-sens-toggle"]').trigger('click')
+      vi.advanceTimersByTime(600)
+      await flushPromises()
+      const bar = wrapper.findComponent({ name: 'CostSensitivityBar' })
+      expect(bar.props('status')).toBe('ready')
+      wrapper.vm.sliders.setValue('a/alpha', 1.5)
+      await nextTick()
+      expect(bar.props('status')).toBe('stale')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('reports a failure instead of leaving the last numbers looking current', async () => {
+    vi.useFakeTimers()
+    try {
+      costSensitivity.mockRejectedValueOnce(new Error('CVODE gave up'))
+      const wrapper = await ready()
+      await wrapper.find('[data-testid="cost-sens-toggle"]').trigger('click')
+      vi.advanceTimersByTime(600)
+      await flushPromises()
+      const bar = wrapper.findComponent({ name: 'CostSensitivityBar' })
+      expect(bar.props('status')).toBe('error')
+      expect(bar.props('error')).toContain('CVODE gave up')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
