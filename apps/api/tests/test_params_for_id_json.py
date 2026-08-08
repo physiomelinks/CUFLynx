@@ -20,7 +20,7 @@ from pathlib import Path
 import pytest
 
 import params_json
-from params_for_id import ParamsForIdError, parse_params_for_id
+from params_for_id import ParamEntry, ParamsForIdError, parse_params_for_id
 
 RESOURCES = Path(__file__).resolve().parents[3] / "resources"
 GOLDENS = Path(__file__).parent / "data" / "params_for_id_goldens.json"
@@ -198,17 +198,42 @@ def test_target_order_is_preserved_on_write():
 
 def test_a_derived_range_is_not_written_back_as_authored_bounds():
     """An unbounded entry's bounds come from its prior. Writing them back would
-    freeze a derived value into the file and stop it tracking the prior."""
-    doc = {"params": [{"targets": ["a/x"], "unbounded": True, "prior": "normal",
-                       "prior_params": {"prior_mean": 10.0, "prior_std": 2.0}}]}
-    entries = parse_params_for_id(doc)
+    freeze a derived value into the file and stop it tracking the prior.
 
-    # The range is derived from the prior, not authored.
-    assert entries[0].min is not None and entries[0].max is not None
-    written = params_json.entries_to_json(entries)["params"][0]
+    Asserted against a constructed entry rather than a parsed one: the subject is
+    the writer, and deriving the range needs a circulatory_autogen that the
+    no-CA CI job deliberately does not have. The end-to-end version is below.
+    """
+    entry = ParamEntry(
+        qname="a/x", qnames=["a/x"], min=0.0, max=20.0, name_for_plotting=None,
+        param_type=None, unbounded=True, prior="normal",
+        prior_params={"prior_mean": "10.0", "prior_std": "2.0"},
+    )
+    written = params_json.entries_to_json([entry])["params"][0]
 
     assert written["unbounded"] is True
     assert "min" not in written and "max" not in written
+
+
+@pytest.fixture
+def requires_ca_priors():
+    """CA owns the derivation of an unbounded entry's range; without a CA new
+    enough to do it there is nothing to assert."""
+    try:
+        from parsers.PrimitiveParsers import derive_bounds_from_prior  # noqa: F401
+    except Exception:
+        pytest.skip("circulatory_autogen without the prior hyper-parameter schema")
+
+
+def test_an_unbounded_entry_gets_its_range_from_its_prior(requires_ca_priors):
+    """End to end: the sliders must cover the range the calibration will search,
+    so the bounds have to be derived rather than left absent."""
+    doc = {"params": [{"targets": ["a/x"], "unbounded": True, "prior": "normal",
+                       "prior_params": {"prior_mean": 10.0, "prior_std": 2.0}}]}
+    entry = parse_params_for_id(doc)[0]
+
+    assert entry.min is not None and entry.max is not None
+    assert entry.min < 10.0 < entry.max
 
 
 # ---------------------------------------------------------------------------
