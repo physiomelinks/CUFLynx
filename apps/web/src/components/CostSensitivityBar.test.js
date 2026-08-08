@@ -157,4 +157,16 @@ describe('CostSensitivityBar (#188)', () => {
     // The FD step is meaningless for an analytic gradient, so it is not shown.
     expect(text).not.toContain('step')
   })
+
+  it('cautions when the tolerance is too loose for the sensitivities (#188)', () => {
+    const wrapper = mountBar({
+      result: payload({ analytic: true, tolerance_warning: 'the solver tolerance (rtol=0.0001) is loose' }),
+    })
+    expect(wrapper.get('[data-testid="cost-sens-tolerance"]').text()).toContain('rtol=0.0001')
+  })
+
+  it('says nothing about tolerance when it is tight enough', () => {
+    const wrapper = mountBar({ result: payload({ analytic: true }) })
+    expect(wrapper.find('[data-testid="cost-sens-tolerance"]').exists()).toBe(false)
+  })
 })

@@ -158,6 +158,39 @@ def _build(key, *, model_path, model_type, solver_info, dt, obs_data, sim_time,
     return pid
 
 
+# Above this, the sensitivity solve stops being worth trusting. Measured on
+# Lotka-Volterra against a 1e-12 reference: the gradient's largest relative error
+# is ~7e-6 at 1e-6, 1e-8 and 1e-10 alike -- flat -- and only then degrades, to
+# 6e-5 at 1e-5 and 1e-4 at 1e-4. So 1e-6 is as good as 1e-8 here and warning at
+# anything tighter would cry wolf; 1e-5 is where the accuracy actually goes.
+FSA_TOLERANCE_LIMIT = 1e-6
+
+
+def tolerance_warning(solver_info: dict | None) -> str | None:
+    """A caution when the solver is too loose for the sensitivities to be trusted.
+
+    Only a caution: a loose gradient still ranks parameters correctly long after
+    its digits stop being right, and the user chose this tolerance deliberately.
+    CA substitutes 1e-8/1e-8 of its own when neither is set and FSA is on, so an
+    unset pair needs no warning.
+    """
+    info = solver_info or {}
+    loose = {
+        key: float(info[key])
+        for key in ("rtol", "atol")
+        if info.get(key) is not None and float(info[key]) > FSA_TOLERANCE_LIMIT
+    }
+    if not loose:
+        return None
+    shown = ", ".join(f"{k}={v:g}" for k, v in sorted(loose.items()))
+    return (
+        f"the solver tolerance ({shown}) is looser than {FSA_TOLERANCE_LIMIT:g}, "
+        f"so these sensitivities carry solver noise: measured error grows about "
+        f"tenfold per decade beyond it. The ranking is usually still right; the "
+        f"digits are not."
+    )
+
+
 def method_for(model_type: str) -> str:
     """What the gradient would be called for this backend, for the UI to report."""
     if model_type == "casadi_python":
@@ -242,6 +275,7 @@ def evaluate(
         "rel_step": None,
         "method": method_for(model_type),
         "analytic": True,
+        "tolerance_warning": tolerance_warning(solver_info),
     }
 
 

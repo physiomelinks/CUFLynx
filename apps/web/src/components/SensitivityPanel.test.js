@@ -33,8 +33,9 @@ const GRAD_CASADI = [
 ]
 // For a cellml_only + CVODE_myokit model: FD + Myokit CVODES FSA (never AD-gated).
 const GRAD_CELLML = [
-  { value: 'FD', label: 'Finite difference', requires_all_differentiable: false },
-  { value: 'FSA', label: 'Forward sensitivity (Myokit CVODES)', requires_all_differentiable: false },
+  { value: 'FD', label: 'Finite difference', do_ad: false, requires_all_differentiable: false },
+  { value: 'FSA', label: 'Forward sensitivity (Myokit CVODES)', do_ad: true,
+    requires_all_differentiable: false },
 ]
 
 describe('SensitivityPanel AD gating', () => {
@@ -251,5 +252,21 @@ describe('SensitivityPanel reacts to a backend switch (#84)', () => {
     opts = gradientOptions(wrapper).map((o) => o.text())
     expect(opts.some((t) => t.includes('Forward sensitivity'))).toBe(true)
     expect(opts.some((t) => t.includes('Automatic'))).toBe(false)
+  })
+
+  it('offers a finite-difference step only to a source that takes one', () => {
+    // Derived from the source's own `do_ad`, not from the name 'FD': an analytic
+    // source has no step, so the control would be a setting with no effect.
+    const withMethod = (gradient_method) =>
+      mount(SensitivityPanel, {
+        props: {
+          defaults: { method: 'local', gradient_method, gradient_methods: GRAD_CELLML },
+          adAvailable: false,
+        },
+        global: { stubs },
+      })
+
+    expect(withMethod('FD').find('[data-testid="rel-step-field"]').exists()).toBe(true)
+    expect(withMethod('FSA').find('[data-testid="rel-step-field"]').exists()).toBe(false)
   })
 })
