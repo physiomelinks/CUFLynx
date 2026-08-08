@@ -3,6 +3,11 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- Served from public/, so these resolve the same in `vite dev`, in the
+         built dist/ the API serves, and inside the frozen desktop app. -->
+    <link rel="icon" href="/favicon.ico" sizes="any" />
+    <link rel="icon" type="image/png" href="/logo-square.png" />
+    <link rel="apple-touch-icon" href="/logo-square.png" />
     <title>CUFLynx</title>
   </head>
   <body>

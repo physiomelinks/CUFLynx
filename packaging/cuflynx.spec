@@ -535,4 +535,10 @@ exe = EXE(  # noqa: F821
     # with no metadata is a heuristic red flag for AV engines; this makes the
     # binary look like the real software it is. Ignored on Linux/macOS.
     version=(str(Path(SPECPATH) / "version_info.txt") if sys.platform == "win32" else None),
+    # The same icon the browser tab uses, so the downloaded executable is
+    # recognisable in Explorer. Windows only, like `version` above: PyInstaller
+    # wants a .icns for a macOS bundle and converts .ico only when Pillow happens
+    # to be in the build env, which is not something to rely on in CI. A macOS
+    # .icns is a follow-up, not a silent maybe.
+    icon=(str(ROOT / "apps" / "web" / "public" / "favicon.ico") if sys.platform == "win32" else None),
 )
