@@ -230,12 +230,19 @@ def robust_loss(output, desired_mean, std, weight, alpha=2.0, c=1.0):
     scales — the same trap as unnormalised weights. Prefer leaving ``c`` at 1 and
     letting each item's ``std`` carry its scale, unless you mean to reweight.
 
-    **The factor of 2** below is deliberate. Barron writes the alpha=2 case as
-    ``0.5*(x/c)**2``, while CA's ``MSE`` is ``2*gaussian_MLE`` and so carries no
-    half. Scaling the whole family by 2 makes ``alpha=2, c=1`` reproduce ``MSE``
-    *exactly* rather than up to a constant — so switching a data_item to this
-    cost and leaving alpha at its default changes nothing, and any change you
-    then see is the robustness, not a rescaling.
+    **The half is Barron's and is kept.** At ``alpha=2, c=1`` this is exactly
+    ``0.5 * mean(((output - desired_mean)/std)**2 * weight)`` — the L2 /
+    least-squares objective, which is precisely **half of CA's ``MSE``** and
+    bit-identical to CA's ``gaussian_MLE`` (``MSE`` is defined as
+    ``2*gaussian_MLE``). So the default lands on a cost CA already has, rather
+    than on a rescaled variant of one.
+
+    A constant factor cannot move the optimum, so this does not change what a
+    single-observable fit converges to. It *does* change the cost's size relative
+    to other data_items: an item scored with this at ``alpha=2`` contributes half
+    what the same item scored with ``MSE`` would. If you mix the two in one
+    obs_data, either use ``gaussian_MLE`` for the others or raise this item's
+    ``weight`` to compensate.
 
     Branching on ``alpha`` in Python is safe under AD: it is a keyword argument
     fixed per data_item, not part of the data, so the branch is taken once when
@@ -253,7 +260,7 @@ def robust_loss(output, desired_mean, std, weight, alpha=2.0, c=1.0):
     else:
         d = abs(alpha - 2.0)
         rho = (d / alpha) * (mb.power(sq / d + 1.0, 0.5 * alpha) - 1.0)
-    per = 2.0 * rho * weight
+    per = rho * weight
     return mb.sum(per) / mb.numel(per)
 ''',
     "differentiable": '''@differentiable

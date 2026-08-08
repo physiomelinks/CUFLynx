@@ -6,9 +6,15 @@ does not run, or whose documented special cases are wrong, is worse than no
 template -- it is a wrong answer with an official-looking provenance.
 
 The robust-loss template (issue #201) carries a claim that has to be true rather
-than plausible: at ``alpha = 2`` it *is* MSE. If that drifts, switching a
-data_item to it and leaving alpha alone would silently rescale the cost, and
-every weight in the obs_data would then mean something slightly different.
+than plausible: at ``alpha = 2`` it is the **L2** objective, which is exactly
+**half of CA's MSE** and bit-identical to CA's ``gaussian_MLE`` (CA defines
+``MSE = 2*gaussian_MLE``). Barron's half is kept, so the default lands on a cost
+CA already has rather than on a rescaled variant of one.
+
+That factor is asserted from both directions -- half of MSE is L2, and the
+template at alpha=2 is that same value -- because a constant factor is invisible
+in a single fit's optimum and very visible in how much a data_item contributes
+next to its neighbours.
 """
 import math
 
@@ -62,42 +68,83 @@ def _mse_reference(output, desired_mean, std, weight):
     return float(np.sum(per) / np.size(per))
 
 
+def _l2_reference(output, desired_mean, std, weight):
+    """The L2 / least-squares objective: ``0.5 * mean(residual**2)``.
+
+    The half is not decoration -- it is what makes the value the Gaussian
+    negative log-likelihood up to constants, which is why CA's ``gaussian_MLE``
+    carries it and why ``MSE`` is defined as twice this.
+    """
+    per = ((output - desired_mean) / std) ** 2 * weight
+    return float(0.5 * np.sum(per) / np.size(per))
+
+
 # ---------------------------------------------------------------------------
 # The claim issue #201 asks for
 # ---------------------------------------------------------------------------
-def test_the_robust_loss_at_alpha_2_is_exactly_mse():
-    """The identity the template's docstring promises, so a user who selects the
-    robust loss and leaves alpha alone changes nothing about their cost."""
+def test_half_of_mse_is_l2():
+    """The premise the rest rests on, asserted rather than assumed: L2 (with its
+    half) *is* half of CA's MSE. If this stops holding, the identity below would
+    still pass while meaning something different."""
+    assert _l2_reference(OUTPUT, TARGET, STD, WEIGHT) == pytest.approx(
+        0.5 * _mse_reference(OUTPUT, TARGET, STD, WEIGHT), rel=1e-12
+    )
+
+
+def test_the_robust_loss_at_alpha_2_is_l2_and_so_half_of_mse():
+    """Barron's alpha=2 case is ``0.5*(x/c)**2`` and the half is kept, so the
+    default lands exactly on the L2 objective -- half of MSE."""
     robust = _load("robust", "robust_loss")
 
     got = robust(OUTPUT, TARGET, STD, WEIGHT, alpha=2.0, c=1.0)
 
-    assert got == pytest.approx(_mse_reference(OUTPUT, TARGET, STD, WEIGHT), rel=1e-12)
+    assert got == pytest.approx(_l2_reference(OUTPUT, TARGET, STD, WEIGHT), rel=1e-12)
+    assert got == pytest.approx(0.5 * _mse_reference(OUTPUT, TARGET, STD, WEIGHT), rel=1e-12)
 
 
-def test_alpha_2_is_the_default_so_the_swap_is_a_no_op():
-    """Stated separately because it is the *default* that makes the swap safe;
-    a template defaulting to alpha=1 would satisfy the test above and still
-    change every user's cost the moment they selected it."""
+def test_alpha_2_is_the_default():
+    """Stated separately because it is the *default* that decides what a user gets
+    on selecting this cost; a template defaulting to alpha=1 would satisfy the
+    test above and still give everyone a different cost."""
     robust = _load("robust", "robust_loss")
 
     assert robust(OUTPUT, TARGET, STD, WEIGHT) == pytest.approx(
-        _mse_reference(OUTPUT, TARGET, STD, WEIGHT), rel=1e-12
+        _l2_reference(OUTPUT, TARGET, STD, WEIGHT), rel=1e-12
     )
+
+
+def test_the_half_halves_the_cost_relative_to_an_mse_item():
+    """The consequence worth knowing, pinned so it cannot be discovered mid-run.
+
+    A constant factor cannot move a single fit's optimum, but it does change this
+    item's size relative to others: an item scored with this at alpha=2
+    contributes half what the same item scored with MSE would.
+    """
+    robust = _load("robust", "robust_loss")
+
+    ratio = robust(OUTPUT, TARGET, STD, WEIGHT) / _mse_reference(OUTPUT, TARGET, STD, WEIGHT)
+
+    assert ratio == pytest.approx(0.5, rel=1e-12)
 
 
 @pytest.mark.integration
-def test_the_robust_loss_at_alpha_2_matches_cas_own_mse(requires_ca):
-    """The same identity against CA's actual MSE rather than a restatement of it,
-    so the reference above cannot drift from the function it claims to mirror."""
+def test_alpha_2_is_bit_identical_to_cas_gaussian_mle(requires_ca):
+    """Against CA's real cost objects rather than a restatement of them, so the
+    references above cannot drift from the functions they claim to mirror.
+
+    ``gaussian_MLE`` is the one it should land on exactly: CA defines
+    ``MSE = 2*gaussian_MLE``, so keeping Barron's half puts the default on a cost
+    CA already has rather than on a rescaled variant of one.
+    """
     from parsers.PrimitiveParsers import scriptFunctionParser
 
-    mse = scriptFunctionParser().get_cost_funcs_dict("numpy")["MSE"]
+    funcs = scriptFunctionParser().get_cost_funcs_dict("numpy")
     robust = _load("robust", "robust_loss")
 
-    assert robust(OUTPUT, TARGET, STD, WEIGHT, alpha=2.0, c=1.0) == pytest.approx(
-        float(mse(OUTPUT, TARGET, STD, WEIGHT)), rel=1e-12
-    )
+    got = robust(OUTPUT, TARGET, STD, WEIGHT, alpha=2.0, c=1.0)
+
+    assert got == pytest.approx(float(funcs["gaussian_MLE"](OUTPUT, TARGET, STD, WEIGHT)), rel=1e-12)
+    assert got == pytest.approx(0.5 * float(funcs["MSE"](OUTPUT, TARGET, STD, WEIGHT)), rel=1e-12)
 
 
 # ---------------------------------------------------------------------------
@@ -118,7 +165,7 @@ def test_each_branch_matches_its_closed_form(alpha, closed_form):
     number, not an error."""
     robust = _load("robust", "robust_loss")
     sq = ((OUTPUT - TARGET) / STD) ** 2
-    expected = float(np.mean(2.0 * closed_form(sq) * WEIGHT))
+    expected = float(np.mean(closed_form(sq) * WEIGHT))
 
     got = robust(OUTPUT, TARGET, STD, WEIGHT, alpha=alpha, c=1.0)
 
@@ -155,13 +202,13 @@ def test_c_rescales_as_well_as_setting_the_transition():
     unnormalised weight.
     """
     robust = _load("robust", "robust_loss")
-    mse = _mse_reference(OUTPUT, TARGET, STD, WEIGHT)
+    l2 = _l2_reference(OUTPUT, TARGET, STD, WEIGHT)
 
     wide = robust(OUTPUT, TARGET, STD, WEIGHT, alpha=0.0, c=1000.0)
 
-    assert wide * 1000.0**2 == pytest.approx(mse, rel=1e-4)
+    assert wide * 1000.0**2 == pytest.approx(l2, rel=1e-4)
     # And at c = 1 the identity of the first test is untouched.
-    assert robust(OUTPUT, TARGET, STD, WEIGHT, alpha=2.0, c=1.0) == pytest.approx(mse)
+    assert robust(OUTPUT, TARGET, STD, WEIGHT, alpha=2.0, c=1.0) == pytest.approx(l2)
 
 
 # ---------------------------------------------------------------------------
