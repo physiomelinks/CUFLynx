@@ -115,6 +115,18 @@ function direction(value) {
       />
     </div>
 
+    <!--
+      A caution, not an error: a loose gradient goes on ranking parameters
+      correctly long after its digits stop being right, and the tolerance was the
+      user's choice.
+    -->
+    <p
+      v-if="result?.tolerance_warning"
+      class="cost-sens-note cost-sens-caution"
+      data-testid="cost-sens-tolerance"
+    >
+      {{ result.tolerance_warning }}
+    </p>
     <p v-if="status === 'error'" class="cost-sens-note" data-testid="cost-sens-error">
       {{ error || 'the sensitivities could not be computed' }}
     </p>
@@ -185,6 +197,10 @@ function direction(value) {
 .cost-sens-sub {
   opacity: 0.5;
   font-size: 0.72rem;
+}
+.cost-sens-caution {
+  color: var(--p-amber-400, #ffb74d);
+  opacity: 0.9;
 }
 .cost-sens-note {
   margin: 0.2rem 0 0;
