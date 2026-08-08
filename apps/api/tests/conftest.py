@@ -106,13 +106,17 @@ def _reset_backend_solver():
     """Restore the engine's backend-solver selection to defaults."""
     engine_mod.engine.model_type = engine_mod.DEFAULT_MODEL_TYPE
     engine_mod.engine.solver = engine_mod.DEFAULT_SOLVER
-    engine_mod.engine.solver_info = dict(engine_mod.DEFAULT_SOLVER_INFO)
     import os
 
     for var in ("CUFLYNX_MODEL_TYPE", "CUFLYNX_SOLVER", "CUFLYNX_SOLVER_INFO"):
         os.environ.pop(var, None)
     solver_options_mod.reset_cache()
     model_codegen_mod.reset_cache()
+    # After the cache drop, so a test that repointed the CA directory doesn't
+    # leave the next one seeded from the previous CA's schema. Reset to unseeded
+    # rather than to a value: the seed is CA's to state (#200), and re-reading it
+    # here would only be a second place for it to be stale.
+    engine_mod.engine._solver_info = None
 
 
 def _analysis_pythons() -> tuple:

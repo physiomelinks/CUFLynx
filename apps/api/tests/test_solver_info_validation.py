@@ -21,9 +21,10 @@ import solver_options as so
 # Nothing hardcodes the inert key any more
 # ---------------------------------------------------------------------------
 def test_default_solver_info_carries_only_settings_the_default_solver_honours():
-    assert "MaximumNumberOfSteps" not in engine_mod.DEFAULT_SOLVER_INFO
-    assert "MaximumStep" in engine_mod.DEFAULT_SOLVER_INFO
-    so.check_solver_info(engine_mod.DEFAULT_SOLVER, dict(engine_mod.DEFAULT_SOLVER_INFO))
+    seeded = engine_mod.default_solver_info()
+    assert "MaximumNumberOfSteps" not in seeded
+    assert "MaximumStep" in seeded
+    so.check_solver_info(engine_mod.DEFAULT_SOLVER, dict(seeded))
 
 
 @pytest.mark.parametrize(

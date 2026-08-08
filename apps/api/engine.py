@@ -26,12 +26,23 @@ from runtime_paths import is_frozen
 DEFAULT_DT = 0.01
 DEFAULT_MODEL_TYPE = "cellml_only"
 DEFAULT_SOLVER = "CVODE_myokit"
-# Only settings DEFAULT_SOLVER (Myokit's CVODE) actually honours. It used to also
-# carry MaximumNumberOfSteps, which myokit_helper never reads — myokit.Simulation
-# has no max-step-count knob — so every run was seeded with an inert setting that
-# the Settings form then displayed as if it did something. See
-# solver_options.UNSUPPORTED_SOLVER_INFO_KEYS.
-DEFAULT_SOLVER_INFO = {"MaximumStep": 0.001}
+
+
+def default_solver_info(solver: str = DEFAULT_SOLVER) -> dict:
+    """The starting ``solver_info`` for ``solver``, read from CA's schema (#200).
+
+    This used to be the literal ``{"MaximumStep": 0.001}``. That was a partial copy
+    of CA's defaults, and it went stale exactly the way a copy does: CA declares
+    rtol/atol = 1e-8 for the CVODE family, CUFLynx seeded neither, so the Settings
+    popup's Rel./Abs. tol boxes came up empty and the run quietly used Myokit's own
+    looser tolerance instead of the one the form claimed to be showing.
+
+    Imported lazily because :mod:`solver_options` imports *this* module, and because
+    reading the schema imports CA — neither belongs in a bare ``import engine``.
+    """
+    from solver_options import default_solver_info as _from_ca  # noqa: PLC0415
+
+    return _from_ca(solver)
 
 
 class SimulationError(RuntimeError):
@@ -658,7 +669,10 @@ class SimulationEngine:
         # generated_model_format; solver must be compatible with it.
         self.model_type = DEFAULT_MODEL_TYPE
         self.solver = DEFAULT_SOLVER
-        self.solver_info = dict(DEFAULT_SOLVER_INFO)
+        # None = not seeded yet; the property fills it from CA's schema on first
+        # read. Deferred rather than done here because seeding imports CA, and an
+        # engine is constructed at module import.
+        self._solver_info: dict | None = None
         self.helper_factory = _default_helper_factory
         self.runner_factory = _default_runner_factory
         # The interpreter live simulation should run in (#167). None/"" keeps the
@@ -672,6 +686,22 @@ class SimulationEngine:
         # the cached runner's helper (avoids re-binding/recreating every run).
         self._runner_protocol_info: dict[str, object] = {}
         self._lock = threading.Lock()
+
+    @property
+    def solver_info(self) -> dict:
+        """The live solver's tuning — seeded from CA's declared defaults (#200).
+
+        Seeding on first read, not in ``__init__``, keeps ``import engine`` free of
+        CA: by the time anything asks for the tuning, the CA directory the user
+        chose has been applied.
+        """
+        if self._solver_info is None:
+            self._solver_info = default_solver_info(self.solver)
+        return self._solver_info
+
+    @solver_info.setter
+    def solver_info(self, value) -> None:
+        self._solver_info = dict(value or {})
 
     def live_backend(self) -> tuple:
         """``(model_type, solver, fell_back_from)`` for a live simulation.

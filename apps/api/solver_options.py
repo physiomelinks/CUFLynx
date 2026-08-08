@@ -189,6 +189,37 @@ def accepted_solver_info_keys(solver: str) -> frozenset[str] | None:
     return frozenset(keys | FRAMEWORK_SOLVER_INFO_KEYS) - unsupported_solver_info_keys(solver)
 
 
+def default_solver_info(solver: str) -> dict:
+    """The starting ``solver_info`` for ``solver``: every setting CA declares a default for.
+
+    CA states those defaults in ``SOLVER_INFO_FIELDS`` (mirroring its own
+    ``get_solver_info_default``) precisely so a tool can populate a settings form
+    without restating them, so they are read from there. The restatement is what
+    broke: CUFLynx seeded a literal ``{"MaximumStep": 0.001}``, which left the
+    Settings popup's Rel./Abs. tol boxes blank while CA had declared 1e-8 for both
+    (#200) — a field with a default that nothing puts into the value.
+
+    Read from the already-filtered per-solver form schema rather than CA's
+    ``get_solver_info_default(model_type)``: that one is keyed by model_type and
+    answers ``cellml_only`` with the CVODE_opencor family — the solver CUFLynx must
+    never use, plus MaximumNumberOfSteps, which myokit_helper never reads. Going
+    through the same schema the form renders means the seeded values and the offered
+    controls cannot disagree.
+
+    ``dt`` is excluded because the engine owns it separately (``engine.dt``, merged
+    back into the /api/config payload); a duplicate in ``solver_info`` would be a
+    second place for it to be wrong. A field CA gives no default for stays unset —
+    unset means the backend's own default, and inventing one here is the original
+    mistake again.
+    """
+    fields = (get_solver_options().get("solver_info_schema") or {}).get(solver) or []
+    return {
+        f["key"]: f["default"]
+        for f in fields
+        if f.get("key") and f["key"] != "dt" and f.get("default") is not None
+    }
+
+
 def check_solver_info(solver: str, solver_info: dict) -> None:
     """Raise ValueError if ``solver_info`` carries a key ``solver`` cannot honour.
 

@@ -835,3 +835,105 @@ def test_the_config_route_carries_the_prior_vocabulary(client, monkeypatch):
     body = client.get("/api/config").json()
     assert body["param_prior_types"]["default"] == "uniform"
     assert body["param_prior_types"]["types"][0]["value"] == "uniform"
+
+
+# ---------------------------------------------------------------------------
+# The seeded solver_info carries CA's declared defaults (#200)
+# ---------------------------------------------------------------------------
+# The Settings popup binds each field to the current solver_info *value*, not to
+# the descriptor's `default`. So a default CA declares but nothing seeds renders
+# as an empty box -- which is what happened to Rel./Abs. tol, because CUFLynx
+# seeded the literal {"MaximumStep": 0.001}. Worse than cosmetic: the form
+# offered 1e-8 as the default while the run used Myokit's own looser one.
+
+@BOTH_SCHEMAS
+def test_every_declared_default_is_seeded_into_solver_info(schema, monkeypatch):
+    """No field may be offered with a default that the seed then leaves unset.
+
+    Stated over the whole schema rather than over rtol/atol by name: naming the two
+    keys would pass again the moment CA declares a default for a third.
+    """
+    monkeypatch.setattr(so, "_introspect_solver_schema", lambda: schema)
+    monkeypatch.setattr(so, "_introspect_differentiable", lambda: {"max": True})
+    so.reset_cache()
+    form = so.get_solver_options(refresh=True)["solver_info_schema"]
+    for solver, fields in form.items():
+        seeded = so.default_solver_info(solver)
+        for f in fields:
+            if f["key"] == "dt" or f.get("default") is None:
+                continue
+            assert f["key"] in seeded, (
+                f"{solver}.{f['key']} is offered with a default nothing seeds"
+            )
+            assert seeded[f["key"]] == f["default"]
+
+
+def _ca_schema_with_fields(fields_by_solver: dict) -> dict:
+    return dict(CA_SCHEMA, solver_info_fields_by_solver=fields_by_solver)
+
+
+def test_the_seed_takes_the_tolerances_from_ca_rather_than_a_local_copy(monkeypatch):
+    """The numbers seeded are CA's, so a CA that retunes its tolerances retunes ours."""
+    monkeypatch.setattr(so, "_introspect_solver_schema", lambda: _ca_schema_with_fields({
+        "CVODE_myokit": [
+            {"name": "MaximumStep", "type": "float", "default": 0.001},
+            {"name": "rtol", "type": "float", "default": 1.25e-9},
+            {"name": "atol", "type": "float", "default": 3.5e-11},
+        ],
+    }))
+    monkeypatch.setattr(so, "_introspect_differentiable", lambda: {"max": True})
+    so.reset_cache()
+    so.get_solver_options(refresh=True)
+    assert so.default_solver_info("CVODE_myokit") == {
+        "method": "CVODE", "MaximumStep": 0.001, "rtol": 1.25e-9, "atol": 3.5e-11,
+    }
+
+
+def test_the_seed_omits_dt_and_anything_ca_gives_no_default_for(monkeypatch):
+    """dt belongs to the engine (a run parameter, merged into /api/config on its
+    own), and a field with no declared default stays unset rather than invented."""
+    monkeypatch.setattr(so, "_introspect_solver_schema", lambda: _ca_schema_with_fields({
+        "CVODE_myokit": [
+            {"name": "MaximumStep", "type": "float", "default": 0.001},
+            {"name": "rtol", "type": "float", "default": None},
+        ],
+    }))
+    monkeypatch.setattr(so, "_introspect_differentiable", lambda: {"max": True})
+    so.reset_cache()
+    so.get_solver_options(refresh=True)
+    seeded = so.default_solver_info("CVODE_myokit")
+    assert seeded == {"method": "CVODE", "MaximumStep": 0.001}
+
+
+def test_a_key_the_solver_cannot_honour_is_not_seeded(monkeypatch):
+    """The seed rides the filtered form schema, so an inert key CA advertises for
+    CVODE_myokit cannot come back in through the default (see
+    UNSUPPORTED_SOLVER_INFO_KEYS) -- and check_solver_info would reject it."""
+    monkeypatch.setattr(so, "_introspect_solver_schema", lambda: _ca_schema_with_fields({
+        "CVODE_myokit": [
+            {"name": "MaximumStep", "type": "float", "default": 0.001},
+            {"name": "MaximumNumberOfSteps", "type": "int", "default": 5000},
+        ],
+    }))
+    monkeypatch.setattr(so, "_introspect_differentiable", lambda: {"max": True})
+    so.reset_cache()
+    so.get_solver_options(refresh=True)
+    seeded = so.default_solver_info("CVODE_myokit")
+    assert "MaximumNumberOfSteps" not in seeded
+    so.check_solver_info("CVODE_myokit", seeded)
+
+
+def test_an_unknown_solver_seeds_nothing_rather_than_raising():
+    assert so.default_solver_info("no_such_solver") == {}
+
+
+def test_the_config_route_reports_a_value_for_every_field_it_offers(client):
+    """End to end: the payload the Settings popup renders must not carry a control
+    with a declared default and nothing to show in it (#200)."""
+    body = client.get("/api/config").json()
+    fields = body["solver_info_schema"][body["solver"]]
+    missing = [
+        f["key"] for f in fields
+        if f.get("default") is not None and body["solver_info"].get(f["key"]) is None
+    ]
+    assert missing == []
