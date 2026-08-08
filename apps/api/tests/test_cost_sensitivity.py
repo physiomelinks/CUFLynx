@@ -215,55 +215,6 @@ def test_endpoint_rejects_an_unqualified_param_name(client, fake_helper):
     assert resp.status_code == 422
 
 
-def test_the_endpoint_says_whether_the_backend_has_analytic_gradients(
-    client, fake_helper, monkeypatch
-):
-    """Issue #188 asks for a warning when the backend is not AD-capable.
-
-    Differencing costs the same 2M+1 solves on every backend; only a backend
-    without analytic (AD) gradients has no cheaper route in principle, so that is
-    the case worth flagging. The endpoint reports the capability and the panel
-    decides how loudly to say it -- the alternative is a slider that quietly goes
-    sluggish with no stated reason.
-    """
-    model_id = _load_lv(client, fake_helper)
-    monkeypatch.setattr("main.engine.run_protocol",
-                        lambda **kwargs: {"time": [0.0], "traces": {}})
-    monkeypatch.setattr(
-        "main._protocol_run_cost",
-        lambda *_a, **_k: {"cost": 1.0, "n_weighted": 1, "items": [{"cost": 1.0}]},
-    )
-    monkeypatch.setattr("main.ad_available", lambda _model_type: False)
-
-    resp = client.post(
-        "/api/cost_sensitivity",
-        json={"model_id": model_id, "params": {"Lotka_Volterra_module/alpha": 1.0}},
-    )
-
-    assert resp.status_code == 200, resp.text
-    assert resp.json()["ad_available"] is False
-
-
-def test_an_ad_capable_backend_is_reported_as_such(client, fake_helper, monkeypatch):
-    """The flag has to distinguish, not just be present -- always-False would
-    warn on every backend and stop meaning anything."""
-    model_id = _load_lv(client, fake_helper)
-    monkeypatch.setattr("main.engine.run_protocol",
-                        lambda **kwargs: {"time": [0.0], "traces": {}})
-    monkeypatch.setattr(
-        "main._protocol_run_cost",
-        lambda *_a, **_k: {"cost": 1.0, "n_weighted": 1, "items": [{"cost": 1.0}]},
-    )
-    monkeypatch.setattr("main.ad_available", lambda _model_type: True)
-
-    resp = client.post(
-        "/api/cost_sensitivity",
-        json={"model_id": model_id, "params": {"Lotka_Volterra_module/alpha": 1.0}},
-    )
-
-    assert resp.json()["ad_available"] is True
-
-
 def test_endpoint_runs_two_simulations_per_parameter(client, fake_helper, monkeypatch):
     """The rows come from the live engine, one run per perturbed point, and the
     base cost is the one the plots panel shows."""

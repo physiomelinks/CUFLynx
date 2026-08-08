@@ -526,10 +526,9 @@ const modelUnits = computed(() => model.variables.value.units ?? {})
 // backend from the run it already did. null when it cannot be known -- no
 // obs_data, no CA -- which must not read as a perfect fit of zero.
 const currentCost = computed(() => sim.cost.value ?? null)
-// A snapshot to compare against: the calibration best fit if there is one, else
-// whatever the user pinned. The comparison is the point -- a cost alone says
-// little, a cost next to the one you started from says whether you are winning.
-const costBaseline = ref(null)
+// A snapshot to compare against. The comparison is the point -- a cost alone
+// says little, a cost next to the one you started from says whether you are
+// winning.
 const compareCosts = ref(false)
 
 // A cost spans orders of magnitude between models, so a fixed number of decimal
@@ -555,12 +554,6 @@ function weightedCount(cost) {
   return cost?.n_weighted ?? (cost?.items ?? []).length
 }
 
-function pinCurrentCost() {
-  costBaseline.value = currentCost.value
-    ? { ...currentCost.value, label: 'pinned parameters' }
-    : null
-}
-
 // The calibration's own error vectors, offered as the baseline once a run has
 // produced them, so "current vs best fit" needs no extra simulation. Reads the
 // composable's refs rather than a result object -- that is the shape the
@@ -584,9 +577,9 @@ const bestFitBaseline = computed(() => {
   }
 })
 
-// The baseline the Analysis tab compares against: whatever was pinned, else the
-// best fit if a calibration has produced one.
-const activeBaseline = computed(() => costBaseline.value ?? bestFitBaseline.value)
+// The baseline the Analysis tab compares against: the best fit, once a
+// calibration has produced one.
+const activeBaseline = computed(() => bestFitBaseline.value)
 
 // ---------------------------------------------------------------------------
 // Cost sensitivities (#188)
@@ -2012,15 +2005,6 @@ watch(
               — not comparable with the calibration cost
             </template>
           </span>
-          <button
-            type="button"
-            class="cost-pin"
-            data-testid="cost-pin"
-            title="remember these parameters, to compare against in the Analysis tab"
-            @click="pinCurrentCost"
-          >
-            pin
-          </button>
           <!--
             Opt-in, and priced in the tooltip: a gradient is 2M+1 simulations
             every time the parameters settle, which is why it is not simply on.
@@ -2037,7 +2021,7 @@ watch(
             "
             @click="costSensOn = !costSensOn"
           >
-            sensitivities
+            cost sensitivities
           </button>
         </div>
         <CostSensitivityBar
@@ -2046,6 +2030,7 @@ watch(
           :status="costSensState"
           :error="costSensError"
           :labels="paramLabels"
+          :ad-available="adAvailable"
           @recompute="runCostSensitivity"
         />
         <div

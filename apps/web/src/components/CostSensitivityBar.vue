@@ -3,9 +3,12 @@
  * Which parameter is driving the cost, beside the cost itself (issue #188).
  *
  * The cost line says the parameters cost 36.8. This says it is `alpha` that the
- * 36.8 is about, and which way to drag it. One row per parameter, ordered by how
- * much the cost cares -- the ordering *is* the answer, so it is done here rather
- * than left to the reader.
+ * 36.8 is about, and which way to drag it.
+ *
+ * One row per parameter, in the order the sliders are in. Ranking by magnitude
+ * reads well in isolation but makes the panel a different list from the one
+ * beside it, so finding a parameter means re-scanning instead of looking across
+ * -- and the bar lengths already carry the ranking without moving anything.
  *
  * The number is `d ln(cost)/d ln(p)`: the percentage the cost moves per percent
  * the parameter moves. Raw dJ/dp cannot be ranked -- across parameters measured
@@ -15,6 +18,7 @@
 import Button from 'primevue/button'
 import ProgressSpinner from 'primevue/progressspinner'
 import { computed } from 'vue'
+import { renderMath } from '../lib/math'
 
 const props = defineProps({
   // The /api/cost_sensitivity payload, or null before the first run.
@@ -27,6 +31,14 @@ const props = defineProps({
   error: { type: String, default: '' },
   // qname -> name_for_plotting, so a row reads like the slider it belongs to.
   labels: { type: Object, default: () => ({}) },
+  // Whether analytic (AD) gradients are available *for this study* — casadi_python
+  // with every operation the loaded obs_data actually uses @differentiable. Passed
+  // in rather than read from the payload because that judgement is per-obs_data,
+  // not per-backend: the global "are all registered operations differentiable"
+  // flag is false for everyone (16 of CA's 38 ops are not), so deciding from it
+  // would warn on every study including the ones where AD demonstrably works.
+  // Defaults to true so a caller that does not wire it makes no claim of slowness.
+  adAvailable: { type: Boolean, default: true },
 })
 
 defineEmits(['recompute'])
@@ -37,8 +49,9 @@ const rows = computed(() => {
   // The largest magnitude sets the bar scale: these are relative to each other,
   // and there is no absolute scale a coefficient could be drawn against.
   const peak = Math.max(...scored.map((p) => Math.abs(p.elasticity)), 0)
+  // Not sorted: the backend returns them in the order they were sent, which is
+  // the order of the parameter column, so the two lists line up row for row.
   return [...params]
-    .sort((a, b) => Math.abs(b.elasticity ?? -1) - Math.abs(a.elasticity ?? -1))
     .map((p) => ({
       ...p,
       label: props.labels?.[p.name] ?? p.name,
@@ -89,14 +102,14 @@ function direction(value) {
         letting a drag quietly turn sluggish.
       -->
       <span
-        v-if="result && result.ad_available === false"
+        v-if="result && !adAvailable"
         class="cost-sens-slow"
         data-testid="cost-sens-no-ad"
         :title="
-          `This backend has no analytic (AD) gradients, so each update runs ` +
-          `${result.n_simulations ?? '2M+1'} simulations. casadi_python with ` +
-          `all-differentiable operations, or aadc_python, would make analytic ` +
-          `gradients possible.`
+          `No analytic (AD) gradients for this study, so each update runs ` +
+          `${result.n_simulations ?? '2M+1'} simulations. AD needs the ` +
+          `casadi_python model format with every operation this obs_data uses ` +
+          `marked @differentiable.`
         "
       >
         slow: no AD
@@ -142,7 +155,7 @@ function direction(value) {
 
     <ul v-else class="cost-sens-rows" :class="{ stale: status === 'stale' }">
       <li v-for="row in rows" :key="row.name" data-testid="cost-sens-row">
-        <span class="cost-sens-name" :title="row.name">{{ row.label }}</span>
+        <span class="cost-sens-name" :title="row.name" v-html="renderMath(row.label)" />
         <span class="cost-sens-track">
           <span
             class="cost-sens-fill"
