@@ -1,3 +1,5 @@
+<img src="apps/web/public/logo.png" alt="CUFLynx" width="140" align="right" />
+
 # CUFLynx
 
 [![Latest release](https://img.shields.io/github/v/release/physiomelinks/CUFLynx?label=download)](https://github.com/physiomelinks/CUFLynx/releases/latest)
