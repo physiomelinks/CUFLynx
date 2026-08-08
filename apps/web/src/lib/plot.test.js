@@ -12,6 +12,8 @@ import {
   lighten,
   shadeForStart,
   unitForVars,
+  hasMixedUnits,
+  withOverlayVars,
   timeUnit,
 } from './plot'
 
@@ -215,6 +217,93 @@ describe('buildChartData calculated features', () => {
     const s = datasets.find((d) => d.kind === 'simulation')
     expect(s.mathLabel).toBe('v_{AR}')
     expect(s.legendStyle).toBe('line')
+  })
+
+  // Issue #196: with several variables on one plot, `varLabel` (the cell's
+  // y-axis label) can only name the first — otherwise every legend entry reads
+  // as the primary variable and the overlay is unidentifiable.
+  it('names overlaid variables by their own qname, not by the cell label', () => {
+    const sim = {
+      time: [0, 1],
+      outputs: { 'aortic_root/v': [1, 2], 'heart/P_lv': [3, 4] },
+    }
+    const traces = buildChartData(sim, { varLabel: 'v_{AR}' }).datasets.filter(
+      (d) => d.kind === 'simulation',
+    )
+    expect(traces.map((d) => d.mathLabel)).toEqual(['v_{AR}', 'heart/P_lv'])
+  })
+
+  it('gives each variable on a plot its own colour', () => {
+    const sim = {
+      time: [0, 1],
+      outputs: { 'aortic_root/v': [1, 2], 'heart/P_lv': [3, 4], 'heart/V_lv': [5, 6] },
+    }
+    const colors = buildChartData(sim, {})
+      .datasets.filter((d) => d.kind === 'simulation')
+      .map((d) => d.borderColor)
+    expect(new Set(colors).size).toBe(3)
+  })
+})
+
+// Issue #196: overlay several variables on one plot cell.
+describe('withOverlayVars', () => {
+  const units = { 'm/x': 'mM', 'm/y': 'mM', 'm/p': 'kPa' }
+  const outputs = { 'm/x': [1, 2], 'm/y': [3, 4], 'm/p': [5, 6] }
+  const cell = () => ({
+    key: 'single',
+    title: 'x',
+    varLabel: 'x',
+    yUnit: 'mM',
+    simResult: { time: [0, 1], outputs: { 'm/x': [1, 2] } },
+  })
+
+  it('appends the overlaid series after the cell\'s own', () => {
+    const out = withOverlayVars(cell(), ['m/y'], outputs, units)
+    expect(Object.keys(out.simResult.outputs)).toEqual(['m/x', 'm/y'])
+    expect(out.simResult.outputs['m/y']).toEqual([3, 4])
+    expect(out.overlayVars).toEqual(['m/y'])
+    // The rest of the cell is untouched — an overlay must not relabel the plot.
+    expect(out.title).toBe('x')
+    expect(out.simResult.time).toEqual([0, 1])
+  })
+
+  it('keeps the shared unit when the variables agree, and drops it when they do not', () => {
+    expect(withOverlayVars(cell(), ['m/y'], outputs, units).yUnit).toBe('mM')
+    const mixed = withOverlayVars(cell(), ['m/p'], outputs, units)
+    expect(mixed.yUnit).toBe('')
+    expect(mixed.mixedUnits).toBe(true)
+  })
+
+  it('returns the cell untouched when there is nothing to add', () => {
+    const c = cell()
+    expect(withOverlayVars(c, [], outputs, units)).toBe(c)
+    expect(withOverlayVars(c, undefined, outputs, units)).toBe(c)
+    // Already drawn here: overlaying it again would double the line.
+    expect(withOverlayVars(c, ['m/x'], outputs, units)).toBe(c)
+  })
+
+  // A variable added just before a re-run has no series yet; an empty trace is
+  // the honest rendering, and blowing up on the missing key is not.
+  it('tolerates a variable the run has not returned yet', () => {
+    const out = withOverlayVars(cell(), ['m/z'], outputs, units)
+    expect(out.simResult.outputs['m/z']).toEqual([])
+  })
+})
+
+describe('hasMixedUnits', () => {
+  const units = { 'm/x': 'mM', 'm/y': 'mM', 'm/p': 'kPa', 'm/d': 'dimensionless' }
+
+  it('is true only when two variables declare different real units', () => {
+    expect(hasMixedUnits(units, ['m/x', 'm/y'])).toBe(false)
+    expect(hasMixedUnits(units, ['m/x', 'm/p'])).toBe(true)
+  })
+
+  // An unknown or dimensionless unit contradicts nothing, so it must not raise
+  // a warning about units the model never claimed.
+  it('ignores unknown and dimensionless units', () => {
+    expect(hasMixedUnits(units, ['m/x', 'm/d'])).toBe(false)
+    expect(hasMixedUnits(units, ['m/x', 'm/unknown'])).toBe(false)
+    expect(hasMixedUnits(undefined, ['m/x', 'm/p'])).toBe(false)
   })
 })
 

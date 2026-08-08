@@ -655,3 +655,58 @@ describe('shared y-axis width', () => {
     expect(fitWith(wrapper, { width: 47 }).width).toBe(47)
   })
 })
+
+// Issue #196: several variables on one plot, added from the plot itself.
+describe('PlotPanel add-variable affordance', () => {
+  const panel = (props) =>
+    mount(PlotPanel, {
+      props: { simResult, title: 'x', varLabel: 'x', ...props },
+      global: { stubs },
+    })
+
+  it('offers the button only when the parent says the plot can take one', () => {
+    expect(panel({}).find('[data-testid="plot-add-var"]').exists()).toBe(false)
+    expect(panel({ addable: true }).find('[data-testid="plot-add-var"]').exists()).toBe(
+      true,
+    )
+  })
+
+  it('asks the parent to open the picker, since the parent owns the variables', async () => {
+    const wrapper = panel({ addable: true })
+    await wrapper.find('[data-testid="plot-add-var"]').trigger('click')
+    expect(wrapper.emitted('add-variable')).toHaveLength(1)
+  })
+
+  // A plot with no title/tag/buttons has no head at all, so the button has to
+  // bring one into existence or it would be unreachable.
+  it('renders a head for a bare plot that is addable', () => {
+    const wrapper = mount(PlotPanel, {
+      props: { simResult, addable: true },
+      global: { stubs },
+    })
+    expect(wrapper.find('[data-testid="plot-add-var"]').exists()).toBe(true)
+  })
+
+  describe('mixed units', () => {
+    // An empty yUnit alone reads as "this model declares no units", which is a
+    // very different claim from "these two lines are measured differently".
+    it('says so, where the unit chip would be', () => {
+      const wrapper = panel({ mixedUnits: true })
+      expect(wrapper.find('[data-testid="plot-mixed-units"]').text()).toBe('[mixed units]')
+      expect(wrapper.find('[data-testid="plot-unit"]').exists()).toBe(false)
+    })
+
+    it('stays quiet for a plot whose variables agree', () => {
+      const wrapper = panel({ yUnit: 'mM' })
+      expect(wrapper.find('[data-testid="plot-mixed-units"]').exists()).toBe(false)
+      expect(wrapper.find('[data-testid="plot-unit"]').text()).toBe('[mM]')
+    })
+
+    // A shared unit is the stronger statement: show it rather than the caveat.
+    it('prefers the unit chip when a shared unit survives', () => {
+      const wrapper = panel({ yUnit: 'mM', mixedUnits: true })
+      expect(wrapper.find('[data-testid="plot-unit"]').text()).toBe('[mM]')
+      expect(wrapper.find('[data-testid="plot-mixed-units"]').exists()).toBe(false)
+    })
+  })
+})

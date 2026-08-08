@@ -48,8 +48,11 @@ import {
   controlledSeries,
   buildExtraPlotCells,
   unitForVars,
+  hasMixedUnits,
+  withOverlayVars,
   timeUnit,
 } from './lib/plot'
+import SearchableSelect from './components/SearchableSelect.vue'
 import SaveParamsDialog from './components/SaveParamsDialog.vue'
 import { requestNotificationPermission } from './lib/notify'
 import { useRunNotifications } from './stores/useRunNotifications'
@@ -595,13 +598,24 @@ const timeUnitLabel = computed(
   () => modelTimeUnit.value || timeUnitOverride.value.trim(),
 )
 
+// Variables the user has overlaid onto an existing plot (issue #196), as
+// cellKey -> [qname]. Keyed by the *cell* rather than by an id of its own
+// because every kind of plot can take an overlay — an obs-derived cell, the
+// combined manual run, an added "Add plot" cell — and their keys are already
+// stable across runs (`exp0:heart/P_lv`, `single`, `extra:3`). That stability
+// is the point: a re-run must not quietly drop what the user chose to compare,
+// and only a change of model or obs_data (below) invalidates the keys.
+const plotVars = ref({})
+
 // Extra-plot qnames to append to a run's requested outputs so the chosen
 // variables come back from the engine — the x variable of a phase-plane plot
-// included, else the engine never returns that series.
+// included, else the engine never returns that series. Overlaid variables
+// (#196) are requested the same way, for the same reason.
 const extraOutputNames = computed(() => [
-  ...new Set(
-    extraPlots.value.flatMap((p) => (p.xqname ? [p.qname, p.xqname] : [p.qname])),
-  ),
+  ...new Set([
+    ...extraPlots.value.flatMap((p) => (p.xqname ? [p.qname, p.xqname] : [p.qname])),
+    ...Object.values(plotVars.value).flat(),
+  ]),
 ])
 
 // Add-plot dialog state. `addPlotXVar` is the x axis: 'time' (the default) for a
@@ -696,6 +710,99 @@ function extraCellsFor(groupKey, time, outputs, expIdx = null) {
     ...cell,
     savedSeries: savedRuns.seriesFor(cell.qname, expIdx, cell.xqname),
   }))
+}
+
+/**
+ * Apply the user's overlaid variables to a plot cell (issue #196).
+ *
+ * Every cell goes through this on its way out of `plotGroups`, so the "+"
+ * affordance means the same thing on an obs-derived plot as on an added one.
+ * The one exception is a `controlled` cell: it draws a params_to_change input
+ * on its own synthesised time base, not the run's, so a model variable dropped
+ * onto it would be plotted against the wrong x.
+ *
+ * An overlaid variable brings its saved-run traces (#126) with it — otherwise
+ * ticking a saved run would redraw only half of a two-variable comparison.
+ */
+function withUserVars(cell, outputs, expIdx = null) {
+  if (cell.controlled) return cell
+  const added = plotVars.value[cell.key]
+  const merged = withOverlayVars(cell, added, outputs, modelUnits.value)
+  if (merged === cell) return { ...cell, addable: true }
+  return {
+    ...merged,
+    addable: true,
+    savedSeries: [
+      ...(cell.savedSeries ?? []),
+      ...merged.overlayVars.flatMap((q) => savedRuns.seriesFor(q, expIdx, cell.xqname)),
+    ],
+  }
+}
+
+// --- add/remove a variable on a plot (#196) --------------------------------
+// One dialog does both: a picker adds, and the list of what is already drawn
+// removes. Splitting them would leave "how do I take that line off again?"
+// answered only by deleting the whole plot.
+const plotVarsOpen = ref(false)
+const plotVarsKey = ref(null)
+const plotVarsPick = ref('')
+
+// Read back from `plotGroups` rather than captured at open time, so the dialog
+// keeps up with what it is itself changing. (Lazy getter, so referencing
+// plotGroups — declared later — is safe.)
+const plotVarsCell = computed(
+  () =>
+    plotGroups.value.flatMap((g) => g.cells).find((c) => c.key === plotVarsKey.value) ??
+    null,
+)
+// Everything drawn on the plot, the cell's own variables first.
+const plotVarsDrawn = computed(() =>
+  Object.keys(plotVarsCell.value?.simResult?.outputs ?? {}),
+)
+const plotVarsAdded = computed(() => plotVars.value[plotVarsKey.value] ?? [])
+const plotVarsChoices = computed(() =>
+  plottableVariables.value.filter((q) => !plotVarsDrawn.value.includes(q)),
+)
+// Warn *before* the overlay is drawn, naming both units: after the fact the
+// axis simply loses its label, which is a much quieter signal than it deserves.
+const plotVarsUnitWarning = computed(() => {
+  const q = plotVarsPick.value
+  if (!q) return ''
+  if (!hasMixedUnits(modelUnits.value, [...plotVarsDrawn.value, q])) return ''
+  const theirs = modelUnits.value[q] || 'unknown'
+  const ours = unitForVars(modelUnits.value, plotVarsDrawn.value) || 'mixed'
+  return `${q} is in ${theirs}, this plot is in ${ours}. They will share one axis and the unit label is dropped.`
+})
+
+function openPlotVars(cell) {
+  plotVarsKey.value = cell.key
+  plotVarsPick.value = ''
+  plotVarsOpen.value = true
+}
+
+function confirmPlotVar() {
+  const qname = plotVarsPick.value
+  if (!qname || !plotVarsKey.value) return
+  plotVars.value = {
+    ...plotVars.value,
+    [plotVarsKey.value]: [...(plotVars.value[plotVarsKey.value] ?? []), qname],
+  }
+  plotVarsPick.value = ''
+  // Re-run so the newly requested variable is fetched, exactly as adding a plot
+  // does — until then the cell would draw an empty series.
+  runSimulation()
+}
+
+// Removing needs no re-run: the series is already in hand, it just stops being
+// drawn. The next run stops asking for it.
+function removePlotVar(qname) {
+  const key = plotVarsKey.value
+  if (!key) return
+  const rest = (plotVars.value[key] ?? []).filter((q) => q !== qname)
+  const next = { ...plotVars.value }
+  if (rest.length) next[key] = rest
+  else delete next[key]
+  plotVars.value = next
 }
 
 // Calibration / sensitivity
@@ -996,6 +1103,9 @@ async function onModelLoaded(data) {
   loadedParamsFilename.value = null
   loadedObsFilename.value = null
   extraPlots.value = []
+  // A new model has new variables, so overlays keyed to the old one's plots
+  // (#196) name variables this model may not even have.
+  plotVars.value = {}
   sliders.clear()
   try {
     const vars = await getVariables(data.model_id)
@@ -1208,8 +1318,10 @@ function onObsDataLoaded(payload) {
   obs.setObsData(payload)
   if (payload?.filename) loadedObsFilename.value = payload.filename
   // The experiment grouping changes with the obs_data, so per-experiment added
-  // plots no longer have a stable home.
+  // plots no longer have a stable home — nor do the cell keys that overlaid
+  // variables (#196) hang off.
   extraPlots.value = []
+  plotVars.value = {}
 }
 
 let timer = null
@@ -1379,7 +1491,12 @@ const plotGroups = computed(() => {
       const label = labels[e]
         ? `Experiment ${e}: ${labels[e]}`
         : `Experiment ${e}`
-      return { key: `exp${e}`, expIdx: e, label, cells }
+      return {
+        key: `exp${e}`,
+        expIdx: e,
+        label,
+        cells: cells.map((c) => withUserVars(c, exp.outputs, e)),
+      }
     })
   }
   // Data-only obs_data: one group, no heading, one plot per referenced variable.
@@ -1401,7 +1518,14 @@ const plotGroups = computed(() => {
       ),
     }))
     cells.push(...extraCellsFor('data-only', sim.result.value.time, out))
-    return [{ key: 'data-only', expIdx: 0, label: '', cells }]
+    return [
+      {
+        key: 'data-only',
+        expIdx: 0,
+        label: '',
+        cells: cells.map((c) => withUserVars(c, out)),
+      },
+    ]
   }
   // Plain manual run: one combined plot of all returned outputs, with any
   // user-added variables split out into their own plots (and excluded here).
@@ -1429,7 +1553,14 @@ const plotGroups = computed(() => {
       },
     ]
     cells.push(...extraCellsFor('single', sim.result.value.time, out))
-    return [{ key: 'single', expIdx: 0, label: '', cells }]
+    return [
+      {
+        key: 'single',
+        expIdx: 0,
+        label: '',
+        cells: cells.map((c) => withUserVars(c, out)),
+      },
+    ]
   }
   return []
 })
@@ -1796,6 +1927,8 @@ watch(
                 :saved-series="cell.savedSeries ?? []"
                 :removable="!!cell.removeId"
                 :switchable="!!cell.xLabel"
+                :addable="!!cell.addable && plottableVariables.length > 0"
+                :mixed-units="!!cell.mixedUnits"
                 :align-width="alignsWithTime(cell) ? sharedAxisWidth : 0"
                 @axis-width="(w) => onAxisWidth(cell, w)"
                 maximizable
@@ -1803,6 +1936,7 @@ watch(
                 @toggle-maximize="toggleMaximizePlot(cell.key)"
                 @remove="removeExtraPlot(cell.removeId)"
                 @switch-axes="switchExtraPlotAxes(cell.removeId)"
+                @add-variable="openPlotVars(cell)"
               />
             </div>
             <div v-if="plottableVariables.length && !effectiveMaximized" class="add-plot-row">
@@ -2231,6 +2365,70 @@ watch(
       </template>
     </Dialog>
 
+    <!--
+      Overlay further variables on one plot (#196). The picker is a
+      SearchableSelect, not a Select: the list is the model's whole plottable
+      variable set, which runs to hundreds on a circulation model (#160).
+    -->
+    <Dialog
+      v-model:visible="plotVarsOpen"
+      modal
+      header="Variables on this plot"
+      :style="{ width: '26rem' }"
+      data-testid="plot-vars-dialog"
+    >
+      <div class="add-plot-dialog">
+        <ul class="plot-vars-list" data-testid="plot-vars-list">
+          <li v-for="q in plotVarsDrawn" :key="q" class="plot-vars-item">
+            <code>{{ q }}</code>
+            <span v-if="modelUnits[q]" class="plot-vars-unit">[{{ modelUnits[q] }}]</span>
+            <!--
+              Only what the user added here can be taken off again: the cell's
+              own variable is what the plot *is*, and removing it would leave an
+              empty axis where "remove the plot" was meant.
+            -->
+            <button
+              v-if="plotVarsAdded.includes(q)"
+              type="button"
+              class="plot-vars-remove"
+              :title="`Remove ${q} from this plot`"
+              :aria-label="`Remove ${q} from this plot`"
+              data-testid="plot-vars-remove"
+              @click="removePlotVar(q)"
+            >
+              ✕
+            </button>
+          </li>
+        </ul>
+        <!-- A plain span, not a <label for>: SearchableSelect's root is a span,
+             which is not a labelable element. The control names itself. -->
+        <span class="add-plot-label">Add a variable</span>
+        <SearchableSelect
+          v-model="plotVarsPick"
+          :options="plotVarsChoices"
+          placeholder="Select a variable"
+          testid="plot-vars-select"
+          class="add-plot-select"
+        />
+        <p v-if="plotVarsUnitWarning" class="plot-vars-warn" data-testid="plot-vars-unit-warning">
+          {{ plotVarsUnitWarning }}
+        </p>
+        <p v-if="!plotVarsChoices.length" class="empty-hint">
+          Every plottable variable is already on this plot.
+        </p>
+      </div>
+      <template #footer>
+        <Button label="Done" text data-testid="plot-vars-done" @click="plotVarsOpen = false" />
+        <Button
+          label="Add"
+          icon="pi pi-plus"
+          :disabled="!plotVarsPick"
+          data-testid="plot-vars-confirm"
+          @click="confirmPlotVar"
+        />
+      </template>
+    </Dialog>
+
     <Dialog
       v-model:visible="exportPromptOpen"
       modal
@@ -2566,6 +2764,43 @@ watch(
 }
 .add-plot-select {
   width: 100%;
+}
+.plot-vars-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+.plot-vars-item {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.85rem;
+}
+.plot-vars-unit {
+  opacity: 0.6;
+  font-size: 0.78rem;
+}
+.plot-vars-remove {
+  margin-left: auto;
+  border: none;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  opacity: 0.55;
+  line-height: 1;
+  padding: 0.1rem 0.25rem;
+}
+.plot-vars-remove:hover {
+  opacity: 1;
+}
+/* A caveat, not an error: the overlay is exactly what was asked for. */
+.plot-vars-warn {
+  margin: 0;
+  font-size: 0.78rem;
+  opacity: 0.8;
 }
 .col-right {
   border-left: 1px solid var(--p-content-border-color, #333);
