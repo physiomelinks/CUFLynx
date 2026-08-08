@@ -39,12 +39,28 @@ def test_lv_qnames_correctly_formed(client):
     }
 
 
-def test_multi_vessel_name_expands_to_multiple_qnames(client):
+def test_multi_vessel_name_is_one_parameter_naming_every_vessel(client):
+    """A whitespace-split vessel_name is ONE parameter that varies in several
+    components at once (issue #193) -- CA gives such a row a single entry in
+    ``param_id_info['param_names']`` and a single value in the optimiser. It used
+    to become one slider per vessel, which let the user move one and not the
+    others and put the model in a state it never has."""
     csv = "vessel_name, param_name, min, max\n" "aortic_root venous_root, C, 1, 2\n"
     resp = _post_csv_text(client, csv)
     assert resp.status_code == 200, resp.text
-    qnames = {p["qname"] for p in resp.json()["params"]}
-    assert qnames == {"aortic_root/C", "venous_root/C"}
+    params = resp.json()["params"]
+    assert len(params) == 1
+    assert params[0]["qnames"] == ["aortic_root/C", "venous_root/C"]
+    # The representative is the first member, so every existing qname lookup
+    # (calibration write-back, saved-run markers) still finds the parameter.
+    assert params[0]["qname"] == "aortic_root/C"
+
+
+def test_a_single_vessel_row_still_lists_itself(client):
+    """`qnames` is the truth for every row, so consumers never special-case the
+    grouped form."""
+    resp = _post_csv_text(client, "vessel_name,param_name,min,max\nmain,alpha_o2,1,2\n")
+    assert resp.json()["params"][0]["qnames"] == ["main/alpha_o2"]
 
 
 def test_missing_required_column_returns_422(client):
@@ -216,6 +232,116 @@ def test_gen_name_fallback_prefers_parameters_component():
 
 
 # ---------------------------------------------------------------------------
+# Grouped parameters (issue #193): one row naming several vessels is one
+# parameter, so it needs one initial value -- and the components had better agree
+# on it.
+# ---------------------------------------------------------------------------
+def _flat_3compartment_values():
+    from cellml_meta import parse_cellml
+    from conftest import RESOURCES_DIR
+
+    return parse_cellml((RESOURCES_DIR / "3compartment_flat.cellml").read_bytes()).initial_values
+
+
+def test_a_group_whose_components_agree_takes_their_value_without_complaint():
+    """`I` is 1e-6 in both pvn and par, which is what a grouped row asserts, so
+    the slider starts there and nothing is reported."""
+    from params_for_id import parse_params_for_id
+
+    entries = parse_params_for_id(
+        "vessel_name,param_name,min,max\npvn par,I,1e-7,1e-5\n", _flat_3compartment_values()
+    )
+    assert entries[0].initial_value == pytest.approx(1e-6)
+    assert entries[0].warning is None
+
+
+def test_a_group_whose_components_disagree_says_so():
+    """`I` is 1e-6 in pvn but 1e4 in aortic_root: the row claims one quantity that
+    the model does not currently hold, and touching the slider overwrites the
+    evidence -- so the first member's value is used and the disagreement named."""
+    from params_for_id import parse_params_for_id
+
+    entries = parse_params_for_id(
+        "vessel_name,param_name,min,max\npvn aortic_root,I,1e-7,1e5\n",
+        _flat_3compartment_values(),
+    )
+    assert entries[0].initial_value == pytest.approx(1e-6)
+    warning = entries[0].warning
+    assert warning and "pvn/I" in warning and "aortic_root/I" in warning
+
+
+def test_the_group_warning_reaches_the_api_payload(client):
+    """The slider is where the user sees it, and the slider is built from this."""
+    from conftest import RESOURCES_DIR
+
+    model_id = upload_model(client, RESOURCES_DIR / "3compartment_flat.cellml")["model_id"]
+    resp = _post_csv_text(
+        client,
+        "vessel_name,param_name,min,max\npvn aortic_root,I,1e-7,1e5\n",
+        model_id=model_id,
+    )
+    assert resp.status_code == 200, resp.text
+    assert "aortic_root/I" in (resp.json()["params"][0]["warning"] or "")
+
+
+@pytest.mark.integration
+def test_a_grouped_parameter_reaches_every_component_it_names(client, requires_simulation):
+    """End to end: the one value the UI reads off the one handle must arrive at
+    all of the group's components in the solver.
+
+    Asserted by contrast rather than by inspecting the payload -- setting both
+    resistances must produce a different trace from setting only the first, which
+    is exactly the difference a per-vessel slider could not express."""
+    from conftest import RESOURCES_DIR
+
+    model_id = upload_model(client, RESOURCES_DIR / "3compartment_flat.cellml")["model_id"]
+    resp = _post_csv_text(
+        client,
+        "vessel_name,param_name,min,max\npar venous_svc,R,1e5,1e7\n",
+        model_id=model_id,
+    )
+    assert resp.status_code == 200, resp.text
+    qnames = resp.json()["params"][0]["qnames"]
+    assert qnames == ["par/R", "venous_svc/R"]
+
+    def run(params):
+        r = client.post(
+            "/api/simulate",
+            json={
+                "model_id": model_id,
+                "params": params,
+                "sim_time": 1.0,
+                "outputs": ["aortic_root/u"],
+            },
+        )
+        assert r.status_code == 200, r.text
+        return np.array(r.json()["outputs"]["aortic_root/u"])
+
+    # Order matters: the engine caches the compiled helper and a constant it was
+    # given stays set, so the run that leaves the second member alone has to come
+    # before the one that sets it.
+    first_only = run({qnames[0]: 5e6})
+    # What one slider at 5e6 sends: the same value under every member qname.
+    grouped = run({q: 5e6 for q in qnames})
+    assert grouped.size and np.all(np.isfinite(grouped))
+    assert not np.allclose(grouped, first_only)
+
+
+def test_a_member_the_model_lacks_is_not_a_disagreement():
+    """An unresolved member is the pre-existing "no such variable" case; calling it
+    a conflict would put a warning on every params_for_id written against a model
+    that was since trimmed."""
+    from params_for_id import parse_params_for_id
+
+    entries = parse_params_for_id(
+        "vessel_name,param_name,min,max\npvn nowhere,I,1e-7,1e-5\n",
+        _flat_3compartment_values(),
+    )
+    assert entries[0].initial_value == pytest.approx(1e-6)
+    assert entries[0].warning is None
+
+
+# ---------------------------------------------------------------------------
 # The `prior` column (MCMC / UQ priors)
 #
 # CA reads a missing prior as `uniform`, so dropping the column is not a lossless
@@ -249,12 +375,13 @@ def test_no_prior_column_leaves_every_entry_unstated():
 
 
 def test_the_prior_survives_a_multi_vessel_row():
-    """A whitespace-split vessel_name expands to several entries; each keeps the
-    row's prior, or the expansion would drop it for all but the first."""
+    """A whitespace-split vessel_name is one parameter (#193), and it keeps the
+    row's prior -- the prior belongs to the row, as CA reads it."""
     from params_for_id import parse_params_for_id
 
     entries = parse_params_for_id("vessel_name,param_name,min,max,prior\na b,k,1,2,normal\n")
-    assert [e.prior for e in entries] == ["normal", "normal"]
+    assert [e.prior for e in entries] == ["normal"]
+    assert entries[0].qnames == ["a/k", "b/k"]
 
 
 def test_the_prior_reaches_the_api_payload(client):

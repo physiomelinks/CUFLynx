@@ -41,6 +41,31 @@ describe('applyBestParams', () => {
     expect(s.sliders['a/z'].min).toBe(0)
     expect(s.sliders['a/z'].max).toBe(10)
   })
+
+  describe('grouped parameters (issue #193)', () => {
+    // CA reports the best fit per *member* qname (one value repeated), so a
+    // grouped parameter arrives as several entries for one slider.
+    const specs = () => {
+      const spec = { min: 0, max: 10, qnames: ['a/E', 'b/E'], primary: 'a/E' }
+      return { 'a/E': spec, 'b/E': spec }
+    }
+
+    it('lands every member on the one slider instead of splitting it apart', () => {
+      const s = useSliders()
+      s.addSlider('a/E', { min: 0, max: 10, value: 1, qnames: ['a/E', 'b/E'] })
+      applyBestParams(s, specs(), { 'a/E': 6, 'b/E': 6 })
+      expect(s.count.value).toBe(1)
+      expect(s.sliders['a/E'].value).toBe(6)
+      expect(s.sliders['b/E']).toBeUndefined()
+    })
+
+    it('re-creates a removed group as a group, not as its members', () => {
+      const s = useSliders()
+      applyBestParams(s, specs(), { 'a/E': 6, 'b/E': 6 })
+      expect(s.count.value).toBe(1)
+      expect(s.sliders['a/E'].qnames).toEqual(['a/E', 'b/E'])
+    })
+  })
 })
 
 describe('useCalibration', () => {

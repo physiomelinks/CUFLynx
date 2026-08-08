@@ -537,6 +537,102 @@ describe('EditParamsDialog — placeholder tells the truth', () => {
   })
 })
 
+// ---------------------------------------------------------------------------
+// Grouped parameters (issue #193)
+// ---------------------------------------------------------------------------
+describe('EditParamsDialog — grouped parameters', () => {
+  // Four aorta segments sharing one elastance, plus one unrelated parameter.
+  const groupProps = {
+    currentParams: [],
+    modelVariables: {
+      params: ['ao_A/E', 'ao_B/E', 'ao_C/E', 'ao_A/R'],
+      initial_values: { 'ao_A/E': 1, 'ao_B/E': 1, 'ao_C/E': 1, 'ao_A/R': 2 },
+    },
+  }
+
+  function rowFor(wrapper, qname) {
+    return wrapper
+      .findAll('[data-testid="ep-row"]')
+      .find((r) => r.find('.ep-name').text().startsWith(qname))
+  }
+
+  it('shows a loaded group as one row, marked with its size', () => {
+    const wrapper = mountDialog({
+      currentParams: [
+        { qname: 'ao_A/E', qnames: ['ao_A/E', 'ao_B/E'], min: 1, max: 2, name_for_plotting: 'E' },
+      ],
+      modelVariables: groupProps.modelVariables,
+    })
+    expect(wrapper.findAll('[data-testid="ep-row"]').map((r) => r.find('.ep-name').text())).toEqual(
+      ['ao_A/E×2', 'ao_A/R', 'ao_C/E'],
+    )
+    expect(wrapper.find('[data-testid="ep-group-badge"]').text()).toBe('×2')
+  })
+
+  it('offers only the variables of the same name to group with', () => {
+    // The CSV has one param_name column, so a group of differently-named
+    // variables is not expressible — offering one would offer something unsavable.
+    const wrapper = mountDialog(groupProps)
+    const row = rowFor(wrapper, 'ao_A/E')
+    row.find('input[type="checkbox"]').setValue(true)
+    return flushPromises().then(async () => {
+      await row.find('[data-testid="ep-group-toggle"]').trigger('click')
+      const members = row.findAll('[data-testid="ep-group-member"]')
+      expect(members.map((m) => m.attributes('data-qname'))).toEqual(['ao_B/E', 'ao_C/E'])
+    })
+  })
+
+  it('has nothing to offer a parameter no other component shares', () => {
+    const wrapper = mountDialog(groupProps)
+    const row = rowFor(wrapper, 'ao_A/R')
+    expect(row.find('[data-testid="ep-group-toggle"]').attributes('disabled')).toBeDefined()
+  })
+
+  it('writes a created group as one row naming every vessel', async () => {
+    uploadParamsForId.mockResolvedValue({ params: [] })
+    const wrapper = mountDialog(groupProps)
+    const row = rowFor(wrapper, 'ao_A/E')
+    await row.find('input[type="checkbox"]').setValue(true) // include it
+    await row.find('[data-testid="ep-group-toggle"]').trigger('click')
+    for (const m of row.findAll('[data-testid="ep-group-member"]')) await m.setValue(true)
+
+    // The absorbed rows stop being parameters of their own.
+    expect(wrapper.findAll('[data-testid="ep-row"]')).toHaveLength(2)
+    expect(wrapper.text()).toContain('1 included')
+
+    await wrapper.find('[data-testid="ep-save"]').trigger('click')
+    await flushPromises()
+    const text = await readFile(uploadParamsForId.mock.calls[0][0])
+    const [, written] = text.trim().split('\n')
+    expect(written.startsWith('ao_A ao_B ao_C,E,')).toBe(true)
+  })
+
+  it('gives a component back when it is unticked', async () => {
+    const wrapper = mountDialog(groupProps)
+    const row = rowFor(wrapper, 'ao_A/E')
+    await row.find('input[type="checkbox"]').setValue(true)
+    await row.find('[data-testid="ep-group-toggle"]').trigger('click')
+    const member = row.findAll('[data-testid="ep-group-member"]')[0]
+    await member.setValue(true)
+    expect(wrapper.findAll('[data-testid="ep-row"]')).toHaveLength(3)
+    await row.findAll('[data-testid="ep-group-member"]')[0].setValue(false)
+    expect(wrapper.findAll('[data-testid="ep-row"]')).toHaveLength(4)
+  })
+
+  it('finds a group by any of its components, not just the one it is named after', async () => {
+    const wrapper = mountDialog({
+      currentParams: [
+        { qname: 'ao_A/E', qnames: ['ao_A/E', 'ao_B/E'], min: 1, max: 2, name_for_plotting: 'E' },
+      ],
+      modelVariables: groupProps.modelVariables,
+    })
+    await wrapper.find('[data-testid="ep-search"]').setValue('ao_B')
+    const rows = wrapper.findAll('[data-testid="ep-row"]')
+    expect(rows).toHaveLength(1)
+    expect(rows[0].find('.ep-name').text()).toBe('ao_A/E×2')
+  })
+})
+
 describe('EditParamsDialog — placeholder follows the bounds', () => {
   it('recomputes when min or max is edited', async () => {
     const wrapper = mountDialog({

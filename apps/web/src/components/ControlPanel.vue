@@ -64,6 +64,18 @@ function onPosition(s, pos) {
 function onValue(qname, value) {
   emit('update', { qname, value: Number(value) })
 }
+
+/** How many model variables this one handle drives (1 for an ordinary slider). */
+function memberCount(s) {
+  return s.qnames?.length || 1
+}
+
+/** Hover text for the parameter's name: every variable the handle writes to. */
+function groupTitle(s) {
+  const members = s.qnames?.length ? s.qnames : [s.qname]
+  if (members.length === 1) return members[0]
+  return `One parameter in ${members.length} components:\n${members.join('\n')}`
+}
 </script>
 
 <template>
@@ -84,7 +96,34 @@ function onValue(qname, value) {
       data-testid="slider-row"
     >
       <div class="slider-label">
-        <span class="qname" :title="s.qname" v-html="renderMath(s.name_for_plotting)" />
+        <span class="slider-title">
+          <span class="qname" :title="groupTitle(s)" v-html="renderMath(s.name_for_plotting)" />
+          <!--
+            One parameter, several components (#193). The count is shown because
+            the plot label ("E_{AR}") says nothing about how many variables the
+            handle moves, and moving four at once is worth knowing before you drag.
+          -->
+          <span
+            v-if="memberCount(s) > 1"
+            class="group-badge"
+            :title="groupTitle(s)"
+            data-testid="group-badge"
+            >&times;{{ memberCount(s) }}</span
+          >
+          <!--
+            The group's components did not start from the same value, so the CSV
+            claims a quantity the model was not holding. Said here rather than
+            swallowed: the first drag overwrites the evidence.
+          -->
+          <i
+            v-if="s.warning"
+            class="pi pi-exclamation-triangle group-warning"
+            :title="s.warning"
+            data-testid="slider-warning"
+            role="img"
+            :aria-label="s.warning"
+          />
+        </span>
         <Button
           icon="pi pi-times"
           text
@@ -248,6 +287,30 @@ function onValue(qname, value) {
   display: flex;
   align-items: center;
   justify-content: space-between;
+}
+/* The name and its markers travel together so the remove button stays on the
+   right however many markers a parameter carries. */
+.slider-title {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+}
+/* Reads as a multiplier on the handle ("this moves 4 variables"), not as a value. */
+.group-badge {
+  flex: 0 0 auto;
+  font-size: 0.7rem;
+  padding: 0 0.3rem;
+  border-radius: 999px;
+  border: 1px solid var(--p-content-border-color, #444);
+  opacity: 0.75;
+  cursor: help;
+}
+.group-warning {
+  flex: 0 0 auto;
+  font-size: 0.8rem;
+  color: #e0a63c;
+  cursor: help;
 }
 .slider-body {
   display: flex;

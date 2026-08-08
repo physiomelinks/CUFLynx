@@ -110,4 +110,37 @@ describe('useSliders', () => {
       expect(s.sliders['a/x'].value).toBe(5)
     })
   })
+
+  describe('grouped parameters (issue #193)', () => {
+    it('a slider drives only itself unless told otherwise', () => {
+      const s = useSliders()
+      s.addSlider('a/x', { min: 0, max: 10, value: 3 })
+      expect(s.sliders['a/x'].qnames).toEqual(['a/x'])
+      expect(s.paramDict.value).toEqual({ 'a/x': 3 })
+    })
+
+    it('one grouped slider sets every component it names', () => {
+      // The params_for_id row "a b c, E" is one parameter in three components;
+      // the model has no variable for the group, so the run must be told all three.
+      const s = useSliders()
+      s.addSlider('a/E', { min: 0, max: 10, value: 4, qnames: ['a/E', 'b/E', 'c/E'] })
+      expect(s.paramDict.value).toEqual({ 'a/E': 4, 'b/E': 4, 'c/E': 4 })
+    })
+
+    it('moving the handle moves every component with it', () => {
+      const s = useSliders()
+      s.addSlider('a/E', { min: 0, max: 10, value: 4, qnames: ['a/E', 'b/E'] })
+      s.setValue('a/E', 9)
+      expect(s.paramDict.value).toEqual({ 'a/E': 9, 'b/E': 9 })
+    })
+
+    it('the save/load order counts parameters, not components', () => {
+      // A .npy is saved in this order and CA writes one value per params_for_id
+      // row, so a group must occupy exactly one slot.
+      const s = useSliders()
+      s.addSlider('a/E', { min: 0, max: 10, value: 4, qnames: ['a/E', 'b/E'] })
+      s.addSlider('a/R', { min: 0, max: 10, value: 1 })
+      expect(s.order.value).toEqual(['a/E', 'a/R'])
+    })
+  })
 })

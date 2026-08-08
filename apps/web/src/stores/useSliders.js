@@ -84,6 +84,14 @@ export function useSliders() {
       // The value the slider was created with, for "reset to init".
       init: rawValue,
       name_for_plotting: opts.name_for_plotting ?? qname,
+      // Every model variable this one slider drives (issue #193). A params_for_id
+      // row naming several vessels is one parameter that varies in all of them
+      // simultaneously, so it gets one handle and writes to all of its qnames.
+      // Always at least [qname], so no consumer has to special-case the group.
+      qnames: opts.qnames?.length ? [...opts.qnames] : [qname],
+      // Something to tell the user about this parameter (a group whose members
+      // started from different values); null for the ordinary case.
+      warning: opts.warning ?? null,
     }
     return sliders[qname]
   }
@@ -118,10 +126,21 @@ export function useSliders() {
     for (const key of Object.keys(sliders)) delete sliders[key]
   }
 
-  /** Param dict ({ qname: value }) for /simulate and /protocol/run. */
+  /**
+   * Param dict ({ qname: value }) for /simulate and /protocol/run.
+   *
+   * A grouped slider (#193) contributes one entry per member, because the model
+   * has no single variable for the group -- the components are what the solver
+   * sets. This is the one place the group is expanded, so everything downstream
+   * (the engine, the calibration start point, local SA's nominal point) sees the
+   * same fully-specified point it always did.
+   */
   const paramDict = computed(() => {
     const out = {}
-    for (const key of Object.keys(sliders)) out[key] = sliders[key].value
+    for (const key of Object.keys(sliders)) {
+      const s = sliders[key]
+      for (const qname of s.qnames ?? [key]) out[qname] = s.value
+    }
     return out
   })
 

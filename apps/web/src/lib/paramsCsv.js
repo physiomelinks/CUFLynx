@@ -30,10 +30,21 @@ export function defaultRange(initialValue) {
 export function mergedRows(currentParams = [], modelVariables = {}) {
   const initials = modelVariables.initial_values || {}
   const byQname = new Map()
+  // Members of a loaded group, so the model-parameter pass below doesn't offer
+  // them again as separate rows — they already belong to a row (#193).
+  const claimed = new Set()
 
   for (const p of currentParams) {
+    const qnames = p.qnames?.length ? [...p.qnames] : [p.qname]
+    for (const q of qnames) claimed.add(q)
     byQname.set(p.qname, {
       qname: p.qname,
+      // Every variable this row drives, `qname` first. One entry for an ordinary
+      // row, so nothing downstream has to ask whether a row is a group.
+      qnames,
+      // Set on a row that has been absorbed into another row's group: it keeps
+      // its edits (so ungrouping restores them) but is neither shown nor saved.
+      groupedInto: null,
       included: true,
       min: p.min,
       max: p.max,
@@ -57,11 +68,13 @@ export function mergedRows(currentParams = [], modelVariables = {}) {
   }
 
   for (const qname of modelVariables.params || []) {
-    if (byQname.has(qname)) continue
+    if (byQname.has(qname) || claimed.has(qname)) continue
     const iv = initials[qname] ?? null
     const { min, max } = defaultRange(iv)
     byQname.set(qname, {
       qname,
+      qnames: [qname],
+      groupedInto: null,
       included: false,
       min,
       max,
@@ -89,6 +102,56 @@ export function splitQname(qname) {
     : { vessel_name: qname.slice(0, i), param_name: qname.slice(i + 1) }
 }
 
+/**
+ * Whether `candidate` could join `row`'s group (#193).
+ *
+ * Only a row with the same `param_name`, because a params_for_id row has exactly
+ * one `param_name` column — the CSV cannot express a group of differently-named
+ * variables, so offering one would be offering something unsavable. A row already
+ * absorbed elsewhere, and a row that is a group itself, are excluded: merging two
+ * groups would have to decide whose range and prior survive.
+ */
+export function canJoinGroup(row, candidate) {
+  return (
+    candidate !== row &&
+    splitQname(candidate.qname).param_name === splitQname(row.qname).param_name &&
+    (candidate.groupedInto == null || candidate.groupedInto === row.qname) &&
+    (candidate.qnames?.length ?? 1) === 1
+  )
+}
+
+/**
+ * Rows that could join `row`'s group.
+ *
+ * @param {Array<object>} rows - every row (visible or absorbed)
+ * @param {object} row
+ */
+export function groupCandidates(rows, row) {
+  return rows.filter((r) => canJoinGroup(row, r))
+}
+
+/**
+ * Absorb `member` into `row`'s group: `row` now drives it too, and `member` stops
+ * being a row of its own. Kept rather than deleted so unticking restores it with
+ * its range, prior and note intact. No-op if it is already in the group.
+ */
+export function addToGroup(row, member) {
+  if (row === member || row.qnames.includes(member.qname)) return
+  row.qnames = [...row.qnames, member.qname]
+  member.groupedInto = row.qname
+}
+
+/** The inverse: `member` becomes an independent row again. */
+export function removeFromGroup(row, member) {
+  row.qnames = row.qnames.filter((q) => q !== member.qname)
+  member.groupedInto = null
+}
+
+/** The rows a CSV is written from: the ticked ones that aren't inside a group. */
+export function rowsToSave(rows) {
+  return rows.filter((r) => r.included && !r.groupedInto)
+}
+
 function csvField(value) {
   const s = value == null ? '' : String(value)
   return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
@@ -99,7 +162,8 @@ function numField(value) {
 }
 
 /**
- * Build params_for_id CSV text from the rows to write (one row per qname). The
+ * Build params_for_id CSV text from the rows to write (one row per parameter —
+ * a grouped row names all of its vessels in the one `vessel_name` cell). The
  * `param_type`, `prior` and `comment` columns are only emitted when at least one
  * row carries one. Column order matches the parser's expectations (vessel_name,
  * param_name, min, max, name_for_plotting[, param_type][, prior][, comment]).
@@ -142,7 +206,14 @@ export function buildParamsCsv(rows) {
 
   const lines = [header.join(',')]
   for (const r of rows) {
-    const { vessel_name, param_name } = splitQname(r.qname)
+    const { param_name } = splitQname(r.qname)
+    // A grouped row writes every vessel into the one `vessel_name` cell,
+    // whitespace-separated — CA's own notation for "this parameter, in all of
+    // these components" (#193). Writing only `r.qname`'s vessel would silently
+    // dissolve the group the moment the file was re-saved.
+    const vessel_name = (r.qnames?.length ? r.qnames : [r.qname])
+      .map((q) => splitQname(q).vessel_name)
+      .join(' ')
     const cells = [
       csvField(vessel_name),
       csvField(param_name),

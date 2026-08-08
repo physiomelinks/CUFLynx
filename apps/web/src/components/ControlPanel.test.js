@@ -257,3 +257,50 @@ describe('ControlPanel virtual (best fit) run', () => {
     expect(wrapper.emitted('toggle-saved')[0]).toEqual(['best fit'])
   })
 })
+
+describe('ControlPanel — grouped parameters (issue #193)', () => {
+  const grouped = {
+    'ao_A/E': {
+      qname: 'ao_A/E',
+      qnames: ['ao_A/E', 'ao_B/E', 'ao_C/E', 'ao_D/E'],
+      min: 3e5,
+      max: 1.3e6,
+      value: 4e5,
+      log: false,
+      name_for_plotting: 'E_{AR}',
+      warning: null,
+    },
+  }
+
+  it('is one row, however many components it drives', () => {
+    const wrapper = mount(ControlPanel, { props: { sliders: grouped }, global: { stubs } })
+    expect(wrapper.findAll('[data-testid="slider-row"]').length).toBe(1)
+  })
+
+  it('says how many components move with the handle', () => {
+    // The plot label ("E_{AR}") says nothing about that on its own.
+    const wrapper = mount(ControlPanel, { props: { sliders: grouped }, global: { stubs } })
+    const badge = wrapper.find('[data-testid="group-badge"]')
+    expect(badge.text()).toBe('×4')
+    expect(badge.attributes('title')).toContain('ao_D/E')
+  })
+
+  it('leaves an ordinary parameter unmarked', () => {
+    const wrapper = mount(ControlPanel, { props: { sliders: sliderState(1) }, global: { stubs } })
+    expect(wrapper.find('[data-testid="group-badge"]').exists()).toBe(false)
+  })
+
+  it('shows the backend warning when the components did not agree', () => {
+    const warning = 'grouped parameter E starts from different values'
+    const wrapper = mount(ControlPanel, {
+      props: { sliders: { 'ao_A/E': { ...grouped['ao_A/E'], warning } } },
+      global: { stubs },
+    })
+    expect(wrapper.find('[data-testid="slider-warning"]').attributes('title')).toBe(warning)
+  })
+
+  it('does not warn when there is nothing to warn about', () => {
+    const wrapper = mount(ControlPanel, { props: { sliders: grouped }, global: { stubs } })
+    expect(wrapper.find('[data-testid="slider-warning"]').exists()).toBe(false)
+  })
+})

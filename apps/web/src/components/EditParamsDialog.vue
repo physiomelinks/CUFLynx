@@ -4,7 +4,16 @@ import Dialog from 'primevue/dialog'
 import Button from 'primevue/button'
 import Checkbox from 'primevue/checkbox'
 import Message from 'primevue/message'
-import { mergedRows, buildParamsCsv, versionedFilename } from '../lib/paramsCsv'
+import {
+  mergedRows,
+  buildParamsCsv,
+  versionedFilename,
+  canJoinGroup,
+  addToGroup,
+  removeFromGroup,
+  rowsToSave,
+  splitQname,
+} from '../lib/paramsCsv'
 import { evalPriorDefault, formatPriorDefault } from '../lib/priorDefaults'
 import { uploadParamsForId, getConfig } from '../lib/api'
 
@@ -30,6 +39,8 @@ const expanded = ref(new Set())
 // extra columns: the values differ per prior, so as columns they would be blank
 // for most rows and make the grid ragged.
 const priorOpen = ref(new Set())
+// qnames whose "vary together" panel is open (issue #193).
+const groupOpen = ref(new Set())
 
 // The prior vocabulary comes from CA (via /api/config), never a hardcoded list
 // here — CA owns what a prior may be, and one it grows should appear without a
@@ -68,6 +79,9 @@ watch(
           .filter((r) => Object.values(r.priorParams ?? {}).some((v) => v !== '' && v != null))
           .map((r) => r.qname),
       )
+      // A group is already visible in its own row's badge and member list, so it
+      // opens shut like the others.
+      groupOpen.value = new Set()
       error.value = ''
       search.value = ''
       loadPriorTypes()
@@ -80,14 +94,59 @@ watch(
 // case-insensitive). Filtering is display-only: `rows` stays the source of
 // truth for inclusion and saving, so hidden rows keep their edits.
 const visibleRows = computed(() => {
+  // A row absorbed into a group is no longer a parameter of its own; it shows in
+  // its group's member list instead of as a row that could be ticked separately.
+  const listed = rows.value.filter((r) => !r.groupedInto)
   const q = search.value.trim().toLowerCase()
-  if (!q) return rows.value
-  return rows.value.filter(
+  if (!q) return listed
+  return listed.filter(
     (r) =>
       r.qname.toLowerCase().includes(q) ||
-      (r.name_for_plotting || '').toLowerCase().includes(q),
+      (r.name_for_plotting || '').toLowerCase().includes(q) ||
+      // A group is findable by any of its members, not just the one it is named
+      // after -- that name is an accident of which vessel came first in the CSV.
+      r.qnames.some((n) => n.toLowerCase().includes(q)),
   )
 })
+
+// ---------------------------------------------------------------------------
+// Grouped parameters (issue #193): one parameter that varies in several
+// components at once, written as a whitespace-separated `vessel_name`.
+// ---------------------------------------------------------------------------
+// Rows indexed by param_name, because that is the only thing a candidate can
+// share with a row. Every row asks for its candidates on every render, and the
+// list is every parameter the model has -- scanning it per row is quadratic in a
+// dialog that routinely opens on hundreds of them.
+const rowsByParamName = computed(() => {
+  const out = new Map()
+  for (const r of rows.value) {
+    const name = splitQname(r.qname).param_name
+    if (!out.has(name)) out.set(name, [])
+    out.get(name).push(r)
+  }
+  return out
+})
+
+/** The rows this one could take in — same param_name, not already in a group. */
+function candidatesFor(row) {
+  const sameName = rowsByParamName.value.get(splitQname(row.qname).param_name) ?? []
+  return sameName.filter((r) => canJoinGroup(row, r))
+}
+
+function isGrouped(row, candidate) {
+  return row.qnames.includes(candidate.qname)
+}
+
+function onGroupToggle(row, candidate, checked) {
+  if (checked) addToGroup(row, candidate)
+  else removeFromGroup(row, candidate)
+}
+
+function toggleGroupPanel(qname) {
+  const next = new Set(groupOpen.value)
+  next.has(qname) ? next.delete(qname) : next.add(qname)
+  groupOpen.value = next
+}
 
 /** CA's display label for a prior value, for the panel heading. */
 function priorLabel(value) {
@@ -214,9 +273,11 @@ function rowInvalid(row) {
   return !Number.isFinite(row.min) || !Number.isFinite(row.max) || row.min >= row.max
 }
 
-const includedCount = computed(() => rows.value.filter((r) => r.included).length)
+// Parameters, not rows: a grouped member is part of one of these, not another one.
+const savedRows = computed(() => rowsToSave(rows.value))
+const includedCount = computed(() => savedRows.value.length)
 const canSave = computed(
-  () => includedCount.value > 0 && !rows.value.some(rowInvalid) && !saving.value,
+  () => includedCount.value > 0 && !savedRows.value.some(rowInvalid) && !saving.value,
 )
 
 function downloadCsv(text, filename) {
@@ -235,8 +296,7 @@ function downloadCsv(text, filename) {
 
 async function onSave() {
   error.value = ''
-  const included = rows.value.filter((r) => r.included)
-  const csv = buildParamsCsv(included)
+  const csv = buildParamsCsv(savedRows.value)
   const filename = versionedFilename(props.loadedFilename, props.modelName)
   downloadCsv(csv, filename)
   saving.value = true
@@ -296,6 +356,12 @@ async function onSave() {
       <span v-if="priorTypes.length" class="ep-prior" title="Prior distribution used by MCMC / UQ">
         Prior
       </span>
+      <span
+        class="ep-note-col"
+        title="Vary this parameter in several components at once (one slider, one calibrated value)"
+      >
+        Group
+      </span>
       <span class="ep-note-col">Note</span>
     </div>
 
@@ -309,7 +375,12 @@ async function onSave() {
         <span class="ep-inc">
           <Checkbox v-model="row.included" :binary="true" />
         </span>
-        <span class="ep-name" :title="row.qname">{{ row.qname }}</span>
+        <span class="ep-name" :title="row.qnames.join('\n')">
+          {{ row.qname
+          }}<span v-if="row.qnames.length > 1" class="ep-group-badge" data-testid="ep-group-badge"
+            >&times;{{ row.qnames.length }}</span
+          >
+        </span>
         <input
           type="number"
           step="any"
@@ -352,6 +423,27 @@ async function onSave() {
             {{ p.label }}
           </option>
         </select>
+        <!--
+          Grouping is offered per row rather than as a multi-select over the list
+          because the CSV can only group variables that share a param_name, and
+          the row is the only place that name is already fixed.
+        -->
+        <button
+          type="button"
+          class="ep-note-btn"
+          :class="{ 'has-note': row.qnames.length > 1 }"
+          data-testid="ep-group-toggle"
+          :disabled="!row.included || !candidatesFor(row).length"
+          :aria-expanded="groupOpen.has(row.qname)"
+          :title="
+            candidatesFor(row).length
+              ? 'Vary this parameter in several components at once'
+              : 'No other component has a parameter of this name to group with'
+          "
+          @click="toggleGroupPanel(row.qname)"
+        >
+          <i class="pi pi-link" />
+        </button>
         <button
           type="button"
           class="ep-note-btn"
@@ -420,6 +512,35 @@ async function onSave() {
             </span>
           </div>
         </div>
+        <!--
+          The components this one parameter is written into. One row in the CSV
+          ("a b c, E, …"), one slider, one calibrated value — so ticking a
+          component here removes its own row rather than leaving two ways to set
+          the same quantity.
+        -->
+        <div v-if="groupOpen.has(row.qname)" class="ep-group-block" data-testid="ep-group-panel">
+          <p class="ep-group-hint">
+            Tick the components this parameter also applies to. They vary together:
+            one slider, one range, one calibrated value.
+          </p>
+          <div class="ep-group-list">
+            <label
+              v-for="c in candidatesFor(row)"
+              :key="c.qname"
+              class="ep-group-item"
+              :title="c.qname"
+            >
+              <input
+                type="checkbox"
+                :checked="isGrouped(row, c)"
+                data-testid="ep-group-member"
+                :data-qname="c.qname"
+                @change="onGroupToggle(row, c, $event.target.checked)"
+              />
+              <span>{{ splitQname(c.qname).vessel_name || c.qname }}</span>
+            </label>
+          </div>
+        </div>
         <div v-if="expanded.has(row.qname)" class="ep-note">
           <textarea
             class="ep-note-input"
@@ -473,7 +594,7 @@ async function onSave() {
 .ep-head,
 .ep-list li {
   display: grid;
-  grid-template-columns: 2.5rem 1fr 6rem 6rem 7rem 2rem;
+  grid-template-columns: 2.5rem 1fr 6rem 6rem 7rem 2rem 2rem;
   align-items: center;
   gap: 0.5rem;
 }
@@ -481,7 +602,7 @@ async function onSave() {
    track list has to match — otherwise the note button lands under "Prior". */
 .ep-head.has-prior,
 .ep-list li.has-prior {
-  grid-template-columns: 2.5rem 1fr 6rem 6rem 7rem 7rem 2rem;
+  grid-template-columns: 2.5rem 1fr 6rem 6rem 7rem 7rem 2rem 2rem;
 }
 select.ep-prior {
   width: 100%;
@@ -640,6 +761,53 @@ input:disabled {
 .ep-note {
   grid-column: 1 / -1;
   padding: 0 0.2rem 0.2rem;
+}
+/* Same disclosure treatment as the prior settings: a detail *of* the row rather
+   than another column in it. */
+.ep-group-block {
+  grid-column: 1 / -1;
+  margin: 0.15rem 0 0.1rem 2.9rem;
+  padding: 0.3rem 0.6rem 0.4rem;
+  border-left: 2px solid var(--p-primary-color, #5b9bd5);
+  background: color-mix(in srgb, var(--p-primary-color, #5b9bd5) 7%, transparent);
+  border-radius: 0 4px 4px 0;
+}
+.ep-group-hint {
+  margin: 0 0 0.3rem;
+  font-size: 0.72rem;
+  opacity: 0.7;
+}
+/* Wraps and scrolls: a param name shared by every vessel in a circulatory model
+   is a long list, and it must not push the footer off the dialog. */
+.ep-group-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.15rem 0.75rem;
+  max-height: 9rem;
+  overflow-y: auto;
+}
+.ep-group-item {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.76rem;
+  cursor: pointer;
+}
+.ep-group-item input {
+  cursor: pointer;
+}
+/* The count of components the row drives, beside its name. */
+.ep-group-badge {
+  margin-left: 0.35rem;
+  padding: 0 0.3rem;
+  border-radius: 999px;
+  border: 1px solid var(--p-content-border-color, #444);
+  font-size: 0.7rem;
+  opacity: 0.75;
+}
+.ep-note-btn:disabled {
+  opacity: 0.2;
+  cursor: default;
 }
 .ep-note-input {
   width: 100%;
