@@ -1365,13 +1365,22 @@ def cost_sensitivity_route(req: CostSensitivityRequest) -> dict:
         return _single_run_cost(record, result, output_dir)
 
     try:
-        return cost_sensitivity.evaluate(
+        result = cost_sensitivity.evaluate(
             req.params,
             cost_at,
             param_names=req.param_names,
             bounds=req.bounds,
             rel_step=req.rel_step,
         )
+        # Whether the 2M+1 solves `n_simulations` already reports were a price
+        # worth paying or an avoidable one (issue #188). Differencing costs the
+        # same number of solves on every backend; a backend with analytic (AD)
+        # gradients is one where CA could in principle not pay it at all, so the
+        # absence of AD is what makes this the slow option rather than merely a
+        # thorough one. Reported rather than left for the user to infer from a
+        # slider that has gone sluggish.
+        result["ad_available"] = ad_available(live_type)
+        return result
     except SimulationError as exc:
         # Only the *base* run reaches here: a perturbed one that fails is that
         # parameter's reason, not the whole request's failure.

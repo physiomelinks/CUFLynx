@@ -82,6 +82,25 @@ function direction(value) {
         ><template v-if="result?.n_simulations">
           ({{ result.n_simulations }} simulations)</template>
       </span>
+      <!--
+        Issue #188: differencing costs the same 2M+1 solves on every backend, but
+        only a backend without analytic (AD) gradients has no cheaper route in
+        principle — so that is where the price is worth flagging rather than
+        letting a drag quietly turn sluggish.
+      -->
+      <span
+        v-if="result && result.ad_available === false"
+        class="cost-sens-slow"
+        data-testid="cost-sens-no-ad"
+        :title="
+          `This backend has no analytic (AD) gradients, so each update runs ` +
+          `${result.n_simulations ?? '2M+1'} simulations. casadi_python with ` +
+          `all-differentiable operations, or aadc_python, would make analytic ` +
+          `gradients possible.`
+        "
+      >
+        slow: no AD
+      </span>
       <ProgressSpinner
         v-if="status === 'running'"
         style="width: 0.9rem; height: 0.9rem"
@@ -150,6 +169,15 @@ function direction(value) {
 .cost-sens {
   padding: 0.25rem 0.75rem 0.5rem;
   font-size: 0.78rem;
+}
+.cost-sens-slow {
+  font-size: 0.7rem;
+  padding: 0.05rem 0.35rem;
+  border-radius: 3px;
+  cursor: help;
+  color: var(--p-amber-400, #ffb74d);
+  border: 1px solid var(--p-amber-400, #ffb74d);
+  opacity: 0.85;
 }
 .cost-sens-head {
   display: flex;

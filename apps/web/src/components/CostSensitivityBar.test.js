@@ -103,4 +103,26 @@ describe('CostSensitivityBar (#188)', () => {
     const wrapper = mountBar({ result: null, status: 'running' })
     expect(wrapper.find('[data-testid="cost-sens-empty"]').text()).toContain('measuring')
   })
+
+  it('flags a backend with no analytic gradients as the slow case (#188)', () => {
+    // Differencing costs the same 2M+1 solves everywhere; only a backend without
+    // AD has no cheaper route in principle, so that is what is worth saying.
+    const wrapper = mountBar({ result: payload({ ad_available: false }) })
+    const badge = wrapper.get('[data-testid="cost-sens-no-ad"]')
+    expect(badge.text()).toContain('no AD')
+    // The badge says it is slow; the tooltip says how slow, and what would fix it.
+    expect(badge.attributes('title')).toContain(String(payload().n_simulations))
+    expect(badge.attributes('title')).toContain('casadi_python')
+  })
+
+  it('says nothing about AD when the backend has it', () => {
+    const wrapper = mountBar({ result: payload({ ad_available: true }) })
+    expect(wrapper.find('[data-testid="cost-sens-no-ad"]').exists()).toBe(false)
+  })
+
+  it('says nothing when the backend did not report either way', () => {
+    // An older payload has no `ad_available`; absence is not a claim of slowness.
+    const wrapper = mountBar()
+    expect(wrapper.find('[data-testid="cost-sens-no-ad"]').exists()).toBe(false)
+  })
 })
