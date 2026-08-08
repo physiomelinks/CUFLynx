@@ -145,7 +145,9 @@ def test_operation_templates_have_tabs_and_mention_plotting(tmp_cfg):
 
 def test_cost_templates_present(tmp_cfg):
     result = uf.read_user_funcs("cost")
-    assert set(result["templates"]) == {"basic", "kwargs", "differentiable", "MLE"}
+    assert set(result["templates"]) == {
+        "basic", "kwargs", "robust", "differentiable", "MLE",
+    }
     assert "cost_type" in result["templates"]["basic"]
     # The differentiable cost template uses @differentiable + the math backend.
     assert "@differentiable" in result["templates"]["differentiable"]
@@ -176,9 +178,17 @@ def test_cost_kwargs_template_teaches_the_contract(tmp_cfg):
 
 
 def test_every_cost_template_is_valid_python(tmp_cfg):
-    """A template the user cannot save is worse than no template."""
+    """A template the user cannot save is worse than no template.
+
+    The name is read out of the template rather than listed here: a validator
+    that insists the function match the cost name means a new template with a
+    new name would otherwise fail this test for its name rather than its code.
+    """
+    import ast
+
     for key, source in uf.read_user_funcs("cost")["templates"].items():
-        name = "my_mle_cost" if key == "MLE" else "my_cost"
+        name = next(n.name for n in ast.parse(source).body
+                    if isinstance(n, ast.FunctionDef))
         assert uf._validate_source("cost", name, source), key
 
 

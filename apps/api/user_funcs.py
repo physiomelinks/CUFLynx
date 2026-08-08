@@ -204,6 +204,58 @@ _COST_TEMPLATES = {
     error = np.abs(output - desired_mean)
     return float(np.sum(np.maximum(error - tolerance, 0.0) ** exponent * weight))
 ''',
+    "robust": '''@differentiable
+def robust_loss(output, desired_mean, std, weight, alpha=2.0, c=1.0):
+    """Barron's general and adaptive robust loss (CVPR 2019), tuned per data_item.
+
+    One family that contains several familiar losses, chosen by ``alpha``:
+
+    ====== ==========================================================
+    alpha  loss
+    ====== ==========================================================
+    2      squared error — identical to ``MSE`` (see the note below)
+    1      pseudo-Huber (Charbonnier)
+    0      Cauchy / Lorentzian
+    -2     Geman-McClure
+    -inf   Welsch / Leclerc
+    ====== ==========================================================
+
+    Lower ``alpha`` gives outliers progressively less influence, which is the
+    point: a single bad experimental point cannot then drag the whole fit. ``c``
+    sets the residual scale at which that down-weighting starts, in units of
+    ``std`` (residuals much smaller than ``c`` are still scored quadratically).
+
+    Note that ``c`` divides the residual, so it also **rescales the cost by
+    1/c**2**. Two data_items with different ``c`` are therefore on different
+    scales — the same trap as unnormalised weights. Prefer leaving ``c`` at 1 and
+    letting each item's ``std`` carry its scale, unless you mean to reweight.
+
+    **The factor of 2** below is deliberate. Barron writes the alpha=2 case as
+    ``0.5*(x/c)**2``, while CA's ``MSE`` is ``2*gaussian_MLE`` and so carries no
+    half. Scaling the whole family by 2 makes ``alpha=2, c=1`` reproduce ``MSE``
+    *exactly* rather than up to a constant — so switching a data_item to this
+    cost and leaving alpha at its default changes nothing, and any change you
+    then see is the robustness, not a rescaling.
+
+    Branching on ``alpha`` in Python is safe under AD: it is a keyword argument
+    fixed per data_item, not part of the data, so the branch is taken once when
+    the graph is built. The special cases are not optional — the general form
+    divides by ``alpha`` and by ``|alpha - 2|``.
+    """
+    x = (output - desired_mean) / std
+    sq = mb.power(x / c, 2)
+    if alpha == 2.0:
+        rho = 0.5 * sq
+    elif alpha == 0.0:
+        rho = mb.log(0.5 * sq + 1.0)
+    elif alpha == float("-inf"):
+        rho = 1.0 - mb.exp(-0.5 * sq)
+    else:
+        d = abs(alpha - 2.0)
+        rho = (d / alpha) * (mb.power(sq / d + 1.0, 0.5 * alpha) - 1.0)
+    per = 2.0 * rho * weight
+    return mb.sum(per) / mb.numel(per)
+''',
     "differentiable": '''@differentiable
 def my_cost(output, desired_mean, std, weight):
     """Differentiable cost — the ``@differentiable`` marker is required to use AD

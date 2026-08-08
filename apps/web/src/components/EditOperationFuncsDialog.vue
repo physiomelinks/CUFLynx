@@ -25,6 +25,7 @@ const TEMPLATE_LABELS = {
   basic: 'Basic',
   multi_operand: 'Multi-operand',
   kwargs: 'With kwargs',
+  robust: 'Robust loss (Barron)',
   differentiable: 'Differentiable (AD/FSA)',
   MLE: 'MLE (Bayesian)',
 }
