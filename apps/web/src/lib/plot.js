@@ -272,6 +272,61 @@ export function unitForVars(units, qnames) {
   return first
 }
 
+/**
+ * Do these variables disagree about their units (#196)?
+ *
+ * `unitForVars` already refuses to label a mixed-unit axis, but silence is
+ * indistinguishable from "the model declares no units" — and a plot that
+ * overlays mmHg on mL with no annotation is a trap. This says which of the two
+ * it is, so the plot can say so out loud. Variables whose unit is unknown or
+ * `dimensionless` are ignored: they contradict nothing.
+ */
+export function hasMixedUnits(units, qnames) {
+  if (!units) return false
+  const seen = new Set()
+  for (const q of qnames ?? []) {
+    const u = units[q]
+    if (u && u !== 'dimensionless') seen.add(u)
+  }
+  return seen.size > 1
+}
+
+/**
+ * Overlay further model variables on an existing plot cell (issue #196).
+ *
+ * The cell keeps whatever it was built from — an obs-derived variable, the
+ * combined manual run, a user-added "Add plot" cell — and simply gains series;
+ * buildChartData already colours each output from PALETTE by position and the
+ * HTML legend already names them, so overlaying costs nothing beyond the merge.
+ *
+ * `qnames` are appended in the order the user added them, after the cell's own
+ * variables, because the *first* series is the one `varLabel` names and the one
+ * a saved-run comparison reads as primary. A variable the cell already draws is
+ * skipped rather than duplicated.
+ *
+ * One y axis, deliberately: the unit conversion (#125) and the shared-axis
+ * alignment (#145) are both per-axis state, and a second axis would double
+ * them while making "which axis is this line on?" a question the legend cannot
+ * answer. Mixed units are flagged (`mixedUnits`) instead of forbidden — the
+ * user can bring the two onto a common scale with the unit converter.
+ */
+export function withOverlayVars(cell, qnames, outputs, units) {
+  const own = cell.simResult?.outputs ?? {}
+  const added = (qnames ?? []).filter((q) => q && !(q in own))
+  if (!added.length) return cell
+  const merged = { ...own }
+  for (const q of added) merged[q] = outputs?.[q] ?? []
+  const all = Object.keys(merged)
+  return {
+    ...cell,
+    simResult: { ...cell.simResult, outputs: merged },
+    qnames: all,
+    overlayVars: added,
+    yUnit: unitForVars(units, all),
+    mixedUnits: hasMixedUnits(units, all),
+  }
+}
+
 /** The model's time units, looked up from whichever variable is named time/t. */
 export function timeUnit(units) {
   if (!units) return ''
@@ -400,17 +455,25 @@ export function buildChartData(simResult, options = {}) {
     })
     colorIdx += 1
   }
+  // `varLabel` names the cell's *primary* variable — it doubles as the y-axis
+  // label — so it can only stand in for the first trace. Once a user overlays
+  // further variables on the same plot (#196) the rest must be named by their
+  // own qname, or every line in the legend would read as the primary one.
+  let first = true
   for (const qname of Object.keys(outputs)) {
+    const nameFor = (fallback) => (first ? varLabel || fallback : fallback)
     const overrides = overrideByVar.get(qname)
     if (overrides && overrides.length) {
       // Plot the operation's transformed series instead of the raw operand.
       for (const item of overrides) {
         const name = item.name_for_plotting ?? item.variable ?? qname
-        pushLine(name, varLabel || name, item.output_series)
+        pushLine(name, nameFor(name), item.output_series)
+        first = false
       }
       continue
     }
-    pushLine(qname, varLabel || qname, outputs[qname] ?? [])
+    pushLine(qname, nameFor(qname), outputs[qname] ?? [])
+    first = false
   }
 
   // Saved runs shown for comparison (issue #126). Each carries its own colour —

@@ -47,6 +47,13 @@ const props = defineProps({
   tag: { type: String, default: '' },
   stepped: { type: Boolean, default: false },
   removable: { type: Boolean, default: false },
+  // Offer to overlay another model variable on this plot (issue #196). The
+  // parent owns the variable list and the picker; this is only the affordance.
+  addable: { type: Boolean, default: false },
+  // The variables drawn here don't share a unit (#196). `yUnit` is then empty —
+  // which on its own is indistinguishable from a model that declares no units —
+  // so say which it is rather than leaving an unlabelled axis to be trusted.
+  mixedUnits: { type: Boolean, default: false },
   // Offer to swap the axes. Only a phase-plane cell (issue #124) can: a time
   // series has nothing to put on the y axis in time's place.
   switchable: { type: Boolean, default: false },
@@ -59,7 +66,13 @@ const props = defineProps({
   alignWidth: { type: Number, default: 0 },
 })
 
-const emit = defineEmits(['remove', 'toggle-maximize', 'switch-axes', 'axis-width'])
+const emit = defineEmits([
+  'remove',
+  'toggle-maximize',
+  'switch-axes',
+  'axis-width',
+  'add-variable',
+])
 
 const chartData = computed(() =>
   buildChartData(props.simResult, {
@@ -276,7 +289,7 @@ defineExpose({
 
 <template>
   <section class="plot-panel" :class="{ maximized }" data-testid="plot-panel">
-    <div v-if="tag || title || removable || maximizable" class="plot-head">
+    <div v-if="tag || title || removable || maximizable || addable" class="plot-head">
       <span v-if="tag" class="plot-tag" data-testid="plot-tag">{{ tag }}</span>
       <h3
         v-if="title"
@@ -304,6 +317,30 @@ defineExpose({
         @click="openConvert('y')"
       >
         [{{ displayUnit }}]
+      </button>
+      <!--
+        No shared unit, so no axis annotation is possible — but an unlabelled
+        axis reads as "this model declares no units", not as "these two lines
+        are measured in different things". Say it (#196).
+      -->
+      <span
+        v-else-if="mixedUnits"
+        class="plot-mixed-units"
+        title="The variables on this plot use different units, so the axis carries none. Use the unit converter on each plot, or split them, if the comparison needs a common scale."
+        data-testid="plot-mixed-units"
+      >
+        [mixed units]
+      </span>
+      <button
+        v-if="addable"
+        type="button"
+        class="plot-add-var"
+        title="Add a variable to this plot"
+        aria-label="Add a variable to this plot"
+        data-testid="plot-add-var"
+        @click="$emit('add-variable')"
+      >
+        <i class="pi pi-plus" />
       </button>
       <button
         v-if="maximizable"
@@ -576,6 +613,28 @@ defineExpose({
   border-top: 1px solid var(--p-content-border-color, #ddd);
   margin: 0.1rem 0;
 }
+/* Sits where the unit chip would, and reads like it — a caveat about the axis,
+   not an error: the plot is exactly what the user asked for. */
+.plot-mixed-units {
+  font-size: 0.78rem;
+  opacity: 0.75;
+  font-style: italic;
+  cursor: help;
+}
+.plot-add-var {
+  margin-left: auto;
+  border: none;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  opacity: 0.5;
+  font-size: 0.8rem;
+  line-height: 1;
+  padding: 0.1rem 0.25rem;
+}
+.plot-add-var:hover {
+  opacity: 1;
+}
 .plot-maximize {
   margin-left: auto;
   border: none;
@@ -603,6 +662,11 @@ defineExpose({
 }
 /* When a maximize button precedes it, sit next to it rather than re-pushing right. */
 .plot-maximize + .plot-remove {
+  margin-left: 0;
+}
+/* Only the first of the right-hand button cluster claims the free space. */
+.plot-add-var + .plot-maximize,
+.plot-add-var + .plot-remove {
   margin-left: 0;
 }
 .plot-remove:hover {

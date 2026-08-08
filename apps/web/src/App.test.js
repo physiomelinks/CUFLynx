@@ -573,6 +573,195 @@ describe('App.vue plot one variable against another (#124)', () => {
   })
 })
 
+// Issue #196: overlay several variables on one plot, added from a button on the
+// plot itself, and taken off again the same way.
+describe('App.vue several variables on one plot (#196)', () => {
+  const VARS = {
+    params: [],
+    odes: ['heart/V_lv', 'heart/P_lv'],
+    algebraic: ['heart/V_rv'],
+    all_names: [],
+    units: { 'heart/V_lv': 'mL', 'heart/P_lv': 'mmHg', 'heart/V_rv': 'mL' },
+  }
+  const OUTPUTS = {
+    'heart/V_lv': [1, 2, 3],
+    'heart/P_lv': [4, 5, 6],
+    'heart/V_rv': [7, 8, 9],
+  }
+
+  // No model id: runSimulation() short-circuits, so the seeded result survives.
+  const mountWithResult = async () => {
+    const wrapper = shallowMount(App)
+    await flushPromises()
+    wrapper.vm.model.variables.value = { ...VARS }
+    wrapper.vm.sim.setResult({ time: [0, 1, 2], outputs: { ...OUTPUTS } })
+    await nextTick()
+    return wrapper
+  }
+
+  // A plot of one variable, which is where overlaying is worth testing: the
+  // combined manual cell already draws everything.
+  const addPlot = async (wrapper, qname) => {
+    wrapper.vm.openAddPlot({ key: 'single', expIdx: 0, label: '' })
+    wrapper.vm.addPlotVar = qname
+    await nextTick()
+    wrapper.vm.confirmAddPlot()
+    await flushPromises()
+  }
+
+  const extraCell = (wrapper) =>
+    wrapper.vm.plotGroups[0].cells.find((c) => c.removeId)
+
+  const overlay = async (wrapper, cell, qname) => {
+    wrapper.vm.openPlotVars(cell)
+    wrapper.vm.plotVarsPick = qname
+    await nextTick()
+    wrapper.vm.confirmPlotVar()
+    await flushPromises()
+  }
+
+  it('draws the added variable alongside the plot\'s own', async () => {
+    const wrapper = await mountWithResult()
+    await addPlot(wrapper, 'heart/V_lv')
+    await overlay(wrapper, extraCell(wrapper), 'heart/V_rv')
+
+    const cell = extraCell(wrapper)
+    expect(Object.keys(cell.simResult.outputs)).toEqual(['heart/V_lv', 'heart/V_rv'])
+    expect(cell.simResult.outputs['heart/V_rv']).toEqual([7, 8, 9])
+    // The plot keeps its identity: the overlay is an addition, not a rename.
+    expect(cell.title).toBe('heart/V_lv')
+  })
+
+  // Without this the cell would draw an empty trace: the engine only returns
+  // what the run asked for.
+  it('asks the engine for the overlaid variable', async () => {
+    const wrapper = await mountWithResult()
+    await addPlot(wrapper, 'heart/V_lv')
+    await overlay(wrapper, extraCell(wrapper), 'heart/V_rv')
+    expect([...wrapper.vm.extraOutputNames].sort()).toEqual([
+      'heart/V_lv',
+      'heart/V_rv',
+    ])
+  })
+
+  // The comparison is the whole point of overlaying; silently losing it on the
+  // next slider drag would make the feature useless.
+  it('survives a re-run', async () => {
+    const wrapper = await mountWithResult()
+    await addPlot(wrapper, 'heart/V_lv')
+    await overlay(wrapper, extraCell(wrapper), 'heart/V_rv')
+
+    wrapper.vm.sim.setResult({
+      time: [0, 1, 2],
+      outputs: { ...OUTPUTS, 'heart/V_rv': [70, 80, 90] },
+    })
+    await nextTick()
+
+    expect(extraCell(wrapper).simResult.outputs['heart/V_rv']).toEqual([70, 80, 90])
+  })
+
+  it('takes the variable off again without touching the plot', async () => {
+    const wrapper = await mountWithResult()
+    await addPlot(wrapper, 'heart/V_lv')
+    const cell = extraCell(wrapper)
+    await overlay(wrapper, cell, 'heart/V_rv')
+
+    wrapper.vm.removePlotVar('heart/V_rv')
+    await nextTick()
+
+    expect(Object.keys(extraCell(wrapper).simResult.outputs)).toEqual(['heart/V_lv'])
+    expect(wrapper.vm.extraOutputNames).toEqual(['heart/V_lv'])
+  })
+
+  it('only offers variables the plot is not already drawing', async () => {
+    const wrapper = await mountWithResult()
+    await addPlot(wrapper, 'heart/V_lv')
+    wrapper.vm.openPlotVars(extraCell(wrapper))
+    await nextTick()
+    expect(wrapper.vm.plotVarsChoices).not.toContain('heart/V_lv')
+    expect(wrapper.vm.plotVarsChoices).toContain('heart/V_rv')
+
+    await overlay(wrapper, extraCell(wrapper), 'heart/V_rv')
+    expect(wrapper.vm.plotVarsChoices).not.toContain('heart/V_rv')
+  })
+
+  // Only what the user added can be removed: taking away the cell's own
+  // variable would leave an empty plot where "remove plot" was meant.
+  it('lists what is drawn, marking only the overlays as removable', async () => {
+    const wrapper = await mountWithResult()
+    await addPlot(wrapper, 'heart/V_lv')
+    await overlay(wrapper, extraCell(wrapper), 'heart/V_rv')
+    expect(wrapper.vm.plotVarsDrawn).toEqual(['heart/V_lv', 'heart/V_rv'])
+    expect(wrapper.vm.plotVarsAdded).toEqual(['heart/V_rv'])
+  })
+
+  describe('units', () => {
+    it('keeps the axis unit when the variables agree', async () => {
+      const wrapper = await mountWithResult()
+      await addPlot(wrapper, 'heart/V_lv')
+      await overlay(wrapper, extraCell(wrapper), 'heart/V_rv')
+      const cell = extraCell(wrapper)
+      expect(cell.yUnit).toBe('mL')
+      expect(cell.mixedUnits).toBe(false)
+    })
+
+    // Allowed, not forbidden — but the plot must stop claiming a unit, and say
+    // why rather than looking like a model that declares none.
+    it('drops the axis unit and flags the plot when they do not', async () => {
+      const wrapper = await mountWithResult()
+      await addPlot(wrapper, 'heart/V_lv')
+      await overlay(wrapper, extraCell(wrapper), 'heart/P_lv')
+      const cell = extraCell(wrapper)
+      expect(cell.yUnit).toBe('')
+      expect(cell.mixedUnits).toBe(true)
+    })
+
+    // Warn before the line is drawn: afterwards the only signal is an axis that
+    // has quietly lost its label.
+    it('warns in the picker, naming both units', async () => {
+      const wrapper = await mountWithResult()
+      await addPlot(wrapper, 'heart/V_lv')
+      wrapper.vm.openPlotVars(extraCell(wrapper))
+      wrapper.vm.plotVarsPick = 'heart/P_lv'
+      await nextTick()
+      expect(wrapper.vm.plotVarsUnitWarning).toContain('mmHg')
+      expect(wrapper.vm.plotVarsUnitWarning).toContain('mL')
+
+      wrapper.vm.plotVarsPick = 'heart/V_rv'
+      await nextTick()
+      expect(wrapper.vm.plotVarsUnitWarning).toBe('')
+    })
+  })
+
+  it('offers the affordance on every output plot, controlled inputs aside', async () => {
+    const wrapper = await mountWithResult()
+    await addPlot(wrapper, 'heart/V_lv')
+    // Both the combined manual cell and the added one can take an overlay.
+    for (const cell of wrapper.vm.plotGroups[0].cells) expect(cell.addable).toBe(true)
+
+    // A controlled (params_to_change) cell draws its input on a synthesised
+    // time base, not the run's, so a model variable would land on the wrong x.
+    const controlled = wrapper.vm.withUserVars(
+      { key: 'exp0:ctrl:heart/HR', controlled: true, simResult: { outputs: {} } },
+      OUTPUTS,
+    )
+    expect(controlled.addable).toBeUndefined()
+  })
+
+  // A new model has different variables, so overlays naming the old one's are
+  // meaningless — and the cell keys they hang off are gone too.
+  it('forgets the overlays when a new model is loaded', async () => {
+    const wrapper = await mountWithResult()
+    await addPlot(wrapper, 'heart/V_lv')
+    await overlay(wrapper, extraCell(wrapper), 'heart/V_rv')
+    expect(wrapper.vm.plotVars).not.toEqual({})
+
+    await wrapper.vm.onModelLoaded({ model_id: 'm2', name: 'other' })
+    await flushPromises()
+    expect(wrapper.vm.plotVars).toEqual({})
+  })
+})
+
 // Multi-core runs need an MPI launcher from the selected interpreter's own env
 // (#75). Nothing used to say which interpreter provides one, so the capability
 // was undiscoverable — the picker now marks the ones that enable Cores > 1.
