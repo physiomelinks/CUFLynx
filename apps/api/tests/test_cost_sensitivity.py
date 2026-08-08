@@ -349,3 +349,31 @@ def test_the_gradient_comes_from_the_solve_and_agrees_with_differencing(
     # Every parameter scored, and at least one of them actually matters.
     assert all(r["elasticity"] is not None for r in analytic["params"])
     assert any(abs(r["elasticity"]) > 1e-6 for r in analytic["params"])
+
+
+@pytest.mark.integration
+def test_bounds_as_the_panel_sends_them_do_not_disable_the_analytic_path(
+    client, requires_simulation
+):
+    """Regression: bounds arrive as ``[min, max]``, and reading them as a mapping
+    raised inside the build -- so every request the panel actually makes fell
+    back to differencing while reporting that no gradient was available."""
+    model_id = upload_model(client, LV_MODEL_PATH)["model_id"]
+    client.post(
+        "/api/obs_data/upload",
+        content=LV_OBS_DATA_PATH.read_bytes(),
+        headers={"content-type": "application/json"},
+        params={"model_id": model_id},
+    )
+    params = {f"Lotka_Volterra_module/{n}": 1.0
+              for n in ("alpha", "beta", "delta", "gamma")}
+
+    body = client.post("/api/cost_sensitivity", json={
+        "model_id": model_id,
+        "params": params,
+        "param_names": list(params),
+        "bounds": {n: [0.1, 5.0] for n in params},  # the shape the panel sends
+    }).json()
+
+    assert body["analytic"] is True, body.get("fallback_reason")
+    assert body["n_simulations"] == 1

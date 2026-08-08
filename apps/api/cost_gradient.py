@@ -67,6 +67,27 @@ def _ca_imports():
     return OpencorParamID, ObsAndParamDataParser
 
 
+def _bounds_pair(entry):
+    """``(min, max)`` from a bounds entry, whichever shape it arrives in.
+
+    The API takes ``[min, max]`` -- which is what the panel sends -- and reading
+    it as a mapping raised ``'list' object has no attribute 'get'`` inside the
+    build, so every request that carried bounds fell back to differencing while
+    reporting, truthfully but uselessly, that no gradient was available. A
+    mapping is accepted too rather than tightened away, because that is the
+    shape a hand-written request most naturally takes.
+    """
+    if entry is None:
+        return None, None
+    if isinstance(entry, dict):
+        return entry.get("min"), entry.get("max")
+    try:
+        low, high = entry
+    except (TypeError, ValueError):
+        return None, None
+    return low, high
+
+
 def _param_id_info(names: list[str], values: dict, bounds: dict | None) -> dict:
     """CA's ``param_id_info`` for the parameters on the sliders.
 
@@ -77,10 +98,7 @@ def _param_id_info(names: list[str], values: dict, bounds: dict | None) -> dict:
     """
     mins, maxs = [], []
     for name in names:
-        low = high = None
-        if bounds and name in (bounds or {}):
-            pair = bounds[name] or {}
-            low, high = pair.get("min"), pair.get("max")
+        low, high = _bounds_pair((bounds or {}).get(name))
         value = float(values.get(name, 0.0) or 0.0)
         if low is None or high is None or not (float(high) > float(low)):
             span = abs(value) if value else 1.0

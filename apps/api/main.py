@@ -1389,8 +1389,13 @@ def cost_sensitivity_route(req: CostSensitivityRequest) -> dict:
         )
     except cost_gradient.GradientUnavailable as exc:
         # Not an error: differencing works on every backend the sliders work on.
-        # The reason travels with the result so the panel can say which it used.
+        # The reason travels with the result so the panel can say which it used,
+        # and is logged because a fallback that is really *our* bug reads exactly
+        # like a backend that cannot do it -- which is how a list/dict mix-up in
+        # the bounds silently differenced every request that carried them.
         fallback_reason = str(exc)
+        print(f"[cost_sensitivity] no analytic gradient, differencing instead: "
+              f"{fallback_reason}", flush=True)
 
     try:
         result = cost_sensitivity.evaluate(
