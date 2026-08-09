@@ -377,3 +377,32 @@ def test_bounds_as_the_panel_sends_them_do_not_disable_the_analytic_path(
 
     assert body["analytic"] is True, body.get("fallback_reason")
     assert body["n_simulations"] == 1
+
+
+# ---------------------------------------------------------------------------
+# The tolerance the sensitivities are only as good as
+# ---------------------------------------------------------------------------
+def test_a_loose_tolerance_is_cautioned_but_a_tight_one_is_not():
+    """Measured on Lotka-Volterra against a 1e-12 reference: the gradient's worst
+    relative error is ~7e-6 at 1e-6, 1e-8 and 1e-10 alike, and only then degrades
+    (6e-5 at 1e-5, 1e-4 at 1e-4). So the line is at 1e-6 -- warning at anything
+    tighter would cry wolf on a tolerance that costs real time.
+    """
+    warn = cost_gradient_mod.tolerance_warning
+
+    assert warn({"rtol": 1e-4}) is not None
+    assert warn({"atol": 1e-5}) is not None
+    assert warn({"rtol": 1e-6, "atol": 1e-6}) is None
+    assert warn({"rtol": 1e-8, "atol": 1e-8}) is None
+    # Unset is not loose: CA substitutes 1e-8/1e-8 itself when FSA is on.
+    assert warn({}) is None
+    assert warn(None) is None
+
+
+def test_the_caution_names_the_offending_tolerance():
+    """A warning that does not say which value is wrong leaves the user hunting
+    through a settings form for it."""
+    message = cost_gradient_mod.tolerance_warning({"rtol": 1e-3, "atol": 1e-8})
+
+    assert "rtol=0.001" in message
+    assert "atol" not in message  # the tight one is not the problem
