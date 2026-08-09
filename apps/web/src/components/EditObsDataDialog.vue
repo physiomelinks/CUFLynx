@@ -792,9 +792,9 @@ async function onSave() {
 }
 /* Light-orange background on operation <option>s that aren't @differentiable, so
    AD/FSA-blocking choices stand out in the dropdown (Chromium styles natively). */
-.non-diff-option {
-  background: rgba(237, 125, 49, 0.25);
-}
+/* `.non-diff-option` is NOT here: SearchableSelect teleports its list to <body>,
+   so an option element is outside this component's scope and a scoped rule can
+   never reach it. It lives in SearchableSelect's global block instead. */
 .eo-nondiff-warn {
   display: flex;
   align-items: baseline;
