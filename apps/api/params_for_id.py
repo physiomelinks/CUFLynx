@@ -1,29 +1,30 @@
-"""Parsing for circulatory_autogen ``*_params_for_id.csv`` files.
+"""Slider entries from a circulatory_autogen ``params_for_id`` document.
 
-Reproduces the subset of
-``PrimitiveParsers._build_param_id_info_from_df`` that the slider-seeding API
-needs: required-column validation, ``min < max`` checks, and the whitespace-split
-``vessel_name`` -> ``vessel/param`` qualified names.  Implemented with pandas only
-(no libCellML/Myokit) so the upload path stays in the unit tier.
+Reads the canonical JSON form; a legacy CSV is converted to it by
+:mod:`params_json` first, so the semantics below are stated once rather than
+implemented twice. Neither libCellML nor Myokit is imported, so the upload path
+stays in the unit tier.
 
-One row is one parameter, exactly as CA reads it: its ``param_names`` is a list
-*per row* of that row's qualified names, and its optimiser carries one value for
-the whole list. A row naming several vessels therefore describes one quantity
-that varies in several components at once, not several quantities -- which is why
-this module emits a single :class:`ParamEntry` carrying every member in
-``qnames`` (issue #193). Splitting them apart gave each component its own slider,
-and moving one without the others put the model in a state it never has.
+Reproduces the subset of ``PrimitiveParsers._build_param_id_info_from_df`` that
+the slider-seeding API needs: bounds validation, prior hyper-parameters, and the
+``vessel/param`` qualified names -- including CA's flat-model fallback, where a
+constant is renamed to a bare ``param_vessel`` in a ``parameters`` component.
+
+One entry is one parameter, exactly as CA reads it: its ``param_names`` is a list
+*per row* of qualified names, and its optimiser carries one value for the whole
+list. An entry naming several targets therefore describes one quantity present in
+several components, not several quantities -- which is why this module emits a
+single :class:`ParamEntry` carrying every member in ``qnames`` (issue #193).
+Splitting them apart gave each component its own slider, and moving one without
+the others put the model in a state it never has.
 """
 
 from __future__ import annotations
 
-import io
 import math
 from dataclasses import dataclass, field
 
-import pandas as pd
-
-REQUIRED_COLUMNS = ("vessel_name", "param_name", "min", "max")
+import params_json
 
 # Components a circulatory_autogen *flat* model puts its constants in. When a
 # params_for_id row's ``vessel/param`` name doesn't exist directly (flat models
@@ -33,32 +34,6 @@ _PARAM_COMPONENTS = ("parameters", "parameters_global")
 
 class ParamsForIdError(ValueError):
     """Raised for a malformed params_for_id CSV (maps to HTTP 422)."""
-
-
-def _prior_param_names() -> tuple:
-    """The prior hyper-parameter column names to recognise in a params_for_id.
-
-    Taken from the same introspect-with-fallback vocabulary the editor renders
-    from, so CA decides what a prior may take and a value it adds is carried
-    through without a change in this file.
-
-    Deliberately *not* conditional on CA being importable. These names decide
-    whether a column in the user's file is read at all, and dropping them when CA
-    is unreachable would silently discard the hyper-parameters -- the same data
-    loss this column support exists to fix. Only the validation below degrades;
-    the values still round-trip.
-    """
-    try:
-        from solver_options import get_param_prior_types  # noqa: PLC0415
-
-        return tuple(
-            spec["name"]
-            for t in get_param_prior_types().get("types", [])
-            for spec in (t.get("params") or [])
-            if spec.get("name")
-        )
-    except Exception:  # noqa: BLE001
-        return ()
 
 
 def _derive_bounds(prior: str | None, values: dict, row_idx: int) -> tuple:
@@ -168,13 +143,12 @@ def _resolve_initial_value(
     return None if key is None else initial_values[key]
 
 
-def _group_initial_value(
-    vessels: list[str],
-    param_name: str,
+def _target_initial_value(
+    targets: list[str],
     initial_values: dict[str, float],
     gen_index: dict[str, dict[str, float]],
 ) -> tuple[float | None, str | None]:
-    """The one initial value a grouped row starts from, plus any warning about it.
+    """The one initial value a grouped entry starts from, plus any warning about it.
 
     The members of a group are the *same* quantity written into several
     components, so the model should already give them the same number. When it
@@ -186,10 +160,11 @@ def _group_initial_value(
     that is the pre-existing "unresolved parameter" case, not a conflict.
     """
     resolved: list[tuple[str, float]] = []
-    for vessel in vessels:
+    for target in targets:
+        vessel, _, param_name = target.rpartition("/")
         val = _resolve_initial_value(vessel, param_name, initial_values, gen_index)
         if val is not None:
-            resolved.append((f"{vessel}/{param_name}", val))
+            resolved.append((target, val))
     if not resolved:
         return None, None
 
@@ -201,9 +176,15 @@ def _group_initial_value(
     ]
     if not differing:
         return value, None
+
+    # Named by the shared parameter when there is one; a group of differently
+    # named parameters has no single name to report, so it is described by its
+    # members instead.
+    names = {t.rpartition("/")[2] for t in targets}
+    described = f"parameter '{next(iter(names))}'" if len(names) == 1 else "parameter group"
     shown = ", ".join(f"{q} = {v:g}" for q, v in resolved)
     return value, (
-        f"grouped parameter '{param_name}' starts from different values in its "
+        f"grouped {described} starts from different values in its "
         f"components ({shown}); the slider uses {value:g} and will set them all."
     )
 
@@ -257,99 +238,109 @@ class ParamEntry:
 
 
 def parse_params_for_id(
-    data: bytes | str,
+    data: bytes | str | dict,
     initial_values: dict[str, float] | None = None,
 ) -> list[ParamEntry]:
-    """Parse params_for_id CSV bytes/text into a list of slider entries.
+    """Parse a params_for_id document into a list of slider entries.
 
-    One :class:`ParamEntry` per *row*, as CA reads it: a space-separated
-    ``vessel_name`` ("a b") is one parameter present in both components, and its
-    members are listed in ``qnames`` (issue #193).
+    Accepts the canonical JSON form (:mod:`params_json`) or a legacy CSV. **A CSV
+    is converted to that JSON first**, so there is a single code path after the
+    front door rather than two parsers to keep in step -- which is the same shape
+    CA reads these files with.
+
+    One :class:`ParamEntry` per parameter, as CA reads it: an entry's targets are
+    one quantity present in several components, and the optimiser carries one
+    value for the whole list, so they share one slider (issue #193).
     """
-    if isinstance(data, bytes):
-        data = data.decode("utf-8-sig", errors="replace")
-
     try:
-        df = pd.read_csv(io.StringIO(data), skipinitialspace=True)
-    except Exception as exc:  # pandas raises many flavours of error
-        raise ParamsForIdError(f"could not parse CSV: {exc}") from exc
+        if isinstance(data, (dict, list)) or params_json.looks_like_json(data):
+            doc = params_json.load_doc(data)
+        else:
+            doc = params_json.csv_to_json(data)
+    except params_json.ParamsJsonError as exc:
+        # One error type reaches the API, which maps it to 422. The JSON layer
+        # cannot import this one without a cycle, so it is translated here.
+        raise ParamsForIdError(str(exc)) from exc
 
-    # Normalise column names (the fixtures use "vessel_name, param_name, ...").
-    df.columns = [str(c).strip() for c in df.columns]
+    return _entries_from_doc(doc, initial_values)
 
-    missing = [c for c in REQUIRED_COLUMNS if c not in df.columns]
-    if missing:
-        raise ParamsForIdError(
-            f"missing required column(s): {', '.join(missing)}"
-        )
 
-    has_plotting = "name_for_plotting" in df.columns
-    has_type = "param_type" in df.columns
-    has_comment = "comment" in df.columns
-    has_prior = "prior" in df.columns
-    has_unbounded = "unbounded" in df.columns
-    prior_param_columns = [n for n in _prior_param_names() if n in df.columns]
+def _bounds(item: dict, idx: int, label: str) -> tuple:
+    """This entry's authored ``min``/``max``, or ``(None, None)`` if not stated.
+
+    Left as None when absent rather than defaulted: an ``unbounded`` entry
+    legitimately omits both and has its range derived from the prior instead.
+    """
+    raw_min, raw_max = item.get("min"), item.get("max")
+    if raw_min is None or raw_max is None or str(raw_min).strip() == "" or str(raw_max).strip() == "":
+        return None, None
+    try:
+        pmin, pmax = float(raw_min), float(raw_max)
+    except (TypeError, ValueError) as exc:
+        raise ParamsForIdError(f"row {idx}: min/max must be numeric") from exc
+    if pmin > pmax:
+        raise ParamsForIdError(f"row {idx} ({label}): min ({pmin}) > max ({pmax})")
+    return pmin, pmax
+
+
+def _text(item: dict, key: str) -> str | None:
+    value = item.get(key)
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _entries_from_doc(
+    doc: dict,
+    initial_values: dict[str, float] | None = None,
+) -> list[ParamEntry]:
+    """Slider entries from the canonical JSON form.
+
+    Everything semantic lives here -- bounds, prior validation, unbounded
+    derivation, initial-value resolution -- so that reading a CSV and reading a
+    JSON cannot disagree about any of it.
+    """
     initial_values = initial_values or {}
     gen_index = _build_gen_index(initial_values)
+    prior_names = params_json.prior_param_names()
 
     entries: list[ParamEntry] = []
-    for idx, row in df.iterrows():
-        param_name = str(row["param_name"]).strip()
-        # Left until the prior is known: an `unbounded` row legitimately leaves
-        # these blank, and its range is derived from the prior further down.
-        raw_min, raw_max = row["min"], row["max"]
-        blank_bounds = (
-            pd.isna(raw_min) or pd.isna(raw_max)
-            or str(raw_min).strip() == "" or str(raw_max).strip() == ""
-        )
-        pmin = pmax = None
-        if not blank_bounds:
-            try:
-                pmin = float(raw_min)
-                pmax = float(raw_max)
-            except (TypeError, ValueError) as exc:
-                raise ParamsForIdError(
-                    f"row {idx}: min/max must be numeric"
-                ) from exc
-            if pmin > pmax:
-                raise ParamsForIdError(
-                    f"row {idx} ({param_name}): min ({pmin}) > max ({pmax})"
-                )
+    for idx, item in enumerate(doc.get("params") or []):
+        targets = [str(t).strip() for t in (item.get("targets") or []) if str(t).strip()]
+        if not targets:
+            raise ParamsForIdError(f"row {idx}: no targets")
+        # The entry's identity in messages and, later, for a modifier to
+        # reference. Falls back to the first target, which is what a converted
+        # CSV row carries.
+        label = _text(item, "name") or targets[0]
 
-        name_for_plotting = (
-            str(row["name_for_plotting"]).strip() if has_plotting else None
-        )
-        param_type = str(row["param_type"]).strip() if has_type else None
-        # `comment` is a free-text annotation (issue #25); rows may leave it
-        # blank, so treat NaN/empty as "no comment" rather than the string "nan".
-        comment = None
-        if has_comment and not pd.isna(row["comment"]):
-            comment_str = str(row["comment"]).strip()
-            comment = comment_str or None
+        pmin, pmax = _bounds(item, idx, label)
+        name_for_plotting = _text(item, "name_for_plotting")
+        param_type = _text(item, "param_type")
+        # `comment` is a free-text annotation (issue #25).
+        comment = _text(item, "comment")
 
-        # `prior` selects the MCMC/UQ prior for this parameter (CA's
-        # PARAM_PRIOR_TYPES). Carried through rather than dropped: the editor used
-        # to rewrite the CSV without this column, which silently reverted every
-        # non-uniform prior to uniform. Left verbatim -- CA canonicalises and
-        # validates it, and duplicating that here is how the two drift apart.
-        prior = None
-        if has_prior and not pd.isna(row["prior"]):
-            prior_str = str(row["prior"]).strip()
-            prior = prior_str or None
+        # `prior` selects the MCMC/UQ prior (CA's PARAM_PRIOR_TYPES). Carried
+        # through rather than dropped: the editor used to rewrite the file
+        # without it, silently reverting every non-uniform prior to uniform.
+        # Left verbatim -- CA canonicalises and validates it, and duplicating
+        # that here is how the two drift apart.
+        prior = _text(item, "prior")
 
-        # The values that prior takes, for the columns CA recognises. Kept as
-        # strings-in / floats-out only where stated: an absent cell means "not
-        # stated", which CA turns into its documented default.
-        prior_params: dict = {}
-        for name in prior_param_columns:
-            if pd.isna(row[name]):
+        # The values that prior takes, restricted to the names CA recognises so
+        # an unrelated key cannot masquerade as a hyper-parameter. An absent one
+        # means "not stated", which CA turns into its documented default.
+        raw_prior_params = item.get("prior_params") or {}
+        prior_params = {}
+        for name in prior_names:
+            if name not in raw_prior_params:
                 continue
-            text = str(row[name]).strip()
+            text = str(raw_prior_params[name]).strip()
             if text:
                 prior_params[name] = text
-        unbounded = False
-        if has_unbounded and not pd.isna(row["unbounded"]):
-            unbounded = str(row["unbounded"]).strip().lower() in ("1", "1.0", "true", "yes", "y")
+
+        unbounded = bool(item.get("unbounded"))
         _validate_prior_params(prior, prior_params, idx, row_min=pmin, row_max=pmax)
 
         if unbounded:
@@ -358,21 +349,17 @@ def parse_params_for_id(
             pmin, pmax = _derive_bounds(prior, prior_params, idx)
         elif pmin is None:
             raise ParamsForIdError(
-                f"row {idx} ({param_name}): min and max are required unless "
+                f"row {idx} ({label}): min and max are required unless "
                 f"'unbounded' is set."
             )
 
-        vessels = str(row["vessel_name"]).split()
-        if not vessels:
-            raise ParamsForIdError(f"row {idx}: empty vessel_name")
-        qnames = [f"{vessel}/{param_name}" for vessel in vessels]
-        initial_value, warning = _group_initial_value(
-            vessels, param_name, initial_values, gen_index
+        initial_value, warning = _target_initial_value(
+            targets, initial_values, gen_index
         )
         entries.append(
             ParamEntry(
-                qname=qnames[0],
-                qnames=qnames,
+                qname=targets[0],
+                qnames=targets,
                 min=pmin,
                 max=pmax,
                 name_for_plotting=name_for_plotting,
