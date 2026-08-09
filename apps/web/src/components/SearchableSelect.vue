@@ -226,6 +226,16 @@ function onKey(event) {
 <!-- The list is teleported to <body>, so it is outside this component's scope
      and its styles have to be global. -->
 <style>
+/* Callers mark options through `classFor`, and the class lands on the element --
+   but the element is teleported, so a *caller's* scoped rule cannot paint it.
+   The obs_data editor's orange "not @differentiable" marker silently stopped
+   showing for exactly that reason when the list moved to <body>. Styled here,
+   where the teleported DOM actually lives, and named distinctively because this
+   block is global. */
+.non-diff-option {
+  background: rgba(237, 125, 49, 0.25);
+}
+
 .ss-options {
   position: fixed;
   z-index: 3000;
