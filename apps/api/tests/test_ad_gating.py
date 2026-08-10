@@ -88,7 +88,34 @@ def test_ad_local_sensitivity_runs_on_casadi_python(tmp_path, requires_casadi):
     assert any(c is not None and math.isfinite(c) for c in coeffs)
 
 
-def _fsa_local_sa_config(tmp_path):
+@pytest.mark.integration
+def test_ad_local_sensitivity_runs_on_3compartment(tmp_path, requires_casadi):
+    """AD local SA on the 3compartment model through casadi_python. Unlike the
+    Lotka-Volterra run above, 3compartment's obs_data reduces with
+    'mean'/'max_minus_min'/'min', so the CasADi jacobian is taken through those
+    operation funcs in casadi mode. semi_implicit_euler (as in the FD test above)
+    rather than cvodes: differentiating through CVODES' forward sensitivities
+    dies with CV_TOO_MUCH_WORK on this model, while the fixed-step scheme is a
+    plain symbolic graph the jacobian goes straight through."""
+    config = {
+        "model_path": model_codegen.resolve_model_path(str(C3_MODEL_PATH), "casadi_python"),
+        "model_type": "casadi_python",
+        "solver": "casadi_integrator",
+        "solver_info": {"solver": "casadi_integrator", "method": "semi_implicit_euler"},
+        "obs_path": str(C3_OBS_DATA_PATH),
+        "params_path": str(C3_PARAMS_CSV_PATH),
+        "output_dir": str(tmp_path / "sa_out"),
+        "file_prefix": "3compartment",
+        "settings": {"method": "local", "gradient_method": "AD", "nominal": "current", "dt": 0.01},
+    }
+    payload = sensitivity_runner.run(config)
+    assert payload["gradient_method"] == "AD"
+    assert payload["param_names"] and payload["output_names"]
+    coeffs = [v for row in payload["indices"]["local"].values() for v in row.values()]
+    assert any(c is not None and math.isfinite(c) for c in coeffs)
+
+
+def _fsa_local_sa_config(tmp_path, gradient_method="FSA"):
     """A sensitivity_runner config for a cellml_only + CVODE_myokit FSA local-SA
     run on 3compartment (a single-subexperiment obs_data, which FSA requires)."""
     return {
@@ -102,19 +129,23 @@ def _fsa_local_sa_config(tmp_path):
         "file_prefix": "3compartment",
         "settings": {
             "method": "local",
-            "gradient_method": "FSA",
+            "gradient_method": gradient_method,
             "nominal": "current",
             "dt": 0.01,
         },
     }
 
 
+# 'AUTO' is CA's schema default, so it is what a run that never touched the
+# gradient selector sends — the exact configuration that failed twice (first
+# rejected by name, then by skipping the engine the resolution demanded).
 @pytest.mark.integration
-def test_fsa_local_sensitivity_runs_on_cellml_only(tmp_path, requires_simulation):
+@pytest.mark.parametrize("gradient_method", ["FSA", "AUTO"])
+def test_fsa_local_sensitivity_runs_on_cellml_only(tmp_path, requires_simulation, gradient_method):
     """FSA (Myokit CVODES forward sensitivities) local SA runs on a cellml_only +
     CVODE_myokit model, delegating to circulatory_autogen's backend-agnostic
     get_observable_sensitivities. Regression: FSA used to be a hard-disabled stub."""
-    payload = sensitivity_runner.run(_fsa_local_sa_config(tmp_path))
+    payload = sensitivity_runner.run(_fsa_local_sa_config(tmp_path, gradient_method))
     assert payload["gradient_method"] == "FSA"
     local = payload["indices"]["local"]
     assert payload["param_names"] and payload["output_names"]
