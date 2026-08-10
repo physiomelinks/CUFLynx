@@ -164,6 +164,12 @@ def reset_app_state():
     _reset_backend_solver()
     calibration_mod.calibration.reset()
     calibration_mod.calibration.runner_path = calibration_mod.RUNNER_PATH
+    # sensitivity was the one manager not restored here, so a unit test's fake
+    # runner (test_sensitivity_run._install_runner) leaked into every later
+    # test: the "real Myokit" integration run spawned the leftover fake and
+    # passed in 0.1s on its canned indices.
+    sensitivity_mod.sensitivity.reset()
+    sensitivity_mod.sensitivity.runner_path = sensitivity_mod.RUNNER_PATH
     uq_mod.uq.reset()
     uq_mod.uq.runner_path = uq_mod.RUNNER_PATH
     yield
@@ -174,6 +180,8 @@ def reset_app_state():
     _reset_backend_solver()
     calibration_mod.calibration.reset()
     calibration_mod.calibration.runner_path = calibration_mod.RUNNER_PATH
+    sensitivity_mod.sensitivity.reset()
+    sensitivity_mod.sensitivity.runner_path = sensitivity_mod.RUNNER_PATH
     uq_mod.uq.reset()
     uq_mod.uq.runner_path = uq_mod.RUNNER_PATH
     _set_analysis_pythons(_pythons_before)
