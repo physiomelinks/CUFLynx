@@ -581,35 +581,32 @@ describe('EditParamsDialog — grouped parameters', () => {
     expect(wrapper.find('[data-testid="ep-group-badge"]').text()).toBe('×2')
   })
 
-  it('offers only the variables of the same name to group with', () => {
-    // The per-row panel is the quick "same parameter, other components" path;
-    // cross-name grouping is the toolbar's multi-select Group (override).
+  it('has no per-row grouping panel — the toolbar Group (override) replaced it', () => {
     const wrapper = mountDialog(groupProps)
-    const row = rowFor(wrapper, 'ao_A/E')
-    row.find('.ep-inc input[type="checkbox"]').setValue(true)
-    return flushPromises().then(async () => {
-      await row.find('[data-testid="ep-group-toggle"]').trigger('click')
-      const members = row.findAll('[data-testid="ep-group-member"]')
-      expect(members.map((m) => m.attributes('data-qname'))).toEqual(['ao_B/E', 'ao_C/E'])
-    })
+    expect(wrapper.find('[data-testid="ep-group-toggle"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="ep-group-panel"]').exists()).toBe(false)
   })
 
-  it('has nothing to offer a parameter no other component shares', () => {
-    const wrapper = mountDialog(groupProps)
-    const row = rowFor(wrapper, 'ao_A/R')
-    expect(row.find('[data-testid="ep-group-toggle"]').attributes('disabled')).toBeDefined()
-  })
+  async function selectRows(wrapper, qnames) {
+    for (const row of wrapper.findAll('[data-testid="ep-row"]')) {
+      const name = row.find('.ep-name').text()
+      if (qnames.some((q) => name.startsWith(q))) {
+        await row.find('[data-testid="ep-select"]').setValue(true)
+      }
+    }
+  }
 
-  it('writes a created group as one entry naming every target', async () => {
+  it('writes a toolbar-created group as one entry naming every target', async () => {
     uploadParamsForId.mockResolvedValue({ params: [] })
     const wrapper = mountDialog(groupProps)
-    const row = rowFor(wrapper, 'ao_A/E')
-    await row.find('.ep-inc input[type="checkbox"]').setValue(true) // include it
-    await row.find('[data-testid="ep-group-toggle"]').trigger('click')
-    for (const m of row.findAll('[data-testid="ep-group-member"]')) await m.setValue(true)
+    await flushPromises()
+    await selectRows(wrapper, ['ao_A/E', 'ao_B/E', 'ao_C/E'])
+    await wrapper.find('[data-testid="ep-group-selected"]').trigger('click')
 
-    // The absorbed rows stop being parameters of their own.
+    // The absorbed rows stop being parameters of their own, and the new group
+    // sits at the top of the list where the user can see it happened.
     expect(wrapper.findAll('[data-testid="ep-row"]')).toHaveLength(2)
+    expect(wrapper.findAll('[data-testid="ep-row"]')[0].text()).toContain('ao_A/E')
     expect(wrapper.text()).toContain('1 included')
 
     await wrapper.find('[data-testid="ep-save"]').trigger('click')
@@ -619,16 +616,25 @@ describe('EditParamsDialog — grouped parameters', () => {
     expect(doc.params[0].targets).toEqual(['ao_A/E', 'ao_B/E', 'ao_C/E'])
   })
 
-  it('gives a component back when it is unticked', async () => {
+  it('ungroups from the row button, giving every component back', async () => {
     const wrapper = mountDialog(groupProps)
-    const row = rowFor(wrapper, 'ao_A/E')
-    await row.find('.ep-inc input[type="checkbox"]').setValue(true)
-    await row.find('[data-testid="ep-group-toggle"]').trigger('click')
-    const member = row.findAll('[data-testid="ep-group-member"]')[0]
-    await member.setValue(true)
+    await flushPromises()
+    await selectRows(wrapper, ['ao_A/E', 'ao_B/E'])
+    await wrapper.find('[data-testid="ep-group-selected"]').trigger('click')
     expect(wrapper.findAll('[data-testid="ep-row"]')).toHaveLength(3)
-    await row.findAll('[data-testid="ep-group-member"]')[0].setValue(false)
+
+    await wrapper.find('[data-testid="ep-ungroup"]').trigger('click')
     expect(wrapper.findAll('[data-testid="ep-row"]')).toHaveLength(4)
+    expect(wrapper.find('[data-testid="ep-ungroup"]').exists()).toBe(false)
+  })
+
+  it('a created modifier also lands at the top of the list', async () => {
+    const wrapper = mountDialog(groupProps)
+    await flushPromises()
+    await selectRows(wrapper, ['ao_A/E', 'ao_B/E'])
+    await wrapper.find('[data-testid="ep-create-modifier"]').trigger('click')
+    const first = wrapper.findAll('[data-testid="ep-row"]')[0]
+    expect(first.find('[data-testid="ep-modifier-badge"]').exists()).toBe(true)
   })
 
   it('finds a group by any of its components, not just the one it is named after', async () => {

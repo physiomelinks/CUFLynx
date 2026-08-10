@@ -5,7 +5,6 @@ import {
   splitQname,
   buildParamsCsv,
   versionedFilename,
-  groupCandidates,
   addToGroup,
   removeFromGroup,
   rowsToSave,
@@ -285,14 +284,6 @@ describe('grouped parameters — creating one', () => {
     })
   }
 
-  it('offers differently-named variables too — the JSON form freed the group (#208)', () => {
-    // The same-param_name restriction existed only because the CSV had a single
-    // param_name column; a JSON entry's `targets` list has no such constraint.
-    const rows = fixture()
-    const eRow = rows.find((r) => r.qname === 'ao_A/E')
-    expect(groupCandidates(rows, eRow).map((r) => r.qname)).toEqual(['ao_B/E', 'ao_C/R'])
-  })
-
   it('absorbing a row removes it from the list but keeps its edits', () => {
     const rows = fixture()
     const [a, b] = [rows.find((r) => r.qname === 'ao_A/E'), rows.find((r) => r.qname === 'ao_B/E')]
@@ -317,12 +308,6 @@ describe('grouped parameters — creating one', () => {
     expect(b.min).toBe(42)
   })
 
-  it('will not offer a row that already belongs to another group', () => {
-    const rows = fixture()
-    rows.push({ qname: 'ao_D/E', qnames: ['ao_D/E'], groupedInto: 'ao_A/E', included: false })
-    const other = { qname: 'ao_Z/E', qnames: ['ao_Z/E'], groupedInto: null }
-    expect(groupCandidates(rows, other).map((r) => r.qname)).not.toContain('ao_D/E')
-  })
 })
 
 // ---------------------------------------------------------------------------

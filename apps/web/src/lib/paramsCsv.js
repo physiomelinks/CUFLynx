@@ -123,38 +123,6 @@ export function splitQname(qname) {
 }
 
 /**
- * Whether `candidate` could join `row`'s group (#193 / #208).
- *
- * The same-`param_name` restriction is gone: it existed only because the CSV
- * had a single `param_name` column, and the JSON form's `targets` list has no
- * such constraint -- grouping arbitrary parameters is the point of #208. A row
- * already absorbed elsewhere, and a row that is a group itself, are still
- * excluded (merging two groups would have to decide whose range and prior
- * survive), as are modifiers and their claimed targets.
- */
-export function canJoinGroup(row, candidate) {
-  return (
-    candidate !== row &&
-    row.kind !== 'modifier' &&
-    candidate.kind !== 'modifier' &&
-    candidate.modifiedBy == null &&
-    row.modifiedBy == null &&
-    (candidate.groupedInto == null || candidate.groupedInto === row.qname) &&
-    (candidate.qnames?.length ?? 1) === 1
-  )
-}
-
-/**
- * Rows that could join `row`'s group.
- *
- * @param {Array<object>} rows - every row (visible or absorbed)
- * @param {object} row
- */
-export function groupCandidates(rows, row) {
-  return rows.filter((r) => canJoinGroup(row, r))
-}
-
-/**
  * Absorb `member` into `row`'s group: `row` now drives it too, and `member` stops
  * being a row of its own. Kept rather than deleted so unticking restores it with
  * its range, prior and note intact. No-op if it is already in the group.
@@ -258,7 +226,9 @@ export function createModifier(rows, selectedRows, opMeta = {}) {
     r.included = true
     r.selected = false
   }
-  rows.push(row)
+  // At the top: the new row is what the user is working on, and at the bottom
+  // of a hundreds-long list it looks like nothing happened.
+  rows.unshift(row)
   return row
 }
 

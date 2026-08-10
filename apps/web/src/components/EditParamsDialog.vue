@@ -6,11 +6,9 @@ import Checkbox from 'primevue/checkbox'
 import Message from 'primevue/message'
 import {
   mergedRows,
-  canJoinGroup,
   addToGroup,
   removeFromGroup,
   rowsToSave,
-  splitQname,
   canCreateModifier,
   createModifier,
   removeModifier,
@@ -45,8 +43,6 @@ const expanded = ref(new Set())
 // extra columns: the values differ per prior, so as columns they would be blank
 // for most rows and make the grid ragged.
 const priorOpen = ref(new Set())
-// qnames whose "vary together" panel is open (issue #193).
-const groupOpen = ref(new Set())
 
 // The prior vocabulary comes from CA (via /api/config), never a hardcoded list
 // here — CA owns what a prior may be, and one it grows should appear without a
@@ -91,9 +87,6 @@ watch(
           .filter((r) => Object.values(r.priorParams ?? {}).some((v) => v !== '' && v != null))
           .map((r) => r.qname),
       )
-      // A group is already visible in its own row's badge and member list, so it
-      // opens shut like the others.
-      groupOpen.value = new Set()
       error.value = ''
       search.value = ''
       loadPriorTypes()
@@ -149,12 +142,23 @@ const canModifySelection = computed(
   () => !casadiGated.value && !!scaleOpMeta.value && canCreateModifier(selectedRows.value),
 )
 
+/** The just-created row goes to the top: it is what the user is working on,
+ *  and at the bottom of a hundreds-long list it looks like nothing happened. */
+function moveToTop(row) {
+  const idx = rows.value.indexOf(row)
+  if (idx > 0) {
+    rows.value.splice(idx, 1)
+    rows.value.unshift(row)
+  }
+}
+
 function onGroupSelected() {
   if (!canGroupSelection.value) return
   const [head, ...members] = selectedRows.value
   for (const m of members) addToGroup(head, m)
   head.included = true
   for (const r of selectedRows.value) r.selected = false
+  moveToTop(head)
 }
 
 function onCreateModifier() {
@@ -173,42 +177,14 @@ function baselineLabel(row, qname) {
 }
 
 // ---------------------------------------------------------------------------
-// Grouped parameters (issue #193): one parameter that varies in several
-// components at once, written as a whitespace-separated `vessel_name`.
+// Grouped parameters (issue #193 / #208): created via the toolbar's
+// multi-select Group (override); the old per-row same-name panel is gone.
 // ---------------------------------------------------------------------------
-// Rows indexed by param_name, because that is the only thing a candidate can
-// share with a row. Every row asks for its candidates on every render, and the
-// list is every parameter the model has -- scanning it per row is quadratic in a
-// dialog that routinely opens on hundreds of them.
-const rowsByParamName = computed(() => {
-  const out = new Map()
+/** Dissolve a group: every absorbed member becomes its own row again. */
+function onUngroup(row) {
   for (const r of rows.value) {
-    const name = splitQname(r.qname).param_name
-    if (!out.has(name)) out.set(name, [])
-    out.get(name).push(r)
+    if (r.groupedInto === row.qname) removeFromGroup(row, r)
   }
-  return out
-})
-
-/** The rows this one could take in — same param_name, not already in a group. */
-function candidatesFor(row) {
-  const sameName = rowsByParamName.value.get(splitQname(row.qname).param_name) ?? []
-  return sameName.filter((r) => canJoinGroup(row, r))
-}
-
-function isGrouped(row, candidate) {
-  return row.qnames.includes(candidate.qname)
-}
-
-function onGroupToggle(row, candidate, checked) {
-  if (checked) addToGroup(row, candidate)
-  else removeFromGroup(row, candidate)
-}
-
-function toggleGroupPanel(qname) {
-  const next = new Set(groupOpen.value)
-  next.has(qname) ? next.delete(qname) : next.add(qname)
-  groupOpen.value = next
 }
 
 /** CA's display label for a prior value, for the panel heading. */
@@ -393,7 +369,7 @@ async function onSave() {
     :visible="visible"
     modal
     header="Edit params_for_id"
-    :style="{ width: '46rem' }"
+    :style="{ width: '72rem', maxWidth: '95vw' }"
     data-testid="edit-params"
     @update:visible="emit('update:visible', $event)"
   >
@@ -476,12 +452,9 @@ async function onSave() {
       <span v-if="priorTypes.length" class="ep-prior" title="Prior distribution used by MCMC / UQ">
         Prior
       </span>
-      <span
-        class="ep-note-col"
-        title="Vary this parameter in several components at once (one slider, one calibrated value)"
-      >
-        Group
-      </span>
+      <!-- Delete/ungroup actions live in this slot (the per-row grouping panel
+           was replaced by the toolbar's Group override). -->
+      <span class="ep-note-col" />
       <span class="ep-note-col">Note</span>
     </div>
 
@@ -568,11 +541,6 @@ async function onSave() {
             {{ p.label }}
           </option>
         </select>
-        <!--
-          Grouping is offered per row rather than as a multi-select over the list
-          because the CSV can only group variables that share a param_name, and
-          the row is the only place that name is already fixed.
-        -->
         <button
           v-if="row.kind === 'modifier'"
           type="button"
@@ -583,23 +551,19 @@ async function onSave() {
         >
           <i class="pi pi-trash" />
         </button>
+        <!-- Groups are created via the toolbar's multi-select Group (override);
+             this dissolves one back into its member rows. -->
         <button
-          v-else
+          v-else-if="row.qnames.length > 1"
           type="button"
-          class="ep-note-btn"
-          :class="{ 'has-note': row.qnames.length > 1 }"
-          data-testid="ep-group-toggle"
-          :disabled="!row.included || !candidatesFor(row).length"
-          :aria-expanded="groupOpen.has(row.qname)"
-          :title="
-            candidatesFor(row).length
-              ? 'Vary this parameter in several components at once'
-              : 'No other component has a parameter of this name to group with'
-          "
-          @click="toggleGroupPanel(row.qname)"
+          class="ep-note-btn has-note"
+          data-testid="ep-ungroup"
+          title="Ungroup: each component becomes its own row again"
+          @click="onUngroup(row)"
         >
-          <i class="pi pi-link" />
+          <i class="pi pi-times-circle" />
         </button>
+        <span v-else class="ep-note-btn-spacer" />
         <button
           type="button"
           class="ep-note-btn"
@@ -666,35 +630,6 @@ async function onSave() {
                 @input="setPriorParam(row, f.name, $event.target.value)"
               />
             </span>
-          </div>
-        </div>
-        <!--
-          The components this one parameter is written into. One row in the CSV
-          ("a b c, E, …"), one slider, one calibrated value — so ticking a
-          component here removes its own row rather than leaving two ways to set
-          the same quantity.
-        -->
-        <div v-if="groupOpen.has(row.qname)" class="ep-group-block" data-testid="ep-group-panel">
-          <p class="ep-group-hint">
-            Tick the components this parameter also applies to. They vary together:
-            one slider, one range, one calibrated value.
-          </p>
-          <div class="ep-group-list">
-            <label
-              v-for="c in candidatesFor(row)"
-              :key="c.qname"
-              class="ep-group-item"
-              :title="c.qname"
-            >
-              <input
-                type="checkbox"
-                :checked="isGrouped(row, c)"
-                data-testid="ep-group-member"
-                :data-qname="c.qname"
-                @change="onGroupToggle(row, c, $event.target.checked)"
-              />
-              <span>{{ splitQname(c.qname).vessel_name || c.qname }}</span>
-            </label>
           </div>
         </div>
         <!-- A modifier's targets, always visible: θ's bounds are dimensionless
