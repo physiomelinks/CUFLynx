@@ -226,3 +226,30 @@ def test_the_refusal_message_explains_the_distinction():
 
     assert ls.LOCAL_GRADIENT_SUPPORT["AD"] == ("casadi_python",)
     assert ls.LOCAL_GRADIENT_SUPPORT["FD"] is None
+
+
+@pytest.mark.parametrize("spelling", ["AUTO", "auto", "ANALYTIC", ""])
+@pytest.mark.parametrize(
+    "model_type,expected", [("casadi_python", "AD"), ("cellml_only", "FSA")]
+)
+def test_cas_own_spelling_resolves_to_this_backends_arm(spelling, model_type, expected):
+    """CA's schema defaults gradient_method to 'AUTO', and its own API takes
+    ''/'ANALYTIC'/'AUTO' to mean "this backend's analytic arm". CUFLynx names the
+    arm so the menu can offer and disable it -- but rejecting CA's word for the
+    same choice made a defaulted run fail with "gradient_method 'AUTO' is not
+    available", which was true of the name and wrong about the capability.
+    """
+    import local_sensitivity as ls
+
+    settings = {"gradient_method": spelling, "nominal": "current"}
+    resolved = ls._resolve_gradient_method(settings, model_type)
+
+    assert resolved == expected
+
+
+def test_a_genuinely_unknown_gradient_method_is_still_rejected():
+    """Accepting CA's spellings must not turn the check into a rubber stamp."""
+    import local_sensitivity as ls
+
+    with pytest.raises(NotImplementedError, match="not available"):
+        ls._resolve_gradient_method({"gradient_method": "MAGIC"}, "cellml_only")
