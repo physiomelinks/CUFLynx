@@ -134,3 +134,70 @@ def test_sensitivity_3compartment_local_fd(client, requires_simulation):
 
     indices = status.get("indices") or {}
     assert indices, f"no sensitivity indices returned; log:\n" + "\n".join(lines)
+
+
+# The analytic gradients, through the full production path: POST /api/sensitivity/run
+# -> the manager spawns the real sensitivity_runner subprocess. The route assembles
+# the runner config itself (model_type/solver come from engine state, obs/params
+# paths from the upload records) — an in-process runner test with a hand-built
+# config cannot catch this layer diverging from what the UI actually sends, which
+# is how the 'AUTO' bug reached a running app twice. 'AUTO' is CA's schema
+# default: exactly what a run that never touched the gradient selector sends.
+@pytest.mark.integration
+@pytest.mark.parametrize("gradient_method", ["FSA", "AUTO"])
+def test_sensitivity_3compartment_local_fsa_via_api(
+    client, requires_simulation, gradient_method
+):
+    model_id = _setup_model_obs_params(client)
+    settings = {
+        "method": "local",
+        "gradient_method": gradient_method,
+        "nominal": "current",
+        "dt": 0.01,
+        "num_cores": 1,
+    }
+    resp = client.post(
+        "/api/sensitivity/run", json={"model_id": model_id, "settings": settings}
+    )
+    assert resp.status_code == 200, resp.text
+
+    status, lines = _wait(client, resp.json()["job_id"], timeout=600)
+    assert status["state"] == "done", "\n".join(lines)
+    assert status.get("indices"), "no sensitivity indices returned; log:\n" + "\n".join(lines)
+    # Proof the FSA arm actually ran (the runner names its gradient source) —
+    # 'done' alone would also be true of a silent fall-through to FD.
+    assert any("forward sensitivities" in ln for ln in lines), "\n".join(lines)
+
+
+@pytest.mark.integration
+def test_sensitivity_3compartment_local_ad_via_api(client, requires_casadi):
+    """AD through the same full path, with the backend switched the way a user
+    does it: POST /api/config (casadi_python + casadi_integrator +
+    semi_implicit_euler — CVODES dies with CV_TOO_MUCH_WORK on this model), then
+    'AUTO', which must resolve to AD on this backend."""
+    r = client.post(
+        "/api/config",
+        json={
+            "generated_model_format": "casadi_python",
+            "solver": "casadi_integrator",
+            "solver_info": {"method": "semi_implicit_euler"},
+        },
+    )
+    assert r.status_code == 200, r.text
+    model_id = _setup_model_obs_params(client)
+    settings = {
+        "method": "local",
+        "gradient_method": "AUTO",
+        "nominal": "current",
+        "dt": 0.01,
+        "num_cores": 1,
+    }
+    resp = client.post(
+        "/api/sensitivity/run", json={"model_id": model_id, "settings": settings}
+    )
+    assert resp.status_code == 200, resp.text
+
+    status, lines = _wait(client, resp.json()["job_id"], timeout=600)
+    assert status["state"] == "done", "\n".join(lines)
+    assert status.get("indices"), "no sensitivity indices returned; log:\n" + "\n".join(lines)
+    assert any("AD jacobian" in ln for ln in lines), "\n".join(lines)
