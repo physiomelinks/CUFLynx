@@ -88,10 +88,18 @@ export function useSliders() {
       // row naming several vessels is one parameter that varies in all of them
       // simultaneously, so it gets one handle and writes to all of its qnames.
       // Always at least [qname], so no consumer has to special-case the group.
+      // For a modifier these are its *modified* qnames.
       qnames: opts.qnames?.length ? [...opts.qnames] : [qname],
       // Something to tell the user about this parameter (a group whose members
       // started from different values); null for the ordinary case.
       warning: opts.warning ?? null,
+      // 'modifier' when this slider carries a dimensionless θ that expands to
+      // θ·baseline per member (#208); 'free' otherwise.
+      kind: opts.kind ?? 'free',
+      operation: opts.operation ?? null,
+      // Per-member model default ({qname: baseline}); the baselineᵢ of
+      // θ·baselineᵢ. Members absent here are unresolved and skipped.
+      baselines: opts.baselines ? { ...opts.baselines } : null,
     }
     return sliders[qname]
   }
@@ -139,7 +147,53 @@ export function useSliders() {
     const out = {}
     for (const key of Object.keys(sliders)) {
       const s = sliders[key]
+      if (s.kind === 'modifier') {
+        // The slider's value is θ; the model gets θ·baseline per member. A
+        // member with no resolved baseline is skipped (the row already warned)
+        // rather than handed θ as if it were a physical value.
+        for (const qname of s.qnames ?? [key]) {
+          const baseline = s.baselines?.[qname]
+          if (baseline != null) out[qname] = s.value * baseline
+        }
+        continue
+      }
       for (const qname of s.qnames ?? [key]) out[qname] = s.value
+    }
+    return out
+  })
+
+  /**
+   * The θ-aware point for the analysis routes (calibration start-from-current,
+   * local-SA nominal): one entry per slider under its *anchor* key -- the
+   * slider's own key, which for a modifier is modifies[0]. Those consumers
+   * match by param_names[i][0], which for a modifier IS modifies[0], so θ
+   * lands in the modifier's slot; expanding it as paramDict does would hand
+   * them a physical value where CA samples θ.
+   */
+  const analysisDict = computed(() => {
+    const out = {}
+    for (const key of Object.keys(sliders)) out[key] = sliders[key].value
+    return out
+  })
+
+  /**
+   * The modifier block for /api/cost_sensitivity: differenced in θ server-side.
+   * Empty array when there are none, so callers can send it unconditionally.
+   */
+  const modifierSpecs = computed(() => {
+    const out = []
+    for (const key of Object.keys(sliders)) {
+      const s = sliders[key]
+      if (s.kind !== 'modifier') continue
+      out.push({
+        name: s.name_for_plotting ?? key,
+        anchor: key,
+        targets: [...(s.qnames ?? [key])],
+        operation: s.operation ?? 'scale',
+        baselines: { ...(s.baselines ?? {}) },
+        value: s.value,
+        bounds: [s.min, s.max],
+      })
     }
     return out
   })
@@ -158,6 +212,8 @@ export function useSliders() {
     applyValues,
     clear,
     paramDict,
+    analysisDict,
+    modifierSpecs,
     order,
     count,
   }

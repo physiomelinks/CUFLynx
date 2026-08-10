@@ -11,7 +11,7 @@ dist/
 venv/
 
 # Node / frontend
-node_modules/
+node_modules
 apps/web/dist/
 *.local
 # This is a yarn project (see apps/web package.json "packageManager" + CI

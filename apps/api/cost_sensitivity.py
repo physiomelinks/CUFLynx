@@ -117,6 +117,7 @@ def evaluate(
     param_names=None,
     bounds=None,
     rel_step: float = DEFAULT_REL_STEP,
+    modifiers=None,
 ) -> dict:
     """``d ln(cost)/d ln(p)`` for each parameter, by central differences.
 
@@ -125,38 +126,71 @@ def evaluate(
     the derivative is of the cost the panel is showing rather than of a second
     one computed here.
 
+    ``modifiers`` rows are differenced **in θ**: each is ``{name, anchor,
+    targets, baselines: {qname: baseline}, value: θ, bounds: [θmin, θmax]}``,
+    and a perturbed run writes ``(θ±h)·baseline_t`` over every target while
+    ``params`` (the physical base point) supplies everything else. The row is
+    keyed by the *anchor* so the panel's bars line up with the slider keys.
+
     Returns the base cost, the step actually used, and one row per parameter with
-    ``elasticity`` (the dimensionless figure), ``derivative`` (raw ``dJ/dp``) and,
-    when either is missing, a ``reason`` saying why. Never a zero standing in for
-    "could not tell": an insensitive parameter and a failed solve look identical
-    if both report 0.
+    ``elasticity`` (the dimensionless figure), ``derivative`` (raw ``dJ/dp`` --
+    ``dJ/dθ`` for a modifier) and, when either is missing, a ``reason`` saying
+    why. Never a zero standing in for "could not tell": an insensitive parameter
+    and a failed solve look identical if both report 0.
     """
     rel_step = float(rel_step)
     if not (math.isfinite(rel_step) and rel_step > 0):
         raise ValueError("rel_step must be a finite positive number")
 
-    names = [n for n in (param_names or list(params)) if n in params]
+    # A modifier's targets are in `params` (the physical base point), but they
+    # are the modifier's to move -- differencing them separately as free rows
+    # would double-count every one of them under the default param_names.
+    claimed: set = set()
+    for mod in modifiers or []:
+        claimed.update(str(t) for t in (mod.get("targets") or []))
+    names = [n for n in (param_names or list(params)) if n in params and n not in claimed]
     bounds = bounds or {}
 
     base = cost_at(dict(params))
     base_cost = _cost_value(base)
-    rows = [
-        {
-            "name": name,
-            "value": float(params[name]),
-            "step": None,
-            "derivative": None,
-            "elasticity": None,
-            "reason": None,
-        }
-        for name in names
-    ]
+    # Modifiers first, matching the analytic arm and the slider column: a new
+    # modifier goes to the top of the params editor, and the same quantity
+    # listed last here would read as a different parameter.
+    rows = []
+    setters, row_bounds = {}, {}
+    for mod in modifiers or []:
+        key = str(mod.get("anchor") or mod.get("name"))
+        rows.append(
+            {
+                "name": key,
+                "value": float(mod.get("value", 0.0)),
+                "step": None,
+                "derivative": None,
+                "elasticity": None,
+                "reason": None,
+            }
+        )
+        setters[key] = _modifier_setter(mod)
+        row_bounds[key] = mod.get("bounds")
+    for name in names:
+        rows.append(
+            {
+                "name": name,
+                "value": float(params[name]),
+                "step": None,
+                "derivative": None,
+                "elasticity": None,
+                "reason": None,
+            }
+        )
+        setters[name] = _free_setter(name)
+        row_bounds[name] = bounds.get(name)
     payload = {
         "cost": base_cost,
         "rel_step": rel_step,
         "method": "central finite difference",
         # What the user paid for this, so the toggle's price is not a mystery.
-        "n_simulations": 1 + 2 * len(names),
+        "n_simulations": 1 + 2 * len(rows),
         "params": rows,
         "unavailable": None,
     }
@@ -173,13 +207,14 @@ def evaluate(
     for row in rows:
         name = row["name"]
         value = row["value"]
-        step = step_for(value, bounds.get(name), rel_step)
+        step = step_for(value, row_bounds.get(name), rel_step)
         row["step"] = step
-        lo, hi = _range(bounds.get(name))
+        lo, hi = _range(row_bounds.get(name))
 
+        set_point = setters[name]
         try:
-            plus = _perturbed(cost_at, params, name, value + step, base_shape)
-            minus = _perturbed(cost_at, params, name, value - step, base_shape)
+            plus = _perturbed(cost_at, params, set_point, name, value + step, base_shape)
+            minus = _perturbed(cost_at, params, set_point, name, value - step, base_shape)
         except CostRunError as exc:
             row["reason"] = str(exc)
             continue
@@ -200,7 +235,34 @@ def evaluate(
     return payload
 
 
-def _perturbed(cost_at, params: dict, name: str, value: float, base_shape) -> float:
+def _free_setter(name: str):
+    """Write a free parameter's perturbed value at its own key."""
+    def set_point(perturbed: dict, value: float) -> None:
+        perturbed[name] = value
+
+    return set_point
+
+
+def _modifier_setter(mod: dict):
+    """Write a modifier's perturbed θ as ``θ·baseline_t`` over every target.
+
+    θ itself never enters the params dict -- the live routes take physical
+    values only, and the whole point of differencing in θ is that one step
+    moves every target in proportion.
+    """
+    targets = list(mod.get("targets") or [])
+    baselines = dict(mod.get("baselines") or {})
+
+    def set_point(perturbed: dict, theta: float) -> None:
+        for target in targets:
+            baseline = baselines.get(target)
+            if baseline is not None:
+                perturbed[target] = theta * float(baseline)
+
+    return set_point
+
+
+def _perturbed(cost_at, params: dict, set_point, name: str, value: float, base_shape) -> float:
     """The cost at one perturbed point, or a ``CostRunError`` saying what went wrong.
 
     The parameter is deliberately *not* clamped to its params_for_id range: those
@@ -209,7 +271,7 @@ def _perturbed(cost_at, params: dict, name: str, value: float, base_shape) -> fl
     one while still dividing by ``2h``, i.e. reporting half the gradient.
     """
     perturbed = dict(params)
-    perturbed[name] = value
+    set_point(perturbed, value)
     try:
         cost = cost_at(perturbed)
     except Exception as exc:  # noqa: BLE001 - a solve that failed is a reason, not a crash

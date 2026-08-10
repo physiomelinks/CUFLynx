@@ -85,7 +85,15 @@ def looks_like_json(data: bytes | str) -> bool:
 
 
 def load_doc(data: bytes | str | dict) -> dict:
-    """Parse and normalise a params_for_id JSON payload."""
+    """Parse and normalise a params_for_id JSON payload.
+
+    Validation and defaults-folding are **CA's** whenever it is importable
+    (``resolve_params_for_id_doc``): unknown keys, duplicate names,
+    targets-XOR-modifies and the modifier relationship rules, with CA's own
+    wording -- the same verdict a calibration would give later. Without CA the
+    local fold runs with the minimal structural checks the sliders need;
+    everything deeper re-runs at calibration time anyway.
+    """
     if isinstance(data, (dict, list)):
         doc = data
     else:
@@ -114,11 +122,33 @@ def load_doc(data: bytes | str | dict) -> dict:
     if not isinstance(defaults, dict):
         raise ParamsJsonError("'defaults' must be an object")
 
+    version = doc.get("version", SCHEMA_VERSION)
+    resolve = _ca_doc_resolver()
+    if resolve is not None and params:
+        try:
+            resolved = resolve({"version": version, "defaults": defaults, "params": params})
+        except ValueError as exc:
+            raise ParamsJsonError(str(exc)) from exc
+        return {"version": version, "defaults": defaults, "params": resolved}
+
     return {
-        "version": doc.get("version", SCHEMA_VERSION),
+        "version": version,
         "defaults": defaults,
         "params": [_resolved(entry, defaults, idx) for idx, entry in enumerate(params)],
     }
+
+
+def _ca_doc_resolver():
+    """CA's ``resolve_params_for_id_doc``, or None when CA is unreachable."""
+    try:
+        from engine import _ensure_ca_on_path  # noqa: PLC0415
+
+        _ensure_ca_on_path()
+        from parsers.PrimitiveParsers import ObsAndParamDataParser  # noqa: PLC0415
+
+        return ObsAndParamDataParser.resolve_params_for_id_doc
+    except (ImportError, AttributeError):
+        return None
 
 
 def _resolved(entry, defaults: dict, idx: int) -> dict:
@@ -183,10 +213,15 @@ def entries_to_json(entries, defaults: dict | None = None) -> dict:
     """
     params = []
     for entry in entries:
-        item: dict = {
-            "name": getattr(entry, "name", None) or entry.qnames[0],
-            "targets": list(entry.qnames),
-        }
+        item: dict = {"name": entry.name or entry.qnames[0]}
+        # A modifier writes `modifies` + `operation` and never `targets` -- CA
+        # refuses an entry carrying both. Keys outside CA's closed entry-key set
+        # must never be invented here, or the file stops being CA-readable.
+        if entry.modifies:
+            item["modifies"] = list(entry.modifies)
+            item["operation"] = entry.operation or "scale"
+        else:
+            item["targets"] = list(entry.qnames)
         if entry.param_type:
             item["param_type"] = entry.param_type
         # An unbounded row's bounds are derived, not authored; writing them back

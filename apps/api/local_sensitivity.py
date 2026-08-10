@@ -135,6 +135,17 @@ def _resolve_nominal(sm, param_names, mins, maxs, settings, best_vals, best_para
         nominal = np.asarray(
             [v[0] if isinstance(v, (list, tuple)) else v for v in vals], dtype=float
         )
+        # A modifier slot's nominal is theta, but get_init_param_vals returns the
+        # anchor's *physical* model default -- overwrite modifier slots with the
+        # operation's identity (theta = 1 for scale), CA's own rule
+        # (apply_modifier_identity_nominals, used by its param-id nominals). The
+        # slider override below still wins: analysisDict puts theta at the anchor.
+        try:
+            from parsers.PrimitiveParsers import apply_modifier_identity_nominals  # noqa: PLC0415
+
+            apply_modifier_identity_nominals(getattr(sm, "param_id_info", None) or {}, nominal)
+        except ImportError:  # a CA predating modifiers has none to overwrite
+            pass
         if current_params:
             applied = 0
             for i, name in enumerate(param_names):
@@ -207,10 +218,25 @@ def _evaluate_features(sm, param_vals: np.ndarray, op_funcs) -> np.ndarray:
     n = len(obs["operations"])
     features = np.full(n, np.nan)
 
+    # A modifier's slot is θ; the solver gets θ·baselineᵢ per target. CA's own
+    # expansion (the same call its param-id and Sobol paths make before
+    # run_protocol), so the FD loop differences in θ while the model always
+    # receives physical values. Without it, θ would be written to every target
+    # as if it were a compliance.
+    vals = [float(v) for v in np.asarray(param_vals, dtype=float)]
+    try:
+        from parsers.PrimitiveParsers import expand_modifier_param_vals  # noqa: PLC0415
+
+        id_param_vals = expand_modifier_param_vals(
+            getattr(sm, "param_id_info", None) or {}, vals
+        )
+    except ImportError:  # a CA predating modifiers has none to expand
+        id_param_vals = vals
+
     _success, operands_outputs_dict, _, _ = sm._protocol_executor.run_protocol(
         sm.protocol_info,
         id_param_names=sm.param_id_info["param_names"],
-        id_param_vals=np.asarray(param_vals, dtype=float),
+        id_param_vals=id_param_vals,
         result_variables=obs["operands"],
         continue_on_failure=True,
     )
@@ -450,9 +476,20 @@ def _ca_analytic_local_sensitivity(pid, param_names, nominal, mins, maxs):
     gradient sources. Returns ``(local, output_names)``.
     """
     nominal = np.asarray(nominal, dtype=float)
-    sens = pid.get_observable_sensitivities(nominal)  # {obs_label: {qname: dY/dP}}
+    sens = pid.get_observable_sensitivities(nominal)  # {obs_label: {param_label: dY/dP}}
     y0 = _ca_feature_values(pid, nominal)  # {obs_label: Y}
     obs = pid.obs_info
+    # CA keys its columns by *entry label*, not by the first member's qname: a
+    # grouped entry is 'a/E+b/E' and a modifier is its own name, because the
+    # sensitivity is d/dtheta over all of that entry's members. Looking them up
+    # by qname misses every such entry and reports an empty cell -- which reads
+    # as "no sensitivity" rather than "asked the wrong question".
+    try:
+        from parsers.PrimitiveParsers import param_entry_labels  # noqa: PLC0415
+
+        labels = list(param_entry_labels(pid.param_id_info))
+    except Exception:  # noqa: BLE001 - a CA predating labels keys by qname
+        labels = list(param_names)
 
     local: dict[str, dict[str, float | None]] = {}
     output_names: list[str] = []
@@ -470,9 +507,13 @@ def _ca_analytic_local_sensitivity(pid, param_names, nominal, mins, maxs):
         row: dict[str, float | None] = {}
         for j, pname in enumerate(param_names):
             rng = maxs[j] - mins[j]
-            row[pname] = relative_coeff(
-                float(deriv_map.get(pname, np.nan)), nominal[j], denom, rng
-            )
+            # Reported under CUFLynx's own key (the entry's first member, which
+            # is the slider's key) but read out under CA's label for it.
+            label = labels[j] if j < len(labels) else pname
+            deriv = deriv_map.get(label)
+            if deriv is None:
+                deriv = deriv_map.get(pname, np.nan)
+            row[pname] = relative_coeff(float(deriv), nominal[j], denom, rng)
         local[oname] = row
     return local, output_names
 
@@ -554,6 +595,16 @@ def compute_local_sensitivity(
         )
 
     sm = sa.SA_manager
+    # Modifier baselines are resolved once here, against the sim helper's
+    # pristine defaults -- the same idempotent call CA's param-id and Sobol
+    # paths make at setup (a no-op without modifiers). The FD loop's expansion
+    # (and FSA's chain rule) refuse to run on unresolved baselines.
+    try:
+        from parsers.PrimitiveParsers import resolve_modifier_baselines  # noqa: PLC0415
+
+        resolve_modifier_baselines(sm.param_id_info, sm.sim_helper)
+    except ImportError:  # a CA predating modifiers has none to resolve
+        pass
     param_names = [
         name[0] if isinstance(name, list) else name
         for name in sm.SA_info["param_names"]

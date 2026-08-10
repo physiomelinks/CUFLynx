@@ -49,7 +49,7 @@ const ButtonStub = {
   props: ['label', 'disabled', 'icon', 'size', 'text', 'title'],
   emits: ['click'],
   template:
-    '<button :disabled="disabled" v-bind="$attrs" @click="$emit(\'click\')">{{ label }}</button>',
+    '<button :disabled="disabled" :title="title" v-bind="$attrs" @click="$emit(\'click\')">{{ label }}</button>',
 }
 const CheckboxStub = {
   props: ['modelValue', 'binary'],
@@ -75,10 +75,23 @@ function mountDialog(props = {}) {
   return mount(EditParamsDialog, { props: { ...baseProps, ...props }, global: { stubs } })
 }
 
+// The modifier operation vocabulary as CA reports it through /api/config.
+const MODIFIER_OPS = {
+  default: 'scale',
+  operations: [
+    { value: 'scale', label: 'Scale', description: 'one calibrated multiplier',
+      applies_to: 'value', dimensionless: true,
+      default_min: 0.5, default_max: 2.0, identity: 1.0 },
+  ],
+}
+
 beforeEach(() => {
   uploadParamsForId.mockReset()
   getConfig.mockReset()
-  getConfig.mockResolvedValue({ param_prior_types: PRIOR_TYPES })
+  getConfig.mockResolvedValue({
+    param_prior_types: PRIOR_TYPES,
+    param_modifier_operations: MODIFIER_OPS,
+  })
   // jsdom lacks createObjectURL; provide a stub so the download path runs.
   globalThis.URL.createObjectURL = vi.fn(() => 'blob:mock')
   globalThis.URL.revokeObjectURL = vi.fn()
@@ -97,7 +110,8 @@ describe('EditParamsDialog', () => {
     const wrapper = mountDialog()
     const rows = wrapper.findAll('[data-testid="ep-row"]')
     expect(rows).toHaveLength(2)
-    const checks = wrapper.findAll('input[type="checkbox"]')
+    // The include column, not the multi-select one that now precedes it.
+    const checks = wrapper.findAll('.ep-inc input[type="checkbox"]')
     expect(checks[0].element.checked).toBe(true) // v/a from CSV
     expect(checks[1].element.checked).toBe(false) // v/b from model
     expect(wrapper.text()).toContain('1 included')
@@ -139,7 +153,7 @@ describe('EditParamsDialog', () => {
 
   it('disables Save when nothing is selected', async () => {
     const wrapper = mountDialog()
-    await wrapper.findAll('input[type="checkbox"]')[0].setValue(false)
+    await wrapper.findAll('.ep-inc input[type="checkbox"]')[0].setValue(false)
     expect(wrapper.text()).toContain('0 included')
     expect(wrapper.find('[data-testid="ep-save"]').attributes('disabled')).toBeDefined()
   })
@@ -152,7 +166,7 @@ describe('EditParamsDialog', () => {
     expect(wrapper.find('[data-testid="ep-save"]').attributes('disabled')).toBeDefined()
   })
 
-  it('on Save: downloads a dated CSV, applies it, and emits saved', async () => {
+  it('on Save: downloads a dated JSON, applies it, and emits saved', async () => {
     uploadParamsForId.mockResolvedValue({ params: [{ qname: 'v/a' }] })
     const clickSpy = vi
       .spyOn(HTMLAnchorElement.prototype, 'click')
@@ -166,23 +180,25 @@ describe('EditParamsDialog', () => {
     expect(globalThis.URL.createObjectURL).toHaveBeenCalledOnce()
     expect(clickSpy).toHaveBeenCalledOnce()
 
-    // applied via the existing upload endpoint with a File + modelId
+    // applied via the existing upload endpoint with a File + modelId. Saved as
+    // the JSON form: a CSV cannot express modifiers or cross-name groups, and a
+    // study loaded from CSV keeps its stem so the lineage stays visible.
     expect(uploadParamsForId).toHaveBeenCalledOnce()
     const [fileArg, idArg] = uploadParamsForId.mock.calls[0]
     expect(idArg).toBe('abc')
     expect(fileArg).toBeInstanceOf(File)
-    expect(fileArg.name).toMatch(/^p_\d{6}\.csv$/) // <stem>_<yymmdd>.csv
+    expect(fileArg.name).toMatch(/^p_\d{6}\.json$/) // <stem>_<yymmdd>.json
 
     // emits saved with parsed params + versioned filename, then closes
     const saved = wrapper.emitted('saved')[0][0]
     expect(saved.params).toEqual([{ qname: 'v/a' }])
-    expect(saved.filename).toMatch(/^p_\d{6}\.csv$/)
+    expect(saved.filename).toMatch(/^p_\d{6}\.json$/)
     expect(wrapper.emitted('update:visible').at(-1)).toEqual([false])
 
     clickSpy.mockRestore()
   })
 
-  it('expands an annotation field, edits it, and writes it into the saved CSV', async () => {
+  it('expands an annotation field, edits it, and writes it into the saved file', async () => {
     uploadParamsForId.mockResolvedValue({ params: [{ qname: 'v/a' }] })
     const wrapper = mountDialog()
 
@@ -199,13 +215,14 @@ describe('EditParamsDialog', () => {
     await flushPromises()
 
     const [fileArg] = uploadParamsForId.mock.calls[0]
-    const text = await new Promise((resolve) => {
-      const reader = new FileReader()
-      reader.onload = () => resolve(reader.result)
-      reader.readAsText(fileArg)
-    })
-    expect(text.split('\n')[0]).toContain('comment')
-    expect(text).toContain('range from Dash 2016')
+    const doc = JSON.parse(
+      await new Promise((resolve) => {
+        const reader = new FileReader()
+        reader.onload = () => resolve(reader.result)
+        reader.readAsText(fileArg)
+      }),
+    )
+    expect(doc.params[0].comment).toBe('range from Dash 2016')
   })
 
   it('auto-expands rows that already carry an annotation', () => {
@@ -254,7 +271,7 @@ describe('EditParamsDialog — prior column', () => {
     expect(wrapper.find('[data-testid="ep-prior"]').element.value).toBe('normal')
   })
 
-  it('writes the chosen prior into the CSV', async () => {
+  it('writes the chosen prior into the saved file', async () => {
     const wrapper = mountDialog({
       currentParams: [{ qname: 'v/a', min: 1, max: 2, prior: 'normal' }],
     })
@@ -263,9 +280,8 @@ describe('EditParamsDialog — prior column', () => {
     await flushPromises()
 
     const [file] = uploadParamsForId.mock.calls[0]
-    const text = await readFile(file)
-    expect(text.split('\n')[0]).toContain('prior')
-    expect(text).toContain('normal')
+    const doc = JSON.parse(await readFile(file))
+    expect(doc.params[0].prior).toBe('normal')
   })
 
   it('round-trips a prior the user never touched', async () => {
@@ -308,7 +324,7 @@ describe('EditParamsDialog — prior hyper-parameters', () => {
     expect(wrapper.find('.ep-prior-block').exists()).toBe(false)
   })
 
-  it('renders a loaded value and writes it into the CSV', async () => {
+  it('renders a loaded value and writes it into the saved file', async () => {
     const wrapper = mountDialog({
       currentParams: [
         { qname: 'v/a', min: 1, max: 2, prior: 'normal', prior_params: { prior_mean: '7' } },
@@ -323,9 +339,8 @@ describe('EditParamsDialog — prior hyper-parameters', () => {
     await wrapper.find('[data-testid="ep-save"]').trigger('click')
     await flushPromises()
 
-    const text = await readFile(uploadParamsForId.mock.calls[0][0])
-    expect(text.split('\n')[0]).toContain('prior_mean')
-    expect(text).toContain('9.5')
+    const doc = JSON.parse(await readFile(uploadParamsForId.mock.calls[0][0]))
+    expect(doc.params[0].prior_params.prior_mean).toBe('9.5')
   })
 
   it('drops values the newly chosen prior does not take', async () => {
@@ -454,13 +469,10 @@ describe('EditParamsDialog — unbounded parameters', () => {
     await wrapper.find('[data-testid="ep-save"]').trigger('click')
     await flushPromises()
 
-    const text = await readFile(uploadParamsForId.mock.calls[0][0])
-    const header = text.split('\n')[0].split(',')
-    const row = text.split('\n')[1].split(',')
-    expect(header).toContain('unbounded')
-    expect(row[header.indexOf('unbounded')]).toBe('true')
-    expect(row[header.indexOf('min')]).toBe('')
-    expect(row[header.indexOf('max')]).toBe('')
+    const doc = JSON.parse(await readFile(uploadParamsForId.mock.calls[0][0]))
+    expect(doc.params[0].unbounded).toBe(true)
+    expect(doc.params[0]).not.toHaveProperty('min')
+    expect(doc.params[0]).not.toHaveProperty('max')
   })
 
   it('refuses to save until the centre and width are given', async () => {
@@ -569,54 +581,60 @@ describe('EditParamsDialog — grouped parameters', () => {
     expect(wrapper.find('[data-testid="ep-group-badge"]').text()).toBe('×2')
   })
 
-  it('offers only the variables of the same name to group with', () => {
-    // The CSV has one param_name column, so a group of differently-named
-    // variables is not expressible — offering one would offer something unsavable.
+  it('has no per-row grouping panel — the toolbar Group (override) replaced it', () => {
     const wrapper = mountDialog(groupProps)
-    const row = rowFor(wrapper, 'ao_A/E')
-    row.find('input[type="checkbox"]').setValue(true)
-    return flushPromises().then(async () => {
-      await row.find('[data-testid="ep-group-toggle"]').trigger('click')
-      const members = row.findAll('[data-testid="ep-group-member"]')
-      expect(members.map((m) => m.attributes('data-qname'))).toEqual(['ao_B/E', 'ao_C/E'])
-    })
+    expect(wrapper.find('[data-testid="ep-group-toggle"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="ep-group-panel"]').exists()).toBe(false)
   })
 
-  it('has nothing to offer a parameter no other component shares', () => {
-    const wrapper = mountDialog(groupProps)
-    const row = rowFor(wrapper, 'ao_A/R')
-    expect(row.find('[data-testid="ep-group-toggle"]').attributes('disabled')).toBeDefined()
-  })
+  async function selectRows(wrapper, qnames) {
+    for (const row of wrapper.findAll('[data-testid="ep-row"]')) {
+      const name = row.find('.ep-name').text()
+      if (qnames.some((q) => name.startsWith(q))) {
+        await row.find('[data-testid="ep-select"]').setValue(true)
+      }
+    }
+  }
 
-  it('writes a created group as one row naming every vessel', async () => {
+  it('writes a toolbar-created group as one entry naming every target', async () => {
     uploadParamsForId.mockResolvedValue({ params: [] })
     const wrapper = mountDialog(groupProps)
-    const row = rowFor(wrapper, 'ao_A/E')
-    await row.find('input[type="checkbox"]').setValue(true) // include it
-    await row.find('[data-testid="ep-group-toggle"]').trigger('click')
-    for (const m of row.findAll('[data-testid="ep-group-member"]')) await m.setValue(true)
+    await flushPromises()
+    await selectRows(wrapper, ['ao_A/E', 'ao_B/E', 'ao_C/E'])
+    await wrapper.find('[data-testid="ep-group-selected"]').trigger('click')
 
-    // The absorbed rows stop being parameters of their own.
+    // The absorbed rows stop being parameters of their own, and the new group
+    // sits at the top of the list where the user can see it happened.
     expect(wrapper.findAll('[data-testid="ep-row"]')).toHaveLength(2)
+    expect(wrapper.findAll('[data-testid="ep-row"]')[0].text()).toContain('ao_A/E')
     expect(wrapper.text()).toContain('1 included')
 
     await wrapper.find('[data-testid="ep-save"]').trigger('click')
     await flushPromises()
-    const text = await readFile(uploadParamsForId.mock.calls[0][0])
-    const [, written] = text.trim().split('\n')
-    expect(written.startsWith('ao_A ao_B ao_C,E,')).toBe(true)
+    const doc = JSON.parse(await readFile(uploadParamsForId.mock.calls[0][0]))
+    // targets order preserved: CA's baselines pair with targets by index.
+    expect(doc.params[0].targets).toEqual(['ao_A/E', 'ao_B/E', 'ao_C/E'])
   })
 
-  it('gives a component back when it is unticked', async () => {
+  it('ungroups from the row button, giving every component back', async () => {
     const wrapper = mountDialog(groupProps)
-    const row = rowFor(wrapper, 'ao_A/E')
-    await row.find('input[type="checkbox"]').setValue(true)
-    await row.find('[data-testid="ep-group-toggle"]').trigger('click')
-    const member = row.findAll('[data-testid="ep-group-member"]')[0]
-    await member.setValue(true)
+    await flushPromises()
+    await selectRows(wrapper, ['ao_A/E', 'ao_B/E'])
+    await wrapper.find('[data-testid="ep-group-selected"]').trigger('click')
     expect(wrapper.findAll('[data-testid="ep-row"]')).toHaveLength(3)
-    await row.findAll('[data-testid="ep-group-member"]')[0].setValue(false)
+
+    await wrapper.find('[data-testid="ep-ungroup"]').trigger('click')
     expect(wrapper.findAll('[data-testid="ep-row"]')).toHaveLength(4)
+    expect(wrapper.find('[data-testid="ep-ungroup"]').exists()).toBe(false)
+  })
+
+  it('a created modifier also lands at the top of the list', async () => {
+    const wrapper = mountDialog(groupProps)
+    await flushPromises()
+    await selectRows(wrapper, ['ao_A/E', 'ao_B/E'])
+    await wrapper.find('[data-testid="ep-create-modifier"]').trigger('click')
+    const first = wrapper.findAll('[data-testid="ep-row"]')[0]
+    expect(first.find('[data-testid="ep-modifier-badge"]').exists()).toBe(true)
   })
 
   it('finds a group by any of its components, not just the one it is named after', async () => {
@@ -723,5 +741,101 @@ describe('EditParamsDialog — placeholder when the number cannot be computed (#
     expect(
       wrapper.find('[data-testid="ep-prior-param-prior_k"]').attributes('placeholder'),
     ).toBe('required')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Modifier parameters (#208): multi-select toolbar, θ rows, JSON save
+// ---------------------------------------------------------------------------
+describe('EditParamsDialog — modifier parameters', () => {
+  const modProps = {
+    currentParams: [],
+    modelVariables: {
+      params: ['a/C', 'b/C', 'c/R'],
+      initial_values: { 'a/C': 2e-8, 'b/C': 4e-8, 'c/R': 5 },
+    },
+  }
+
+  async function selectRows(wrapper, qnames) {
+    for (const row of wrapper.findAll('[data-testid="ep-row"]')) {
+      const name = row.find('.ep-name').text()
+      if (qnames.some((q) => name.startsWith(q))) {
+        await row.find('[data-testid="ep-select"]').setValue(true)
+      }
+    }
+  }
+
+  it('creates a scale modifier from the selection and saves modifies+operation', async () => {
+    uploadParamsForId.mockResolvedValue({ params: [] })
+    const wrapper = mountDialog(modProps)
+    await flushPromises() // vocabulary load gates the button
+
+    await selectRows(wrapper, ['a/C', 'b/C'])
+    const create = wrapper.find('[data-testid="ep-create-modifier"]')
+    expect(create.attributes('disabled')).toBeUndefined()
+    await create.trigger('click')
+
+    // One modifier row replaces the two claimed targets.
+    const badge = wrapper.find('[data-testid="ep-modifier-badge"]')
+    expect(badge.text()).toBe('scale ×2')
+    expect(wrapper.find('[data-testid="ep-modifier-targets"]').text()).toContain('a/C')
+
+    await wrapper.find('[data-testid="ep-save"]').trigger('click')
+    await flushPromises()
+    const doc = JSON.parse(await readFile(uploadParamsForId.mock.calls[0][0]))
+    const mod = doc.params.find((p) => p.modifies)
+    expect(mod.modifies).toEqual(['a/C', 'b/C'])
+    expect(mod.operation).toBe('scale')
+    expect(mod.min).toBe(0.5) // θ bounds from CA's vocabulary
+    expect(mod.max).toBe(2)
+    expect(mod).not.toHaveProperty('targets')
+  })
+
+  it('deleting a modifier restores its targets', async () => {
+    const wrapper = mountDialog(modProps)
+    await flushPromises()
+    await selectRows(wrapper, ['a/C', 'b/C'])
+    await wrapper.find('[data-testid="ep-create-modifier"]').trigger('click')
+    expect(wrapper.findAll('[data-testid="ep-row"]')).toHaveLength(2) // mod + c/R
+
+    await wrapper.find('[data-testid="ep-remove-modifier"]').trigger('click')
+    expect(wrapper.findAll('[data-testid="ep-row"]')).toHaveLength(3)
+    expect(wrapper.find('[data-testid="ep-modifier-badge"]').exists()).toBe(false)
+  })
+
+  it('groups differently-named parameters via the toolbar (override)', async () => {
+    uploadParamsForId.mockResolvedValue({ params: [] })
+    const wrapper = mountDialog(modProps)
+    await flushPromises()
+    await selectRows(wrapper, ['a/C', 'c/R'])
+    await wrapper.find('[data-testid="ep-group-selected"]').trigger('click')
+
+    expect(wrapper.find('[data-testid="ep-group-badge"]').text()).toBe('×2')
+    await wrapper.find('[data-testid="ep-save"]').trigger('click')
+    await flushPromises()
+    const doc = JSON.parse(await readFile(uploadParamsForId.mock.calls[0][0]))
+    // The CSV could never say this: one entry, two differently-named targets.
+    expect(doc.params[0].targets).toEqual(['a/C', 'c/R'])
+  })
+
+  it('greys Group and Create-modifier on the CasADi backend', async () => {
+    const wrapper = mountDialog({ ...modProps, generatedModelFormat: 'casadi_python' })
+    await flushPromises()
+    await selectRows(wrapper, ['a/C', 'b/C'])
+    expect(
+      wrapper.find('[data-testid="ep-group-selected"]').attributes('disabled'),
+    ).toBeDefined()
+    expect(
+      wrapper.find('[data-testid="ep-create-modifier"]').attributes('disabled'),
+    ).toBeDefined()
+  })
+
+  it('shows Calculate disabled, pending upstream CA support', async () => {
+    const wrapper = mountDialog(modProps)
+    await flushPromises()
+    const calc = wrapper.find('[data-testid="ep-create-calculate"]')
+    expect(calc.exists()).toBe(true)
+    expect(calc.attributes('disabled')).toBeDefined()
+    expect(calc.attributes('title')).toContain('pending upstream support')
   })
 })

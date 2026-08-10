@@ -34,6 +34,9 @@ const props = defineProps({
   loadedObsFilename: { type: String, default: null },
   // Enables the pipeline/plotting export buttons (a model must be loaded).
   canExport: { type: Boolean, default: false },
+  // Gates the group/modifier buttons in the params editor: the CasADi backend
+  // refuses grouped and modifier rows at run time (#208).
+  generatedModelFormat: { type: String, default: '' },
 })
 const emit = defineEmits([
   'model-loaded',
@@ -525,6 +528,7 @@ async function onParamsDrop(event) {
       :model-variables="modelVariables"
       :model-name="modelName"
       :loaded-filename="loadedFilename"
+      :generated-model-format="generatedModelFormat"
       @saved="onEditSaved"
     />
 

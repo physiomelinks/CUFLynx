@@ -306,6 +306,141 @@ def test_uploading_json_without_ca_still_works(no_ca, client):
 
 
 # ---------------------------------------------------------------------------
+# Modifier entries (CA #378): the slider carries θ, targets get θ·baselineᵢ
+# ---------------------------------------------------------------------------
+MODEL_VALUES = {"a/C": 2e-8, "b/C": 4e-8}
+
+
+def _scale_doc(**over):
+    entry = {"name": "C_scale", "modifies": ["a/C", "b/C"], "operation": "scale",
+             "min": 0.5, "max": 2.0}
+    entry.update(over)
+    return {"params": [entry]}
+
+
+def test_a_scale_modifier_becomes_one_theta_entry():
+    entry = parse_params_for_id(_scale_doc(), MODEL_VALUES)[0]
+
+    assert entry.qname == "a/C"  # the anchor: modifies[0]
+    assert entry.qnames == ["a/C", "b/C"]
+    assert entry.name == "C_scale"
+    assert entry.operation == "scale"
+    # θ starts at the operation's identity -- never at a model value.
+    assert entry.initial_value == 1.0 and entry.identity == 1.0
+    assert entry.baselines == {"a/C": 2e-8, "b/C": 4e-8}
+    assert (entry.min, entry.max) == (0.5, 2.0)
+    assert entry.warning is None
+
+
+def test_modifier_baselines_keep_file_order():
+    """baselines[i] pairs with modifies[i]; reordering would scale the wrong
+    parameter by the wrong default."""
+    entry = parse_params_for_id(_scale_doc(modifies=["b/C", "a/C"]), MODEL_VALUES)[0]
+    assert entry.qnames == ["b/C", "a/C"]
+    assert list(entry.baselines) == ["b/C", "a/C"]
+
+
+def test_an_unresolved_modifier_target_warns_but_parses():
+    entry = parse_params_for_id(_scale_doc(modifies=["a/C", "ghost/x"]), MODEL_VALUES)[0]
+    assert "ghost/x" in entry.warning
+    assert entry.baselines == {"a/C": 2e-8}
+
+
+def test_a_zero_baseline_warns():
+    """θ·0 is 0 for every θ -- the slider would appear to do nothing."""
+    entry = parse_params_for_id(_scale_doc(), {"a/C": 0.0, "b/C": 4e-8})[0]
+    assert "zero baseline" in entry.warning
+
+
+def test_a_modifier_without_bounds_is_rejected():
+    with pytest.raises(ParamsForIdError, match="min and max"):
+        parse_params_for_id(
+            {"params": [{"name": "s", "modifies": ["a/C"], "operation": "scale"}]}
+        )
+
+
+def test_a_modifier_cannot_be_unbounded():
+    with pytest.raises(ParamsForIdError, match="unbounded"):
+        parse_params_for_id(_scale_doc(unbounded=True))
+
+
+def test_an_unknown_operation_is_rejected_by_name():
+    with pytest.raises(ParamsForIdError, match="warp"):
+        parse_params_for_id(_scale_doc(operation="warp"))
+
+
+def test_targets_and_modifies_together_are_rejected():
+    with pytest.raises(ParamsForIdError, match="modifies"):
+        parse_params_for_id(
+            {"params": [{"targets": ["a/C"], "modifies": ["b/C"],
+                         "operation": "scale", "min": 0.5, "max": 2.0}]}
+        )
+
+
+def test_a_modifier_round_trips_through_the_editor_writer():
+    """parse -> entries_to_json -> parse must be lossless, and the written
+    entry must carry modifies+operation and never targets (CA refuses both)."""
+    doc = {"params": [
+        # Free/override entries name parameters the modifier does not touch --
+        # a modified qname that is also free is (rightly) refused by CA.
+        {"targets": ["c/R"], "min": 1e-9, "max": 5e-8},
+        {"name": "grp", "targets": ["a/C2", "b/C2"], "min": 1.0, "max": 2.0},
+        _scale_doc()["params"][0],
+    ]}
+    first = parse_params_for_id(doc, MODEL_VALUES)
+    written = params_json.entries_to_json(first)
+
+    mod = written["params"][2]
+    assert mod["modifies"] == ["a/C", "b/C"] and mod["operation"] == "scale"
+    assert "targets" not in mod
+    assert written["params"][1]["name"] == "grp"
+
+    again = parse_params_for_id(written, MODEL_VALUES)
+    assert [e.as_dict() for e in again] == [e.as_dict() for e in first]
+
+
+# CA's cross-entry rules, judged by its resolver when it is importable.
+@pytest.fixture
+def requires_ca_resolver():
+    if params_json._ca_doc_resolver() is None:
+        pytest.skip("circulatory_autogen's params_for_id resolver not available")
+
+
+def test_ca_rejects_a_duplicate_name(requires_ca_resolver):
+    with pytest.raises(ParamsForIdError, match="reuses the name"):
+        parse_params_for_id({"params": [
+            {"name": "same", "targets": ["a/C"], "min": 1.0, "max": 2.0},
+            {"name": "same", "targets": ["b/C"], "min": 1.0, "max": 2.0},
+        ]})
+
+
+def test_ca_rejects_a_modifier_of_a_modifier(requires_ca_resolver):
+    with pytest.raises(ParamsForIdError):
+        parse_params_for_id({"params": [
+            {"name": "s1", "modifies": ["a/C"], "operation": "scale",
+             "min": 0.5, "max": 2.0},
+            {"name": "s2", "modifies": ["a/C"], "operation": "scale",
+             "min": 0.5, "max": 2.0},
+        ]})
+
+
+def test_ca_rejects_a_modified_param_that_is_also_free(requires_ca_resolver):
+    with pytest.raises(ParamsForIdError):
+        parse_params_for_id({"params": [
+            {"targets": ["a/C"], "min": 1e-9, "max": 5e-8},
+            {"name": "s", "modifies": ["a/C"], "operation": "scale",
+             "min": 0.5, "max": 2.0},
+        ]})
+
+
+def test_ca_rejects_an_unknown_entry_key(requires_ca_resolver):
+    with pytest.raises(ParamsForIdError, match="unknown key"):
+        parse_params_for_id(
+            {"params": [{"targets": ["a/C"], "min": 1.0, "max": 2.0, "wingspan": 3}]}
+        )
+
+
+# ---------------------------------------------------------------------------
 # The stored file's suffix follows its content (CA branches on the suffix)
 # ---------------------------------------------------------------------------
 def test_a_json_upload_is_stored_with_a_json_suffix(client):
@@ -373,7 +508,9 @@ def test_min_greater_than_max_names_the_entry():
 
 
 def test_an_entry_with_no_targets_is_rejected():
-    with pytest.raises(ParamsForIdError, match="no targets"):
+    # Matches a fragment stable across both judges: CA's resolver says
+    # 'needs a non-empty "targets" list'; the no-CA path says 'no targets'.
+    with pytest.raises(ParamsForIdError, match="targets"):
         parse_params_for_id({"params": [{"targets": [], "min": 1.0, "max": 2.0}]})
 
 

@@ -17,6 +17,29 @@ import {
  * the one slider (#193). `spec.primary` says which slider that is; the repeated
  * writes are the same value, so applying them all is harmless.
  */
+/**
+ * Best-fit values as *physical* model values, for a best-fit run.
+ *
+ * `bestParams` carries the raw slot value per member qname — for a modifier
+ * that is θ at every member, which is right for slider write-back (the anchor
+ * slider holds θ) but wrong to hand a simulation. This expands each modifier's
+ * targets to θ·baselineᵢ from the run's `modifiers` metadata (baselines are a
+ * list aligned with targets, resolved by CA before the run).
+ */
+export function expandBestFitParams(bestParams, modifiers) {
+  const out = { ...(bestParams || {}) }
+  for (const m of modifiers || []) {
+    const theta = m.theta
+    if (theta == null) continue
+    ;(m.targets || []).forEach((target, i) => {
+      const baseline = m.baselines?.[i]
+      if (baseline != null) out[target] = theta * baseline
+      else delete out[target]
+    })
+  }
+  return out
+}
+
 export function applyBestParams(slidersStore, paramSpecs, bestParams) {
   for (const [qname, value] of Object.entries(bestParams || {})) {
     const spec = paramSpecs?.[qname]
@@ -45,6 +68,9 @@ export function useCalibration(options = {}) {
   const state = ref('idle') // idle | running | done | error | cancelled
   const lines = ref([])
   const bestParams = ref(null)
+  // Modifier metadata from the finished run ({name, anchor, targets, operation,
+  // baselines, theta}); [] for runs without modifiers (#208).
+  const bestModifiers = ref([])
   const cost = ref(null)
   const error = ref('')
   // Path (server-side) of the calibrated CellML saved on finish (issue #114); a
@@ -84,6 +110,7 @@ export function useCalibration(options = {}) {
     state.value = 'idle'
     lines.value = []
     bestParams.value = null
+    bestModifiers.value = []
     cost.value = null
     calibratedModelPath.value = null
     error.value = ''
@@ -149,6 +176,7 @@ export function useCalibration(options = {}) {
         // fires, so it must already be set — otherwise they see a stale null
         // and the sliders never update.
         bestParams.value = s.best_params
+        bestModifiers.value = s.modifiers ?? []
         cost.value = s.cost
         calibratedModelPath.value = s.calibrated_model_path || null
         percentError.value = s.percent_error
@@ -188,6 +216,7 @@ export function useCalibration(options = {}) {
     state,
     lines,
     bestParams,
+    bestModifiers,
     cost,
     calibratedModelPath,
     calibratedModelUrl,

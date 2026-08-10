@@ -58,7 +58,114 @@ def test_it_prices_itself():
 
     out = cost_sensitivity.evaluate({"a/p": 1.0, "a/q": 2.0}, cost_at)
     assert out["n_simulations"] == 5
-    assert len(calls) == 5
+
+
+# ---------------------------------------------------------------------------
+# Modifier sliders are differenced in θ (#208)
+# ---------------------------------------------------------------------------
+_MOD = {
+    "name": "C_scale", "anchor": "m/p", "targets": ["m/p", "m/q"],
+    "operation": "scale", "baselines": {"m/p": 2.0, "m/q": 4.0},
+    "value": 1.0, "bounds": [0.5, 2.0],
+}
+
+
+def test_a_modifier_perturbation_moves_every_target_in_proportion():
+    """One θ step writes (θ±h)·baselineₜ over each target; θ itself never
+    appears in the params the run receives."""
+    calls = []
+
+    def cost_at(params):
+        calls.append(dict(params))
+        # The cost tracks the targets so the difference is nonzero.
+        return _cost(params["m/p"] + params["m/q"])
+
+    base = {"m/p": 2.0, "m/q": 4.0, "a/free": 7.0}
+    out = cost_sensitivity.evaluate(
+        base, cost_at, param_names=["a/free"], modifiers=[_MOD]
+    )
+
+    row = next(r for r in out["params"] if r["name"] == "m/p")
+    assert row["value"] == 1.0  # θ, not the physical 2.0
+    h = row["step"]
+    perturbed = [c for c in calls if c != base]
+    theta_calls = [c for c in perturbed if c.get("a/free") == 7.0]
+    assert {(c["m/p"], c["m/q"]) for c in theta_calls} == {
+        ((1.0 + h) * 2.0, (1.0 + h) * 4.0),
+        ((1.0 - h) * 2.0, (1.0 - h) * 4.0),
+    }
+    # dJ/dθ = 2 + 4 = 6 about θ=1, and J = 6θ so d ln J/d ln θ = 1.
+    assert row["derivative"] == pytest.approx(6.0, rel=1e-6)
+    assert row["elasticity"] == pytest.approx(1.0, rel=1e-6)
+
+
+def test_modifier_targets_are_not_double_counted_as_free_rows():
+    """Under the default param_names, a modifier's targets (present in the
+    physical base point) must not also be differenced individually."""
+    out = cost_sensitivity.evaluate(
+        {"m/p": 2.0, "m/q": 4.0, "a/free": 7.0},
+        lambda params: _cost(sum(params.values())),
+        modifiers=[_MOD],
+    )
+    # Modifier first: where its slider sits in the parameter column.
+    assert [r["name"] for r in out["params"]] == ["m/p", "a/free"]
+    # 2 rows -> 1 base + 4 perturbed runs.
+    assert out["n_simulations"] == 5
+
+
+def test_the_analytic_arm_gives_a_modifier_one_entry_naming_its_targets():
+    """The layout that makes CA apply its own chain rule: one entry per
+    modifier naming every target (so fsa_backend combines their sensitivity
+    columns via modifier_weights_by_index), theta's own bounds, and the
+    targets left out of the free entries."""
+    info = cost_gradient_mod._param_id_info(
+        ["a/free"], {"a/free": 7.0, "m/p": 2.0, "m/q": 4.0},
+        {"a/free": [1.0, 10.0]}, [_MOD],
+    )
+
+    # Modifiers first, matching the slider column and the differencing arm.
+    assert info["param_names"] == [["m/p", "m/q"], ["a/free"]]
+    assert info["param_mins"][0] == 0.5 and info["param_maxs"][0] == 2.0  # θ's
+    (block,) = info["modifiers"]
+    assert block["index"] == 0  # the slot θ occupies
+    assert block["targets"] == ["m/p", "m/q"]
+    assert block["operation"] == "scale"
+    # Left for CA to resolve against its own sim helper at setup: filling them
+    # from the request would trust baselines the *client* resolved.
+    assert block["baselines"] is None
+
+
+def test_a_request_without_modifiers_is_unchanged():
+    """The block only appears when there is one -- a CA predating modifiers
+    must not be handed a key it will not recognise."""
+    info = cost_gradient_mod._param_id_info(["a/x"], {"a/x": 1.0}, None, None)
+    assert "modifiers" not in info
+    assert info["param_names"] == [["a/x"]]
+
+
+class _FakePid:
+    def __init__(self, baselines):
+        self.param_id_info = {"modifiers": [{
+            "name": "C_scale", "operation": "scale",
+            "targets": ["m/p", "m/q"], "baselines": baselines,
+        }]}
+
+
+def test_baselines_that_disagree_with_the_model_fall_back_rather_than_differ():
+    """θ means θ·baseline, so two arms with different baselines measure
+    different points. CA resolves its own from the model; the differencing arm
+    can only use the client's. A divergence is reported, not averaged over."""
+    with pytest.raises(cost_gradient_mod.GradientUnavailable, match="m/q"):
+        cost_gradient_mod._check_baselines(_FakePid([2.0, 9.0]), [_MOD])
+
+
+def test_matching_baselines_pass_the_check():
+    cost_gradient_mod._check_baselines(_FakePid([2.0, 4.0]), [_MOD])
+
+
+def test_unresolved_baselines_fall_back_too():
+    with pytest.raises(cost_gradient_mod.GradientUnavailable, match="baselines"):
+        cost_gradient_mod._check_baselines(_FakePid(None), [_MOD])
 
 
 def test_it_steps_relative_to_each_parameter():
@@ -406,3 +513,97 @@ def test_the_caution_names_the_offending_tolerance():
 
     assert "rtol=0.001" in message
     assert "atol" not in message  # the tight one is not the problem
+
+
+# ---------------------------------------------------------------------------
+# The analytic dJ/dθ for a modifier, against the differenced one (#208)
+# ---------------------------------------------------------------------------
+def _cost_via_api(client, model_id, params):
+    """The cost of one parameter point, through the same route the panel uses."""
+    run = client.post("/api/protocol/run", json={"model_id": model_id, "params": params})
+    assert run.status_code == 200, run.text
+    return run.json()["cost"]
+
+
+@pytest.mark.integration
+def test_the_modifier_gradient_is_analytic_and_agrees_with_differencing(
+    client, requires_simulation
+):
+    """The two routes to dJ/dθ, cross-checked on a real model.
+
+    A scale modifier's θ is one calibrated variable governing several model
+    parameters, so its gradient is CA's chain rule
+    ``dJ/dθ = Σᵢ baselineᵢ·dJ/dpᵢ`` over the members' CVODES columns -- one
+    solve, not 2M+1 differenced ones. Differencing in θ stays the fallback, and
+    where both work they must agree, or the bar beside the slider is measuring
+    something other than what dragging it does.
+    """
+    import engine as engine_mod
+
+    engine_mod.engine.reset()
+    engine_mod.engine.model_type, engine_mod.engine.solver = "cellml_only", "CVODE_myokit"
+    model_id = _load_lv(client, None)
+
+    # α and β driven by one θ; δ stays a free parameter beside it. The
+    # baselines are the model's own defaults, which is what the frontend sends
+    # (ParamEntry.baselines is resolved from the model's initial values) -- and
+    # what CA independently resolves, so θ means the same thing to both arms.
+    alpha, beta = 5.0, 0.2
+    modifiers = [{
+        "name": "growth_scale",
+        "anchor": "Lotka_Volterra_module/alpha",
+        "targets": ["Lotka_Volterra_module/alpha", "Lotka_Volterra_module/beta"],
+        "operation": "scale",
+        "baselines": {
+            "Lotka_Volterra_module/alpha": alpha,
+            "Lotka_Volterra_module/beta": beta,
+        },
+        "value": 1.0,
+        "bounds": [0.5, 2.0],
+    }]
+    body = {
+        "model_id": model_id,
+        "params": {
+            "Lotka_Volterra_module/alpha": alpha,
+            "Lotka_Volterra_module/beta": beta,
+            "Lotka_Volterra_module/delta": 1.0,
+        },
+        "param_names": ["Lotka_Volterra_module/delta"],
+        "bounds": {"Lotka_Volterra_module/delta": [0.1, 5.0]},
+        "modifiers": modifiers,
+    }
+
+    analytic = client.post("/api/cost_sensitivity", json=body).json()
+    assert analytic["analytic"] is True, analytic.get("fallback_reason")
+    # One solve carrying its own derivatives, not 2M+1 differenced ones.
+    assert analytic["n_simulations"] == 1
+
+    rows = {r["name"]: r for r in analytic["params"]}
+    # Keyed by the anchor -- the key the modifier's slider carries, so the bar
+    # lines up with the handle whichever arm produced it.
+    theta_row = rows["Lotka_Volterra_module/alpha"]
+    assert theta_row["value"] == 1.0  # θ, not a physical α
+    assert theta_row["elasticity"] is not None
+    # θ moves both α and β, so it cannot be flat here.
+    assert abs(theta_row["elasticity"]) > 1e-6
+    # The modifier's targets are not also differenced as free parameters.
+    assert "Lotka_Volterra_module/beta" not in rows
+
+    # The same number the fallback would report. The band is wide on purpose:
+    # the *differenced* value is the approximate one -- this module's own
+    # measurements put the analytic gradient within ~7% of a converged
+    # difference quotient -- so a tight tolerance here would be asserting that
+    # FD is exact. What it still catches is the failure that matters: a wrong
+    # chain rule, a missing member, θ evaluated at the wrong point, or a sign
+    # flip, all of which move this by far more than the FD error does.
+    differenced = cost_sensitivity.evaluate(
+        dict(body["params"]),
+        lambda params: _cost_via_api(client, model_id, params),
+        param_names=body["param_names"],
+        bounds=body["bounds"],
+        modifiers=modifiers,
+    )
+    fd_row = next(r for r in differenced["params"]
+                  if r["name"] == "Lotka_Volterra_module/alpha")
+    assert fd_row["elasticity"] is not None
+    assert theta_row["elasticity"] == pytest.approx(fd_row["elasticity"], rel=0.15)

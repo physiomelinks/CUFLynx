@@ -210,15 +210,33 @@ class ParamEntry:
     prior_params: dict | None = None
     # Every qname this row names, in file order, ``qname`` first (issue #193).
     # A one-vessel row has exactly one, so consumers can treat this as the truth
-    # and never special-case the grouped form.
+    # and never special-case the grouped form. For a modifier these are the
+    # *modified* qnames -- the parameters its θ writes into.
     qnames: list[str] = field(default_factory=list)
-    # Something the user should know about this row that is not an error -- so far
-    # only a group whose components disagree on their initial value.
+    # Something the user should know about this row that is not an error -- a
+    # group whose components disagree on their initial value, or a modifier
+    # whose target is unresolved or has a zero baseline.
     warning: str | None = None
+    # The entry's identity (CA enforces uniqueness); the handle a modifier's
+    # slider is labelled with. Falls back to the first qname.
+    name: str | None = None
+    # Modifier form (CA #378): `modifies` + `operation` instead of `targets`.
+    # The slider then carries the dimensionless θ, not a model value.
+    modifies: list[str] | None = None
+    operation: str | None = None
+    # Per-target model default, keyed by qname -- the baselineᵢ of θ·baselineᵢ.
+    # Only resolvable targets appear; index alignment is preserved by iterating
+    # `qnames`. None for free entries.
+    baselines: dict | None = None
+    # The θ at which every target sits at its baseline (1.0 for scale); what a
+    # fresh modifier slider is set to. None for free entries.
+    identity: float | None = None
 
     def __post_init__(self) -> None:
         if not self.qnames:
             self.qnames = [self.qname]
+        if not self.name:
+            self.name = self.qname
 
     def as_dict(self) -> dict:
         return {
@@ -234,6 +252,11 @@ class ParamEntry:
             "prior": self.prior,
             "unbounded": self.unbounded,
             "prior_params": self.prior_params or {},
+            "name": self.name,
+            "modifies": list(self.modifies) if self.modifies else None,
+            "operation": self.operation,
+            "baselines": dict(self.baselines) if self.baselines else None,
+            "identity": self.identity,
         }
 
 
@@ -291,6 +314,114 @@ def _text(item: dict, key: str) -> str | None:
     return text or None
 
 
+def _modifier_operation_meta(operation: str | None) -> tuple[str, dict]:
+    """The resolved operation name and its vocabulary entry.
+
+    The vocabulary is CA's ``PARAM_MODIFIER_OPERATIONS`` (introspected by
+    ``solver_options`` with a fallback), so an operation CA grows is accepted
+    here without a change -- and one this CA cannot run is refused by name.
+    """
+    from solver_options import get_param_modifier_operations  # noqa: PLC0415
+
+    vocab = get_param_modifier_operations()
+    op = operation or vocab.get("default") or "scale"
+    for meta in vocab.get("operations") or []:
+        if meta.get("value") == op:
+            return op, meta
+    return op, {}
+
+
+def _modifier_entry(
+    idx: int,
+    label: str,
+    modifies: list[str],
+    operation: str | None,
+    pmin,
+    pmax,
+    unbounded: bool,
+    name_for_plotting: str | None,
+    param_type: str | None,
+    comment: str | None,
+    prior: str | None,
+    prior_params: dict,
+    initial_values: dict[str, float],
+    gen_index: dict,
+) -> ParamEntry:
+    """A modifier entry: the slider carries θ, targets get θ·baselineᵢ.
+
+    Baselines are the model's pristine defaults, resolved once here for the
+    live tier (CA resolves its own copy against the sim helper for analysis
+    runs -- same source values, per the modifier design). ``initial_value`` is
+    the operation's *identity* (1.0 for scale), never a model value: a fresh
+    modifier slider must start where every target sits at its baseline.
+    """
+    op, meta = _modifier_operation_meta(operation)
+    if not meta:
+        raise ParamsForIdError(
+            f"row {idx} ({label}): unknown modifier operation '{op}'; the "
+            f"available operations come from circulatory_autogen's "
+            f"PARAM_MODIFIER_OPERATIONS."
+        )
+    if unbounded:
+        # CA raises here too: the meaningful version of an unbounded multiplier
+        # is a log-scale slider, not the linear unbounded transform.
+        raise ParamsForIdError(
+            f"row {idx} ({label}): a modifier cannot be 'unbounded'; give θ "
+            f"its own min and max."
+        )
+    if pmin is None:
+        raise ParamsForIdError(
+            f"row {idx} ({label}): min and max are required unless "
+            f"'unbounded' is set."
+        )
+
+    baselines: dict[str, float] = {}
+    missing: list[str] = []
+    for target in modifies:
+        vessel, _, param_name = target.rpartition("/")
+        val = _resolve_initial_value(vessel, param_name, initial_values, gen_index)
+        if val is None:
+            missing.append(target)
+        else:
+            baselines[target] = val
+
+    warnings: list[str] = []
+    # No model loaded (empty initial_values) is not a complaint -- the same
+    # silence _target_initial_value keeps for free entries.
+    if missing and initial_values:
+        warnings.append(
+            f"modifier '{label}': the model has no variable for "
+            f"{', '.join(missing)}; circulatory_autogen will refuse it at run time."
+        )
+    zeros = [t for t, v in baselines.items() if v == 0.0]
+    if op == "scale" and zeros:
+        warnings.append(
+            f"modifier '{label}': {', '.join(zeros)} default to 0, and a scale "
+            f"modifier cannot move a zero baseline."
+        )
+
+    identity = meta.get("identity")
+    return ParamEntry(
+        qname=modifies[0],
+        qnames=list(modifies),
+        min=pmin,
+        max=pmax,
+        name_for_plotting=name_for_plotting,
+        param_type=param_type,
+        initial_value=identity,
+        comment=comment,
+        prior=prior,
+        unbounded=False,
+        prior_params=prior_params,
+        warning=" ".join(warnings) or None,
+        name=label,
+        modifies=list(modifies),
+        operation=op,
+        baselines=baselines,
+        identity=identity,
+    )
+
+
 def _entries_from_doc(
     doc: dict,
     initial_values: dict[str, float] | None = None,
@@ -308,12 +439,26 @@ def _entries_from_doc(
     entries: list[ParamEntry] = []
     for idx, item in enumerate(doc.get("params") or []):
         targets = [str(t).strip() for t in (item.get("targets") or []) if str(t).strip()]
-        if not targets:
+        modifies = [str(t).strip() for t in (item.get("modifies") or []) if str(t).strip()]
+        operation = _text(item, "operation")
+        # Minimal structural checks, stated here for the no-CA JSON path; with
+        # CA importable, load_doc has already run resolve_params_for_id_doc and
+        # these (plus the deeper cross-entry rules) were judged with CA's wording.
+        if targets and modifies:
+            raise ParamsForIdError(
+                f"row {idx}: an entry may set 'targets' or 'modifies', not both"
+            )
+        if operation and not modifies:
+            raise ParamsForIdError(
+                f"row {idx}: 'operation' is only valid on a modifier entry "
+                f"(one that sets 'modifies')"
+            )
+        if not targets and not modifies:
             raise ParamsForIdError(f"row {idx}: no targets")
-        # The entry's identity in messages and, later, for a modifier to
-        # reference. Falls back to the first target, which is what a converted
-        # CSV row carries.
-        label = _text(item, "name") or targets[0]
+        # The entry's identity in messages and for a modifier's slider label.
+        # Falls back to the first target, which is what a converted CSV row
+        # carries.
+        label = _text(item, "name") or (targets or modifies)[0]
 
         pmin, pmax = _bounds(item, idx, label)
         name_for_plotting = _text(item, "name_for_plotting")
@@ -343,6 +488,16 @@ def _entries_from_doc(
         unbounded = bool(item.get("unbounded"))
         _validate_prior_params(prior, prior_params, idx, row_min=pmin, row_max=pmax)
 
+        if modifies:
+            entries.append(
+                _modifier_entry(
+                    idx, label, modifies, operation, pmin, pmax, unbounded,
+                    name_for_plotting, param_type, comment, prior,
+                    dict(prior_params), initial_values, gen_index,
+                )
+            )
+            continue
+
         if unbounded:
             # CA owns the derivation (centre +/- a span of the scale) so the
             # sliders cover the same range the calibration will search.
@@ -370,6 +525,7 @@ def _entries_from_doc(
                 unbounded=unbounded,
                 prior_params=dict(prior_params),
                 warning=warning,
+                name=label,
             )
         )
 

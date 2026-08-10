@@ -37,15 +37,29 @@ export function mergedRows(currentParams = [], modelVariables = {}) {
   for (const p of currentParams) {
     const qnames = p.qnames?.length ? [...p.qnames] : [p.qname]
     for (const q of qnames) claimed.add(q)
+    const isModifier = !!(p.modifies?.length)
     byQname.set(p.qname, {
       qname: p.qname,
       // Every variable this row drives, `qname` first. One entry for an ordinary
-      // row, so nothing downstream has to ask whether a row is a group.
+      // row, so nothing downstream has to ask whether a row is a group. For a
+      // modifier these are its *modified* qnames.
       qnames,
       // Set on a row that has been absorbed into another row's group: it keeps
       // its edits (so ungrouping restores them) but is neither shown nor saved.
       groupedInto: null,
+      // Set on a row claimed as a modifier's target -- same lifecycle as
+      // groupedInto, keyed by the modifier's name so deletion restores it.
+      modifiedBy: null,
+      // Multi-select for the Group / Create-modifier toolbar actions.
+      selected: false,
       included: true,
+      // The entry's identity (CA enforces uniqueness across the file); the
+      // handle a modifier is referenced and labelled by.
+      name: p.name ?? p.qname,
+      kind: isModifier ? 'modifier' : 'free',
+      operation: p.operation ?? null,
+      // Per-target model default ({qname: baseline}) for the θ·baselineᵢ preview.
+      baselines: p.baselines ? { ...p.baselines } : null,
       min: p.min,
       max: p.max,
       name_for_plotting: p.name_for_plotting ?? p.qname,
@@ -75,7 +89,13 @@ export function mergedRows(currentParams = [], modelVariables = {}) {
       qname,
       qnames: [qname],
       groupedInto: null,
+      modifiedBy: null,
+      selected: false,
       included: false,
+      name: qname,
+      kind: 'free',
+      operation: null,
+      baselines: null,
       min,
       max,
       name_for_plotting: qname,
@@ -103,34 +123,6 @@ export function splitQname(qname) {
 }
 
 /**
- * Whether `candidate` could join `row`'s group (#193).
- *
- * Only a row with the same `param_name`, because a params_for_id row has exactly
- * one `param_name` column — the CSV cannot express a group of differently-named
- * variables, so offering one would be offering something unsavable. A row already
- * absorbed elsewhere, and a row that is a group itself, are excluded: merging two
- * groups would have to decide whose range and prior survive.
- */
-export function canJoinGroup(row, candidate) {
-  return (
-    candidate !== row &&
-    splitQname(candidate.qname).param_name === splitQname(row.qname).param_name &&
-    (candidate.groupedInto == null || candidate.groupedInto === row.qname) &&
-    (candidate.qnames?.length ?? 1) === 1
-  )
-}
-
-/**
- * Rows that could join `row`'s group.
- *
- * @param {Array<object>} rows - every row (visible or absorbed)
- * @param {object} row
- */
-export function groupCandidates(rows, row) {
-  return rows.filter((r) => canJoinGroup(row, r))
-}
-
-/**
  * Absorb `member` into `row`'s group: `row` now drives it too, and `member` stops
  * being a row of its own. Kept rather than deleted so unticking restores it with
  * its range, prior and note intact. No-op if it is already in the group.
@@ -147,9 +139,107 @@ export function removeFromGroup(row, member) {
   member.groupedInto = null
 }
 
-/** The rows a CSV is written from: the ticked ones that aren't inside a group. */
+/** The rows a file is written from: ticked, and not absorbed into a group or
+ * claimed by a modifier. */
 export function rowsToSave(rows) {
-  return rows.filter((r) => r.included && !r.groupedInto)
+  return rows.filter((r) => r.included && !r.groupedInto && !r.modifiedBy)
+}
+
+
+/**
+ * A unique modifier name: `scale_<shared param_name>` when every target shares
+ * one, else `scale_params`, deduplicated against the existing row names.
+ */
+export function suggestModifierName(rows, targets) {
+  const names = new Set(targets.map((q) => splitQname(q).param_name))
+  const base = names.size === 1 ? `scale_${[...names][0]}` : 'scale_params'
+  const taken = new Set(rows.map((r) => r.name))
+  if (!taken.has(base)) return base
+  let n = 2
+  while (taken.has(`${base}_${n}`)) n += 1
+  return `${base}_${n}`
+}
+
+
+/**
+ * Whether these rows can become a modifier's targets: at least one, all free,
+ * none already claimed by a group or another modifier -- the client-side mirror
+ * of CA's no-chain / no-double-modification rules, for immediate feedback (CA
+ * re-judges the file on upload).
+ */
+export function canCreateModifier(selectedRows) {
+  return (
+    selectedRows.length > 0 &&
+    selectedRows.every(
+      (r) =>
+        r.kind !== 'modifier' &&
+        r.groupedInto == null &&
+        r.modifiedBy == null &&
+        (r.qnames?.length ?? 1) === 1,
+    )
+  )
+}
+
+
+/**
+ * Create a scale-modifier row over `selectedRows` and claim them (#208).
+ *
+ * θ's bounds come from the operation's vocabulary entry (CA's
+ * default_min/default_max); its value column shows the identity, at which every
+ * target sits at its baseline. The claimed rows keep their edits and are
+ * restored by `removeModifier`. Returns the new row, already appended to
+ * `rows`, or null when the selection cannot become one.
+ */
+export function createModifier(rows, selectedRows, opMeta = {}) {
+  if (!canCreateModifier(selectedRows)) return null
+  const targets = selectedRows.map((r) => r.qname)
+  const name = suggestModifierName(rows, targets)
+  const baselines = {}
+  for (const r of selectedRows) {
+    if (r.initial_value != null) baselines[r.qname] = r.initial_value
+  }
+  const row = {
+    qname: targets[0], // the anchor: modifies[0], the slider's key
+    qnames: targets,
+    groupedInto: null,
+    modifiedBy: null,
+    selected: false,
+    included: true,
+    name,
+    kind: 'modifier',
+    operation: opMeta.value ?? 'scale',
+    baselines,
+    min: opMeta.default_min ?? 0.5,
+    max: opMeta.default_max ?? 2.0,
+    name_for_plotting: name,
+    param_type: null,
+    initial_value: opMeta.identity ?? 1.0,
+    comment: '',
+    prior: '',
+    priorParams: {},
+    unbounded: false,
+  }
+  for (const r of selectedRows) {
+    r.modifiedBy = name
+    // A modifier's target is definitionally in play: deleting the modifier
+    // must restore it as an included row, not silently drop it from the file.
+    r.included = true
+    r.selected = false
+  }
+  // At the top: the new row is what the user is working on, and at the bottom
+  // of a hundreds-long list it looks like nothing happened.
+  rows.unshift(row)
+  return row
+}
+
+
+/** Delete a modifier row and restore its claimed targets as their own rows. */
+export function removeModifier(rows, modifierRow) {
+  const idx = rows.indexOf(modifierRow)
+  if (idx !== -1) rows.splice(idx, 1)
+  for (const r of rows) {
+    if (r.modifiedBy === modifierRow.name) r.modifiedBy = null
+  }
 }
 
 function csvField(value) {

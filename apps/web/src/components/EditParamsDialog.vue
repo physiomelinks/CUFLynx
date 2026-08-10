@@ -6,14 +6,14 @@ import Checkbox from 'primevue/checkbox'
 import Message from 'primevue/message'
 import {
   mergedRows,
-  buildParamsCsv,
-  versionedFilename,
-  canJoinGroup,
   addToGroup,
   removeFromGroup,
   rowsToSave,
-  splitQname,
+  canCreateModifier,
+  createModifier,
+  removeModifier,
 } from '../lib/paramsCsv'
+import { rowsToDoc, versionedJsonName } from '../lib/paramsJson'
 import { evalPriorDefault, formatPriorDefault } from '../lib/priorDefaults'
 import { uploadParamsForId, getConfig } from '../lib/api'
 
@@ -26,6 +26,10 @@ const props = defineProps({
   modelVariables: { type: Object, default: () => ({}) },
   loadedFilename: { type: String, default: null },
   modelName: { type: String, default: null },
+  // The CasADi backend refuses grouped and modifier rows at run time
+  // (casadi_backend refuses them by design), so the buttons that create them
+  // are disabled rather than letting the run fail later.
+  generatedModelFormat: { type: String, default: '' },
 })
 const emit = defineEmits(['update:visible', 'saved'])
 
@@ -39,8 +43,6 @@ const expanded = ref(new Set())
 // extra columns: the values differ per prior, so as columns they would be blank
 // for most rows and make the grid ragged.
 const priorOpen = ref(new Set())
-// qnames whose "vary together" panel is open (issue #193).
-const groupOpen = ref(new Set())
 
 // The prior vocabulary comes from CA (via /api/config), never a hardcoded list
 // here — CA owns what a prior may be, and one it grows should appear without a
@@ -48,6 +50,9 @@ const groupOpen = ref(new Set())
 // doesn't report any, which hides the column rather than offering a wrong menu.
 const priorTypes = ref([])
 const priorDefault = ref('')
+// The modifier operation vocabulary (CA's PARAM_MODIFIER_OPERATIONS via
+// /api/config) — never hardcoded. Empty hides the create-modifier button.
+const modifierOps = ref([])
 
 async function loadPriorTypes() {
   try {
@@ -55,11 +60,14 @@ async function loadPriorTypes() {
     const p = cfg?.param_prior_types ?? {}
     priorTypes.value = Array.isArray(p.types) ? p.types : []
     priorDefault.value = p.default ?? ''
+    const m = cfg?.param_modifier_operations ?? {}
+    modifierOps.value = Array.isArray(m.operations) ? m.operations : []
   } catch {
     // An older backend has no vocabulary to offer. The column stays hidden and
     // each row's prior is still round-tripped untouched, so nothing is lost.
     priorTypes.value = []
     priorDefault.value = ''
+    modifierOps.value = []
   }
 }
 
@@ -79,9 +87,6 @@ watch(
           .filter((r) => Object.values(r.priorParams ?? {}).some((v) => v !== '' && v != null))
           .map((r) => r.qname),
       )
-      // A group is already visible in its own row's badge and member list, so it
-      // opens shut like the others.
-      groupOpen.value = new Set()
       error.value = ''
       search.value = ''
       loadPriorTypes()
@@ -94,14 +99,16 @@ watch(
 // case-insensitive). Filtering is display-only: `rows` stays the source of
 // truth for inclusion and saving, so hidden rows keep their edits.
 const visibleRows = computed(() => {
-  // A row absorbed into a group is no longer a parameter of its own; it shows in
-  // its group's member list instead of as a row that could be ticked separately.
-  const listed = rows.value.filter((r) => !r.groupedInto)
+  // A row absorbed into a group, or claimed by a modifier, is no longer a
+  // parameter of its own; it shows in its owner's member list instead of as a
+  // row that could be ticked separately.
+  const listed = rows.value.filter((r) => !r.groupedInto && !r.modifiedBy)
   const q = search.value.trim().toLowerCase()
   if (!q) return listed
   return listed.filter(
     (r) =>
       r.qname.toLowerCase().includes(q) ||
+      (r.name || '').toLowerCase().includes(q) ||
       (r.name_for_plotting || '').toLowerCase().includes(q) ||
       // A group is findable by any of its members, not just the one it is named
       // after -- that name is an accident of which vessel came first in the CSV.
@@ -110,42 +117,74 @@ const visibleRows = computed(() => {
 })
 
 // ---------------------------------------------------------------------------
-// Grouped parameters (issue #193): one parameter that varies in several
-// components at once, written as a whitespace-separated `vessel_name`.
+// Multi-select + modifier parameters (#208)
 // ---------------------------------------------------------------------------
-// Rows indexed by param_name, because that is the only thing a candidate can
-// share with a row. Every row asks for its candidates on every render, and the
-// list is every parameter the model has -- scanning it per row is quadratic in a
-// dialog that routinely opens on hundreds of them.
-const rowsByParamName = computed(() => {
-  const out = new Map()
-  for (const r of rows.value) {
-    const name = splitQname(r.qname).param_name
-    if (!out.has(name)) out.set(name, [])
-    out.get(name).push(r)
+const selectedRows = computed(() => rows.value.filter((r) => r.selected))
+const casadiGated = computed(() => props.generatedModelFormat === 'casadi_python')
+const scaleOpMeta = computed(
+  () => modifierOps.value.find((o) => o.value === 'scale') ?? null,
+)
+// Group (override): several free rows become one multi-target entry -- one
+// value written to all of them. Two selected single free rows minimum.
+const canGroupSelection = computed(
+  () =>
+    !casadiGated.value &&
+    selectedRows.value.length >= 2 &&
+    selectedRows.value.every(
+      (r) =>
+        r.kind !== 'modifier' &&
+        r.groupedInto == null &&
+        r.modifiedBy == null &&
+        (r.qnames?.length ?? 1) === 1,
+    ),
+)
+const canModifySelection = computed(
+  () => !casadiGated.value && !!scaleOpMeta.value && canCreateModifier(selectedRows.value),
+)
+
+/** The just-created row goes to the top: it is what the user is working on,
+ *  and at the bottom of a hundreds-long list it looks like nothing happened. */
+function moveToTop(row) {
+  const idx = rows.value.indexOf(row)
+  if (idx > 0) {
+    rows.value.splice(idx, 1)
+    rows.value.unshift(row)
   }
-  return out
-})
-
-/** The rows this one could take in — same param_name, not already in a group. */
-function candidatesFor(row) {
-  const sameName = rowsByParamName.value.get(splitQname(row.qname).param_name) ?? []
-  return sameName.filter((r) => canJoinGroup(row, r))
 }
 
-function isGrouped(row, candidate) {
-  return row.qnames.includes(candidate.qname)
+function onGroupSelected() {
+  if (!canGroupSelection.value) return
+  const [head, ...members] = selectedRows.value
+  for (const m of members) addToGroup(head, m)
+  head.included = true
+  for (const r of selectedRows.value) r.selected = false
+  moveToTop(head)
 }
 
-function onGroupToggle(row, candidate, checked) {
-  if (checked) addToGroup(row, candidate)
-  else removeFromGroup(row, candidate)
+function onCreateModifier() {
+  if (!canModifySelection.value) return
+  createModifier(rows.value, selectedRows.value, scaleOpMeta.value ?? {})
 }
 
-function toggleGroupPanel(qname) {
-  const next = new Set(groupOpen.value)
-  next.has(qname) ? next.delete(qname) : next.add(qname)
-  groupOpen.value = next
+function onRemoveModifier(row) {
+  removeModifier(rows.value, row)
+}
+
+/** The θ·baseline preview for one of a modifier's targets. */
+function baselineLabel(row, qname) {
+  const b = row.baselines?.[qname]
+  return b == null ? `${qname} (no model default)` : `${qname} (baseline ${b})`
+}
+
+// ---------------------------------------------------------------------------
+// Grouped parameters (issue #193 / #208): created via the toolbar's
+// multi-select Group (override); the old per-row same-name panel is gone.
+// ---------------------------------------------------------------------------
+/** Dissolve a group: every absorbed member becomes its own row again. */
+function onUngroup(row) {
+  for (const r of rows.value) {
+    if (r.groupedInto === row.qname) removeFromGroup(row, r)
+  }
 }
 
 /** CA's display label for a prior value, for the panel heading. */
@@ -290,11 +329,11 @@ const canSave = computed(
   () => includedCount.value > 0 && !savedRows.value.some(rowInvalid) && !saving.value,
 )
 
-function downloadCsv(text, filename) {
+function downloadText(text, filename, type) {
   // jsdom (tests) and some sandboxes lack createObjectURL — skip the download
   // there but still run the apply path below.
   if (typeof URL === 'undefined' || !URL.createObjectURL) return
-  const href = URL.createObjectURL(new Blob([text], { type: 'text/csv' }))
+  const href = URL.createObjectURL(new Blob([text], { type }))
   const a = document.createElement('a')
   a.href = href
   a.download = filename
@@ -306,12 +345,14 @@ function downloadCsv(text, filename) {
 
 async function onSave() {
   error.value = ''
-  const csv = buildParamsCsv(savedRows.value)
-  const filename = versionedFilename(props.loadedFilename, props.modelName)
-  downloadCsv(csv, filename)
+  // Saved as the JSON form from here on: the CSV cannot express an override of
+  // differently-named parameters, nor a modifier at all. CSV stays load-only.
+  const text = JSON.stringify(rowsToDoc(savedRows.value), null, 1)
+  const filename = versionedJsonName(props.loadedFilename, props.modelName)
+  downloadText(text, filename, 'application/json')
   saving.value = true
   try {
-    const file = new File([csv], filename, { type: 'text/csv' })
+    const file = new File([text], filename, { type: 'application/json' })
     const data = await uploadParamsForId(file, props.modelId)
     emit('saved', { ...data, filename })
     emit('update:visible', false)
@@ -328,13 +369,13 @@ async function onSave() {
     :visible="visible"
     modal
     header="Edit params_for_id"
-    :style="{ width: '46rem' }"
+    :style="{ width: '72rem', maxWidth: '95vw' }"
     data-testid="edit-params"
     @update:visible="emit('update:visible', $event)"
   >
     <p class="ep-hint">
       Tick the parameters to include and set their ranges. Saving downloads a new
-      <code>…_yymmdd.csv</code> (the original is kept) and applies it.
+      <code>…_yymmdd.json</code> (the original is kept) and applies it.
       <i
         class="pi pi-info-circle ep-hint-info"
         data-testid="ep-ranges-hint"
@@ -357,7 +398,52 @@ async function onSave() {
       data-testid="ep-search"
     />
 
+    <!-- Multi-select actions (#208). Select rows with the ○ column, then either
+         group them (one value written to all — the override) or create a scale
+         modifier (one θ slider multiplying each target's model default). -->
+    <div class="ep-toolbar">
+      <Button
+        label="Group (override)"
+        size="small"
+        outlined
+        data-testid="ep-group-selected"
+        :disabled="!canGroupSelection"
+        :title="
+          casadiGated
+            ? 'The CasADi backend does not support grouped or modifier parameters'
+            : 'One value written to every selected parameter (one slider, one calibrated value)'
+        "
+        @click="onGroupSelected"
+      />
+      <Button
+        v-if="modifierOps.length"
+        label="Create scale modifier"
+        size="small"
+        outlined
+        data-testid="ep-create-modifier"
+        :disabled="!canModifySelection"
+        :title="
+          casadiGated
+            ? 'The CasADi backend does not support grouped or modifier parameters'
+            : 'A new dimensionless θ parameter; each selected target follows θ × its model default'
+        "
+        @click="onCreateModifier"
+      />
+      <Button
+        label="Calculate…"
+        size="small"
+        outlined
+        data-testid="ep-create-calculate"
+        :disabled="true"
+        title="Compute a parameter from a user python function — needs a newer circulatory_autogen (pending upstream support)"
+      />
+      <span v-if="selectedRows.length" class="ep-selcount">
+        {{ selectedRows.length }} selected
+      </span>
+    </div>
+
     <div class="ep-head" :class="{ 'has-prior': priorTypes.length }">
+      <span class="ep-sel" title="Select for Group / Create modifier">○</span>
       <span class="ep-inc">Use</span>
       <span class="ep-name">Parameter</span>
       <span class="ep-num">min</span>
@@ -366,26 +452,48 @@ async function onSave() {
       <span v-if="priorTypes.length" class="ep-prior" title="Prior distribution used by MCMC / UQ">
         Prior
       </span>
-      <span
-        class="ep-note-col"
-        title="Vary this parameter in several components at once (one slider, one calibrated value)"
-      >
-        Group
-      </span>
+      <!-- Delete/ungroup actions live in this slot (the per-row grouping panel
+           was replaced by the toolbar's Group override). -->
+      <span class="ep-note-col" />
       <span class="ep-note-col">Note</span>
     </div>
 
     <ul class="ep-list">
       <li
         v-for="row in visibleRows"
-        :key="row.qname"
-        :class="{ invalid: rowInvalid(row), 'has-prior': priorTypes.length }"
+        :key="row.kind === 'modifier' ? `mod:${row.name}` : row.qname"
+        :class="{
+          invalid: rowInvalid(row),
+          'has-prior': priorTypes.length,
+          'is-modifier': row.kind === 'modifier',
+        }"
         data-testid="ep-row"
       >
+        <span class="ep-sel">
+          <input
+            v-if="row.kind !== 'modifier'"
+            v-model="row.selected"
+            type="checkbox"
+            data-testid="ep-select"
+          />
+        </span>
         <span class="ep-inc">
           <Checkbox v-model="row.included" :binary="true" />
         </span>
-        <span class="ep-name" :title="row.qnames.join('\n')">
+        <span v-if="row.kind === 'modifier'" class="ep-name">
+          <input
+            type="text"
+            class="ep-mod-name"
+            :value="row.name"
+            data-testid="ep-modifier-name"
+            title="The modifier's name (must be unique in the file)"
+            @input="row.name = $event.target.value"
+          />
+          <span class="ep-mod-badge" data-testid="ep-modifier-badge"
+            >{{ row.operation }} &times;{{ row.qnames.length }}</span
+          >
+        </span>
+        <span v-else class="ep-name" :title="row.qnames.join('\n')">
           {{ row.qname
           }}<span v-if="row.qnames.length > 1" class="ep-group-badge" data-testid="ep-group-badge"
             >&times;{{ row.qnames.length }}</span
@@ -433,27 +541,29 @@ async function onSave() {
             {{ p.label }}
           </option>
         </select>
-        <!--
-          Grouping is offered per row rather than as a multi-select over the list
-          because the CSV can only group variables that share a param_name, and
-          the row is the only place that name is already fixed.
-        -->
         <button
+          v-if="row.kind === 'modifier'"
           type="button"
           class="ep-note-btn"
-          :class="{ 'has-note': row.qnames.length > 1 }"
-          data-testid="ep-group-toggle"
-          :disabled="!row.included || !candidatesFor(row).length"
-          :aria-expanded="groupOpen.has(row.qname)"
-          :title="
-            candidatesFor(row).length
-              ? 'Vary this parameter in several components at once'
-              : 'No other component has a parameter of this name to group with'
-          "
-          @click="toggleGroupPanel(row.qname)"
+          data-testid="ep-remove-modifier"
+          title="Delete this modifier and restore its targets as their own rows"
+          @click="onRemoveModifier(row)"
         >
-          <i class="pi pi-link" />
+          <i class="pi pi-trash" />
         </button>
+        <!-- Groups are created via the toolbar's multi-select Group (override);
+             this dissolves one back into its member rows. -->
+        <button
+          v-else-if="row.qnames.length > 1"
+          type="button"
+          class="ep-note-btn has-note"
+          data-testid="ep-ungroup"
+          title="Ungroup: each component becomes its own row again"
+          @click="onUngroup(row)"
+        >
+          <i class="pi pi-times-circle" />
+        </button>
+        <span v-else class="ep-note-btn-spacer" />
         <button
           type="button"
           class="ep-note-btn"
@@ -522,33 +632,27 @@ async function onSave() {
             </span>
           </div>
         </div>
-        <!--
-          The components this one parameter is written into. One row in the CSV
-          ("a b c, E, …"), one slider, one calibrated value — so ticking a
-          component here removes its own row rather than leaving two ways to set
-          the same quantity.
-        -->
-        <div v-if="groupOpen.has(row.qname)" class="ep-group-block" data-testid="ep-group-panel">
+        <!-- A modifier's targets, always visible: θ's bounds are dimensionless
+             (min/max above are θ's, not a target's), and what θ multiplies is
+             the one thing a reader needs to see. -->
+        <div
+          v-if="row.kind === 'modifier'"
+          class="ep-group-block"
+          data-testid="ep-modifier-targets"
+        >
           <p class="ep-group-hint">
-            Tick the components this parameter also applies to. They vary together:
-            one slider, one range, one calibrated value.
+            θ multiplies each target's model default (θ = {{ row.initial_value ?? 1 }} leaves
+            them at their baselines). Bounds above are θ's, not a target's.
           </p>
           <div class="ep-group-list">
-            <label
-              v-for="c in candidatesFor(row)"
-              :key="c.qname"
+            <span
+              v-for="q in row.qnames"
+              :key="q"
               class="ep-group-item"
-              :title="c.qname"
+              :title="baselineLabel(row, q)"
             >
-              <input
-                type="checkbox"
-                :checked="isGrouped(row, c)"
-                data-testid="ep-group-member"
-                :data-qname="c.qname"
-                @change="onGroupToggle(row, c, $event.target.checked)"
-              />
-              <span>{{ splitQname(c.qname).vessel_name || c.qname }}</span>
-            </label>
+              {{ q }}
+            </span>
           </div>
         </div>
         <div v-if="expanded.has(row.qname)" class="ep-note">
@@ -604,7 +708,7 @@ async function onSave() {
 .ep-head,
 .ep-list li {
   display: grid;
-  grid-template-columns: 2.5rem 1fr 6rem 6rem 7rem 2rem 2rem;
+  grid-template-columns: 1.4rem 2.5rem 1fr 6rem 6rem 7rem 2rem 2rem;
   align-items: center;
   gap: 0.5rem;
 }
@@ -612,7 +716,40 @@ async function onSave() {
    track list has to match — otherwise the note button lands under "Prior". */
 .ep-head.has-prior,
 .ep-list li.has-prior {
-  grid-template-columns: 2.5rem 1fr 6rem 6rem 7rem 7rem 2rem 2rem;
+  grid-template-columns: 1.4rem 2.5rem 1fr 6rem 6rem 7rem 7rem 2rem 2rem;
+}
+.ep-sel {
+  text-align: center;
+}
+.ep-sel input {
+  cursor: pointer;
+}
+.ep-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+.ep-selcount {
+  font-size: 0.75rem;
+  opacity: 0.65;
+}
+/* A modifier row is a different kind of thing (θ, not a model value): tinted so
+   it reads as such at a glance. */
+.ep-list li.is-modifier {
+  background: color-mix(in srgb, var(--p-primary-color, #5b9bd5) 8%, transparent);
+}
+input.ep-mod-name {
+  width: 60%;
+  font-size: 0.8rem;
+}
+.ep-mod-badge {
+  margin-left: 0.35rem;
+  padding: 0 0.35rem;
+  border-radius: 999px;
+  border: 1px solid var(--p-primary-color, #5b9bd5);
+  color: var(--p-primary-color, #5b9bd5);
+  font-size: 0.7rem;
 }
 select.ep-prior {
   width: 100%;
