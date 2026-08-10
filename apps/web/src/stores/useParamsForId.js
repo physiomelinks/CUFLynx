@@ -28,21 +28,29 @@ export function useParamsForId(slidersStore) {
       const initial =
         p.initial_value != null ? p.initial_value : (p.min + p.max) / 2
       const qnames = p.qnames?.length ? p.qnames : [p.qname]
+      const isModifier = !!(p.modifies?.length)
       slidersStore.addSlider(p.qname, {
         min: p.min,
         max: p.max,
+        // For a modifier this is the operation's identity θ (the backend sets
+        // initial_value to it), so a fresh slider leaves every target at its
+        // baseline.
         value: initial,
-        name_for_plotting: p.name_for_plotting ?? p.qname,
+        name_for_plotting: p.name_for_plotting ?? p.name ?? p.qname,
         qnames,
         warning: p.warning ?? null,
+        kind: isModifier ? 'modifier' : 'free',
+        operation: p.operation ?? null,
+        baselines: p.baselines ?? null,
       })
       importedKeys.value.push(p.qname)
       const spec = {
         min: p.min,
         max: p.max,
-        name_for_plotting: p.name_for_plotting ?? p.qname,
+        name_for_plotting: p.name_for_plotting ?? p.name ?? p.qname,
         qnames,
         primary: p.qname,
+        kind: isModifier ? 'modifier' : 'free',
       }
       for (const qname of qnames) paramSpecs.value[qname] = spec
     }

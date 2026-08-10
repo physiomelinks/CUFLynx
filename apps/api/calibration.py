@@ -696,6 +696,10 @@ class CalibrationJob:
         self.lines: list[str] = []
         self.state = "running"  # running | done | error | cancelled
         self.best_params: dict | None = None
+        # Modifier metadata from the run ({name, anchor, targets, operation,
+        # baselines, theta} per modifier) so the frontend can apply theta to the
+        # anchor slider and expand physical values for the best-fit run (#208).
+        self.modifiers: list | None = None
         self.cost = None
         # Calibrated CellML saved on finish (best-fit values baked in, issue #114).
         self.calibrated_model_path: str | None = None
@@ -821,6 +825,7 @@ class CalibrationManager:
                 try:
                     data = json.loads(Path(results).read_text())
                     job.best_params = data.get("params", {})
+                    job.modifiers = data.get("modifiers") or []
                     job.cost = data.get("cost")
                     job.calibrated_model_path = data.get("calibrated_model_path")
                     job.percent_error = data.get("percent_error")
@@ -846,6 +851,7 @@ class CalibrationManager:
                 "lines": lines,
                 "next_offset": offset + len(lines),
                 "best_params": job.best_params,
+                "modifiers": job.modifiers,
                 "cost": job.cost,
                 "calibrated_model_path": job.calibrated_model_path,
                 "percent_error": job.percent_error,

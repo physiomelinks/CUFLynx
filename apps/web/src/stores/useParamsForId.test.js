@@ -107,3 +107,74 @@ describe('useParamsForId — grouped parameters (issue #193)', () => {
     expect(sliders.count.value).toBe(0)
   })
 })
+
+describe('useParamsForId — scale modifier parameters (#208)', () => {
+  function modifier() {
+    return [
+      {
+        qname: 'a/C', qnames: ['a/C', 'b/C'], name: 'C_scale',
+        modifies: ['a/C', 'b/C'], operation: 'scale',
+        baselines: { 'a/C': 2e-8, 'b/C': 4e-8 },
+        min: 0.5, max: 2.0, initial_value: 1.0, identity: 1.0,
+        name_for_plotting: 'C_scale',
+      },
+    ]
+  }
+
+  it('one slider carrying θ, starting at the identity', () => {
+    const sliders = useSliders()
+    useParamsForId(sliders).importParams(modifier())
+    expect(sliders.count.value).toBe(1)
+    const s = sliders.sliders['a/C']
+    expect(s.kind).toBe('modifier')
+    expect(s.value).toBe(1.0) // θ = identity: every target at its baseline
+    expect(s.min).toBe(0.5)
+  })
+
+  it('paramDict expands θ·baseline per target — the analogue of the grouped fan-out', () => {
+    const sliders = useSliders()
+    useParamsForId(sliders).importParams(modifier())
+    expect(sliders.paramDict.value).toEqual({ 'a/C': 2e-8, 'b/C': 4e-8 })
+    sliders.setValue('a/C', 1.5)
+    expect(sliders.paramDict.value['a/C']).toBeCloseTo(3e-8)
+    expect(sliders.paramDict.value['b/C']).toBeCloseTo(6e-8)
+  })
+
+  it('analysisDict carries θ at the anchor, never a physical value', () => {
+    // The θ/anchor contract: calibration start points and SA nominals match by
+    // param_names[i][0], which for a modifier IS modifies[0].
+    const sliders = useSliders()
+    useParamsForId(sliders).importParams(modifier())
+    sliders.setValue('a/C', 1.4)
+    expect(sliders.analysisDict.value).toEqual({ 'a/C': 1.4 })
+  })
+
+  it('a target with no resolved baseline is skipped, not handed θ', () => {
+    const sliders = useSliders()
+    const entries = modifier()
+    delete entries[0].baselines['b/C']
+    useParamsForId(sliders).importParams(entries)
+    expect(sliders.paramDict.value).toEqual({ 'a/C': 2e-8 })
+  })
+
+  it('modifierSpecs describes the slider for the cost-sensitivity request', () => {
+    const sliders = useSliders()
+    useParamsForId(sliders).importParams(modifier())
+    sliders.setValue('a/C', 1.2)
+    expect(sliders.modifierSpecs.value).toEqual([
+      {
+        name: 'C_scale', anchor: 'a/C', targets: ['a/C', 'b/C'],
+        operation: 'scale', baselines: { 'a/C': 2e-8, 'b/C': 4e-8 },
+        value: 1.2, bounds: [0.5, 2.0],
+      },
+    ])
+  })
+
+  it('paramSpecs points every member at the modifier for calibration write-back', () => {
+    const sliders = useSliders()
+    const p = useParamsForId(sliders)
+    p.importParams(modifier())
+    expect(p.paramSpecs.value['b/C'].primary).toBe('a/C')
+    expect(p.paramSpecs.value['b/C'].kind).toBe('modifier')
+  })
+})

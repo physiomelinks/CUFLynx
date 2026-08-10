@@ -152,6 +152,9 @@ export async function costSensitivity(modelId, params, options = {}) {
   const body = { model_id: modelId, params }
   if (options.paramNames != null) body.param_names = options.paramNames
   if (options.bounds != null) body.bounds = options.bounds
+  // Modifier sliders, differenced in θ server-side (#208). Sent only when
+  // non-empty so older backends never see an unknown key.
+  if (options.modifiers?.length) body.modifiers = options.modifiers
   if (options.relStep != null) body.rel_step = options.relStep
   if (options.simTime != null) body.sim_time = options.simTime
   if (options.preTime != null) body.pre_time = options.preTime

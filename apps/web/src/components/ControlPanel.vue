@@ -73,6 +73,13 @@ function memberCount(s) {
 /** Hover text for the parameter's name: every variable the handle writes to. */
 function groupTitle(s) {
   const members = s.qnames?.length ? s.qnames : [s.qname]
+  if (s.kind === 'modifier') {
+    const lines = members.map((q) => {
+      const b = s.baselines?.[q]
+      return b == null ? `${q} (no model default)` : `${q} = θ × ${b}`
+    })
+    return `θ multiplies each target's model default:\n${lines.join('\n')}`
+  }
   if (members.length === 1) return members[0]
   return `One parameter in ${members.length} components:\n${members.join('\n')}`
 }
@@ -103,8 +110,17 @@ function groupTitle(s) {
             the plot label ("E_{AR}") says nothing about how many variables the
             handle moves, and moving four at once is worth knowing before you drag.
           -->
+          <!-- A modifier slider carries a dimensionless θ, not a model value —
+               said in its own tag so a drag is understood before it happens. -->
           <span
-            v-if="memberCount(s) > 1"
+            v-if="s.kind === 'modifier'"
+            class="group-badge modifier-badge"
+            :title="groupTitle(s)"
+            data-testid="modifier-badge"
+            >{{ s.operation || 'scale' }} &times;{{ memberCount(s) }}</span
+          >
+          <span
+            v-else-if="memberCount(s) > 1"
             class="group-badge"
             :title="groupTitle(s)"
             data-testid="group-badge"
@@ -305,6 +321,12 @@ function groupTitle(s) {
   border: 1px solid var(--p-content-border-color, #444);
   opacity: 0.75;
   cursor: help;
+}
+/* θ, not a model value — tinted so the different kind reads at a glance. */
+.modifier-badge {
+  border-color: var(--p-primary-color, #5b9bd5);
+  color: var(--p-primary-color, #5b9bd5);
+  opacity: 1;
 }
 .group-warning {
   flex: 0 0 auto;

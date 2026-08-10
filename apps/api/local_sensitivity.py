@@ -218,10 +218,25 @@ def _evaluate_features(sm, param_vals: np.ndarray, op_funcs) -> np.ndarray:
     n = len(obs["operations"])
     features = np.full(n, np.nan)
 
+    # A modifier's slot is θ; the solver gets θ·baselineᵢ per target. CA's own
+    # expansion (the same call its param-id and Sobol paths make before
+    # run_protocol), so the FD loop differences in θ while the model always
+    # receives physical values. Without it, θ would be written to every target
+    # as if it were a compliance.
+    vals = [float(v) for v in np.asarray(param_vals, dtype=float)]
+    try:
+        from parsers.PrimitiveParsers import expand_modifier_param_vals  # noqa: PLC0415
+
+        id_param_vals = expand_modifier_param_vals(
+            getattr(sm, "param_id_info", None) or {}, vals
+        )
+    except ImportError:  # a CA predating modifiers has none to expand
+        id_param_vals = vals
+
     _success, operands_outputs_dict, _, _ = sm._protocol_executor.run_protocol(
         sm.protocol_info,
         id_param_names=sm.param_id_info["param_names"],
-        id_param_vals=np.asarray(param_vals, dtype=float),
+        id_param_vals=id_param_vals,
         result_variables=obs["operands"],
         continue_on_failure=True,
     )
@@ -565,6 +580,16 @@ def compute_local_sensitivity(
         )
 
     sm = sa.SA_manager
+    # Modifier baselines are resolved once here, against the sim helper's
+    # pristine defaults -- the same idempotent call CA's param-id and Sobol
+    # paths make at setup (a no-op without modifiers). The FD loop's expansion
+    # (and FSA's chain rule) refuse to run on unresolved baselines.
+    try:
+        from parsers.PrimitiveParsers import resolve_modifier_baselines  # noqa: PLC0415
+
+        resolve_modifier_baselines(sm.param_id_info, sm.sim_helper)
+    except ImportError:  # a CA predating modifiers has none to resolve
+        pass
     param_names = [
         name[0] if isinstance(name, list) else name
         for name in sm.SA_info["param_names"]

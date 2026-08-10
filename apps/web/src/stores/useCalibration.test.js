@@ -10,12 +10,48 @@ vi.mock('../lib/api', () => ({
 }))
 
 import { startCalibration, getCalibrationStatus } from '../lib/api'
-import { useCalibration, applyBestParams } from './useCalibration'
+import { useCalibration, applyBestParams, expandBestFitParams } from './useCalibration'
 import { useSliders } from './useSliders'
 
 beforeEach(() => {
   startCalibration.mockReset()
   getCalibrationStatus.mockReset()
+})
+
+describe('expandBestFitParams (#208)', () => {
+  it('expands a modifier slot from θ to θ·baseline per target', () => {
+    // bestParams carries θ at every member (right for the anchor slider, wrong
+    // for a simulation); the run's modifiers metadata carries the baselines.
+    const best = { 'x/k': 7, 'a/C': 1.5, 'b/C': 1.5 }
+    const modifiers = [
+      { name: 'C_scale', anchor: 'a/C', targets: ['a/C', 'b/C'],
+        operation: 'scale', baselines: [2, 4], theta: 1.5 },
+    ]
+    expect(expandBestFitParams(best, modifiers)).toEqual({ 'x/k': 7, 'a/C': 3, 'b/C': 6 })
+  })
+
+  it('drops a target with no resolved baseline rather than passing θ through', () => {
+    const best = { 'a/C': 1.5 }
+    const modifiers = [
+      { name: 's', anchor: 'a/C', targets: ['a/C'], operation: 'scale',
+        baselines: null, theta: 1.5 },
+    ]
+    expect(expandBestFitParams(best, modifiers)).toEqual({})
+  })
+
+  it('modifier θ still lands on the anchor slider through applyBestParams', () => {
+    // The write-back path needs no expansion: the anchor slider *holds* θ.
+    const s = useSliders()
+    s.addSlider('a/C', {
+      min: 0.5, max: 2, value: 1, kind: 'modifier',
+      qnames: ['a/C', 'b/C'], baselines: { 'a/C': 2, 'b/C': 4 },
+    })
+    const spec = { min: 0.5, max: 2, qnames: ['a/C', 'b/C'], primary: 'a/C', kind: 'modifier' }
+    applyBestParams(s, { 'a/C': spec, 'b/C': spec }, { 'a/C': 1.5, 'b/C': 1.5 })
+    expect(s.sliders['a/C'].value).toBe(1.5)
+    // And the live expansion follows: θ=1.5 over baselines [2, 4].
+    expect(s.paramDict.value).toEqual({ 'a/C': 3, 'b/C': 6 })
+  })
 })
 
 describe('applyBestParams', () => {

@@ -9,6 +9,10 @@ import {
   addToGroup,
   removeFromGroup,
   rowsToSave,
+  canCreateModifier,
+  createModifier,
+  removeModifier,
+  suggestModifierName,
 } from './paramsCsv'
 
 describe('defaultRange (±10% of initial value)', () => {
@@ -281,10 +285,12 @@ describe('grouped parameters — creating one', () => {
     })
   }
 
-  it('only offers variables of the same name — the CSV cannot express any other group', () => {
+  it('offers differently-named variables too — the JSON form freed the group (#208)', () => {
+    // The same-param_name restriction existed only because the CSV had a single
+    // param_name column; a JSON entry's `targets` list has no such constraint.
     const rows = fixture()
     const eRow = rows.find((r) => r.qname === 'ao_A/E')
-    expect(groupCandidates(rows, eRow).map((r) => r.qname)).toEqual(['ao_B/E'])
+    expect(groupCandidates(rows, eRow).map((r) => r.qname)).toEqual(['ao_B/E', 'ao_C/R'])
   })
 
   it('absorbing a row removes it from the list but keeps its edits', () => {
@@ -316,5 +322,83 @@ describe('grouped parameters — creating one', () => {
     rows.push({ qname: 'ao_D/E', qnames: ['ao_D/E'], groupedInto: 'ao_A/E', included: false })
     const other = { qname: 'ao_Z/E', qnames: ['ao_Z/E'], groupedInto: null }
     expect(groupCandidates(rows, other).map((r) => r.qname)).not.toContain('ao_D/E')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Modifier parameters (#208)
+// ---------------------------------------------------------------------------
+describe('modifier parameters', () => {
+  const SCALE = { value: 'scale', default_min: 0.5, default_max: 2.0, identity: 1.0 }
+
+  function fixture() {
+    return mergedRows([], {
+      params: ['a/C', 'b/C', 'c/R'],
+      initial_values: { 'a/C': 2e-8, 'b/C': 4e-8, 'c/R': 5 },
+    })
+  }
+
+  it('creates a scale modifier over the selection: θ bounds from the vocabulary, targets claimed', () => {
+    const rows = fixture()
+    const selected = rows.filter((r) => r.qname !== 'c/R')
+    const mod = createModifier(rows, selected, SCALE)
+
+    expect(mod.kind).toBe('modifier')
+    expect(mod.operation).toBe('scale')
+    expect(mod.qname).toBe('a/C') // the anchor: modifies[0]
+    expect(mod.qnames).toEqual(['a/C', 'b/C'])
+    expect(mod.min).toBe(0.5)
+    expect(mod.max).toBe(2.0)
+    expect(mod.initial_value).toBe(1.0) // identity θ
+    expect(mod.baselines).toEqual({ 'a/C': 2e-8, 'b/C': 4e-8 })
+    // The targets stop being rows of their own but keep their edits.
+    for (const r of selected) expect(r.modifiedBy).toBe(mod.name)
+    expect(rowsToSave(rows).map((r) => r.name)).toEqual([mod.name])
+  })
+
+  it('suggests a unique name from the shared param_name', () => {
+    const rows = fixture()
+    expect(suggestModifierName(rows, ['a/C', 'b/C'])).toBe('scale_C')
+    rows.push({ name: 'scale_C' })
+    expect(suggestModifierName(rows, ['a/C', 'b/C'])).toBe('scale_C_2')
+    expect(suggestModifierName(rows, ['a/C', 'c/R'])).toBe('scale_params')
+  })
+
+  it('refuses a selection containing a modifier or an already-claimed row', () => {
+    const rows = fixture()
+    const selected = rows.filter((r) => r.qname !== 'c/R')
+    createModifier(rows, selected, SCALE)
+    // The claimed rows cannot be modified again (CA's no-double-modification),
+    // and a modifier cannot modify a modifier (no chains).
+    expect(canCreateModifier([rows.find((r) => r.qname === 'a/C' && r.kind === 'free')])).toBe(false)
+    expect(canCreateModifier([rows.find((r) => r.kind === 'modifier')])).toBe(false)
+  })
+
+  it('deleting a modifier restores its targets as their own rows', () => {
+    const rows = fixture()
+    const selected = rows.filter((r) => r.qname !== 'c/R')
+    const mod = createModifier(rows, selected, SCALE)
+    removeModifier(rows, mod)
+    expect(rows.find((r) => r.kind === 'modifier')).toBeUndefined()
+    expect(rowsToSave(rows).map((r) => r.qname)).toEqual(
+      expect.arrayContaining(['a/C', 'b/C']),
+    )
+  })
+
+  it('a loaded modifier entry hydrates as a modifier row', () => {
+    const rows = mergedRows(
+      [{
+        qname: 'a/C', qnames: ['a/C', 'b/C'], name: 'C_scale',
+        modifies: ['a/C', 'b/C'], operation: 'scale',
+        baselines: { 'a/C': 2e-8, 'b/C': 4e-8 },
+        min: 0.5, max: 2, initial_value: 1.0, identity: 1.0,
+      }],
+      { params: ['a/C', 'b/C', 'c/R'], initial_values: { 'c/R': 5 } },
+    )
+    const mod = rows.find((r) => r.kind === 'modifier')
+    expect(mod.name).toBe('C_scale')
+    expect(mod.baselines).toEqual({ 'a/C': 2e-8, 'b/C': 4e-8 })
+    // Its targets are claimed, not offered again as separate rows.
+    expect(rows.filter((r) => r.qname === 'b/C')).toHaveLength(0)
   })
 })

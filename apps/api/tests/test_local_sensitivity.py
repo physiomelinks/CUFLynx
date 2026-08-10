@@ -299,3 +299,35 @@ def test_a_modifier_slot_defaults_to_identity_not_a_model_value(requires_params_
     nominal, source = _resolve_modifier(None)
     assert list(nominal) == [1.0]
     assert "model defaults" in source
+
+
+def test_feature_runs_expand_theta_before_the_solver(requires_params_csv):
+    """The FD loop differences in theta, but the model must always receive
+    theta*baseline per target -- handing theta raw to run_protocol would set
+    every target to theta itself (the same expansion CA's param-id and Sobol
+    paths make before run_protocol)."""
+    captured = {}
+
+    class _Exec:
+        def run_protocol(self, _protocol_info, **kwargs):
+            captured.update(kwargs)
+            return True, {}, None, None
+
+    class _SM:
+        obs_info = {
+            "operations": [], "operands": [], "experiment_idxs": [],
+            "subexperiment_idxs": [], "operation_kwargs": [],
+            "names_for_plotting": [],
+        }
+        protocol_info = {}
+        param_id_info = {
+            "param_names": [["x/k"], ["a/C", "b/C"]],
+            "modifiers": [{"index": 1, "name": "s", "operation": "scale",
+                           "targets": ["a/C", "b/C"], "baselines": [2.0, 4.0]}],
+        }
+        _protocol_executor = _Exec()
+
+    ls._evaluate_features(_SM(), np.array([7.0, 1.5]), {})
+
+    assert captured["id_param_vals"][0] == 7.0
+    assert captured["id_param_vals"][1] == [3.0, 6.0]  # theta=1.5 expanded

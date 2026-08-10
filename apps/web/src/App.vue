@@ -24,7 +24,7 @@ import { useSliders, shouldUseLog } from './stores/useSliders'
 import { useSimResult } from './stores/useSimResult'
 import { useObsData } from './stores/useObsData'
 import { useParamsForId } from './stores/useParamsForId'
-import { useCalibration, applyBestParams } from './stores/useCalibration'
+import { useCalibration, applyBestParams, expandBestFitParams } from './stores/useCalibration'
 import { useSensitivity } from './stores/useSensitivity'
 import { useUQ } from './stores/useUQ'
 import {
@@ -615,11 +615,21 @@ function paramKey() {
   return JSON.stringify(sliders.paramDict.value)
 }
 
-/** The slider ranges, which matter only where a parameter sits at exactly 0. */
+/** The slider ranges, which matter only where a parameter sits at exactly 0.
+ *  Free sliders only: a modifier's bounds are θ's and travel in the modifiers
+ *  block, not here. */
 function costSensBounds() {
   const out = {}
-  for (const [qname, s] of Object.entries(sliders.sliders)) out[qname] = [s.min, s.max]
+  for (const [qname, s] of Object.entries(sliders.sliders)) {
+    if (s.kind !== 'modifier') out[qname] = [s.min, s.max]
+  }
   return out
+}
+
+/** The parameters the cost-sensitivity bars difference individually: free
+ *  sliders. Modifier sliders are differenced in θ via the modifiers block. */
+function costSensParamNames() {
+  return sliders.order.value.filter((q) => sliders.sliders[q]?.kind !== 'modifier')
 }
 
 /**
@@ -673,8 +683,9 @@ async function runCostSensitivity() {
     // No sim_time/pre_time: the obs_data paths do not send them either, and a
     // different run length would be a different cost.
     const data = await costSensitivity(model.modelId.value, params, {
-      paramNames: sliders.order.value,
+      paramNames: costSensParamNames(),
       bounds: costSensBounds(),
+      modifiers: sliders.modifierSpecs.value,
       outputs: liveOutputs(),
       outputsDir: outputsDir.value.trim() || undefined,
       signal: controller.signal,
@@ -1087,8 +1098,10 @@ function onRunCalibration(settings) {
       config_outputs_dir: outputsDir.value.trim() || undefined,
     },
     // Live slider values, so gradient descent can start from the user's current
-    // parameter values when "start from current" is enabled (#65).
-    { ...sliders.paramDict.value },
+    // parameter values when "start from current" is enabled (#65). The θ-aware
+    // analysisDict, not paramDict: a modifier's start point is θ at its anchor
+    // (CA samples θ there), never an expanded physical value (#208).
+    { ...sliders.analysisDict.value },
   )
 }
 
@@ -1180,8 +1193,9 @@ function onRunSensitivity(settings) {
       config_outputs_dir: outputsDir.value.trim() || undefined,
     },
     // Live slider values, so local SA with nominal="current" linearises about the
-    // user's current parameter values rather than the model defaults (#65).
-    { ...sliders.paramDict.value },
+    // user's current parameter values rather than the model defaults (#65). The
+    // θ-aware analysisDict: a modifier's nominal is θ at its anchor (#208).
+    { ...sliders.analysisDict.value },
   )
 }
 
@@ -1386,8 +1400,13 @@ async function loadBestFitRun() {
   const best = calib.bestParams.value
   if (!best || !model.hasModel.value) return null
   // The fit only names the calibrated parameters; everything else stays where
-  // the sliders are, so the comparison isolates what calibration changed.
-  const params = { ...sliders.paramDict.value, ...best }
+  // the sliders are, so the comparison isolates what calibration changed. A
+  // modifier's slots carry θ and must be expanded to θ·baseline before they
+  // are handed to a simulation (#208).
+  const params = {
+    ...sliders.paramDict.value,
+    ...expandBestFitParams(best, calib.bestModifiers.value),
+  }
   const data = await runWithParams(params)
   return { prefix: BEST_FIT_PREFIX, params, ...data }
 }
@@ -2167,6 +2186,7 @@ watch(
           :experiment-count="obs.experimentCount.value"
           :loaded-obs-filename="loadedObsFilename"
           :can-export="model.hasModel.value"
+          :generated-model-format="generatedModelFormat"
           @model-loaded="onModelLoaded"
           @obs-data-loaded="onObsDataLoaded"
           @params-loaded="onParamsLoaded"
