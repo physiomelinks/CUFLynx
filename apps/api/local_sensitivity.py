@@ -268,7 +268,7 @@ def _fd_local_sensitivity(sm, param_names, nominal, mins, maxs, output_names, h)
     return local
 
 
-def _resolve_gradient_method(settings: dict, model_type: str) -> str:
+def resolve_gradient_method(settings: dict, model_type: str) -> str:
     """The gradient source to use, in CUFLynx's vocabulary (FD / AD / FSA).
 
     Accepts circulatory_autogen's spellings too. Its API -- and its schema's
@@ -276,6 +276,11 @@ def _resolve_gradient_method(settings: dict, model_type: str) -> str:
     because a backend has only one. CUFLynx names the arm so the menu can offer,
     disable and report it; rejecting CA's word for the same choice is what made a
     defaulted run fail with "gradient_method 'AUTO' is not available".
+
+    Public because it is the *one* rule for "what will this run actually do":
+    the runner must call it to decide whether the FSA engine is needed, rather
+    than testing the raw string -- resolving 'AUTO' only after that decision is
+    how 'AUTO' came to demand an engine nobody had built.
     """
     method = str(settings.get("gradient_method", "FD") or "").upper()
     if method == "CVODES":
@@ -532,7 +537,7 @@ def compute_local_sensitivity(
         ``engine`` (a ``do_ad`` ``CVS0DParamID`` the runner builds). ``CVODES`` is
         accepted as a legacy alias for ``FSA``.
     """
-    gradient_method = _resolve_gradient_method(settings, model_type)
+    gradient_method = resolve_gradient_method(settings, model_type)
     if gradient_method == "AD" and model_type not in LOCAL_GRADIENT_SUPPORT["AD"]:
         raise NotImplementedError(
             "Local sensitivity's AD path is CasADi-specific -- it builds the jacobian "

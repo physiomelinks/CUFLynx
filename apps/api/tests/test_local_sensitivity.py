@@ -242,7 +242,7 @@ def test_cas_own_spelling_resolves_to_this_backends_arm(spelling, model_type, ex
     import local_sensitivity as ls
 
     settings = {"gradient_method": spelling, "nominal": "current"}
-    resolved = ls._resolve_gradient_method(settings, model_type)
+    resolved = ls.resolve_gradient_method(settings, model_type)
 
     assert resolved == expected
 
@@ -252,4 +252,4 @@ def test_a_genuinely_unknown_gradient_method_is_still_rejected():
     import local_sensitivity as ls
 
     with pytest.raises(NotImplementedError, match="not available"):
-        ls._resolve_gradient_method({"gradient_method": "MAGIC"}, "cellml_only")
+        ls.resolve_gradient_method({"gradient_method": "MAGIC"}, "cellml_only")

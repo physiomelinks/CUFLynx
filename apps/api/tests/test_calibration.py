@@ -1382,3 +1382,61 @@ def test_the_output_plots_cost_matches_the_calibrations_own(client, requires_sim
     assert ours is not None, "the run reported no cost to compare"
     assert ours["incomplete"] is False, "some observable went unscored; the comparison would be vacuous"
     assert ours["cost"] == pytest.approx(ca_cost, rel=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# gradient_method spellings: the runner and the resolver must agree (#220)
+# ---------------------------------------------------------------------------
+def _run_calibration_runner(monkeypatch, tmp_path, gradient_method):
+    """Drive ``calibration_runner.run`` with CA stubbed out, returning the
+    kwargs ``CVS0DParamID`` was constructed with."""
+    import types
+
+    import calibration_runner as cr
+
+    captured = {}
+
+    class _FakeParamID:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def run(self):
+            pass
+
+        def get_best_param_vals(self):
+            return [1.0]
+
+        def get_param_names(self):
+            return [["v/p"]]
+
+    fake_pkg = types.ModuleType("param_id")
+    fake_mod = types.ModuleType("param_id.paramID")
+    fake_mod.CVS0DParamID = _FakeParamID
+    monkeypatch.setitem(sys.modules, "param_id", fake_pkg)
+    monkeypatch.setitem(sys.modules, "param_id.paramID", fake_mod)
+    monkeypatch.setattr(cr, "_ensure_ca_on_path", lambda: None)
+    monkeypatch.setattr(cr, "_generate_error_vectors", lambda *a, **k: {})
+
+    cr.run({
+        "model_path": "model.cellml",
+        "obs_path": "obs.json",
+        "params_path": str(tmp_path / "params.csv"),
+        "output_dir": str(tmp_path / "out"),
+        "model_type": "cellml_only",
+        "settings": {"method": "genetic_algorithm", "gradient_method": gradient_method},
+    })
+    return captured
+
+
+def test_cas_auto_spelling_turns_the_analytic_gradient_on(tmp_path, monkeypatch):
+    """CA's 'AUTO' (its schema's default) means "this backend's analytic arm".
+    The runner used to test the raw string against ("AD", "FSA"), so 'AUTO'
+    landed in the FD bucket and a defaulted gradient calibration was silently
+    downgraded to finite differences."""
+    captured = _run_calibration_runner(monkeypatch, tmp_path, "AUTO")
+    assert captured["do_ad"] is True
+
+
+def test_fd_still_leaves_the_analytic_gradient_off(tmp_path, monkeypatch):
+    captured = _run_calibration_runner(monkeypatch, tmp_path, "FD")
+    assert captured["do_ad"] is False

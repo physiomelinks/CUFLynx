@@ -125,6 +125,7 @@ def _apply_start_point(param_id, values: dict, source_label: str) -> None:
 def run(config: dict) -> dict:
     _ensure_ca_on_path()
     from param_id.paramID import CVS0DParamID  # noqa: E402
+    from local_sensitivity import resolve_gradient_method  # noqa: E402
 
     settings = config.get("settings", {})
     output_dir = config["output_dir"]
@@ -134,8 +135,11 @@ def run(config: dict) -> dict:
     solver_info = _solver_info_from_config(config, settings)
     # gradient_method drives CA's gradient source for the gradient methods:
     # AD/FSA => automatic (CasADi jacobian or Myokit CVODES forward sensitivity),
-    # FD => finite difference. Ignored by the non-gradient methods.
-    do_ad = str(settings.get("gradient_method", "FD")).upper() in ("AD", "FSA")
+    # FD => finite difference. Ignored by the non-gradient methods. Resolved
+    # through the shared rule so CA's 'AUTO'/'ANALYTIC'/'' spellings (its schema's
+    # default) mean the analytic arm here too -- the raw string put them in the
+    # FD bucket, silently downgrading a defaulted gradient calibration.
+    do_ad = resolve_gradient_method(settings, model_type) in ("AD", "FSA")
 
     # Global random seed (Settings popup). When set, seed numpy's legacy global RNG
     # so the GA (which draws from np.random directly) is repeatable, and forward it
