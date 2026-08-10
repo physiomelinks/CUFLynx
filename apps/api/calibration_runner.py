@@ -208,16 +208,36 @@ def run(config: dict) -> dict:
 
     result = {"params": {}, "cost": None, "rank": rank}
     if rank == 0:
+        # Raw slot value per member qname. For a modifier this is theta at every
+        # member (anchor included) -- deliberately, because best-fit reuse
+        # (start-from-best-fit, SA nominal) matches by anchor and needs theta
+        # there, not a physical value. The physical expansion is separate below.
         params: dict[str, float] = {}
         for i, name_list in enumerate(param_names):
             for qname in name_list:
                 params[qname] = float(best_vals[i])
         cost = getattr(getattr(param_id, "param_id", None), "best_cost", None)
-        # Save the calibrated CellML (best-fit values baked into the flat model) so
-        # it can be reloaded and reproduce the calibrated simulation (issue #114).
-        calibrated_path = _write_calibrated_cellml(config, params, output_dir)
+        info = getattr(param_id, "param_id_info", None) or {}
+        modifiers = _result_modifiers(info, best_vals)
+        # Save the calibrated CellML (best-fit values baked into the flat model)
+        # so it can be reloaded and reproduce the calibrated simulation (#114).
+        # The write gets *physical* values: a modifier slot's theta expands to
+        # theta*baseline_i via CA's own expansion. If that expansion fails with
+        # modifiers present, skip the write rather than bake theta in as if it
+        # were a volume or a compliance.
+        try:
+            expanded = _expanded_best_fit(info, param_names, best_vals)
+            calibrated_path = _write_calibrated_cellml(config, expanded, output_dir)
+        except Exception as exc:  # noqa: BLE001 - best-effort, never fails the run
+            print(
+                f"warning: could not expand the modifier best fit for the "
+                f"calibrated CellML: {exc}",
+                flush=True,
+            )
+            calibrated_path = None
         payload = {
             "params": params,
+            "modifiers": modifiers,
             "cost": None if cost is None else float(cost),
             "calibrated_model_path": calibrated_path,
             **errors,
@@ -226,6 +246,63 @@ def run(config: dict) -> dict:
         with open(os.path.join(output_dir, "results.json"), "w") as fh:
             json.dump(payload, fh)
     return result
+
+
+def _result_modifiers(param_id_info: dict, best_vals) -> list:
+    """The modifier metadata a run carries back to the app.
+
+    ``{name, anchor, targets, operation, baselines, theta}`` per modifier --
+    the anchor is ``targets[0]`` (the same name every anchor-keyed consumer
+    collapses to), theta the best-fit slot value, baselines as CA resolved them
+    before the run. The frontend applies theta to the modifier slider and skips
+    its targets when applying the per-member params map.
+    """
+    out = []
+    for mod in (param_id_info or {}).get("modifiers") or []:
+        idx = mod.get("index")
+        theta = None
+        if idx is not None and 0 <= int(idx) < len(best_vals):
+            theta = float(best_vals[int(idx)])
+        targets = list(mod.get("targets") or [])
+        baselines = mod.get("baselines")
+        out.append({
+            "name": mod.get("name"),
+            "anchor": targets[0] if targets else None,
+            "targets": targets,
+            "operation": mod.get("operation"),
+            "baselines": None if baselines is None else [float(b) for b in baselines],
+            "theta": theta,
+        })
+    return out
+
+
+def _expanded_best_fit(param_id_info: dict, param_names, best_vals) -> dict:
+    """Best-fit values as *physical* model values, one per member qname.
+
+    A modifier's slot (theta) expands to ``theta * baseline_i`` through CA's
+    ``expand_modifier_param_vals`` -- the same arithmetic the calibration ran
+    with, not a reimplementation. On a CA predating modifiers the vector passes
+    through raw, which is exactly today's behavior (no modifiers can exist
+    there). Unresolved baselines raise: writing theta into a CellML as if it
+    were a physical value is the failure this function exists to prevent.
+    """
+    vals = [float(v) for v in best_vals]
+    try:
+        from parsers.PrimitiveParsers import expand_modifier_param_vals  # noqa: PLC0415
+    except ImportError:
+        expanded = vals
+    else:
+        expanded = expand_modifier_param_vals(param_id_info or {}, vals)
+    out: dict[str, float] = {}
+    for i, name_list in enumerate(param_names):
+        slot = expanded[i]
+        if isinstance(slot, (list, tuple)):
+            for qname, val in zip(name_list, slot):
+                out[qname] = float(val)
+        else:
+            for qname in name_list:
+                out[qname] = float(slot)
+    return out
 
 
 def _write_calibrated_cellml(config: dict, params: dict, output_dir: str) -> str | None:

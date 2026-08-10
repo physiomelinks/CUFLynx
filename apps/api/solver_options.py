@@ -356,6 +356,20 @@ _FALLBACK_PARAM_PRIOR_TYPES = {
     ],
 }
 
+# The modifier-operation vocabulary offered when CA can't be introspected —
+# mirrors PrimitiveParsers.PARAM_MODIFIER_OPERATIONS so the params editor still
+# offers the one operation CA has always had. `identity` is the θ at which every
+# target sits at its baseline (what a fresh modifier slider is set to).
+_FALLBACK_PARAM_MODIFIER_OPERATIONS = {
+    "default": "scale",
+    "operations": [
+        {"value": "scale", "label": "Scale",
+         "description": "one calibrated multiplier applied to every target's default value",
+         "applies_to": "value", "dimensionless": True,
+         "default_min": 0.5, "default_max": 2.0, "identity": 1.0},
+    ],
+}
+
 # Option blocks for the non-calibration analysis modes (sensitivity / MCMC /
 # identifiability) offered when CA can't be introspected — mirrors
 # PrimitiveParsers.ANALYSIS_OPTIONS so the SA/UQ panels still render their settings
@@ -404,15 +418,17 @@ _cache: dict | None = None
 _param_id_cache: list | None = None
 _analysis_cache: dict | None = None
 _prior_cache: dict | None = None
+_modifier_cache: dict | None = None
 
 
 def reset_cache() -> None:
     """Drop the cached options (call when the CA directory changes)."""
-    global _cache, _param_id_cache, _analysis_cache, _prior_cache
+    global _cache, _param_id_cache, _analysis_cache, _prior_cache, _modifier_cache
     _cache = None
     _param_id_cache = None
     _analysis_cache = None
     _prior_cache = None
+    _modifier_cache = None
 
 
 def _ca_paths() -> list[str]:
@@ -886,6 +902,63 @@ def get_param_id_methods(refresh: bool = False) -> list[dict]:
     if ok:
         _param_id_cache = methods
     return methods
+
+
+def _introspect_param_modifier_operations() -> dict:
+    """The modifier ``operation`` vocabulary, from CA's
+    ``PARAM_MODIFIER_OPERATIONS``.
+
+    Raises on a CA predating modifiers, so the caller degrades to
+    :data:`_FALLBACK_PARAM_MODIFIER_OPERATIONS`. Same "introspect CA, never
+    hardcode" pattern as the priors: CA decides what a modifier may do, and an
+    operation it grows (``calculate`` is the expected next one) shows up in the
+    params editor without a change here.
+    """
+    _ensure_ca_path()
+    from parsers.PrimitiveParsers import (  # noqa: E402
+        DEFAULT_PARAM_MODIFIER_OPERATION,
+        param_modifier_operations,
+    )
+
+    return {
+        "default": DEFAULT_PARAM_MODIFIER_OPERATION,
+        "operations": [
+            {
+                "value": name,
+                "label": (meta or {}).get("label", name.capitalize()),
+                "description": (meta or {}).get("description", ""),
+                "applies_to": (meta or {}).get("applies_to"),
+                "dimensionless": bool((meta or {}).get("dimensionless", False)),
+                # Bounds a fresh modifier is offered (θ is dimensionless for
+                # scale, so CA can state universal defaults); `identity` is the
+                # θ at which every target sits at its baseline.
+                "default_min": (meta or {}).get("default_min"),
+                "default_max": (meta or {}).get("default_max"),
+                "identity": (meta or {}).get("identity"),
+            }
+            for name, meta in param_modifier_operations().items()
+        ],
+    }
+
+
+def get_param_modifier_operations(refresh: bool = False) -> dict:
+    """The modifier ``operation`` vocabulary from CA's
+    ``PARAM_MODIFIER_OPERATIONS`` (introspected, not hardcoded).
+
+    Degrades to :data:`_FALLBACK_PARAM_MODIFIER_OPERATIONS` on a CA predating
+    modifiers. Caches a successful introspection; returns the fallback uncached
+    so a later CA-dir change can still pick it up.
+    """
+    global _modifier_cache
+    if _modifier_cache is not None and not refresh:
+        return _modifier_cache
+    ops, ok = _safe(
+        _introspect_param_modifier_operations,
+        copy.deepcopy(_FALLBACK_PARAM_MODIFIER_OPERATIONS),
+    )
+    if ok:
+        _modifier_cache = ops
+    return ops
 
 
 def get_param_prior_types(refresh: bool = False) -> dict:

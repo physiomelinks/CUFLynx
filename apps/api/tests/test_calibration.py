@@ -1440,3 +1440,42 @@ def test_cas_auto_spelling_turns_the_analytic_gradient_on(tmp_path, monkeypatch)
 def test_fd_still_leaves_the_analytic_gradient_off(tmp_path, monkeypatch):
     captured = _run_calibration_runner(monkeypatch, tmp_path, "FD")
     assert captured["do_ad"] is False
+
+
+# ---------------------------------------------------------------------------
+# Modifier parameters in the calibration result (#208)
+# ---------------------------------------------------------------------------
+_MOD_INFO = {"modifiers": [{"index": 1, "name": "C_scale", "operation": "scale",
+                            "targets": ["a/C", "b/C"], "baselines": [2.0, 4.0]}]}
+
+
+def test_result_modifiers_carry_theta_at_the_anchor():
+    import calibration_runner as cr
+
+    out = cr._result_modifiers(_MOD_INFO, [7.0, 1.5])
+    assert out == [{
+        "name": "C_scale", "anchor": "a/C", "targets": ["a/C", "b/C"],
+        "operation": "scale", "baselines": [2.0, 4.0], "theta": 1.5,
+    }]
+
+
+def test_expanded_best_fit_writes_physical_values(requires_params_csv):
+    """theta=1.5 over baselines [2, 4] -> 3.0 / 6.0 at the targets; the free
+    slot passes through. The arithmetic is CA's expand_modifier_param_vals, not
+    a reimplementation."""
+    import calibration_runner as cr
+
+    out = cr._expanded_best_fit(_MOD_INFO, [["x/k"], ["a/C", "b/C"]], [7.0, 1.5])
+    assert out == {"x/k": 7.0, "a/C": 3.0, "b/C": 6.0}
+
+
+def test_unresolved_baselines_refuse_to_pose_as_physical_values(requires_params_csv):
+    """Baselines still None means the expansion cannot run -- raising here is
+    what stops theta being baked into a calibrated CellML as if it were a
+    compliance."""
+    import calibration_runner as cr
+
+    info = {"modifiers": [{"index": 0, "name": "s", "operation": "scale",
+                           "targets": ["a/C"], "baselines": None}]}
+    with pytest.raises(ValueError, match="baselines"):
+        cr._expanded_best_fit(info, [["a/C"]], [1.5])

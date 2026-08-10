@@ -213,12 +213,21 @@ def evaluate(
     param_names=None,
     bounds=None,
     output_dir=None,
+    modifiers=None,
 ) -> dict:
     """``d ln(cost)/d ln(p)`` for each parameter, from one sensitivity solve.
 
     Raises :class:`GradientUnavailable` when this backend cannot, so the caller
     falls back to differencing rather than losing the panel.
     """
+    if modifiers:
+        # dJ/dθ = Σᵢ baselineᵢ·dJ/dpᵢ (CA's shipped FSA chain rule) is easy to
+        # add; until then differencing in θ is correct, and pretending the
+        # fabricated param_id_info below covers modifiers would not be.
+        raise GradientUnavailable(
+            "modifier parameters are differenced in θ for now; the analytic "
+            "dJ/dθ chain rule is a follow-up"
+        )
     names = [n for n in (param_names or list(params)) if n in params]
     if not names:
         raise GradientUnavailable("no parameters to measure")

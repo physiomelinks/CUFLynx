@@ -135,6 +135,17 @@ def _resolve_nominal(sm, param_names, mins, maxs, settings, best_vals, best_para
         nominal = np.asarray(
             [v[0] if isinstance(v, (list, tuple)) else v for v in vals], dtype=float
         )
+        # A modifier slot's nominal is theta, but get_init_param_vals returns the
+        # anchor's *physical* model default -- overwrite modifier slots with the
+        # operation's identity (theta = 1 for scale), CA's own rule
+        # (apply_modifier_identity_nominals, used by its param-id nominals). The
+        # slider override below still wins: analysisDict puts theta at the anchor.
+        try:
+            from parsers.PrimitiveParsers import apply_modifier_identity_nominals  # noqa: PLC0415
+
+            apply_modifier_identity_nominals(getattr(sm, "param_id_info", None) or {}, nominal)
+        except ImportError:  # a CA predating modifiers has none to overwrite
+            pass
         if current_params:
             applied = 0
             for i, name in enumerate(param_names):

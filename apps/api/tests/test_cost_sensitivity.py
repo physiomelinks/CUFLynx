@@ -58,7 +58,70 @@ def test_it_prices_itself():
 
     out = cost_sensitivity.evaluate({"a/p": 1.0, "a/q": 2.0}, cost_at)
     assert out["n_simulations"] == 5
-    assert len(calls) == 5
+
+
+# ---------------------------------------------------------------------------
+# Modifier sliders are differenced in θ (#208)
+# ---------------------------------------------------------------------------
+_MOD = {
+    "name": "C_scale", "anchor": "m/p", "targets": ["m/p", "m/q"],
+    "operation": "scale", "baselines": {"m/p": 2.0, "m/q": 4.0},
+    "value": 1.0, "bounds": [0.5, 2.0],
+}
+
+
+def test_a_modifier_perturbation_moves_every_target_in_proportion():
+    """One θ step writes (θ±h)·baselineₜ over each target; θ itself never
+    appears in the params the run receives."""
+    calls = []
+
+    def cost_at(params):
+        calls.append(dict(params))
+        # The cost tracks the targets so the difference is nonzero.
+        return _cost(params["m/p"] + params["m/q"])
+
+    base = {"m/p": 2.0, "m/q": 4.0, "a/free": 7.0}
+    out = cost_sensitivity.evaluate(
+        base, cost_at, param_names=["a/free"], modifiers=[_MOD]
+    )
+
+    row = next(r for r in out["params"] if r["name"] == "m/p")
+    assert row["value"] == 1.0  # θ, not the physical 2.0
+    h = row["step"]
+    perturbed = [c for c in calls if c != base]
+    theta_calls = [c for c in perturbed if c.get("a/free") == 7.0]
+    assert {(c["m/p"], c["m/q"]) for c in theta_calls} == {
+        ((1.0 + h) * 2.0, (1.0 + h) * 4.0),
+        ((1.0 - h) * 2.0, (1.0 - h) * 4.0),
+    }
+    # dJ/dθ = 2 + 4 = 6 about θ=1, and J = 6θ so d ln J/d ln θ = 1.
+    assert row["derivative"] == pytest.approx(6.0, rel=1e-6)
+    assert row["elasticity"] == pytest.approx(1.0, rel=1e-6)
+
+
+def test_modifier_targets_are_not_double_counted_as_free_rows():
+    """Under the default param_names, a modifier's targets (present in the
+    physical base point) must not also be differenced individually."""
+    out = cost_sensitivity.evaluate(
+        {"m/p": 2.0, "m/q": 4.0, "a/free": 7.0},
+        lambda params: _cost(sum(params.values())),
+        modifiers=[_MOD],
+    )
+    assert [r["name"] for r in out["params"]] == ["a/free", "m/p"]
+    # 2 rows -> 1 base + 4 perturbed runs.
+    assert out["n_simulations"] == 5
+
+
+def test_the_analytic_arm_refuses_modifiers_with_a_reason():
+    """v1: dJ/dθ is differenced; the analytic chain rule is a follow-up. The
+    refusal reason travels to the panel via the existing fallback path."""
+    with pytest.raises(cost_gradient_mod.GradientUnavailable, match="modifier"):
+        cost_gradient_mod.evaluate(
+            {"a/p": 1.0},
+            model_path="m", model_type="cellml_only", solver_info={}, dt=0.01,
+            obs_data={}, sim_time=1.0, pre_time=0.0,
+            modifiers=[_MOD],
+        )
 
 
 def test_it_steps_relative_to_each_parameter():

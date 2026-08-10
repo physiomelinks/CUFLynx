@@ -765,6 +765,59 @@ def test_stiff_filter_is_a_noop_when_ca_cannot_say(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# modifier `operation` vocabulary
+# ---------------------------------------------------------------------------
+def test_param_modifier_operations_are_introspected_from_ca(monkeypatch):
+    """CA owns what a modifier may do. An operation CA grows ('calculate' is the
+    expected next one) must appear here without a change in CUFLynx."""
+    fake_mod = types.SimpleNamespace(
+        DEFAULT_PARAM_MODIFIER_OPERATION="scale",
+        param_modifier_operations=lambda: {
+            "scale": {"description": "one calibrated multiplier", "applies_to": "value",
+                      "dimensionless": True, "default_min": 0.5, "default_max": 2.0,
+                      "identity": 1.0},
+            "calculate": {"description": "a user function computes the targets",
+                          "applies_to": "value", "dimensionless": False,
+                          "default_min": None, "default_max": None, "identity": None},
+        },
+    )
+    monkeypatch.setitem(sys.modules, "parsers.PrimitiveParsers", fake_mod)
+    monkeypatch.setattr(so, "_ensure_ca_path", lambda: None)
+    so.reset_cache()
+
+    ops = so.get_param_modifier_operations(refresh=True)
+
+    assert ops["default"] == "scale"
+    assert [o["value"] for o in ops["operations"]] == ["scale", "calculate"]
+    by_value = {o["value"]: o for o in ops["operations"]}
+    # default bounds + identity travel: they seed a fresh modifier's θ slider.
+    assert by_value["scale"]["default_min"] == 0.5
+    assert by_value["scale"]["identity"] == 1.0
+    assert by_value["calculate"]["identity"] is None
+
+
+def test_param_modifier_operations_fall_back_for_older_ca(monkeypatch):
+    """A CA predating modifiers still gets the one operation it will grow into,
+    so the editor renders (and the parser refuses unknown ops by name)."""
+    def _boom():
+        raise ImportError("cannot import name 'param_modifier_operations'")
+
+    monkeypatch.setattr(so, "_introspect_param_modifier_operations", _boom)
+    so.reset_cache()
+    ops = so.get_param_modifier_operations(refresh=True)
+    assert ops["default"] == "scale"
+    assert [o["value"] for o in ops["operations"]] == ["scale"]
+    assert ops["operations"][0]["identity"] == 1.0
+
+
+def test_the_config_route_carries_the_modifier_vocabulary(client):
+    body = client.get("/api/config").json()
+    ops = body["param_modifier_operations"]
+    assert ops["default"] == "scale"
+    assert any(o["value"] == "scale" for o in ops["operations"])
+
+
+# ---------------------------------------------------------------------------
 # params_for_id `prior` vocabulary
 # ---------------------------------------------------------------------------
 def test_param_prior_types_are_introspected_from_ca(monkeypatch):

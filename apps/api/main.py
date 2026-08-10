@@ -75,6 +75,7 @@ from solver_options import (
     filter_solver_info,
     get_analysis_options,
     get_param_id_methods,
+    get_param_modifier_operations,
     get_param_prior_types,
     gradient_sources,
     get_solver_options,
@@ -392,6 +393,10 @@ def _config_payload() -> dict:
         # editor can offer a picker instead of dropping the column (which
         # silently reverted every non-uniform prior to uniform).
         "param_prior_types": get_param_prior_types(),
+        # The modifier `operation` vocabulary (CA's PARAM_MODIFIER_OPERATIONS),
+        # so the editor's "create modifier parameter" menu tracks what CA can
+        # actually run rather than hardcoding it.
+        "param_modifier_operations": get_param_modifier_operations(),
     }
 
 
@@ -1309,6 +1314,11 @@ class CostSensitivityRequest(BaseModel):
     outputs: list[str] | None = None
     protocol_info: dict | None = None
     config_outputs_dir: str = ""
+    # Modifier sliders, differenced in θ: [{name, anchor, targets, operation,
+    # baselines: {qname: baseline}, value: θ, bounds: [θmin, θmax]}]. Their
+    # targets are excluded from param_names by the client (and re-excluded by
+    # cost_sensitivity.evaluate) -- they are the modifier's to move.
+    modifiers: list[dict] | None = None
 
 
 @app.post("/api/cost_sensitivity")
@@ -1387,6 +1397,7 @@ def cost_sensitivity_route(req: CostSensitivityRequest) -> dict:
             param_names=req.param_names,
             bounds=req.bounds,
             output_dir=output_dir,
+            modifiers=req.modifiers,
         )
     except cost_gradient.GradientUnavailable as exc:
         # Not an error: differencing works on every backend the sliders work on.
@@ -1405,6 +1416,7 @@ def cost_sensitivity_route(req: CostSensitivityRequest) -> dict:
             param_names=req.param_names,
             bounds=req.bounds,
             rel_step=req.rel_step,
+            modifiers=req.modifiers,
         )
         result["analytic"] = False
         result["fallback_reason"] = fallback_reason

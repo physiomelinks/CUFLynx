@@ -253,3 +253,49 @@ def test_a_genuinely_unknown_gradient_method_is_still_rejected():
 
     with pytest.raises(NotImplementedError, match="not available"):
         ls.resolve_gradient_method({"gradient_method": "MAGIC"}, "cellml_only")
+
+
+# ---------------------------------------------------------------------------
+# The theta / anchor contract for modifier parameters (#208)
+# ---------------------------------------------------------------------------
+class _ModifierHelper:
+    def get_init_param_vals(self, _names):
+        # The anchor's *physical* model default -- wrong as a theta, which is
+        # the point of the identity overwrite.
+        return [[2e-8]]
+
+
+class _ModifierSM:
+    sim_helper = _ModifierHelper()
+    SA_info = {"param_names": [["m/p", "m/q"]]}
+    # A modifier's param_names entry IS its modifies list; the runner's SA
+    # manager carries the matching modifiers metadata.
+    param_id_info = {"modifiers": [
+        {"index": 0, "name": "s", "operation": "scale",
+         "targets": ["m/p", "m/q"], "baselines": None},
+    ]}
+
+
+def _resolve_modifier(current_params, requires_ca=True):
+    return ls._resolve_nominal(
+        _ModifierSM(), ["m/p"], np.array([0.5]), np.array([2.0]),
+        {"nominal": "current"}, None, None, current_params=current_params,
+    )
+
+
+def test_a_modifier_slot_takes_theta_from_its_anchor(requires_params_csv):
+    """The contract: analysisDict puts theta at modifies[0], and the nominal
+    resolver matches current_params by param_names[i][0] -- which for a modifier
+    IS modifies[0]. Theta lands in the modifier's slot with no name mapping."""
+    nominal, source = _resolve_modifier({"m/p": 1.4})
+    assert list(nominal) == [1.4]
+    assert "sliders" in source
+
+
+def test_a_modifier_slot_defaults_to_identity_not_a_model_value(requires_params_csv):
+    """Without a slider override the slot must be the operation's identity
+    (theta=1: every target at its baseline), never the anchor's physical
+    default -- 2e-8 as a theta would collapse every target toward zero."""
+    nominal, source = _resolve_modifier(None)
+    assert list(nominal) == [1.0]
+    assert "model defaults" in source
