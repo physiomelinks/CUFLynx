@@ -28,11 +28,21 @@ because ``p_i = theta*b_i`` makes each member's own relative coefficient carry
 its weight -- so the claim can be checked against CA's per-member numbers from
 the same solve, with no solver error between the two sides.
 
-Comparing the two *models* is a different claim: two different augmented
-CVODES systems, whose sensitivities agree to about 1e-7 here. That floor is the
-integrator's, not the chain rule's -- tightening the solver past rtol=atol=1e-12
-makes it worse (1.7e-4 at 1e-14), so 1e-6 is asserted and the reason recorded
-rather than a tighter number forced.
+Comparing the two *models* is a different claim: two different augmented CVODES
+systems. That comparison, and every closed-form assertion, now lives **upstream
+in circulatory_autogen** (`tests/test_fsa_analytic_accuracy.py`, with the
+fixture pair), because it pins CA's arithmetic rather than a CUFLynx seam -- and
+because CUFLynx CI has no Myokit, so a numerical claim here never actually runs.
+What stays below is the seam: that CUFLynx's own member-summing and label lookup
+reproduce CA's per-member numbers from a single solve.
+
+**On solver tolerance.** These tests used rtol=atol=1e-12, originally to be
+immune to CA's rtol/atol swap in myokit_helper. That swap is fixed (CA #379),
+and 1e-12 turned out to be actively harmful: Myokit excludes the CVODES
+sensitivity variables from the local error test and sizes its finite-difference
+sensitivity RHS by sqrt(rtol), so tightening rtol degrades the *gradients* while
+the states stay exact (CA #387 -- measured 9e-8 at rtol 1e-8 against 3e-3 at
+1e-12). CA now warns below 1e-9. These tests run at 1e-8.
 
 The fixture is deliberately *decoupled* (one rate per state). The obvious
 pairing, ``dx/dt = k1 - k2*x``, leaves the steady state k1/k2 independent of
@@ -99,16 +109,17 @@ MODIFIER_BLOCK = {
 
 
 def _setup(client, model_path, params_doc) -> str:
-    """One model + the shared obs_data + its params_for_id, on a tightly
-    toleranced Myokit CVODES backend.
+    """One model + the shared obs_data + its params_for_id, on a Myokit CVODES
+    backend at the tolerance CA's FSA gradients are actually accurate at.
 
-    rtol == atol, which also makes every comparison here immune to CA's
-    rtol/atol swap in myokit_helper.
+    NOT tighter: below rtol 1e-9 the CVODES sensitivities get *worse*, because
+    Myokit leaves them out of the local error test and sizes its
+    finite-difference sensitivity RHS by sqrt(rtol) (CA #387). CA warns there.
     """
     resp = client.post("/api/config", json={
         "generated_model_format": "cellml_only",
         "solver": "CVODE_myokit",
-        "solver_info": {"rtol": 1e-12, "atol": 1e-12},
+        "solver_info": {"rtol": 1e-8, "atol": 1e-8},
     })
     assert resp.status_code == 200, resp.text
 
@@ -175,24 +186,9 @@ def _exact_for(output_name: str) -> float:
     return EXACT["x"] if "x_" in output_name else EXACT["y"]
 
 
-@pytest.mark.integration
-def test_the_two_models_are_the_same_system_at_theta_one(client, requires_simulation):
-    """The premise every comparison rests on. If the costs differ, the models
-    are not the same point and a sensitivity disagreement would say nothing
-    about the chain rule."""
-    native = _setup(client, NATIVE_PATH, NATIVE_PARAMS)
-    native_cost = client.post(
-        "/api/protocol/run", json={"model_id": native, "params": {"affine/theta": 1.0}}
-    ).json()["cost"]["cost"]
-
-    modifier = _setup(client, MODIFIER_PATH, MODIFIER_PARAMS)
-    modifier_cost = client.post(
-        "/api/protocol/run",
-        json={"model_id": modifier, "params": {"affine/k1": C1, "affine/k2": C2}},
-    ).json()["cost"]["cost"]
-
-    assert native_cost == pytest.approx(modifier_cost, rel=1e-12)
-
+# NOTE: test_the_two_models_are_the_same_system_at_theta_one moved to
+# circulatory_autogen tests/test_fsa_analytic_accuracy.py -- it validates the
+# fixture pair, so it travels with the fixture.
 
 # ---------------------------------------------------------------------------
 # The chain rule, exactly (rtol 1e-8; holds to ~1e-16)
@@ -257,52 +253,22 @@ def test_a_modifier_cost_bar_is_exactly_its_members_summed(client, requires_simu
 # ---------------------------------------------------------------------------
 # The two models, and the closed form (solver-limited, ~1e-7)
 # ---------------------------------------------------------------------------
-@pytest.mark.integration
-def test_output_sensitivities_match_the_native_model_and_the_closed_form(
-    client, requires_simulation
-):
-    """theta measured three ways: through the modifier, through the same
-    combination written into the model's math, and analytically.
-
-    1e-6 rather than 1e-8: the two models are different augmented CVODES
-    systems and their sensitivities agree to ~1e-7 at rtol=atol=1e-12, which is
-    the integrator's floor and not the chain rule's -- 1e-14 makes it *worse*
-    (1.7e-4). The exact claim about the combination is asserted above.
-    """
-    native = _one_column(_local_sa(
-        client, _setup(client, NATIVE_PATH, NATIVE_PARAMS), {NATIVE_ANCHOR: 1.0},
-    ))
-    modifier = _one_column(_local_sa(
-        client, _setup(client, MODIFIER_PATH, MODIFIER_PARAMS), {MODIFIER_ANCHOR: 1.0},
-    ))
-
-    assert set(native) == set(modifier), (native, modifier)
-    assert len(native) == 2, native
-    for out, native_value in native.items():
-        exact = _exact_for(out)
-        # Each path against the truth, then against each other.
-        assert native_value == pytest.approx(exact, rel=1e-6), out
-        assert modifier[out] == pytest.approx(exact, rel=1e-6), out
-        assert modifier[out] == pytest.approx(native_value, rel=1e-6), out
-
+# NOTE: test_output_sensitivities_match_the_native_model_and_the_closed_form
+# moved to circulatory_autogen tests/test_fsa_analytic_accuracy.py -- the
+# closed-form claim (d ln Y/d ln theta = -c*T) is about CA's sensitivities,
+# not about any CUFLynx seam.
 
 @pytest.mark.integration
-def test_the_modifier_cost_bar_matches_the_native_models(client, requires_simulation):
-    """The cost-sensitivity bar for theta, through the modifier and through the
-    model that does the same combination itself.
+def test_both_cost_bars_are_analytic_and_broadly_agree(client, requires_simulation):
+    """Smoke check: the cost-sensitivity bar for theta comes back *analytic* on both
+    arms and lands in the same place.
 
-    3e-3, and the loose figure is upstream's, not the chain rule's. Measured on
-    this fixture against the closed form (elasticity 5.806415767):
-
-        differenced cost      5.806415751   2.8e-09
-        native FSA cost       5.804107645   4.0e-04
-        modifier FSA cost     5.815423107   1.6e-03
-
-    i.e. CA's FSA *cost* gradient (get_cost_and_jac_fsa) is orders of magnitude
-    less accurate than its *output* sensitivities, which the test above pins at
-    1e-6 against the same closed form. The native model carries no modifier at
-    all and is still 4e-4 out, so this is not about theta. The exact claim about
-    the combination is asserted in the member-sum tests.
+    Deliberately loose (1%). The accuracy of CA's FSA cost gradient is CA's claim and
+    is asserted upstream against the closed form
+    (circulatory_autogen tests/test_fsa_analytic_accuracy.py); encoding a tighter
+    number here would record upstream's accuracy in our suite, where it neither
+    belongs nor tightens when CA improves. What this pins is ours: that the modifier
+    path produces an analytic bar at all, for the right quantity, of the right size.
     """
     native_id = _setup(client, NATIVE_PATH, NATIVE_PARAMS)
     native_body = client.post("/api/cost_sensitivity", json={
@@ -325,8 +291,8 @@ def test_the_modifier_cost_bar_matches_the_native_models(client, requires_simula
     native_row = next(r for r in native_body["params"] if r["name"] == NATIVE_ANCHOR)
     modifier_row = modifier_body["params"][0]
     assert abs(native_row["elasticity"]) > 1e-3
-    # The cost itself is the same number to the last bits; only its FSA
-    # *gradient* is the imprecise part.
+    # The cost itself is the same number to the last bits -- that much is exact.
     assert modifier_body["cost"] == pytest.approx(native_body["cost"], rel=1e-8)
+    # The gradient only has to be recognisably the same bar.
     assert modifier_row["elasticity"] == pytest.approx(
-        native_row["elasticity"], rel=3e-3)
+        native_row["elasticity"], rel=1e-2)
