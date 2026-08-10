@@ -12,16 +12,26 @@ jobs:
     defaults:
       run:
         working-directory: apps/api
+    env:
+      # The params_for_id CSV -> JSON conversion is CA's alone (no local
+      # fallback), so the unit tier needs CA's parser importable. The pin is
+      # bumped deliberately -- upstream drift must not break CUFLynx CI.
+      CIRCULATORY_AUTOGEN_SRC: ${{ github.workspace }}/circulatory_autogen/src
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: physiomelinks/circulatory_autogen
+          ref: 46b8c3a4ddc18e172078006e4880f8f9b184b78d
+          path: circulatory_autogen
       - uses: actions/setup-python@v5
         with:
           python-version: "3.10"
       # Install only the light deps needed by the unit tier; the heavy
       # simulation stack (myokit/libcellml) is exercised by the integration
-      # marker, which is skipped here.
+      # marker, which is skipped here. pyyaml is for CA's parser module.
       - name: Install unit-test deps
-        run: pip install fastapi "uvicorn[standard]" numpy pandas python-multipart httpx pytest pytest-cov
+        run: pip install fastapi "uvicorn[standard]" numpy pandas pyyaml python-multipart httpx pytest pytest-cov
       - name: Run unit tests
         run: pytest -m "not integration" -q
 
@@ -31,15 +41,22 @@ jobs:
     defaults:
       run:
         working-directory: apps/api
+    env:
+      CIRCULATORY_AUTOGEN_SRC: ${{ github.workspace }}/circulatory_autogen/src
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: physiomelinks/circulatory_autogen
+          ref: 46b8c3a4ddc18e172078006e4880f8f9b184b78d
+          path: circulatory_autogen
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
       # Same light deps as the Ubuntu unit job; the heavy simulation stack
       # (myokit/libcellml) is exercised by the integration marker, skipped here.
       - name: Install unit-test deps
-        run: pip install fastapi "uvicorn[standard]" numpy pandas python-multipart httpx pytest pytest-cov
+        run: pip install fastapi "uvicorn[standard]" numpy pandas pyyaml python-multipart httpx pytest pytest-cov
       - name: Run unit tests
         run: pytest -m "not integration" -q
 

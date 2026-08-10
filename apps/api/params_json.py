@@ -26,30 +26,21 @@ whole reason for the format: a list of qnames has no reason to share a
 ``param_name``, so arbitrary parameters can be grouped. One target is the
 ordinary single-parameter case; several mean one value set on all of them.
 
-**This module duplicates a conversion CA also owns**
-(``ObsAndParamDataParser.params_for_id_csv_to_json``). Deliberately, and
-temporarily: the params editor must work with no CA on ``sys.path`` at all --
-the packaged app with no CA directory chosen is a supported state -- and
-silently refusing to read a user's CSV there would be worse than the
-duplication. CA's version is preferred whenever it is importable, so the two
-cannot disagree in the configuration that matters. Remove this fallback only
-when CA is a hard dependency.
+**The CSV -> JSON conversion itself is CA's**
+(``ObsAndParamDataParser.params_for_id_csv_to_json``) -- there is exactly one
+converter, so the two repositories cannot disagree about the mapping. When CA
+is not importable (the packaged app before a circulatory_autogen directory is
+chosen in Settings), reading a CSV is an error that says so; the JSON form
+still parses without CA. CUFLynx used to carry a duplicate converter for that
+state, and retiring it is the #208 close condition: a fallback that only runs
+where CA is absent is a fallback that drifts unobserved.
 """
 
 from __future__ import annotations
 
-import io
 import json
 
-import pandas as pd
-
 SCHEMA_VERSION = 1
-
-# The columns a CSV may carry that map to a JSON key of the same name. Bounds and
-# names are handled separately because they are required or composite.
-_PASSTHROUGH_COLUMNS = ("param_type", "name_for_plotting", "comment", "prior")
-
-REQUIRED_CSV_COLUMNS = ("vessel_name", "param_name", "min", "max")
 
 
 class ParamsJsonError(ValueError):
@@ -61,7 +52,7 @@ def prior_param_names() -> tuple:
 
     Introspected from CA's vocabulary with a fallback, so a hyper-parameter CA
     adds is carried through without a change here. Deliberately *not* conditional
-    on CA being importable: these names decide whether a column is read at all,
+    on CA being importable: these names decide whether a key is read at all,
     and dropping them when CA is unreachable would silently discard the
     hyper-parameters rather than merely fail to validate them.
     """
@@ -79,21 +70,6 @@ def prior_param_names() -> tuple:
     except Exception:  # noqa: BLE001 - any CA import/shape problem falls back
         pass
     return ("prior_mean", "prior_std", "prior_lambda")
-
-
-def _is_blank(value) -> bool:
-    if value is None:
-        return True
-    try:
-        if pd.isna(value):
-            return True
-    except (TypeError, ValueError):  # arrays/lists aren't NaN-checkable
-        pass
-    return str(value).strip() == ""
-
-
-def _truthy(value) -> bool:
-    return str(value).strip().lower() in ("1", "1.0", "true", "yes", "y")
 
 
 def looks_like_json(data: bytes | str) -> bool:
@@ -167,10 +143,14 @@ def _resolved(entry, defaults: dict, idx: int) -> dict:
 
 
 def csv_to_json(data: bytes | str) -> dict:
-    """A params_for_id CSV as the canonical JSON structure.
+    """A params_for_id CSV as the canonical JSON structure, via CA's converter.
 
-    Prefers CA's own converter so the two repositories cannot disagree about the
-    mapping; falls back to the local one below when CA is not importable.
+    There is no local fallback: the conversion is CA's alone. Without CA the
+    error says how to fix that, because the packaged app starts in exactly this
+    state. CA's parse failures are translated into :class:`ParamsJsonError` --
+    it raises bare ``ValueError``/pandas errors, and anything that is not a
+    ``ParamsJsonError`` escapes ``parse_params_for_id`` as an HTTP 500 instead
+    of a 422 naming the problem.
     """
     try:
         from engine import _ensure_ca_on_path  # noqa: PLC0415
@@ -178,90 +158,20 @@ def csv_to_json(data: bytes | str) -> dict:
         _ensure_ca_on_path()
         from parsers.PrimitiveParsers import ObsAndParamDataParser  # noqa: PLC0415
 
-        convert = getattr(ObsAndParamDataParser, "params_for_id_csv_to_json", None)
-        if convert is not None:
-            text = data.decode("utf-8-sig", errors="replace") if isinstance(data, bytes) else data
-            return load_doc(convert(text))
-    except Exception:  # noqa: BLE001 - no CA, or a CA too old to have it
-        pass
-    return _local_csv_to_json(data)
+        convert = ObsAndParamDataParser.params_for_id_csv_to_json
+    except (ImportError, AttributeError) as exc:
+        raise ParamsJsonError(
+            "reading a params_for_id CSV requires circulatory_autogen, which is "
+            "not available. Set the circulatory_autogen directory in Settings "
+            "(gear icon), or upload the params_for_id JSON form instead."
+        ) from exc
 
-
-def _local_csv_to_json(data: bytes | str) -> dict:
-    """The CSV -> JSON mapping, implemented without CA.
-
-    Kept faithful to CA's column semantics:
-
-    - ``vessel_name`` is whitespace-split and each vessel is joined to the single
-      ``param_name``, giving one qname per vessel (CA builds
-      ``vessel_name[i] + '/' + param_name`` the same way).
-    - prior hyper-parameter columns collapse into a ``prior_params`` object.
-    - blank cells mean "not stated" and are omitted, not written as empty
-      strings, so CA's own defaulting still applies downstream.
-    """
-    if isinstance(data, bytes):
-        data = data.decode("utf-8-sig", errors="replace")
-
+    text = data.decode("utf-8-sig", errors="replace") if isinstance(data, bytes) else data
     try:
-        df = pd.read_csv(io.StringIO(data), skipinitialspace=True)
-    except Exception as exc:  # pandas raises many flavours of error
-        raise ParamsJsonError(f"could not parse CSV: {exc}") from exc
-
-    df.columns = [str(c).strip() for c in df.columns]
-    missing = [c for c in REQUIRED_CSV_COLUMNS if c not in df.columns]
-    if missing:
-        raise ParamsJsonError(f"missing required column(s): {', '.join(missing)}")
-
-    prior_columns = [n for n in prior_param_names() if n in df.columns]
-    has_unbounded = "unbounded" in df.columns
-
-    params = []
-    for idx, row in df.iterrows():
-        param_name = str(row["param_name"]).strip()
-        vessels = str(row["vessel_name"]).split()
-        if not vessels:
-            raise ParamsJsonError(f"row {idx}: empty vessel_name")
-
-        entry: dict = {"targets": [f"{vessel}/{param_name}" for vessel in vessels]}
-        # The name is the row's identity for a modifier to reference later. The
-        # first target keeps it stable and unique for the single-parameter case,
-        # which is what nearly every row is.
-        entry["name"] = entry["targets"][0]
-
-        for column in _PASSTHROUGH_COLUMNS:
-            if column in df.columns and not _is_blank(row[column]):
-                entry[column] = str(row[column]).strip()
-
-        for bound in ("min", "max"):
-            if _is_blank(row[bound]):
-                continue
-            # Coerced here so the document is JSON-serialisable (pandas hands
-            # back numpy scalars). A value that will not convert is passed
-            # through untouched so the numeric complaint is raised once,
-            # downstream, where the row's identity is known.
-            try:
-                entry[bound] = float(row[bound])
-            except (TypeError, ValueError):
-                entry[bound] = str(row[bound]).strip()
-
-        prior_params = {
-            column: str(row[column]).strip()
-            for column in prior_columns
-            if not _is_blank(row[column])
-        }
-        if prior_params:
-            entry["prior_params"] = prior_params
-
-        # Only written when true: an absent key reads as "not unbounded", and
-        # writing `false` on every row would add noise to every converted file.
-        if has_unbounded and not _is_blank(row["unbounded"]) and _truthy(row["unbounded"]):
-            entry["unbounded"] = True
-
-        params.append(entry)
-
-    if not params:
-        raise ParamsJsonError("no parameter rows found")
-    return {"version": SCHEMA_VERSION, "defaults": {}, "params": params}
+        doc = convert(text)
+    except Exception as exc:  # noqa: BLE001 - CA raises bare ValueError / pandas errors
+        raise ParamsJsonError(f"could not read params_for_id CSV: {exc}") from exc
+    return load_doc(doc)
 
 
 def entries_to_json(entries, defaults: dict | None = None) -> dict:

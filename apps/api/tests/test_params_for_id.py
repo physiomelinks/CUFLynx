@@ -3,6 +3,11 @@ import pytest
 
 from conftest import BG_MODEL_PATH, LV_MODEL_PATH, LV_PARAMS_CSV_PATH, upload_model
 
+# Every test here feeds a CSV through the parser, and the CSV -> JSON conversion
+# is CA's alone (no local fallback). The no-CA *behavior* -- the 422 pointing at
+# Settings -- is asserted unconditionally in test_params_for_id_json.py.
+pytestmark = pytest.mark.usefixtures("requires_params_csv")
+
 
 def _post_csv_file(client, path, model_id=None):
     url = "/api/params_for_id/upload"
