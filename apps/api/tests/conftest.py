@@ -99,6 +99,30 @@ def requires_casadi(requires_simulation):
         pytest.skip("casadi not available")
 
 
+def _params_csv_converter_available() -> bool:
+    """Whether CA's params_for_id CSV converter is importable.
+
+    The CSV -> JSON conversion is CA's alone (no local fallback), so tests
+    about *CSV semantics* have nothing to exercise without it. Tests about the
+    no-CA behavior itself force CA away and always run.
+    """
+    try:
+        from engine import _ensure_ca_on_path
+
+        _ensure_ca_on_path()
+        from parsers.PrimitiveParsers import ObsAndParamDataParser
+
+        return hasattr(ObsAndParamDataParser, "params_for_id_csv_to_json")
+    except Exception:  # noqa: BLE001
+        return False
+
+
+@pytest.fixture
+def requires_params_csv():
+    if not _params_csv_converter_available():
+        pytest.skip("circulatory_autogen's params_for_id CSV converter not available")
+
+
 # ---------------------------------------------------------------------------
 # App + state isolation
 # ---------------------------------------------------------------------------

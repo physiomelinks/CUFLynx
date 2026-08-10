@@ -63,6 +63,7 @@ import obs_cost
 import cost_gradient
 import cost_sensitivity
 from obs_series import compute_output_series
+import params_json
 from params_for_id import ParamsForIdError, parse_params_for_id
 import saved_runs
 from param_io import ParamIOError, load_param_values, save_param_values
@@ -623,7 +624,9 @@ def export_pipeline_route(req: ExportPipelineRequest) -> dict:
             obs_file = "obs_data.json"
             shutil.copyfile(record.obs_path, resources / obs_file)
         if record.params_path is not None:
-            params_file = "params_for_id.csv"
+            # Keep the stored suffix: CA branches CSV-vs-JSON on it, so an
+            # exported JSON doc renamed to .csv would be misparsed downstream.
+            params_file = "params_for_id" + Path(record.params_path).suffix
             shutil.copyfile(record.params_path, resources / params_file)
         for key, src in user_func_paths(req.config_outputs_dir or None).items():
             # Keep CA's own filenames: the export is meant to be readable and
@@ -1090,9 +1093,7 @@ async def upload_omex(
         name, blob = parts["params"]
         try:
             entries = parse_params_for_id(blob, meta.initial_values)
-            params_path = UPLOAD_DIR / f"{model_id}_params_for_id.csv"
-            params_path.write_bytes(blob)
-            _models[model_id].params_path = params_path
+            _models[model_id].params_path = _save_params_file(model_id, blob)
             result["params_for_id"] = {
                 "filename": name,
                 "params": [e.as_dict() for e in entries],
@@ -1627,6 +1628,23 @@ def load_params(req: LoadParamsRequest) -> dict:
     return {"values": values}
 
 
+def _save_params_file(model_id: str, data: bytes | str) -> Path:
+    """Persist an uploaded params_for_id with the suffix its content needs.
+
+    CA branches CSV-vs-JSON on the filename suffix (``get_param_id_info``), so
+    a JSON document saved under ``.csv`` would be handed to CA's CSV parser by
+    every runner. The stale other-suffix twin is removed so a format switch
+    cannot leave two files disagreeing about which is current.
+    """
+    raw = data if isinstance(data, bytes) else data.encode()
+    suffix = ".json" if params_json.looks_like_json(raw) else ".csv"
+    path = UPLOAD_DIR / f"{model_id}_params_for_id{suffix}"
+    path.write_bytes(raw)
+    other_suffix = ".csv" if suffix == ".json" else ".json"
+    (UPLOAD_DIR / f"{model_id}_params_for_id{other_suffix}").unlink(missing_ok=True)
+    return path
+
+
 @app.post("/api/params_for_id/upload")
 async def upload_params_for_id(
     request: Request, model_id: str | None = Query(default=None)
@@ -1652,9 +1670,7 @@ async def upload_params_for_id(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     if model_id and model_id in _models:
-        params_path = UPLOAD_DIR / f"{model_id}_params_for_id.csv"
-        params_path.write_bytes(data if isinstance(data, bytes) else data.encode())
-        _models[model_id].params_path = params_path
+        _models[model_id].params_path = _save_params_file(model_id, data)
 
     return {"params": [e.as_dict() for e in entries]}
 

@@ -200,6 +200,34 @@ def test_malformed_number_raises_a_typed_error_not_a_bare_crash():
     assert "num_calls_to_function" in str(exc.value)
 
 
+def test_export_keeps_a_json_params_suffix(client, tmp_path):
+    """CA branches CSV-vs-JSON on the filename suffix, so an exported JSON
+    params doc renamed to .csv would be misparsed by the exported pipeline."""
+    model_id = upload_model(client, LV_MODEL_PATH)["model_id"]
+    obs = json.loads(LV_OBS_DATA_PATH.read_text())
+    assert client.post("/api/obs_data/upload", json={"model_id": model_id, "obs_data": obs}).status_code == 200
+    doc = {"params": [{"targets": ["Lotka_Volterra_module/alpha"], "min": 0.1, "max": 2.0}]}
+    r = client.post(f"/api/params_for_id/upload?model_id={model_id}",
+                    content=json.dumps(doc), headers={"content-type": "application/json"})
+    assert r.status_code == 200, r.text
+
+    resp = client.post("/api/export/pipeline", json={
+        "model_id": model_id,
+        "file_prefix": "lotka_volterra",
+        "sim_time": 2.0,
+        "enabled": {"do_simulation": True},
+        "config_outputs_dir": str(tmp_path),
+    })
+    assert resp.status_code == 200, resp.text
+    export_dir = resp.json()["export_dir"]
+    import os
+    assert os.path.isfile(os.path.join(export_dir, "resources", "params_for_id.json"))
+    yaml_files = [f for f in os.listdir(export_dir) if f.startswith("user_inputs_") and f.endswith(".yaml")]
+    ui = yaml.safe_load(open(os.path.join(export_dir, yaml_files[0])))
+    # build_inp_data_dict derives params_for_id_path from this at run time.
+    assert ui["params_for_id_file"] == "params_for_id.json"
+
+
 def test_export_route_accepts_null_option_values(client, tmp_path):
     # The end-to-end shape of #133: the payload the UI sends before the user has
     # typed into a required field whose CA default is null.

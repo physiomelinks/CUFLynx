@@ -47,7 +47,7 @@ def _goldens():
 # The backwards-compatibility guarantee
 # ---------------------------------------------------------------------------
 @pytest.mark.parametrize("snapshot", sorted(_goldens()))
-def test_csv_reads_exactly_as_it_did_before_json(snapshot):
+def test_csv_reads_exactly_as_it_did_before_json(snapshot, requires_params_csv):
     """Key-by-key equality against the pre-conversion parser, per fixture.
 
     Captured from the implementation that read the CSV directly, so this fails if
@@ -68,7 +68,7 @@ def test_every_shipped_fixture_is_covered():
     assert shipped == covered, f"fixtures without goldens: {sorted(shipped - covered)}"
 
 
-def test_a_multi_vessel_row_becomes_one_entry_with_both_targets():
+def test_a_multi_vessel_row_becomes_one_entry_with_both_targets(requires_params_csv):
     """CA reads `vessel_name="a b"` as one parameter in two components (#193)."""
     csv = "vessel_name,param_name,min,max\naortic_root par,C,1e-9,5e-8\n"
     doc = params_json.csv_to_json(csv)
@@ -76,7 +76,7 @@ def test_a_multi_vessel_row_becomes_one_entry_with_both_targets():
     assert doc["params"][0]["targets"] == ["aortic_root/C", "par/C"]
 
 
-def test_a_global_row_keeps_its_gen_name_fallback():
+def test_a_global_row_keeps_its_gen_name_fallback(requires_params_csv):
     """The flat-model rename (#298/#368): `global` contributes a bare name."""
     csv = "vessel_name,param_name,min,max\nglobal,q_lv_init,1e-4,1e-3\n"
     entries = parse_params_for_id(csv, INITIAL_VALUES)
@@ -178,7 +178,7 @@ def test_prior_params_merge_per_key_rather_than_wholesale():
 # Round-tripping through the editor
 # ---------------------------------------------------------------------------
 @pytest.mark.parametrize("filename", sorted(p.name for p in RESOURCES.glob("*params*.csv")))
-def test_entries_survive_a_write_and_reread(filename):
+def test_entries_survive_a_write_and_reread(filename, requires_params_csv):
     """What the editor does: read, write JSON, read again. Anything the writer
     drops would be lost the first time a user saved a file they had not edited."""
     first = parse_params_for_id((RESOURCES / filename).read_bytes(), INITIAL_VALUES)
@@ -239,7 +239,7 @@ def test_an_unbounded_entry_gets_its_range_from_its_prior(requires_ca_priors):
 # ---------------------------------------------------------------------------
 # Errors
 # ---------------------------------------------------------------------------
-def test_a_blank_optional_cell_is_absent_rather_than_the_string_nan():
+def test_a_blank_optional_cell_is_absent_rather_than_the_string_nan(requires_params_csv):
     """Reading a blank `name_for_plotting` used to yield the text "nan", which
     then appeared on the plot axis."""
     csv = "vessel_name,param_name,min,max,name_for_plotting\na,x,1,2,\n"
@@ -247,21 +247,124 @@ def test_a_blank_optional_cell_is_absent_rather_than_the_string_nan():
     assert parse_params_for_id(csv)[0].name_for_plotting is None
 
 
-def test_a_missing_required_column_is_a_params_for_id_error():
+def test_a_csv_without_bounds_columns_is_a_params_for_id_error(requires_params_csv):
     """The JSON layer has its own error type; only one may reach the API, which
     maps it to 422.
 
-    The wording depends on which converter ran. Without CA, the local fallback
-    requires the min/max *columns* and names them. With CA importable,
-    csv_to_json prefers CA's own params_for_id_csv_to_json, which — since
-    'unbounded' rows exist — accepts a CSV without them; the missing bounds then
-    surface downstream as the row-level "min and max are required unless
-    'unbounded' is set" error. Either way it is one ParamsForIdError, so pin the
-    type and accept both messages rather than the local fallback's phrasing."""
-    with pytest.raises(
-        ParamsForIdError, match="missing required column|min and max are required"
-    ):
+    CA's converter accepts a CSV without min/max columns ('unbounded' rows make
+    them optional), so the missing bounds surface downstream as the row-level
+    "min and max are required" error rather than a column complaint. Supersedes
+    the transitional both-wordings version from #222."""
+    with pytest.raises(ParamsForIdError, match="min and max are required"):
         parse_params_for_id("vessel_name,param_name\na,x\n")
+
+
+# ---------------------------------------------------------------------------
+# Without circulatory_autogen: CSV is an actionable error, JSON still works
+# ---------------------------------------------------------------------------
+@pytest.fixture
+def no_ca(monkeypatch):
+    """Force the no-CA state even on a machine that has CA.
+
+    Setting a sys.modules entry to None makes any import of it raise
+    ImportError, regardless of sys.path -- necessary because dev machines have
+    CA as a sibling and it is usually already imported by earlier tests.
+    """
+    import sys
+
+    monkeypatch.setitem(sys.modules, "parsers", None)
+    monkeypatch.setitem(sys.modules, "parsers.PrimitiveParsers", None)
+
+
+def test_reading_a_csv_without_ca_says_how_to_fix_it(no_ca):
+    """No local fallback: the packaged app starts with no CA dir configured, so
+    the error must say what to do (Settings -> CA dir), not merely fail."""
+    with pytest.raises(params_json.ParamsJsonError, match="Settings"):
+        params_json.csv_to_json("vessel_name,param_name,min,max\na,x,1,2\n")
+
+
+def test_uploading_a_csv_without_ca_is_a_422_pointing_at_settings(no_ca, client):
+    resp = client.post(
+        "/api/params_for_id/upload",
+        content="vessel_name,param_name,min,max\na,x,1,2\n",
+        headers={"content-type": "text/csv"},
+    )
+    assert resp.status_code == 422
+    assert "Settings" in resp.json()["detail"]
+
+
+def test_uploading_json_without_ca_still_works(no_ca, client):
+    """JSON parsing does not need CA; only the CSV conversion is CA's."""
+    doc = {"params": [{"targets": ["a/x"], "min": 1.0, "max": 2.0}]}
+    resp = client.post(
+        "/api/params_for_id/upload",
+        content=json.dumps(doc),
+        headers={"content-type": "application/json"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["params"][0]["qname"] == "a/x"
+
+
+# ---------------------------------------------------------------------------
+# The stored file's suffix follows its content (CA branches on the suffix)
+# ---------------------------------------------------------------------------
+def test_a_json_upload_is_stored_with_a_json_suffix(client):
+    """CA's get_param_id_info picks its parser by filename suffix, so a JSON doc
+    saved under .csv would be handed to CA's CSV parser by every runner."""
+    import main
+    from conftest import LV_MODEL_PATH, upload_model
+
+    model_id = upload_model(client, LV_MODEL_PATH)["model_id"]
+    doc = {"params": [{"targets": ["Lotka_Volterra_module/alpha"], "min": 0.1, "max": 2.0}]}
+    r = client.post(
+        f"/api/params_for_id/upload?model_id={model_id}",
+        content=json.dumps(doc),
+        headers={"content-type": "application/json"},
+    )
+    assert r.status_code == 200, r.text
+    assert main._models[model_id].params_path.suffix == ".json"
+
+
+def test_switching_formats_removes_the_stale_twin(client, requires_params_csv):
+    """A format switch must not leave two params files disagreeing about which
+    is current -- the runners read whichever path the record holds, but a human
+    inspecting the upload dir would find both."""
+    import main
+    from conftest import LV_MODEL_PATH, LV_PARAMS_CSV_PATH, upload_model
+
+    model_id = upload_model(client, LV_MODEL_PATH)["model_id"]
+    doc = {"params": [{"targets": ["Lotka_Volterra_module/alpha"], "min": 0.1, "max": 2.0}]}
+    r = client.post(
+        f"/api/params_for_id/upload?model_id={model_id}",
+        content=json.dumps(doc),
+        headers={"content-type": "application/json"},
+    )
+    assert r.status_code == 200, r.text
+    json_path = main._models[model_id].params_path
+
+    with open(LV_PARAMS_CSV_PATH, "rb") as fh:
+        r = client.post(
+            f"/api/params_for_id/upload?model_id={model_id}",
+            files={"file": (LV_PARAMS_CSV_PATH.name, fh, "text/csv")},
+        )
+    assert r.status_code == 200, r.text
+    assert main._models[model_id].params_path.suffix == ".csv"
+    assert not json_path.exists(), "stale .json twin left beside the .csv"
+
+
+def test_ca_available_in_ci():
+    """Canary: in CI the CA checkout must be importable, or the whole CSV test
+    tier silently skips and reads as green. Fails (not skips) only in CI."""
+    import os
+
+    from conftest import _params_csv_converter_available
+
+    if os.environ.get("CI") and not _params_csv_converter_available():
+        raise AssertionError(
+            "CI is expected to provide a circulatory_autogen checkout via "
+            "CIRCULATORY_AUTOGEN_SRC, but its params CSV converter is not "
+            "importable -- the CSV test tier is silently skipping"
+        )
 
 
 def test_min_greater_than_max_names_the_entry():
