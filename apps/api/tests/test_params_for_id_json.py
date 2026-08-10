@@ -249,8 +249,18 @@ def test_a_blank_optional_cell_is_absent_rather_than_the_string_nan():
 
 def test_a_missing_required_column_is_a_params_for_id_error():
     """The JSON layer has its own error type; only one may reach the API, which
-    maps it to 422."""
-    with pytest.raises(ParamsForIdError, match="missing required column"):
+    maps it to 422.
+
+    The wording depends on which converter ran. Without CA, the local fallback
+    requires the min/max *columns* and names them. With CA importable,
+    csv_to_json prefers CA's own params_for_id_csv_to_json, which — since
+    'unbounded' rows exist — accepts a CSV without them; the missing bounds then
+    surface downstream as the row-level "min and max are required unless
+    'unbounded' is set" error. Either way it is one ParamsForIdError, so pin the
+    type and accept both messages rather than the local fallback's phrasing."""
+    with pytest.raises(
+        ParamsForIdError, match="missing required column|min and max are required"
+    ):
         parse_params_for_id("vessel_name,param_name\na,x\n")
 
 
