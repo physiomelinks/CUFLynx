@@ -30,10 +30,14 @@ FAIL_MARKER = "__UQ_FAILED__"
 
 # CUFLynx-level / calibration settings that must NOT be forwarded into CA's
 # mcmc_options (the rest are the CA mcmc option values the UI collected).
+# config_outputs_dir is attached to every run by the UI (App.vue) alongside
+# python_path; cost_convergence is NOT reserved here because for MCMC it is a
+# genuine mcmc_options value (_mcmc_options sets it explicitly).
 _UQ_RESERVED = {
     "method", "run_calibration_first", "num_cores", "dt", "DEBUG", "solver",
     "solver_info", "python_path", "sim_time", "pre_time", "generated_model_format",
     "param_id_method", "num_calls_to_function", "max_patience", "gradient_method",
+    "config_outputs_dir",
 }
 
 NUM_BINS = 30

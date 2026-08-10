@@ -39,11 +39,18 @@ DONE_MARKER = "__SENSITIVITY_DONE__"
 FAIL_MARKER = "__SENSITIVITY_FAILED__"
 
 # CUFLynx-level / local-path settings that must NOT be forwarded into CA's
-# sa_options (the rest are the CA sensitivity_analysis option values).
+# sa_options (the rest are the CA sensitivity_analysis option values). The UI
+# always attaches config_outputs_dir, and folds the calibration panel's GA
+# settings (param_id_method / num_calls_to_function / max_patience /
+# cost_convergence) into the SA settings when run_calibration_first is set —
+# those feed _calibrate_for_nominal, which reads them from settings directly,
+# and have no business inside sa_options.
 _SA_RESERVED = {
     "method", "gradient_method", "rel_step", "nominal", "run_calibration_first",
     "dt", "DEBUG", "num_cores", "solver", "solver_info", "python_path",
     "sim_time", "pre_time", "cost_type", "generated_model_format",
+    "config_outputs_dir", "param_id_method", "num_calls_to_function",
+    "max_patience", "cost_convergence",
 }
 
 
