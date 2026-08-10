@@ -268,6 +268,40 @@ def _fd_local_sensitivity(sm, param_names, nominal, mins, maxs, output_names, h)
     return local
 
 
+def resolve_gradient_method(settings: dict, model_type: str) -> str:
+    """The gradient source to use, in CUFLynx's vocabulary (FD / AD / FSA).
+
+    Accepts circulatory_autogen's spellings too. Its API -- and its schema's
+    default -- use ''/'ANALYTIC'/'AUTO' for "this backend's analytic arm",
+    because a backend has only one. CUFLynx names the arm so the menu can offer,
+    disable and report it; rejecting CA's word for the same choice is what made a
+    defaulted run fail with "gradient_method 'AUTO' is not available".
+
+    Public because it is the *one* rule for "what will this run actually do":
+    the runner must call it to decide whether the FSA engine is needed, rather
+    than testing the raw string -- resolving 'AUTO' only after that decision is
+    how 'AUTO' came to demand an engine nobody had built.
+    """
+    method = str(settings.get("gradient_method", "FD") or "").upper()
+    if method == "CVODES":
+        method = "FSA"  # legacy alias -> the Myokit forward-sensitivity path
+    if method in ("", "AUTO", "ANALYTIC"):
+        # circulatory_autogen's own spelling of "this backend's analytic arm" --
+        # and the default its schema hands back, so it arrives here whenever the
+        # panel is seeded from CA rather than from a user's choice. CUFLynx names
+        # the arm instead (so the menu can offer, disable and report it), but
+        # rejecting CA's word for the same thing made a defaulted run fail with
+        # "gradient_method 'AUTO' is not available" -- true of the name, and
+        # quite wrong about the capability. Resolved to the arm CA would pick.
+        return "AD" if model_type in LOCAL_GRADIENT_SUPPORT["AD"] else "FSA"
+    if method not in ("FD", "AD", "FSA"):
+        raise NotImplementedError(
+            f"gradient_method '{method}' is not available; use 'FD' (finite "
+            "difference), 'AD' (casadi_python), or 'FSA' (cellml_only + CVODE_myokit)."
+        )
+    return method
+
+
 def _non_differentiable(names, funcs_dict, is_differentiable):
     """Names (de-duplicated, skipping empty/'none') whose func isn't differentiable."""
     bad = []
@@ -503,14 +537,7 @@ def compute_local_sensitivity(
         ``engine`` (a ``do_ad`` ``CVS0DParamID`` the runner builds). ``CVODES`` is
         accepted as a legacy alias for ``FSA``.
     """
-    gradient_method = str(settings.get("gradient_method", "FD")).upper()
-    if gradient_method == "CVODES":
-        gradient_method = "FSA"  # legacy alias -> the Myokit forward-sensitivity path
-    if gradient_method not in ("FD", "AD", "FSA"):
-        raise NotImplementedError(
-            f"gradient_method '{gradient_method}' is not available; use 'FD' (finite "
-            "difference), 'AD' (casadi_python), or 'FSA' (cellml_only + CVODE_myokit)."
-        )
+    gradient_method = resolve_gradient_method(settings, model_type)
     if gradient_method == "AD" and model_type not in LOCAL_GRADIENT_SUPPORT["AD"]:
         raise NotImplementedError(
             "Local sensitivity's AD path is CasADi-specific -- it builds the jacobian "

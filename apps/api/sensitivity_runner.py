@@ -249,7 +249,10 @@ def run(config: dict) -> dict:
 
     # Local (derivative-based) SA runs single-process; no Sobol sampling / MPI.
     if method == "local":
-        from local_sensitivity import compute_local_sensitivity  # noqa: E402
+        from local_sensitivity import (  # noqa: E402
+            compute_local_sensitivity,
+            resolve_gradient_method,
+        )
 
         # run_calibration_first: locate a fresh best-fit point here, then take
         # the local sensitivity about it. Otherwise the nominal point comes from
@@ -260,8 +263,11 @@ def run(config: dict) -> dict:
         # FSA (Myokit CVODES forward sensitivities) is computed by circulatory_autogen's
         # backend-agnostic accessor, which needs a do_ad param-id engine; FD/AD use the
         # SA manager directly, so only build the engine when it's actually needed.
+        # Resolved through the same rule compute_local_sensitivity applies -- CA's
+        # 'AUTO'/'ANALYTIC'/'' spellings resolve to FSA on cellml_only, and testing
+        # the raw string here skipped the engine that resolution then demanded.
         engine = None
-        if str(settings.get("gradient_method", "FD")).upper() in ("FSA", "CVODES"):
+        if resolve_gradient_method(settings, model_type) == "FSA":
             engine = _build_local_engine(config, settings, solver_info, model_type)
         payload = compute_local_sensitivity(
             sa,
