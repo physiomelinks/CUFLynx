@@ -121,15 +121,10 @@ def _param_id_info(
     """
     mins, maxs = [], []
     param_names: list[list[str]] = []
-    for name in names:
-        low, high = _range_for(*_bounds_pair((bounds or {}).get(name)),
-                               float(values.get(name, 0.0) or 0.0))
-        mins.append(low)
-        maxs.append(high)
-        # One entry per parameter, as a list, which is the grouped shape CA reads
-        # a params_for_id row into (issue #193).
-        param_names.append([name])
 
+    # Modifiers first, so the panel lists them where the slider column does --
+    # a new modifier goes to the top of the params editor, and a bar chart that
+    # put the same quantity last would read as a different parameter.
     blocks = []
     for mod in modifiers or []:
         targets = [str(t) for t in (mod.get("targets") or [])]
@@ -147,6 +142,15 @@ def _param_id_info(
         param_names.append(targets)
         mins.append(low)
         maxs.append(high)
+
+    for name in names:
+        low, high = _range_for(*_bounds_pair((bounds or {}).get(name)),
+                               float(values.get(name, 0.0) or 0.0))
+        mins.append(low)
+        maxs.append(high)
+        # One entry per parameter, as a list, which is the grouped shape CA reads
+        # a params_for_id row into (issue #193).
+        param_names.append([name])
 
     info = {
         "param_names": param_names,
@@ -343,11 +347,11 @@ def evaluate(
                 modifiers=modifiers)
         if modifiers:
             _check_baselines(pid, modifiers)
-        # One value per *entry*, in the order _param_id_info laid them out: the
-        # free parameters, then theta per modifier. CA expands theta into its
-        # targets itself, so a physical value here would be read as theta.
-        values = [float(params[n]) for n in names]
-        values += [float(m.get("value", 0.0) or 0.0) for m in modifiers]
+        # One value per *entry*, in the order _param_id_info laid them out:
+        # theta per modifier, then the free parameters. CA expands theta into
+        # its targets itself, so a physical value here would be read as theta.
+        values = [float(m.get("value", 0.0) or 0.0) for m in modifiers]
+        values += [float(params[n]) for n in names]
         cost, gradient = pid.get_cost_and_gradient(values)
     except GradientUnavailable:
         raise
@@ -362,11 +366,9 @@ def evaluate(
             f"the gradient has {len(flat)} entries for {len(values)} parameters")
 
     # A modifier's row is keyed by its *anchor* (targets[0]), the key its slider
-    # carries, so the panel's bars line up with the sliders either arm computed
-    # them -- the differencing arm keys them the same way.
-    row_names = names + [
-        (m.get("targets") or [None])[0] for m in modifiers
-    ]
+    # carries, so the panel's bars line up with the sliders whichever arm
+    # computed them -- the differencing arm keys and orders them the same way.
+    row_names = [(m.get("targets") or [None])[0] for m in modifiers] + names
     rows = []
     for name, value, derivative in zip(row_names, values, flat):
         rows.append({

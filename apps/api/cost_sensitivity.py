@@ -153,19 +153,11 @@ def evaluate(
 
     base = cost_at(dict(params))
     base_cost = _cost_value(base)
-    rows = [
-        {
-            "name": name,
-            "value": float(params[name]),
-            "step": None,
-            "derivative": None,
-            "elasticity": None,
-            "reason": None,
-        }
-        for name in names
-    ]
-    setters = {row["name"]: _free_setter(row["name"]) for row in rows}
-    row_bounds = {row["name"]: bounds.get(row["name"]) for row in rows}
+    # Modifiers first, matching the analytic arm and the slider column: a new
+    # modifier goes to the top of the params editor, and the same quantity
+    # listed last here would read as a different parameter.
+    rows = []
+    setters, row_bounds = {}, {}
     for mod in modifiers or []:
         key = str(mod.get("anchor") or mod.get("name"))
         rows.append(
@@ -180,6 +172,19 @@ def evaluate(
         )
         setters[key] = _modifier_setter(mod)
         row_bounds[key] = mod.get("bounds")
+    for name in names:
+        rows.append(
+            {
+                "name": name,
+                "value": float(params[name]),
+                "step": None,
+                "derivative": None,
+                "elasticity": None,
+                "reason": None,
+            }
+        )
+        setters[name] = _free_setter(name)
+        row_bounds[name] = bounds.get(name)
     payload = {
         "cost": base_cost,
         "rel_step": rel_step,

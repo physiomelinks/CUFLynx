@@ -107,7 +107,8 @@ def test_modifier_targets_are_not_double_counted_as_free_rows():
         lambda params: _cost(sum(params.values())),
         modifiers=[_MOD],
     )
-    assert [r["name"] for r in out["params"]] == ["a/free", "m/p"]
+    # Modifier first: where its slider sits in the parameter column.
+    assert [r["name"] for r in out["params"]] == ["m/p", "a/free"]
     # 2 rows -> 1 base + 4 perturbed runs.
     assert out["n_simulations"] == 5
 
@@ -122,10 +123,11 @@ def test_the_analytic_arm_gives_a_modifier_one_entry_naming_its_targets():
         {"a/free": [1.0, 10.0]}, [_MOD],
     )
 
-    assert info["param_names"] == [["a/free"], ["m/p", "m/q"]]
-    assert info["param_mins"][1] == 0.5 and info["param_maxs"][1] == 2.0  # θ's
+    # Modifiers first, matching the slider column and the differencing arm.
+    assert info["param_names"] == [["m/p", "m/q"], ["a/free"]]
+    assert info["param_mins"][0] == 0.5 and info["param_maxs"][0] == 2.0  # θ's
     (block,) = info["modifiers"]
-    assert block["index"] == 1  # the slot θ occupies
+    assert block["index"] == 0  # the slot θ occupies
     assert block["targets"] == ["m/p", "m/q"]
     assert block["operation"] == "scale"
     # Left for CA to resolve against its own sim helper at setup: filling them

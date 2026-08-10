@@ -476,9 +476,20 @@ def _ca_analytic_local_sensitivity(pid, param_names, nominal, mins, maxs):
     gradient sources. Returns ``(local, output_names)``.
     """
     nominal = np.asarray(nominal, dtype=float)
-    sens = pid.get_observable_sensitivities(nominal)  # {obs_label: {qname: dY/dP}}
+    sens = pid.get_observable_sensitivities(nominal)  # {obs_label: {param_label: dY/dP}}
     y0 = _ca_feature_values(pid, nominal)  # {obs_label: Y}
     obs = pid.obs_info
+    # CA keys its columns by *entry label*, not by the first member's qname: a
+    # grouped entry is 'a/E+b/E' and a modifier is its own name, because the
+    # sensitivity is d/dtheta over all of that entry's members. Looking them up
+    # by qname misses every such entry and reports an empty cell -- which reads
+    # as "no sensitivity" rather than "asked the wrong question".
+    try:
+        from parsers.PrimitiveParsers import param_entry_labels  # noqa: PLC0415
+
+        labels = list(param_entry_labels(pid.param_id_info))
+    except Exception:  # noqa: BLE001 - a CA predating labels keys by qname
+        labels = list(param_names)
 
     local: dict[str, dict[str, float | None]] = {}
     output_names: list[str] = []
@@ -496,9 +507,13 @@ def _ca_analytic_local_sensitivity(pid, param_names, nominal, mins, maxs):
         row: dict[str, float | None] = {}
         for j, pname in enumerate(param_names):
             rng = maxs[j] - mins[j]
-            row[pname] = relative_coeff(
-                float(deriv_map.get(pname, np.nan)), nominal[j], denom, rng
-            )
+            # Reported under CUFLynx's own key (the entry's first member, which
+            # is the slider's key) but read out under CA's label for it.
+            label = labels[j] if j < len(labels) else pname
+            deriv = deriv_map.get(label)
+            if deriv is None:
+                deriv = deriv_map.get(pname, np.nan)
+            row[pname] = relative_coeff(float(deriv), nominal[j], denom, rng)
         local[oname] = row
     return local, output_names
 
