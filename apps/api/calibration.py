@@ -12,6 +12,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import uuid
 from pathlib import Path
@@ -189,6 +190,35 @@ def teardown_warning(code: int, lines: list, tail: int = 3) -> str:
         f"The analysis completed and its results were saved, but the runner "
         f"exited with code {code} while shutting down.{detail}"
     )
+
+
+def write_run_config(config: dict, filename: str) -> str:
+    """Write a runner's config payload and return the path to hand it as argv[1].
+
+    Into a private temp directory, **not** the user's outputs directory. Nothing
+    ever reads this file back: it exists only because a config dict cannot be
+    passed on a command line, and because every MPI rank has to read it at
+    startup (``build_command`` prepends ``mpiexec -n N``), which rules out a pipe.
+    So it has to outlive the spawn, not the run — and writing it beside the
+    outputs put a file there that is no part of the study and that the user has
+    no use for.
+
+    Shared by all three managers so there is one answer to where it goes.
+    :func:`clear_run_config` removes it once the process has exited.
+    """
+    directory = tempfile.mkdtemp(prefix="cuflynx-run-")
+    path = os.path.join(directory, filename)
+    with open(path, "w") as fh:
+        json.dump(config, fh)
+    return path
+
+
+def clear_run_config(config_path: str | None) -> None:
+    """Remove the temp directory :func:`write_run_config` created. Never raises:
+    a leftover temp file must not turn a finished run into a failed one."""
+    if not config_path:
+        return
+    shutil.rmtree(os.path.dirname(config_path), ignore_errors=True)
 
 
 def _read_interrupted_best_params(output_dir: str, params_path: str | None) -> dict | None:
@@ -743,6 +773,8 @@ class CalibrationJob:
         # MPI finalize abort, say): the results stand, and the user is told.
         self.warning: str | None = None
         self.proc: subprocess.Popen | None = None
+        # The temp file the runner was handed as argv[1], removed when it exits.
+        self.config_path: str | None = None
         self.lock = threading.Lock()
 
 
@@ -816,13 +848,12 @@ class CalibrationManager:
             # A reused output_dir may hold a previous run's progress history; clear
             # it so this run's live plots start fresh instead of reading stale data.
             _clear_progress_history(output_dir)
-            config_path = os.path.join(output_dir, "calib_config.json")
-            with open(config_path, "w") as fh:
-                json.dump(config, fh)
+            config_path = write_run_config(config, "calib_config.json")
 
             job = CalibrationJob(
                 uuid.uuid4().hex, output_dir, config.get("model_id"), config.get("params_path"),
             )
+            job.config_path = config_path
             env = runner_launch_env(config.get("python") or self.python)
             job.proc = subprocess.Popen(
                 self.build_command(config, config_path),
@@ -846,6 +877,7 @@ class CalibrationManager:
         finally:
             code = job.proc.wait() if job.proc else -1
             self._finalize(job, code)
+            clear_run_config(job.config_path)
 
     def _finalize(self, job: CalibrationJob, code: int) -> None:
         with job.lock:

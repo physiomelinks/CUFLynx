@@ -42,6 +42,55 @@ def test_fd_local_sensitivity_on_casadi_python_reduces_with_numpy_ops(tmp_path, 
 
 
 @pytest.mark.integration
+def test_ad_local_sensitivity_handles_a_grouped_row(tmp_path, requires_casadi):
+    """Regression for CA #390: the CasADi helper refuses nested parameter names.
+
+    A grouped row is one calibrated variable writing into several model
+    constants, so ``param_names`` is a list per row. The AD path passed those
+    straight to ``_create_param_subset``, which raised
+    ``expects flat parameter names, got nested`` and took every AD local
+    sensitivity on casadi_python with it. Members are flattened for the symbolic
+    subset and the jacobian folded back per entry -- so the answer still has one
+    column per calibrated variable, matching the FSA arm.
+    """
+    doc = {
+        "params": [
+            # One row naming two constants: the grouped form (#193).
+            {
+                "targets": ["heart/E_lv_A", "heart/E_lv_B"],
+                "param_type": "const",
+                "min": 1e6,
+                "max": 5e8,
+            },
+            {"targets": ["aortic_root/C"], "param_type": "const", "min": 1e-9, "max": 5e-8},
+        ]
+    }
+    params_path = tmp_path / "grouped_params_for_id.json"
+    params_path.write_text(json.dumps(doc), encoding="utf-8")
+
+    payload = sensitivity_runner.run({
+        "model_path": model_codegen.resolve_model_path(str(C3_MODEL_PATH), "casadi_python"),
+        "model_type": "casadi_python",
+        "solver": "casadi_integrator",
+        "solver_info": {"solver": "casadi_integrator", "method": "semi_implicit_euler"},
+        "obs_path": str(C3_OBS_DATA_PATH),
+        "params_path": str(params_path),
+        "output_dir": str(tmp_path / "sa_out"),
+        "file_prefix": "3compartment",
+        "settings": {
+            "method": "local", "gradient_method": "AD", "nominal": "current", "dt": 0.01,
+        },
+    })
+    assert payload["gradient_method"] == "AD"
+    # One column per calibrated variable, not one per member.
+    assert len(payload["param_names"]) == 2
+    for row in payload["indices"]["local"].values():
+        assert len(row) == 2
+    coeffs = [v for row in payload["indices"]["local"].values() for v in row.values()]
+    assert any(c is not None and math.isfinite(c) for c in coeffs)
+
+
+@pytest.mark.integration
 def test_config_reports_differentiable_ops_for_casadi_python(client, requires_casadi):
     body = client.post(
         "/api/config",

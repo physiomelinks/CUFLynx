@@ -885,6 +885,48 @@ def test_calibration_honors_config_outputs_dir(client, tmp_path):
     assert (out / "results.json").exists()
 
 
+def test_the_run_config_never_lands_in_the_outputs_dir(client, tmp_path):
+    """``calib_config.json`` is argv[1] for the runner and nothing else.
+
+    Nothing reads it back, so it is plumbing, not a study file — the outputs
+    directory should hold what the run produced, not how it was launched. It
+    goes to a temp dir that is removed once the process exits.
+    """
+    _install_runner(tmp_path, FAKE_RUNNER)
+    out = tmp_path / "my_outputs"
+    model_id = _setup_model_obs_params(
+        client, LV_MODEL_PATH, LV_OBS_DATA_PATH, LV_PARAMS_CSV_PATH
+    )
+    resp = client.post(
+        "/api/calibration/run",
+        json={"model_id": model_id, "settings": {"config_outputs_dir": str(out)}},
+    )
+    assert resp.status_code == 200, resp.text
+    status, _ = _wait(client, resp.json()["job_id"])
+    assert status["state"] == "done"
+    assert not (out / "calib_config.json").exists()
+    # And it is cleaned up rather than left in the temp dir forever.
+    job = calibration_mod.calibration._job
+    assert job.config_path and not os.path.exists(job.config_path)
+
+
+def test_the_run_config_is_readable_while_the_runner_starts(tmp_path):
+    """It must outlive the spawn: every MPI rank reads it at startup.
+
+    Guards the obvious wrong fix — a NamedTemporaryFile deleted on close, which
+    works single-process and fails under ``mpiexec -n N`` for ranks that have
+    not read it yet.
+    """
+    path = calibration_mod.write_run_config({"output_dir": str(tmp_path)}, "calib_config.json")
+    try:
+        assert os.path.isfile(path)
+        assert json.loads(Path(path).read_text())["output_dir"] == str(tmp_path)
+    finally:
+        calibration_mod.clear_run_config(path)
+    assert not os.path.exists(path)
+    assert not os.path.isdir(os.path.dirname(path))
+
+
 def test_calibration_config_outputs_dir_must_be_absolute(client, tmp_path):
     _install_runner(tmp_path, FAKE_RUNNER)
     model_id = _setup_model_obs_params(

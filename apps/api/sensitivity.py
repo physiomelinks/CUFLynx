@@ -21,10 +21,12 @@ from pathlib import Path
 # Interpreter discovery is shared with calibration — same machine, same probe.
 from calibration import (  # noqa: F401  (list_python_interpreters re-exported)
     _warn_no_mpiexec,
+    clear_run_config,
     finished_before_exiting,
     list_python_interpreters,
     resolve_mpiexec,
     teardown_warning,
+    write_run_config,
 )
 from runtime_paths import default_python, runner_command, runner_launch_env, runner_path
 
@@ -48,6 +50,8 @@ class SensitivityJob:
         # Set when the run finished but its process failed on the way out.
         self.warning: str | None = None
         self.proc: subprocess.Popen | None = None
+        # The temp file the runner was handed as argv[1], removed when it exits.
+        self.config_path: str | None = None
         self.lock = threading.Lock()
 
 
@@ -102,11 +106,10 @@ class SensitivityManager:
                 raise RuntimeError("a sensitivity job is already running")
             output_dir = config["output_dir"]
             os.makedirs(output_dir, exist_ok=True)
-            config_path = os.path.join(output_dir, "sa_config.json")
-            with open(config_path, "w") as fh:
-                json.dump(config, fh)
+            config_path = write_run_config(config, "sa_config.json")
 
             job = SensitivityJob(uuid.uuid4().hex, output_dir)
+            job.config_path = config_path
             env = runner_launch_env(config.get("python") or self.python)
             job.proc = subprocess.Popen(
                 self.build_command(config, config_path),
@@ -130,6 +133,7 @@ class SensitivityManager:
         finally:
             code = job.proc.wait() if job.proc else -1
             self._finalize(job, code)
+            clear_run_config(job.config_path)
 
     def _finalize(self, job: SensitivityJob, code: int) -> None:
         with job.lock:

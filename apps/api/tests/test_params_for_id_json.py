@@ -485,31 +485,60 @@ def test_a_json_upload_is_stored_with_a_json_suffix(client):
     assert main._models[model_id].params_path.suffix == ".json"
 
 
-def test_switching_formats_removes_the_stale_twin(client, requires_params_csv):
-    """A format switch must not leave two params files disagreeing about which
-    is current -- the runners read whichever path the record holds, but a human
-    inspecting the upload dir would find both."""
+def test_an_uploaded_csv_is_stored_as_json(client, requires_params_csv):
+    """A CSV is converted on the way in, so the stored study is always JSON.
+
+    JSON is the only form that can carry a modifier, its inputs or a prior's
+    parameters, so keeping the CSV as the stored form would make those
+    unrepresentable in whatever ends up in the user's outputs directory.
+    """
     import main
     from conftest import LV_MODEL_PATH, LV_PARAMS_CSV_PATH, upload_model
 
     model_id = upload_model(client, LV_MODEL_PATH)["model_id"]
-    doc = {"params": [{"targets": ["Lotka_Volterra_module/alpha"], "min": 0.1, "max": 2.0}]}
-    r = client.post(
-        f"/api/params_for_id/upload?model_id={model_id}",
-        content=json.dumps(doc),
-        headers={"content-type": "application/json"},
-    )
-    assert r.status_code == 200, r.text
-    json_path = main._models[model_id].params_path
-
     with open(LV_PARAMS_CSV_PATH, "rb") as fh:
         r = client.post(
             f"/api/params_for_id/upload?model_id={model_id}",
             files={"file": (LV_PARAMS_CSV_PATH.name, fh, "text/csv")},
         )
     assert r.status_code == 200, r.text
-    assert main._models[model_id].params_path.suffix == ".csv"
+    stored = main._models[model_id].params_path
+    assert stored.suffix == ".json"
+    doc = json.loads(stored.read_text())
+    assert doc["params"], "converted document has no parameters"
+
+
+def test_a_csv_is_kept_as_csv_when_ca_cannot_convert_it(monkeypatch):
+    """Without CA the CSV is stored as-is rather than the upload being refused.
+
+    The packaged app starts with no CA directory set, and a study must not
+    become unloadable because of that -- CA's own CSV path still reads it. Driven
+    at ``_save_params_file`` rather than through the route, because faking "no
+    CA" also disables the *parsing* the route does first, which would fail the
+    request for an unrelated reason and prove nothing about storage.
+
+    Also pins the stale-twin rule: a format switch must not leave two params
+    files disagreeing about which is current. The runners read whichever path
+    the record holds, but a human inspecting the upload dir would find both.
+    """
+    import main
+    import params_json
+
+    def _no_ca(_data):
+        raise params_json.ParamsJsonError("circulatory_autogen is not available")
+
+    monkeypatch.setattr(params_json, "csv_to_json", _no_ca)
+
+    model_id = "twin-test"
+    json_path = main._save_params_file(model_id, b'{"params": []}')
+    assert json_path.suffix == ".json"
+
+    csv_path = main._save_params_file(
+        model_id, b"vessel_name,param_name,param_type,min,max\nheart,C,constant,1,2\n"
+    )
+    assert csv_path.suffix == ".csv"
     assert not json_path.exists(), "stale .json twin left beside the .csv"
+    csv_path.unlink(missing_ok=True)
 
 
 def test_ca_available_in_ci():
@@ -547,3 +576,45 @@ def test_a_document_without_params_is_rejected():
 def test_bounds_are_required_unless_unbounded():
     with pytest.raises(ParamsForIdError, match="min and max are required"):
         parse_params_for_id({"params": [{"targets": ["a/x"]}]})
+
+
+# ---------------------------------------------------------------------------
+# A modifier's `inputs` (CA #383)
+# ---------------------------------------------------------------------------
+def test_a_modifiers_inputs_survive_a_round_trip():
+    """`inputs` names the model constants the modifier function needs.
+
+    CA's `remainder` cannot be called without its `subtract` list, so dropping
+    the key on a read/write cycle would silently break the entry on the next run
+    -- and the editor rewrites this file every time it saves.
+    """
+    from params_json import entries_to_json
+
+    doc = {
+        "params": [
+            {
+                "name": "q_total",
+                "modifies": ["heart/q_lv_init"],
+                "modifier": "remainder",
+                "inputs": {"subtract": ["heart/q_rv_init", "aortic_root/q_init"]},
+                "min": 1e-4,
+                "max": 1e-2,
+            }
+        ]
+    }
+    entries = parse_params_for_id(doc)
+    assert entries[0].inputs == {"subtract": ["heart/q_rv_init", "aortic_root/q_init"]}
+    # Exposed to the editor, so the row can carry it through a save.
+    assert entries[0].as_dict()["inputs"] == doc["params"][0]["inputs"]
+    written = entries_to_json(entries)["params"][0]
+    assert written["inputs"] == doc["params"][0]["inputs"]
+
+
+def test_an_entry_without_inputs_does_not_grow_the_key():
+    """CA refuses keys outside its closed entry-key set, and an empty one would
+    be noise in a file the user reads."""
+    from params_json import entries_to_json
+
+    doc = {"params": [{"targets": ["a/x"], "min": 0.1, "max": 2.0}]}
+    written = entries_to_json(parse_params_for_id(doc))["params"][0]
+    assert "inputs" not in written

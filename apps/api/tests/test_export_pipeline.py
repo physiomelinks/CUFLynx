@@ -188,7 +188,9 @@ def test_export_pipeline_writes_self_contained_folder(client, tmp_path):
     assert os.path.isfile(os.path.join(export_dir, "generated_models", "lotka_volterra", ui["model_file"]))
     res = os.path.join(export_dir, "resources")
     assert os.path.isfile(os.path.join(res, "obs_data.json"))
-    assert os.path.isfile(os.path.join(res, "params_for_id.csv"))
+    # JSON, not CSV: an uploaded CSV is converted on the way in, so the bundle
+    # always carries the canonical form CA and the editors both read.
+    assert os.path.isfile(os.path.join(res, "params_for_id.json"))
 
 
 # ---------------------------------------------------------------------------
@@ -481,6 +483,15 @@ def my_export_cost(o, d, s, w):
     return w * (o - d) ** 2
 """
 
+# A modifier is the third kind (CA #383): a params_for_id entry names it, so a
+# study using one is no more reproducible without its file than one using a
+# custom operation. Decorated, because CA registers only decorated functions.
+_MODIFIER_SRC = """
+@modifier_func(inputs={}, description="offset every target by theta")
+def my_export_modifier(theta, baseline):
+    return baseline + theta
+"""
+
 
 def _save_func(client, kind, name, source, out_dir):
     r = client.post(
@@ -521,6 +532,72 @@ def test_the_export_carries_user_authored_funcs(client, tmp_path):
     # Reported back, so the user can see what shipped.
     assert "resources/operation_funcs_user.py" in body["files"]
     assert "resources/cost_funcs_user.py" in body["files"]
+
+
+def test_the_export_carries_a_user_authored_modifier(client, tmp_path):
+    """The third kind travels too. A params_for_id entry names its modifier by
+    name, so without the file the exported run dies on a modifier CA has never
+    heard of -- exactly the failure the operation/cost copies prevent."""
+    model_id = _setup_lv(client)
+    _save_func(client, "modifier", "my_export_modifier", _MODIFIER_SRC, tmp_path)
+
+    resp = client.post("/api/export/pipeline", json={
+        "model_id": model_id,
+        "file_prefix": "lv",
+        "sim_time": 2.0,
+        "enabled": {"do_calibration": True},
+        "config_outputs_dir": str(tmp_path),
+    })
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    export_dir = Path(body["export_dir"])
+
+    mod_file = export_dir / "resources" / "modifier_funcs_user.py"
+    assert mod_file.is_file()
+    assert "my_export_modifier" in mod_file.read_text()
+
+    ui = yaml.safe_load(next(export_dir.glob("user_inputs_*.yaml")).read_text())
+    assert ui["modifier_funcs_external_path"] == "resources/modifier_funcs_user.py"
+    assert "resources/modifier_funcs_user.py" in body["files"]
+
+
+def test_the_run_script_absolutises_the_modifier_func_path(tmp_path):
+    """The generated script matches the external-path keys by suffix, not from a
+    fixed list, so the third kind resolves without it having been named there --
+    and a fourth would too."""
+    script = tmp_path / "run_pipeline.py"
+    script.write_text(ep.render_pipeline_script(), encoding="utf-8")
+    ns = {"__name__": "exported_pipeline", "__file__": str(script)}
+    exec(compile(script.read_text(), str(script), "exec"), ns)  # noqa: S102
+
+    cfg = {
+        "file_prefix": "m",
+        "model_file": "m.cellml",
+        "modifier_funcs_external_path": "resources/modifier_funcs_user.py",
+    }
+    inp = ns["build_inp_data_dict"](cfg, str(tmp_path))
+    got = inp["modifier_funcs_external_path"]
+    assert os.path.isabs(got), got
+    assert os.path.normpath(got) == os.path.normpath(
+        os.path.join(str(tmp_path), "resources", "modifier_funcs_user.py")
+    )
+
+
+def test_the_bundle_lists_the_plotting_module_it_ships(client, tmp_path):
+    """plot_outputs.py imports plot_utilities, and the bundle writes both -- but
+    only one was reported, which reads as a bundle missing a module."""
+    model_id = _setup_lv(client)
+    resp = client.post("/api/export/pipeline", json={
+        "model_id": model_id,
+        "file_prefix": "lv",
+        "sim_time": 2.0,
+        "config_outputs_dir": str(tmp_path),
+    })
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert "plot_utilities.py" in body["files"]
+    for name in body["files"]:
+        assert (Path(body["export_dir"]) / name).is_file(), f"{name} listed but not written"
 
 
 def test_the_run_script_resolves_the_func_paths_absolutely(tmp_path):

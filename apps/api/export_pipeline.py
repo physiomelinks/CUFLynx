@@ -102,7 +102,11 @@ def build_user_inputs(
         "file_prefix": file_prefix,
         "model_type": model_type,
         "model_file": model_file,  # CUFLynx extra: the (flat) CellML to run/generate from
-        "input_param_file": f"{file_prefix}_parameters.csv",
+        # No `input_param_file`: the bundle does not contain a `<prefix>_parameters.csv`
+        # and this pipeline never reads one (it runs a flat CellML, and only CA's
+        # module-*generation* scripts want that file). Naming a file the folder does
+        # not have reads as a bundle missing an input. build_inp_data_dict still
+        # supplies the conventional name, so nothing downstream sees a change.
         "resources_dir": "resources",
         # --- solver / sim ---
         "solver": solver,
@@ -243,11 +247,13 @@ def build_inp_data_dict(cfg, output_dir):
             pass
     if cfg.get("params_for_id_file"):
         inp["params_for_id_path"] = os.path.join(resources, cfg["params_for_id_file"])
-    # User-authored operation/cost funcs travel with the export, so point CA at
-    # the copies in this folder rather than wherever they lived on the machine
-    # that produced it (CA #303). Without these the run dies on the first
-    # data_item naming a func the user wrote.
-    for key in ("operation_funcs_external_path", "cost_funcs_external_path"):
+    # User-authored operation / cost / modifier funcs travel with the export, so
+    # point CA at the copies in this folder rather than wherever they lived on
+    # the machine that produced it (CA #303, #383). Without these the run dies on
+    # the first data_item or params_for_id entry naming a func the user wrote.
+    # Matched by suffix rather than by a fixed list, so a kind CUFLynx grows
+    # needs no edit to this generated script.
+    for key in [k for k in cfg if k.endswith("_funcs_external_path")]:
         if cfg.get(key):
             inp[key] = os.path.join(HERE, cfg[key])
     return inp

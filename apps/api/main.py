@@ -319,7 +319,9 @@ def _restore_persisted_settings() -> None:
 _restore_persisted_settings()
 
 
-def _config_payload() -> dict:
+def _config_payload(output_dir: str = "") -> dict:
+    """The config the UI reads. ``output_dir`` is the user's outputs directory,
+    needed only because a user's own modifier funcs live under it."""
     src = _circulatory_autogen_src()
     p = Path(src)
     ca_dir = str(p.parent) if p.name == "src" else src
@@ -396,13 +398,17 @@ def _config_payload() -> dict:
         # The modifier `operation` vocabulary (CA's PARAM_MODIFIER_OPERATIONS),
         # so the editor's "create modifier parameter" menu tracks what CA can
         # actually run rather than hardcoding it.
-        "param_modifier_operations": get_param_modifier_operations(),
+        "param_modifier_operations": get_param_modifier_operations(
+            output_dir=_user_func_base_dir(output_dir)
+        ),
     }
 
 
 @app.get("/api/config")
-def get_config() -> dict:
-    return _config_payload()
+def get_config(output_dir: str = "") -> dict:
+    """``output_dir`` is optional and only widens ``param_modifier_operations``
+    to include the modifier funcs the user wrote under it."""
+    return _config_payload(output_dir)
 
 
 @app.post("/api/config")
@@ -684,8 +690,14 @@ def export_pipeline_route(req: ExportPipelineRequest) -> dict:
     except OSError as exc:
         raise _fs_error(exc, "write the export to", export_dir, user_dir=user_dir) from exc
 
+    # Every file actually written, so the UI's "what shipped" list matches the
+    # folder. plot_utilities.py used to be written and not listed, which reads
+    # as a bundle missing the module its plotting script imports.
     files = [
-        yaml_name, "run_pipeline.py", "plot_outputs.py",
+        yaml_name,
+        "run_pipeline.py",
+        export_pipeline.PLOTTING_SCRIPT_NAME,
+        export_pipeline.PLOT_UTILITIES_NAME,
         f"generated_models/{file_prefix}/{model_file}",
     ]
     if obs_file:
@@ -1108,7 +1120,13 @@ async def upload_omex(
 
     if parts["module_config"]:
         _name, blob = parts["module_config"]
-        result["module_config_path"] = omex_import.save_module_config(blob, out_dir)
+        # Beside the model in `generated_models/<prefix>/`, not among the run
+        # outputs: this is PhLynx's editor state for that model, not a result of
+        # anything. Same layout the export bundle uses, so the archive round-trips
+        # into a folder CA already understands.
+        result["module_config_path"] = omex_import.save_module_config(
+            blob, _model_dir(out_dir, Path(parts["master"] or "").stem or meta.name)
+        )
 
     # An obs_data in the archive is the author's own and always wins; only when
     # there is none does the .mmt's protocol become the study's protocol.
@@ -1524,6 +1542,19 @@ def _user_func_base_dir(output_dir: str | None) -> str | None:
     return d or None
 
 
+def _model_dir(base_dir: str | None, file_prefix: str | None) -> str | None:
+    """``<base_dir>/generated_models/<prefix>/`` — where a model's own files live.
+
+    The layout circulatory_autogen resolves ``model_path`` against and the one
+    the export bundle writes, so anything belonging to *the model* (rather than
+    to a run) has one place to go in both. ``None`` when there is no outputs
+    directory to put it under.
+    """
+    if not base_dir:
+        return None
+    return str(Path(base_dir) / "generated_models" / (file_prefix or "model"))
+
+
 def _save_edited_copy(output_dir: str | None, filename: str | None, data: bytes) -> str | None:
     """Write the dated copy of a config file the user just saved in an editor.
 
@@ -1608,6 +1639,37 @@ def delete_cost_func(name: str, output_dir: str = "") -> dict:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
+@app.get("/api/modifier_funcs")
+def list_modifier_funcs(output_dir: str = "") -> dict:
+    """User-authored parameter modifiers + the editor templates (CA #383).
+
+    The third kind, and the one a params_for_id refers to rather than an obs_data:
+    a modifier maps the calibrated theta to each parameter it governs.
+    """
+    return read_user_funcs("modifier", _user_func_base_dir(output_dir))
+
+
+@app.post("/api/modifier_funcs")
+def save_modifier_func(req: UserFuncRequest) -> dict:
+    """Create or update a user modifier func; then it appears in the params editor.
+
+    Named by the ``def`` in ``source``; ``req.name`` is only the entry being edited.
+    """
+    try:
+        return save_user_func("modifier", req.name, req.source, _user_func_base_dir(req.output_dir))
+    except UserFuncError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.delete("/api/modifier_funcs/{name}")
+def delete_modifier_func(name: str, output_dir: str = "") -> dict:
+    """Remove a user modifier func."""
+    try:
+        return delete_user_func("modifier", name, _user_func_base_dir(output_dir))
+    except UserFuncError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
 class SaveParamsRequest(BaseModel):
     values: dict[str, float]  # {qname: value} — the current slider values
     order: list[str] = Field(default_factory=list)  # qname order for the npy array
@@ -1680,14 +1742,31 @@ def load_params(req: LoadParamsRequest) -> dict:
 
 
 def _save_params_file(model_id: str, data: bytes | str) -> Path:
-    """Persist an uploaded params_for_id with the suffix its content needs.
+    """Persist an uploaded params_for_id, canonicalised to JSON.
+
+    **A CSV is converted on the way in** (by CA, which owns the conversion), so
+    the stored study, the export bundle and every runner see the one canonical
+    form. JSON is the only form that can express a modifier, its inputs or a
+    prior's parameters, so keeping a CSV as the stored form means those are
+    unrepresentable in whatever the user's outputs directory ends up holding.
+
+    The conversion needs CA. When it is unavailable the CSV is stored as-is
+    rather than refusing the upload: a study must not become unloadable because
+    the CA directory has not been set yet (the packaged app starts in exactly
+    that state), and CA's own CSV path still reads it.
 
     CA branches CSV-vs-JSON on the filename suffix (``get_param_id_info``), so
-    a JSON document saved under ``.csv`` would be handed to CA's CSV parser by
-    every runner. The stale other-suffix twin is removed so a format switch
-    cannot leave two files disagreeing about which is current.
+    the suffix must follow the content. The stale other-suffix twin is removed
+    so a format switch cannot leave two files disagreeing about which is current.
     """
     raw = data if isinstance(data, bytes) else data.encode()
+    if not params_json.looks_like_json(raw):
+        try:
+            doc = params_json.csv_to_json(raw)
+        except params_json.ParamsJsonError:
+            pass  # no CA: keep the CSV, which CA's own CSV path still reads
+        else:
+            raw = json.dumps(doc, indent=2).encode()
     suffix = ".json" if params_json.looks_like_json(raw) else ".csv"
     path = UPLOAD_DIR / f"{model_id}_params_for_id{suffix}"
     path.write_bytes(raw)

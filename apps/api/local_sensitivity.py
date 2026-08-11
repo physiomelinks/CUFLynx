@@ -369,6 +369,57 @@ def assert_ad_operations(
     )
 
 
+def _flatten_for_casadi(param_id_info, nominal):
+    """``(flat_member_names, entry_map, expanded_values)`` for the CasADi arm.
+
+    CA #390 split the two levels apart: a params_for_id *entry* is one calibrated
+    variable (θ), while the CasADi graph carries one symbol per *model constant*.
+    A grouped row shares θ across its members and a modifier maps it through
+    ``fn(θ, baselineᵢ)``, so the symbolic subset must be built over members and
+    the jacobian folded back per entry.
+
+    Delegates to CA's own helpers so the two cannot disagree about the weights.
+    Falls back to the pre-#390 flat shape on a CA that has neither, which is also
+    the case where every entry has exactly one member anyway.
+    """
+    names = param_id_info["param_names"]
+    try:
+        from param_id.casadi_backend import flatten_entries  # noqa: PLC0415
+    except ImportError:  # CA predating #390: names are already what the helper wants
+        return names, None, [float(v) for v in np.asarray(nominal, dtype=float)]
+
+    flat_names, entry_map = flatten_entries(param_id_info)
+    vals = [float(v) for v in np.asarray(nominal, dtype=float)]
+    try:
+        from parsers.PrimitiveParsers import expand_modifier_param_vals  # noqa: PLC0415
+
+        expanded = expand_modifier_param_vals(param_id_info, vals)
+    except ImportError:  # a CA predating modifiers has none to expand
+        expanded = vals
+    return flat_names, entry_map, expanded
+
+
+def _flat_values(expanded):
+    """The per-member value list ``_create_param_subset`` wants, from CA's
+    per-entry expansion (whose entries may themselves be lists)."""
+    flat: list[float] = []
+    for value in expanded:
+        if isinstance(value, (list, tuple)):
+            flat.extend(float(v) for v in value)
+        else:
+            flat.append(float(value))
+    return flat
+
+
+def _fold_casadi_entries(matrix, entry_map, n_entries):
+    """Per-member jacobian columns folded to one column per calibrated variable."""
+    if entry_map is None:  # pre-#390 CA: columns are already per entry
+        return matrix
+    from param_id.casadi_backend import fold_entry_rows  # noqa: PLC0415
+
+    return fold_entry_rows(matrix, entry_map, n_entries)
+
+
 def _ad_local_sensitivity(sm, param_names, nominal, mins, maxs, output_names):
     """Exact local sensitivities via CasADi automatic differentiation.
 
@@ -391,14 +442,22 @@ def _ad_local_sensitivity(sm, param_names, nominal, mins, maxs, output_names):
     assert_ad_operations(obs["operations"], op_funcs, is_circulatory_differentiable)
 
     nominal = np.asarray(nominal, dtype=float)
+    # A grouped or modifier row is *one* calibrated variable governing several
+    # model constants, but the CasADi graph carries one symbol per constant. CA
+    # #390 made that contract explicit -- the helper now refuses nested names --
+    # so flatten to members here and fold the jacobian back below, exactly as
+    # CA's own casadi arm does (param_id.casadi_backend.build_functions).
+    flat_names, entry_map, id_param_vals = _flatten_for_casadi(sm.param_id_info, nominal)
     # Symbolic parameter subset + AD mode (sets sim_helper.variables_symb_subset).
-    sm.sim_helper._create_param_subset(sm.param_id_info["param_names"], nominal)
+    sm.sim_helper._create_param_subset(flat_names, _flat_values(id_param_vals))
     p_symb = sm.sim_helper.variables_symb_subset
 
     success, operands_outputs_dict, _, _ = sm._protocol_executor.run_protocol(
         sm.protocol_info,
         id_param_names=sm.param_id_info["param_names"],
-        id_param_vals=nominal,
+        # Expanded, so the symbolic evaluation point and the simulated one are
+        # the same point -- a modifier's θ reaches the model as fn(θ, baselineᵢ).
+        id_param_vals=id_param_vals,
         result_variables=obs["operands"],
         continue_on_failure=False,
         reset_after_experiment=False,  # AD needs solver state preserved across exps
@@ -437,7 +496,11 @@ def _ad_local_sensitivity(sm, param_names, nominal, mins, maxs, output_names):
     )
     y0_dm, jac_dm = evaluate(helper.states, helper.variables)
     y0 = np.array(y0_dm).reshape(-1)
-    J = np.array(jac_dm).reshape(n, len(param_names))
+    J = np.array(jac_dm).reshape(n, len(flat_names))
+    # Members back to one column per calibrated variable, weighted by dpᵢ/dθ (1.0
+    # for a shared-value group, the probed affine coefficient for a modifier), so
+    # this answers the same question as the Myokit/FSA arm.
+    J = _fold_casadi_entries(J, entry_map, len(param_names))
 
     local: dict[str, dict[str, float | None]] = {name: {} for name in output_names}
     for k, pname in enumerate(param_names):
