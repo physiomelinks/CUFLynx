@@ -90,25 +90,34 @@ def test_the_simulation_stage_asks_for_its_outputs_once():
     assert 'hasattr(sim_helper, "get_time")' not in src
 
 
-def test_every_stage_reports_under_its_own_name():
-    """simulation.json / sensitivity.json / uq.json — the generic results.json
-    meant a reader could pick up whichever stage it found first (#217)."""
+def test_every_stage_reports_in_circulatory_autogens_own_formats():
+    """No CUFLynx-authored results format is written anywhere (#210).
+
+    Traces go into the ``all_outputs_*.npz`` CA already writes for a best fit,
+    posteriors into a plain ``.npy`` of samples, and the sensitivity stage writes
+    nothing at all because CA has already written its indices CSV. A run
+    directory produced by CA's own scripts then plots exactly like one produced
+    here.
+    """
     src = ep.render_pipeline_script()
 
-    assert 'write_stage(output_dir, "simulation"' in src
-    assert 'write_stage(output_dir, "sensitivity"' in src
-    assert 'write_stage(out_dir, "uq"' in src
-    # Nothing writes the ambiguous name any more.
-    assert 'json.dump({"method": method' not in src
+    assert "def save_all_outputs(" in src
+    assert "all_outputs_exp_%d.npz" in src
+    assert "def save_uq_samples(" in src
+    assert "uq_posterior_samples.npy" in src
+    # Nothing writes a JSON summary any more.
+    for gone in ("write_stage(", "simulation.json", "sensitivity.json",
+                 "uq.json", "results.json"):
+        assert gone not in src, gone
 
 
-def test_the_sensitivity_stage_writes_its_indices():
-    """The exported plot_analysis() heatmap reads an indices payload that
-    nothing in the bundle used to produce, so it could never draw (#217)."""
+def test_the_sensitivity_stage_leaves_cas_indices_alone():
+    """It used to write a second summary beside CA's own indices CSV, which is a
+    format to keep in step for no gain (#210)."""
     src = ep.render_pipeline_script()
 
-    assert "def sobol_indices(" in src
-    assert "load_sobol_indices()" in src
+    assert "def sobol_indices(" not in src
+    assert "load_sobol_indices()" not in src
 
 
 def test_uq_reuses_the_calibration_engine():
@@ -128,12 +137,16 @@ def test_the_simulation_helper_is_released_before_the_next_stage():
 
 
 def test_plotting_script_is_valid_python_with_every_plot_kind():
-    """Renamed from "three plot kinds": there are five now, and each is drawn by
-    its own function in the file the user edits."""
+    """Each figure is drawn by its own function in the file the user edits.
+
+    Four, not five: a simulation-only run leaves the same ``all_outputs`` npz a
+    calibration does, so plot_best_fit draws both and the separate
+    "simulation outputs" figure went with the JSON it used to read (#210).
+    """
     src = ep.render_plotting_script()
     ast.parse(src)
-    assert "def plot_simulation_outputs" in src  # output traces
-    assert "def plot_best_fit" in src  # calibrated traces vs their targets
+    assert "def plot_simulation_outputs" not in src
+    assert "def plot_best_fit" in src  # every run's traces, calibrated or not
     assert "def plot_progress" in src  # cost/param vs generation
     assert "def plot_error_bars" in src  # per-observable error
     assert "def plot_analysis" in src  # sensitivity / UQ
@@ -444,10 +457,15 @@ def test_export_pipeline_simulation_runs_and_honors_obs_protocol(client, require
     )
     assert proc.returncode == 0, f"pipeline failed:\n{proc.stdout}\n{proc.stderr}"
 
-    sim_path = os.path.join(export_dir, "output", "simulation.json")
-    assert os.path.isfile(sim_path), "simulation.json not written"
-    sim = json.loads(open(sim_path).read())
-    t, outputs = sim["time"], sim["outputs"]
+    # circulatory_autogen's own npz shape, the same file a calibrated best fit
+    # leaves, so the plotting script has one reader for both (#210).
+    sim_path = os.path.join(export_dir, "output", "all_outputs_exp_0.npz")
+    assert os.path.isfile(sim_path), "all_outputs_exp_0.npz not written"
+    import numpy as np
+
+    data = np.load(sim_path, allow_pickle=False)
+    t = [float(v) for v in data["time"]]
+    outputs = {name: [float(v) for v in data[name]] for name in data.files if name != "time"}
 
     # Window comes from obs_data protocol_info (sim_time=2), not the yaml's 10.
     assert abs((t[-1] - t[0]) - 2.0) < 0.2, f"sim window {t[-1]-t[0]:.2f}s != obs sim_time 2s"

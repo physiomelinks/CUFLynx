@@ -28,14 +28,26 @@ C3_OBS_DATA_PATH = RESOURCES_DIR / "3compartment_obs_data.json"
 C3_PARAMS_CSV_PATH = RESOURCES_DIR / "3compartment_params_for_id.csv"
 
 
+# The fakes write what *circulatory_autogen* writes, because that is now what the
+# manager reads (#210). A fake that wrote a CUFLynx-shaped summary would be
+# testing a format nothing produces any more.
+_WRITE_CA_RESULTS = """
+import csv, numpy as np
+def write_ca_results(out_dir, param_names, values, cost):
+    np.save(str(Path(out_dir, "best_param_vals.npy")), np.array(values, dtype=float))
+    np.save(str(Path(out_dir, "best_cost.npy")), np.array([cost], dtype=float))
+    with open(Path(out_dir, "param_names.csv"), "w", newline="") as fh:
+        csv.writer(fh).writerows(param_names)
+"""
+
 FAKE_RUNNER = """
 import json, sys
 from pathlib import Path
+""" + _WRITE_CA_RESULTS + """
 cfg = json.loads(Path(sys.argv[1]).read_text())
 print("starting fake calibration", flush=True)
 print("generation 0 cost: 1.0", flush=True)
-Path(cfg["output_dir"], "results.json").write_text(
-    json.dumps({"params": {"a/x": 1.5, "a/y": 2.0}, "cost": 0.25}))
+write_ca_results(cfg["output_dir"], [["a/x"], ["a/y"]], [1.5, 2.0], 0.25)
 print("best cost: 0.25", flush=True)
 print("__CALIBRATION_DONE__", flush=True)
 """
@@ -51,6 +63,7 @@ time.sleep(30)
 HISTORY_RUNNER = """
 import json, os, sys
 from pathlib import Path
+""" + _WRITE_CA_RESULTS + """
 cfg = json.loads(Path(sys.argv[1]).read_text())
 sub = Path(cfg["output_dir"], "genetic_algorithm_model_obs")
 sub.mkdir(parents=True, exist_ok=True)
@@ -58,8 +71,7 @@ sub.mkdir(parents=True, exist_ok=True)
     "1.0, 2.0, 3.0\\n0.5, 0.7, 0.9\\n")
 (sub / "best_param_vals_history.csv").write_text(
     "a x,a y\\n0.10, 0.20\\n0.30, 0.40\\n")
-Path(cfg["output_dir"], "results.json").write_text(
-    json.dumps({"params": {"a/x": 1.5}, "cost": 0.5}))
+write_ca_results(str(sub), [["a/x"]], [1.5], 0.5)
 print("__CALIBRATION_DONE__", flush=True)
 """
 
@@ -529,9 +541,14 @@ def test_calibration_streams_and_completes(client, tmp_path):
 SEED_ECHO_RUNNER = """
 import json, sys
 from pathlib import Path
+""" + _WRITE_CA_RESULTS + """
 cfg = json.loads(Path(sys.argv[1]).read_text())
-Path(cfg["output_dir"], "results.json").write_text(
-    json.dumps({"params": {"seed_seen": cfg.get("seed")}, "cost": 0.0}))
+# The seed is echoed back as a parameter *value*, so the assertion can read it
+# out of the results the manager reconstructs from CA's files.
+seed = cfg.get("seed")
+write_ca_results(
+    cfg["output_dir"], [["seed_seen"]], [-1.0 if seed is None else float(seed)], 0.0
+)
 print("__CALIBRATION_DONE__", flush=True)
 """
 
@@ -548,7 +565,7 @@ def test_calibration_config_carries_global_seed(client, tmp_path):
     assert resp.status_code == 200, resp.text
     status, _ = _wait(client, resp.json()["job_id"])
     assert status["state"] == "done"
-    assert status["best_params"]["seed_seen"] == 314
+    assert status["best_params"]["seed_seen"] == 314.0
 
 
 def test_calibration_config_omits_seed_by_default(client, tmp_path):
@@ -561,7 +578,9 @@ def test_calibration_config_omits_seed_by_default(client, tmp_path):
     assert resp.status_code == 200, resp.text
     status, _ = _wait(client, resp.json()["job_id"])
     assert status["state"] == "done"
-    assert status["best_params"]["seed_seen"] is None
+    # -1 is the fake runner's stand-in for "no seed": CA's best_param_vals.npy
+    # is a float array and cannot carry a null.
+    assert status["best_params"]["seed_seen"] == -1.0
 
 
 def test_calibration_requires_obs_and_params_422(client, tmp_path):
@@ -881,8 +900,10 @@ def test_calibration_honors_config_outputs_dir(client, tmp_path):
     assert resp.status_code == 200, resp.text
     status, _ = _wait(client, resp.json()["job_id"])
     assert status["state"] == "done"
-    # Runner wrote results.json into the configured dir (proves it was used).
-    assert (out / "results.json").exists()
+    # CA's own outputs landed in the configured dir (proves it was used), and
+    # no CUFLynx-shaped summary sits beside them (#210).
+    assert (out / "best_param_vals.npy").exists()
+    assert not (out / "results.json").exists()
 
 
 def test_the_run_config_never_lands_in_the_outputs_dir(client, tmp_path):

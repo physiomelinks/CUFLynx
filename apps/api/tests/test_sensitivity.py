@@ -72,7 +72,18 @@ def _run_local_runner(monkeypatch, tmp_path, gradient_method):
 
     def fake_compute(sa, settings, **kwargs):
         received.update(kwargs)
-        return {"indices": {"local": {}}, "method": "local"}
+        # The full payload shape: the runner now writes it out in CA's
+        # local-sensitivity CSV format, so a stub missing a key would fail there
+        # rather than in what this test is actually about.
+        return {
+            "indices": {"local": {}},
+            "method": "local",
+            "param_names": [],
+            "output_names": [],
+            "gradient_method": settings.get("gradient_method"),
+            "nominal": [],
+            "nominal_source": "test",
+        }
 
     monkeypatch.setattr(ls, "compute_local_sensitivity", fake_compute)
 

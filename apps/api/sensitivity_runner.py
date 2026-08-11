@@ -1,7 +1,7 @@
 """Standalone sensitivity-analysis runner — spawned as a subprocess by the API.
 
-Reads a JSON config and writes the resulting indices to
-``<output_dir>/results.json``. Two methods are supported:
+Reads a JSON config and leaves the resulting indices in circulatory_autogen's own
+CSV formats, which the manager reads (#210). Two methods are supported:
 
 * ``method: "sobol"`` — circulatory_autogen's ``SensitivityAnalysis`` global
   variance-based (Sobol) engine; also writes CSV/PNG artifacts to ``output_dir``.
@@ -37,6 +37,10 @@ from pathlib import Path
 # Markers the API watches for in stdout.
 DONE_MARKER = "__SENSITIVITY_DONE__"
 FAIL_MARKER = "__SENSITIVITY_FAILED__"
+#: Prefix for the one line of run metadata the manager needs and no file holds:
+#: which method ran, and (for a local run) the point it was linearised about.
+#: The *results* are read from circulatory_autogen's own files (#210).
+META_MARKER = "__SENSITIVITY_META__ "
 
 # CUFLynx-level / local-path settings that must NOT be forwarded into CA's
 # sa_options (the rest are the CA sensitivity_analysis option values). The UI
@@ -256,6 +260,7 @@ def run(config: dict) -> dict:
 
     # Local (derivative-based) SA runs single-process; no Sobol sampling / MPI.
     if method == "local":
+        import ca_run_history  # noqa: E402 (CA output formats, one place)
         from local_sensitivity import (  # noqa: E402
             compute_local_sensitivity,
             resolve_gradient_method,
@@ -285,8 +290,27 @@ def run(config: dict) -> dict:
             engine=engine,
             current_params=config.get("current_params"),
         )
-        with open(os.path.join(output_dir, "results.json"), "w") as fh:
-            json.dump(payload, fh)
+        # Results in circulatory_autogen's own local-sensitivity CSV format, so
+        # the outputs directory holds one format whichever arm produced them and
+        # the manager reads CA's file rather than a CUFLynx summary (#210).
+        ca_run_history.write_local_sensitivity(
+            output_dir, "relative", payload["indices"]["local"], payload["output_names"]
+        )
+        # The linearisation point and how it was chosen are CUFLynx's own run
+        # metadata, not a result: a few hundred bytes over the pipe the manager
+        # already reads, rather than another file beside the outputs. Kept small
+        # deliberately -- under mpiexec every rank shares this pipe, and a line
+        # over PIPE_BUF could interleave.
+        print(
+            META_MARKER
+            + json.dumps({
+                "method": "local",
+                "gradient_method": payload["gradient_method"],
+                "nominal": payload["nominal"],
+                "nominal_source": payload["nominal_source"],
+            }),
+            flush=True,
+        )
         print(f"Local sensitivity analysis completed; results in {output_dir}", flush=True)
         return {"rank": 0, **payload}
 
@@ -305,8 +329,9 @@ def run(config: dict) -> dict:
     if rank == 0:
         payload = _indices_to_dict(sa)
         result.update(payload)
-        with open(os.path.join(output_dir, "results.json"), "w") as fh:
-            json.dump(payload, fh)
+        # Nothing written here: CA already wrote all_outputs_n<N>_Sobol_indices.csv
+        # into this directory, and the manager reads that (#210).
+        print(META_MARKER + json.dumps({"method": sa_options["method"]}), flush=True)
         _collect_plots(output_dir)
     return result
 

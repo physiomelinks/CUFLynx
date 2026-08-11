@@ -14,9 +14,11 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import uuid
 from pathlib import Path
 
+import ca_run_history
 from runtime_paths import (
     bundled_mpiexec,
     default_python,
@@ -190,6 +192,29 @@ def teardown_warning(code: int, lines: list, tail: int = 3) -> str:
         f"The analysis completed and its results were saved, but the runner "
         f"exited with code {code} while shutting down.{detail}"
     )
+
+
+def read_meta_line(lines: list, marker: str) -> dict:
+    """The runner's one line of run metadata, or ``{}``.
+
+    A finished run's *results* are read from circulatory_autogen's own files
+    (#210). What is left over is a little metadata no file holds -- which method
+    ran, the point a local sensitivity was linearised about -- and it travels on
+    the stdout the manager already reads rather than in another file beside the
+    outputs. Deliberately small: under ``mpiexec`` every rank shares this pipe,
+    and a line over ``PIPE_BUF`` could interleave with another rank's output.
+
+    Last one wins, so a rerun within one process cannot be read as the first.
+    Never raises: a garbled line means the metadata is missing, which costs a
+    display detail rather than a finished run.
+    """
+    for line in reversed(lines):
+        if line.startswith(marker):
+            try:
+                return json.loads(line[len(marker):])
+            except ValueError:
+                return {}
+    return {}
 
 
 def write_run_config(config: dict, filename: str) -> str:
@@ -775,6 +800,11 @@ class CalibrationJob:
         self.proc: subprocess.Popen | None = None
         # The temp file the runner was handed as argv[1], removed when it exits.
         self.config_path: str | None = None
+        # Names the calibrated CellML the runner writes, so its path is derived
+        # here rather than reported back.
+        self.file_prefix: str | None = None
+        # When the run started; results older than this belong to a previous one.
+        self.started_at: float | None = None
         self.lock = threading.Lock()
 
 
@@ -854,6 +884,12 @@ class CalibrationManager:
                 uuid.uuid4().hex, output_dir, config.get("model_id"), config.get("params_path"),
             )
             job.config_path = config_path
+            # Both halves of the calibrated model's filename are known here, so
+            # the path never has to be round-tripped back from the runner.
+            job.file_prefix = config.get("file_prefix")
+            # When this run started, so a previous run's results left in the same
+            # outputs directory cannot be reported as this one's.
+            job.started_at = time.time()
             env = runner_launch_env(config.get("python") or self.python)
             job.proc = subprocess.Popen(
                 self.build_command(config, config_path),
@@ -886,7 +922,6 @@ class CalibrationManager:
                 # from (#83). Never overrides the cancelled state.
                 job.best_params = _read_interrupted_best_params(job.output_dir, job.params_path)
                 return
-            results = os.path.join(job.output_dir, "results.json")
             # A non-zero exit *after* the DONE marker is a teardown failure, not
             # a failed run -- see finished_before_exiting.
             from calibration_runner import DONE_MARKER, FAIL_MARKER  # noqa: PLC0415
@@ -894,16 +929,26 @@ class CalibrationManager:
             finished = code == 0 or finished_before_exiting(
                 job.lines, DONE_MARKER, FAIL_MARKER
             )
-            if finished and os.path.exists(results):
+            # Read from circulatory_autogen's own outputs rather than from a
+            # summary the runner serialised for us (#210). Everything here is a
+            # file CA wrote: best_param_vals.npy / best_cost.npy,
+            # param_modifiers.json with its resolved baselines, and the
+            # percent/std/name error triple. The gate is "did CA write the run"
+            # rather than "did we manage to copy it", which is strictly more
+            # robust to an MPI teardown abort.
+            if finished and ca_run_history.has_results(job.output_dir, job.started_at):
                 try:
-                    data = json.loads(Path(results).read_text())
-                    job.best_params = data.get("params", {})
-                    job.modifiers = data.get("modifiers") or []
-                    job.cost = data.get("cost")
-                    job.calibrated_model_path = data.get("calibrated_model_path")
-                    job.percent_error = data.get("percent_error")
-                    job.std_error = data.get("std_error")
-                    job.error_labels = data.get("error_labels") or []
+                    best = ca_run_history.best_param_values(job.output_dir)
+                    job.best_params = best["params"]
+                    job.cost = best["cost"]
+                    job.modifiers = ca_run_history.modifiers(job.output_dir)
+                    errors = ca_run_history.error_vectors(job.output_dir)
+                    job.percent_error = errors["percent_error"]
+                    job.std_error = errors["std_error"]
+                    job.error_labels = errors["error_labels"]
+                    job.calibrated_model_path = ca_run_history.calibrated_model_path(
+                        job.output_dir, job.file_prefix
+                    )
                     job.state = "done"
                     if code != 0:
                         job.warning = teardown_warning(code, job.lines)

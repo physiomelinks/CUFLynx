@@ -71,6 +71,10 @@ for runner in (
     # Live simulation runs here too when the user picks an interpreter (#167).
     "sim_worker_runner.py",
     "local_sensitivity.py",
+    # Every runner writes its results in circulatory_autogen's own formats and the
+    # managers read them back from there (#210); this module is the one place that
+    # knows those formats, so both sides need it.
+    "ca_run_history.py",
     # calibration_runner -> calibrated_model -> cellml_meta / params_for_id, to
     # save a calibrated CellML when a run finishes (issue #114).
     "calibrated_model.py",

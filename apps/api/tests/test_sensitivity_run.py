@@ -21,20 +21,26 @@ C3_OBS_DATA_PATH = RESOURCES_DIR / "3compartment_obs_data.json"
 C3_PARAMS_CSV_PATH = RESOURCES_DIR / "3compartment_params_for_id.csv"
 
 
-# A fake runner: writes a minimal local-SA results.json and prints the done marker,
-# so the endpoint/plumbing can be tested without Myokit.
+# A fake runner: writes a minimal local-SA result in circulatory_autogen's own
+# CSV format and prints the metadata + done markers, so the endpoint/plumbing can
+# be tested without Myokit. It writes what the real runner writes -- a fake that
+# emitted a CUFLynx-shaped results.json would test a format nothing produces.
 FAKE_RUNNER = """
-import json, sys
+import csv, json, sys
 from pathlib import Path
 cfg = json.loads(Path(sys.argv[1]).read_text())
-Path(cfg["output_dir"], "results.json").write_text(json.dumps({
+out = Path(cfg["output_dir"])
+out.mkdir(parents=True, exist_ok=True)
+with open(out / "local_sensitivity_relative.csv", "w", newline="") as fh:
+    w = csv.writer(fh)
+    w.writerow(["output", "p/a", "p/b"])
+    w.writerow(["out^{1,1}", 0.5, -0.2])
+print("__SENSITIVITY_META__ " + json.dumps({
     "method": "local",
-    "indices": {"local": {"out^{1,1}": {"p/a": 0.5, "p/b": -0.2}}},
-    "param_names": ["p/a", "p/b"],
-    "output_names": ["out^{1,1}"],
+    "gradient_method": "FD",
     "nominal": [1.5, 2.5e-8],
     "nominal_source": "current parameter values (from sliders)",
-}))
+}), flush=True)
 print("__SENSITIVITY_DONE__", flush=True)
 """
 

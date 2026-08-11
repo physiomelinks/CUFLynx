@@ -419,23 +419,21 @@ _cache: dict | None = None
 _param_id_cache: list | None = None
 _analysis_cache: dict | None = None
 _prior_cache: dict | None = None
+# {output_dir: vocabulary}. The modifier vocabulary depends on the output dir (a
+# user's own modifier file lives under it), and both keys are asked for in normal
+# use, so this is a map rather than a single slot — same rule as obs_options'
+# cache, but without the thrash a one-entry cache would have here.
 _modifier_cache: dict | None = None
-# The output dir `_modifier_cache` was built for. The modifier vocabulary now
-# depends on it (a user's own modifier file lives under it), so a cache hit has
-# to agree on the directory as well — same rule as obs_options' cache.
-_modifier_cache_output_dir: str | None = None
 
 
 def reset_cache() -> None:
     """Drop the cached options (call when the CA directory changes)."""
     global _cache, _param_id_cache, _analysis_cache, _prior_cache, _modifier_cache
-    global _modifier_cache_output_dir
     _cache = None
     _param_id_cache = None
     _analysis_cache = None
     _prior_cache = None
     _modifier_cache = None
-    _modifier_cache_output_dir = None
 
 
 def _ca_paths() -> list[str]:
@@ -975,20 +973,21 @@ def get_param_modifier_operations(
     the user's own modifier file lives under it); returns the fallback uncached
     so a later CA-dir change can still pick it up.
     """
-    global _modifier_cache, _modifier_cache_output_dir
-    if (
-        _modifier_cache is not None
-        and not refresh
-        and _modifier_cache_output_dir == output_dir
-    ):
-        return _modifier_cache
+    global _modifier_cache
+    # Keyed by output_dir rather than holding one entry: the UI asks both with a
+    # directory (the params editor, which wants the user's own modifiers) and
+    # without (everything else), and a single slot would thrash between the two
+    # and re-introspect CA on every alternating call.
+    if _modifier_cache is None:
+        _modifier_cache = {}
+    if not refresh and output_dir in _modifier_cache:
+        return _modifier_cache[output_dir]
     ops, ok = _safe(
         lambda: _introspect_param_modifier_operations(output_dir),
         copy.deepcopy(_FALLBACK_PARAM_MODIFIER_OPERATIONS),
     )
     if ok:
-        _modifier_cache = ops
-        _modifier_cache_output_dir = output_dir
+        _modifier_cache[output_dir] = ops
     return ops
 
 

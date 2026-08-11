@@ -44,14 +44,20 @@ from conftest import (
 
 IS_WINDOWS = sys.platform.startswith("win")
 
-# A trivial cross-platform runner: write a results.json superset that every
-# manager's _finalize can read, then exit 0. Lets a job complete without Myokit.
+# A trivial cross-platform runner: write circulatory_autogen's own best-fit files
+# (what every manager's _finalize now reads, #210), then exit 0. Lets a job
+# complete without Myokit.
 _OK_RUNNER = (
-    "import json, sys\n"
+    "import csv, json, sys\n"
+    "import numpy as np\n"
     "from pathlib import Path\n"
     "cfg = json.loads(Path(sys.argv[1]).read_text())\n"
-    "Path(cfg['output_dir'], 'results.json').write_text(json.dumps("
-    "{'params': {}, 'cost': 0.0, 'method': 'test'}))\n"
+    "out = Path(cfg['output_dir'])\n"
+    "out.mkdir(parents=True, exist_ok=True)\n"
+    "np.save(str(out / 'best_param_vals.npy'), np.array([1.0]))\n"
+    "np.save(str(out / 'best_cost.npy'), np.array([0.0]))\n"
+    "with open(out / 'param_names.csv', 'w', newline='') as fh:\n"
+    "    csv.writer(fh).writerows([['a/x']])\n"
     "print('__DONE__', flush=True)\n"
 )
 

@@ -19,10 +19,12 @@ import uuid
 from pathlib import Path
 
 # Interpreter discovery is shared with calibration — same machine, same probe.
+import ca_run_history
 from calibration import (  # noqa: F401  (list_python_interpreters re-exported)
     _warn_no_mpiexec,
     clear_run_config,
     finished_before_exiting,
+    read_meta_line,
     list_python_interpreters,
     resolve_mpiexec,
     teardown_warning,
@@ -139,22 +141,35 @@ class SensitivityManager:
         with job.lock:
             if job.state == "cancelled":
                 return
-            results = os.path.join(job.output_dir, "results.json")
             # A non-zero exit *after* the DONE marker is a teardown failure,
             # not a failed run -- see calibration.finished_before_exiting.
-            from sensitivity_runner import DONE_MARKER, FAIL_MARKER  # noqa: PLC0415
+            from sensitivity_runner import (  # noqa: PLC0415
+                DONE_MARKER,
+                FAIL_MARKER,
+                META_MARKER,
+            )
 
             finished = code == 0 or finished_before_exiting(
                 job.lines, DONE_MARKER, FAIL_MARKER
             )
-            if finished and os.path.exists(results):
+            # Indices come from circulatory_autogen's own files (#210): the Sobol
+            # CSV CA writes, or the local-sensitivity CSVs in CA's format. Only
+            # the run metadata that no file holds -- which method ran, and the
+            # point a local run was linearised about -- arrives on the pipe.
+            meta = read_meta_line(job.lines, META_MARKER)
+            data = None
+            if finished:
+                if meta.get("method") == "local":
+                    data = ca_run_history.local_sensitivity(job.output_dir)
+                else:
+                    data = ca_run_history.sobol_indices(job.output_dir)
+            if data is not None:
                 try:
-                    data = json.loads(Path(results).read_text())
-                    job.indices = data.get("indices", {})
-                    job.param_names = data.get("param_names", [])
-                    job.output_names = data.get("output_names", [])
-                    job.nominal = data.get("nominal")
-                    job.nominal_source = data.get("nominal_source")
+                    job.indices = data["indices"]
+                    job.param_names = data["param_names"]
+                    job.output_names = data["output_names"]
+                    job.nominal = meta.get("nominal")
+                    job.nominal_source = meta.get("nominal_source")
                     job.state = "done"
                     if code != 0:
                         job.warning = teardown_warning(code, job.lines)

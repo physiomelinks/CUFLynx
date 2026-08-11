@@ -1,7 +1,8 @@
 """Standalone UQ runner — spawned as a subprocess by the API.
 
-Runs uncertainty quantification on a CellML model and writes per-parameter
-posterior distributions to ``<output_dir>/results.json``. Two methods:
+Runs uncertainty quantification on a CellML model and persists the posterior
+*samples* it settled on (``uq_posterior_samples.npy``); the manager bins them into
+the per-parameter distributions the UQ panel plots (#210). Two methods:
 
 - ``mcmc``    — emcee sampling (circulatory_autogen ``CVS0DParamID(mcmc_instead=True)``).
 - ``laplace`` — Gaussian approx around the best fit (``IdentifiabilityAnalysis``).
@@ -27,6 +28,9 @@ os.environ.setdefault("MPLBACKEND", "Agg")
 # Markers the API watches for in stdout.
 DONE_MARKER = "__UQ_DONE__"
 FAIL_MARKER = "__UQ_FAILED__"
+#: Prefix for the one line of run metadata no file holds: which method ran. The
+#: posterior itself is read from the samples on disk (#210).
+META_MARKER = "__UQ_META__ "
 
 # CUFLynx-level / calibration settings that must NOT be forwarded into CA's
 # mcmc_options (the rest are the CA mcmc option values the UI collected).
@@ -40,7 +44,13 @@ _UQ_RESERVED = {
     "config_outputs_dir",
 }
 
-NUM_BINS = 30
+#: Histogram resolution. Imported lazily from ca_run_history where the manager
+#: re-bins the same samples, so the two cannot drift apart; the literal is the
+#: fallback for a runner executed without the app modules importable.
+try:
+    from ca_run_history import NUM_BINS
+except ImportError:  # pragma: no cover - the app module is normally importable
+    NUM_BINS = 40
 LAPLACE_SAMPLES = 100000
 
 
@@ -294,10 +304,14 @@ def run(config: dict) -> dict:
     else:
         raise RuntimeError(f"unknown UQ method: {method!r}")
 
-    payload = {"method": method, "params": _distributions(np.asarray(flat), qnames)}
-    with open(os.path.join(output_dir, "results.json"), "w") as fh:
-        json.dump(payload, fh)
-    return {"rank": 0, **payload}
+    # The samples *are* the result, so they are what is persisted -- numeric, in
+    # CA's own .npy idiom, rather than a CUFLynx-shaped results.json (#210). The
+    # manager summarises them into histograms from there, with the same bin count.
+    import ca_run_history  # noqa: E402 (CA output formats live in one place)
+
+    ca_run_history.write_uq_samples(output_dir, np.asarray(flat), qnames)
+    print(META_MARKER + json.dumps({"method": method}), flush=True)
+    return {"rank": 0, "method": method, "params": _distributions(np.asarray(flat), qnames)}
 
 
 def main(argv: list[str]) -> int:
