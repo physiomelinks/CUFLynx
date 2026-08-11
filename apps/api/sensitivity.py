@@ -21,8 +21,10 @@ from pathlib import Path
 # Interpreter discovery is shared with calibration — same machine, same probe.
 from calibration import (  # noqa: F401  (list_python_interpreters re-exported)
     _warn_no_mpiexec,
+    finished_before_exiting,
     list_python_interpreters,
     resolve_mpiexec,
+    teardown_warning,
 )
 from runtime_paths import default_python, runner_command, runner_launch_env, runner_path
 
@@ -43,6 +45,8 @@ class SensitivityJob:
         self.nominal: list | None = None
         self.nominal_source: str | None = None
         self.error: str | None = None
+        # Set when the run finished but its process failed on the way out.
+        self.warning: str | None = None
         self.proc: subprocess.Popen | None = None
         self.lock = threading.Lock()
 
@@ -132,7 +136,14 @@ class SensitivityManager:
             if job.state == "cancelled":
                 return
             results = os.path.join(job.output_dir, "results.json")
-            if code == 0 and os.path.exists(results):
+            # A non-zero exit *after* the DONE marker is a teardown failure,
+            # not a failed run -- see calibration.finished_before_exiting.
+            from sensitivity_runner import DONE_MARKER, FAIL_MARKER  # noqa: PLC0415
+
+            finished = code == 0 or finished_before_exiting(
+                job.lines, DONE_MARKER, FAIL_MARKER
+            )
+            if finished and os.path.exists(results):
                 try:
                     data = json.loads(Path(results).read_text())
                     job.indices = data.get("indices", {})
@@ -141,6 +152,8 @@ class SensitivityManager:
                     job.nominal = data.get("nominal")
                     job.nominal_source = data.get("nominal_source")
                     job.state = "done"
+                    if code != 0:
+                        job.warning = teardown_warning(code, job.lines)
                 except Exception as exc:  # noqa: BLE001
                     job.state = "error"
                     job.error = f"failed to read results: {exc}"
@@ -165,6 +178,7 @@ class SensitivityManager:
                 "nominal": job.nominal,
                 "nominal_source": job.nominal_source,
                 "error": job.error,
+                "warning": job.warning,
             }
 
     def cancel(self, job_id: str) -> bool:

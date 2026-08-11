@@ -160,6 +160,37 @@ HISTORY_FILES = (
 BEST_PARAM_VALS_FILE = "best_param_vals.npy"
 
 
+def finished_before_exiting(lines: list, done_marker: str, fail_marker: str) -> bool:
+    """Whether the runner completed its work before a non-zero exit.
+
+    A runner that printed its DONE marker has already written its results, so a
+    non-zero exit *after* that is a teardown failure, not a failed analysis.
+
+    MPI is what forced this. MPICH's ``MPI_Finalize`` can abort while flushing
+    its network queue -- on macOS with libfabric selecting a real NIC for what
+    is a single-machine run, ``OFI poll failed (default nic=en5)`` -- long after
+    every rank has finished and ``results.json`` is on disk. Gating purely on
+    the exit code threw that completed calibration away and told the user
+    "runner exited with code 808576911".
+
+    Deliberately narrow: the FAIL marker still wins, and the caller must still
+    find and parse the results. This forgives the *epilogue*, not a crash.
+    """
+    if any(fail_marker in line for line in lines):
+        return False
+    return any(done_marker in line for line in lines)
+
+
+def teardown_warning(code: int, lines: list, tail: int = 3) -> str:
+    """Message for a run that finished and then failed on the way out."""
+    noise = [ln for ln in lines[-tail:] if ln.strip()]
+    detail = f" Last output: {' | '.join(noise)}" if noise else ""
+    return (
+        f"The analysis completed and its results were saved, but the runner "
+        f"exited with code {code} while shutting down.{detail}"
+    )
+
+
 def _read_interrupted_best_params(output_dir: str, params_path: str | None) -> dict | None:
     """Best-so-far params of a run that ended early, mapped to ``{qname: value}``.
 
@@ -708,6 +739,9 @@ class CalibrationJob:
         self.std_error: list | None = None
         self.error_labels: list = []
         self.error: str | None = None
+        # Set when the run finished but its process failed on the way out (an
+        # MPI finalize abort, say): the results stand, and the user is told.
+        self.warning: str | None = None
         self.proc: subprocess.Popen | None = None
         self.lock = threading.Lock()
 
@@ -821,7 +855,14 @@ class CalibrationManager:
                 job.best_params = _read_interrupted_best_params(job.output_dir, job.params_path)
                 return
             results = os.path.join(job.output_dir, "results.json")
-            if code == 0 and os.path.exists(results):
+            # A non-zero exit *after* the DONE marker is a teardown failure, not
+            # a failed run -- see finished_before_exiting.
+            from calibration_runner import DONE_MARKER, FAIL_MARKER  # noqa: PLC0415
+
+            finished = code == 0 or finished_before_exiting(
+                job.lines, DONE_MARKER, FAIL_MARKER
+            )
+            if finished and os.path.exists(results):
                 try:
                     data = json.loads(Path(results).read_text())
                     job.best_params = data.get("params", {})
@@ -832,6 +873,8 @@ class CalibrationManager:
                     job.std_error = data.get("std_error")
                     job.error_labels = data.get("error_labels") or []
                     job.state = "done"
+                    if code != 0:
+                        job.warning = teardown_warning(code, job.lines)
                 except Exception as exc:  # noqa: BLE001
                     job.state = "error"
                     job.error = f"failed to read results: {exc}"
@@ -858,6 +901,7 @@ class CalibrationManager:
                 "std_error": job.std_error,
                 "error_labels": job.error_labels,
                 "error": job.error,
+                "warning": job.warning,
             }
 
     def progress(self, job_id: str) -> dict | None:

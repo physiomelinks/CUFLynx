@@ -1435,7 +1435,13 @@ def cost_sensitivity_route(req: CostSensitivityRequest) -> dict:
 
 @app.post("/api/obs_data/upload")
 async def upload_obs_data(
-    request: Request, model_id: str | None = Query(default=None)
+    request: Request,
+    model_id: str | None = Query(default=None),
+    # Set by the editor's Save (#215): the dated copy is written where the study
+    # lives instead of being handed to the browser as a download. Absent for a
+    # plain file upload, which has a file on disk already.
+    output_dir: str | None = Query(default=None),
+    filename: str | None = Query(default=None),
 ) -> dict:
     ctype = request.headers.get("content-type", "")
     if ctype.startswith("multipart/form-data"):
@@ -1469,8 +1475,14 @@ async def upload_obs_data(
         obs_path.write_text(json.dumps(obj), encoding="utf-8")
         _models[model_id].obs_path = obs_path
 
+    saved_path = _save_edited_copy(
+        output_dir, filename, json.dumps(obj, indent=1).encode("utf-8")
+    )
+
     return {
         "model_id": model_id,
+        # Where Save put the dated copy, so the panel can say it (#215).
+        "saved_path": saved_path,
         **parsed.summary(),
         "data_items": parsed.data_items,
         "prediction_items": parsed.prediction_items,
@@ -1510,6 +1522,33 @@ def _user_func_base_dir(output_dir: str | None) -> str | None:
     if d and not os.path.isabs(d):
         raise HTTPException(status_code=422, detail="output_dir must be an absolute path")
     return d or None
+
+
+def _save_edited_copy(output_dir: str | None, filename: str | None, data: bytes) -> str | None:
+    """Write the dated copy of a config file the user just saved in an editor.
+
+    The obs_data and params_for_id editors used to hand this file to the browser
+    as a download; issue #215 makes Save write it where the study lives instead.
+    Into the configured outputs directory, or the app's own config dir when
+    there is none -- Save must never silently lose an edit because no directory
+    was chosen, so there is a fallback rather than a refusal.
+
+    Only the *basename* is taken from the client: the editors name the file
+    (``<stem>_<yymmdd>.json``) but they do not choose where it goes, and a
+    filename carrying ``..`` must not be able to walk out of the directory.
+    """
+    if not filename:
+        return None
+    base = _user_func_base_dir(output_dir) or str(settings_store.config_dir())
+    target = Path(base) / Path(filename).name
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+    except OSError as exc:
+        raise _fs_error(
+            exc, "save the edited file to", target.parent, user_dir=bool(output_dir)
+        ) from exc
+    return str(target)
 
 
 # One pair of routes per kind. CUFLynx saves the func to an external file under the
@@ -1659,7 +1698,11 @@ def _save_params_file(model_id: str, data: bytes | str) -> Path:
 
 @app.post("/api/params_for_id/upload")
 async def upload_params_for_id(
-    request: Request, model_id: str | None = Query(default=None)
+    request: Request,
+    model_id: str | None = Query(default=None),
+    # Set by the editor's Save (#215); see upload_obs_data.
+    output_dir: str | None = Query(default=None),
+    filename: str | None = Query(default=None),
 ) -> dict:
     ctype = request.headers.get("content-type", "")
     if ctype.startswith("multipart/form-data"):
@@ -1684,7 +1727,10 @@ async def upload_params_for_id(
     if model_id and model_id in _models:
         _models[model_id].params_path = _save_params_file(model_id, data)
 
-    return {"params": [e.as_dict() for e in entries]}
+    raw = data if isinstance(data, bytes) else data.encode()
+    saved_path = _save_edited_copy(output_dir, filename, raw)
+
+    return {"params": [e.as_dict() for e in entries], "saved_path": saved_path}
 
 
 # ---------------------------------------------------------------------------

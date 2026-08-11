@@ -73,9 +73,57 @@ def test_pipeline_script_is_valid_python_and_gates_each_stage():
     assert "CVS0DParamID.init_from_dict" in src
     assert "SensitivityAnalysis.init_from_dict" in src
     assert "get_simulation_helper_from_inp_data_dict" in src
-    # UQ actually runs MCMC / Laplace (not a stub)
+    # UQ actually runs MCMC / Laplace (not a stub). `run_mcmc()` is CA's name
+    # today; it becomes `run_UQ()` when CA renames it (CUFLynx #217).
     assert "run_mcmc()" in src and "IdentifiabilityAnalysis.init_from_dict" in src
     assert "ensure_mle_cost_type_for_bayesian_inner" in src
+
+
+def test_the_simulation_stage_asks_for_its_outputs_once():
+    """CA publishes a combined accessor and uses it itself; the stage used to
+    call get_all_variable_names + get_results and branch on get_time (#217)."""
+    src = ep.render_pipeline_script()
+
+    assert "get_all_results_dict()" in src
+    assert "get_all_variable_names" not in src
+    assert 'hasattr(sim_helper, "get_time")' not in src
+
+
+def test_every_stage_reports_under_its_own_name():
+    """simulation.json / sensitivity.json / uq.json — the generic results.json
+    meant a reader could pick up whichever stage it found first (#217)."""
+    src = ep.render_pipeline_script()
+
+    assert 'write_stage(output_dir, "simulation"' in src
+    assert 'write_stage(output_dir, "sensitivity"' in src
+    assert 'write_stage(out_dir, "uq"' in src
+    # Nothing writes the ambiguous name any more.
+    assert 'json.dump({"method": method' not in src
+
+
+def test_the_sensitivity_stage_writes_its_indices():
+    """The exported plot_analysis() heatmap reads an indices payload that
+    nothing in the bundle used to produce, so it could never draw (#217)."""
+    src = ep.render_pipeline_script()
+
+    assert "def sobol_indices(" in src
+    assert "load_sobol_indices()" in src
+
+
+def test_uq_reuses_the_calibration_engine():
+    """Building a second CVS0DParamID for Laplace compiles the model again
+    (#216); the calibration's engine is exactly what it needs."""
+    src = ep.render_pipeline_script()
+
+    assert "calibrated = param_id" in src
+    assert "cvs = calibrated or CVS0DParamID.init_from_dict(uq_inp)" in src
+
+
+def test_the_simulation_helper_is_released_before_the_next_stage():
+    """It holds a compiled model and every stage below builds its own (#216)."""
+    src = ep.render_pipeline_script()
+
+    assert "close_simulation()" in src
 
 
 def test_plotting_script_is_valid_python_with_every_plot_kind():

@@ -218,6 +218,40 @@ def test_a_param_history_without_a_header_keeps_its_first_row(tmp_path):
 
 
 @pytest.mark.integration
+def test_it_plots_both_analyses_from_their_own_stage_files(tmp_path):
+    """The shape the pipeline now actually writes.
+
+    Sensitivity and UQ used to share a generic results.json — which the
+    sensitivity stage never wrote at all, so its heatmap could not draw, and
+    with both present only whichever was found first would have. Each stage
+    writes its own file and the reader merges them, so both figures appear.
+    """
+    pytest.importorskip("matplotlib")
+    out = tmp_path / "output"
+    out.mkdir(parents=True)
+    (out / "sensitivity.json").write_text(
+        json.dumps({
+            "output_names": ["max/m/x"],
+            "param_names": ["a/b", "c/d"],
+            "indices": {"ST": {"max/m/x": {"a/b": 0.7, "c/d": 0.3}}},
+        })
+    )
+    (out / "uq.json").write_text(
+        json.dumps({
+            "method": "mcmc",
+            "params": [{"qname": "a/b", "mean": 1.0, "std": 0.1, "q05": 0.8,
+                        "q50": 1.0, "q95": 1.2,
+                        "bins": [0.8, 0.9, 1.0, 1.1, 1.2], "counts": [1, 4, 4, 1]}],
+        })
+    )
+
+    assert _run(_write_script(tmp_path)).returncode == 0
+    plots = out / "pyscript_plots"
+    assert (plots / "analysis_sensitivity.png").is_file()
+    assert (plots / "analysis_uq.png").is_file()
+
+
+@pytest.mark.integration
 def test_it_plots_a_sensitivity_heatmap(tmp_path):
     pytest.importorskip("matplotlib")
     out = tmp_path / "output"
