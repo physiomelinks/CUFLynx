@@ -268,6 +268,21 @@ def flat_param_names(param_id):
     return [g[0] if isinstance(g, (list, tuple)) else g for g in param_id.get_param_names()]
 
 
+def as_floats(series):
+    """A flat list of floats from one variable's results, whatever holds them.
+
+    get_all_results_dict() hands back the backend's own container: CasADi
+    returns DM matrices, which are deliberately not iterable, while the others
+    return arrays. get_results(..., flatten=True) used to do this flattening,
+    so it has to happen here now that the outputs come from one call.
+    """
+    if hasattr(series, "full"):  # CasADi DM
+        series = series.full().ravel()
+    elif hasattr(series, "ravel"):  # numpy
+        series = series.ravel()
+    return [float(v) for v in series]
+
+
 def write_stage(out_dir, stage, payload):
     """Write one stage's outputs as ``<stage>.json``.
 
@@ -360,10 +375,10 @@ def main():
         # itself. It does not include time, which is the one separate ask, and
         # 'time' resolves on every backend so no per-helper branch is needed.
         outputs = {
-            name: [float(v) for v in series]
+            name: as_floats(series)
             for name, series in sim_helper.get_all_results_dict().items()
         }
-        time = [float(t) for t in sim_helper.get_results(["time"], flatten=True)[0]]
+        time = as_floats(sim_helper.get_results(["time"], flatten=True)[0])
         write_stage(output_dir, "simulation", {"time": time, "outputs": outputs})
         # Released before the next stage builds its own: a helper holds a
         # compiled model, and every stage below constructs one of its own.
@@ -632,7 +647,15 @@ def cost_history():
 
 
 def param_history():
-    """``(generations, [(name, values), ...])`` for the fitted parameters."""
+    """``(generations, [(name, values), ...])`` of **normalised** parameters.
+
+    circulatory_autogen writes this file normalised to each parameter's
+    [min, max] -- 0 is its lower bound, 1 its upper -- while the multi-start
+    history files hold actual values. Nothing in the file says so, and calling
+    these "the fitted parameters" (as this did) invites reading 0.43 as a
+    physical value. Denormalising needs the bounds, which CA does not persist
+    beside the run; see CUFLynx #210.
+    """
     path = find("best_param_vals_history.csv")
     if not path:
         return [], []
@@ -959,6 +982,10 @@ def plot_progress():
             ax.plot(generations, values, color=colour(i), lw=1.4)
             ax.set_title(name, fontsize=8)
             ax.set_xlabel("generation")
+            # Normalised to [min, max], not physical: CA writes this history
+            # that way and the axis must not imply otherwise.
+            ax.set_ylabel("normalised value", fontsize=7)
+            ax.set_ylim(-0.05, 1.05)
             ax.grid(alpha=0.25)
         fig.tight_layout()
         util.save(fig, "progress_params.png", STYLE["dpi"])
