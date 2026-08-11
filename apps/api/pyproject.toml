@@ -8,7 +8,17 @@ name = "cuflynx-api"
 # cannot bump one copy of the number and leave the others behind.
 dynamic = ["version"]
 description = "FastAPI backend for the CellML slider-visualisation app"
-readme = "../../README.md"
+# No `readme` key. It pointed at ../../README.md, and hatchling refuses a readme
+# outside the project directory ("Readme path must be within the project
+# directory"), so `pip install -e .` failed outright on a fresh clone. Older
+# hatchling tolerated it, which is why this sat here working until a new
+# environment resolved a newer build backend.
+#
+# Dropped rather than worked around: this package is only ever installed from
+# source into a venv, never published, so the long-description metadata is
+# decoration. A copy of the README here would be a second one to keep in step,
+# and a symlink breaks on Windows. The README lives at the repo root, which is
+# where anyone reading the project looks for it.
 requires-python = ">=3.10"
 dependencies = [
     "fastapi>=0.110.0",
