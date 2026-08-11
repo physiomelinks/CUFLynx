@@ -73,9 +73,10 @@ def test_pipeline_script_is_valid_python_and_gates_each_stage():
     assert "CVS0DParamID.init_from_dict" in src
     assert "SensitivityAnalysis.init_from_dict" in src
     assert "get_simulation_helper_from_inp_data_dict" in src
-    # UQ actually runs MCMC / Laplace (not a stub). `run_mcmc()` is CA's name
-    # today; it becomes `run_UQ()` when CA renames it (CUFLynx #217).
-    assert "run_mcmc()" in src and "IdentifiabilityAnalysis.init_from_dict" in src
+    # UQ actually runs MCMC / Laplace (not a stub). run_UQ is CA's name since
+    # CA #392 (CUFLynx #217); run_mcmc stays as the fallback for an older CA.
+    assert "run_UQ(" in src and "run_mcmc()" in src
+    assert "IdentifiabilityAnalysis.init_from_dict" in src
     assert "ensure_mle_cost_type_for_bayesian_inner" in src
 
 

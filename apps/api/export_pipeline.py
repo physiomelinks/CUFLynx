@@ -437,10 +437,20 @@ def main():
         best_param_vals = np.asarray(best_param_vals, dtype=float)
 
         if method == "mcmc":
-            mcmc = CVS0DParamID.init_from_dict({**uq_inp, "mcmc_instead": True})
+            # Reuse the calibration engine when there is one: run_UQ promotes it
+            # in place, so UQ samples with the model already compiled. Older CA
+            # only offers run_mcmc() on an object built with mcmc_instead=True,
+            # which forces a second engine and a second compile.
+            if calibrated is not None and hasattr(calibrated, "run_UQ"):
+                mcmc = calibrated
+            else:
+                mcmc = CVS0DParamID.init_from_dict({**uq_inp, "mcmc_instead": True})
             mcmc.set_best_param_vals(best_param_vals)
             ensure_mle_cost_type_for_bayesian_inner(paramID_module.mcmc_object, uq_inp)
-            mcmc.run_mcmc()
+            if hasattr(mcmc, "run_UQ"):
+                mcmc.run_UQ(uq_inp.get("mcmc_options"))
+            else:
+                mcmc.run_mcmc()
             if getattr(mcmc, "rank", 0) == 0:
                 write_uq(output_dir, method, mcmc.get_mcmc_samples()[0], flat_param_names(mcmc))
         else:
