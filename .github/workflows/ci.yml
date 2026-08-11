@@ -6,6 +6,35 @@ on:
   pull_request:
 
 jobs:
+  # `pip install -e .` is how a user installs from source (scripts/install.py runs
+  # exactly this), and nothing in CI exercised it: every other job installs the
+  # dependencies by hand, so the packaging metadata was never built. A readme path
+  # pointing outside apps/api sat here working until a fresh environment resolved a
+  # hatchling strict enough to refuse it -- and then every clean clone failed at
+  # install, with the next release build queued to fail the same way.
+  #
+  # --no-deps deliberately: this asks whether the *metadata* builds, which is the
+  # part that broke. Installing the real dependency set is minutes of CI for a
+  # question the other jobs already answer.
+  packaging:
+    name: Editable install (packaging metadata)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/api
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Install from source, as a user would
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e . --no-deps
+      - name: The installed package is importable and self-describing
+        run: |
+          python -c "import importlib.metadata as m; print(m.version('cuflynx-api'))"
+
   backend-unit:
     name: Backend unit tests (no Myokit)
     runs-on: ubuntu-latest
