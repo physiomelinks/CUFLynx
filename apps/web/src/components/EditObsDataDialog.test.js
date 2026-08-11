@@ -380,22 +380,26 @@ describe('EditObsDataDialog', () => {
     expect(wrapper.findAll('[data-testid="eo-row"]')).toHaveLength(2)
   })
 
-  it('on Save: downloads, applies (preserving the series item), emits saved, closes', async () => {
+  it('on Save: writes to the output dir, applies (preserving the series item), emits saved, closes', async () => {
     uploadObsData.mockResolvedValue({ n_data_items: 2, has_protocol: true })
     const clickSpy = vi
       .spyOn(HTMLAnchorElement.prototype, 'click')
       .mockImplementation(() => {})
 
-    const wrapper = mountDialog()
+    const wrapper = mountDialog({ outputsDir: '/tmp/study' })
     await flushPromises()
     await wrapper.find('[data-testid="eo-save"]').trigger('click')
     await flushPromises()
 
-    expect(globalThis.URL.createObjectURL).toHaveBeenCalledOnce()
-    expect(clickSpy).toHaveBeenCalledOnce()
+    // No browser download any more (#215): the server writes the dated copy
+    // where the study lives, so a saved file is one the user can find.
+    expect(globalThis.URL.createObjectURL).not.toHaveBeenCalled()
+    expect(clickSpy).not.toHaveBeenCalled()
 
     expect(uploadObsData).toHaveBeenCalledOnce()
-    const [idArg, obsArg] = uploadObsData.mock.calls[0]
+    const [idArg, obsArg, saveArg] = uploadObsData.mock.calls[0]
+    expect(saveArg.outputsDir).toBe('/tmp/study')
+    expect(saveArg.filename).toMatch(/_\d{6}\.json$/)
     expect(idArg).toBe('abc')
     // object form: protocol_info rebuilt from the model (pre/sim preserved) +
     // edited constant + preserved series item.

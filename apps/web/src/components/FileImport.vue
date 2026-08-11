@@ -529,6 +529,7 @@ async function onParamsDrop(event) {
       :model-name="modelName"
       :loaded-filename="loadedFilename"
       :generated-model-format="generatedModelFormat"
+      :outputs-dir="outputsDir"
       @saved="onEditSaved"
     />
 
@@ -542,6 +543,7 @@ async function onParamsDrop(event) {
       :model-variables="modelVariables"
       :model-name="modelName"
       :loaded-filename="loadedObsFilename"
+      :outputs-dir="outputsDir"
       @saved="onObsEditSaved"
     />
   </section>

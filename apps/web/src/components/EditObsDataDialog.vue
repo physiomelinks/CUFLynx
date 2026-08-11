@@ -38,6 +38,8 @@ const props = defineProps({
   modelVariables: { type: Object, default: () => ({}) },
   modelName: { type: String, default: null },
   loadedFilename: { type: String, default: null },
+  // Where Save writes the dated copy (#215); '' falls back to the config dir.
+  outputsDir: { type: String, default: '' },
 })
 const emit = defineEmits(['update:visible', 'saved'])
 
@@ -369,18 +371,6 @@ function removePred(i) {
   predRows.value.splice(i, 1)
 }
 
-function downloadJson(text, filename) {
-  if (typeof URL === 'undefined' || !URL.createObjectURL) return
-  const href = URL.createObjectURL(new Blob([text], { type: 'application/json' }))
-  const a = document.createElement('a')
-  a.href = href
-  a.download = filename
-  document.body.appendChild(a)
-  a.click()
-  a.remove()
-  URL.revokeObjectURL(href)
-}
-
 async function onSave() {
   error.value = ''
   const protocolInfo = protocolModel.value
@@ -393,10 +383,13 @@ async function onSave() {
     predictionRows: predRows.value,
   })
   const filename = versionedJsonName(props.loadedFilename, props.modelName)
-  downloadJson(JSON.stringify(obsData, null, 2), filename)
   saving.value = true
   try {
-    const summary = await uploadObsData(props.modelId, obsData)
+    // Written server-side into the output directory (#215), not downloaded.
+    const summary = await uploadObsData(props.modelId, obsData, {
+      filename,
+      outputsDir: props.outputsDir,
+    })
     emit('saved', { ...summary, filename })
     emit('update:visible', false)
   } catch (e) {
@@ -417,8 +410,8 @@ async function onSave() {
     @update:visible="emit('update:visible', $event)"
   >
     <p class="eo-hint">
-      Edit the observation targets. Saving downloads a new
-      <code>…_yymmdd.json</code> (the original is kept) and applies it.
+      Edit the observation targets. Saving writes a new
+      <code>…_yymmdd.json</code> to the output directory (the original is kept) and applies it.
       <template v-if="!hasProtocol"> (data-only obs_data — no protocol/predictions)</template>
     </p>
 
@@ -725,7 +718,7 @@ async function onSave() {
       <span class="eo-count">{{ editableRows.length }} data item(s)</span>
       <Button label="Cancel" size="small" text @click="emit('update:visible', false)" />
       <Button
-        label="Save & download"
+        label="Save"
         size="small"
         :disabled="!canSave"
         data-testid="eo-save"
