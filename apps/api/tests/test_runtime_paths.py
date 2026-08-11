@@ -262,8 +262,20 @@ def test_extraction_cache_dir_is_versioned_under_the_app_cache():
 
 
 def test_runner_launch_env_is_plain_subprocess_env_from_source():
-    """Not frozen -> no relocation, identical to subprocess_env()."""
-    assert runtime_paths.runner_launch_env(None) == runtime_paths.subprocess_env()
+    """Not frozen -> no relocation.
+
+    Was exact equality with subprocess_env(); the launcher now also pins
+    libfabric to loopback for these single-node MPI runs (see
+    test_mpi_teardown.py), so the property to hold is that nothing *else*
+    changes and no extraction relocation happens.
+    """
+    env = runtime_paths.runner_launch_env(None)
+    base = runtime_paths.subprocess_env()
+
+    assert {k: v for k, v in env.items() if k not in ("FI_PROVIDER", "FI_TCP_IFACE")} == {
+        k: v for k, v in base.items() if k not in ("FI_PROVIDER", "FI_TCP_IFACE")
+    }
+    assert "onefile-cache" not in env.get("TMPDIR", "")
 
 
 def test_runner_launch_env_skips_relocation_for_external_python(frozen, monkeypatch):

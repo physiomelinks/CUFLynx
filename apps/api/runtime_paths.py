@@ -295,6 +295,29 @@ def _relocate_bundle_extraction_env(env: dict) -> None:
             env[var] = cache_str
 
 
+def _default_single_node_mpi_env(env: dict) -> None:
+    """Keep MPI off the network for a run that never leaves this machine.
+
+    Every analysis CUFLynx launches is single-node: ``mpiexec`` fans out ranks
+    across local cores and nothing talks to another host. MPICH's OFI netmod
+    does not know that, and picks a real interface anyway -- which on macOS has
+    meant ``MPI_Finalize`` aborting while flushing its send queue::
+
+        MPIDI_OFI_handle_cq_error(593): OFI poll failed
+        (default nic=en5: Input/output error)
+
+    after the run had finished and written its results. Pinning libfabric to
+    loopback TCP keeps the transport on an interface that cannot go away
+    mid-run (a Wi-Fi drop, a VPN coming up, a virtual adapter appearing).
+
+    Defaults only: anything the user already set in their environment wins, so
+    a genuinely multi-node setup, or someone tuning a provider deliberately, is
+    untouched.
+    """
+    env.setdefault("FI_PROVIDER", "tcp")
+    env.setdefault("FI_TCP_IFACE", "lo0" if sys.platform == "darwin" else "lo")
+
+
 def runner_launch_env(python: Optional[str]) -> dict:
     """Environment for spawning an analysis runner (calibration/sensitivity/UQ).
 
@@ -303,8 +326,12 @@ def runner_launch_env(python: Optional[str]) -> dict:
     :func:`runner_command`), also relocate the onefile extraction temp onto a roomy
     per-build cache dir so N MPI ranks don't exhaust the system ``$TMPDIR`` (issue
     #67). For an external interpreter this is irrelevant, so it's omitted.
+
+    Also pins libfabric to loopback for these single-node MPI runs; see
+    :func:`_default_single_node_mpi_env`.
     """
     env = subprocess_env()
     if python is None and is_frozen():
         _relocate_bundle_extraction_env(env)
+    _default_single_node_mpi_env(env)
     return env
