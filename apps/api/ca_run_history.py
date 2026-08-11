@@ -36,7 +36,19 @@ _RESULT_FILES = ("best_param_vals.npy", "best_cost.npy", "param_names.csv")
 
 
 def _ca_run_history():
-    """CA's ``param_id.run_history`` module, or None on a CA that predates it."""
+    """CA's ``param_id.run_history`` module, or None if it cannot be imported.
+
+    Puts CA on ``sys.path`` first. A bare import works in the API process only
+    because something else imported CA earlier, which makes the progress endpoint
+    one import-order change away from going quietly blank -- and it already fails
+    that way inside a git worktree, where the sibling-clone guess misses.
+    """
+    try:
+        from solver_options import _ensure_ca_path  # noqa: PLC0415
+
+        _ensure_ca_path()
+    except Exception:  # noqa: BLE001 - fall through to the bare import
+        pass
     try:
         from param_id import run_history  # noqa: PLC0415
     except ImportError:
@@ -113,14 +125,20 @@ def has_results(output_dir: str, newer_than: float | None = None) -> bool:
 # Small readers. Each returns None/[] rather than raising: a run directory may
 # be read while it is still being written.
 # ---------------------------------------------------------------------------
-def _npy(run_dir: str, name: str):
+def _npy(run_dir: str, name: str, allow_pickle: bool = False):
+    """A ``.npy`` from the run directory, or None.
+
+    ``allow_pickle`` is for the label arrays: CA saves them as ``<U`` on a
+    current numpy and as an object array on older ones, and only the latter
+    needs unpickling.
+    """
     path = os.path.join(run_dir, name)
     if not os.path.isfile(path):
         return None
     try:
         import numpy as np  # noqa: PLC0415
 
-        return np.load(path, allow_pickle=False)
+        return np.load(path, allow_pickle=allow_pickle)
     except Exception:  # noqa: BLE001
         return None
 
@@ -238,26 +256,12 @@ def error_vectors(output_dir: str) -> dict:
         return {"percent_error": None, "std_error": None, "error_labels": []}
     percent = _npy(run_dir, "percent_error_vec.npy")
     std = _npy(run_dir, "std_error_vec.npy")
-    names = _npy(run_dir, "error_vec_names.npy")
-    if names is None:  # older CA: allow_pickle for the object array of strings
-        names = _load_names(os.path.join(run_dir, "error_vec_names.npy"))
+    names = _npy(run_dir, "error_vec_names.npy", allow_pickle=True)
     return {
         "percent_error": None if percent is None else [float(v) for v in percent.reshape(-1)],
         "std_error": None if std is None else [float(v) for v in std.reshape(-1)],
         "error_labels": [] if names is None else [str(v) for v in names.reshape(-1)],
     }
-
-
-def _load_names(path: str):
-    """CA saves the label array with dtype ``<U``/object depending on version."""
-    if not os.path.isfile(path):
-        return None
-    try:
-        import numpy as np  # noqa: PLC0415
-
-        return np.load(path, allow_pickle=True)
-    except Exception:  # noqa: BLE001
-        return None
 
 
 def calibrated_model_path(output_dir: str, file_prefix: str | None) -> str | None:
@@ -476,19 +480,112 @@ def read_run_history(output_dir: str, param_id_info: dict | None = None) -> dict
         return None
 
 
+#: CA writes the best-so-far parameter vector here incrementally, so it exists
+#: even for a run stopped early -- which is what lets a cancelled calibration be
+#: continued from (#83). Deliberately spared by ``clear_run_history``.
+BEST_PARAM_VALS_FILE = "best_param_vals.npy"
+
+#: The empty progress payload. Its shape is the contract with the Progress tab,
+#: so it is written once here rather than reconstructed at each early return.
+_EMPTY_PROGRESS = {
+    "param_names": [],
+    "cost_history": [],
+    "param_history": [],
+    "start_costs": [],
+    "start_params": {"param_names": [], "starts": []},
+    "grad_history": [],
+    "start_grads": {"param_names": [], "starts": []},
+}
+
+
+def _full_width(rows: list) -> list:
+    """``rows`` less any torn trailing row.
+
+    CA keeps a row at whatever width it parsed to -- it guards against
+    *unparseable* rows, not short ones -- and a run is polled while it is being
+    written, so the last row is routinely half-flushed. Left in, it puts a
+    phantom point on the plot that appears and moves on every poll.
+    """
+    if not rows:
+        return []
+    width = max(len(r) for r in rows)
+    return [r for r in rows if len(r) == width]
+
+
+def progress_history(output_dir: str) -> dict:
+    """The live progress payload, from CA's own reader (issue #210).
+
+    ``param_history`` is CA's ``param_history_norm`` -- **normalised**, never its
+    denormalised ``param_history``. The Progress plot pins its y-axis to [0, 1],
+    titles it "normalised value" and denormalises in the tooltip, so handing it
+    physical values would plot them on a normalised axis and then convert them a
+    second time. The trap is live rather than theoretical: CA writes
+    ``param_bounds.json`` on every real run, so the denormalised series is
+    populated in production and ``None`` in most fixtures -- wrong in the app,
+    green in CI.
+
+    Returns :data:`_EMPTY_PROGRESS` when CA cannot be imported, which is what the
+    Progress tab already renders as "run a calibration to see progress".
+    """
+    hist = read_run_history(output_dir)
+    if hist is None:
+        return dict(_EMPTY_PROGRESS)
+
+    labels = list(hist.get("param_labels") or [])
+    starts = hist.get("starts") or []
+    start_params = [_full_width(s.get("params") or []) for s in starts]
+    start_grads = [_full_width(s.get("grad") or []) for s in starts]
+    return {
+        "param_names": labels,
+        # Deliberately unfiltered: a genetic algorithm writes its whole sorted
+        # top-10 per generation and the Progress plot draws that band, so rows
+        # here are variable-width by design.
+        "cost_history": hist.get("cost_history") or [],
+        "param_history": _full_width(hist.get("param_history_norm") or []),
+        "start_costs": [s.get("cost") or [] for s in starts],
+        "start_params": {
+            "param_names": labels if any(start_params) else [],
+            "starts": start_params,
+        },
+        "grad_history": _full_width(hist.get("grad_history") or []),
+        "start_grads": {
+            "param_names": labels if any(start_grads) else [],
+            "starts": start_grads,
+        },
+    }
+
+
 def clear_run_history(output_dir: str) -> bool:
     """Delete the transient history files so a new run does not append onto an
-    old one. CA declares which files are transient, instead of CUFLynx
-    hardcoding the list; the result files are deliberately spared (a cancelled
-    run's best-so-far is worth keeping until a new one replaces it, CA #300).
+    old one, or show an old one's plots.
+
+    **CA owns the file list; CUFLynx owns the scope.** CA's clearer locates *one*
+    run directory and clears that, which is not enough here: an outputs directory
+    reused across methods accumulates a ``<case_type>_<prefix>`` subdir per run,
+    and clearing only the newest leaves the reader free to fall back to an older
+    one and serve its history as this run's. That is exactly the stale-plot bug
+    this function was written for, so it is applied to ``output_dir`` and to every
+    immediate subdirectory.
+
+    The result files (``best_param_vals.npy`` / ``best_cost.npy``) are deliberately
+    spared by CA -- a cancelled run's best-so-far is worth keeping until a new one
+    replaces it (CA #300), which is what continuing a stopped calibration reads.
 
     Returns whether CA's own clearer ran.
     """
     mod = _ca_run_history()
     if mod is None:
         return False
+    targets = [output_dir]
     try:
-        mod.clear_run_history(output_dir)
-    except Exception:  # noqa: BLE001
-        return False
-    return True
+        targets += [e.path for e in os.scandir(output_dir) if e.is_dir()]
+    except OSError:
+        pass
+    ran = False
+    for target in targets:
+        try:
+            mod.clear_run_history(target)
+            ran = True
+        except Exception:  # noqa: BLE001 - one unreadable dir must not stop the rest
+            continue
+    return ran

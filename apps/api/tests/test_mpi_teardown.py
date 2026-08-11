@@ -21,6 +21,7 @@ import calibration as calibration_mod
 import pytest
 import runtime_paths
 from calibration import finished_before_exiting, teardown_warning
+from conftest import write_ca_results
 
 DONE = "__CALIBRATION_DONE__"
 FAIL = "__CALIBRATION_FAILED__"
@@ -66,14 +67,7 @@ def _finalized_job(tmp_path, code, lines, results=True):
         # (#210). That makes this gate strictly more robust: it asks whether the
         # *run* wrote its results, not whether CUFLynx managed to serialise a
         # copy of them -- and the copy is what a teardown abort could interrupt.
-        import csv
-
-        import numpy as np
-
-        np.save(str(tmp_path / "best_param_vals.npy"), np.array([1.5]))
-        np.save(str(tmp_path / "best_cost.npy"), np.array([0.25]))
-        with open(tmp_path / "param_names.csv", "w", newline="") as fh:
-            csv.writer(fh).writerows([["a/x"]])
+        write_ca_results(tmp_path, [["a/x"]], [1.5], 0.25)
     calibration_mod.calibration._finalize(job, code)
     return job
 

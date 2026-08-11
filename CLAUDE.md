@@ -65,7 +65,9 @@ so developers can point at a local checkout. (See issue #18.)
 
 **Analysis backends** (one API module + runner each, plus a Vue panel):
 
-- `apps/api/sensitivity.py` / `sensitivity_runner.py` — global **Sobol** sensitivity; `local_sensitivity.py` — local **finite-difference** sensitivity (`d ln Y/d ln P` about a nominal point: current values / reused calibration best fit / bounds centre; optional "run calibration first"). UI: `SensitivityPanel.vue`; results render in `AnalysisPanel.vue` (S1/ST/local heatmaps).
+- `apps/api/sensitivity.py` / `sensitivity_runner.py` — global **Sobol** sensitivity; `local_sensitivity.py` — local sensitivity (`d ln Y/d ln P` about a nominal point: current values / reused calibration best fit / bounds centre; optional "run calibration first"). UI: `SensitivityPanel.vue`; results render in `AnalysisPanel.vue` (S1/ST/local heatmaps).
+
+  **Every gradient source is computed by CA**, through the one backend-agnostic accessor `OpencorParamID.get_observable_sensitivities(param_vals, gradient_method, fd_rel_step)` — FD (`fd_backend`), AD (`casadi_backend`) and FSA (`fsa_backend`) alike, so the runner builds the param-id engine for all three. CUFLynx reimplemented the FD loop and the CasADi jacobian until #210's follow-up; that is why it had to mirror CA's flatten/fold contract for grouped and modifier rows, and why CA #390 tightening that contract broke the AD path. **Do not reimplement a gradient here.** What `local_sensitivity.py` legitimately owns is only what CA does not answer: the nominal point, the *signed* relative coefficient (CA's is unsigned and 0.0 on a degenerate denominator), the `var^{e,s} [op]` labels shared with the Sobol heatmap, and the `CVODES`/`AUTO` alias resolution. Two traps: read the nominal features **before** the sensitivities (CA's CasADi arm leaves the helper in AD mode, so a later numeric evaluation returns an `SX`), and pass `rel_step` explicitly as `fd_rel_step` (CUFLynx defaults to 1e-2, CA to 1e-3 — up to 48% apart).
 - `apps/api/calibration.py` / `calibration_runner.py` — GA parameter identification; `CalibrationPanel.vue` (also emits live settings reused by local-sensitivity "run calibration first").
 - `apps/api/uq.py` / `uq_runner.py` — uncertainty quantification; `UQPanel.vue`.
 
@@ -83,6 +85,17 @@ format, and no plumbing:
   plus CA's `param_id.run_history` reader (`read_run_history` / `clear_run_history`
   / `find_run_dir`, CA#392). A run directory produced by **CA's own scripts** is
   therefore just as readable as one produced through the GUI.
+  The **live Progress payload** comes from `progress_history()` here, not from
+  hand-written parsing in `calibration.py` (which used to hold ~260 lines of it).
+  Three things it owns and CA does not: it takes CA's **`param_history_norm`**,
+  never its denormalised `param_history` (the plot pins its y-axis to [0,1],
+  titles it "normalised value" and denormalises in the tooltip — and CA writes
+  `param_bounds.json` on every real run, so the wrong key is populated in
+  production and `None` in most fixtures: wrong in the app, green in CI); it
+  filters torn trailing rows (CA guards against *unparseable* rows, not short
+  ones, and a run is polled while it is being written); and it clears **every**
+  case subdirectory, because CA's clearer locates one run dir and an outputs
+  directory reused across methods accumulates several.
 - The runners' `<stage>_config.json` payloads go to a **temp dir** — they are
   `argv[1]` and nothing reads them back. `write_run_config` / `clear_run_config`
   in `calibration.py`, shared by all three managers.

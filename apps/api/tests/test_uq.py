@@ -11,6 +11,7 @@ import calibration as calibration_mod
 import pytest
 import uq as uq_mod
 from conftest import (
+    WRITE_CA_RESULTS_SRC,
     LV_MODEL_PATH,
     LV_OBS_DATA_PATH,
     LV_PARAMS_CSV_PATH,
@@ -42,16 +43,11 @@ print("__UQ_DONE__", flush=True)
 
 # A fake calibration runner that completes with best params (for reuse-mode UQ).
 FAKE_CALIB_RUNNER = """
-import csv, json, sys
-import numpy as np
+import json, sys
 from pathlib import Path
+""" + WRITE_CA_RESULTS_SRC + """
 cfg = json.loads(Path(sys.argv[1]).read_text())
-out = Path(cfg["output_dir"])
-out.mkdir(parents=True, exist_ok=True)
-np.save(str(out / "best_param_vals.npy"), np.array([1.5, 2.0]))
-np.save(str(out / "best_cost.npy"), np.array([0.25]))
-with open(out / "param_names.csv", "w", newline="") as fh:
-    csv.writer(fh).writerows([["a/x"], ["a/y"]])
+write_ca_results(cfg["output_dir"], [["a/x"], ["a/y"]], [1.5, 2.0], 0.25)
 print("__CALIBRATION_DONE__", flush=True)
 """
 

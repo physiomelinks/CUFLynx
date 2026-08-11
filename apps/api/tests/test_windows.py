@@ -36,6 +36,7 @@ import main
 import sensitivity as sensitivity_mod
 import uq as uq_mod
 from conftest import (
+    WRITE_CA_RESULTS_SRC,
     LV_MODEL_PATH,
     LV_OBS_DATA_PATH,
     LV_PARAMS_CSV_PATH,
@@ -48,16 +49,11 @@ IS_WINDOWS = sys.platform.startswith("win")
 # (what every manager's _finalize now reads, #210), then exit 0. Lets a job
 # complete without Myokit.
 _OK_RUNNER = (
-    "import csv, json, sys\n"
-    "import numpy as np\n"
+    "import json, sys\n"
     "from pathlib import Path\n"
-    "cfg = json.loads(Path(sys.argv[1]).read_text())\n"
-    "out = Path(cfg['output_dir'])\n"
-    "out.mkdir(parents=True, exist_ok=True)\n"
-    "np.save(str(out / 'best_param_vals.npy'), np.array([1.0]))\n"
-    "np.save(str(out / 'best_cost.npy'), np.array([0.0]))\n"
-    "with open(out / 'param_names.csv', 'w', newline='') as fh:\n"
-    "    csv.writer(fh).writerows([['a/x']])\n"
+    + WRITE_CA_RESULTS_SRC
+    + "cfg = json.loads(Path(sys.argv[1]).read_text())\n"
+    "write_ca_results(cfg['output_dir'])\n"
     "print('__DONE__', flush=True)\n"
 )
 

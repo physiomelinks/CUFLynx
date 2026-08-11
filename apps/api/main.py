@@ -1582,92 +1582,61 @@ def _save_edited_copy(output_dir: str | None, filename: str | None, data: bytes)
     return str(target)
 
 
-# One pair of routes per kind. CUFLynx saves the func to an external file under the
-# user's output directory and points CA at it via the config keys (issue #104
-# rework; CA #303), instead of writing into CA's tracked tree.
-@app.get("/api/operation_funcs")
-def list_operation_funcs(output_dir: str = "") -> dict:
-    """User-authored observable operations + the editor templates (issue #58)."""
-    return read_user_funcs("operation", _user_func_base_dir(output_dir))
+# One trio of routes per user-func kind: list, save, delete. CUFLynx saves the
+# func to an external file under the user's output directory and points CA at it
+# via that kind's config key (issue #104 rework; CA #303, CA #383), instead of
+# writing into CA's tracked tree.
+#
+# Registered from `user_funcs.KINDS` rather than written out three times. The
+# bodies differed only by a kind string, so the third copy (modifiers) was the
+# point at which "one more near-identical block" stopped being cheaper than the
+# loop. The paths are still literal, so the URLs are exactly what they were --
+# a `{kind}` path parameter would have changed them.
+def _register_user_func_routes(kind: str, label: str) -> None:
+    def list_funcs(output_dir: str = "") -> dict:
+        return read_user_funcs(kind, _user_func_base_dir(output_dir))
+
+    def save_func(req: UserFuncRequest) -> dict:
+        try:
+            return save_user_func(
+                kind, req.name, req.source, _user_func_base_dir(req.output_dir)
+            )
+        except UserFuncError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    def delete_func(name: str, output_dir: str = "") -> dict:
+        try:
+            return delete_user_func(kind, name, _user_func_base_dir(output_dir))
+        except UserFuncError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    # Named and documented per kind, so /docs reads as it did when these were
+    # three hand-written trios.
+    list_funcs.__name__ = f"list_{kind}_funcs"
+    list_funcs.__doc__ = f"User-authored {label} + the editor templates."
+    save_func.__name__ = f"save_{kind}_func"
+    save_func.__doc__ = (
+        f"Create or update a user {kind} func; then it appears in the options "
+        f"list. Named by the ``def`` in ``source``; ``req.name`` is only the "
+        f"entry being edited."
+    )
+    delete_func.__name__ = f"delete_{kind}_func"
+    delete_func.__doc__ = f"Remove a user {kind} func."
+
+    app.get(f"/api/{kind}_funcs")(list_funcs)
+    app.post(f"/api/{kind}_funcs")(save_func)
+    app.delete(f"/api/{kind}_funcs/{{name}}")(delete_func)
 
 
-@app.post("/api/operation_funcs")
-def save_operation_func(req: UserFuncRequest) -> dict:
-    """Create or update a user operation func; then it appears in the options list.
-
-    Named by the ``def`` in ``source``; ``req.name`` is only the entry being edited.
-    """
-    try:
-        return save_user_func("operation", req.name, req.source, _user_func_base_dir(req.output_dir))
-    except UserFuncError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-
-
-@app.delete("/api/operation_funcs/{name}")
-def delete_operation_func(name: str, output_dir: str = "") -> dict:
-    """Remove a user operation func."""
-    try:
-        return delete_user_func("operation", name, _user_func_base_dir(output_dir))
-    except UserFuncError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-
-
-@app.get("/api/cost_funcs")
-def list_cost_funcs(output_dir: str = "") -> dict:
-    """User-authored cost functions + the editor templates (issue #104)."""
-    return read_user_funcs("cost", _user_func_base_dir(output_dir))
-
-
-@app.post("/api/cost_funcs")
-def save_cost_func(req: UserFuncRequest) -> dict:
-    """Create or update a user cost func; then it appears as a cost_type option.
-
-    Named by the ``def`` in ``source``; ``req.name`` is only the entry being edited.
-    """
-    try:
-        return save_user_func("cost", req.name, req.source, _user_func_base_dir(req.output_dir))
-    except UserFuncError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-
-
-@app.delete("/api/cost_funcs/{name}")
-def delete_cost_func(name: str, output_dir: str = "") -> dict:
-    """Remove a user cost func."""
-    try:
-        return delete_user_func("cost", name, _user_func_base_dir(output_dir))
-    except UserFuncError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-
-
-@app.get("/api/modifier_funcs")
-def list_modifier_funcs(output_dir: str = "") -> dict:
-    """User-authored parameter modifiers + the editor templates (CA #383).
-
-    The third kind, and the one a params_for_id refers to rather than an obs_data:
-    a modifier maps the calibrated theta to each parameter it governs.
-    """
-    return read_user_funcs("modifier", _user_func_base_dir(output_dir))
-
-
-@app.post("/api/modifier_funcs")
-def save_modifier_func(req: UserFuncRequest) -> dict:
-    """Create or update a user modifier func; then it appears in the params editor.
-
-    Named by the ``def`` in ``source``; ``req.name`` is only the entry being edited.
-    """
-    try:
-        return save_user_func("modifier", req.name, req.source, _user_func_base_dir(req.output_dir))
-    except UserFuncError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-
-
-@app.delete("/api/modifier_funcs/{name}")
-def delete_modifier_func(name: str, output_dir: str = "") -> dict:
-    """Remove a user modifier func."""
-    try:
-        return delete_user_func("modifier", name, _user_func_base_dir(output_dir))
-    except UserFuncError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+for _kind, _label in (
+    ("operation", "observable operations (issue #58)"),
+    ("cost", "cost functions (issue #104)"),
+    # The third kind, and the one a params_for_id refers to rather than an
+    # obs_data: a modifier maps the calibrated theta to each parameter it
+    # governs (CA #383).
+    ("modifier", "parameter modifiers (CA #383)"),
+):
+    _register_user_func_routes(_kind, _label)
 
 
 class SaveParamsRequest(BaseModel):

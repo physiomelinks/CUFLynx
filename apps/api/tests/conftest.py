@@ -277,3 +277,29 @@ def upload_bundle(client: TestClient, paths):
     field, returning the raw response so error cases can assert on it too."""
     files = [("files", (p.name, p.read_bytes(), "application/xml")) for p in paths]
     return client.post("/api/models/upload", files=files)
+
+
+#: What a finished calibration leaves behind, in circulatory_autogen's own
+#: formats -- which is what the managers read (#210), so it is what a fake runner
+#: has to produce.
+#:
+#: Held as source because three of the fakes are executed as a *subprocess* and
+#: cannot import anything of ours, while two run in-process and want the
+#: function. Defining the function from this same text keeps one copy: five test
+#: modules were each hand-rolling it, four with their own copy of the reason.
+WRITE_CA_RESULTS_SRC = '''
+import csv
+import numpy as np
+from pathlib import Path
+
+
+def write_ca_results(out_dir, param_names=(["a/x"],), values=(1.0,), cost=0.0):
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    np.save(str(out / "best_param_vals.npy"), np.array(values, dtype=float))
+    np.save(str(out / "best_cost.npy"), np.array([cost], dtype=float))
+    with open(out / "param_names.csv", "w", newline="") as fh:
+        csv.writer(fh).writerows(param_names)
+'''
+
+exec(WRITE_CA_RESULTS_SRC, globals())  # noqa: S102 - one definition, two uses

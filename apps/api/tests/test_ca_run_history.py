@@ -268,3 +268,241 @@ def test_no_runner_or_manager_names_results_json_in_code():
         if '"results.json"' in text or "'results.json'" in text:
             offenders.append(name)
     assert not offenders, f"results.json is back in {offenders}"
+
+
+# ---------------------------------------------------------------------------
+# The live progress payload
+#
+# These moved here from test_calibration.py along with the ~260 lines of
+# hand-written parsing they used to cover. The fixtures are unchanged -- the same
+# CA files, the same torn trailing rows -- because the point is that CA's own
+# reader answers them identically.
+# ---------------------------------------------------------------------------
+def test_progress_parses_a_case_subdir_and_tolerates_a_torn_row(tmp_path):
+    sub = tmp_path / "genetic_algorithm_model_obs"
+    sub.mkdir()
+    # Two full generations plus a partially-flushed final row.
+    (sub / "best_cost_history.csv").write_text(
+        "0.9, 1.0, 1.1\n0.4, 0.6, 0.8\n0.3, 0.3"
+    )
+    (sub / "best_param_vals_history.csv").write_text(
+        "global q_lv_init,aortic_root C\n0.75, 0.30\n1.00, 0.29\n1.00,"
+    )
+    hist = crh.progress_history(str(tmp_path))
+    assert hist["param_names"] == ["global q_lv_init", "aortic_root C"]
+    # A genetic algorithm writes its whole sorted top-10 per generation, so cost
+    # rows are variable-width by design and are not filtered; best is column 0.
+    assert [row[0] for row in hist["cost_history"]] == [0.9, 0.4, 0.3]
+    # Parameters are fixed-width, so the half-flushed row goes. CA keeps it -- it
+    # guards against *unparseable* rows, not short ones -- and a run is polled
+    # while it is being written, so left in it adds a phantom point every poll.
+    assert hist["param_history"] == [[0.75, 0.30], [1.00, 0.29]]
+
+
+def test_progress_of_an_empty_directory_is_the_empty_payload(tmp_path):
+    assert crh.progress_history(str(tmp_path)) == {
+        "param_names": [],
+        "cost_history": [],
+        "param_history": [],
+        "start_costs": [],
+        "start_params": {"param_names": [], "starts": []},
+        "grad_history": [],
+        "start_grads": {"param_names": [], "starts": []},
+    }
+
+
+def test_the_parameter_history_stays_normalised(tmp_path):
+    """The Progress plot pins its y-axis to [0, 1], titles it "normalised value"
+    and denormalises in the tooltip. CA returns the series both ways; taking its
+    denormalised one would plot physical values on a normalised axis and then
+    convert them a second time.
+
+    The trap is live, not theoretical: CA writes param_bounds.json on every real
+    run, so its denormalised series is populated in production and absent from
+    most fixtures -- wrong in the app, green in CI. Hence the bounds file here.
+    """
+    sub = tmp_path / "genetic_algorithm_model_obs"
+    sub.mkdir()
+    (sub / "best_param_vals_history.csv").write_text("a x,b y\n0.25, 0.50\n")
+    (sub / "param_bounds.json").write_text(
+        json.dumps({"param_labels": ["a/x", "b/y"],
+                    "param_mins": [0.0, 100.0], "param_maxs": [4.0, 300.0]})
+    )
+    # 0.25 and 0.50 as written -- not 1.0 and 200.0, which is what denormalising
+    # against those bounds would give.
+    assert crh.progress_history(str(tmp_path))["param_history"] == [[0.25, 0.50]]
+
+
+def test_multi_start_costs_are_demuxed_per_start(tmp_path):
+    """CA appends `start_idx, iteration, cost` rows interleaved across MPI ranks;
+    each start must come back as one cost-vs-iteration curve."""
+    sub = tmp_path / "sp_minimize_model_obs"
+    sub.mkdir()
+    # With the header CA actually writes (optimisers.py:1508). The old CUFLynx
+    # parser tolerated a headerless file, so the fixture never had one; CA skips
+    # a header here, so a headerless fixture silently loses its first row.
+    (sub / "multi_start_cost_history.csv").write_text(
+        "start_idx, iteration, cost\n"
+        "0,0,1.5\n1,0,2.0\n2,0,3.0\n0,1,1.2\n1,1,1.1\n0,2,1.0\n"
+    )
+    assert crh.progress_history(str(tmp_path))["start_costs"] == [
+        [1.5, 1.2, 1.0],
+        [2.0, 1.1],
+        [3.0],
+    ]
+
+
+def test_multi_start_streams_are_empty_for_a_single_start_run(tmp_path):
+    """GA / single-start runs write none of the multi_start_* files."""
+    sub = tmp_path / "genetic_algorithm_model_obs"
+    sub.mkdir()
+    (sub / "best_cost_history.csv").write_text("0.9\n0.4\n")
+    hist = crh.progress_history(str(tmp_path))
+    assert hist["start_costs"] == []
+    assert hist["start_params"] == {"param_names": [], "starts": []}
+    assert hist["start_grads"] == {"param_names": [], "starts": []}
+    assert hist["grad_history"] == []
+
+
+def test_multi_start_params_are_demuxed_and_named(tmp_path):
+    """Interleaved `start_idx, iteration, <vals>` rows group into one
+    [iteration][param] matrix per start.
+
+    The names come from best_param_vals_history.csv's header, which CA writes on
+    rank 0 for every method before any optimiser starts -- not from the
+    multi-start file's own header, which CA's reader does not hand back.
+    """
+    sub = tmp_path / "sp_minimize_model_obs"
+    sub.mkdir()
+    (sub / "best_param_vals_history.csv").write_text("well x,well y\n")
+    (sub / "multi_start_param_vals_history.csv").write_text(
+        "start_idx, iteration, well x, well y\n"
+        "0, 0, 1.2, 3.4\n"
+        "1, 0, 2.2, 4.4\n"
+        "0, 1, 1.0, 3.0\n"
+        "1, 1, 1.9, 4.0\n"
+    )
+    assert crh.progress_history(str(tmp_path))["start_params"] == {
+        "param_names": ["well x", "well y"],
+        "starts": [
+            [[1.2, 3.4], [1.0, 3.0]],
+            [[2.2, 4.4], [1.9, 4.0]],
+        ],
+    }
+
+
+def test_a_torn_multi_start_row_is_dropped(tmp_path):
+    sub = tmp_path / "sp_minimize_model_obs"
+    sub.mkdir()
+    (sub / "best_param_vals_history.csv").write_text("well x,well y\n")
+    (sub / "multi_start_param_vals_history.csv").write_text(
+        "start_idx, iteration, well x, well y\n0, 0, 1.2, 3.4\n0, 1, 1.0"
+    )
+    assert crh.progress_history(str(tmp_path))["start_params"]["starts"] == [[[1.2, 3.4]]]
+
+
+def test_the_gradient_history_drops_its_header_and_torn_row(tmp_path):
+    """CA #296: a header row of param labels, then one dJ/dp row per L-BFGS-B
+    iteration in lockstep with the cost history, then a final best-gradient row."""
+    sub = tmp_path / "sp_minimize_model_obs"
+    sub.mkdir()
+    (sub / "best_gradient_history.csv").write_text(
+        "well x, well y\n"
+        "1.0e+00, -2.0e+00\n"
+        "5.0e-01, -1.0e+00\n"
+        "1.0e-03, -2.0e-03\n"
+        "9.0e-04"
+    )
+    assert crh.progress_history(str(tmp_path))["grad_history"] == [
+        [1.0, -2.0],
+        [0.5, -1.0],
+        [1.0e-03, -2.0e-03],
+    ]
+
+
+def test_multi_start_gradients_are_demuxed_per_start(tmp_path):
+    """CA #296: shares the (start_idx, iteration) keying of the other streams."""
+    sub = tmp_path / "sp_minimize_model_obs"
+    sub.mkdir()
+    (sub / "best_param_vals_history.csv").write_text("well x,well y\n")
+    (sub / "multi_start_gradient_history.csv").write_text(
+        "start_idx, iteration, well x, well y\n"
+        "0, 0, 1.0, -2.0\n"
+        "1, 0, 3.0, -4.0\n"
+        "0, 1, 0.5, -1.0\n"
+        "1, 1, 1.5, -2.0\n"
+        "0, 2, 1.0"
+    )
+    assert crh.progress_history(str(tmp_path))["start_grads"] == {
+        "param_names": ["well x", "well y"],
+        "starts": [
+            [[1.0, -2.0], [0.5, -1.0]],
+            [[3.0, -4.0], [1.5, -2.0]],
+        ],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Clearing between runs
+# ---------------------------------------------------------------------------
+def test_clearing_removes_the_gradient_streams_too(tmp_path):
+    """They are transient progress files like the rest: CA appends and never
+    truncates, so a reused directory would draw the previous run's gradients."""
+    sub = tmp_path / "sp_minimize_model_run1"
+    sub.mkdir()
+    (sub / "best_gradient_history.csv").write_text("a, b\n1.0, 2.0\n")
+    (sub / "multi_start_gradient_history.csv").write_text(
+        "start_idx, iteration, a, b\n0, 0, 1.0, 2.0\n"
+    )
+    crh.clear_run_history(str(tmp_path))
+    assert not (sub / "best_gradient_history.csv").exists()
+    assert not (sub / "multi_start_gradient_history.csv").exists()
+
+
+def test_the_freshest_run_directory_wins(tmp_path):
+    """A reused outputs dir can hold a previous run's history under another
+    method's subdir; the live plot must follow the freshest, or a second run
+    shows stale data that never changes."""
+    import time
+
+    old = tmp_path / "genetic_algorithm_model_run1"
+    old.mkdir()
+    (old / "best_cost_history.csv").write_text("9.9\n8.8\n")
+    time.sleep(0.02)
+    new = tmp_path / "sp_minimize_model_run2"
+    new.mkdir()
+    (new / "best_cost_history.csv").write_text("5.0\n4.0\n3.0\n")
+
+    hist = crh.progress_history(str(tmp_path))
+    assert [r[0] for r in hist["cost_history"]] == [5.0, 4.0, 3.0]
+
+
+def test_clearing_reaches_every_case_subdir_and_spares_the_results(tmp_path):
+    """Regression, and the reason CUFLynx owns the *scope* of the clear.
+
+    CA's own clearer locates one run directory and clears that. An outputs
+    directory reused across methods accumulates a subdir per run, so clearing
+    only the newest leaves the reader free to fall back to an older one and serve
+    its history as this run's -- exactly the stale-plot bug being guarded here.
+    """
+    a = tmp_path / "genetic_algorithm_model_run1"
+    b = tmp_path / "sp_minimize_model_run2"
+    a.mkdir()
+    b.mkdir()
+    (a / "best_cost_history.csv").write_text("9.9\n8.8\n7.7\n")
+    (a / "best_param_vals_history.csv").write_text("a,b\n0.1,0.2\n")
+    (b / "best_cost_history.csv").write_text("5.0\n4.0\n")
+    (tmp_path / "best_cost_history.csv").write_text("1.0\n")
+    np.save(a / "best_param_vals.npy", np.array([1.0]))  # a result -> keep
+
+    assert crh.progress_history(str(tmp_path))["cost_history"]
+
+    crh.clear_run_history(str(tmp_path))
+
+    assert crh.progress_history(str(tmp_path))["cost_history"] == []
+    assert not (a / "best_cost_history.csv").exists()
+    assert not (b / "best_cost_history.csv").exists()
+    assert not (tmp_path / "best_cost_history.csv").exists()
+    # CA #300: a cancelled run's best-so-far is worth keeping until a new run
+    # replaces it -- it is what continuing a stopped calibration reads.
+    assert (a / "best_param_vals.npy").exists()

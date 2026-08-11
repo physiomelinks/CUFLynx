@@ -119,50 +119,6 @@ def _interpreter_bindirs(exe: str) -> list[Path]:
     return dirs
 
 
-COST_HISTORY_FILE = "best_cost_history.csv"
-PARAM_HISTORY_FILE = "best_param_vals_history.csv"
-#: multi_start_sp_minimize streams one ``start_idx, iteration, cost`` row per
-#: L-BFGS-B iteration here (CA #286), so the Progress tab can draw one cost line
-#: per start while the run is in progress.
-MULTISTART_COST_FILE = "multi_start_cost_history.csv"
-#: Sibling of MULTISTART_COST_FILE (CA #291): a header row naming the params
-#: followed by ``start_idx, iteration, <param values…>`` rows (actual,
-#: unnormalised values), so the Progress tab can draw each parameter's per-start
-#: trajectory alongside the cost while the run is in progress.
-MULTISTART_PARAM_FILE = "multi_start_param_vals_history.csv"
-#: Single-start gradient stream (CA #296): a header row of param labels followed
-#: by one ``dJ/dp`` (real parameter space) row per L-BFGS-B iteration, in lockstep
-#: with COST_HISTORY_FILE, plus a final best-gradient row. Only gradient-based
-#: (sp_minimize) runs write it, so the Progress tab can toggle the cost plot to
-#: the cost gradient and watch the descent approach a stationary point.
-GRAD_HISTORY_FILE = "best_gradient_history.csv"
-#: Multi-start sibling of GRAD_HISTORY_FILE (CA #296): a header naming the params
-#: followed by ``start_idx, iteration, <dJ/dp values…>`` rows, sharing the same
-#: (start_idx, iteration) keys as MULTISTART_COST_FILE / MULTISTART_PARAM_FILE.
-MULTISTART_GRAD_FILE = "multi_start_gradient_history.csv"
-
-
-#: Transient per-generation progress files CA appends to during a run (they drive
-#: the live cost/param plots). CA opens them in append mode and creates a new
-#: <case_type>_<prefix> subdir per method, so in a reused output_dir a previous
-#: run's copies linger; they are cleared at the start of each run (see
-#: _clear_progress_history) so a second run's plots start fresh and update live.
-HISTORY_FILES = (
-    COST_HISTORY_FILE,
-    PARAM_HISTORY_FILE,
-    MULTISTART_COST_FILE,
-    MULTISTART_PARAM_FILE,
-    GRAD_HISTORY_FILE,
-    MULTISTART_GRAD_FILE,
-)
-
-#: CA writes the *actual* best-so-far parameter vector here, incrementally (each time
-#: the optimiser finds a new best — see circulatory_autogen optimisers.py). So it
-#: exists even when a run is stopped early, which is what lets a cancelled
-#: calibration be continued from (#83).
-BEST_PARAM_VALS_FILE = "best_param_vals.npy"
-
-
 def finished_before_exiting(lines: list, done_marker: str, fail_marker: str) -> bool:
     """Whether the runner completed its work before a non-zero exit.
 
@@ -249,7 +205,7 @@ def clear_run_config(config_path: str | None) -> None:
 def _read_interrupted_best_params(output_dir: str, params_path: str | None) -> dict | None:
     """Best-so-far params of a run that ended early, mapped to ``{qname: value}``.
 
-    Reads CA's incrementally-saved :data:`BEST_PARAM_VALS_FILE` (a bare value array,
+    Reads CA's incrementally-saved ``best_param_vals.npy`` (a bare value array,
     ordered as the params_for_id rows) and pairs it with the entries parsed from the
     params CSV -- one per row, matching the file's one value per row. A grouped row
     (several vessels varying together, #193) contributes its one value under every
@@ -260,7 +216,10 @@ def _read_interrupted_best_params(output_dir: str, params_path: str | None) -> d
     """
     if not params_path:
         return None
-    npy = _find_history_file(output_dir, BEST_PARAM_VALS_FILE)
+    run_dir = ca_run_history.find_run_dir(output_dir)
+    npy = os.path.join(run_dir, ca_run_history.BEST_PARAM_VALS_FILE) if run_dir else None
+    if npy and not os.path.isfile(npy):
+        npy = None
     if not npy:
         return None
     try:
@@ -280,265 +239,6 @@ def _read_interrupted_best_params(output_dir: str, params_path: str | None) -> d
         return None
 
 
-def _find_history_file(output_dir: str, name: str) -> str | None:
-    """Locate a history CSV under output_dir, tolerating the ``<case_type>``
-    subdir circulatory_autogen creates (e.g. ``genetic_algorithm_<prefix>_…``).
-
-    Prefer the most-recently-modified match: a reused output_dir can hold copies
-    from earlier runs (in other method subdirs), and picking an arbitrary one
-    would show stale data that never changes during the current run.
-    """
-    import glob
-
-    direct = os.path.join(output_dir, name)
-    if os.path.exists(direct):
-        return direct
-    matches = glob.glob(os.path.join(output_dir, "**", name), recursive=True)
-    if not matches:
-        return None
-    return max(matches, key=os.path.getmtime)
-
-
-def _clear_progress_history(output_dir: str) -> None:
-    """Remove any leftover progress-history CSVs under output_dir.
-
-    CA appends to these and never truncates, and a run may reuse an output_dir
-    (a user-configured outputs dir is fixed). Without clearing, a new run's live
-    plots read the previous run's history and appear stuck. Best-effort: never
-    raises. Only the transient *_history.csv files are removed -- final results
-    (results.json, param CSVs, plots) are left intact.
-    """
-    import glob
-
-    for name in HISTORY_FILES:
-        for path in glob.glob(os.path.join(output_dir, "**", name), recursive=True):
-            try:
-                os.remove(path)
-            except OSError:
-                pass
-
-
-def _read_history(output_dir: str) -> dict:
-    """Parse the calibration history CSVs into JSON-friendly arrays.
-
-    ``best_cost_history.csv`` has one row of (up to 10) comma-separated costs per
-    generation, best first. ``best_param_vals_history.csv`` has a header row of
-    display-friendly param names followed by one row of normalised best param
-    values per generation. Never raises: missing files / partially-written final
-    rows yield empty or truncated arrays so a mid-run poll is always safe.
-    """
-    param_names: list[str] = []
-    cost_history: list[list[float]] = []
-    param_history: list[list[float]] = []
-
-    cost_path = _find_history_file(output_dir, COST_HISTORY_FILE)
-    if cost_path:
-        try:
-            for line in Path(cost_path).read_text().splitlines():
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    cost_history.append([float(x) for x in line.split(",")])
-                except ValueError:
-                    # partially-flushed final row mid-write; skip it
-                    continue
-        except OSError:
-            pass
-
-    param_path = _find_history_file(output_dir, PARAM_HISTORY_FILE)
-    if param_path:
-        try:
-            lines = Path(param_path).read_text().splitlines()
-            if lines:
-                param_names = [c.strip() for c in lines[0].split(",")]
-                width = len(param_names)
-                for line in lines[1:]:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        row = [float(x) for x in line.split(",")]
-                    except ValueError:
-                        continue
-                    if len(row) == width:
-                        param_history.append(row)
-        except OSError:
-            pass
-
-    return {
-        "param_names": param_names,
-        "cost_history": cost_history,
-        "param_history": param_history,
-        "start_costs": _read_multistart_costs(output_dir),
-        "start_params": _read_multistart_params(output_dir),
-        "grad_history": _read_grad_history(output_dir),
-        "start_grads": _read_multistart_grads(output_dir),
-    }
-
-
-def _read_grad_history(output_dir: str) -> list[list[float]]:
-    """Single-start cost-gradient trajectory from best_gradient_history.csv (CA #296).
-
-    A header row of param labels followed by one ``dJ/dp`` (real parameter space)
-    row per L-BFGS-B iteration, in lockstep with best_cost_history.csv, plus a
-    final best-gradient row. Only gradient-based (sp_minimize) runs write it, so
-    the Progress tab can offer a cost/gradient toggle. Returns one gradient vector
-    per iteration ([] when absent, e.g. GA / population-based runs). Never raises:
-    partial mid-write rows (wrong width) are skipped.
-    """
-    grad_history: list[list[float]] = []
-    path = _find_history_file(output_dir, GRAD_HISTORY_FILE)
-    if not path:
-        return grad_history
-    try:
-        lines = Path(path).read_text().splitlines()
-    except OSError:
-        return grad_history
-    if not lines:
-        return grad_history
-    width = len([c for c in lines[0].split(",")])
-    for line in lines[1:]:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            row = [float(x) for x in line.split(",")]
-        except ValueError:
-            continue  # header repeat or partially-flushed row
-        if len(row) == width:
-            grad_history.append(row)
-    return grad_history
-
-
-def _read_multistart_grads(output_dir: str) -> dict:
-    """Per-start cost-gradient trajectories from multi_start_gradient_history.csv (CA #296).
-
-    Sibling of :func:`_read_multistart_params`: a header naming the params, then
-    ``start_idx, iteration, <dJ/dp values…>`` rows interleaved across MPI ranks.
-    Group by start and order by iteration into one ``[iteration][param]`` matrix
-    per start (index = start_idx). Returns ``{"param_names": [], "starts": []}``
-    when the file is absent (GA / single-start runs). Never raises: partial
-    mid-write rows (wrong width / unparseable) are skipped.
-    """
-    empty = {"param_names": [], "starts": []}
-    path = _find_history_file(output_dir, MULTISTART_GRAD_FILE)
-    if not path:
-        return empty
-    try:
-        lines = Path(path).read_text().splitlines()
-    except OSError:
-        return empty
-    if not lines:
-        return empty
-    # Header: "start_idx, iteration, <param label>, …" -> drop the two key cols.
-    param_names = [c.strip() for c in lines[0].split(",")][2:]
-    width = len(param_names)
-    if width == 0:
-        return empty
-    by_start: dict[int, dict[int, list[float]]] = {}
-    for line in lines[1:]:
-        parts = line.split(",")
-        if len(parts) != width + 2:
-            continue
-        try:
-            start = int(float(parts[0]))
-            iteration = int(float(parts[1]))
-            vals = [float(x) for x in parts[2:]]
-        except ValueError:
-            continue  # header repeat or partially-flushed row
-        by_start.setdefault(start, {})[iteration] = vals
-    if not by_start:
-        return {"param_names": param_names, "starts": []}
-    starts = [
-        [by_start[s][i] for i in sorted(by_start[s])] if s in by_start else []
-        for s in range(max(by_start) + 1)
-    ]
-    return {"param_names": param_names, "starts": starts}
-
-
-def _read_multistart_costs(output_dir: str) -> list[list[float]]:
-    """Per-start cost curves from multi_start_cost_history.csv, for the multi-start
-    gradient-descent plot.
-
-    CA streams ``start_idx, iteration, cost`` rows, interleaved across MPI ranks.
-    Group by start and order by iteration into one cost list per start (index =
-    start_idx); returns [] when the file is absent (GA / single-start runs).
-    Never raises: partial mid-write rows are skipped.
-    """
-    path = _find_history_file(output_dir, MULTISTART_COST_FILE)
-    if not path:
-        return []
-    by_start: dict[int, dict[int, float]] = {}
-    try:
-        for line in Path(path).read_text().splitlines():
-            parts = line.split(",")
-            if len(parts) != 3:
-                continue
-            try:
-                start = int(float(parts[0]))
-                iteration = int(float(parts[1]))
-                cost = float(parts[2])
-            except ValueError:
-                continue  # header or partially-flushed row
-            by_start.setdefault(start, {})[iteration] = cost
-    except OSError:
-        return []
-    if not by_start:
-        return []
-    return [
-        [by_start[s][i] for i in sorted(by_start[s])] if s in by_start else []
-        for s in range(max(by_start) + 1)
-    ]
-
-
-def _read_multistart_params(output_dir: str) -> dict:
-    """Per-start parameter trajectories from multi_start_param_vals_history.csv.
-
-    CA writes a header naming the params, then ``start_idx, iteration, <param
-    values…>`` rows (actual, unnormalised values), interleaved across MPI ranks.
-    Group by start and order by iteration into one ``[iteration][param]`` matrix
-    per start (index = start_idx). Returns ``{"param_names": [], "starts": []}``
-    when the file is absent (GA / single-start runs). Never raises: partial
-    mid-write rows (wrong width / unparseable) are skipped.
-    """
-    empty = {"param_names": [], "starts": []}
-    path = _find_history_file(output_dir, MULTISTART_PARAM_FILE)
-    if not path:
-        return empty
-    try:
-        lines = Path(path).read_text().splitlines()
-    except OSError:
-        return empty
-    if not lines:
-        return empty
-    # Header: "start_idx, iteration, <param label>, …" -> drop the two key cols.
-    param_names = [c.strip() for c in lines[0].split(",")][2:]
-    width = len(param_names)
-    if width == 0:
-        return empty
-    by_start: dict[int, dict[int, list[float]]] = {}
-    for line in lines[1:]:
-        parts = line.split(",")
-        if len(parts) != width + 2:
-            continue
-        try:
-            start = int(float(parts[0]))
-            iteration = int(float(parts[1]))
-            vals = [float(x) for x in parts[2:]]
-        except ValueError:
-            continue  # header repeat or partially-flushed row
-        by_start.setdefault(start, {})[iteration] = vals
-    if not by_start:
-        return {"param_names": param_names, "starts": []}
-    starts = [
-        [by_start[s][i] for i in sorted(by_start[s])] if s in by_start else []
-        for s in range(max(by_start) + 1)
-    ]
-    return {"param_names": param_names, "starts": starts}
-
-# Modules a Python interpreter needs to run calibrations. myokit + libcellml are
-# required for any run; nevergrad (CMA-ES) and mpi4py (multi-core) are optional.
 REQUIRED_MODULES = ["myokit", "libcellml"]
 OPTIONAL_MODULES = ["nevergrad", "mpi4py"]
 
@@ -877,7 +577,7 @@ class CalibrationManager:
             os.makedirs(output_dir, exist_ok=True)
             # A reused output_dir may hold a previous run's progress history; clear
             # it so this run's live plots start fresh instead of reading stale data.
-            _clear_progress_history(output_dir)
+            ca_run_history.clear_run_history(output_dir)
             config_path = write_run_config(config, "calib_config.json")
 
             job = CalibrationJob(
@@ -991,7 +691,7 @@ class CalibrationManager:
         job = self._job
         if job is None or job.id != job_id:
             return None
-        hist = _read_history(job.output_dir)
+        hist = ca_run_history.progress_history(job.output_dir)
         return {"job_id": job.id, "state": job.state, **hist}
 
     def cancel(self, job_id: str) -> bool:
