@@ -30,6 +30,8 @@ const props = defineProps({
   // (casadi_backend refuses them by design), so the buttons that create them
   // are disabled rather than letting the run fail later.
   generatedModelFormat: { type: String, default: '' },
+  // Where Save writes the dated copy (#215); '' falls back to the config dir.
+  outputsDir: { type: String, default: '' },
 })
 const emit = defineEmits(['update:visible', 'saved'])
 
@@ -329,31 +331,22 @@ const canSave = computed(
   () => includedCount.value > 0 && !savedRows.value.some(rowInvalid) && !saving.value,
 )
 
-function downloadText(text, filename, type) {
-  // jsdom (tests) and some sandboxes lack createObjectURL — skip the download
-  // there but still run the apply path below.
-  if (typeof URL === 'undefined' || !URL.createObjectURL) return
-  const href = URL.createObjectURL(new Blob([text], { type }))
-  const a = document.createElement('a')
-  a.href = href
-  a.download = filename
-  document.body.appendChild(a)
-  a.click()
-  a.remove()
-  URL.revokeObjectURL(href)
-}
-
 async function onSave() {
   error.value = ''
   // Saved as the JSON form from here on: the CSV cannot express an override of
   // differently-named parameters, nor a modifier at all. CSV stays load-only.
   const text = JSON.stringify(rowsToDoc(savedRows.value), null, 1)
   const filename = versionedJsonName(props.loadedFilename, props.modelName)
-  downloadText(text, filename, 'application/json')
   saving.value = true
   try {
     const file = new File([text], filename, { type: 'application/json' })
-    const data = await uploadParamsForId(file, props.modelId)
+    // The server writes the dated copy where the study lives (#215): the
+    // outputs directory, or its own config dir when none is set. No browser
+    // download — a file the user cannot find is not saved.
+    const data = await uploadParamsForId(file, props.modelId, {
+      filename,
+      outputsDir: props.outputsDir,
+    })
     emit('saved', { ...data, filename })
     emit('update:visible', false)
   } catch (e) {
@@ -374,8 +367,8 @@ async function onSave() {
     @update:visible="emit('update:visible', $event)"
   >
     <p class="ep-hint">
-      Tick the parameters to include and set their ranges. Saving downloads a new
-      <code>…_yymmdd.json</code> (the original is kept) and applies it.
+      Tick the parameters to include and set their ranges. Saving writes a new
+      <code>…_yymmdd.json</code> to the output directory (the original is kept) and applies it.
       <i
         class="pi pi-info-circle ep-hint-info"
         data-testid="ep-ranges-hint"
@@ -672,7 +665,7 @@ async function onSave() {
       <span class="ep-count">{{ includedCount }} included</span>
       <Button label="Cancel" size="small" text @click="emit('update:visible', false)" />
       <Button
-        label="Save & download"
+        label="Save"
         size="small"
         :disabled="!canSave"
         data-testid="ep-save"

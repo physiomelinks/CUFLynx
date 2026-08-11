@@ -178,11 +178,15 @@ export async function uploadOmex(file, outputDir = '') {
   return data
 }
 
-export async function uploadObsData(modelId, obsData) {
-  const { data } = await axios.post(url('/api/obs_data/upload'), {
-    model_id: modelId,
-    obs_data: obsData,
-  })
+// `save` (#215) asks the server to also write the dated copy where the study
+// lives — { outputsDir, filename } — instead of the browser downloading it.
+// Omitted for a plain upload, which already has a file on disk.
+export async function uploadObsData(modelId, obsData, save = null) {
+  const { data } = await axios.post(
+    url('/api/obs_data/upload'),
+    { model_id: modelId, obs_data: obsData },
+    { params: save?.filename ? { filename: save.filename, output_dir: save.outputsDir || '' } : {} },
+  )
   return data
 }
 
@@ -233,11 +237,13 @@ export const getUserOperations = () => getUserFuncs('operation')
 export const saveUserOperation = (name, source) => saveUserFunc('operation', name, source)
 export const deleteUserOperation = (name) => deleteUserFunc('operation', name)
 
-export async function uploadParamsForId(file, modelId) {
+export async function uploadParamsForId(file, modelId, save = null) {
   const form = new FormData()
   form.append('file', file)
   if (modelId) form.append('model_id', modelId)
-  const { data } = await axios.post(url('/api/params_for_id/upload'), form)
+  const { data } = await axios.post(url('/api/params_for_id/upload'), form, {
+    params: save?.filename ? { filename: save.filename, output_dir: save.outputsDir || '' } : {},
+  })
   return data
 }
 

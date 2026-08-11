@@ -166,26 +166,29 @@ describe('EditParamsDialog', () => {
     expect(wrapper.find('[data-testid="ep-save"]').attributes('disabled')).toBeDefined()
   })
 
-  it('on Save: downloads a dated JSON, applies it, and emits saved', async () => {
+  it('on Save: writes a dated JSON to the output dir, applies it, and emits saved', async () => {
     uploadParamsForId.mockResolvedValue({ params: [{ qname: 'v/a' }] })
     const clickSpy = vi
       .spyOn(HTMLAnchorElement.prototype, 'click')
       .mockImplementation(() => {})
 
-    const wrapper = mountDialog()
+    const wrapper = mountDialog({ outputsDir: '/tmp/study' })
     await wrapper.find('[data-testid="ep-save"]').trigger('click')
     await flushPromises()
 
-    // download triggered
-    expect(globalThis.URL.createObjectURL).toHaveBeenCalledOnce()
-    expect(clickSpy).toHaveBeenCalledOnce()
+    // No browser download any more (#215): the server writes the dated copy
+    // where the study lives, so a saved file is one the user can find.
+    expect(globalThis.URL.createObjectURL).not.toHaveBeenCalled()
+    expect(clickSpy).not.toHaveBeenCalled()
 
     // applied via the existing upload endpoint with a File + modelId. Saved as
     // the JSON form: a CSV cannot express modifiers or cross-name groups, and a
     // study loaded from CSV keeps its stem so the lineage stays visible.
     expect(uploadParamsForId).toHaveBeenCalledOnce()
-    const [fileArg, idArg] = uploadParamsForId.mock.calls[0]
+    const [fileArg, idArg, saveArg] = uploadParamsForId.mock.calls[0]
     expect(idArg).toBe('abc')
+    expect(saveArg.outputsDir).toBe('/tmp/study')
+    expect(saveArg.filename).toMatch(/^p_\d{6}\.json$/)
     expect(fileArg).toBeInstanceOf(File)
     expect(fileArg.name).toMatch(/^p_\d{6}\.json$/) // <stem>_<yymmdd>.json
 
