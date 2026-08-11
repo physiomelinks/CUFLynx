@@ -231,6 +231,14 @@ class ParamEntry:
     # The θ at which every target sits at its baseline (1.0 for scale); what a
     # fresh modifier slider is set to. None for free entries.
     identity: float | None = None
+    # The model constants this modifier's function declares as inputs, as the
+    # entry names them: ``{input_name: qname}`` or ``{input_name: [qnames]}``
+    # depending on whether the function declared that input 'float' or 'list'
+    # (CA #383, e.g. `remainder`'s ``subtract``). CA resolves them to their model
+    # defaults once at setup. Carried verbatim rather than interpreted -- which
+    # inputs exist is the modifier function's business, and re-deriving it here
+    # is how the two drift apart. None/absent for entries that need none.
+    inputs: dict | None = None
 
     def __post_init__(self) -> None:
         if not self.qnames:
@@ -257,6 +265,7 @@ class ParamEntry:
             "operation": self.operation,
             "baselines": dict(self.baselines) if self.baselines else None,
             "identity": self.identity,
+            "inputs": dict(self.inputs) if self.inputs else None,
         }
 
 
@@ -346,6 +355,7 @@ def _modifier_entry(
     prior_params: dict,
     initial_values: dict[str, float],
     gen_index: dict,
+    inputs: dict | None = None,
 ) -> ParamEntry:
     """A modifier entry: the slider carries θ, targets get θ·baselineᵢ.
 
@@ -419,6 +429,7 @@ def _modifier_entry(
         operation=op,
         baselines=baselines,
         identity=identity,
+        inputs=dict(inputs) if inputs else None,
     )
 
 
@@ -497,6 +508,7 @@ def _entries_from_doc(
                     idx, label, modifies, operation, pmin, pmax, unbounded,
                     name_for_plotting, param_type, comment, prior,
                     dict(prior_params), initial_values, gen_index,
+                    inputs=item.get("inputs") or None,
                 )
             )
             continue

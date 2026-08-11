@@ -50,8 +50,16 @@ export async function makeDir(parent, name) {
   return data
 }
 
-export async function getConfig() {
-  const { data } = await axios.get(url('/api/config'))
+/**
+ * Runtime config. `outputsDir` is optional and only affects
+ * `param_modifier_operations`: a modifier the user wrote themselves lives under
+ * the outputs directory, so without it their own modifiers are missing from the
+ * params editor's list.
+ */
+export async function getConfig(outputsDir = '') {
+  const { data } = await axios.get(url('/api/config'), {
+    params: outputsDir ? { output_dir: outputsDir } : {},
+  })
   return data
 }
 

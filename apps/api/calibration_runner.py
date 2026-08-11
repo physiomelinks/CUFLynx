@@ -1,8 +1,10 @@
 """Standalone calibration runner — spawned as a subprocess by the API.
 
 Reads a JSON config, drives circulatory_autogen's ``CVS0DParamID`` to calibrate
-the model against the uploaded obs_data + params_for_id, and writes the best-fit
-parameters to ``<output_dir>/results.json``. Progress (per-generation cost,
+the model against the uploaded obs_data + params_for_id. The best fit is left in
+circulatory_autogen's own files (``best_param_vals.npy`` / ``best_cost.npy`` /
+``param_modifiers.json``), which the manager reads -- there is no CUFLynx summary
+format any more (#210). Progress (per-generation cost,
 etc.) is printed by circulatory_autogen straight to stdout, which the API
 captures for the terminal view; run with ``python -u`` so it streams unbuffered.
 
@@ -235,16 +237,20 @@ def run(config: dict) -> dict:
                 flush=True,
             )
             calibrated_path = None
-        payload = {
+        # No results.json. Everything below is already on disk, written by CA
+        # itself, and the manager reads it from there (#210) -- serialising a
+        # second copy put a file in the user's outputs directory that is no part
+        # of the study and made CUFLynx the author of a format duplicating CA's.
+        # The return value still carries it, because that is this function's
+        # contract with its caller inside this process.
+        result = {
             "params": params,
             "modifiers": modifiers,
             "cost": None if cost is None else float(cost),
             "calibrated_model_path": calibrated_path,
             **errors,
+            "rank": rank,
         }
-        result = {**payload, "rank": rank}
-        with open(os.path.join(output_dir, "results.json"), "w") as fh:
-            json.dump(payload, fh)
     return result
 
 

@@ -64,6 +64,32 @@ describe('rowsToDoc', () => {
     expect(doc.params[0]).not.toHaveProperty('targets')
   })
 
+  it("keeps a modifier's inputs, which CA needs to call it", () => {
+    // `remainder` cannot be called without its `subtract` list. The editor
+    // rewrites this file on every save, so dropping the key would silently
+    // break a hand-written entry the next time the user touched anything.
+    const doc = rowsToDoc([
+      freeRow({
+        name: 'q_total',
+        kind: 'modifier',
+        operation: 'remainder',
+        inputs: { subtract: ['heart/q_rv_init', 'aortic_root/q_init'] },
+        qnames: ['heart/q_lv_init'],
+        qname: 'heart/q_lv_init',
+      }),
+    ])
+    expect(doc.params[0].inputs).toEqual({
+      subtract: ['heart/q_rv_init', 'aortic_root/q_init'],
+    })
+  })
+
+  it('omits inputs when the modifier takes none', () => {
+    const doc = rowsToDoc([
+      freeRow({ kind: 'modifier', operation: 'scale', inputs: {}, qnames: ['a/C'] }),
+    ])
+    expect(doc.params[0]).not.toHaveProperty('inputs')
+  })
+
   it('omits bounds on an unbounded row', () => {
     const doc = rowsToDoc([freeRow({ unbounded: true, prior: 'normal' })])
     expect(doc.params[0].unbounded).toBe(true)

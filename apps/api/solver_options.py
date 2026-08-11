@@ -366,7 +366,8 @@ _FALLBACK_PARAM_MODIFIER_OPERATIONS = {
         {"value": "scale", "label": "Scale",
          "description": "one calibrated multiplier applied to every target's default value",
          "applies_to": "value", "dimensionless": True,
-         "default_min": 0.5, "default_max": 2.0, "identity": 1.0},
+         "default_min": 0.5, "default_max": 2.0, "identity": 1.0,
+         "inputs": {}, "user_defined": False},
     ],
 }
 
@@ -418,6 +419,10 @@ _cache: dict | None = None
 _param_id_cache: list | None = None
 _analysis_cache: dict | None = None
 _prior_cache: dict | None = None
+# {output_dir: vocabulary}. The modifier vocabulary depends on the output dir (a
+# user's own modifier file lives under it), and both keys are asked for in normal
+# use, so this is a map rather than a single slot — same rule as obs_options'
+# cache, but without the thrash a one-entry cache would have here.
 _modifier_cache: dict | None = None
 
 
@@ -904,21 +909,32 @@ def get_param_id_methods(refresh: bool = False) -> list[dict]:
     return methods
 
 
-def _introspect_param_modifier_operations() -> dict:
-    """The modifier ``operation`` vocabulary, from CA's
-    ``PARAM_MODIFIER_OPERATIONS``.
+def _introspect_param_modifier_operations(output_dir: str | None = None) -> dict:
+    """The modifier vocabulary, from CA's registry of modifier functions.
 
     Raises on a CA predating modifiers, so the caller degrades to
     :data:`_FALLBACK_PARAM_MODIFIER_OPERATIONS`. Same "introspect CA, never
-    hardcode" pattern as the priors: CA decides what a modifier may do, and an
-    operation it grows (``calculate`` is the expected next one) shows up in the
-    params editor without a change here.
+    hardcode" pattern as the priors: CA decides what a modifier may do, and one
+    it grows shows up in the params editor without a change here.
+
+    ``output_dir`` is where the user's own ``modifier_funcs_user.py`` lives, if
+    any (CA #383). Passing it means a modifier the user wrote in the GUI is
+    offered alongside CA's built-ins, exactly as ``obs_options`` does for
+    operations and costs — otherwise they could save one and never select it.
     """
     _ensure_ca_path()
     from parsers.PrimitiveParsers import (  # noqa: E402
         DEFAULT_PARAM_MODIFIER_OPERATION,
         param_modifier_operations,
     )
+
+    import user_funcs
+
+    external_path = user_funcs.external_path("modifier", output_dir)
+    try:
+        registry = param_modifier_operations(external_path)
+    except TypeError:  # older CA whose registry predates the external_path arg
+        registry = param_modifier_operations()
 
     return {
         "default": DEFAULT_PARAM_MODIFIER_OPERATION,
@@ -935,29 +951,43 @@ def _introspect_param_modifier_operations() -> dict:
                 "default_min": (meta or {}).get("default_min"),
                 "default_max": (meta or {}).get("default_max"),
                 "identity": (meta or {}).get("identity"),
+                # Extra model constants this modifier needs, ``{name: 'float' |
+                # 'list'}``: the entry supplies a qname (or several) per input
+                # and CA resolves them to their model defaults once at setup.
+                # `remainder`'s ``subtract`` is the motivating case.
+                "inputs": dict((meta or {}).get("inputs") or {}),
+                "user_defined": bool((meta or {}).get("user_defined", False)),
             }
-            for name, meta in param_modifier_operations().items()
+            for name, meta in registry.items()
         ],
     }
 
 
-def get_param_modifier_operations(refresh: bool = False) -> dict:
-    """The modifier ``operation`` vocabulary from CA's
-    ``PARAM_MODIFIER_OPERATIONS`` (introspected, not hardcoded).
+def get_param_modifier_operations(
+    refresh: bool = False, output_dir: str | None = None
+) -> dict:
+    """The modifier vocabulary from CA's registry (introspected, not hardcoded).
 
     Degrades to :data:`_FALLBACK_PARAM_MODIFIER_OPERATIONS` on a CA predating
-    modifiers. Caches a successful introspection; returns the fallback uncached
+    modifiers. Caches a successful introspection (keyed on ``output_dir``, since
+    the user's own modifier file lives under it); returns the fallback uncached
     so a later CA-dir change can still pick it up.
     """
     global _modifier_cache
-    if _modifier_cache is not None and not refresh:
-        return _modifier_cache
+    # Keyed by output_dir rather than holding one entry: the UI asks both with a
+    # directory (the params editor, which wants the user's own modifiers) and
+    # without (everything else), and a single slot would thrash between the two
+    # and re-introspect CA on every alternating call.
+    if _modifier_cache is None:
+        _modifier_cache = {}
+    if not refresh and output_dir in _modifier_cache:
+        return _modifier_cache[output_dir]
     ops, ok = _safe(
-        _introspect_param_modifier_operations,
+        lambda: _introspect_param_modifier_operations(output_dir),
         copy.deepcopy(_FALLBACK_PARAM_MODIFIER_OPERATIONS),
     )
     if ok:
-        _modifier_cache = ops
+        _modifier_cache[output_dir] = ops
     return ops
 
 

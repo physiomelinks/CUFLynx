@@ -319,7 +319,9 @@ def _restore_persisted_settings() -> None:
 _restore_persisted_settings()
 
 
-def _config_payload() -> dict:
+def _config_payload(output_dir: str = "") -> dict:
+    """The config the UI reads. ``output_dir`` is the user's outputs directory,
+    needed only because a user's own modifier funcs live under it."""
     src = _circulatory_autogen_src()
     p = Path(src)
     ca_dir = str(p.parent) if p.name == "src" else src
@@ -396,13 +398,17 @@ def _config_payload() -> dict:
         # The modifier `operation` vocabulary (CA's PARAM_MODIFIER_OPERATIONS),
         # so the editor's "create modifier parameter" menu tracks what CA can
         # actually run rather than hardcoding it.
-        "param_modifier_operations": get_param_modifier_operations(),
+        "param_modifier_operations": get_param_modifier_operations(
+            output_dir=_user_func_base_dir(output_dir)
+        ),
     }
 
 
 @app.get("/api/config")
-def get_config() -> dict:
-    return _config_payload()
+def get_config(output_dir: str = "") -> dict:
+    """``output_dir`` is optional and only widens ``param_modifier_operations``
+    to include the modifier funcs the user wrote under it."""
+    return _config_payload(output_dir)
 
 
 @app.post("/api/config")
@@ -684,8 +690,14 @@ def export_pipeline_route(req: ExportPipelineRequest) -> dict:
     except OSError as exc:
         raise _fs_error(exc, "write the export to", export_dir, user_dir=user_dir) from exc
 
+    # Every file actually written, so the UI's "what shipped" list matches the
+    # folder. plot_utilities.py used to be written and not listed, which reads
+    # as a bundle missing the module its plotting script imports.
     files = [
-        yaml_name, "run_pipeline.py", "plot_outputs.py",
+        yaml_name,
+        "run_pipeline.py",
+        export_pipeline.PLOTTING_SCRIPT_NAME,
+        export_pipeline.PLOT_UTILITIES_NAME,
         f"generated_models/{file_prefix}/{model_file}",
     ]
     if obs_file:
@@ -1108,7 +1120,13 @@ async def upload_omex(
 
     if parts["module_config"]:
         _name, blob = parts["module_config"]
-        result["module_config_path"] = omex_import.save_module_config(blob, out_dir)
+        # Beside the model in `generated_models/<prefix>/`, not among the run
+        # outputs: this is PhLynx's editor state for that model, not a result of
+        # anything. Same layout the export bundle uses, so the archive round-trips
+        # into a folder CA already understands.
+        result["module_config_path"] = omex_import.save_module_config(
+            blob, _model_dir(out_dir, Path(parts["master"] or "").stem or meta.name)
+        )
 
     # An obs_data in the archive is the author's own and always wins; only when
     # there is none does the .mmt's protocol become the study's protocol.
@@ -1524,6 +1542,19 @@ def _user_func_base_dir(output_dir: str | None) -> str | None:
     return d or None
 
 
+def _model_dir(base_dir: str | None, file_prefix: str | None) -> str | None:
+    """``<base_dir>/generated_models/<prefix>/`` — where a model's own files live.
+
+    The layout circulatory_autogen resolves ``model_path`` against and the one
+    the export bundle writes, so anything belonging to *the model* (rather than
+    to a run) has one place to go in both. ``None`` when there is no outputs
+    directory to put it under.
+    """
+    if not base_dir:
+        return None
+    return str(Path(base_dir) / "generated_models" / (file_prefix or "model"))
+
+
 def _save_edited_copy(output_dir: str | None, filename: str | None, data: bytes) -> str | None:
     """Write the dated copy of a config file the user just saved in an editor.
 
@@ -1551,61 +1582,61 @@ def _save_edited_copy(output_dir: str | None, filename: str | None, data: bytes)
     return str(target)
 
 
-# One pair of routes per kind. CUFLynx saves the func to an external file under the
-# user's output directory and points CA at it via the config keys (issue #104
-# rework; CA #303), instead of writing into CA's tracked tree.
-@app.get("/api/operation_funcs")
-def list_operation_funcs(output_dir: str = "") -> dict:
-    """User-authored observable operations + the editor templates (issue #58)."""
-    return read_user_funcs("operation", _user_func_base_dir(output_dir))
+# One trio of routes per user-func kind: list, save, delete. CUFLynx saves the
+# func to an external file under the user's output directory and points CA at it
+# via that kind's config key (issue #104 rework; CA #303, CA #383), instead of
+# writing into CA's tracked tree.
+#
+# Registered from `user_funcs.KINDS` rather than written out three times. The
+# bodies differed only by a kind string, so the third copy (modifiers) was the
+# point at which "one more near-identical block" stopped being cheaper than the
+# loop. The paths are still literal, so the URLs are exactly what they were --
+# a `{kind}` path parameter would have changed them.
+def _register_user_func_routes(kind: str, label: str) -> None:
+    def list_funcs(output_dir: str = "") -> dict:
+        return read_user_funcs(kind, _user_func_base_dir(output_dir))
+
+    def save_func(req: UserFuncRequest) -> dict:
+        try:
+            return save_user_func(
+                kind, req.name, req.source, _user_func_base_dir(req.output_dir)
+            )
+        except UserFuncError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    def delete_func(name: str, output_dir: str = "") -> dict:
+        try:
+            return delete_user_func(kind, name, _user_func_base_dir(output_dir))
+        except UserFuncError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    # Named and documented per kind, so /docs reads as it did when these were
+    # three hand-written trios.
+    list_funcs.__name__ = f"list_{kind}_funcs"
+    list_funcs.__doc__ = f"User-authored {label} + the editor templates."
+    save_func.__name__ = f"save_{kind}_func"
+    save_func.__doc__ = (
+        f"Create or update a user {kind} func; then it appears in the options "
+        f"list. Named by the ``def`` in ``source``; ``req.name`` is only the "
+        f"entry being edited."
+    )
+    delete_func.__name__ = f"delete_{kind}_func"
+    delete_func.__doc__ = f"Remove a user {kind} func."
+
+    app.get(f"/api/{kind}_funcs")(list_funcs)
+    app.post(f"/api/{kind}_funcs")(save_func)
+    app.delete(f"/api/{kind}_funcs/{{name}}")(delete_func)
 
 
-@app.post("/api/operation_funcs")
-def save_operation_func(req: UserFuncRequest) -> dict:
-    """Create or update a user operation func; then it appears in the options list.
-
-    Named by the ``def`` in ``source``; ``req.name`` is only the entry being edited.
-    """
-    try:
-        return save_user_func("operation", req.name, req.source, _user_func_base_dir(req.output_dir))
-    except UserFuncError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-
-
-@app.delete("/api/operation_funcs/{name}")
-def delete_operation_func(name: str, output_dir: str = "") -> dict:
-    """Remove a user operation func."""
-    try:
-        return delete_user_func("operation", name, _user_func_base_dir(output_dir))
-    except UserFuncError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-
-
-@app.get("/api/cost_funcs")
-def list_cost_funcs(output_dir: str = "") -> dict:
-    """User-authored cost functions + the editor templates (issue #104)."""
-    return read_user_funcs("cost", _user_func_base_dir(output_dir))
-
-
-@app.post("/api/cost_funcs")
-def save_cost_func(req: UserFuncRequest) -> dict:
-    """Create or update a user cost func; then it appears as a cost_type option.
-
-    Named by the ``def`` in ``source``; ``req.name`` is only the entry being edited.
-    """
-    try:
-        return save_user_func("cost", req.name, req.source, _user_func_base_dir(req.output_dir))
-    except UserFuncError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-
-
-@app.delete("/api/cost_funcs/{name}")
-def delete_cost_func(name: str, output_dir: str = "") -> dict:
-    """Remove a user cost func."""
-    try:
-        return delete_user_func("cost", name, _user_func_base_dir(output_dir))
-    except UserFuncError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+for _kind, _label in (
+    ("operation", "observable operations (issue #58)"),
+    ("cost", "cost functions (issue #104)"),
+    # The third kind, and the one a params_for_id refers to rather than an
+    # obs_data: a modifier maps the calibrated theta to each parameter it
+    # governs (CA #383).
+    ("modifier", "parameter modifiers (CA #383)"),
+):
+    _register_user_func_routes(_kind, _label)
 
 
 class SaveParamsRequest(BaseModel):
@@ -1680,14 +1711,31 @@ def load_params(req: LoadParamsRequest) -> dict:
 
 
 def _save_params_file(model_id: str, data: bytes | str) -> Path:
-    """Persist an uploaded params_for_id with the suffix its content needs.
+    """Persist an uploaded params_for_id, canonicalised to JSON.
+
+    **A CSV is converted on the way in** (by CA, which owns the conversion), so
+    the stored study, the export bundle and every runner see the one canonical
+    form. JSON is the only form that can express a modifier, its inputs or a
+    prior's parameters, so keeping a CSV as the stored form means those are
+    unrepresentable in whatever the user's outputs directory ends up holding.
+
+    The conversion needs CA. When it is unavailable the CSV is stored as-is
+    rather than refusing the upload: a study must not become unloadable because
+    the CA directory has not been set yet (the packaged app starts in exactly
+    that state), and CA's own CSV path still reads it.
 
     CA branches CSV-vs-JSON on the filename suffix (``get_param_id_info``), so
-    a JSON document saved under ``.csv`` would be handed to CA's CSV parser by
-    every runner. The stale other-suffix twin is removed so a format switch
-    cannot leave two files disagreeing about which is current.
+    the suffix must follow the content. The stale other-suffix twin is removed
+    so a format switch cannot leave two files disagreeing about which is current.
     """
     raw = data if isinstance(data, bytes) else data.encode()
+    if not params_json.looks_like_json(raw):
+        try:
+            doc = params_json.csv_to_json(raw)
+        except params_json.ParamsJsonError:
+            pass  # no CA: keep the CSV, which CA's own CSV path still reads
+        else:
+            raw = json.dumps(doc, indent=2).encode()
     suffix = ".json" if params_json.looks_like_json(raw) else ".csv"
     path = UPLOAD_DIR / f"{model_id}_params_for_id{suffix}"
     path.write_bytes(raw)

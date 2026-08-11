@@ -72,7 +72,18 @@ def _run_local_runner(monkeypatch, tmp_path, gradient_method):
 
     def fake_compute(sa, settings, **kwargs):
         received.update(kwargs)
-        return {"indices": {"local": {}}, "method": "local"}
+        # The full payload shape: the runner now writes it out in CA's
+        # local-sensitivity CSV format, so a stub missing a key would fail there
+        # rather than in what this test is actually about.
+        return {
+            "indices": {"local": {}},
+            "method": "local",
+            "param_names": [],
+            "output_names": [],
+            "gradient_method": settings.get("gradient_method"),
+            "nominal": [],
+            "nominal_source": "test",
+        }
 
     monkeypatch.setattr(ls, "compute_local_sensitivity", fake_compute)
 
@@ -100,8 +111,13 @@ def test_the_runner_builds_the_fsa_engine_for_cas_auto_spelling(tmp_path, monkey
     assert received["engine"] == "ENGINE"
 
 
-def test_the_runner_still_skips_the_engine_for_fd(tmp_path, monkeypatch):
-    """The engine is a full CVS0DParamID construction; FD must not pay for it."""
+def test_the_runner_builds_the_engine_for_fd_too(tmp_path, monkeypatch):
+    """FD is computed by circulatory_autogen's accessor like the other two.
+
+    It used to run off the SA manager through CUFLynx's own difference loop --
+    a reimplementation of CA's ``fd_backend``. One code path means one engine,
+    built for every gradient method rather than only the analytic ones.
+    """
     built, received = _run_local_runner(monkeypatch, tmp_path, "FD")
-    assert not built
-    assert received["engine"] is None
+    assert built == ["engine"]
+    assert received["engine"] == "ENGINE"

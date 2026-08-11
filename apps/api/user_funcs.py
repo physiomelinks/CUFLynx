@@ -1,9 +1,17 @@
-"""User-authored observable *operation* and *cost* funcs for circulatory_autogen.
+"""User-authored *operation*, *cost* and *modifier* funcs for circulatory_autogen.
 
-Issue #58 (+ #104 rework): let a user write their own operation func (the
-reduction applied to a data_item's operand series -> the scalar a cost function
-compares) *and* their own cost func (compares a model output to a target ->
-scalar cost) from the GUI, without opening circulatory_autogen.
+Issue #58 (+ #104 rework): let a user write their own funcs from the GUI, without
+opening circulatory_autogen. Three kinds, distinguished by what they act on:
+
+- **operation** — reduces a data_item's operand series to the scalar a cost func
+  compares. Declared in obs_data.
+- **cost** — compares a model output to its target and returns a scalar cost.
+  Declared in obs_data.
+- **modifier** — maps one calibrated theta to each model parameter it governs
+  (``p_i = fn(theta, baseline_i, **inputs)``). Declared in params_for_id (CA #383).
+
+An operation acts on an *output*, a modifier acts on a *parameter* — CA's own
+vocabulary, worth keeping straight because the two were once the same word.
 
 **External-file design (no bridge into CA's tree).** Each kind is stored in a
 single file under the user's chosen **output directory** (``config_outputs_dir``,
@@ -12,14 +20,18 @@ When no output directory is set it falls back to the user config dir::
 
     <output_dir>/user_funcs/operation_funcs_user.py
     <output_dir>/user_funcs/cost_funcs_user.py
+    <output_dir>/user_funcs/modifier_funcs_user.py
 
 CUFLynx passes the file path to circulatory_autogen through CA's config keys
-``operation_funcs_external_path`` / ``cost_funcs_external_path`` (CA #303): the
-analysis runners include them in the run config (forwarded to ``CVS0DParamID`` /
-``SensitivityAnalysis``), and ``obs_options`` hands the same paths to CA's
-``get_operation_funcs_dict_for_mode`` / ``get_cost_funcs_dict_for_mode`` /
-``cost_func_metadata`` builders so the editor's dropdowns show the merged set.
-:func:`external_path` is the single source of a kind's path.
+``operation_funcs_external_path`` / ``cost_funcs_external_path`` (CA #303) and
+``modifier_funcs_external_path`` (CA #383): the analysis runners include them in
+the run config (forwarded to ``CVS0DParamID`` / ``SensitivityAnalysis``),
+``obs_options`` hands the first two to CA's ``get_operation_funcs_dict_for_mode``
+/ ``get_cost_funcs_dict_for_mode`` / ``cost_func_metadata`` builders, and
+``solver_options`` hands the third to CA's ``param_modifiers()`` — so every
+editor dropdown shows the merged set. :func:`external_path` is the single source
+of a kind's path, and the export bundle copies each file it finds beside the
+study (so a params_for_id naming a user modifier stays reproducible).
 
 CA loads the files and registers their top-level funcs alongside its built-ins,
 keeping only funcs whose ``__module__`` is the file itself — so the decorators we
@@ -288,9 +300,82 @@ def my_mle_cost(output, desired_mean, std, weight):
 }
 
 
+_MODIFIER_HEADER = '''"""User-defined parameter modifiers authored via CUFLynx (issue #58, CA #383).
+
+Each top-level function here is registered as a selectable "modifier" in the
+params_for_id editor and used by circulatory_autogen during calibration /
+sensitivity / UQ (loaded from CA's modifier_funcs_external_path config input).
+
+A modifier says how one calibrated variable (``theta``) computes each of the model
+parameters it governs::
+
+    p_i = fn(theta, baseline_i, **inputs)
+
+``baseline_i`` is that target's model-default value. ``inputs`` are extra model
+constants the params_for_id entry names by qname, resolved to their defaults once
+at setup — so nothing compounds across calibration iterations. Declare them with
+``@modifier_func(inputs={...})``: ``"float"`` for one qname, ``"list"`` for
+several. That declaration is what the params editor reads to render a field per
+input, so an undecorated function is ignored rather than half-registered.
+
+**Every modifier must be affine in theta** (``a*theta + b`` for fixed inputs).
+That is not a style rule: the analytic gradients apply a constant chain-rule
+weight ``a = dp_i/dtheta``, and theta's starting value is derived by inverting the
+mapping at the baseline. CA probes affinity numerically at setup and refuses a
+function that fails, before it can produce a silently wrong gradient.
+
+Managed by CUFLynx's "Custom funcs" dialog; the header may be regenerated.
+"""
+import numpy as np  # noqa: F401 -- available to user modifiers
+
+# Imported (not defined) so CA registers only the decorated funcs below, never this.
+from param_id.modifier_funcs import modifier_func  # noqa: F401
+'''
+
+_MODIFIER_TEMPLATES = {
+    "basic": '''@modifier_func(
+    inputs={},
+    description="one calibrated offset added to every target's default value")
+def my_modifier(theta, baseline):
+    """Map the calibrated ``theta`` to one target's value.
+
+    ``baseline`` is that target's default value in the model, so this entry shifts
+    every target it governs by the same calibrated amount. Must be affine in
+    ``theta`` — ``a*theta + b`` for fixed inputs — which CA verifies at setup.
+    """
+    return baseline + theta
+''',
+    "list_input": '''@modifier_func(
+    inputs={"subtract": "list"},
+    description="target = theta - sum(subtract): calibrate a total, derive the remainder")
+def my_remainder(theta, baseline, subtract):
+    """Derive a target as whatever is left of a calibrated total.
+
+    ``inputs`` declares each extra argument: ``"list"`` means the params_for_id
+    entry names several model constants by qname (e.g. ``heart/q_rv_init``) and
+    this receives their default values as a list of floats. Calibrating a total
+    volume and deriving one compartment from it is the motivating case (CA #383).
+    """
+    return theta - sum(subtract)
+''',
+    "float_input": '''@modifier_func(
+    inputs={"reference": "float"},
+    description="scale a target against another model constant")
+def my_relative_scale(theta, baseline, reference):
+    """Scale by ``theta`` relative to one named constant rather than the default.
+
+    ``"float"`` means the entry names exactly one qname for ``reference``, and this
+    receives that constant's default value. Note ``baseline`` goes unused here —
+    that is fine; it is offered to every modifier, not required by one.
+    """
+    return theta * reference
+''',
+}
+
+
 @dataclass(frozen=True)
 class _Kind:
-    key: str  # "operation" | "cost"
+    key: str  # "operation" | "cost" | "modifier"
     filename: str
     config_key: str  # the CA config key CUFLynx sets to the file path (CA #303)
     list_marker: str  # top-level assignment CUFLynx uses to remember ordering
@@ -327,6 +412,15 @@ _KINDS = {
                 "np", "mb", "make_math_backend",
             }
         ),
+    ),
+    "modifier": _Kind(
+        key="modifier",
+        filename="modifier_funcs_user.py",
+        config_key="modifier_funcs_external_path",
+        list_marker="CUFLYNX_MODIFIERS",
+        header=_MODIFIER_HEADER,
+        templates=_MODIFIER_TEMPLATES,
+        reserved=frozenset({"CUFLYNX_MODIFIERS", "modifier_func", "np"}),
     ),
 }
 
@@ -367,7 +461,12 @@ def external_path(kind: str, base_dir: str | None = None) -> str | None:
 def external_paths(base_dir: str | None = None) -> dict:
     """``{ca_config_key: path}`` for every kind whose file exists — splat into a
     run config so CA loads the user funcs (``operation_funcs_external_path`` /
-    ``cost_funcs_external_path``)."""
+    ``cost_funcs_external_path`` / ``modifier_funcs_external_path``).
+
+    Keyed by CA's config key rather than by our kind name, so a caller that
+    forwards these never has to know how many kinds there are: adding one here
+    puts it in the run config, the export bundle and the exported script at once.
+    """
     return {
         k.config_key: str(_user_dir(base_dir) / k.filename)
         for k in _KINDS.values()
@@ -568,12 +667,19 @@ def delete_user_func(kind: str, name: str, base_dir: str | None = None) -> dict:
 
 
 def _refresh_options() -> None:
-    try:
-        import obs_options
+    """Drop the introspection caches so a just-saved func shows in the dropdowns.
 
-        obs_options.reset_cache()
-    except Exception:  # noqa: BLE001 - options cache is best-effort
-        pass
+    Both caches, not just obs_options': operations and costs are offered by
+    ``obs_options``, modifiers by ``solver_options``, and a saved modifier that
+    does not appear in the params editor until restart reads as a failed save.
+    """
+    for module_name in ("obs_options", "solver_options"):
+        try:
+            import importlib
+
+            importlib.import_module(module_name).reset_cache()
+        except Exception:  # noqa: BLE001 - options cache is best-effort
+            pass
 
 
 # ---------------------------------------------------------------------------

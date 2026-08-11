@@ -19,11 +19,15 @@ from pathlib import Path
 # Interpreter discovery is shared with calibration — same machine, same probe.
 from calibration import (  # noqa: F401  (list_python_interpreters re-exported)
     _warn_no_mpiexec,
+    clear_run_config,
     finished_before_exiting,
+    read_meta_line,
     list_python_interpreters,
     resolve_mpiexec,
     teardown_warning,
+    write_run_config,
 )
+import ca_run_history
 from runtime_paths import default_python, runner_command, runner_launch_env, runner_path
 
 RUNNER_PATH = str(runner_path("uq_runner.py"))
@@ -41,6 +45,8 @@ class UQJob:
         # Set when the run finished but its process failed on the way out.
         self.warning: str | None = None
         self.proc: subprocess.Popen | None = None
+        # The temp file the runner was handed as argv[1], removed when it exits.
+        self.config_path: str | None = None
         self.lock = threading.Lock()
 
 
@@ -93,11 +99,10 @@ class UQManager:
                 raise RuntimeError("a UQ job is already running")
             output_dir = config["output_dir"]
             os.makedirs(output_dir, exist_ok=True)
-            config_path = os.path.join(output_dir, "uq_config.json")
-            with open(config_path, "w") as fh:
-                json.dump(config, fh)
+            config_path = write_run_config(config, "uq_config.json")
 
             job = UQJob(uuid.uuid4().hex, output_dir)
+            job.config_path = config_path
             env = runner_launch_env(config.get("python") or self.python)
             job.proc = subprocess.Popen(
                 self.build_command(config, config_path),
@@ -121,24 +126,29 @@ class UQManager:
         finally:
             code = job.proc.wait() if job.proc else -1
             self._finalize(job, code)
+            clear_run_config(job.config_path)
 
     def _finalize(self, job: UQJob, code: int) -> None:
         with job.lock:
             if job.state == "cancelled":
                 return
-            results = os.path.join(job.output_dir, "results.json")
             # A non-zero exit *after* the DONE marker is a teardown failure,
             # not a failed run -- see calibration.finished_before_exiting.
-            from uq_runner import DONE_MARKER, FAIL_MARKER  # noqa: PLC0415
+            from uq_runner import DONE_MARKER, FAIL_MARKER, META_MARKER  # noqa: PLC0415
 
             finished = code == 0 or finished_before_exiting(
                 job.lines, DONE_MARKER, FAIL_MARKER
             )
-            if finished and os.path.exists(results):
+            # The posterior is re-derived from the samples the run persisted, not
+            # from a summary it serialised for us (#210). Which method ran is the
+            # only thing no file holds, so it comes over the pipe.
+            params = (
+                ca_run_history.uq_distributions(job.output_dir) if finished else None
+            )
+            if params is not None:
                 try:
-                    data = json.loads(Path(results).read_text())
-                    job.method = data.get("method")
-                    job.params = data.get("params", [])
+                    job.method = read_meta_line(job.lines, META_MARKER).get("method")
+                    job.params = params
                     job.state = "done"
                     if code != 0:
                         job.warning = teardown_warning(code, job.lines)

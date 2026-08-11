@@ -65,9 +65,54 @@ so developers can point at a local checkout. (See issue #18.)
 
 **Analysis backends** (one API module + runner each, plus a Vue panel):
 
-- `apps/api/sensitivity.py` / `sensitivity_runner.py` — global **Sobol** sensitivity; `local_sensitivity.py` — local **finite-difference** sensitivity (`d ln Y/d ln P` about a nominal point: current values / reused calibration best fit / bounds centre; optional "run calibration first"). UI: `SensitivityPanel.vue`; results render in `AnalysisPanel.vue` (S1/ST/local heatmaps).
+- `apps/api/sensitivity.py` / `sensitivity_runner.py` — global **Sobol** sensitivity; `local_sensitivity.py` — local sensitivity (`d ln Y/d ln P` about a nominal point: current values / reused calibration best fit / bounds centre; optional "run calibration first"). UI: `SensitivityPanel.vue`; results render in `AnalysisPanel.vue` (S1/ST/local heatmaps).
+
+  **Every gradient source is computed by CA**, through the one backend-agnostic accessor `OpencorParamID.get_observable_sensitivities(param_vals, gradient_method, fd_rel_step)` — FD (`fd_backend`), AD (`casadi_backend`) and FSA (`fsa_backend`) alike, so the runner builds the param-id engine for all three. CUFLynx reimplemented the FD loop and the CasADi jacobian until #210's follow-up; that is why it had to mirror CA's flatten/fold contract for grouped and modifier rows, and why CA #390 tightening that contract broke the AD path. **Do not reimplement a gradient here.** What `local_sensitivity.py` legitimately owns is only what CA does not answer: the nominal point, the *signed* relative coefficient (CA's is unsigned and 0.0 on a degenerate denominator), the `var^{e,s} [op]` labels shared with the Sobol heatmap, and the `CVODES`/`AUTO` alias resolution. Two traps: read the nominal features **before** the sensitivities (CA's CasADi arm leaves the helper in AD mode, so a later numeric evaluation returns an `SX`), and pass `rel_step` explicitly as `fd_rel_step` (CUFLynx defaults to 1e-2, CA to 1e-3 — up to 48% apart).
 - `apps/api/calibration.py` / `calibration_runner.py` — GA parameter identification; `CalibrationPanel.vue` (also emits live settings reused by local-sensitivity "run calibration first").
 - `apps/api/uq.py` / `uq_runner.py` — uncertainty quantification; `UQPanel.vue`.
+
+**Only circulatory_autogen writes to the user's outputs directory** (#210). A run
+leaves CA's own files there and nothing else — no CUFLynx-authored results
+format, and no plumbing:
+
+- `apps/api/ca_run_history.py` is **the one place that knows CA's output
+  formats**. Managers and the exported plotting script both read through it:
+  `best_param_vals.npy` / `best_cost.npy` / `param_names.csv` /
+  `param_modifiers.json` (resolved baselines + affine chain-rule weights) /
+  `percent_error_vec.npy` + `error_vec_names.npy` (CA#341 — the vectors
+  self-identify, so labels are never guessed from obs_data) /
+  `all_outputs_n<N>_Sobol_indices.csv` / `local_sensitivity_{relative,absolute}.csv`,
+  plus CA's `param_id.run_history` reader (`read_run_history` / `clear_run_history`
+  / `find_run_dir`, CA#392). A run directory produced by **CA's own scripts** is
+  therefore just as readable as one produced through the GUI.
+  The **live Progress payload** comes from `progress_history()` here, not from
+  hand-written parsing in `calibration.py` (which used to hold ~260 lines of it).
+  Three things it owns and CA does not: it takes CA's **`param_history_norm`**,
+  never its denormalised `param_history` (the plot pins its y-axis to [0,1],
+  titles it "normalised value" and denormalises in the tooltip — and CA writes
+  `param_bounds.json` on every real run, so the wrong key is populated in
+  production and `None` in most fixtures: wrong in the app, green in CI); it
+  filters torn trailing rows (CA guards against *unparseable* rows, not short
+  ones, and a run is polled while it is being written); and it clears **every**
+  case subdirectory, because CA's clearer locates one run dir and an outputs
+  directory reused across methods accumulates several.
+- The runners' `<stage>_config.json` payloads go to a **temp dir** — they are
+  `argv[1]` and nothing reads them back. `write_run_config` / `clear_run_config`
+  in `calibration.py`, shared by all three managers.
+- What no file holds — which method ran, the point a local SA was linearised
+  about — travels on the stdout the manager already reads, via a `__*_META__`
+  marker line. Keep those lines **small**: under `mpiexec` every rank shares that
+  pipe and a line over `PIPE_BUF` can interleave.
+- Where CA persists nothing usable, the run persists the **result**, in CA's own
+  idiom, never a summary of it: forward-simulation traces as
+  `all_outputs_exp_<i>.npz` (the shape CA writes for a best fit, so one reader
+  covers both), UQ posteriors as `uq_posterior_samples.npy` (binned on read —
+  CA's burn-in rule needs a live param-id object, so reading its raw
+  `mcmc_chain.npy` would report a different posterior from the one the run did).
+- Reading via `find_run_dir` can reach an **earlier** run's `<case_type>` subdir,
+  which the old direct read could not. `has_results(output_dir, newer_than=…)`
+  takes the job's start time so a run whose own results are missing fails
+  instead of reporting someone else's numbers.
 
 One analysis is deliberately **not** in that tier: `apps/api/cost_sensitivity.py`
 (`POST /api/cost_sensitivity`, `CostSensitivityBar.vue`, #188) — `d ln(cost)/d ln(p)`
@@ -84,7 +129,21 @@ tier this is avoiding. Opt-in and off by default: 2M+1 simulations per settle.
 **GUI config editing** (edit CA config files in the browser → download dated copy → apply immediately):
 
 - **obs_data.json** — `EditObsDataDialog.vue` + `apps/web/src/lib/obsDataJson.js`; its operand and operation pickers are `SearchableSelect.vue` (type-to-filter, #160) because those lists are a model's whole variable set and every registered operation; edits `data_items`/`prediction_items` (incl. `source`/`comment` notes) and embeds `ProtocolInfoEditor.vue` (+ `lib/protocolInfo.js`) for `protocol_info` (experiments, params_to_change, constant/ramp/step/pulse/paced inputs, time-view plots). Time-varying inputs are written as **`protocol_shapes`** — declarations in Myokit's `[[protocol]]` vocabulary (`level`/`start`/`length`/`period`/`multiplier`), which CA expands into `protocol_traces` on read (CA#339). Declarations, not expansions, because a point table cannot be read back into the fields that produced it. `expandShape()` in `lib/protocolInfo.js` mirrors CA's expansion for the plots; **the two must agree** — change both. Hand-written `protocol_traces` are still accepted and preserved verbatim, as is any shape the editor has no form for. Dropdown vocabularies come from `apps/api/obs_options.py` (`GET /api/obs_data/options`), which introspects CA registries — **never hardcode** operations/cost_types/data_types/plot_types. A data_item's `operation_kwargs` and `cost_kwargs` (CA#304 / CA#370) are edited the same way: an input per keyword argument, from a schema introspected off the chosen func's signature (`operation_kwargs_schema` / `cost_kwargs_schema`). A stored kwarg is only ever deleted when CA has said the newly chosen func cannot accept it (`cost_kwargs_accepts_any` is a *full* map so "accepts nothing else" is distinguishable from "CA never answered") — otherwise it round-trips untouched, because dropping a key is data loss. `apps/api/obs_cost.py` calls cost funcs through CA's `call_cost_func`, so the panel's cost is the call the calibration makes: `std`/`weight` only when the signature declares them, plus the data_item's `cost_kwargs`.
-- **params_for_id.csv** — `EditParamsDialog.vue` + `apps/web/src/lib/paramsCsv.js`; edits ranges/selection, writes a dated CSV, can apply best-fit to sliders.
+- **params_for_id.json** — `EditParamsDialog.vue` + `apps/web/src/lib/paramsCsv.js`; edits ranges/selection, writes a dated JSON, can apply best-fit to sliders. **An uploaded CSV is converted to JSON on the way in** (by CA, which owns the conversion): JSON is the only form that can express a modifier, its `inputs` or a prior's parameters, so a stored CSV would make those unrepresentable in the study the user ends up with. Without CA the CSV is kept as-is rather than the upload being refused — the packaged app starts with no CA directory set.
+
+**User-authored funcs** (`apps/api/user_funcs.py`) come in **three** kinds, one
+file and one CA config key each, all under `<outputs>/user_funcs/`:
+`operation_funcs_user.py` / `cost_funcs_user.py` (CA#303, named by an obs_data
+data_item) and `modifier_funcs_user.py` (CA#383, named by a params_for_id entry).
+Everything is driven off the `_KINDS` map — the run config, the export copy into
+`resources/`, and the yaml keys all fall out of it, and the exported script
+matches the external-path keys **by suffix** so a fourth kind needs no edit
+there. A study is not reproducible without its funcs: CA dies on an operation or
+modifier it has never heard of, which is why they travel with the bundle. A
+modifier's `inputs` (`{name: qname}` / `{name: [qnames]}`) round-trips verbatim
+through both the backend and the editor — dropping it silently breaks the entry
+on the next run. *Not yet built:* a form for entering those input qnames, so a
+modifier that takes any is still only configurable in a hand-written file.
 
 ## Desktop packaging (pywebview + PyInstaller)
 
