@@ -102,7 +102,11 @@ def build_user_inputs(
         "file_prefix": file_prefix,
         "model_type": model_type,
         "model_file": model_file,  # CUFLynx extra: the (flat) CellML to run/generate from
-        "input_param_file": f"{file_prefix}_parameters.csv",
+        # No `input_param_file`: the bundle does not contain a `<prefix>_parameters.csv`
+        # and this pipeline never reads one (it runs a flat CellML, and only CA's
+        # module-*generation* scripts want that file). Naming a file the folder does
+        # not have reads as a bundle missing an input. build_inp_data_dict still
+        # supplies the conventional name, so nothing downstream sees a change.
         "resources_dir": "resources",
         # --- solver / sim ---
         "solver": solver,
@@ -165,6 +169,7 @@ Usage:
     # or set CIRCULATORY_AUTOGEN_SRC in the environment
 """
 import argparse
+import csv
 import glob
 import json
 import os
@@ -243,11 +248,13 @@ def build_inp_data_dict(cfg, output_dir):
             pass
     if cfg.get("params_for_id_file"):
         inp["params_for_id_path"] = os.path.join(resources, cfg["params_for_id_file"])
-    # User-authored operation/cost funcs travel with the export, so point CA at
-    # the copies in this folder rather than wherever they lived on the machine
-    # that produced it (CA #303). Without these the run dies on the first
-    # data_item naming a func the user wrote.
-    for key in ("operation_funcs_external_path", "cost_funcs_external_path"):
+    # User-authored operation / cost / modifier funcs travel with the export, so
+    # point CA at the copies in this folder rather than wherever they lived on
+    # the machine that produced it (CA #303, #383). Without these the run dies on
+    # the first data_item or params_for_id entry naming a func the user wrote.
+    # Matched by suffix rather than by a fixed list, so a kind CUFLynx grows
+    # needs no edit to this generated script.
+    for key in [k for k in cfg if k.endswith("_funcs_external_path")]:
         if cfg.get(key):
             inp[key] = os.path.join(HERE, cfg[key])
     return inp
@@ -283,64 +290,32 @@ def as_floats(series):
     return [float(v) for v in series]
 
 
-def write_stage(out_dir, stage, payload):
-    """Write one stage's outputs as ``<stage>.json``.
+def save_all_outputs(out_dir, sim_helper, exp_idx=0):
+    """Save a run's traces the way circulatory_autogen saves them.
 
-    Every stage that produces something reports it the same way and under its
-    own name. They used to differ -- simulation wrote simulation.json, UQ wrote
-    a generic results.json, sensitivity wrote nothing at all -- and the shared
-    name meant a reader looking for "results.json" could find whichever stage
-    happened to be found first.
+    An ``all_outputs_exp_<i>.npz`` of ``{variable: series}`` -- the same file and
+    the same shape CA writes for a calibrated best fit, so the plotting script
+    has one reader for both and no CUFLynx-only JSON exists anywhere in the
+    bundle (CUFLynx #210). ``get_all_results_dict`` excludes time, which is the
+    one separate ask; it is stored under a "time"-suffixed key, which is how the
+    abscissa is identified in CA's own files.
     """
-    with open(os.path.join(out_dir, f"{stage}.json"), "w") as fh:
-        json.dump(payload, fh)
+    data = {name: np.asarray(as_floats(series))
+            for name, series in sim_helper.get_all_results_dict().items()}
+    data["time"] = np.asarray(as_floats(sim_helper.get_results(["time"], flatten=True)[0]))
+    np.savez(os.path.join(out_dir, "all_outputs_exp_%d.npz" % exp_idx), **data)
 
 
-def sobol_indices(sa_agent):
-    """The Sobol indices as {"indices": {kind: {output: {param: v}}}, ...}.
+def save_uq_samples(out_dir, flat, qnames):
+    """Persist the posterior samples plus their labels.
 
-    Read back from circulatory_autogen's own accessor rather than re-deriving
-    them. Keys are CA's, verbatim: this script is standalone, and relabelling
-    them here would be a second naming convention to keep in step. Returns
-    empty structures when the method produced no Sobol indices (a local
-    sensitivity run), so the stage still reports rather than failing.
+    The samples *are* the result, so they are what is stored -- numeric, in CA's
+    own .npy idiom. The histograms are derived by the plotting script, so the
+    bundle carries no summary format of CUFLynx's own devising.
     """
-    try:
-        raw = sa_agent.SA_manager.load_sobol_indices()
-    except Exception as exc:  # noqa: BLE001 - a stage that ran is not a failure
-        print(f"  no Sobol indices to summarise: {exc}", flush=True)
-        raw = {}
-    indices = {kind: dict(by_out or {}) for kind, by_out in (raw or {}).items()}
-    output_names, param_names = [], []
-    for kind in ("S1", "ST"):
-        for out_name, params in (indices.get(kind) or {}).items():
-            if out_name not in output_names:
-                output_names.append(out_name)
-            for p in params:
-                if p not in param_names:
-                    param_names.append(p)
-    return {"indices": indices, "output_names": output_names, "param_names": param_names}
-
-
-def write_uq(out_dir, method, flat, qnames):
-    """Per-parameter posterior summary + histogram from samples (N, P)."""
-    import numpy as np
-
-    flat = np.asarray(flat)
-    params = []
-    for i, qname in enumerate(qnames):
-        col = np.asarray(flat[:, i], dtype=float)
-        col = col[np.isfinite(col)]
-        if col.size == 0:
-            continue
-        counts, edges = np.histogram(col, bins=30)
-        q05, q50, q95 = (float(x) for x in np.percentile(col, [5, 50, 95]))
-        params.append({
-            "qname": qname, "mean": float(np.mean(col)), "std": float(np.std(col)),
-            "q05": q05, "q50": q50, "q95": q95,
-            "bins": [float(x) for x in edges], "counts": [int(x) for x in counts],
-        })
-    write_stage(out_dir, "uq", {"method": method, "params": params})
+    np.save(os.path.join(out_dir, "uq_posterior_samples.npy"), np.asarray(flat, dtype=float))
+    with open(os.path.join(out_dir, "uq_param_names.csv"), "w", newline="") as fh:
+        csv.writer(fh).writerows([[name] for name in qnames])
 
 
 def main():
@@ -371,15 +346,7 @@ def main():
 
         sim_helper = get_simulation_helper_from_inp_data_dict(inp)
         sim_helper.run()
-        # One call for every variable -- the accessor circulatory_autogen uses
-        # itself. It does not include time, which is the one separate ask, and
-        # 'time' resolves on every backend so no per-helper branch is needed.
-        outputs = {
-            name: as_floats(series)
-            for name, series in sim_helper.get_all_results_dict().items()
-        }
-        time = as_floats(sim_helper.get_results(["time"], flatten=True)[0])
-        write_stage(output_dir, "simulation", {"time": time, "outputs": outputs})
+        save_all_outputs(output_dir, sim_helper)
         # Released before the next stage builds its own: a helper holds a
         # compiled model, and every stage below constructs one of its own.
         if hasattr(sim_helper, "close_simulation"):
@@ -396,7 +363,11 @@ def main():
         # plotting script wants them the way every other stage reports, so this
         # stage writes its own summary too. Without it the exported
         # plot_analysis() heatmap had nothing to read and never drew.
-        write_stage(output_dir, "sensitivity", sobol_indices(sa_agent))
+        # Nothing written here: circulatory_autogen already wrote
+        # all_outputs_n<N>_Sobol_indices.csv into this directory, and the
+        # plotting script reads that (CUFLynx #210). This stage used to write a
+        # summary of its own beside CA's, which is a second format to keep in
+        # step for no gain.
 
     # ---- 3) Calibration ----------------------------------------------------
     best_param_vals = None  # reused by UQ below when available
@@ -437,12 +408,22 @@ def main():
         best_param_vals = np.asarray(best_param_vals, dtype=float)
 
         if method == "mcmc":
-            mcmc = CVS0DParamID.init_from_dict({**uq_inp, "mcmc_instead": True})
+            # Reuse the calibration engine when there is one: run_UQ promotes it
+            # in place, so UQ samples with the model already compiled. Older CA
+            # only offers run_mcmc() on an object built with mcmc_instead=True,
+            # which forces a second engine and a second compile.
+            if calibrated is not None and hasattr(calibrated, "run_UQ"):
+                mcmc = calibrated
+            else:
+                mcmc = CVS0DParamID.init_from_dict({**uq_inp, "mcmc_instead": True})
             mcmc.set_best_param_vals(best_param_vals)
             ensure_mle_cost_type_for_bayesian_inner(paramID_module.mcmc_object, uq_inp)
-            mcmc.run_mcmc()
+            if hasattr(mcmc, "run_UQ"):
+                mcmc.run_UQ(uq_inp.get("mcmc_options"))
+            else:
+                mcmc.run_mcmc()
             if getattr(mcmc, "rank", 0) == 0:
-                write_uq(output_dir, method, mcmc.get_mcmc_samples()[0], flat_param_names(mcmc))
+                save_uq_samples(output_dir, mcmc.get_mcmc_samples()[0], flat_param_names(mcmc))
         else:
             from identifiabilty_analysis.identifiabilityAnalysis import IdentifiabilityAnalysis
 
@@ -463,7 +444,7 @@ def main():
                 samples = np.random.multivariate_normal(
                     laplace_mean, ia.covariance_matrix_Laplace, size=100000
                 )
-                write_uq(output_dir, method, samples, flat_param_names(cvs))
+                save_uq_samples(output_dir, samples, flat_param_names(cvs))
 
     print(f"Done. Outputs in {output_dir}", flush=True)
 
@@ -614,18 +595,6 @@ def tex(label, operation=""):
 # ---------------------------------------------------------------------------
 # Reading what a run leaves behind
 # ---------------------------------------------------------------------------
-def simulation():
-    """``(time, {variable: series})`` from an exported pipeline run, or None."""
-    path = os.path.join(OUT, "simulation.json")
-    if not os.path.isfile(path):
-        return None
-    with open(path, encoding="utf-8") as fh:
-        data = json.load(fh)
-    if isinstance(data.get("experiments"), list):
-        return [(e.get("time", []), e.get("outputs", {})) for e in data["experiments"]]
-    return [(data.get("time", []), data.get("outputs", {}))]
-
-
 def cost_history():
     """Rows of the cost history, newest column first, or []."""
     path = find("best_cost_history.csv")
@@ -646,19 +615,58 @@ def cost_history():
     return rows
 
 
-def param_history():
-    """``(generations, [(name, values), ...])`` of **normalised** parameters.
+def param_bounds():
+    """``{label: (min, max)}`` from the study's own params_for_id, or {}.
 
-    circulatory_autogen writes this file normalised to each parameter's
+    The bounds come from the file the *user* wrote, in ``resources/`` -- the same
+    numbers they typed in the editor -- rather than from a copy of them written
+    beside the outputs. Labels are matched loosely because the history header
+    writes a member qname with "/" replaced by a space.
+    """
+    bounds = {}
+    for name in ("params_for_id.json", "params_for_id.csv"):
+        path = os.path.join(HERE, "resources", name)
+        if not os.path.isfile(path):
+            continue
+        try:
+            if name.endswith(".json"):
+                with open(path, encoding="utf-8-sig") as fh:
+                    entries = json.load(fh).get("params") or []
+                for entry in entries:
+                    targets = entry.get("targets") or entry.get("modifies") or []
+                    labels = [entry.get("name")] + list(targets)
+                    for label in labels:
+                        if label and entry.get("min") is not None:
+                            bounds[str(label)] = (float(entry["min"]), float(entry["max"]))
+            else:
+                with open(path, newline="", encoding="utf-8-sig") as fh:
+                    for row in csv.DictReader(fh):
+                        label = "%s/%s" % (row["vessel_name"].strip(),
+                                           row["param_name"].strip())
+                        bounds[label] = (float(row["min"]), float(row["max"]))
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+        break
+    # The history header writes "vessel param", not "vessel/param".
+    for label, value in list(bounds.items()):
+        bounds.setdefault(label.replace("/", " "), value)
+    return bounds
+
+
+def param_history():
+    """``(generations, [(name, values), ...])`` of the fitted parameters.
+
+    circulatory_autogen writes this file **normalised** to each parameter's
     [min, max] -- 0 is its lower bound, 1 its upper -- while the multi-start
-    history files hold actual values. Nothing in the file says so, and calling
-    these "the fitted parameters" (as this did) invites reading 0.43 as a
-    physical value. Denormalising needs the bounds, which CA does not persist
-    beside the run; see CUFLynx #210.
+    history files hold actual values. Nothing in the file says so, so the values
+    are converted back here using the bounds from the study's own params_for_id
+    (see :func:`param_bounds`); a parameter whose bounds cannot be found is left
+    normalised rather than silently mis-scaled, and :func:`param_history_units`
+    says which happened.
     """
     path = find("best_param_vals_history.csv")
     if not path:
-        return [], []
+        return [], [], False
     rows = []
     header = []
     with open(path, newline="", encoding="utf-8") as fh:
@@ -669,32 +677,111 @@ def param_history():
                 if i == 0:
                     header = row
     if not rows:
-        return [], []
+        return [], [], False
     columns = list(zip(*rows))
     names = header if len(header) == len(columns) else [f"p{i}" for i in range(len(columns))]
-    return list(range(len(rows))), list(zip(names, columns))
-
-
-def results():
-    """The analysis payload: sensitivity indices and UQ posteriors, or None.
-
-    Each stage writes its own file now. They used to share a generic
-    results.json, so with both present whichever the search found first won and
-    the other's figures silently never drew. Their keys do not overlap, so the
-    two are simply merged. ``results.json`` is still read for bundles exported
-    before the split.
-    """
-    merged = {}
-    for name in ("sensitivity.json", "uq.json", "results.json"):
-        path = find(name)
-        if not path:
+    bounds = param_bounds()
+    series = []
+    for name, column in zip(names, columns):
+        low_high = bounds.get(name.strip())
+        if low_high is None:
+            series.append((name, column, False))
             continue
-        # Deliberately not swallowing a parse error: a corrupt file is worth a
-        # warning, and run_sections turns the exception into one without
-        # costing the figures that rendered perfectly well.
-        with open(path, encoding="utf-8") as fh:
-            merged.update(json.load(fh))
-    return merged or None
+        low, high = low_high
+        series.append((name, tuple(low + v * (high - low) for v in column), True))
+    return list(range(len(rows))), [(n, c) for n, c, _ in series], \
+        all(scaled for _, _, scaled in series) and bool(series)
+
+
+def _matrix_csv(path):
+    """``(row_labels, col_labels, {row: {col: float|None}})`` from a labelled CSV."""
+    with open(path, newline="", encoding="utf-8-sig") as fh:
+        rows = [r for r in csv.reader(fh) if r]
+    if not rows:
+        return [], [], {}
+    header = [c.strip() for c in rows[0]][1:]
+    labels, table = [], {}
+    for row in rows[1:]:
+        label = row[0].strip()
+        labels.append(label)
+        values = {}
+        for col, cell in zip(header, row[1:]):
+            try:
+                values[col] = float((cell or "").strip())
+            except ValueError:
+                # circulatory_autogen marks a failed evaluation NaN deliberately,
+                # to keep it distinct from a real zero.
+                values[col] = None
+        table[label] = values
+    return labels, header, table
+
+
+def sensitivity_indices():
+    """Sensitivity indices from circulatory_autogen's own CSVs, or None.
+
+    Sobol first (``all_outputs_n<N>_Sobol_indices.csv``: a Parameter column, then
+    ``S1_<output>`` / ``ST_<output>`` per output), then the local-sensitivity
+    matrix. Read from CA's files rather than from a summary the pipeline wrote
+    beside them -- there is no CUFLynx-authored results format any more, so a run
+    produced by CA's own scripts plots exactly like one produced here (#210).
+    """
+    matches = [m for m in sorted(glob.glob(os.path.join(OUT, "**", "*Sobol_indices.csv"),
+                                           recursive=True))
+               if "2nd_order" not in os.path.basename(m)]
+    if matches:
+        params, columns, table = _matrix_csv(matches[0])
+        indices, output_names = {}, []
+        for column in columns:
+            kind, _, out_name = column.partition("_")
+            if kind not in ("S1", "ST") or not out_name:
+                continue
+            if out_name not in output_names:
+                output_names.append(out_name)
+            indices.setdefault(kind, {}).setdefault(out_name, {})
+            for param in params:
+                indices[kind][out_name][param] = table[param].get(column)
+        if indices:
+            return {"indices": indices, "output_names": output_names,
+                    "param_names": params}
+
+    path = find("local_sensitivity_relative.csv")
+    if not path:
+        return None
+    output_names, param_names, table = _matrix_csv(path)
+    return {"indices": {"local": table}, "output_names": output_names,
+            "param_names": param_names}
+
+
+def uq_posteriors(bins=40):
+    """Per-parameter posterior summary + histogram, or None.
+
+    Binned here from the samples the run persisted, so the bundle stores the
+    result (samples, in CA's .npy idiom) rather than a summary of it.
+    """
+    path = find("uq_posterior_samples.npy")
+    names_path = find("uq_param_names.csv")
+    if not path or not names_path:
+        return None
+    flat = np.load(path, allow_pickle=False)
+    with open(names_path, newline="", encoding="utf-8") as fh:
+        qnames = [row[0].strip() for row in csv.reader(fh) if row]
+    out = []
+    for i, qname in enumerate(qnames):
+        if i >= flat.shape[1]:
+            break
+        col = np.asarray(flat[:, i], dtype=float)
+        col = col[np.isfinite(col)]
+        if col.size == 0:
+            continue
+        counts, edges = np.histogram(col, bins=bins)
+        out.append({
+            "qname": qname,
+            "mean": float(np.mean(col)),
+            "std": float(np.std(col)),
+            "bins": [float(x) for x in edges],
+            "counts": [int(x) for x in counts],
+        })
+    return out or None
 
 
 def latest_obs_data():
@@ -744,14 +831,26 @@ def observed(doc=None):
     return out
 
 
+def all_outputs_files():
+    """The ``all_outputs_*exp_<i>.npz`` traces present, best fit preferred.
+
+    circulatory_autogen writes ``all_outputs_with_best_param_vals_exp_<i>.npz``
+    after a calibration; a simulation-only run writes ``all_outputs_exp_<i>.npz``
+    in the same shape. The best fit wins when both exist -- it is the run worth
+    looking at, and plotting both would draw the same variables twice.
+    """
+    files = sorted(
+        glob.glob(os.path.join(OUT, "**", "all_outputs_*exp_*.npz"), recursive=True)
+    )
+    # CA also writes a `_plot.npz` variant; prefer the full one when both exist.
+    files = [f for f in files if not f.endswith("_plot.npz")] or files
+    best = [f for f in files if "with_best_param_vals" in os.path.basename(f)]
+    return best or files
+
+
 def best_fit_runs():
     """``[(experiment, time, {variable: series}), ...]`` from the saved npz files."""
-    files = sorted(
-        glob.glob(
-            os.path.join(OUT, "**", "all_outputs_with_best_param_vals_exp_*.npz"), recursive=True
-        )
-    )
-    files = [f for f in files if not f.endswith("_plot.npz")] or files
+    files = all_outputs_files()
     runs = []
     for path in files:
         stem = os.path.basename(path)
@@ -802,14 +901,16 @@ def paginate(items, per_page):
 
 # What this script can draw, and therefore what it looks for before claiming
 # there is nothing to do.
+#: Everything here is a file circulatory_autogen writes, or (for the posterior
+#: samples) a numeric result in its .npy idiom. There is deliberately no
+#: CUFLynx-authored results format left to look for (#210).
 INPUTS = (
-    "simulation.json",
     "best_cost_history.csv",
     "best_param_vals_history.csv",
-    "sensitivity.json",
-    "uq.json",
-    "results.json",  # bundles exported before the stages had their own names
+    "local_sensitivity_relative.csv",
+    "uq_posterior_samples.npy",
     "percent_error_vec.npy",
+    "std_error_vec.npy",
 )
 
 
@@ -817,9 +918,9 @@ def nothing_to_plot():
     """The inputs, if none of them are anywhere under OUT; else an empty list."""
     if any(find(name) for name in INPUTS):
         return []
-    if glob.glob(
-        os.path.join(OUT, "**", "all_outputs_with_best_param_vals_exp_*.npz"), recursive=True
-    ):
+    if glob.glob(os.path.join(OUT, "**", "*Sobol_indices.csv"), recursive=True):
+        return []
+    if all_outputs_files():
         return []
     return list(INPUTS)
 
@@ -975,17 +1076,23 @@ def plot_progress():
         fig.tight_layout()
         util.save(fig, "progress_cost.png", STYLE["dpi"])
 
-    generations, params = util.param_history()
+    generations, params, physical = util.param_history()
     if params:
         fig, axes = util.grid(len(params), STYLE["panel_cols"], 4.5, 3.0)
         for i, (ax, (name, values)) in enumerate(zip(axes, params)):
             ax.plot(generations, values, color=colour(i), lw=1.4)
             ax.set_title(name, fontsize=8)
             ax.set_xlabel("generation")
-            # Normalised to [min, max], not physical: CA writes this history
-            # that way and the axis must not imply otherwise.
-            ax.set_ylabel("normalised value", fontsize=7)
-            ax.set_ylim(-0.05, 1.05)
+            # circulatory_autogen writes this history normalised to [min, max].
+            # It is converted back using the bounds in the study's own
+            # params_for_id; when those cannot be found the values stay
+            # normalised, and the axis label says so rather than implying a
+            # physical value.
+            if physical:
+                ax.set_ylabel("value", fontsize=7)
+            else:
+                ax.set_ylabel("normalised value", fontsize=7)
+                ax.set_ylim(-0.05, 1.05)
             ax.grid(alpha=0.25)
         fig.tight_layout()
         util.save(fig, "progress_params.png", STYLE["dpi"])
@@ -995,10 +1102,14 @@ def plot_progress():
 # ANALYSIS — sensitivity indices and UQ posteriors
 # ---------------------------------------------------------------------------
 def plot_analysis():
-    """Sensitivity heatmap and UQ posteriors, from the analysis results.json."""
-    res = util.results()
-    if not res:
-        return
+    """Sensitivity heatmap and UQ posteriors.
+
+    Both come from circulatory_autogen's own files -- its Sobol / local
+    sensitivity CSVs, and the posterior samples the run persisted -- so a run
+    directory produced by CA's own scripts plots exactly like one produced by
+    this pipeline (CUFLynx #210).
+    """
+    res = util.sensitivity_indices() or {}
 
     # Sensitivity: indices are {kind: {output: {param: value}}}.
     indices = res.get("indices")
@@ -1028,9 +1139,9 @@ def plot_analysis():
         fig.tight_layout()
         util.save(fig, "analysis_sensitivity.png", STYLE["dpi"])
 
-    # UQ posteriors: [{qname, mean, std, q05, q95, bins, counts}].
-    uq_params = res.get("params") if isinstance(res.get("params"), list) else None
-    if uq_params and all("counts" in p for p in uq_params):
+    # UQ posteriors, binned from the samples the run persisted.
+    uq_params = util.uq_posteriors()
+    if uq_params:
         n = len(uq_params)
         fig, axes = plt.subplots(n, 1, figsize=(5, 2 * n), squeeze=False)
         for i, param in enumerate(uq_params):
@@ -1048,18 +1159,6 @@ def plot_analysis():
             ax.set_title(param.get("qname", f"param {i}"), fontsize=7)
         fig.tight_layout()
         util.save(fig, "analysis_uq.png", STYLE["dpi"])
-
-
-# ---------------------------------------------------------------------------
-# SIMULATION TRACES — every logged variable, from an exported pipeline run
-# ---------------------------------------------------------------------------
-def plot_simulation_outputs():
-    runs = util.simulation()
-    if not runs:
-        return
-    for e, (t, outputs) in enumerate(runs):
-        suffix = f"_exp{e}" if len(runs) > 1 else ""
-        _plot_all_traces(t, outputs, f"output_plot{suffix}")
 
 
 def _plot_all_traces(t, outputs, stem):
@@ -1129,8 +1228,10 @@ def _discovered_panels(exp, series):
 # ---------------------------------------------------------------------------
 # The figures, in order. Comment one out to stop drawing it.
 # ---------------------------------------------------------------------------
+# plot_best_fit draws the traces for every run, calibrated or not: a
+# simulation-only run leaves the same all_outputs npz a calibration does, so
+# there is no separate "simulation outputs" figure to draw (CUFLynx #210).
 FIGURES = [
-    plot_simulation_outputs,
     plot_best_fit,
     plot_progress,
     plot_error_bars,

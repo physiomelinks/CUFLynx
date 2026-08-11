@@ -58,7 +58,7 @@ const modifierOps = ref([])
 
 async function loadPriorTypes() {
   try {
-    const cfg = await getConfig()
+    const cfg = await getConfig(props.outputsDir)
     const p = cfg?.param_prior_types ?? {}
     priorTypes.value = Array.isArray(p.types) ? p.types : []
     priorDefault.value = p.default ?? ''

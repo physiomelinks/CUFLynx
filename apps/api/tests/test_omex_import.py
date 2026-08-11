@@ -157,6 +157,24 @@ def test_one_drop_loads_model_obs_and_params(client, tmp_path):
     assert Path(body["module_config_path"]).is_file()
 
 
+def test_module_config_lands_beside_the_model_not_among_the_outputs(client, tmp_path):
+    """It is the model's editor state, not a result, so it goes into
+    ``generated_models/<prefix>/`` -- the layout the export bundle uses and CA
+    resolves a model path against. It used to sit at the top of the outputs
+    directory, among files the user had asked a calibration to produce."""
+    with open(EXAMPLE, "rb") as fh:
+        resp = client.post(
+            "/api/omex/upload",
+            params={"output_dir": str(tmp_path)},
+            files={"file": (EXAMPLE.name, fh, "application/zip")},
+        )
+    assert resp.status_code == 200, resp.text
+    saved = Path(resp.json()["module_config_path"])
+    assert saved == tmp_path / "generated_models" / "3compartment_flat" / "module_config.json"
+    assert saved.is_file()
+    assert not (tmp_path / "module_config.json").exists()
+
+
 def test_the_loaded_model_behaves_like_any_other(client, tmp_path):
     with open(EXAMPLE, "rb") as fh:
         body = client.post(

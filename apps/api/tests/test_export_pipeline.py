@@ -73,9 +73,10 @@ def test_pipeline_script_is_valid_python_and_gates_each_stage():
     assert "CVS0DParamID.init_from_dict" in src
     assert "SensitivityAnalysis.init_from_dict" in src
     assert "get_simulation_helper_from_inp_data_dict" in src
-    # UQ actually runs MCMC / Laplace (not a stub). `run_mcmc()` is CA's name
-    # today; it becomes `run_UQ()` when CA renames it (CUFLynx #217).
-    assert "run_mcmc()" in src and "IdentifiabilityAnalysis.init_from_dict" in src
+    # UQ actually runs MCMC / Laplace (not a stub). run_UQ is CA's name since
+    # CA #392 (CUFLynx #217); run_mcmc stays as the fallback for an older CA.
+    assert "run_UQ(" in src and "run_mcmc()" in src
+    assert "IdentifiabilityAnalysis.init_from_dict" in src
     assert "ensure_mle_cost_type_for_bayesian_inner" in src
 
 
@@ -89,25 +90,34 @@ def test_the_simulation_stage_asks_for_its_outputs_once():
     assert 'hasattr(sim_helper, "get_time")' not in src
 
 
-def test_every_stage_reports_under_its_own_name():
-    """simulation.json / sensitivity.json / uq.json — the generic results.json
-    meant a reader could pick up whichever stage it found first (#217)."""
+def test_every_stage_reports_in_circulatory_autogens_own_formats():
+    """No CUFLynx-authored results format is written anywhere (#210).
+
+    Traces go into the ``all_outputs_*.npz`` CA already writes for a best fit,
+    posteriors into a plain ``.npy`` of samples, and the sensitivity stage writes
+    nothing at all because CA has already written its indices CSV. A run
+    directory produced by CA's own scripts then plots exactly like one produced
+    here.
+    """
     src = ep.render_pipeline_script()
 
-    assert 'write_stage(output_dir, "simulation"' in src
-    assert 'write_stage(output_dir, "sensitivity"' in src
-    assert 'write_stage(out_dir, "uq"' in src
-    # Nothing writes the ambiguous name any more.
-    assert 'json.dump({"method": method' not in src
+    assert "def save_all_outputs(" in src
+    assert "all_outputs_exp_%d.npz" in src
+    assert "def save_uq_samples(" in src
+    assert "uq_posterior_samples.npy" in src
+    # Nothing writes a JSON summary any more.
+    for gone in ("write_stage(", "simulation.json", "sensitivity.json",
+                 "uq.json", "results.json"):
+        assert gone not in src, gone
 
 
-def test_the_sensitivity_stage_writes_its_indices():
-    """The exported plot_analysis() heatmap reads an indices payload that
-    nothing in the bundle used to produce, so it could never draw (#217)."""
+def test_the_sensitivity_stage_leaves_cas_indices_alone():
+    """It used to write a second summary beside CA's own indices CSV, which is a
+    format to keep in step for no gain (#210)."""
     src = ep.render_pipeline_script()
 
-    assert "def sobol_indices(" in src
-    assert "load_sobol_indices()" in src
+    assert "def sobol_indices(" not in src
+    assert "load_sobol_indices()" not in src
 
 
 def test_uq_reuses_the_calibration_engine():
@@ -127,12 +137,16 @@ def test_the_simulation_helper_is_released_before_the_next_stage():
 
 
 def test_plotting_script_is_valid_python_with_every_plot_kind():
-    """Renamed from "three plot kinds": there are five now, and each is drawn by
-    its own function in the file the user edits."""
+    """Each figure is drawn by its own function in the file the user edits.
+
+    Four, not five: a simulation-only run leaves the same ``all_outputs`` npz a
+    calibration does, so plot_best_fit draws both and the separate
+    "simulation outputs" figure went with the JSON it used to read (#210).
+    """
     src = ep.render_plotting_script()
     ast.parse(src)
-    assert "def plot_simulation_outputs" in src  # output traces
-    assert "def plot_best_fit" in src  # calibrated traces vs their targets
+    assert "def plot_simulation_outputs" not in src
+    assert "def plot_best_fit" in src  # every run's traces, calibrated or not
     assert "def plot_progress" in src  # cost/param vs generation
     assert "def plot_error_bars" in src  # per-observable error
     assert "def plot_analysis" in src  # sensitivity / UQ
@@ -187,7 +201,9 @@ def test_export_pipeline_writes_self_contained_folder(client, tmp_path):
     assert os.path.isfile(os.path.join(export_dir, "generated_models", "lotka_volterra", ui["model_file"]))
     res = os.path.join(export_dir, "resources")
     assert os.path.isfile(os.path.join(res, "obs_data.json"))
-    assert os.path.isfile(os.path.join(res, "params_for_id.csv"))
+    # JSON, not CSV: an uploaded CSV is converted on the way in, so the bundle
+    # always carries the canonical form CA and the editors both read.
+    assert os.path.isfile(os.path.join(res, "params_for_id.json"))
 
 
 # ---------------------------------------------------------------------------
@@ -441,10 +457,15 @@ def test_export_pipeline_simulation_runs_and_honors_obs_protocol(client, require
     )
     assert proc.returncode == 0, f"pipeline failed:\n{proc.stdout}\n{proc.stderr}"
 
-    sim_path = os.path.join(export_dir, "output", "simulation.json")
-    assert os.path.isfile(sim_path), "simulation.json not written"
-    sim = json.loads(open(sim_path).read())
-    t, outputs = sim["time"], sim["outputs"]
+    # circulatory_autogen's own npz shape, the same file a calibrated best fit
+    # leaves, so the plotting script has one reader for both (#210).
+    sim_path = os.path.join(export_dir, "output", "all_outputs_exp_0.npz")
+    assert os.path.isfile(sim_path), "all_outputs_exp_0.npz not written"
+    import numpy as np
+
+    data = np.load(sim_path, allow_pickle=False)
+    t = [float(v) for v in data["time"]]
+    outputs = {name: [float(v) for v in data[name]] for name in data.files if name != "time"}
 
     # Window comes from obs_data protocol_info (sim_time=2), not the yaml's 10.
     assert abs((t[-1] - t[0]) - 2.0) < 0.2, f"sim window {t[-1]-t[0]:.2f}s != obs sim_time 2s"
@@ -478,6 +499,15 @@ def my_export_op(x):
 _COST_SRC = """
 def my_export_cost(o, d, s, w):
     return w * (o - d) ** 2
+"""
+
+# A modifier is the third kind (CA #383): a params_for_id entry names it, so a
+# study using one is no more reproducible without its file than one using a
+# custom operation. Decorated, because CA registers only decorated functions.
+_MODIFIER_SRC = """
+@modifier_func(inputs={}, description="offset every target by theta")
+def my_export_modifier(theta, baseline):
+    return baseline + theta
 """
 
 
@@ -520,6 +550,72 @@ def test_the_export_carries_user_authored_funcs(client, tmp_path):
     # Reported back, so the user can see what shipped.
     assert "resources/operation_funcs_user.py" in body["files"]
     assert "resources/cost_funcs_user.py" in body["files"]
+
+
+def test_the_export_carries_a_user_authored_modifier(client, tmp_path):
+    """The third kind travels too. A params_for_id entry names its modifier by
+    name, so without the file the exported run dies on a modifier CA has never
+    heard of -- exactly the failure the operation/cost copies prevent."""
+    model_id = _setup_lv(client)
+    _save_func(client, "modifier", "my_export_modifier", _MODIFIER_SRC, tmp_path)
+
+    resp = client.post("/api/export/pipeline", json={
+        "model_id": model_id,
+        "file_prefix": "lv",
+        "sim_time": 2.0,
+        "enabled": {"do_calibration": True},
+        "config_outputs_dir": str(tmp_path),
+    })
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    export_dir = Path(body["export_dir"])
+
+    mod_file = export_dir / "resources" / "modifier_funcs_user.py"
+    assert mod_file.is_file()
+    assert "my_export_modifier" in mod_file.read_text()
+
+    ui = yaml.safe_load(next(export_dir.glob("user_inputs_*.yaml")).read_text())
+    assert ui["modifier_funcs_external_path"] == "resources/modifier_funcs_user.py"
+    assert "resources/modifier_funcs_user.py" in body["files"]
+
+
+def test_the_run_script_absolutises_the_modifier_func_path(tmp_path):
+    """The generated script matches the external-path keys by suffix, not from a
+    fixed list, so the third kind resolves without it having been named there --
+    and a fourth would too."""
+    script = tmp_path / "run_pipeline.py"
+    script.write_text(ep.render_pipeline_script(), encoding="utf-8")
+    ns = {"__name__": "exported_pipeline", "__file__": str(script)}
+    exec(compile(script.read_text(), str(script), "exec"), ns)  # noqa: S102
+
+    cfg = {
+        "file_prefix": "m",
+        "model_file": "m.cellml",
+        "modifier_funcs_external_path": "resources/modifier_funcs_user.py",
+    }
+    inp = ns["build_inp_data_dict"](cfg, str(tmp_path))
+    got = inp["modifier_funcs_external_path"]
+    assert os.path.isabs(got), got
+    assert os.path.normpath(got) == os.path.normpath(
+        os.path.join(str(tmp_path), "resources", "modifier_funcs_user.py")
+    )
+
+
+def test_the_bundle_lists_the_plotting_module_it_ships(client, tmp_path):
+    """plot_outputs.py imports plot_utilities, and the bundle writes both -- but
+    only one was reported, which reads as a bundle missing a module."""
+    model_id = _setup_lv(client)
+    resp = client.post("/api/export/pipeline", json={
+        "model_id": model_id,
+        "file_prefix": "lv",
+        "sim_time": 2.0,
+        "config_outputs_dir": str(tmp_path),
+    })
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert "plot_utilities.py" in body["files"]
+    for name in body["files"]:
+        assert (Path(body["export_dir"]) / name).is_file(), f"{name} listed but not written"
 
 
 def test_the_run_script_resolves_the_func_paths_absolutely(tmp_path):

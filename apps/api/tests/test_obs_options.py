@@ -288,3 +288,46 @@ def test_the_fallback_covers_every_operation_it_offers(client, monkeypatch):
         assert offered == set(spec), "FALLBACK_OPERATIONS and its arities have drifted"
     finally:
         oo.reset_cache()
+
+
+# ---------------------------------------------------------------------------
+# The default cost_type (issue #212)
+# ---------------------------------------------------------------------------
+def test_the_default_cost_type_comes_from_ca(requires_ca):
+    """Naming the default in the editor is only honest if CA said it.
+
+    CA published it as obs_data_helpers.DEFAULT_COST_TYPE in #392; before that
+    it was a literal in two places in PrimitiveParsers, which is how CA ended up
+    with three different answers (parser, OMEX importer, Bayesian path). This
+    asserts we read CA's, not a fourth copy.
+    """
+    import obs_options as oo
+    from utilities.obs_data_helpers import DEFAULT_COST_TYPE
+
+    oo.reset_cache()
+    try:
+        assert oo.get_obs_data_options()["default_cost_type"] == DEFAULT_COST_TYPE
+    finally:
+        oo.reset_cache()
+
+
+def test_an_older_ca_reports_no_default_rather_than_guessing():
+    """The editor then says plain "default" -- naming the wrong cost function
+    would be worse than naming none."""
+    import obs_options as oo
+
+    assert oo._introspect_default_cost_type.__doc__  # documented, not incidental
+    import builtins
+
+    real_import = builtins.__import__
+
+    def no_helpers(name, *a, **k):
+        if name == "utilities.obs_data_helpers":
+            raise ImportError("older CA")
+        return real_import(name, *a, **k)
+
+    builtins.__import__ = no_helpers
+    try:
+        assert oo._introspect_default_cost_type() == ""
+    finally:
+        builtins.__import__ = real_import

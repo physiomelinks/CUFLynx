@@ -30,7 +30,16 @@ function rowToEntry(row) {
   const entry = { name: row.name || row.qname }
   if (row.kind === 'modifier') {
     entry.modifies = qnames
-    entry.operation = row.operation || 'scale'
+    // `modifier`, not `operation`: CA renamed the key because a modifier acts
+    // on parameters while an operation acts on outputs (CA #385). The old name
+    // still loads, with a deprecation warning, so files written before this
+    // keep working — but nothing new is written under it.
+    entry.modifier = row.operation || 'scale'
+    // The model constants the modifier function declares as inputs, as this
+    // entry names them (`{name: qname}` or `{name: [qnames]}`; CA #383). Written
+    // back verbatim — a modifier that takes inputs cannot be called without
+    // them, so dropping the key would silently break the entry on the next run.
+    if (row.inputs && Object.keys(row.inputs).length) entry.inputs = { ...row.inputs }
   } else {
     entry.targets = qnames
   }

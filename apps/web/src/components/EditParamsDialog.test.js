@@ -768,7 +768,7 @@ describe('EditParamsDialog — modifier parameters', () => {
     }
   }
 
-  it('creates a scale modifier from the selection and saves modifies+operation', async () => {
+  it('creates a scale modifier from the selection and saves modifies+modifier', async () => {
     uploadParamsForId.mockResolvedValue({ params: [] })
     const wrapper = mountDialog(modProps)
     await flushPromises() // vocabulary load gates the button
@@ -788,7 +788,7 @@ describe('EditParamsDialog — modifier parameters', () => {
     const doc = JSON.parse(await readFile(uploadParamsForId.mock.calls[0][0]))
     const mod = doc.params.find((p) => p.modifies)
     expect(mod.modifies).toEqual(['a/C', 'b/C'])
-    expect(mod.operation).toBe('scale')
+    expect(mod.modifier).toBe('scale')
     expect(mod.min).toBe(0.5) // θ bounds from CA's vocabulary
     expect(mod.max).toBe(2)
     expect(mod).not.toHaveProperty('targets')

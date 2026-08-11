@@ -312,7 +312,7 @@ MODEL_VALUES = {"a/C": 2e-8, "b/C": 4e-8}
 
 
 def _scale_doc(**over):
-    entry = {"name": "C_scale", "modifies": ["a/C", "b/C"], "operation": "scale",
+    entry = {"name": "C_scale", "modifies": ["a/C", "b/C"], "modifier": "scale",
              "min": 0.5, "max": 2.0}
     entry.update(over)
     return {"params": [entry]}
@@ -330,6 +330,28 @@ def test_a_scale_modifier_becomes_one_theta_entry():
     assert entry.baselines == {"a/C": 2e-8, "b/C": 4e-8}
     assert (entry.min, entry.max) == (0.5, 2.0)
     assert entry.warning is None
+
+
+def test_a_file_written_before_the_rename_still_loads():
+    """CA renamed the key to `modifier` (CA #385) and deprecated `operation`.
+    Every params_for_id CUFLynx has already written uses the old name, so
+    reading it must keep working -- silently, since the user did nothing wrong."""
+    doc = {"params": [{"name": "C_scale", "modifies": ["a/C", "b/C"],
+                       "operation": "scale", "min": 0.5, "max": 2.0}]}
+    entry = parse_params_for_id(doc, MODEL_VALUES)[0]
+
+    assert entry.operation == "scale"
+    assert entry.qnames == ["a/C", "b/C"]
+
+
+def test_setting_both_names_is_refused(requires_ca_resolver):
+    """CA refuses an entry carrying the key and its deprecated alias rather than
+    silently picking one -- two spellings of the same thing in one entry is a
+    file the author did not mean to write."""
+    doc = {"params": [{"name": "s", "modifies": ["a/C"], "modifier": "scale",
+                       "operation": "scale", "min": 0.5, "max": 2.0}]}
+    with pytest.raises(ParamsForIdError, match="deprecated alias"):
+        parse_params_for_id(doc, MODEL_VALUES)
 
 
 def test_modifier_baselines_keep_file_order():
@@ -355,7 +377,7 @@ def test_a_zero_baseline_warns():
 def test_a_modifier_without_bounds_is_rejected():
     with pytest.raises(ParamsForIdError, match="min and max"):
         parse_params_for_id(
-            {"params": [{"name": "s", "modifies": ["a/C"], "operation": "scale"}]}
+            {"params": [{"name": "s", "modifies": ["a/C"], "modifier": "scale"}]}
         )
 
 
@@ -366,14 +388,14 @@ def test_a_modifier_cannot_be_unbounded():
 
 def test_an_unknown_operation_is_rejected_by_name():
     with pytest.raises(ParamsForIdError, match="warp"):
-        parse_params_for_id(_scale_doc(operation="warp"))
+        parse_params_for_id(_scale_doc(modifier="warp"))
 
 
 def test_targets_and_modifies_together_are_rejected():
     with pytest.raises(ParamsForIdError, match="modifies"):
         parse_params_for_id(
             {"params": [{"targets": ["a/C"], "modifies": ["b/C"],
-                         "operation": "scale", "min": 0.5, "max": 2.0}]}
+                         "modifier": "scale", "min": 0.5, "max": 2.0}]}
         )
 
 
@@ -391,7 +413,10 @@ def test_a_modifier_round_trips_through_the_editor_writer():
     written = params_json.entries_to_json(first)
 
     mod = written["params"][2]
-    assert mod["modifies"] == ["a/C", "b/C"] and mod["operation"] == "scale"
+    # `modifier`, not `operation`: CA renamed the key (a modifier acts on
+    # parameters, an operation acts on outputs) and warns on the old one.
+    assert mod["modifies"] == ["a/C", "b/C"] and mod["modifier"] == "scale"
+    assert "operation" not in mod
     assert "targets" not in mod
     assert written["params"][1]["name"] == "grp"
 
@@ -417,9 +442,9 @@ def test_ca_rejects_a_duplicate_name(requires_ca_resolver):
 def test_ca_rejects_a_modifier_of_a_modifier(requires_ca_resolver):
     with pytest.raises(ParamsForIdError):
         parse_params_for_id({"params": [
-            {"name": "s1", "modifies": ["a/C"], "operation": "scale",
+            {"name": "s1", "modifies": ["a/C"], "modifier": "scale",
              "min": 0.5, "max": 2.0},
-            {"name": "s2", "modifies": ["a/C"], "operation": "scale",
+            {"name": "s2", "modifies": ["a/C"], "modifier": "scale",
              "min": 0.5, "max": 2.0},
         ]})
 
@@ -428,7 +453,7 @@ def test_ca_rejects_a_modified_param_that_is_also_free(requires_ca_resolver):
     with pytest.raises(ParamsForIdError):
         parse_params_for_id({"params": [
             {"targets": ["a/C"], "min": 1e-9, "max": 5e-8},
-            {"name": "s", "modifies": ["a/C"], "operation": "scale",
+            {"name": "s", "modifies": ["a/C"], "modifier": "scale",
              "min": 0.5, "max": 2.0},
         ]})
 
@@ -460,31 +485,60 @@ def test_a_json_upload_is_stored_with_a_json_suffix(client):
     assert main._models[model_id].params_path.suffix == ".json"
 
 
-def test_switching_formats_removes_the_stale_twin(client, requires_params_csv):
-    """A format switch must not leave two params files disagreeing about which
-    is current -- the runners read whichever path the record holds, but a human
-    inspecting the upload dir would find both."""
+def test_an_uploaded_csv_is_stored_as_json(client, requires_params_csv):
+    """A CSV is converted on the way in, so the stored study is always JSON.
+
+    JSON is the only form that can carry a modifier, its inputs or a prior's
+    parameters, so keeping the CSV as the stored form would make those
+    unrepresentable in whatever ends up in the user's outputs directory.
+    """
     import main
     from conftest import LV_MODEL_PATH, LV_PARAMS_CSV_PATH, upload_model
 
     model_id = upload_model(client, LV_MODEL_PATH)["model_id"]
-    doc = {"params": [{"targets": ["Lotka_Volterra_module/alpha"], "min": 0.1, "max": 2.0}]}
-    r = client.post(
-        f"/api/params_for_id/upload?model_id={model_id}",
-        content=json.dumps(doc),
-        headers={"content-type": "application/json"},
-    )
-    assert r.status_code == 200, r.text
-    json_path = main._models[model_id].params_path
-
     with open(LV_PARAMS_CSV_PATH, "rb") as fh:
         r = client.post(
             f"/api/params_for_id/upload?model_id={model_id}",
             files={"file": (LV_PARAMS_CSV_PATH.name, fh, "text/csv")},
         )
     assert r.status_code == 200, r.text
-    assert main._models[model_id].params_path.suffix == ".csv"
+    stored = main._models[model_id].params_path
+    assert stored.suffix == ".json"
+    doc = json.loads(stored.read_text())
+    assert doc["params"], "converted document has no parameters"
+
+
+def test_a_csv_is_kept_as_csv_when_ca_cannot_convert_it(monkeypatch):
+    """Without CA the CSV is stored as-is rather than the upload being refused.
+
+    The packaged app starts with no CA directory set, and a study must not
+    become unloadable because of that -- CA's own CSV path still reads it. Driven
+    at ``_save_params_file`` rather than through the route, because faking "no
+    CA" also disables the *parsing* the route does first, which would fail the
+    request for an unrelated reason and prove nothing about storage.
+
+    Also pins the stale-twin rule: a format switch must not leave two params
+    files disagreeing about which is current. The runners read whichever path
+    the record holds, but a human inspecting the upload dir would find both.
+    """
+    import main
+    import params_json
+
+    def _no_ca(_data):
+        raise params_json.ParamsJsonError("circulatory_autogen is not available")
+
+    monkeypatch.setattr(params_json, "csv_to_json", _no_ca)
+
+    model_id = "twin-test"
+    json_path = main._save_params_file(model_id, b'{"params": []}')
+    assert json_path.suffix == ".json"
+
+    csv_path = main._save_params_file(
+        model_id, b"vessel_name,param_name,param_type,min,max\nheart,C,constant,1,2\n"
+    )
+    assert csv_path.suffix == ".csv"
     assert not json_path.exists(), "stale .json twin left beside the .csv"
+    csv_path.unlink(missing_ok=True)
 
 
 def test_ca_available_in_ci():
@@ -522,3 +576,45 @@ def test_a_document_without_params_is_rejected():
 def test_bounds_are_required_unless_unbounded():
     with pytest.raises(ParamsForIdError, match="min and max are required"):
         parse_params_for_id({"params": [{"targets": ["a/x"]}]})
+
+
+# ---------------------------------------------------------------------------
+# A modifier's `inputs` (CA #383)
+# ---------------------------------------------------------------------------
+def test_a_modifiers_inputs_survive_a_round_trip():
+    """`inputs` names the model constants the modifier function needs.
+
+    CA's `remainder` cannot be called without its `subtract` list, so dropping
+    the key on a read/write cycle would silently break the entry on the next run
+    -- and the editor rewrites this file every time it saves.
+    """
+    from params_json import entries_to_json
+
+    doc = {
+        "params": [
+            {
+                "name": "q_total",
+                "modifies": ["heart/q_lv_init"],
+                "modifier": "remainder",
+                "inputs": {"subtract": ["heart/q_rv_init", "aortic_root/q_init"]},
+                "min": 1e-4,
+                "max": 1e-2,
+            }
+        ]
+    }
+    entries = parse_params_for_id(doc)
+    assert entries[0].inputs == {"subtract": ["heart/q_rv_init", "aortic_root/q_init"]}
+    # Exposed to the editor, so the row can carry it through a save.
+    assert entries[0].as_dict()["inputs"] == doc["params"][0]["inputs"]
+    written = entries_to_json(entries)["params"][0]
+    assert written["inputs"] == doc["params"][0]["inputs"]
+
+
+def test_an_entry_without_inputs_does_not_grow_the_key():
+    """CA refuses keys outside its closed entry-key set, and an empty one would
+    be noise in a file the user reads."""
+    from params_json import entries_to_json
+
+    doc = {"params": [{"targets": ["a/x"], "min": 0.1, "max": 2.0}]}
+    written = entries_to_json(parse_params_for_id(doc))["params"][0]
+    assert "inputs" not in written

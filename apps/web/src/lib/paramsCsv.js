@@ -58,6 +58,10 @@ export function mergedRows(currentParams = [], modelVariables = {}) {
       name: p.name ?? p.qname,
       kind: isModifier ? 'modifier' : 'free',
       operation: p.operation ?? null,
+      // The model constants the modifier function declares as inputs, as this
+      // entry names them (CA #383). Carried through the editor untouched so a
+      // hand-written `remainder` entry survives a save (see paramsJson).
+      inputs: p.inputs ? { ...p.inputs } : null,
       // Per-target model default ({qname: baseline}) for the θ·baselineᵢ preview.
       baselines: p.baselines ? { ...p.baselines } : null,
       min: p.min,
@@ -95,6 +99,7 @@ export function mergedRows(currentParams = [], modelVariables = {}) {
       name: qname,
       kind: 'free',
       operation: null,
+      inputs: null,
       baselines: null,
       min,
       max,
@@ -208,6 +213,9 @@ export function createModifier(rows, selectedRows, opMeta = {}) {
     name,
     kind: 'modifier',
     operation: opMeta.value ?? 'scale',
+    // A modifier created here takes no inputs yet: the editor has no form for
+    // naming them, so only a hand-written entry carries any (CA #383).
+    inputs: null,
     baselines,
     min: opMeta.default_min ?? 0.5,
     max: opMeta.default_max ?? 2.0,

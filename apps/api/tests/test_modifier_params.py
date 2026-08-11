@@ -35,7 +35,7 @@ PARAMS_DOC = {
         {"name": "C_ao", "targets": ["aortic_root/C"],
          "min": 1e-9, "max": 5e-8, "param_type": "const"},
         {"name": "E_lv_scale", "modifies": ["global/E_lv_A", "global/E_lv_B"],
-         "operation": "scale", "min": 0.5, "max": 2.0, "param_type": "const"},
+         "modifier": "scale", "min": 0.5, "max": 2.0, "param_type": "const"},
     ],
 }
 

@@ -36,6 +36,7 @@ import main
 import sensitivity as sensitivity_mod
 import uq as uq_mod
 from conftest import (
+    WRITE_CA_RESULTS_SRC,
     LV_MODEL_PATH,
     LV_OBS_DATA_PATH,
     LV_PARAMS_CSV_PATH,
@@ -44,14 +45,15 @@ from conftest import (
 
 IS_WINDOWS = sys.platform.startswith("win")
 
-# A trivial cross-platform runner: write a results.json superset that every
-# manager's _finalize can read, then exit 0. Lets a job complete without Myokit.
+# A trivial cross-platform runner: write circulatory_autogen's own best-fit files
+# (what every manager's _finalize now reads, #210), then exit 0. Lets a job
+# complete without Myokit.
 _OK_RUNNER = (
     "import json, sys\n"
     "from pathlib import Path\n"
-    "cfg = json.loads(Path(sys.argv[1]).read_text())\n"
-    "Path(cfg['output_dir'], 'results.json').write_text(json.dumps("
-    "{'params': {}, 'cost': 0.0, 'method': 'test'}))\n"
+    + WRITE_CA_RESULTS_SRC
+    + "cfg = json.loads(Path(sys.argv[1]).read_text())\n"
+    "write_ca_results(cfg['output_dir'])\n"
     "print('__DONE__', flush=True)\n"
 )
 

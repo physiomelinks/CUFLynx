@@ -26,6 +26,13 @@ VALID_COST = (
     "def my_cost(output, desired_mean, std, weight):\n"
     "    return float(np.sum(((output - desired_mean) / std) ** 2 * weight))\n"
 )
+# The third kind (CA #383). Decorated because CA registers only decorated
+# functions, and affine in theta because CA probes that at setup.
+VALID_MODIFIER = (
+    "@modifier_func(inputs={'subtract': 'list'}, description='remainder of a total')\n"
+    "def my_remainder(theta, baseline, subtract):\n"
+    "    return theta - sum(subtract)\n"
+)
 
 
 @pytest.fixture
@@ -337,6 +344,24 @@ def test_cost_routes_save_list_delete(client, tmp_cfg):
     assert resp.json()["functions"] == []
 
 
+def test_modifier_routes_save_list_delete(client, tmp_cfg):
+    """The third kind gets the same three routes. A params_for_id entry names a
+    modifier by name, so it needs the same author-it-in-the-GUI path the
+    obs_data kinds have."""
+    resp = client.post(
+        "/api/modifier_funcs", json={"name": "my_remainder", "source": VALID_MODIFIER}
+    )
+    assert resp.status_code == 200, resp.text
+    assert [f["name"] for f in resp.json()["functions"]] == ["my_remainder"]
+
+    resp = client.get("/api/modifier_funcs")
+    assert [f["name"] for f in resp.json()["functions"]] == ["my_remainder"]
+
+    resp = client.delete("/api/modifier_funcs/my_remainder")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["functions"] == []
+
+
 def test_route_invalid_returns_422(client, tmp_cfg):
     resp = client.post(
         "/api/operation_funcs",
@@ -505,3 +530,55 @@ def test_custom_operation_kwargs_change_the_computed_value(tmp_path, monkeypatch
     assert fn(series, **obs_info["operation_kwargs"][0]) == pytest.approx(6.0)
     assert fn(series, **{"factor": 4.0}) == pytest.approx(12.0)
     assert fn(series) == pytest.approx(3.0)  # the op's own default
+
+
+# ---------------------------------------------------------------------------
+# The modifier kind (CA #383)
+# ---------------------------------------------------------------------------
+def test_save_modifier_writes_its_own_file_and_config_key(tmp_cfg):
+    """Its own file and CA's own config key, so CA loads it exactly as it loads
+    a user's operations and costs."""
+    result = uf.save_user_func("modifier", "my_remainder", VALID_MODIFIER)
+    assert [f["name"] for f in result["functions"]] == ["my_remainder"]
+    path = tmp_cfg / "user_funcs" / "modifier_funcs_user.py"
+    assert path.is_file()
+    assert uf.external_path("modifier") == str(path)
+    assert uf.external_paths()["modifier_funcs_external_path"] == str(path)
+
+
+def test_the_decorator_survives_a_read_back(tmp_cfg):
+    """Without ``@modifier_func`` CA ignores the function entirely, so losing the
+    decorator on a round-trip would silently unregister it."""
+    uf.save_user_func("modifier", "my_remainder", VALID_MODIFIER)
+    source = uf.read_user_funcs("modifier")["functions"][0]["source"]
+    assert source.startswith("@modifier_func(")
+    assert "inputs={'subtract': 'list'}" in source
+
+
+def test_the_modifier_header_imports_the_decorator_without_defining_it(tmp_cfg):
+    """Imported, never redefined: CA collects anything carrying the
+    ``is_modifier_func`` attribute, and a locally-defined decorator would not be
+    CA's own."""
+    uf.save_user_func("modifier", "my_remainder", VALID_MODIFIER)
+    text = (tmp_cfg / "user_funcs" / "modifier_funcs_user.py").read_text()
+    assert "from param_id.modifier_funcs import modifier_func" in text
+    assert "def modifier_func" not in text
+
+
+def test_every_modifier_template_is_valid_python(tmp_cfg):
+    """A template that does not parse cannot be saved from the dialog it is
+    offered in."""
+    import ast
+
+    templates = uf.read_user_funcs("modifier")["templates"]
+    assert set(templates) >= {"basic", "list_input", "float_input"}
+    for name, source in templates.items():
+        ast.parse(source), name
+
+
+def test_a_modifier_may_not_shadow_the_decorator(tmp_cfg):
+    """`modifier_func` is the structural name the file is built on."""
+    with pytest.raises(uf.UserFuncError):
+        uf.save_user_func(
+            "modifier", None, "def modifier_func(theta, baseline):\n    return theta\n"
+        )

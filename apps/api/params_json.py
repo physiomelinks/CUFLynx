@@ -219,7 +219,17 @@ def entries_to_json(entries, defaults: dict | None = None) -> dict:
         # must never be invented here, or the file stops being CA-readable.
         if entry.modifies:
             item["modifies"] = list(entry.modifies)
-            item["operation"] = entry.operation or "scale"
+            # CA renamed this key: a modifier acts on parameters, an operation
+            # acts on outputs (CA #385). ``operation`` still reads, with a
+            # deprecation warning, so files written before this keep working --
+            # but nothing new should be written under the old name.
+            item["modifier"] = entry.operation or "scale"
+            # The model constants the modifier function declared as inputs, as
+            # this entry names them. Written back verbatim: dropping a key the
+            # user authored is data loss, and without them CA cannot call a
+            # modifier that takes any (`remainder`'s ``subtract``, CA #383).
+            if entry.inputs:
+                item["inputs"] = dict(entry.inputs)
         else:
             item["targets"] = list(entry.qnames)
         if entry.param_type:

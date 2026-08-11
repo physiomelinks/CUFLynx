@@ -8,8 +8,10 @@ import json
 import time
 
 import calibration as calibration_mod
+import pytest
 import uq as uq_mod
 from conftest import (
+    WRITE_CA_RESULTS_SRC,
     LV_MODEL_PATH,
     LV_OBS_DATA_PATH,
     LV_PARAMS_CSV_PATH,
@@ -17,19 +19,25 @@ from conftest import (
 )
 
 # A fake UQ runner: writes a results.json with two per-parameter posteriors.
+# The fakes persist what the real runners persist: posterior *samples* for UQ and
+# circulatory_autogen's own best-fit files for calibration. The manager derives
+# the histograms and the best fit from those (#210), so a fake writing a
+# CUFLynx-shaped results.json would be testing a format nothing produces.
 FAKE_UQ_RUNNER = """
-import json, sys
+import csv, json, sys
+import numpy as np
 from pathlib import Path
 cfg = json.loads(Path(sys.argv[1]).read_text())
 print("starting fake uq", flush=True)
-params = [
-    {"qname": "a/x", "mean": 1.0, "std": 0.1, "q05": 0.8, "q50": 1.0, "q95": 1.2,
-     "bins": [0.5, 1.0, 1.5], "counts": [3, 7]},
-    {"qname": "a/y", "mean": 2.0, "std": 0.2, "q05": 1.7, "q50": 2.0, "q95": 2.3,
-     "bins": [1.5, 2.0, 2.5], "counts": [5, 4]},
-]
-Path(cfg["output_dir"], "results.json").write_text(
-    json.dumps({"method": cfg["settings"].get("method", "mcmc"), "params": params}))
+out = Path(cfg["output_dir"])
+out.mkdir(parents=True, exist_ok=True)
+rng = np.random.default_rng(0)
+samples = np.column_stack([rng.normal(1.0, 0.1, 200), rng.normal(2.0, 0.2, 200)])
+np.save(str(out / "uq_posterior_samples.npy"), samples)
+with open(out / "uq_param_names.csv", "w", newline="") as fh:
+    csv.writer(fh).writerows([["a/x"], ["a/y"]])
+print("__UQ_META__ " + json.dumps(
+    {"method": cfg["settings"].get("method", "mcmc")}), flush=True)
 print("__UQ_DONE__", flush=True)
 """
 
@@ -37,9 +45,9 @@ print("__UQ_DONE__", flush=True)
 FAKE_CALIB_RUNNER = """
 import json, sys
 from pathlib import Path
+""" + WRITE_CA_RESULTS_SRC + """
 cfg = json.loads(Path(sys.argv[1]).read_text())
-Path(cfg["output_dir"], "results.json").write_text(
-    json.dumps({"params": {"a/x": 1.5, "a/y": 2.0}, "cost": 0.25}))
+write_ca_results(cfg["output_dir"], [["a/x"], ["a/y"]], [1.5, 2.0], 0.25)
 print("__CALIBRATION_DONE__", flush=True)
 """
 
@@ -154,7 +162,13 @@ def test_uq_run_calibration_first_completes(client, tmp_path):
     assert status["state"] == "done", lines
     assert status["method"] == "mcmc"
     assert [p["qname"] for p in status["params"]] == ["a/x", "a/y"]
-    assert status["params"][0]["bins"] == [0.5, 1.0, 1.5]
+    # Binned by the manager from the samples the run persisted, so the histogram
+    # is derived rather than round-tripped: edges = counts + 1, and the summary
+    # matches the distribution the fake sampled from.
+    posterior = status["params"][0]
+    assert len(posterior["bins"]) == len(posterior["counts"]) + 1
+    assert posterior["mean"] == pytest.approx(1.0, abs=0.05)
+    assert posterior["std"] == pytest.approx(0.1, abs=0.03)
 
 
 def test_uq_reuse_after_calibration_completes(client, tmp_path):

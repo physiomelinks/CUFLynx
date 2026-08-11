@@ -16,6 +16,7 @@ import calibration as calibration_mod
 from pathlib import Path
 
 from conftest import (
+    WRITE_CA_RESULTS_SRC,
     LV_MODEL_PATH,
     LV_OBS_DATA_PATH,
     LV_PARAMS_CSV_PATH,
@@ -31,11 +32,11 @@ C3_PARAMS_CSV_PATH = RESOURCES_DIR / "3compartment_params_for_id.csv"
 FAKE_RUNNER = """
 import json, sys
 from pathlib import Path
+""" + WRITE_CA_RESULTS_SRC + """
 cfg = json.loads(Path(sys.argv[1]).read_text())
 print("starting fake calibration", flush=True)
 print("generation 0 cost: 1.0", flush=True)
-Path(cfg["output_dir"], "results.json").write_text(
-    json.dumps({"params": {"a/x": 1.5, "a/y": 2.0}, "cost": 0.25}))
+write_ca_results(cfg["output_dir"], [["a/x"], ["a/y"]], [1.5, 2.0], 0.25)
 print("best cost: 0.25", flush=True)
 print("__CALIBRATION_DONE__", flush=True)
 """
@@ -51,6 +52,7 @@ time.sleep(30)
 HISTORY_RUNNER = """
 import json, os, sys
 from pathlib import Path
+""" + WRITE_CA_RESULTS_SRC + """
 cfg = json.loads(Path(sys.argv[1]).read_text())
 sub = Path(cfg["output_dir"], "genetic_algorithm_model_obs")
 sub.mkdir(parents=True, exist_ok=True)
@@ -58,8 +60,7 @@ sub.mkdir(parents=True, exist_ok=True)
     "1.0, 2.0, 3.0\\n0.5, 0.7, 0.9\\n")
 (sub / "best_param_vals_history.csv").write_text(
     "a x,a y\\n0.10, 0.20\\n0.30, 0.40\\n")
-Path(cfg["output_dir"], "results.json").write_text(
-    json.dumps({"params": {"a/x": 1.5}, "cost": 0.5}))
+write_ca_results(str(sub), [["a/x"]], [1.5], 0.5)
 print("__CALIBRATION_DONE__", flush=True)
 """
 
@@ -529,9 +530,14 @@ def test_calibration_streams_and_completes(client, tmp_path):
 SEED_ECHO_RUNNER = """
 import json, sys
 from pathlib import Path
+""" + WRITE_CA_RESULTS_SRC + """
 cfg = json.loads(Path(sys.argv[1]).read_text())
-Path(cfg["output_dir"], "results.json").write_text(
-    json.dumps({"params": {"seed_seen": cfg.get("seed")}, "cost": 0.0}))
+# The seed is echoed back as a parameter *value*, so the assertion can read it
+# out of the results the manager reconstructs from CA's files.
+seed = cfg.get("seed")
+write_ca_results(
+    cfg["output_dir"], [["seed_seen"]], [-1.0 if seed is None else float(seed)], 0.0
+)
 print("__CALIBRATION_DONE__", flush=True)
 """
 
@@ -548,7 +554,7 @@ def test_calibration_config_carries_global_seed(client, tmp_path):
     assert resp.status_code == 200, resp.text
     status, _ = _wait(client, resp.json()["job_id"])
     assert status["state"] == "done"
-    assert status["best_params"]["seed_seen"] == 314
+    assert status["best_params"]["seed_seen"] == 314.0
 
 
 def test_calibration_config_omits_seed_by_default(client, tmp_path):
@@ -561,7 +567,9 @@ def test_calibration_config_omits_seed_by_default(client, tmp_path):
     assert resp.status_code == 200, resp.text
     status, _ = _wait(client, resp.json()["job_id"])
     assert status["state"] == "done"
-    assert status["best_params"]["seed_seen"] is None
+    # -1 is the fake runner's stand-in for "no seed": CA's best_param_vals.npy
+    # is a float array and cannot carry a null.
+    assert status["best_params"]["seed_seen"] == -1.0
 
 
 def test_calibration_requires_obs_and_params_422(client, tmp_path):
@@ -592,232 +600,6 @@ def test_calibration_busy_returns_409(client, tmp_path):
 
 def test_calibration_status_unknown_job_404(client):
     assert client.get("/api/calibration/nope/status").status_code == 404
-
-
-def test_read_history_parses_subdir_and_tolerates_partial(tmp_path):
-    sub = tmp_path / "genetic_algorithm_model_obs"
-    sub.mkdir()
-    # Two full generations plus a partially-flushed final row.
-    (sub / "best_cost_history.csv").write_text(
-        "0.9, 1.0, 1.1\n0.4, 0.6, 0.8\n0.3, 0.3"  # last line shorter, still parses
-    )
-    (sub / "best_param_vals_history.csv").write_text(
-        "global q_lv_init,aortic_root C\n0.75, 0.30\n1.00, 0.29\n1.00,"  # trailing
-    )
-    hist = calibration_mod._read_history(str(tmp_path))
-    assert hist["param_names"] == ["global q_lv_init", "aortic_root C"]
-    # cost: all rows parse (variable width tolerated); best is column 0.
-    assert [row[0] for row in hist["cost_history"]] == [0.9, 0.4, 0.3]
-    # params: only full-width rows kept (trailing "1.00," has wrong width).
-    assert hist["param_history"] == [[0.75, 0.30], [1.00, 0.29]]
-
-
-def test_read_history_missing_files_returns_empty(tmp_path):
-    hist = calibration_mod._read_history(str(tmp_path))
-    assert hist == {
-        "param_names": [],
-        "cost_history": [],
-        "param_history": [],
-        "start_costs": [],
-        "start_params": {"param_names": [], "starts": []},
-        "grad_history": [],
-        "start_grads": {"param_names": [], "starts": []},
-    }
-
-
-def test_read_multistart_costs_demuxes_interleaved_rows(tmp_path):
-    """CA appends `start_idx, iteration, cost` rows interleaved across MPI ranks;
-    _read_multistart_costs must group by start and order by iteration so each
-    start becomes one cost-vs-iteration curve for the Progress plot."""
-    sub = tmp_path / "sp_minimize_model_obs"
-    sub.mkdir()
-    (sub / "multi_start_cost_history.csv").write_text(
-        "0,0,1.5\n1,0,2.0\n2,0,3.0\n0,1,1.2\n1,1,1.1\n0,2,1.0\n"
-    )
-    assert calibration_mod._read_multistart_costs(str(tmp_path)) == [
-        [1.5, 1.2, 1.0],
-        [2.0, 1.1],
-        [3.0],
-    ]
-    # And it's surfaced by _read_history for the progress endpoint.
-    assert calibration_mod._read_history(str(tmp_path))["start_costs"] == [
-        [1.5, 1.2, 1.0],
-        [2.0, 1.1],
-        [3.0],
-    ]
-
-
-def test_read_multistart_costs_absent_returns_empty(tmp_path):
-    """GA / single-start runs write no multi_start_cost_history.csv -> []."""
-    sub = tmp_path / "genetic_algorithm_model_obs"
-    sub.mkdir()
-    (sub / "best_cost_history.csv").write_text("0.9\n0.4\n")
-    assert calibration_mod._read_multistart_costs(str(tmp_path)) == []
-
-
-def test_read_multistart_params_demuxes_interleaved_rows(tmp_path):
-    """CA writes a header naming the params then `start_idx, iteration, <vals>`
-    rows interleaved across MPI ranks; _read_multistart_params must name the
-    params and group each start's rows into one [iteration][param] matrix."""
-    sub = tmp_path / "sp_minimize_model_obs"
-    sub.mkdir()
-    (sub / "multi_start_param_vals_history.csv").write_text(
-        "start_idx, iteration, well x, well y\n"
-        "0, 0, 1.2, 3.4\n"
-        "1, 0, 2.2, 4.4\n"
-        "0, 1, 1.0, 3.0\n"
-        "1, 1, 1.9, 4.0\n"
-    )
-    res = calibration_mod._read_multistart_params(str(tmp_path))
-    assert res == {
-        "param_names": ["well x", "well y"],
-        "starts": [
-            [[1.2, 3.4], [1.0, 3.0]],
-            [[2.2, 4.4], [1.9, 4.0]],
-        ],
-    }
-    # Surfaced by _read_history for the progress endpoint.
-    assert calibration_mod._read_history(str(tmp_path))["start_params"] == res
-
-
-def test_read_multistart_params_tolerates_partial_and_absent(tmp_path):
-    """Partial mid-write rows (wrong width) are skipped; an absent file yields
-    empty names/starts (GA / single-start runs)."""
-    assert calibration_mod._read_multistart_params(str(tmp_path)) == {
-        "param_names": [],
-        "starts": [],
-    }
-    sub = tmp_path / "sp_minimize_model_obs"
-    sub.mkdir()
-    (sub / "multi_start_param_vals_history.csv").write_text(
-        "start_idx, iteration, well x, well y\n"
-        "0, 0, 1.2, 3.4\n"
-        "0, 1, 1.0"  # partially-flushed final row: wrong width, skipped
-    )
-    assert calibration_mod._read_multistart_params(str(tmp_path)) == {
-        "param_names": ["well x", "well y"],
-        "starts": [[[1.2, 3.4]]],
-    }
-
-
-def test_read_grad_history_single_start_skips_header_and_partial(tmp_path):
-    """CA #296: best_gradient_history.csv has a header row of param labels then one
-    dJ/dp row per L-BFGS-B iteration (lockstep with best_cost_history), plus a final
-    best-gradient row. _read_grad_history drops the header and keeps full-width rows."""
-    sub = tmp_path / "sp_minimize_model_obs"
-    sub.mkdir()
-    (sub / "best_gradient_history.csv").write_text(
-        "well x, well y\n"
-        "1.0e+00, -2.0e+00\n"
-        "5.0e-01, -1.0e+00\n"
-        "1.0e-03, -2.0e-03\n"  # final best-gradient row, converging toward zero
-        "9.0e-04"  # partially-flushed final row: wrong width, skipped
-    )
-    hist = calibration_mod._read_history(str(tmp_path))
-    assert hist["grad_history"] == [
-        [1.0, -2.0],
-        [0.5, -1.0],
-        [1.0e-03, -2.0e-03],
-    ]
-
-
-def test_read_grad_history_absent_returns_empty(tmp_path):
-    """GA / population-based runs write no best_gradient_history.csv -> []."""
-    sub = tmp_path / "genetic_algorithm_model_obs"
-    sub.mkdir()
-    (sub / "best_cost_history.csv").write_text("0.9\n0.4\n")
-    assert calibration_mod._read_grad_history(str(tmp_path)) == []
-    assert calibration_mod._read_history(str(tmp_path))["grad_history"] == []
-
-
-def test_read_multistart_grads_demuxes_interleaved_rows(tmp_path):
-    """CA #296: multi_start_gradient_history.csv shares the (start_idx, iteration)
-    keying of the cost/param streams; _read_multistart_grads groups each start's
-    dJ/dp rows into one [iteration][param] matrix, interleaving tolerated."""
-    sub = tmp_path / "sp_minimize_model_obs"
-    sub.mkdir()
-    (sub / "multi_start_gradient_history.csv").write_text(
-        "start_idx, iteration, well x, well y\n"
-        "0, 0, 1.0, -2.0\n"
-        "1, 0, 3.0, -4.0\n"
-        "0, 1, 0.5, -1.0\n"
-        "1, 1, 1.5, -2.0\n"
-        "0, 2, 1.0"  # partially-flushed final row: wrong width, skipped
-    )
-    res = calibration_mod._read_multistart_grads(str(tmp_path))
-    assert res == {
-        "param_names": ["well x", "well y"],
-        "starts": [
-            [[1.0, -2.0], [0.5, -1.0]],
-            [[3.0, -4.0], [1.5, -2.0]],
-        ],
-    }
-    # Surfaced by _read_history for the progress endpoint.
-    assert calibration_mod._read_history(str(tmp_path))["start_grads"] == res
-
-
-def test_read_multistart_grads_absent_returns_empty(tmp_path):
-    """GA / single-start runs write no multi_start_gradient_history.csv."""
-    assert calibration_mod._read_multistart_grads(str(tmp_path)) == {
-        "param_names": [],
-        "starts": [],
-    }
-
-
-def test_clear_progress_history_removes_gradient_files(tmp_path):
-    """The gradient streams are transient progress files too: a reused output_dir
-    must clear them so a second run's gradient plot starts fresh (CA appends)."""
-    sub = tmp_path / "sp_minimize_model_run1"
-    sub.mkdir()
-    (sub / "best_gradient_history.csv").write_text("a, b\n1.0, 2.0\n")
-    (sub / "multi_start_gradient_history.csv").write_text(
-        "start_idx, iteration, a, b\n0, 0, 1.0, 2.0\n"
-    )
-    calibration_mod._clear_progress_history(str(tmp_path))
-    assert not (sub / "best_gradient_history.csv").exists()
-    assert not (sub / "multi_start_gradient_history.csv").exists()
-
-
-def test_find_history_prefers_the_most_recent_match(tmp_path):
-    """A reused output_dir can hold a previous run's history in another method
-    subdir; _read_history must follow the freshest one, not an arbitrary match,
-    or a second run's live plot shows stale data that never changes."""
-    old = tmp_path / "genetic_algorithm_model_run1"
-    old.mkdir()
-    (old / "best_cost_history.csv").write_text("9.9\n8.8\n")
-    time.sleep(0.02)
-    new = tmp_path / "sp_minimize_model_run2"
-    new.mkdir()
-    (new / "best_cost_history.csv").write_text("5.0\n4.0\n3.0\n")
-
-    assert calibration_mod._find_history_file(str(tmp_path), "best_cost_history.csv") == str(
-        new / "best_cost_history.csv"
-    )
-    assert [r[0] for r in calibration_mod._read_history(str(tmp_path))["cost_history"]] == [5.0, 4.0, 3.0]
-
-
-def test_clear_progress_history_removes_stale_history_but_keeps_results(tmp_path):
-    """Regression: a calibration run reusing an output_dir must clear the previous
-    run's progress-history CSVs so its live plots start fresh (CA appends to them
-    and never truncates). Final results must be left intact."""
-    sub = tmp_path / "genetic_algorithm_model_run1"
-    sub.mkdir()
-    (sub / "best_cost_history.csv").write_text("9.9\n8.8\n7.7\n")
-    (sub / "best_param_vals_history.csv").write_text("a,b\n0.1,0.2\n")
-    (sub / "results.json").write_text('{"cost": 0.1}')  # a real result -> keep
-    (tmp_path / "best_cost_history.csv").write_text("1.0\n")  # also the direct copy
-
-    # Before: stale history is read.
-    assert calibration_mod._read_history(str(tmp_path))["cost_history"]
-
-    calibration_mod._clear_progress_history(str(tmp_path))
-
-    # History cleared everywhere; results preserved.
-    assert calibration_mod._read_history(str(tmp_path))["cost_history"] == []
-    assert not (sub / "best_cost_history.csv").exists()
-    assert not (sub / "best_param_vals_history.csv").exists()
-    assert not (tmp_path / "best_cost_history.csv").exists()
-    assert (sub / "results.json").exists()  # final result untouched
 
 
 def test_calibration_progress_endpoint(client, tmp_path):
@@ -856,7 +638,7 @@ def test_run_clears_stale_progress_history_from_a_reused_outputs_dir(client, tmp
     assert resp.status_code == 200
     try:
         # The stale history is gone the moment the run starts.
-        assert calibration_mod._read_history(str(outdir))["cost_history"] == []
+        assert calibration_mod.ca_run_history.progress_history(str(outdir))["cost_history"] == []
         assert client.get(f"/api/calibration/{resp.json()['job_id']}/progress").json()[
             "cost_history"
         ] == []
@@ -881,8 +663,52 @@ def test_calibration_honors_config_outputs_dir(client, tmp_path):
     assert resp.status_code == 200, resp.text
     status, _ = _wait(client, resp.json()["job_id"])
     assert status["state"] == "done"
-    # Runner wrote results.json into the configured dir (proves it was used).
-    assert (out / "results.json").exists()
+    # CA's own outputs landed in the configured dir (proves it was used), and
+    # no CUFLynx-shaped summary sits beside them (#210).
+    assert (out / "best_param_vals.npy").exists()
+    assert not (out / "results.json").exists()
+
+
+def test_the_run_config_never_lands_in_the_outputs_dir(client, tmp_path):
+    """``calib_config.json`` is argv[1] for the runner and nothing else.
+
+    Nothing reads it back, so it is plumbing, not a study file — the outputs
+    directory should hold what the run produced, not how it was launched. It
+    goes to a temp dir that is removed once the process exits.
+    """
+    _install_runner(tmp_path, FAKE_RUNNER)
+    out = tmp_path / "my_outputs"
+    model_id = _setup_model_obs_params(
+        client, LV_MODEL_PATH, LV_OBS_DATA_PATH, LV_PARAMS_CSV_PATH
+    )
+    resp = client.post(
+        "/api/calibration/run",
+        json={"model_id": model_id, "settings": {"config_outputs_dir": str(out)}},
+    )
+    assert resp.status_code == 200, resp.text
+    status, _ = _wait(client, resp.json()["job_id"])
+    assert status["state"] == "done"
+    assert not (out / "calib_config.json").exists()
+    # And it is cleaned up rather than left in the temp dir forever.
+    job = calibration_mod.calibration._job
+    assert job.config_path and not os.path.exists(job.config_path)
+
+
+def test_the_run_config_is_readable_while_the_runner_starts(tmp_path):
+    """It must outlive the spawn: every MPI rank reads it at startup.
+
+    Guards the obvious wrong fix — a NamedTemporaryFile deleted on close, which
+    works single-process and fails under ``mpiexec -n N`` for ranks that have
+    not read it yet.
+    """
+    path = calibration_mod.write_run_config({"output_dir": str(tmp_path)}, "calib_config.json")
+    try:
+        assert os.path.isfile(path)
+        assert json.loads(Path(path).read_text())["output_dir"] == str(tmp_path)
+    finally:
+        calibration_mod.clear_run_config(path)
+    assert not os.path.exists(path)
+    assert not os.path.isdir(os.path.dirname(path))
 
 
 def test_calibration_config_outputs_dir_must_be_absolute(client, tmp_path):

@@ -796,6 +796,61 @@ def test_param_modifier_operations_are_introspected_from_ca(monkeypatch):
     assert by_value["calculate"]["identity"] is None
 
 
+def test_a_user_authored_modifier_is_offered_alongside_cas_own(monkeypatch, tmp_path):
+    """The user's own modifier file is passed to CA's registry.
+
+    Without this a modifier saved in the GUI could never be selected in the
+    params editor -- the save would look like it worked and the entry would be
+    unreachable. Mirrors what obs_options does for operations and costs.
+    """
+    seen = {}
+
+    def _registry(external_path=None):
+        seen["external_path"] = external_path
+        ops = {"scale": {"description": "one calibrated multiplier", "identity": 1.0}}
+        if external_path:
+            ops["my_remainder"] = {
+                "description": "remainder of a total",
+                "inputs": {"subtract": "list"},
+                "user_defined": True,
+            }
+        return ops
+
+    fake_mod = types.SimpleNamespace(
+        DEFAULT_PARAM_MODIFIER_OPERATION="scale",
+        param_modifier_operations=_registry,
+    )
+    monkeypatch.setitem(sys.modules, "parsers.PrimitiveParsers", fake_mod)
+    monkeypatch.setattr(so, "_ensure_ca_path", lambda: None)
+
+    import user_funcs
+
+    monkeypatch.setattr(user_funcs, "config_dir", lambda: tmp_path)
+    monkeypatch.setattr(
+        user_funcs, "_circulatory_autogen_src", lambda: str(tmp_path / "ca" / "src")
+    )
+    user_funcs.save_user_func(
+        "modifier",
+        None,
+        "@modifier_func(inputs={'subtract': 'list'})\n"
+        "def my_remainder(theta, baseline, subtract):\n"
+        "    return theta - sum(subtract)\n",
+    )
+    so.reset_cache()
+
+    ops = so.get_param_modifier_operations(refresh=True, output_dir=str(tmp_path))
+
+    assert seen["external_path"] == str(
+        tmp_path / "user_funcs" / "modifier_funcs_user.py"
+    )
+    by_value = {o["value"]: o for o in ops["operations"]}
+    assert "my_remainder" in by_value
+    # `inputs` is what lets the editor ask for the qnames the function needs.
+    assert by_value["my_remainder"]["inputs"] == {"subtract": "list"}
+    assert by_value["my_remainder"]["user_defined"] is True
+    assert by_value["scale"]["user_defined"] is False
+
+
 def test_param_modifier_operations_fall_back_for_older_ca(monkeypatch):
     """A CA predating modifiers still gets the one operation it will grow into,
     so the editor renders (and the parser refuses unknown ops by name)."""

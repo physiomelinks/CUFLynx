@@ -7,7 +7,7 @@ Reported on macOS: a completed calibration reported as failed with
     (default nic=en5: Input/output error)
 
 MPICH's MPI_Finalize aborted while flushing its network queue -- long after
-every rank had finished and results.json was on disk. The managers gated purely
+every rank had finished and the results were on disk. The managers gated purely
 on the exit code, so the results were discarded and the user was told "runner
 exited with code 808576911".
 
@@ -21,6 +21,7 @@ import calibration as calibration_mod
 import pytest
 import runtime_paths
 from calibration import finished_before_exiting, teardown_warning
+from conftest import write_ca_results
 
 DONE = "__CALIBRATION_DONE__"
 FAIL = "__CALIBRATION_FAILED__"
@@ -62,7 +63,11 @@ def _finalized_job(tmp_path, code, lines, results=True):
     job = calibration_mod.CalibrationJob("j", str(tmp_path), None, None)
     job.lines = list(lines)
     if results:
-        (tmp_path / "results.json").write_text('{"params": {"a/x": 1.5}, "cost": 0.25}')
+        # circulatory_autogen's own outputs, which is what the manager now reads
+        # (#210). That makes this gate strictly more robust: it asks whether the
+        # *run* wrote its results, not whether CUFLynx managed to serialise a
+        # copy of them -- and the copy is what a teardown abort could interrupt.
+        write_ca_results(tmp_path, [["a/x"]], [1.5], 0.25)
     calibration_mod.calibration._finalize(job, code)
     return job
 

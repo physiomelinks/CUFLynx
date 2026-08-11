@@ -50,10 +50,19 @@ def _run(script: Path):
     )
 
 
-def _sim(out: Path, outputs: dict, time=None):
+def _sim(out: Path, outputs: dict, time=None, exp=0):
+    """A simulation-stage run's traces, in circulatory_autogen's npz shape.
+
+    The same file a calibrated best fit leaves, so one reader covers both and no
+    CUFLynx-authored JSON exists in the bundle (#210).
+    """
+    import numpy as np
+
     out.mkdir(parents=True, exist_ok=True)
     time = time if time is not None else [i * 0.01 for i in range(50)]
-    (out / "simulation.json").write_text(json.dumps({"time": time, "outputs": outputs}))
+    data = {name: np.asarray(series, dtype=float) for name, series in outputs.items()}
+    data["time"] = np.asarray(time, dtype=float)
+    np.savez(out / f"all_outputs_exp_{exp}.npz", **data)
 
 
 TRACES = {
@@ -121,7 +130,7 @@ def test_it_plots_a_simulation(tmp_path):
     _sim(tmp_path / "output", TRACES)
     result = _run(_write_script(tmp_path))
     assert result.returncode == 0, result.stderr
-    assert list((tmp_path / "output" / "pyscript_plots").glob("output_plot*.png"))
+    assert list((tmp_path / "output" / "pyscript_plots").glob("best_fit_exp*.png"))
 
 
 @pytest.mark.integration
@@ -139,7 +148,7 @@ def test_each_variable_gets_its_own_panel(tmp_path):
     many.update(TRACES)
     _sim(tmp_path / "output", many)
     assert _run(_write_script(tmp_path)).returncode == 0
-    pages = sorted((tmp_path / "output" / "pyscript_plots").glob("output_plot*.png"))
+    pages = sorted((tmp_path / "output" / "pyscript_plots").glob("best_fit_exp*.png"))
     assert pages
     img = mpimg.imread(pages[0])
     assert img.shape[0] > 1000, "expected a multi-row grid, not one shared axes"
@@ -152,30 +161,22 @@ def test_many_variables_are_paginated(tmp_path):
     pytest.importorskip("matplotlib")
     _sim(tmp_path / "output", {f"m/v{i}": [float(i)] * 50 for i in range(30)})
     assert _run(_write_script(tmp_path)).returncode == 0
-    assert len(list((tmp_path / "output" / "pyscript_plots").glob("output_plot*.png"))) > 1
+    assert len(list((tmp_path / "output" / "pyscript_plots").glob("best_fit_exp*.png"))) > 1
 
 
 @pytest.mark.integration
 def test_a_protocol_run_plots_each_experiment_separately(tmp_path):
     """Experiments have their own time bases; plotting them together would put
-    one experiment's trace on another's axes. This shape used to raise KeyError
-    and take the whole script down."""
+    one experiment's trace on another's axes. One npz per experiment, which is
+    how circulatory_autogen writes them."""
     pytest.importorskip("matplotlib")
     out = tmp_path / "output"
-    out.mkdir(parents=True)
-    (out / "simulation.json").write_text(
-        json.dumps(
-            {
-                "experiments": [
-                    {"time": [0, 1, 2], "outputs": {"m/x": [1, 2, 3]}},
-                    {"time": [0, 1, 2], "outputs": {"m/x": [4, 5, 6]}},
-                ]
-            }
-        )
-    )
+    _sim(out, {"m/x": [1, 2, 3]}, time=[0, 1, 2], exp=0)
+    _sim(out, {"m/x": [4, 5, 6]}, time=[0, 1, 2], exp=1)
     assert _run(_write_script(tmp_path)).returncode == 0
-    assert (out / "pyscript_plots" / "output_plot_exp0.png").is_file()
-    assert (out / "pyscript_plots" / "output_plot_exp1.png").is_file()
+    plots = out / "pyscript_plots"
+    assert list(plots.glob("best_fit_exp0*.png"))
+    assert list(plots.glob("best_fit_exp1*.png"))
 
 
 @pytest.mark.integration
@@ -218,32 +219,24 @@ def test_a_param_history_without_a_header_keeps_its_first_row(tmp_path):
 
 
 @pytest.mark.integration
-def test_it_plots_both_analyses_from_their_own_stage_files(tmp_path):
-    """The shape the pipeline now actually writes.
+def test_it_plots_both_analyses_from_circulatory_autogens_own_outputs(tmp_path):
+    """Both figures come from files circulatory_autogen (or the run) wrote.
 
-    Sensitivity and UQ used to share a generic results.json — which the
-    sensitivity stage never wrote at all, so its heatmap could not draw, and
-    with both present only whichever was found first would have. Each stage
-    writes its own file and the reader merges them, so both figures appear.
+    The Sobol indices CSV is CA's own; the posterior is binned from the samples
+    the run persisted. Nothing here is a CUFLynx-authored results format, so a
+    run directory produced by CA's own scripts plots identically (#210).
     """
     pytest.importorskip("matplotlib")
+    import numpy as np
+
     out = tmp_path / "output"
     out.mkdir(parents=True)
-    (out / "sensitivity.json").write_text(
-        json.dumps({
-            "output_names": ["max/m/x"],
-            "param_names": ["a/b", "c/d"],
-            "indices": {"ST": {"max/m/x": {"a/b": 0.7, "c/d": 0.3}}},
-        })
+    (out / "all_outputs_n64_Sobol_indices.csv").write_text(
+        "Parameter,S1_max/m/x,ST_max/m/x\na/b,0.6,0.7\nc/d,0.2,0.3\n"
     )
-    (out / "uq.json").write_text(
-        json.dumps({
-            "method": "mcmc",
-            "params": [{"qname": "a/b", "mean": 1.0, "std": 0.1, "q05": 0.8,
-                        "q50": 1.0, "q95": 1.2,
-                        "bins": [0.8, 0.9, 1.0, 1.1, 1.2], "counts": [1, 4, 4, 1]}],
-        })
-    )
+    rng = np.random.default_rng(0)
+    np.save(out / "uq_posterior_samples.npy", rng.normal(1.0, 0.1, (500, 1)))
+    (out / "uq_param_names.csv").write_text("a/b\n")
 
     assert _run(_write_script(tmp_path)).returncode == 0
     plots = out / "pyscript_plots"
@@ -252,18 +245,14 @@ def test_it_plots_both_analyses_from_their_own_stage_files(tmp_path):
 
 
 @pytest.mark.integration
-def test_it_plots_a_sensitivity_heatmap(tmp_path):
+def test_it_plots_a_local_sensitivity_heatmap(tmp_path):
+    """The local arm writes CA's local_sensitivity_relative.csv, so the same
+    reader covers both kinds."""
     pytest.importorskip("matplotlib")
     out = tmp_path / "output"
     out.mkdir(parents=True)
-    (out / "results.json").write_text(
-        json.dumps(
-            {
-                "output_names": ["max/m/x"],
-                "param_names": ["a/b", "c/d"],
-                "indices": {"ST": {"max/m/x": {"a/b": 0.7, "c/d": 0.3}}},
-            }
-        )
+    (out / "local_sensitivity_relative.csv").write_text(
+        "output,a/b,c/d\nmax/m/x,0.7,-0.3\n"
     )
     assert _run(_write_script(tmp_path)).returncode == 0
     assert (out / "pyscript_plots" / "analysis_sensitivity.png").is_file()
@@ -271,15 +260,17 @@ def test_it_plots_a_sensitivity_heatmap(tmp_path):
 
 @pytest.mark.integration
 def test_one_bad_section_does_not_lose_the_others(tmp_path):
-    """A malformed results.json should not cost you the simulation plots that
+    """A malformed analysis file should not cost you the trace plots that
     rendered perfectly well."""
     pytest.importorskip("matplotlib")
     out = tmp_path / "output"
     _sim(out, TRACES)
-    (out / "results.json").write_text("{not json")
+    (out / "local_sensitivity_relative.csv").write_text("output,a/b\nnot,a,number,at,all\n")
+    (out / "uq_posterior_samples.npy").write_text("not an npy")
+    (out / "uq_param_names.csv").write_text("a/b\n")
     result = _run(_write_script(tmp_path))
     assert result.returncode == 0, result.stderr
-    assert list((out / "pyscript_plots").glob("output_plot*.png"))
+    assert list((out / "pyscript_plots").glob("best_fit_exp*.png"))
     assert "WARNING" in result.stdout
 
 
@@ -310,7 +301,7 @@ def test_partial_data_plots_what_it_can_without_complaining(tmp_path):
     result = _run(_write_script(tmp_path))
     assert result.returncode == 0, result.stdout + result.stderr
     assert (out / "pyscript_plots" / "progress_cost.png").is_file()
-    assert not (out / "pyscript_plots" / "output_plot_exp0.png").exists()
+    assert not list((out / "pyscript_plots").glob("best_fit_exp*.png"))
 
 
 # ---------------------------------------------------------------------------
@@ -777,9 +768,11 @@ def test_every_figure_has_its_own_editable_function():
         "def plot_error_bars():",
         "def plot_progress():",
         "def plot_analysis():",
-        "def plot_simulation_outputs():",
     ):
         assert name in src, name
+    # plot_best_fit covers a simulation-only run too, so there is no separate
+    # "simulation outputs" figure (#210).
+    assert "def plot_simulation_outputs():" not in src
     assert "FIGURES = [" in src
 
 

@@ -1,7 +1,8 @@
 """Standalone UQ runner — spawned as a subprocess by the API.
 
-Runs uncertainty quantification on a CellML model and writes per-parameter
-posterior distributions to ``<output_dir>/results.json``. Two methods:
+Runs uncertainty quantification on a CellML model and persists the posterior
+*samples* it settled on (``uq_posterior_samples.npy``); the manager bins them into
+the per-parameter distributions the UQ panel plots (#210). Two methods:
 
 - ``mcmc``    — emcee sampling (circulatory_autogen ``CVS0DParamID(mcmc_instead=True)``).
 - ``laplace`` — Gaussian approx around the best fit (``IdentifiabilityAnalysis``).
@@ -27,6 +28,9 @@ os.environ.setdefault("MPLBACKEND", "Agg")
 # Markers the API watches for in stdout.
 DONE_MARKER = "__UQ_DONE__"
 FAIL_MARKER = "__UQ_FAILED__"
+#: Prefix for the one line of run metadata no file holds: which method ran. The
+#: posterior itself is read from the samples on disk (#210).
+META_MARKER = "__UQ_META__ "
 
 # CUFLynx-level / calibration settings that must NOT be forwarded into CA's
 # mcmc_options (the rest are the CA mcmc option values the UI collected).
@@ -40,7 +44,13 @@ _UQ_RESERVED = {
     "config_outputs_dir",
 }
 
-NUM_BINS = 30
+#: Histogram resolution. Imported lazily from ca_run_history where the manager
+#: re-bins the same samples, so the two cannot drift apart; the literal is the
+#: fallback for a runner executed without the app modules importable.
+try:
+    from ca_run_history import NUM_BINS
+except ImportError:  # pragma: no cover - the app module is normally importable
+    NUM_BINS = 40
 LAPLACE_SAMPLES = 100000
 
 
@@ -140,6 +150,15 @@ def _make_param_id(config, settings, obs_path, *, mcmc, options_key, options):
     return CVS0DParamID(**kwargs)
 
 
+def _has_run_uq(param_id) -> bool:
+    """Whether this CA can run UQ on an already-built engine (CA #392).
+
+    Older CA only offers ``run_mcmc()`` on an object constructed with
+    ``mcmc_instead=True``, so the caller must keep building a second one.
+    """
+    return callable(getattr(param_id, "run_UQ", None))
+
+
 def _flat_param_names(param_id):
     """Representative qname per parameter group (first of each list), matching the
     column order of best-fit vectors / samples."""
@@ -234,14 +253,22 @@ def run(config: dict) -> dict:
 
     # ---- run the chosen method --------------------------------------------
     if method == "mcmc":
-        mcmc = _make_param_id(
+        # Reuse the calibration engine when one was just built: CA's run_UQ
+        # promotes it in place (OpencorMCMC.from_param_id), so the model
+        # compiled for the GA is the one UQ samples with. Before CA #392 the
+        # only way in was mcmc_instead=True at construction, which forced a
+        # second CVS0DParamID and a second compile (CUFLynx #216/#217).
+        mcmc = ga if (run_calib and _has_run_uq(ga)) else _make_param_id(
             config, settings, obs_path, mcmc=True, options_key="mcmc_options",
             options=mcmc_options,
         )
         best = best if run_calib else _best_from_reuse(mcmc, reuse_best)
         mcmc.set_best_param_vals(best)
         ensure_mle_cost_type_for_bayesian_inner(pid.mcmc_object, inp)
-        mcmc.run_mcmc()
+        if _has_run_uq(mcmc):
+            mcmc.run_UQ(mcmc_options)
+        else:
+            mcmc.run_mcmc()  # a CA predating run_UQ
         rank = getattr(mcmc, "rank", 0)
         if rank != 0:
             return {"rank": rank}
@@ -277,10 +304,14 @@ def run(config: dict) -> dict:
     else:
         raise RuntimeError(f"unknown UQ method: {method!r}")
 
-    payload = {"method": method, "params": _distributions(np.asarray(flat), qnames)}
-    with open(os.path.join(output_dir, "results.json"), "w") as fh:
-        json.dump(payload, fh)
-    return {"rank": 0, **payload}
+    # The samples *are* the result, so they are what is persisted -- numeric, in
+    # CA's own .npy idiom, rather than a CUFLynx-shaped results.json (#210). The
+    # manager summarises them into histograms from there, with the same bin count.
+    import ca_run_history  # noqa: E402 (CA output formats live in one place)
+
+    ca_run_history.write_uq_samples(output_dir, np.asarray(flat), qnames)
+    print(META_MARKER + json.dumps({"method": method}), flush=True)
+    return {"rank": 0, "method": method, "params": _distributions(np.asarray(flat), qnames)}
 
 
 def main(argv: list[str]) -> int:
