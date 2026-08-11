@@ -268,6 +268,45 @@ def flat_param_names(param_id):
     return [g[0] if isinstance(g, (list, tuple)) else g for g in param_id.get_param_names()]
 
 
+def write_stage(out_dir, stage, payload):
+    """Write one stage's outputs as ``<stage>.json``.
+
+    Every stage that produces something reports it the same way and under its
+    own name. They used to differ -- simulation wrote simulation.json, UQ wrote
+    a generic results.json, sensitivity wrote nothing at all -- and the shared
+    name meant a reader looking for "results.json" could find whichever stage
+    happened to be found first.
+    """
+    with open(os.path.join(out_dir, f"{stage}.json"), "w") as fh:
+        json.dump(payload, fh)
+
+
+def sobol_indices(sa_agent):
+    """The Sobol indices as {"indices": {kind: {output: {param: v}}}, ...}.
+
+    Read back from circulatory_autogen's own accessor rather than re-deriving
+    them. Keys are CA's, verbatim: this script is standalone, and relabelling
+    them here would be a second naming convention to keep in step. Returns
+    empty structures when the method produced no Sobol indices (a local
+    sensitivity run), so the stage still reports rather than failing.
+    """
+    try:
+        raw = sa_agent.SA_manager.load_sobol_indices()
+    except Exception as exc:  # noqa: BLE001 - a stage that ran is not a failure
+        print(f"  no Sobol indices to summarise: {exc}", flush=True)
+        raw = {}
+    indices = {kind: dict(by_out or {}) for kind, by_out in (raw or {}).items()}
+    output_names, param_names = [], []
+    for kind in ("S1", "ST"):
+        for out_name, params in (indices.get(kind) or {}).items():
+            if out_name not in output_names:
+                output_names.append(out_name)
+            for p in params:
+                if p not in param_names:
+                    param_names.append(p)
+    return {"indices": indices, "output_names": output_names, "param_names": param_names}
+
+
 def write_uq(out_dir, method, flat, qnames):
     """Per-parameter posterior summary + histogram from samples (N, P)."""
     import numpy as np
@@ -286,8 +325,7 @@ def write_uq(out_dir, method, flat, qnames):
             "q05": q05, "q50": q50, "q95": q95,
             "bins": [float(x) for x in edges], "counts": [int(x) for x in counts],
         })
-    with open(os.path.join(out_dir, "results.json"), "w") as fh:
-        json.dump({"method": method, "params": params}, fh)
+    write_stage(out_dir, "uq", {"method": method, "params": params})
 
 
 def main():
@@ -318,17 +356,19 @@ def main():
 
         sim_helper = get_simulation_helper_from_inp_data_dict(inp)
         sim_helper.run()
-        names = sim_helper.get_all_variable_names()
-        results = sim_helper.get_results(names, flatten=True)
-        # Myokit/OpenCOR/python helpers expose get_time; the CasADi helper doesn't,
-        # but resolves the logged sim-time vector as the 'time' variable.
-        if hasattr(sim_helper, "get_time"):
-            time = [float(t) for t in sim_helper.get_time()]
-        else:
-            time = [float(t) for t in sim_helper.get_results(["time"], flatten=True)[0]]
-        outputs = {name: [float(v) for v in series] for name, series in zip(names, results)}
-        with open(os.path.join(output_dir, "simulation.json"), "w") as fh:
-            json.dump({"time": time, "outputs": outputs}, fh)
+        # One call for every variable -- the accessor circulatory_autogen uses
+        # itself. It does not include time, which is the one separate ask, and
+        # 'time' resolves on every backend so no per-helper branch is needed.
+        outputs = {
+            name: [float(v) for v in series]
+            for name, series in sim_helper.get_all_results_dict().items()
+        }
+        time = [float(t) for t in sim_helper.get_results(["time"], flatten=True)[0]]
+        write_stage(output_dir, "simulation", {"time": time, "outputs": outputs})
+        # Released before the next stage builds its own: a helper holds a
+        # compiled model, and every stage below constructs one of its own.
+        if hasattr(sim_helper, "close_simulation"):
+            sim_helper.close_simulation()
 
     # ---- 2) Sensitivity analysis ------------------------------------------
     if cfg.get("do_sensitivity"):
@@ -337,9 +377,15 @@ def main():
 
         sa_agent = SensitivityAnalysis.init_from_dict(inp)
         sa_agent.run_sensitivity_analysis(inp["sa_options"])
+        # circulatory_autogen leaves its indices as CSVs and figures; the
+        # plotting script wants them the way every other stage reports, so this
+        # stage writes its own summary too. Without it the exported
+        # plot_analysis() heatmap had nothing to read and never drew.
+        write_stage(output_dir, "sensitivity", sobol_indices(sa_agent))
 
     # ---- 3) Calibration ----------------------------------------------------
     best_param_vals = None  # reused by UQ below when available
+    calibrated = None  # the engine itself, likewise
     if cfg.get("do_calibration"):
         print("=== calibration ===", flush=True)
         from param_id.paramID import CVS0DParamID
@@ -348,6 +394,9 @@ def main():
         param_id.run()
         param_id.plot_outputs()
         best_param_vals = param_id.get_best_param_vals()
+        # Kept for UQ below: it wants exactly this engine, and building a
+        # second one compiles the model again.
+        calibrated = param_id
 
     # ---- 4) Uncertainty quantification ------------------------------------
     if cfg.get("do_mcmc") or cfg.get("do_ia"):
@@ -369,6 +418,7 @@ def main():
             calib = CVS0DParamID.init_from_dict(uq_inp)
             calib.run()
             best_param_vals = calib.get_best_param_vals()
+            calibrated = calib  # so Laplace below reuses it rather than rebuilding
         best_param_vals = np.asarray(best_param_vals, dtype=float)
 
         if method == "mcmc":
@@ -381,7 +431,10 @@ def main():
         else:
             from identifiabilty_analysis.identifiabilityAnalysis import IdentifiabilityAnalysis
 
-            cvs = CVS0DParamID.init_from_dict(uq_inp)
+            # Reuse the calibration's engine when there is one: Laplace only
+            # needs a built param_id, and constructing a second CVS0DParamID
+            # compiles the model a second time for no gain.
+            cvs = calibrated or CVS0DParamID.init_from_dict(uq_inp)
             ia = IdentifiabilityAnalysis.init_from_dict(uq_inp, cvs.param_id)
             ia.set_best_param_vals(best_param_vals)
             ensure_mle_cost_type_for_bayesian_inner(cvs.param_id, uq_inp)
@@ -600,15 +653,25 @@ def param_history():
 
 
 def results():
-    """The analysis payload (sensitivity indices / UQ samples), or None."""
-    path = find("results.json")
-    if not path:
-        return None
-    # Deliberately not swallowing a parse error: a corrupt results.json is worth
-    # a warning, and run_sections turns the exception into one without costing
-    # the figures that rendered perfectly well.
-    with open(path, encoding="utf-8") as fh:
-        return json.load(fh)
+    """The analysis payload: sensitivity indices and UQ posteriors, or None.
+
+    Each stage writes its own file now. They used to share a generic
+    results.json, so with both present whichever the search found first won and
+    the other's figures silently never drew. Their keys do not overlap, so the
+    two are simply merged. ``results.json`` is still read for bundles exported
+    before the split.
+    """
+    merged = {}
+    for name in ("sensitivity.json", "uq.json", "results.json"):
+        path = find(name)
+        if not path:
+            continue
+        # Deliberately not swallowing a parse error: a corrupt file is worth a
+        # warning, and run_sections turns the exception into one without
+        # costing the figures that rendered perfectly well.
+        with open(path, encoding="utf-8") as fh:
+            merged.update(json.load(fh))
+    return merged or None
 
 
 def latest_obs_data():
@@ -720,7 +783,9 @@ INPUTS = (
     "simulation.json",
     "best_cost_history.csv",
     "best_param_vals_history.csv",
-    "results.json",
+    "sensitivity.json",
+    "uq.json",
+    "results.json",  # bundles exported before the stages had their own names
     "percent_error_vec.npy",
 )
 
