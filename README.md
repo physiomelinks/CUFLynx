@@ -13,39 +13,30 @@ manually explore how parameters affect your (CellML) model outputs.
 | OS | Download |
 |----|----------|
 | **Linux** (x86-64, glibc 2.35+ / Ubuntu 22.04+) | [**CUFLynx-linux-x86_64**](https://github.com/physiomelinks/CUFLynx/releases/latest/download/CUFLynx-linux-x86_64) |
-| **macOS** — Apple silicon (any M-series: M1–M5 and later; macOS 11+) | [**CUFLynx-macos-arm64**](https://github.com/physiomelinks/CUFLynx/releases/latest/download/CUFLynx-macos-arm64) |
+| **macOS** — Apple silicon (any M-series; macOS 11+) | [**CUFLynx-macos-arm64**](https://github.com/physiomelinks/CUFLynx/releases/latest/download/CUFLynx-macos-arm64) |
 | **macOS** — Intel (macOS 11+) | [**CUFLynx-macos-x86_64**](https://github.com/physiomelinks/CUFLynx/releases/latest/download/CUFLynx-macos-x86_64) |
 | **Windows** (x86-64) | [**CUFLynx-windows-x86_64.exe**](https://github.com/physiomelinks/CUFLynx/releases/latest/download/CUFLynx-windows-x86_64.exe) |
 
-Not sure which Mac you have? **Apple menu → About This Mac**: anything starting
-"Apple M" is Apple silicon; "Intel…" is Intel. Every M-series chip runs the same
-`arm64` build.
+Not sure which Mac? **Apple menu → About This Mac**: "Apple M…" is Apple silicon,
+"Intel…" is Intel. Every M-series chip runs the same `arm64` build.
+
+The app is self-contained — it bundles Python and everything `circulatory_autogen`
+needs, so simulation **and** analysis run without any Python setup.
 
 ### Run it
 
 <details open>
 <summary><b>macOS</b></summary>
 
-Apple silicon:
-
 ```bash
 cd ~/Downloads
-chmod +x CUFLynx-macos-arm64
+chmod +x CUFLynx-macos-arm64          # or CUFLynx-macos-x86_64 on Intel
 xattr -d com.apple.quarantine CUFLynx-macos-arm64
 ./CUFLynx-macos-arm64
 ```
 
-Intel:
-
-```bash
-cd ~/Downloads
-chmod +x CUFLynx-macos-x86_64
-xattr -d com.apple.quarantine CUFLynx-macos-x86_64
-./CUFLynx-macos-x86_64
-```
-
-The app isn't notarized yet, so macOS blocks the download until the quarantine
-flag is cleared — the `xattr` line does that, or right-click → **Open** → **Open**.
+The app isn't notarized yet, so macOS blocks it until the quarantine flag is
+cleared — that's what the `xattr` line does (or right-click → **Open** → **Open**).
 
 </details>
 
@@ -66,82 +57,29 @@ chmod +x CUFLynx-linux-x86_64
 Double-click `CUFLynx-windows-x86_64.exe`. If SmartScreen warns, choose
 **More info** → **Run anyway**.
 
-Windows Defender (or another antivirus) may flag the file as a threat. This is a
-**false positive** — a known quirk of the PyInstaller packaging the app uses, not
-actual malware. If it's quarantined, restore it and allow it in your antivirus,
-or download again. (The app isn't code-signed yet, which is what would stop this
-for good.)
+Antivirus may flag it as a threat. This is a **false positive** — a known quirk of
+PyInstaller packaging, not malware. Restore it and allow it, or download again.
+(Code signing would stop this for good; it isn't in place yet.)
 
 </details>
 
-These links always point at the newest release. All builds are also listed on the
-[releases page](https://github.com/physiomelinks/CUFLynx/releases/latest).
+**On first run**, point the app at a `circulatory_autogen` checkout under
+**Settings → CA dir** (`git clone https://github.com/physiomelinks/circulatory_autogen.git`).
+That's the only setup, and it's remembered.
 
-The app is self-contained — it bundles Python and everything
-`circulatory_autogen` needs, so simulation **and** analysis (sensitivity /
-calibration / UQ) run without any Python setup.
+→ **[Using CUFLynx](tutorials/docs/basic.md)** — solver backends, Myokit `.mmt`
+models, and replotting a run outside the app.
 
-On first run, point the app at a `circulatory_autogen` checkout under
-**Settings → CA dir** (clone it with
-`git clone https://github.com/physiomelinks/circulatory_autogen.git`). That's the
-only setup; it's remembered.
-
-**Developing circulatory_autogen?** You can switch analysis to your own Python
-under **Settings → Python interpreter** (pick one with your local CA + its deps
-installed) instead of the bundled one, so your edits to CA take effect.
-
-### Optional: a C compiler (only for the Myokit/CVODE backend)
-
-CUFLynx works out of the box with no compiler. Of the three solver backends, only
-one needs a C toolchain:
-
-| Backend (Settings) | Solver | Needs a C compiler? |
-|---|---|---|
-| `python` | scipy `solve_ivp` | no |
-| `casadi_python` | `casadi_integrator` | no |
-| `cellml_only` | `CVODE_myokit` | **yes** |
-
-Myokit compiles each CellML model to a native extension when it runs, and that
-toolchain can't be shipped inside the app. If it's missing, CUFLynx shows a
-warning and you simply pick one of the other two backends. To enable
-`CVODE_myokit`:
-
-- **Linux** — `sudo apt install build-essential`
-- **macOS** — `xcode-select --install`
-- **Windows** — [Microsoft C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) ("Desktop development with C++")
-
-(Sundials/CVODE itself is bundled — you do *not* need to install it separately.)
-
-### Optional: AADC (a fourth backend, licensed separately)
-
-`aadc_python` records the forward integration on a tape and replays it, giving an
-exact gradient from a single evaluation — useful for gradient-based calibration.
-It needs [AADC](https://matlogica.com/) from Matlogica, which is proprietary
-software, **free for academic use**.
-
-CUFLynx only lists `aadc_python` in **Settings → Generated model format** when the
-library can actually be imported; offering a backend that can't run would just
-move the failure to your first calibration. Settings says whether it was found and
-what to do if not.
-
-To enable it:
-
-1. Request an academic licence at <https://matlogica.com/>.
-2. Install the wheel they provide **into the Python you use for analysis runs**
-   (Settings → Python) — that is where calibration, sensitivity and UQ execute.
-   Installing it only into the app's own environment leaves those runs failing.
-3. Restart CUFLynx. `aadc_python` appears in the format list.
-
-## Install from source
+## For Developers: Install from source
 
 One-time setup (installs the backend + frontend and builds the UI). Works on
-Linux, macOS and Windows — needs **Python** and **Node.js** installed.
+Linux, macOS and Windows — needs **Python** and **Node.js**.
 
 ```bash
 python scripts/install.py
 ```
 
-## Run
+## For Developers: Run
 
 ```bash
 python scripts/run.py
@@ -152,99 +90,5 @@ This opens the app at **http://localhost:8000**.
 Calibration / sensitivity / UQ runs use the Python interpreter you pick in the
 top bar — point it at your `circulatory_autogen` virtual environment.
 
-## Myokit models
-
-Drop a Myokit `.mmt` on the model box and it is converted to CellML on the way
-in. Only the `[[model]]` section is imported: in CUFLynx the protocol lives in
-`obs_data.json`, so baking Myokit's stimulus into the CellML would give the model
-two sources of pacing that disagree.
-
-The `[[protocol]]` section is carried across for you: if you have no obs_data
-loaded, dropping the `.mmt` creates `<model>_obs_data.json` from it, saves it to
-the outputs directory and loads it, so the model is paced as Myokit paced it. An
-obs_data you dropped yourself is never replaced by a derived one. It arrives with
-no `data_items` — what the model should be measured against isn't in the `.mmt` —
-so add those via **Edit**.
-
-The events cross over unchanged, under Myokit's own names, as a `protocol_shapes`
-entry:
-
-```json
-"sim_times": [[2000.0]],
-"params_to_change": {"engine/pace": [["engine_pace"]]},
-"protocol_shapes": {
-  "engine_pace": {"events": [{"level": 1.0, "start": 100.0, "length": 2.0,
-                              "period": 1000.0, "multiplier": 0}]}
-}
-```
-
-so the file still says "1 Hz" after it is written, and the period can be edited
-rather than recomputed. The obs_data editor writes every time-varying input this
-way — constant, ramp, step, pulse and paced — and reads them back as the fields
-you typed. **This needs a circulatory_autogen with `protocol_shapes` support**
-(physiomelinks/circulatory_autogen#339); hand-written `protocol_traces` point
-tables are still accepted and preserved untouched.
-
-An archive can be built around a `.mmt` instead of a CellML — see
-`resources/br-1977.omex`, which holds the Myokit model and a `params_for_id`
-and no obs_data at all. Dropping it converts the model, loads the parameter and
-takes the protocol from the `.mmt`, so the study runs from one drop. An obs_data
-*in* the archive always wins over the model's own protocol.
-
-The same conversion is available from the command line, which is the way to
-re-derive a protocol into an obs_data you have already written:
-
-```bash
-python scripts/mmt_to_obs_data.py resources/br-1977.mmt
-```
-
-That writes (or updates) `br-1977_obs_data.json`, filling in `protocol_info` from
-the `[[protocol]]` section. Updating keeps everything else in the file, so
-hand-written `data_items` survive. A Myokit protocol usually repeats forever
-while a CUFLynx experiment is a finite list of durations, so it takes `--beats`
-(default 2) or an explicit `--duration`.
-
-## Plots from the exported script
-
-`plot_outputs.py` regenerates the app's plots from a run's data, and writes them
-into a **`pyscript_plots/`** folder so a directory of results does not gradually
-become a directory of results and pictures of results.
-
-It comes in two files. **`plot_outputs.py`** is yours to edit and the one you
-run: a `STYLE` block, one named function per fitted observable (generated from
-your obs_data, with the variables written in), and one function per figure —
-best fit, progress, error bars, analysis, simulation traces. Change a plot by
-editing its function; drop it by removing it from `FIGURES`.
-**`plot_utilities.py`** finds the run and reads its files, and you should not
-need to open it.
-
-It finds the data on its own: `output/` beside the script when an exported
-pipeline made one, otherwise the script's own folder — which is where CUFLynx
-puts it, alongside circulatory_autogen's run directories. So after a calibration
-or sensitivity run in the app, **Export plotting script** then
-`python plot_outputs.py` just works.
-
-```bash
-python plot_outputs.py                       # find the data automatically
-python plot_outputs.py --output-dir <dir>    # a specific run directory
-```
-
-Sensitivity plots drawn by the app itself land in **`SA_plots/`** inside the run
-directory, for the same reason.
-
-## Build the desktop app yourself
-
-```bash
-python scripts/package.py      # -> dist/CUFLynx (or dist/CUFLynx.exe)
-```
-
-Builds the frontend, then freezes the backend + UI + a native window into one
-executable. PyInstaller can't cross-compile, so build on the OS you're targeting
-(the release workflow does this on Linux, macOS and Windows runners).
-
-Want a native window without packaging? `python apps/desktop/app.py`.
-
----
-
-Developer setup, dev mode (hot reload), API reference and tests:
-see [`apps/README.md`](apps/README.md).
+→ **[Developing CUFLynx](tutorials/docs/dev.md)** — hot reload, tests, and
+building the desktop executable.
