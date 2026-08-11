@@ -125,6 +125,12 @@ def _introspect(output_dir: str | None = None) -> dict:
     return {
         "operations": operations,
         "cost_types": cost_types,
+        # What CA applies to a data_item that states no cost_type. Published as
+        # a constant since CA #392 (CUFLynx #212); before that it was a literal
+        # inside PrimitiveParsers and could only be mirrored, which is how the
+        # three different answers in CA came about. Introspected, never
+        # restated -- if CA changes it, the editor's label follows.
+        "default_cost_type": _introspect_default_cost_type(),
         "cost_func_metadata": _introspect_cost_func_metadata(cost_funcs_user, cost_path),
         # cost name -> [{name, default, type}] tunable keyword args, the cost-func
         # twin of operation_kwargs_schema (CA #370). Empty on an older CA.
@@ -384,6 +390,26 @@ def _introspect_operation_differentiability(op_funcs) -> dict:
     return {name: bool(is_circulatory_differentiable(fn)) for name, fn in op_funcs.items()}
 
 
+def _introspect_default_cost_type() -> str:
+    """The cost function CA applies to a data_item that names none.
+
+    Published by CA as ``obs_data_helpers.DEFAULT_COST_TYPE`` since CA #392
+    (CUFLynx #212). Before that it was a bare literal inside two places in
+    ``PrimitiveParsers``, which is how CA came to have three different answers
+    -- the parser's, the OMEX importer's, and the Bayesian path's. Introspected
+    so the editor's label cannot become a fourth.
+
+    Empty string when CA is older or unreachable: the editor then says plain
+    "default" rather than naming a cost function that may not be the one used.
+    """
+    try:
+        from utilities.obs_data_helpers import DEFAULT_COST_TYPE  # noqa: PLC0415
+
+        return str(DEFAULT_COST_TYPE or "")
+    except Exception:  # noqa: BLE001 - older CA, or no CA at all
+        return ""
+
+
 def _introspect_cost_func_metadata(cost_funcs_user, external_path=None) -> dict:
     """Per-cost-function flags (is_MLE / is_combiner / differentiable) from CA's
     ``cost_func_metadata()`` — including CUFLynx's external cost funcs (CA #303) —
@@ -471,6 +497,10 @@ def get_obs_data_options(refresh: bool = False, output_dir: str | None = None) -
         return {
             "operations": list(FALLBACK_OPERATIONS),
             "cost_types": list(FALLBACK_COST_TYPES),
+            # Empty, not guessed: an older CA's default is not knowable from
+            # here, and the editor says plain "default" rather than naming the
+            # wrong cost function.
+            "default_cost_type": "",
             "cost_func_metadata": {},
             "cost_kwargs_schema": {},
             "cost_kwargs_accepts_any": {},

@@ -440,7 +440,10 @@ def _entries_from_doc(
     for idx, item in enumerate(doc.get("params") or []):
         targets = [str(t).strip() for t in (item.get("targets") or []) if str(t).strip()]
         modifies = [str(t).strip() for t in (item.get("modifies") or []) if str(t).strip()]
-        operation = _text(item, "operation")
+        # ``modifier`` is CA's name for this since #385 (a modifier acts on
+        # parameters; an operation acts on outputs). ``operation`` is still
+        # accepted so files written before the rename keep loading.
+        operation = _text(item, "modifier") or _text(item, "operation")
         # Minimal structural checks, stated here for the no-CA JSON path; with
         # CA importable, load_doc has already run resolve_params_for_id_doc and
         # these (plus the deeper cross-entry rules) were judged with CA's wording.

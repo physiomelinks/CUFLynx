@@ -22,7 +22,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: physiomelinks/circulatory_autogen
-          ref: 46b8c3a4ddc18e172078006e4880f8f9b184b78d
+          ref: d2f6cf73fbc37acececa974d992af9ad40780634
           path: circulatory_autogen
       - uses: actions/setup-python@v5
         with:
@@ -48,7 +48,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: physiomelinks/circulatory_autogen
-          ref: 46b8c3a4ddc18e172078006e4880f8f9b184b78d
+          ref: d2f6cf73fbc37acececa974d992af9ad40780634
           path: circulatory_autogen
       - uses: actions/setup-python@v5
         with:

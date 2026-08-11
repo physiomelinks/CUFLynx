@@ -56,6 +56,10 @@ const diffOps = ref({})
 // report it (older CA / offline), in which case no kwarg inputs show.
 const opKwargsSchema = ref({})
 const costTypes = ref(FALLBACK_COST_TYPES)
+// What CA applies when a data_item names no cost_type (#212). From CA, never
+// restated here — empty on an older CA, and the option then says plain
+// "default" rather than naming a cost function that may not be the one used.
+const defaultCostType = ref('')
 // Per-cost-function flags (is_MLE / is_combiner / differentiable) from CA, used
 // only to annotate the cost_type options; empty when CA doesn't expose them.
 const costMeta = ref({})
@@ -92,6 +96,7 @@ async function loadOptions(refresh = false) {
     if (opts?.operation_kwargs_schema) opKwargsSchema.value = opts.operation_kwargs_schema
     if (opts?.operation_operands) opOperands.value = opts.operation_operands
     if (opts?.cost_types?.length) costTypes.value = opts.cost_types
+    defaultCostType.value = opts?.default_cost_type || ''
     if (opts?.cost_func_metadata) costMeta.value = opts.cost_func_metadata
     if (opts?.cost_kwargs_schema) costKwargsSchema.value = opts.cost_kwargs_schema
     if (opts?.cost_kwargs_accepts_any) costKwargsAcceptAny.value = opts.cost_kwargs_accepts_any
@@ -615,7 +620,12 @@ async function onSave() {
           </label>
           <label>cost_type
             <select :value="row.cost_type" @change="onCostTypeChange(row, $event.target.value)">
-              <option value="">(default)</option>
+              <!-- Naming the default matters: "default" alone leaves the user
+                   guessing which cost their unlabelled data_items are scored
+                   by, and CA's answer has changed (#212). -->
+              <option value="">
+                {{ defaultCostType ? `(default — ${defaultCostType})` : '(default)' }}
+              </option>
               <option v-for="ct in costTypes" :key="ct" :value="ct">{{ costTypeLabel(ct) }}</option>
             </select>
           </label>

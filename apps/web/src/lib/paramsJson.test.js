@@ -38,7 +38,7 @@ describe('rowsToDoc', () => {
     expect(doc.params[0].name_for_plotting).toBe('k')
   })
 
-  it('writes a modifier as modifies+operation and never targets', () => {
+  it('writes a modifier as modifies+modifier and never targets', () => {
     const doc = rowsToDoc([
       freeRow({
         name: 'C_scale',
@@ -54,7 +54,9 @@ describe('rowsToDoc', () => {
     expect(doc.params[0]).toEqual({
       name: 'C_scale',
       modifies: ['a/C', 'b/C'],
-      operation: 'scale',
+      // CA renamed the key: a modifier acts on parameters, an operation acts
+      // on outputs (CA #385). The row keeps its own `operation` field.
+      modifier: 'scale',
       min: 0.5,
       max: 2,
       name_for_plotting: 'C_scale',
@@ -73,7 +75,7 @@ describe('rowsToDoc', () => {
   it('never invents keys outside CA closed entry-key set', () => {
     // A key CA does not know makes the whole file unreadable by its resolver.
     const allowed = new Set([
-      'name', 'targets', 'modifies', 'operation', 'param_type', 'min', 'max',
+      'name', 'targets', 'modifies', 'modifier', 'param_type', 'min', 'max',
       'name_for_plotting', 'prior', 'prior_params', 'unbounded', 'comment',
     ])
     const doc = rowsToDoc([

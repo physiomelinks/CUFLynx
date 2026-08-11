@@ -82,7 +82,7 @@ NATIVE_PARAMS = {
 MODIFIER_PARAMS = {
     "version": 1,
     "params": [{"name": "k_scale", "modifies": ["affine/k1", "affine/k2"],
-                "operation": "scale", "min": THETA_MIN, "max": THETA_MAX}],
+                "modifier": "scale", "min": THETA_MIN, "max": THETA_MAX}],
 }
 # The same two parameters, calibrated independently: the per-member numbers the
 # modifier's single coefficient must reproduce.
@@ -101,7 +101,7 @@ MODIFIER_BLOCK = {
     "name": "k_scale",
     "anchor": MODIFIER_ANCHOR,
     "targets": ["affine/k1", "affine/k2"],
-    "operation": "scale",
+    "modifier": "scale",
     "baselines": {"affine/k1": C1, "affine/k2": C2},
     "value": 1.0,
     "bounds": [THETA_MIN, THETA_MAX],

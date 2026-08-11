@@ -30,7 +30,11 @@ function rowToEntry(row) {
   const entry = { name: row.name || row.qname }
   if (row.kind === 'modifier') {
     entry.modifies = qnames
-    entry.operation = row.operation || 'scale'
+    // `modifier`, not `operation`: CA renamed the key because a modifier acts
+    // on parameters while an operation acts on outputs (CA #385). The old name
+    // still loads, with a deprecation warning, so files written before this
+    // keep working — but nothing new is written under it.
+    entry.modifier = row.operation || 'scale'
   } else {
     entry.targets = qnames
   }

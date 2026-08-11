@@ -140,6 +140,15 @@ def _make_param_id(config, settings, obs_path, *, mcmc, options_key, options):
     return CVS0DParamID(**kwargs)
 
 
+def _has_run_uq(param_id) -> bool:
+    """Whether this CA can run UQ on an already-built engine (CA #392).
+
+    Older CA only offers ``run_mcmc()`` on an object constructed with
+    ``mcmc_instead=True``, so the caller must keep building a second one.
+    """
+    return callable(getattr(param_id, "run_UQ", None))
+
+
 def _flat_param_names(param_id):
     """Representative qname per parameter group (first of each list), matching the
     column order of best-fit vectors / samples."""
@@ -234,14 +243,22 @@ def run(config: dict) -> dict:
 
     # ---- run the chosen method --------------------------------------------
     if method == "mcmc":
-        mcmc = _make_param_id(
+        # Reuse the calibration engine when one was just built: CA's run_UQ
+        # promotes it in place (OpencorMCMC.from_param_id), so the model
+        # compiled for the GA is the one UQ samples with. Before CA #392 the
+        # only way in was mcmc_instead=True at construction, which forced a
+        # second CVS0DParamID and a second compile (CUFLynx #216/#217).
+        mcmc = ga if (run_calib and _has_run_uq(ga)) else _make_param_id(
             config, settings, obs_path, mcmc=True, options_key="mcmc_options",
             options=mcmc_options,
         )
         best = best if run_calib else _best_from_reuse(mcmc, reuse_best)
         mcmc.set_best_param_vals(best)
         ensure_mle_cost_type_for_bayesian_inner(pid.mcmc_object, inp)
-        mcmc.run_mcmc()
+        if _has_run_uq(mcmc):
+            mcmc.run_UQ(mcmc_options)
+        else:
+            mcmc.run_mcmc()  # a CA predating run_UQ
         rank = getattr(mcmc, "rank", 0)
         if rank != 0:
             return {"rank": rank}

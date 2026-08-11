@@ -312,7 +312,7 @@ MODEL_VALUES = {"a/C": 2e-8, "b/C": 4e-8}
 
 
 def _scale_doc(**over):
-    entry = {"name": "C_scale", "modifies": ["a/C", "b/C"], "operation": "scale",
+    entry = {"name": "C_scale", "modifies": ["a/C", "b/C"], "modifier": "scale",
              "min": 0.5, "max": 2.0}
     entry.update(over)
     return {"params": [entry]}
@@ -330,6 +330,28 @@ def test_a_scale_modifier_becomes_one_theta_entry():
     assert entry.baselines == {"a/C": 2e-8, "b/C": 4e-8}
     assert (entry.min, entry.max) == (0.5, 2.0)
     assert entry.warning is None
+
+
+def test_a_file_written_before_the_rename_still_loads():
+    """CA renamed the key to `modifier` (CA #385) and deprecated `operation`.
+    Every params_for_id CUFLynx has already written uses the old name, so
+    reading it must keep working -- silently, since the user did nothing wrong."""
+    doc = {"params": [{"name": "C_scale", "modifies": ["a/C", "b/C"],
+                       "operation": "scale", "min": 0.5, "max": 2.0}]}
+    entry = parse_params_for_id(doc, MODEL_VALUES)[0]
+
+    assert entry.operation == "scale"
+    assert entry.qnames == ["a/C", "b/C"]
+
+
+def test_setting_both_names_is_refused(requires_ca_resolver):
+    """CA refuses an entry carrying the key and its deprecated alias rather than
+    silently picking one -- two spellings of the same thing in one entry is a
+    file the author did not mean to write."""
+    doc = {"params": [{"name": "s", "modifies": ["a/C"], "modifier": "scale",
+                       "operation": "scale", "min": 0.5, "max": 2.0}]}
+    with pytest.raises(ParamsForIdError, match="deprecated alias"):
+        parse_params_for_id(doc, MODEL_VALUES)
 
 
 def test_modifier_baselines_keep_file_order():
@@ -355,7 +377,7 @@ def test_a_zero_baseline_warns():
 def test_a_modifier_without_bounds_is_rejected():
     with pytest.raises(ParamsForIdError, match="min and max"):
         parse_params_for_id(
-            {"params": [{"name": "s", "modifies": ["a/C"], "operation": "scale"}]}
+            {"params": [{"name": "s", "modifies": ["a/C"], "modifier": "scale"}]}
         )
 
 
@@ -366,14 +388,14 @@ def test_a_modifier_cannot_be_unbounded():
 
 def test_an_unknown_operation_is_rejected_by_name():
     with pytest.raises(ParamsForIdError, match="warp"):
-        parse_params_for_id(_scale_doc(operation="warp"))
+        parse_params_for_id(_scale_doc(modifier="warp"))
 
 
 def test_targets_and_modifies_together_are_rejected():
     with pytest.raises(ParamsForIdError, match="modifies"):
         parse_params_for_id(
             {"params": [{"targets": ["a/C"], "modifies": ["b/C"],
-                         "operation": "scale", "min": 0.5, "max": 2.0}]}
+                         "modifier": "scale", "min": 0.5, "max": 2.0}]}
         )
 
 
@@ -391,7 +413,10 @@ def test_a_modifier_round_trips_through_the_editor_writer():
     written = params_json.entries_to_json(first)
 
     mod = written["params"][2]
-    assert mod["modifies"] == ["a/C", "b/C"] and mod["operation"] == "scale"
+    # `modifier`, not `operation`: CA renamed the key (a modifier acts on
+    # parameters, an operation acts on outputs) and warns on the old one.
+    assert mod["modifies"] == ["a/C", "b/C"] and mod["modifier"] == "scale"
+    assert "operation" not in mod
     assert "targets" not in mod
     assert written["params"][1]["name"] == "grp"
 
@@ -417,9 +442,9 @@ def test_ca_rejects_a_duplicate_name(requires_ca_resolver):
 def test_ca_rejects_a_modifier_of_a_modifier(requires_ca_resolver):
     with pytest.raises(ParamsForIdError):
         parse_params_for_id({"params": [
-            {"name": "s1", "modifies": ["a/C"], "operation": "scale",
+            {"name": "s1", "modifies": ["a/C"], "modifier": "scale",
              "min": 0.5, "max": 2.0},
-            {"name": "s2", "modifies": ["a/C"], "operation": "scale",
+            {"name": "s2", "modifies": ["a/C"], "modifier": "scale",
              "min": 0.5, "max": 2.0},
         ]})
 
@@ -428,7 +453,7 @@ def test_ca_rejects_a_modified_param_that_is_also_free(requires_ca_resolver):
     with pytest.raises(ParamsForIdError):
         parse_params_for_id({"params": [
             {"targets": ["a/C"], "min": 1e-9, "max": 5e-8},
-            {"name": "s", "modifies": ["a/C"], "operation": "scale",
+            {"name": "s", "modifies": ["a/C"], "modifier": "scale",
              "min": 0.5, "max": 2.0},
         ]})
 
