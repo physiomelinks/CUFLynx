@@ -191,109 +191,6 @@ def relative_coeff(deriv: float, pj: float, denom: float, rng: float) -> float |
     return float(deriv * (rng if rng > 0 else 1.0) / denom)
 
 
-def _numpy_operation_funcs(sm):
-    """Operation funcs that reduce the *numeric* (numpy) results of a forward run.
-
-    For ``casadi_python`` the SA manager builds casadi-mode operation funcs (they
-    call ``.numel()`` etc. on CasADi symbols), which fail on the plain numpy
-    arrays a finite-difference forward run produces. Rebuild a numpy-mode table in
-    that case; other backends already use numpy-mode ops.
-    """
-    if getattr(sm, "model_type", None) != "casadi_python":
-        return sm.operation_funcs_dict
-    import operation_funcs as _op  # noqa: E402 (CA module, resolved via sys.path)
-
-    return _op.get_operation_funcs_dict_for_mode("numpy")
-
-
-def _evaluate_features(sm, param_vals: np.ndarray, op_funcs) -> np.ndarray:
-    """Run the protocol once and reduce each observable to a scalar feature.
-
-    Mirrors ``sobol_SA.generate_outputs_mpi``'s per-sample inner loop, but for a
-    single parameter vector and without the mean-imputation of missing values
-    (imputed values would corrupt finite differences). Returns an array aligned
-    with ``obs_info['operations']``; failed / missing features are ``nan``.
-    """
-    obs = sm.obs_info
-    n = len(obs["operations"])
-    features = np.full(n, np.nan)
-
-    # A modifier's slot is θ; the solver gets θ·baselineᵢ per target. CA's own
-    # expansion (the same call its param-id and Sobol paths make before
-    # run_protocol), so the FD loop differences in θ while the model always
-    # receives physical values. Without it, θ would be written to every target
-    # as if it were a compliance.
-    vals = [float(v) for v in np.asarray(param_vals, dtype=float)]
-    try:
-        from parsers.PrimitiveParsers import expand_modifier_param_vals  # noqa: PLC0415
-
-        id_param_vals = expand_modifier_param_vals(
-            getattr(sm, "param_id_info", None) or {}, vals
-        )
-    except ImportError:  # a CA predating modifiers has none to expand
-        id_param_vals = vals
-
-    _success, operands_outputs_dict, _, _ = sm._protocol_executor.run_protocol(
-        sm.protocol_info,
-        id_param_names=sm.param_id_info["param_names"],
-        id_param_vals=id_param_vals,
-        result_variables=obs["operands"],
-        continue_on_failure=True,
-    )
-
-    temp_results: dict = {}
-    for j in range(n):
-        exp_idx = obs["experiment_idxs"][j]
-        subexp_idx = obs["subexperiment_idxs"][j]
-        operands_outputs = operands_outputs_dict.get((exp_idx, subexp_idx), None)
-        if operands_outputs is None:
-            continue
-        func = op_funcs[obs["operations"][j]]
-        raw_kwargs = obs["operation_kwargs"][j]
-        kwargs = dict(raw_kwargs) if isinstance(raw_kwargs, dict) else {}
-        for k, v in list(kwargs.items()):
-            if isinstance(v, str) and v in temp_results:
-                kwargs[k] = temp_results[v]
-        feature = func(*operands_outputs[j], **kwargs)
-        temp_results[obs["names_for_plotting"][j]] = feature
-        try:
-            features[j] = float(feature)
-        except (TypeError, ValueError):
-            features[j] = np.nan
-    return features
-
-
-def _fd_local_sensitivity(sm, param_names, nominal, mins, maxs, output_names, h):
-    """Central finite-difference local sensitivities (works for any backend that
-    runs a forward simulation, including ``cellml_only`` and ``casadi_python``)."""
-    # FD reduces numeric (numpy) forward-run results, so use numpy-mode ops even
-    # when the casadi_python SA manager holds casadi-mode operation funcs.
-    op_funcs = _numpy_operation_funcs(sm)
-    y0 = _evaluate_features(sm, nominal, op_funcs)
-
-    local: dict[str, dict[str, float | None]] = {name: {} for name in output_names}
-    for k, pname in enumerate(param_names):
-        pj = nominal[k]
-        rng = maxs[k] - mins[k]
-        step = abs(pj) * h if pj != 0.0 else (h * rng if rng > 0 else h)
-
-        p_plus = nominal.copy()
-        p_plus[k] = pj + step
-        p_minus = nominal.copy()
-        p_minus[k] = pj - step
-        yp = _evaluate_features(sm, p_plus, op_funcs)
-        ym = _evaluate_features(sm, p_minus, op_funcs)
-        print(f"  d/d[{pname}] evaluated", flush=True)
-
-        for i, oname in enumerate(output_names):
-            coeff = None
-            if np.isfinite(yp[i]) and np.isfinite(ym[i]):
-                deriv = (yp[i] - ym[i]) / (2.0 * step)
-                coeff = relative_coeff(deriv, pj, y0[i], rng)
-            local[oname][pname] = coeff
-    return local
-
-
 def resolve_gradient_method(settings: dict, model_type: str) -> str:
     """The gradient source to use, in CUFLynx's vocabulary (FD / AD / FSA).
 
@@ -328,187 +225,23 @@ def resolve_gradient_method(settings: dict, model_type: str) -> str:
     return method
 
 
-def _non_differentiable(names, funcs_dict, is_differentiable):
-    """Names (de-duplicated, skipping empty/'none') whose func isn't differentiable."""
-    bad = []
-    for name in dict.fromkeys(names or []):
-        if not name or str(name).lower() == "none":
-            continue
-        fn = funcs_dict.get(name) if funcs_dict else None
-        if fn is None or not is_differentiable(fn):
-            bad.append(name)
-    return bad
+def _check_ad_operations() -> None:
+    """Refuse an AD run whose obs operations are not all ``@differentiable``.
 
-
-def assert_ad_operations(
-    operations, op_funcs_dict, is_differentiable, cost_types=None, cost_funcs_dict=None
-) -> None:
-    """Raise an informative error if any obs operation / cost function in use
-    isn't ``@differentiable``.
-
-    AD (CasADi symbolic execution) only works when every operation applied to the
-    observables — and every cost function, when checked — is marked
-    ``@differentiable``. The error names the specific offenders, grouped by kind,
-    so the user knows exactly what to change. ``is_differentiable`` is injected
-    (CA's ``is_circulatory_differentiable``) so this stays unit-testable.
+    circulatory_autogen already raises this, naming the offending operation, the
+    moment its casadi-mode operation table is built -- so all that is missing is
+    what to do about it. Enriching CA's message beats restating its check: the
+    registry is CA's, and a copy here would be another thing to keep in step.
     """
-    bad_ops = _non_differentiable(operations, op_funcs_dict, is_differentiable)
-    bad_costs = _non_differentiable(cost_types, cost_funcs_dict, is_differentiable)
-    if not (bad_ops or bad_costs):
-        return
-    details = []
-    if bad_ops:
-        details.append(f"operation(s) {bad_ops}")
-    if bad_costs:
-        details.append(f"cost function(s) {bad_costs}")
-    raise ValueError(
-        "Automatic differentiation requires every obs_data operation and cost "
-        f"function to be marked @differentiable; these are not: {' and '.join(details)}. "
-        "Switch the gradient method to 'FD' (finite difference), or make the "
-        "offending function(s) differentiable in circulatory_autogen."
-    )
+    import operation_funcs as _op  # noqa: PLC0415 (CA module, resolved via sys.path)
 
-
-def _flatten_for_casadi(param_id_info, nominal):
-    """``(flat_member_names, entry_map, expanded_values)`` for the CasADi arm.
-
-    CA #390 split the two levels apart: a params_for_id *entry* is one calibrated
-    variable (θ), while the CasADi graph carries one symbol per *model constant*.
-    A grouped row shares θ across its members and a modifier maps it through
-    ``fn(θ, baselineᵢ)``, so the symbolic subset must be built over members and
-    the jacobian folded back per entry.
-
-    Delegates to CA's own helpers so the two cannot disagree about the weights.
-    Falls back to the pre-#390 flat shape on a CA that has neither, which is also
-    the case where every entry has exactly one member anyway.
-    """
-    names = param_id_info["param_names"]
     try:
-        from param_id.casadi_backend import flatten_entries  # noqa: PLC0415
-    except ImportError:  # CA predating #390: names are already what the helper wants
-        return names, None, [float(v) for v in np.asarray(nominal, dtype=float)]
-
-    flat_names, entry_map = flatten_entries(param_id_info)
-    vals = [float(v) for v in np.asarray(nominal, dtype=float)]
-    try:
-        from parsers.PrimitiveParsers import expand_modifier_param_vals  # noqa: PLC0415
-
-        expanded = expand_modifier_param_vals(param_id_info, vals)
-    except ImportError:  # a CA predating modifiers has none to expand
-        expanded = vals
-    return flat_names, entry_map, expanded
-
-
-def _flat_values(expanded):
-    """The per-member value list ``_create_param_subset`` wants, from CA's
-    per-entry expansion (whose entries may themselves be lists)."""
-    flat: list[float] = []
-    for value in expanded:
-        if isinstance(value, (list, tuple)):
-            flat.extend(float(v) for v in value)
-        else:
-            flat.append(float(value))
-    return flat
-
-
-def _fold_casadi_entries(matrix, entry_map, n_entries):
-    """Per-member jacobian columns folded to one column per calibrated variable."""
-    if entry_map is None:  # pre-#390 CA: columns are already per entry
-        return matrix
-    from param_id.casadi_backend import fold_entry_rows  # noqa: PLC0415
-
-    return fold_entry_rows(matrix, entry_map, n_entries)
-
-
-def _ad_local_sensitivity(sm, param_names, nominal, mins, maxs, output_names):
-    """Exact local sensitivities via CasADi automatic differentiation.
-
-    Only valid for ``casadi_python`` models with all-``@differentiable`` ops.
-    Mirrors ``paramID.build_casadi_functions``: put the helper in AD mode with the
-    symbolic parameter subset, run the protocol symbolically so observables come
-    back as CasADi ``SX`` expressions, reduce them with the casadi-mode operation
-    funcs, then take the analytic jacobian and evaluate it at the nominal point.
-    """
-    import casadi as ca  # noqa: E402 (heavy; only imported on the AD path)
-    import operation_funcs as _op  # noqa: E402 (CA module, resolved via sys.path)
-    from param_id.differentiable import is_circulatory_differentiable  # noqa: E402
-
-    obs = sm.obs_info
-    n = len(obs["operations"])
-
-    # The SA manager's operation_funcs are numpy-mode; AD needs the casadi ones.
-    op_funcs = _op.get_operation_funcs_dict_for_mode("casadi")
-    # Fail fast (and clearly) if an operation in use can't be differentiated.
-    assert_ad_operations(obs["operations"], op_funcs, is_circulatory_differentiable)
-
-    nominal = np.asarray(nominal, dtype=float)
-    # A grouped or modifier row is *one* calibrated variable governing several
-    # model constants, but the CasADi graph carries one symbol per constant. CA
-    # #390 made that contract explicit -- the helper now refuses nested names --
-    # so flatten to members here and fold the jacobian back below, exactly as
-    # CA's own casadi arm does (param_id.casadi_backend.build_functions).
-    flat_names, entry_map, id_param_vals = _flatten_for_casadi(sm.param_id_info, nominal)
-    # Symbolic parameter subset + AD mode (sets sim_helper.variables_symb_subset).
-    sm.sim_helper._create_param_subset(flat_names, _flat_values(id_param_vals))
-    p_symb = sm.sim_helper.variables_symb_subset
-
-    success, operands_outputs_dict, _, _ = sm._protocol_executor.run_protocol(
-        sm.protocol_info,
-        id_param_names=sm.param_id_info["param_names"],
-        # Expanded, so the symbolic evaluation point and the simulated one are
-        # the same point -- a modifier's θ reaches the model as fn(θ, baselineᵢ).
-        id_param_vals=id_param_vals,
-        result_variables=obs["operands"],
-        continue_on_failure=False,
-        reset_after_experiment=False,  # AD needs solver state preserved across exps
-    )
-    if not success:
-        raise RuntimeError("symbolic (AD) protocol run failed")
-
-    feature_exprs = []
-    temp_results: dict = {}
-    for j in range(n):
-        exp_idx = obs["experiment_idxs"][j]
-        subexp_idx = obs["subexperiment_idxs"][j]
-        operands_outputs = operands_outputs_dict.get((exp_idx, subexp_idx))
-        if operands_outputs is None:
-            feature_exprs.append(ca.SX(float("nan")))
-            continue
-        func = op_funcs[obs["operations"][j]]
-        raw_kwargs = obs["operation_kwargs"][j]
-        kwargs = dict(raw_kwargs) if isinstance(raw_kwargs, dict) else {}
-        for k, v in list(kwargs.items()):
-            if isinstance(v, str) and v in temp_results:
-                kwargs[k] = temp_results[v]
-        feature = func(*operands_outputs[j], **kwargs)
-        temp_results[obs["names_for_plotting"][j]] = feature
-        feature_exprs.append(ca.SX(feature))
-
-    features_vec = ca.vertcat(*feature_exprs)
-    jac = ca.jacobian(features_vec, p_symb)
-    # The feature expressions still reference the full state/variable symbol
-    # vectors (initial states, protocol input params); mirror paramID's
-    # build_casadi_functions and bind those as inputs, evaluating at the helper's
-    # numeric operating point so only the param subset is differentiated.
-    helper = sm.sim_helper
-    evaluate = ca.Function(
-        "local_ad", [helper.states_symb, helper.variables_symb], [features_vec, jac]
-    )
-    y0_dm, jac_dm = evaluate(helper.states, helper.variables)
-    y0 = np.array(y0_dm).reshape(-1)
-    J = np.array(jac_dm).reshape(n, len(flat_names))
-    # Members back to one column per calibrated variable, weighted by dpᵢ/dθ (1.0
-    # for a shared-value group, the probed affine coefficient for a modifier), so
-    # this answers the same question as the Myokit/FSA arm.
-    J = _fold_casadi_entries(J, entry_map, len(param_names))
-
-    local: dict[str, dict[str, float | None]] = {name: {} for name in output_names}
-    for k, pname in enumerate(param_names):
-        pj = nominal[k]
-        rng = maxs[k] - mins[k]
-        for i, oname in enumerate(output_names):
-            local[oname][pname] = relative_coeff(float(J[i, k]), pj, float(y0[i]), rng)
-    return local
+        _op.get_operation_funcs_dict_for_mode("casadi")
+    except ValueError as exc:
+        raise ValueError(
+            f"{exc} Switch the gradient method to 'FD' (finite difference), or mark "
+            f"the operation @differentiable in circulatory_autogen."
+        ) from exc
 
 
 def _ca_feature_values(pid, nominal) -> dict:
@@ -527,20 +260,49 @@ def _ca_feature_values(pid, nominal) -> dict:
     return {pid._observable_label(o): float(const[k]) for k, o in enumerate(c2o)}
 
 
-def _ca_analytic_local_sensitivity(pid, param_names, nominal, mins, maxs):
+def _ca_local_sensitivity(
+    pid, param_names, nominal, mins, maxs, gradient_method=None, rel_step=None
+):
     """Local sensitivities via circulatory_autogen's backend-agnostic accessor
-    ``OpencorParamID.get_observable_sensitivities`` — the Myokit CVODES forward
-    sensitivities (FSA) for ``cellml_only`` + ``CVODE_myokit``.
+    ``OpencorParamID.get_observable_sensitivities``.
 
-    CA returns the raw ``d(feature)/d(param)`` per const (scalar) observable; we
-    normalise to the same dimensionless ``d ln(Y)/d ln(P)`` the FD/AD paths report
-    (via :func:`relative_coeff`) and label the outputs with
-    :func:`format_output_name`, so the payload and heatmap are identical across
-    gradient sources. Returns ``(local, output_names)``.
+    **All three gradient sources come through here.** CA implements each of them
+    -- FD (``fd_backend``), AD (``casadi_backend``, which flattens grouped and
+    modifier rows to their member constants and folds the jacobian back per
+    calibrated variable itself) and FSA (``fsa_backend``) -- behind one call with
+    one return shape. CUFLynx used to reimplement the FD loop and the CasADi
+    jacobian, which is why it had to mirror CA's flatten/fold contract and why
+    tightening that contract (CA #390) broke the AD path.
+
+    What is left here is only what CA does not answer: the *nominal point* (CA's
+    own local SA hardcodes the model defaults), the *normalisation* (CA's
+    relative index is unsigned, and the sign is half the answer), and the *label*
+    spelling the heatmap shares with the Sobol path.
+
+    CA returns the raw ``d(feature)/d(param)`` per const (scalar) observable, keyed
+    by entry label; this normalises to the dimensionless ``d ln(Y)/d ln(P)`` via
+    :func:`relative_coeff` and relabels with :func:`format_output_name`. Returns
+    ``(local, output_names)``.
     """
     nominal = np.asarray(nominal, dtype=float)
-    sens = pid.get_observable_sensitivities(nominal)  # {obs_label: {param_label: dY/dP}}
+    # `rel_step` is passed explicitly rather than left to CA's default: CUFLynx's
+    # is 1e-2 and CA's fd_rel_step is 1e-3, and per CA's own measurement the two
+    # differ by up to 48% on a rough functional -- a silent change of answer.
+    kwargs = {}
+    if gradient_method:
+        kwargs["gradient_method"] = gradient_method
+    if rel_step is not None:
+        kwargs["fd_rel_step"] = float(rel_step)
+    # The nominal features FIRST, while the helper is still numeric. CA's CasADi
+    # arm leaves the simulation helper in AD mode (a symbolic parameter subset),
+    # so a numeric evaluation afterwards comes back as an SX expression and the
+    # reduction blows up in numpy. Order is the whole fix, and it costs nothing
+    # for the other two arms.
     y0 = _ca_feature_values(pid, nominal)  # {obs_label: Y}
+    try:
+        sens = pid.get_observable_sensitivities(nominal, **kwargs)
+    except TypeError:  # a CA whose accessor predates the two arguments
+        sens = pid.get_observable_sensitivities(nominal)
     obs = pid.obs_info
     # CA keys its columns by *entry label*, not by the first member's qname: a
     # grouped entry is 'a/E+b/E' and a modifier is its own name, because the
@@ -572,8 +334,8 @@ def _ca_analytic_local_sensitivity(pid, param_names, nominal, mins, maxs):
             rng = maxs[j] - mins[j]
             # Reported under CUFLynx's own key (the entry's first member, which
             # is the slider's key) but read out under CA's label for it.
-            label = labels[j] if j < len(labels) else pname
-            deriv = deriv_map.get(label)
+            entry_label = labels[j] if j < len(labels) else pname
+            deriv = deriv_map.get(entry_label)
             if deriv is None:
                 deriv = deriv_map.get(pname, np.nan)
             row[pname] = relative_coeff(float(deriv), nominal[j], denom, rng)
@@ -633,13 +395,18 @@ def compute_local_sensitivity(
     ``best_params`` is a reused best-fit dict keyed by qname. See
     :func:`_resolve_nominal` for how the nominal point is chosen.
 
-    The gradient source is ``settings['gradient_method']``:
-      * ``FD``  — central finite differences (any backend); CUFLynx's own loop.
-      * ``AD``  — exact CasADi jacobian (``casadi_python`` only); CUFLynx's own path.
-      * ``FSA`` — Myokit CVODES forward sensitivities (``cellml_only`` + ``CVODE_myokit``),
-        delegated to circulatory_autogen's ``get_observable_sensitivities`` via the
-        ``engine`` (a ``do_ad`` ``CVS0DParamID`` the runner builds). ``CVODES`` is
-        accepted as a legacy alias for ``FSA``.
+    **Every gradient source is computed by circulatory_autogen**, through the one
+    backend-agnostic accessor ``get_observable_sensitivities`` on the ``engine``
+    (a ``do_ad`` ``CVS0DParamID`` the runner builds): ``FD`` central differences,
+    ``AD`` the CasADi jacobian (``casadi_python`` only), ``FSA`` Myokit CVODES
+    forward sensitivities (``cellml_only`` + ``CVODE_myokit``). ``CVODES`` is
+    accepted as a legacy alias for ``FSA``.
+
+    CUFLynx reimplemented the FD loop and the CasADi jacobian until #210's
+    follow-up. That is why it had to mirror CA's flatten/fold contract for
+    grouped and modifier rows, and why CA #390 tightening that contract broke the
+    AD path. What is left here is the nominal point, the normalisation and the
+    labels -- the three things CA does not answer.
     """
     gradient_method = resolve_gradient_method(settings, model_type)
     if gradient_method == "AD" and model_type not in LOCAL_GRADIENT_SUPPORT["AD"]:
@@ -690,19 +457,21 @@ def compute_local_sensitivity(
         flush=True,
     )
 
-    if gradient_method == "AD":
-        local = _ad_local_sensitivity(sm, param_names, nominal, mins, maxs, output_names)
-    elif gradient_method == "FSA":
-        if engine is None:
-            raise RuntimeError(
-                "FSA local sensitivity needs a param-id engine; the runner must build "
-                "one (internal error)."
-            )
-        local, output_names = _ca_analytic_local_sensitivity(
-            engine.param_id, param_names, nominal, mins, maxs
+    if engine is None:
+        raise RuntimeError(
+            "Local sensitivity needs a param-id engine; the runner must build one "
+            "(internal error)."
         )
-    else:
-        local = _fd_local_sensitivity(sm, param_names, nominal, mins, maxs, output_names, h)
+    if gradient_method == "AD":
+        _check_ad_operations()
+    # CA answers for the scalar (const) observables only, so its list replaces
+    # `_output_names`: a series row has no local sensitivity to report, and it
+    # used to be listed with an empty cell -- which reads as "no sensitivity"
+    # rather than "not a question this can answer".
+    local, output_names = _ca_local_sensitivity(
+        engine.param_id, param_names, nominal, mins, maxs,
+        gradient_method=gradient_method, rel_step=h,
+    )
 
     return {
         "indices": {"local": local},

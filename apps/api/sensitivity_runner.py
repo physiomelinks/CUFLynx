@@ -221,7 +221,29 @@ def _calibrate_for_nominal(config: dict, settings: dict, solver_info: dict, mode
     return np.asarray(param_id.get_best_param_vals(), dtype=float)
 
 
+def _with_gradient_hint(exc: ValueError) -> ValueError:
+    """CA's non-differentiable-operation error, plus what to do about it.
+
+    CA names the offending operation and says it is not ``@differentiable``; it
+    cannot say "use FD", because the gradient method is a CUFLynx setting. Any
+    other ValueError passes through untouched.
+    """
+    if "@differentiable" not in str(exc):
+        return exc
+    return ValueError(
+        f"{exc} Switch the gradient method to 'FD' (finite difference), or mark "
+        f"the operation @differentiable in circulatory_autogen."
+    )
+
+
 def run(config: dict) -> dict:
+    try:
+        return _run(config)
+    except ValueError as exc:
+        raise _with_gradient_hint(exc) from exc
+
+
+def _run(config: dict) -> dict:
     _ensure_ca_on_path()
     from sensitivity_analysis.sensitivityAnalysis import SensitivityAnalysis  # noqa: E402
 
@@ -242,6 +264,12 @@ def run(config: dict) -> dict:
         np.random.seed(int(seed))
     sa_options = _sa_options(settings, output_dir, seed)
 
+    # A ValueError from here naming @differentiable is CA refusing a casadi_python
+    # model whose obs operations are not all differentiable -- it builds its
+    # casadi-mode operation table during construction, before any gradient method
+    # is chosen. `_with_gradient_hint` adds the one thing CA cannot know: that
+    # switching to FD is the way out, since the gradient method is a CUFLynx
+    # setting. Enriched, never restated -- the registry is CA's.
     sa = SensitivityAnalysis(
         model_path=config["model_path"],
         model_type=model_type,
@@ -272,15 +300,15 @@ def run(config: dict) -> dict:
         best_vals = None
         if bool(settings.get("run_calibration_first", False)):
             best_vals = _calibrate_for_nominal(config, settings, solver_info, model_type)
-        # FSA (Myokit CVODES forward sensitivities) is computed by circulatory_autogen's
-        # backend-agnostic accessor, which needs a do_ad param-id engine; FD/AD use the
-        # SA manager directly, so only build the engine when it's actually needed.
-        # Resolved through the same rule compute_local_sensitivity applies -- CA's
-        # 'AUTO'/'ANALYTIC'/'' spellings resolve to FSA on cellml_only, and testing
-        # the raw string here skipped the engine that resolution then demanded.
-        engine = None
-        if resolve_gradient_method(settings, model_type) == "FSA":
-            engine = _build_local_engine(config, settings, solver_info, model_type)
+        # Every gradient source -- FD, AD and FSA alike -- is computed by
+        # circulatory_autogen's backend-agnostic accessor, which needs a do_ad
+        # param-id engine, so it is always built. FD and AD used to run off the SA
+        # manager through CUFLynx's own loop and jacobian; those were
+        # reimplementations of CA's fd_backend and casadi_backend, and keeping
+        # them in step with CA's flatten/fold contract is what CA #390 broke.
+        # The engine costs one model parse; for AD the CasADi graph dominates and
+        # was being built anyway, and for FD it is small beside 2M simulations.
+        engine = _build_local_engine(config, settings, solver_info, model_type)
         payload = compute_local_sensitivity(
             sa,
             settings,

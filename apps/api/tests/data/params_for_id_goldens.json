@@ -1,546 +1,546 @@
 {
-  "3compartment_params_for_id.csv::bare": [
-    {
-      "baselines": null,
-      "comment": null,
-      "identity": null,
-      "initial_value": null,
-      "max": 0.0015,
-      "min": 0.0002,
-      "modifies": null,
-      "name": "global/q_lv_init",
-      "name_for_plotting": "q_{sbv}",
-      "operation": null,
-      "param_type": "const",
-      "prior": null,
-      "prior_params": {},
-      "qname": "global/q_lv_init",
-      "qnames": [
-        "global/q_lv_init"
-      ],
-      "unbounded": false,
-      "warning": null,
-      "inputs": null
-    },
-    {
-      "baselines": null,
-      "comment": null,
-      "identity": null,
-      "initial_value": null,
-      "max": 5e-08,
-      "min": 1e-09,
-      "modifies": null,
-      "name": "aortic_root/C",
-      "name_for_plotting": "C_{ao}",
-      "operation": null,
-      "param_type": "const",
-      "prior": null,
-      "prior_params": {},
-      "qname": "aortic_root/C",
-      "qnames": [
-        "aortic_root/C"
-      ],
-      "unbounded": false,
-      "warning": null,
-      "inputs": null
-    },
-    {
-      "baselines": null,
-      "comment": null,
-      "identity": null,
-      "initial_value": null,
-      "max": 500000000.0,
-      "min": 100000000.0,
-      "modifies": null,
-      "name": "global/E_lv_A",
-      "name_for_plotting": "E_{lvA}",
-      "operation": null,
-      "param_type": "const",
-      "prior": null,
-      "prior_params": {},
-      "qname": "global/E_lv_A",
-      "qnames": [
-        "global/E_lv_A"
-      ],
-      "unbounded": false,
-      "warning": null,
-      "inputs": null
-    },
-    {
-      "baselines": null,
-      "comment": null,
-      "identity": null,
-      "initial_value": null,
-      "max": 50000000.0,
-      "min": 1000000.0,
-      "modifies": null,
-      "name": "global/E_lv_B",
-      "name_for_plotting": "E_{lvB}",
-      "operation": null,
-      "param_type": "const",
-      "prior": null,
-      "prior_params": {},
-      "qname": "global/E_lv_B",
-      "qnames": [
-        "global/E_lv_B"
-      ],
-      "unbounded": false,
-      "warning": null,
-      "inputs": null
-    }
-  ],
-  "3compartment_params_for_id.csv::with_initials": [
-    {
-      "baselines": null,
-      "comment": null,
-      "identity": null,
-      "initial_value": 0.0005,
-      "max": 0.0015,
-      "min": 0.0002,
-      "modifies": null,
-      "name": "global/q_lv_init",
-      "name_for_plotting": "q_{sbv}",
-      "operation": null,
-      "param_type": "const",
-      "prior": null,
-      "prior_params": {},
-      "qname": "global/q_lv_init",
-      "qnames": [
-        "global/q_lv_init"
-      ],
-      "unbounded": false,
-      "warning": null,
-      "inputs": null
-    },
-    {
-      "baselines": null,
-      "comment": null,
-      "identity": null,
-      "initial_value": 1e-08,
-      "max": 5e-08,
-      "min": 1e-09,
-      "modifies": null,
-      "name": "aortic_root/C",
-      "name_for_plotting": "C_{ao}",
-      "operation": null,
-      "param_type": "const",
-      "prior": null,
-      "prior_params": {},
-      "qname": "aortic_root/C",
-      "qnames": [
-        "aortic_root/C"
-      ],
-      "unbounded": false,
-      "warning": null,
-      "inputs": null
-    },
-    {
-      "baselines": null,
-      "comment": null,
-      "identity": null,
-      "initial_value": 200000000.0,
-      "max": 500000000.0,
-      "min": 100000000.0,
-      "modifies": null,
-      "name": "global/E_lv_A",
-      "name_for_plotting": "E_{lvA}",
-      "operation": null,
-      "param_type": "const",
-      "prior": null,
-      "prior_params": {},
-      "qname": "global/E_lv_A",
-      "qnames": [
-        "global/E_lv_A"
-      ],
-      "unbounded": false,
-      "warning": null,
-      "inputs": null
-    },
-    {
-      "baselines": null,
-      "comment": null,
-      "identity": null,
-      "initial_value": 10000000.0,
-      "max": 50000000.0,
-      "min": 1000000.0,
-      "modifies": null,
-      "name": "global/E_lv_B",
-      "name_for_plotting": "E_{lvB}",
-      "operation": null,
-      "param_type": "const",
-      "prior": null,
-      "prior_params": {},
-      "qname": "global/E_lv_B",
-      "qnames": [
-        "global/E_lv_B"
-      ],
-      "unbounded": false,
-      "warning": null,
-      "inputs": null
-    }
-  ],
-  "Lotka_Volterra_params_for_id.csv::bare": [
-    {
-      "baselines": null,
-      "comment": null,
-      "identity": null,
-      "initial_value": null,
-      "max": 7.0,
-      "min": 0.1,
-      "modifies": null,
-      "name": "Lotka_Volterra_module/alpha",
-      "name_for_plotting": "\\alpha",
-      "operation": null,
-      "param_type": null,
-      "prior": "uniform",
-      "prior_params": {},
-      "qname": "Lotka_Volterra_module/alpha",
-      "qnames": [
-        "Lotka_Volterra_module/alpha"
-      ],
-      "unbounded": false,
-      "warning": null,
-      "inputs": null
-    },
-    {
-      "baselines": null,
-      "comment": null,
-      "identity": null,
-      "initial_value": null,
-      "max": 2.0,
-      "min": 0.01,
-      "modifies": null,
-      "name": "Lotka_Volterra_module/beta",
-      "name_for_plotting": "\\beta",
-      "operation": null,
-      "param_type": null,
-      "prior": "uniform",
-      "prior_params": {},
-      "qname": "Lotka_Volterra_module/beta",
-      "qnames": [
-        "Lotka_Volterra_module/beta"
-      ],
-      "unbounded": false,
-      "warning": null,
-      "inputs": null
-    },
-    {
-      "baselines": null,
-      "comment": null,
-      "identity": null,
-      "initial_value": null,
-      "max": 2.0,
-      "min": 0.01,
-      "modifies": null,
-      "name": "Lotka_Volterra_module/delta",
-      "name_for_plotting": "\\delta",
-      "operation": null,
-      "param_type": null,
-      "prior": "uniform",
-      "prior_params": {},
-      "qname": "Lotka_Volterra_module/delta",
-      "qnames": [
-        "Lotka_Volterra_module/delta"
-      ],
-      "unbounded": false,
-      "warning": null,
-      "inputs": null
-    },
-    {
-      "baselines": null,
-      "comment": null,
-      "identity": null,
-      "initial_value": null,
-      "max": 10.0,
-      "min": 0.1,
-      "modifies": null,
-      "name": "Lotka_Volterra_module/gamma",
-      "name_for_plotting": "\\gamma",
-      "operation": null,
-      "param_type": null,
-      "prior": "uniform",
-      "prior_params": {},
-      "qname": "Lotka_Volterra_module/gamma",
-      "qnames": [
-        "Lotka_Volterra_module/gamma"
-      ],
-      "unbounded": false,
-      "warning": null,
-      "inputs": null
-    }
-  ],
-  "Lotka_Volterra_params_for_id.csv::with_initials": [
-    {
-      "baselines": null,
-      "comment": null,
-      "identity": null,
-      "initial_value": null,
-      "max": 7.0,
-      "min": 0.1,
-      "modifies": null,
-      "name": "Lotka_Volterra_module/alpha",
-      "name_for_plotting": "\\alpha",
-      "operation": null,
-      "param_type": null,
-      "prior": "uniform",
-      "prior_params": {},
-      "qname": "Lotka_Volterra_module/alpha",
-      "qnames": [
-        "Lotka_Volterra_module/alpha"
-      ],
-      "unbounded": false,
-      "warning": null,
-      "inputs": null
-    },
-    {
-      "baselines": null,
-      "comment": null,
-      "identity": null,
-      "initial_value": null,
-      "max": 2.0,
-      "min": 0.01,
-      "modifies": null,
-      "name": "Lotka_Volterra_module/beta",
-      "name_for_plotting": "\\beta",
-      "operation": null,
-      "param_type": null,
-      "prior": "uniform",
-      "prior_params": {},
-      "qname": "Lotka_Volterra_module/beta",
-      "qnames": [
-        "Lotka_Volterra_module/beta"
-      ],
-      "unbounded": false,
-      "warning": null,
-      "inputs": null
-    },
-    {
-      "baselines": null,
-      "comment": null,
-      "identity": null,
-      "initial_value": null,
-      "max": 2.0,
-      "min": 0.01,
-      "modifies": null,
-      "name": "Lotka_Volterra_module/delta",
-      "name_for_plotting": "\\delta",
-      "operation": null,
-      "param_type": null,
-      "prior": "uniform",
-      "prior_params": {},
-      "qname": "Lotka_Volterra_module/delta",
-      "qnames": [
-        "Lotka_Volterra_module/delta"
-      ],
-      "unbounded": false,
-      "warning": null,
-      "inputs": null
-    },
-    {
-      "baselines": null,
-      "comment": null,
-      "identity": null,
-      "initial_value": null,
-      "max": 10.0,
-      "min": 0.1,
-      "modifies": null,
-      "name": "Lotka_Volterra_module/gamma",
-      "name_for_plotting": "\\gamma",
-      "operation": null,
-      "param_type": null,
-      "prior": "uniform",
-      "prior_params": {},
-      "qname": "Lotka_Volterra_module/gamma",
-      "qnames": [
-        "Lotka_Volterra_module/gamma"
-      ],
-      "unbounded": false,
-      "warning": null,
-      "inputs": null
-    }
-  ],
-  "SN_simple_params_for_id.csv::bare": [
-    {
-      "baselines": null,
-      "comment": null,
-      "identity": null,
-      "initial_value": null,
-      "max": 6.0,
-      "min": 1.0,
-      "modifies": null,
-      "name": "soma_SN/g_Na",
-      "name_for_plotting": "g_{Na}",
-      "operation": null,
-      "param_type": null,
-      "prior": null,
-      "prior_params": {},
-      "qname": "soma_SN/g_Na",
-      "qnames": [
-        "soma_SN/g_Na"
-      ],
-      "unbounded": false,
-      "warning": null,
-      "inputs": null
-    },
-    {
-      "baselines": null,
-      "comment": null,
-      "identity": null,
-      "initial_value": null,
-      "max": 0.004,
-      "min": 0.001,
-      "modifies": null,
-      "name": "soma_SN/g_M",
-      "name_for_plotting": "g_{M}",
-      "operation": null,
-      "param_type": null,
-      "prior": null,
-      "prior_params": {},
-      "qname": "soma_SN/g_M",
-      "qnames": [
-        "soma_SN/g_M"
-      ],
-      "unbounded": false,
-      "warning": null,
-      "inputs": null
-    },
-    {
-      "baselines": null,
-      "comment": null,
-      "identity": null,
-      "initial_value": null,
-      "max": 0.1,
-      "min": 0.03,
-      "modifies": null,
-      "name": "soma_SN/g_Kv1_5",
-      "name_for_plotting": "g_{kv}",
-      "operation": null,
-      "param_type": null,
-      "prior": null,
-      "prior_params": {},
-      "qname": "soma_SN/g_Kv1_5",
-      "qnames": [
-        "soma_SN/g_Kv1_5"
-      ],
-      "unbounded": false,
-      "warning": null,
-      "inputs": null
-    }
-  ],
-  "SN_simple_params_for_id.csv::with_initials": [
-    {
-      "baselines": null,
-      "comment": null,
-      "identity": null,
-      "initial_value": null,
-      "max": 6.0,
-      "min": 1.0,
-      "modifies": null,
-      "name": "soma_SN/g_Na",
-      "name_for_plotting": "g_{Na}",
-      "operation": null,
-      "param_type": null,
-      "prior": null,
-      "prior_params": {},
-      "qname": "soma_SN/g_Na",
-      "qnames": [
-        "soma_SN/g_Na"
-      ],
-      "unbounded": false,
-      "warning": null,
-      "inputs": null
-    },
-    {
-      "baselines": null,
-      "comment": null,
-      "identity": null,
-      "initial_value": null,
-      "max": 0.004,
-      "min": 0.001,
-      "modifies": null,
-      "name": "soma_SN/g_M",
-      "name_for_plotting": "g_{M}",
-      "operation": null,
-      "param_type": null,
-      "prior": null,
-      "prior_params": {},
-      "qname": "soma_SN/g_M",
-      "qnames": [
-        "soma_SN/g_M"
-      ],
-      "unbounded": false,
-      "warning": null,
-      "inputs": null
-    },
-    {
-      "baselines": null,
-      "comment": null,
-      "identity": null,
-      "initial_value": null,
-      "max": 0.1,
-      "min": 0.03,
-      "modifies": null,
-      "name": "soma_SN/g_Kv1_5",
-      "name_for_plotting": "g_{kv}",
-      "operation": null,
-      "param_type": null,
-      "prior": null,
-      "prior_params": {},
-      "qname": "soma_SN/g_Kv1_5",
-      "qnames": [
-        "soma_SN/g_Kv1_5"
-      ],
-      "unbounded": false,
-      "warning": null,
-      "inputs": null
-    }
-  ],
-  "br-1977_params_for_id.csv::bare": [
-    {
-      "baselines": null,
-      "comment": null,
-      "identity": null,
-      "initial_value": null,
-      "max": 10.0,
-      "min": 1.0,
-      "modifies": null,
-      "name": "ina/gNaBar",
-      "name_for_plotting": "g_{Na}",
-      "operation": null,
-      "param_type": "const",
-      "prior": null,
-      "prior_params": {},
-      "qname": "ina/gNaBar",
-      "qnames": [
-        "ina/gNaBar"
-      ],
-      "unbounded": false,
-      "warning": null,
-      "inputs": null
-    }
-  ],
-  "br-1977_params_for_id.csv::with_initials": [
-    {
-      "baselines": null,
-      "comment": null,
-      "identity": null,
-      "initial_value": null,
-      "max": 10.0,
-      "min": 1.0,
-      "modifies": null,
-      "name": "ina/gNaBar",
-      "name_for_plotting": "g_{Na}",
-      "operation": null,
-      "param_type": "const",
-      "prior": null,
-      "prior_params": {},
-      "qname": "ina/gNaBar",
-      "qnames": [
-        "ina/gNaBar"
-      ],
-      "unbounded": false,
-      "warning": null,
-      "inputs": null
-    }
-  ]
+ "3compartment_params_for_id.csv::bare": [
+  {
+   "baselines": null,
+   "comment": null,
+   "identity": null,
+   "initial_value": null,
+   "inputs": null,
+   "max": 0.0015,
+   "min": 0.0002,
+   "modifies": null,
+   "name": "global/q_lv_init",
+   "name_for_plotting": "q_{sbv}",
+   "operation": null,
+   "param_type": "const",
+   "prior": null,
+   "prior_params": {},
+   "qname": "global/q_lv_init",
+   "qnames": [
+    "global/q_lv_init"
+   ],
+   "unbounded": false,
+   "warning": null
+  },
+  {
+   "baselines": null,
+   "comment": null,
+   "identity": null,
+   "initial_value": null,
+   "inputs": null,
+   "max": 5e-08,
+   "min": 1e-09,
+   "modifies": null,
+   "name": "aortic_root/C",
+   "name_for_plotting": "C_{ao}",
+   "operation": null,
+   "param_type": "const",
+   "prior": null,
+   "prior_params": {},
+   "qname": "aortic_root/C",
+   "qnames": [
+    "aortic_root/C"
+   ],
+   "unbounded": false,
+   "warning": null
+  },
+  {
+   "baselines": null,
+   "comment": null,
+   "identity": null,
+   "initial_value": null,
+   "inputs": null,
+   "max": 500000000.0,
+   "min": 100000000.0,
+   "modifies": null,
+   "name": "global/E_lv_A",
+   "name_for_plotting": "E_{lvA}",
+   "operation": null,
+   "param_type": "const",
+   "prior": null,
+   "prior_params": {},
+   "qname": "global/E_lv_A",
+   "qnames": [
+    "global/E_lv_A"
+   ],
+   "unbounded": false,
+   "warning": null
+  },
+  {
+   "baselines": null,
+   "comment": null,
+   "identity": null,
+   "initial_value": null,
+   "inputs": null,
+   "max": 50000000.0,
+   "min": 1000000.0,
+   "modifies": null,
+   "name": "global/E_lv_B",
+   "name_for_plotting": "E_{lvB}",
+   "operation": null,
+   "param_type": "const",
+   "prior": null,
+   "prior_params": {},
+   "qname": "global/E_lv_B",
+   "qnames": [
+    "global/E_lv_B"
+   ],
+   "unbounded": false,
+   "warning": null
+  }
+ ],
+ "3compartment_params_for_id.csv::with_initials": [
+  {
+   "baselines": null,
+   "comment": null,
+   "identity": null,
+   "initial_value": 0.0005,
+   "inputs": null,
+   "max": 0.0015,
+   "min": 0.0002,
+   "modifies": null,
+   "name": "global/q_lv_init",
+   "name_for_plotting": "q_{sbv}",
+   "operation": null,
+   "param_type": "const",
+   "prior": null,
+   "prior_params": {},
+   "qname": "global/q_lv_init",
+   "qnames": [
+    "global/q_lv_init"
+   ],
+   "unbounded": false,
+   "warning": null
+  },
+  {
+   "baselines": null,
+   "comment": null,
+   "identity": null,
+   "initial_value": 1e-08,
+   "inputs": null,
+   "max": 5e-08,
+   "min": 1e-09,
+   "modifies": null,
+   "name": "aortic_root/C",
+   "name_for_plotting": "C_{ao}",
+   "operation": null,
+   "param_type": "const",
+   "prior": null,
+   "prior_params": {},
+   "qname": "aortic_root/C",
+   "qnames": [
+    "aortic_root/C"
+   ],
+   "unbounded": false,
+   "warning": null
+  },
+  {
+   "baselines": null,
+   "comment": null,
+   "identity": null,
+   "initial_value": 200000000.0,
+   "inputs": null,
+   "max": 500000000.0,
+   "min": 100000000.0,
+   "modifies": null,
+   "name": "global/E_lv_A",
+   "name_for_plotting": "E_{lvA}",
+   "operation": null,
+   "param_type": "const",
+   "prior": null,
+   "prior_params": {},
+   "qname": "global/E_lv_A",
+   "qnames": [
+    "global/E_lv_A"
+   ],
+   "unbounded": false,
+   "warning": null
+  },
+  {
+   "baselines": null,
+   "comment": null,
+   "identity": null,
+   "initial_value": 10000000.0,
+   "inputs": null,
+   "max": 50000000.0,
+   "min": 1000000.0,
+   "modifies": null,
+   "name": "global/E_lv_B",
+   "name_for_plotting": "E_{lvB}",
+   "operation": null,
+   "param_type": "const",
+   "prior": null,
+   "prior_params": {},
+   "qname": "global/E_lv_B",
+   "qnames": [
+    "global/E_lv_B"
+   ],
+   "unbounded": false,
+   "warning": null
+  }
+ ],
+ "Lotka_Volterra_params_for_id.csv::bare": [
+  {
+   "baselines": null,
+   "comment": null,
+   "identity": null,
+   "initial_value": null,
+   "inputs": null,
+   "max": 7.0,
+   "min": 0.1,
+   "modifies": null,
+   "name": "Lotka_Volterra_module/alpha",
+   "name_for_plotting": "\\alpha",
+   "operation": null,
+   "param_type": null,
+   "prior": "uniform",
+   "prior_params": {},
+   "qname": "Lotka_Volterra_module/alpha",
+   "qnames": [
+    "Lotka_Volterra_module/alpha"
+   ],
+   "unbounded": false,
+   "warning": null
+  },
+  {
+   "baselines": null,
+   "comment": null,
+   "identity": null,
+   "initial_value": null,
+   "inputs": null,
+   "max": 2.0,
+   "min": 0.01,
+   "modifies": null,
+   "name": "Lotka_Volterra_module/beta",
+   "name_for_plotting": "\\beta",
+   "operation": null,
+   "param_type": null,
+   "prior": "uniform",
+   "prior_params": {},
+   "qname": "Lotka_Volterra_module/beta",
+   "qnames": [
+    "Lotka_Volterra_module/beta"
+   ],
+   "unbounded": false,
+   "warning": null
+  },
+  {
+   "baselines": null,
+   "comment": null,
+   "identity": null,
+   "initial_value": null,
+   "inputs": null,
+   "max": 2.0,
+   "min": 0.01,
+   "modifies": null,
+   "name": "Lotka_Volterra_module/delta",
+   "name_for_plotting": "\\delta",
+   "operation": null,
+   "param_type": null,
+   "prior": "uniform",
+   "prior_params": {},
+   "qname": "Lotka_Volterra_module/delta",
+   "qnames": [
+    "Lotka_Volterra_module/delta"
+   ],
+   "unbounded": false,
+   "warning": null
+  },
+  {
+   "baselines": null,
+   "comment": null,
+   "identity": null,
+   "initial_value": null,
+   "inputs": null,
+   "max": 10.0,
+   "min": 0.1,
+   "modifies": null,
+   "name": "Lotka_Volterra_module/gamma",
+   "name_for_plotting": "\\gamma",
+   "operation": null,
+   "param_type": null,
+   "prior": "uniform",
+   "prior_params": {},
+   "qname": "Lotka_Volterra_module/gamma",
+   "qnames": [
+    "Lotka_Volterra_module/gamma"
+   ],
+   "unbounded": false,
+   "warning": null
+  }
+ ],
+ "Lotka_Volterra_params_for_id.csv::with_initials": [
+  {
+   "baselines": null,
+   "comment": null,
+   "identity": null,
+   "initial_value": null,
+   "inputs": null,
+   "max": 7.0,
+   "min": 0.1,
+   "modifies": null,
+   "name": "Lotka_Volterra_module/alpha",
+   "name_for_plotting": "\\alpha",
+   "operation": null,
+   "param_type": null,
+   "prior": "uniform",
+   "prior_params": {},
+   "qname": "Lotka_Volterra_module/alpha",
+   "qnames": [
+    "Lotka_Volterra_module/alpha"
+   ],
+   "unbounded": false,
+   "warning": null
+  },
+  {
+   "baselines": null,
+   "comment": null,
+   "identity": null,
+   "initial_value": null,
+   "inputs": null,
+   "max": 2.0,
+   "min": 0.01,
+   "modifies": null,
+   "name": "Lotka_Volterra_module/beta",
+   "name_for_plotting": "\\beta",
+   "operation": null,
+   "param_type": null,
+   "prior": "uniform",
+   "prior_params": {},
+   "qname": "Lotka_Volterra_module/beta",
+   "qnames": [
+    "Lotka_Volterra_module/beta"
+   ],
+   "unbounded": false,
+   "warning": null
+  },
+  {
+   "baselines": null,
+   "comment": null,
+   "identity": null,
+   "initial_value": null,
+   "inputs": null,
+   "max": 2.0,
+   "min": 0.01,
+   "modifies": null,
+   "name": "Lotka_Volterra_module/delta",
+   "name_for_plotting": "\\delta",
+   "operation": null,
+   "param_type": null,
+   "prior": "uniform",
+   "prior_params": {},
+   "qname": "Lotka_Volterra_module/delta",
+   "qnames": [
+    "Lotka_Volterra_module/delta"
+   ],
+   "unbounded": false,
+   "warning": null
+  },
+  {
+   "baselines": null,
+   "comment": null,
+   "identity": null,
+   "initial_value": null,
+   "inputs": null,
+   "max": 10.0,
+   "min": 0.1,
+   "modifies": null,
+   "name": "Lotka_Volterra_module/gamma",
+   "name_for_plotting": "\\gamma",
+   "operation": null,
+   "param_type": null,
+   "prior": "uniform",
+   "prior_params": {},
+   "qname": "Lotka_Volterra_module/gamma",
+   "qnames": [
+    "Lotka_Volterra_module/gamma"
+   ],
+   "unbounded": false,
+   "warning": null
+  }
+ ],
+ "SN_simple_params_for_id.csv::bare": [
+  {
+   "baselines": null,
+   "comment": null,
+   "identity": null,
+   "initial_value": null,
+   "inputs": null,
+   "max": 6.0,
+   "min": 1.0,
+   "modifies": null,
+   "name": "soma_SN/g_Na",
+   "name_for_plotting": "g_{Na}",
+   "operation": null,
+   "param_type": null,
+   "prior": null,
+   "prior_params": {},
+   "qname": "soma_SN/g_Na",
+   "qnames": [
+    "soma_SN/g_Na"
+   ],
+   "unbounded": false,
+   "warning": null
+  },
+  {
+   "baselines": null,
+   "comment": null,
+   "identity": null,
+   "initial_value": null,
+   "inputs": null,
+   "max": 0.004,
+   "min": 0.001,
+   "modifies": null,
+   "name": "soma_SN/g_M",
+   "name_for_plotting": "g_{M}",
+   "operation": null,
+   "param_type": null,
+   "prior": null,
+   "prior_params": {},
+   "qname": "soma_SN/g_M",
+   "qnames": [
+    "soma_SN/g_M"
+   ],
+   "unbounded": false,
+   "warning": null
+  },
+  {
+   "baselines": null,
+   "comment": null,
+   "identity": null,
+   "initial_value": null,
+   "inputs": null,
+   "max": 0.1,
+   "min": 0.03,
+   "modifies": null,
+   "name": "soma_SN/g_Kv1_5",
+   "name_for_plotting": "g_{kv}",
+   "operation": null,
+   "param_type": null,
+   "prior": null,
+   "prior_params": {},
+   "qname": "soma_SN/g_Kv1_5",
+   "qnames": [
+    "soma_SN/g_Kv1_5"
+   ],
+   "unbounded": false,
+   "warning": null
+  }
+ ],
+ "SN_simple_params_for_id.csv::with_initials": [
+  {
+   "baselines": null,
+   "comment": null,
+   "identity": null,
+   "initial_value": null,
+   "inputs": null,
+   "max": 6.0,
+   "min": 1.0,
+   "modifies": null,
+   "name": "soma_SN/g_Na",
+   "name_for_plotting": "g_{Na}",
+   "operation": null,
+   "param_type": null,
+   "prior": null,
+   "prior_params": {},
+   "qname": "soma_SN/g_Na",
+   "qnames": [
+    "soma_SN/g_Na"
+   ],
+   "unbounded": false,
+   "warning": null
+  },
+  {
+   "baselines": null,
+   "comment": null,
+   "identity": null,
+   "initial_value": null,
+   "inputs": null,
+   "max": 0.004,
+   "min": 0.001,
+   "modifies": null,
+   "name": "soma_SN/g_M",
+   "name_for_plotting": "g_{M}",
+   "operation": null,
+   "param_type": null,
+   "prior": null,
+   "prior_params": {},
+   "qname": "soma_SN/g_M",
+   "qnames": [
+    "soma_SN/g_M"
+   ],
+   "unbounded": false,
+   "warning": null
+  },
+  {
+   "baselines": null,
+   "comment": null,
+   "identity": null,
+   "initial_value": null,
+   "inputs": null,
+   "max": 0.1,
+   "min": 0.03,
+   "modifies": null,
+   "name": "soma_SN/g_Kv1_5",
+   "name_for_plotting": "g_{kv}",
+   "operation": null,
+   "param_type": null,
+   "prior": null,
+   "prior_params": {},
+   "qname": "soma_SN/g_Kv1_5",
+   "qnames": [
+    "soma_SN/g_Kv1_5"
+   ],
+   "unbounded": false,
+   "warning": null
+  }
+ ],
+ "br-1977_params_for_id.csv::bare": [
+  {
+   "baselines": null,
+   "comment": null,
+   "identity": null,
+   "initial_value": null,
+   "inputs": null,
+   "max": 10.0,
+   "min": 1.0,
+   "modifies": null,
+   "name": "ina/gNaBar",
+   "name_for_plotting": "g_{Na}",
+   "operation": null,
+   "param_type": "const",
+   "prior": null,
+   "prior_params": {},
+   "qname": "ina/gNaBar",
+   "qnames": [
+    "ina/gNaBar"
+   ],
+   "unbounded": false,
+   "warning": null
+  }
+ ],
+ "br-1977_params_for_id.csv::with_initials": [
+  {
+   "baselines": null,
+   "comment": null,
+   "identity": null,
+   "initial_value": null,
+   "inputs": null,
+   "max": 10.0,
+   "min": 1.0,
+   "modifies": null,
+   "name": "ina/gNaBar",
+   "name_for_plotting": "g_{Na}",
+   "operation": null,
+   "param_type": "const",
+   "prior": null,
+   "prior_params": {},
+   "qname": "ina/gNaBar",
+   "qnames": [
+    "ina/gNaBar"
+   ],
+   "unbounded": false,
+   "warning": null
+  }
+ ]
 }
