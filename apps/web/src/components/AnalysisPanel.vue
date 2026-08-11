@@ -418,16 +418,30 @@ const uqMethodLabel = computed(() =>
         (#159). Shown whether or not a calibration has run: a manual
         perturbation has a cost too, and that was the whole gap.
       -->
+      <!--
+        Each figure carries its own series colour (#221), the same one its bars
+        and legend swatch use below. The two numbers sat in body text, so which
+        cost belonged to which series had to be read from the caption alone.
+        CURRENT_COLOUR / BASELINE_COLOUR stay the single definition.
+      -->
       <div v-if="comparable" class="cost-summary" data-testid="analysis-cost">
         <div class="cost-figure">
           <span class="cost-caption">current parameters</span>
-          <strong class="cost-number" data-testid="analysis-cost-current">
+          <strong
+            class="cost-number"
+            :style="{ color: CURRENT_COLOUR }"
+            data-testid="analysis-cost-current"
+          >
             {{ formatCost(currentCost?.cost) }}
           </strong>
         </div>
         <div v-if="baselineCost" class="cost-figure">
           <span class="cost-caption">{{ baselineCost.label ?? 'baseline' }}</span>
-          <strong class="cost-number" data-testid="analysis-cost-baseline">
+          <strong
+            class="cost-number"
+            :style="{ color: BASELINE_COLOUR }"
+            data-testid="analysis-cost-baseline"
+          >
             {{ formatCost(baselineCost.cost) }}
           </strong>
         </div>

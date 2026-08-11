@@ -170,6 +170,19 @@ describe('AnalysisPanel cost (#159)', () => {
     expect(w.text()).toContain('calibration best fit')
   })
 
+  it('colours each cost figure as its own series (#221)', () => {
+    // The two numbers used to sit in body text, so which cost belonged to
+    // which series had to be read from the caption. They now carry the same
+    // colours their bars and legend swatches do.
+    const w = mountIt({ currentCost: CURRENT, baselineCost: BASELINE })
+    const current = w.find('[data-testid="analysis-cost-current"]').attributes('style')
+    const baseline = w.find('[data-testid="analysis-cost-baseline"]').attributes('style')
+
+    expect(current).toContain('rgb(91, 155, 213)') // CURRENT_COLOUR  #5b9bd5
+    expect(baseline).toContain('rgb(161, 66, 244)') // BASELINE_COLOUR #a142f4
+    expect(current).not.toBe(baseline)
+  })
+
   it('offers no comparison when there is nothing to compare with', () => {
     const w = mountIt({ currentCost: CURRENT })
     expect(w.find('[data-testid="compare-costs"]').exists()).toBe(false)
