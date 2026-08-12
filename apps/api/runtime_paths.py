@@ -295,29 +295,6 @@ def _relocate_bundle_extraction_env(env: dict) -> None:
             env[var] = cache_str
 
 
-def _default_single_node_mpi_env(env: dict) -> None:
-    """Keep MPI off the network for a run that never leaves this machine.
-
-    Every analysis CUFLynx launches is single-node: ``mpiexec`` fans out ranks
-    across local cores and nothing talks to another host. MPICH's OFI netmod
-    does not know that, and picks a real interface anyway -- which on macOS has
-    meant ``MPI_Finalize`` aborting while flushing its send queue::
-
-        MPIDI_OFI_handle_cq_error(593): OFI poll failed
-        (default nic=en5: Input/output error)
-
-    after the run had finished and written its results. Pinning libfabric to
-    loopback TCP keeps the transport on an interface that cannot go away
-    mid-run (a Wi-Fi drop, a VPN coming up, a virtual adapter appearing).
-
-    Defaults only: anything the user already set in their environment wins, so
-    a genuinely multi-node setup, or someone tuning a provider deliberately, is
-    untouched.
-    """
-    env.setdefault("FI_PROVIDER", "tcp")
-    env.setdefault("FI_TCP_IFACE", "lo0" if sys.platform == "darwin" else "lo")
-
-
 def runner_launch_env(python: Optional[str]) -> dict:
     """Environment for spawning an analysis runner (calibration/sensitivity/UQ).
 
@@ -327,11 +304,28 @@ def runner_launch_env(python: Optional[str]) -> dict:
     per-build cache dir so N MPI ranks don't exhaust the system ``$TMPDIR`` (issue
     #67). For an external interpreter this is irrelevant, so it's omitted.
 
-    Also pins libfabric to loopback for these single-node MPI runs; see
-    :func:`_default_single_node_mpi_env`.
+    **The MPI environment is left alone.** A previous version set
+    ``FI_PROVIDER=tcp`` and ``FI_TCP_IFACE=lo0``/``lo`` to keep libfabric on
+    loopback, on the reasoning that every analysis CUFLynx launches is
+    single-node and a real interface can vanish mid-run -- which is what aborted
+    ``MPI_Finalize`` on macOS after a run had already written its results.
+
+    That made things worse. On macOS those settings abort ``MPI_Init``::
+
+        MPIDI_OFI_create_vci_context(1054): OFI call ep_enable failed
+        (default nic=tcp: Bad file descriptor)
+
+    and an abort at *init* loses the whole run, where the abort it was preventing
+    happened at *teardown* with the results already on disk. It also only ever
+    hardened against a fault reported on macOS; no Linux equivalent was seen.
+
+    The teardown abort is handled where it belongs instead:
+    ``calibration.finished_before_exiting`` treats a non-zero exit after the DONE
+    marker as a shutdown failure rather than a failed analysis, so the results
+    stand and the user is told. That is robust to *any* cause, not just the one
+    provider setting we guessed at. See CUFLynx #229 and the v0.2.0 release build.
     """
     env = subprocess_env()
     if python is None and is_frozen():
         _relocate_bundle_extraction_env(env)
-    _default_single_node_mpi_env(env)
     return env
