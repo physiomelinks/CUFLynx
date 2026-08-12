@@ -26,14 +26,28 @@ whole reason for the format: a list of qnames has no reason to share a
 ``param_name``, so arbitrary parameters can be grouped. One target is the
 ordinary single-parameter case; several mean one value set on all of them.
 
-**The CSV -> JSON conversion itself is CA's**
-(``ObsAndParamDataParser.params_for_id_csv_to_json``) -- there is exactly one
-converter, so the two repositories cannot disagree about the mapping. When CA
-is not importable (the packaged app before a circulatory_autogen directory is
-chosen in Settings), reading a CSV is an error that says so; the JSON form
-still parses without CA. CUFLynx used to carry a duplicate converter for that
-state, and retiring it is the #208 close condition: a fallback that only runs
-where CA is absent is a fallback that drifts unobserved.
+**The CSV -> JSON conversion is CA's whenever CA is importable**
+(``ObsAndParamDataParser.params_for_id_csv_to_json``), so a column CA adds flows
+through without an edit here and the two repositories cannot disagree about the
+mapping.
+
+When CA is *not* importable there is a local fallback,
+``_csv_to_json_without_ca``. #208 removed an earlier one on the grounds that "a
+fallback that only runs where CA is absent is a fallback that drifts
+unobserved", and that objection was correct about *that* fallback: nothing
+compared it with CA. It is reinstated because the state it serves turned out not
+to be a corner -- a freshly downloaded release has no CA directory, so the app
+could not open a params_for_id CSV at all, which is the first thing a study
+needs -- and because the drift is now observed: ``test_params_csv_fallback_
+matches_ca`` asserts the two produce the same document, and runs in CI, where CA
+*is* importable. A change to CA's mapping fails there rather than silently
+giving packaged users a different study.
+
+Reproducing the mapping is also sanctioned by CA, whose converter is documented
+as pure with the mapping written down "because a tool without circulatory_autogen
+on sys.path has to be able to reproduce it".
+
+The real fix is bundling CA (#18); this is what makes the app usable until then.
 """
 
 from __future__ import annotations
@@ -172,36 +186,145 @@ def _resolved(entry, defaults: dict, idx: int) -> dict:
     return merged
 
 
-def csv_to_json(data: bytes | str) -> dict:
-    """A params_for_id CSV as the canonical JSON structure, via CA's converter.
+#: CSV columns that become ``prior_params`` entries rather than top-level keys.
+#: CA derives this from its prior-type declarations; mirrored here for the
+#: fallback below, and pinned to CA's list by
+#: ``test_params_csv_fallback_matches_ca`` so a hyper-parameter added there
+#: cannot go missing here unnoticed.
+_CSV_PRIOR_COLUMNS = ("prior_lambda", "prior_origin", "prior_scale", "prior_mean", "prior_std")
 
-    There is no local fallback: the conversion is CA's alone. Without CA the
-    error says how to fix that, because the packaged app starts in exactly this
-    state. CA's parse failures are translated into :class:`ParamsJsonError` --
-    it raises bare ``ValueError``/pandas errors, and anything that is not a
+#: Columns that map straight to a top-level key of the same name.
+_CSV_PASSTHROUGH_COLUMNS = ("param_type", "name_for_plotting", "comment", "prior", "min", "max")
+
+#: The spellings CA accepts for a boolean cell.
+_CSV_TRUE = frozenset({"1", "1.0", "true", "yes", "y"})
+_CSV_FALSE = frozenset({"0", "0.0", "false", "no", "n"})
+
+
+def _truthy_cell(value: str, column: str) -> bool:
+    """A params_for_id boolean cell, CA's spelling rules.
+
+    Anything unrecognised is an error rather than a quiet False: a cell the user
+    filled in must not be ignored.
+    """
+    text = str(value).strip().lower()
+    if text in _CSV_TRUE:
+        return True
+    if text in _CSV_FALSE:
+        return False
+    raise ParamsJsonError(
+        f"'{column}' must be true/false (or 1/0, yes/no), got {value!r}."
+    )
+
+
+def _csv_to_json_without_ca(text: str) -> dict:
+    """The params_for_id CSV mapping, done locally.
+
+    Used only when circulatory_autogen cannot be imported. That is the state a
+    freshly downloaded release starts in -- CA is chosen at runtime and is not
+    bundled -- and refusing there made the packaged app unable to open a
+    params_for_id CSV at all, which is the first thing a study needs.
+
+    Reproducing CA's mapping here is sanctioned by CA itself: its converter is
+    documented as pure, with the mapping written down in the tutorial "because a
+    tool without circulatory_autogen on sys.path has to be able to reproduce
+    it". CA stays the authority whenever it is importable -- this runs only as
+    the fallback -- and ``test_params_csv_fallback_matches_ca`` asserts the two
+    agree, so a change to CA's mapping fails CI here rather than silently
+    producing a different study.
+
+    Deliberately uses ``csv``, not pandas: the fallback exists for an
+    environment that is missing things, so it must not itself depend on one.
+    """
+    import csv as _csv  # noqa: PLC0415
+    import io as _io  # noqa: PLC0415
+
+    reader = _csv.DictReader(_io.StringIO(text))
+    columns = [c.strip() for c in (reader.fieldnames or [])]
+    if "vessel_name" not in columns or "param_name" not in columns:
+        raise ParamsJsonError(
+            "params_for_id CSV needs at least the vessel_name and param_name columns; "
+            f"got {columns or 'no header row'}."
+        )
+
+    def cell(row, key):
+        for raw_key, value in row.items():
+            if raw_key is not None and raw_key.strip() == key:
+                return value.strip() if isinstance(value, str) else value
+        return None
+
+    params = []
+    for idx, row in enumerate(reader):
+        vessels = [v for v in str(cell(row, "vessel_name") or "").split() if v]
+        param_name = str(cell(row, "param_name") or "").strip()
+        if not vessels or not param_name:
+            raise ParamsJsonError(
+                f"params_for_id CSV row {idx}: both vessel_name and param_name are "
+                f"required (got vessel_name={cell(row, 'vessel_name')!r}, "
+                f"param_name={param_name!r})."
+            )
+
+        entry = {"targets": [f"{v}/{param_name}" for v in vessels]}
+        entry["name"] = entry["targets"][0]
+        for key in _CSV_PASSTHROUGH_COLUMNS:
+            value = cell(row, key)
+            if key in columns and value not in (None, ""):
+                entry[key] = str(value).strip()
+        unbounded = cell(row, "unbounded")
+        if "unbounded" in columns and unbounded not in (None, ""):
+            entry["unbounded"] = _truthy_cell(unbounded, "unbounded")
+
+        prior_params = {}
+        for key in _CSV_PRIOR_COLUMNS:
+            value = cell(row, key)
+            if key in columns and value not in (None, ""):
+                prior_params[key] = str(value).strip()
+        if prior_params:
+            entry["prior_params"] = prior_params
+
+        params.append(entry)
+
+    if not params:
+        raise ParamsJsonError("params_for_id CSV has a header but no rows.")
+    return {"version": SCHEMA_VERSION, "defaults": {}, "params": params}
+
+
+def csv_to_json(data: bytes | str) -> dict:
+    """A params_for_id CSV as the canonical JSON structure.
+
+    CA's converter when CA is importable, because the conversion is CA's to
+    define and a column it adds should flow through without an edit here. When
+    it is not -- the state a freshly downloaded release starts in, since CA is
+    chosen at runtime and not bundled -- :func:`_csv_to_json_without_ca` does
+    the same mapping locally rather than the upload being refused.
+
+    CA's parse failures are translated into :class:`ParamsJsonError` -- it
+    raises bare ``ValueError``/pandas errors, and anything that is not a
     ``ParamsJsonError`` escapes ``parse_params_for_id`` as an HTTP 500 instead
     of a 422 naming the problem.
     """
+    text = data.decode("utf-8-sig", errors="replace") if isinstance(data, bytes) else data
+    convert = _ca_csv_converter()
+    if convert is None:
+        return load_doc(_csv_to_json_without_ca(text))
+    try:
+        doc = convert(text)
+    except Exception as exc:  # noqa: BLE001 - CA raises bare ValueError / pandas errors
+        raise ParamsJsonError(f"could not read params_for_id CSV: {exc}") from exc
+    return load_doc(doc)
+
+
+def _ca_csv_converter():
+    """CA's ``params_for_id_csv_to_json``, or None when CA cannot provide it."""
     try:
         from engine import _ensure_ca_on_path  # noqa: PLC0415
 
         _ensure_ca_on_path()
         from parsers.PrimitiveParsers import ObsAndParamDataParser  # noqa: PLC0415
 
-        convert = ObsAndParamDataParser.params_for_id_csv_to_json
-    except (ImportError, AttributeError) as exc:
-        raise ParamsJsonError(
-            "reading a params_for_id CSV requires circulatory_autogen, which is "
-            "not available. Set the circulatory_autogen directory in Settings "
-            "(gear icon), or upload the params_for_id JSON form instead."
-        ) from exc
-
-    text = data.decode("utf-8-sig", errors="replace") if isinstance(data, bytes) else data
-    try:
-        doc = convert(text)
-    except Exception as exc:  # noqa: BLE001 - CA raises bare ValueError / pandas errors
-        raise ParamsJsonError(f"could not read params_for_id CSV: {exc}") from exc
-    return load_doc(doc)
+        return ObsAndParamDataParser.params_for_id_csv_to_json
+    except (ImportError, AttributeError):
+        return None
 
 
 def entries_to_json(entries, defaults: dict | None = None) -> dict:
