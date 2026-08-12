@@ -7,6 +7,7 @@ here is refusal and provenance, not happy paths.
 """
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -26,14 +27,17 @@ def test_emulator_dir_matches_cas_own_rule(tmp_path):
     got = ca_run_history.emulator_dir(
         str(tmp_path), "3compartment", "/some/where/3compartment_obs_data.json"
     )
-    assert got.endswith("emulators/3compartment_3compartment_obs_data")
+    # By path components, not by a slash-joined string: os.path.join gives
+    # backslashes on Windows, and the rule being checked is about the names, not
+    # about which separator the platform writes them with.
+    assert Path(got).parts[-2:] == ("emulators", "3compartment_3compartment_obs_data")
 
 
 def test_emulator_dir_without_an_obs_path_still_resolves(tmp_path):
     import ca_run_history
 
     got = ca_run_history.emulator_dir(str(tmp_path), "model", None)
-    assert got.endswith("emulators/model_obs")
+    assert Path(got).parts[-2:] == ("emulators", "model_obs")
 
 
 def test_metadata_is_none_when_nothing_has_been_trained(tmp_path):
