@@ -410,6 +410,10 @@ NUM_BINS = 40
 #: ``<param_id_output_dir>/emulators/<file_prefix>_<obs_prefix>``.
 EMULATOR_SUBDIR = "emulators"
 EMULATOR_METADATA_FILE = "emulator_metadata.json"
+#: The held-out points CA keeps beside the emulator: the parameters, the
+#: simulator's answer at each and the emulator's. The statistics say how wrong
+#: the emulator is; only these say *where* (CA #333).
+EMULATOR_VALIDATION_FILE = "emulator_validation.npz"
 
 
 def emulator_dir(output_dir: str, file_prefix: str, obs_path: str | None) -> str:
@@ -423,6 +427,39 @@ def emulator_dir(output_dir: str, file_prefix: str, obs_path: str | None) -> str
     if obs_path:
         obs_prefix = os.path.splitext(os.path.basename(obs_path))[0]
     return os.path.join(output_dir, EMULATOR_SUBDIR, f"{file_prefix}_{obs_prefix}")
+
+
+def emulator_error_points(emu_dir: str) -> dict | None:
+    """The emulator's held-out points, as the Analysis view plots them.
+
+    ``{theta, y_true, y_pred, residual, feature_labels, param_entry_labels}`` in
+    real units, or None when the bundle predates CA writing them. The residual is
+    **prediction minus truth** -- CA's sign convention, kept rather than recomputed
+    so a positive residual means the same thing here as it does there.
+
+    These are the points a parity plot and a residual-against-parameter plot are
+    drawn from, and no statistic replaces them: R2 says how well the emulator does
+    over the whole design, and these say where it does not.
+    """
+    path = os.path.join(emu_dir, EMULATOR_VALIDATION_FILE)
+    if not os.path.isfile(path):
+        return None
+    try:
+        import numpy as np  # noqa: PLC0415
+
+        with np.load(path, allow_pickle=True) as data:
+            y_true = np.asarray(data["y_true"], dtype=float)
+            y_pred = np.asarray(data["y_pred"], dtype=float)
+            return {
+                "theta": np.asarray(data["theta"], dtype=float).tolist(),
+                "y_true": y_true.tolist(),
+                "y_pred": y_pred.tolist(),
+                "residual": (y_pred - y_true).tolist(),
+                "feature_labels": [str(v) for v in data["feature_labels"]],
+                "param_entry_labels": [str(v) for v in data["param_entry_labels"]],
+            }
+    except Exception:  # noqa: BLE001 - a damaged extra is not a damaged emulator
+        return None
 
 
 def emulator_metadata(emu_dir: str) -> dict | None:
@@ -458,6 +495,14 @@ def emulator_metadata(emu_dir: str) -> dict | None:
         "design": meta.get("design") or {},
         "provenance": meta.get("provenance") or {},
         "fingerprint": meta.get("fingerprint") or {},
+        # The rest of what the held-out set said, per feature. R2 alone cannot
+        # rank features -- a feature can score well and still read systematically
+        # high (bias), and RMSE in one feature's units says nothing against
+        # another's (nrmse can). Absent on a bundle trained before CA wrote them.
+        "feature_mae": meta.get("feature_mae") or [],
+        "feature_bias": meta.get("feature_bias") or [],
+        "feature_max_abs_error": meta.get("feature_max_abs_error") or [],
+        "feature_nrmse": meta.get("feature_nrmse") or [],
     }
 
 

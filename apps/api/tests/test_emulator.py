@@ -69,6 +69,38 @@ def test_metadata_surfaces_the_worst_r2(tmp_path):
     assert meta["dir"] == str(tmp_path)
 
 
+def test_held_out_points_are_read_for_the_analysis_view(tmp_path):
+    """The statistics say how wrong the emulator is; these say *where*.
+
+    Read verbatim from CA's file, including its residual sign convention, so a
+    positive residual means the same thing in the GUI as it does in CA.
+    """
+    import numpy as np
+
+    import ca_run_history
+
+    np.savez(
+        tmp_path / "emulator_validation.npz",
+        theta=np.array([[0.1], [0.9]]),
+        y_true=np.array([[1.0], [2.0]]),
+        y_pred=np.array([[1.5], [1.5]]),
+        feature_labels=np.array(["x (max a/x)"], dtype=object),
+        param_entry_labels=np.array(["a/p"], dtype=object),
+    )
+    points = ca_run_history.emulator_error_points(str(tmp_path))
+    assert points["feature_labels"] == ["x (max a/x)"]
+    # prediction minus truth: +0.5 where the emulator reads high, -0.5 where low.
+    assert points["residual"] == [[0.5], [-0.5]]
+
+
+def test_a_bundle_without_held_out_points_is_not_an_error(tmp_path):
+    """An emulator trained before CA saved them is still a usable emulator, and
+    the view must distinguish that from having no emulator at all."""
+    import ca_run_history
+
+    assert ca_run_history.emulator_error_points(str(tmp_path)) is None
+
+
 # ---------------------------------------------------------------------------
 # "Use the emulator" reaching circulatory_autogen
 # ---------------------------------------------------------------------------

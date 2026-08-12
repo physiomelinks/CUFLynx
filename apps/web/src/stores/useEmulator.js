@@ -29,6 +29,12 @@ export function useEmulator(options = {}) {
 
   /** CA's emulator_metadata.json for the trained emulator, or null. */
   const metadata = ref(null)
+  /**
+   * CA's held-out points for it: {theta, y_true, y_pred, residual, labels}.
+   * Null on an emulator trained before circulatory_autogen saved them -- which
+   * is why the Analysis view distinguishes "no emulator" from "no points".
+   */
+  const errorPoints = ref(null)
   const emulatorDir = ref('')
   /** The tick box: evaluate the emulator in SA / calibration / UQ. */
   const useEmulator = ref(false)
@@ -68,6 +74,7 @@ export function useEmulator(options = {}) {
       const info = await getEmulatorInfo(modelId, configOutputsDir)
       emulatorDir.value = info.emulator_dir ?? ''
       metadata.value = info.metadata ?? null
+      errorPoints.value = info.error_points ?? null
       if (!metadata.value) useEmulator.value = false
     } catch (e) {
       // Not an error state for the panel: no emulator is the normal start.
@@ -113,6 +120,10 @@ export function useEmulator(options = {}) {
         if (s.state === 'done' && s.metadata) {
           metadata.value = s.metadata
           emulatorDir.value = s.metadata.dir ?? emulatorDir.value
+          // The points are not on the job status (they are a file, and a large
+          // one); re-read them so the Analysis view has the new run's, not the
+          // previous emulator's.
+          await refresh(modelId, configOutputsDir)
         } else {
           // A failed training leaves whatever was there before: an older
           // emulator is still a real emulator, and silently forgetting it
@@ -146,6 +157,7 @@ export function useEmulator(options = {}) {
     error,
     running,
     metadata,
+    errorPoints,
     emulatorDir,
     features,
     worstR2,

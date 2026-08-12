@@ -2190,7 +2190,11 @@ def emulator_info(model_id: str, config_outputs_dir: str = "") -> dict:
     """
     emu_dir = _emulator_dir_for(model_id, {"config_outputs_dir": config_outputs_dir})
     metadata = ca_run_history.emulator_metadata(emu_dir)
-    return {"emulator_dir": emu_dir, "metadata": metadata}
+    # The held-out points travel with the metadata rather than behind a second
+    # route: they are what the Analysis view draws, and a caller that has one
+    # without the other can only show half the picture.
+    points = ca_run_history.emulator_error_points(emu_dir) if metadata else None
+    return {"emulator_dir": emu_dir, "metadata": metadata, "error_points": points}
 
 
 @app.post("/api/emulator/train")
