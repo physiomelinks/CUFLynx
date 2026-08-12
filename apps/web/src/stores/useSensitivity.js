@@ -48,10 +48,16 @@ export function useSensitivity(options = {}) {
 
   // Human-readable label summarising what produced a run, so saved runs are
   // distinguishable in the comparison selector.
-  function makeLabel(id, settings) {
+  // `resolved` is the gradient method the run actually used, which is not always
+  // what was asked for: the request may say 'auto' (circulatory_autogen's own
+  // default spelling), and 'auto' names no arm — a label reading "Local · auto"
+  // says nothing about what produced the numbers. The backend reports the
+  // resolved arm once the run finishes, so prefer it, falling back to the
+  // request for a run that never reported one.
+  function makeLabel(id, settings, resolved = null) {
     const s = settings ?? {}
     if (s.method === 'local') {
-      const parts = ['Local', (s.gradient_method ?? 'FD'), (s.nominal ?? 'current')]
+      const parts = ['Local', (resolved || s.gradient_method || 'FD'), (s.nominal ?? 'current')]
       if (s.run_calibration_first) parts.push('calib-first')
       return `#${id} ${parts.join(' · ')}`
     }
@@ -96,7 +102,7 @@ export function useSensitivity(options = {}) {
       ...results.value,
       {
         id,
-        label: makeLabel(id, pendingSettings),
+        label: makeLabel(id, pendingSettings, s.gradient_method),
         at: new Date().toLocaleTimeString(),
         method: pendingSettings?.method ?? null,
         settings: pendingSettings ? { ...pendingSettings } : null,
