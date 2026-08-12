@@ -38,7 +38,9 @@ const optionValues = reactive({})
 const isMcmc = computed(() => settings.method === 'mcmc')
 
 // CA's mcmc option descriptors (num_steps, num_walkers, …), never hardcoded.
-const mcmcOptions = computed(() => props.defaults.mcmc_options ?? [])
+// `uq_options` since CA renamed the mode; `mcmc_options` is the pre-rename field name,
+// kept so an API that has not been restarted yet still fills this form.
+const mcmcOptions = computed(() => props.defaults.uq_options ?? props.defaults.mcmc_options ?? [])
 
 // Seed each option's default when the schema arrives, keeping any user value.
 watch(

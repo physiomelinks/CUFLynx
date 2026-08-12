@@ -134,8 +134,8 @@ def build_user_inputs(
             "sample_type": sensitivity.get("sample_type") or "saltelli",
             "num_samples": _num(sensitivity.get("num_samples"), 256, int, "num_samples"),
         },
-        # --- UQ / mcmc ---
-        "mcmc_options": {
+        # --- UQ ---
+        "UQ_options": {
             "num_steps": _num(uq.get("num_steps"), 1000, int, "num_steps"),
             "num_walkers": _num(uq.get("num_walkers"), 64, int, "num_walkers"),
             "cost_type": uq.get("cost_type") or "gaussian_MLE",
@@ -144,7 +144,9 @@ def build_user_inputs(
         "do_simulation": bool(enabled.get("do_simulation", True)),
         "do_calibration": bool(enabled.get("do_calibration", False)),
         "do_sensitivity": bool(enabled.get("do_sensitivity", False)),
-        "do_mcmc": bool(enabled.get("do_mcmc", False)),
+        # do_mcmc/mcmc_options are the pre-rename spelling; a ui_settings.json saved by an
+        # older CUFLynx is still read (see _uq_block below), it is just no longer written.
+        "do_uq": bool(enabled.get("do_uq", enabled.get("do_mcmc", False))),
         "do_ia": bool(enabled.get("do_ia", False)),
     }
     return ui
@@ -198,6 +200,38 @@ def resolve_ca_src():
     return args.ca_src
 
 
+def _uq_block(cfg):
+    """The UQ option block from the yaml, under either spelling.
+
+    CA renamed do_mcmc/mcmc_options to do_uq/UQ_options once MCMC became one method of
+    uncertainty quantification rather than the whole of it. An export made before that
+    rename still runs: both spellings are read here, and only the new one is written.
+    """
+    return dict(cfg.get("UQ_options") or cfg.get("mcmc_options") or {})
+
+
+def _do_uq(cfg):
+    return bool(cfg.get("do_uq", cfg.get("do_mcmc", False)))
+
+
+def _uq_options_key():
+    """Whether this CA's init_from_dict reads UQ_options or the older mcmc_options.
+
+    Called rather than cached at import: circulatory_autogen is only importable once
+    --ca-src has been resolved onto sys.path.
+    """
+    try:
+        import inspect
+
+        from param_id.paramID import CVS0DParamID
+
+        if "UQ_options" in inspect.signature(CVS0DParamID.__init__).parameters:
+            return "UQ_options"
+    except Exception:
+        pass
+    return "mcmc_options"
+
+
 def build_inp_data_dict(cfg, output_dir):
     """Turn the exported yaml into a circulatory_autogen ``inp_data_dict`` with
     every path resolved to an absolute location inside this export folder. This is
@@ -224,7 +258,7 @@ def build_inp_data_dict(cfg, output_dir):
         "param_id_method": cfg.get("param_id_method", "genetic_algorithm"),
         "do_ad": bool(cfg.get("do_ad", False)),
         "optimiser_options": dict(cfg.get("optimiser_options", {})),
-        "mcmc_options": dict(cfg.get("mcmc_options", {})),
+        _uq_options_key(): dict(_uq_block(cfg)),
         "sa_options": {**cfg.get("sa_options", {}), "output_dir": output_dir},
         "DEBUG": False,
     }
@@ -385,18 +419,19 @@ def main():
         calibrated = param_id
 
     # ---- 4) Uncertainty quantification ------------------------------------
-    if cfg.get("do_mcmc") or cfg.get("do_ia"):
-        method = "mcmc" if cfg.get("do_mcmc") else "laplace"
+    if _do_uq(cfg) or cfg.get("do_ia"):
+        method = "mcmc" if _do_uq(cfg) else "laplace"
         print(f"=== uncertainty quantification ({method}) ===", flush=True)
         import param_id.paramID as paramID_module
         from param_id.paramID import CVS0DParamID, ensure_mle_cost_type_for_bayesian_inner
 
         # MCMC / Laplace need ln L = -cost, so use an MLE obs copy + MLE cost_type.
-        cost_type = inp["mcmc_options"].get("cost_type", "gaussian_MLE")
+        uq_key = _uq_options_key()
+        cost_type = inp[uq_key].get("cost_type", "gaussian_MLE")
         uq_inp = dict(inp)
         uq_inp["param_id_obs_path"] = mle_obs_data(inp["param_id_obs_path"], output_dir, cost_type)
         uq_inp["optimiser_options"] = {**inp["optimiser_options"], "cost_type": cost_type}
-        uq_inp["mcmc_options"] = {**inp["mcmc_options"], "cost_type": cost_type}
+        uq_inp[uq_key] = {**inp[uq_key], "cost_type": cost_type}
 
         # UQ needs a best fit: reuse the calibration above, else run one now.
         if best_param_vals is None:
@@ -419,7 +454,7 @@ def main():
             mcmc.set_best_param_vals(best_param_vals)
             ensure_mle_cost_type_for_bayesian_inner(paramID_module.mcmc_object, uq_inp)
             if hasattr(mcmc, "run_UQ"):
-                mcmc.run_UQ(uq_inp.get("mcmc_options"))
+                mcmc.run_UQ(uq_inp.get(uq_key))
             else:
                 mcmc.run_mcmc()
             if getattr(mcmc, "rank", 0) == 0:

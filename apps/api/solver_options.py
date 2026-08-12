@@ -390,15 +390,23 @@ _FALLBACK_ANALYSIS_OPTIONS = {
              "description": "Base sample count; total runs ~ num_samples*(2M+2) for Sobol."},
         ],
     },
-    "mcmc": {
-        "label": "MCMC posterior sampling",
-        "enable_flag": "do_mcmc",
-        "options_key": "mcmc_options",
+    "uq": {
+        "label": "Uncertainty quantification",
+        "enable_flag": "do_uq",
+        "options_key": "UQ_options",
         "options": [
+            {"name": "method", "type": "enum", "default": "mcmc", "required": False,
+             "choices": ["mcmc"],
+             "description": "Uncertainty-quantification method."},
+            {"name": "library", "type": "enum", "default": "emcee", "required": False,
+             "choices": ["emcee"],
+             "description": "Sampler backend for method=mcmc."},
             {"name": "num_steps", "type": "int", "default": 1000, "required": False,
              "description": "Number of MCMC steps per walker."},
             {"name": "num_walkers", "type": "int", "default": 64, "required": False,
              "description": "Number of ensemble walkers (defaults to 2 * number of parameters)."},
+            {"name": "burn_in", "type": "float", "default": 0.5, "required": False,
+             "description": "Samples discarded before the chain is used."},
         ],
     },
     "identifiability_analysis": {
@@ -1015,11 +1023,31 @@ def get_param_prior_types(refresh: bool = False) -> dict:
     return priors
 
 
+def _normalise_uq_mode_key(opts: dict) -> dict:
+    """Present CA's UQ block under 'uq' whichever CA is installed.
+
+    CA renamed the mode from 'mcmc' to 'uq' (with options_key UQ_options and
+    enable_flag do_uq) once MCMC became one method of uncertainty quantification
+    rather than the whole of it. CUFLynx keys off 'uq' internally, so an older CA
+    that still reports 'mcmc' is mapped here -- one place, rather than every panel
+    and runner having to know which CA it is talking to.
+    """
+    if "uq" in opts or "mcmc" not in opts:
+        return opts
+    legacy = dict(opts.pop("mcmc"))
+    legacy.setdefault("label", "Uncertainty quantification")
+    opts["uq"] = legacy
+    return opts
+
+
 def get_analysis_options(refresh: bool = False) -> dict:
     """Analysis-mode option blocks from CA's ``ANALYSIS_OPTIONS`` schema
-    (introspected, not hardcoded), keyed by mode ('sensitivity_analysis', 'mcmc',
+    (introspected, not hardcoded), keyed by mode ('sensitivity_analysis', 'uq',
     'identifiability_analysis'). Each value carries ``label``/``enable_flag``/
     ``options_key`` and the per-mode ``options`` descriptors the SA/UQ panels render.
+
+    An older CA reporting the pre-rename 'mcmc' mode is normalised to 'uq', so the
+    rest of CUFLynx has one spelling to know about.
 
     Degrades to :data:`_FALLBACK_ANALYSIS_OPTIONS` on an older CA that lacks the
     schema. Caches a successful introspection; returns the fallback uncached so a
@@ -1032,6 +1060,7 @@ def get_analysis_options(refresh: bool = False) -> dict:
         _introspect_analysis_options,
         {k: dict(v, options=[dict(o) for o in v["options"]]) for k, v in _FALLBACK_ANALYSIS_OPTIONS.items()},
     )
+    opts = _normalise_uq_mode_key(opts)
     if ok:
         _analysis_cache = opts
     return opts

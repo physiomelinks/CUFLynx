@@ -19,14 +19,42 @@ const stubs = {
   Button: ButtonStub,
 }
 
-// The MCMC settings come from CA's ANALYSIS_OPTIONS[mcmc] descriptors
+// The UQ settings come from CA's ANALYSIS_OPTIONS[uq] descriptors
 // (introspected, not hardcoded), so new CA options surface here automatically.
-describe('UQPanel MCMC options from CA schema', () => {
+describe('UQPanel UQ options from CA schema', () => {
   const MCMC_OPTIONS = [
     { name: 'num_steps', type: 'int', default: 1000 },
     { name: 'num_walkers', type: 'int', default: 64 },
     { name: 'thin', type: 'int', default: 5 }, // a future CA option
   ]
+
+  it('renders the options CA now sends under uq_options', async () => {
+    // CA renamed the mode from 'mcmc' to 'uq', so /api/uq/defaults now carries them as
+    // `uq_options`. `mcmc_options` is still read (below) so a panel talking to an API that
+    // has not been restarted yet keeps rendering its form.
+    const wrapper = mount(UQPanel, {
+      props: { canRun: true, defaults: { method: 'mcmc', uq_options: MCMC_OPTIONS } },
+      global: { stubs },
+    })
+    expect(wrapper.find('[data-testid="mcmc-opt-num_steps"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="mcmc-opt-thin"]').exists()).toBe(true)
+  })
+
+  it('prefers uq_options when both spellings are present', async () => {
+    const wrapper = mount(UQPanel, {
+      props: {
+        canRun: true,
+        defaults: {
+          method: 'mcmc',
+          uq_options: [{ name: 'burn_in', type: 'float', default: 0.5 }],
+          mcmc_options: MCMC_OPTIONS,
+        },
+      },
+      global: { stubs },
+    })
+    expect(wrapper.find('[data-testid="mcmc-opt-burn_in"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="mcmc-opt-thin"]').exists()).toBe(false)
+  })
 
   it('renders the schema options and seeds their defaults', async () => {
     const wrapper = mount(UQPanel, {
