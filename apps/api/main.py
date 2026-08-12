@@ -22,6 +22,7 @@ import json
 import os
 import shutil
 import tempfile
+import time
 import uuid
 from pathlib import Path
 
@@ -104,6 +105,44 @@ app.add_middleware(
 
 UPLOAD_DIR = Path(tempfile.gettempdir()) / "cuflynx_uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+# Uploads outlive the session that made them on purpose: _get_model() re-derives
+# a model from its .cellml after a --reload, and a calib_/sa_/uq_ run dir is read
+# back for results. Nothing ever removed them, so a long-lived server accumulated
+# every model, obs_data and run directory it had ever been given, in a temp dir
+# the OS only clears at boot. Age them out at startup instead.
+UPLOAD_TTL_DAYS = float(os.environ.get("CUFLYNX_UPLOAD_TTL_DAYS", "7"))
+
+
+def prune_upload_dir(directory: Path = UPLOAD_DIR, ttl_days: float = UPLOAD_TTL_DAYS) -> int:
+    """Delete uploads and run directories untouched for *ttl_days*.
+
+    Returns the number of entries removed. A ttl of 0 or less disables the
+    prune. Never raises: a temp dir we cannot tidy must not stop the server.
+    """
+    if ttl_days <= 0:
+        return 0
+    cutoff = time.time() - ttl_days * 86400
+    removed = 0
+    try:
+        entries = list(directory.iterdir())
+    except OSError:
+        return 0
+    for entry in entries:
+        try:
+            if entry.stat().st_mtime >= cutoff:
+                continue
+            if entry.is_dir():
+                shutil.rmtree(entry, ignore_errors=True)
+            else:
+                entry.unlink(missing_ok=True)
+            removed += 1
+        except OSError:
+            continue
+    return removed
+
+
+prune_upload_dir()
 
 
 class _ModelRecord:
