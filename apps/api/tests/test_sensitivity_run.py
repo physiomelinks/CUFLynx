@@ -110,6 +110,11 @@ def test_sensitivity_run_launches_and_completes(client, tmp_path):
     # The local-SA nominal point is surfaced so the Analysis panel can show it.
     assert status["nominal"] == [1.5, 2.5e-8]
     assert "sliders" in status["nominal_source"]
+    # And the gradient arm the run *resolved* to. The request may say "auto"
+    # (circulatory_autogen's own default spelling), which names no arm -- so a
+    # label built from the request reads "Local - auto" and says nothing about
+    # what produced the numbers.
+    assert status["gradient_method"] == "FD"
 
 
 def test_sensitivity_status_404_for_unknown_job(client):

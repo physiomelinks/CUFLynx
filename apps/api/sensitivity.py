@@ -48,6 +48,11 @@ class SensitivityJob:
         # surfaced so the Analysis panel can show what values it was taken about.
         self.nominal: list | None = None
         self.nominal_source: str | None = None
+        # The gradient source the run *resolved* to. The request may say "auto"
+        # (CA's own default spelling), which names no arm -- so a label built from
+        # the request reads "Local - auto", telling the user nothing about what
+        # actually produced the numbers.
+        self.gradient_method: str | None = None
         self.error: str | None = None
         # Set when the run finished but its process failed on the way out.
         self.warning: str | None = None
@@ -170,6 +175,7 @@ class SensitivityManager:
                     job.output_names = data["output_names"]
                     job.nominal = meta.get("nominal")
                     job.nominal_source = meta.get("nominal_source")
+                    job.gradient_method = meta.get("gradient_method")
                     job.state = "done"
                     if code != 0:
                         job.warning = teardown_warning(code, job.lines)
@@ -196,6 +202,7 @@ class SensitivityManager:
                 "output_names": job.output_names,
                 "nominal": job.nominal,
                 "nominal_source": job.nominal_source,
+                "gradient_method": job.gradient_method,
                 "error": job.error,
                 "warning": job.warning,
             }
