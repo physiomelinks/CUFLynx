@@ -52,7 +52,7 @@ def test_enablement_flags_default_and_override():
     assert ui["do_simulation"] is True  # default on
     assert ui["do_sensitivity"] is True
     assert ui["do_calibration"] is False  # default off
-    assert ui["do_mcmc"] is False and ui["do_ia"] is False
+    assert ui["do_uq"] is False and ui["do_ia"] is False
 
 
 def test_do_ad_false_for_fd():
@@ -65,8 +65,12 @@ def test_pipeline_script_is_valid_python_and_gates_each_stage():
     ast.parse(src)  # valid python
     # loads the dated yaml, and gates every stage on a do_* flag
     assert "user_inputs_*.yaml" in src
-    for flag in ("do_simulation", "do_sensitivity", "do_calibration", "do_mcmc"):
+    for flag in ("do_simulation", "do_sensitivity", "do_calibration"):
         assert f'cfg.get("{flag}")' in src
+    # UQ is gated through a helper because it accepts both the pre-rename do_mcmc and the
+    # current do_uq, so an export made by an older CUFLynx still runs.
+    assert "_do_uq(cfg)" in src
+    assert 'cfg.get("do_uq", cfg.get("do_mcmc", False))' in src
     # drives CA via the tutorial's init_from_dict idiom (not a custom builder)
     assert "init_from_dict" in src
     assert "build_inp_data_dict" in src
@@ -225,8 +229,8 @@ NULLABLE_NUMERIC_SETTINGS = [
     ("calibration", "cost_convergence", ("optimiser_options", "cost_convergence"), 0.0001),
     ("calibration", "max_patience", ("optimiser_options", "max_patience"), 10),
     ("sensitivity", "num_samples", ("sa_options", "num_samples"), 256),
-    ("uq", "num_steps", ("mcmc_options", "num_steps"), 1000),
-    ("uq", "num_walkers", ("mcmc_options", "num_walkers"), 64),
+    ("uq", "num_steps", ("UQ_options", "num_steps"), 1000),
+    ("uq", "num_walkers", ("UQ_options", "num_walkers"), 64),
 ]
 
 
@@ -254,7 +258,7 @@ def test_null_settings_still_yaml_serialisable():
     # Nulls must not leak through into the yaml CA reads back.
     assert ui["param_id_method"] == "genetic_algorithm"
     assert ui["sa_options"]["method"] == "sobol"
-    assert ui["mcmc_options"]["cost_type"] == "gaussian_MLE"
+    assert ui["UQ_options"]["cost_type"] == "gaussian_MLE"
     yaml.safe_dump(ui)
 
 
@@ -312,7 +316,7 @@ def test_export_route_accepts_null_option_values(client, tmp_path):
     name = [f for f in os.listdir(export_dir) if f.startswith("user_inputs_")][0]
     ui = yaml.safe_load(open(os.path.join(export_dir, name)))
     assert ui["optimiser_options"]["num_calls_to_function"] == 100
-    assert ui["mcmc_options"]["num_walkers"] == 64
+    assert ui["UQ_options"]["num_walkers"] == 64
 
 
 def test_export_route_reports_a_malformed_number_as_422(client, tmp_path):
@@ -355,9 +359,9 @@ def test_export_accepts_every_default_from_the_real_ca_schema(
             "sim_time": 2.0,
             "calibration": calibration,
             "sensitivity": opts(sa_d.get("options", [])),
-            "uq": opts(uq_d.get("mcmc_options", [])),
+            "uq": opts(uq_d.get("uq_options", [])),
             "enabled": {"do_simulation": True, "do_calibration": True,
-                        "do_sensitivity": True, "do_mcmc": True},
+                        "do_sensitivity": True, "do_uq": True},
             "config_outputs_dir": str(tmp_path),
         })
         assert resp.status_code == 200, (

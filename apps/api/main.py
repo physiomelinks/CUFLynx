@@ -2136,12 +2136,17 @@ UQ_DEFAULTS = {
 
 @app.get("/api/uq/defaults")
 def uq_defaults() -> dict:
-    # `mcmc_options` / `ia_options` are CA's descriptors (introspected from
+    # `uq_options` / `ia_options` are CA's descriptors (introspected from
     # ANALYSIS_OPTIONS, never hardcoded) so the UQ settings forms track CA.
+    # get_analysis_options normalises CA's pre-rename 'mcmc' mode key to 'uq'.
     ao = get_analysis_options()
+    uq_options = ao.get("uq", {}).get("options", [])
     return {
         **UQ_DEFAULTS,
-        "mcmc_options": ao.get("mcmc", {}).get("options", []),
+        "uq_options": uq_options,
+        # The pre-rename field name, still emitted so a browser holding a cached
+        # older bundle keeps rendering its settings form.
+        "mcmc_options": uq_options,
         "ia_options": ao.get("identifiability_analysis", {}).get("options", []),
     }
 

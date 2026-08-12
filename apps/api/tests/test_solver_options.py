@@ -553,8 +553,9 @@ def test_analysis_options_from_ca_schema(monkeypatch):
             "label": "SA", "enable_flag": "do_sensitivity", "options_key": "sa_options",
             "options": [{"name": "num_samples", "type": "int", "default": None, "required": True}],
         },
-        "mcmc": {
-            "label": "MCMC", "enable_flag": "do_mcmc", "options_key": "mcmc_options",
+        "uq": {
+            "label": "Uncertainty quantification", "enable_flag": "do_uq",
+            "options_key": "UQ_options",
             "options": [{"name": "num_steps", "type": "int", "default": 5000}],
         },
     }
@@ -564,11 +565,30 @@ def test_analysis_options_from_ca_schema(monkeypatch):
     so.reset_cache()
 
     ao = so.get_analysis_options(refresh=True)
-    assert set(ao) == {"sensitivity_analysis", "mcmc"}
-    assert ao["mcmc"]["options_key"] == "mcmc_options"
-    assert so.analysis_mode_options("mcmc")[0]["name"] == "num_steps"
+    assert set(ao) == {"sensitivity_analysis", "uq"}
+    assert ao["uq"]["options_key"] == "UQ_options"
+    assert so.analysis_mode_options("uq")[0]["name"] == "num_steps"
     # num_steps default flows through untouched from CA.
-    assert so.analysis_mode_options("mcmc")[0]["default"] == 5000
+    assert so.analysis_mode_options("uq")[0]["default"] == 5000
+
+
+def test_a_pre_rename_ca_mcmc_mode_is_normalised_to_uq(monkeypatch):
+    """CA renamed the mode from 'mcmc' to 'uq' once MCMC became one method of uncertainty
+    quantification rather than the whole of it. CUFLynx keys off 'uq' internally, so a CA that
+    still reports 'mcmc' is mapped in one place rather than every panel and runner having to
+    know which CA it is talking to."""
+    monkeypatch.setattr(so, "_introspect_analysis_options",
+                        lambda: {"mcmc": {
+                            "label": "MCMC posterior sampling", "enable_flag": "do_mcmc",
+                            "options_key": "mcmc_options",
+                            "options": [{"name": "num_steps", "type": "int", "default": 42}]}})
+    so.reset_cache()
+
+    ao = so.get_analysis_options(refresh=True)
+    assert "uq" in ao and "mcmc" not in ao, "the legacy key should be presented as 'uq'"
+    # Its own options_key/enable_flag are preserved: they are what that CA actually reads.
+    assert ao["uq"]["options_key"] == "mcmc_options"
+    assert so.analysis_mode_options("uq")[0]["default"] == 42
 
 
 def test_analysis_options_fall_back_for_older_ca(monkeypatch):
@@ -580,7 +600,7 @@ def test_analysis_options_fall_back_for_older_ca(monkeypatch):
     monkeypatch.setattr(so, "_introspect_analysis_options", _boom)
     so.reset_cache()
     ao = so.get_analysis_options(refresh=True)
-    assert {"sensitivity_analysis", "mcmc", "identifiability_analysis"} <= set(ao)
+    assert {"sensitivity_analysis", "uq", "identifiability_analysis"} <= set(ao)
     names = [o["name"] for o in ao["sensitivity_analysis"]["options"]]
     assert "num_samples" in names and "sample_type" in names
 

@@ -48,13 +48,13 @@ def test_sensitivity_seed_omitted_when_none():
 
 
 # ---------------------------------------------------------------------------
-# UQ -> mcmc_options['seed'] and optimiser_options['seed'].
+# UQ -> UQ_options['seed'] and optimiser_options['seed'].
 # ---------------------------------------------------------------------------
 def test_uq_seed_forwarded_to_mcmc_and_optimiser_options():
-    assert uq_runner._mcmc_options({}, seed=99)["seed"] == 99
+    assert uq_runner._uq_options({}, seed=99)["seed"] == 99
     assert uq_runner._optimiser_options({}, seed=99)["seed"] == 99
 
 
 def test_uq_seed_omitted_when_none():
-    assert "seed" not in uq_runner._mcmc_options({}, seed=None)
+    assert "seed" not in uq_runner._uq_options({}, seed=None)
     assert "seed" not in uq_runner._optimiser_options({}, seed=None)

@@ -4,7 +4,7 @@ App.vue attaches ``python_path`` and ``config_outputs_dir`` to every analysis
 run, and folds the calibration panel's GA settings into the sensitivity
 settings when ``run_calibration_first`` is set (``onRunSensitivity`` /
 ``onRunUQ``). The runners forward any non-reserved settings key into CA's
-``sa_options`` / ``mcmc_options`` — deliberately, so new CA options flow
+``sa_options`` / ``UQ_options`` — deliberately, so new CA options flow
 through without a runner change — which means every CUFLynx-level key the UI
 attaches must be in the reserved sets or it leaks into CA's options. The
 earlier filter tests used hand-built settings that never included these keys,
@@ -53,7 +53,7 @@ def test_sa_options_exclude_every_key_the_ui_attaches():
     assert sa["num_samples"] == 128
 
 
-def test_mcmc_options_exclude_every_key_the_ui_attaches():
+def test_uq_options_exclude_every_key_the_ui_attaches():
     settings = {
         "method": "mcmc",
         "num_steps": 200,
@@ -63,9 +63,9 @@ def test_mcmc_options_exclude_every_key_the_ui_attaches():
         "dt": 0.01,
         "num_cores": 1,
     }
-    opts = uq_runner._mcmc_options(settings)
+    opts = uq_runner._uq_options(settings)
     for key in ("config_outputs_dir", "python_path"):
-        assert key not in opts, f"{key} leaked into CA's mcmc_options"
+        assert key not in opts, f"{key} leaked into CA's UQ_options"
     assert opts["num_steps"] == 200
-    # cost_convergence stays: for MCMC it is a genuine mcmc_options value.
+    # cost_convergence stays: for MCMC it is a genuine UQ_options value.
     assert "cost_convergence" in opts

@@ -33,10 +33,10 @@ FAIL_MARKER = "__UQ_FAILED__"
 META_MARKER = "__UQ_META__ "
 
 # CUFLynx-level / calibration settings that must NOT be forwarded into CA's
-# mcmc_options (the rest are the CA mcmc option values the UI collected).
+# UQ_options (the rest are the CA UQ option values the UI collected).
 # config_outputs_dir is attached to every run by the UI (App.vue) alongside
 # python_path; cost_convergence is NOT reserved here because for MCMC it is a
-# genuine mcmc_options value (_mcmc_options sets it explicitly).
+# genuine UQ_options value (_uq_options sets it explicitly).
 _UQ_RESERVED = {
     "method", "run_calibration_first", "num_cores", "dt", "DEBUG", "solver",
     "solver_info", "python_path", "sim_time", "pre_time", "generated_model_format",
@@ -69,10 +69,10 @@ def _optimiser_options(settings: dict, seed=None) -> dict:
     return opts
 
 
-def _mcmc_options(settings: dict, seed=None) -> dict:
-    """CA ``mcmc_options`` from the UI settings. Any additional CA mcmc option the UI
+def _uq_options(settings: dict, seed=None) -> dict:
+    """CA ``UQ_options`` from the UI settings. Any additional CA UQ option the UI
     collected from CA's ANALYSIS_OPTIONS schema is forwarded (forward-compatible).
-    A global random ``seed`` is forwarded under ``mcmc_options['seed']``; ``None``
+    A global random ``seed`` is forwarded under ``UQ_options['seed']``; ``None``
     omits it."""
     opts = {
         "num_steps": int(settings.get("num_steps") or 1000),
@@ -124,7 +124,8 @@ def _mle_obs_path(config, cost_type: str) -> str:
 
 def _make_param_id(config, settings, obs_path, *, mcmc, options_key, options):
     """Construct a CVS0DParamID (no run). ``options_key`` is 'optimiser_options' or
-    'mcmc_options'; ``mcmc`` toggles mcmc_instead."""
+    the UQ options kwarg this CA takes (see uq_options_kwarg); ``mcmc`` toggles
+    mcmc_instead."""
     from param_id.paramID import CVS0DParamID  # noqa: E402
 
     kwargs = dict(
@@ -157,6 +158,26 @@ def _has_run_uq(param_id) -> bool:
     ``mcmc_instead=True``, so the caller must keep building a second one.
     """
     return callable(getattr(param_id, "run_UQ", None))
+
+
+def uq_options_kwarg() -> str:
+    """Whether this CA takes ``UQ_options=`` or the older ``mcmc_options=``.
+
+    CA renamed the argument once MCMC became one method of uncertainty
+    quantification rather than the whole of it. It still accepts the old name as a
+    deprecated alias that warns on every construction, so detecting the supported
+    spelling keeps a current CA quiet without breaking an older one.
+    """
+    try:
+        import inspect
+
+        from param_id.paramID import CVS0DParamID
+
+        if "UQ_options" in inspect.signature(CVS0DParamID.__init__).parameters:
+            return "UQ_options"
+    except Exception:
+        pass
+    return "mcmc_options"
 
 
 def _flat_param_names(param_id):
@@ -220,13 +241,15 @@ def run(config: dict) -> dict:
     if seed is not None:
         np.random.seed(int(seed))
     optimiser_options = _optimiser_options(settings, seed)
-    mcmc_options = _mcmc_options(settings, seed)
+    uq_options = _uq_options(settings, seed)
+    uq_key = uq_options_kwarg()
     # Minimal inp_data_dict so ensure_mle_cost_type_for_bayesian_inner can pick the
     # MLE cost from our option dicts (required for ln L = -cost in MCMC / Laplace).
+    # Keyed by the spelling this CA reads, so the cost_type is found either way.
     inp = {
         "DEBUG": bool(settings.get("DEBUG", False)),
         "optimiser_options": optimiser_options,
-        "mcmc_options": mcmc_options,
+        uq_key: uq_options,
     }
 
     run_calib = bool(settings.get("run_calibration_first", False))
@@ -259,14 +282,14 @@ def run(config: dict) -> dict:
         # only way in was mcmc_instead=True at construction, which forced a
         # second CVS0DParamID and a second compile (CUFLynx #216/#217).
         mcmc = ga if (run_calib and _has_run_uq(ga)) else _make_param_id(
-            config, settings, obs_path, mcmc=True, options_key="mcmc_options",
-            options=mcmc_options,
+            config, settings, obs_path, mcmc=True, options_key=uq_key,
+            options=uq_options,
         )
         best = best if run_calib else _best_from_reuse(mcmc, reuse_best)
         mcmc.set_best_param_vals(best)
         ensure_mle_cost_type_for_bayesian_inner(pid.mcmc_object, inp)
         if _has_run_uq(mcmc):
-            mcmc.run_UQ(mcmc_options)
+            mcmc.run_UQ(uq_options)
         else:
             mcmc.run_mcmc()  # a CA predating run_UQ
         rank = getattr(mcmc, "rank", 0)
