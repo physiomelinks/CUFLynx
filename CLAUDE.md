@@ -48,7 +48,7 @@ so developers can point at a local checkout. (See issue #18.)
 
 ## Key files
 
-- `apps/web/src/App.vue` — main UI (tabs: Parameters · Sensitivity · Calibration · UQ; center: Output plots · Progress · Analysis)
+- `apps/web/src/App.vue` — main UI (tabs: Parameters · Emulator · Sensitivity · Calibration · UQ; center: Output plots · Progress · Analysis)
 - `apps/api/main.py` — FastAPI app: `/api/*` routes + serves the built frontend
 - `apps/api/engine.py` — live simulation; delegates to `sim_worker.py` /
   `sim_worker_runner.py` when an interpreter is chosen (#167), else runs in-process
@@ -70,6 +70,47 @@ so developers can point at a local checkout. (See issue #18.)
   **Every gradient source is computed by CA**, through the one backend-agnostic accessor `OpencorParamID.get_observable_sensitivities(param_vals, gradient_method, fd_rel_step)` — FD (`fd_backend`), AD (`casadi_backend`) and FSA (`fsa_backend`) alike, so the runner builds the param-id engine for all three. CUFLynx reimplemented the FD loop and the CasADi jacobian until #210's follow-up; that is why it had to mirror CA's flatten/fold contract for grouped and modifier rows, and why CA #390 tightening that contract broke the AD path. **Do not reimplement a gradient here.** What `local_sensitivity.py` legitimately owns is only what CA does not answer: the nominal point, the *signed* relative coefficient (CA's is unsigned and 0.0 on a degenerate denominator), the `var^{e,s} [op]` labels shared with the Sobol heatmap, and the `CVODES`/`AUTO` alias resolution. Two traps: read the nominal features **before** the sensitivities (CA's CasADi arm leaves the helper in AD mode, so a later numeric evaluation returns an `SX`), and pass `rel_step` explicitly as `fd_rel_step` (CUFLynx defaults to 1e-2, CA to 1e-3 — up to 48% apart).
 - `apps/api/calibration.py` / `calibration_runner.py` — GA parameter identification; `CalibrationPanel.vue` (also emits live settings reused by local-sensitivity "run calibration first").
 - `apps/api/uq.py` / `uq_runner.py` — uncertainty quantification; `UQPanel.vue`.
+- `apps/api/emulator.py` / `emulator_runner.py` — trains a **surrogate** of the
+  model's scalar observable features with CA's `EmulatorTrainer` (CA #333);
+  `EmulatorPanel.vue`, tab between Parameters and Sensitivity. Two independent
+  controls, because emulation has two steps: **Train** fits one against the
+  solver, and the **use** tick box (`useEmulator` store) makes sensitivity,
+  calibration and UQ evaluate it instead. `solver:` keeps meaning the truth
+  solver throughout, so an emulator run stays comparable with what it approximates.
+
+  **The bundle outlives the session**, so nothing about it is remembered in
+  memory: `ca_run_history.emulator_dir()` derives the location from the outputs
+  directory by CA's own rule (`<outputs>/emulators/<prefix>_<obs_prefix>`) on
+  *both* sides, and `emulator_metadata()` reads CA's `emulator_metadata.json`.
+  One consequence worth keeping: an emulator trained by CA's own script into the
+  same outputs directory is usable from the GUI, and nothing has to be re-pointed.
+
+  `emulator_config.engine_kwargs()` is the one place "use the emulator" becomes
+  CA engine kwargs; **all three** analysis runners call it (sensitivity twice
+  more, for its local arm and its calibrate-first engine) so a study cannot be
+  calibrated on the surrogate and analysed on the solver without saying so. It
+  returns `{}` rather than `use_emulator=False` when off, because a CA that
+  predates emulators does not accept the keyword at all.
+
+  The panel form is built from CA's `ANALYSIS_OPTIONS['emulation']` — the only
+  mode carrying a `use_flag` as well as an `enable_flag`, now passed through
+  `solver_options._introspect_analysis_options`. `models` is a *runtime* registry
+  (`solver_options.emulator_models()` → CA's `emulator_model_names()`), so it is
+  a menu when the backend could read it and free text when it could not; an empty
+  menu would read as "there are none".
+
+  **Live comparison on the Parameters tab.** The sliders keep running the real
+  solver; with the tick box on, the emulator's prediction of each scalar feature
+  is drawn as a *third* reference line (dotted) beside the measurement (dashed)
+  and the model's own feature (solid), in that feature's colour — so dragging a
+  parameter shows where the surrogate stops agreeing with the model. That
+  prediction is a **fifth sim-worker verb** (`emulator_predict`), not a fifth
+  process: it answers during a drag, which is the live tier, and loading the
+  bundle needs the autoemulate/torch CUFLynx does not bundle — so it has to run
+  in the interpreter chosen in Settings. With no worker configured it says so
+  rather than failing inside a joblib unpickle. `plot.js` matches predictions to
+  data_items **by CA's feature label**, including the `[exp e, sub s]` form CA
+  uses when a label repeats, never by position.
 
 **Only circulatory_autogen writes to the user's outputs directory** (#210). A run
 leaves CA's own files there and nothing else — no CUFLynx-authored results

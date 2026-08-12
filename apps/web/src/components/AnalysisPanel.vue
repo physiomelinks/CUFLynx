@@ -32,9 +32,108 @@ const props = defineProps({
   // saved runs (e.g. global Sobol vs local FD) without overwriting.
   savedResults: { type: Array, default: () => [] },
   selectedResultId: { type: [Number, String], default: null },
+  // Emulator (CA #333): the trained emulator's metadata and the held-out points
+  // it was scored on. Both come from circulatory_autogen's own files -- the
+  // statistics say how wrong the emulator is, the points say where.
+  emulatorMetadata: { type: Object, default: null },
+  emulatorErrorPoints: { type: Object, default: null },
+  emulatorInUse: { type: Boolean, default: false },
 })
 
 const emit = defineEmits(['select-result', 'remove-result', 'clear-results'])
+
+// ---- Emulator error --------------------------------------------------------
+// Everything here is read from CA's emulator_metadata.json / emulator_validation.npz;
+// nothing is recomputed. R2 alone cannot rank features -- one can score well and
+// still read systematically high -- so the table carries the statistics that can.
+const hasEmulator = computed(() => !!props.emulatorMetadata)
+
+const emulatorRows = computed(() => {
+  const meta = props.emulatorMetadata
+  if (!meta) return []
+  return (meta.feature_labels ?? []).map((label, i) => ({
+    label,
+    r2: meta.feature_r2?.[i] ?? null,
+    rmse: meta.feature_rmse?.[i] ?? null,
+    mae: meta.feature_mae?.[i] ?? null,
+    bias: meta.feature_bias?.[i] ?? null,
+    maxAbs: meta.feature_max_abs_error?.[i] ?? null,
+    nrmse: meta.feature_nrmse?.[i] ?? null,
+  }))
+})
+
+/** Which feature the parity/residual plots show. */
+const emulatorFeature = ref(0)
+watch(emulatorRows, (rows) => {
+  if (emulatorFeature.value >= rows.length) emulatorFeature.value = 0
+})
+
+const emulatorFeatureOptions = computed(() =>
+  emulatorRows.value.map((r, i) => ({ label: r.label, value: i })),
+)
+
+function fmtStat(value, digits = 4) {
+  if (value == null || Number.isNaN(Number(value))) return '—'
+  const n = Number(value)
+  // Small numbers in a table of R2s are unreadable in fixed notation.
+  if (n !== 0 && Math.abs(n) < 1e-3) return n.toExponential(1)
+  return n.toFixed(digits)
+}
+
+/**
+ * Parity plot geometry: predicted against true, as percentages of the plot box,
+ * with the 1:1 line the eye reads them against. Both axes share one range —
+ * a parity plot with independent axes makes any emulator look perfect.
+ */
+const parityPoints = computed(() => {
+  const pts = props.emulatorErrorPoints
+  const col = emulatorFeature.value
+  if (!pts?.y_true?.length) return null
+  const truth = pts.y_true.map((row) => Number(row[col]))
+  const pred = pts.y_pred.map((row) => Number(row[col]))
+  const lo = Math.min(...truth, ...pred)
+  const hi = Math.max(...truth, ...pred)
+  const span = hi - lo || 1
+  return {
+    lo,
+    hi,
+    points: truth.map((t, i) => ({
+      x: ((t - lo) / span) * 100,
+      y: ((pred[i] - lo) / span) * 100,
+      truth: t,
+      pred: pred[i],
+    })),
+  }
+})
+
+/**
+ * Residual against each parameter: where in the space the emulator goes wrong,
+ * which is the question a single score cannot answer.
+ */
+const residualByParam = computed(() => {
+  const pts = props.emulatorErrorPoints
+  const col = emulatorFeature.value
+  if (!pts?.residual?.length) return []
+  const residuals = pts.residual.map((row) => Number(row[col]))
+  const worst = Math.max(...residuals.map((r) => Math.abs(r))) || 1
+  return (pts.param_entry_labels ?? []).map((label, p) => {
+    const values = pts.theta.map((row) => Number(row[p]))
+    const lo = Math.min(...values)
+    const hi = Math.max(...values)
+    const span = hi - lo || 1
+    return {
+      label,
+      worst,
+      points: values.map((v, i) => ({
+        x: ((v - lo) / span) * 100,
+        // 50% is zero residual; the axis spans -worst..+worst.
+        y: 50 - (residuals[i] / worst) * 50,
+        residual: residuals[i],
+        value: v,
+      })),
+    }
+  })
+})
 
 // ---- Sensitivity heatmap ---------------------------------------------------
 // Sobol runs carry S1/ST; a local (finite-difference) run carries a single
@@ -561,6 +660,108 @@ const uqMethodLabel = computed(() =>
       </template>
     </section>
 
+    <!-- Emulator error ------------------------------------------------------>
+    <section class="analysis-section">
+      <h2>
+        Emulator error
+        <span v-if="emulatorInUse" class="uq-method"> · in use for analyses</span>
+      </h2>
+      <p v-if="!hasEmulator" class="empty-hint">
+        Train an emulator in the Emulator tab to see how well it reproduces the
+        model.
+      </p>
+      <template v-else>
+        <table class="emu-error-table" data-testid="emulator-error-table">
+          <thead>
+            <tr>
+              <th>Feature</th><th>R²</th><th>nRMSE</th><th>RMSE</th>
+              <th>MAE</th><th>Bias</th><th>Max |err|</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="(row, i) in emulatorRows" :key="row.label">
+              <td class="emu-error-label" v-html="renderMath(row.label)" />
+              <td>{{ fmtStat(row.r2) }}</td>
+              <td>{{ fmtStat(row.nrmse) }}</td>
+              <td>{{ fmtStat(row.rmse, 3) }}</td>
+              <td>{{ fmtStat(row.mae, 3) }}</td>
+              <td>{{ fmtStat(row.bias, 3) }}</td>
+              <td>{{ fmtStat(row.maxAbs, 3) }}</td>
+            </tr>
+          </tbody>
+        </table>
+        <p class="emu-error-note">
+          Measured on held-out points the emulator was never fitted to. Bias is
+          signed (prediction − truth), so a systematically high emulator is
+          distinguishable from a merely noisy one; nRMSE is relative to each
+          feature's own spread, so features in different units can be compared.
+        </p>
+
+        <p v-if="!emulatorErrorPoints" class="empty-hint" data-testid="emu-no-points">
+          This emulator was trained before circulatory_autogen saved its held-out
+          points, so only the summary above is available. Retrain it to see where
+          the error falls.
+        </p>
+        <template v-else>
+          <label class="field emu-feature-pick">
+            <span>Feature</span>
+            <!-- A native select: this panel mounts without the PrimeVue plugin
+                 in tests, and one dropdown is not worth changing that. -->
+            <select
+              v-model="emulatorFeature"
+              class="emu-feature-select"
+              data-testid="emu-feature-select"
+            >
+              <option v-for="o in emulatorFeatureOptions" :key="o.value" :value="o.value">
+                {{ o.label }}
+              </option>
+            </select>
+          </label>
+
+          <section class="error-chart">
+            <h3>Predicted vs simulated</h3>
+            <div class="parity-box" data-testid="emu-parity">
+              <span class="parity-line" />
+              <span
+                v-for="(pt, i) in parityPoints?.points ?? []"
+                :key="i"
+                class="parity-point"
+                :style="{ left: pt.x + '%', bottom: pt.y + '%' }"
+                :title="`simulated ${pt.truth}, emulated ${pt.pred}`"
+              />
+            </div>
+            <small class="emu-error-note">
+              Points on the diagonal are exact. Both axes share one range — a
+              parity plot with independent axes makes any emulator look perfect.
+            </small>
+          </section>
+
+          <section
+            v-for="param in residualByParam"
+            :key="param.label"
+            class="error-chart"
+          >
+            <h3>Residual vs {{ param.label }}</h3>
+            <div class="residual-box" :data-testid="'emu-residual'">
+              <span class="residual-zero" />
+              <span
+                v-for="(pt, i) in param.points"
+                :key="i"
+                class="parity-point"
+                :style="{ left: pt.x + '%', top: pt.y + '%' }"
+                :title="`${param.label} = ${pt.value}, residual ${pt.residual}`"
+              />
+            </div>
+            <small class="emu-error-note">
+              Structure here — a trend, or a cluster far from the line — means the
+              emulator is wrong in a particular part of the parameter space, not
+              uniformly. ±{{ fmtStat(param.worst, 3) }} full scale.
+            </small>
+          </section>
+        </template>
+      </template>
+    </section>
+
     <!-- UQ ------------------------------------------------------------------>
     <section class="analysis-section">
       <h2>UQ<span v-if="uqMethodLabel" class="uq-method"> · {{ uqMethodLabel }}</span></h2>
@@ -595,6 +796,77 @@ const uqMethodLabel = computed(() =>
 </template>
 
 <style scoped>
+.emu-error-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.75rem;
+}
+.emu-error-table th,
+.emu-error-table td {
+  text-align: right;
+  padding: 0.15rem 0.3rem;
+  border-bottom: 1px solid var(--p-content-border-color, #eee);
+}
+.emu-error-table th:first-child,
+.emu-error-table td:first-child {
+  text-align: left;
+}
+.emu-error-label {
+  max-width: 16rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.emu-error-note {
+  font-size: 0.7rem;
+  opacity: 0.75;
+}
+.emu-feature-select {
+  font-size: 0.75rem;
+  max-width: 18rem;
+}
+.emu-feature-pick {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.8rem;
+  margin: 0.4rem 0;
+}
+.parity-box,
+.residual-box {
+  position: relative;
+  height: 190px;
+  border: 1px solid var(--p-content-border-color, #ddd);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.parity-line {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 141.4%;
+  height: 1px;
+  background: var(--p-content-border-color, #bbb);
+  transform-origin: left bottom;
+  transform: rotate(-45deg);
+}
+.residual-zero {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  width: 100%;
+  height: 1px;
+  background: var(--p-content-border-color, #bbb);
+}
+.parity-point {
+  position: absolute;
+  width: 6px;
+  height: 6px;
+  margin: -3px 0 0 -3px;
+  border-radius: 50%;
+  background: var(--p-primary-color, #5b9bd5);
+  opacity: 0.75;
+}
 .analysis-panel {
   display: flex;
   flex-direction: column;

@@ -349,3 +349,60 @@ describe('AnalysisPanel comparison legend (#178)', () => {
     expect(w.find('[data-testid="compare-legend"]').text()).toContain('bounds centre')
   })
 })
+
+describe('emulator error', () => {
+  const METADATA = {
+    feature_labels: ['x (max a/x)', 'y (max a/y)'],
+    feature_r2: [0.999, 0.42],
+    feature_rmse: [0.01, 0.9],
+    feature_mae: [0.008, 0.7],
+    feature_bias: [0.0, -0.6],
+    feature_max_abs_error: [0.02, 1.4],
+    feature_nrmse: [0.002, 0.31],
+  }
+  const POINTS = {
+    theta: [[0.1, 1.0], [0.9, 2.0]],
+    y_true: [[1.0, 5.0], [2.0, 6.0]],
+    y_pred: [[1.05, 4.0], [1.90, 6.9]],
+    residual: [[0.05, -1.0], [-0.10, 0.9]],
+    feature_labels: METADATA.feature_labels,
+    param_entry_labels: ['a/p', 'a/q'],
+  }
+
+  it('says what to do when no emulator has been trained', () => {
+    const wrapper = mount(AnalysisPanel)
+    expect(wrapper.find('[data-testid="emulator-error-table"]').exists()).toBe(false)
+    expect(wrapper.text()).toContain('Train an emulator')
+  })
+
+  it('shows every statistic, because R2 alone cannot rank features', () => {
+    const wrapper = mount(AnalysisPanel, { props: { emulatorMetadata: METADATA } })
+    const table = wrapper.find('[data-testid="emulator-error-table"]')
+    expect(table.exists()).toBe(true)
+    const text = table.text()
+    // The second feature scores badly and is biased low; both must be visible,
+    // since a good R2 with a bias shifts every downstream cost.
+    expect(text).toContain('0.4200')
+    expect(text).toContain('-0.600')
+  })
+
+  it('distinguishes "no emulator" from "no held-out points"', () => {
+    // An emulator trained before CA saved them is still a usable emulator; the
+    // summary is real and only the plots are missing.
+    const wrapper = mount(AnalysisPanel, { props: { emulatorMetadata: METADATA } })
+    expect(wrapper.find('[data-testid="emu-no-points"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="emu-parity"]').exists()).toBe(false)
+  })
+
+  it('plots predicted against simulated on a shared range', () => {
+    const wrapper = mount(AnalysisPanel, {
+      props: { emulatorMetadata: METADATA, emulatorErrorPoints: POINTS },
+    })
+    const parity = wrapper.find('[data-testid="emu-parity"]')
+    expect(parity.exists()).toBe(true)
+    // One point per held-out sample.
+    expect(parity.findAll('.parity-point')).toHaveLength(2)
+    // And a residual panel per parameter, which is what says *where* it is wrong.
+    expect(wrapper.findAll('[data-testid="emu-residual"]')).toHaveLength(2)
+  })
+})

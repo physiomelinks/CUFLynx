@@ -15,6 +15,7 @@ import {
   hasMixedUnits,
   withOverlayVars,
   timeUnit,
+  emulatorFeatureFor,
 } from './plot'
 
 // Mirrors the SN_simple obs_data shape (3 experiments, predictions + overlays).
@@ -167,6 +168,32 @@ describe('controlledSeries (params_to_change)', () => {
   })
 })
 
+describe('emulatorFeatureFor', () => {
+  const item = {
+    name_for_plotting: 'x_{SS}',
+    operation: 'steady_state_avg',
+    operands: ['benchmark/x'],
+  }
+
+  it("matches circulatory_autogen's own feature label", () => {
+    const features = { 'x_{SS} (steady_state_avg benchmark/x)': 1.5 }
+    expect(emulatorFeatureFor(features, item)).toBe(1.5)
+  })
+
+  it('matches the disambiguated label CA writes when one repeats', () => {
+    // CA appends "[exp e, sub s]" only when two data_items would share a label,
+    // so both spellings have to resolve or a multi-experiment study loses its
+    // overlay without saying why.
+    const features = { 'x_{SS} (steady_state_avg benchmark/x) [exp 1, sub 0]': 2.5 }
+    expect(emulatorFeatureFor(features, item)).toBe(2.5)
+  })
+
+  it('returns null for a feature the emulator does not carry', () => {
+    expect(emulatorFeatureFor({ 'something else': 1 }, item)).toBe(null)
+    expect(emulatorFeatureFor(null, item)).toBe(null)
+  })
+})
+
 describe('computeFeature', () => {
   const time = [0, 1, 2, 3]
   it('computes max/min with the time of occurrence', () => {
@@ -201,6 +228,89 @@ describe('buildChartData calculated features', () => {
     expect(obs.legendStyle).toBe('dash')
     expect(calc.legendStyle).toBe('line')
     expect(calc.mathLabel).toBe('v_{AR}')
+  })
+
+  it('draws the emulator prediction beside the measurement and the model', () => {
+    // The comparison the Emulator tab exists to make: three lines in one colour
+    // -- what was measured, what the model says, and what the surrogate says the
+    // model says -- so a user dragging a parameter can see where they diverge.
+    const sim = { time: [0, 1, 2], outputs: { 'aortic_root/v': [1e-4, 5e-4, 2e-4] } }
+    const item = {
+      name_for_plotting: 'v_{AR}',
+      data_type: 'constant',
+      operation: 'max',
+      operands: ['aortic_root/v'],
+      plot_type: 'horizontal',
+      value: 4e-4,
+    }
+    const { datasets } = buildChartData(sim, {
+      dataItems: [item],
+      emulatorFeatures: { 'v_{AR} (max aortic_root/v)': 4.6e-4 },
+    })
+    const obs = datasets.find((d) => d.kind === 'obs-constant')
+    const calc = datasets.find((d) => d.kind === 'calc-constant')
+    const emu = datasets.find((d) => d.kind === 'emu-constant')
+    expect(obs.data[0].y).toBe(4e-4)
+    expect(calc.data[0].y).toBe(5e-4)
+    expect(emu.data[0].y).toBe(4.6e-4)
+    // Three distinguishable styles, or the lines cannot be told apart.
+    expect(obs.legendStyle).toBe('dash')
+    expect(calc.legendStyle).toBe('line')
+    expect(emu.legendStyle).toBe('dot')
+    // Same colour as its own item's other two lines: the grouping is by feature.
+    expect(emu.borderColor).toBe(calc.borderColor)
+  })
+
+  it('draws no emulator line when no emulator is in use', () => {
+    const sim = { time: [0, 1], outputs: { 'aortic_root/v': [1e-4, 5e-4] } }
+    const item = {
+      name_for_plotting: 'v_{AR}',
+      data_type: 'constant',
+      operation: 'max',
+      operands: ['aortic_root/v'],
+      plot_type: 'horizontal',
+      value: 4e-4,
+    }
+    const { datasets } = buildChartData(sim, { dataItems: [item] })
+    expect(datasets.some((d) => d.kind === 'emu-constant')).toBe(false)
+  })
+
+  it('shifts the emulator line by the same base as the model for max_minus_min', () => {
+    // max_minus_min is drawn as an offset from the trace minimum, so an
+    // unshifted emulator value would sit somewhere the eye cannot compare it.
+    const sim = { time: [0, 1, 2], outputs: { 'heart/q_lv': [10, 40, 20] } }
+    const item = {
+      name_for_plotting: 'q',
+      data_type: 'constant',
+      operation: 'max_minus_min',
+      operands: ['heart/q_lv'],
+      plot_type: 'horizontal',
+      value: 25,
+    }
+    const { datasets } = buildChartData(sim, {
+      dataItems: [item],
+      emulatorFeatures: { 'q (max_minus_min heart/q_lv)': 28 },
+    })
+    const emu = datasets.find((d) => d.kind === 'emu-constant')
+    expect(emu.data[0].y).toBe(38) // min(10) + 28
+  })
+
+  it('drops the emulator overlay on a phase-plane cell, as it does the obs ones', () => {
+    const sim = { time: [0, 1], outputs: { 'a/y': [1, 2] } }
+    const item = {
+      name_for_plotting: 'y',
+      data_type: 'constant',
+      operation: 'max',
+      operands: ['a/y'],
+      plot_type: 'horizontal',
+      value: 2,
+    }
+    const { datasets } = buildChartData(sim, {
+      dataItems: [item],
+      emulatorFeatures: { 'y (max a/y)': 2.1 },
+      xSource: [0, 1],
+    })
+    expect(datasets.some((d) => d.kind === 'emu-constant')).toBe(false)
   })
 
   it('stepped option disables line smoothing (for controlled step series)', () => {

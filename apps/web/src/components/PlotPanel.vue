@@ -30,6 +30,10 @@ ChartJS.register(
 const props = defineProps({
   simResult: { type: Object, default: null },
   dataItems: { type: Array, default: () => [] },
+  // { [emulator feature label]: value } when an emulator is in use, so each
+  // data_item can draw the surrogate's prediction beside the model's own
+  // feature and the measurement (CA #333). Null when none is in use.
+  emulatorFeatures: { type: Object, default: null },
   // Saved runs shown for comparison (#126): [{prefix, color, time, values}],
   // each already narrowed to this cell's variable and experiment.
   savedSeries: { type: Array, default: () => [] },
@@ -77,6 +81,7 @@ const emit = defineEmits([
 const chartData = computed(() =>
   buildChartData(props.simResult, {
     dataItems: props.dataItems,
+    emulatorFeatures: props.emulatorFeatures,
     varLabel: props.varLabel,
     stepped: props.stepped,
     savedSeries: props.savedSeries,
@@ -496,7 +501,13 @@ defineExpose({
             y2="5"
             :stroke="d.borderColor"
             stroke-width="2"
-            :stroke-dasharray="d.legendStyle === 'dash' ? '4 2' : undefined"
+            :stroke-dasharray="
+              d.legendStyle === 'dash'
+                ? '4 2'
+                : d.legendStyle === 'dot'
+                  ? '1.5 2'
+                  : undefined
+            "
           />
         </svg>
         <span class="legend-label" v-html="renderMath(d.mathLabel)" />

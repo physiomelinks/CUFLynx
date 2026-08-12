@@ -34,6 +34,8 @@ import sys
 import traceback
 from pathlib import Path
 
+import emulator_config
+
 # Markers the API watches for in stdout.
 DONE_MARKER = "__SENSITIVITY_DONE__"
 FAIL_MARKER = "__SENSITIVITY_FAILED__"
@@ -171,6 +173,9 @@ def _build_local_engine(config: dict, settings: dict, solver_info: dict, model_t
         resources_dir=os.path.dirname(config["params_path"]),
         operation_funcs_external_path=config.get("operation_funcs_external_path"),
         cost_funcs_external_path=config.get("cost_funcs_external_path"),
+        # The local arm must sit on the same forward model as the global one, or
+        # "Sobol" and "local" in one study would measure different things.
+        **emulator_config.engine_kwargs(config),
     )
 
 
@@ -216,6 +221,7 @@ def _calibrate_for_nominal(config: dict, settings: dict, solver_info: dict, mode
         resources_dir=os.path.dirname(config["params_path"]),
         operation_funcs_external_path=config.get("operation_funcs_external_path"),
         cost_funcs_external_path=config.get("cost_funcs_external_path"),
+        **emulator_config.engine_kwargs(config),
     )
     param_id.run()
     return np.asarray(param_id.get_best_param_vals(), dtype=float)
@@ -270,6 +276,11 @@ def _run(config: dict) -> dict:
     # is chosen. `_with_gradient_hint` adds the one thing CA cannot know: that
     # switching to FD is the way out, since the gradient method is a CUFLynx
     # setting. Enriched, never restated -- the registry is CA's.
+    emulator_kwargs = emulator_config.engine_kwargs(config)
+    note = emulator_config.describe(config)
+    if note:
+        print(note, flush=True)
+
     sa = SensitivityAnalysis(
         model_path=config["model_path"],
         model_type=model_type,
@@ -284,6 +295,7 @@ def _run(config: dict) -> dict:
         params_for_id_path=config["params_path"],
         operation_funcs_external_path=config.get("operation_funcs_external_path"),
         cost_funcs_external_path=config.get("cost_funcs_external_path"),
+        **emulator_kwargs,
     )
 
     # Local (derivative-based) SA runs single-process; no Sobol sampling / MPI.

@@ -80,6 +80,12 @@ for runner in (
     "calibrated_model.py",
     "cellml_meta.py",
     "params_for_id.py",
+    # "use the emulator" -> CA engine kwargs, shared by all three analysis
+    # runners so a study cannot be calibrated on a surrogate and analysed on the
+    # solver without saying so (CA #333).
+    "emulator_config.py",
+    # Training the emulator itself.
+    "emulator_runner.py",
 ):
     datas.append((str(API_DIR / runner), "runners"))
 

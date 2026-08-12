@@ -405,6 +405,106 @@ UQ_SAMPLES_FILE = "uq_posterior_samples.npy"
 #: sampled at and the value the manager bins at cannot drift apart.
 NUM_BINS = 40
 
+#: Where CA's emulator trainer puts a bundle, relative to the outputs directory,
+#: and the file that describes it (CA #333). Mirrors CA's ``resolve_emulator_dir``:
+#: ``<param_id_output_dir>/emulators/<file_prefix>_<obs_prefix>``.
+EMULATOR_SUBDIR = "emulators"
+EMULATOR_METADATA_FILE = "emulator_metadata.json"
+#: The held-out points CA keeps beside the emulator: the parameters, the
+#: simulator's answer at each and the emulator's. The statistics say how wrong
+#: the emulator is; only these say *where* (CA #333).
+EMULATOR_VALIDATION_FILE = "emulator_validation.npz"
+
+
+def emulator_dir(output_dir: str, file_prefix: str, obs_path: str | None) -> str:
+    """The directory CA's trainer will write this study's emulator into.
+
+    Computed the same way on both sides rather than passed around, so a run that
+    trains and a run that uses agree on where the bundle is without a second
+    setting to keep in step.
+    """
+    obs_prefix = "obs"
+    if obs_path:
+        obs_prefix = os.path.splitext(os.path.basename(obs_path))[0]
+    return os.path.join(output_dir, EMULATOR_SUBDIR, f"{file_prefix}_{obs_prefix}")
+
+
+def emulator_error_points(emu_dir: str) -> dict | None:
+    """The emulator's held-out points, as the Analysis view plots them.
+
+    ``{theta, y_true, y_pred, residual, feature_labels, param_entry_labels}`` in
+    real units, or None when the bundle predates CA writing them. The residual is
+    **prediction minus truth** -- CA's sign convention, kept rather than recomputed
+    so a positive residual means the same thing here as it does there.
+
+    These are the points a parity plot and a residual-against-parameter plot are
+    drawn from, and no statistic replaces them: R2 says how well the emulator does
+    over the whole design, and these say where it does not.
+    """
+    path = os.path.join(emu_dir, EMULATOR_VALIDATION_FILE)
+    if not os.path.isfile(path):
+        return None
+    try:
+        import numpy as np  # noqa: PLC0415
+
+        with np.load(path, allow_pickle=True) as data:
+            y_true = np.asarray(data["y_true"], dtype=float)
+            y_pred = np.asarray(data["y_pred"], dtype=float)
+            return {
+                "theta": np.asarray(data["theta"], dtype=float).tolist(),
+                "y_true": y_true.tolist(),
+                "y_pred": y_pred.tolist(),
+                "residual": (y_pred - y_true).tolist(),
+                "feature_labels": [str(v) for v in data["feature_labels"]],
+                "param_entry_labels": [str(v) for v in data["param_entry_labels"]],
+            }
+    except Exception:  # noqa: BLE001 - a damaged extra is not a damaged emulator
+        return None
+
+
+def emulator_metadata(emu_dir: str) -> dict | None:
+    """A trained emulator's metadata, or ``None`` if there is no emulator there.
+
+    This is the file the user has to read before trusting anything downstream:
+    held-out R2 and RMSE per feature, the parameter box the emulator is valid in,
+    the design that produced it, and the fingerprint that decides whether it is
+    still about this model. Returned verbatim -- CUFLynx displays CA's numbers and
+    does not compute its own.
+    """
+    meta = _json(emu_dir, EMULATOR_METADATA_FILE)
+    if not isinstance(meta, dict):
+        return None
+    worst = None
+    for value in meta.get("feature_r2") or []:
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            continue
+        if worst is None or value < worst:
+            worst = value
+    return {
+        "dir": emu_dir,
+        "feature_labels": meta.get("feature_labels") or [],
+        "feature_r2": meta.get("feature_r2") or [],
+        "feature_rmse": meta.get("feature_rmse") or [],
+        "worst_r2": worst,
+        "param_entry_labels": meta.get("param_entry_labels") or [],
+        "param_mins": meta.get("param_mins") or [],
+        "param_maxs": meta.get("param_maxs") or [],
+        "model_name": meta.get("model_name"),
+        "design": meta.get("design") or {},
+        "provenance": meta.get("provenance") or {},
+        "fingerprint": meta.get("fingerprint") or {},
+        # The rest of what the held-out set said, per feature. R2 alone cannot
+        # rank features -- a feature can score well and still read systematically
+        # high (bias), and RMSE in one feature's units says nothing against
+        # another's (nrmse can). Absent on a bundle trained before CA wrote them.
+        "feature_mae": meta.get("feature_mae") or [],
+        "feature_bias": meta.get("feature_bias") or [],
+        "feature_max_abs_error": meta.get("feature_max_abs_error") or [],
+        "feature_nrmse": meta.get("feature_nrmse") or [],
+    }
+
 
 def write_uq_samples(output_dir: str, flat, qnames) -> str:
     """Persist the posterior samples plus their labels."""
