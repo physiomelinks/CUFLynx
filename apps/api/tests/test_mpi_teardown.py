@@ -99,23 +99,32 @@ def test_a_run_that_never_finished_is_still_an_error(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Not provoking it in the first place
+# ...and NOT by second-guessing libfabric
 # ---------------------------------------------------------------------------
-def test_single_node_runs_keep_mpi_on_loopback(monkeypatch):
-    """Every analysis CUFLynx launches is single-node, so libfabric has no
-    business picking a real NIC that can go away mid-run."""
+def test_the_mpi_environment_is_left_alone(monkeypatch):
+    """CUFLynx must not pin libfabric's provider or interface.
+
+    It used to: ``FI_PROVIDER=tcp`` plus ``FI_TCP_IFACE=lo0``/``lo``, to keep a
+    single-node run off a real NIC that could vanish mid-run. That aborted
+    ``MPI_Init`` on macOS -- "OFI call ep_enable failed (default nic=tcp: Bad
+    file descriptor)" -- which is strictly worse than the fault it prevented: an
+    init abort loses the run, while the teardown abort it was aimed at happens
+    with the results already written.
+
+    So the mitigation lives entirely in ``finished_before_exiting`` above, which
+    is robust to any cause rather than to the one provider setting we guessed at.
+    """
     for var in ("FI_PROVIDER", "FI_TCP_IFACE"):
         monkeypatch.delenv(var, raising=False)
 
     env = runtime_paths.runner_launch_env(None)
 
-    assert env["FI_PROVIDER"] == "tcp"
-    assert env["FI_TCP_IFACE"] in ("lo0", "lo")
+    assert "FI_PROVIDER" not in env
+    assert "FI_TCP_IFACE" not in env
 
 
-def test_the_users_own_mpi_settings_win(monkeypatch):
-    """Defaults only: a deliberate provider choice, or a genuinely multi-node
-    setup, must not be overridden."""
+def test_the_users_own_mpi_settings_are_passed_through(monkeypatch):
+    """Whatever the user set is theirs -- inherited, never rewritten."""
     monkeypatch.setenv("FI_PROVIDER", "verbs")
     monkeypatch.setenv("FI_TCP_IFACE", "eth0")
 
@@ -123,14 +132,3 @@ def test_the_users_own_mpi_settings_win(monkeypatch):
 
     assert env["FI_PROVIDER"] == "verbs"
     assert env["FI_TCP_IFACE"] == "eth0"
-
-
-@pytest.mark.parametrize("platform,iface", [("darwin", "lo0"), ("linux", "lo")])
-def test_the_loopback_interface_is_named_per_platform(monkeypatch, platform, iface):
-    """macOS calls it lo0, Linux calls it lo; naming the wrong one would leave
-    libfabric with nothing to bind."""
-    for var in ("FI_PROVIDER", "FI_TCP_IFACE"):
-        monkeypatch.delenv(var, raising=False)
-    monkeypatch.setattr(runtime_paths.sys, "platform", platform)
-
-    assert runtime_paths.runner_launch_env(None)["FI_TCP_IFACE"] == iface
