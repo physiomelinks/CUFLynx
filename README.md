@@ -35,7 +35,7 @@ xattr -d com.apple.quarantine CUFLynx-macos-arm64
 ./CUFLynx-macos-arm64
 ```
 
-The app isn't notarized yet, so macOS blocks it until the quarantine flag is
+The app is not notarised yet, so macOS blocks it until the quarantine flag is
 cleared — that's what the `xattr` line does (or right-click → **Open** → **Open**).
 
 </details>
