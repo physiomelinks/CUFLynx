@@ -86,9 +86,39 @@ def _validate_prior_params(prior: str | None, values: dict, row_idx: int,
 
 def _gen_name(vessel: str, param_name: str) -> str:
     """CA's ``param_names_for_gen`` name for a ``vessel``/``param`` pair — the bare
-    constant name a flat model uses. Mirrors ``PrimitiveParsers`` #298 exactly:
-    ``global`` -> just ``param``; otherwise ``param_vessel``."""
-    return param_name if vessel == "global" else f"{param_name}_{vessel}"
+    constant name a flat model uses.
+
+    Asks CA (``param_name_for_gen``), because the rule is CA's. The local
+    expression is kept only for a CA that cannot be imported: the upload path is
+    unit-tier and has to work with no CA on ``sys.path`` (the packaged app with no
+    CA directory chosen is a supported state). It is a fallback, never an
+    override — if CA answers, its answer wins.
+    """
+    try:
+        from parsers.PrimitiveParsers import param_name_for_gen  # noqa: PLC0415
+
+        return str(param_name_for_gen(vessel, param_name))
+    except ImportError:
+        return param_name if vessel == "global" else f"{param_name}_{vessel}"
+
+
+def _ca_qname_candidates(vessel: str, param_name: str) -> list[str] | None:
+    """The names CA says a flat model may have given this entry, most specific
+    first — or None when CA cannot be imported.
+
+    CA publishes the rule (``model_qname_candidates``) precisely so a tool with
+    only an uploaded file need not restate it: CA answers *what the names could
+    be*, the caller decides which one the model actually has, because only the
+    caller has the variable set. Restating it is the failure this removes — a
+    reimplementation does not break loudly when CA's rule changes, it silently
+    resolves to a **different variable** and seeds the wrong slider (#210).
+    """
+    try:
+        from parsers.PrimitiveParsers import model_qname_candidates  # noqa: PLC0415
+
+        return [str(c) for c in model_qname_candidates(f"{vessel}/{param_name}")]
+    except ImportError:
+        return None
 
 
 def _build_gen_index(initial_values: dict[str, float]) -> dict[str, dict[str, float]]:
@@ -109,16 +139,25 @@ def resolve_model_qname(
     """The model variable qname (``component/variable``) a params_for_id
     ``vessel``/``param`` entry refers to, or None if it can't be resolved.
 
-    Tries the direct ``vessel/param`` name first (non-flat models, e.g.
-    Lotka-Volterra). If that isn't in the model, falls back to CA's flat-model
-    convention: the constant is named ``_gen_name(vessel, param)`` and lives in a
-    ``parameters`` component (issue #114). The fallback is only used when it
-    resolves unambiguously, so a coincidental bare-name clash never picks a wrong
-    variable — for both reading the loaded value and writing a calibrated one.
+    **CA is asked first.** ``model_qname_candidates`` returns the names a flat
+    model may have given this entry, most specific first, and the first one the
+    model actually has wins — so the naming rule stays CA's (#210). The bare-name
+    search below runs only when CA offered nothing that matched, so it can widen
+    the search but never contradict CA.
+
+    That search is the older behaviour, kept for the layouts CA's list does not
+    enumerate: the constant is named ``_gen_name(vessel, param)`` and found by its
+    last path segment (issue #114). It is used only when it resolves
+    unambiguously, so a coincidental bare-name clash never picks a wrong variable
+    — for both reading the loaded value and writing a calibrated one.
     """
     direct = f"{vessel}/{param_name}"
     if direct in initial_values:
         return direct
+
+    for candidate in _ca_qname_candidates(vessel, param_name) or ():
+        if candidate in initial_values:
+            return candidate
 
     hits = gen_index.get(_gen_name(vessel, param_name))
     if not hits:

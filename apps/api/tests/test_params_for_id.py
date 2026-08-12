@@ -237,6 +237,87 @@ def test_gen_name_fallback_prefers_parameters_component():
 
 
 # ---------------------------------------------------------------------------
+# The naming rule is circulatory_autogen's, not ours (#210)
+# ---------------------------------------------------------------------------
+def test_the_flat_model_naming_rule_comes_from_ca(monkeypatch, requires_ca):
+    """CA answers *what the names could be*; we only decide which one the model
+    has.
+
+    Reimplementing the rule is the failure this removes: a copy does not break
+    loudly when CA changes it, it silently resolves to a **different variable**,
+    seeds the wrong slider and writes the wrong constant into a calibrated CellML.
+    So the delegation is asserted directly -- change CA's answer and the resolved
+    qname must follow it.
+    """
+    import params_for_id as pfi
+    from parsers.PrimitiveParsers import model_qname_candidates
+
+    called = {}
+
+    def spy(qname):
+        called["qname"] = qname
+        return ["invented/name_from_ca"]
+
+    monkeypatch.setattr("parsers.PrimitiveParsers.model_qname_candidates", spy)
+
+    initial = {"invented/name_from_ca": 3.5}
+    idx = pfi._build_gen_index(initial)
+    resolved = pfi.resolve_model_qname("aortic_root", "C", initial, idx)
+
+    assert called["qname"] == "aortic_root/C"
+    assert resolved == "invented/name_from_ca"
+    # And the real CA rule offers the flat name this replaces, so the spy is
+    # standing in for something that genuinely answers.
+    assert "parameters/C_aortic_root" in model_qname_candidates("aortic_root/C")
+
+
+def test_the_local_search_never_overrides_ca(monkeypatch, requires_ca):
+    """The bare-name search is a fallback for layouts CA does not enumerate. It
+    runs only when nothing CA offered was in the model, so it can widen the
+    search but never contradict the rule."""
+    import params_for_id as pfi
+
+    # CA's answer exists in the model, and so does a bare-name hit that the local
+    # search would otherwise have preferred.
+    initial = {"parameters/C_aortic_root": 1.0, "elsewhere/C_aortic_root": 2.0}
+    monkeypatch.setattr(
+        "parsers.PrimitiveParsers.model_qname_candidates",
+        lambda _q: ["parameters/C_aortic_root"],
+    )
+    idx = pfi._build_gen_index(initial)
+
+    assert pfi.resolve_model_qname("aortic_root", "C", initial, idx) == (
+        "parameters/C_aortic_root"
+    )
+
+
+def test_resolution_still_works_with_no_ca(monkeypatch):
+    """The upload path is unit-tier and must survive with no CA importable -- the
+    packaged app with no CA directory chosen is a supported state. The local rule
+    is the fallback for exactly that, never an override."""
+    import builtins
+
+    import params_for_id as pfi
+
+    real_import = builtins.__import__
+
+    def no_ca(name, *args, **kwargs):
+        if name.startswith("parsers"):
+            raise ImportError("no circulatory_autogen here")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", no_ca)
+
+    initial = {"parameters/C_aortic_root": 1.25}
+    idx = pfi._build_gen_index(initial)
+    assert pfi._gen_name("aortic_root", "C") == "C_aortic_root"
+    assert pfi._gen_name("global", "q_init") == "q_init"
+    assert pfi.resolve_model_qname("aortic_root", "C", initial, idx) == (
+        "parameters/C_aortic_root"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Grouped parameters (issue #193): one row naming several vessels is one
 # parameter, so it needs one initial value -- and the components had better agree
 # on it.
