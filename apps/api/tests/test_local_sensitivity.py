@@ -19,7 +19,7 @@ def _is_diff(fn):
 
 def _resolve(current_params, mode="current"):
     return ls._resolve_nominal(
-        _FakeSM(), ["a/x", "b/y"], np.array([0.0, 0.0]), np.array([10.0, 10.0]),
+        _FakePid(), ["a/x", "b/y"], np.array([0.0, 0.0]), np.array([10.0, 10.0]),
         {"nominal": mode}, None, None, current_params=current_params,
     )
 
@@ -30,9 +30,16 @@ class _FakeHelper:
         return [[1.0], [2.0]]
 
 
-class _FakeSM:
+class _FakePid:
+    """Stands in for CA's ``OpencorParamID``.
+
+    The local path reads the study from the param-id engine, never from the
+    Sobol sampling manager -- both parse the same files and each owns a
+    simulation helper, so reading from both compiled the model twice (#216).
+    """
+
     sim_helper = _FakeHelper()
-    SA_info = {"param_names": [["a/x"], ["b/y"]]}
+    param_id_info = {"param_names": [["a/x"], ["b/y"]]}
 
 
 def test_resolve_nominal_current_uses_slider_values(monkeypatch):
@@ -180,20 +187,22 @@ class _ModifierHelper:
         return [[2e-8]]
 
 
-class _ModifierSM:
+class _ModifierPid:
     sim_helper = _ModifierHelper()
-    SA_info = {"param_names": [["m/p", "m/q"]]}
-    # A modifier's param_names entry IS its modifies list; the runner's SA
-    # manager carries the matching modifiers metadata.
-    param_id_info = {"modifiers": [
-        {"index": 0, "name": "s", "operation": "scale",
-         "targets": ["m/p", "m/q"], "baselines": None},
-    ]}
+    # A modifier's param_names entry IS its modifies list, and the engine carries
+    # the matching modifiers metadata beside it.
+    param_id_info = {
+        "param_names": [["m/p", "m/q"]],
+        "modifiers": [
+            {"index": 0, "name": "s", "operation": "scale",
+             "targets": ["m/p", "m/q"], "baselines": None},
+        ],
+    }
 
 
 def _resolve_modifier(current_params, requires_ca=True):
     return ls._resolve_nominal(
-        _ModifierSM(), ["m/p"], np.array([0.5]), np.array([2.0]),
+        _ModifierPid(), ["m/p"], np.array([0.5]), np.array([2.0]),
         {"nominal": "current"}, None, None, current_params=current_params,
     )
 

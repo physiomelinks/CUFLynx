@@ -121,3 +121,54 @@ def test_the_runner_builds_the_engine_for_fd_too(tmp_path, monkeypatch):
     built, received = _run_local_runner(monkeypatch, tmp_path, "FD")
     assert built == ["engine"]
     assert received["engine"] == "ENGINE"
+
+
+def test_a_local_run_never_touches_the_sobol_managers_helper(monkeypatch, tmp_path):
+    """One simulation helper per local SA, not two (#216).
+
+    ``sobol_SA`` and ``OpencorParamID`` each parse the same study and each own a
+    helper, and building one compiles the model. circulatory_autogen made
+    ``sobol_SA.sim_helper`` lazy precisely so a local run never pays for the half
+    it does not use -- so reading the study from the SA manager, as this used to,
+    silently reinstated the second compile.
+
+    Asserted by making ``SA_manager`` explode on any attribute read: the property
+    is lazy, so counting compiles is invisible, but *touching it at all* is the
+    thing that must not happen.
+    """
+    import local_sensitivity as ls
+
+    class _Detonate:
+        def __getattr__(self, name):
+            raise AssertionError(
+                f"the local path read SA_manager.{name}; it must take the study "
+                f"from the param-id engine, or the model compiles twice (#216)"
+            )
+
+    captured = {}
+
+    def fake_ca(pid, param_names, nominal, mins, maxs, **kwargs):
+        captured["pid"] = pid
+        return {}, []
+
+    monkeypatch.setattr(ls, "_ca_local_sensitivity", fake_ca)
+    monkeypatch.setattr(ls, "resolve_gradient_method", lambda *a, **k: "FD")
+
+    class _Sa:
+        SA_manager = _Detonate()
+
+    class _Pid:
+        sim_helper = type("H", (), {"get_init_param_vals": lambda self, n: [[1.0]]})()
+        param_id_info = {
+            "param_names": [["a/x"]], "param_mins": [0.0], "param_maxs": [2.0],
+        }
+
+    engine = type("E", (), {"param_id": _Pid()})()
+
+    payload = ls.compute_local_sensitivity(
+        _Sa(), {"method": "local", "gradient_method": "FD", "nominal": "current"},
+        model_type="cellml_only", engine=engine,
+    )
+
+    assert payload["param_names"] == ["a/x"]
+    assert captured["pid"] is engine.param_id

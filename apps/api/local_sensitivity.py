@@ -102,7 +102,7 @@ def _bounds_point(mins: np.ndarray, maxs: np.ndarray, mode: str) -> np.ndarray:
     return 0.5 * (mins + maxs)
 
 
-def _resolve_nominal(sm, param_names, mins, maxs, settings, best_vals, best_params,
+def _resolve_nominal(pid, param_names, mins, maxs, settings, best_vals, best_params,
                      current_params=None):
     """Pick the parameter point to linearise about, and a label for the log.
 
@@ -131,7 +131,11 @@ def _resolve_nominal(sm, param_names, mins, maxs, settings, best_vals, best_para
             "reused calibration best fit",
         )
     if mode == "current":
-        vals = sm.sim_helper.get_init_param_vals(sm.SA_info["param_names"])
+        first_members = [
+            n[0] if isinstance(n, (list, tuple)) else n
+            for n in pid.param_id_info["param_names"]
+        ]
+        vals = pid.sim_helper.get_init_param_vals(first_members)
         nominal = np.asarray(
             [v[0] if isinstance(v, (list, tuple)) else v for v in vals], dtype=float
         )
@@ -143,7 +147,7 @@ def _resolve_nominal(sm, param_names, mins, maxs, settings, best_vals, best_para
         try:
             from parsers.PrimitiveParsers import apply_modifier_identity_nominals  # noqa: PLC0415
 
-            apply_modifier_identity_nominals(getattr(sm, "param_id_info", None) or {}, nominal)
+            apply_modifier_identity_nominals(getattr(pid, "param_id_info", None) or {}, nominal)
         except ImportError:  # a CA predating modifiers has none to overwrite
             pass
         if current_params:
@@ -157,20 +161,6 @@ def _resolve_nominal(sm, param_names, mins, maxs, settings, best_vals, best_para
                 return nominal, "current parameter values (from sliders)"
         return nominal, "current parameter values (model defaults)"
     return _bounds_point(mins, maxs, mode), f"{mode} of bounds"
-
-
-def _output_names(sm) -> list[str]:
-    """One label per observable operation, matching the Sobol output naming."""
-    obs = sm.obs_info
-    return [
-        format_output_name(
-            obs["names_for_plotting"][j],
-            obs["experiment_idxs"][j],
-            obs["subexperiment_idxs"][j],
-            obs["operations"][j],
-        )
-        for j in range(len(obs["operations"]))
-    ]
 
 
 def relative_coeff(deriv: float, pj: float, denom: float, rng: float) -> float | None:
@@ -424,28 +414,49 @@ def compute_local_sensitivity(
             f"'cellml_only' with solver 'CVODE_myokit'; current format is {model_type!r}."
         )
 
-    sm = sa.SA_manager
+    if engine is None:
+        raise RuntimeError(
+            "Local sensitivity needs a param-id engine; the runner must build one "
+            "(internal error)."
+        )
+    # Everything comes from the param-id engine, nothing from the Sobol sampling
+    # manager -- which is what CA's own run_local_sensitivity does, and the reason
+    # is #216. Both objects parse the same study and each owns a simulation
+    # helper; reading the study from one and the sensitivities from the other
+    # realises both, so a local SA compiled the model twice. CA made
+    # sobol_SA.sim_helper lazy for exactly this, and touching it here defeated
+    # that. `sa` is now unused on this path.
+    pid = engine.param_id
     # Modifier baselines are resolved once here, against the sim helper's
     # pristine defaults -- the same idempotent call CA's param-id and Sobol
-    # paths make at setup (a no-op without modifiers). The FD loop's expansion
-    # (and FSA's chain rule) refuse to run on unresolved baselines.
+    # paths make at setup (a no-op without modifiers). The chain rule refuses to
+    # run on unresolved baselines.
     try:
         from parsers.PrimitiveParsers import resolve_modifier_baselines  # noqa: PLC0415
 
-        resolve_modifier_baselines(sm.param_id_info, sm.sim_helper)
+        resolve_modifier_baselines(pid.param_id_info, pid.sim_helper)
     except ImportError:  # a CA predating modifiers has none to resolve
         pass
     param_names = [
-        name[0] if isinstance(name, list) else name
-        for name in sm.SA_info["param_names"]
+        name[0] if isinstance(name, (list, tuple)) else name
+        for name in pid.param_id_info["param_names"]
     ]
-    mins = np.asarray(sm.param_id_info["param_mins"], dtype=float)
-    maxs = np.asarray(sm.param_id_info["param_maxs"], dtype=float)
+    mins = np.asarray(pid.param_id_info["param_mins"], dtype=float)
+    maxs = np.asarray(pid.param_id_info["param_maxs"], dtype=float)
     nominal, nominal_source = _resolve_nominal(
-        sm, param_names, mins, maxs, settings, best_vals, best_params, current_params
+        pid, param_names, mins, maxs, settings, best_vals, best_params, current_params
     )
     h = float(settings.get("rel_step", 0.01))
-    output_names = _output_names(sm)
+    if gradient_method == "AD":
+        _check_ad_operations()
+    # The output names are CA's. It answers for the scalar (const) observables
+    # only, and a series row has no local sensitivity to report -- listing one
+    # with an empty cell reads as "no sensitivity" rather than "not a question
+    # this can answer".
+    local, output_names = _ca_local_sensitivity(
+        pid, param_names, nominal, mins, maxs,
+        gradient_method=gradient_method, rel_step=h,
+    )
 
     source = {
         "AD": "AD jacobian",
@@ -455,22 +466,6 @@ def compute_local_sensitivity(
         f"Local sensitivity ({source}, nominal={nominal_source}): "
         f"{len(param_names)} params x {len(output_names)} outputs",
         flush=True,
-    )
-
-    if engine is None:
-        raise RuntimeError(
-            "Local sensitivity needs a param-id engine; the runner must build one "
-            "(internal error)."
-        )
-    if gradient_method == "AD":
-        _check_ad_operations()
-    # CA answers for the scalar (const) observables only, so its list replaces
-    # `_output_names`: a series row has no local sensitivity to report, and it
-    # used to be listed with an empty cell -- which reads as "no sensitivity"
-    # rather than "not a question this can answer".
-    local, output_names = _ca_local_sensitivity(
-        engine.param_id, param_names, nominal, mins, maxs,
-        gradient_method=gradient_method, rel_step=h,
     )
 
     return {
