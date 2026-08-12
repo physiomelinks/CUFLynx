@@ -8,4 +8,4 @@ string, and ``package.json`` -- which cannot import Python -- is held to it by
 says so.
 """
 
-__version__ = "0.1.9"
+__version__ = "0.2.0"
