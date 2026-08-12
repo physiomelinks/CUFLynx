@@ -574,10 +574,34 @@ def _introspect_analysis_options() -> dict:
         out[mode] = {
             "label": meta.get("label", mode),
             "enable_flag": meta.get("enable_flag"),
+            # Emulation is the one mode with two flags: `enable_flag`
+            # (do_emulation) trains, `use_flag` (use_emulator) makes the other
+            # analyses evaluate what was trained. Absent on every other mode
+            # (CA #333), so a UI reads it as "this mode has a use step".
+            "use_flag": meta.get("use_flag"),
             "options_key": meta.get("options_key"),
             "options": [dict(o) for o in (meta.get("options") or [])],
         }
     return out
+
+
+def emulator_models() -> list[str]:
+    """The emulator names CA's ``emulator_settings.models`` accepts.
+
+    A runtime registry, not a schema: the list is whatever the *installed*
+    autoemulate registers, so it is discovered through CA's accessor rather than
+    hardcoded here (the same rule as the cost/operation funcs). Empty when CA is
+    too old to have it, or when autoemulate is not installed in the interpreter
+    the API is running in -- a UI shows the field as free text then, rather than
+    an authoritative-looking but stale menu.
+    """
+    try:
+        _ensure_ca_path()
+        from emulators.emulator_trainer import emulator_model_names  # noqa: PLC0415
+
+        return [str(name) for name in emulator_model_names()]
+    except Exception:  # noqa: BLE001 - older CA, or no autoemulate
+        return []
 
 
 def _dt_field() -> dict:

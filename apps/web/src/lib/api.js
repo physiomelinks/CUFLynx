@@ -361,6 +361,63 @@ export async function cancelSensitivity(jobId) {
   return data
 }
 
+// --- Emulator (surrogate model, CA #333) -------------------------------------
+
+/** The emulator settings form, from circulatory_autogen's `emulation` schema. */
+export async function getEmulatorDefaults() {
+  const { data } = await axios.get(url('/api/emulator/defaults'))
+  return data
+}
+
+/**
+ * The trained emulator for this study, if any: `{ emulator_dir, metadata }`.
+ * `metadata` is null when nothing has been trained yet, which is the normal
+ * starting state rather than an error.
+ */
+export async function getEmulatorInfo(modelId, configOutputsDir = '') {
+  const { data } = await axios.get(
+    url(
+      `/api/emulator/info?model_id=${encodeURIComponent(modelId)}` +
+        `&config_outputs_dir=${encodeURIComponent(configOutputsDir || '')}`,
+    ),
+  )
+  return data
+}
+
+export async function startEmulatorTraining(modelId, settings) {
+  const { data } = await axios.post(url('/api/emulator/train'), {
+    model_id: modelId,
+    settings,
+  })
+  return data
+}
+
+export async function getEmulatorStatus(jobId, offset = 0) {
+  const { data } = await axios.get(
+    url(`/api/emulator/${jobId}/status?offset=${offset}`),
+  )
+  return data
+}
+
+export async function cancelEmulatorTraining(jobId) {
+  const { data } = await axios.post(url(`/api/emulator/${jobId}/cancel`))
+  return data
+}
+
+/**
+ * The emulator's predicted features at the given parameter values.
+ * `{ labels, values, in_box }` — drawn beside the model's own features so the
+ * two can be compared against the ground truth while a slider moves.
+ */
+export async function predictEmulator(modelId, params, settings = {}) {
+  const { data } = await axios.post(url('/api/emulator/predict'), {
+    model_id: modelId,
+    params,
+    settings,
+  })
+  return data
+}
+
 export async function getUQDefaults() {
   const { data } = await axios.get(url('/api/uq/defaults'))
   return data

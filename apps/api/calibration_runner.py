@@ -29,6 +29,8 @@ import sys
 import traceback
 from pathlib import Path
 
+import emulator_config
+
 # Force a headless matplotlib backend before circulatory_autogen imports pyplot
 # (the post-calibration error plots run server-side with no display).
 os.environ.setdefault("MPLBACKEND", "Agg")
@@ -161,6 +163,11 @@ def run(config: dict) -> dict:
         flush=True,
     )
 
+    emulator_kwargs = emulator_config.engine_kwargs(config)
+    note = emulator_config.describe(config)
+    if note:
+        print(note, flush=True)
+
     param_id = CVS0DParamID(
         model_path=config["model_path"],
         model_type=model_type,
@@ -180,6 +187,7 @@ def run(config: dict) -> dict:
         # CUFLynx-authored operation/cost funcs loaded from external files (CA #303).
         operation_funcs_external_path=config.get("operation_funcs_external_path"),
         cost_funcs_external_path=config.get("cost_funcs_external_path"),
+        **emulator_kwargs,
     )
 
     # Gradient descent (sp_minimize) starts from param_init, which CA seeds from the

@@ -6,6 +6,7 @@ import PlotPanel from './components/PlotPanel.vue'
 import FileImport from './components/FileImport.vue'
 import StatusBar from './components/StatusBar.vue'
 import CalibrationPanel from './components/CalibrationPanel.vue'
+import EmulatorPanel from './components/EmulatorPanel.vue'
 import ProgressPanel from './components/ProgressPanel.vue'
 import SensitivityPanel from './components/SensitivityPanel.vue'
 import UQPanel from './components/UQPanel.vue'
@@ -25,6 +26,7 @@ import { useSimResult } from './stores/useSimResult'
 import { useObsData } from './stores/useObsData'
 import { useParamsForId } from './stores/useParamsForId'
 import { useCalibration, applyBestParams, expandBestFitParams } from './stores/useCalibration'
+import { useEmulator } from './stores/useEmulator'
 import { useSensitivity } from './stores/useSensitivity'
 import { useUQ } from './stores/useUQ'
 import {
@@ -34,6 +36,8 @@ import {
   costSensitivity,
   getCalibrationDefaults,
   getCalibrationPythons,
+  getEmulatorDefaults,
+  predictEmulator,
   getSensitivityDefaults,
   getUQDefaults,
   getConfig,
@@ -75,6 +79,7 @@ const obs = useObsData()
 const paramsForId = useParamsForId(sliders)
 const calib = useCalibration()
 const sa = useSensitivity()
+const emu = useEmulator()
 const uq = useUQ()
 
 const simTime = ref(10)
@@ -399,6 +404,15 @@ useRunNotifications(
 
 // Left column tab: 'params' | 'sensitivity' | 'calibration' | 'uq'
 const leftTab = ref('params')
+
+// Emulator (CA #333). `emuDefaults` is CA's emulation settings schema;
+// `emuSettings` mirrors the panel's live values so a run can carry them.
+const emuDefaults = ref({})
+const emuSettings = ref({})
+// The emulator's predicted features at the current slider values, keyed by CA's
+// own feature label. Null when no emulator is in use — which is what makes the
+// third reference line appear and disappear with the tick box.
+const emulatorFeatureMap = ref(null)
 // The right-hand import column is resizable via a draggable vertical divider:
 // drag it left/right to resize, drag it fully to the right edge to hide the column
 // (giving the plots/analysis more room). When hidden, a tab sits on the right edge
@@ -956,6 +970,11 @@ onMounted(async () => {
   try {
     saDefaults.value = await getSensitivityDefaults()
   } catch {
+    /* leave the panel on its built-in defaults */
+  }
+  try {
+    emuDefaults.value = await getEmulatorDefaults()
+  } catch {
     /* backend not up yet; panel falls back to built-in defaults */
   }
   try {
@@ -1096,6 +1115,8 @@ function onRunCalibration(settings) {
       ...settings,
       python_path: pythonPath.value,
       config_outputs_dir: outputsDir.value.trim() || undefined,
+      // Evaluate the trained emulator instead of the solver (Emulator tab).
+      use_emulator: emu.useEmulator.value,
     },
     // Live slider values, so gradient descent can start from the user's current
     // parameter values when "start from current" is enabled (#65). The θ-aware
@@ -1191,6 +1212,8 @@ function onRunSensitivity(settings) {
       ...calibFirst,
       python_path: pythonPath.value,
       config_outputs_dir: outputsDir.value.trim() || undefined,
+      // Evaluate the trained emulator instead of the solver (Emulator tab).
+      use_emulator: emu.useEmulator.value,
     },
     // Live slider values, so local SA with nominal="current" linearises about the
     // user's current parameter values rather than the model defaults (#65). The
@@ -1213,8 +1236,76 @@ function onRunUQ(settings) {
     ...settings,
     python_path: pythonPath.value,
     config_outputs_dir: outputsDir.value.trim() || undefined,
+    use_emulator: emu.useEmulator.value,
   })
 }
+
+function onTrainEmulator(settings) {
+  emu.train(model.modelId.value, {
+    ...settings,
+    python_path: pythonPath.value,
+    config_outputs_dir: outputsDir.value.trim() || undefined,
+  })
+}
+
+/**
+ * Refresh the emulator's predicted features for the current slider values.
+ *
+ * Only while the tick box is on: the prediction costs a round trip to the
+ * simulation worker, and with no emulator in use there is nothing to compare.
+ * A failure clears the overlay rather than surfacing an error — the model's own
+ * trace is still correct, and a missing dotted line is the honest way to say the
+ * surrogate could not answer here.
+ */
+async function refreshEmulatorFeatures() {
+  if (!emu.useEmulator.value || !model.modelId.value) {
+    emulatorFeatureMap.value = null
+    return
+  }
+  try {
+    const res = await predictEmulator(
+      model.modelId.value,
+      { ...sliders.analysisDict.value },
+      { config_outputs_dir: outputsDir.value.trim() || undefined },
+    )
+    const map = {}
+    ;(res.labels ?? []).forEach((label, i) => {
+      map[label] = res.values?.[i]
+    })
+    emulatorFeatureMap.value = map
+  } catch {
+    emulatorFeatureMap.value = null
+  }
+}
+
+// Follow the sliders, and the tick box itself, so the comparison is live while a
+// parameter is dragged — which is the only way to see where the surrogate starts
+// disagreeing with the model.
+watch(
+  () => [emu.useEmulator.value, JSON.stringify(sliders.analysisDict.value)],
+  () => {
+    refreshEmulatorFeatures()
+  },
+)
+
+// A newly trained emulator becomes the one the overlay uses.
+watch(
+  () => emu.state.value,
+  (state) => {
+    if (state === 'done') refreshEmulatorFeatures()
+  },
+)
+
+// Look for an already-trained emulator whenever the study or its outputs
+// directory changes: an emulator outlives the session that trained it, and one
+// trained by circulatory_autogen's own script counts too.
+watch(
+  () => [model.modelId.value, outputsDir.value],
+  () => {
+    emu.refresh(model.modelId.value, outputsDir.value.trim() || '')
+  },
+  { immediate: true },
+)
 
 // When a UQ run finishes, surface the posterior distributions automatically.
 watch(
@@ -1845,6 +1936,27 @@ watch(
           </button>
           <button
             class="left-tab"
+            :class="{ active: leftTab === 'emulator' }"
+            data-testid="tab-emulator"
+            @click="leftTab = 'emulator'"
+          >
+            Emulator
+            <span
+              v-if="emu.running.value"
+              class="tab-dot"
+              title="emulator training"
+            />
+            <!-- A dot the other tabs do not have: the emulator is the one tab
+                 whose setting changes what the *other* tabs do, so whether it is
+                 in use has to be visible from any of them. -->
+            <span
+              v-else-if="emu.useEmulator.value"
+              class="tab-dot tab-dot-on"
+              title="analyses are using the emulator"
+            />
+          </button>
+          <button
+            class="left-tab"
             :class="{ active: leftTab === 'sensitivity' }"
             data-testid="tab-sensitivity"
             @click="leftTab = 'sensitivity'"
@@ -1892,6 +2004,22 @@ watch(
             @save-current="saveParamsOpen = true"
             @reset-saved="savedParamsBrowserOpen = true"
             @toggle-saved="onToggleSavedRun"
+          />
+        </div>
+        <div v-show="leftTab === 'emulator'" class="left-pane left-pane-scroll">
+          <EmulatorPanel
+            v-model="emu.useEmulator.value"
+            :defaults="emuDefaults"
+            :can-run="canCalibrate"
+            :mpiexec-available="mpiexecAvailable"
+            :lines="emu.lines.value"
+            :state="emu.state.value"
+            :error="emu.error.value"
+            :metadata="emu.metadata.value"
+            :features="emu.features.value"
+            @run="onTrainEmulator"
+            @change="(s) => (emuSettings = s)"
+            @cancel="emu.cancel()"
           />
         </div>
         <div v-show="leftTab === 'sensitivity'" class="left-pane left-pane-scroll">
@@ -2082,6 +2210,7 @@ watch(
                 :stepped="cell.controlled"
                 :sim-result="cell.simResult"
                 :data-items="cell.dataItems"
+                :emulator-features="emulatorFeatureMap"
                 :saved-series="cell.savedSeries ?? []"
                 :removable="!!cell.removeId"
                 :switchable="!!cell.xLabel"
@@ -2836,6 +2965,12 @@ watch(
   margin-left: 0.35rem;
   border-radius: 50%;
   background: #ffc000;
+}
+/* Amber means "running"; green means "the emulator is what the other tabs will
+   evaluate". A different state deserves a different colour, or the one dot that
+   is not about a running job would read as one. */
+.tab-dot-on {
+  background: #3fb950;
 }
 .left-pane {
   flex: 1;

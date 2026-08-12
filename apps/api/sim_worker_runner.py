@@ -411,6 +411,47 @@ def _warning_texts(caught) -> list:
     return texts
 
 
+#: One loaded emulator bundle, keyed by directory. Predicting is a matrix
+#: multiply; loading is a joblib unpickle that drags in torch, so it happens once
+#: per worker rather than once per slider drag.
+_EMULATOR_CACHE = {}
+
+
+def _emulator_predict(msg):
+    """Predicted scalar features for one theta, from a trained emulator bundle.
+
+    A fifth verb, deliberately, rather than a fifth process: this is a *live*
+    computation -- it answers while a slider is being dragged, beside the model's
+    own features -- and the live tier is exactly what this worker is. It also has
+    to run in the interpreter the user chose, because loading the bundle needs the
+    autoemulate/torch that CUFLynx does not bundle.
+
+    Returns the emulator's own feature labels alongside the values: the caller
+    aligns by label rather than assuming its obs_data ordering matches the one
+    the emulator was trained on.
+    """
+    emulator_dir = msg["emulator_dir"]
+    bundle = _EMULATOR_CACHE.get(emulator_dir)
+    if bundle is None:
+        from emulators.emulator_bundle import EmulatorBundle
+
+        bundle = EmulatorBundle.load(emulator_dir)
+        _EMULATOR_CACHE[emulator_dir] = bundle
+    # 'warn', not the configured policy: this is a diagnostic overlay next to the
+    # real model output, and refusing to draw it is a worse answer than drawing it
+    # with the caller told it is extrapolating. An analysis run still refuses.
+    values = bundle.predict(msg["theta"], out_of_bounds="warn")
+    in_box = all(
+        lo <= float(v) <= hi
+        for v, lo, hi in zip(msg["theta"], bundle.param_mins, bundle.param_maxs)
+    )
+    return {
+        "labels": list(bundle.feature_labels),
+        "values": [float(v) for v in values],
+        "in_box": bool(in_box),
+    }
+
+
 def _handle(worker, msg):
     op = msg.get("op")
     tee = _Tee(sys.stderr)
@@ -419,6 +460,8 @@ def _handle(worker, msg):
             return {"ok": True, "result": {"pid": os.getpid()}}
         if op == "configure":
             return {"ok": True, "result": worker.configure(msg)}
+        if op == "emulator_predict":
+            return {"ok": True, "result": _emulator_predict(msg)}
         # CA warns about things the run cannot tell you itself -- above all that a
         # model is too stiff for the chosen integrator, which is the difference
         # between "this trace is wrong" and "this trace is wrong *and here is why,

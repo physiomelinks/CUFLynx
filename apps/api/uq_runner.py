@@ -22,6 +22,8 @@ import sys
 import traceback
 from pathlib import Path
 
+import emulator_config
+
 # Headless matplotlib for any plots circulatory_autogen produces server-side.
 os.environ.setdefault("MPLBACKEND", "Agg")
 
@@ -145,6 +147,9 @@ def _make_param_id(config, settings, obs_path, *, mcmc, options_key, options):
         # CUFLynx-authored operation/cost funcs loaded from external files (CA #303).
         operation_funcs_external_path=config.get("operation_funcs_external_path"),
         cost_funcs_external_path=config.get("cost_funcs_external_path"),
+        # On the trained emulator when the user asked for it, so a posterior is
+        # sampled from the same forward model the calibration used (CA #333).
+        **emulator_config.engine_kwargs(config),
     )
     kwargs[options_key] = options
     return CVS0DParamID(**kwargs)

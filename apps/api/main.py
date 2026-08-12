@@ -64,6 +64,7 @@ import cost_gradient
 import cost_sensitivity
 from obs_series import compute_output_series
 import params_json
+import ca_run_history
 from params_for_id import ParamsForIdError, parse_params_for_id
 import saved_runs
 from param_io import ParamIOError, load_param_values, save_param_values
@@ -74,6 +75,7 @@ from solver_options import (
     check_solver_info,
     filter_solver_info,
     get_analysis_options,
+    emulator_models,
     get_param_id_methods,
     get_param_modifier_operations,
     get_param_prior_types,
@@ -90,6 +92,7 @@ from user_funcs import (
     save_user_func,
 )
 from sensitivity import sensitivity
+from emulator import emulator
 from uq import uq
 
 app = FastAPI(title="CUFLynx API", version=__version__)
@@ -261,6 +264,7 @@ def _set_analysis_python(path: str) -> None:
     """
     calibration.python = path
     sensitivity.python = path
+    emulator.python = path
     uq.python = path
     engine.worker_python = path
     reset_python_cache()
@@ -1895,6 +1899,9 @@ def calibration_run(req: CalibrationRequest) -> dict:
         "best_fit_params": best_fit_params,
         # Global random seed (Settings popup); None => non-deterministic run.
         "seed": _analysis_seed,
+        # Evaluate the trained emulator instead of the solver when the
+        # Emulator tab's tick box is on (CA #333).
+        **_emulator_run_config(req.model_id, req.settings),
     }
     try:
         job_id = calibration.start(config)
@@ -2083,12 +2090,232 @@ def sensitivity_run(req: SensitivityRequest) -> dict:
         "current_params": req.current_params,
         # Global random seed (Settings popup); None => non-deterministic run.
         "seed": _analysis_seed,
+        # Evaluate the trained emulator instead of the solver when the Emulator
+        # tab's tick box is on (CA #333).
+        **_emulator_run_config(req.model_id, req.settings),
     }
     try:
         job_id = sensitivity.start(config)
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"job_id": job_id}
+
+
+class EmulatorTrainRequest(BaseModel):
+    model_id: str
+    settings: dict = Field(default_factory=dict)
+
+
+class EmulatorPredictRequest(BaseModel):
+    model_id: str
+    params: dict = Field(default_factory=dict)
+    settings: dict = Field(default_factory=dict)
+
+
+def _emulator_dir_for(model_id: str, settings: dict) -> str:
+    """Where this study's emulator lives, from the same rule the trainer uses.
+
+    Derived rather than remembered, so a training run and a later analysis agree
+    without a second setting to keep in step, and so an emulator trained by CA's
+    own script into the same outputs directory is found here too.
+    """
+    record = _get_model(model_id)
+    configured = (settings.get("config_outputs_dir") or "").strip()
+    output_dir = configured or str(UPLOAD_DIR / f"emu_{model_id}")
+    return ca_run_history.emulator_dir(
+        output_dir,
+        record.meta.name or "model",
+        str(record.obs_path) if record.obs_path else None,
+    )
+
+
+def _emulator_run_config(model_id: str, settings: dict) -> dict:
+    """Config keys that put an analysis run on the trained emulator, or ``{}``.
+
+    Lifted out of the panel's settings here rather than sent as a path by the
+    frontend: the location is derived from the outputs directory by one rule
+    (:func:`ca_run_history.emulator_dir`), and deriving it in one place is what
+    stops a run training into one directory and reading from another.
+
+    Refuses up front when the tick box is on and nothing is trained — the run
+    would otherwise start, compile the model, and fail inside CA.
+    """
+    if not settings.get("use_emulator"):
+        return {}
+    emu_dir = _emulator_dir_for(model_id, settings)
+    if ca_run_history.emulator_metadata(emu_dir) is None:
+        raise HTTPException(
+            status_code=422,
+            detail="'use the emulator' is on but no emulator has been trained for "
+            "this study; train one in the Emulator tab first",
+        )
+    return {
+        "use_emulator": True,
+        "emulator_dir": emu_dir,
+        "emulator_settings": {
+            k: v
+            for k, v in settings.items()
+            if k in ("min_r2", "out_of_bounds", "fd_rel_step")
+        },
+    }
+
+
+@app.get("/api/emulator/defaults")
+def emulator_defaults() -> dict:
+    """The emulator settings form, from CA's ``emulation`` schema entry (#333).
+
+    ``supported`` is False on a circulatory_autogen that predates emulators, so
+    the tab can say so plainly instead of rendering an empty form. ``models`` is a
+    runtime registry (whatever autoemulate has registered), not a schema, so an
+    empty list means "type a name" rather than "there are none".
+    """
+    meta = get_analysis_options().get("emulation", {})
+    return {
+        "supported": bool(meta.get("options")),
+        "label": meta.get("label", "Emulator"),
+        "enable_flag": meta.get("enable_flag"),
+        "use_flag": meta.get("use_flag"),
+        "options": meta.get("options", []),
+        "models": emulator_models(),
+    }
+
+
+@app.get("/api/emulator/info")
+def emulator_info(model_id: str, config_outputs_dir: str = "") -> dict:
+    """The trained emulator for this study, if there is one.
+
+    Read on load and after a run so the tab can show what is available -- and,
+    above all, its held-out R2 per feature. Absent is not an error: most studies
+    have no emulator, and the tab's job is then to offer to train one.
+    """
+    emu_dir = _emulator_dir_for(model_id, {"config_outputs_dir": config_outputs_dir})
+    metadata = ca_run_history.emulator_metadata(emu_dir)
+    return {"emulator_dir": emu_dir, "metadata": metadata}
+
+
+@app.post("/api/emulator/train")
+def emulator_train(req: EmulatorTrainRequest) -> dict:
+    record = _get_model(req.model_id)
+    if record.obs_path is None or record.params_path is None:
+        raise HTTPException(
+            status_code=422,
+            detail="training an emulator requires both an obs_data.json and a "
+            "params_for_id.csv to be uploaded for this model",
+        )
+    python_path = req.settings.get("python_path") or None
+    if python_path and not (
+        os.path.isfile(python_path) and os.access(python_path, os.X_OK)
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail=f"python interpreter not found or not executable: {python_path}",
+        )
+
+    configured = (req.settings.get("config_outputs_dir") or "").strip()
+    if configured and not os.path.isabs(configured):
+        raise HTTPException(
+            status_code=422, detail="config_outputs_dir must be an absolute path"
+        )
+    output_dir = configured or str(UPLOAD_DIR / f"emu_{req.model_id}")
+    config = {
+        "model_path": resolve_model_path(
+            str(record.path), engine.model_type, model_id=req.model_id
+        ),
+        "model_type": engine.model_type,
+        "solver": engine.solver,
+        "solver_info": dict(engine.solver_info),
+        "obs_path": str(record.obs_path),
+        "params_path": str(record.params_path),
+        "operation_funcs_external_path": user_func_path("operation", configured or None),
+        "cost_funcs_external_path": user_func_path("cost", configured or None),
+        "output_dir": output_dir,
+        "file_prefix": record.meta.name or "model",
+        "num_cores": int(req.settings.get("num_cores", 1) or 1),
+        "python": python_path,
+        "settings": req.settings,
+        "seed": _analysis_seed,
+    }
+    try:
+        job_id = emulator.start(config)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"job_id": job_id}
+
+
+@app.get("/api/emulator/{job_id}/status")
+def emulator_status(job_id: str, offset: int = 0) -> dict:
+    status = emulator.status(job_id, offset)
+    if status is None:
+        raise HTTPException(status_code=404, detail="emulator job not found")
+    return status
+
+
+@app.post("/api/emulator/{job_id}/cancel")
+def emulator_cancel(job_id: str) -> dict:
+    if not emulator.cancel(job_id):
+        raise HTTPException(status_code=404, detail="emulator job not found")
+    return {"ok": True}
+
+
+@app.post("/api/emulator/predict")
+def emulator_predict(req: EmulatorPredictRequest) -> dict:
+    """The emulator's predicted features at the current slider values (#333).
+
+    Drawn beside the model's own features so the two can be read against the
+    ground truth in the same plot -- which is the only way to see, while moving a
+    parameter, whether the surrogate still agrees with the model there.
+
+    Values are returned keyed by the emulator's own feature labels; the caller
+    matches them to its data_items rather than assuming a shared ordering.
+    """
+    emu_dir = _emulator_dir_for(req.model_id, req.settings)
+    metadata = ca_run_history.emulator_metadata(emu_dir)
+    if metadata is None:
+        raise HTTPException(
+            status_code=404,
+            detail="no trained emulator for this study; train one in the Emulator tab",
+        )
+    theta = _emulator_theta(req.model_id, req.params, metadata)
+    try:
+        result = engine.emulator_predict(emu_dir, theta)
+    except SimulationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return result
+
+
+def _emulator_theta(model_id: str, params: dict, metadata: dict) -> list:
+    """The theta vector for the emulator, ordered as it was trained.
+
+    A params_for_id row is one calibrated variable that may write several model
+    constants (#193), and the emulator carries one value per row. The sliders are
+    keyed by qname, so the value is taken from the row's first member -- the same
+    anchor CUFLynx uses everywhere else for a grouped row.
+    """
+    record = _get_model(model_id)
+    entries = parse_params_for_id(Path(record.params_path).read_bytes())
+    theta = []
+    for entry in entries:
+        value = None
+        for qname in entry.qnames or [entry.qname]:
+            if qname in params:
+                value = float(params[qname])
+                break
+        if value is None:
+            # No slider for this row (it was never added, or the study changed):
+            # its own initial value is the honest stand-in, and the midpoint of
+            # its range when it has none.
+            value = entry.initial_value
+            if value is None:
+                value = 0.5 * (float(entry.min) + float(entry.max))
+        theta.append(float(value))
+    expected = len(metadata.get("param_entry_labels") or [])
+    if expected and len(theta) != expected:
+        raise HTTPException(
+            status_code=409,
+            detail=f"this emulator was trained on {expected} parameters but the "
+            f"study now has {len(theta)}; retrain it",
+        )
+    return theta
 
 
 @app.get("/api/sensitivity/{job_id}/status")
@@ -2211,6 +2438,9 @@ def uq_run(req: UQRequest) -> dict:
         "best_params": best_params,
         # Global random seed (Settings popup); None => non-deterministic run.
         "seed": _analysis_seed,
+        # Evaluate the trained emulator instead of the solver when the
+        # Emulator tab's tick box is on (CA #333).
+        **_emulator_run_config(req.model_id, req.settings),
     }
     try:
         job_id = uq.start(config)

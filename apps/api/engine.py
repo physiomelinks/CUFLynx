@@ -730,6 +730,43 @@ class SimulationEngine:
         python = (self.worker_python or "").strip()
         return bool(python) and not _is_this_interpreter(python)
 
+    def emulator_predict(self, emulator_dir: str, theta) -> dict:
+        """A trained emulator's predicted features for ``theta`` (CA #333).
+
+        Runs in the simulation worker when one is configured, because loading the
+        bundle needs the autoemulate/torch that CUFLynx does not bundle — the same
+        reason analysis runs go to the user's interpreter. With no worker there is
+        no interpreter to borrow, so this says so rather than failing on an import
+        deep inside a joblib unpickle.
+
+        Returns ``{labels, values, in_box}``; the caller aligns by label rather
+        than assuming its obs_data order matches the emulator's.
+        """
+        theta = [float(v) for v in theta]
+        if self.uses_worker():
+            remote = self._worker_call(
+                "emulator_predict", {}, emulator_dir=emulator_dir, theta=theta
+            )
+            return remote.get("result") or {}
+        try:
+            from emulators.emulator_bundle import EmulatorBundle  # noqa: PLC0415
+        except ImportError as exc:
+            raise SimulationError(
+                "emulator predictions need autoemulate, which CUFLynx does not "
+                "bundle. Choose a Python that has it in Settings — the same "
+                "interpreter the training run uses."
+            ) from exc
+        bundle = EmulatorBundle.load(emulator_dir)
+        values = bundle.predict(theta, out_of_bounds="warn")
+        in_box = all(
+            lo <= v <= hi for v, lo, hi in zip(theta, bundle.param_mins, bundle.param_maxs)
+        )
+        return {
+            "labels": list(bundle.feature_labels),
+            "values": [float(v) for v in values],
+            "in_box": bool(in_box),
+        }
+
     def reset(self) -> None:
         """Drop all cached helpers/runners (used between tests).
 

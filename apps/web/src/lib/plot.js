@@ -87,6 +87,35 @@ export function obsModelVar(item) {
   return item.variable
 }
 
+/**
+ * The emulator's prediction for one data_item, or null.
+ *
+ * Matched on circulatory_autogen's own feature label — `name (operation operand)`,
+ * disambiguated by experiment when a study repeats one — because that is what the
+ * emulator recorded when it was trained. Falling back to the plotting name alone
+ * keeps a single-experiment study working when nothing needed disambiguating.
+ */
+export function emulatorFeatureFor(features, item) {
+  if (!features || !item) return null
+  const name = item.name_for_plotting ?? item.variable ?? ''
+  const op = item.operation
+  const operand = (item.operands ?? [])[0] ?? item.variable ?? ''
+  const candidates = [
+    `${name} (${op} ${operand})`,
+    `${name} (${operand})`,
+    name,
+  ]
+  for (const key of candidates) {
+    if (key && features[key] != null) return features[key]
+  }
+  // Disambiguated form: CA appends "[exp e, sub s]" only when a label repeats.
+  const prefix = `${name} (${op} ${operand}) [`
+  for (const key of Object.keys(features)) {
+    if (key.startsWith(prefix)) return features[key]
+  }
+  return null
+}
+
 /** A data_item that renders as a reference line (horizontal or vertical). */
 export function isPlottableOverlay(item) {
   if (item.data_type === 'frequency') return false // frequency overlays: future work
@@ -370,16 +399,18 @@ export function attachOutputSeries(items, seriesByIndex, allItems) {
   })
 }
 
-function refLine({ name, op, role, dashed, kind, color: c, data }) {
+function refLine({ name, op, role, dashed, dotted, kind, color: c, data }) {
   return {
     label: `${name} (${role}${op ? ' ' + op : ''})`,
     mathLabel: name,
     suffix: `${role}${op ? ' ' + op : ''}`,
-    legendStyle: dashed ? 'dash' : 'line',
+    // Three distinguishable styles for the three things a feature can be:
+    // solid = the model, dashed = the measurement, dotted = the emulator.
+    legendStyle: dotted ? 'dot' : dashed ? 'dash' : 'line',
     kind,
     data,
     borderColor: c,
-    borderDash: dashed ? [6, 4] : undefined,
+    borderDash: dotted ? [2, 3] : dashed ? [6, 4] : undefined,
     borderWidth: 1.5,
     pointRadius: 0,
   }
@@ -389,9 +420,14 @@ function refLine({ name, op, role, dashed, kind, color: c, data }) {
  * Build Chart.js datasets from a simulation result and obs_data items.
  *
  * Simulation outputs render as solid lines. Each obs_data `data_item` overlays:
- *  - the experimental `value` as a dashed reference line, and
+ *  - the experimental `value` as a dashed reference line,
  *  - the calculated feature (its `operation` applied to the sim trace) as a
- *    solid reference line in the same colour, so the two can be compared.
+ *    solid reference line in the same colour, so the two can be compared, and
+ *  - when an emulator is in use, its prediction of the same feature as a dotted
+ *    line in that colour (`emulatorFeatures`). Three lines in one colour is the
+ *    whole point: ground truth, what the model says, and what the surrogate says
+ *    it says — read together, while a parameter moves, they show whether the
+ *    emulator is still telling the truth at this point in the space (CA #333).
  * `series` items render as a scatter overlay.
  *
  * Datasets carry `mathLabel` (LaTeX), `suffix` and `legendStyle` for the HTML
@@ -410,6 +446,11 @@ export function buildChartData(simResult, options = {}) {
   // mean nothing against another variable's axis: drop them rather than draw
   // them in the wrong place. (Extra plots pass dataItems: [] anyway.)
   const dataItems = phasePlane ? [] : (options.dataItems ?? [])
+  // { [feature label]: predicted value } from a trained emulator, keyed by the
+  // emulator's own labels — matched here by label rather than by position,
+  // because the emulator carries only the scalar (constant) features and the
+  // obs_data may hold others in between.
+  const emulatorFeatures = phasePlane ? null : (options.emulatorFeatures ?? null)
   const varLabel = options.varLabel ?? ''
   // Step series (e.g. controlled params_to_change inputs) must not be smoothed,
   // otherwise the bezier overshoots the risers. A phase-plane trace loops back
@@ -576,6 +617,16 @@ export function buildChartData(simResult, options = {}) {
       if (calcY != null) {
         datasets.push(
           refLine({ name, op, role: 'calc', dashed: false, kind: 'calc-constant', color: c, data: hline(calcY) }),
+        )
+      }
+      const emuValue = emulatorFeatureFor(emulatorFeatures, item)
+      if (emuValue != null) {
+        // Same base shift as the calc line for max_minus_min, so the emulator's
+        // value is read against the same zero as the model's rather than
+        // floating somewhere the eye cannot compare it.
+        const emuY = op === 'max_minus_min' && series.length ? minOf(series) + emuValue : emuValue
+        datasets.push(
+          refLine({ name, op, role: 'emu', dotted: true, kind: 'emu-constant', color: c, data: hline(emuY) }),
         )
       }
     }
