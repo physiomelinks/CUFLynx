@@ -146,6 +146,7 @@ class UQManager:
     def _finalize(self, job: UQJob, code: int) -> None:
         with job.lock:
             if job.state == "cancelled":
+                self._salvage_partial(job)
                 return
             # A non-zero exit *after* the DONE marker is a teardown failure,
             # not a failed run -- see calibration.finished_before_exiting.
@@ -173,6 +174,48 @@ class UQManager:
             else:
                 job.state = "error"
                 job.error = job.error or f"runner exited with code {code}"
+
+    def _salvage_partial(self, job: UQJob) -> None:
+        """Build the posterior from the chain a cancelled run had already sampled.
+
+        Cancelling used to throw the run away: the posterior is derived from uq_samples.npy,
+        which the runner writes only when it finishes, so the Analysis tab stayed empty even
+        though thousands of usable draws were sitting on disk. Since CA #418 writes the chain as
+        it samples, a cancelled run has one -- it is just shorter than the one that was asked
+        for, which is a reason to label it, not to discard it.
+
+        Best effort throughout: a cancel that cannot be salvaged must still be a clean cancel.
+        """
+        try:
+            import numpy as np  # noqa: PLC0415
+
+            samples = mcmc_progress.read_chain(job.output_dir)
+            if samples is None or samples.shape[0] < 2:
+                return
+            steps = samples.shape[0]
+            cut = mcmc_progress.burn_in_index(steps, job.burn_in, job.target_steps)
+            note = f"cancelled after {steps} steps"
+            if cut >= steps - 1:
+                # The configured burn-in is past where the run got to. Half the chain is CA's
+                # own default, and saying so is better than reporting one sample.
+                cut = steps // 2
+                note += "; the configured burn-in was never reached, so half the chain was"
+                note += " discarded instead"
+            flat = samples[cut:].reshape(-1, samples.shape[2])
+
+            run_dir = ca_run_history.find_run_dir(job.output_dir) or job.output_dir
+            qnames = [row[0] for row in ca_run_history.param_names(run_dir) or []]
+            if len(qnames) != samples.shape[2]:
+                qnames = [f"param_{i}" for i in range(samples.shape[2])]
+
+            ca_run_history.write_uq_samples(job.output_dir, np.asarray(flat), qnames)
+            params = ca_run_history.uq_distributions(job.output_dir)
+            if params:
+                job.params = params
+                job.method = job.method or "mcmc"
+                job.warning = f"Posterior from a partial chain ({note})."
+        except Exception:  # noqa: BLE001 - a failed salvage is still a clean cancel
+            return
 
     def status(self, job_id: str, offset: int = 0) -> dict | None:
         job = self._job

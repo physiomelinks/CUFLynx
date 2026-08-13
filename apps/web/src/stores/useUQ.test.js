@@ -107,3 +107,40 @@ describe('a job the server has forgotten', () => {
     expect(uq.error.value).toContain('still in the run directory')
   })
 })
+
+describe('cancelling keeps what was sampled', () => {
+  it('picks up the posterior the server salvages from the partial chain', async () => {
+    // Cancelling used to throw the run away: the posterior is derived from a file the runner
+    // writes only on a clean finish, so Analysis stayed empty with thousands of usable draws
+    // on disk. The salvage happens as the runner exits, i.e. after cancel() returns.
+    getUQStatus
+      .mockResolvedValueOnce({ state: 'running', lines: [], next_offset: 0 })
+      .mockResolvedValueOnce({ state: 'cancelled', lines: [], next_offset: 0, params: null })
+      .mockResolvedValue({
+        state: 'cancelled', lines: [], next_offset: 0, method: 'mcmc',
+        params: [{ qname: 'a', mean: 1 }], warning: 'Posterior from a partial chain.',
+      })
+    getUQProgress.mockResolvedValue(CHAIN)
+
+    const uq = useUQ({ intervalMs: 10000, chainIntervalMs: 10000 })
+    await uq.start('m1', {})
+    await uq.cancel()
+
+    expect(uq.state.value).toBe('cancelled')
+    expect(uq.params.value).toHaveLength(1)
+    // Labelled, because it is not the posterior that was asked for.
+    expect(uq.warning.value).toContain('partial chain')
+  })
+
+  it('a cancel with nothing to salvage is still a clean cancel', async () => {
+    getUQStatus.mockResolvedValue({ state: 'cancelled', lines: [], next_offset: 0, params: null })
+    getUQProgress.mockResolvedValue({ ...CHAIN, steps: 0 })
+
+    const uq = useUQ({ intervalMs: 10000, chainIntervalMs: 10000 })
+    await uq.start('m1', {})
+    await uq.cancel()
+
+    expect(uq.state.value).toBe('cancelled')
+    expect(uq.error.value).toBe('')
+  })
+})

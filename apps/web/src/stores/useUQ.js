@@ -20,6 +20,8 @@ export function useUQ(options = {}) {
   // [{ qname, mean, std, q05, q50, q95, bins, counts }, ...]
   const params = ref([])
   const error = ref('')
+  // Set when a result is real but qualified -- a posterior from a cancelled run's partial chain.
+  const warning = ref('')
   // The three live views of the chain; null until the run writes its first checkpoint.
   const progress = ref(null)
 
@@ -40,6 +42,7 @@ export function useUQ(options = {}) {
     method.value = null
     params.value = []
     error.value = ''
+    warning.value = ''
     progress.value = null
   }
 
@@ -72,6 +75,7 @@ export function useUQ(options = {}) {
         method.value = s.method
         params.value = s.params ?? []
         error.value = s.error || ''
+        warning.value = s.warning || ''
         // One last look at the chain now the run has stopped.
         //
         // CA writes the finished chain as the very last thing it does, *after* the poll that
@@ -116,6 +120,30 @@ export function useUQ(options = {}) {
     }
   }
 
+  /**
+   * Pick up the posterior the server salvages from a cancelled run's partial chain.
+   *
+   * The salvage happens when the runner process actually exits, which is after the cancel
+   * request returns -- so one immediate poll would usually miss it. A few short retries cover
+   * the gap without keeping a timer alive for a run that is over.
+   */
+  async function collectCancelledResults(attempts = 6, delayMs = 500) {
+    for (let attempt = 0; attempt < attempts; attempt++) {
+      try {
+        const s = await getUQStatus(jobId, offset)
+        if (s?.params?.length) {
+          params.value = s.params
+          method.value = s.method ?? method.value
+          warning.value = s.warning || ''
+          return
+        }
+      } catch {
+        return
+      }
+      await new Promise((resolve) => setTimeout(resolve, delayMs))
+    }
+  }
+
   async function cancel() {
     if (timer) clearTimeout(timer)
     if (chainTimer) clearTimeout(chainTimer)
@@ -130,10 +158,12 @@ export function useUQ(options = {}) {
       state.value = 'cancelled'
       // A cancelled run still has every step it sampled before it stopped.
       await pollChain()
+      await collectCancelledResults()
     }
   }
 
   const running = computed(() => state.value === 'running')
 
-  return { state, lines, method, params, error, running, progress, start, cancel, reset }
+  return { state, lines, method, params, error, warning, running, progress, start, cancel,
+    reset }
 }
