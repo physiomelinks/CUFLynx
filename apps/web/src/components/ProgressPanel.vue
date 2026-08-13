@@ -13,6 +13,7 @@ import {
   Tooltip,
 } from 'chart.js'
 import { PALETTE, shadeForStart } from '../lib/plot'
+import MCMCProgress from './MCMCProgress.vue'
 
 ChartJS.register(
   LinearScale,
@@ -93,6 +94,10 @@ const props = defineProps({
   // Multi-start cost-gradient trajectories: { param_names, starts } where
   // starts[start][iteration] = [dJ/dp per param]. Empty for GA / single-start runs.
   startGrads: { type: Object, default: () => ({ param_names: [], starts: [] }) },
+  // The growing MCMC chain, as /api/uq/{job}/progress returns it (#244). Null until the run
+  // writes its first checkpoint; `uqRunning` distinguishes "not started" from "not yet".
+  uqProgress: { type: Object, default: null },
+  uqRunning: { type: Boolean, default: false },
 })
 
 const hasData = computed(
@@ -102,6 +107,10 @@ const hasData = computed(
     hasStartParams.value ||
     hasGradient.value,
 )
+
+// An MCMC run produces no cost history, so the calibration charts above stay empty for it --
+// the chain is its progress, and it is what should be on screen while it samples.
+const hasMCMC = computed(() => props.uqRunning || (props.uqProgress?.steps ?? 0) > 0)
 // Multi-start when CA emitted per-start cost curves with more than one start.
 const multiStart = computed(
   () => props.startCosts.length > 0 && props.startCosts.some((c) => c && c.length),
@@ -467,10 +476,13 @@ const paramOptions = {
 
 <template>
   <div class="progress-panel" data-testid="progress-panel">
-    <p v-if="!hasData" class="empty-hint">
+    <!-- MCMC first while it samples: it is the run that is happening now, and an MCMC run
+         leaves the calibration charts below empty because it produces no cost history. -->
+    <MCMCProgress v-if="hasMCMC" :progress="uqProgress" :running="uqRunning" />
+    <p v-if="!hasData && !hasMCMC" class="empty-hint">
       Run a calibration to see cost and parameter progress.
     </p>
-    <template v-else>
+    <template v-else-if="hasData">
       <section class="progress-chart">
         <div class="chart-head">
           <h3>{{ metricLabel === 'cost' ? 'Cost' : 'Cost gradient' }} vs {{ xLabel }}</h3>

@@ -28,6 +28,7 @@ from calibration import (  # noqa: F401  (list_python_interpreters re-exported)
     write_run_config,
 )
 import ca_run_history
+import mcmc_progress
 from runtime_paths import default_python, runner_command, runner_launch_env, runner_path
 
 RUNNER_PATH = str(runner_path("uq_runner.py"))
@@ -175,6 +176,23 @@ class UQManager:
                 "error": job.error,
                 "warning": job.warning,
             }
+
+    def progress(self, job_id: str) -> dict | None:
+        """The growing chain, for the live plots (#244).
+
+        Reads mcmc_chain.npy straight from the run directory rather than going through the job:
+        the runner subprocess owns that file and rewrites it every checkpoint (CA #417), so
+        there is nothing here to lock. Before the first checkpoint it simply reports no steps.
+        """
+        job = self._job
+        if job is None or job.id != job_id:
+            return None
+        labels = [row[0] for row in ca_run_history.param_names(job.output_dir) or []]
+        return {
+            "job_id": job.id,
+            "state": job.state,
+            **mcmc_progress.progress(job.output_dir, labels),
+        }
 
     def cancel(self, job_id: str) -> bool:
         job = self._job

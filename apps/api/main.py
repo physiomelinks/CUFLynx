@@ -2505,6 +2505,20 @@ def uq_status(job_id: str, offset: int = 0) -> dict:
     return status
 
 
+@app.get("/api/uq/{job_id}/progress")
+def uq_progress(job_id: str) -> dict:
+    """The chain so far, as the three views the Progress tab draws (#244).
+
+    Separate from /status on purpose: status is polled for log lines at a rate suited to text,
+    and the chain is the largest thing a run produces. Keeping them apart lets the client ask
+    for each at the rate it is worth.
+    """
+    progress = uq.progress(job_id)
+    if progress is None:
+        raise HTTPException(status_code=404, detail="UQ job not found")
+    return progress
+
+
 @app.post("/api/uq/{job_id}/cancel")
 def uq_cancel(job_id: str) -> dict:
     if not uq.cancel(job_id):

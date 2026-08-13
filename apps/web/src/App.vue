@@ -2251,6 +2251,8 @@ watch(
             :grad-history="calib.gradHistory.value"
             :start-grads="calib.startGrads.value"
             :param-specs="paramsForId.paramSpecs.value"
+            :uq-progress="uq.progress.value"
+            :uq-running="uq.running.value"
           />
         </div>
         <div v-show="centerTab === 'analysis'" class="plot-groups">

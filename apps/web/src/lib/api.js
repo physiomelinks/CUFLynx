@@ -436,6 +436,17 @@ export async function getUQStatus(jobId, offset = 0) {
   return data
 }
 
+/**
+ * The growing MCMC chain, as the three views the Progress tab draws (#244).
+ *
+ * Separate from getUQStatus because it is the heaviest thing a run produces: status is polled
+ * for log lines at a rate that suits text, this at one that suits a plot.
+ */
+export async function getUQProgress(jobId) {
+  const { data } = await axios.get(url(`/api/uq/${jobId}/progress`))
+  return data
+}
+
 export async function cancelUQ(jobId) {
   const { data } = await axios.post(url(`/api/uq/${jobId}/cancel`))
   return data
