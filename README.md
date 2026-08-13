@@ -1,9 +1,33 @@
-<img src="apps/web/public/logo.png" alt="CUFLynx" width="140" align="right" />
+<div align="center">
+
+  <!-- Logo Banner or Transparent Icon -->
+  <a href="https://github.com/physiomelinks/CUFLynx">
+    <img 
+        src="apps/web/public/logo_transparent.png" 
+        alt="CUFLynx Logo" 
+        width="180" 
+        style="filter: drop-shadow(0px 0px 8px rgba(255, 255, 255, 0.49));"
+    >
+    </a>
+
+  <!-- Main Title (Using styled <p> to prevent the bottom border/line) -->
+  <p align="center">
+    <strong style="font-size: 2.25em;">CUFLynx</strong>
+  </p>
+
+  <!-- Badges directly below title without any separating line -->
+  <p align="center">
+    <a href="https://github.com/physiomelinks/CUFLynx/releases/latest">
+      <img src="https://img.shields.io/github/v/release/physiomelinks/CUFLynx?label=download&style=flat-square" alt="Latest Release">
+    </a>
+    <a href="https://github.com/physiomelinks/CUFLynx/blob/main/LICENSE">
+      <img src="https://img.shields.io/badge/license-Apache--2.0-green?style=flat-square" alt="License">
+    </a>
+  </p>
+
+</div>
 
 # CUFLynx
-
-[![Latest release](https://img.shields.io/github/v/release/physiomelinks/CUFLynx?label=download)](https://github.com/physiomelinks/CUFLynx/releases/latest)
-
 A GUI for [Circulatory Autogen](https://github.com/physiomelinks/circulatory_autogen):
 run sensitivity analysis, calibration and uncertainty quantification, and
 manually explore how parameters affect your (CellML) model outputs.
