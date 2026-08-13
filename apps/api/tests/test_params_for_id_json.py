@@ -276,21 +276,28 @@ def no_ca(monkeypatch):
     monkeypatch.setitem(sys.modules, "parsers.PrimitiveParsers", None)
 
 
-def test_reading_a_csv_without_ca_says_how_to_fix_it(no_ca):
-    """No local fallback: the packaged app starts with no CA dir configured, so
-    the error must say what to do (Settings -> CA dir), not merely fail."""
-    with pytest.raises(params_json.ParamsJsonError, match="Settings"):
-        params_json.csv_to_json("vessel_name,param_name,min,max\na,x,1,2\n")
+def test_reading_a_csv_without_ca_uses_the_local_mapping(no_ca):
+    """A packaged app starts with no CA directory, and a study starts with a CSV.
+
+    This used to raise, pointing the user at Settings -- the #208 position, that
+    a fallback only exercised where CA is absent drifts unobserved. The state
+    turned out not to be a corner: it is every fresh download, and it left the
+    app unable to open a params_for_id at all. The drift objection is answered
+    instead of ignored, by test_params_csv_fallback_matches_ca in
+    test_params_csv_without_ca.py, which compares the two where CA *is* present.
+    """
+    doc = params_json.csv_to_json("vessel_name,param_name,min,max\na,x,1,2\n")
+    assert doc["params"][0]["targets"] == ["a/x"]
 
 
-def test_uploading_a_csv_without_ca_is_a_422_pointing_at_settings(no_ca, client):
+def test_uploading_a_csv_without_ca_now_succeeds(no_ca, client):
     resp = client.post(
         "/api/params_for_id/upload",
         content="vessel_name,param_name,min,max\na,x,1,2\n",
         headers={"content-type": "text/csv"},
     )
-    assert resp.status_code == 422
-    assert "Settings" in resp.json()["detail"]
+    assert resp.status_code == 200, resp.text
+    assert [p["qname"] for p in resp.json()["params"]] == ["a/x"]
 
 
 def test_uploading_json_without_ca_still_works(no_ca, client):
