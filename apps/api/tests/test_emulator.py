@@ -358,3 +358,47 @@ def test_emulator_models_is_empty_when_nothing_can_answer(monkeypatch, tmp_path)
     solver_options._MODEL_CACHE.clear()
 
     assert solver_options.emulator_models("/venv/bin/python") == []
+
+
+def test_runner_gives_the_root_logger_a_handler(monkeypatch):
+    """autoemulate's records propagate to the root, where nothing was configured -- so Python
+    fell back to logging.lastResort, which writes to stderr. Under mpiexec the non-zero ranks
+    have theirs torn down, and every INFO line became a "--- Logging error --- ValueError: I/O
+    operation on closed file" traceback in the run log."""
+    import logging
+
+    import emulator_runner
+
+    root = logging.getLogger()
+    saved = root.handlers[:]
+    try:
+        root.handlers = []
+        emulator_runner.configure_logging(rank=0)
+        assert root.handlers, "rank 0 must have somewhere to log"
+        assert not isinstance(root.handlers[0], logging.NullHandler)
+
+        root.handlers = []
+        emulator_runner.configure_logging(rank=3)
+        # A NullHandler is still a handler: it is what stops the lastResort fallback.
+        assert isinstance(root.handlers[0], logging.NullHandler)
+
+        # An application that configured its own logging keeps it.
+        marker = logging.StreamHandler()
+        root.handlers = [marker]
+        emulator_runner.configure_logging(rank=0)
+        assert root.handlers == [marker]
+    finally:
+        root.handlers = saved
+
+
+def test_runner_reads_its_rank_from_the_launcher(monkeypatch):
+    import emulator_runner
+
+    for var in emulator_runner._RANK_VARS:
+        monkeypatch.delenv(var, raising=False)
+    assert emulator_runner.mpi_rank() == 0
+
+    monkeypatch.setenv("OMPI_COMM_WORLD_RANK", "4")
+    assert emulator_runner.mpi_rank() == 4
+    monkeypatch.setenv("OMPI_COMM_WORLD_RANK", "not-a-rank")
+    assert emulator_runner.mpi_rank() == 0

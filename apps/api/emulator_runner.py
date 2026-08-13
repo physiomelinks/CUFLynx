@@ -24,6 +24,7 @@ config.json (same shape as the sensitivity runner):
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
 import traceback
@@ -142,11 +143,58 @@ def run(config: dict) -> dict:
     return {"rank": 0, "emulator_dir": emu_dir}
 
 
+#: Rank variables the common launchers set. Read from the environment rather than by importing
+#: mpi4py: this runs before CA is on the path, and CA's own rule is never to open MPI at module
+#: scope (CA #396).
+_RANK_VARS = ("OMPI_COMM_WORLD_RANK", "PMI_RANK", "PMIX_RANK", "SLURM_PROCID")
+
+
+def mpi_rank() -> int:
+    """This process's MPI rank, or 0 when it was not launched by a launcher we recognise."""
+    for var in _RANK_VARS:
+        value = os.environ.get(var)
+        if value is not None:
+            try:
+                return int(value)
+            except ValueError:
+                continue
+    return 0
+
+
+def configure_logging(rank: int) -> None:
+    """Give the root logger a handler, so Python never falls back to logging.lastResort.
+
+    autoemulate logs through the library-safe pattern -- its own logger carries only a
+    NullHandler -- so its records propagate to the root, where nothing was configured. Python
+    then uses ``logging.lastResort``, which writes to ``sys.stderr``. Under ``mpiexec`` the
+    non-zero ranks have theirs torn down, so every INFO line autoemulate emitted became a
+    "--- Logging error --- ValueError: I/O operation on closed file" traceback in the run log:
+    alarming, and about a message nobody needed.
+
+    Rank 0 keeps its output, on this process's own stdout -- the stream the API already reads
+    for the run log. Every other rank gets a NullHandler, which is the rank-0-reports rule the
+    rest of this runner follows.
+
+    Leaves an already-configured root alone: the caller's choice wins over this default.
+    """
+    root = logging.getLogger()
+    if root.handlers:
+        return
+    if rank == 0:
+        handler = logging.StreamHandler(sys.stdout)
+        handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
+        root.addHandler(handler)
+        root.setLevel(logging.INFO)
+    else:
+        root.addHandler(logging.NullHandler())
+
+
 def main(argv: list[str]) -> int:
     if len(argv) < 2:
         print(f"{FAIL_MARKER} usage: emulator_runner.py <config.json>", flush=True)
         return 2
     config = json.loads(Path(argv[1]).read_text())
+    configure_logging(mpi_rank())
     try:
         result = run(config)
     except Exception as exc:  # surface to the captured stdout for the UI
