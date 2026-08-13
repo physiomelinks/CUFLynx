@@ -14,6 +14,10 @@ const props = defineProps({
   // The /api/uq/{job}/progress payload; null before the first poll returns.
   progress: { type: Object, default: null },
   running: { type: Boolean, default: false },
+  // True once a run has been through this panel, so the section stays put afterwards rather
+  // than disappearing the moment `running` goes false -- the calibration charts persist and
+  // this should too.
+  finished: { type: Boolean, default: false },
 })
 
 const VIEW_W = 340
@@ -68,9 +72,15 @@ const plotted = computed(() => {
 /** Why there is nothing to draw — never a blank panel with no explanation. */
 const emptyReason = computed(() => {
   if (!hasChain.value) {
-    return props.running
-      ? 'Waiting for the first chain checkpoint…'
-      : 'Run an MCMC analysis to watch the chain here.'
+    if (props.running) return 'Waiting for the first chain checkpoint…'
+    // A finished run with no chain is a real outcome worth naming: a Laplace run writes none,
+    // and an MCMC run that failed early leaves none either. Saying "run an MCMC analysis" to
+    // someone who just did would send them looking in the wrong place.
+    if (props.finished) {
+      return 'That run finished without writing a chain. A Laplace run has none to write; an'
+        + ' MCMC run should — check the run log for what it did instead.'
+    }
+    return 'Run an MCMC analysis to watch the chain here.'
   }
   if (!plotted.value && view.value === 'windowed') {
     return `The chain is shorter than the ${props.progress?.windowed_mean?.window ?? 10}-step`

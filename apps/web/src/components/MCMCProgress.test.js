@@ -108,3 +108,32 @@ describe('ProgressPanel with a running MCMC', () => {
     expect(w.find('[data-testid="mcmc-progress"]').exists()).toBe(false)
   })
 })
+
+describe('the section outlives the run', () => {
+  it('keeps the MCMC section after the run finishes', () => {
+    // It used to vanish the moment `running` went false, which is exactly when a user turns to
+    // look at it. The calibration charts persist; so does this.
+    const w = mount(ProgressPanel, {
+      props: { uqRunning: false, uqState: 'done', uqProgress: payload() },
+    })
+    expect(w.find('[data-testid="mcmc-progress"]').exists()).toBe(true)
+    expect(w.findAll('[data-testid="mcmc-panel"]').length).toBe(1)
+  })
+
+  it('stays put and explains itself when a finished run wrote no chain', () => {
+    // A Laplace run writes none; an MCMC run that failed early leaves none. Telling someone
+    // who just ran one to "run an MCMC analysis" sends them looking in the wrong place.
+    const w = mount(ProgressPanel, {
+      props: { uqRunning: false, uqState: 'done', uqProgress: null },
+    })
+    expect(w.find('[data-testid="mcmc-progress"]').exists()).toBe(true)
+    expect(w.find('[data-testid="mcmc-empty"]').text()).toContain('without writing a chain')
+  })
+
+  it('keeps a cancelled run’s partial chain on screen', () => {
+    const w = mount(ProgressPanel, {
+      props: { uqRunning: false, uqState: 'cancelled', uqProgress: payload() },
+    })
+    expect(w.findAll('[data-testid="mcmc-panel"]').length).toBe(1)
+  })
+})

@@ -72,6 +72,14 @@ export function useUQ(options = {}) {
         method.value = s.method
         params.value = s.params ?? []
         error.value = s.error || ''
+        // One last look at the chain now the run has stopped.
+        //
+        // CA writes the finished chain as the very last thing it does, *after* the poll that
+        // saw the run still going -- and with an emulator the whole run can take less time
+        // than one chain poll interval, so without this there was nothing to draw at all and
+        // the section vanished the moment `running` went false. It also picks up the partial
+        // chain of a cancelled or failed run, which is the other half of what CA #418 is for.
+        await pollChain()
       }
     } catch (e) {
       state.value = 'error'
@@ -94,6 +102,7 @@ export function useUQ(options = {}) {
     } catch {
       /* keep the last chain we had */
     }
+    // Only keep a timer going while the run is; a finished run is fetched once, by poll().
     if (state.value === 'running') {
       chainTimer = setTimeout(pollChain, chainIntervalMs)
     }
@@ -111,6 +120,8 @@ export function useUQ(options = {}) {
         /* best effort */
       }
       state.value = 'cancelled'
+      // A cancelled run still has every step it sampled before it stopped.
+      await pollChain()
     }
   }
 
