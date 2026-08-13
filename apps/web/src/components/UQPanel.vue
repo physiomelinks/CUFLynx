@@ -40,7 +40,17 @@ const isMcmc = computed(() => settings.method === 'mcmc')
 // CA's mcmc option descriptors (num_steps, num_walkers, …), never hardcoded.
 // `uq_options` since CA renamed the mode; `mcmc_options` is the pre-rename field name,
 // kept so an API that has not been restarted yet still fills this form.
-const mcmcOptions = computed(() => props.defaults.uq_options ?? props.defaults.mcmc_options ?? [])
+const schemaOptions = computed(
+  () => props.defaults.uq_options ?? props.defaults.mcmc_options ?? [],
+)
+
+// CA's uq schema also carries `method`, which this panel already asks for above --
+// and CUFLynx offers more than CA's own list does, since `laplace` runs through
+// IdentifiabilityAnalysis rather than the uq path. Rendering both put two Method
+// dropdowns on the form, and the schema copy silently won: its default ('mcmc')
+// was merged over settings.method in buildSettings, so choosing Laplace ran MCMC.
+// Anything this panel owns is dropped here, and the panel's value is the one sent.
+const mcmcOptions = computed(() => schemaOptions.value.filter((o) => !(o.name in settings)))
 
 // Seed each option's default when the schema arrives, keeping any user value.
 watch(
