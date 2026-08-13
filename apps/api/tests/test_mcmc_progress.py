@@ -152,3 +152,59 @@ def test_the_payload_is_json_serialisable(tmp_path):
 
     _chain(str(tmp_path))
     json.dumps(mcmc_progress.progress(str(tmp_path), ["a", "b", "c"]))
+
+
+# --- CA writes into its own run subdirectory, not the one it was handed --------------------
+
+
+def test_finds_the_chain_in_cas_run_subdirectory(tmp_path):
+    """The bug that made every run look chainless.
+
+    CA does not write into the directory it is given: it makes
+    <output_dir>/<method>_<file_prefix>_<obs_prefix>/ and writes there. Joining the file name
+    onto the job's output dir found nothing, ever -- so a perfectly good MCMC run reported "that
+    run finished without writing a chain".
+    """
+    run_dir = tmp_path / "mcmc_3compartment_lv_observables"
+    run_dir.mkdir()
+    _chain(str(run_dir))
+
+    out = mcmc_progress.progress(str(tmp_path))
+    assert out["steps"] == STEPS
+    assert len(out["traces"]) == PARAMS
+
+
+def test_prefers_a_chain_written_directly_in_the_output_dir(tmp_path):
+    """Whatever CA does today, a chain sitting where it was asked to write is this run's."""
+    samples = _chain(str(tmp_path))
+    stale = tmp_path / "older_run"
+    stale.mkdir()
+    _chain(str(stale), steps=7, seed=9)
+
+    out = mcmc_progress.progress(str(tmp_path))
+    assert out["steps"] == samples.shape[0]
+
+
+def test_the_newest_run_subdirectory_wins(tmp_path):
+    """An earlier run's directory must not shadow the one being sampled now."""
+    import os as _os
+    import time as _time
+
+    old = tmp_path / "mcmc_old"
+    old.mkdir()
+    _chain(str(old), steps=11, seed=1)
+    _os.utime(_os.path.join(str(old), mcmc_progress.CHAIN_FILE), (1, 1))
+
+    new = tmp_path / "mcmc_new"
+    new.mkdir()
+    _chain(str(new), steps=23, seed=2)
+    _os.utime(_os.path.join(str(new), mcmc_progress.CHAIN_FILE),
+              (_time.time(), _time.time()))
+
+    assert mcmc_progress.progress(str(tmp_path))["steps"] == 23
+
+
+def test_no_chain_anywhere_is_still_no_chain(tmp_path):
+    (tmp_path / "some_run_dir").mkdir()
+    assert mcmc_progress.progress(str(tmp_path))["steps"] == 0
+    assert mcmc_progress.chain_path(str(tmp_path / "does_not_exist")) is None

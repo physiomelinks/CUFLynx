@@ -35,8 +35,34 @@ MAX_WALKERS = 12
 DEFAULT_WINDOW = 10
 
 
-def chain_path(output_dir: str) -> str:
-    return os.path.join(output_dir, CHAIN_FILE)
+def chain_path(output_dir: str) -> str | None:
+    """Where this run's chain actually is, or None.
+
+    CA does not write into the directory it is handed: it makes
+    ``<param_id_output_dir>/<method>_<file_prefix>_<obs_prefix>/`` and writes there. Joining
+    ``mcmc_chain.npy`` onto the job's output dir therefore found nothing, ever -- and every run
+    looked like one that had written no chain at all, which is the opposite of what happened.
+
+    ``ca_run_history.find_run_dir`` is the usual way to resolve that, but it keys on the
+    *calibration* result files, which a UQ-only run does not have while it is sampling. So this
+    looks for the artefact it actually wants. Newest wins, so a directory left by an earlier run
+    cannot shadow the one being sampled now.
+    """
+    if not output_dir or not os.path.isdir(output_dir):
+        return None
+    direct = os.path.join(output_dir, CHAIN_FILE)
+    if os.path.isfile(direct):
+        return direct
+    found = []
+    try:
+        for entry in os.scandir(output_dir):
+            if entry.is_dir():
+                candidate = os.path.join(entry.path, CHAIN_FILE)
+                if os.path.isfile(candidate):
+                    found.append((os.path.getmtime(candidate), candidate))
+    except OSError:
+        return None
+    return max(found)[1] if found else None
 
 
 def read_chain(output_dir: str) -> np.ndarray | None:
@@ -47,7 +73,7 @@ def read_chain(output_dir: str) -> np.ndarray | None:
     old enough to lack #417's atomic save" is the same -- show nothing this tick, ask again.
     """
     path = chain_path(output_dir)
-    if not os.path.exists(path):
+    if path is None:
         return None
     try:
         samples = np.load(path)
