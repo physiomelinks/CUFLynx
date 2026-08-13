@@ -41,6 +41,10 @@ class UQJob:
         self.lines: list[str] = []
         self.state = "running"  # running | done | error | cancelled
         self.method: str | None = None
+        # The sampling settings the cumulative-mean plot needs: where CA will cut the burn-in,
+        # and the run length the fraction is taken against.
+        self.burn_in: float = 0.5
+        self.target_steps: int | None = None
         self.params: list | None = None  # per-parameter posterior summaries
         self.error: str | None = None
         # Set when the run finished but its process failed on the way out.
@@ -103,6 +107,9 @@ class UQManager:
             config_path = write_run_config(config, "uq_config.json")
 
             job = UQJob(uuid.uuid4().hex, output_dir)
+            settings = config.get("settings") or config
+            job.burn_in = settings.get("burn_in", 0.5)
+            job.target_steps = settings.get("num_steps")
             job.config_path = config_path
             env = runner_launch_env(config.get("python") or self.python)
             job.proc = subprocess.Popen(
@@ -191,7 +198,7 @@ class UQManager:
         return {
             "job_id": job.id,
             "state": job.state,
-            **mcmc_progress.progress(job.output_dir, labels),
+            **mcmc_progress.progress(job.output_dir, labels, job.burn_in, job.target_steps),
         }
 
     def cancel(self, job_id: str) -> bool:

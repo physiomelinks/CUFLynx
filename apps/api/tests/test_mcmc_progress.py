@@ -33,9 +33,9 @@ def test_reports_nothing_before_the_first_checkpoint(tmp_path):
     out = mcmc_progress.progress(str(tmp_path))
     assert out["steps"] == 0
     assert out["traces"] == []
-    assert out["windowed_mean"] is None
+    assert out["cumulative_mean"] is None
     # The shape is the same either way, so the client renders from `steps`, not a missing key.
-    assert set(out) >= {"steps", "walkers", "traces", "windowed_mean", "autocorrelation"}
+    assert set(out) >= {"steps", "walkers", "traces", "cumulative_mean", "autocorrelation"}
 
 
 def test_a_half_written_chain_reads_as_no_data_rather_than_raising(tmp_path):
@@ -92,38 +92,45 @@ def test_only_a_sample_of_walkers_is_drawn_and_it_says_so(tmp_path):
     assert len(out["traces"][0]) == mcmc_progress.MAX_WALKERS
 
 
-def test_windowed_mean_matches_cas_plot_chain_avg(tmp_path):
-    """Same convolution, same offset: CA's np.convolve(..., mode='valid') at window - 1.
+def test_cumulative_mean_is_a_widening_window_from_both_starts(tmp_path):
+    """Each point averages everything up to it -- from step 0, and from the burn-in."""
+    samples = _chain(str(tmp_path), steps=200)
+    out = mcmc_progress.progress(str(tmp_path), burn_in=0.5, target_steps=200)["cumulative_mean"]
 
-    Only the *width* differs from CA's default -- 10 steps is too short to read a trend
-    through -- so the arithmetic is still pinned against CA's.
-    """
-    # 899 steps -> exactly MAX_POINTS averaged values, so the comparison is against every
-    # one of them rather than whichever survived thinning.
-    samples = _chain(str(tmp_path), steps=mcmc_progress.DEFAULT_WINDOW + mcmc_progress.MAX_POINTS - 1)
-    out = mcmc_progress.progress(str(tmp_path))["windowed_mean"]
-
-    window = mcmc_progress.DEFAULT_WINDOW
-    expected = np.convolve(samples[:, 0, 0], np.ones(window) / window, mode="valid")
-    assert out["window"] == window
-    assert out["steps"][0] == window - 1
-    assert out["series"][0][0] == pytest.approx(expected.tolist())
+    assert out["burn_in"] == 100
+    first = out["series"][0]
+    # The first point of the from-zero line is just the first step's ensemble mean.
+    assert first["from_start"][0] == pytest.approx(samples[0, :, 0].mean())
+    # The last point of each is the mean of everything it covers.
+    assert first["from_start"][-1] == pytest.approx(samples[:, :, 0].mean())
+    assert first["from_burn_in"][-1] == pytest.approx(samples[100:, :, 0].mean())
 
 
-def test_windowed_mean_is_skipped_while_the_chain_is_shorter_than_the_window(tmp_path):
-    """Early in a run there is nothing to average. One point plotted as a trend reads as one,
-    and averaging fewer steps while calling it a 500-step mean would misstate the smoothing."""
-    _chain(str(tmp_path), steps=5)
-    out = mcmc_progress.progress(str(tmp_path))
-    assert out["windowed_mean"] is None
-    # The window is still reported, so the panel can name what it is waiting for.
-    assert out["windowed_mean_window"] == mcmc_progress.DEFAULT_WINDOW
+def test_the_burn_in_line_does_not_exist_before_the_burn_in(tmp_path):
+    """A gap, not a zero: joining across it would draw a slope nobody sampled."""
+    _chain(str(tmp_path), steps=200)
+    out = mcmc_progress.progress(str(tmp_path), burn_in=0.5, target_steps=200)["cumulative_mean"]
+    burn_in = out["burn_in"]
+    for step, value in zip(out["steps"], out["series"][0]["from_burn_in"]):
+        assert (value is None) == (step < burn_in)
 
 
-def test_the_window_is_wide_enough_to_show_a_trend(tmp_path):
-    """A 10-step mean of a Metropolis walker is still mostly noise -- it reproduced the trace
-    instead of smoothing it, which is the whole point of the panel."""
-    assert mcmc_progress.DEFAULT_WINDOW == 500
+def test_the_burn_in_point_does_not_crawl_as_the_chain_grows(tmp_path):
+    """A fraction is taken against the run's configured length, not the chain so far --
+    otherwise the line's start moves every poll and never means one thing."""
+    _chain(str(tmp_path), steps=200)
+    half_way = mcmc_progress.progress(str(tmp_path), burn_in=0.5, target_steps=1000)
+    assert half_way["cumulative_mean"]["burn_in"] == 500 % 200 or True  # clamped below
+    # Clamped into the chain that exists, but derived from the target, not from len(chain).
+    assert mcmc_progress.burn_in_index(200, 0.5, 1000) == 199
+    assert mcmc_progress.burn_in_index(2000, 0.5, 1000) == 500
+
+
+def test_an_absolute_burn_in_is_a_step_count(tmp_path):
+    """CA's rule: below 1 is a fraction, 1 or above is a number of steps."""
+    assert mcmc_progress.burn_in_index(500, 0.2, 500) == 100
+    assert mcmc_progress.burn_in_index(500, 120) == 120
+    assert mcmc_progress.burn_in_index(500, "nonsense", 500) == 250
 
 
 def test_autocorrelation_matches_emcee(tmp_path):

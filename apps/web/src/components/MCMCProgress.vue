@@ -33,11 +33,12 @@ const VIEWS = [
       + ' off on its own has not.',
   },
   {
-    key: 'windowed',
-    title: 'Windowed mean',
+    key: 'cumulative',
+    title: 'Cumulative mean',
     xLabel: 'step',
-    hint: 'Convergence shows up as the running means coming together and flattening. A mean'
-      + ' still moving means that walker is still exploring.',
+    hint: 'Each point averages everything up to it, so the line flattens once the estimate'
+      + ' stops moving. The two lines converging means the burn-in no longer matters; a'
+      + ' persistent gap means it does.',
   },
   {
     key: 'autocorrelation',
@@ -57,9 +58,15 @@ const hasChain = computed(() => (props.progress?.steps ?? 0) > 0)
 const plotted = computed(() => {
   const p = props.progress
   if (!p || !p.steps) return null
-  if (view.value === 'windowed') {
-    if (!p.windowed_mean) return null
-    return { x: p.windowed_mean.steps, series: p.windowed_mean.series, guides: [] }
+  if (view.value === 'cumulative') {
+    if (!p.cumulative_mean) return null
+    // Two lines per parameter, in a fixed order so the legend below means something.
+    return {
+      x: p.cumulative_mean.steps,
+      series: p.cumulative_mean.series.map((s) => [s.from_start, s.from_burn_in]),
+      guides: [],
+      legend: ['from step 0', `from burn-in (step ${p.cumulative_mean.burn_in})`],
+    }
   }
   if (view.value === 'autocorrelation') {
     if (!p.autocorrelation) return null
@@ -82,10 +89,8 @@ const emptyReason = computed(() => {
     }
     return 'Run an MCMC analysis to watch the chain here.'
   }
-  if (!plotted.value && view.value === 'windowed') {
-    const window = props.progress?.windowed_mean_window ?? 500
-    return `The chain is shorter than the ${window}-step averaging window`
-      + ` (${props.progress?.steps ?? 0} steps so far), so there is nothing to average yet.`
+  if (!plotted.value && view.value === 'cumulative') {
+    return 'Not enough steps yet to average.'
   }
   return plotted.value ? '' : 'Not enough steps yet for this view.'
 })
@@ -93,7 +98,7 @@ const emptyReason = computed(() => {
 function panelFor(paramIdx) {
   const data = plotted.value
   const lines = data.series[paramIdx] ?? []
-  const flat = lines.flat().filter((v) => Number.isFinite(v))
+  const flat = lines.flat().filter((v) => v != null && Number.isFinite(v))
   if (!flat.length || !data.x.length) return null
 
   let lo = Math.min(...flat, ...data.guides)
@@ -118,8 +123,13 @@ function panelFor(paramIdx) {
     y0,
     y1,
     paths: lines.map((line, i) => ({
-      d: line.map((v, j) => `${j ? 'L' : 'M'}${sx(data.x[j]).toFixed(1)} ${sy(v).toFixed(1)}`)
-        .join(' '),
+      // `null` is a gap, not a zero: the burn-in line does not exist before the burn-in, and
+      // joining across it would draw a slope that was never sampled.
+      d: line.reduce((acc, v, j) => {
+        if (v == null || !Number.isFinite(v)) return acc + ''
+        const cmd = acc === '' || line[j - 1] == null ? 'M' : 'L'
+        return `${acc}${cmd}${sx(data.x[j]).toFixed(1)} ${sy(v).toFixed(1)} `
+      }, ''),
       colour: PALETTE[i % PALETTE.length],
     })),
     guides: data.guides.map((g) => ({ y: sy(g), zero: g === 0 })),
@@ -171,6 +181,11 @@ const panels = computed(() => {
 
     <template v-else>
       <p class="mcmc-hint">{{ activeView.hint }}</p>
+      <div v-if="plotted?.legend" class="mcmc-legend" data-testid="mcmc-legend">
+        <span v-for="(label, i) in plotted.legend" :key="label">
+          <i :style="{ background: PALETTE[i % PALETTE.length] }" />{{ label }}
+        </span>
+      </div>
       <div
         v-for="panel in panels"
         :key="panel.label"
@@ -279,6 +294,20 @@ const panels = computed(() => {
 .mcmc-verdict[data-bounded='false'] {
   color: #e84a5f;
   opacity: 1;
+}
+.mcmc-legend {
+  display: flex;
+  gap: 0.9rem;
+  font-size: 0.7rem;
+  opacity: 0.85;
+  margin-bottom: 0.3rem;
+}
+.mcmc-legend i {
+  display: inline-block;
+  width: 0.7rem;
+  height: 0.15rem;
+  margin-right: 0.3rem;
+  vertical-align: middle;
 }
 .mcmc-hint {
   font-size: 0.7rem;

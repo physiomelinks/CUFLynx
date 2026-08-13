@@ -14,8 +14,11 @@ function payload(overrides = {}) {
     param_labels: ['\\alpha'],
     trace_steps: steps,
     traces: [[[0.1, 0.2, 0.3, 0.4], [0.5, 0.4, 0.3, 0.2]]],
-    windowed_mean: { steps: [2, 3], series: [[[0.2, 0.3], [0.4, 0.3]]], window: 500 },
-    windowed_mean_window: 500,
+    cumulative_mean: {
+      steps: [0, 1, 2, 3],
+      burn_in: 2,
+      series: [{ from_start: [0.1, 0.15, 0.2, 0.25], from_burn_in: [null, null, 0.2, 0.22] }],
+    },
     autocorrelation: { lags: steps, series: [[[1, 0.5, 0.1, 0.0], [1, 0.6, 0.2, 0.05]]],
       bounded: true },
     ...overrides,
@@ -50,7 +53,7 @@ describe('MCMCProgress', () => {
 
   it('switches between the three views the issue asks for', async () => {
     const w = mount(MCMCProgress, { props: { progress: payload() } })
-    for (const view of ['trace', 'windowed', 'autocorrelation']) {
+    for (const view of ['trace', 'cumulative', 'autocorrelation']) {
       await w.find(`[data-testid="mcmc-view-${view}"]`).trigger('click')
       expect(w.findAll('[data-testid="mcmc-panel"]').length).toBe(1)
     }
@@ -78,16 +81,31 @@ describe('MCMCProgress', () => {
     expect(stuck.find('[data-testid="mcmc-bounded"]').text()).toContain('still correlated')
   })
 
-  it('explains an empty windowed mean instead of showing a blank panel', async () => {
-    // Early in a run the chain is shorter than the averaging window, so CA skips the plot --
-    // a blank panel with no reason reads as a bug.
-    const w = mount(MCMCProgress, { props: { progress: payload({ windowed_mean: null }) } })
-    await w.find('[data-testid="mcmc-view-windowed"]').trigger('click')
-    const msg = w.find('[data-testid="mcmc-empty"]').text()
-    // It has to name the window it is waiting for, and how far the chain has got -- "not yet"
-    // with no numbers reads as broken when it is a 500-step average of a 4-step chain.
-    expect(msg).toContain('500-step averaging window')
-    expect(msg).toContain('4 steps so far')
+  it('explains an empty cumulative mean instead of showing a blank panel', async () => {
+    const w = mount(MCMCProgress, { props: { progress: payload({ cumulative_mean: null }) } })
+    await w.find('[data-testid="mcmc-view-cumulative"]').trigger('click')
+    expect(w.find('[data-testid="mcmc-empty"]').text()).toContain('Not enough steps')
+  })
+
+  it('draws both cumulative lines, labelled, with the burn-in named', async () => {
+    const w = mount(MCMCProgress, { props: { progress: payload() } })
+    await w.find('[data-testid="mcmc-view-cumulative"]').trigger('click')
+
+    expect(w.findAll('[data-testid="mcmc-panel"]')[0].findAll('path.walker')).toHaveLength(2)
+    const legend = w.find('[data-testid="mcmc-legend"]').text()
+    expect(legend).toContain('from step 0')
+    expect(legend).toContain('burn-in (step 2)')
+  })
+
+  it('breaks the burn-in line rather than joining across the steps it does not cover', async () => {
+    // null is a gap, not a zero: drawing through it would show a slope nobody sampled.
+    const w = mount(MCMCProgress, { props: { progress: payload() } })
+    await w.find('[data-testid="mcmc-view-cumulative"]').trigger('click')
+    const paths = w.findAll('[data-testid="mcmc-panel"]')[0].findAll('path.walker')
+    const burnInPath = paths[1].attributes('d')
+    // Starts at the burn-in, not at step 0: one move command, and only two points.
+    expect((burnInPath.match(/M/g) || []).length).toBe(1)
+    expect((burnInPath.match(/[ML]/g) || []).length).toBe(2)
   })
 
   it('gives every panel a labelled, ticked axis', () => {
