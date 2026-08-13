@@ -92,3 +92,18 @@ describe('useUQ chain polling', () => {
     expect(uq.progress.value).toBeNull()
   })
 })
+
+describe('a job the server has forgotten', () => {
+  it('says the run was lost, not that it failed', async () => {
+    // A restarted server 404s every poll. "AxiosError: status code 404" sends someone looking
+    // for a bug in their model; the run was fine, the server went away underneath it.
+    getUQStatus.mockRejectedValue({ response: { status: 404, data: { detail: 'not found' } } })
+
+    const uq = useUQ()
+    await uq.start('m1', {})
+
+    expect(uq.state.value).toBe('error')
+    expect(uq.error.value).toContain('no longer tracking this run')
+    expect(uq.error.value).toContain('still in the run directory')
+  })
+})

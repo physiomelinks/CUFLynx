@@ -83,7 +83,15 @@ export function useUQ(options = {}) {
       }
     } catch (e) {
       state.value = 'error'
-      error.value = e?.response?.data?.detail || String(e)
+      // A 404 means the server no longer knows this job -- it was restarted, or the app is
+      // talking to a different one. That is not "the run failed", and reporting it as a bare
+      // Axios error sends someone looking for a bug in their model.
+      error.value =
+        e?.response?.status === 404
+          ? 'The server is no longer tracking this run (it was restarted, or replaced). The'
+            + ' sampling process may have been stopped with it; any chain it had already'
+            + ' written is still in the run directory.'
+          : e?.response?.data?.detail || String(e)
     }
   }
 
