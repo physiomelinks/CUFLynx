@@ -112,29 +112,69 @@ const parityPoints = computed(() => {
  * Residual against each parameter: where in the space the emulator goes wrong,
  * which is the question a single score cannot answer.
  */
-const residualByParam = computed(() => {
+/**
+ * Residuals, normalised by the ground truth, so the axis carries a size and not
+ * just a zero line: 0.05 is "5% out", which is readable without knowing what
+ * this feature's units are or how large it usually is. A raw residual of 3e-4
+ * says nothing on its own.
+ *
+ * Where a truth value is zero the fraction is undefined, so that feature falls
+ * back to normalising by the spread of its own truths (what CA's nRMSE does) and
+ * the caption says so. Silently plotting Infinity, or quietly dropping those
+ * points, would both misreport the error.
+ */
+const normalisedResiduals = computed(() => {
   const pts = props.emulatorErrorPoints
   const col = emulatorFeature.value
-  if (!pts?.residual?.length) return []
+  if (!pts?.residual?.length) return null
   const residuals = pts.residual.map((row) => Number(row[col]))
-  const worst = Math.max(...residuals.map((r) => Math.abs(r))) || 1
+  const truths = (pts.y_true ?? []).map((row) => Number(row[col]))
+
+  const usable = truths.length === residuals.length && truths.every((t) => t !== 0)
+  if (usable) {
+    return { basis: 'truth', values: residuals.map((r, i) => r / truths[i]) }
+  }
+  const spread = truths.length ? Math.max(...truths) - Math.min(...truths) : 0
+  if (spread > 0) {
+    return { basis: 'spread', values: residuals.map((r) => r / spread) }
+  }
+  // Nothing to normalise against: show the residual itself rather than invent a scale.
+  return { basis: 'raw', values: residuals }
+})
+
+const residualByParam = computed(() => {
+  const pts = props.emulatorErrorPoints
+  const norm = normalisedResiduals.value
+  if (!norm) return []
+  const worst = Math.max(...norm.values.map((r) => Math.abs(r))) || 1
   return (pts.param_entry_labels ?? []).map((label, p) => {
     const values = pts.theta.map((row) => Number(row[p]))
     return {
       label,
       worst,
+      basis: norm.basis,
       // Symmetric about zero, so a systematic offset reads as an offset rather
       // than being re-centred away by the axis.
       lo: Math.min(...values),
       hi: Math.max(...values),
       points: values.map((v, i) => ({
         x: v,
-        y: residuals[i],
-        title: `${label} = ${v}, residual ${residuals[i]}`,
+        y: norm.values[i],
+        title: `${label} = ${v}, normalised residual ${norm.values[i]}`,
       })),
     }
   })
 })
+
+/** What the residual axis is divided by, for the axis label and the caption. */
+const RESIDUAL_BASIS = {
+  truth: { axis: 'residual / truth', note: 'each residual divided by its own ground-truth value, so 0.05 is 5% out' },
+  spread: { axis: 'residual / range', note: 'divided by the spread of this feature’s truths, because at least one of them is zero' },
+  raw: { axis: 'residual', note: 'left unnormalised: every truth for this feature is the same value' },
+}
+const residualBasis = computed(
+  () => RESIDUAL_BASIS[normalisedResiduals.value?.basis ?? 'raw'],
+)
 
 // ---- Sensitivity heatmap ---------------------------------------------------
 // Sobol runs carry S1/ST; a local (finite-difference) run carries a single
@@ -750,20 +790,20 @@ const uqMethodLabel = computed(() =>
             :key="param.label"
             class="error-chart"
           >
-            <h3>Residual vs {{ param.label }}</h3>
+            <h3>Normalised residual vs {{ param.label }}</h3>
             <ScatterChart
               data-testid="emu-residual"
               :points="param.points"
               :x-domain="[param.lo, param.hi]"
               :y-domain="[-param.worst, param.worst]"
               :x-label="param.label"
-              y-label="residual"
+              :y-label="residualBasis.axis"
               guide="zero"
             />
             <small class="emu-error-note">
               Structure here — a trend, or a cluster far from the line — means the
               emulator is wrong in a particular part of the parameter space, not
-              uniformly.
+              uniformly. The axis is {{ residualBasis.note }}.
             </small>
           </section>
         </template>
