@@ -25,10 +25,14 @@ and falls back to a built-in copy of the schema when CA can't be imported.
 from __future__ import annotations
 
 import copy
+import json
+import os
+import subprocess
 import sys
 from pathlib import Path
 
 from engine import _circulatory_autogen_src
+from runtime_paths import default_python
 
 # model_types CUFLynx can actually run (it code-generates python/casadi from the
 # uploaded CellML; it has no 'cpp' build path), so cpp is filtered out even though
@@ -593,22 +597,74 @@ def _introspect_analysis_options() -> dict:
     return out
 
 
-def emulator_models() -> list[str]:
+_MODEL_PROBE = (
+    "import sys, json;"
+    "sys.path.insert(0, {src!r});"
+    "from emulators.emulator_trainer import emulator_model_names;"
+    "print(json.dumps([str(n) for n in emulator_model_names()]))"
+)
+
+
+def _models_from_interpreter(python: str, src: str) -> list[str]:
+    """Ask another interpreter what emulators it has. [] if it cannot answer."""
+    try:
+        out = subprocess.run(
+            [python, "-c", _MODEL_PROBE.format(src=src)],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        if out.returncode != 0:
+            return []
+        return [str(name) for name in json.loads(out.stdout.strip().splitlines()[-1])]
+    except Exception:  # noqa: BLE001 - no autoemulate there either, or a broken interpreter
+        return []
+
+
+#: Probing costs seconds (autoemulate pulls in torch), and the answer only changes when the
+#: interpreter or the CA directory does -- which is exactly the cache key.
+_MODEL_CACHE: dict[tuple, list[str]] = {}
+
+
+def emulator_models(python: str | None = None) -> list[str]:
     """The emulator names CA's ``emulator_settings.models`` accepts.
 
-    A runtime registry, not a schema: the list is whatever the *installed*
-    autoemulate registers, so it is discovered through CA's accessor rather than
-    hardcoded here (the same rule as the cost/operation funcs). Empty when CA is
-    too old to have it, or when autoemulate is not installed in the interpreter
-    the API is running in -- a UI shows the field as free text then, rather than
-    an authoritative-looking but stale menu.
+    A runtime registry, not a schema: the list is whatever the *installed* autoemulate
+    registers, so it is discovered through CA's accessor rather than hardcoded here (the same
+    rule as the cost/operation funcs).
+
+    Asked of ``python`` -- the **configured analysis interpreter**, passed in by the caller
+    because only it knows which one the runners were given -- because that is the interpreter
+    that will do the training. autoemulate is an optional extra with heavy dependencies, and it is routinely
+    installed in the CA venv a user points CUFLynx at while the API itself runs on a plain
+    system python. Probing in-process then answered "no models" about an interpreter that was
+    never going to train anything -- and the panel, which offers a menu only when the list is
+    non-empty, fell back to free text on a machine where the menu was perfectly knowable.
+
+    Falls back to this process when there is no external interpreter configured (the frozen app
+    trains in its own), and returns empty when neither can answer -- a UI shows free text then,
+    which is honest, rather than an authoritative-looking but stale menu.
     """
+    src = None
     try:
         _ensure_ca_path()
+        src = os.environ.get("CIRCULATORY_AUTOGEN_SRC")
+    except Exception:  # noqa: BLE001 - no CA configured at all
+        src = None
+
+    python = python or default_python()
+    if python and src:
+        key = (python, src)
+        if key not in _MODEL_CACHE:
+            _MODEL_CACHE[key] = _models_from_interpreter(python, src)
+        if _MODEL_CACHE[key]:
+            return list(_MODEL_CACHE[key])
+
+    try:
         from emulators.emulator_trainer import emulator_model_names  # noqa: PLC0415
 
         return [str(name) for name in emulator_model_names()]
-    except Exception:  # noqa: BLE001 - older CA, or no autoemulate
+    except Exception:  # noqa: BLE001 - older CA, or no autoemulate here either
         return []
 
 
