@@ -17,7 +17,11 @@ function payload(overrides = {}) {
     cumulative_mean: {
       steps: [0, 1, 2, 3],
       burn_in: 2,
-      series: [{ from_start: [0.1, 0.15, 0.2, 0.25], from_burn_in: [null, null, 0.2, 0.22] }],
+      burn_in_reached: true,
+      series: [{
+        from_start: [[0.1, 0.15, 0.2, 0.25], [0.3, 0.28, 0.26, 0.25]],
+        from_burn_in: [[null, null, 0.2, 0.22], [null, null, 0.26, 0.25]],
+      }],
     },
     autocorrelation: { lags: steps, series: [[[1, 0.5, 0.1, 0.0], [1, 0.6, 0.2, 0.05]]],
       bounded: true },
@@ -110,10 +114,29 @@ describe('MCMCProgress', () => {
     const w = mount(MCMCProgress, { props: { progress: payload() } })
     await w.find('[data-testid="mcmc-view-cumulative"]').trigger('click')
 
-    expect(w.findAll('[data-testid="mcmc-panel"]')[0].findAll('path.walker')).toHaveLength(2)
+    // One line per chain, twice over: from step 0 and from the burn-in.
+    expect(w.findAll('[data-testid="mcmc-panel"]')[0].findAll('path.walker')).toHaveLength(4)
     const legend = w.find('[data-testid="mcmc-legend"]').text()
     expect(legend).toContain('from step 0')
     expect(legend).toContain('burn-in (step 2)')
+  })
+
+  it('says the burn-in has not been reached rather than drawing a stub', async () => {
+    // At 17,778 steps of a 100,000-step run the burn-in is at 50,000 -- in the future. It used
+    // to be clamped to the chain so far, which read as "burn-in at step 8889".
+    const w = mount(MCMCProgress, {
+      props: {
+        progress: payload({
+          cumulative_mean: {
+            steps: [0, 1], burn_in: 50000, burn_in_reached: false,
+            series: [{ from_start: [[0.1, 0.2]], from_burn_in: [[null, null]] }],
+          },
+        }),
+      },
+    })
+    await w.find('[data-testid="mcmc-view-cumulative"]').trigger('click')
+    expect(w.find('[data-testid="mcmc-legend"]').text()).toContain('not reached yet')
+    expect(w.findAll('[data-testid="mcmc-panel"]')[0].findAll('path.walker')).toHaveLength(1)
   })
 
   it('breaks the burn-in line rather than joining across the steps it does not cover', async () => {
@@ -121,7 +144,10 @@ describe('MCMCProgress', () => {
     const w = mount(MCMCProgress, { props: { progress: payload() } })
     await w.find('[data-testid="mcmc-view-cumulative"]').trigger('click')
     const paths = w.findAll('[data-testid="mcmc-panel"]')[0].findAll('path.walker')
-    const burnInPath = paths[1].attributes('d')
+    // Index 2 is the first burn-in line (2 chains from step 0 come first), and it is dashed.
+    expect(paths[2].attributes('stroke-dasharray')).toBeTruthy()
+    expect(paths[0].attributes('stroke-dasharray')).toBeFalsy()
+    const burnInPath = paths[2].attributes('d')
     // Starts at the burn-in, not at step 0: one move command, and only two points.
     expect((burnInPath.match(/M/g) || []).length).toBe(1)
     expect((burnInPath.match(/[ML]/g) || []).length).toBe(2)

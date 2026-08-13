@@ -99,11 +99,13 @@ def test_cumulative_mean_is_a_widening_window_from_both_starts(tmp_path):
 
     assert out["burn_in"] == 100
     first = out["series"][0]
-    # The first point of the from-zero line is just the first step's ensemble mean.
-    assert first["from_start"][0] == pytest.approx(samples[0, :, 0].mean())
-    # The last point of each is the mean of everything it covers.
-    assert first["from_start"][-1] == pytest.approx(samples[:, :, 0].mean())
-    assert first["from_burn_in"][-1] == pytest.approx(samples[100:, :, 0].mean())
+    # One line per chain, not one pooled line: a chain that has not found the answer shows its
+    # own running mean sitting apart, which an ensemble mean averages away.
+    assert len(first["from_start"]) == WALKERS
+    for walker in range(WALKERS):
+        assert first["from_start"][walker][0] == pytest.approx(samples[0, walker, 0])
+        assert first["from_start"][walker][-1] == pytest.approx(samples[:, walker, 0].mean())
+        assert first["from_burn_in"][walker][-1] == pytest.approx(samples[100:, walker, 0].mean())
 
 
 def test_the_burn_in_line_does_not_exist_before_the_burn_in(tmp_path):
@@ -111,7 +113,7 @@ def test_the_burn_in_line_does_not_exist_before_the_burn_in(tmp_path):
     _chain(str(tmp_path), steps=200)
     out = mcmc_progress.progress(str(tmp_path), burn_in=0.5, target_steps=200)["cumulative_mean"]
     burn_in = out["burn_in"]
-    for step, value in zip(out["steps"], out["series"][0]["from_burn_in"]):
+    for step, value in zip(out["steps"], out["series"][0]["from_burn_in"][0]):
         assert (value is None) == (step < burn_in)
 
 
@@ -119,16 +121,19 @@ def test_the_burn_in_point_does_not_crawl_as_the_chain_grows(tmp_path):
     """A fraction is taken against the run's configured length, not the chain so far --
     otherwise the line's start moves every poll and never means one thing."""
     _chain(str(tmp_path), steps=200)
-    half_way = mcmc_progress.progress(str(tmp_path), burn_in=0.5, target_steps=1000)
-    assert half_way["cumulative_mean"]["burn_in"] == 500 % 200 or True  # clamped below
-    # Clamped into the chain that exists, but derived from the target, not from len(chain).
-    assert mcmc_progress.burn_in_index(200, 0.5, 1000) == 199
+    # Half of the configured run, not half of the chain so far -- the complaint being fixed is
+    # a burn-in marker that read "step 8889" at 17,778 steps of a 100,000-step run.
+    out = mcmc_progress.progress(str(tmp_path), burn_in=0.5, target_steps=1000)["cumulative_mean"]
+    assert out["burn_in"] == 500
+    assert out["burn_in_reached"] is False, "the run has not sampled that far yet"
+    assert all(v is None for v in out["series"][0]["from_burn_in"][0])
     assert mcmc_progress.burn_in_index(2000, 0.5, 1000) == 500
 
 
 def test_an_absolute_burn_in_is_a_step_count(tmp_path):
     """CA's rule: below 1 is a fraction, 1 or above is a number of steps."""
     assert mcmc_progress.burn_in_index(500, 0.2, 500) == 100
+    # A string from a form must not silently become "half the chain so far".
     assert mcmc_progress.burn_in_index(500, 120) == 120
     assert mcmc_progress.burn_in_index(500, "nonsense", 500) == 250
 

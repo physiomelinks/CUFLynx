@@ -66,9 +66,14 @@ const plotted = computed(() => {
     // Two lines per parameter, in a fixed order so the legend below means something.
     return {
       x: p.cumulative_mean.steps,
-      series: p.cumulative_mean.series.map((s) => [s.from_start, s.from_burn_in]),
+      // One line per chain, twice over: from step 0, then from the burn-in. Same colour per
+      // chain so a walker can be followed between the two families; dashed marks the second.
+      series: p.cumulative_mean.series.map((s) => [...s.from_start, ...s.from_burn_in]),
+      dashedFrom: p.cumulative_mean.series[0]?.from_start?.length ?? 0,
       guides: [],
-      legend: ['from step 0', `from burn-in (step ${p.cumulative_mean.burn_in})`],
+      legend: p.cumulative_mean.burn_in_reached
+        ? ['from step 0', `from burn-in (step ${p.cumulative_mean.burn_in})`]
+        : [`from step 0 — burn-in (step ${p.cumulative_mean.burn_in}) not reached yet`],
     }
   }
   if (view.value === 'autocorrelation') {
@@ -133,8 +138,11 @@ function panelFor(paramIdx) {
         const cmd = acc === '' || line[j - 1] == null ? 'M' : 'L'
         return `${acc}${cmd}${sx(data.x[j]).toFixed(1)} ${sy(v).toFixed(1)} `
       }, ''),
-      colour: PALETTE[i % PALETTE.length],
-    })),
+      colour: PALETTE[i % (data.dashedFrom || lines.length) % PALETTE.length],
+      dashed: data.dashedFrom ? i >= data.dashedFrom : false,
+      // A line with no points at all -- the burn-in one before the run reaches it -- must not
+      // become an empty <path>; that is an invisible element the eye cannot see but a count can.
+    })).filter((p) => p.d.trim()),
     guides: data.guides.map((g) => ({ y: sy(g), zero: g === 0 })),
     xTicks: niceTicks(xMin, xMax).map((v) => ({ v, at: sx(v), text: fmtTick(v) })),
     yTicks: niceTicks(lo, hi).map((v) => ({ v, at: sy(v), text: fmtTick(v) })),
@@ -189,7 +197,7 @@ const panels = computed(() => {
       <p class="mcmc-hint">{{ activeView.hint }}</p>
       <div v-if="plotted?.legend" class="mcmc-legend" data-testid="mcmc-legend">
         <span v-for="(label, i) in plotted.legend" :key="label">
-          <i :style="{ background: PALETTE[i % PALETTE.length] }" />{{ label }}
+          <i :class="{ dashed: i === 1 }" />{{ label }}
         </span>
       </div>
       <div
@@ -222,6 +230,7 @@ const panels = computed(() => {
             :d="p.d"
             :stroke="p.colour"
             class="walker"
+            :stroke-dasharray="p.dashed ? '4 3' : undefined"
           />
           <g class="axis">
             <line
@@ -310,10 +319,15 @@ const panels = computed(() => {
 }
 .mcmc-legend i {
   display: inline-block;
-  width: 0.7rem;
-  height: 0.15rem;
+  width: 0.9rem;
+  height: 0;
   margin-right: 0.3rem;
   vertical-align: middle;
+  border-top: 2px solid currentColor;
+  opacity: 0.8;
+}
+.mcmc-legend i.dashed {
+  border-top-style: dashed;
 }
 .mcmc-hint {
   font-size: 0.7rem;

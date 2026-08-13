@@ -109,7 +109,14 @@ class UQManager:
             job = UQJob(uuid.uuid4().hex, output_dir)
             settings = config.get("settings") or config
             job.burn_in = settings.get("burn_in", 0.5)
-            job.target_steps = settings.get("num_steps")
+            # The configured run length, which the burn-in fraction is taken against. Coerced
+            # rather than trusted: it arrives from a form, so "100000" is as likely as 100000,
+            # and a string here silently fell back to half the chain *so far* -- a burn-in
+            # marker that crawled forward on every poll.
+            try:
+                job.target_steps = int(float(settings.get("num_steps")))
+            except (TypeError, ValueError):
+                job.target_steps = None
             job.config_path = config_path
             env = runner_launch_env(config.get("python") or self.python)
             job.proc = subprocess.Popen(

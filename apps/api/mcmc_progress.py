@@ -125,8 +125,10 @@ def burn_in_index(num_steps, burn_in=0.5, target_steps=None):
     except (TypeError, ValueError):
         burn_in = 0.5
     basis = target_steps or num_steps
-    index = int(basis * burn_in) if burn_in < 1 else int(burn_in)
-    return max(0, min(index, num_steps - 1))
+    # Deliberately not clamped to the chain so far: a burn-in the run has not reached yet is a
+    # fact worth reporting, and clamping it to the last step drew a one-point line pretending
+    # otherwise.
+    return max(0, int(basis * burn_in) if burn_in < 1 else int(burn_in))
 
 
 def cumulative_means(samples, burn_in=0.5, target_steps=None):
@@ -141,36 +143,39 @@ def cumulative_means(samples, burn_in=0.5, target_steps=None):
     actually report. They converging on each other means the burn-in no longer matters; a
     persistent gap means it does.
 
-    Pooled across walkers, not one pair per walker: the estimate is the ensemble's, and 12
-    walkers x 2 lines is 24 lines of the same colour saying one thing.
+    One pair per chain, not pooled: chains that have found the same answer show their running
+    means converging on each other, and one that has not shows its own line sitting apart --
+    which the ensemble mean averages away entirely.
     """
     num_steps, _num_walkers, num_params = samples.shape
     if num_steps < 2:
         return None
     cut = burn_in_index(num_steps, burn_in, target_steps)
     keep = _thin(num_steps)
+    walkers = min(samples.shape[1], MAX_WALKERS)
 
-    # Mean over walkers first, then accumulate over steps: the running mean of the ensemble.
-    per_step = samples.mean(axis=1)                       # (steps, params)
-    counts = np.arange(1, num_steps + 1, dtype=float)
-    from_start = np.cumsum(per_step, axis=0) / counts[:, None]
+    counts = np.arange(1, num_steps + 1, dtype=float)[:, None, None]
+    from_start = np.cumsum(samples, axis=0) / counts                 # (steps, walkers, params)
 
-    after = per_step[cut:]
-    from_burn_in = np.full_like(per_step, np.nan)
+    after = samples[cut:] if cut < num_steps else samples[:0]
+    from_burn_in = np.full_like(samples, np.nan)
     if len(after):
         from_burn_in[cut:] = (np.cumsum(after, axis=0)
-                              / np.arange(1, len(after) + 1, dtype=float)[:, None])
+                              / np.arange(1, len(after) + 1, dtype=float)[:, None, None])
 
-    def series(values, param):
+    def line(values, walker, param):
         # NaN before the burn-in is not JSON, and is not a value either -- None leaves the gap.
-        return [None if np.isnan(v) else float(v) for v in values[keep, param]]
+        return [None if np.isnan(v) else float(v) for v in values[keep, walker, param]]
 
     return {
         "steps": keep.tolist(),
         "burn_in": int(cut),
+        # False while the run has not sampled that far: the second line does not exist yet, and
+        # the panel says so rather than drawing a stub at the end of the chain.
+        "burn_in_reached": bool(cut < num_steps - 1),
         "series": [
-            {"from_start": series(from_start, param),
-             "from_burn_in": series(from_burn_in, param)}
+            {"from_start": [line(from_start, w, param) for w in range(walkers)],
+             "from_burn_in": [line(from_burn_in, w, param) for w in range(walkers)]}
             for param in range(num_params)
         ],
     }
