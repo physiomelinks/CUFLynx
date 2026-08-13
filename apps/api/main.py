@@ -2215,7 +2215,8 @@ def emulator_defaults() -> dict:
         "enable_flag": meta.get("enable_flag"),
         "use_flag": meta.get("use_flag"),
         "options": meta.get("options", []),
-        "models": emulator_models(),
+        # The interpreter that will train is the one that knows what it can train with.
+        "models": emulator_models(emulator.python),
     }
 
 

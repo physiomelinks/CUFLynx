@@ -297,3 +297,64 @@ def test_training_and_sensitivity_do_not_block_each_other(tmp_path):
     import sensitivity
 
     assert emulator.emulator is not sensitivity.sensitivity
+
+
+# --- the models registry is read from the interpreter that will train (#244 follow-up) ------
+
+
+def test_emulator_models_asks_the_configured_interpreter_not_this_one(monkeypatch, tmp_path):
+    """autoemulate is an optional extra with heavy deps. It is routinely installed in the CA
+    venv a user points CUFLynx at, while the API itself runs on a plain system python -- so
+    probing in-process answered "no models" about an interpreter that was never going to train
+    anything, and the panel fell back to free text on a machine where the menu was knowable."""
+    import solver_options
+
+    asked = {}
+
+    def fake_probe(python, src):
+        asked["python"] = python
+        return ["GaussianProcessRBF", "RandomForest"]
+
+    monkeypatch.setattr(solver_options, "_models_from_interpreter", fake_probe)
+    monkeypatch.setattr(solver_options, "_ensure_ca_path", lambda: None)
+    monkeypatch.setenv("CIRCULATORY_AUTOGEN_SRC", str(tmp_path))
+    solver_options._MODEL_CACHE.clear()
+
+    models = solver_options.emulator_models("/venv/bin/python")
+
+    assert models == ["GaussianProcessRBF", "RandomForest"]
+    assert asked["python"] == "/venv/bin/python", "probed the wrong interpreter"
+
+
+def test_emulator_models_is_cached_per_interpreter(monkeypatch, tmp_path):
+    """The probe imports autoemulate, which costs seconds; the answer only changes when the
+    interpreter or the CA directory does."""
+    import solver_options
+
+    calls = []
+
+    monkeypatch.setattr(solver_options, "_models_from_interpreter",
+                        lambda python, src: calls.append(python) or ["MLP"])
+    monkeypatch.setattr(solver_options, "_ensure_ca_path", lambda: None)
+    monkeypatch.setenv("CIRCULATORY_AUTOGEN_SRC", str(tmp_path))
+    solver_options._MODEL_CACHE.clear()
+
+    solver_options.emulator_models("/venv/bin/python")
+    solver_options.emulator_models("/venv/bin/python")
+    assert calls == ["/venv/bin/python"], "probed twice for the same interpreter"
+
+    solver_options.emulator_models("/other/bin/python")
+    assert len(calls) == 2, "a different interpreter must be probed on its own"
+
+
+def test_emulator_models_is_empty_when_nothing_can_answer(monkeypatch, tmp_path):
+    """Empty is honest -- the panel shows free text rather than an authoritative-looking but
+    stale menu. It must not raise, and must not invent names."""
+    import solver_options
+
+    monkeypatch.setattr(solver_options, "_models_from_interpreter", lambda python, src: [])
+    monkeypatch.setattr(solver_options, "_ensure_ca_path", lambda: None)
+    monkeypatch.setenv("CIRCULATORY_AUTOGEN_SRC", str(tmp_path))
+    solver_options._MODEL_CACHE.clear()
+
+    assert solver_options.emulator_models("/venv/bin/python") == []
