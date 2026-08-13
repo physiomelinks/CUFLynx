@@ -2,8 +2,13 @@
 
   <!-- Logo Banner or Transparent Icon -->
   <a href="https://github.com/physiomelinks/CUFLynx">
-    <img src="apps/web/public/logo_transparent.png" alt="CUFLynx Logo" width="180">
-  </a>
+    <img 
+        src="apps/web/public/logo_transparent.png" 
+        alt="CUFLynx Logo" 
+        width="180" 
+        style="filter: drop-shadow(0px 0px 8px rgba(255, 255, 255, 0.49));"
+    >
+    </a>
 
   <!-- Main Title (Using styled <p> to prevent the bottom border/line) -->
   <p align="center">
@@ -16,7 +21,7 @@
       <img src="https://img.shields.io/github/v/release/physiomelinks/CUFLynx?label=download&style=flat-square" alt="Latest Release">
     </a>
     <a href="https://github.com/physiomelinks/CUFLynx/blob/main/LICENSE">
-      <img src="https://img.shields.io/github/license/physiomelinks/CUFLynx?style=flat-square" alt="License">
+      <img src="https://img.shields.io/badge/license-Apache--2.0-green?style=flat-square" alt="License">
     </a>
   </p>
 
