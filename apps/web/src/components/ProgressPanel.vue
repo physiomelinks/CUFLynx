@@ -98,6 +98,8 @@ const props = defineProps({
   // writes its first checkpoint; `uqRunning` distinguishes "not started" from "not yet".
   uqProgress: { type: Object, default: null },
   uqRunning: { type: Boolean, default: false },
+  // The UQ run's state, so a finished run keeps its section (and can explain an empty one).
+  uqState: { type: String, default: 'idle' },
 })
 
 const hasData = computed(
@@ -110,7 +112,10 @@ const hasData = computed(
 
 // An MCMC run produces no cost history, so the calibration charts above stay empty for it --
 // the chain is its progress, and it is what should be on screen while it samples.
-const hasMCMC = computed(() => props.uqRunning || (props.uqProgress?.steps ?? 0) > 0)
+const uqFinished = computed(() => ['done', 'error', 'cancelled'].includes(props.uqState))
+const hasMCMC = computed(
+  () => props.uqRunning || uqFinished.value || (props.uqProgress?.steps ?? 0) > 0,
+)
 // Multi-start when CA emitted per-start cost curves with more than one start.
 const multiStart = computed(
   () => props.startCosts.length > 0 && props.startCosts.some((c) => c && c.length),
@@ -478,7 +483,12 @@ const paramOptions = {
   <div class="progress-panel" data-testid="progress-panel">
     <!-- MCMC first while it samples: it is the run that is happening now, and an MCMC run
          leaves the calibration charts below empty because it produces no cost history. -->
-    <MCMCProgress v-if="hasMCMC" :progress="uqProgress" :running="uqRunning" />
+    <MCMCProgress
+      v-if="hasMCMC"
+      :progress="uqProgress"
+      :running="uqRunning"
+      :finished="uqFinished"
+    />
     <p v-if="!hasData && !hasMCMC" class="empty-hint">
       Run a calibration to see cost and parameter progress.
     </p>
