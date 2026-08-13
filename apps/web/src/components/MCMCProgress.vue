@@ -83,8 +83,9 @@ const emptyReason = computed(() => {
     return 'Run an MCMC analysis to watch the chain here.'
   }
   if (!plotted.value && view.value === 'windowed') {
-    return `The chain is shorter than the ${props.progress?.windowed_mean?.window ?? 10}-step`
-      + ' averaging window, so there is nothing to average yet.'
+    const window = props.progress?.windowed_mean_window ?? 500
+    return `The chain is shorter than the ${window}-step averaging window`
+      + ` (${props.progress?.steps ?? 0} steps so far), so there is nothing to average yet.`
   }
   return plotted.value ? '' : 'Not enough steps yet for this view.'
 })

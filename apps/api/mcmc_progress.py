@@ -31,8 +31,17 @@ MAX_POINTS = 400
 #: ensemble. The count that were run is reported alongside, so the plot cannot imply otherwise.
 MAX_WALKERS = 12
 
-#: CA's plot_chain_avg default.
-DEFAULT_WINDOW = 10
+#: Steps averaged for the windowed mean.
+#:
+#: CA's plot_chain_avg defaults to 10, which is too short to read: over ten steps a Metropolis
+#: walker's running mean is still mostly noise, so the panel showed the same jitter as the trace
+#: rather than the trend it exists to show. 500 smooths a chain of the length these runs produce
+#: enough that walkers converging on each other is visible as convergence.
+#:
+#: The cost is that nothing is drawn until the chain passes 500 steps -- averaging fewer and
+#: calling it a 500-step mean would be a lie about the smoothing. The panel says so while it
+#: waits.
+DEFAULT_WINDOW = 500
 
 
 def chain_path(output_dir: str) -> str | None:
@@ -199,6 +208,7 @@ def progress(output_dir: str, param_labels: list[str] | None = None) -> dict:
             "trace_steps": [],
             "traces": [],
             "windowed_mean": None,
+            "windowed_mean_window": DEFAULT_WINDOW,
             "autocorrelation": None,
         }
 
@@ -217,5 +227,8 @@ def progress(output_dir: str, param_labels: list[str] | None = None) -> dict:
         "trace_steps": keep.tolist(),
         "traces": traces(samples),
         "windowed_mean": windowed_means(samples),
+        # Reported even when the mean is skipped, so the panel can name the window it is
+        # waiting for rather than guessing at one.
+        "windowed_mean_window": DEFAULT_WINDOW,
         "autocorrelation": autocorrelations(samples),
     }

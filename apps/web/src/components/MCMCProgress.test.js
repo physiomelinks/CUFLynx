@@ -14,7 +14,8 @@ function payload(overrides = {}) {
     param_labels: ['\\alpha'],
     trace_steps: steps,
     traces: [[[0.1, 0.2, 0.3, 0.4], [0.5, 0.4, 0.3, 0.2]]],
-    windowed_mean: { steps: [2, 3], series: [[[0.2, 0.3], [0.4, 0.3]]], window: 3 },
+    windowed_mean: { steps: [2, 3], series: [[[0.2, 0.3], [0.4, 0.3]]], window: 500 },
+    windowed_mean_window: 500,
     autocorrelation: { lags: steps, series: [[[1, 0.5, 0.1, 0.0], [1, 0.6, 0.2, 0.05]]],
       bounded: true },
     ...overrides,
@@ -82,7 +83,11 @@ describe('MCMCProgress', () => {
     // a blank panel with no reason reads as a bug.
     const w = mount(MCMCProgress, { props: { progress: payload({ windowed_mean: null }) } })
     await w.find('[data-testid="mcmc-view-windowed"]').trigger('click')
-    expect(w.find('[data-testid="mcmc-empty"]').text()).toContain('averaging window')
+    const msg = w.find('[data-testid="mcmc-empty"]').text()
+    // It has to name the window it is waiting for, and how far the chain has got -- "not yet"
+    // with no numbers reads as broken when it is a 500-step average of a 4-step chain.
+    expect(msg).toContain('500-step averaging window')
+    expect(msg).toContain('4 steps so far')
   })
 
   it('gives every panel a labelled, ticked axis', () => {

@@ -93,8 +93,14 @@ def test_only_a_sample_of_walkers_is_drawn_and_it_says_so(tmp_path):
 
 
 def test_windowed_mean_matches_cas_plot_chain_avg(tmp_path):
-    """Same convolution, same offset: CA's np.convolve(..., mode='valid') at window - 1."""
-    samples = _chain(str(tmp_path), steps=60)
+    """Same convolution, same offset: CA's np.convolve(..., mode='valid') at window - 1.
+
+    Only the *width* differs from CA's default -- 10 steps is too short to read a trend
+    through -- so the arithmetic is still pinned against CA's.
+    """
+    # 899 steps -> exactly MAX_POINTS averaged values, so the comparison is against every
+    # one of them rather than whichever survived thinning.
+    samples = _chain(str(tmp_path), steps=mcmc_progress.DEFAULT_WINDOW + mcmc_progress.MAX_POINTS - 1)
     out = mcmc_progress.progress(str(tmp_path))["windowed_mean"]
 
     window = mcmc_progress.DEFAULT_WINDOW
@@ -105,9 +111,19 @@ def test_windowed_mean_matches_cas_plot_chain_avg(tmp_path):
 
 
 def test_windowed_mean_is_skipped_while_the_chain_is_shorter_than_the_window(tmp_path):
-    """Early in a run there is nothing to average. One point plotted as a trend reads as one."""
+    """Early in a run there is nothing to average. One point plotted as a trend reads as one,
+    and averaging fewer steps while calling it a 500-step mean would misstate the smoothing."""
     _chain(str(tmp_path), steps=5)
-    assert mcmc_progress.progress(str(tmp_path))["windowed_mean"] is None
+    out = mcmc_progress.progress(str(tmp_path))
+    assert out["windowed_mean"] is None
+    # The window is still reported, so the panel can name what it is waiting for.
+    assert out["windowed_mean_window"] == mcmc_progress.DEFAULT_WINDOW
+
+
+def test_the_window_is_wide_enough_to_show_a_trend(tmp_path):
+    """A 10-step mean of a Metropolis walker is still mostly noise -- it reproduced the trace
+    instead of smoothing it, which is the whole point of the panel."""
+    assert mcmc_progress.DEFAULT_WINDOW == 500
 
 
 def test_autocorrelation_matches_emcee(tmp_path):
