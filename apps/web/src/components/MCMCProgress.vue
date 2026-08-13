@@ -14,6 +14,9 @@ const props = defineProps({
   // The /api/uq/{job}/progress payload; null before the first poll returns.
   progress: { type: Object, default: null },
   running: { type: Boolean, default: false },
+  // qname -> LaTeX/plotting name from params_for_id, so a panel is titled the way the output
+  // plots title it rather than with the raw model qname.
+  paramLabels: { type: Object, default: () => ({}) },
   // True once a run has been through this panel, so the section stays put afterwards rather
   // than disappearing the moment `running` goes false -- the calibration charts persist and
   // this should too.
@@ -142,6 +145,9 @@ const panels = computed(() => {
   if (!plotted.value) return []
   return (props.progress.param_labels ?? []).map((label, idx) => ({
     label,
+    // Same lookup the UQ posteriors use: name_for_plotting when there is one, the qname
+    // otherwise. renderMath turns \alpha into the symbol.
+    display: props.paramLabels?.[label] ?? label,
     geom: panelFor(idx),
   })).filter((p) => p.geom)
 })
@@ -192,13 +198,13 @@ const panels = computed(() => {
         class="mcmc-panel"
         data-testid="mcmc-panel"
       >
-        <span class="mcmc-label" v-html="renderMath(panel.label)" />
+        <span class="mcmc-label" v-html="renderMath(panel.display)" />
         <svg
           :viewBox="`0 0 ${VIEW_W} ${VIEW_H}`"
           preserveAspectRatio="xMidYMid meet"
           class="mcmc-plot"
           role="img"
-          :aria-label="`${activeView.title} for ${panel.label}`"
+          :aria-label="`${activeView.title} for ${panel.display}`"
         >
           <line
             v-for="g in panel.geom.guides"

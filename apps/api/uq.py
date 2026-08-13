@@ -194,7 +194,11 @@ class UQManager:
         job = self._job
         if job is None or job.id != job_id:
             return None
-        labels = [row[0] for row in ca_run_history.param_names(job.output_dir) or []]
+        # param_names.csv lives in CA's run directory, not the one CA was handed -- the same
+        # place the chain does. Reading the job dir found nothing, so every parameter came back
+        # as "parameter 1".
+        run_dir = ca_run_history.find_run_dir(job.output_dir) or job.output_dir
+        labels = [row[0] for row in ca_run_history.param_names(run_dir) or []]
         return {
             "job_id": job.id,
             "state": job.state,

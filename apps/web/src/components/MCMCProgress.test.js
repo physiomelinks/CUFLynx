@@ -11,7 +11,7 @@ function payload(overrides = {}) {
     walkers: 20,
     walkers_shown: 2,
     num_params: 1,
-    param_labels: ['\\alpha'],
+    param_labels: ['Lotka_Volterra_module/alpha'],
     trace_steps: steps,
     traces: [[[0.1, 0.2, 0.3, 0.4], [0.5, 0.4, 0.3, 0.2]]],
     cumulative_mean: {
@@ -34,6 +34,25 @@ describe('MCMCProgress', () => {
 
     const waiting = mount(MCMCProgress, { props: { progress: null, running: true } })
     expect(waiting.find('[data-testid="mcmc-empty"]').text()).toContain('first chain checkpoint')
+  })
+
+  it('titles each panel with the plotting name, rendered as maths', () => {
+    // The panels used to read "parameter 1": the qnames were being looked for in the wrong
+    // directory, and nothing mapped them to the name_for_plotting the output plots use.
+    const w = mount(MCMCProgress, {
+      props: {
+        progress: payload(),
+        paramLabels: { 'Lotka_Volterra_module/alpha': '\\alpha' },
+      },
+    })
+    const label = w.find('.mcmc-label')
+    expect(label.html()).toContain('katex')
+    expect(w.text()).not.toContain('parameter 1')
+  })
+
+  it('falls back to the qname when a parameter has no plotting name', () => {
+    const w = mount(MCMCProgress, { props: { progress: payload() } })
+    expect(w.find('.mcmc-label').text()).toContain('Lotka_Volterra_module/alpha')
   })
 
   it('draws one panel per parameter, one path per walker shown', () => {

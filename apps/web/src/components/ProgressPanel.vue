@@ -100,6 +100,8 @@ const props = defineProps({
   uqRunning: { type: Boolean, default: false },
   // The UQ run's state, so a finished run keeps its section (and can explain an empty one).
   uqState: { type: String, default: 'idle' },
+  // qname -> plotting name, shared with the Analysis panel's posteriors.
+  paramLabels: { type: Object, default: () => ({}) },
 })
 
 const hasData = computed(
@@ -488,6 +490,7 @@ const paramOptions = {
       :progress="uqProgress"
       :running="uqRunning"
       :finished="uqFinished"
+      :param-labels="paramLabels"
     />
     <p v-if="!hasData && !hasMCMC" class="empty-hint">
       Run a calibration to see cost and parameter progress.

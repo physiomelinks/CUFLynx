@@ -2254,6 +2254,7 @@ watch(
             :uq-progress="uq.progress.value"
             :uq-running="uq.running.value"
             :uq-state="uq.state.value"
+            :param-labels="paramLabels"
           />
         </div>
         <div v-show="centerTab === 'analysis'" class="plot-groups">
