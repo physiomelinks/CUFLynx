@@ -2,6 +2,8 @@
 import { ref, computed, watch } from 'vue'
 import { renderMath, renderOutputLabel } from '../lib/math'
 import { fmtSci } from '../lib/format'
+import { niceTicks, fmtTick } from '../lib/plot'
+import ScatterChart from './ScatterChart.vue'
 
 const props = defineProps({
   // Sensitivity: { S1: {outName: {param: val}}, ST: {...}, local: {...} }
@@ -81,9 +83,11 @@ function fmtStat(value, digits = 4) {
 }
 
 /**
- * Parity plot geometry: predicted against true, as percentages of the plot box,
- * with the 1:1 line the eye reads them against. Both axes share one range —
- * a parity plot with independent axes makes any emulator look perfect.
+ * Parity plot: predicted against true, in *data* units. ScatterChart does the
+ * scaling, so the 1:1 line is drawn in the same space as the points it is judged
+ * against — as a CSS-rotated div it was only a true diagonal when the box
+ * happened to be square. Both axes share one range; a parity plot with
+ * independent axes makes any emulator look perfect.
  */
 const parityPoints = computed(() => {
   const pts = props.emulatorErrorPoints
@@ -93,15 +97,13 @@ const parityPoints = computed(() => {
   const pred = pts.y_pred.map((row) => Number(row[col]))
   const lo = Math.min(...truth, ...pred)
   const hi = Math.max(...truth, ...pred)
-  const span = hi - lo || 1
   return {
     lo,
     hi,
     points: truth.map((t, i) => ({
-      x: ((t - lo) / span) * 100,
-      y: ((pred[i] - lo) / span) * 100,
-      truth: t,
-      pred: pred[i],
+      x: t,
+      y: pred[i],
+      title: `simulated ${t}, emulated ${pred[i]}`,
     })),
   }
 })
@@ -110,30 +112,69 @@ const parityPoints = computed(() => {
  * Residual against each parameter: where in the space the emulator goes wrong,
  * which is the question a single score cannot answer.
  */
-const residualByParam = computed(() => {
+/**
+ * Residuals, normalised by the ground truth, so the axis carries a size and not
+ * just a zero line: 0.05 is "5% out", which is readable without knowing what
+ * this feature's units are or how large it usually is. A raw residual of 3e-4
+ * says nothing on its own.
+ *
+ * Where a truth value is zero the fraction is undefined, so that feature falls
+ * back to normalising by the spread of its own truths (what CA's nRMSE does) and
+ * the caption says so. Silently plotting Infinity, or quietly dropping those
+ * points, would both misreport the error.
+ */
+const normalisedResiduals = computed(() => {
   const pts = props.emulatorErrorPoints
   const col = emulatorFeature.value
-  if (!pts?.residual?.length) return []
+  if (!pts?.residual?.length) return null
   const residuals = pts.residual.map((row) => Number(row[col]))
-  const worst = Math.max(...residuals.map((r) => Math.abs(r))) || 1
+  const truths = (pts.y_true ?? []).map((row) => Number(row[col]))
+
+  const usable = truths.length === residuals.length && truths.every((t) => t !== 0)
+  if (usable) {
+    return { basis: 'truth', values: residuals.map((r, i) => r / truths[i]) }
+  }
+  const spread = truths.length ? Math.max(...truths) - Math.min(...truths) : 0
+  if (spread > 0) {
+    return { basis: 'spread', values: residuals.map((r) => r / spread) }
+  }
+  // Nothing to normalise against: show the residual itself rather than invent a scale.
+  return { basis: 'raw', values: residuals }
+})
+
+const residualByParam = computed(() => {
+  const pts = props.emulatorErrorPoints
+  const norm = normalisedResiduals.value
+  if (!norm) return []
+  const worst = Math.max(...norm.values.map((r) => Math.abs(r))) || 1
   return (pts.param_entry_labels ?? []).map((label, p) => {
     const values = pts.theta.map((row) => Number(row[p]))
-    const lo = Math.min(...values)
-    const hi = Math.max(...values)
-    const span = hi - lo || 1
     return {
       label,
       worst,
+      basis: norm.basis,
+      // Symmetric about zero, so a systematic offset reads as an offset rather
+      // than being re-centred away by the axis.
+      lo: Math.min(...values),
+      hi: Math.max(...values),
       points: values.map((v, i) => ({
-        x: ((v - lo) / span) * 100,
-        // 50% is zero residual; the axis spans -worst..+worst.
-        y: 50 - (residuals[i] / worst) * 50,
-        residual: residuals[i],
-        value: v,
+        x: v,
+        y: norm.values[i],
+        title: `${label} = ${v}, normalised residual ${norm.values[i]}`,
       })),
     }
   })
 })
+
+/** What the residual axis is divided by, for the axis label and the caption. */
+const RESIDUAL_BASIS = {
+  truth: { axis: 'residual / truth', note: 'each residual divided by its own ground-truth value, so 0.05 is 5% out' },
+  spread: { axis: 'residual / range', note: 'divided by the spread of this feature’s truths, because at least one of them is zero' },
+  raw: { axis: 'residual', note: 'left unnormalised: every truth for this feature is the same value' },
+}
+const residualBasis = computed(
+  () => RESIDUAL_BASIS[normalisedResiduals.value?.basis ?? 'raw'],
+)
 
 // ---- Sensitivity heatmap ---------------------------------------------------
 // Sobol runs carry S1/ST; a local (finite-difference) run carries a single
@@ -383,6 +424,14 @@ function densityGeometry(p) {
     meanX: xOf(p.mean).toFixed(2),
     bandX: bandX.toFixed(2),
     bandW: Math.max(0, xOf(p.q95) - bandX).toFixed(2),
+    // The parameter scale. The plot is deliberately stretched to the row width,
+    // which would distort text drawn inside it, so the tick *marks* live in the
+    // SVG and their labels are HTML positioned by percentage.
+    ticks: niceTicks(xmin, xmax).map((v) => ({
+      at: xOf(v).toFixed(2),
+      pct: (((v - xmin) / xspan) * 100).toFixed(3),
+      text: fmtTick(v),
+    })),
   }
 }
 
@@ -660,10 +709,10 @@ const uqMethodLabel = computed(() =>
       </template>
     </section>
 
-    <!-- Emulator error ------------------------------------------------------>
+    <!-- Emulator ------------------------------------------------------------>
     <section class="analysis-section">
       <h2>
-        Emulator error
+        Emulator
         <span v-if="emulatorInUse" class="uq-method"> · in use for analyses</span>
       </h2>
       <p v-if="!hasEmulator" class="empty-hint">
@@ -720,16 +769,16 @@ const uqMethodLabel = computed(() =>
 
           <section class="error-chart">
             <h3>Predicted vs simulated</h3>
-            <div class="parity-box" data-testid="emu-parity">
-              <span class="parity-line" />
-              <span
-                v-for="(pt, i) in parityPoints?.points ?? []"
-                :key="i"
-                class="parity-point"
-                :style="{ left: pt.x + '%', bottom: pt.y + '%' }"
-                :title="`simulated ${pt.truth}, emulated ${pt.pred}`"
-              />
-            </div>
+            <ScatterChart
+              data-testid="emu-parity"
+              :points="parityPoints?.points ?? []"
+              :x-domain="[parityPoints?.lo ?? 0, parityPoints?.hi ?? 1]"
+              :y-domain="[parityPoints?.lo ?? 0, parityPoints?.hi ?? 1]"
+              x-label="simulated"
+              y-label="emulated"
+              guide="diagonal"
+              square
+            />
             <small class="emu-error-note">
               Points on the diagonal are exact. Both axes share one range — a
               parity plot with independent axes makes any emulator look perfect.
@@ -741,21 +790,20 @@ const uqMethodLabel = computed(() =>
             :key="param.label"
             class="error-chart"
           >
-            <h3>Residual vs {{ param.label }}</h3>
-            <div class="residual-box" :data-testid="'emu-residual'">
-              <span class="residual-zero" />
-              <span
-                v-for="(pt, i) in param.points"
-                :key="i"
-                class="parity-point"
-                :style="{ left: pt.x + '%', top: pt.y + '%' }"
-                :title="`${param.label} = ${pt.value}, residual ${pt.residual}`"
-              />
-            </div>
+            <h3>Normalised residual vs {{ param.label }}</h3>
+            <ScatterChart
+              data-testid="emu-residual"
+              :points="param.points"
+              :x-domain="[param.lo, param.hi]"
+              :y-domain="[-param.worst, param.worst]"
+              :x-label="param.label"
+              :y-label="residualBasis.axis"
+              guide="zero"
+            />
             <small class="emu-error-note">
               Structure here — a trend, or a cluster far from the line — means the
               emulator is wrong in a particular part of the parameter space, not
-              uniformly. ±{{ fmtStat(param.worst, 3) }} full scale.
+              uniformly. The axis is {{ residualBasis.note }}.
             </small>
           </section>
         </template>
@@ -788,7 +836,21 @@ const uqMethodLabel = computed(() =>
             <rect :x="p.geom.bandX" y="0" :width="p.geom.bandW" height="60" class="uq-band" />
             <polygon :points="p.geom.points" class="uq-area" />
             <line :x1="p.geom.meanX" y1="0" :x2="p.geom.meanX" y2="60" class="uq-mean" />
+            <line
+              v-for="t in p.geom.ticks"
+              :key="'t' + t.at"
+              class="uq-tick"
+              :x1="t.at"
+              y1="54"
+              :x2="t.at"
+              y2="60"
+            />
           </svg>
+          <div class="uq-axis" data-testid="uq-axis">
+            <span v-for="t in p.geom.ticks" :key="'l' + t.at" :style="{ left: t.pct + '%' }">
+              {{ t.text }}
+            </span>
+          </div>
         </div>
       </div>
     </section>
@@ -832,41 +894,7 @@ const uqMethodLabel = computed(() =>
   font-size: 0.8rem;
   margin: 0.4rem 0;
 }
-.parity-box,
-.residual-box {
-  position: relative;
-  height: 190px;
-  border: 1px solid var(--p-content-border-color, #ddd);
-  border-radius: 4px;
-  overflow: hidden;
-}
-.parity-line {
-  position: absolute;
-  left: 0;
-  bottom: 0;
-  width: 141.4%;
-  height: 1px;
-  background: var(--p-content-border-color, #bbb);
-  transform-origin: left bottom;
-  transform: rotate(-45deg);
-}
-.residual-zero {
-  position: absolute;
-  left: 0;
-  top: 50%;
-  width: 100%;
-  height: 1px;
-  background: var(--p-content-border-color, #bbb);
-}
-.parity-point {
-  position: absolute;
-  width: 6px;
-  height: 6px;
-  margin: -3px 0 0 -3px;
-  border-radius: 50%;
-  background: var(--p-primary-color, #5b9bd5);
-  opacity: 0.75;
-}
+/* The plots themselves are ScatterChart; only their headings are styled here. */
 .analysis-panel {
   display: flex;
   flex-direction: column;
@@ -1151,6 +1179,22 @@ const uqMethodLabel = computed(() =>
   stroke: #ffc000;
   stroke-width: 1.5;
   vector-effect: non-scaling-stroke;
+}
+.uq-tick {
+  stroke: var(--p-content-border-color, #888);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+.uq-axis {
+  position: relative;
+  height: 0.95rem;
+  font-size: 0.65rem;
+  opacity: 0.7;
+}
+.uq-axis span {
+  position: absolute;
+  transform: translateX(-50%);
+  white-space: nowrap;
 }
 
 /* Cost summary and the current-vs-baseline comparison (#159). */

@@ -81,6 +81,48 @@ describe('UQPanel UQ options from CA schema', () => {
     expect(wrapper.find('[data-testid="mcmc-opt-num_steps"]').exists()).toBe(false)
   })
 
+  // CA's uq schema carries `method` too. Rendering it alongside the panel's own
+  // Method select put two Method fields on the form -- and the schema copy won
+  // the merge, so picking Laplace ran MCMC.
+  it('does not render a second Method field for the schema copy', () => {
+    const wrapper = mount(UQPanel, {
+      props: {
+        canRun: true,
+        defaults: {
+          method: 'mcmc',
+          uq_options: [
+            { name: 'method', type: 'enum', default: 'mcmc', choices: ['mcmc'] },
+            ...MCMC_OPTIONS,
+          ],
+        },
+      },
+      global: { stubs },
+    })
+    expect(wrapper.find('[data-testid="mcmc-opt-method"]').exists()).toBe(false)
+    // and the panel's own one is still there, with the options it offers
+    expect(wrapper.findAll('.field').filter((f) => f.text().startsWith('Method'))).toHaveLength(1)
+  })
+
+  it('sends the method the user chose, not the schema default', async () => {
+    // The panel offers laplace; CA's uq schema does not, because laplace runs
+    // through IdentifiabilityAnalysis. The user's choice has to survive.
+    const wrapper = mount(UQPanel, {
+      props: {
+        canRun: true,
+        defaults: {
+          method: 'laplace',
+          uq_options: [
+            { name: 'method', type: 'enum', default: 'mcmc', choices: ['mcmc'] },
+            ...MCMC_OPTIONS,
+          ],
+        },
+      },
+      global: { stubs },
+    })
+    await wrapper.find('[data-testid="run-uq"]').trigger('click')
+    expect(wrapper.emitted('run')[0][0].method).toBe('laplace')
+  })
+
   it("renders a 'str' option as a text input, not a number input", async () => {
     // Regression: str descriptors fell through to InputNumber and displayed NaN.
     // CA's identifiability sub_method ('parabola_fit') is the real instance.

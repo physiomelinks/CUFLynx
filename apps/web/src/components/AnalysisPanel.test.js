@@ -42,6 +42,18 @@ describe('AnalysisPanel UQ section', () => {
     // LaTeX label rendered via KaTeX (not the raw backslash form)
     expect(rows[0].find('.uq-label').html()).toContain('katex')
   })
+
+  it('puts a parameter scale under the posterior', () => {
+    // Without it the density has a shape but no position: the mean is in the
+    // header text and nothing says where the tails actually reach.
+    const wrapper = mount(AnalysisPanel, { props: { uqParams: UQ_PARAMS, uqMethod: 'mcmc' } })
+    const axis = wrapper.find('[data-testid="uq-axis"]')
+    expect(axis.exists()).toBe(true)
+    expect(axis.findAll('span').length).toBeGreaterThan(1)
+    // Labels are HTML, positioned by percent: the plot is stretched to the row
+    // width, which would distort text drawn inside the SVG.
+    expect(axis.find('span').attributes('style')).toContain('left')
+  })
 })
 
 const SENS = {
@@ -404,5 +416,91 @@ describe('emulator error', () => {
     expect(parity.findAll('.parity-point')).toHaveLength(2)
     // And a residual panel per parameter, which is what says *where* it is wrong.
     expect(wrapper.findAll('[data-testid="emu-residual"]')).toHaveLength(2)
+  })
+
+  it('gives every emulator plot named, ticked axes', () => {
+    // A scatter with no axes shows the shape of the error but not its size.
+    const wrapper = mount(AnalysisPanel, {
+      props: { emulatorMetadata: METADATA, emulatorErrorPoints: POINTS },
+    })
+    const parity = wrapper.find('[data-testid="emu-parity"]')
+    expect(parity.text()).toContain('simulated')
+    expect(parity.text()).toContain('emulated')
+    expect(parity.findAll('.tick').length).toBeGreaterThan(0)
+
+    for (const res of wrapper.findAll('[data-testid="emu-residual"]')) {
+      expect(res.text()).toContain('residual')
+      expect(res.findAll('.tick').length).toBeGreaterThan(0)
+    }
+  })
+
+  it('normalises the residual by the truth, so the axis carries a size', () => {
+    // A raw residual axis whose only labelled value is the zero line says the
+    // error has a shape but not how big it is. Dividing by the ground truth
+    // makes 0.05 mean "5% out" without knowing the feature's units.
+    const wrapper = mount(AnalysisPanel, {
+      props: { emulatorMetadata: METADATA, emulatorErrorPoints: POINTS },
+    })
+    const res = wrapper.find('[data-testid="emu-residual"]')
+    expect(res.text()).toContain('residual / truth')
+    // POINTS feature 0: residuals 0.05 and -0.10 against truths 1.0 and 2.0.
+    const ys = res.findAll('.parity-point').map((p) => Number(p.attributes('cy')))
+    const guideY = Number(res.find('[data-testid="chart-guide"]').attributes('y1'))
+    // 0.05/1.0 = +0.05 and -0.10/2.0 = -0.05 are equal and opposite, so the two
+    // points sit the same distance either side of zero -- which the raw
+    // residuals (0.05, -0.10) would not do.
+    expect(guideY - ys[0]).toBeCloseTo(ys[1] - guideY, 6)
+    // and the ticks show real fractions, not just the zero line
+    const labels = res.findAll('.tick').map((t) => t.text())
+    expect(labels.filter((t) => t !== '0').length).toBeGreaterThan(0)
+  })
+
+  it('falls back to the truth spread when a truth is zero, and says so', () => {
+    // Dividing by zero would plot Infinity; dropping the point would hide error.
+    const zeroTruth = {
+      ...POINTS,
+      y_true: [[0.0, 5.0], [2.0, 6.0]],
+    }
+    const wrapper = mount(AnalysisPanel, {
+      props: { emulatorMetadata: METADATA, emulatorErrorPoints: zeroTruth },
+    })
+    const res = wrapper.find('[data-testid="emu-residual"]')
+    expect(res.text()).toContain('residual / range')
+    expect(wrapper.text()).toContain('at least one of them is zero')
+    for (const p of res.findAll('.parity-point')) {
+      expect(Number.isFinite(Number(p.attributes('cy')))).toBe(true)
+    }
+  })
+
+  it('scales the parity plot with the data, not with the box', () => {
+    // The 1:1 line used to be a CSS-rotated div sized 141.4% of the box, which
+    // is the diagonal only when the box is square; at any other width it left
+    // exact predictions sitting off the line. It is drawn in the points' own
+    // coordinates now, so this holds whatever width the panel is given.
+    const exact = {
+      ...POINTS,
+      y_true: [[1.0, 5.0], [2.0, 6.0]],
+      y_pred: [[1.0, 5.0], [2.0, 6.0]],
+    }
+    const wrapper = mount(AnalysisPanel, {
+      props: { emulatorMetadata: METADATA, emulatorErrorPoints: exact },
+    })
+    const guide = wrapper.find('[data-testid="emu-parity"] [data-testid="chart-guide"]')
+    const at = (a) => Number(guide.attributes(a))
+    const points = wrapper.findAll('[data-testid="emu-parity"] .parity-point')
+    expect(points.length).toBe(2)
+    for (const pt of points) {
+      const t = (Number(pt.attributes('cx')) - at('x1')) / (at('x2') - at('x1'))
+      expect(Number(pt.attributes('cy'))).toBeCloseTo(at('y1') + t * (at('y2') - at('y1')), 6)
+    }
+  })
+
+  it('heads the section "Emulator", not "Emulator error"', () => {
+    // It carries the error statistics, but the section is the emulator's: the
+    // plots and whether it is in use for analyses live here too.
+    const wrapper = mount(AnalysisPanel, { props: { emulatorMetadata: METADATA } })
+    const heads = wrapper.findAll('h2').map((h) => h.text())
+    expect(heads.some((h) => h.startsWith('Emulator'))).toBe(true)
+    expect(heads.some((h) => h.includes('Emulator error'))).toBe(false)
   })
 })

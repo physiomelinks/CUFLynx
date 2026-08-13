@@ -634,3 +634,33 @@ export function buildChartData(simResult, options = {}) {
 
   return { datasets }
 }
+
+/**
+ * Axis ticks on 1/2/5 x 10^n — the steps a reader converts without arithmetic.
+ *
+ * Returns values in data units; the caller scales them. `count` is a target,
+ * not a promise: the nice step wins, so the result is usually count ± 1.
+ */
+export function niceTicks(lo, hi, count = 4) {
+  const raw = (hi - lo) / count
+  if (!(raw > 0) || !Number.isFinite(raw)) return [lo]
+  const mag = 10 ** Math.floor(Math.log10(raw))
+  const norm = raw / mag
+  const step = (norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 5 ? 5 : 10) * mag
+  const ticks = []
+  // The slack keeps a tick landing exactly on `hi` from being lost to the drift
+  // in the accumulating sum.
+  for (let v = Math.ceil(lo / step) * step; v <= hi + step * 1e-9; v += step) {
+    // -0 prints as "-0"; it is the same tick as 0.
+    ticks.push(v === 0 ? 0 : v)
+  }
+  return ticks
+}
+
+/** Tick text: short enough for an axis, without lying about the magnitude. */
+export function fmtTick(v) {
+  if (v === 0) return '0'
+  const a = Math.abs(v)
+  if (a >= 1e5 || a < 1e-3) return v.toExponential(0)
+  return String(Number(v.toPrecision(3)))
+}
