@@ -455,6 +455,31 @@ describe('emulator error', () => {
     expect(labels.filter((t) => t !== '0').length).toBeGreaterThan(0)
   })
 
+  it('brackets zero on the residual axis, for real emulator error', () => {
+    // Straight from a trained CardiovascularSystem emulator: truths of order
+    // 1e-4 with residuals a few percent of them. The normalised half-range comes
+    // out at ±0.0447, where the tick step used to round up to 0.05 -- wider than
+    // the axis -- leaving the zero line as the only labelled value, on the one
+    // plot whose job is to say how large the error is.
+    const real = {
+      theta: [[0.1, 1.0], [0.5, 1.5], [0.9, 2.0]],
+      y_true: [[7.585e-5, 5.0], [1.02e-4, 6.0], [1.383e-4, 7.0]],
+      y_pred: [[7.24e-5, 5.0], [1.05e-4, 6.0], [1.4e-4, 7.0]],
+      residual: [[-3.393e-6, 0.0], [3.0e-6, 0.0], [1.7e-6, 0.0]],
+      feature_labels: METADATA.feature_labels,
+      param_entry_labels: ['a/p', 'a/q'],
+    }
+    const wrapper = mount(AnalysisPanel, {
+      props: { emulatorMetadata: METADATA, emulatorErrorPoints: real },
+    })
+    const res = wrapper.find('[data-testid="emu-residual"]')
+    // The y ticks are the ones left of the plot area; take their text.
+    const labels = res.findAll('.tick').map((t) => t.text())
+    const numbers = labels.map(Number).filter((n) => !Number.isNaN(n))
+    expect(numbers.some((n) => n < 0), `no tick below zero: ${labels}`).toBe(true)
+    expect(numbers.some((n) => n > 0), `no tick above zero: ${labels}`).toBe(true)
+  })
+
   it('falls back to the truth spread when a truth is zero, and says so', () => {
     // Dividing by zero would plot Infinity; dropping the point would hide error.
     const zeroTruth = {

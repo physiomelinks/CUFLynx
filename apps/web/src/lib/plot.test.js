@@ -16,7 +16,54 @@ import {
   withOverlayVars,
   timeUnit,
   emulatorFeatureFor,
+  niceTicks,
+  fmtTick,
 } from './plot'
+
+describe('niceTicks', () => {
+  // Measured from a real trained emulator (CardiovascularSystem, 13 held-out
+  // points): these are the normalised-residual half-ranges its features produce.
+  // The step rounds *up* the 1/2/5 ladder, so ±0.0447 picked 0.05 -- wider than
+  // the range -- and the axis showed nothing but the zero line, which is exactly
+  // the axis that is supposed to say how big the error is.
+  const REAL_WORST = [0.0447341, 0.117373, 0.0524317, 0.0453284, 0.0859714, 0.109053]
+
+  it('always brackets zero on a symmetric residual axis', () => {
+    for (const worst of REAL_WORST) {
+      const ticks = niceTicks(-worst, worst)
+      expect(ticks.some((t) => t < 0), `no tick below zero for ±${worst}`).toBe(true)
+      expect(ticks.some((t) => t > 0), `no tick above zero for ±${worst}`).toBe(true)
+      expect(ticks.length).toBeGreaterThanOrEqual(3)
+    }
+  })
+
+  it('keeps every tick inside the range it was given', () => {
+    for (const worst of REAL_WORST) {
+      for (const t of niceTicks(-worst, worst)) {
+        expect(Math.abs(t)).toBeLessThanOrEqual(worst + 1e-12)
+      }
+    }
+  })
+
+  it('stays on the 1/2/5 ladder while it widens the tick set', () => {
+    // Dropping to an arbitrary step would satisfy minTicks with unreadable
+    // numbers; the point of the ladder is that a reader converts them at sight.
+    const ticks = niceTicks(-0.0447341, 0.0447341)
+    expect(ticks.map(fmtTick)).toEqual(['-0.04', '-0.02', '0', '0.02', '0.04'])
+  })
+
+  it('leaves the ranges that already worked alone', () => {
+    expect(niceTicks(-1, 1).map(fmtTick)).toEqual(['-1', '-0.5', '0', '0.5', '1'])
+    expect(niceTicks(0, 10).map(fmtTick)).toEqual(['0', '5', '10'])
+    expect(niceTicks(-0.117373, 0.117373).map(fmtTick)).toEqual(['-0.1', '0', '0.1'])
+  })
+
+  it('does not spin on a degenerate range', () => {
+    expect(niceTicks(5, 5)).toEqual([5])
+    expect(niceTicks(0, Infinity)).toEqual([0])
+    expect(niceTicks(NaN, NaN)).toEqual([NaN])
+  })
+})
 
 // Mirrors the SN_simple obs_data shape (3 experiments, predictions + overlays).
 const obs = {

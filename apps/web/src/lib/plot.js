@@ -635,24 +635,53 @@ export function buildChartData(simResult, options = {}) {
   return { datasets }
 }
 
-/**
- * Axis ticks on 1/2/5 x 10^n — the steps a reader converts without arithmetic.
- *
- * Returns values in data units; the caller scales them. `count` is a target,
- * not a promise: the nice step wins, so the result is usually count ± 1.
- */
-export function niceTicks(lo, hi, count = 4) {
-  const raw = (hi - lo) / count
-  if (!(raw > 0) || !Number.isFinite(raw)) return [lo]
-  const mag = 10 ** Math.floor(Math.log10(raw))
-  const norm = raw / mag
-  const step = (norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 5 ? 5 : 10) * mag
+/** Every tick of `step` that lands within [lo, hi]. */
+function ticksOfStep(lo, hi, step) {
   const ticks = []
   // The slack keeps a tick landing exactly on `hi` from being lost to the drift
   // in the accumulating sum.
   for (let v = Math.ceil(lo / step) * step; v <= hi + step * 1e-9; v += step) {
     // -0 prints as "-0"; it is the same tick as 0.
     ticks.push(v === 0 ? 0 : v)
+  }
+  return ticks
+}
+
+/** The next step down the 1/2/5 ladder: 5 -> 2 -> 1 -> 0.5 -> 0.2 -> ... */
+function stepDown(step) {
+  const mag = 10 ** Math.floor(Math.log10(step) + 1e-9)
+  const lead = Math.round(step / mag)
+  if (lead >= 5) return 2 * mag
+  if (lead >= 2) return 1 * mag
+  return 5 * (mag / 10)
+}
+
+/**
+ * Axis ticks on 1/2/5 x 10^n — the steps a reader converts without arithmetic.
+ *
+ * Returns values in data units; the caller scales them. `count` is a target,
+ * not a promise: the nice step wins, so the result is usually count ± 1.
+ *
+ * `minTicks` is a promise, though, and it has to be. The step is rounded *up*
+ * the ladder, so on a narrow range it can come out wider than the range itself
+ * and leave a single tick on the axis — a residual axis spanning ±0.0447 picks
+ * a step of 0.05 and shows nothing but the zero line, which is exactly the axis
+ * that cannot say how big the error is. When too few ticks land, the step walks
+ * back down the ladder until enough do.
+ */
+export function niceTicks(lo, hi, count = 4, minTicks = 3) {
+  const raw = (hi - lo) / count
+  if (!(raw > 0) || !Number.isFinite(raw)) return [lo]
+  const mag = 10 ** Math.floor(Math.log10(raw))
+  const norm = raw / mag
+  let step = (norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 5 ? 5 : 10) * mag
+
+  let ticks = ticksOfStep(lo, hi, step)
+  // Bounded: each pass at least halves the step, so it reaches minTicks long
+  // before this runs out, and a pathological range still terminates.
+  for (let guard = 0; ticks.length < minTicks && guard < 8; guard++) {
+    step = stepDown(step)
+    ticks = ticksOfStep(lo, hi, step)
   }
   return ticks
 }
