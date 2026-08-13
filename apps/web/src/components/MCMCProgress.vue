@@ -14,6 +14,13 @@ const props = defineProps({
   // The /api/uq/{job}/progress payload; null before the first poll returns.
   progress: { type: Object, default: null },
   running: { type: Boolean, default: false },
+  // qname -> LaTeX/plotting name from params_for_id, so a panel is titled the way the output
+  // plots title it rather than with the raw model qname.
+  paramLabels: { type: Object, default: () => ({}) },
+  // True once a run has been through this panel, so the section stays put afterwards rather
+  // than disappearing the moment `running` goes false -- the calibration charts persist and
+  // this should too.
+  finished: { type: Boolean, default: false },
 })
 
 const VIEW_W = 340
@@ -29,11 +36,12 @@ const VIEWS = [
       + ' off on its own has not.',
   },
   {
-    key: 'windowed',
-    title: 'Windowed mean',
+    key: 'cumulative',
+    title: 'Cumulative mean',
     xLabel: 'step',
-    hint: 'Convergence shows up as the running means coming together and flattening. A mean'
-      + ' still moving means that walker is still exploring.',
+    hint: 'Each point averages everything up to it, so the line flattens once the estimate'
+      + ' stops moving. The two lines converging means the burn-in no longer matters; a'
+      + ' persistent gap means it does.',
   },
   {
     key: 'autocorrelation',
@@ -53,9 +61,20 @@ const hasChain = computed(() => (props.progress?.steps ?? 0) > 0)
 const plotted = computed(() => {
   const p = props.progress
   if (!p || !p.steps) return null
-  if (view.value === 'windowed') {
-    if (!p.windowed_mean) return null
-    return { x: p.windowed_mean.steps, series: p.windowed_mean.series, guides: [] }
+  if (view.value === 'cumulative') {
+    if (!p.cumulative_mean) return null
+    // Two lines per parameter, in a fixed order so the legend below means something.
+    return {
+      x: p.cumulative_mean.steps,
+      // One line per chain, twice over: from step 0, then from the burn-in. Same colour per
+      // chain so a walker can be followed between the two families; dashed marks the second.
+      series: p.cumulative_mean.series.map((s) => [...s.from_start, ...s.from_burn_in]),
+      dashedFrom: p.cumulative_mean.series[0]?.from_start?.length ?? 0,
+      guides: [],
+      legend: p.cumulative_mean.burn_in_reached
+        ? ['from step 0', `from burn-in (step ${p.cumulative_mean.burn_in})`]
+        : [`from step 0 — burn-in (step ${p.cumulative_mean.burn_in}) not reached yet`],
+    }
   }
   if (view.value === 'autocorrelation') {
     if (!p.autocorrelation) return null
@@ -68,13 +87,18 @@ const plotted = computed(() => {
 /** Why there is nothing to draw — never a blank panel with no explanation. */
 const emptyReason = computed(() => {
   if (!hasChain.value) {
-    return props.running
-      ? 'Waiting for the first chain checkpoint…'
-      : 'Run an MCMC analysis to watch the chain here.'
+    if (props.running) return 'Waiting for the first chain checkpoint…'
+    // A finished run with no chain is a real outcome worth naming: a Laplace run writes none,
+    // and an MCMC run that failed early leaves none either. Saying "run an MCMC analysis" to
+    // someone who just did would send them looking in the wrong place.
+    if (props.finished) {
+      return 'That run finished without writing a chain. A Laplace run has none to write; an'
+        + ' MCMC run should — check the run log for what it did instead.'
+    }
+    return 'Run an MCMC analysis to watch the chain here.'
   }
-  if (!plotted.value && view.value === 'windowed') {
-    return `The chain is shorter than the ${props.progress?.windowed_mean?.window ?? 10}-step`
-      + ' averaging window, so there is nothing to average yet.'
+  if (!plotted.value && view.value === 'cumulative') {
+    return 'Not enough steps yet to average.'
   }
   return plotted.value ? '' : 'Not enough steps yet for this view.'
 })
@@ -82,7 +106,7 @@ const emptyReason = computed(() => {
 function panelFor(paramIdx) {
   const data = plotted.value
   const lines = data.series[paramIdx] ?? []
-  const flat = lines.flat().filter((v) => Number.isFinite(v))
+  const flat = lines.flat().filter((v) => v != null && Number.isFinite(v))
   if (!flat.length || !data.x.length) return null
 
   let lo = Math.min(...flat, ...data.guides)
@@ -107,10 +131,18 @@ function panelFor(paramIdx) {
     y0,
     y1,
     paths: lines.map((line, i) => ({
-      d: line.map((v, j) => `${j ? 'L' : 'M'}${sx(data.x[j]).toFixed(1)} ${sy(v).toFixed(1)}`)
-        .join(' '),
-      colour: PALETTE[i % PALETTE.length],
-    })),
+      // `null` is a gap, not a zero: the burn-in line does not exist before the burn-in, and
+      // joining across it would draw a slope that was never sampled.
+      d: line.reduce((acc, v, j) => {
+        if (v == null || !Number.isFinite(v)) return acc + ''
+        const cmd = acc === '' || line[j - 1] == null ? 'M' : 'L'
+        return `${acc}${cmd}${sx(data.x[j]).toFixed(1)} ${sy(v).toFixed(1)} `
+      }, ''),
+      colour: PALETTE[i % (data.dashedFrom || lines.length) % PALETTE.length],
+      dashed: data.dashedFrom ? i >= data.dashedFrom : false,
+      // A line with no points at all -- the burn-in one before the run reaches it -- must not
+      // become an empty <path>; that is an invisible element the eye cannot see but a count can.
+    })).filter((p) => p.d.trim()),
     guides: data.guides.map((g) => ({ y: sy(g), zero: g === 0 })),
     xTicks: niceTicks(xMin, xMax).map((v) => ({ v, at: sx(v), text: fmtTick(v) })),
     yTicks: niceTicks(lo, hi).map((v) => ({ v, at: sy(v), text: fmtTick(v) })),
@@ -121,6 +153,9 @@ const panels = computed(() => {
   if (!plotted.value) return []
   return (props.progress.param_labels ?? []).map((label, idx) => ({
     label,
+    // Same lookup the UQ posteriors use: name_for_plotting when there is one, the qname
+    // otherwise. renderMath turns \alpha into the symbol.
+    display: props.paramLabels?.[label] ?? label,
     geom: panelFor(idx),
   })).filter((p) => p.geom)
 })
@@ -160,19 +195,24 @@ const panels = computed(() => {
 
     <template v-else>
       <p class="mcmc-hint">{{ activeView.hint }}</p>
+      <div v-if="plotted?.legend" class="mcmc-legend" data-testid="mcmc-legend">
+        <span v-for="(label, i) in plotted.legend" :key="label">
+          <i :class="{ dashed: i === 1 }" />{{ label }}
+        </span>
+      </div>
       <div
         v-for="panel in panels"
         :key="panel.label"
         class="mcmc-panel"
         data-testid="mcmc-panel"
       >
-        <span class="mcmc-label" v-html="renderMath(panel.label)" />
+        <span class="mcmc-label" v-html="renderMath(panel.display)" />
         <svg
           :viewBox="`0 0 ${VIEW_W} ${VIEW_H}`"
           preserveAspectRatio="xMidYMid meet"
           class="mcmc-plot"
           role="img"
-          :aria-label="`${activeView.title} for ${panel.label}`"
+          :aria-label="`${activeView.title} for ${panel.display}`"
         >
           <line
             v-for="g in panel.geom.guides"
@@ -190,6 +230,7 @@ const panels = computed(() => {
             :d="p.d"
             :stroke="p.colour"
             class="walker"
+            :stroke-dasharray="p.dashed ? '4 3' : undefined"
           />
           <g class="axis">
             <line
@@ -268,6 +309,25 @@ const panels = computed(() => {
 .mcmc-verdict[data-bounded='false'] {
   color: #e84a5f;
   opacity: 1;
+}
+.mcmc-legend {
+  display: flex;
+  gap: 0.9rem;
+  font-size: 0.7rem;
+  opacity: 0.85;
+  margin-bottom: 0.3rem;
+}
+.mcmc-legend i {
+  display: inline-block;
+  width: 0.9rem;
+  height: 0;
+  margin-right: 0.3rem;
+  vertical-align: middle;
+  border-top: 2px solid currentColor;
+  opacity: 0.8;
+}
+.mcmc-legend i.dashed {
+  border-top-style: dashed;
 }
 .mcmc-hint {
   font-size: 0.7rem;

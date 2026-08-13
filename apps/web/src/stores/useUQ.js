@@ -20,6 +20,8 @@ export function useUQ(options = {}) {
   // [{ qname, mean, std, q05, q50, q95, bins, counts }, ...]
   const params = ref([])
   const error = ref('')
+  // Set when a result is real but qualified -- a posterior from a cancelled run's partial chain.
+  const warning = ref('')
   // The three live views of the chain; null until the run writes its first checkpoint.
   const progress = ref(null)
 
@@ -40,6 +42,7 @@ export function useUQ(options = {}) {
     method.value = null
     params.value = []
     error.value = ''
+    warning.value = ''
     progress.value = null
   }
 
@@ -72,10 +75,27 @@ export function useUQ(options = {}) {
         method.value = s.method
         params.value = s.params ?? []
         error.value = s.error || ''
+        warning.value = s.warning || ''
+        // One last look at the chain now the run has stopped.
+        //
+        // CA writes the finished chain as the very last thing it does, *after* the poll that
+        // saw the run still going -- and with an emulator the whole run can take less time
+        // than one chain poll interval, so without this there was nothing to draw at all and
+        // the section vanished the moment `running` went false. It also picks up the partial
+        // chain of a cancelled or failed run, which is the other half of what CA #418 is for.
+        await pollChain()
       }
     } catch (e) {
       state.value = 'error'
-      error.value = e?.response?.data?.detail || String(e)
+      // A 404 means the server no longer knows this job -- it was restarted, or the app is
+      // talking to a different one. That is not "the run failed", and reporting it as a bare
+      // Axios error sends someone looking for a bug in their model.
+      error.value =
+        e?.response?.status === 404
+          ? 'The server is no longer tracking this run (it was restarted, or replaced). The'
+            + ' sampling process may have been stopped with it; any chain it had already'
+            + ' written is still in the run directory.'
+          : e?.response?.data?.detail || String(e)
     }
   }
 
@@ -94,8 +114,33 @@ export function useUQ(options = {}) {
     } catch {
       /* keep the last chain we had */
     }
+    // Only keep a timer going while the run is; a finished run is fetched once, by poll().
     if (state.value === 'running') {
       chainTimer = setTimeout(pollChain, chainIntervalMs)
+    }
+  }
+
+  /**
+   * Pick up the posterior the server salvages from a cancelled run's partial chain.
+   *
+   * The salvage happens when the runner process actually exits, which is after the cancel
+   * request returns -- so one immediate poll would usually miss it. A few short retries cover
+   * the gap without keeping a timer alive for a run that is over.
+   */
+  async function collectCancelledResults(attempts = 6, delayMs = 500) {
+    for (let attempt = 0; attempt < attempts; attempt++) {
+      try {
+        const s = await getUQStatus(jobId, offset)
+        if (s?.params?.length) {
+          params.value = s.params
+          method.value = s.method ?? method.value
+          warning.value = s.warning || ''
+          return
+        }
+      } catch {
+        return
+      }
+      await new Promise((resolve) => setTimeout(resolve, delayMs))
     }
   }
 
@@ -111,10 +156,14 @@ export function useUQ(options = {}) {
         /* best effort */
       }
       state.value = 'cancelled'
+      // A cancelled run still has every step it sampled before it stopped.
+      await pollChain()
+      await collectCancelledResults()
     }
   }
 
   const running = computed(() => state.value === 'running')
 
-  return { state, lines, method, params, error, running, progress, start, cancel, reset }
+  return { state, lines, method, params, error, warning, running, progress, start, cancel,
+    reset }
 }

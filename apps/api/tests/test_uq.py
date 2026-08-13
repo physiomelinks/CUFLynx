@@ -197,3 +197,38 @@ def test_uq_unknown_model_404(client):
 
 def test_uq_status_unknown_job_404(client):
     assert client.get("/api/uq/nope/status").status_code == 404
+
+
+def test_a_cancelled_run_keeps_the_posterior_it_had_sampled(tmp_path, monkeypatch):
+    """Cancelling used to discard the run: the posterior comes from a file the runner writes
+    only on a clean finish, so Analysis stayed empty with thousands of usable draws on disk.
+    Since CA #418 writes the chain as it samples, a cancelled run has one -- shorter than asked
+    for, which is a reason to label it, not to throw it away."""
+    import numpy as np
+
+    import uq as uq_mod
+
+    run_dir = tmp_path / "mcmc_model_obs"
+    run_dir.mkdir()
+    chain = np.cumsum(np.random.default_rng(0).normal(size=(400, 4, 2)) * 0.1, axis=0)
+    np.save(run_dir / "mcmc_chain.npy", chain)
+
+    job = uq_mod.UQJob("j1", str(tmp_path))
+    job.state = "cancelled"
+    job.burn_in = 0.5
+    job.target_steps = 400
+
+    uq_mod.uq._salvage_partial(job)
+
+    assert job.params, "a cancelled run's chain was thrown away"
+    assert len(job.params) == 2
+    assert "partial chain" in (job.warning or "")
+
+
+def test_a_cancel_with_no_chain_is_still_a_clean_cancel(tmp_path):
+    import uq as uq_mod
+
+    job = uq_mod.UQJob("j2", str(tmp_path))
+    job.state = "cancelled"
+    uq_mod.uq._salvage_partial(job)          # must not raise
+    assert job.params is None

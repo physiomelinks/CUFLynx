@@ -33,9 +33,9 @@ def test_reports_nothing_before_the_first_checkpoint(tmp_path):
     out = mcmc_progress.progress(str(tmp_path))
     assert out["steps"] == 0
     assert out["traces"] == []
-    assert out["windowed_mean"] is None
+    assert out["cumulative_mean"] is None
     # The shape is the same either way, so the client renders from `steps`, not a missing key.
-    assert set(out) >= {"steps", "walkers", "traces", "windowed_mean", "autocorrelation"}
+    assert set(out) >= {"steps", "walkers", "traces", "cumulative_mean", "autocorrelation"}
 
 
 def test_a_half_written_chain_reads_as_no_data_rather_than_raising(tmp_path):
@@ -92,22 +92,50 @@ def test_only_a_sample_of_walkers_is_drawn_and_it_says_so(tmp_path):
     assert len(out["traces"][0]) == mcmc_progress.MAX_WALKERS
 
 
-def test_windowed_mean_matches_cas_plot_chain_avg(tmp_path):
-    """Same convolution, same offset: CA's np.convolve(..., mode='valid') at window - 1."""
-    samples = _chain(str(tmp_path), steps=60)
-    out = mcmc_progress.progress(str(tmp_path))["windowed_mean"]
+def test_cumulative_mean_is_a_widening_window_from_both_starts(tmp_path):
+    """Each point averages everything up to it -- from step 0, and from the burn-in."""
+    samples = _chain(str(tmp_path), steps=200)
+    out = mcmc_progress.progress(str(tmp_path), burn_in=0.5, target_steps=200)["cumulative_mean"]
 
-    window = mcmc_progress.DEFAULT_WINDOW
-    expected = np.convolve(samples[:, 0, 0], np.ones(window) / window, mode="valid")
-    assert out["window"] == window
-    assert out["steps"][0] == window - 1
-    assert out["series"][0][0] == pytest.approx(expected.tolist())
+    assert out["burn_in"] == 100
+    first = out["series"][0]
+    # One line per chain, not one pooled line: a chain that has not found the answer shows its
+    # own running mean sitting apart, which an ensemble mean averages away.
+    assert len(first["from_start"]) == WALKERS
+    for walker in range(WALKERS):
+        assert first["from_start"][walker][0] == pytest.approx(samples[0, walker, 0])
+        assert first["from_start"][walker][-1] == pytest.approx(samples[:, walker, 0].mean())
+        assert first["from_burn_in"][walker][-1] == pytest.approx(samples[100:, walker, 0].mean())
 
 
-def test_windowed_mean_is_skipped_while_the_chain_is_shorter_than_the_window(tmp_path):
-    """Early in a run there is nothing to average. One point plotted as a trend reads as one."""
-    _chain(str(tmp_path), steps=5)
-    assert mcmc_progress.progress(str(tmp_path))["windowed_mean"] is None
+def test_the_burn_in_line_does_not_exist_before_the_burn_in(tmp_path):
+    """A gap, not a zero: joining across it would draw a slope nobody sampled."""
+    _chain(str(tmp_path), steps=200)
+    out = mcmc_progress.progress(str(tmp_path), burn_in=0.5, target_steps=200)["cumulative_mean"]
+    burn_in = out["burn_in"]
+    for step, value in zip(out["steps"], out["series"][0]["from_burn_in"][0]):
+        assert (value is None) == (step < burn_in)
+
+
+def test_the_burn_in_point_does_not_crawl_as_the_chain_grows(tmp_path):
+    """A fraction is taken against the run's configured length, not the chain so far --
+    otherwise the line's start moves every poll and never means one thing."""
+    _chain(str(tmp_path), steps=200)
+    # Half of the configured run, not half of the chain so far -- the complaint being fixed is
+    # a burn-in marker that read "step 8889" at 17,778 steps of a 100,000-step run.
+    out = mcmc_progress.progress(str(tmp_path), burn_in=0.5, target_steps=1000)["cumulative_mean"]
+    assert out["burn_in"] == 500
+    assert out["burn_in_reached"] is False, "the run has not sampled that far yet"
+    assert all(v is None for v in out["series"][0]["from_burn_in"][0])
+    assert mcmc_progress.burn_in_index(2000, 0.5, 1000) == 500
+
+
+def test_an_absolute_burn_in_is_a_step_count(tmp_path):
+    """CA's rule: below 1 is a fraction, 1 or above is a number of steps."""
+    assert mcmc_progress.burn_in_index(500, 0.2, 500) == 100
+    # A string from a form must not silently become "half the chain so far".
+    assert mcmc_progress.burn_in_index(500, 120) == 120
+    assert mcmc_progress.burn_in_index(500, "nonsense", 500) == 250
 
 
 def test_autocorrelation_matches_emcee(tmp_path):
@@ -152,3 +180,59 @@ def test_the_payload_is_json_serialisable(tmp_path):
 
     _chain(str(tmp_path))
     json.dumps(mcmc_progress.progress(str(tmp_path), ["a", "b", "c"]))
+
+
+# --- CA writes into its own run subdirectory, not the one it was handed --------------------
+
+
+def test_finds_the_chain_in_cas_run_subdirectory(tmp_path):
+    """The bug that made every run look chainless.
+
+    CA does not write into the directory it is given: it makes
+    <output_dir>/<method>_<file_prefix>_<obs_prefix>/ and writes there. Joining the file name
+    onto the job's output dir found nothing, ever -- so a perfectly good MCMC run reported "that
+    run finished without writing a chain".
+    """
+    run_dir = tmp_path / "mcmc_3compartment_lv_observables"
+    run_dir.mkdir()
+    _chain(str(run_dir))
+
+    out = mcmc_progress.progress(str(tmp_path))
+    assert out["steps"] == STEPS
+    assert len(out["traces"]) == PARAMS
+
+
+def test_prefers_a_chain_written_directly_in_the_output_dir(tmp_path):
+    """Whatever CA does today, a chain sitting where it was asked to write is this run's."""
+    samples = _chain(str(tmp_path))
+    stale = tmp_path / "older_run"
+    stale.mkdir()
+    _chain(str(stale), steps=7, seed=9)
+
+    out = mcmc_progress.progress(str(tmp_path))
+    assert out["steps"] == samples.shape[0]
+
+
+def test_the_newest_run_subdirectory_wins(tmp_path):
+    """An earlier run's directory must not shadow the one being sampled now."""
+    import os as _os
+    import time as _time
+
+    old = tmp_path / "mcmc_old"
+    old.mkdir()
+    _chain(str(old), steps=11, seed=1)
+    _os.utime(_os.path.join(str(old), mcmc_progress.CHAIN_FILE), (1, 1))
+
+    new = tmp_path / "mcmc_new"
+    new.mkdir()
+    _chain(str(new), steps=23, seed=2)
+    _os.utime(_os.path.join(str(new), mcmc_progress.CHAIN_FILE),
+              (_time.time(), _time.time()))
+
+    assert mcmc_progress.progress(str(tmp_path))["steps"] == 23
+
+
+def test_no_chain_anywhere_is_still_no_chain(tmp_path):
+    (tmp_path / "some_run_dir").mkdir()
+    assert mcmc_progress.progress(str(tmp_path))["steps"] == 0
+    assert mcmc_progress.chain_path(str(tmp_path / "does_not_exist")) is None

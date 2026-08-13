@@ -10,6 +10,12 @@ autocorrelation, and the windowed mean.
 with the PDF produced ten minutes later would be worse than no live view at all. Each function
 below names the CA routine it mirrors; if one of them changes, this has to change with it.
 
+The mean is the exception, and knowingly so. CA's ``plot_chain_avg`` slides a fixed window,
+which over ten steps is still mostly noise and over any width answers "is it moving now"; a
+running mean from step 0 and one from the burn-in answer "has the estimate settled, and does
+the burn-in still matter" -- which is what is worth watching while a chain is running. The
+burn-in itself is still CA's, via ``burn_in_index``.
+
 The chain is the largest artefact a run produces -- steps x walkers x parameters, polled every
 few seconds -- so everything here is thinned before it is serialised. The browser cannot draw
 100k points per parameter and would not show anything more for having them.
@@ -31,12 +37,35 @@ MAX_POINTS = 400
 #: ensemble. The count that were run is reported alongside, so the plot cannot imply otherwise.
 MAX_WALKERS = 12
 
-#: CA's plot_chain_avg default.
-DEFAULT_WINDOW = 10
 
+def chain_path(output_dir: str) -> str | None:
+    """Where this run's chain actually is, or None.
 
-def chain_path(output_dir: str) -> str:
-    return os.path.join(output_dir, CHAIN_FILE)
+    CA does not write into the directory it is handed: it makes
+    ``<param_id_output_dir>/<method>_<file_prefix>_<obs_prefix>/`` and writes there. Joining
+    ``mcmc_chain.npy`` onto the job's output dir therefore found nothing, ever -- and every run
+    looked like one that had written no chain at all, which is the opposite of what happened.
+
+    ``ca_run_history.find_run_dir`` is the usual way to resolve that, but it keys on the
+    *calibration* result files, which a UQ-only run does not have while it is sampling. So this
+    looks for the artefact it actually wants. Newest wins, so a directory left by an earlier run
+    cannot shadow the one being sampled now.
+    """
+    if not output_dir or not os.path.isdir(output_dir):
+        return None
+    direct = os.path.join(output_dir, CHAIN_FILE)
+    if os.path.isfile(direct):
+        return direct
+    found = []
+    try:
+        for entry in os.scandir(output_dir):
+            if entry.is_dir():
+                candidate = os.path.join(entry.path, CHAIN_FILE)
+                if os.path.isfile(candidate):
+                    found.append((os.path.getmtime(candidate), candidate))
+    except OSError:
+        return None
+    return max(found)[1] if found else None
 
 
 def read_chain(output_dir: str) -> np.ndarray | None:
@@ -47,7 +76,7 @@ def read_chain(output_dir: str) -> np.ndarray | None:
     old enough to lack #417's atomic save" is the same -- show nothing this tick, ask again.
     """
     path = chain_path(output_dir)
-    if not os.path.exists(path):
+    if path is None:
         return None
     try:
         samples = np.load(path)
@@ -83,31 +112,73 @@ def traces(samples: np.ndarray) -> list[list[list[float]]]:
     ]
 
 
-def windowed_means(samples: np.ndarray, window: int = DEFAULT_WINDOW):
-    """Running mean per walker -- CA's ``plot_chain_avg``.
+def burn_in_index(num_steps, burn_in=0.5, target_steps=None):
+    """CA's own rule: below 1 is a fraction, 1 or above is a number of steps.
 
-    Same convolution CA uses (``mode='valid'``, so the first value sits at ``window - 1``), and
-    the same "skip it, do not fake it" rule when the chain is shorter than the window: early in
-    a run there is nothing to average yet, and a single point plotted as a trend reads as one.
-
-    Convergence shows up as the walkers' running means coming together and flattening, which is
-    the thing worth watching *during* a run rather than after it.
+    Mirrors ``OpencorMCMC.burn_in_index`` so the line starts where CA will actually cut the
+    chain. The fraction is taken against ``target_steps`` -- the run's configured num_steps --
+    not the chain so far, or the burn-in point would crawl forward as the chain grew and the
+    line would never mean one thing.
     """
-    num_steps = samples.shape[0]
-    if window >= num_steps:
+    try:
+        burn_in = float(burn_in)
+    except (TypeError, ValueError):
+        burn_in = 0.5
+    basis = target_steps or num_steps
+    # Deliberately not clamped to the chain so far: a burn-in the run has not reached yet is a
+    # fact worth reporting, and clamping it to the last step drew a one-point line pretending
+    # otherwise.
+    return max(0, int(basis * burn_in) if burn_in < 1 else int(burn_in))
+
+
+def cumulative_means(samples, burn_in=0.5, target_steps=None):
+    """Two running means per parameter: one from step 0, one from the burn-in point.
+
+    A widening window rather than a sliding one. Each point is the mean of everything up to it,
+    so the line flattens as the estimate stops moving -- which is the question being asked of a
+    chain that is still running: has the answer settled, or is it still drifting?
+
+    Two lines because they answer different halves of it. From step 0 includes the walk in from
+    the initial point and keeps dragging it along; from the burn-in is the estimate CA will
+    actually report. They converging on each other means the burn-in no longer matters; a
+    persistent gap means it does.
+
+    One pair per chain, not pooled: chains that have found the same answer show their running
+    means converging on each other, and one that has not shows its own line sitting apart --
+    which the ensemble mean averages away entirely.
+    """
+    num_steps, _num_walkers, num_params = samples.shape
+    if num_steps < 2:
         return None
-    kernel = np.ones(window) / window
+    cut = burn_in_index(num_steps, burn_in, target_steps)
+    keep = _thin(num_steps)
     walkers = min(samples.shape[1], MAX_WALKERS)
-    full_x = np.arange(num_steps - window + 1) + window - 1
-    keep = _thin(len(full_x))
-    series = [
-        [
-            np.convolve(samples[:, walker, param], kernel, mode="valid")[keep].tolist()
-            for walker in range(walkers)
-        ]
-        for param in range(samples.shape[2])
-    ]
-    return {"steps": full_x[keep].tolist(), "series": series, "window": window}
+
+    counts = np.arange(1, num_steps + 1, dtype=float)[:, None, None]
+    from_start = np.cumsum(samples, axis=0) / counts                 # (steps, walkers, params)
+
+    after = samples[cut:] if cut < num_steps else samples[:0]
+    from_burn_in = np.full_like(samples, np.nan)
+    if len(after):
+        from_burn_in[cut:] = (np.cumsum(after, axis=0)
+                              / np.arange(1, len(after) + 1, dtype=float)[:, None, None])
+
+    def line(values, walker, param):
+        # NaN before the burn-in is not JSON, and is not a value either -- None leaves the gap.
+        return [None if np.isnan(v) else float(v) for v in values[keep, walker, param]]
+
+    return {
+        "steps": keep.tolist(),
+        "burn_in": int(cut),
+        # False while the run has not sampled that far: the second line does not exist yet, and
+        # the panel says so rather than drawing a stub at the end of the chain.
+        "burn_in_reached": bool(cut < num_steps - 1),
+        "series": [
+            {"from_start": [line(from_start, w, param) for w in range(walkers)],
+             "from_burn_in": [line(from_burn_in, w, param) for w in range(walkers)]}
+            for param in range(num_params)
+        ],
+    }
 
 
 def autocorrelation_1d(values: np.ndarray) -> np.ndarray:
@@ -156,7 +227,8 @@ def autocorrelations(samples: np.ndarray):
     return {"lags": keep.tolist(), "series": series, "bounded": bounded}
 
 
-def progress(output_dir: str, param_labels: list[str] | None = None) -> dict:
+def progress(output_dir: str, param_labels: list[str] | None = None, burn_in=0.5,
+             target_steps=None) -> dict:
     """The live payload: the three views plus enough context to label them.
 
     Always the same shape, so the client renders "nothing yet" from ``steps: 0`` rather than
@@ -172,7 +244,7 @@ def progress(output_dir: str, param_labels: list[str] | None = None) -> dict:
             "walkers_shown": 0,
             "trace_steps": [],
             "traces": [],
-            "windowed_mean": None,
+            "cumulative_mean": None,
             "autocorrelation": None,
         }
 
@@ -190,6 +262,6 @@ def progress(output_dir: str, param_labels: list[str] | None = None) -> dict:
         "walkers_shown": int(min(num_walkers, MAX_WALKERS)),
         "trace_steps": keep.tolist(),
         "traces": traces(samples),
-        "windowed_mean": windowed_means(samples),
+        "cumulative_mean": cumulative_means(samples, burn_in, target_steps),
         "autocorrelation": autocorrelations(samples),
     }

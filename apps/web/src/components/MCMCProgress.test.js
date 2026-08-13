@@ -11,10 +11,18 @@ function payload(overrides = {}) {
     walkers: 20,
     walkers_shown: 2,
     num_params: 1,
-    param_labels: ['\\alpha'],
+    param_labels: ['Lotka_Volterra_module/alpha'],
     trace_steps: steps,
     traces: [[[0.1, 0.2, 0.3, 0.4], [0.5, 0.4, 0.3, 0.2]]],
-    windowed_mean: { steps: [2, 3], series: [[[0.2, 0.3], [0.4, 0.3]]], window: 3 },
+    cumulative_mean: {
+      steps: [0, 1, 2, 3],
+      burn_in: 2,
+      burn_in_reached: true,
+      series: [{
+        from_start: [[0.1, 0.15, 0.2, 0.25], [0.3, 0.28, 0.26, 0.25]],
+        from_burn_in: [[null, null, 0.2, 0.22], [null, null, 0.26, 0.25]],
+      }],
+    },
     autocorrelation: { lags: steps, series: [[[1, 0.5, 0.1, 0.0], [1, 0.6, 0.2, 0.05]]],
       bounded: true },
     ...overrides,
@@ -30,6 +38,25 @@ describe('MCMCProgress', () => {
 
     const waiting = mount(MCMCProgress, { props: { progress: null, running: true } })
     expect(waiting.find('[data-testid="mcmc-empty"]').text()).toContain('first chain checkpoint')
+  })
+
+  it('titles each panel with the plotting name, rendered as maths', () => {
+    // The panels used to read "parameter 1": the qnames were being looked for in the wrong
+    // directory, and nothing mapped them to the name_for_plotting the output plots use.
+    const w = mount(MCMCProgress, {
+      props: {
+        progress: payload(),
+        paramLabels: { 'Lotka_Volterra_module/alpha': '\\alpha' },
+      },
+    })
+    const label = w.find('.mcmc-label')
+    expect(label.html()).toContain('katex')
+    expect(w.text()).not.toContain('parameter 1')
+  })
+
+  it('falls back to the qname when a parameter has no plotting name', () => {
+    const w = mount(MCMCProgress, { props: { progress: payload() } })
+    expect(w.find('.mcmc-label').text()).toContain('Lotka_Volterra_module/alpha')
   })
 
   it('draws one panel per parameter, one path per walker shown', () => {
@@ -49,7 +76,7 @@ describe('MCMCProgress', () => {
 
   it('switches between the three views the issue asks for', async () => {
     const w = mount(MCMCProgress, { props: { progress: payload() } })
-    for (const view of ['trace', 'windowed', 'autocorrelation']) {
+    for (const view of ['trace', 'cumulative', 'autocorrelation']) {
       await w.find(`[data-testid="mcmc-view-${view}"]`).trigger('click')
       expect(w.findAll('[data-testid="mcmc-panel"]').length).toBe(1)
     }
@@ -77,12 +104,53 @@ describe('MCMCProgress', () => {
     expect(stuck.find('[data-testid="mcmc-bounded"]').text()).toContain('still correlated')
   })
 
-  it('explains an empty windowed mean instead of showing a blank panel', async () => {
-    // Early in a run the chain is shorter than the averaging window, so CA skips the plot --
-    // a blank panel with no reason reads as a bug.
-    const w = mount(MCMCProgress, { props: { progress: payload({ windowed_mean: null }) } })
-    await w.find('[data-testid="mcmc-view-windowed"]').trigger('click')
-    expect(w.find('[data-testid="mcmc-empty"]').text()).toContain('averaging window')
+  it('explains an empty cumulative mean instead of showing a blank panel', async () => {
+    const w = mount(MCMCProgress, { props: { progress: payload({ cumulative_mean: null }) } })
+    await w.find('[data-testid="mcmc-view-cumulative"]').trigger('click')
+    expect(w.find('[data-testid="mcmc-empty"]').text()).toContain('Not enough steps')
+  })
+
+  it('draws both cumulative lines, labelled, with the burn-in named', async () => {
+    const w = mount(MCMCProgress, { props: { progress: payload() } })
+    await w.find('[data-testid="mcmc-view-cumulative"]').trigger('click')
+
+    // One line per chain, twice over: from step 0 and from the burn-in.
+    expect(w.findAll('[data-testid="mcmc-panel"]')[0].findAll('path.walker')).toHaveLength(4)
+    const legend = w.find('[data-testid="mcmc-legend"]').text()
+    expect(legend).toContain('from step 0')
+    expect(legend).toContain('burn-in (step 2)')
+  })
+
+  it('says the burn-in has not been reached rather than drawing a stub', async () => {
+    // At 17,778 steps of a 100,000-step run the burn-in is at 50,000 -- in the future. It used
+    // to be clamped to the chain so far, which read as "burn-in at step 8889".
+    const w = mount(MCMCProgress, {
+      props: {
+        progress: payload({
+          cumulative_mean: {
+            steps: [0, 1], burn_in: 50000, burn_in_reached: false,
+            series: [{ from_start: [[0.1, 0.2]], from_burn_in: [[null, null]] }],
+          },
+        }),
+      },
+    })
+    await w.find('[data-testid="mcmc-view-cumulative"]').trigger('click')
+    expect(w.find('[data-testid="mcmc-legend"]').text()).toContain('not reached yet')
+    expect(w.findAll('[data-testid="mcmc-panel"]')[0].findAll('path.walker')).toHaveLength(1)
+  })
+
+  it('breaks the burn-in line rather than joining across the steps it does not cover', async () => {
+    // null is a gap, not a zero: drawing through it would show a slope nobody sampled.
+    const w = mount(MCMCProgress, { props: { progress: payload() } })
+    await w.find('[data-testid="mcmc-view-cumulative"]').trigger('click')
+    const paths = w.findAll('[data-testid="mcmc-panel"]')[0].findAll('path.walker')
+    // Index 2 is the first burn-in line (2 chains from step 0 come first), and it is dashed.
+    expect(paths[2].attributes('stroke-dasharray')).toBeTruthy()
+    expect(paths[0].attributes('stroke-dasharray')).toBeFalsy()
+    const burnInPath = paths[2].attributes('d')
+    // Starts at the burn-in, not at step 0: one move command, and only two points.
+    expect((burnInPath.match(/M/g) || []).length).toBe(1)
+    expect((burnInPath.match(/[ML]/g) || []).length).toBe(2)
   })
 
   it('gives every panel a labelled, ticked axis', () => {
@@ -106,5 +174,34 @@ describe('ProgressPanel with a running MCMC', () => {
     const w = mount(ProgressPanel)
     expect(w.text()).toContain('Run a calibration')
     expect(w.find('[data-testid="mcmc-progress"]').exists()).toBe(false)
+  })
+})
+
+describe('the section outlives the run', () => {
+  it('keeps the MCMC section after the run finishes', () => {
+    // It used to vanish the moment `running` went false, which is exactly when a user turns to
+    // look at it. The calibration charts persist; so does this.
+    const w = mount(ProgressPanel, {
+      props: { uqRunning: false, uqState: 'done', uqProgress: payload() },
+    })
+    expect(w.find('[data-testid="mcmc-progress"]').exists()).toBe(true)
+    expect(w.findAll('[data-testid="mcmc-panel"]').length).toBe(1)
+  })
+
+  it('stays put and explains itself when a finished run wrote no chain', () => {
+    // A Laplace run writes none; an MCMC run that failed early leaves none. Telling someone
+    // who just ran one to "run an MCMC analysis" sends them looking in the wrong place.
+    const w = mount(ProgressPanel, {
+      props: { uqRunning: false, uqState: 'done', uqProgress: null },
+    })
+    expect(w.find('[data-testid="mcmc-progress"]').exists()).toBe(true)
+    expect(w.find('[data-testid="mcmc-empty"]').text()).toContain('without writing a chain')
+  })
+
+  it('keeps a cancelled run’s partial chain on screen', () => {
+    const w = mount(ProgressPanel, {
+      props: { uqRunning: false, uqState: 'cancelled', uqProgress: payload() },
+    })
+    expect(w.findAll('[data-testid="mcmc-panel"]').length).toBe(1)
   })
 })
