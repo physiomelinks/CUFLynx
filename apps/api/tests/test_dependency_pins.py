@@ -186,3 +186,41 @@ def test_installed_libcellml_still_emits_variable_count():
         f"installed libcellml is {version}; CA's PythonGenerator needs <0.7 "
         "(0.7 no longer emits VARIABLE_COUNT)"
     )
+
+
+def _core_dependencies() -> list[str]:
+    """The ``[project] dependencies`` list only — not the optional extras.
+
+    That distinction is the whole point of the test below: a package named anywhere
+    in the file satisfies :func:`_requirement`, including the ``[analysis]`` extra
+    that a source install never installs.
+    """
+    text = PYPROJECT.read_text()
+    block = re.search(r"^dependencies = \[(.*?)^\]", text, re.MULTILINE | re.DOTALL)
+    assert block, f"could not find the [project] dependencies list in {PYPROJECT}"
+    return re.findall(r'"([^"]+)"', block.group(1))
+
+
+@pytest.mark.parametrize("package", ["numdifftools", "scikit-learn"])
+def test_in_process_cost_gradient_deps_are_core_not_analysis(package):
+    """The analytic cost gradient runs *in-process*, so its imports are core deps.
+
+    ``cost_gradient.py`` imports CA's ``param_id.paramID``, which reaches an
+    unguarded ``import numdifftools`` in CA's ``utilities/utility_funcs.py``, and then
+    scikit-learn. Both were declared only in the ``[analysis]`` extra — the
+    *subprocess* tier — so ``scripts/install.py`` (``pip install -e ".[dev]"``) built
+    an environment in which the analytic gradient could never be computed.
+
+    It fails silently, which is why this is a metadata test rather than a smoke test:
+    the route catches ``GradientUnavailable`` and differences instead, so the app keeps
+    working and merely returns a gradient that is ~10x slower and, for a parameter the
+    cost barely depends on, of arbitrary sign. Nothing turns red; the numbers just get
+    worse. Measured on a clean venv, ``/api/cost_sensitivity`` returned
+    ``analytic: false`` with ``fallback_reason: "No module named 'numdifftools'"``.
+    """
+    names = {re.split(r"[<>=!~;\[ ]", dep)[0] for dep in _core_dependencies()}
+    assert package in names, (
+        f"{package} must be a core dependency: the in-process cost gradient imports it "
+        "through circulatory_autogen. Declaring it only in [analysis] leaves a source "
+        "install silently differencing every cost gradient."
+    )
