@@ -132,3 +132,63 @@ def test_the_users_own_mpi_settings_are_passed_through(monkeypatch):
 
     assert env["FI_PROVIDER"] == "verbs"
     assert env["FI_TCP_IFACE"] == "eth0"
+
+
+# ---------------------------------------------------------------------------
+# Probing an interpreter from inside the bundle
+# ---------------------------------------------------------------------------
+def _spawns(monkeypatch, func, *args):
+    """Run ``func`` with subprocess.run stubbed, returning the env of each spawn."""
+    seen = []
+
+    class _Out:
+        returncode = 0
+        stdout = "Open MPI v4.1.2"
+        stderr = ""
+
+    def fake_run(cmd, **kwargs):
+        seen.append(kwargs.get("env"))
+        return _Out()
+
+    monkeypatch.setattr(calibration_mod.subprocess, "run", fake_run)
+    func(*args)
+    return seen
+
+
+@pytest.mark.parametrize(
+    "probe, args",
+    [
+        ("_runtime_family", ("/somewhere/venv/bin/python",)),
+        ("_launcher_family", ("/usr/bin/mpiexec",)),
+    ],
+)
+def test_interpreter_probes_do_not_inherit_the_bundles_loader_path(monkeypatch, probe, args):
+    """The MPI chip must be decided in the environment the *run* will use.
+
+    PyInstaller points ``LD_LIBRARY_PATH`` at the unpacked bundle, and children
+    inherit it. An external interpreter probed that way dlopens the **bundle's**
+    ``libmpi`` (MPICH) rather than its own, so a venv whose mpi4py is built against
+    the system Open MPI reports mpich, disagrees with the system launcher, and is
+    told multi-core will not work -- while the run itself works fine, because it is
+    spawned through ``runner_launch_env``, which strips those variables.
+
+    Reported against the v0.3.0 desktop build: "MPI is working but the MPI tick
+    mark isn't showing up". Reproduced exactly by running the probe with
+    ``LD_LIBRARY_PATH`` set to the bundle dir -- runtime 'mpich' vs launcher
+    'openmpi' -- and fixed by probing through ``subprocess_env``.
+    """
+    monkeypatch.setattr(calibration_mod, "is_frozen", lambda: True, raising=False)
+    monkeypatch.setattr(runtime_paths, "is_frozen", lambda: True)
+    monkeypatch.setenv("LD_LIBRARY_PATH", "/tmp/_MEIbundle")
+    monkeypatch.delenv("LD_LIBRARY_PATH_ORIG", raising=False)
+
+    envs = _spawns(monkeypatch, getattr(calibration_mod, probe), *args)
+
+    assert envs, f"{probe} spawned nothing"
+    for env in envs:
+        assert env is not None, (
+            f"{probe} inherited the parent environment; inside the bundle that is "
+            "LD_LIBRARY_PATH pointing at the unpacked app")
+        assert "LD_LIBRARY_PATH" not in env, (
+            f"{probe} probed with the bundle's loader path, so an external "
+            "interpreter would load the bundle's MPI instead of its own")
