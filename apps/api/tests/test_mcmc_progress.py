@@ -10,6 +10,7 @@ directly rather than trusted to a comment.
 import os
 import sys
 
+import json
 import numpy as np
 import pytest
 
@@ -236,3 +237,63 @@ def test_no_chain_anywhere_is_still_no_chain(tmp_path):
     (tmp_path / "some_run_dir").mkdir()
     assert mcmc_progress.progress(str(tmp_path))["steps"] == 0
     assert mcmc_progress.chain_path(str(tmp_path / "does_not_exist")) is None
+
+
+# ---------------------------------------------------------------------------
+# A pyMC chain that is still filling: one column per chain, NaN where it has not got there
+# ---------------------------------------------------------------------------
+def _ragged(num_steps=40, drawn=(40, 25, 0)):
+    """A chain shaped the way CA writes a partial pyMC run: chains fill one after another."""
+    samples = np.full((num_steps, len(drawn), 2), np.nan)
+    for walker, reached in enumerate(drawn):
+        if reached:
+            rng = np.random.default_rng(walker)
+            samples[:reached, walker, :] = rng.normal(size=(reached, 2))
+    return samples
+
+
+def test_a_walkers_length_is_where_its_draws_stop():
+    samples = _ragged(drawn=(40, 25, 0))
+    assert [mcmc_progress.sampled_length(samples, w) for w in range(3)] == [40, 25, 0]
+
+
+def test_a_dense_emcee_chain_is_full_length_for_every_walker():
+    """emcee advances all its walkers together, so nothing here may shorten them."""
+    samples = np.zeros((30, 4, 2))
+    assert [mcmc_progress.sampled_length(samples, w) for w in range(4)] == [30] * 4
+
+
+def test_traces_emit_null_not_nan_for_a_draw_that_has_not_happened():
+    """NaN is not JSON. Emitting it produces a payload the browser refuses to parse -- the whole
+    Progress tab goes blank rather than one trace stopping short."""
+    out = mcmc_progress.traces(_ragged(drawn=(40, 25, 0)))
+
+    finished, partial, unstarted = out[0][0], out[0][1], out[0][2]
+    assert all(v is not None for v in finished)
+    assert any(v is not None for v in partial) and partial[-1] is None
+    assert all(v is None for v in unstarted)
+    assert json.dumps(out), 'the payload must serialise'
+
+
+def test_one_unstarted_chain_does_not_blank_the_autocorrelation_of_the_others():
+    """A single NaN takes the mean subtracted inside autocorrelation_1d to NaN, which makes the
+    whole curve NaN. Transformed together, one chain waiting its turn would blank the panel for
+    every chain and quietly report the run as not converged."""
+    out = mcmc_progress.autocorrelations(_ragged(drawn=(40, 25, 0)))
+
+    assert out is not None
+    finished, partial, unstarted = out["series"][0]
+    assert all(v is not None for v in finished), 'the finished chain must still have a curve'
+    assert any(v is not None for v in partial), 'and so must the one still running'
+    assert all(v is None for v in unstarted), 'a chain with no draws says nothing'
+    assert json.dumps(out)
+
+
+def test_a_ragged_chain_still_produces_a_running_mean_per_chain():
+    """The mean line should stop where its chain stops, not vanish or run on."""
+    out = mcmc_progress.cumulative_means(_ragged(drawn=(40, 25, 0)), burn_in=0.5)
+
+    finished, partial = out["series"][0]["from_start"][0], out["series"][0]["from_start"][1]
+    assert all(v is not None for v in finished)
+    assert any(v is not None for v in partial) and partial[-1] is None
+    assert json.dumps(out)

@@ -98,16 +98,34 @@ def _thin(num_steps: int) -> np.ndarray:
     return np.unique(np.linspace(0, num_steps - 1, MAX_POINTS).round().astype(int))
 
 
+def sampled_length(samples: np.ndarray, walker: int) -> int:
+    """How many draws ``walker`` actually has.
+
+    A pyMC chain sampled at ``cores=1`` is filled from draw 0 onwards while the other chains
+    wait their turn, so CA pads the ones that have not caught up with NaN (see CA's
+    ``pymc_backend._LiveChainWriter``). The first NaN therefore ends the real draws; everything
+    after it is "not sampled yet" rather than a value.
+
+    emcee advances every walker together and never pads, so this is the full height there.
+    """
+    missing = np.isnan(samples[:, walker, :]).any(axis=1)
+    gaps = np.flatnonzero(missing)
+    return int(gaps[0]) if gaps.size else samples.shape[0]
+
+
 def traces(samples: np.ndarray) -> list[list[list[float]]]:
     """Walker traces per parameter -- CA's ``plot_mcmc`` chain plot, thinned.
 
     Shape is [param][walker][step]; the x values are returned once, in ``steps``, since every
-    trace shares them.
+    trace shares them. A draw a chain has not reached is ``None``, not a number: it leaves a gap
+    the chart skips, and -- less cosmetically -- ``NaN`` is not JSON, so emitting it produces a
+    payload the browser refuses to parse rather than a plot with a hole in it.
     """
     keep = _thin(samples.shape[0])
     walkers = min(samples.shape[1], MAX_WALKERS)
     return [
-        [samples[keep, walker, param].tolist() for walker in range(walkers)]
+        [[None if np.isnan(v) else float(v) for v in samples[keep, walker, param]]
+         for walker in range(walkers)]
         for param in range(samples.shape[2])
     ]
 
@@ -208,6 +226,13 @@ def autocorrelations(samples: np.ndarray):
     ``bounded`` applies CA's own reading of the plot: every walker inside +-0.1 over the last
     fifth of the lags means the chain is producing near-independent draws. It is reported rather
     than left to the eye because it is the question the plot exists to answer.
+
+    Each walker is transformed over **its own** draws. A chain waiting its turn is NaN-padded,
+    and a single NaN takes the mean subtracted inside ``autocorrelation_1d`` to NaN, which makes
+    the whole curve NaN -- so one chain that had not started yet would blank the panel for every
+    chain and quietly set ``bounded`` false. A chain too short to say anything (< 2 draws)
+    contributes no curve rather than a flat line at 1.0, which would read as perfect
+    correlation.
     """
     num_steps = samples.shape[0]
     if num_steps < 2:
@@ -218,11 +243,16 @@ def autocorrelations(samples: np.ndarray):
     for param in range(samples.shape[2]):
         per_walker = []
         for walker in range(walkers):
-            acf = autocorrelation_1d(samples[:, walker, param])
+            drawn = sampled_length(samples, walker)
+            if drawn < 2:
+                per_walker.append([None] * len(keep))
+                continue
+            acf = autocorrelation_1d(samples[:drawn, walker, param])
             tail = max(1, int(0.2 * len(acf)))
             if np.any(np.abs(acf[-tail:]) > 0.1):
                 bounded = False
-            per_walker.append(acf[keep].tolist())
+            # keep indexes the full height; lags this walker cannot speak to are a gap.
+            per_walker.append([float(acf[lag]) if lag < len(acf) else None for lag in keep])
         series.append(per_walker)
     return {"lags": keep.tolist(), "series": series, "bounded": bounded}
 
