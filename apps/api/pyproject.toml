@@ -50,6 +50,20 @@ dependencies = [
     "ruamel.yaml>=0.17.0",
     "rdflib>=5.0.0",
     "pint>=0.18",
+    # circulatory_autogen's *cost-gradient* imports, which are in-process too. #188
+    # put the analytic cost gradient in the live tier: cost_gradient.py imports CA's
+    # param_id.paramID, and that reaches an unguarded `import numdifftools` in CA's
+    # utilities/utility_funcs.py, then scikit-learn. Both were declared only in
+    # [analysis] below — the *subprocess* tier — so a source install (scripts/install.py
+    # runs `pip install -e ".[dev]"`) never got them, and neither would a frozen build
+    # without that extra. The failure is silent rather than loud: cost_gradient raises
+    # GradientUnavailable("No module named 'numdifftools'"), the route catches it and
+    # differences instead, so the user gets a gradient that is ~10x slower and, for a
+    # parameter the cost barely depends on, of arbitrary sign (see cost_gradient's own
+    # measurements). Same shape as the casadi/sympy gap above: a dev machine has these
+    # installed for CA anyway, so only a clean environment shows it.
+    "numdifftools>=0.9.0",
+    "scikit-learn",
     # NB: CA's *analysis* deps (emcee, SALib, nevergrad, mpi4py, matplotlib, ...) live
     # in the [analysis] extra below — the self-contained desktop build bundles them
     # so analysis runs in-app. They're not core runtime deps for a source install.
@@ -82,8 +96,9 @@ analysis = [
     "statsmodels>=0.12.0",
     "schwimmbad>=0.3.0",
     "nevergrad>=1.0.12",
-    "numdifftools>=0.9.0",
-    "scikit-learn",
+    # numdifftools and scikit-learn moved up to the core dependencies: the in-process
+    # cost gradient needs them, so they are not optional. Listing them here as well
+    # would say they are only wanted for analysis, which is what caused the gap.
     "tqdm>=4.62.0",
     "mpi4py>=3.0.0",
     # A pip-installable, fully self-contained MPICH runtime (libmpi + libfabric/ucx),
