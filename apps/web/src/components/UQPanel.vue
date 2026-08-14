@@ -50,7 +50,26 @@ const schemaOptions = computed(
 // dropdowns on the form, and the schema copy silently won: its default ('mcmc')
 // was merged over settings.method in buildSettings, so choosing Laplace ran MCMC.
 // Anything this panel owns is dropped here, and the panel's value is the one sent.
-const mcmcOptions = computed(() => schemaOptions.value.filter((o) => !(o.name in settings)))
+// Which sampler is selected. CA carries `library` as an ordinary option, so the live
+// value is the one in optionValues; before a value exists (first render, or a CA whose
+// schema has no library setting) fall back to the descriptor's default.
+const selectedLibrary = computed(
+  () =>
+    optionValues.library ??
+    schemaOptions.value.find((o) => o.name === 'library')?.default ??
+    null,
+)
+
+const mcmcOptions = computed(() =>
+  schemaOptions.value
+    .filter((o) => !(o.name in settings))
+    // The samplers do not take the same settings: num_tune and pymc_method are pyMC's,
+    // and CA marks them with `libraries`. Offering them under emcee asks for a tuning
+    // count nothing reads and an algorithm that will not run. A descriptor with no
+    // `libraries` applies to every backend -- which is also what a CA older than that
+    // annotation sends, so this filter is a no-op there rather than an empty form.
+    .filter((o) => !o.libraries || o.libraries.includes(selectedLibrary.value)),
+)
 
 // Seed each option's default when the schema arrives, keeping any user value.
 watch(

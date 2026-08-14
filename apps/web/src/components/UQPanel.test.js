@@ -181,3 +181,69 @@ describe('UQPanel cores gating (no MPI launcher)', () => {
     expect(msg(mountPanel(false, 1)).exists()).toBe(false)
   })
 })
+
+// CA marks the options only some samplers read (`libraries` on the descriptor). The panel
+// offers what the chosen sampler actually reads: num_tune and pymc_method are pyMC's, and
+// under emcee they are a tuning count nothing reads and an algorithm that will not run.
+describe('UQPanel option visibility follows the sampler library', () => {
+  const options = (library) => [
+    { name: 'library', type: 'enum', default: library, choices: ['emcee', 'pymc'] },
+    { name: 'num_steps', type: 'int', default: 1000 },
+    { name: 'chain_save_every', type: 'int', default: 50 }, // both backends honour it
+    { name: 'num_tune', type: 'int', default: 1000, libraries: ['pymc'] },
+    {
+      name: 'pymc_method',
+      type: 'enum',
+      default: 'mcmc',
+      choices: ['mcmc', 'smc'],
+      libraries: ['pymc'],
+    },
+  ]
+
+  const mountWith = (uq_options) =>
+    mount(UQPanel, {
+      props: { canRun: true, defaults: { method: 'mcmc', uq_options } },
+      global: { stubs },
+    })
+
+  const shown = (w, name) => w.find(`[data-testid="mcmc-opt-${name}"]`).exists()
+
+  it('hides the pyMC-only settings when emcee is selected', () => {
+    const w = mountWith(options('emcee'))
+    expect(shown(w, 'num_steps')).toBe(true)
+    expect(shown(w, 'chain_save_every')).toBe(true)
+    expect(shown(w, 'num_tune')).toBe(false)
+    expect(shown(w, 'pymc_method')).toBe(false)
+  })
+
+  it('shows them when pymc is selected', () => {
+    const w = mountWith(options('pymc'))
+    expect(shown(w, 'num_tune')).toBe(true)
+    expect(shown(w, 'pymc_method')).toBe(true)
+  })
+
+  it('does not send a hidden option in the run payload', async () => {
+    // Not merely cosmetic: a hidden setting that still travelled would put a value in
+    // UQ_options that the run's own sampler never reads, and the exported pipeline would
+    // carry it too -- a setting the user cannot see and did not choose.
+    const w = mountWith(options('emcee'))
+    await w.find('[data-testid="run-uq"]').trigger('click')
+    const payload = w.emitted('run')[0][0]
+    expect(payload.num_steps).toBe(1000)
+    expect(payload.num_tune).toBeUndefined()
+    expect(payload.pymc_method).toBeUndefined()
+  })
+
+  it('renders every option when CA sends no libraries annotation', () => {
+    // A CA older than the annotation says nothing about which sampler reads what. Showing
+    // everything is what this panel did before, and is the right degradation: hiding a
+    // setting CA has not classified would remove the only way to set it.
+    const w = mountWith([
+      { name: 'library', type: 'enum', default: 'emcee', choices: ['emcee', 'pymc'] },
+      { name: 'num_tune', type: 'int', default: 1000 },
+      { name: 'pymc_method', type: 'enum', default: 'mcmc', choices: ['mcmc', 'smc'] },
+    ])
+    expect(shown(w, 'num_tune')).toBe(true)
+    expect(shown(w, 'pymc_method')).toBe(true)
+  })
+})
