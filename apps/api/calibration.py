@@ -25,6 +25,7 @@ from runtime_paths import (
     runner_command,
     runner_launch_env,
     runner_path,
+    subprocess_env,
 )
 
 RUNNER_PATH = str(runner_path("calibration_runner.py"))
@@ -306,9 +307,13 @@ def _mpi_family(banner: str) -> str:
 
 
 def _launcher_family(launcher: str) -> str:
+    # subprocess_env(): the launcher must be asked what it is in the environment
+    # it will actually run in, not inside the bundle's loader paths. See
+    # _runtime_family for what inheriting them does.
     try:
         out = subprocess.run(
-            [launcher, "--version"], capture_output=True, text=True, timeout=10
+            [launcher, "--version"], capture_output=True, text=True, timeout=10,
+            env=subprocess_env(),
         )
     except (OSError, subprocess.SubprocessError):
         return ""
@@ -316,13 +321,24 @@ def _launcher_family(launcher: str) -> str:
 
 
 def _runtime_family(path: str) -> str:
-    """The MPI ``mpi4py`` is bound to in ``path``'s environment."""
+    """The MPI ``mpi4py`` is bound to in ``path``'s environment.
+
+    Asked with :func:`subprocess_env`, which is load-bearing in the packaged app.
+    PyInstaller points ``LD_LIBRARY_PATH`` at the unpacked bundle, and a child
+    process inherits it -- so an external interpreter's ``mpi4py`` dlopens the
+    *bundle's* ``libmpi`` (MPICH) instead of the one its own environment provides.
+    The probe then reports mpich for a venv built against the system Open MPI,
+    disagrees with the launcher, and concludes multi-core will not work -- for an
+    environment that runs it perfectly, because the run itself is spawned through
+    ``runner_launch_env`` and never sees those variables.
+    """
     try:
         out = subprocess.run(
             [path, "-c", "from mpi4py import MPI;print(MPI.Get_library_version())"],
             capture_output=True,
             text=True,
             timeout=20,
+            env=subprocess_env(),
         )
     except (OSError, subprocess.SubprocessError):
         return ""
@@ -377,11 +393,15 @@ def _probe_python(path: str) -> dict | None:
     multi-core runs; ``mpiexec`` is the launcher path that would be used.
     """
     try:
+        # Every probe of an *external* interpreter runs through subprocess_env, for
+        # the same reason the runners do: inside the bundle's loader paths it would
+        # import the bundle's native libraries rather than its own.
         ver = subprocess.run(
             [path, "-c", "import sys;print('.'.join(map(str, sys.version_info[:3])));print(sys.prefix)"],
             capture_output=True,
             text=True,
             timeout=10,
+            env=subprocess_env(),
         )
         if ver.returncode != 0:
             return None
@@ -402,6 +422,7 @@ def _probe_python(path: str) -> dict | None:
             capture_output=True,
             text=True,
             timeout=20,
+            env=subprocess_env(),
         )
         missing = (
             [m for m in check.stdout.strip().split(",") if m]
