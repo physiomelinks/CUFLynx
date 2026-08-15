@@ -175,6 +175,36 @@ export async function costSensitivity(modelId, params, options = {}) {
   return data
 }
 
+/**
+ * One parameter set, scored by the model and by the emulator (#333).
+ *
+ * `{ cost, emulator_cost }`, both in the shape a run's `cost` comes back in, and
+ * both from the one CA-backed scorer — so the difference between them is the
+ * surrogate's error and nothing else. Both are asked for in a single request so
+ * they cannot end up describing two different points.
+ *
+ * `analysisParams` is the same point written as θ (one value per params_for_id
+ * row, at a modifier's anchor rather than its expansion): the emulator was
+ * trained on θ and must be given θ. Omit it where the two coincide.
+ *
+ * `emulator_cost` is null whenever the emulator cannot answer — no bundle, a
+ * stale one, no autoemulate in the configured interpreter. That is a silence,
+ * not an error.
+ */
+export async function costAtParams(modelId, params, options = {}) {
+  const body = { model_id: modelId, params }
+  if (options.analysisParams != null) body.analysis_params = options.analysisParams
+  if (options.simTime != null) body.sim_time = options.simTime
+  if (options.preTime != null) body.pre_time = options.preTime
+  if (options.outputs != null) body.outputs = options.outputs
+  if (options.protocolInfo != null) body.protocol_info = options.protocolInfo
+  if (options.outputsDir) body.config_outputs_dir = options.outputsDir
+  const { data } = await axios.post(url('/api/cost_at_params'), body, {
+    signal: options.signal,
+  })
+  return data
+}
+
 // Load a whole COMBINE archive (.omex): model + obs_data + params_for_id (#149).
 // One request, because an archive is the study rather than any one of its files.
 export async function uploadOmex(file, outputDir = '') {
@@ -406,8 +436,14 @@ export async function cancelEmulatorTraining(jobId) {
 
 /**
  * The emulator's predicted features at the given parameter values.
- * `{ labels, values, in_box }` — drawn beside the model's own features so the
- * two can be compared against the ground truth while a slider moves.
+ * `{ labels, values, in_box, cost }` — drawn beside the model's own features so
+ * the two can be compared against the ground truth while a slider moves.
+ *
+ * `cost` is what those predicted features cost against the loaded obs_data,
+ * scored by the same code that scores the solver's (#333). It rides on this
+ * request because this request is already made whenever the parameters settle,
+ * so the emulator's cost and the model's describe one parameter set rather than
+ * two. Null when there is no obs_data or CA cannot score it.
  */
 export async function predictEmulator(modelId, params, settings = {}) {
   const { data } = await axios.post(url('/api/emulator/predict'), {

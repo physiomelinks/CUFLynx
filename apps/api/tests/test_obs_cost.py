@@ -474,3 +474,110 @@ def test_without_ca_the_panel_still_reports(monkeypatch):
                             obs_data={"protocol_info": {}, "data_items": [item]})
     assert out["computed_by"] == "cuflynx"
     assert out["cost"] == pytest.approx(4.0)
+
+
+# ---------------------------------------------------------------------------
+# The emulator's cost, beside the solver's (#333)
+#
+# A calibration with "use the emulator" on minimises the *emulator's* cost while
+# the Output plots show the solver's, and the two were never on screen together
+# -- so a user comparing the reported best cost with the number above the plots
+# was comparing two different functions with nothing to say so. Showing both is
+# only defensible if they are the same arithmetic over different features, which
+# is what these pin.
+# ---------------------------------------------------------------------------
+def _ca_labels(obs):
+    """CA's own feature labels for an obs_data, or a skip when CA is unreachable.
+
+    Taken from CA rather than written out here on purpose: the emulator records
+    these strings when it is trained, and the match has to be against *those*.
+    """
+    pid = obs_cost._ca_engine(obs, None, 0.01)
+    if pid is None:
+        pytest.skip("circulatory_autogen could not be reached")
+    labels = obs_cost._ca_feature_labels(pid.obs_info)
+    if labels is None:
+        pytest.skip("this circulatory_autogen has no emulator feature labels")
+    return labels
+
+
+def test_the_emulator_cost_is_the_solver_cost_when_the_features_agree():
+    """The strong form of "same arithmetic": feed the emulated path the very
+    values the run produced and every number must come back identical -- cost,
+    denominator, per-observable rows and all. Anything less and the gap between
+    the two figures would be partly the implementation rather than wholly the
+    surrogate's error."""
+    obs = _obs_data(cost_type="MSE")
+    solver = obs_cost._ca_evaluate(obs, {0: {"a/u": [1.0, 8.0]}}, None, 0.01)
+    if solver is None:
+        pytest.skip("circulatory_autogen could not be reached")
+    (label,) = _ca_labels(obs)
+
+    emulated = obs_cost.evaluate_features({label: solver["items"][0]["model"]}, obs)
+    assert emulated == solver
+
+
+def test_a_prediction_that_differs_scores_differently():
+    """...and by exactly the cost func's own amount: MSE of 6 against 10 is 16,
+    where the run's 8 was 4. A number that did not move with the prediction would
+    be describing something other than the emulator."""
+    obs = _obs_data(cost_type="MSE")
+    (label,) = _ca_labels(obs)
+    out = obs_cost.evaluate_features({label: 6.0}, obs)
+    assert out["cost"] == pytest.approx(16.0)
+    assert out["items"][0]["model"] == pytest.approx(6.0)
+    assert out["items"][0]["percent_error"] == pytest.approx(-40.0)
+
+
+def test_predictions_are_matched_by_cas_own_disambiguated_labels():
+    """A plotting name can repeat across experiments, and CA then appends
+    "[exp e, sub s]". Matching on the bare name would score one experiment's
+    prediction against another's data -- silently, and only for the studies where
+    it matters most."""
+    item = _obs_data(cost_type="MSE")["data_items"][0]
+    obs = {
+        "protocol_info": {"pre_times": [0.0, 0.0], "sim_times": [[1.0], [1.0]]},
+        "data_items": [dict(item), dict(item, experiment_idx=1, value=4.0)],
+    }
+    labels = _ca_labels(obs)
+    assert labels == ["u (max a/u) [exp 0, sub 0]", "u (max a/u) [exp 1, sub 0]"]
+
+    both = obs_cost.evaluate_features({labels[0]: 8.0, labels[1]: 3.0}, obs)
+    # CA's mean per weighted observable over both experiments: (16 + 1) / 2 is
+    # not it -- 8 against 10 is 4, 3 against 4 is 1, so 2.5.
+    assert both["cost"] == pytest.approx(2.5)
+    # The undisambiguated name matches nothing, and nothing is scored at all.
+    assert obs_cost.evaluate_features({"u": 8.0}, obs) is None
+
+
+def test_a_feature_the_emulator_has_no_value_for_scores_nothing():
+    """Not a partial cost: an unscored observable in a mean would read as a
+    better fit than the solver's over the same data."""
+    obs = _obs_data(cost_type="MSE")
+    _ca_labels(obs)
+    assert obs_cost.evaluate_features({"not a feature of this study": 8.0}, obs) is None
+    assert obs_cost.evaluate_features({}, obs) is None
+    assert obs_cost.evaluate_features({"x": 1.0}, None) is None
+
+
+def test_without_ca_there_is_no_emulator_cost(monkeypatch):
+    """`evaluate` degrades to the local walk when CA cannot be reached; this must
+    not. The two figures sit side by side, so one computed by CA and the other by
+    CUFLynx's approximation would be a comparison of engines dressed as a
+    comparison of the model with its surrogate."""
+    monkeypatch.setattr(obs_cost, "_ca_engine", lambda *a, **k: None)
+    monkeypatch.setattr(obs_cost, "get_operation_funcs", lambda _d=None: {"max": max})
+    monkeypatch.setattr(obs_cost, "get_cost_funcs", lambda _d=None: {"MSE": _mse})
+    assert obs_cost.evaluate_features({"u (max a/u)": 8.0}, _obs_data(cost_type="MSE")) is None
+
+
+def test_the_solver_cost_is_untouched_by_the_emulated_path():
+    """The default call is byte-for-byte the call it always was: no features, no
+    change. `evaluate` is what every run route uses, and the emulator being off
+    must leave it exactly as it was."""
+    obs = _obs_data(cost_type="MSE")
+    run = {0: {"a/u": [1.0, 8.0]}}
+    direct = obs_cost._ca_evaluate(obs, run, None, 0.01)
+    if direct is None:
+        pytest.skip("circulatory_autogen could not be reached")
+    assert obs_cost.evaluate(obs["data_items"], run, None, obs_data=obs) == direct

@@ -40,6 +40,16 @@ const props = defineProps({
   emulatorMetadata: { type: Object, default: null },
   emulatorErrorPoints: { type: Object, default: null },
   emulatorInUse: { type: Boolean, default: false },
+  // The calibration best fit scored twice (#333): by the solver and by the
+  // emulator, at the *same* parameters and through the same cost path. Same
+  // shape as `currentCost`, so the bars need no special case for either. Null
+  // where that side could not be measured -- no emulator, or no calibration.
+  bestFitModelCost: { type: Object, default: null },
+  bestFitEmulatorCost: { type: Object, default: null },
+  // Whether the last calibration ran on the emulator. It decides which side the
+  // toggle starts on, so what is first on screen is what the calibration
+  // actually minimised and its reported cost reconciles rather than puzzles.
+  calibrationUsedEmulator: { type: Boolean, default: false },
 })
 
 const emit = defineEmits(['select-result', 'remove-result', 'clear-results'])
@@ -294,12 +304,49 @@ function fmtCell(value) {
 }
 
 // ---- Calibration error bars ------------------------------------------------
+// ---- ...measured against the model or against the emulator (#333) ----------
+// A calibration run with "use the emulator" on fits the *surrogate*, so the
+// error vectors it writes describe the emulator's features and its best cost is
+// an em cost. The same best fit run through the solver is the other half of the
+// answer, and until now there was no way to ask for it. Both sides arrive
+// already computed (one request, one point), so this switches between two
+// payloads and never triggers a run.
+const bothSourcesAvailable = computed(
+  () =>
+    !!props.bestFitModelCost?.items?.length && !!props.bestFitEmulatorCost?.items?.length,
+)
+const showEmulatorSource = ref(props.calibrationUsedEmulator)
+// Default to what the calibration minimised, so the numbers first shown are the
+// ones its reported cost belongs to; a later calibration re-points it.
+watch(
+  () => props.calibrationUsedEmulator,
+  (used) => {
+    showEmulatorSource.value = used
+  },
+)
+const calibrationSource = computed(() => {
+  if (!bothSourcesAvailable.value) return null
+  return showEmulatorSource.value ? props.bestFitEmulatorCost : props.bestFitModelCost
+})
+// Said in words, not only by a checked box: the two can differ a lot, and a
+// screenshot of the bars has to say which model produced them.
+const calibrationSourceLabel = computed(() =>
+  showEmulatorSource.value ? 'the emulator' : 'the forward model',
+)
+
+/** One side's rows for a field, with the observables it could not score dropped. */
+function sourceSeries(field) {
+  const items = (calibrationSource.value?.items ?? []).filter((i) => i[field] != null)
+  return { values: items.map((i) => i[field]), labels: items.map((i) => i.label) }
+}
+
 const hasCalibration = computed(
   () =>
-    Array.isArray(props.percentError) &&
-    props.percentError.length > 0 &&
-    Array.isArray(props.stdError) &&
-    props.stdError.length > 0,
+    !!calibrationSource.value ||
+    (Array.isArray(props.percentError) &&
+      props.percentError.length > 0 &&
+      Array.isArray(props.stdError) &&
+      props.stdError.length > 0),
 )
 
 // Green where the fit is good, red where the error is large (so problem
@@ -317,14 +364,15 @@ function barColors(values, hi) {
 // One zero-centered HTML bar per observable. Widths are normalised to the
 // largest |error| in that chart; positive errors extend right of centre,
 // negative left. `hi` sets the green->red colour scale; `fmt` the value label.
-function errorBars(values, hi, fmt) {
+function errorBars(values, hi, fmt, labels = null) {
   const vals = values ?? []
+  const names = labels ?? props.errorLabels
   const maxAbs = Math.max(1e-9, ...vals.map((v) => Math.abs(v)))
   const colors = barColors(vals, hi)
   return vals.map((v, i) => {
     const halfPct = (Math.min(1, Math.abs(v) / maxAbs) * 50).toFixed(2)
     return {
-      label: props.errorLabels[i] ?? `obs ${i}`,
+      label: names[i] ?? `obs ${i}`,
       color: colors[i],
       width: `${halfPct}%`,
       left: v >= 0 ? '50%' : `${(50 - Number(halfPct)).toFixed(2)}%`,
@@ -333,8 +381,21 @@ function errorBars(values, hi, fmt) {
   })
 }
 
-const percentBars = computed(() => errorBars(props.percentError, 20, (v) => `${v.toFixed(1)}%`))
-const stdBars = computed(() => errorBars(props.stdError, 3, (v) => `${v.toFixed(2)}σ`))
+// The selected source's rows where there is a choice, and the calibration's own
+// vectors where there is not -- the same bars either way, only the numbers
+// behind them change.
+const percentBars = computed(() => {
+  const fmt = (v) => `${v.toFixed(1)}%`
+  if (!calibrationSource.value) return errorBars(props.percentError, 20, fmt)
+  const { values, labels } = sourceSeries('percent_error')
+  return errorBars(values, 20, fmt, labels)
+})
+const stdBars = computed(() => {
+  const fmt = (v) => `${v.toFixed(2)}σ`
+  if (!calibrationSource.value) return errorBars(props.stdError, 3, fmt)
+  const { values, labels } = sourceSeries('std_error')
+  return errorBars(values, 3, fmt, labels)
+})
 
 // ---- Current parameters vs the best fit (#159) -----------------------------
 // Off by default: a second set of bars on every chart is a comparison when you
@@ -674,6 +735,34 @@ const uqMethodLabel = computed(() =>
         series, so leaving these below would plot the same numbers twice.
       -->
       <template v-else-if="hasCalibration">
+        <!--
+          Which model the errors below describe (#333). A calibration on the
+          emulator fits the surrogate, so its errors and its cost are the
+          emulator's; the forward model's, at the same best fit, are the other
+          half of the answer. Both were measured once, when the calibration
+          finished -- ticking this switches payloads, it does not run anything.
+        -->
+        <div
+          v-if="bothSourcesAvailable"
+          class="source-toggle"
+          data-testid="calibration-source"
+        >
+          <label class="cost-compare">
+            <input
+              v-model="showEmulatorSource"
+              type="checkbox"
+              data-testid="compare-with-emulator"
+            />
+            compare with the emulator
+          </label>
+          <span class="cost-caption" data-testid="calibration-source-label">
+            errors and cost from <strong>{{ calibrationSourceLabel }}</strong> at the
+            calibration best fit —
+            <span data-testid="calibration-source-cost">{{
+              formatCost(calibrationSource?.cost)
+            }}</span>
+          </span>
+        </div>
         <section class="error-chart">
           <h3>Percentage error per observable</h3>
           <div class="bar-list" data-testid="percent-error-chart">
@@ -1249,6 +1338,18 @@ const uqMethodLabel = computed(() =>
   gap: 0.35rem;
   font-size: 0.78rem;
   cursor: pointer;
+}
+/* Which model the calibration errors describe (#333). The tick box comes first
+   and the answer in words beside it: a checked box alone says nothing in a
+   screenshot, and the two sides can differ by a lot. */
+.source-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.6rem;
+}
+.source-toggle .cost-compare {
+  margin-left: 0;
 }
 /* The baseline bar sits over the current one, half height, so both are readable
    where they overlap. */

@@ -1469,6 +1469,38 @@ class CostSensitivityRequest(BaseModel):
     modifiers: list[dict] | None = None
 
 
+def _solver_cost_at(record, params: dict, *, model_id, model_path, protocol_info,
+                    output_dir, sim_time: float, pre_time: float,
+                    outputs: list[str] | None = None) -> dict | None:
+    """A solver run at ``params``, scored -- the cost the Output plots show.
+
+    Deliberately the *same* run the run routes make, down to which outputs are
+    requested: a superset would score observables the panel's cost does not, and
+    anything built on this -- a differenced gradient (#188), a best-fit
+    comparison against the emulator (#333) -- would then belong to a different
+    number.
+    """
+    if protocol_info is not None:
+        wanted = outputs or (record.meta.odes + record.meta.algebraic)
+        result = engine.run_protocol(
+            model_id=model_id,
+            model_path=model_path,
+            protocol_info=protocol_info,
+            params=params,
+            outputs=_with_obs_operands(wanted, record),
+        )
+        return _protocol_run_cost(record, result, protocol_info, output_dir)
+    result = engine.simulate(
+        model_id=model_id,
+        model_path=model_path,
+        params=params,
+        sim_time=sim_time,
+        pre_time=pre_time,
+        outputs=outputs or record.meta.odes,
+    )
+    return _single_run_cost(record, result, output_dir)
+
+
 @app.post("/api/cost_sensitivity")
 def cost_sensitivity_route(req: CostSensitivityRequest) -> dict:
     """``d ln(cost)/d ln(p)`` per parameter, about the current slider values (#188).
@@ -1504,25 +1536,16 @@ def cost_sensitivity_route(req: CostSensitivityRequest) -> dict:
     # outputs are requested: a superset would score observables the panel's cost
     # does not, and the gradient would then belong to a different number.
     def cost_at(params: dict) -> dict | None:
-        if protocol_info is not None:
-            outputs = req.outputs or (record.meta.odes + record.meta.algebraic)
-            result = engine.run_protocol(
-                model_id=req.model_id,
-                model_path=model_path,
-                protocol_info=protocol_info,
-                params=params,
-                outputs=_with_obs_operands(outputs, record),
-            )
-            return _protocol_run_cost(record, result, protocol_info, output_dir)
-        result = engine.simulate(
+        return _solver_cost_at(
+            record, params,
             model_id=req.model_id,
             model_path=model_path,
-            params=params,
+            protocol_info=protocol_info,
+            output_dir=output_dir,
             sim_time=req.sim_time,
             pre_time=req.pre_time,
-            outputs=req.outputs or record.meta.odes,
+            outputs=req.outputs,
         )
-        return _single_run_cost(record, result, output_dir)
 
     # The sensitivity solve first: enabling FSA/AD makes the forward solve carry
     # its own derivatives, so one run gives the cost and dJ/dp together -- about
@@ -1579,6 +1602,109 @@ def cost_sensitivity_route(req: CostSensitivityRequest) -> dict:
         raise HTTPException(
             status_code=500, detail=engine.describe_exception(exc)
         ) from exc
+
+
+class CostAtParamsRequest(BaseModel):
+    model_id: str
+    # Physical model values, the way the sliders hand them to a run.
+    params: dict[str, float] = Field(default_factory=dict)
+    # The same point written as theta -- one value per params_for_id row, at a
+    # modifier's anchor rather than its expansion (#208). The emulator was
+    # trained on theta and must be given theta; `params` alone would feed a
+    # modifier's expanded value to a surrogate that has never seen one. Absent
+    # means "they are the same", which is true of a study with no modifiers.
+    analysis_params: dict[str, float] | None = None
+    sim_time: float = 10.0
+    pre_time: float = 0.0
+    outputs: list[str] | None = None
+    protocol_info: dict | None = None
+    config_outputs_dir: str | None = None
+
+
+@app.post("/api/cost_at_params")
+def cost_at_params(req: CostAtParamsRequest) -> dict:
+    """One parameter set, scored twice: by the model and by the emulator (#333).
+
+    The question this answers is the calibration one -- a fit found on the
+    surrogate reports a cost and per-observable errors that describe the
+    *emulator's* features, and there was no way to see what the model says at the
+    same parameters. Both sides come back from a single request so that they are
+    unarguably the same point: one ``params`` in, one theta derived from it, no
+    opportunity for the two to be asked at different slider values.
+
+    Both are scored through the one CA-backed path (``obs_cost``), so the
+    difference between them is the surrogate's error and nothing else. The
+    emulator side is absent -- never an error -- when there is no bundle, when it
+    cannot be loaded, or when its features cannot be matched to the obs_data.
+    """
+    record = _get_model(req.model_id)
+    _validate_param_keys(req.params)
+    if record.obs_data is None:
+        raise HTTPException(
+            status_code=422,
+            detail="no obs_data is loaded, so there is nothing to score against",
+        )
+
+    output_dir = _user_func_base_dir(req.config_outputs_dir)
+    protocol_info = req.protocol_info
+    if protocol_info is None:
+        protocol_info = record.obs_data.protocol_info
+
+    try:
+        live_type, _live_solver, _fell_back = engine.live_backend()
+        model_path = resolve_model_path(str(record.path), live_type, model_id=req.model_id)
+        cost = _solver_cost_at(
+            record, req.params,
+            model_id=req.model_id,
+            model_path=model_path,
+            protocol_info=protocol_info,
+            output_dir=output_dir,
+            sim_time=req.sim_time,
+            pre_time=req.pre_time,
+            outputs=req.outputs,
+        )
+    except SimulationError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001 - anything else still owes a reason
+        raise HTTPException(
+            status_code=500, detail=engine.describe_exception(exc)
+        ) from exc
+
+    return {
+        "cost": cost,
+        "emulator_cost": _emulator_cost_at(
+            record,
+            req.model_id,
+            req.analysis_params if req.analysis_params is not None else req.params,
+            req.config_outputs_dir,
+            output_dir,
+            protocol_info,
+        ),
+    }
+
+
+def _emulator_cost_at(record, model_id: str, params: dict, config_outputs_dir,
+                      output_dir, protocol_info=None) -> dict | None:
+    """The emulator's cost at ``params``, or None if it cannot answer.
+
+    Every reason it might not -- no bundle, a bundle trained on a different
+    parameter set, no autoemulate in the configured interpreter -- is a silence
+    rather than a failure: the solver's cost is still correct and complete, and
+    an error banner over a missing second opinion would be worse than not
+    offering one.
+    """
+    try:
+        emu_dir = _emulator_dir_for(model_id, {"config_outputs_dir": config_outputs_dir or ""})
+        metadata = ca_run_history.emulator_metadata(emu_dir)
+        if metadata is None:
+            return None
+        theta = _emulator_theta(model_id, params, metadata)
+        prediction = engine.emulator_predict(emu_dir, theta)
+    except Exception:  # noqa: BLE001 - an emulator that cannot answer says nothing
+        return None
+    return _emulator_feature_cost(record, prediction, output_dir, protocol_info)
 
 
 @app.post("/api/obs_data/upload")
@@ -2419,7 +2545,16 @@ def emulator_predict(req: EmulatorPredictRequest) -> dict:
 
     Values are returned keyed by the emulator's own feature labels; the caller
     matches them to its data_items rather than assuming a shared ordering.
+
+    ``cost`` rides along: what those predicted features cost against the loaded
+    obs_data, scored by the same CA path ``/api/simulate`` scores the solver's
+    features with (#333). Here rather than on the run routes because this request
+    is already made every time the parameters settle -- so the panel gets both
+    numbers without a second round trip, and, since both are asked for at the
+    same slider values, they are two costs of one parameter set rather than two
+    parameter sets. None when there is no obs_data or CA cannot score it.
     """
+    record = _get_model(req.model_id)
     emu_dir = _emulator_dir_for(req.model_id, req.settings)
     metadata = ca_run_history.emulator_metadata(emu_dir)
     if metadata is None:
@@ -2432,7 +2567,39 @@ def emulator_predict(req: EmulatorPredictRequest) -> dict:
         result = engine.emulator_predict(emu_dir, theta)
     except SimulationError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    result["cost"] = _emulator_feature_cost(
+        record, result, _user_func_base_dir(req.settings.get("config_outputs_dir"))
+    )
     return result
+
+
+def _emulator_feature_cost(record, prediction: dict, output_dir,
+                           protocol_info=None) -> dict | None:
+    """What an emulator's predicted features cost, through CA's own cost path.
+
+    The prediction is matched to the data_items by circulatory_autogen's feature
+    labels -- the same rule the Output plots' overlay matches by, and the labels
+    the bundle was trained with -- and then scored by exactly the code that
+    scores a solver run (:func:`obs_cost.evaluate_features`). Two numbers meant
+    to be read against each other cannot come from two implementations.
+
+    Quiet on failure: an emulator that cannot be scored (no obs_data, an
+    obs_data CA cannot parse, a bundle whose labels no longer match) leaves the
+    solver's cost exactly as it was and simply offers no second number.
+    """
+    labels = prediction.get("labels") or []
+    values = prediction.get("values") or []
+    if not labels or len(labels) != len(values):
+        return None
+    try:
+        return obs_cost.evaluate_features(
+            dict(zip(labels, values)),
+            _obs_data_document(record, protocol_info),
+            output_dir,
+            dt=engine.dt,
+        )
+    except Exception:  # noqa: BLE001 - a cost is never worth failing the prediction over
+        return None
 
 
 def _emulator_theta(model_id: str, params: dict, metadata: dict) -> list:

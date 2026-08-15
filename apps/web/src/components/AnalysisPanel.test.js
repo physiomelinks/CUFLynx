@@ -504,3 +504,99 @@ describe('emulator error', () => {
     expect(heads.some((h) => h.includes('Emulator error'))).toBe(false)
   })
 })
+
+// ---------------------------------------------------------------------------
+// Which model the calibration errors describe (#333)
+//
+// A calibration run with "use the emulator" on fits the surrogate, so the
+// percent/std errors it writes and the cost it reports are the emulator's. The
+// same best fit put through the solver is the other half of the answer, and
+// there was no way to ask for it. Both arrive already measured, at one point and
+// through one cost path, so the tick box only chooses which is drawn.
+// ---------------------------------------------------------------------------
+describe('AnalysisPanel calibration source (#333)', () => {
+  const MODEL = {
+    cost: 12.5,
+    n_weighted: 2,
+    items: [
+      { label: 'u', observed: 10, model: 9, percent_error: -10, std_error: -1, cost: 12 },
+      { label: 'v', observed: 4, model: 4.4, percent_error: 10, std_error: 0.4, cost: 13 },
+    ],
+  }
+  const EMULATED = {
+    cost: 9.5,
+    n_weighted: 2,
+    items: [
+      { label: 'u', observed: 10, model: 9.6, percent_error: -4, std_error: -0.4, cost: 9 },
+      { label: 'v', observed: 4, model: 4.1, percent_error: 2.5, std_error: 0.1, cost: 10 },
+    ],
+  }
+  const CALIB = { percentError: [-4, 2.5], stdError: [-0.4, 0.1], errorLabels: ['u', 'v'] }
+
+  const mountIt = (props = {}) =>
+    mount(AnalysisPanel, {
+      props: {
+        ...CALIB,
+        bestFitModelCost: MODEL,
+        bestFitEmulatorCost: EMULATED,
+        ...props,
+      },
+    })
+
+  it('offers the choice only when both sides exist', () => {
+    expect(mountIt().find('[data-testid="calibration-source"]').exists()).toBe(true)
+    // No emulator for this study: the section is exactly what it was.
+    const alone = mountIt({ bestFitEmulatorCost: null })
+    expect(alone.find('[data-testid="calibration-source"]').exists()).toBe(false)
+    expect(alone.find('[data-testid="percent-error-chart"]').exists()).toBe(true)
+    // No calibration to describe.
+    const none = mount(AnalysisPanel, { props: { bestFitModelCost: MODEL } })
+    expect(none.find('[data-testid="calibration-source"]').exists()).toBe(false)
+  })
+
+  it('says which model the numbers came from, not just which box is ticked', async () => {
+    const w = mountIt()
+    expect(w.find('[data-testid="calibration-source-label"]').text()).toContain(
+      'the forward model',
+    )
+    expect(w.find('[data-testid="calibration-source-cost"]').text()).toBe('12.5')
+    await w.find('[data-testid="compare-with-emulator"]').setValue(true)
+    expect(w.find('[data-testid="calibration-source-label"]').text()).toContain('the emulator')
+    expect(w.find('[data-testid="calibration-source-cost"]').text()).toBe('9.5')
+  })
+
+  it('switches the error bars to the chosen source', async () => {
+    const w = mountIt()
+    expect(w.find('[data-testid="percent-error-chart"]').text()).toContain('-10.0%')
+    expect(w.find('[data-testid="std-error-chart"]').text()).toContain('-1.00σ')
+    await w.find('[data-testid="compare-with-emulator"]').setValue(true)
+    expect(w.find('[data-testid="percent-error-chart"]').text()).toContain('-4.0%')
+    expect(w.find('[data-testid="std-error-chart"]').text()).toContain('-0.40σ')
+  })
+
+  // The rows are the same shape from either side -- the one cost path produced
+  // them both -- so the bars need no special case, labels included.
+  it('draws the same observables either way', async () => {
+    const w = mountIt()
+    const labels = () =>
+      w.findAll('[data-testid="percent-error-chart"] .bar-label').map((n) => n.text())
+    expect(labels()).toEqual(['u', 'v'])
+    await w.find('[data-testid="compare-with-emulator"]').setValue(true)
+    expect(labels()).toEqual(['u', 'v'])
+  })
+
+  // The calibration's reported best cost is an em cost when it ran on the
+  // emulator; starting on the other side would open with two numbers that
+  // cannot be reconciled.
+  it('starts on the side the calibration actually minimised', () => {
+    const w = mountIt({ calibrationUsedEmulator: true })
+    expect(w.find('[data-testid="calibration-source-label"]').text()).toContain('the emulator')
+    expect(w.find('[data-testid="percent-error-chart"]').text()).toContain('-4.0%')
+  })
+
+  it('falls back to the calibration\'s own vectors when there is nothing to switch', () => {
+    const w = mount(AnalysisPanel, { props: { ...CALIB } })
+    expect(w.find('[data-testid="percent-error-chart"]').text()).toContain('-4.0%')
+    expect(w.find('[data-testid="calibration-source"]').exists()).toBe(false)
+  })
+})

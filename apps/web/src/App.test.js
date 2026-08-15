@@ -36,6 +36,8 @@ vi.mock('./lib/api', () => ({
   getUQDefaults: vi.fn().mockResolvedValue({}),
   getEmulatorDefaults: vi.fn().mockResolvedValue({}),
   getEmulatorInfo: vi.fn().mockResolvedValue({}),
+  predictEmulator: vi.fn().mockResolvedValue({ labels: [], values: [], cost: null }),
+  costAtParams: vi.fn().mockResolvedValue({ cost: null, emulator_cost: null }),
   getConfig: vi.fn().mockResolvedValue({
     ca_dir: '',
     ca_exists: true,
@@ -66,6 +68,9 @@ import {
   loadSavedRun,
   simulate,
   costSensitivity,
+  predictEmulator,
+  costAtParams,
+  getEmulatorInfo,
 } from './lib/api'
 import { setNotificationCtor } from './lib/notify'
 import App from './App.vue'
@@ -2037,5 +2042,158 @@ describe('Emulator tab when emulation is unavailable', () => {
     await flushPromises()
     expect(getEmulatorDefaults).toHaveBeenCalled()
     expect(wrapper.find('[data-testid="tab-emulator"]').classes()).toContain('warn')
+  })
+})
+
+// Issue #333: a calibration with "use the emulator" on minimises the emulator's
+// cost, while the line above the plots has always shown the solver's. The two
+// are different functions of the same parameters, and nothing said so -- so the
+// gap read as a bug. Both numbers, side by side, turn it into a quantity.
+describe('App.vue cost line with the emulator in use (#333)', () => {
+  const SOLVER = {
+    cost: 1234.5,
+    n_weighted: 2,
+    incomplete: false,
+    items: [{ label: 'u', cost: 600 }, { label: 'v', cost: 400 }],
+    computed_by: 'circulatory_autogen',
+  }
+  const EMULATED = {
+    cost: 987.6,
+    n_weighted: 2,
+    incomplete: false,
+    items: [{ label: 'u', cost: 500 }, { label: 'v', cost: 400 }],
+    computed_by: 'circulatory_autogen',
+  }
+
+  // Driven through the real path -- the prediction request, then a run -- rather
+  // than by assigning the refs: the two costs are only comparable because they
+  // are asked for at the same parameters, and that is the part worth testing.
+  const shown = async ({ useEmulator = true, emulatorCost = EMULATED } = {}) => {
+    // A trained emulator has to be found for the study, or the tick box unticks
+    // itself -- there would be nothing to evaluate.
+    getEmulatorInfo.mockResolvedValue({
+      emulator_dir: '/out/emulators/m_obs',
+      metadata: { feature_labels: ['u'] },
+    })
+    predictEmulator.mockResolvedValue({ labels: ['u'], values: [1], cost: emulatorCost })
+    simulate.mockResolvedValue({ time: [0, 1], outputs: {}, cost: SOLVER })
+    const wrapper = shallowMount(App)
+    await flushPromises()
+    wrapper.vm.model.modelId.value = 'abc'
+    await flushPromises()
+    wrapper.vm.emu.useEmulator.value = useEmulator
+    await flushPromises()
+    await wrapper.vm.runSimulation()
+    await nextTick()
+    return wrapper
+  }
+
+  it('shows the model cost and the emulator cost side by side', async () => {
+    const wrapper = await shown()
+    expect(wrapper.find('[data-testid="cost-value"]').text()).toBe('1235')
+    expect(wrapper.find('[data-testid="em-cost-value"]').text()).toBe('987.6')
+    expect(wrapper.find('[data-testid="em-cost-label"]').text()).toBe('em cost')
+  })
+
+  it('says which cost is over how many observables', async () => {
+    const wrapper = await shown()
+    const note = wrapper.find('[data-testid="cost-note"]').text()
+    expect(note).toContain('cost: 2 of 2 observables')
+    expect(note).toContain('em cost: 2 of 2')
+  })
+
+  // The answer to "why don't these match?" has to be *here*, where the question
+  // is asked, not in a tab the user has no reason to open.
+  it('explains that the calibration minimises the em cost', async () => {
+    const wrapper = await shown()
+    expect(wrapper.find('[data-testid="em-cost-value"]').attributes('title')).toContain(
+      'minimises the em cost',
+    )
+  })
+
+  it('looks exactly as it did when the emulator is not in use', async () => {
+    const wrapper = await shown({ useEmulator: false })
+    expect(wrapper.find('[data-testid="cost-value"]').text()).toBe('1235')
+    expect(wrapper.find('[data-testid="em-cost-value"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="cost-note"]').text()).toContain('2 of 2 observables')
+  })
+
+  // A bundle that cannot be scored (no obs_data CA can parse, labels that no
+  // longer match) sends no cost. That is a silence, not an error banner.
+  it('shows only the model cost when the emulator cannot be scored', async () => {
+    const wrapper = await shown({ emulatorCost: null })
+    expect(wrapper.find('[data-testid="cost-value"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="em-cost-value"]').exists()).toBe(false)
+  })
+
+  // Two costs of two different parameter sets are not a comparison. The
+  // prediction and the run are separate requests, so mid-drag one can be a
+  // slider position ahead of the other -- and then the em cost waits.
+  it('withholds the em cost until it is of the same parameters as the run', async () => {
+    const wrapper = await shown()
+    wrapper.vm.emulatorCostAt = '{"a/alpha":2}'
+    await nextTick()
+    expect(wrapper.find('[data-testid="em-cost-value"]').exists()).toBe(false)
+  })
+})
+
+// The same capability at the calibration's best fit: which model the Analysis
+// tab's per-observable errors and cost describe (#333).
+describe('App.vue calibration errors against model or emulator (#333)', () => {
+  const BEST = { 'a/alpha': 1.5 }
+  const MODEL_COST = { cost: 12, n_weighted: 1, items: [{ label: 'u', percent_error: 5, std_error: 1, cost: 12 }] }
+  const EMU_COST = { cost: 9, n_weighted: 1, items: [{ label: 'u', percent_error: 3, std_error: 0.5, cost: 9 }] }
+
+  const withBestFit = async ({ emulator = true } = {}) => {
+    getEmulatorInfo.mockResolvedValue(
+      emulator
+        ? { emulator_dir: '/out/emulators/m_obs', metadata: { feature_labels: ['u'] } }
+        : {},
+    )
+    costAtParams.mockResolvedValue({ cost: MODEL_COST, emulator_cost: EMU_COST })
+    const wrapper = shallowMount(App)
+    await flushPromises()
+    wrapper.vm.model.modelId.value = 'abc'
+    wrapper.vm.obs.setObsData({ data_items: [], has_protocol: false })
+    await flushPromises()
+    wrapper.vm.calib.bestParams.value = { ...BEST }
+    await flushPromises()
+    return wrapper
+  }
+
+  it('scores the best fit both ways, in one request', async () => {
+    costAtParams.mockClear()
+    const wrapper = await withBestFit()
+    expect(costAtParams).toHaveBeenCalledTimes(1)
+    // Physical values for the solver, theta for the emulator -- one point.
+    const [, params, options] = costAtParams.mock.calls[0]
+    expect(params).toEqual(BEST)
+    expect(options.analysisParams).toEqual(BEST)
+    expect(wrapper.vm.bestFitScores).toEqual({ model: MODEL_COST, emulator: EMU_COST })
+  })
+
+  // The tick box switches between two payloads that are already here. A solver
+  // run per click would make it unusable.
+  it('does not re-measure when nothing about the best fit changed', async () => {
+    const wrapper = await withBestFit()
+    costAtParams.mockClear()
+    wrapper.vm.calib.bestParams.value = { ...BEST }
+    await flushPromises()
+    expect(costAtParams).not.toHaveBeenCalled()
+  })
+
+  it('asks again for a new best fit', async () => {
+    const wrapper = await withBestFit()
+    costAtParams.mockClear()
+    wrapper.vm.calib.bestParams.value = { 'a/alpha': 2.5 }
+    await flushPromises()
+    expect(costAtParams).toHaveBeenCalledTimes(1)
+  })
+
+  it('offers nothing to compare when the study has no emulator', async () => {
+    costAtParams.mockClear()
+    const wrapper = await withBestFit({ emulator: false })
+    expect(costAtParams).not.toHaveBeenCalled()
+    expect(wrapper.vm.bestFitScores).toBe(null)
   })
 })
