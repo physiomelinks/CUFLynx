@@ -480,7 +480,7 @@ class HeatFEniCSxModel:
         # keeps this clear of the dolfinx cell-connectivity API entirely.
         mappable = axes.tripcolor(self._dof_coords[:, 0], self._dof_coords[:, 1],
                                   field, shading='gouraud')
-        figure.colorbar(mappable, ax=axes, label='u')
+        figure.colorbar(mappable, ax=axes, label='u', format='%.2g')
         for idx, (px, py) in enumerate(PROBE_POINTS):
             axes.plot(px, py, 'o', markersize=7, markerfacecolor='none',
                       markeredgecolor='white', markeredgewidth=1.8)

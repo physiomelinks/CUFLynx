@@ -1181,11 +1181,21 @@ const paramLabels = computed(() => {
   return out
 })
 
+// The top bar's t₁/pre travel with every analysis run. For an obs_data with a
+// protocol they are ignored (protocol timing wins, #13); for a protocol-less
+// obs_data they are what the runner simulates over — without them, calibration
+// silently fell back to sim_time=2.0 while the Output-plots cost ran at the top
+// bar's t₁, so the same best-fit parameters scored two different costs.
+function runTimes() {
+  return { sim_time: simTime.value, pre_time: preTime.value }
+}
+
 function onRunCalibration(settings) {
   calib.start(
     model.modelId.value,
     {
       ...settings,
+      ...runTimes(),
       python_path: pythonPath.value,
       config_outputs_dir: outputsDir.value.trim() || undefined,
       // Evaluate the trained emulator instead of the solver (Emulator tab).
@@ -1283,6 +1293,7 @@ function onRunSensitivity(settings) {
     {
       ...settings,
       ...calibFirst,
+      ...runTimes(),
       python_path: pythonPath.value,
       config_outputs_dir: outputsDir.value.trim() || undefined,
       // Evaluate the trained emulator instead of the solver (Emulator tab).
@@ -1307,6 +1318,7 @@ watch(
 function onRunUQ(settings) {
   uq.start(model.modelId.value, {
     ...settings,
+    ...runTimes(),
     python_path: pythonPath.value,
     config_outputs_dir: outputsDir.value.trim() || undefined,
     use_emulator: emu.useEmulator.value,

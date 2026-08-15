@@ -20,6 +20,18 @@ vi.mock('./lib/api', () => ({
   }),
   getCalibrationDefaults: vi.fn().mockResolvedValue({}),
   getCalibrationPythons: vi.fn().mockResolvedValue({ pythons: [] }),
+  startCalibration: vi.fn().mockResolvedValue({ job_id: 'job-1' }),
+  getCalibrationStatus: vi.fn().mockResolvedValue({ state: 'running', log: '' }),
+  getCalibrationProgress: vi.fn().mockResolvedValue({}),
+  cancelCalibration: vi.fn().mockResolvedValue({}),
+  calibratedModelUrl: vi.fn((id) => `/api/calibration/${id}/calibrated_model`),
+  startSensitivity: vi.fn().mockResolvedValue({ job_id: 'job-2' }),
+  getSensitivityStatus: vi.fn().mockResolvedValue({ state: 'running', log: '' }),
+  cancelSensitivity: vi.fn().mockResolvedValue({}),
+  startUQ: vi.fn().mockResolvedValue({ job_id: 'job-3' }),
+  getUQStatus: vi.fn().mockResolvedValue({ state: 'running', log: '' }),
+  getUQProgress: vi.fn().mockResolvedValue({}),
+  cancelUQ: vi.fn().mockResolvedValue({}),
   getSensitivityDefaults: vi.fn().mockResolvedValue({}),
   getUQDefaults: vi.fn().mockResolvedValue({}),
   getConfig: vi.fn().mockResolvedValue({
@@ -1879,5 +1891,62 @@ describe('App.vue free-form (JSON) solver_info fields', () => {
     await nextTick()
     expect(wrapper.vm.solverInfo.user_config).toBeNull()
     expect(wrapper.vm.jsonFieldErrors.user_config).toBe('')
+  })
+})
+
+// The top bar's t₁/pre must travel with every analysis run: for a protocol-less
+// obs_data the runner otherwise falls back to sim_time=2.0 while the Output-plots
+// cost runs at the top bar's t₁ — the same best-fit parameters then score two
+// different costs (heat1d: calibration said 24.66, the plots said otherwise).
+describe('analysis runs carry the top-bar timeline', () => {
+  const mountApp = async () => {
+    const wrapper = shallowMount(App)
+    await flushPromises()
+    return wrapper
+  }
+
+  it('calibration payload includes sim_time/pre_time from the top bar', async () => {
+    const { startCalibration } = await import('./lib/api')
+    startCalibration.mockClear()
+    const wrapper = await mountApp()
+    wrapper.vm.simTime = 7
+    wrapper.vm.preTime = 1.5
+    await nextTick()
+    wrapper.vm.onRunCalibration({ param_id_method: 'genetic_algorithm' })
+    await flushPromises()
+    expect(startCalibration).toHaveBeenCalledTimes(1)
+    const settings = startCalibration.mock.calls[0][1]
+    expect(settings.sim_time).toBe(7)
+    expect(settings.pre_time).toBe(1.5)
+  })
+
+  it('sensitivity payload includes sim_time/pre_time from the top bar', async () => {
+    const { startSensitivity } = await import('./lib/api')
+    startSensitivity.mockClear()
+    const wrapper = await mountApp()
+    wrapper.vm.simTime = 7
+    wrapper.vm.preTime = 1.5
+    await nextTick()
+    wrapper.vm.onRunSensitivity({ analysis_type: 'global' })
+    await flushPromises()
+    expect(startSensitivity).toHaveBeenCalledTimes(1)
+    const settings = startSensitivity.mock.calls[0][1]
+    expect(settings.sim_time).toBe(7)
+    expect(settings.pre_time).toBe(1.5)
+  })
+
+  it('UQ payload includes sim_time/pre_time from the top bar', async () => {
+    const { startUQ } = await import('./lib/api')
+    startUQ.mockClear()
+    const wrapper = await mountApp()
+    wrapper.vm.simTime = 7
+    wrapper.vm.preTime = 1.5
+    await nextTick()
+    wrapper.vm.onRunUQ({ method: 'mcmc' })
+    await flushPromises()
+    expect(startUQ).toHaveBeenCalledTimes(1)
+    const settings = startUQ.mock.calls[0][1]
+    expect(settings.sim_time).toBe(7)
+    expect(settings.pre_time).toBe(1.5)
   })
 })
