@@ -229,11 +229,17 @@ the same reason: at `u_D = 0` every edge is identical, p1 and p3 coincide, and t
 structure the example exists to show disappears.)
 
 **Time scales.** The slowest mode decays at `λ = 2kπ² ≈ 19.7k`, so across the
-`k ∈ [0.01, 0.2]` calibration box the plate's time constant runs from about 5 s
+`k ∈ [0.001, 0.2]` calibration box the plate's time constant runs from about 51 s
 down to 0.25 s. Hence `dt = 0.02` and `sim_time = 2.0`: 100 steps, about two time
 constants at the default `k = 0.05`, with `k = 0.01` leaving the plate partly
 cooled and `k = 0.2` fully relaxing it — and still milliseconds per run once the
 forms are compiled.
+
+Below about `k = 0.005` the plate barely cools on this window (at `k = 0.001` it
+keeps ~96% of its heat) and every observable saturates at the initial temperature.
+That is what a lower bound should say — "no diffusion" — and a calibration rules it
+out at once, but it is a flat patch of the cost surface, so lengthen `sim_time` if
+you want that end of the box to be informative.
 
 **MPI.** The mesh is built on `MPI.COMM_SELF`, not `COMM_WORLD`. CA parallelises
 over *independent simulations* — each rank runs its own parameter sample — so every
