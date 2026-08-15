@@ -16,7 +16,7 @@ import {
 } from 'chart.js'
 import { buildChartData } from '../lib/plot'
 import { renderMath } from '../lib/math'
-import { fmtSci, fmtAxis, fmtSigFigs } from '../lib/format'
+import { fmtSci, fmtAxisTick, fmtSigFigs } from '../lib/format'
 
 ChartJS.register(
   LinearScale,
@@ -90,8 +90,10 @@ const chartData = computed(() =>
 
 // Model values span a huge range (compliances ~1e-9, large resistances), so raw
 // JS numbers like 0.0000000015 or 1500000 are unreadable in the cursor tooltip
-// and on the ticks. Format both with the shared fmtSci/fmtAxis (issue #107).
-const sciTicks = { callback: (v) => fmtAxis(v) }
+// and on the ticks. Format both with the shared formatters (issue #107): ticks
+// at 2 significant figures, widened only when a narrow offset range would give
+// adjacent ticks the same label.
+const sciTicks = { callback: (v, _i, ticks) => fmtAxisTick(v, ticks) }
 
 // Reading a value off a trace should not require aiming. Chart.js hit-tests each
 // *sample* with `distance^2 < (hitRadius + radius)^2` and the traces draw with
