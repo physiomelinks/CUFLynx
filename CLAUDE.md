@@ -1,8 +1,8 @@
-# cellml_file_slider_visualization — Agent summary
+# CUFLynx — Agent summary
 
 ## Purpose
 
-Interactive **manual parameter exploration** for CellML models: sliders change constants, simulations update plots, and experimental CSV data can be overlaid for rough calibration before formal parameter identification.
+interactive calibration for computational models: sliders change constants, simulations update plots. The user can define their observable data and parameters to calibrate, then create an emulator, do sensitvity analysis, calibration, and UQ. 
 
 ## Test fixtures (`resources/`)
 
@@ -25,7 +25,7 @@ packaging/         PyInstaller spec + runtime hooks (single-file executable)
 
 **Backend engine (target):** [circulatory_autogen](https://github.com/...) `protocol_runners.ProtocolRunner` + `solver_wrappers.get_simulation_helper` (**Myokit** CVODE). Not the in-browser RK4.
 
-> **No OpenCOR — ever.** CUFLynx must **not** bundle OpenCOR or any OpenCOR dependency, and must not depend on an OpenCOR runtime. CellML is simulated through **Myokit** (`CVODE_myokit`), not OpenCOR. Consequently CA's `CVODE_opencor` solver must never be surfaced in CUFLynx: it's filtered out of the solver options in `apps/api/solver_options.py` (`UNSUPPORTED_SOLVERS`), so `cellml_only` offers/defaults to `CVODE_myokit`. When consuming CA's discoverable schemas, always drop OpenCOR-only choices rather than passing them through. (CA's own test/run env requires OpenCOR's Python shell — that requirement stays inside CA and must not leak into CUFLynx.)
+> **No OpenCOR — ever.** CUFLynx must **not** bundle OpenCOR or any OpenCOR dependency, and must not depend on an OpenCOR runtime. CellML is simulated through **Myokit** (`CVODE_myokit`), not OpenCOR. Consequently CA's `CVODE_opencor` solver must never be surfaced in CUFLynx: it's filtered out of the solver options in `apps/api/solver_options.py` (`UNSUPPORTED_SOLVERS`), so `cellml_only` offers/defaults to `CVODE_myokit`. When consuming CA's discoverable schemas, always drop OpenCOR-only choices rather than passing them through. (CA is moving off OpenCOR's Python shell too — it now documents a plain venv — so there is no OpenCOR requirement to leak in either direction. If you point the CA dir at a checkout, no `pythonshell` is needed.)
 
 **Reference implementation:** sibling repo `ICUHealthy` — FastAPI + cached `get_simulation_helper`, `helper.set_param_vals(param_names, param_vals)`, `helper.run()`, `helper.get_results()`.
 
