@@ -59,8 +59,11 @@ jobs:
       # Install only the light deps needed by the unit tier; the heavy
       # simulation stack (myokit/libcellml) is exercised by the integration
       # marker, which is skipped here. pyyaml is for CA's parser module.
+      # matplotlib is for the extra-figure pipeline: without it the
+      # sim-worker child degrades to "no extra figures" by design, which
+      # would silently gut test_solver_plots_worker's drift guards.
       - name: Install unit-test deps
-        run: pip install fastapi "uvicorn[standard]" numpy pandas pyyaml python-multipart httpx pytest pytest-cov
+        run: pip install fastapi "uvicorn[standard]" numpy pandas pyyaml python-multipart httpx matplotlib pytest pytest-cov
       - name: Run unit tests
         run: pytest -m "not integration" -q
 
@@ -82,10 +85,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      # Same light deps as the Ubuntu unit job; the heavy simulation stack
+      # Same light deps as the Ubuntu unit job (matplotlib included for the
+      # extra-figure drift guards); the heavy simulation stack
       # (myokit/libcellml) is exercised by the integration marker, skipped here.
       - name: Install unit-test deps
-        run: pip install fastapi "uvicorn[standard]" numpy pandas pyyaml python-multipart httpx pytest pytest-cov
+        run: pip install fastapi "uvicorn[standard]" numpy pandas pyyaml python-multipart httpx matplotlib pytest pytest-cov
       - name: Run unit tests
         run: pytest -m "not integration" -q
 
