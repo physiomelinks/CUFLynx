@@ -12,6 +12,7 @@ import {
   uploadObsData,
   uploadParamsForId,
   fetchExampleModel,
+  modelSourceUrl,
   uploadOmex,
 } from '../lib/api'
 import { PHLYNX_URL } from '../lib/examples'
@@ -37,6 +38,12 @@ const props = defineProps({
   // Gates the group/modifier buttons in the params editor: the CasADi backend
   // refuses grouped and modifier rows at run time (#208).
   generatedModelFormat: { type: String, default: '' },
+  // What kind of model is loaded, as the server reported it: 'external_python'
+  // for a dropped .py, empty for CellML. Decides what Edit does.
+  modelFormat: { type: String, default: '' },
+  // The filename a converted model came from -- set for a .mmt, which becomes
+  // CellML at import (#27). Also decides what Edit does.
+  convertedFrom: { type: String, default: null },
 })
 const emit = defineEmits([
   'model-loaded',
@@ -71,17 +78,47 @@ const cellmlLoaded = computed(() => !!props.modelId)
 const obsLoaded = computed(() => !!props.loadedObsFilename)
 const paramsLoaded = computed(() => !!props.loadedFilename)
 
-// The box beside the CellML dropzone: "Start" (no model yet) opens the Start
-// dialog to pick an example or link to PhLynx; "Edit" (a model is loaded) opens
-// the current model in PhLynx to edit it.
-function onStartEdit() {
-  if (props.modelId) {
-    // A link that opens PhLynx is enough for now; deeper integration is future
-    // work (issue #91).
-    window.open(PHLYNX_URL, '_blank', 'noopener')
-  } else {
-    startOpen.value = true
+// PhLynx is a *CellML* model builder, so it is only ever the right thing to open
+// for a CellML model. An external python model's source is its .py, and a Myokit
+// model's is the .mmt it was converted from — opening a CellML builder on either
+// would show the user a model they did not write and cannot edit there.
+//
+// `.mmt` is spotted through `converted_from` rather than through the model
+// format: the conversion is what makes the loaded model CellML, so by the time
+// it is loaded nothing else remembers the file was Myokit.
+const sourceExt = computed(() => {
+  if (props.modelFormat === 'external_python') return '.py'
+  if (/\.mmt$/i.test(String(props.convertedFrom || ''))) return '.mmt'
+  return ''
+})
+
+// The box beside the CellML dropzone: "Create" (no model yet) opens the Start
+// dialog to pick an example or link to PhLynx; with a model loaded it either
+// shows the user's own source file or opens PhLynx, per `sourceExt`.
+const startEditLabel = computed(() => {
+  if (!props.modelId) return 'Create'
+  return sourceExt.value ? 'View source' : 'Edit'
+})
+const startEditTitle = computed(() => {
+  if (!props.modelId) return 'Create a model: start from an example or build one in PhLynx'
+  if (sourceExt.value) {
+    return `View the model source (${sourceExt.value}) in a new tab — edit it in your own editor and drop it again`
   }
+  return 'Edit the current model in PhLynx'
+})
+
+function onStartEdit() {
+  if (!props.modelId) {
+    startOpen.value = true
+    return
+  }
+  if (sourceExt.value) {
+    window.open(modelSourceUrl(props.modelId), '_blank', 'noopener')
+    return
+  }
+  // A link that opens PhLynx is enough for now; deeper integration is future
+  // work (issue #91).
+  window.open(PHLYNX_URL, '_blank', 'noopener')
 }
 
 // The Start dialog chose an example: fetch it and feed it through the normal
@@ -376,16 +413,12 @@ async function onParamsDrop(event) {
         <input type="file" accept=".cellml,.xml,.mmt,.py,.omex" multiple @change="onCellmlDrop" />
       </label>
       <Button
-        :label="modelId ? 'Edit' : 'Create'"
-        :icon="modelId ? 'pi pi-pencil' : 'pi pi-plus'"
+        :label="startEditLabel"
+        :icon="modelId ? (sourceExt ? 'pi pi-file' : 'pi pi-pencil') : 'pi pi-plus'"
         size="small"
         class="params-edit-btn"
         data-testid="start-edit"
-        :title="
-          modelId
-            ? 'Edit the current model in PhLynx'
-            : 'Create a model: start from an example or build one in PhLynx'
-        "
+        :title="startEditTitle"
         @click="onStartEdit"
       />
     </div>

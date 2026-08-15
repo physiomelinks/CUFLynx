@@ -5,6 +5,7 @@ Endpoints
 GET  /api/health                       liveness probe
 POST /api/models/upload                upload a .cellml file -> metadata
 GET  /api/models/{model_id}/variables  classified variable lists
+GET  /api/models/{model_id}/source     the .py / .mmt the user actually wrote
 POST /api/simulate                     single run (circulatory_autogen helper)
 POST /api/protocol/run                 multi-experiment protocol run
 POST /api/obs_data/upload              load obs_data.json (protocol + overlays)
@@ -21,6 +22,7 @@ import contextlib
 import errno
 import json
 import os
+import re
 import shutil
 import tempfile
 import time
@@ -201,6 +203,50 @@ def _get_model(model_id: str) -> _ModelRecord:
             return record
         raise HTTPException(status_code=404, detail=f"model {model_id!r} not found")
     return record
+
+
+#: A model id is generated here (``uuid4().hex``), but on the way back in it is a
+#: client string, and the one rule for those is that they are never joined onto a
+#: path unchecked -- the same discipline ``solver_plots`` applies to its segments.
+_SAFE_MODEL_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
+
+#: The suffixes of a model *source*: the file the user wrote, as opposed to the
+#: model CUFLynx runs. Ordered by how directly they are the model -- an
+#: external_python model **is** its ``.py``, while a ``.mmt`` sits beside the
+#: CellML it was converted into at import (#27). A plain CellML model has no
+#: entry here on purpose: it is edited in PhLynx, and the flattened document
+#: CUFLynx generated is not a file the user has ever seen.
+MODEL_SOURCE_SUFFIXES = (".py", ".mmt")
+
+
+def _save_model_source(model_id: str, suffix: str, data: bytes) -> None:
+    """Keep the dropped file beside the model derived from it.
+
+    Only for a model whose source is *not* what gets simulated: a ``.mmt`` is
+    converted to CellML at the door, so without this the file the user wrote
+    exists nowhere on the server and "show me my model" has nothing to show.
+    The converted CellML is still written exactly as before -- it is what every
+    simulation path uses, and this copy is only ever read back to look at.
+    """
+    with contextlib.suppress(OSError):
+        (UPLOAD_DIR / f"{model_id}{suffix}").write_bytes(data)
+
+
+def _model_source_path(model_id: str) -> Path | None:
+    """The stored source for *model_id*, or None when it has none."""
+    if not _SAFE_MODEL_ID.match(str(model_id or "")):
+        return None
+    for suffix in MODEL_SOURCE_SUFFIXES:
+        path = UPLOAD_DIR / f"{model_id}{suffix}"
+        if path.is_file():
+            return path
+    return None
+
+
+def _display_stem(name: str, fallback: str) -> str:
+    """A filename stem safe to put in a Content-Disposition header."""
+    stem = re.sub(r"[^A-Za-z0-9._-]+", "_", str(name or "")).strip("._-")
+    return stem or fallback
 
 
 def _validate_param_keys(params: dict) -> None:
@@ -1043,6 +1089,10 @@ async def upload_model(
     converted_from = None
     converted_path = None
     protocol: dict | None = None
+    # The bytes the user dropped, kept once the model_id exists: the conversion
+    # below replaces `only_bytes` with CellML, and the .mmt would otherwise be
+    # gone the moment this request returns.
+    mmt_source: bytes | None = None
     if single and (
         myokit_import.is_myokit_filename(only_name) or myokit_import.looks_like_myokit(only_bytes)
     ):
@@ -1057,6 +1107,7 @@ async def upload_model(
         except myokit_import.MyokitImportError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         converted_from = only_name
+        mmt_source = mmt_bytes
         raw_by_name = {Path(only_name).stem + ".cellml": only_bytes}
         # The [[protocol]] section the model import deliberately leaves behind.
         # Offered rather than applied: the client decides, because a model
@@ -1088,6 +1139,8 @@ async def upload_model(
     model_id = uuid.uuid4().hex
     path = UPLOAD_DIR / f"{model_id}.cellml"
     path.write_bytes(raw)
+    if mmt_source is not None:
+        _save_model_source(model_id, ".mmt", mmt_source)
     _models[model_id] = _ModelRecord(model_id, path, meta)
 
     return {
@@ -1138,6 +1191,7 @@ async def upload_omex(
     # than like a lesser kind of study.
     converted_from = None
     protocol = None
+    mmt_source: bytes | None = None
     if len(raw_by_name) == 1 and myokit_import.is_myokit_filename(parts["master"] or ""):
         only_name = parts["master"]
         mmt_bytes = raw_by_name[only_name]
@@ -1148,6 +1202,7 @@ async def upload_omex(
         except myokit_import.MyokitImportError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         converted_from = only_name
+        mmt_source = mmt_bytes
         protocol = _protocol_from_mmt(mmt_bytes, only_name, out_dir)
         raw_by_name = {Path(only_name).stem + ".cellml": cellml_bytes}
         parts = {**parts, "master": Path(only_name).stem + ".cellml"}
@@ -1174,6 +1229,8 @@ async def upload_omex(
     model_id = uuid.uuid4().hex
     path = UPLOAD_DIR / f"{model_id}.cellml"
     path.write_bytes(raw)
+    if mmt_source is not None:
+        _save_model_source(model_id, ".mmt", mmt_source)
     _models[model_id] = _ModelRecord(model_id, path, meta)
 
     result = {
@@ -1273,6 +1330,41 @@ def get_variables(model_id: str) -> dict:
         # qname -> CellML units identifier, used to label plot axes (#125).
         "units": m.units,
     }
+
+
+@app.get("/api/models/{model_id}/source")
+def get_model_source(model_id: str) -> FileResponse:
+    """The file the user wrote, for a model that has one (#91 follow-up).
+
+    Two kinds of model do. An ``external_python`` model **is** its ``.py``, and a
+    Myokit model's ``.mmt`` is kept beside the CellML it was converted into at
+    import. A plain CellML model has none: it is edited in PhLynx, so this 404s
+    rather than answering with the flattened document CUFLynx generated, which is
+    not a file the user has ever seen.
+
+    Served as ``text/plain`` **inline**: this is the "show me my model" of the
+    Edit button, and a browser tab that displays the source is what was asked
+    for. A download would put the file somewhere the user then has to find.
+
+    The model id is validated before anything is joined onto a path — the same
+    rule ``solver_plots`` follows; a client string never becomes a path segment.
+    """
+    if not _SAFE_MODEL_ID.match(str(model_id or "")):
+        raise HTTPException(status_code=404, detail="model source not found")
+    record = _get_model(model_id)
+    path = _model_source_path(model_id)
+    if path is None:
+        raise HTTPException(
+            status_code=404,
+            detail="this model has no source file to show — a CellML model is edited in PhLynx",
+        )
+    stem = _display_stem(record.meta.name, model_id)
+    return FileResponse(
+        path,
+        media_type="text/plain; charset=utf-8",
+        filename=f"{stem}{path.suffix}",
+        content_disposition_type="inline",
+    )
 
 
 @app.get("/api/models/{model_id}/solver_plots/{token}/{index}.png")
@@ -2468,7 +2560,16 @@ def emulator_info(model_id: str, config_outputs_dir: str = "") -> dict:
     # route: they are what the Analysis view draws, and a caller that has one
     # without the other can only show half the picture.
     points = ca_run_history.emulator_error_points(emu_dir) if metadata else None
-    return {"emulator_dir": emu_dir, "metadata": metadata, "error_points": points}
+    return {
+        "emulator_dir": emu_dir,
+        "metadata": metadata,
+        "error_points": points,
+        # Whether `emulator_settings.reuse_samples` could run here. Its own key
+        # rather than inferred from `metadata`: CA needs the saved samples *as
+        # well as* the metadata, so a bundle can be perfectly usable and still
+        # have nothing to refit.
+        "reusable": ca_run_history.emulator_reusable(emu_dir),
+    }
 
 
 @app.post("/api/emulator/train")

@@ -106,6 +106,68 @@ def test_a_bundle_without_held_out_points_is_not_an_error(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Whether there are samples to reuse (emulator_settings.reuse_samples)
+# ---------------------------------------------------------------------------
+def _bundle(directory, metadata=True, samples=True):
+    directory.mkdir(parents=True, exist_ok=True)
+    if metadata:
+        (directory / "emulator_metadata.json").write_text(json.dumps({"feature_r2": [0.99]}))
+    if samples:
+        (directory / "training_data.npz").write_bytes(b"not really an npz")
+    return str(directory)
+
+
+@pytest.mark.parametrize(
+    "metadata,samples,expected",
+    [(True, True, True), (True, False, False), (False, True, False), (False, False, False)],
+)
+def test_reuse_needs_both_files_just_as_ca_does(tmp_path, metadata, samples, expected):
+    """CA raises EmulatorReuseError unless the metadata *and* the saved samples
+    are there, so "an emulator exists" is not the question being asked: a bundle
+    from a circulatory_autogen that predates training_data.npz is perfectly
+    usable and still has nothing to refit."""
+    import ca_run_history
+
+    directory = _bundle(tmp_path / "emu", metadata=metadata, samples=samples)
+    assert ca_run_history.emulator_reusable(directory) is expected
+
+
+def test_reuse_is_false_for_a_directory_that_does_not_exist(tmp_path):
+    import ca_run_history
+
+    assert ca_run_history.emulator_reusable(str(tmp_path / "nope")) is False
+
+
+def test_the_info_route_says_whether_samples_can_be_reused(client, tmp_path):
+    """The panel disables the tick box off this, rather than letting the user ask
+    for a run CA will refuse minutes later."""
+    from conftest import BG_MODEL_PATH
+
+    with open(BG_MODEL_PATH, "rb") as fh:
+        model_id = client.post(
+            "/api/models/upload", files={"file": (BG_MODEL_PATH.name, fh, "application/xml")}
+        ).json()["model_id"]
+
+    def info():
+        return client.get(
+            "/api/emulator/info",
+            params={"model_id": model_id, "config_outputs_dir": str(tmp_path)},
+        ).json()
+
+    body = info()
+    assert body["metadata"] is None and body["reusable"] is False
+
+    emu_dir = Path(body["emulator_dir"])
+    _bundle(emu_dir, samples=False)
+    assert info()["reusable"] is False  # trained, but nothing saved to refit
+
+    _bundle(emu_dir)
+    body = info()
+    assert body["reusable"] is True
+    assert body["metadata"] is not None
+
+
+# ---------------------------------------------------------------------------
 # "Use the emulator" reaching circulatory_autogen
 # ---------------------------------------------------------------------------
 def test_engine_kwargs_are_empty_when_the_box_is_off():

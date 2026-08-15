@@ -36,6 +36,14 @@ export function useEmulator(options = {}) {
    */
   const errorPoints = ref(null)
   const emulatorDir = ref('')
+  /**
+   * Whether `emulator_settings.reuse_samples` has anything to reuse: CA needs
+   * the saved training samples *as well as* the metadata, and refuses the run
+   * when either is missing. Its own flag rather than `trained`, because a bundle
+   * from a circulatory_autogen that predates the saved samples is a perfectly
+   * usable emulator with nothing to refit.
+   */
+  const reusable = ref(false)
   /** The tick box: evaluate the emulator in SA / calibration / UQ. */
   const useEmulator = ref(false)
 
@@ -75,10 +83,12 @@ export function useEmulator(options = {}) {
       emulatorDir.value = info.emulator_dir ?? ''
       metadata.value = info.metadata ?? null
       errorPoints.value = info.error_points ?? null
+      reusable.value = info.reusable === true
       if (!metadata.value) useEmulator.value = false
     } catch (e) {
       // Not an error state for the panel: no emulator is the normal start.
       metadata.value = null
+      reusable.value = false
     }
   }
 
@@ -162,6 +172,7 @@ export function useEmulator(options = {}) {
     features,
     worstR2,
     trained,
+    reusable,
     canUse,
     useEmulator,
     refresh,

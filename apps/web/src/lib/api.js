@@ -109,6 +109,18 @@ export async function uploadCellML(fileOrFiles, outputDir = '') {
   return data
 }
 
+/**
+ * Direct URL to the file the user wrote, for a model that has one: the `.py` of
+ * an external python model, or the `.mmt` a CellML model was converted from
+ * (#27). Opened in a tab rather than fetched — it is served inline as text, and
+ * "show me my model" is a thing to look at, not data the app needs.
+ *
+ * 404s for a plain CellML model, which is edited in PhLynx instead.
+ */
+export function modelSourceUrl(modelId) {
+  return url(`/api/models/${encodeURIComponent(modelId)}/source`)
+}
+
 // Fetch a bundled example as a File, so it can be fed straight through the
 // normal upload flow (same path as a dropped file).
 //

@@ -32,6 +32,11 @@ const props = defineProps({
   metadata: { type: Object, default: null },
   /** Per-feature {label, r2, rmse} rows derived from it. */
   features: { type: Array, default: () => [] },
+  /**
+   * Whether the emulator directory holds both CA's metadata and the training
+   * samples it saved — the two files `emulator_settings.reuse_samples` needs.
+   */
+  reusable: { type: Boolean, default: false },
   /** v-model for the "use the emulator" tick box. */
   modelValue: { type: Boolean, default: false },
 })
@@ -133,6 +138,39 @@ function optionLabel(name) {
   const s = String(name).replace(/_/g, ' ')
   return s.charAt(0).toUpperCase() + s.slice(1)
 }
+
+/**
+ * `reuse_samples` refits the design and simulated features a previous run left
+ * in the emulator directory, running no simulations at all. Two consequences the
+ * form has to show, or the tick box lies about what CA will do:
+ *
+ * 1. It needs a previous run's `training_data.npz` beside CA's metadata. Without
+ *    both, CA raises EmulatorReuseError at train time — so the box is disabled
+ *    rather than the run failing minutes later.
+ * 2. With it on, the settings that describe a *design* are ignored. They are
+ *    greyed so the form matches the run. Everything about the *fit* — models,
+ *    test_fraction, n_iter, n_splits, min_r2, random_seed — still applies, which
+ *    is the entire point of reusing.
+ */
+const REUSE_FLAG = 'reuse_samples'
+const REUSE_IGNORES = ['num_train_samples', 'sample_type', 'log_scale_params']
+
+const reuseOn = computed(() => optionValues[REUSE_FLAG] === true)
+
+function optionDisabled(name) {
+  if (name === REUSE_FLAG) return !props.reusable
+  return reuseOn.value && REUSE_IGNORES.includes(name)
+}
+
+// An emulator directory that loses its samples (a different study, a bundle from
+// an older circulatory_autogen) must not leave the box ticked: the run would be
+// refused, and CUFLynx would have asked for it.
+watch(
+  () => props.reusable,
+  (ok) => {
+    if (!ok && optionValues[REUSE_FLAG] !== undefined) optionValues[REUSE_FLAG] = false
+  },
+)
 
 function buildSettings() {
   const opts = {}
@@ -296,19 +334,30 @@ function onRun() {
       <div class="cal-form">
         <!-- CA's emulation options, from ANALYSIS_OPTIONS['emulation']. -->
         <template v-for="opt in emulatorOptions" :key="opt.name">
-          <label v-if="opt.type === 'bool'" class="field checkbox">
+          <label
+            v-if="opt.type === 'bool'"
+            class="field checkbox"
+            :class="{ 'opt-off': optionDisabled(opt.name) }"
+          >
             <Checkbox
               v-model="optionValues[opt.name]"
               :binary="true"
+              :disabled="optionDisabled(opt.name)"
               :input-id="'emu-opt-' + opt.name"
+              :data-testid="'emu-opt-' + opt.name"
             />
             <span :title="opt.description">{{ optionLabel(opt.name) }}</span>
           </label>
-          <label v-else-if="opt.type === 'enum'" class="field">
+          <label
+            v-else-if="opt.type === 'enum'"
+            class="field"
+            :class="{ 'opt-off': optionDisabled(opt.name) }"
+          >
             <span :title="opt.description">{{ optionLabel(opt.name) }}</span>
             <Select
               v-model="optionValues[opt.name]"
               :options="opt.choices"
+              :disabled="optionDisabled(opt.name)"
               size="small"
               :data-testid="'emu-opt-' + opt.name"
             />
@@ -333,20 +382,44 @@ function onRun() {
               :data-testid="'emu-opt-' + opt.name"
             />
           </label>
-          <label v-else class="field">
+          <label v-else class="field" :class="{ 'opt-off': optionDisabled(opt.name) }">
             <span :title="opt.description">{{ optionLabel(opt.name) }}</span>
             <InputNumber
               v-model="optionValues[opt.name]"
               :min-fraction-digits="opt.type === 'float' ? 1 : undefined"
               :max-fraction-digits="opt.type === 'float' ? 10 : undefined"
+              :disabled="optionDisabled(opt.name)"
               size="small"
               :data-testid="'emu-opt-' + opt.name"
             />
           </label>
+          <!-- Why the reuse box cannot be ticked: there is nothing on disk to
+               refit. Said here rather than left to a failed run. -->
+          <small
+            v-if="opt.name === REUSE_FLAG && !reusable"
+            class="hint"
+            data-testid="emu-reuse-unavailable"
+          >
+            Train an emulator first — reuse refits samples a previous run simulated.
+          </small>
+          <small
+            v-else-if="opt.name === REUSE_FLAG && reuseOn"
+            class="hint"
+            data-testid="emu-reuse-on"
+          >
+            Reusing the saved design: no simulations are run, so the design settings
+            below are ignored. The fit settings still apply.
+          </small>
         </template>
 
-        <label class="field">
-          <span title="mpiexec -n N: the training simulations are split across ranks">Cores</span>
+        <label class="field" :class="{ 'opt-off': reuseOn }">
+          <span
+            :title="
+              reuseOn
+                ? 'A reuse run refits samples already on disk and runs no simulations, so one process is all it needs.'
+                : 'mpiexec -n N: the training simulations are split across ranks'
+            "
+          >Cores</span>
           <InputNumber
             v-model="settings.num_cores"
             :min="1"
@@ -432,6 +505,11 @@ function onRun() {
   flex-direction: row;
   align-items: center;
   gap: 0.4rem;
+}
+/* A setting circulatory_autogen will ignore on this run, or one it cannot accept
+   yet: greyed so the form says what the run will actually do. */
+.field.opt-off {
+  opacity: 0.5;
 }
 .use-row {
   border: 1px solid var(--p-content-border-color, #ddd);

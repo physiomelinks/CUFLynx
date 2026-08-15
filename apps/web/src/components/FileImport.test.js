@@ -8,9 +8,11 @@ vi.mock('../lib/api', () => ({
   uploadParamsForId: vi.fn(),
   getObsDataOptions: vi.fn(),
   fetchExampleModel: vi.fn(),
+  modelSourceUrl: (id) => `/api/models/${id}/source`,
 }))
 
 import FileImport from './FileImport.vue'
+import { PHLYNX_URL } from '../lib/examples'
 import {
   uploadCellML,
   uploadObsData,
@@ -24,8 +26,10 @@ import {
 const ButtonStub = {
   props: ['label', 'disabled', 'icon', 'size', 'text', 'title'],
   emits: ['click'],
+  // `title` is rendered, not swallowed: the Edit button's tooltip is what tells
+  // the user whether it opens PhLynx or their own source file.
   template:
-    '<button :disabled="disabled" v-bind="$attrs" @click="$emit(\'click\')">{{ label }}</button>',
+    '<button :disabled="disabled" :title="title" v-bind="$attrs" @click="$emit(\'click\')">{{ label }}</button>',
 }
 const EditParamsStub = {
   props: ['visible'],
@@ -287,6 +291,71 @@ describe('FileImport', () => {
     await wrapper.find('[data-testid="start-edit"]').trigger('click')
     expect(wrapper.find('[data-testid="start-dialog"]').exists()).toBe(false)
     expect(openSpy).toHaveBeenCalledOnce()
+    expect(openSpy.mock.calls[0][0]).toBe(PHLYNX_URL)
+    openSpy.mockRestore()
+  })
+
+  // PhLynx builds CellML, so it is nonsense to open it for a model written in
+  // Python or Myokit -- those users want their own file.
+  it('Edit opens the .py for an external python model, not PhLynx', async () => {
+    const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null)
+    const wrapper = mount(FileImport, {
+      props: { modelId: 'abc', modelFormat: 'external_python' },
+      global: { stubs },
+    })
+    const btn = wrapper.find('[data-testid="start-edit"]')
+    // The button says what it will do, so the user is not surprised by a tab
+    // full of source when they expected an editor.
+    expect(btn.text()).toBe('View source')
+    expect(btn.attributes('title')).toContain('.py')
+    await btn.trigger('click')
+    expect(openSpy).toHaveBeenCalledOnce()
+    expect(openSpy.mock.calls[0][0]).toBe('/api/models/abc/source')
+    openSpy.mockRestore()
+  })
+
+  it('Edit opens the .mmt for a model converted from Myokit', async () => {
+    const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null)
+    // The model itself is CellML by the time it is loaded (#27); converted_from
+    // is the only thing that still remembers it was written as a .mmt.
+    const wrapper = mount(FileImport, {
+      props: { modelId: 'abc', convertedFrom: 'br-1977.mmt' },
+      global: { stubs },
+    })
+    const btn = wrapper.find('[data-testid="start-edit"]')
+    expect(btn.text()).toBe('View source')
+    expect(btn.attributes('title')).toContain('.mmt')
+    await btn.trigger('click')
+    expect(openSpy).toHaveBeenCalledOnce()
+    expect(openSpy.mock.calls[0][0]).toBe('/api/models/abc/source')
+    openSpy.mockRestore()
+  })
+
+  it('Edit still opens PhLynx for a plain CellML model', async () => {
+    const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null)
+    const wrapper = mount(FileImport, {
+      props: { modelId: 'abc', modelFormat: '', convertedFrom: null },
+      global: { stubs },
+    })
+    const btn = wrapper.find('[data-testid="start-edit"]')
+    expect(btn.text()).toBe('Edit')
+    expect(btn.attributes('title')).toContain('PhLynx')
+    await btn.trigger('click')
+    expect(openSpy.mock.calls[0][0]).toBe(PHLYNX_URL)
+    openSpy.mockRestore()
+  })
+
+  it('with no model loaded the button still opens the Start dialog', async () => {
+    const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null)
+    // Even for a would-be source model: nothing is loaded, so there is nothing
+    // to show and the dialog is the only sensible thing.
+    const wrapper = mount(FileImport, {
+      props: { modelFormat: 'external_python' },
+      global: { stubs },
+    })
+    await wrapper.find('[data-testid="start-edit"]').trigger('click')
+    expect(wrapper.find('[data-testid="start-dialog"]').exists()).toBe(true)
+    expect(openSpy).not.toHaveBeenCalled()
     openSpy.mockRestore()
   })
 
