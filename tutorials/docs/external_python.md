@@ -38,7 +38,7 @@ Your file declares one class and registers it at module level:
 
 ```python
 class MyModel:
-    parameters = {"heat/k": 1.0, "heat/u_D": 0.0}   # literal dict: name -> default
+    parameters = {"heat/k": 0.05, "heat/u_D": 0.25}  # literal dict: name -> default
     output_names = ["heat/T_p1", "heat/T_p2", "heat/T_p3"]
 
     def init_solver(self, config): ...   # once; config: dt, sim_time, pre_time, start_time, solver_info
@@ -202,8 +202,10 @@ moved between releases (`FunctionSpace` → `functionspace`, `BoundingBoxTree` �
 on a different dolfinx than 0.8.x / 0.9.x.
 
 **What it solves.** Backward Euler for `u_t = k Δu` on the unit square, P1
-Lagrange on a 16×16 mesh, Dirichlet `u = u_D` on the whole boundary, starting from
-a Gaussian bump at the centre. Weak form, with `u_n` the previous step:
+Lagrange on a 16×16 mesh: a uniformly hot plate (`u = 1` everywhere) quenched
+through its boundary, with the **left edge held at the calibratable `u_D`** and the
+bottom, top and right edges held at a fixed `0`. Weak form, with `u_n` the previous
+step:
 
 ```
 ∫ u v dx + dt·k ∫ ∇u·∇v dx  =  ∫ u_n v dx
@@ -214,19 +216,23 @@ to `.value` and never a recompilation of the form:
 
 | Parameter | Meaning | Default |
 |---|---|---|
-| `heat/k` | diffusivity, in the stiffness term | 1.0 |
-| `heat/u_D` | the Dirichlet value on the whole boundary | 0.0 |
+| `heat/k` | diffusivity, in the stiffness term | 0.05 |
+| `heat/u_D` | the Dirichlet value on the **left** edge | 0.25 |
 
 **Three outputs**, the field sampled at three probe points every step:
 `heat/T_p1` at (0.25, 0.25), `heat/T_p2` at (0.5, 0.5) and `heat/T_p3` at
-(0.75, 0.75). p1 and p3 sit symmetrically about the centre of a symmetric mesh
-under a radially symmetric initial condition, so their traces must agree to
-round-off — a free correctness check every time you run it.
+(0.75, 0.75). Because only the left edge is driven, the three carry independent
+information: p1 is nearest it and answers mostly to `u_D`, p3 is furthest and
+answers mostly to `k`. p1 must run warmer than p3 whenever `u_D > 0` — a free
+correctness check every time you run it. (`u_D` defaults to 0.25 rather than 0 for
+the same reason: at `u_D = 0` every edge is identical, p1 and p3 coincide, and the
+structure the example exists to show disappears.)
 
-**Time scales.** The slowest mode decays at `λ = 2kπ² ≈ 19.7k`, so at `k = 1` the
-bump has a time constant of about 0.05 s. Hence `dt = 0.0005` and
-`sim_time = 0.05`: 100 steps, about one time constant of decay, interesting across
-the whole `k ∈ [0.2, 5]` calibration box and still milliseconds per run once the
+**Time scales.** The slowest mode decays at `λ = 2kπ² ≈ 19.7k`, so across the
+`k ∈ [0.01, 0.2]` calibration box the plate's time constant runs from about 5 s
+down to 0.25 s. Hence `dt = 0.02` and `sim_time = 2.0`: 100 steps, about two time
+constants at the default `k = 0.05`, with `k = 0.01` leaving the plate partly
+cooled and `k = 0.2` fully relaxing it — and still milliseconds per run once the
 forms are compiled.
 
 **MPI.** The mesh is built on `MPI.COMM_SELF`, not `COMM_WORLD`. CA parallelises
@@ -252,8 +258,8 @@ from petsc4py import PETSc
 
 #: Where the three probes sit, in the order they appear in output_names.
 PROBE_POINTS = ((0.25, 0.25), (0.5, 0.5), (0.75, 0.75))
-BUMP_CENTRE = (0.5, 0.5)
-BUMP_SIGMA = 0.15
+INITIAL_TEMP = 1.0     # uniformly hot plate
+FIXED_TEMP = 0.0       # bottom, top and right edges
 DEFAULT_NX = 16
 
 
@@ -262,7 +268,7 @@ class HeatFEniCSxModel:
 
     # Literal values only: CUFLynx reads these by parsing the file, without
     # importing it, so the parameter table appears before dolfinx is ever loaded.
-    parameters = {"heat/k": 1.0, "heat/u_D": 0.0}
+    parameters = {"heat/k": 0.05, "heat/u_D": 0.25}
     output_names = ["heat/T_p1", "heat/T_p2", "heat/T_p3"]
 
     def __init__(self):
@@ -277,7 +283,6 @@ class HeatFEniCSxModel:
         user_config = (config.get('solver_info') or {}).get('user_config') or {}
         nx = int(user_config.get('nx', DEFAULT_NX))
         ny = int(user_config.get('ny', nx))
-        self._sigma = float(user_config.get('bump_sigma', BUMP_SIGMA))
 
         # COMM_SELF: one complete mesh per rank -- CA parallelises over samples.
         self._mesh = dmesh.create_unit_square(MPI.COMM_SELF, nx, ny)
@@ -300,7 +305,7 @@ class HeatFEniCSxModel:
         self._a_form = fem.form(a)
         self._L_form = fem.form(self._u_n * v * ufl.dx)
 
-        self._bc = self._make_boundary_condition()
+        self._bcs = self._make_boundary_conditions()
         self._set_initial_condition()
 
         self._dof_coords = self._V.tabulate_dof_coordinates()[:, :2].copy()
@@ -315,22 +320,45 @@ class HeatFEniCSxModel:
         self.update_times(config['dt'], config.get('start_time', 0.0),
                           config['sim_time'], config.get('pre_time', 0.0))
 
-    def _make_boundary_condition(self):
-        """Dirichlet u = u_D on the whole boundary."""
+    def _make_boundary_conditions(self):
+        """Left edge at the calibratable u_D; bottom, top and right at FIXED_TEMP.
+
+        Facets are located geometrically -- on a unit square "x == 0" is exactly
+        what distinguishes the driven edge, and that needs no MeshTags. The two
+        corners at (0, 0) and (0, 1) lie on both sets: the boundary value there is
+        genuinely discontinuous, so the fixed dofs are filtered to exclude the
+        left-edge ones, giving the corners to u_D. Arbitrary, but deterministic
+        and written down.
+        """
         tdim = self._mesh.topology.dim
-        self._mesh.topology.create_connectivity(tdim - 1, tdim)
-        facets = dmesh.exterior_facet_indices(self._mesh.topology)
-        dofs = fem.locate_dofs_topological(self._V, tdim - 1, facets)
-        return fem.dirichletbc(self._uD_const, dofs, self._V)
+        fdim = tdim - 1
+        self._mesh.topology.create_connectivity(fdim, tdim)
+
+        left_facets = dmesh.locate_entities_boundary(
+            self._mesh, fdim, lambda x: np.isclose(x[0], 0.0))
+        rest_facets = dmesh.locate_entities_boundary(
+            self._mesh, fdim,
+            lambda x: (np.isclose(x[0], 1.0) | np.isclose(x[1], 0.0)
+                       | np.isclose(x[1], 1.0)))
+
+        left_dofs = fem.locate_dofs_topological(self._V, fdim, left_facets)
+        rest_dofs = fem.locate_dofs_topological(self._V, fdim, rest_facets)
+        rest_dofs = np.setdiff1d(rest_dofs, left_dofs)   # corners belong to u_D
+
+        scalar = dolfinx.default_scalar_type
+        self._fixed_const = fem.Constant(self._mesh, scalar(FIXED_TEMP))
+        return [fem.dirichletbc(self._uD_const, left_dofs, self._V),
+                fem.dirichletbc(self._fixed_const, rest_dofs, self._V)]
 
     def _set_initial_condition(self):
-        cx, cy = BUMP_CENTRE
-        sigma = self._sigma
+        """A uniform plate, quenched through its boundary.
 
-        def bump(x):
-            return np.exp(-((x[0] - cx) ** 2 + (x[1] - cy) ** 2) / (2.0 * sigma ** 2))
-
-        self._u_n.interpolate(bump)
+        Uniform rather than a bump so every probe starts at the same known value
+        and decays monotonically -- which is what makes `min` an informative
+        observable (the temperature reached by the end of the window) instead of a
+        constant.
+        """
+        self._u_n.x.array[:] = INITIAL_TEMP
         self._uh.x.array[:] = self._u_n.x.array
 
     def _locate_probes(self):
@@ -406,7 +434,7 @@ class HeatFEniCSxModel:
         # k changes between runs, so the matrix is rebuilt here rather than in
         # init_solver -- noise next to the form compilation already paid for.
         self._destroy_matrix()
-        self._matrix = fem_petsc.assemble_matrix(self._a_form, bcs=[self._bc])
+        self._matrix = fem_petsc.assemble_matrix(self._a_form, bcs=self._bcs)
         self._matrix.assemble()
         self._rhs_vector = self._matrix.createVecRight()
         self._solver.setOperators(self._matrix)
@@ -417,10 +445,10 @@ class HeatFEniCSxModel:
             with self._rhs_vector.localForm() as local:
                 local.set(0.0)
             fem_petsc.assemble_vector(self._rhs_vector, self._L_form)
-            fem_petsc.apply_lifting(self._rhs_vector, [self._a_form], [[self._bc]])
+            fem_petsc.apply_lifting(self._rhs_vector, [self._a_form], [self._bcs])
             self._rhs_vector.ghostUpdate(addv=PETSc.InsertMode.ADD,
                                          mode=PETSc.ScatterMode.REVERSE)
-            fem_petsc.set_bc(self._rhs_vector, [self._bc])
+            fem_petsc.set_bc(self._rhs_vector, self._bcs)
 
             self._solver.solve(self._rhs_vector, self._uh.x.petsc_vec)
             self._uh.x.scatter_forward()
@@ -519,9 +547,8 @@ SIM_HELPER = HeatFEniCSxModel
 2. Check **Settings → Python** is the `fenicsx` environment. Nothing imports your
    file until the first run, so a wrong interpreter shows up as an `ImportError`
    on that run, not on the drop.
-3. Set the run window: **t₁** to `0.05` in the time controls, and **Time step
-   (dt)** to `0.0005` in Settings. Those are the 100 steps the model is sized
-   for; the default `dt` of `0.01` would give you five.
+3. Set the run window: **t₁** to `2.0` in the time controls, and **Time step
+   (dt)** to `0.02` in Settings. Those are the 100 steps the model is sized for.
 4. Add sliders for `heat/k` and `heat/u_D`, and drag them.
 
 `heat/T_p1`, `heat/T_p2` and `heat/T_p3` plot as ordinary traces — they come
@@ -529,12 +556,12 @@ through the same channel a CellML model's outputs do, so everything the plots ca
 do (overlays, added variables, unit conversion, saved-run comparison) works here
 too. Below them, in the **Output plots** tab, are the two field heatmaps from
 `extra_plots()`: `u` at mid-time and at the final time, with the three probes
-marked. They are redrawn after every completed run, so dragging `heat/k` shows the
-bump spreading faster in the picture and the probe traces flattening in step.
+marked. They are redrawn after every completed run, so raising `heat/k` shows the
+plate cooling faster in the picture and the probe traces falling in step.
 
-Raise `heat/u_D` and the whole field is pulled towards the boundary value; the
-heatmap says that in one glance, which is the case for `extra_plots()` in the
-first place.
+Raise `heat/u_D` and the left edge warms while the other three stay put — the
+heatmap shows the whole asymmetric profile in one glance, which is the case for
+`extra_plots()` in the first place.
 
 ## Calibrating it
 
@@ -545,25 +572,31 @@ channels.
 **Define what to fit.** Click **Edit** beside the obs_data box. Add a data_item
 per measurement: pick the operand from the dropdown (your `output_names` are all
 there), an operation (`mean`, `min`, `max`, a series comparison…), the measured
-value and its standard deviation. The example that ships with CA fits two
-constants off the centre probe:
+value and its standard deviation. The example that ships with CA fits the `mean`
+and the `min` of **each** of the three probes — six constants, so every probe is
+scored rather than just the centre one (two of them shown here):
 
 ```json
 [
-  { "variable": "centre probe mean",
-    "name_for_plotting": "mean(T_{p2})",
+  { "variable": "near probe mean",
+    "name_for_plotting": "mean(T_{p1})",
     "data_type": "constant", "operation": "mean",
-    "operands": ["heat/T_p2"], "unit": "dimensionless",
-    "weight": 1.0, "value": 0.385, "std": 0.02,
+    "operands": ["heat/T_p1"], "unit": "dimensionless",
+    "weight": 1.0, "value": 0.470, "std": 0.02,
     "cost_type": "gaussian_MLE", "plot_type": "horizontal" },
-  { "variable": "centre probe minimum",
-    "name_for_plotting": "min(T_{p2})",
+  { "variable": "near probe minimum",
+    "name_for_plotting": "min(T_{p1})",
     "data_type": "constant", "operation": "min",
-    "operands": ["heat/T_p2"], "unit": "dimensionless",
-    "weight": 1.0, "value": 0.172, "std": 0.015,
+    "operands": ["heat/T_p1"], "unit": "dimensionless",
+    "weight": 1.0, "value": 0.215, "std": 0.015,
     "cost_type": "gaussian_MLE", "plot_type": "horizontal" }
 ]
 ```
+
+`min` is informative here because the plate cools monotonically from a uniform
+start: it is the temperature the probe reaches by the end of the window. `max`
+would be the initial `1.0` for every parameter set — a constant feature that
+contributes nothing to the cost.
 
 Saving writes a dated `*_obs_data.json` into your outputs directory and loads it.
 The measured values then appear as reference lines on the plots, and the **cost**
