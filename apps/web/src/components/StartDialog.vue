@@ -1,7 +1,12 @@
 <script setup>
 import Dialog from 'primevue/dialog'
 import Button from 'primevue/button'
-import { PHLYNX_URL, PMR_URL, EXAMPLE_MODELS } from '../lib/examples'
+import {
+  PHLYNX_URL,
+  PMR_URL,
+  EXAMPLE_MODELS,
+  EXTERNAL_PYTHON_TUTORIAL_URL,
+} from '../lib/examples'
 
 defineProps({
   visible: { type: Boolean, default: false },
@@ -72,6 +77,39 @@ function chooseExample(example) {
           </li>
         </ul>
       </section>
+
+      <!--
+        The fourth way in is not a model description at all: the user brings the
+        solver. CUFLynx calibrates a Python class the same way it calibrates a
+        CellML model, so it belongs beside the other three starting points.
+      -->
+      <section class="start-section">
+        <h3>External Python</h3>
+        <p class="start-hint">
+          Bring your own solver — a Python class CUFLynx calibrates like any other
+          model.
+        </p>
+        <ol class="start-steps" data-testid="start-external-python-steps">
+          <li>
+            Write the class with <code>SIM_HELPER = MyClass</code> at the bottom of
+            the file.
+          </li>
+          <li>Drop the <code>.py</code> here, on the model box.</li>
+          <li>
+            Pick the interpreter that has its dependencies in
+            <strong>Settings</strong>.
+          </li>
+        </ol>
+        <a
+          :href="EXTERNAL_PYTHON_TUTORIAL_URL"
+          target="_blank"
+          rel="noopener"
+          class="phlynx-link"
+          data-testid="start-external-python-link"
+        >
+          <i class="pi pi-external-link" /> Open the External Python tutorial
+        </a>
+      </section>
     </div>
   </Dialog>
 </template>
@@ -100,6 +138,17 @@ function chooseExample(example) {
 }
 .phlynx-link:hover {
   text-decoration: underline;
+}
+/* The three steps are a summary, not the tutorial: same size as the blurb so
+   they read as one paragraph with numbers, and the link below carries the rest. */
+.start-steps {
+  margin: 0 0 0.5rem;
+  padding-left: 1.1rem;
+  opacity: 0.7;
+  font-size: 0.8rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
 }
 .example-list {
   list-style: none;

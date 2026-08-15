@@ -2,7 +2,12 @@ import { describe, it, expect } from 'vitest'
 import { mount } from '@vue/test-utils'
 
 import StartDialog from './StartDialog.vue'
-import { PHLYNX_URL, PMR_URL, EXAMPLE_MODELS } from '../lib/examples'
+import {
+  PHLYNX_URL,
+  PMR_URL,
+  EXAMPLE_MODELS,
+  EXTERNAL_PYTHON_TUTORIAL_URL,
+} from '../lib/examples'
 
 // Render the Dialog's default slot inline when visible so the body is testable
 // without PrimeVue's overlay/teleport machinery.
@@ -46,5 +51,33 @@ describe('StartDialog', () => {
   it('renders nothing until visible', () => {
     const wrapper = mount(StartDialog, { props: { visible: false }, global: { stubs } })
     expect(wrapper.find('[data-testid="dialog"]').exists()).toBe(false)
+  })
+})
+
+// The fourth way in: the user brings the solver rather than a model description.
+// The dialog is where the other three starting points live, so this one belongs
+// beside them -- and the contract is a page of code, hence a link to the tutorial
+// rather than an explanation in the dialog.
+describe('StartDialog External Python section', () => {
+  it('offers the section and links to the tutorial', () => {
+    const wrapper = mount(StartDialog, { props: { visible: true }, global: { stubs } })
+    expect(wrapper.text()).toContain('External Python')
+    const link = wrapper.find('[data-testid="start-external-python-link"]')
+    expect(link.exists()).toBe(true)
+    expect(link.attributes('href')).toBe(EXTERNAL_PYTHON_TUTORIAL_URL)
+    // Same treatment as the PhLynx / PMR links: opens away from the app.
+    expect(link.attributes('target')).toBe('_blank')
+    expect(link.classes()).toContain('phlynx-link')
+  })
+
+  it('summarises the three steps to getting one running', () => {
+    const wrapper = mount(StartDialog, { props: { visible: true }, global: { stubs } })
+    const steps = wrapper.find('[data-testid="start-external-python-steps"]')
+    expect(steps.findAll('li')).toHaveLength(3)
+    // The three things that are not guessable: the export name, where the file
+    // goes, and that the interpreter has to be the one with the dependencies.
+    expect(steps.text()).toContain('SIM_HELPER')
+    expect(steps.text()).toContain('.py')
+    expect(steps.text()).toContain('Settings')
   })
 })

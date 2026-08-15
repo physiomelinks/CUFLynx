@@ -37,7 +37,11 @@ from runtime_paths import default_python
 # model_types CUFLynx can actually run (it code-generates python/casadi from the
 # uploaded CellML; it has no 'cpp' build path), so cpp is filtered out even though
 # CA's schema lists it.
-SUPPORTED_FORMATS = ("cellml_only", "python", "casadi_python")
+#
+# external_python is here because CUFLynx has no build path to provide for it
+# either: the model file *is* the user's own module, so "can CUFLynx produce what
+# this format needs" is trivially yes -- it uploads it and hands CA the path.
+SUPPORTED_FORMATS = ("cellml_only", "python", "casadi_python", "external_python")
 
 # Formats CUFLynx can run, but only when an optional third-party library is
 # present (#122). aadc_python needs Matlogica's AADC, which is proprietary and
@@ -264,25 +268,36 @@ def filter_solver_info(solver: str, solver_info: dict) -> dict:
 
 
 # Used only when CA's SOLVER_SCHEMA can't be imported (mirrors it).
+#
+# external_python is mirrored here as well as read from CA, because the packaged
+# app's *cold start* has no CA directory chosen yet -- and the format a user
+# reaches for first, having been handed a .py, must be on the menu before they
+# have configured anything. Its one degree of freedom is `user_config`, a
+# free-form dict the wrapper hands the user's class untouched.
 FALLBACK_SOLVER_SCHEMA = {
-    "model_types": ["cellml_only", "python", "cpp", "casadi_python"],
+    "model_types": ["cellml_only", "python", "cpp", "casadi_python", "external_python"],
     "solvers_by_model_type": {
         "cellml_only": ["CVODE_opencor", "CVODE_myokit"],
         "python": ["solve_ivp"],
         "cpp": ["CVODE", "RK4", "PETSC"],
         "casadi_python": ["casadi_integrator"],
+        "external_python": ["external"],
     },
     "methods_by_solver": {
         "CVODE_opencor": ["CVODE"],
         "CVODE_myokit": ["CVODE"],
         "solve_ivp": ["RK45", "RK23", "DOP853", "Radau", "BDF", "LSODA", "forward_euler"],
         "casadi_integrator": ["cvodes", "idas", "collocation", "rk", "semi_implicit_euler", "bdf"],
+        # The user's class chooses its own integration; "external" is the one
+        # method there is, named so the form has something honest to show.
+        "external": ["external"],
     },
     "default_solver_by_model_type": {
         "cellml_only": "CVODE_opencor",
         "python": "solve_ivp",
         "cpp": "CVODE",
         "casadi_python": "casadi_integrator",
+        "external_python": "external",
     },
 }
 
@@ -311,6 +326,12 @@ _FALLBACK_DEFAULT_METHOD = {
 
 _NUM = "number"
 _SEL = "select"
+# A free-form object, edited as JSON text. Only external_python's `user_config`
+# uses it: that field is the *whole* of an external solver's configuration, so
+# skipping it the way the other dict-typed fields are skipped would leave the
+# format unconfigurable -- and check_solver_info would then reject the very key
+# CA expects, since what a solver accepts is derived from these descriptors.
+_JSON = "json"
 
 # Settings each fallback method exposes (name/type/default) — the fields CUFLynx
 # historically showed. Used only when CA can't be introspected.
@@ -695,7 +716,16 @@ _SOLVER_INFO_LABELS = {
     "max_step": "Max step",
     "max_step_size": "Max step size",
     "max_num_steps": "Max # steps",
+    "user_config": "User config (JSON)",
 }
+
+# dict-typed solver_info fields the form renders anyway, as JSON. An allow-list
+# rather than "render every dict": casadi's `options` is a plugin's own option
+# bag with its own failure modes, and offering it as free text would invite
+# settings that fail inside CasADi. `user_config` is different in kind — the
+# external wrapper passes it straight to the user's class and interprets none of
+# it, so the user is the only one who could fill it in.
+_JSON_DICT_FIELDS = frozenset({"user_config"})
 
 
 def _pretty_label(name: str) -> str:
@@ -706,9 +736,13 @@ def _pretty_label(name: str) -> str:
 def _si_field_from_descriptor(desc: dict) -> dict | None:
     """Map a CA solver_info descriptor (name/type/default/choices) to a CUFLynx
     form field, or None when the compact settings form can't render it — i.e. the
-    ``str``/``dict`` fields (jac, gradient_method, casadi ``options``)."""
+    ``str``/``dict`` fields (jac, gradient_method, casadi ``options``), except the
+    dict fields named in :data:`_JSON_DICT_FIELDS`."""
     name = desc.get("name")
     typ = desc.get("type")
+    if typ == "dict" and name in _JSON_DICT_FIELDS:
+        return {"key": name, "label": _SOLVER_INFO_LABELS.get(name, _pretty_label(name)),
+                "type": _JSON, "default": desc.get("default")}
     if typ in ("str", "dict"):
         return None
     label = _SOLVER_INFO_LABELS.get(name, _pretty_label(name))
@@ -811,6 +845,9 @@ def _solver_info_schema(methods_by_solver: dict, default_method_by_solver: dict 
     # Adaptive CasADi plugins take tolerance/step-count options; the fixed-step
     # semi_implicit_euler doesn't (it uses only dt).
     casadi_adaptive = [m for m in casadi_methods if m != "semi_implicit_euler"]
+    external_methods = methods_by_solver.get(
+        "external", FALLBACK_SOLVER_SCHEMA["methods_by_solver"]["external"]
+    )
 
     return {
         "CVODE_myokit": cvode_fields(),
@@ -834,6 +871,14 @@ def _solver_info_schema(methods_by_solver: dict, default_method_by_solver: dict 
             # more robust/accurate on stiff, discontinuous models (valve switches),
             # slower. Only 'bdf' consumes it.
             {"key": "max_step", "label": "Max internal step", "type": _NUM, "default": 1e-3, "methods": ["bdf"]},
+        ],
+        # The user's own solver class. dt still applies (the wrapper passes it to
+        # update_times), and everything else it might want is `user_config`,
+        # which CA hands over untouched — so this is the whole form.
+        "external": [
+            _method_field(external_methods, "Method"),
+            _dt_field(),
+            {"key": "user_config", "label": "User config (JSON)", "type": _JSON, "default": None},
         ],
     }
 

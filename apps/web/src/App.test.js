@@ -1606,3 +1606,278 @@ describe('App.vue cost sensitivities (#188)', () => {
     }
   })
 })
+
+// External python models (a dropped .py holding the solver class) run as CA's
+// `external_python` model_type and nothing else can run them, so the backend is
+// a property of the model rather than a setting -- and `external_python` cannot
+// be generated from a CellML model, so it is not on offer for one.
+describe('App.vue external python models own the backend', () => {
+  const BASE = {
+    ca_dir: '', ca_exists: true, generated_model_format: 'cellml_only',
+    solver: 'CVODE_myokit', solver_info: {}, differentiable_operations: {},
+    model_formats: ['cellml_only', 'python', 'casadi_python', 'external_python'],
+    solvers_by_format: {
+      cellml_only: ['CVODE_myokit'], python: ['solve_ivp'],
+      casadi_python: ['casadi_integrator'], external_python: ['external'],
+    },
+    default_solver_by_format: {
+      cellml_only: 'CVODE_myokit', python: 'solve_ivp',
+      casadi_python: 'casadi_integrator', external_python: 'external',
+    },
+  }
+
+  beforeEach(() => {
+    getConfig.mockResolvedValue({ ...BASE })
+    // The server echoes back what it was set to, as the real one does; taking a
+    // bare {} would make every save read as "reset to cellml_only".
+    setConfig.mockImplementation(async (payload) => ({
+      ...BASE,
+      generated_model_format: payload?.generatedModelFormat ?? BASE.generated_model_format,
+      solver: payload?.solver ?? BASE.solver,
+      solver_info: payload?.solverInfo ?? {},
+    }))
+  })
+  afterEach(() => {
+    setConfig.mockReset().mockResolvedValue({})
+    getConfig.mockResolvedValue({ ...BASE, model_formats: ['cellml_only'] })
+  })
+
+  // Render the Settings dialog's slot: the format selector and its hint live
+  // inside it, and a stubbed Dialog drops the whole body.
+  const DialogSlotStub = { template: '<div><slot /></div>' }
+
+  const loadModel = async (data) => {
+    const wrapper = shallowMount(App, { global: { stubs: { Dialog: DialogSlotStub } } })
+    await flushPromises()
+    await wrapper.vm.onModelLoaded(data)
+    await flushPromises()
+    return wrapper
+  }
+
+  it('switches the backend to external_python when a .py is loaded', async () => {
+    const wrapper = await loadModel({
+      model_id: 'py1', name: 'heat_fenics', model_format: 'external_python',
+    })
+    expect(wrapper.vm.generatedModelFormat).toBe('external_python')
+    expect(wrapper.vm.solver).toBe('external')
+    // Persisted, so the runners agree with the sliders about what is running.
+    expect(setConfig).toHaveBeenCalledWith(
+      expect.objectContaining({ generatedModelFormat: 'external_python' }),
+    )
+  })
+
+  it('locks the format selector while that model is loaded', async () => {
+    const wrapper = await loadModel({
+      model_id: 'py1', name: 'heat_fenics', model_format: 'external_python',
+    })
+    expect(wrapper.vm.isExternalPythonModel).toBe(true)
+    expect(wrapper.vm.formatChoices).toEqual(['external_python'])
+    const select = wrapper.find('[data-testid="model-format-select"]')
+    expect(select.attributes('disabled')).toBe('true')
+    // A greyed-out control with no explanation is a puzzle, not a lock.
+    expect(wrapper.find('[data-testid="external-python-format-hint"]').exists()).toBe(true)
+  })
+
+  // It cannot be generated from a CellML model, so offering it would only move
+  // the failure to the next simulation -- the OpenCOR/AADC rule.
+  it('hides external_python from the menu for a CellML model', async () => {
+    const wrapper = await loadModel({ model_id: 'c1', name: 'lotka' })
+    expect(wrapper.vm.formatChoices).not.toContain('external_python')
+    expect(wrapper.vm.formatChoices).toContain('cellml_only')
+    expect(
+      wrapper.find('[data-testid="model-format-select"]').attributes('disabled'),
+    ).toBe('false')
+    expect(wrapper.find('[data-testid="external-python-format-hint"]').exists()).toBe(false)
+  })
+
+  // external_python has nothing to run once the .py is gone.
+  it('leaves external_python when a CellML model replaces the .py', async () => {
+    const wrapper = await loadModel({
+      model_id: 'py1', name: 'heat_fenics', model_format: 'external_python',
+    })
+    await wrapper.vm.onModelLoaded({ model_id: 'c1', name: 'lotka' })
+    await flushPromises()
+    expect(wrapper.vm.generatedModelFormat).toBe('cellml_only')
+    expect(wrapper.vm.isExternalPythonModel).toBe(false)
+  })
+})
+
+// Workstream D: figures the solver drew for the run (an external python model's
+// `extra_plots()`), rendered to PNG server-side and shown beside the traces.
+describe('App.vue solver plots (external python extra_plots)', () => {
+  const FIG = {
+    index: 0, title: 'Temperature field', url: '/api/models/m1/solver_plots/tok1/0.png',
+  }
+  const FIG2 = {
+    index: 1, title: 'Mesh', url: '/api/models/m1/solver_plots/tok1/1.png',
+  }
+
+  const mountApp = async () => {
+    const wrapper = shallowMount(App)
+    await flushPromises()
+    return wrapper
+  }
+
+  it('adds an image cell per figure after a manual run', async () => {
+    const wrapper = await mountApp()
+    wrapper.vm.sim.setResult({
+      time: [0, 1], outputs: { 'heat/T_p1': [1, 2] }, solver_plots: [FIG, FIG2],
+    })
+    await nextTick()
+    const cells = wrapper.vm.plotGroups[0].cells
+    // Appended after the model's own plots: the figure is about the whole run.
+    expect(cells.slice(-2).map((c) => c.key)).toEqual(['solver:0', 'solver:1'])
+    expect(cells.at(-2)).toMatchObject({
+      kind: 'image', title: 'Temperature field', url: FIG.url,
+    })
+  })
+
+  it('renders those cells with ImagePanel, not a chart', async () => {
+    const wrapper = await mountApp()
+    wrapper.vm.sim.setResult({
+      time: [0, 1], outputs: { 'heat/T_p1': [1, 2] }, solver_plots: [FIG],
+    })
+    await nextTick()
+    const panels = wrapper.findAllComponents({ name: 'ImagePanel' })
+    expect(panels).toHaveLength(1)
+    expect(panels[0].props('url')).toBe(FIG.url)
+    expect(panels[0].props('title')).toBe('Temperature field')
+    expect(panels[0].props('maximizable')).toBe(true)
+  })
+
+  // A new run means a new token, so the url is its own cache-buster -- nothing
+  // here has to version it, but the stale one must not survive.
+  it('replaces them when the next run draws different ones', async () => {
+    const wrapper = await mountApp()
+    wrapper.vm.sim.setResult({ time: [0], outputs: {}, solver_plots: [FIG] })
+    await nextTick()
+    const next = { ...FIG, url: '/api/models/m1/solver_plots/tok2/0.png' }
+    wrapper.vm.sim.setResult({ time: [0], outputs: {}, solver_plots: [next] })
+    await nextTick()
+    const images = wrapper.vm.plotGroups[0].cells.filter((c) => c.kind === 'image')
+    expect(images).toHaveLength(1)
+    expect(images[0].url).toBe(next.url)
+  })
+
+  it('drops them when a new model is loaded', async () => {
+    const wrapper = await mountApp()
+    wrapper.vm.sim.setResult({ time: [0], outputs: {}, solver_plots: [FIG] })
+    await nextTick()
+    await wrapper.vm.onModelLoaded({ model_id: 'm2', name: 'other' })
+    await flushPromises()
+    expect(wrapper.vm.sim.solverPlots.value).toEqual([])
+  })
+
+  // One run, one set of figures: on a protocol run they go on the last group so
+  // they appear once, at the end, rather than under every experiment.
+  it('puts a protocol run’s figures on the last experiment group', async () => {
+    const wrapper = await mountApp()
+    wrapper.vm.obs.setObsData({
+      protocol_info: { sim_times: [[1], [1]] },
+      data_items: [{ variable: 'heat/T_p1', operation: 'series' }],
+    })
+    wrapper.vm.sim.setExperiments(
+      [
+        { time: [0, 1], outputs: { 'heat/T_p1': [1, 2] } },
+        { time: [0, 1], outputs: { 'heat/T_p1': [3, 4] } },
+      ],
+      [], 5, null, [FIG],
+    )
+    await nextTick()
+    const groups = wrapper.vm.plotGroups
+    expect(groups).toHaveLength(2)
+    expect(groups[0].cells.some((c) => c.kind === 'image')).toBe(false)
+    expect(groups.at(-1).cells.at(-1)).toMatchObject({ kind: 'image', url: FIG.url })
+  })
+
+  it('adds nothing when the run drew no figures', async () => {
+    const wrapper = await mountApp()
+    wrapper.vm.sim.setResult({ time: [0, 1], outputs: { 'heat/T_p1': [1, 2] } })
+    await nextTick()
+    expect(wrapper.vm.plotGroups[0].cells.some((c) => c.kind === 'image')).toBe(false)
+    expect(wrapper.findAllComponents({ name: 'ImagePanel' })).toHaveLength(0)
+  })
+})
+
+// CA types a solver_info field `json` when it is a free-form object handed to
+// the backend untouched -- external_python's `user_config`, which is the whole
+// of an external solver's configuration. Rendered as a number input (the form's
+// fallback) it would be unusable, so it gets a text field of its own.
+describe('App.vue free-form (JSON) solver_info fields', () => {
+  const CONFIG = {
+    ca_dir: '', ca_exists: true, generated_model_format: 'external_python',
+    solver: 'external', solver_info: {}, differentiable_operations: {},
+    model_formats: ['cellml_only', 'external_python'],
+    solvers_by_format: { external_python: ['external'] },
+    default_solver_by_format: { external_python: 'external' },
+    solver_info_schema: {
+      external: [
+        { key: 'dt', label: 'Time step (dt)', type: 'number', default: 0.01 },
+        { key: 'user_config', label: 'User config (JSON)', type: 'json', default: null },
+      ],
+    },
+  }
+
+  beforeEach(() => {
+    getConfig.mockResolvedValue({ ...CONFIG })
+    // The server echoes the solver_info it was given, as the real one does.
+    setConfig.mockImplementation(async (payload) => ({
+      ...CONFIG, solver_info: payload?.solverInfo ?? {},
+    }))
+  })
+  afterEach(() => {
+    setConfig.mockReset().mockResolvedValue({})
+    getConfig.mockResolvedValue({
+      ca_dir: '', ca_exists: true, generated_model_format: 'cellml_only',
+      solver: 'CVODE_myokit', solver_info: {}, differentiable_operations: {},
+    })
+  })
+
+  const mountApp = async () => {
+    const wrapper = shallowMount(App, {
+      global: { stubs: { Dialog: { template: '<div><slot /></div>' } } },
+    })
+    await flushPromises()
+    return wrapper
+  }
+
+  it('renders it as text, not as a number input', async () => {
+    const wrapper = await mountApp()
+    const field = wrapper.find('[data-testid="solver-info-user_config"]')
+    expect(field.exists()).toBe(true)
+    expect(field.element.tagName.toLowerCase()).toContain('input-text')
+  })
+
+  it('parses what was typed into solver_info', async () => {
+    const wrapper = await mountApp()
+    wrapper.vm.onJsonFieldInput('user_config', '{"nx": 32}')
+    await nextTick()
+    expect(wrapper.vm.solverInfo.user_config).toEqual({ nx: 32 })
+    expect(setConfig).toHaveBeenCalledWith(
+      expect.objectContaining({ solverInfo: expect.objectContaining({ user_config: { nx: 32 } }) }),
+    )
+  })
+
+  // Half-typed JSON is the normal state of a text field being filled in; it must
+  // not wipe the value currently in force.
+  it('keeps the last value that parsed while the text is incomplete', async () => {
+    const wrapper = await mountApp()
+    wrapper.vm.onJsonFieldInput('user_config', '{"nx": 32}')
+    wrapper.vm.onJsonFieldInput('user_config', '{"nx":')
+    await nextTick()
+    expect(wrapper.vm.solverInfo.user_config).toEqual({ nx: 32 })
+    expect(wrapper.vm.jsonFieldErrors.user_config).toContain('Not valid JSON')
+    expect(
+      wrapper.find('[data-testid="solver-info-user_config-error"]').exists(),
+    ).toBe(true)
+  })
+
+  it('treats an empty field as no config at all', async () => {
+    const wrapper = await mountApp()
+    wrapper.vm.onJsonFieldInput('user_config', '{"nx": 32}')
+    wrapper.vm.onJsonFieldInput('user_config', '  ')
+    await nextTick()
+    expect(wrapper.vm.solverInfo.user_config).toBeNull()
+    expect(wrapper.vm.jsonFieldErrors.user_config).toBe('')
+  })
+})

@@ -3,6 +3,7 @@ import { ref, computed, watch, onMounted } from 'vue'
 import ControlPanel from './components/ControlPanel.vue'
 import VariableList from './components/VariableList.vue'
 import PlotPanel from './components/PlotPanel.vue'
+import ImagePanel from './components/ImagePanel.vue'
 import FileImport from './components/FileImport.vue'
 import StatusBar from './components/StatusBar.vue'
 import CalibrationPanel from './components/CalibrationPanel.vue'
@@ -13,6 +14,7 @@ import UQPanel from './components/UQPanel.vue'
 import AnalysisPanel from './components/AnalysisPanel.vue'
 import CostSensitivityBar from './components/CostSensitivityBar.vue'
 import InputNumber from 'primevue/inputnumber'
+import InputText from 'primevue/inputtext'
 import Button from 'primevue/button'
 import Message from 'primevue/message'
 import Select from 'primevue/select'
@@ -343,6 +345,77 @@ function onSolverChange(s) {
   solver.value = s
   solverInfo.value = defaultSolverInfo(solverOpts.value, s)
   applyBackendSolver()
+}
+
+// --- free-form solver_info fields, edited as JSON ---------------------------
+// CA types a solver_info field `json` when it is a free-form object it hands to
+// the backend untouched — external_python's `user_config`, which is the *whole*
+// of an external solver's configuration. There is no schema to build a form
+// from, so it is text: the text being typed is kept separately from the parsed
+// value, and only a parse writes back, so a half-typed `{"nx":` does not clear
+// the setting that is currently in force.
+const jsonDrafts = ref({})
+const jsonFieldErrors = ref({})
+
+function jsonFieldText(key) {
+  if (key in jsonDrafts.value) return jsonDrafts.value[key]
+  const v = solverInfo.value[key]
+  return v == null ? '' : JSON.stringify(v)
+}
+
+function onJsonFieldInput(key, text) {
+  jsonDrafts.value = { ...jsonDrafts.value, [key]: text }
+  const trimmed = String(text ?? '').trim()
+  if (!trimmed) {
+    // Empty is a real choice: no user_config at all.
+    jsonFieldErrors.value = { ...jsonFieldErrors.value, [key]: '' }
+    solverInfo.value[key] = null
+    applyBackendSolver()
+    return
+  }
+  try {
+    solverInfo.value[key] = JSON.parse(trimmed)
+    jsonFieldErrors.value = { ...jsonFieldErrors.value, [key]: '' }
+    applyBackendSolver()
+  } catch {
+    jsonFieldErrors.value = {
+      ...jsonFieldErrors.value,
+      [key]: 'Not valid JSON yet — the last value that parsed is still in force.',
+    }
+  }
+}
+
+// --- external python models own their backend -------------------------------
+// An external python model *is* the solver: there is nothing to generate and no
+// choice to make, so the format follows the loaded model rather than the user.
+const EXTERNAL_PYTHON = 'external_python'
+const isExternalPythonModel = computed(() => model.modelFormat.value === EXTERNAL_PYTHON)
+
+// The formats offered in Settings. `external_python` cannot be generated from a
+// CellML model — it only exists because the user dropped a .py — so it is hidden
+// unless that is what is loaded, the same rule that keeps unavailable backends
+// (OpenCOR, a missing AADC) out of the menu rather than in it and failing.
+const formatChoices = computed(() => {
+  const all = solverOpts.value.model_formats ?? ['cellml_only']
+  const kept = all.filter((f) =>
+    isExternalPythonModel.value ? f === EXTERNAL_PYTHON : f !== EXTERNAL_PYTHON,
+  )
+  // A backend that predates external python models doesn't list the format; the
+  // selector still has to name what the loaded model runs as.
+  if (!kept.length && isExternalPythonModel.value) return [EXTERNAL_PYTHON]
+  return kept
+})
+
+// Bind the backend to whatever model was just loaded: a .py forces
+// external_python, and any other model has to leave it, since external_python
+// has no model to run once the .py is gone.
+function syncFormatToModel() {
+  const wanted = isExternalPythonModel.value ? EXTERNAL_PYTHON : null
+  if (wanted) {
+    if (generatedModelFormat.value !== wanted) onFormatChange(wanted)
+  } else if (generatedModelFormat.value === EXTERNAL_PYTHON) {
+    onFormatChange(formatChoices.value[0] ?? 'cellml_only')
+  }
 }
 
 // Settings popup (CA dir + backend solver + theme).
@@ -1334,10 +1407,16 @@ async function onModelLoaded(data) {
   loadedParamsFilename.value = null
   loadedObsFilename.value = null
   extraPlots.value = []
+  // The last run's solver figures belong to the model that produced them, and
+  // their URLs are keyed to that run.
+  sim.clearSolverPlots()
   // A new model has new variables, so overlays keyed to the old one's plots
   // (#196) name variables this model may not even have.
   plotVars.value = {}
   sliders.clear()
+  // The backend is a property of the model for an external python one, so it is
+  // set here rather than left to the user (and left locked in Settings).
+  syncFormatToModel()
   try {
     const vars = await getVariables(data.model_id)
     model.setVariables(vars)
@@ -1558,6 +1637,8 @@ function onObsDataLoaded(payload) {
   // variables (#196) hang off.
   extraPlots.value = []
   plotVars.value = {}
+  // The groups are about to be rebuilt, and a solver figure hangs off one of them.
+  sim.clearSolverPlots()
 }
 
 let timer = null
@@ -1647,7 +1728,14 @@ async function runSimulation() {
       })
       backendFallback.value = data.backend_fallback ?? null
       sim.setExperiments(
-        data.experiments, data.warnings, performance.now() - started, data.cost ?? null,
+        data.experiments,
+        data.warnings,
+        performance.now() - started,
+        data.cost ?? null,
+        // Figures the solver drew for this run, if it draws any (an external
+        // python model's extra_plots()). A protocol run's payload is not handed
+        // to the store wholesale, so they travel as an argument like the cost.
+        data.solver_plots ?? [],
       )
     } else if (obs.hasObsData.value) {
       // Data-only obs_data: overlays only, no protocol. The manual t1/pre are
@@ -1681,6 +1769,25 @@ async function runSimulation() {
   }
 }
 
+/**
+ * Image cells for the figures the solver drew for the last run (#Workstream D).
+ *
+ * These are not built from a series and have no axes, units or overlays of their
+ * own, so they carry `kind: 'image'` and the cell `v-for` renders them with
+ * ImagePanel instead of PlotPanel. They are appended after the model's own plots
+ * — and, on a protocol run, to the last experiment group — because a figure is
+ * about the whole run rather than about any one experiment, so it reads last
+ * wherever the groups came from.
+ */
+const solverPlotCells = computed(() =>
+  (sim.solverPlots.value ?? []).map((p, i) => ({
+    key: `solver:${p.index ?? i}`,
+    kind: 'image',
+    title: p.title || `Solver plot ${p.index ?? i}`,
+    url: p.url,
+  })),
+)
+
 // Plots grouped by experiment: each group has a heading and its plot cells.
 // A protocol run shows every experiment, prefixing each with the controlled
 // (params_to_change) inputs, then one plot per (experiment, variable).
@@ -1689,7 +1796,7 @@ const plotGroups = computed(() => {
     const vars = obs.plotVariables.value
     const labels = obs.experimentLabels.value
     const pi = obs.obsData.value?.protocol_info
-    return sim.experiments.value.map((exp, e) => {
+    const groups = sim.experiments.value.map((exp, e) => {
       const cells = []
       // Controlled inputs first, flagged so they get a "controlled" label.
       for (const c of controlledSeries(pi, e)) {
@@ -1731,6 +1838,12 @@ const plotGroups = computed(() => {
         cells: cells.map((c) => withUserVars(c, exp.outputs, e)),
       }
     })
+    // One run, one set of figures: they go on the last group so they appear once,
+    // at the end, rather than repeated under every experiment.
+    if (groups.length && solverPlotCells.value.length) {
+      groups[groups.length - 1].cells.push(...solverPlotCells.value)
+    }
+    return groups
   }
   // Data-only obs_data: one group, no heading, one plot per referenced variable.
   if (obs.hasObsData.value && obs.plotVariables.value.length && sim.result.value) {
@@ -1756,7 +1869,7 @@ const plotGroups = computed(() => {
         key: 'data-only',
         expIdx: 0,
         label: '',
-        cells: cells.map((c) => withUserVars(c, out)),
+        cells: [...cells.map((c) => withUserVars(c, out)), ...solverPlotCells.value],
       },
     ]
   }
@@ -1791,7 +1904,7 @@ const plotGroups = computed(() => {
         key: 'single',
         expIdx: 0,
         label: '',
-        cells: cells.map((c) => withUserVars(c, out)),
+        cells: [...cells.map((c) => withUserVars(c, out)), ...solverPlotCells.value],
       },
     ]
   }
@@ -2196,10 +2309,25 @@ watch(
               class="plot-grid"
               :class="{ single: g.cells.length <= 1, maximized: !!effectiveMaximized }"
             >
-              <PlotPanel
-                v-for="cell in g.cells"
+              <template v-for="cell in g.cells" :key="cell.key">
+              <!--
+                A solver-drawn figure (external python `extra_plots()`) is a
+                picture, not a series: same chrome, different body.
+              -->
+              <ImagePanel
+                v-if="cell.kind === 'image'"
                 v-show="!effectiveMaximized || effectiveMaximized === cell.key"
-                :key="cell.key"
+                class="plot-cell"
+                data-testid="solver-plot-cell"
+                :title="cell.title"
+                :url="cell.url"
+                maximizable
+                :maximized="effectiveMaximized === cell.key"
+                @toggle-maximize="toggleMaximizePlot(cell.key)"
+              />
+              <PlotPanel
+                v-else
+                v-show="!effectiveMaximized || effectiveMaximized === cell.key"
                 class="plot-cell"
                 :title="cell.title"
                 :var-label="cell.varLabel"
@@ -2225,6 +2353,7 @@ watch(
                 @switch-axes="switchExtraPlotAxes(cell.removeId)"
                 @add-variable="openPlotVars(cell)"
               />
+              </template>
             </div>
             <div v-if="plottableVariables.length && !effectiveMaximized" class="add-plot-row">
               <Button
@@ -2444,12 +2573,27 @@ watch(
           </span>
           <Select
             :model-value="generatedModelFormat"
-            :options="solverOpts.model_formats ?? ['cellml_only']"
+            :options="formatChoices"
             size="small"
+            :disabled="isExternalPythonModel"
             data-testid="model-format-select"
             @update:model-value="onFormatChange"
           />
         </label>
+        <!--
+          The loaded model is the solver, so there is no format to choose: say
+          that, rather than leaving a greyed-out control to be puzzled over.
+        -->
+        <p
+          v-if="isExternalPythonModel"
+          class="settings-hint"
+          data-testid="external-python-format-hint"
+        >
+          This model is an external Python solver, so it runs as
+          <code>external_python</code> — there is nothing to generate and no other
+          backend can run it. Drop a CellML or Myokit model to choose a format
+          again.
+        </p>
         <!--
           aadc_python is only in that list when Matlogica's AADC is importable
           (#122) — offering a format that cannot run is what the OpenCOR
@@ -2469,11 +2613,8 @@ watch(
             @update:model-value="onSolverChange"
           />
         </label>
-        <div
-          v-for="f in solverInfoFields"
-          :key="f.key"
-          class="settings-row"
-        >
+        <template v-for="f in solverInfoFields" :key="f.key">
+        <div class="settings-row">
           <span class="settings-label">{{ f.label }}</span>
           <Select
             v-if="f.type === 'select'"
@@ -2490,6 +2631,19 @@ watch(
             :data-testid="`solver-info-${f.key}`"
             @update:model-value="applyBackendSolver"
           />
+          <!--
+            A free-form object (external_python's `user_config`, which CA hands
+            to the user's class untouched). There is no schema to build a form
+            from, so it is edited as JSON text.
+          -->
+          <InputText
+            v-else-if="f.type === 'json'"
+            :model-value="jsonFieldText(f.key)"
+            size="small"
+            placeholder="{}"
+            :data-testid="`solver-info-${f.key}`"
+            @update:model-value="(v) => onJsonFieldInput(f.key, v)"
+          />
           <InputNumber
             v-else
             v-model="solverInfo[f.key]"
@@ -2500,6 +2654,14 @@ watch(
             @update:model-value="applyBackendSolver"
           />
         </div>
+        <p
+          v-if="f.type === 'json' && jsonFieldErrors[f.key]"
+          class="settings-warn"
+          :data-testid="`solver-info-${f.key}-error`"
+        >
+          ⚠ {{ jsonFieldErrors[f.key] }}
+        </p>
+        </template>
         <p v-if="generatedModelFormat === 'casadi_python'" class="settings-hint">
           casadi_python enables automatic differentiation:
           <span data-testid="ad-status">{{

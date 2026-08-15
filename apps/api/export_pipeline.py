@@ -287,8 +287,13 @@ def build_inp_data_dict(cfg, output_dir):
     # the machine that produced it (CA #303, #383). Without these the run dies on
     # the first data_item or params_for_id entry naming a func the user wrote.
     # Matched by suffix rather than by a fixed list, so a kind CUFLynx grows
-    # needs no edit to this generated script.
-    for key in [k for k in cfg if k.endswith("_funcs_external_path")]:
+    # needs no edit to this generated script. external_model_path rides along:
+    # an external_python model is user-authored Python that travels with the
+    # study for exactly the same reason, and CA reads it from its own key.
+    for key in [
+        k for k in cfg
+        if k.endswith("_funcs_external_path") or k == "external_model_path"
+    ]:
         if cfg.get(key):
             inp[key] = os.path.join(HERE, cfg[key])
     return inp

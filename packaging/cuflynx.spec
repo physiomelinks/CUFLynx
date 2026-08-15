@@ -479,6 +479,11 @@ hiddenimports += [
     "model_codegen",
     "obs_options",
     "solver_options",
+    # external_python: the AST-only model reader and the extra-figure store. The
+    # store reaches matplotlib lazily, which is already collected in full for the
+    # analysis stack (and MPLBACKEND=Agg is set before any pyplot import).
+    "py_model_meta",
+    "solver_plots",
     "compiler_check",
     "runtime_paths",
 ]
