@@ -127,6 +127,119 @@ describe('EmulatorPanel', () => {
     expect(wrapper.find('[data-testid="train-emulator"]').exists()).toBe(false)
   })
 
+  // The interpreter chosen in Settings cannot import autoemulate. What the panel
+  // used to do was degrade quietly -- the models menu became a text box, because
+  // the registry could not be read -- which reads as a bug rather than as a
+  // missing package (#261). Now it explains, and offers nothing else.
+  describe('when the interpreter cannot emulate', () => {
+    // Verbatim from apps/api/solver_options.py's emulator_availability(): it is
+    // written for display, and it carries *two* commands mid-sentence.
+    const REASON =
+      'The analysis interpreter /envs/fenicsx/bin/python cannot import autoemulate, ' +
+      'which is what provides the emulator models, so there is nothing to train. ' +
+      'Install it there with: /envs/fenicsx/bin/python -m pip install ' +
+      '"autoemulate>=2.1,<3" (autoemulate requires Python >=3.10,<3.13). Installing ' +
+      'circulatory_autogen itself with its optional emulation extra does the same: ' +
+      'pip install -e "/src/circulatory_autogen[emulation]". Or choose an interpreter ' +
+      'that already has it in Settings.'
+    const UNAVAILABLE = {
+      ...DEFAULTS,
+      models: [],
+      available: false,
+      interpreter: '/envs/fenicsx/bin/python',
+      unavailable_reason: REASON,
+    }
+
+    it('renders the explanation and nothing else', () => {
+      const wrapper = mountPanel({ defaults: UNAVAILABLE })
+      expect(wrapper.find('[data-testid="emu-unavailable"]').exists()).toBe(true)
+      // No settings, no Train, no tick box: every one would be a control that
+      // cannot do anything.
+      expect(wrapper.find('[data-testid="emu-opt-num_train_samples"]').exists()).toBe(false)
+      expect(wrapper.find('[data-testid="emu-opt-models"]').exists()).toBe(false)
+      expect(wrapper.find('[data-testid="emu-cores"]').exists()).toBe(false)
+      expect(wrapper.find('[data-testid="train-emulator"]').exists()).toBe(false)
+      expect(wrapper.find('[data-testid="use-emulator"]').exists()).toBe(false)
+      expect(wrapper.find('[data-testid="emu-terminal"]').exists()).toBe(false)
+    })
+
+    it("shows the backend's reason verbatim, with the commands set apart", () => {
+      const wrapper = mountPanel({ defaults: UNAVAILABLE })
+      const reason = wrapper.find('[data-testid="emu-unavailable-reason"]')
+      // Verbatim: the sentence is written for display, and naming the
+      // interpreter is the half that tells the user *where* to install.
+      expect(reason.text()).toBe(REASON)
+      // ...but the commands are to be copied, so each is a <code> run of its
+      // own — ending where the command ends, not where the sentence does.
+      const codes = reason.findAll('code').map((c) => c.text())
+      expect(codes).toEqual([
+        '/envs/fenicsx/bin/python -m pip install "autoemulate>=2.1,<3"',
+        'pip install -e "/src/circulatory_autogen[emulation]"',
+      ])
+      // And the tutorial section that says which environment it belongs in.
+      expect(wrapper.find('[data-testid="emu-install-link"]').attributes('href')).toContain(
+        'external_python.md#installing-the-models-dependencies',
+      )
+    })
+
+    // The backend's other worded-for-display case: nothing configured at all.
+    it('sets the commands apart in the "no interpreter configured" reason too', () => {
+      const reason =
+        "CUFLynx's own environment cannot import autoemulate, which is what provides " +
+        'the emulator models, and no analysis interpreter is configured. Choose one in ' +
+        'Settings that has autoemulate installed, or install it there with: pip install ' +
+        '"autoemulate>=2.1,<3" (autoemulate requires Python >=3.10,<3.13). Installing ' +
+        'circulatory_autogen itself with its optional emulation extra does the same: ' +
+        'pip install -e "/src/circulatory_autogen[emulation]".'
+      const wrapper = mountPanel({
+        defaults: { ...UNAVAILABLE, interpreter: null, unavailable_reason: reason },
+      })
+      const shown = wrapper.find('[data-testid="emu-unavailable-reason"]')
+      expect(shown.text()).toBe(reason)
+      expect(shown.findAll('code').map((c) => c.text())).toEqual([
+        'pip install "autoemulate>=2.1,<3"',
+        'pip install -e "/src/circulatory_autogen[emulation]"',
+      ])
+    })
+
+    it('still shows the whole reason when it carries no command', () => {
+      const wrapper = mountPanel({
+        defaults: { ...UNAVAILABLE, unavailable_reason: 'No Python interpreter is configured.' },
+      })
+      expect(wrapper.find('[data-testid="emu-unavailable-reason"]').text()).toBe(
+        'No Python interpreter is configured.',
+      )
+    })
+
+    // `available` is false whenever `supported` is, so both would otherwise
+    // render. The one that names the interpreter and the command wins.
+    it('wins over the older "this CA has no emulators" message', () => {
+      const wrapper = mountPanel({ defaults: { ...UNAVAILABLE, supported: false } })
+      expect(wrapper.find('[data-testid="emu-unavailable"]').exists()).toBe(true)
+      expect(wrapper.find('[data-testid="emu-unsupported"]').exists()).toBe(false)
+    })
+
+    // A circulatory_autogen (or a backend) that predates the field says nothing
+    // about availability, and must behave exactly as it did before.
+    it('treats a missing `available` as available', () => {
+      const wrapper = mountPanel({ defaults: DEFAULTS })
+      expect(wrapper.find('[data-testid="emu-unavailable"]').exists()).toBe(false)
+      expect(wrapper.find('[data-testid="train-emulator"]').exists()).toBe(true)
+    })
+  })
+
+  // The degradation that started this: an available emulator whose model
+  // registry could not be listed still offers the field, as free text.
+  it('offers models as a menu when there are any and as free text when not', () => {
+    const menu = mountPanel()
+    expect(menu.find('[data-testid="emu-opt-models"]').element.tagName).toBe('SELECT')
+    const free = mountPanel({ defaults: { ...DEFAULTS, models: [], available: true } })
+    const field = free.find('[data-testid="emu-opt-models"]')
+    expect(field.exists()).toBe(true)
+    expect(field.element.tagName).not.toBe('SELECT')
+    expect(free.find('[data-testid="train-emulator"]').exists()).toBe(true)
+  })
+
   it('blocks a multi-core run when there is no MPI launcher', async () => {
     const wrapper = mountPanel({ mpiexecAvailable: false })
     wrapper.vm.settings.num_cores = 4

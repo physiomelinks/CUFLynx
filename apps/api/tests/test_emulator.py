@@ -402,3 +402,184 @@ def test_runner_reads_its_rank_from_the_launcher(monkeypatch):
     assert emulator_runner.mpi_rank() == 4
     monkeypatch.setenv("OMPI_COMM_WORLD_RANK", "not-a-rank")
     assert emulator_runner.mpi_rank() == 0
+
+
+# --- why the panel is unavailable, not just that it is ----------------------------------
+#
+# `models` going empty is the honest answer -- CA's emulator_model_names() returns [] when
+# autoemulate is absent -- but it is a mute one. A user who pointed Settings at a conda env
+# built for FEniCSx watched the model dropdown turn into a free-text box and had to ask why.
+# The tab is orange and shows the reason instead, so the reason has to be a complete,
+# actionable sentence rather than a code the client phrases.
+
+EMULATION_SUPPORTED = {
+    "emulation": {
+        "label": "Emulator",
+        "enable_flag": "do_emulation",
+        "use_flag": "use_emulator",
+        "options_key": "emulator_settings",
+        "options": [{"name": "models", "type": "str", "default": "GaussianProcessRBF"}],
+    }
+}
+
+
+def _probe_env(monkeypatch, tmp_path, *, external=(), in_process=(), analysis=None):
+    """Wire solver_options' emulator probe up to fixed answers.
+
+    Nothing here may need autoemulate or circulatory_autogen to be importable: this is the
+    unit tier, and the whole subject is environments that lack them.
+    """
+    import solver_options
+
+    monkeypatch.setattr(solver_options, "_ensure_ca_path", lambda: None)
+    monkeypatch.setattr(
+        solver_options, "_models_from_interpreter", lambda python, src: list(external)
+    )
+    monkeypatch.setattr(solver_options, "_models_in_process", lambda: list(in_process))
+    monkeypatch.setattr(
+        solver_options, "get_analysis_options",
+        lambda: EMULATION_SUPPORTED if analysis is None else analysis,
+    )
+    monkeypatch.setenv("CIRCULATORY_AUTOGEN_SRC", str(tmp_path / "circulatory_autogen" / "src"))
+    solver_options._MODEL_CACHE.clear()
+    return solver_options
+
+
+def test_emulation_is_available_when_the_training_interpreter_has_autoemulate(
+    monkeypatch, tmp_path
+):
+    """The working case, and the one that decides the shape: available says nothing more
+    than "that probe found names", so it cannot drift from the menu beside it."""
+    solver_options = _probe_env(monkeypatch, tmp_path, external=["GaussianProcessRBF"])
+
+    got = solver_options.emulator_availability("/venv/bin/python")
+
+    assert got["available"] is True
+    assert got["unavailable_reason"] is None
+    assert got["models"] == ["GaussianProcessRBF"]
+    assert got["interpreter"] == "/venv/bin/python"
+
+
+def test_a_configured_interpreter_without_autoemulate_is_named_with_its_install_line(
+    monkeypatch, tmp_path
+):
+    """The reported case: Settings pointed at a conda env built for FEniCSx. Naming the
+    interpreter is the whole point -- "autoemulate is missing" is not actionable when the
+    app runs on one interpreter and trains on another."""
+    solver_options = _probe_env(monkeypatch, tmp_path)  # neither side has any
+
+    got = solver_options.emulator_availability("/opt/conda/envs/fenicsx/bin/python")
+    reason = got["unavailable_reason"]
+
+    assert got["available"] is False
+    assert got["models"] == []
+    assert got["interpreter"] == "/opt/conda/envs/fenicsx/bin/python"
+    assert "/opt/conda/envs/fenicsx/bin/python" in reason, "the reason must name the interpreter"
+    assert 'pip install "autoemulate>=2.1,<3"' in reason, "give the exact install line"
+    # autoemulate pins the interpreter, and a conda env built for something else is routinely
+    # outside it -- so the pip line failing is the *next* thing this user would hit.
+    assert ">=3.10,<3.13" in reason
+    # CA declares it as an optional extra; installing CA that way is the same install.
+    assert "[emulation]" in reason
+    assert reason.endswith("."), "a complete sentence: the panel shows this and nothing else"
+
+
+def test_the_install_hint_points_at_the_configured_circulatory_autogen(monkeypatch, tmp_path):
+    """`pip install -e "<CA_dir>[emulation]"` is only useful with the real directory in it,
+    and it is the repo root that holds the pyproject declaring the extra -- not src/."""
+    solver_options = _probe_env(monkeypatch, tmp_path)
+
+    reason = solver_options.emulator_availability("/venv/bin/python")["unavailable_reason"]
+
+    assert f'"{tmp_path / "circulatory_autogen"}[emulation]"' in reason
+
+
+def test_with_no_interpreter_configured_the_reason_points_at_settings(monkeypatch, tmp_path):
+    """The frozen app's default: training would happen in CUFLynx's own environment, which
+    does not carry autoemulate (torch/gpytorch are not bundled). Nothing to name, so the
+    fix is to choose an interpreter rather than to install into one."""
+    solver_options = _probe_env(monkeypatch, tmp_path)
+    monkeypatch.setattr(solver_options, "default_python", lambda: None)
+
+    got = solver_options.emulator_availability(None)
+    reason = got["unavailable_reason"]
+
+    assert got["available"] is False
+    assert got["interpreter"] is None
+    assert "Settings" in reason
+    assert 'pip install "autoemulate>=2.1,<3"' in reason
+    # Must not pretend to name an interpreter it does not have.
+    assert "None" not in reason
+
+
+def test_a_circulatory_autogen_without_emulators_is_a_different_answer(monkeypatch, tmp_path):
+    """Distinct from "autoemulate is missing": installing autoemulate would fix nothing, and
+    telling this user to do it sends them down the wrong path entirely."""
+    solver_options = _probe_env(
+        monkeypatch, tmp_path, external=["GaussianProcessRBF"], analysis={},
+    )
+
+    got = solver_options.emulator_availability("/venv/bin/python")
+    reason = got["unavailable_reason"]
+
+    # False even though the probe found names: there is no CA-side emulator to train.
+    assert got["available"] is False
+    assert "circulatory_autogen" in reason
+    assert "autoemulate" not in reason, "wrong diagnosis: the interpreter is fine"
+
+
+def test_emulator_models_still_answers_for_its_existing_callers(monkeypatch, tmp_path):
+    """The availability probe is the same probe, not a second one beside it."""
+    solver_options = _probe_env(monkeypatch, tmp_path, external=["MLP"])
+
+    assert solver_options.emulator_models("/venv/bin/python") == ["MLP"]
+    assert solver_options.emulator_availability("/venv/bin/python")["models"] == ["MLP"]
+
+
+def test_the_defaults_endpoint_carries_the_reason_beside_the_form(client, monkeypatch):
+    """The endpoint the Emulator tab polls. The existing keys are unchanged -- the panel
+    still renders the form from them when emulation *is* available."""
+    import main
+
+    monkeypatch.setattr(main, "get_analysis_options", lambda: EMULATION_SUPPORTED)
+    monkeypatch.setattr(
+        main, "emulator_availability",
+        lambda python: {
+            "models": [],
+            "available": False,
+            "interpreter": "/venv/bin/python",
+            "unavailable_reason": "no autoemulate over there.",
+        },
+    )
+
+    body = client.get("/api/emulator/defaults").json()
+
+    assert body["supported"] is True
+    assert body["label"] == "Emulator"
+    assert body["enable_flag"] == "do_emulation"
+    assert body["use_flag"] == "use_emulator"
+    assert body["options"] == EMULATION_SUPPORTED["emulation"]["options"]
+    assert body["models"] == []
+    assert body["available"] is False
+    assert body["interpreter"] == "/venv/bin/python"
+    assert body["unavailable_reason"] == "no autoemulate over there."
+
+
+def test_the_defaults_endpoint_probes_the_interpreter_that_would_train(client, monkeypatch):
+    """Not this process's. That asymmetry is the bug the availability signal explains."""
+    import emulator as emulator_mod
+    import main
+
+    asked = {}
+
+    def fake(python):
+        asked["python"] = python
+        return {"models": [], "available": False, "interpreter": python,
+                "unavailable_reason": "..."}
+
+    monkeypatch.setattr(main, "emulator_availability", fake)
+    monkeypatch.setattr(emulator_mod.emulator, "python", "/venv/bin/python")
+
+    client.get("/api/emulator/defaults")
+
+    assert asked["python"] == "/venv/bin/python"

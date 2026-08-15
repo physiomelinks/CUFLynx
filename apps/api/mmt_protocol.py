@@ -203,14 +203,24 @@ def _as_shape(protocol, name, total, notes, pre_time, label):
     )
 
 
-def fill_protocol_info(obs_data: dict[str, Any], protocol_info: dict[str, Any]) -> dict[str, Any]:
+def fill_protocol_info(
+    obs_data: dict[str, Any] | list | None, protocol_info: dict[str, Any]
+) -> dict[str, Any]:
     """Put ``protocol_info`` into an obs_data document, returning a new dict.
 
     An existing document's labels and colours are kept when they still fit the
     new schedule: those are the parts a user writes for themselves ("1 Hz
     pacing" reads better than "pacing, period 1000"), and re-deriving the timings
     is no reason to throw them away.
+
+    A bare array of data_items -- CA's other accepted shape, and what the
+    3compartment / heat_fenics studies ship -- becomes the object form carrying
+    those same items, which is the only shape that can hold a protocol_info at
+    all. ``dict(obs_data or {})`` used to raise on one, so
+    ``scripts/mmt_to_obs_data.py`` died rather than updating a data-only file.
     """
+    if isinstance(obs_data, list):
+        obs_data = {"data_items": obs_data}
     out = dict(obs_data or {})
     existing = out.get("protocol_info") or {}
     merged = dict(protocol_info)

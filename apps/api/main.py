@@ -79,7 +79,7 @@ from solver_options import (
     check_solver_info,
     filter_solver_info,
     get_analysis_options,
-    emulator_models,
+    emulator_availability,
     get_param_id_methods,
     get_param_modifier_operations,
     get_param_prior_types,
@@ -2299,16 +2299,32 @@ def emulator_defaults() -> dict:
     the tab can say so plainly instead of rendering an empty form. ``models`` is a
     runtime registry (whatever autoemulate has registered), not a schema, so an
     empty list means "type a name" rather than "there are none".
+
+    ``available`` / ``interpreter`` / ``unavailable_reason`` are what the tab needs
+    to stop degrading in silence. Emulation needs autoemulate in the interpreter
+    that would *train*, and that is an optional extra with heavy dependencies: a
+    user who pointed Settings at a conda env built for FEniCSx watched the model
+    dropdown become a free-text box and had no way to learn why. The panel turns
+    orange and shows ``unavailable_reason`` alone -- so the reason is a complete,
+    actionable sentence, not a code the client has to phrase.
+
+    One probe answers both ``models`` and ``available`` (``solver_options`` owns it,
+    and caches it per interpreter + CA dir), so polling this costs no subprocess and
+    the menu can never disagree with the explanation beside it.
     """
     meta = get_analysis_options().get("emulation", {})
+    # The interpreter that will train is the one that knows what it can train with.
+    probe = emulator_availability(emulator.python)
     return {
         "supported": bool(meta.get("options")),
         "label": meta.get("label", "Emulator"),
         "enable_flag": meta.get("enable_flag"),
         "use_flag": meta.get("use_flag"),
         "options": meta.get("options", []),
-        # The interpreter that will train is the one that knows what it can train with.
-        "models": emulator_models(emulator.python),
+        "models": probe["models"],
+        "available": probe["available"],
+        "interpreter": probe["interpreter"],
+        "unavailable_reason": probe["unavailable_reason"],
     }
 
 

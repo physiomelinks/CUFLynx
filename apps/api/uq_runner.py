@@ -23,6 +23,7 @@ import traceback
 from pathlib import Path
 
 import emulator_config
+from obs_data import data_items_of
 
 # Headless matplotlib for any plots circulatory_autogen produces server-side.
 os.environ.setdefault("MPLBACKEND", "Agg")
@@ -115,10 +116,19 @@ def _solver_info(config: dict, settings: dict) -> dict:
 def _mle_obs_path(config, cost_type: str) -> str:
     """Write a copy of the obs_data with every data_item's ``cost_type`` set to an
     MLE cost. MCMC / Laplace require ``ln L = -cost``, and the per-observable cost
-    is read from the data_items at construction (defaults to MSE otherwise)."""
+    is read from the data_items at construction (defaults to MSE otherwise).
+
+    The items are reached through :func:`obs_data.data_items_of` because an
+    obs_data may be an object *or* a bare array of data_items, and only the
+    object form was handled here: UQ on a data-only file (3compartment,
+    heat_fenics) died with ``'list' object has no attribute 'get'``. The items
+    are edited in place and the document written back in the shape it arrived
+    in, so CA reads the same shape the user supplied.
+    """
     obs = json.loads(Path(config["obs_path"]).read_text())
-    for item in obs.get("data_items", []):
-        item["cost_type"] = cost_type
+    for item in data_items_of(obs):
+        if isinstance(item, dict):
+            item["cost_type"] = cost_type
     out = os.path.join(config["output_dir"], "uq_obs_data.json")
     Path(out).write_text(json.dumps(obs), encoding="utf-8")
     return out

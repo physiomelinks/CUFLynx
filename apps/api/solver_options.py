@@ -646,6 +646,61 @@ def _models_from_interpreter(python: str, src: str) -> list[str]:
 #: interpreter or the CA directory does -- which is exactly the cache key.
 _MODEL_CACHE: dict[tuple, list[str]] = {}
 
+#: What has to be installed for CA to have any emulator models at all. CA declares it as the
+#: optional ``emulation`` extra (not ``dev``) because autoemulate pulls torch / gpytorch /
+#: pyro-ppl / lightgbm and pins the interpreter, so it is never present by accident -- which is
+#: why "no models" needs an explanation rather than a shrug.
+AUTOEMULATE_REQUIREMENT = 'autoemulate>=2.1,<3'
+#: autoemulate's own interpreter pin. A conda env built for something else (FEniCSx, say) is
+#: routinely outside it, and `pip install` then fails for a reason worth stating up front.
+AUTOEMULATE_PYTHON_RANGE = ">=3.10,<3.13"
+
+
+def _probe_models(python: str | None = None) -> tuple[list[str], str | None]:
+    """``(model names, the interpreter that was probed)``.
+
+    The single detection path behind both :func:`emulator_models` and
+    :func:`emulator_availability`, so "which models" and "why none" can never be answered by
+    two differently-behaved probes.
+
+    The interpreter is ``python`` -- the **configured analysis interpreter**, passed in by the
+    caller because only it knows which one the runners were given -- falling back to
+    :func:`default_python`. That is the interpreter that will do the training. It is None only
+    in the frozen app with nothing configured, where training happens in the bundle's own
+    environment; the answer is then whatever *this* process can import.
+    """
+    src = None
+    try:
+        _ensure_ca_path()
+        src = os.environ.get("CIRCULATORY_AUTOGEN_SRC")
+    except Exception:  # noqa: BLE001 - no CA configured at all
+        src = None
+
+    python = python or default_python()
+    if python and src:
+        key = (python, src)
+        if key not in _MODEL_CACHE:
+            _MODEL_CACHE[key] = _models_from_interpreter(python, src)
+        if _MODEL_CACHE[key]:
+            return list(_MODEL_CACHE[key]), python
+
+    return _models_in_process(), python
+
+
+def _models_in_process() -> list[str]:
+    """The emulator names *this* interpreter can see, or [].
+
+    The fallback arm of :func:`_probe_models`, split out so it is one named thing
+    a test can stand in for -- the unit tier has to be able to describe "the
+    environment has no autoemulate" without needing an environment that hasn't.
+    """
+    try:
+        from emulators.emulator_trainer import emulator_model_names  # noqa: PLC0415
+
+        return [str(name) for name in emulator_model_names()]
+    except Exception:  # noqa: BLE001 - older CA, or no autoemulate here either
+        return []
+
 
 def emulator_models(python: str | None = None) -> list[str]:
     """The emulator names CA's ``emulator_settings.models`` accepts.
@@ -663,30 +718,83 @@ def emulator_models(python: str | None = None) -> list[str]:
     non-empty, fell back to free text on a machine where the menu was perfectly knowable.
 
     Falls back to this process when there is no external interpreter configured (the frozen app
-    trains in its own), and returns empty when neither can answer -- a UI shows free text then,
-    which is honest, rather than an authoritative-looking but stale menu.
+    trains in its own), and returns empty when neither can answer. Empty is honest but mute,
+    which is the whole of the complaint :func:`emulator_availability` answers: the panel
+    degraded from a menu to a free-text box and said nothing about why.
     """
-    src = None
-    try:
-        _ensure_ca_path()
-        src = os.environ.get("CIRCULATORY_AUTOGEN_SRC")
-    except Exception:  # noqa: BLE001 - no CA configured at all
-        src = None
+    return _probe_models(python)[0]
 
-    python = python or default_python()
-    if python and src:
-        key = (python, src)
-        if key not in _MODEL_CACHE:
-            _MODEL_CACHE[key] = _models_from_interpreter(python, src)
-        if _MODEL_CACHE[key]:
-            return list(_MODEL_CACHE[key])
 
-    try:
-        from emulators.emulator_trainer import emulator_model_names  # noqa: PLC0415
+def _ca_dir_hint() -> str:
+    """The configured circulatory_autogen checkout, for the ``pip install -e`` hint.
 
-        return [str(name) for name in emulator_model_names()]
-    except Exception:  # noqa: BLE001 - older CA, or no autoemulate here either
-        return []
+    Its *root*, not ``src/`` -- that is where the pyproject declaring the ``emulation`` extra
+    lives. A placeholder when no CA directory is configured, so the sentence still reads.
+    """
+    src = os.environ.get("CIRCULATORY_AUTOGEN_SRC")
+    return str(Path(src).parent) if src else "<circulatory_autogen>"
+
+
+def emulator_availability(python: str | None = None) -> dict:
+    """Whether an emulator could be trained at all, and if not, what to do about it.
+
+    ``{"models", "available", "interpreter", "unavailable_reason"}``. Same probe as
+    :func:`emulator_models` -- ``available`` is exactly "that probe found names", because CA's
+    ``emulator_model_names()`` returns [] when autoemulate is absent and non-empty when it is
+    not. What is added is the *reason*, which is what nothing could say before: a user who
+    pointed Settings at a conda env built for FEniCSx saw the Emulator panel's model dropdown
+    quietly become a free-text box, with no way to find out that the env lacked autoemulate.
+
+    Three distinguishable causes, because they have three different fixes:
+
+    * this circulatory_autogen has no emulators at all (``supported`` False) -- update CA;
+    * an interpreter is configured and cannot import autoemulate -- install it *there*;
+    * none is configured and this process cannot import it either -- choose one in Settings.
+
+    Cheap on purpose: the panel polls this. The model probe is cached per
+    (interpreter, CA dir) and the analysis-options introspection is cached outright, so a poll
+    spawns no subprocess.
+    """
+    # Cannot train against a CA that has no emulators, whatever the interpreter has.
+    supported = bool(get_analysis_options().get("emulation", {}).get("options"))
+    models, interpreter = _probe_models(python)
+    available = bool(supported and models)
+
+    if available:
+        reason = None
+    elif not supported:
+        reason = (
+            "This circulatory_autogen has no emulation support: its analysis options "
+            "declare no emulation mode. Point Settings at a newer circulatory_autogen "
+            "to train emulators."
+        )
+    elif interpreter:
+        reason = (
+            f"The analysis interpreter {interpreter} cannot import autoemulate, which is "
+            f"what provides the emulator models, so there is nothing to train. Install it "
+            f'there with: {interpreter} -m pip install "{AUTOEMULATE_REQUIREMENT}" '
+            f"(autoemulate requires Python {AUTOEMULATE_PYTHON_RANGE}). Installing "
+            f"circulatory_autogen itself with its optional emulation extra does the same: "
+            f'pip install -e "{_ca_dir_hint()}[emulation]". Or choose an interpreter that '
+            f"already has it in Settings."
+        )
+    else:
+        reason = (
+            f"CUFLynx's own environment cannot import autoemulate, which is what provides "
+            f"the emulator models, and no analysis interpreter is configured. Choose one in "
+            f"Settings that has autoemulate installed, or install it there with: "
+            f'pip install "{AUTOEMULATE_REQUIREMENT}" (autoemulate requires Python '
+            f"{AUTOEMULATE_PYTHON_RANGE}). Installing circulatory_autogen itself with its "
+            f'optional emulation extra does the same: pip install -e '
+            f'"{_ca_dir_hint()}[emulation]".'
+        )
+
+    return {
+        "models": models,
+        "available": available,
+        "interpreter": interpreter,
+        "unavailable_reason": reason,
+    }
 
 
 def _dt_field() -> dict:

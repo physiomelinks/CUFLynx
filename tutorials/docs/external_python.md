@@ -154,6 +154,10 @@ and the pipeline need on top:
 pip install matplotlib numpy
 ```
 
+`python=3.11` is not incidental: it is inside the `>=3.10,<3.13` window the
+emulator's `autoemulate` requires (step 2), so this environment can run every tab
+of the app. A 3.9 or 3.13 environment would work for everything except emulation.
+
 ### 2. Put circulatory_autogen's dependencies in the same environment
 
 That environment is also where CUFLynx's runs execute, so it needs what
@@ -162,13 +166,34 @@ SALib, nevergrad, mpi4py, tqdm, …). From your circulatory_autogen checkout:
 
 ```bash
 conda activate fenicsx
-pip install -e .
+pip install -e ".[emulation]"
 ```
 
 Installing CA itself is the easiest way to get its dependency list right; CUFLynx
 still uses the checkout you point it at, so an editable install is the friendly
 option. If you would rather not install CA, install its dependencies by hand — but
 a missing one shows up as a failed run rather than as a warning.
+
+**Take the `[emulation]` extra.** It is what the **Emulator** tab needs, and it is
+*not* part of the plain install: it pulls `autoemulate`, and with it torch,
+gpytorch, pyro-ppl and lightgbm, plus a Python floor of 3.10 that the rest of CA
+does not have — which is exactly why circulatory_autogen keeps it optional rather
+than making every calibration carry a deep-learning stack. Without it, CUFLynx's
+**Emulator** tab is drawn in orange and, when opened, shows only an explanation of
+how to enable it — no settings, no Train button. Everything else keeps working.
+
+The other extras circulatory_autogen offers, so you can tell which you want:
+
+| Extra | Brings | Take it if |
+|---|---|---|
+| `emulation` | `autoemulate` (surrogate models) | You want the **Emulator** tab. Needs Python `>=3.10,<3.13`. |
+| `uq` | `pymc` | You want the **UQ** tab's pyMC sampler. The default sampler, emcee, is a core dependency and needs nothing extra. |
+| `dev` | pytest, black, flake8, mypy | You are *developing* circulatory_autogen and running its test suite. Not needed to use CUFLynx. |
+| `docs` | mkdocs-material, mkdocstrings | You are building CA's documentation. |
+
+They combine, so a contributor who also wants surrogates writes
+`pip install -e ".[dev,emulation]"`. A user of CUFLynx wants `[emulation]` alone;
+`dev` adds nothing the app uses.
 
 Do **not** install these into the app's own bundled environment and expect it to
 help: that is not where an external python model runs.
@@ -189,7 +214,9 @@ Open **Settings** (the gear icon):
   it reads `external_python` and is locked, and the solver is `external`.
 
 Changing the interpreter restarts the simulation worker, so the next run picks it
-up.
+up. The **Emulator** tab is re-checked against the new interpreter at the same
+moment — it turns orange if the environment you just chose has no `autoemulate`,
+without a restart.
 
 ## The worked example: a FEniCSx heat equation
 
@@ -630,9 +657,18 @@ are the fitted ones.
 local `d ln Y / d ln P` about the current point. With two parameters and a run in
 the milliseconds, a full Sobol sweep of the heat example is quick — a good way to
 confirm your `set_param_vals` really is in-place before pointing the machinery at
-something expensive. **UQ** gives posteriors over the same parameters.
+something expensive. **UQ** gives posteriors over the same parameters — by
+default with emcee, which is a core circulatory_autogen dependency; switching its
+**Library** to pyMC needs the `[uq]` extra (`pip install -e ".[uq]"`) in the same
+environment.
 
-Both of these run in the interpreter from **Settings → Python**, i.e. the same
+The **Emulator** tab trains a surrogate of the fitted features and lets
+sensitivity, calibration and UQ evaluate *that* instead of the model — which is
+the reason to bother on a model where a single run is a finite-element solve. It
+needs the `[emulation]` extra from step 2; without it the tab is orange and says
+so rather than offering settings that cannot work.
+
+All of these run in the interpreter from **Settings → Python**, i.e. the same
 environment as the live plots — which is exactly why there is one environment to
 set up rather than two.
 

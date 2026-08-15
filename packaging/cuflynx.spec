@@ -80,6 +80,10 @@ for runner in (
     "calibrated_model.py",
     "cellml_meta.py",
     "params_for_id.py",
+    # An obs_data.json is an object *or* a bare array of data_items; uq_runner
+    # rewrites one (MLE cost_type) and reads its items through the single helper
+    # that knows both shapes, rather than assuming the object form.
+    "obs_data.py",
     # "use the emulator" -> CA engine kwargs, shared by all three analysis
     # runners so a study cannot be calibrated on a surrogate and analysed on the
     # solver without saying so (CA #333).

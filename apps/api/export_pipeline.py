@@ -18,6 +18,8 @@ from __future__ import annotations
 
 from datetime import date
 
+from obs_data import data_items_of
+
 
 def dated_suffix() -> str:
     return date.today().strftime("%y%m%d")
@@ -232,6 +234,34 @@ def _uq_options_key():
     return "mcmc_options"
 
 
+def obs_data_items(doc):
+    """The data_items of an obs_data document, whichever shape it is in.
+
+    circulatory_autogen accepts two: an object with a ``data_items`` key, and a
+    bare array *of* data_items (the data-only form the 3compartment and
+    heat_fenics studies ship). Assuming the object form here crashed the MLE
+    rewrite below with "'list' object has no attribute 'get'".
+
+    Restated in this generated script rather than imported: the export has to run
+    on a machine that has circulatory_autogen and nothing of CUFLynx. It mirrors
+    ``obs_data.data_items_of`` in the app -- keep the two in step.
+    """
+    if isinstance(doc, list):
+        return doc
+    if isinstance(doc, dict):
+        items = doc.get("data_items") or []
+        return items if isinstance(items, list) else []
+    return []
+
+
+def obs_protocol_info(doc):
+    """The protocol_info of an obs_data document, or {} (the data-only form has
+    none -- it is run with manual time). Mirrors ``obs_data.protocol_info_of``."""
+    if isinstance(doc, dict) and isinstance(doc.get("protocol_info"), dict):
+        return doc["protocol_info"]
+    return {}
+
+
 def build_inp_data_dict(cfg, output_dir):
     """Turn the exported yaml into a circulatory_autogen ``inp_data_dict`` with
     every path resolved to an absolute location inside this export folder. This is
@@ -271,7 +301,7 @@ def build_inp_data_dict(cfg, output_dir):
         # only inp["pre_time"]/["sim_time"], so without this the simulation would run
         # an unwarmed, wrong-length window and its outputs wouldn't match the obs_data.
         try:
-            proto = json.loads(open(inp["param_id_obs_path"]).read()).get("protocol_info") or {}
+            proto = obs_protocol_info(json.loads(open(inp["param_id_obs_path"]).read()))
             pre = (proto.get("pre_times") or [None])[0]
             sim = (proto.get("sim_times") or [[None]])[0][0]
             if pre is not None:
@@ -303,8 +333,9 @@ def mle_obs_data(obs_path, out_dir, cost_type="gaussian_MLE"):
     """MCMC / Laplace need ln L = -cost, so write a copy of the obs_data with every
     data_item's cost_type set to an MLE cost (mirrors uq_runner._mle_obs_path)."""
     obs = json.loads(open(obs_path).read())
-    for item in obs.get("data_items", []):
-        item["cost_type"] = cost_type
+    for item in obs_data_items(obs):
+        if isinstance(item, dict):
+            item["cost_type"] = cost_type
     out = os.path.join(out_dir, "uq_obs_data.json")
     open(out, "w").write(json.dumps(obs))
     return out
@@ -824,6 +855,26 @@ def uq_posteriors(bins=40):
     return out or None
 
 
+def obs_data_items(doc):
+    """The data_items of an obs_data document, whichever shape it is in.
+
+    circulatory_autogen accepts two: an object with a ``data_items`` key, and a
+    bare array *of* data_items (the data-only form the 3compartment and
+    heat_fenics studies ship). Only the object form used to be recognised here,
+    so a data-only study exported plots with no observed targets at all.
+
+    Restated in this generated script rather than imported: it has to run on a
+    machine that has none of CUFLynx. Mirrors ``obs_data.data_items_of`` in the
+    app -- keep the two in step.
+    """
+    if isinstance(doc, list):
+        return doc
+    if isinstance(doc, dict):
+        items = doc.get("data_items") or []
+        return items if isinstance(items, list) else []
+    return []
+
+
 def latest_obs_data():
     """The obs_data.json belonging to this run, or None.
 
@@ -840,7 +891,7 @@ def latest_obs_data():
                 doc = json.load(fh)
         except (OSError, ValueError):
             continue
-        if isinstance(doc, dict) and doc.get("data_items"):
+        if obs_data_items(doc):
             return doc
     return None
 
@@ -854,7 +905,7 @@ def observed(doc=None):
     """
     doc = doc if doc is not None else latest_obs_data()
     out = []
-    for item in (doc or {}).get("data_items", []):
+    for item in obs_data_items(doc):
         operands = list(item.get("operands") or [])
         series = tuple(o for o in operands if not is_time(o))
         variable = series[0] if series else (operands[0] if operands else item.get("variable"))
@@ -1323,7 +1374,7 @@ def _identifier(text: str) -> str:
     return name
 
 
-def _panel_functions(obs_data: dict | None) -> str:
+def _panel_functions(obs_data: dict | list | None) -> str:
     """Generate one named panel function per fitted series.
 
     The alternative -- a loop over whatever obs_data happens to be next to the
@@ -1331,8 +1382,12 @@ def _panel_functions(obs_data: dict | None) -> str:
     panel you have to understand the loop that draws all of them. Here each
     panel is a few lines of ordinary matplotlib with the variable names already
     written in, so changing one is changing one.
+
+    Accepts either obs_data shape (object or bare array of data_items): the app
+    hands over the object form, but a caller reading a study's file straight off
+    disk has whichever the user wrote.
     """
-    items = (obs_data or {}).get("data_items") or []
+    items = data_items_of(obs_data)
     if not items:
         return (
             "# No obs_data was available when this script was written, so there are\n"
@@ -1435,7 +1490,7 @@ def render_plot_utilities() -> str:
     return PLOT_UTILITIES_SCRIPT
 
 
-def render_plotting_script(obs_data: dict | None = None) -> str:
+def render_plotting_script(obs_data: dict | list | None = None) -> str:
     """The half the user edits, and the one they run.
 
     With an ``obs_data`` document, the best-fit panels are generated as named

@@ -34,6 +34,8 @@ vi.mock('./lib/api', () => ({
   cancelUQ: vi.fn().mockResolvedValue({}),
   getSensitivityDefaults: vi.fn().mockResolvedValue({}),
   getUQDefaults: vi.fn().mockResolvedValue({}),
+  getEmulatorDefaults: vi.fn().mockResolvedValue({}),
+  getEmulatorInfo: vi.fn().mockResolvedValue({}),
   getConfig: vi.fn().mockResolvedValue({
     ca_dir: '',
     ca_exists: true,
@@ -57,6 +59,7 @@ vi.mock('./lib/api', () => ({
 import {
   getConfig,
   setConfig,
+  getEmulatorDefaults,
   getCalibrationPythons,
   saveParams,
   listSavedRuns,
@@ -1948,5 +1951,91 @@ describe('analysis runs carry the top-bar timeline', () => {
     const settings = startUQ.mock.calls[0][1]
     expect(settings.sim_time).toBe(7)
     expect(settings.pre_time).toBe(1.5)
+  })
+})
+
+// Pointing Settings -> Python at an environment without autoemulate (a FEniCSx
+// conda env, say) leaves every other tab working and emulation impossible. The
+// tab has to say so from the outside -- the panel's form quietly degrading is
+// what the user reported as a bug (#261).
+describe('Emulator tab when emulation is unavailable', () => {
+  const UNAVAILABLE = {
+    supported: true,
+    label: 'Emulator (surrogate model)',
+    enable_flag: 'do_emulation',
+    use_flag: 'use_emulator',
+    options: [],
+    models: [],
+    available: false,
+    interpreter: '/envs/fenicsx/bin/python',
+    unavailable_reason:
+      'The analysis interpreter /envs/fenicsx/bin/python cannot import autoemulate, ' +
+      'which is what provides the emulator models, so there is nothing to train. ' +
+      'Install it there with: /envs/fenicsx/bin/python -m pip install ' +
+      '"autoemulate>=2.1,<3".',
+  }
+
+  it('warns on the tab, in words as well as in colour', async () => {
+    getEmulatorDefaults.mockResolvedValueOnce(UNAVAILABLE)
+    const wrapper = shallowMount(App)
+    await flushPromises()
+    const tab = wrapper.find('[data-testid="tab-emulator"]')
+    expect(tab.classes()).toContain('warn')
+    // Colour is never the only signal: a mark, a tooltip and a name for it.
+    expect(wrapper.find('[data-testid="tab-emulator-warn"]').exists()).toBe(true)
+    expect(tab.attributes('title')).toContain('autoemulate')
+    expect(tab.attributes('aria-label')).toContain('unavailable')
+  })
+
+  it('leaves the tab alone when emulation is available', async () => {
+    getEmulatorDefaults.mockResolvedValueOnce({ ...UNAVAILABLE, available: true })
+    const wrapper = shallowMount(App)
+    await flushPromises()
+    const tab = wrapper.find('[data-testid="tab-emulator"]')
+    expect(tab.classes()).not.toContain('warn')
+    expect(wrapper.find('[data-testid="tab-emulator-warn"]').exists()).toBe(false)
+    expect(tab.attributes('aria-label')).toBeUndefined()
+  })
+
+  // A circulatory_autogen with no emulators at all is the same story from the
+  // user's side, and the backend reports it as unavailable too.
+  it('warns for a circulatory_autogen with no emulator support', async () => {
+    getEmulatorDefaults.mockResolvedValueOnce({ supported: false, options: [] })
+    const wrapper = shallowMount(App)
+    await flushPromises()
+    expect(wrapper.find('[data-testid="tab-emulator"]').classes()).toContain('warn')
+  })
+
+  // The tick box is gone while unavailable, so leaving the flag on would be a
+  // setting with no control -- and sensitivity / calibration / UQ would keep
+  // asking circulatory_autogen for an emulator it cannot load.
+  it('switches the analyses back off the emulator', async () => {
+    getEmulatorDefaults.mockResolvedValueOnce(UNAVAILABLE)
+    const wrapper = shallowMount(App)
+    // Ticked before the interpreter was changed under it.
+    wrapper.vm.emu.useEmulator.value = true
+    await flushPromises()
+    expect(wrapper.vm.emu.useEmulator.value).toBe(false)
+  })
+
+  it('keeps the flag when emulation is available', async () => {
+    getEmulatorDefaults.mockResolvedValueOnce({ ...UNAVAILABLE, available: true })
+    const wrapper = shallowMount(App)
+    wrapper.vm.emu.useEmulator.value = true
+    await flushPromises()
+    expect(wrapper.vm.emu.useEmulator.value).toBe(true)
+  })
+
+  // Availability is answered by probing the interpreter chosen in Settings, so
+  // it is not a constant of the session: changing the interpreter re-asks.
+  it('re-reads availability when the interpreter changes', async () => {
+    const wrapper = shallowMount(App)
+    await flushPromises()
+    getEmulatorDefaults.mockClear()
+    getEmulatorDefaults.mockResolvedValueOnce(UNAVAILABLE)
+    wrapper.vm.pythonPath = '/envs/fenicsx/bin/python'
+    await flushPromises()
+    expect(getEmulatorDefaults).toHaveBeenCalled()
+    expect(wrapper.find('[data-testid="tab-emulator"]').classes()).toContain('warn')
   })
 })

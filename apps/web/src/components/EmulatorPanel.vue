@@ -5,6 +5,7 @@ import Checkbox from 'primevue/checkbox'
 import InputNumber from 'primevue/inputnumber'
 import InputText from 'primevue/inputtext'
 import Select from 'primevue/select'
+import { EXTERNAL_PYTHON_INSTALL_URL } from '../lib/examples'
 
 /**
  * Train a surrogate of the model's scalar observable features, then run the
@@ -54,6 +55,69 @@ const emulatorOptions = computed(() =>
 )
 
 const supported = computed(() => props.defaults.supported !== false)
+
+/**
+ * Emulation the interpreter cannot do.
+ *
+ * The backend probes the interpreter that would train (Settings → Python) for
+ * `autoemulate` and answers `available` / `unavailable_reason`. When it cannot,
+ * this panel shows the reason and *nothing else*: the settings form degrading —
+ * the `models` menu silently becoming a text box, because the registry could not
+ * be read — looked like a bug rather than like a missing package (#261).
+ *
+ * A CA that predates the field sends neither key; `available` is then undefined
+ * and the panel behaves exactly as it did before.
+ */
+const available = computed(() => props.defaults.available !== false)
+const unavailableReason = computed(() => props.defaults.unavailable_reason || '')
+/**
+ * The two messages are not both shown. `supported: false` ("this CA has no
+ * emulators at all") is the older, vaguer one; a reason names the interpreter
+ * and the command, so it wins wherever the backend sent one.
+ */
+const showUnavailable = computed(
+  () => (!available.value || !supported.value) && !!unavailableReason.value,
+)
+const showUnsupported = computed(() => !supported.value && !showUnavailable.value)
+
+const installUrl = EXTERNAL_PYTHON_INSTALL_URL
+
+/**
+ * The reason is a finished sentence written by the backend and is rendered
+ * verbatim — except for the install commands inside it, which are meant to be
+ * copied, so each is lifted into its own <code> run. The reason may carry more
+ * than one (install autoemulate itself, or circulatory_autogen's `[emulation]`
+ * extra), and each sits mid-sentence, so the match has to end where the command
+ * does: after its arguments, before the prose that follows.
+ *
+ * `<interpreter> -m` is kept when it is there — which interpreter to install
+ * into is the whole point of the message. When the reason names no command at
+ * all, the sentence is rendered as plain text.
+ */
+const INSTALL_RE =
+  /(?:\S+\s+-m\s+)?(?:pip|pip3|conda|uv)\s+install(?:\s+(?:"[^"]*"|'[^']*'|[^\s"'(]+))+/g
+
+const reasonParts = computed(() => {
+  const text = unavailableReason.value
+  if (!text) return []
+  const parts = []
+  let last = 0
+  for (const m of text.matchAll(INSTALL_RE)) {
+    let cmd = m[0]
+    // Stop at a sentence break: an unquoted argument otherwise runs on into the
+    // next sentence, and the command would swallow the prose after it.
+    const stop = cmd.search(/\.\s/)
+    if (stop !== -1) cmd = cmd.slice(0, stop)
+    // A sentence-ending period is punctuation, not part of the command.
+    cmd = cmd.replace(/[.,;:\s]+$/, '')
+    if (!cmd) continue
+    if (m.index > last) parts.push({ text: text.slice(last, m.index), code: false })
+    parts.push({ text: cmd, code: true })
+    last = m.index + cmd.length
+  }
+  if (last < text.length) parts.push({ text: text.slice(last), code: false })
+  return parts
+})
 
 watch(
   emulatorOptions,
@@ -141,7 +205,29 @@ function onRun() {
       <span class="cal-state" :data-state="state">{{ state }}</span>
     </header>
 
-    <p v-if="!supported" class="hint" data-testid="emu-unsupported">
+    <!-- Emulation the chosen interpreter cannot do: the explanation, and nothing
+         else. No settings, no Train button, no use tick box — every one of them
+         would be a control that cannot work, and the degraded form is what read
+         as a bug in the first place. -->
+    <div v-if="showUnavailable" class="emu-unavailable" data-testid="emu-unavailable">
+      <p class="emu-reason" data-testid="emu-unavailable-reason"><template
+        v-for="(p, i) in reasonParts"
+        :key="i"
+      ><code v-if="p.code" class="emu-install">{{ p.text }}</code><span v-else>{{ p.text }}</span></template></p>
+      <p class="hint">
+        Until then, sensitivity, calibration and UQ evaluate the solver directly;
+        nothing else in the app is affected.
+      </p>
+      <p class="hint">
+        <a :href="installUrl" target="_blank" rel="noopener" data-testid="emu-install-link">
+          Installing the model's dependencies
+        </a>
+        in the External Python tutorial covers which environment this has to go
+        into and why.
+      </p>
+    </div>
+
+    <p v-else-if="showUnsupported" class="hint" data-testid="emu-unsupported">
       This circulatory_autogen has no emulator support. Update it, or point the CA
       directory (gear icon) at a version with emulators.
     </p>
@@ -354,6 +440,31 @@ function onRun() {
 }
 .use-row.disabled {
   opacity: 0.7;
+}
+/* The same amber the app uses for its other "works, but not this part" states
+   (the compiler warning banner, the running dot) — not a new colour. */
+.emu-unavailable {
+  border: 1px solid var(--p-message-warn-color, #ffc000);
+  border-radius: 4px;
+  padding: 0.5rem 0.6rem;
+}
+.emu-reason {
+  margin: 0 0 0.4rem;
+  font-size: 0.8rem;
+  color: var(--p-message-warn-color, #ffc000);
+}
+/* The command is the actionable half of the sentence, so it is copy-pasteable
+   rather than prose. */
+.emu-install {
+  display: inline-block;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.75rem;
+  white-space: pre-wrap;
+  word-break: break-all;
+  padding: 0 0.2rem;
+  border-radius: 3px;
+  background: rgba(127, 127, 127, 0.18);
+  color: var(--p-text-color, inherit);
 }
 .emu-summary {
   font-size: 0.75rem;

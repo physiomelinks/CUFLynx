@@ -12,6 +12,12 @@ export const PMR_URL = 'https://models.physiomeproject.org'
 export const EXTERNAL_PYTHON_TUTORIAL_URL =
   'https://github.com/physiomelinks/CUFLynx/blob/main/tutorials/docs/external_python.md'
 
+// The section of that tutorial that lists what has to be installed into the
+// chosen interpreter — including the `[emulation]` extra the Emulator tab needs.
+// Linked from the Emulator tab when autoemulate is missing, so the fix is one
+// click from the place the problem is reported.
+export const EXTERNAL_PYTHON_INSTALL_URL = `${EXTERNAL_PYTHON_TUTORIAL_URL}#installing-the-models-dependencies`
+
 // Example studies the "Start" dialog offers. Data-driven so PMR models (and
 // other bundled examples) slot in later without touching the UI. Each `name`
 // maps to a backend `GET /api/examples/{name}` route; `filename` is the display

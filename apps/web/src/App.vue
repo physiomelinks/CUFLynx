@@ -233,6 +233,9 @@ watch(pythonPath, async (p) => {
     } catch {
       /* keep the list we have; the chips just stay as they were */
     }
+    // Emulation is judged by importing autoemulate *in the chosen interpreter*,
+    // so the Emulator tab's availability changes with this pick (#261).
+    await refreshEmulatorDefaults()
   } catch {
     /* keep the in-session choice even if persisting fails */
   }
@@ -254,6 +257,9 @@ watch(seed, async (s) => {
 async function applyCaDir(dir) {
   try {
     applyConfigPayload(await setConfig(dir))
+    // A different circulatory_autogen can have a different emulation schema, or
+    // none at all — re-read it rather than leaving the startup answer up.
+    await refreshEmulatorDefaults()
   } catch {
     /* leave previous value on error */
   }
@@ -1045,11 +1051,7 @@ onMounted(async () => {
   } catch {
     /* leave the panel on its built-in defaults */
   }
-  try {
-    emuDefaults.value = await getEmulatorDefaults()
-  } catch {
-    /* backend not up yet; panel falls back to built-in defaults */
-  }
+  await refreshEmulatorDefaults()
   try {
     uqDefaults.value = await getUQDefaults()
   } catch {
@@ -1328,6 +1330,11 @@ function onRunUQ(settings) {
 function onTrainEmulator(settings) {
   emu.train(model.modelId.value, {
     ...settings,
+    // The SAME window every other analysis uses. CA's staleness fingerprint covers
+    // protocol_info's sim_times, so an emulator trained on the runner's fallback and
+    // then used by a calibration running at the top bar's t₁ is rejected as stale --
+    // "the model, parameter bounds, obs_data operations or protocol differ".
+    ...runTimes(),
     python_path: pythonPath.value,
     config_outputs_dir: outputsDir.value.trim() || undefined,
   })
@@ -1371,6 +1378,51 @@ watch(
   () => {
     refreshEmulatorFeatures()
   },
+)
+
+/**
+ * Re-read CA's emulation schema, and with it whether emulation is possible at
+ * all. It is not a constant of the session: `available` is answered by probing
+ * the interpreter chosen in Settings, so switching interpreter or CA directory
+ * can turn emulation on or off and the tab has to follow without a restart.
+ */
+async function refreshEmulatorDefaults() {
+  try {
+    emuDefaults.value = await getEmulatorDefaults()
+  } catch {
+    /* backend not up yet; panel falls back to built-in defaults */
+  }
+}
+
+/**
+ * Whether emulation can be done at all with the current interpreter and CA.
+ *
+ * `available: false` is the backend saying the interpreter that would train
+ * cannot `import autoemulate` (it also sends `unavailable_reason`); `supported:
+ * false` is the older "this circulatory_autogen has no emulators" case. Either
+ * way there is nothing to configure, so the tab says so instead of degrading its
+ * form into controls that cannot work (#261). A CA that sends neither key reads
+ * as available, which is the behaviour that predates this.
+ */
+const emuUnavailable = computed(
+  () => emuDefaults.value?.available === false || emuDefaults.value?.supported === false,
+)
+const emuUnavailableTitle = computed(() =>
+  emuDefaults.value?.unavailable_reason ||
+  'Emulation is unavailable — open the Emulator tab for how to enable it.',
+)
+
+// ...and nothing downstream may keep evaluating a surrogate that cannot be
+// loaded. The tick box is hidden while unavailable, so leaving the flag on would
+// be a setting with no visible control: sensitivity, calibration and UQ would
+// keep asking for an emulator and fail inside CA. Force it off; the panel says
+// that the analyses are back on the solver.
+watch(
+  emuUnavailable,
+  (unavailable) => {
+    if (unavailable) emu.useEmulator.value = false
+  },
+  { immediate: true },
 )
 
 // A newly trained emulator becomes the one the overlay uses.
@@ -2061,13 +2113,24 @@ watch(
           </button>
           <button
             class="left-tab"
-            :class="{ active: leftTab === 'emulator' }"
+            :class="{ active: leftTab === 'emulator', warn: emuUnavailable }"
             data-testid="tab-emulator"
+            :title="emuUnavailable ? emuUnavailableTitle : null"
+            :aria-label="emuUnavailable ? 'Emulator — unavailable' : null"
             @click="leftTab = 'emulator'"
           >
             Emulator
+            <!-- Colour alone would not carry this: the glyph says "warning"
+                 without it, and the title/aria-label say it in words. -->
             <span
-              v-if="emu.running.value"
+              v-if="emuUnavailable"
+              class="tab-warn-mark"
+              data-testid="tab-emulator-warn"
+              aria-hidden="true"
+              >⚠</span
+            >
+            <span
+              v-else-if="emu.running.value"
               class="tab-dot"
               title="emulator training"
             />
@@ -3138,6 +3201,20 @@ watch(
 .left-tab.active {
   opacity: 1;
   border-bottom-color: var(--p-primary-color, #5b9bd5);
+}
+/* "This tab works, but this part of the app does not" — the same amber as the
+   compiler warning banner and the running dot, not a second orange. Full
+   opacity, or an inactive tab's 0.6 would mute the very thing being flagged. */
+.left-tab.warn {
+  color: var(--p-message-warn-color, #ffc000);
+  opacity: 1;
+}
+.left-tab.warn.active {
+  border-bottom-color: var(--p-message-warn-color, #ffc000);
+}
+.tab-warn-mark {
+  margin-left: 0.3rem;
+  font-size: 0.8rem;
 }
 .tab-dot {
   display: inline-block;
