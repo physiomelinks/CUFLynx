@@ -61,6 +61,47 @@ class ObsData:
         }
 
 
+def data_items_of(obj) -> list:
+    """The ``data_items`` of an obs_data document, in either accepted shape.
+
+    The one place the "object or bare array" rule is applied outside
+    :func:`parse_obs_data`, so a site that only wants to walk the items does not
+    have to re-decide which shape it was handed. Every such site used to assume
+    the object form and died with ``'list' object has no attribute 'get'`` on a
+    data-only file (the shipped 3compartment / heat_fenics obs_data are bare
+    arrays).
+
+    Tolerant on purpose: this is for consumers of an already-accepted document
+    (the runners, the exported scripts), not for validation. Anything that is
+    not one of the two shapes reads as "no items"; :func:`parse_obs_data` is
+    what refuses a malformed document, with a message naming the problem.
+
+    The list returned for the object form is the document's own list, and its
+    entries are the document's own dicts in both shapes -- so a caller that
+    edits an item in place (e.g. stamping a ``cost_type``) edits the document,
+    and can then write the document back out in the shape it arrived in.
+    """
+    if isinstance(obj, list):
+        return obj
+    if isinstance(obj, dict):
+        items = obj.get("data_items") or []
+        return items if isinstance(items, list) else []
+    return []
+
+
+def protocol_info_of(obj) -> dict | None:
+    """The ``protocol_info`` block of an obs_data document, or None.
+
+    None for the bare-array (data-only) form, which by definition carries no
+    protocol -- CUFLynx runs those with manual time. Same tolerance rule as
+    :func:`data_items_of`.
+    """
+    if isinstance(obj, dict):
+        info = obj.get("protocol_info")
+        return info if isinstance(info, dict) else None
+    return None
+
+
 def parse_obs_data(obj) -> ObsData:
     """Validate and structure a parsed obs_data JSON value (object or array).
 

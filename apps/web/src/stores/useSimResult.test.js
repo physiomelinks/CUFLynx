@@ -44,3 +44,47 @@ describe('useSimResult warnings', () => {
     expect(sim.warnings.value).toEqual(['pre_time ignored'])
   })
 })
+
+// Workstream D: an external python model's `extra_plots()` figures are rendered
+// server-side and arrive as `solver_plots` on the run's response. They are the
+// only view of a 2D field a time series cannot show, so losing them (or keeping
+// a stale one) is the failure mode worth testing.
+const FIG = { index: 0, title: 'Temperature field', url: '/api/models/m/solver_plots/t1/0.png' }
+
+describe('useSimResult solver plots', () => {
+  it('takes a single run’s solver_plots off the payload', () => {
+    const sim = useSimResult()
+    sim.setResult({ time: [0], outputs: {}, solver_plots: [FIG] })
+    expect(sim.solverPlots.value).toEqual([FIG])
+  })
+
+  it('has none when the run drew none', () => {
+    const sim = useSimResult()
+    sim.setResult({ time: [0], outputs: {} })
+    expect(sim.solverPlots.value).toEqual([])
+  })
+
+  // A figure drawn from the previous parameters, shown beside the new run's
+  // traces, is worse than no figure at all.
+  it('does not keep the previous run’s figures', () => {
+    const sim = useSimResult()
+    sim.setResult({ solver_plots: [FIG] })
+    sim.setResult({ time: [0], outputs: {} })
+    expect(sim.solverPlots.value).toEqual([])
+  })
+
+  // A protocol run's payload is not handed to the store wholesale, so its
+  // figures travel as an argument -- like the cost.
+  it('takes a protocol run’s figures as an argument', () => {
+    const sim = useSimResult()
+    sim.setExperiments([{ time: [0], outputs: {} }], [], 5, null, [FIG])
+    expect(sim.solverPlots.value).toEqual([FIG])
+  })
+
+  it('clears them on demand (a new model or obs_data)', () => {
+    const sim = useSimResult()
+    sim.setResult({ solver_plots: [FIG] })
+    sim.clearSolverPlots()
+    expect(sim.solverPlots.value).toEqual([])
+  })
+})

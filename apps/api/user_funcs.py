@@ -1,7 +1,7 @@
-"""User-authored *operation*, *cost* and *modifier* funcs for circulatory_autogen.
+"""User-authored Python that travels with a study: funcs, and the model itself.
 
 Issue #58 (+ #104 rework): let a user write their own funcs from the GUI, without
-opening circulatory_autogen. Three kinds, distinguished by what they act on:
+opening circulatory_autogen. Three func kinds, distinguished by what they act on:
 
 - **operation** — reduces a data_item's operand series to the scalar a cost func
   compares. Declared in obs_data.
@@ -9,6 +9,16 @@ opening circulatory_autogen. Three kinds, distinguished by what they act on:
   Declared in obs_data.
 - **modifier** — maps one calibrated theta to each model parameter it governs
   (``p_i = fn(theta, baseline_i, **inputs)``). Declared in params_for_id (CA #383).
+
+…and a fourth kind that is not a func at all:
+
+- **model** — an ``external_python`` model's solver class (``user_model.py``,
+  CA's ``external_model_path``). It is here because it *travels* the same way:
+  one file under the study's outputs, named to CA by a config key, copied into
+  the export bundle by the same loop. It is marked ``is_module`` so the funcs
+  editor skips it — its listing, validation and routes all assume a file of
+  single top-level ``def``\\ s, which a solver class is not. It is uploaded
+  through ``/api/models/upload``, not typed into the funcs dialog.
 
 An operation acts on an *output*, a modifier acts on a *parameter* — CA's own
 vocabulary, worth keeping straight because the two were once the same word.
@@ -375,13 +385,19 @@ def my_relative_scale(theta, baseline, reference):
 
 @dataclass(frozen=True)
 class _Kind:
-    key: str  # "operation" | "cost" | "modifier"
+    key: str  # "operation" | "cost" | "modifier" | "model"
     filename: str
     config_key: str  # the CA config key CUFLynx sets to the file path (CA #303)
     list_marker: str  # top-level assignment CUFLynx uses to remember ordering
     header: str
     templates: dict
     reserved: frozenset  # structural names a user func must not shadow
+    # A *module*, not a list of funcs: one file the user authors elsewhere, which
+    # travels with the study exactly as a funcs file does but has none of the
+    # editor's single-function machinery (no list marker, no templates, no
+    # per-func routes). The editor endpoints refuse it rather than silently
+    # offering to rewrite a solver class as one `def`.
+    is_module: bool = False
 
 
 _KINDS = {
@@ -422,7 +438,29 @@ _KINDS = {
         templates=_MODIFIER_TEMPLATES,
         reserved=frozenset({"CUFLYNX_MODIFIERS", "modifier_func", "np"}),
     ),
+    # The fourth kind, and the first that is not a func: an `external_python`
+    # model's solver class. It belongs here because it travels the same way --
+    # CA loads it from a config key naming a file under the study's outputs, and
+    # a study is no more reproducible without its model than without the
+    # operation the obs_data names. It is *not* in the editor, because a solver
+    # class is written in a real editor and uploaded, not typed into a dialog
+    # that saves one function at a time.
+    "model": _Kind(
+        key="model",
+        filename="user_model.py",
+        config_key="external_model_path",
+        list_marker="",
+        header="",
+        templates={},
+        reserved=frozenset(),
+        is_module=True,
+    ),
 }
+
+#: The kinds the funcs editor owns — everything except the module kinds. The
+#: routes, the listing and the validation are all registered from this rather
+#: than from ``_KINDS``, so growing a module kind cannot grow an editor tab.
+FUNC_KINDS = tuple(k for k, v in _KINDS.items() if not v.is_module)
 
 
 def _kind(kind: str) -> _Kind:
@@ -430,6 +468,17 @@ def _kind(kind: str) -> _Kind:
         return _KINDS[kind]
     except KeyError:
         raise UserFuncError(f"unknown func kind '{kind}'") from None
+
+
+def _func_kind(kind: str) -> _Kind:
+    """``_kind`` for the editor paths: a module kind is not editable here."""
+    k = _kind(kind)
+    if k.is_module:
+        raise UserFuncError(
+            f"'{k.key}' is a whole module, not a list of functions; it is uploaded "
+            "rather than edited here"
+        )
+    return k
 
 
 # ---------------------------------------------------------------------------
@@ -458,20 +507,47 @@ def external_path(kind: str, base_dir: str | None = None) -> str | None:
     return str(path) if path.is_file() else None
 
 
-def external_paths(base_dir: str | None = None) -> dict:
+def external_paths(base_dir: str | None = None, *, include_modules: bool = True) -> dict:
     """``{ca_config_key: path}`` for every kind whose file exists — splat into a
     run config so CA loads the user funcs (``operation_funcs_external_path`` /
-    ``cost_funcs_external_path`` / ``modifier_funcs_external_path``).
+    ``cost_funcs_external_path`` / ``modifier_funcs_external_path``) and, for an
+    external_python study, its model (``external_model_path``).
 
     Keyed by CA's config key rather than by our kind name, so a caller that
     forwards these never has to know how many kinds there are: adding one here
     puts it in the run config, the export bundle and the exported script at once.
+
+    ``include_modules=False`` withholds the module kinds. The stored
+    ``user_model.py`` is the last external_python model saved under this output
+    directory, and it outlives a switch to a CellML model — so a caller that
+    knows the active model is not an external_python one says so, rather than
+    exporting a yaml pointing CA at a model the study does not use.
     """
     return {
         k.config_key: str(_user_dir(base_dir) / k.filename)
         for k in _KINDS.values()
-        if (_user_dir(base_dir) / k.filename).is_file()
+        if (include_modules or not k.is_module)
+        and (_user_dir(base_dir) / k.filename).is_file()
     }
+
+
+def save_model_module(source: bytes | str, base_dir: str | None = None) -> str:
+    """Store an external_python model's ``.py`` beside the study's user funcs.
+
+    The run itself uses the copy in the uploads dir (that is what ``model_path``
+    points at); this second copy exists so the model travels with the *study* —
+    the export bundle copies every path :func:`external_paths` reports, and a
+    study whose model file is missing is no more reproducible than one whose
+    operation func is.
+
+    Written verbatim: it is the user's program, and reformatting or re-emitting
+    it would change the thing being reproduced.
+    """
+    data = source.encode("utf-8") if isinstance(source, str) else bytes(source)
+    path = _user_file("model", base_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+    return str(path)
 
 
 # ---------------------------------------------------------------------------
@@ -483,7 +559,7 @@ def _validate_name(kind: str, name: str) -> str:
     The messages name the ``def`` rather than a form field, because that is now
     the only place a name is entered.
     """
-    k = _kind(kind)
+    k = _func_kind(kind)
     name = (name or "").strip()
     if not name:
         raise UserFuncError(f"{k.key} name is required")
@@ -509,7 +585,7 @@ def _validate_source(kind: str, source: str) -> tuple[str, str]:
     fact was entered twice and the only feedback for disagreeing was a rejected
     save. Deriving it removes the disagreement rather than reporting it.
     """
-    k = _kind(kind)
+    k = _func_kind(kind)
     source = (source or "").strip("\n")
     if not source.strip():
         raise UserFuncError(f"{k.key} code is required")
@@ -548,7 +624,7 @@ def _node_source(text: str, node: ast.FunctionDef) -> str | None:
 
 def _parse_existing(kind: str, base_dir: str | None = None) -> tuple[list[str], dict[str, str]]:
     """Return (ordered names, {name: source}) from the on-disk user file."""
-    k = _kind(kind)
+    k = _func_kind(kind)
     path = _user_file(kind, base_dir)
     if not path.is_file():
         return [], {}
@@ -585,7 +661,7 @@ def read_user_funcs(kind: str, base_dir: str | None = None) -> dict:
     imported decorators can't resolve, so the funcs can't load). ``base_dir`` is
     the output directory the funcs are stored under.
     """
-    k = _kind(kind)
+    k = _func_kind(kind)
     available = bool(_circulatory_autogen_src())
     order, sources = _parse_existing(kind, base_dir)
     return {
@@ -602,7 +678,7 @@ def read_user_funcs(kind: str, base_dir: str | None = None) -> dict:
 # Write
 # ---------------------------------------------------------------------------
 def _render(kind: str, order: list[str], sources: dict[str, str]) -> str:
-    k = _kind(kind)
+    k = _func_kind(kind)
     names = ", ".join(f'"{n}"' for n in order)
     parts = [k.header, "", "", f"{k.list_marker} = [{names}]"]
     for name in order:

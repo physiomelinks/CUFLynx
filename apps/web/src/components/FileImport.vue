@@ -263,9 +263,13 @@ async function onCellmlDrop(event) {
   // path. .mmt is accepted there and converted to CellML server-side (#27) -- a
   // Myokit model is a single file, so it never joins a sister-file bundle.
   if (await handleOmex(files)) return
-  const bad = files.find((f) => !extOk(f.name, ['.cellml', '.xml', '.mmt']))
+  // `.py` is an *external python* model: a file holding the solver class itself
+  // rather than a model description CUFLynx generates a solver from. It travels
+  // the same upload route, and the server answers with model_format:
+  // "external_python" so the app can lock the backend to it.
+  const bad = files.find((f) => !extOk(f.name, ['.cellml', '.xml', '.mmt', '.py']))
   if (bad) {
-    error.value = `Expected a .cellml, .mmt or .omex file, got "${bad.name}"`
+    error.value = `Expected a .cellml, .mmt, .py or .omex file, got "${bad.name}"`
     return
   }
   const unreadable = files.map(unreadableDrop).find(Boolean)
@@ -365,11 +369,11 @@ async function onParamsDrop(event) {
           <small>drop another to replace</small>
         </template>
         <template v-else>
-          <i class="pi pi-file" /> Drop <strong>CellML</strong> (.cellml) or
-          <strong>Myokit</strong> (.mmt)
+          <i class="pi pi-file" /> Drop <strong>CellML</strong> (.cellml),
+          <strong>Myokit</strong> (.mmt) or <strong>External Python</strong> (.py)
           <small>one file, a non-flattened model with its sisters, or a .omex archive</small>
         </template>
-        <input type="file" accept=".cellml,.xml,.mmt,.omex" multiple @change="onCellmlDrop" />
+        <input type="file" accept=".cellml,.xml,.mmt,.py,.omex" multiple @change="onCellmlDrop" />
       </label>
       <Button
         :label="modelId ? 'Edit' : 'Create'"

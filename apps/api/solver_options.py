@@ -37,7 +37,11 @@ from runtime_paths import default_python
 # model_types CUFLynx can actually run (it code-generates python/casadi from the
 # uploaded CellML; it has no 'cpp' build path), so cpp is filtered out even though
 # CA's schema lists it.
-SUPPORTED_FORMATS = ("cellml_only", "python", "casadi_python")
+#
+# external_python is here because CUFLynx has no build path to provide for it
+# either: the model file *is* the user's own module, so "can CUFLynx produce what
+# this format needs" is trivially yes -- it uploads it and hands CA the path.
+SUPPORTED_FORMATS = ("cellml_only", "python", "casadi_python", "external_python")
 
 # Formats CUFLynx can run, but only when an optional third-party library is
 # present (#122). aadc_python needs Matlogica's AADC, which is proprietary and
@@ -264,25 +268,36 @@ def filter_solver_info(solver: str, solver_info: dict) -> dict:
 
 
 # Used only when CA's SOLVER_SCHEMA can't be imported (mirrors it).
+#
+# external_python is mirrored here as well as read from CA, because the packaged
+# app's *cold start* has no CA directory chosen yet -- and the format a user
+# reaches for first, having been handed a .py, must be on the menu before they
+# have configured anything. Its one degree of freedom is `user_config`, a
+# free-form dict the wrapper hands the user's class untouched.
 FALLBACK_SOLVER_SCHEMA = {
-    "model_types": ["cellml_only", "python", "cpp", "casadi_python"],
+    "model_types": ["cellml_only", "python", "cpp", "casadi_python", "external_python"],
     "solvers_by_model_type": {
         "cellml_only": ["CVODE_opencor", "CVODE_myokit"],
         "python": ["solve_ivp"],
         "cpp": ["CVODE", "RK4", "PETSC"],
         "casadi_python": ["casadi_integrator"],
+        "external_python": ["external"],
     },
     "methods_by_solver": {
         "CVODE_opencor": ["CVODE"],
         "CVODE_myokit": ["CVODE"],
         "solve_ivp": ["RK45", "RK23", "DOP853", "Radau", "BDF", "LSODA", "forward_euler"],
         "casadi_integrator": ["cvodes", "idas", "collocation", "rk", "semi_implicit_euler", "bdf"],
+        # The user's class chooses its own integration; "external" is the one
+        # method there is, named so the form has something honest to show.
+        "external": ["external"],
     },
     "default_solver_by_model_type": {
         "cellml_only": "CVODE_opencor",
         "python": "solve_ivp",
         "cpp": "CVODE",
         "casadi_python": "casadi_integrator",
+        "external_python": "external",
     },
 }
 
@@ -311,6 +326,12 @@ _FALLBACK_DEFAULT_METHOD = {
 
 _NUM = "number"
 _SEL = "select"
+# A free-form object, edited as JSON text. Only external_python's `user_config`
+# uses it: that field is the *whole* of an external solver's configuration, so
+# skipping it the way the other dict-typed fields are skipped would leave the
+# format unconfigurable -- and check_solver_info would then reject the very key
+# CA expects, since what a solver accepts is derived from these descriptors.
+_JSON = "json"
 
 # Settings each fallback method exposes (name/type/default) — the fields CUFLynx
 # historically showed. Used only when CA can't be introspected.
@@ -625,6 +646,61 @@ def _models_from_interpreter(python: str, src: str) -> list[str]:
 #: interpreter or the CA directory does -- which is exactly the cache key.
 _MODEL_CACHE: dict[tuple, list[str]] = {}
 
+#: What has to be installed for CA to have any emulator models at all. CA declares it as the
+#: optional ``emulation`` extra (not ``dev``) because autoemulate pulls torch / gpytorch /
+#: pyro-ppl / lightgbm and pins the interpreter, so it is never present by accident -- which is
+#: why "no models" needs an explanation rather than a shrug.
+AUTOEMULATE_REQUIREMENT = 'autoemulate>=2.1,<3'
+#: autoemulate's own interpreter pin. A conda env built for something else (FEniCSx, say) is
+#: routinely outside it, and `pip install` then fails for a reason worth stating up front.
+AUTOEMULATE_PYTHON_RANGE = ">=3.10,<3.13"
+
+
+def _probe_models(python: str | None = None) -> tuple[list[str], str | None]:
+    """``(model names, the interpreter that was probed)``.
+
+    The single detection path behind both :func:`emulator_models` and
+    :func:`emulator_availability`, so "which models" and "why none" can never be answered by
+    two differently-behaved probes.
+
+    The interpreter is ``python`` -- the **configured analysis interpreter**, passed in by the
+    caller because only it knows which one the runners were given -- falling back to
+    :func:`default_python`. That is the interpreter that will do the training. It is None only
+    in the frozen app with nothing configured, where training happens in the bundle's own
+    environment; the answer is then whatever *this* process can import.
+    """
+    src = None
+    try:
+        _ensure_ca_path()
+        src = os.environ.get("CIRCULATORY_AUTOGEN_SRC")
+    except Exception:  # noqa: BLE001 - no CA configured at all
+        src = None
+
+    python = python or default_python()
+    if python and src:
+        key = (python, src)
+        if key not in _MODEL_CACHE:
+            _MODEL_CACHE[key] = _models_from_interpreter(python, src)
+        if _MODEL_CACHE[key]:
+            return list(_MODEL_CACHE[key]), python
+
+    return _models_in_process(), python
+
+
+def _models_in_process() -> list[str]:
+    """The emulator names *this* interpreter can see, or [].
+
+    The fallback arm of :func:`_probe_models`, split out so it is one named thing
+    a test can stand in for -- the unit tier has to be able to describe "the
+    environment has no autoemulate" without needing an environment that hasn't.
+    """
+    try:
+        from emulators.emulator_trainer import emulator_model_names  # noqa: PLC0415
+
+        return [str(name) for name in emulator_model_names()]
+    except Exception:  # noqa: BLE001 - older CA, or no autoemulate here either
+        return []
+
 
 def emulator_models(python: str | None = None) -> list[str]:
     """The emulator names CA's ``emulator_settings.models`` accepts.
@@ -642,30 +718,83 @@ def emulator_models(python: str | None = None) -> list[str]:
     non-empty, fell back to free text on a machine where the menu was perfectly knowable.
 
     Falls back to this process when there is no external interpreter configured (the frozen app
-    trains in its own), and returns empty when neither can answer -- a UI shows free text then,
-    which is honest, rather than an authoritative-looking but stale menu.
+    trains in its own), and returns empty when neither can answer. Empty is honest but mute,
+    which is the whole of the complaint :func:`emulator_availability` answers: the panel
+    degraded from a menu to a free-text box and said nothing about why.
     """
-    src = None
-    try:
-        _ensure_ca_path()
-        src = os.environ.get("CIRCULATORY_AUTOGEN_SRC")
-    except Exception:  # noqa: BLE001 - no CA configured at all
-        src = None
+    return _probe_models(python)[0]
 
-    python = python or default_python()
-    if python and src:
-        key = (python, src)
-        if key not in _MODEL_CACHE:
-            _MODEL_CACHE[key] = _models_from_interpreter(python, src)
-        if _MODEL_CACHE[key]:
-            return list(_MODEL_CACHE[key])
 
-    try:
-        from emulators.emulator_trainer import emulator_model_names  # noqa: PLC0415
+def _ca_dir_hint() -> str:
+    """The configured circulatory_autogen checkout, for the ``pip install -e`` hint.
 
-        return [str(name) for name in emulator_model_names()]
-    except Exception:  # noqa: BLE001 - older CA, or no autoemulate here either
-        return []
+    Its *root*, not ``src/`` -- that is where the pyproject declaring the ``emulation`` extra
+    lives. A placeholder when no CA directory is configured, so the sentence still reads.
+    """
+    src = os.environ.get("CIRCULATORY_AUTOGEN_SRC")
+    return str(Path(src).parent) if src else "<circulatory_autogen>"
+
+
+def emulator_availability(python: str | None = None) -> dict:
+    """Whether an emulator could be trained at all, and if not, what to do about it.
+
+    ``{"models", "available", "interpreter", "unavailable_reason"}``. Same probe as
+    :func:`emulator_models` -- ``available`` is exactly "that probe found names", because CA's
+    ``emulator_model_names()`` returns [] when autoemulate is absent and non-empty when it is
+    not. What is added is the *reason*, which is what nothing could say before: a user who
+    pointed Settings at a conda env built for FEniCSx saw the Emulator panel's model dropdown
+    quietly become a free-text box, with no way to find out that the env lacked autoemulate.
+
+    Three distinguishable causes, because they have three different fixes:
+
+    * this circulatory_autogen has no emulators at all (``supported`` False) -- update CA;
+    * an interpreter is configured and cannot import autoemulate -- install it *there*;
+    * none is configured and this process cannot import it either -- choose one in Settings.
+
+    Cheap on purpose: the panel polls this. The model probe is cached per
+    (interpreter, CA dir) and the analysis-options introspection is cached outright, so a poll
+    spawns no subprocess.
+    """
+    # Cannot train against a CA that has no emulators, whatever the interpreter has.
+    supported = bool(get_analysis_options().get("emulation", {}).get("options"))
+    models, interpreter = _probe_models(python)
+    available = bool(supported and models)
+
+    if available:
+        reason = None
+    elif not supported:
+        reason = (
+            "This circulatory_autogen has no emulation support: its analysis options "
+            "declare no emulation mode. Point Settings at a newer circulatory_autogen "
+            "to train emulators."
+        )
+    elif interpreter:
+        reason = (
+            f"The analysis interpreter {interpreter} cannot import autoemulate, which is "
+            f"what provides the emulator models, so there is nothing to train. Install it "
+            f'there with: {interpreter} -m pip install "{AUTOEMULATE_REQUIREMENT}" '
+            f"(autoemulate requires Python {AUTOEMULATE_PYTHON_RANGE}). Installing "
+            f"circulatory_autogen itself with its optional emulation extra does the same: "
+            f'pip install -e "{_ca_dir_hint()}[emulation]". Or choose an interpreter that '
+            f"already has it in Settings."
+        )
+    else:
+        reason = (
+            f"CUFLynx's own environment cannot import autoemulate, which is what provides "
+            f"the emulator models, and no analysis interpreter is configured. Choose one in "
+            f"Settings that has autoemulate installed, or install it there with: "
+            f'pip install "{AUTOEMULATE_REQUIREMENT}" (autoemulate requires Python '
+            f"{AUTOEMULATE_PYTHON_RANGE}). Installing circulatory_autogen itself with its "
+            f'optional emulation extra does the same: pip install -e '
+            f'"{_ca_dir_hint()}[emulation]".'
+        )
+
+    return {
+        "models": models,
+        "available": available,
+        "interpreter": interpreter,
+        "unavailable_reason": reason,
+    }
 
 
 def _dt_field() -> dict:
@@ -695,7 +824,16 @@ _SOLVER_INFO_LABELS = {
     "max_step": "Max step",
     "max_step_size": "Max step size",
     "max_num_steps": "Max # steps",
+    "user_config": "User config (JSON)",
 }
+
+# dict-typed solver_info fields the form renders anyway, as JSON. An allow-list
+# rather than "render every dict": casadi's `options` is a plugin's own option
+# bag with its own failure modes, and offering it as free text would invite
+# settings that fail inside CasADi. `user_config` is different in kind — the
+# external wrapper passes it straight to the user's class and interprets none of
+# it, so the user is the only one who could fill it in.
+_JSON_DICT_FIELDS = frozenset({"user_config"})
 
 
 def _pretty_label(name: str) -> str:
@@ -706,9 +844,13 @@ def _pretty_label(name: str) -> str:
 def _si_field_from_descriptor(desc: dict) -> dict | None:
     """Map a CA solver_info descriptor (name/type/default/choices) to a CUFLynx
     form field, or None when the compact settings form can't render it — i.e. the
-    ``str``/``dict`` fields (jac, gradient_method, casadi ``options``)."""
+    ``str``/``dict`` fields (jac, gradient_method, casadi ``options``), except the
+    dict fields named in :data:`_JSON_DICT_FIELDS`."""
     name = desc.get("name")
     typ = desc.get("type")
+    if typ == "dict" and name in _JSON_DICT_FIELDS:
+        return {"key": name, "label": _SOLVER_INFO_LABELS.get(name, _pretty_label(name)),
+                "type": _JSON, "default": desc.get("default")}
     if typ in ("str", "dict"):
         return None
     label = _SOLVER_INFO_LABELS.get(name, _pretty_label(name))
@@ -811,6 +953,9 @@ def _solver_info_schema(methods_by_solver: dict, default_method_by_solver: dict 
     # Adaptive CasADi plugins take tolerance/step-count options; the fixed-step
     # semi_implicit_euler doesn't (it uses only dt).
     casadi_adaptive = [m for m in casadi_methods if m != "semi_implicit_euler"]
+    external_methods = methods_by_solver.get(
+        "external", FALLBACK_SOLVER_SCHEMA["methods_by_solver"]["external"]
+    )
 
     return {
         "CVODE_myokit": cvode_fields(),
@@ -834,6 +979,14 @@ def _solver_info_schema(methods_by_solver: dict, default_method_by_solver: dict 
             # more robust/accurate on stiff, discontinuous models (valve switches),
             # slower. Only 'bdf' consumes it.
             {"key": "max_step", "label": "Max internal step", "type": _NUM, "default": 1e-3, "methods": ["bdf"]},
+        ],
+        # The user's own solver class. dt still applies (the wrapper passes it to
+        # update_times), and everything else it might want is `user_config`,
+        # which CA hands over untouched — so this is the whole form.
+        "external": [
+            _method_field(external_methods, "Method"),
+            _dt_field(),
+            {"key": "user_config", "label": "User config (JSON)", "type": _JSON, "default": None},
         ],
     }
 

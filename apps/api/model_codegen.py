@@ -58,9 +58,15 @@ def generate_python_model(cellml_path: str, *, casadi_compat: bool, module_name:
 
 
 def resolve_model_path(cellml_path: str, model_type: str, *, model_id: str | None = None) -> str:
-    """Path to feed CA for this format: the CellML for ``cellml_only``, else the
-    generated ``.py`` (generating + caching on first use)."""
+    """Path to feed CA for this format: the CellML for ``cellml_only``, the user's
+    own module for ``external_python``, else the generated ``.py`` (generating +
+    caching on first use)."""
     if model_type in (None, "", "cellml_only"):
+        return str(cellml_path)
+    # An external_python model *is* the file the user uploaded: there is nothing
+    # to generate from, and nothing that could generate it. Verbatim, so the path
+    # CA imports is the path the upload wrote.
+    if model_type == "external_python":
         return str(cellml_path)
     casadi = model_type == "casadi_python"
     stem = model_id or Path(cellml_path).stem

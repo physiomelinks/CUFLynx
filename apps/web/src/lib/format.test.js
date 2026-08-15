@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { fmtSci, fmtAxis, fmtSigFigs } from './format'
+import { fmtSci, fmtAxis, fmtAxisTick, fmtSigFigs } from './format'
 
 describe('fmtSci', () => {
   it('uses scientific notation for very small magnitudes (e.g. compliances)', () => {
@@ -77,5 +77,50 @@ describe('fmtSigFigs', () => {
     expect(fmtSigFigs('')).toBe('')
     expect(fmtSigFigs(NaN)).toBe('')
     expect(fmtSigFigs(Infinity)).toBe('')
+  })
+})
+
+describe('fmtAxis (2 significant figures)', () => {
+  it('collapses float artefacts that fmtSci printed in full (heat1d y axis)', () => {
+    expect(fmtAxis(0.30000000000000004)).toBe('0.3')
+    expect(fmtAxis(0.7000000000000001)).toBe('0.7')
+  })
+
+  it('bounds plain-range ticks to 2 significant figures', () => {
+    expect(fmtAxis(0.123456)).toBe('0.12')
+    expect(fmtAxis(987.6)).toBe('990')
+  })
+
+  it('keeps short labels short', () => {
+    expect(fmtAxis(0.5)).toBe('0.5')
+    expect(fmtAxis(50)).toBe('50')
+    expect(fmtAxis(0)).toBe('0')
+  })
+})
+
+describe('fmtAxisTick', () => {
+  const t = (vals) => vals.map((value) => ({ value }))
+
+  it('formats at 2 significant figures when labels stay distinct', () => {
+    const ticks = t([0, 0.2, 0.4, 0.6000000000000001, 0.8, 1])
+    expect(fmtAxisTick(0.6000000000000001, ticks)).toBe('0.6')
+    expect(fmtAxisTick(0.2, ticks)).toBe('0.2')
+  })
+
+  it('widens precision on a narrow offset range so ticks keep distinct labels', () => {
+    const ticks = t([292, 294, 296, 298])
+    // At 2 sig figs every tick would read "290" or "300" — same label, wrong value.
+    expect(fmtAxisTick(294, ticks)).toBe('294')
+    expect(fmtAxisTick(298, ticks)).toBe('298')
+  })
+
+  it('widens only as far as needed', () => {
+    const ticks = t([0.98, 0.99, 1.0, 1.01, 1.02])
+    expect(fmtAxisTick(1.01, ticks)).toBe('1.01')
+  })
+
+  it('falls back to plain fmtAxis without tick context', () => {
+    expect(fmtAxisTick(0.30000000000000004, undefined)).toBe('0.3')
+    expect(fmtAxisTick(0.30000000000000004, [])).toBe('0.3')
   })
 })

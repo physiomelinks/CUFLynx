@@ -28,9 +28,38 @@ export function fmtSci(v, digits = 4) {
   return String(n)
 }
 
-/** Concise variant for plot axis ticks (fewer digits, short labels). */
+/**
+ * Concise variant for plot axis ticks (fewer digits, short labels).
+ *
+ * Bounded to 2 significant figures on BOTH branches (via fmtSigFigs), because
+ * Chart.js auto-ticks carry float artefacts — 0.30000000000000004 — and
+ * fmtSci's plain branch prints them in full (issue: 10+ decimal places on the
+ * heat1d y axis).
+ */
 export function fmtAxis(v) {
-  return fmtSci(v, 1)
+  return fmtSigFigs(v, 2)
+}
+
+/**
+ * Axis-tick formatter with collision widening. 2 significant figures is right
+ * for the common 0-anchored axis, but on a narrow offset range (ticks
+ * 292, 294, 296…) it would label every tick "290"/"300" — same label, wrong
+ * value. Given the full tick list (Chart.js passes it as the callback's third
+ * argument), widen the precision just enough that every tick keeps a distinct
+ * label, and no further.
+ * @param {number} v the tick being formatted
+ * @param {Array<{value: number}|number>} ticks the axis's full tick list
+ */
+export function fmtAxisTick(v, ticks) {
+  const values = Array.isArray(ticks)
+    ? ticks.map((t) => (t !== null && typeof t === 'object' ? t.value : t)).filter(Number.isFinite)
+    : []
+  if (values.length < 2) return fmtAxis(v)
+  for (let sf = 2; sf <= 8; sf++) {
+    const labels = values.map((x) => fmtSigFigs(x, sf))
+    if (new Set(labels).size === values.length) return fmtSigFigs(v, sf)
+  }
+  return fmtSigFigs(v, 8)
 }
 
 /**

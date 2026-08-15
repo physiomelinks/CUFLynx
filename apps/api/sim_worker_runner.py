@@ -19,6 +19,13 @@ Protocol: one JSON object per line on stdin, one per line on stdout.
 Four verbs: ``configure``, ``simulate``, ``run_protocol``, ``ping``. Keep it that
 way -- the failure mode for this design is a second API growing beside the first.
 
+``simulate`` / ``run_protocol`` carry one optional extra field, ``solver_plots_dir``:
+an ``external_python`` model may draw figures of its own, and PNG bytes have no
+business on a JSON wire. The parent names the directory, the child writes
+``<k>.png`` into it and returns only ``[{index, file, title}]``, and the parent
+turns that into URLs. A verb was not added for it because it is not a separate
+question -- it is part of the answer to "run this".
+
 Everything circulatory_autogen prints is captured per request and returned in
 ``captured``, because the parent needs it to explain a failure (issue #138) and
 because stdout here is the protocol channel and must carry nothing else.
@@ -104,6 +111,81 @@ def _resolve_output_key(var2idx, name):
             if cand in var2idx:
                 return cand
     return None
+
+
+#: CA's model_type for a user-written solver class. Mirrors
+#: ``engine.EXTERNAL_MODEL_TYPE``; the two must stay in step, like everything
+#: else duplicated in this file.
+EXTERNAL_MODEL_TYPE = "external_python"
+
+
+def _figure_title(fig, index):
+    """Suptitle, else the first axes' title, else a numbered label.
+
+    Duplicated from ``solver_plots.figure_title`` -- an *external* interpreter
+    executes this file and cannot import the app's modules. Keep the two in step:
+    a divergence shows up as differently-labelled plots depending on whether an
+    interpreter is configured in Settings.
+    """
+    text = ""
+    supt = getattr(fig, "_suptitle", None)
+    if supt is not None:
+        try:
+            text = (supt.get_text() or "").strip()
+        except Exception:  # noqa: BLE001
+            text = ""
+    if not text:
+        for axes in getattr(fig, "axes", None) or []:
+            try:
+                text = (axes.get_title() or "").strip()
+            except Exception:  # noqa: BLE001
+                text = ""
+            if text:
+                break
+    return text or "Extra plot %d" % (index + 1)
+
+
+def _save_extra_figures(helper, out_dir):
+    """Render the model's own extra figures into ``out_dir`` as ``<k>.png``.
+
+    Returns ``[{"index", "file", "title"}]``; the parent owns the URLs, because
+    only the parent serves them. Agg is forced *before* the figures are asked
+    for: ``extra_plots`` is user code and may call ``plt.show()``, which in a
+    process with no display is a hang rather than an error.
+
+    Duplicated from ``solver_plots.save_figures`` for the same reason as
+    ``_figure_title``.
+    """
+    getter = getattr(helper, "get_extra_figures", None)
+    if getter is None or not out_dir:
+        return []
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg", force=True)
+    except Exception:  # noqa: BLE001 - no matplotlib means no extra figures
+        return []
+    figures = list(getter() or [])
+    if not figures:
+        return []
+    os.makedirs(out_dir, exist_ok=True)
+    entries = []
+    for index, fig in enumerate(figures):
+        title = _figure_title(fig, index)
+        name = "%d.png" % index
+        try:
+            fig.savefig(os.path.join(out_dir, name), format="png", bbox_inches="tight")
+        except Exception:  # noqa: BLE001 - one bad figure is not a failed run
+            continue
+        finally:
+            try:
+                import matplotlib.pyplot as plt
+
+                plt.close(fig)
+            except Exception:  # noqa: BLE001
+                pass
+        entries.append({"index": index, "file": name, "title": title})
+    return entries
 
 
 class Worker:
@@ -208,7 +290,23 @@ class Worker:
                     continue
                 raise
             out[var] = [float(v) for v in series]
-        return {"time": time, "outputs": out}
+        result = {"time": time, "outputs": out}
+        self._add_extra_figures(result, helper, msg, tee)
+        return result
+
+    def _add_extra_figures(self, result, helper, msg, tee):
+        """Attach the model's own figures, for the one format that has any.
+
+        Guarded on the configured model_type rather than on hasattr alone: only
+        CA's external helper draws these, and asking every other backend costs a
+        pointless matplotlib import in the live path.
+        """
+        if self.model_type != EXTERNAL_MODEL_TYPE:
+            return
+        with contextlib.redirect_stdout(tee):
+            plots = _save_extra_figures(helper, msg.get("solver_plots_dir"))
+        if plots:
+            result["solver_plots"] = plots
 
     def run_protocol(self, msg, tee):
         model_id = msg["model_id"]
@@ -265,6 +363,8 @@ class Worker:
             result["subexperiments"] = _subexperiment_outputs(
                 results_by_sub, protocol_info, outputs, key_for, var2idx, time_by_sub
             )
+        # The protocol runner drives the same helper the single-run path uses.
+        self._add_extra_figures(result, getattr(runner, "sim_helper", None), msg, tee)
         return result
 
 

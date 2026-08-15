@@ -591,3 +591,65 @@ describe('FileImport omex (#149)', () => {
     expect(uploadOmex).not.toHaveBeenCalled()
   })
 })
+
+// External python models: the user drops a .py holding the solver class itself.
+// It goes up the same route as a CellML model, and the server answers with
+// `model_format: "external_python"`, which the app needs in order to lock the
+// backend to it — so the response must reach the parent intact.
+describe('FileImport accepts an external python model (.py)', () => {
+  const drop = async (name, content = 'SIM_HELPER = MyModel\n') => {
+    const wrapper = mount(FileImport, { global: { stubs } })
+    const file = new File([content], name, { type: 'text/x-python' })
+    await wrapper
+      .find('[data-testid="cellml-drop"]')
+      .trigger('drop', { dataTransfer: { files: [file] } })
+    await flushPromises()
+    return wrapper
+  }
+
+  beforeEach(() => {
+    uploadCellML.mockReset().mockResolvedValue({
+      model_id: 'py1',
+      name: 'heat_fenics',
+      model_format: 'external_python',
+    })
+    uploadOmex.mockReset()
+  })
+
+  it('uploads a dropped .py instead of rejecting it', async () => {
+    const wrapper = await drop('heat_fenics.py')
+    expect(uploadCellML).toHaveBeenCalledTimes(1)
+    expect(wrapper.find('[data-testid="import-error"]').exists()).toBe(false)
+    expect(wrapper.emitted('model-loaded')[0][0].filename).toBe('heat_fenics.py')
+  })
+
+  // The whole format lock hangs off this field; dropping it would leave the app
+  // trying to run a Python class through Myokit.
+  it('passes model_format through to the parent', async () => {
+    const wrapper = await drop('heat_fenics.py')
+    expect(wrapper.emitted('model-loaded')[0][0].model_format).toBe('external_python')
+  })
+
+  it('does not mistake a .py for an archive', async () => {
+    await drop('heat_fenics.py')
+    expect(uploadOmex).not.toHaveBeenCalled()
+  })
+
+  // Accepting .py must not turn the zone into "any file at all".
+  it('still rejects an unrelated file, naming what it wanted', async () => {
+    const wrapper = await drop('notes.txt', 'hello')
+    expect(uploadCellML).not.toHaveBeenCalled()
+    expect(wrapper.vm.error).toContain('.py')
+    expect(wrapper.vm.error).toContain('.mmt')
+  })
+
+  // The picker and the drop guard have to agree, or browsing for a .py greys it
+  // out while dragging the same file works.
+  it('offers .py in the file picker too', () => {
+    const wrapper = mount(FileImport, { global: { stubs } })
+    const accept = wrapper
+      .find('[data-testid="cellml-drop"] input[type="file"]')
+      .attributes('accept')
+    for (const ext of ['.cellml', '.mmt', '.py', '.omex']) expect(accept).toContain(ext)
+  })
+})

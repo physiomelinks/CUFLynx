@@ -8,11 +8,17 @@ export function useModel() {
   // top bar; falls back to the model name when no filename is available.
   const filePrefix = ref(null)
   const variables = ref({ params: [], odes: [], algebraic: [], all_names: [], units: {} })
+  // What kind of model was uploaded, as the server reports it. Only an external
+  // python model says anything here (`external_python`); a CellML or .mmt upload
+  // carries no model_format, which is the empty default. It is the model's own
+  // nature, not a setting — the backend to run it with follows from it.
+  const modelFormat = ref('')
 
-  function setModel({ model_id, name: modelName, filename }) {
+  function setModel({ model_id, name: modelName, filename, model_format }) {
     modelId.value = model_id
     name.value = modelName
     filePrefix.value = filename ? filename.replace(/\.[^/.]+$/, '') : (modelName ?? null)
+    modelFormat.value = model_format ?? ''
   }
 
   function setVariables(vars) {
@@ -34,6 +40,7 @@ export function useModel() {
     modelId,
     name,
     filePrefix,
+    modelFormat,
     variables,
     setModel,
     setVariables,

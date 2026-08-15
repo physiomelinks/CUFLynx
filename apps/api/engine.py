@@ -27,6 +27,12 @@ DEFAULT_DT = 0.01
 DEFAULT_MODEL_TYPE = "cellml_only"
 DEFAULT_SOLVER = "CVODE_myokit"
 
+#: CA's model_type for a user-written solver class (``solver='external'``). It is
+#: named here rather than spelled out at each site because it is the one format
+#: whose *model file is the user's own program*, which is what every special case
+#: below is really about.
+EXTERNAL_MODEL_TYPE = "external_python"
+
 
 def default_solver_info(solver: str = DEFAULT_SOLVER) -> dict:
     """The starting ``solver_info`` for ``solver``, read from CA's schema (#200).
@@ -341,6 +347,10 @@ _BACKEND_MODULE = {
     "python": "scipy",
     "casadi_python": "casadi",
     "aadc_python": "aadc",
+    # The user's own module. Nothing here can say whether *it* imports -- that is
+    # the whole of what an external model is -- so the probe stands for the
+    # wrapper's own floor: CA's helper hands results back as numpy arrays.
+    EXTERNAL_MODEL_TYPE: "numpy",
 }
 
 # Tried in order when the chosen format cannot run here. python/solve_ivp last:
@@ -350,6 +360,17 @@ _LIVE_FALLBACKS = (
     ("casadi_python", "casadi_integrator"),
     ("python", "solve_ivp"),
 )
+
+# external_python is neither a fallback *source* nor a fallback *target*, and the
+# assertion says so where the tuple is, not in a comment that could go stale.
+#
+# Not a target: the substitute backends all read a CellML/generated model, and
+# the file here is the user's program -- Myokit would report it as invalid XML.
+# Not a source: substituting anything for it changes which *model* runs, not just
+# which integrator, so a preview from a fallback would be a different model's
+# plot presented as this one's. It fails instead, with a message that names the
+# interpreter (see SimulationEngine.construction_error).
+assert EXTERNAL_MODEL_TYPE not in {fmt for fmt, _solver in _LIVE_FALLBACKS}
 
 
 def backend_importable(model_type: str) -> bool:
@@ -718,6 +739,10 @@ class SimulationEngine:
         # 'loader'": a .cellml path passed to a helper that imports Python.
         if self.uses_worker() or backend_importable(self.model_type):
             return self.model_type, self.solver, None
+        # An external_python model is never swapped for another backend: the
+        # substitute would run a different model (see _LIVE_FALLBACKS above).
+        if self.model_type == EXTERNAL_MODEL_TYPE:
+            return self.model_type, self.solver, None
         for fmt, solver in _LIVE_FALLBACKS:
             if backend_importable(fmt):
                 return fmt, solver, self.model_type
@@ -924,6 +949,82 @@ class SimulationEngine:
         reason = _solver_reason(captured) or f"{type(exc).__name__}: {exc}"
         return self.failure_message(reason, **extra)
 
+    def construction_error(self, exc: BaseException, model_type: str, **extra) -> SimulationError:
+        """The error for a helper/runner that could not be *built* at all.
+
+        Building an external_python helper imports the user's own module, so its
+        failures are import failures — a missing third-party package, not a
+        solver setting. In-process that import happens in the app's interpreter,
+        which is not where the user installed anything, so the message has to
+        name the setting that moves the run somewhere the imports exist rather
+        than sending them to look at tolerances.
+        """
+        message = self.describe_exception(exc, "", **extra)
+        if model_type == EXTERNAL_MODEL_TYPE:
+            message += (
+                "\nAn external_python model is your own module, and building the solver "
+                "imports it. This run imported it in the app's own interpreter; anything "
+                "it needs may only be installed in the Python you chose in Settings — "
+                "choose one there and live simulation is run in it too."
+            )
+        return SimulationError(message)
+
+    # ------------------------------------------------------------------
+    # Extra figures drawn by an external_python model (CA's get_extra_figures)
+    #
+    # Only this format has them: a user-written solver class may know something
+    # about its own state that no generic trace can show. Both tiers land in the
+    # same store -- the worker writes the PNGs into a directory named here and
+    # returns their titles, the in-process path saves them itself -- so the
+    # response shape cannot depend on which interpreter ran the model.
+    # ------------------------------------------------------------------
+    def _draws_extra_figures(self) -> bool:
+        return self.model_type == EXTERNAL_MODEL_TYPE
+
+    def _new_plot_run(self, model_id: str):
+        """``(token, dir)`` for this run's figures, or ``(None, None)``.
+
+        Allocated before the run because the worker has to be told where to
+        write. A run that then draws nothing costs one unused token, which is
+        cheaper than a second round trip to ask.
+        """
+        if not self._draws_extra_figures():
+            return None, None
+        import solver_plots  # noqa: PLC0415 - optional path, keeps `import engine` light
+
+        try:
+            token = solver_plots.next_token(model_id)
+            return token, str(solver_plots.run_dir(model_id, token))
+        except (OSError, ValueError):
+            # A temp dir we cannot write is no reason to fail the simulation.
+            return None, None
+
+    @staticmethod
+    def _attach_remote_plots(result: dict, model_id: str, token) -> None:
+        """Turn the worker's ``[{index, title}]`` into the response's URL shape."""
+        entries = result.pop("solver_plots", None) if isinstance(result, dict) else None
+        if not entries or token is None:
+            return
+        import solver_plots  # noqa: PLC0415
+
+        meta = solver_plots.metadata(model_id, token, entries)
+        if meta:
+            result["solver_plots"] = meta
+
+    def _attach_local_plots(self, result: dict, model_id: str, helper, token) -> None:
+        """Render the helper's extra figures for the in-process path."""
+        if not self._draws_extra_figures() or helper is None or token is None:
+            return
+        import solver_plots  # noqa: PLC0415
+
+        try:
+            figures = solver_plots.figures_from_helper(helper)
+            meta = solver_plots.save_figures(model_id, token, figures)
+        except Exception:  # noqa: BLE001 - a figure that will not draw is not a failed run
+            return
+        if meta:
+            result["solver_plots"] = meta
+
     # ------------------------------------------------------------------
     # Single run
     # ------------------------------------------------------------------
@@ -942,6 +1043,7 @@ class SimulationEngine:
         # model runs somewhere else. The worker gets the configured backend and
         # fails loudly if its interpreter cannot run it -- which is the whole
         # reason for choosing that interpreter.
+        plots_token, plots_dir = self._new_plot_run(model_id)
         remote = self._worker_call(
             "simulate",
             {"sim_time": sim_time, "pre_time": pre_time},
@@ -952,8 +1054,10 @@ class SimulationEngine:
             pre_time=float(pre_time),
             outputs=list(outputs or []),
             best_effort_outputs=bool(best_effort_outputs),
+            solver_plots_dir=plots_dir,
         )
         if remote:
+            self._attach_remote_plots(remote["result"], model_id, plots_token)
             return self.finish_run(
                 remote["result"], remote.get("warnings"),
                 sim_time=sim_time, pre_time=pre_time,
@@ -966,15 +1070,20 @@ class SimulationEngine:
             cache_key = (model_id, model_type, solver)
             helper = self._helpers.get(cache_key)
             if helper is None:
-                helper = self.helper_factory(
-                    model_path=str(model_path),
-                    dt=self.dt,
-                    sim_time=float(sim_time),
-                    pre_time=float(pre_time),
-                    solver_info=self.solver_info,
-                    model_type=model_type,
-                    solver=solver,
-                )
+                try:
+                    helper = self.helper_factory(
+                        model_path=str(model_path),
+                        dt=self.dt,
+                        sim_time=float(sim_time),
+                        pre_time=float(pre_time),
+                        solver_info=self.solver_info,
+                        model_type=model_type,
+                        solver=solver,
+                    )
+                except Exception as exc:  # noqa: BLE001 - re-raised with context
+                    raise self.construction_error(
+                        exc, model_type, sim_time=sim_time, pre_time=pre_time
+                    ) from exc
                 self._helpers[cache_key] = helper
 
             helper.reset_and_clear()
@@ -1036,6 +1145,7 @@ class SimulationEngine:
                 out[var] = [float(v) for v in series]
 
         result = {"time": time, "outputs": out}
+        self._attach_local_plots(result, model_id, helper, plots_token)
         if fell_back:
             result["backend_fallback"] = {
                 "requested": fell_back,
@@ -1059,6 +1169,7 @@ class SimulationEngine:
     ) -> dict:
         # See simulate(): the worker runs the configured backend, and the
         # in-process fallback below is for when there is no worker.
+        plots_token, plots_dir = self._new_plot_run(model_id)
         remote = self._worker_call(
             "run_protocol",
             {"experiments": _n_experiments(protocol_info)},
@@ -1067,8 +1178,10 @@ class SimulationEngine:
             protocol_info=protocol_info,
             params=params or {},
             outputs=list(outputs or []),
+            solver_plots_dir=plots_dir,
         )
         if remote:
+            self._attach_remote_plots(remote["result"], model_id, plots_token)
             return self.finish_run(
                 remote["result"], remote.get("warnings"),
                 experiments=_n_experiments(protocol_info),
@@ -1079,13 +1192,18 @@ class SimulationEngine:
             cache_key = (model_id, model_type, solver)
             runner = self._runners.get(cache_key)
             if runner is None:
-                runner = self.runner_factory(
-                    model_path=str(model_path),
-                    dt=self.dt,
-                    solver_info=self.solver_info,
-                    model_type=model_type,
-                    solver=solver,
-                )
+                try:
+                    runner = self.runner_factory(
+                        model_path=str(model_path),
+                        dt=self.dt,
+                        solver_info=self.solver_info,
+                        model_type=model_type,
+                        solver=solver,
+                    )
+                except Exception as exc:  # noqa: BLE001 - re-raised with context
+                    raise self.construction_error(
+                        exc, model_type, experiments=_n_experiments(protocol_info)
+                    ) from exc
                 self._runners[cache_key] = runner
 
             # Bind any time-varying protocol traces onto the helper before the
@@ -1163,6 +1281,11 @@ class SimulationEngine:
         out: dict = {"experiments": experiments}
         if subexperiments:
             out["subexperiments"] = subexperiments
+        # The protocol runner drives the same helper the single-run path uses, so
+        # the model's own figures come from there.
+        self._attach_local_plots(
+            out, model_id, getattr(runner, "sim_helper", None), plots_token
+        )
         if fell_back:
             out["backend_fallback"] = {
                 "requested": fell_back,

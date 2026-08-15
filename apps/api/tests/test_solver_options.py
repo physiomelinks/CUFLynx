@@ -118,7 +118,11 @@ def test_get_solver_options_entry_point_works():
     assert opts["solvers_by_format"]["casadi_python"] == ["casadi_integrator"]
     # CUFLynx can't run CA's 'cpp' backend, so it isn't offered as a format.
     assert "cpp" not in opts["model_formats"]
-    assert set(opts["model_formats"]) <= {"cellml_only", "python", "casadi_python"}
+    # aadc_python is conditional on a licensed library, so it may or may not be
+    # here; external_python needs nothing installed and is always offered.
+    assert set(opts["model_formats"]) <= {
+        "cellml_only", "python", "casadi_python", "external_python",
+    }
     for solver in ("CVODE_myokit", "solve_ivp", "casadi_integrator"):
         assert solver in opts["solver_info_schema"]
 

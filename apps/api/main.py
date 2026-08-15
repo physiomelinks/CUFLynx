@@ -17,6 +17,7 @@ work (and are unit-tested) without Myokit installed.
 
 from __future__ import annotations
 
+import contextlib
 import errno
 import json
 import os
@@ -47,6 +48,8 @@ from cellml_flatten import (
     pick_main_cellml,
 )
 from cellml_meta import CellMLModel, CellMLParseError, parse_cellml
+from py_model_meta import PyModelParseError, looks_like_py_filename, parse_py_model
+import solver_plots
 import mmt_protocol
 import myokit_import
 import omex_import
@@ -76,7 +79,7 @@ from solver_options import (
     check_solver_info,
     filter_solver_info,
     get_analysis_options,
-    emulator_models,
+    emulator_availability,
     get_param_id_methods,
     get_param_modifier_operations,
     get_param_prior_types,
@@ -85,11 +88,13 @@ from solver_options import (
     reset_cache as reset_solver_options,
 )
 from user_funcs import (
+    FUNC_KINDS,
     UserFuncError,
     delete_user_func,
     external_path as user_func_path,
     external_paths as user_func_paths,
     read_user_funcs,
+    save_model_module,
     save_user_func,
 )
 from sensitivity import sensitivity
@@ -108,6 +113,11 @@ app.add_middleware(
 
 UPLOAD_DIR = Path(tempfile.gettempdir()) / "cuflynx_uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+# The figures an external_python model draws for itself live under the uploads
+# dir, so the TTL prune below ages them out with everything else. Told to the
+# store rather than duplicated in it: one definition of where uploads go.
+solver_plots.set_root(UPLOAD_DIR / "solver_plots")
 
 # Uploads outlive the session that made them on purpose: _get_model() re-derives
 # a model from its .cellml after a --reload, and a calib_/sa_/uq_ run dir is read
@@ -167,20 +177,28 @@ def _get_model(model_id: str) -> _ModelRecord:
     record = _models.get(model_id)
     if record is None:
         # Recover from the persisted upload if the in-memory registry lost it
-        # (e.g. a dev-server --reload wiped it). The CellML file still lives in
+        # (e.g. a dev-server --reload wiped it). The model file still lives in
         # UPLOAD_DIR, so a parameter change / new plot can re-derive the model
         # and regenerate its python/casadi build instead of failing. obs_data /
         # params_for_id aren't restored (re-upload to run protocols / calibration).
-        path = UPLOAD_DIR / f"{model_id}.cellml"
-        if path.is_file():
+        # Both upload formats are recoverable, and by the same rule: re-derive
+        # the metadata from the persisted file with the parser that made it.
+        # An external_python model is re-read by AST here exactly as it was at
+        # upload -- recovery must not become the one path that imports it.
+        for suffix, parse, failure in (
+            (".cellml", parse_cellml, CellMLParseError),
+            (".py", parse_py_model, PyModelParseError),
+        ):
+            path = UPLOAD_DIR / f"{model_id}{suffix}"
+            if not path.is_file():
+                continue
             try:
-                meta = parse_cellml(path.read_bytes())
-            except CellMLParseError:
-                meta = None
-            if meta is not None:
-                record = _ModelRecord(model_id, path, meta)
-                _models[model_id] = record
-                return record
+                meta = parse(path.read_bytes())
+            except failure:
+                continue
+            record = _ModelRecord(model_id, path, meta)
+            _models[model_id] = record
+            return record
         raise HTTPException(status_code=404, detail=f"model {model_id!r} not found")
     return record
 
@@ -658,7 +676,11 @@ def export_pipeline_route(req: ExportPipelineRequest) -> dict:
     file_prefix = req.file_prefix.strip() or record.meta.name or "model"
     # The model lives where circulatory_autogen resolves model_path:
     # generated_models/<prefix>/<prefix>.cellml. obs/params go in resources/.
-    model_file = f"{file_prefix}.cellml"
+    # The suffix is the uploaded file's own: an external_python model is a .py,
+    # and copying it out as ".cellml" would hand CA a file whose name says it is
+    # something it is not.
+    model_file = file_prefix + (Path(record.path).suffix or ".cellml")
+    external_model = Path(record.path).suffix.lower() == ".py"
     model_dir = export_dir / "generated_models" / file_prefix
 
     # An unwritable outputs dir, a full disk or a too-long path must say which
@@ -682,7 +704,12 @@ def export_pipeline_route(req: ExportPipelineRequest) -> dict:
             # exported JSON doc renamed to .csv would be misparsed downstream.
             params_file = "params_for_id" + Path(record.params_path).suffix
             shutil.copyfile(record.params_path, resources / params_file)
-        for key, src in user_func_paths(req.config_outputs_dir or None).items():
+        # include_modules only for an external_python study: the stored
+        # user_model.py is whatever .py was uploaded last under this output dir,
+        # and a CellML study's bundle must not carry an external_model_path.
+        for key, src in user_func_paths(
+            req.config_outputs_dir or None, include_modules=external_model
+        ).items():
             # Keep CA's own filenames: the export is meant to be readable and
             # handed to circulatory_autogen directly.
             name = Path(src).name
@@ -972,6 +999,44 @@ async def upload_model(
     single = len(raw_by_name) == 1
     only_name, only_bytes = next(iter(raw_by_name.items()))
 
+    # An external_python model: the user's own solver class, run by CA's
+    # ExternalSimulationHelper. Decided by extension and only for a single file,
+    # because a .py has no sniffable signature and a bundle means "a model and
+    # the sisters it imports", which is a CellML idea.
+    #
+    # First, before the Myokit sniff: those heuristics read *content*, and a
+    # Python module that mentions a Myokit-ish word is still a Python module.
+    # Parsed by AST, never imported -- see py_model_meta.
+    if single and looks_like_py_filename(only_name):
+        try:
+            meta = parse_py_model(only_bytes)
+        except PyModelParseError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        model_id = uuid.uuid4().hex
+        path = UPLOAD_DIR / f"{model_id}.py"
+        path.write_bytes(only_bytes)
+        _models[model_id] = _ModelRecord(model_id, path, meta)
+        # A second copy beside the study's user funcs, so the model travels with
+        # the export the way an operation func does (CA's external_model_path).
+        # Best-effort: an unwritable output dir must not fail the upload, which
+        # has already succeeded everywhere that matters.
+        with contextlib.suppress(OSError):
+            save_model_module(only_bytes, _user_func_base_dir(output_dir or ""))
+        return {
+            "model_id": model_id,
+            "name": meta.name,
+            "variable_count": meta.variable_count,
+            "params": meta.params,
+            "odes": meta.odes,
+            # The one field a CellML/mmt upload does not carry. Its presence is
+            # what tells the client this model is run by the user's own code --
+            # different solver menu, possible extra plots, no generated model.
+            "model_format": "external_python",
+            "converted_from": None,
+            "converted_cellml_path": None,
+            "protocol_obs_data": None,
+        }
+
     # A Myokit model is converted to CellML on the way in (#27), so everything
     # downstream -- the metadata parser, params_for_id naming, the exported
     # pipeline, CA itself -- keeps seeing the CellML it already expects.
@@ -1210,6 +1275,24 @@ def get_variables(model_id: str) -> dict:
     }
 
 
+@app.get("/api/models/{model_id}/solver_plots/{token}/{index}.png")
+def get_solver_plot(model_id: str, token: str, index: str) -> FileResponse:
+    """One figure an external_python model drew for itself during a run.
+
+    The URL is handed out by the simulate / protocol response's ``solver_plots``
+    entries; ``token`` is that run's counter, so each run's images are a distinct
+    resource the browser may cache forever. An unknown token or index is a 404
+    — the run may simply have been pruned (only the last two are kept).
+
+    All three path segments are validated as ids/integers before anything is
+    joined onto a path; the client never supplies a path component directly.
+    """
+    path = solver_plots.plot_file(model_id, token, index)
+    if path is None:
+        raise HTTPException(status_code=404, detail="solver plot not found")
+    return FileResponse(path, media_type="image/png")
+
+
 def _single_run_cost(record, result: dict, output_dir) -> dict | None:
     """What a single run's parameters cost against the loaded obs_data (#159).
 
@@ -1255,7 +1338,11 @@ def _protocol_run_cost(record, result: dict, protocol_info, output_dir) -> dict 
 def simulate(req: SimulateRequest) -> dict:
     record = _get_model(req.model_id)
     _validate_param_keys(req.params)
-    outputs = req.outputs or record.meta.odes
+    # The states, by default -- they are what a model is usually watched by. An
+    # external_python model declares no states (it integrates itself), so for one
+    # of those the default is its declared output_names instead; without this
+    # "just simulate it" would ask for nothing and draw an empty plot.
+    outputs = req.outputs or record.meta.odes or record.meta.algebraic
     try:
         # Resolve the path for the backend the *live* run will actually use: the
         # engine falls back when the configured format cannot run in-process
@@ -1679,6 +1766,11 @@ for _kind, _label in (
     # governs (CA #383).
     ("modifier", "parameter modifiers (CA #383)"),
 ):
+    # user_funcs also carries a *module* kind (an external_python model's solver
+    # class), which travels with a study like a func but is not one: it has no
+    # list of top-level defs to list, validate or template. FUNC_KINDS is the
+    # editor's own list, so a module kind can never acquire these routes.
+    assert _kind in FUNC_KINDS, f"{_kind} is not an editable func kind"
     _register_user_func_routes(_kind, _label)
 
 
@@ -2207,16 +2299,32 @@ def emulator_defaults() -> dict:
     the tab can say so plainly instead of rendering an empty form. ``models`` is a
     runtime registry (whatever autoemulate has registered), not a schema, so an
     empty list means "type a name" rather than "there are none".
+
+    ``available`` / ``interpreter`` / ``unavailable_reason`` are what the tab needs
+    to stop degrading in silence. Emulation needs autoemulate in the interpreter
+    that would *train*, and that is an optional extra with heavy dependencies: a
+    user who pointed Settings at a conda env built for FEniCSx watched the model
+    dropdown become a free-text box and had no way to learn why. The panel turns
+    orange and shows ``unavailable_reason`` alone -- so the reason is a complete,
+    actionable sentence, not a code the client has to phrase.
+
+    One probe answers both ``models`` and ``available`` (``solver_options`` owns it,
+    and caches it per interpreter + CA dir), so polling this costs no subprocess and
+    the menu can never disagree with the explanation beside it.
     """
     meta = get_analysis_options().get("emulation", {})
+    # The interpreter that will train is the one that knows what it can train with.
+    probe = emulator_availability(emulator.python)
     return {
         "supported": bool(meta.get("options")),
         "label": meta.get("label", "Emulator"),
         "enable_flag": meta.get("enable_flag"),
         "use_flag": meta.get("use_flag"),
         "options": meta.get("options", []),
-        # The interpreter that will train is the one that knows what it can train with.
-        "models": emulator_models(emulator.python),
+        "models": probe["models"],
+        "available": probe["available"],
+        "interpreter": probe["interpreter"],
+        "unavailable_reason": probe["unavailable_reason"],
     }
 
 
