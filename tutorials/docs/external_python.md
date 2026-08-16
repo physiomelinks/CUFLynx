@@ -4,6 +4,19 @@ Everything here is optional reading — the app runs without any of it. See the
 [README](../../README.md) to download and start it, and [Using CUFLynx](misc.md)
 for the CellML and Myokit paths.
 
+> **You need a [circulatory_autogen](https://github.com/physiomelinks/circulatory_autogen)
+> checkout for the example files.** Everything this page tells you to drop on the
+> model box lives in that repository, under `funcs_user/`: the FEniCSx heat
+> equation worked through below (`funcs_user/heat_fenics/`), and the two smaller
+> ones it refers to — a scipy oscillator (`funcs_user/example_model_scipy/`) and a
+> hand-written 1D heat scheme (`funcs_user/example_model_external/`). Each ships
+> its model, its `obs_data.json` and its `params_for_id`, so one clone gives you
+> every file named here.
+>
+> Clone it anywhere; you do **not** have to point **Settings → CA dir** at it. That
+> setting is a development override, and CUFLynx brings its own copy of the solver
+> code — the checkout here is only where the example files come from.
+
 ## What they are
 
 CUFLynx normally takes a *model description* — a CellML file, or a Myokit `.mmt` —
@@ -17,11 +30,11 @@ This is well suited for a PDE solver code (the worked example below is finite el
 FEniCSx/dolfinx), a compiled library behind a thin Python binding, or a scheme
 with particular time stepping.
 
-> Not to be confused with circulatory_autogen's `python_user_defined` model type,
-> where you write the RHS and CA integrates it with scipy `solve_ivp`. Here CA
-> integrates nothing: it hands over `dt` / `sim_time` / `pre_time`, asks for a run,
-> and reads the traces back. In CA's vocabulary this is
-> `model_type: external_python` with `solver: external`.
+> Note CA integrates nothing here: it hands over `dt` / `sim_time` / `pre_time`,
+> asks for a run, and reads the traces back — the stepping is entirely yours. In
+> CA's vocabulary this is `model_type: external_python` with `solver: external`.
+> If you only want to write a right-hand side and have it integrated for you,
+> `funcs_user/example_model_scipy/` does exactly that inside its own `run()`.
 
 Drop the `.py` on the model box, exactly where a `.cellml` goes. CUFLynx reads the
 class's declared parameters and outputs, gives you a slider per parameter and a

@@ -19,7 +19,7 @@ in order to draw sliders and pick outputs *before* anything has been run:
 in the API process. The file *is* executed later — when a simulation builds the
 helper — but that happens in the engine or, when an interpreter is chosen in
 Settings, in the worker process, which is the same trust level (and the same
-place) as circulatory_autogen's ``python_user_defined`` funcs. Upload is a
+place) as a user's own operation / cost / modifier funcs. Upload is a
 different moment from run: a user browsing a model they were sent has not asked
 for its ``import`` side effects, and the variables endpoint must answer without
 them.
