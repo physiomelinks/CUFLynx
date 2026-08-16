@@ -660,6 +660,24 @@ const tourCtx = {
   closeSettings: () => {
     settingsOpen.value = false
   },
+  // Closing a dialog whose open flag belongs to a child component (the
+  // operation-funcs editor's lives in EditObsDataDialog). Rather than lifting
+  // that flag into App just so a tour step can reach it, press the dialog's own
+  // close button: the same element the user would click, running the same
+  // handler, so there is no second close path to keep in step with the first.
+  closeDialog: (selector) => {
+    const dialog = document.querySelector(selector)
+    if (!dialog) return
+    // Several selectors because PrimeVue has spelled this differently across
+    // versions; the header's own button is the last-resort match. If none hit,
+    // nothing happens and the step's waitFor still ends it when the user
+    // closes the dialog themselves.
+    const close = dialog.querySelector(
+      '[data-pc-name="pcclosebutton"], [data-pc-section="closebutton"],' +
+        '.p-dialog-close-button, .p-dialog-header button',
+    )
+    if (close) close.click()
+  },
 }
 
 function markTourSeen() {
@@ -667,14 +685,21 @@ function markTourSeen() {
   localStorage.setItem('cuflynx-tour-seen', '1')
 }
 function startTour() {
-  // The step index is deliberately not persisted: resuming at step 19 into a
-  // reloaded, empty app is worse than starting over.
-  tourStep.value = 0
+  // Resumes where it was left. Skipping is usually "not now" rather than "never
+  // again", and restarting at 1 then replayed the whole run -- and, with a model
+  // already loaded, silently skipped forward past every step about getting one,
+  // landing somewhere in the middle with no way back to what had just been read.
+  //
+  // Deliberately session state and not localStorage: a *reload* starts over,
+  // because resuming at step 19 into an empty app describes controls that are no
+  // longer there. `onTourClose` resets it when the run actually finished, so
+  // pressing Tutorial again after the end starts from the beginning.
   tourOpen.value = true
   markTourSeen()
 }
-function onTourClose() {
+function onTourClose(reason) {
   tourOpen.value = false
+  if (reason === 'finish') tourStep.value = 0
   markTourSeen()
 }
 

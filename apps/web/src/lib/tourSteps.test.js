@@ -46,10 +46,10 @@ function declaredIn(testid, sources) {
 }
 
 describe('tourSteps', () => {
-  it('ships exactly 37 steps', () => {
+  it('ships exactly 40 steps', () => {
     // A bare number, on purpose: an accidental deletion during an unrelated
     // edit is otherwise invisible -- the tour just gets shorter.
-    expect(TOUR_STEPS.length).toBe(37)
+    expect(TOUR_STEPS.length).toBe(40)
   })
 
   it('gives every step a unique, non-empty id', () => {
@@ -98,13 +98,17 @@ describe('tourSteps', () => {
     }
   })
 
-  // `onNext` is the one place a step may write to the app, so it is worth
-  // stating out loud which steps hold that permission: exactly one, the step
-  // whose subject is a modal the user would otherwise be left standing behind.
-  it('lets exactly the close-Settings step act on Next, and closes Settings with it', () => {
+  // `onNext` is the only place a step may write to the app, so the set that
+  // holds that permission is pinned rather than left to grow quietly. Both
+  // members are the same case: a step describing a modal, where Next would
+  // otherwise walk the tour on to something the mask is covering. A third entry
+  // should have to be argued for here before it is added.
+  it('lets exactly the two dialog steps act on Next', () => {
     const acting = TOUR_STEPS.filter((s) => 'onNext' in s).map((s) => s.id)
-    expect(acting).toEqual(['settings-close'])
+    expect(acting).toEqual(['settings-close', 'op-funcs-save'])
+  })
 
+  it('closes Settings from the close-Settings step', () => {
     const step = TOUR_STEPS.find((s) => s.id === 'settings-close')
     let closed = 0
     step.onNext({ closeSettings: () => (closed += 1) })
@@ -113,6 +117,23 @@ describe('tourSteps', () => {
     // ordinary way, so Next is an alternative rather than the only exit.
     expect(step.waitFor({ settingsOpen: () => false })).toBe(true)
     expect(step.waitFor({ settingsOpen: () => true })).toBe(false)
+  })
+
+  it('closes the operation-funcs editor from its own step', () => {
+    const step = TOUR_STEPS.find((s) => s.id === 'op-funcs-save')
+    const closed = []
+    step.onNext({ closeDialog: (sel) => closed.push(sel) })
+    expect(closed).toEqual(['[data-testid="edit-op-funcs"]'])
+  })
+
+  it('sends the user-func step to the outputs directory, not the CA checkout', () => {
+    // The funcs are written to <outputs>/user_funcs/ (apps/api/user_funcs.py),
+    // and the copy used to read as though they landed inside circulatory_autogen
+    // -- which would be someone else's repo, and would not travel with the study.
+    const step = TOUR_STEPS.find((s) => s.id === 'op-funcs-save')
+    expect(step.text).toContain('outputs directory')
+    expect(step.text).toContain('user_funcs/operation_funcs_user.py')
+    expect(step.text).toContain('never into the circulatory_autogen checkout')
   })
 
   // The guard that matters. The tour points at testids from a separate file, so

@@ -31,7 +31,9 @@
  * ---------------------------------------------------------------------------
  * Renumbering
  * ---------------------------------------------------------------------------
- * The list the user wrote had 28 entries and was renumbered into a clean 1..37.
+ * The list the user wrote had 28 entries and was renumbered into a clean 1..37,
+ * then grew to 40: a Progress step before the closing one, and two export steps
+ * after it (pipeline-to-python, plotting script).
  * `5.1`-`5.4` became 6-10: the gear plus three Settings popups, plus a dedicated
  * *close Settings* step so the tour is never left pointing at UI sitting behind
  * a modal. The duplicated `14`/`15` (save obs_data, edit params_for_id) became
@@ -44,7 +46,8 @@
  * (+10 close) · 6 -> 11 · 7 -> 12 · 8 -> 13 · 9,10 -> 14,15 · 11,12,13 ->
  * 16,17,18 · 14,15 (user-defined ops) -> 19,20,21 · 14dup -> 22 · 15dup -> 23 ·
  * 16,17,18 -> 24,25,26 · 19 -> 27 · 20 -> 28 · 21 -> 29 · 22 -> 30 · 23,24 ->
- * 31,32 · 25,26 -> 33,34 · 27,28 -> 35,36 · +37 closing step.
+ * 31,32 · 25,26 -> 33,34 · 27,28 -> 35,36 · +37 progress · +38 analysis ·
+ * +39,40 the two exports.
  */
 
 /** Is an anchor on the page right now? Queries `document`, not `#app`: every
@@ -236,8 +239,9 @@ export const TOUR_STEPS = Object.freeze([
     id: 'op-funcs-save',
     target: '[data-testid="of-save"]',
     side: 'right',
-    text: 'Edit the Python in the box and Save — it lands in your circulatory_autogen user files and appears in the operation list next to the built-ins. Mark it @differentiable if a gradient-based calibration should be allowed to use it. Close this dialog when you are done.',
+    text: 'Edit the Python in the box and Save. It is written to your outputs directory, as user_funcs/operation_funcs_user.py — never into the circulatory_autogen checkout — and travels with the study, so a run stays reproducible. It then appears in the operation list beside the built-ins. Mark it @differentiable if a gradient-based calibration should be allowed to use it.',
     waitFor: () => gone(EDIT_OP_FUNCS),
+    onNext: (ctx) => ctx.closeDialog(EDIT_OP_FUNCS),
   },
   {
     id: 'obs-save',
@@ -261,9 +265,13 @@ export const TOUR_STEPS = Object.freeze([
   },
   {
     id: 'params-choose',
-    target: '[data-testid="ep-include"]',
+    // The column head, spanning down through every row's tick box: anchored on
+    // one row's Checkbox the ring was a 20px square that sat under the scroll
+    // bar's thumb and moved as the list was filtered.
+    target: '[data-testid="ep-use-header"]',
+    spanAll: '[data-testid="ep-include"]',
     side: 'right',
-    text: 'Tick Use for each parameter you want identified. Search to find them — every constant in the model is listed, and only the ticked ones go into the file.',
+    text: 'Tick Use for each parameter you want identified. Search to find them — every constant in the model is listed, and only the ticked ones are included in the set of params to calibrate/vary/emulate.',
   },
   {
     id: 'params-range',
@@ -276,7 +284,7 @@ export const TOUR_STEPS = Object.freeze([
     target: '[data-testid="ep-create-modifier"]',
     side: 'right',
     title: 'Modifier functions',
-    text: 'These let one identified parameter drive several model constants — select the rows, then create a modifier (a scale, an offset) so the calibration fits one handle instead of five.',
+    text: 'These let one identified parameter drive several model constants — select the rows, then create a modifier (a scale, an offset, etc.) so the calibration fits the new modifier parameter, which modifies the selected.',
   },
   {
     id: 'params-save',
@@ -287,7 +295,7 @@ export const TOUR_STEPS = Object.freeze([
   },
 
   /* ---------------------------------------------------------------- *
-   * 28-37  Emulator, sensitivity, calibration, UQ, analysis
+   * 28-40  Emulator, sensitivity, calibration, UQ, progress, analysis, export
    *
    * Every pane below is `v-show`n, so each section opens with a step that asks
    * the user to click its tab -- the tour cannot click it for them. Those steps
@@ -306,7 +314,7 @@ export const TOUR_STEPS = Object.freeze([
     id: 'emulator-what',
     target: '[data-testid="emu-settings"]',
     side: 'right',
-    text: 'An emulator is a cheap stand-in for the model: it is trained on a sample of runs and then predicts the data_items in milliseconds instead of seconds. Choose how many samples to spend and press Train. It reports a held-out R² per output, which is how you decide whether to trust it.',
+    text: 'An emulator is a cheap stand-in for the model: it is trained on a sample of runs and then predicts the data_items in milliseconds instead of seconds/minutes. Choose how many samples to spend and press Train. It reports a held-out R² per output, which is how you decide whether to trust it.',
   },
   {
     id: 'emulator-use',
@@ -362,10 +370,31 @@ export const TOUR_STEPS = Object.freeze([
     text: 'Set the chains and samples, then Run. Long runs are what the emulator is for. The posterior and its intervals appear in Analysis.',
   },
   {
+    id: 'progress',
+    target: '[data-testid="tab-progress"]',
+    side: 'bottom',
+    title: 'Progress',
+    text: 'Watch a calibration or a UQ run here while it goes: the cost coming down, and the parameters moving, sample by sample.',
+  },
+  {
     id: 'analysis',
     target: '[data-testid="tab-analysis"]',
     side: 'bottom',
     title: 'Analysis',
-    text: "This collects the results of all three. That's the tour — press the Tutorial button any time to run it again.",
+    text: 'This collects the results of all three.',
+  },
+  {
+    id: 'export-pipeline',
+    target: '[data-testid="export-pipeline"]',
+    side: 'left',
+    title: 'Export pipeline to python',
+    text: 'To keep this flexible we never want you to be restricted by this GUI. If you need to do something else, export to python and run there — but please let us know in a GitHub issue what else you would like in CUFLynx, so we can keep improving system understanding through interactive calibration and keep pipelines reproducible.',
+  },
+  {
+    id: 'export-plotting',
+    target: '[data-testid="export-plotting"]',
+    side: 'left',
+    title: 'Export python plotting script',
+    text: "If you want paper- or presentation-worthy plots, edit the exported plotting script. It starts from basic plots of every output the pipeline you just ran generated. That's the tour — press the Tutorial button any time to run it again.",
   },
 ])

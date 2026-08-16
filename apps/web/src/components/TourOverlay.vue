@@ -25,6 +25,7 @@
  *
  * Step shape (the step list itself lives elsewhere -- this file only consumes it):
  *   { id, target: '[data-testid="…"]', title?, text, side,   // 'top'|'bottom'|'left'|'right'
+ *     spanAll?:  '[data-testid="…"]',  // ring the union of every match (a column)
  *     advanceOn?: { target, event },   // delegated listener; target defaults to step.target
  *     waitFor?:  (ctx) => boolean,     // polled on the tick; true => advance
  *     when?:     (ctx) => boolean,     // false => step is skipped
@@ -151,11 +152,16 @@ function grace(i, dir) {
   const started = Date.now()
   const again = () => {
     if (!alive) return
+    // Cleared before either exit, not after: `frame` is what tells onTick a
+    // resolution is still in flight, so leaving a stale id here would stop the
+    // tick doing anything ever again.
     if (available(props.steps[i])) {
+      frame = 0
       land(i)
       return
     }
     if (Date.now() - started >= GRACE_MS) {
+      frame = 0
       walk(i + dir, dir, false)
       return
     }
@@ -225,6 +231,23 @@ const showNext = computed(() => {
   return !s.advanceOn && typeof s.waitFor !== 'function'
 })
 
+/**
+ * Whether Back has anywhere to go: an earlier step that is currently available.
+ *
+ * `index > 0` is not the same question -- resume the tour with a model already
+ * loaded and the earlier steps are all about *getting* one, so none of them can
+ * be shown. Back then did nothing at all, which reads as a broken button rather
+ * than as "there is nothing behind this".
+ */
+const canGoBack = computed(() => {
+  const c = current.value
+  if (!c) return false
+  for (let i = c.index - 1; i >= 0; i -= 1) {
+    if (available(props.steps[i])) return true
+  }
+  return false
+})
+
 /* ------------------------------------------------------------------ *
  * Measurement and placement
  * ------------------------------------------------------------------ */
@@ -236,26 +259,107 @@ const showNext = computed(() => {
 // document.body, so targets like [data-testid="edit-obs"] live outside #app.
 //
 // ProtocolInfoEditor's `editorBounds()` ancestor walk is deliberately NOT
-// copied here: teleported to <body> there is no clipping ancestor to fit
-// inside, only the viewport. Don't add it back.
+// copied for *placing the bubble*: teleported to <body> there is no clipping
+// ancestor to fit the bubble inside, only the viewport.
+//
+// The ring is the opposite case, and needs exactly that walk -- see `clipped`.
+
+const asRect = (top, left, right, bottom) => ({
+  top,
+  left,
+  right,
+  bottom,
+  width: Math.max(0, right - left),
+  height: Math.max(0, bottom - top),
+})
+
+/** The union of two rects; either may be null. */
+function union(a, b) {
+  if (!a) return b
+  if (!b) return a
+  return asRect(
+    Math.min(a.top, b.top),
+    Math.min(a.left, b.left),
+    Math.max(a.right, b.right),
+    Math.max(a.bottom, b.bottom),
+  )
+}
+
+/**
+ * The box the ring should draw, in viewport coordinates.
+ *
+ * Two things the target's own rect does not give us:
+ *
+ * 1. **`spanAll`** -- a step whose subject is a *column* rather than one
+ *    control (the params_for_id "Use" ticks) rings the union of every match,
+ *    so the highlight is the column and not the first row's 20px box, which
+ *    otherwise reads as "this one row" and moves under the user as the list
+ *    is filtered.
+ * 2. **Scroll clipping** -- a list longer than the pane it scrolls in has a
+ *    rect taller than the pane, so an unclipped ring spills out over the
+ *    dialog and the page behind it. Every scrollable (or clipping) ancestor
+ *    trims it back, so the ring only ever marks what the user can see.
+ */
+function ringRect(el, step) {
+  let r = el.getBoundingClientRect()
+  if (step && step.spanAll) {
+    for (const other of document.querySelectorAll(step.spanAll)) {
+      const o = other.getBoundingClientRect()
+      if (o.width || o.height) r = union(r, o)
+    }
+  }
+  return clipped(r, el)
+}
+
+/** Trim a rect to every scrolling/clipping ancestor of `el`, then the viewport. */
+function clipped(rect, el) {
+  let out = asRect(rect.top, rect.left, rect.right, rect.bottom)
+  if (typeof getComputedStyle === 'function') {
+    let node = el.parentElement
+    while (node && node !== document.body && node !== document.documentElement) {
+      const style = getComputedStyle(node)
+      const scrolls = /(auto|scroll|hidden)/.test(`${style.overflowY} ${style.overflowX}`)
+      if (scrolls) {
+        const b = node.getBoundingClientRect()
+        out = asRect(
+          Math.max(out.top, b.top),
+          Math.max(out.left, b.left),
+          Math.min(out.right, b.right),
+          Math.min(out.bottom, b.bottom),
+        )
+      }
+      node = node.parentElement
+    }
+  }
+  const vw = typeof window !== 'undefined' ? window.innerWidth : out.right
+  const vh = typeof window !== 'undefined' ? window.innerHeight : out.bottom
+  return asRect(
+    Math.max(out.top, 0),
+    Math.max(out.left, 0),
+    Math.min(out.right, vw),
+    Math.min(out.bottom, vh),
+  )
+}
+
 function reposition() {
   const s = current.value && current.value.step
   const el = find(s)
   if (!el) return
-  const r = el.getBoundingClientRect()
+  const r = ringRect(el, s)
   box.value = { top: r.top, left: r.left, width: r.width, height: r.height }
   // PrimeVue's modal mask already dims; keep the ring, drop the second dim.
   dim.value = !(el.closest && el.closest('.p-dialog'))
   // Place with whatever the bubble measures now (zero on the very first
   // render, since v-if has not produced it yet), then refine on the next
   // frame once it has its real size -- the clear/measure/shift dance from
-  // ProtocolInfoEditor.fitEditor.
+  // ProtocolInfoEditor.fitEditor. The bubble is placed against the *clipped*
+  // box, so it points at the visible part rather than at an edge off-pane.
   place(r)
   if (typeof requestAnimationFrame === 'function') {
     requestAnimationFrame(() => {
       if (!alive || !current.value) return
       const again = find(current.value.step)
-      if (again) place(again.getBoundingClientRect())
+      if (again) place(ringRect(again, current.value.step))
     })
   }
 }
@@ -305,12 +409,19 @@ function compute(rect, bw, bh) {
 }
 
 function scrollIntoViewIfNeeded() {
-  const el = find(current.value && current.value.step)
+  const step = current.value && current.value.step
+  const el = find(step)
   if (!el || typeof el.scrollIntoView !== 'function') return
   const r = el.getBoundingClientRect()
   const off = r.bottom < 0 || r.top > window.innerHeight || r.right < 0 || r.left > window.innerWidth
   // Scrolled out of view is *not* a reason to skip a step -- bring it back.
-  if (off) el.scrollIntoView({ block: 'center', inline: 'center' })
+  // `clipped` covers the subtler case: still inside the viewport, but scrolled
+  // out of the pane it lives in, which is where the ring would have nothing
+  // left to draw.
+  const visible = clipped(r, el)
+  if (off || !(visible.width && visible.height)) {
+    el.scrollIntoView({ block: 'center', inline: 'center' })
+  }
 }
 
 /* ------------------------------------------------------------------ *
@@ -324,6 +435,12 @@ function onReflow() {
 function onTick() {
   const c = current.value
   if (!c) return
+  // A resolution already in flight owns the next move. Without this the tick
+  // (200 ms) restarts a grace period (350 ms) before it can ever finish, and
+  // the tour sticks on a step whose target has gone -- closing the obs_data
+  // dialog left it on "the protocol" forever instead of walking on to the
+  // next thing on screen.
+  if (frame) return
   if (available(c.step)) {
     misses = 0
     reposition()
@@ -474,7 +591,7 @@ watch(
             type="button"
             class="tour-btn"
             data-testid="tour-back"
-            :disabled="current.index <= 0"
+            :disabled="!canGoBack"
             @click="back"
           >
             Back
@@ -534,7 +651,16 @@ watch(
   box-shadow: 0 0 0 2px var(--p-primary-color, #3b82f6);
 }
 
+/* The bubble is deliberately NOT --p-content-background: that is the colour of
+   the panels and dialogs it sits on top of, so it read as part of them. A grey
+   a step away from the surface underneath -- light grey on light, dark grey on
+   dark -- is what makes it legible as something laid over the app.
+   `.cellml-dark` is the darkModeSelector set in main.js, on <html>, so it
+   reaches the bubble even though the bubble is teleported to <body>. */
 .tour-bubble {
+  --tour-surface: #e8eaed;
+  --tour-border: #b7bcc3;
+  --tour-ink: #1b1d21;
   position: fixed;
   /* Above PrimeVue's modal (1100) and above the 3000 a teleported
      SearchableSelect list uses, so a picker opened mid-step cannot cover the
@@ -544,12 +670,17 @@ watch(
   width: max-content;
   max-width: 22rem;
   padding: 0.6rem 0.75rem;
-  border: 1px solid var(--p-content-border-color, #ccc);
+  border: 1px solid var(--tour-border);
   border-radius: 6px;
-  background: var(--p-content-background, #fff);
-  color: var(--p-text-color, #222);
-  box-shadow: 0 6px 22px rgba(0, 0, 0, 0.22);
+  background: var(--tour-surface);
+  color: var(--tour-ink);
+  box-shadow: 0 6px 22px rgba(0, 0, 0, 0.32);
   font-size: 0.85rem;
+}
+.cellml-dark .tour-bubble {
+  --tour-surface: #34383f;
+  --tour-border: #565c66;
+  --tour-ink: #f1f2f4;
 }
 .tour-count {
   font-size: 0.72rem;
@@ -573,9 +704,11 @@ watch(
 .tour-btn {
   font: inherit;
   padding: 0.15rem 0.6rem;
-  border: 1px solid var(--p-content-border-color, #ccc);
+  /* The bubble's own palette, not the app's, so the controls stay legible on
+     the grey rather than reverting to the surface behind it. */
+  border: 1px solid var(--tour-border);
   border-radius: 3px;
-  background: var(--p-content-background, #fff);
+  background: transparent;
   color: inherit;
   cursor: pointer;
 }
@@ -599,8 +732,8 @@ watch(
   position: absolute;
   width: 10px;
   height: 10px;
-  background: var(--p-content-background, #fff);
-  border: 1px solid var(--p-content-border-color, #ccc);
+  background: var(--tour-surface);
+  border: 1px solid var(--tour-border);
   transform: rotate(45deg);
 }
 /* `side` is where the bubble sits relative to the target, so the caret is on

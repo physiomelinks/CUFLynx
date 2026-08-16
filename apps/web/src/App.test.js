@@ -2488,7 +2488,7 @@ describe('guided tour', () => {
     expect(tour.exists()).toBe(true)
     expect(tour.props('step')).toBe(0)
     expect(tour.props('steps')).toBe(TOUR_STEPS)
-    expect(tour.props('steps').length).toBe(37)
+    expect(tour.props('steps').length).toBe(40)
     // The ctx is getters over App's own state, read on the overlay's tick.
     expect(typeof tour.props('ctx').hasModel).toBe('function')
     expect(tour.props('ctx').hasModel()).toBe(false)
@@ -2507,9 +2507,27 @@ describe('guided tour', () => {
     expect(wrapper.find('[data-testid="tour-start"]').classes()).not.toContain('tour-pulse')
   })
 
-  // The step index is deliberately not persisted: resuming at step 19 into a
-  // reloaded, empty app is worse than starting again.
-  it('starts from the beginning every time', async () => {
+  // Skipping is "not now", not "never again": reopening resumes where it was
+  // left, rather than replaying from 1 -- which, with a model already loaded,
+  // then skipped forward past every step about getting one and landed the user
+  // in the middle with nothing behind them.
+  it('resumes where it was skipped', async () => {
+    const wrapper = shallowMount(App)
+    await wrapper.find('[data-testid="tour-start"]').trigger('click')
+    await nextTick()
+    overlay(wrapper).vm.$emit('update:step', 19)
+    await nextTick()
+
+    overlay(wrapper).vm.$emit('close', 'skip')
+    await nextTick()
+    await wrapper.find('[data-testid="tour-start"]').trigger('click')
+    await nextTick()
+    expect(overlay(wrapper).props('step')).toBe(19)
+  })
+
+  // Finishing is different: there is nothing left to resume, so the next run
+  // starts at the top.
+  it('starts again from the beginning once it has been finished', async () => {
     const wrapper = shallowMount(App)
     await wrapper.find('[data-testid="tour-start"]').trigger('click')
     await nextTick()

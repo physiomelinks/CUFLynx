@@ -437,7 +437,9 @@ async function onSave() {
 
     <div class="ep-head" :class="{ 'has-prior': priorTypes.length }">
       <span class="ep-sel" title="Select for Group / Create modifier">○</span>
-      <span class="ep-inc">Use</span>
+      <!-- The guided tour rings this column head and spans down through every
+           row's ep-include, so the highlight is the whole Use column. -->
+      <span class="ep-inc" data-testid="ep-use-header">Use</span>
       <span class="ep-name">Parameter</span>
       <span class="ep-num">min</span>
       <span class="ep-num">max</span>
