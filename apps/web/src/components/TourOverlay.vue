@@ -31,6 +31,7 @@
  *     when?:     (ctx) => boolean,     // false => step is skipped
  *     onNext?:   (ctx) => void,        // Next button only; see above
  *     bullets?:  ['…', '…'],           // a list under the text, for options
+ *     outro?:    '…',                  // a paragraph *after* the list
  *     link?:     { href, label } }     // one "read more" link under the text
  *
  * `ctx` is a plain object of *getters* over app state, plus the few writers the
@@ -594,6 +595,9 @@ watch(
         <ul v-if="current.step.bullets" class="tour-bullets" data-testid="tour-bullets">
           <li v-for="(b, i) in current.step.bullets" :key="i">{{ b }}</li>
         </ul>
+        <p v-if="current.step.outro" class="tour-text" data-testid="tour-outro">
+          {{ current.step.outro }}
+        </p>
         <!-- A real anchor rather than a URL in the prose: the text is rendered
              as plain text (no v-html), so a bare link would not be clickable.
              `noopener` because it opens in a new tab. -->

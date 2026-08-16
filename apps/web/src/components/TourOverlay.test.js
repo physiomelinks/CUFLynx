@@ -440,6 +440,22 @@ describe('TourOverlay', () => {
     expect(document.querySelector('[data-testid="tour-bullets"]')).toBeNull()
   })
 
+  it('puts an outro paragraph after the bullets, not before', async () => {
+    anchor('a')
+    const steps = FIXTURE()
+    steps[0].bullets = ['first thing', 'second thing']
+    steps[0].outro = 'And then this.'
+    await mountTour({ steps })
+    const order = [...bubble().querySelectorAll('[data-testid]')].map((n) =>
+      n.getAttribute('data-testid'),
+    )
+    expect(order.indexOf('tour-bullets')).toBeLessThan(order.indexOf('tour-outro'))
+    expect(order.indexOf('tour-text')).toBeLessThan(order.indexOf('tour-bullets'))
+    expect(document.querySelector('[data-testid="tour-outro"]').textContent.trim()).toBe(
+      'And then this.',
+    )
+  })
+
   it('renders a step link as a real anchor, opened safely', async () => {
     // The text is plain (no v-html), so a URL written into the prose would not
     // be clickable -- hence a field of its own.

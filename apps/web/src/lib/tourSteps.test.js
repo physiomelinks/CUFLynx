@@ -98,6 +98,12 @@ describe('tourSteps', () => {
       if ('spanAll' in step) {
         expect(step.spanAll, `step ${step.id} spanAll`).toMatch(/^\[data-testid="[a-z0-9-]+"\]$/)
       }
+      if ('outro' in step) {
+        // Only ever a *second* paragraph: with nothing above it to follow on
+        // from, it is just `text` spelled differently.
+        expect(step.bullets, `step ${step.id} outro without bullets`).toBeTruthy()
+        expect(typeof step.outro, `step ${step.id} outro`).toBe('string')
+      }
       if ('bullets' in step) {
         expect(Array.isArray(step.bullets), `step ${step.id} bullets`).toBe(true)
         expect(step.bullets.length, `step ${step.id} bullets`).toBeGreaterThan(1)
@@ -157,6 +163,7 @@ describe('tourSteps', () => {
   it('keeps every bubble short enough to read', () => {
     for (const step of TOUR_STEPS) {
       expect(step.text.length, `step ${step.id} text`).toBeLessThan(420)
+      expect((step.outro ?? '').length, `step ${step.id} outro`).toBeLessThan(280)
       for (const b of step.bullets ?? []) {
         expect(b.length, `step ${step.id} bullet`).toBeLessThan(140)
       }
@@ -167,7 +174,9 @@ describe('tourSteps', () => {
   // the places that wanted one wanted a list instead.
   it('uses no arrow glyphs in the copy', () => {
     for (const step of TOUR_STEPS) {
-      const all = [step.text, step.title ?? '', ...(step.bullets ?? [])].join(' ')
+      const all = [step.text, step.title ?? '', step.outro ?? '', ...(step.bullets ?? [])].join(
+        ' ',
+      )
       expect(all, `step ${step.id}`).not.toMatch(/[\u2190-\u21FF\u27F0-\u27FF]/)
     }
   })

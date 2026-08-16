@@ -244,11 +244,13 @@ export const TOUR_STEPS = Object.freeze([
     target: '[data-testid="of-templates"]',
     side: 'right',
     title: 'User-defined operations',
-    text: 'Two kinds of function can be written here. Start from a template: the plain one, a multi-operand one, one with keyword arguments, a robust cost, a differentiable one.',
+    text: 'Two kinds of function can be written here.',
     bullets: [
       'an operation reduces a simulated trace to a number',
       'a cost scores a predicted number against an observed one',
     ],
+    outro:
+      'Start from a template: the plain one, a multi-operand one, one with keyword arguments, a robust cost, a differentiable one.',
   },
   {
     id: 'op-funcs-save',
