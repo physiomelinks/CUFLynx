@@ -293,6 +293,53 @@ describe('TourOverlay', () => {
     expect(ran).toEqual([])
   })
 
+  it('offers no Next on a step that is waiting for the user to click something', async () => {
+    // The accident this prevents: Next sits under the pointer, so it is the
+    // easiest thing to press -- and pressing it walks past the click the step
+    // exists for, onto a bubble pointing at UI that click was going to produce.
+    anchor('a')
+    anchor('b')
+    const steps = FIXTURE()
+    steps[0].advanceOn = { target: '[data-testid="a"]' }
+    await mountTour({ steps })
+    expect(button('next')).toBeNull()
+    // Never a dead end: Back and Skip are always there.
+    expect(button('skip')).not.toBeNull()
+    expect(button('back')).not.toBeNull()
+  })
+
+  it('offers no Next on a step that is waiting on app state either', async () => {
+    anchor('a')
+    anchor('b')
+    const steps = FIXTURE()
+    steps[0].waitFor = () => false
+    await mountTour({ steps })
+    expect(button('next')).toBeNull()
+  })
+
+  it('does offer Next when the step can do the waiting-for itself', async () => {
+    // `onNext` means pressing Next performs the action rather than skipping it.
+    anchor('a')
+    anchor('b')
+    const steps = FIXTURE()
+    steps[0].waitFor = (ctx) => ctx.done
+    steps[0].onNext = (ctx) => {
+      ctx.done = true
+    }
+    const ctx = { done: false }
+    const w = await mountTour({ steps, ctx })
+    expect(button('next')).not.toBeNull()
+    await clickOn(button('next'))
+    expect(ctx.done).toBe(true)
+    expect(w.emitted('update:step')).toEqual([[1]])
+  })
+
+  it('offers Next on an ordinary explanatory step', async () => {
+    anchor('a')
+    await mountTour()
+    expect(button('next')).not.toBeNull()
+  })
+
   it('re-resolves forward when its target disappears', async () => {
     const a = anchor('a')
     anchor('b')
