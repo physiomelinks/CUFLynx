@@ -169,12 +169,11 @@ def _ca_parser():
     stack into the upload path.
     """
     try:
-        from obs_options import _ca_paths  # noqa: PLC0415
+        from ca_imports import ca_from, ensure_ca_path  # noqa: PLC0415
 
-        for p in _ca_paths():
-            if p not in sys.path:
-                sys.path.insert(0, p)
-        from parsers.PrimitiveParsers import ObsAndParamDataParser  # noqa: PLC0415
+        ensure_ca_path()
+        ObsAndParamDataParser = ca_from(
+            "parsers.PrimitiveParsers", "ObsAndParamDataParser")
     except Exception:  # noqa: BLE001 - CA absent or too old; nothing to ask
         return None
     return ObsAndParamDataParser()

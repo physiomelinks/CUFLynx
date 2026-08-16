@@ -154,7 +154,9 @@ def _build_local_engine(config: dict, settings: dict, solver_info: dict, model_t
     CVODE_myokit). Mirrors :func:`_calibrate_for_nominal`'s construction; ``do_ad``
     is forced on so CA takes the analytic-sensitivity path.
     """
-    from param_id.paramID import CVS0DParamID  # noqa: E402
+    from ca_imports import ca_from  # noqa: E402 (shipped into runners/ too)
+
+    CVS0DParamID = ca_from("param_id.paramID", "CVS0DParamID")
 
     return CVS0DParamID(
         model_path=config["model_path"],
@@ -188,7 +190,10 @@ def _calibrate_for_nominal(config: dict, settings: dict, solver_info: dict, mode
     the SA param order, both derived from params_for_id).
     """
     import numpy as np  # noqa: E402
-    from param_id.paramID import CVS0DParamID  # noqa: E402
+
+    from ca_imports import ca_from  # noqa: E402 (shipped into runners/ too)
+
+    CVS0DParamID = ca_from("param_id.paramID", "CVS0DParamID")
 
     optimiser_options = {
         "num_calls_to_function": int(settings.get("num_calls_to_function", 100)),
@@ -251,7 +256,10 @@ def run(config: dict) -> dict:
 
 def _run(config: dict) -> dict:
     _ensure_ca_on_path()
-    from sensitivity_analysis.sensitivityAnalysis import SensitivityAnalysis  # noqa: E402
+    from ca_imports import ca_from  # noqa: E402 (shipped into runners/ too)
+
+    SensitivityAnalysis = ca_from(
+        "sensitivity_analysis.sensitivityAnalysis", "SensitivityAnalysis")
 
     settings = config.get("settings", {})
     method = settings.get("method", "sobol")

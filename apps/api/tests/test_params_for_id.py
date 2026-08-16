@@ -1,6 +1,7 @@
 import numpy as np
 import pytest
 
+import ca_imports
 from conftest import BG_MODEL_PATH, LV_MODEL_PATH, LV_PARAMS_CSV_PATH, upload_model
 
 # Every test here feeds a CSV through the parser, and the CSV -> JSON conversion
@@ -250,7 +251,10 @@ def test_the_flat_model_naming_rule_comes_from_ca(monkeypatch, requires_ca):
     qname must follow it.
     """
     import params_for_id as pfi
-    from parsers.PrimitiveParsers import model_qname_candidates
+    from ca_imports import ca_from
+
+    model_qname_candidates = ca_from(
+        "parsers.PrimitiveParsers", "model_qname_candidates")
 
     called = {}
 
@@ -258,7 +262,12 @@ def test_the_flat_model_naming_rule_comes_from_ca(monkeypatch, requires_ca):
         called["qname"] = qname
         return ["invented/name_from_ca"]
 
-    monkeypatch.setattr("parsers.PrimitiveParsers.model_qname_candidates", spy)
+    # The patch target is a *string*, so it has to name the module CA actually
+    # resolved to -- "parsers.PrimitiveParsers" or "libcuflynx.parsers.PrimitiveParsers".
+    monkeypatch.setattr(
+        f"{ca_imports.resolved_name('parsers.PrimitiveParsers')}.model_qname_candidates",
+        spy,
+    )
 
     initial = {"invented/name_from_ca": 3.5}
     idx = pfi._build_gen_index(initial)
@@ -281,7 +290,7 @@ def test_the_local_search_never_overrides_ca(monkeypatch, requires_ca):
     # search would otherwise have preferred.
     initial = {"parameters/C_aortic_root": 1.0, "elsewhere/C_aortic_root": 2.0}
     monkeypatch.setattr(
-        "parsers.PrimitiveParsers.model_qname_candidates",
+        f"{ca_imports.resolved_name('parsers.PrimitiveParsers')}.model_qname_candidates",
         lambda _q: ["parameters/C_aortic_root"],
     )
     idx = pfi._build_gen_index(initial)
@@ -495,7 +504,9 @@ def requires_ca_priors():
     """CA validates the hyper-parameters; without a CA new enough to know them
     there is no verdict to assert, and the upload passes them through."""
     try:
-        from parsers.PrimitiveParsers import normalise_prior_params  # noqa: F401
+        from ca_imports import ca_from
+
+        ca_from("parsers.PrimitiveParsers", "normalise_prior_params")
     except Exception:
         pytest.skip("circulatory_autogen without the prior hyper-parameter schema")
 

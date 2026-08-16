@@ -88,7 +88,9 @@ def _solver_info_from_config(config: dict, settings: dict) -> dict:
 
 def run(config: dict) -> dict:
     _ensure_ca_on_path()
-    from emulators.emulator_trainer import EmulatorTrainer  # noqa: E402
+    from ca_imports import ca_from  # noqa: E402 (shipped into runners/ too)
+
+    EmulatorTrainer = ca_from("emulators.emulator_trainer", "EmulatorTrainer")
     import ca_run_history  # noqa: E402  (CA output formats, one place)
 
     settings = config.get("settings", {})

@@ -17,6 +17,7 @@ import tempfile
 from pathlib import Path
 
 import user_funcs
+from ca_imports import ca_from
 from engine import _ensure_ca_on_path
 
 # Generated modules live next to the uploads, keyed by model + format so the two
@@ -44,7 +45,7 @@ def generate_python_model(cellml_path: str, *, casadi_compat: bool, module_name:
         return cached
 
     _ensure_ca_on_path()
-    from generators.PythonGenerator import PythonGenerator  # noqa: E402
+    PythonGenerator = ca_from("generators.PythonGenerator", "PythonGenerator")
 
     GEN_DIR.mkdir(parents=True, exist_ok=True)
     gen = PythonGenerator(

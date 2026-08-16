@@ -138,7 +138,9 @@ def _make_param_id(config, settings, obs_path, *, mcmc, options_key, options):
     """Construct a CVS0DParamID (no run). ``options_key`` is 'optimiser_options' or
     the UQ options kwarg this CA takes (see uq_options_kwarg); ``mcmc`` toggles
     mcmc_instead."""
-    from param_id.paramID import CVS0DParamID  # noqa: E402
+    from ca_imports import ca_from  # noqa: E402 (shipped into runners/ too)
+
+    CVS0DParamID = ca_from("param_id.paramID", "CVS0DParamID")
 
     kwargs = dict(
         model_path=config["model_path"],
@@ -186,7 +188,9 @@ def uq_options_kwarg() -> str:
     try:
         import inspect
 
-        from param_id.paramID import CVS0DParamID
+        from ca_imports import ca_from
+
+        CVS0DParamID = ca_from("param_id.paramID", "CVS0DParamID")
 
         if "UQ_options" in inspect.signature(CVS0DParamID.__init__).parameters:
             return "UQ_options"
@@ -239,9 +243,14 @@ def _distributions(flat, qnames):
 def run(config: dict) -> dict:
     _ensure_ca_on_path()
     import numpy as np
-    import param_id.paramID as pid
-    from param_id.paramID import ensure_mle_cost_type_for_bayesian_inner
-    from identifiabilty_analysis.identifiabilityAnalysis import IdentifiabilityAnalysis
+
+    from ca_imports import ca_from, ca_import  # noqa: E402 (shipped into runners/ too)
+
+    pid = ca_import("param_id.paramID")
+    ensure_mle_cost_type_for_bayesian_inner = ca_from(
+        "param_id.paramID", "ensure_mle_cost_type_for_bayesian_inner")
+    IdentifiabilityAnalysis = ca_from(
+        "identifiabilty_analysis.identifiabilityAnalysis", "IdentifiabilityAnalysis")
 
     settings = config.get("settings", {})
     method = settings.get("method", "mcmc")

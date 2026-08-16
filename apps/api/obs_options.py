@@ -11,9 +11,8 @@ from __future__ import annotations
 
 import inspect
 import sys
-from pathlib import Path
 
-from engine import _circulatory_autogen_src
+from ca_imports import ca_from, ca_import, ca_paths, ensure_ca_path
 
 # Keyword arguments that are part of the operation-calling machinery rather than
 # user-tunable knobs, so they're never surfaced as editable per-data_item inputs.
@@ -72,11 +71,11 @@ def reset_cache() -> None:
     _cache_output_dir = None
 
 
-def _ca_paths() -> list[str]:
-    """The sys.path entries CA's operation/cost modules need to import."""
-    src = Path(_circulatory_autogen_src())
-    root = src.parent  # repo root holds funcs_user/ alongside src/
-    return [str(src), str(src / "param_id"), str(root / "funcs_user")]
+#: CA's sys.path entries: one implementation, in :mod:`ca_imports`. Kept as a
+#: module-level name here because ``obs_data``/``obs_cost``/``cost_gradient``
+#: import it from this module.
+_ca_paths = ca_paths
+_ensure_ca_path = ensure_ca_path
 
 
 def _introspect_schema() -> tuple[list, list]:
@@ -86,7 +85,7 @@ def _introspect_schema() -> tuple[list, list]:
     CA doesn't lose the operation/cost lists.
     """
     try:
-        from utilities import obs_data_helpers as odh  # noqa: E402
+        odh = ca_import("utilities.obs_data_helpers")
 
         data_types = list(odh.get_valid_data_types())
         plot_types = list(odh.get_valid_plot_types())
@@ -102,7 +101,10 @@ def _introspect(output_dir: str | None = None) -> dict:
         if p not in sys.path:
             sys.path.insert(0, p)
     import operation_funcs  # noqa: E402 (CA module, resolved via sys.path)
-    import cost_funcs_user  # noqa: E402
+
+    # Not a bare import: CA #433 moved this into the package, so the module the
+    # bare name found in ``funcs_user/`` no longer exists in a current CA.
+    cost_funcs_user = ca_import("cost_funcs_user")
 
     # numpy mode keeps this light (no casadi/myokit). CUFLynx-authored funcs live
     # in external files (issue #104); hand their paths to CA's builders so the
@@ -299,7 +301,7 @@ def _reserved_cost_kwargs() -> frozenset:
     an input whose value CA refuses to accept.
     """
     try:
-        from param_id.cost_kwargs import RESERVED_COST_KWARGS  # noqa: PLC0415
+        RESERVED_COST_KWARGS = ca_from("param_id.cost_kwargs", "RESERVED_COST_KWARGS")
 
         return frozenset(RESERVED_COST_KWARGS)
     except Exception:  # noqa: BLE001 - CA without the contract (pre-#370)
@@ -341,7 +343,7 @@ def _introspect_cost_kwargs(cost_funcs) -> tuple[dict, dict]:
     """
     reserved = _reserved_cost_kwargs()
     try:
-        from param_id.cost_kwargs import get_cost_kwarg_spec  # noqa: PLC0415
+        get_cost_kwarg_spec = ca_from("param_id.cost_kwargs", "get_cost_kwarg_spec")
     except Exception:  # noqa: BLE001 - older CA; parse the signature ourselves
         get_cost_kwarg_spec = None
 
@@ -384,7 +386,8 @@ def _introspect_operation_differentiability(op_funcs) -> dict:
     it). Best-effort: an older CA without ``is_circulatory_differentiable`` yields
     ``{}``, leaving the editor unable to flag ops (no false warnings)."""
     try:
-        from param_id.differentiable import is_circulatory_differentiable  # noqa: E402
+        is_circulatory_differentiable = ca_from(
+            "param_id.differentiable", "is_circulatory_differentiable")
     except Exception:  # noqa: BLE001 - older CA without the marker
         return {}
     return {name: bool(is_circulatory_differentiable(fn)) for name, fn in op_funcs.items()}
@@ -403,7 +406,7 @@ def _introspect_default_cost_type() -> str:
     "default" rather than naming a cost function that may not be the one used.
     """
     try:
-        from utilities.obs_data_helpers import DEFAULT_COST_TYPE  # noqa: PLC0415
+        DEFAULT_COST_TYPE = ca_from("utilities.obs_data_helpers", "DEFAULT_COST_TYPE")
 
         return str(DEFAULT_COST_TYPE or "")
     except Exception:  # noqa: BLE001 - older CA, or no CA at all
@@ -471,7 +474,8 @@ def get_cost_funcs(output_dir: str | None = None):
         for p in _ca_paths():
             if p not in sys.path:
                 sys.path.insert(0, p)
-        import cost_funcs_user  # noqa: E402 (CA module, resolved via sys.path)
+        # See _introspect: CA #433 relocated this module into the package.
+        cost_funcs_user = ca_import("cost_funcs_user")
 
         _, cost_path = _external_func_paths(output_dir)
         return _cost_funcs_dict(cost_funcs_user, cost_path)

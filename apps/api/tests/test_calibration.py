@@ -21,6 +21,7 @@ from conftest import (
     LV_OBS_DATA_PATH,
     LV_PARAMS_CSV_PATH,
     RESOURCES_DIR,
+    set_ca_module,
     upload_model,
 )
 
@@ -1238,8 +1239,8 @@ def _run_calibration_runner(monkeypatch, tmp_path, gradient_method):
     fake_pkg = types.ModuleType("param_id")
     fake_mod = types.ModuleType("param_id.paramID")
     fake_mod.CVS0DParamID = _FakeParamID
-    monkeypatch.setitem(sys.modules, "param_id", fake_pkg)
-    monkeypatch.setitem(sys.modules, "param_id.paramID", fake_mod)
+    set_ca_module(monkeypatch, "param_id", fake_pkg)
+    set_ca_module(monkeypatch, "param_id.paramID", fake_mod)
     monkeypatch.setattr(cr, "_ensure_ca_on_path", lambda: None)
     monkeypatch.setattr(cr, "_generate_error_vectors", lambda *a, **k: {})
 

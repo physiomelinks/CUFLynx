@@ -202,6 +202,42 @@ def resolve_ca_src():
     return args.ca_src
 
 
+def ca_import(module):
+    """Import a circulatory_autogen module, in either of its two layouts.
+
+    CA moved every module under a ``libcuflynx.`` namespace (CA #437) and older
+    checkouts are flat, so an export has to run against both: try the namespaced
+    spelling first, then the flat one. (Mirrors ``apps/api/ca_imports.py`` in
+    CUFLynx, which is where this rule is documented.)
+    """
+    import importlib
+
+    errors = []
+    for cand in ("libcuflynx." + module, module):
+        try:
+            return importlib.import_module(cand)
+        except ModuleNotFoundError as exc:
+            # Only try the other spelling when *this* one is absent. A module
+            # that is present but missing a dependency of its own must say so.
+            if not (exc.name and (cand == exc.name or cand.startswith(exc.name + "."))):
+                raise
+            errors.append("%r (%s)" % (cand, exc))
+    # ImportError, not sys.exit: callers below probe for optional CA features
+    # inside ``except Exception`` and a SystemExit would sail straight past them.
+    raise ImportError(
+        "circulatory_autogen module %r could not be imported (tried %s). "
+        "Point --ca-src at the 'src' folder of a circulatory_autogen clone."
+        % (module, " and ".join(errors))
+    )
+
+
+def ca_from(module, *names):
+    """``from <module> import <names>``; one name returns it, several a tuple."""
+    mod = ca_import(module)
+    values = tuple(getattr(mod, n) for n in names)
+    return values[0] if len(names) == 1 else values
+
+
 def _uq_block(cfg):
     """The UQ option block from the yaml, under either spelling.
 
@@ -225,7 +261,7 @@ def _uq_options_key():
     try:
         import inspect
 
-        from param_id.paramID import CVS0DParamID
+        CVS0DParamID = ca_from("param_id.paramID", "CVS0DParamID")
 
         if "UQ_options" in inspect.signature(CVS0DParamID.__init__).parameters:
             return "UQ_options"
@@ -399,7 +435,7 @@ def main():
     # python / casadi_python backends run a generated .py model: build it from the
     # bundled CellML, alongside where circulatory_autogen expects the model.
     if inp["model_type"] in ("python", "casadi_python"):
-        from generators.PythonGenerator import PythonGenerator
+        PythonGenerator = ca_from("generators.PythonGenerator", "PythonGenerator")
 
         cellml_path = os.path.join(HERE, "generated_models", cfg["file_prefix"], cfg["model_file"])
         inp["model_path"] = PythonGenerator(
@@ -412,7 +448,8 @@ def main():
     # ---- 1) Simulation -----------------------------------------------------
     if cfg.get("do_simulation"):
         print("=== simulation ===", flush=True)
-        from solver_wrappers import get_simulation_helper_from_inp_data_dict
+        get_simulation_helper_from_inp_data_dict = ca_from(
+            "solver_wrappers", "get_simulation_helper_from_inp_data_dict")
 
         sim_helper = get_simulation_helper_from_inp_data_dict(inp)
         sim_helper.run()
@@ -425,7 +462,8 @@ def main():
     # ---- 2) Sensitivity analysis ------------------------------------------
     if cfg.get("do_sensitivity"):
         print("=== sensitivity analysis ===", flush=True)
-        from sensitivity_analysis.sensitivityAnalysis import SensitivityAnalysis
+        SensitivityAnalysis = ca_from(
+            "sensitivity_analysis.sensitivityAnalysis", "SensitivityAnalysis")
 
         sa_agent = SensitivityAnalysis.init_from_dict(inp)
         sa_agent.run_sensitivity_analysis(inp["sa_options"])
@@ -444,7 +482,7 @@ def main():
     calibrated = None  # the engine itself, likewise
     if cfg.get("do_calibration"):
         print("=== calibration ===", flush=True)
-        from param_id.paramID import CVS0DParamID
+        CVS0DParamID = ca_from("param_id.paramID", "CVS0DParamID")
 
         param_id = CVS0DParamID.init_from_dict(inp)
         param_id.run()
@@ -458,8 +496,9 @@ def main():
     if _do_uq(cfg) or cfg.get("do_ia"):
         method = "mcmc" if _do_uq(cfg) else "laplace"
         print(f"=== uncertainty quantification ({method}) ===", flush=True)
-        import param_id.paramID as paramID_module
-        from param_id.paramID import CVS0DParamID, ensure_mle_cost_type_for_bayesian_inner
+        paramID_module = ca_import("param_id.paramID")
+        CVS0DParamID, ensure_mle_cost_type_for_bayesian_inner = ca_from(
+            "param_id.paramID", "CVS0DParamID", "ensure_mle_cost_type_for_bayesian_inner")
 
         # MCMC / Laplace need ln L = -cost, so use an MLE obs copy + MLE cost_type.
         uq_key = _uq_options_key()
@@ -496,7 +535,8 @@ def main():
             if getattr(mcmc, "rank", 0) == 0:
                 save_uq_samples(output_dir, mcmc.get_mcmc_samples()[0], flat_param_names(mcmc))
         else:
-            from identifiabilty_analysis.identifiabilityAnalysis import IdentifiabilityAnalysis
+            IdentifiabilityAnalysis = ca_from(
+                "identifiabilty_analysis.identifiabilityAnalysis", "IdentifiabilityAnalysis")
 
             # Reuse the calibration's engine when there is one: Laplace only
             # needs a built param_id, and constructing a second CVS0DParamID

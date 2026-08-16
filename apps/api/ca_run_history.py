@@ -43,17 +43,16 @@ def _ca_run_history():
     one import-order change away from going quietly blank -- and it already fails
     that way inside a git worktree, where the sibling-clone guess misses.
     """
-    try:
-        from solver_options import _ensure_ca_path  # noqa: PLC0415
+    from ca_imports import ca_import, ensure_ca_path  # noqa: PLC0415
 
-        _ensure_ca_path()
-    except Exception:  # noqa: BLE001 - fall through to the bare import
+    try:
+        ensure_ca_path()
+    except Exception:  # noqa: BLE001 - try the import anyway; CA may already be there
         pass
     try:
-        from param_id import run_history  # noqa: PLC0415
+        return ca_import("param_id.run_history")
     except ImportError:
         return None
-    return run_history
 
 
 def find_run_dir(output_dir: str) -> str | None:

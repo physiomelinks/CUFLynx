@@ -499,7 +499,10 @@ def test_custom_operation_kwargs_change_the_computed_value(tmp_path, monkeypatch
         obs_options.reset_cache()
 
     # 2) CA parses a CUFLynx-shaped obs_data.json and keeps the kwargs.
-    from parsers.PrimitiveParsers import ObsAndParamDataParser
+    from ca_imports import ca_from
+
+    ObsAndParamDataParser = ca_from(
+        "parsers.PrimitiveParsers", "ObsAndParamDataParser")
 
     obs = {
         "protocol_info": {"pre_times": [0.0], "sim_times": [[5]], "params_to_change": {}},
@@ -582,3 +585,50 @@ def test_a_modifier_may_not_shadow_the_decorator(tmp_cfg):
         uf.save_user_func(
             "modifier", None, "def modifier_func(theta, baseline):\n    return theta\n"
         )
+
+
+def test_every_generated_header_names_both_ca_module_layouts(tmp_cfg):
+    """A generated funcs file must import from CA whichever layout the CA dir has.
+
+    These headers are written into the study's own ``<outputs>/user_funcs/`` directory,
+    they are what "Edit source" opens, and they are the files CA actually runs. The CA
+    directory is chosen at runtime, so one CUFLynx build writes files that must load
+    against a flat checkout and against a ``libcuflynx.``-namespaced one alike.
+
+    ``cost_funcs_user`` is the subtle one: CA #433 moved the built-in funcs into the
+    package as ``libcuflynx.funcs.cost_funcs_user``, so the bare spelling only still
+    resolves because CA aliases it for files written *before* that move. Depending on
+    that shim from a newly generated file would make CUFLynx's output rely on a
+    compatibility path meant for legacy content -- and it is removable.
+
+    Each pair is checked as its own try/except: a CA can have the namespace without the
+    funcs move (the state during CA #428), and coupling the imports into one block would
+    send that case down the flat arm for modules that are not flat.
+    """
+    import ast
+
+    for kind, header, namespaced, flat in (
+        ("operation", uf._OPERATION_HEADER,
+         "libcuflynx.param_id.differentiable", "param_id.differentiable"),
+        ("cost", uf._COST_HEADER,
+         "libcuflynx.funcs.cost_funcs_user", "cost_funcs_user"),
+        ("modifier", uf._MODIFIER_HEADER,
+         "libcuflynx.param_id.modifier_funcs", "param_id.modifier_funcs"),
+    ):
+        assert namespaced in header, f"{kind} header does not name {namespaced}"
+        assert flat in header, f"{kind} header does not name {flat}"
+        # A header that does not parse cannot be edited into a working funcs file.
+        ast.parse(header)
+
+    # Every `from <ca module> import` in the cost header must sit inside a try/except
+    # ImportError, so neither layout is assumed.
+    tree = ast.parse(uf._COST_HEADER)
+    guarded = {
+        node.module
+        for handler in ast.walk(tree) if isinstance(handler, ast.Try)
+        for node in ast.walk(handler) if isinstance(node, ast.ImportFrom)
+    }
+    top_level = {
+        node.module for node in tree.body if isinstance(node, ast.ImportFrom)
+    }
+    assert not top_level - guarded, f"unguarded CA imports in cost header: {top_level - guarded}"

@@ -40,7 +40,6 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-import sys
 import tempfile
 
 # One built param_id per (model, backend, obs_data, parameters). Building it
@@ -56,15 +55,13 @@ class GradientUnavailable(Exception):
 
 
 def _ca_imports():
-    from obs_options import _ca_paths  # noqa: PLC0415
+    from ca_imports import ca_from, ensure_ca_path  # noqa: PLC0415
 
-    for path in _ca_paths():
-        if path not in sys.path:
-            sys.path.insert(0, path)
-    from param_id.paramID import OpencorParamID  # noqa: PLC0415
-    from parsers.PrimitiveParsers import ObsAndParamDataParser  # noqa: PLC0415
-
-    return OpencorParamID, ObsAndParamDataParser
+    ensure_ca_path()
+    return (
+        ca_from("param_id.paramID", "OpencorParamID"),
+        ca_from("parsers.PrimitiveParsers", "ObsAndParamDataParser"),
+    )
 
 
 def _bounds_pair(entry):

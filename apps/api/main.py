@@ -63,6 +63,7 @@ from compiler_check import compiler_status
 from engine import SimulationError, engine, _circulatory_autogen_src
 from examples import EXAMPLE_MODELS, media_type as example_media_type
 from local_sensitivity import local_gradient_sources
+import ca_imports
 import export_pipeline
 from model_codegen import resolve_model_path, reset_cache as reset_codegen
 from obs_data import ObsData, ObsDataError, parse_obs_data
@@ -546,6 +547,10 @@ def set_config(req: ConfigRequest) -> dict:
             os.environ["CIRCULATORY_AUTOGEN_SRC"] = _ca_src_from_dir(d)
         else:
             os.environ.pop("CIRCULATORY_AUTOGEN_SRC", None)
+        # The new directory may use the other module layout (flat vs libcuflynx.,
+        # CA #437), and reset_solver_options() below re-introspects CA before
+        # engine.reset() gets to it.
+        ca_imports.reset_cache()
 
 
     # Interpreter for analysis runs. Shared by all three job managers.

@@ -70,6 +70,10 @@ for runner in (
     "uq_runner.py",
     # Live simulation runs here too when the user picks an interpreter (#167).
     "sim_worker_runner.py",
+    # circulatory_autogen moved its modules under a ``libcuflynx.`` namespace and
+    # CUFLynx has to import either layout (CA #437). One resolver, used by both
+    # tiers -- so it ships here with the modules that use it.
+    "ca_imports.py",
     "local_sensitivity.py",
     # Every runner writes its results in circulatory_autogen's own formats and the
     # managers read them back from there (#210); this module is the one place that

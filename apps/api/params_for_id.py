@@ -45,7 +45,10 @@ def _derive_bounds(prior: str | None, values: dict, row_idx: int) -> tuple:
     is an error naming what is missing rather than a guess at the span.
     """
     try:
-        from parsers.PrimitiveParsers import derive_bounds_from_prior  # noqa: PLC0415
+        from ca_imports import ca_from  # noqa: PLC0415
+
+        derive_bounds_from_prior = ca_from(
+            "parsers.PrimitiveParsers", "derive_bounds_from_prior")
     except Exception as exc:  # noqa: BLE001
         raise ParamsForIdError(
             f"row {row_idx}: 'unbounded' needs a circulatory_autogen that supports it, "
@@ -68,7 +71,10 @@ def _validate_prior_params(prior: str | None, values: dict, row_idx: int,
     calibration would have given. Silent when CA is unreachable.
     """
     try:
-        from parsers.PrimitiveParsers import normalise_prior_params  # noqa: PLC0415
+        from ca_imports import ca_from  # noqa: PLC0415
+
+        normalise_prior_params = ca_from(
+            "parsers.PrimitiveParsers", "normalise_prior_params")
     except Exception:  # noqa: BLE001
         return
     row = dict(values)
@@ -95,8 +101,9 @@ def _gen_name(vessel: str, param_name: str) -> str:
     override — if CA answers, its answer wins.
     """
     try:
-        from parsers.PrimitiveParsers import param_name_for_gen  # noqa: PLC0415
+        from ca_imports import ca_from  # noqa: PLC0415
 
+        param_name_for_gen = ca_from("parsers.PrimitiveParsers", "param_name_for_gen")
         return str(param_name_for_gen(vessel, param_name))
     except ImportError:
         return param_name if vessel == "global" else f"{param_name}_{vessel}"
@@ -114,8 +121,10 @@ def _ca_qname_candidates(vessel: str, param_name: str) -> list[str] | None:
     resolves to a **different variable** and seeds the wrong slider (#210).
     """
     try:
-        from parsers.PrimitiveParsers import model_qname_candidates  # noqa: PLC0415
+        from ca_imports import ca_from  # noqa: PLC0415
 
+        model_qname_candidates = ca_from(
+            "parsers.PrimitiveParsers", "model_qname_candidates")
         return [str(c) for c in model_qname_candidates(f"{vessel}/{param_name}")]
     except ImportError:
         return None

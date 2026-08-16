@@ -1,5 +1,7 @@
 """Tests for GET /api/obs_data/options (operation/cost_type names from CA)."""
 
+from conftest import set_ca_module
+
 
 def test_obs_data_options_returns_lists(client):
     resp = client.get("/api/obs_data/options")
@@ -35,9 +37,11 @@ def test_obs_data_options_fallback_when_ca_unavailable(monkeypatch):
     obs_options.reset_cache()
 
 
-def test_operation_differentiability_introspected():
+def test_operation_differentiability_introspected(monkeypatch):
     """Each operation is mapped to whether it's @differentiable, so the obs editor
     can flag data_items whose operation blocks AD gradients."""
+    import types
+
     import obs_options
 
     op_funcs = {"max": object(), "calc_spike_period": object()}
@@ -47,23 +51,14 @@ def test_operation_differentiability_introspected():
         calls.setdefault("seen", []).append(fn)
         return fn is op_funcs["max"]
 
-    import sys
-    import types
-
     fake_mod = types.ModuleType("param_id.differentiable")
     fake_mod.is_circulatory_differentiable = fake_is_diff
-    # param_id.differentiable is imported inside the helper; inject both the
-    # package and submodule so the `from ... import ...` resolves.
-    pkg = sys.modules.get("param_id") or types.ModuleType("param_id")
-    monkey_added = "param_id" not in sys.modules
-    sys.modules["param_id"] = pkg
-    sys.modules["param_id.differentiable"] = fake_mod
-    try:
-        out = obs_options._introspect_operation_differentiability(op_funcs)
-    finally:
-        del sys.modules["param_id.differentiable"]
-        if monkey_added:
-            del sys.modules["param_id"]
+    # Registered under both spellings: a fake named only flat would lose to the
+    # real module the moment the configured CA is a namespaced checkout.
+    set_ca_module(monkeypatch, "param_id.differentiable", fake_mod)
+
+    out = obs_options._introspect_operation_differentiability(op_funcs)
+
     assert out == {"max": True, "calc_spike_period": False}
 
 
@@ -74,7 +69,7 @@ def test_operation_differentiability_empty_on_older_ca(monkeypatch):
     import obs_options
 
     # Ensure the import fails deterministically.
-    monkeypatch.setitem(sys.modules, "param_id.differentiable", None)
+    set_ca_module(monkeypatch, "param_id.differentiable", None)
     assert obs_options._introspect_operation_differentiability({"max": object()}) == {}
 
 
@@ -219,7 +214,7 @@ def test_cost_kwargs_schema_survives_a_ca_without_the_contract(monkeypatch):
     import sys
     import obs_options
 
-    monkeypatch.setitem(sys.modules, "param_id.cost_kwargs", None)
+    set_ca_module(monkeypatch, "param_id.cost_kwargs", None)
 
     def tolerant(output, desired_mean, std, weight, tolerance=0.5):
         return 0.0
@@ -302,7 +297,9 @@ def test_the_default_cost_type_comes_from_ca(requires_ca):
     asserts we read CA's, not a fourth copy.
     """
     import obs_options as oo
-    from utilities.obs_data_helpers import DEFAULT_COST_TYPE
+    from ca_imports import ca_from
+
+    DEFAULT_COST_TYPE = ca_from("utilities.obs_data_helpers", "DEFAULT_COST_TYPE")
 
     oo.reset_cache()
     try:
@@ -311,23 +308,14 @@ def test_the_default_cost_type_comes_from_ca(requires_ca):
         oo.reset_cache()
 
 
-def test_an_older_ca_reports_no_default_rather_than_guessing():
+def test_an_older_ca_reports_no_default_rather_than_guessing(monkeypatch):
     """The editor then says plain "default" -- naming the wrong cost function
     would be worse than naming none."""
     import obs_options as oo
 
     assert oo._introspect_default_cost_type.__doc__  # documented, not incidental
-    import builtins
+    # Both spellings blocked, or "older CA" would only be simulated for whichever
+    # layout the developer's CA directory happens to be in.
+    set_ca_module(monkeypatch, "utilities.obs_data_helpers", None)
 
-    real_import = builtins.__import__
-
-    def no_helpers(name, *a, **k):
-        if name == "utilities.obs_data_helpers":
-            raise ImportError("older CA")
-        return real_import(name, *a, **k)
-
-    builtins.__import__ = no_helpers
-    try:
-        assert oo._introspect_default_cost_type() == ""
-    finally:
-        builtins.__import__ = real_import
+    assert oo._introspect_default_cost_type() == ""

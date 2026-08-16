@@ -1,3 +1,4 @@
+from conftest import set_ca_module
 
 
 # ---------------------------------------------------------------------------
@@ -60,8 +61,8 @@ def _run_local_runner(monkeypatch, tmp_path, gradient_method):
     fake_pkg = types.ModuleType("sensitivity_analysis")
     fake_mod = types.ModuleType("sensitivity_analysis.sensitivityAnalysis")
     fake_mod.SensitivityAnalysis = lambda **kwargs: object()
-    monkeypatch.setitem(sys.modules, "sensitivity_analysis", fake_pkg)
-    monkeypatch.setitem(sys.modules, "sensitivity_analysis.sensitivityAnalysis", fake_mod)
+    set_ca_module(monkeypatch, "sensitivity_analysis", fake_pkg)
+    set_ca_module(monkeypatch, "sensitivity_analysis.sensitivityAnalysis", fake_mod)
     monkeypatch.setattr(sr, "_ensure_ca_on_path", lambda: None)
 
     built = []

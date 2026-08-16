@@ -128,8 +128,10 @@ def _apply_start_point(param_id, values: dict, source_label: str) -> None:
 
 def run(config: dict) -> dict:
     _ensure_ca_on_path()
-    from param_id.paramID import CVS0DParamID  # noqa: E402
+    from ca_imports import ca_from  # noqa: E402 (shipped into runners/ too)
     from local_sensitivity import resolve_gradient_method  # noqa: E402
+
+    CVS0DParamID = ca_from("param_id.paramID", "CVS0DParamID")
 
     settings = config.get("settings", {})
     output_dir = config["output_dir"]
@@ -302,7 +304,10 @@ def _expanded_best_fit(param_id_info: dict, param_names, best_vals) -> dict:
     """
     vals = [float(v) for v in best_vals]
     try:
-        from parsers.PrimitiveParsers import expand_modifier_param_vals  # noqa: PLC0415
+        from ca_imports import ca_from  # noqa: PLC0415
+
+        expand_modifier_param_vals = ca_from(
+            "parsers.PrimitiveParsers", "expand_modifier_param_vals")
     except ImportError:
         expanded = vals
     else:

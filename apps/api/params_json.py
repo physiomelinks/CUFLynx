@@ -155,12 +155,12 @@ def load_doc(data: bytes | str | dict) -> dict:
 def _ca_doc_resolver():
     """CA's ``resolve_params_for_id_doc``, or None when CA is unreachable."""
     try:
-        from engine import _ensure_ca_on_path  # noqa: PLC0415
+        from ca_imports import ca_from, ensure_ca_path  # noqa: PLC0415
 
-        _ensure_ca_on_path()
-        from parsers.PrimitiveParsers import ObsAndParamDataParser  # noqa: PLC0415
-
-        return ObsAndParamDataParser.resolve_params_for_id_doc
+        ensure_ca_path()
+        return ca_from(
+            "parsers.PrimitiveParsers", "ObsAndParamDataParser"
+        ).resolve_params_for_id_doc
     except (ImportError, AttributeError):
         return None
 
@@ -317,12 +317,12 @@ def csv_to_json(data: bytes | str) -> dict:
 def _ca_csv_converter():
     """CA's ``params_for_id_csv_to_json``, or None when CA cannot provide it."""
     try:
-        from engine import _ensure_ca_on_path  # noqa: PLC0415
+        from ca_imports import ca_from, ensure_ca_path  # noqa: PLC0415
 
-        _ensure_ca_on_path()
-        from parsers.PrimitiveParsers import ObsAndParamDataParser  # noqa: PLC0415
-
-        return ObsAndParamDataParser.params_for_id_csv_to_json
+        ensure_ca_path()
+        return ca_from(
+            "parsers.PrimitiveParsers", "ObsAndParamDataParser"
+        ).params_for_id_csv_to_json
     except (ImportError, AttributeError):
         return None
 

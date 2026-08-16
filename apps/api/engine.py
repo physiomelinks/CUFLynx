@@ -21,6 +21,8 @@ import threading
 import warnings as _warnings
 from pathlib import Path
 
+import ca_imports
+from ca_imports import ca_from
 from runtime_paths import is_frozen
 
 DEFAULT_DT = 0.01
@@ -607,7 +609,7 @@ def _default_helper_factory(
     *, model_path, dt, sim_time, pre_time, solver_info, model_type=DEFAULT_MODEL_TYPE, solver=DEFAULT_SOLVER
 ):
     _ensure_ca_on_path()
-    from solver_wrappers import get_simulation_helper  # noqa: E402
+    get_simulation_helper = ca_from("solver_wrappers", "get_simulation_helper")
 
     return get_simulation_helper(
         model_path=str(model_path),
@@ -624,7 +626,7 @@ def _default_runner_factory(
     *, model_path, dt, solver_info, model_type=DEFAULT_MODEL_TYPE, solver=DEFAULT_SOLVER
 ):
     _ensure_ca_on_path()
-    from protocol_runners import ProtocolRunner  # noqa: E402
+    ProtocolRunner = ca_from("protocol_runners", "ProtocolRunner")
 
     return ProtocolRunner(
         str(model_path),
@@ -799,7 +801,7 @@ class SimulationEngine:
             )
             return remote.get("result") or {}
         try:
-            from emulators.emulator_bundle import EmulatorBundle  # noqa: PLC0415
+            EmulatorBundle = ca_from("emulators.emulator_bundle", "EmulatorBundle")
         except ImportError as exc:
             raise SimulationError(
                 "emulator predictions need autoemulate, which CUFLynx does not "
@@ -822,7 +824,12 @@ class SimulationEngine:
 
         Stops the worker too: its caches are the same caches, and it holds an
         imported copy of CA that a reset is usually trying to be rid of.
+
+        The remembered CA *layout* goes with them: a new CA directory can be
+        namespaced where the old one was flat (CA #437), and the cached answer
+        would otherwise send every import to the wrong spelling first.
         """
+        ca_imports.reset_cache()
         with self._lock:
             self._helpers.clear()
             self._runners.clear()
