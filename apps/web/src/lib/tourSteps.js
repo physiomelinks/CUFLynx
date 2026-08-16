@@ -347,7 +347,7 @@ export const TOUR_STEPS = Object.freeze([
     id: 'emulator-what',
     target: '[data-testid="emu-settings"]',
     side: 'right',
-    text: 'An emulator is a cheap stand-in for the model: trained on a sample of runs, it then predicts the data_items in milliseconds instead of seconds/minutes.',
+    text: 'An emulator is a cheap stand-in for the model: trained on a sample of runs, it then predicts the observables (set in data_items) in milliseconds instead of seconds/minutes.',
     bullets: [
       'choose how many samples to spend, then press Train',
       'it reports a held-out R² per output — that is how you decide whether to trust it',
