@@ -444,7 +444,15 @@ async function onSave() {
       <span class="ep-num">min</span>
       <span class="ep-num">max</span>
       <span class="ep-plot">Plot label</span>
-      <span v-if="priorTypes.length" class="ep-prior" title="Prior distribution used by MCMC / UQ">
+      <!-- Like ep-use-header: the guided tour rings this head and spans down
+           through the rows' ep-prior selects. Both are `v-if`'d on the backend
+           offering priors at all, so the tour step skips itself when it does not. -->
+      <span
+        v-if="priorTypes.length"
+        class="ep-prior"
+        data-testid="ep-prior-header"
+        title="Prior distribution used by MCMC / UQ"
+      >
         Prior
       </span>
       <!-- Delete/ungroup actions live in this slot (the per-row grouping panel

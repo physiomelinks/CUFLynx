@@ -425,6 +425,26 @@ describe('TourOverlay', () => {
     expect(button('back').disabled).toBe(false)
   })
 
+  it('renders a step link as a real anchor, opened safely', async () => {
+    // The text is plain (no v-html), so a URL written into the prose would not
+    // be clickable -- hence a field of its own.
+    anchor('a')
+    const steps = FIXTURE()
+    steps[0].link = { href: 'https://www.autoemulate.com/', label: 'autoemulate.com' }
+    await mountTour({ steps })
+    const a = document.querySelector('[data-testid="tour-link"]')
+    expect(a.getAttribute('href')).toBe('https://www.autoemulate.com/')
+    expect(a.textContent.trim()).toBe('autoemulate.com')
+    expect(a.getAttribute('target')).toBe('_blank')
+    expect(a.getAttribute('rel')).toContain('noopener')
+  })
+
+  it('renders no link element on a step without one', async () => {
+    anchor('a')
+    await mountTour()
+    expect(document.querySelector('[data-testid="tour-link"]')).toBeNull()
+  })
+
   it('re-resolves forward when its target disappears', async () => {
     const a = anchor('a')
     anchor('b')

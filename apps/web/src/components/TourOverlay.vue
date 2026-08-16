@@ -29,7 +29,8 @@
  *     advanceOn?: { target, event },   // delegated listener; target defaults to step.target
  *     waitFor?:  (ctx) => boolean,     // polled on the tick; true => advance
  *     when?:     (ctx) => boolean,     // false => step is skipped
- *     onNext?:   (ctx) => void }       // Next button only; see above
+ *     onNext?:   (ctx) => void,        // Next button only; see above
+ *     link?:     { href, label } }     // one "read more" link under the text
  *
  * `ctx` is a plain object of *getters* over app state, plus the few writers the
  * `onNext` steps need. Read it; write only through those.
@@ -586,6 +587,18 @@ watch(
         <div class="tour-count" data-testid="tour-count">{{ current.index + 1 }} / {{ steps.length }}</div>
         <h3 v-if="current.step.title" class="tour-title">{{ current.step.title }}</h3>
         <p class="tour-text" data-testid="tour-text">{{ current.step.text }}</p>
+        <!-- A real anchor rather than a URL in the prose: the text is rendered
+             as plain text (no v-html), so a bare link would not be clickable.
+             `noopener` because it opens in a new tab. -->
+        <p v-if="current.step.link" class="tour-link">
+          <a
+            :href="current.step.link.href"
+            target="_blank"
+            rel="noopener noreferrer"
+            data-testid="tour-link"
+            >{{ current.step.link.label || current.step.link.href }}</a
+          >
+        </p>
         <div class="tour-actions">
           <button
             type="button"
@@ -695,6 +708,13 @@ watch(
   margin: 0 0 0.55rem;
   line-height: 1.35;
   white-space: pre-line;
+}
+.tour-link {
+  margin: -0.25rem 0 0.55rem;
+  font-size: 0.8rem;
+}
+.tour-link a {
+  color: inherit;
 }
 .tour-actions {
   display: flex;

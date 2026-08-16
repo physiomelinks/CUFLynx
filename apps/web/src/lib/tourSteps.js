@@ -32,8 +32,9 @@
  * Renumbering
  * ---------------------------------------------------------------------------
  * The list the user wrote had 28 entries and was renumbered into a clean 1..37,
- * then grew to 40: a Progress step before the closing one, and two export steps
- * after it (pipeline-to-python, plotting script).
+ * then grew to 41: a Progress step before the closing one, two export steps
+ * after it (pipeline-to-python, plotting script), and a Priors step split out of
+ * the min/max one, since the two answer different questions.
  * `5.1`-`5.4` became 6-10: the gear plus three Settings popups, plus a dedicated
  * *close Settings* step so the tour is never left pointing at UI sitting behind
  * a modal. The duplicated `14`/`15` (save obs_data, edit params_for_id) became
@@ -277,7 +278,19 @@ export const TOUR_STEPS = Object.freeze([
     id: 'params-range',
     target: '[data-testid="ep-min"]',
     side: 'right',
-    text: 'min / max are the bounds the calibration searches in, and the range a UQ prior spans. Keep them wide enough to contain the answer and narrow enough to be physiological. Where the backend offers priors, pick the distribution here.',
+    text: 'min / max are the bounds the calibration searches in, and the range a UQ prior spans. These should be your physical/physiologically plausible min/max, for your sensitivity analyses to be valid.',
+  },
+  {
+    id: 'params-prior',
+    // The whole Prior column, head included -- same treatment as Use. Both the
+    // head and the row selects are `v-if`'d on the backend offering priors, so
+    // this step disappears by itself on a backend that offers none, which is
+    // exactly what its copy is conditional on.
+    target: '[data-testid="ep-prior-header"]',
+    spanAll: '[data-testid="ep-prior"]',
+    side: 'left',
+    title: 'Priors',
+    text: 'Where the backend offers priors, pick the distribution here. It is what UQ samples from, and what the min / max above bound.',
   },
   {
     id: 'params-modifier',
@@ -295,7 +308,7 @@ export const TOUR_STEPS = Object.freeze([
   },
 
   /* ---------------------------------------------------------------- *
-   * 28-40  Emulator, sensitivity, calibration, UQ, progress, analysis, export
+   * 29-41  Emulator, sensitivity, calibration, UQ, progress, analysis, export
    *
    * Every pane below is `v-show`n, so each section opens with a step that asks
    * the user to click its tab -- the tour cannot click it for them. Those steps
@@ -314,7 +327,8 @@ export const TOUR_STEPS = Object.freeze([
     id: 'emulator-what',
     target: '[data-testid="emu-settings"]',
     side: 'right',
-    text: 'An emulator is a cheap stand-in for the model: it is trained on a sample of runs and then predicts the data_items in milliseconds instead of seconds/minutes. Choose how many samples to spend and press Train. It reports a held-out R² per output, which is how you decide whether to trust it.',
+    text: 'An emulator is a cheap stand-in for the model: it is trained on a sample of runs and then predicts the data_items in milliseconds instead of seconds/minutes. Choose how many samples to spend and press Train. It reports a held-out R² per output, which is how you decide whether to trust it. The emulators are currently built with autoemulate, which is what the model choices here come from.',
+    link: { href: 'https://www.autoemulate.com/', label: 'autoemulate.com' },
   },
   {
     id: 'emulator-use',

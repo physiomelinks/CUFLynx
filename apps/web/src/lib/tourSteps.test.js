@@ -46,10 +46,10 @@ function declaredIn(testid, sources) {
 }
 
 describe('tourSteps', () => {
-  it('ships exactly 40 steps', () => {
+  it('ships exactly 41 steps', () => {
     // A bare number, on purpose: an accidental deletion during an unrelated
     // edit is otherwise invisible -- the tour just gets shorter.
-    expect(TOUR_STEPS.length).toBe(40)
+    expect(TOUR_STEPS.length).toBe(41)
   })
 
   it('gives every step a unique, non-empty id', () => {
@@ -95,6 +95,15 @@ describe('tourSteps', () => {
         expect(typeof step.advanceOn.event, `step ${step.id} advanceOn.event`).toBe('string')
       }
       if ('onNext' in step) expect(typeof step.onNext, `step ${step.id} onNext`).toBe('function')
+      if ('spanAll' in step) {
+        expect(step.spanAll, `step ${step.id} spanAll`).toMatch(/^\[data-testid="[a-z0-9-]+"\]$/)
+      }
+      if ('link' in step) {
+        // https only, and never a bare href with no words on it: the bubble
+        // renders the label, and an unlabelled URL in a sentence reads as noise.
+        expect(step.link.href, `step ${step.id} link.href`).toMatch(/^https:\/\//)
+        expect(step.link.label, `step ${step.id} link.label`).toBeTruthy()
+      }
     }
   })
 
