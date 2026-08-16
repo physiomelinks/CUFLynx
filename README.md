@@ -91,7 +91,7 @@ PyInstaller packaging, not malware. Restore it and allow it, or download again.
 **Settings → CA dir** (`git clone https://github.com/physiomelinks/circulatory_autogen.git`).
 That's the only setup, and it's remembered.
 
-→ **[Using CUFLynx](tutorials/docs/basic.md)** — solver backends, Myokit `.mmt`
+→ **[Using CUFLynx](tutorials/docs/misc.md)** — solver backends, Myokit `.mmt`
 models, and replotting a run outside the app.
 
 ## For Developers: Install from source
