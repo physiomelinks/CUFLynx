@@ -414,6 +414,25 @@ EMULATOR_METADATA_FILE = "emulator_metadata.json"
 #: simulator's answer at each and the emulator's. The statistics say how wrong
 #: the emulator is; only these say *where* (CA #333).
 EMULATOR_VALIDATION_FILE = "emulator_validation.npz"
+#: The design and the simulated features CA keeps beside a bundle, so a later run
+#: can refit them without paying for the simulations again
+#: (``emulator_settings.reuse_samples``). CA's ``emulator_bundle.TRAINING_DATA_FILE``.
+EMULATOR_TRAINING_DATA_FILE = "training_data.npz"
+
+
+def emulator_reusable(emu_dir: str) -> bool:
+    """Whether ``emulator_settings.reuse_samples`` has anything to reuse here.
+
+    CA's trainer raises ``EmulatorReuseError`` unless **both** the metadata and
+    the saved samples are in the resolved emulator directory, so both are checked
+    -- a bundle trained by a circulatory_autogen that predates
+    ``training_data.npz`` has the first and not the second, and "an emulator
+    exists" is therefore not the same question.
+    """
+    return all(
+        os.path.isfile(os.path.join(emu_dir, name))
+        for name in (EMULATOR_METADATA_FILE, EMULATOR_TRAINING_DATA_FILE)
+    )
 
 
 def emulator_dir(output_dir: str, file_prefix: str, obs_path: str | None) -> str:

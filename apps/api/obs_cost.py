@@ -225,7 +225,93 @@ def _operands_for(pid, segment: dict):
     ]
 
 
-def _ca_evaluate(obs_data, outputs_by_experiment, output_dir, dt) -> dict | None:
+def _ca_feature_labels(obs_info) -> list[str] | None:
+    """CA's own label per emulated feature, in the emulator's output order.
+
+    The same function the trainer labelled the bundle with
+    (``emulated_feature_labels``), so matching predictions by these strings is
+    matching them by what the emulator actually recorded -- including the
+    ``[exp e, sub s]`` suffix CA appends only where a label repeats. Rebuilding
+    the rule here would be a second convention that agrees until it does not,
+    which is exactly the failure the by-label matching exists to avoid.
+
+    None on a CA that predates emulators; the caller then has no way to say which
+    prediction belongs to which observable, and reports no cost rather than
+    guessing by position.
+    """
+    try:
+        from param_id.paramID import emulated_feature_labels  # noqa: PLC0415
+
+        return [str(label) for label in emulated_feature_labels(obs_info)]
+    except Exception:  # noqa: BLE001 - no CA, or one without emulators
+        return None
+
+
+def _emulated_operands(pid, feature_values: dict, why: list | None = None):
+    """CA's operand layout for features that were *predicted* rather than derived.
+
+    An emulator answers with one scalar per data_item -- the value the operation
+    would have produced -- and CA's own emulator helper hands those to
+    ``get_cost_from_operands`` as length-1 arrays, one per operand slot, with
+    ``emulates_features`` set so the operation is not run over them a second
+    time. Building that same shape here is what lets the emulator's cost go
+    through the identical call the solver's cost goes through: same weights, same
+    cost funcs, same cost_kwargs, same denominator.
+
+    Returns None when the predictions cannot be matched to the observables, which
+    is the only honest answer -- a partly-filled vector would be scored as if the
+    observables it is missing fitted perfectly.
+    """
+    import numpy as np  # noqa: PLC0415
+
+    def _give_up(reason):
+        # The caller shows this to the user. A silent None is why the missing number
+        # was undiagnosable: a stale bundle, an edited obs_data and a series
+        # observable all looked identical from the outside.
+        if why is not None:
+            why.append(reason)
+        return None
+
+    obs_info = pid.obs_info
+    labels = _ca_feature_labels(obs_info)
+    if labels is None:
+        return _give_up('circulatory_autogen could not label this obs_data\'s observables')
+    num_obs = int(obs_info["num_obs"])
+    const_to_obs = [int(i) for i in obs_info["const_idx_to_obs_idx"]]
+    # An emulator predicts scalar features only. A series/frequency observable
+    # has no prediction, and CA would score whatever stood in for it -- so the
+    # whole cost is reported unavailable rather than quietly computed over a
+    # subset of the observables the solver's cost covers.
+    if len(const_to_obs) != num_obs or len(labels) != len(const_to_obs):
+        return _give_up(
+            'an emulator predicts scalar features only, and this obs_data has an observable '
+            'that is not one (a series or frequency item)')
+
+    by_item: list[float | None] = [None] * num_obs
+    for k, obs_idx in enumerate(const_to_obs):
+        label = labels[k]
+        if label not in feature_values:
+            return _give_up(
+                f'the emulator has no prediction for "{label}". Its features were fixed when '
+                f'it was trained, so an observable added or renamed since is not among them '
+                f'-- retrain the emulator for this obs_data')
+        try:
+            value = float(feature_values[label])
+        except (TypeError, ValueError):
+            return _give_up(f'the emulator\'s prediction for "{label}" is not a number')
+        if not math.isfinite(value):
+            return _give_up(f'the emulator predicted a non-finite value for "{label}"')
+        by_item[obs_idx] = value
+    if any(v is None for v in by_item):
+        return _give_up('the emulator\'s predictions do not cover every scored observable')
+    return [
+        [np.array([by_item[JJ]], dtype=float) for _ in obs_info["operands"][JJ]]
+        for JJ in range(num_obs)
+    ]
+
+
+def _ca_evaluate(obs_data, outputs_by_experiment, output_dir, dt, why=None,  # noqa: PLR0913
+                 feature_values: dict | None = None) -> dict | None:
     """The cost, computed by circulatory_autogen rather than reproduced here.
 
     Every part of the number is CA's: the operation that turns a trace into an
@@ -235,14 +321,33 @@ def _ca_evaluate(obs_data, outputs_by_experiment, output_dir, dt) -> dict | None
     scored only `constant` items and left series, frequency and prob_dist counted
     but never evaluated -- so the panel could differ from the calibration it is
     meant to mirror while looking authoritative.
-    """
-    import numpy as np  # noqa: PLC0415
 
+    ``feature_values`` (#333) replaces the step that turns a run into scalar
+    observables: given ``{CA feature label: value}`` -- an emulator's prediction
+    -- the observables are those values and ``outputs_by_experiment`` is not
+    read. *Only* that step changes; the cost of each observable and the way they
+    are combined are the same lines either way, which is the whole point. Two
+    costs from two implementations would not be comparable, so if this cannot be
+    done through CA there is no emulator cost at all.
+    """
     pid = _ca_engine(obs_data, output_dir, dt)
     if pid is None:
+        # The one failure with no better description available: CA could not be
+        # imported, or could not parse this obs_data. Saying so beats saying nothing,
+        # which is what the emulator path did before.
+        if why is not None:
+            why.append('circulatory_autogen could not read this obs_data '
+                       '(check the CA directory in Settings, and that the obs_data parses)')
         return None
 
     obs_info = pid.obs_info
+    feature_operands = None
+    if feature_values is not None:
+        feature_operands = _emulated_operands(pid, feature_values, why)
+        if feature_operands is None:
+            return None
+        # CA's own flag for "these operands are already the reduced features".
+        pid.emulates_features = True
     # Absent on a CA that predates cost_kwargs; then no data_item can carry any.
     kwargs_for = getattr(pid, "_cost_kwargs_for", None)
     num_sub = pid.protocol_info["num_sub_per_exp"]
@@ -254,12 +359,18 @@ def _ca_evaluate(obs_data, outputs_by_experiment, output_dir, dt) -> dict | None
     try:
         for exp in range(len(pid.protocol_info["sim_times"])):
             for sub in range(num_sub[exp]):
-                segment = outputs_by_experiment.get((exp, sub))
-                if segment is None:
-                    segment = outputs_by_experiment.get(exp)
-                if segment is None:
-                    continue
-                operands = _operands_for(pid, segment)
+                if feature_operands is not None:
+                    # The emulator predicts every data_item's feature at once,
+                    # whichever subexperiment it belongs to; the weights CA
+                    # applies below are what scope each one to its own segment.
+                    operands = feature_operands
+                else:
+                    segment = outputs_by_experiment.get((exp, sub))
+                    if segment is None:
+                        segment = outputs_by_experiment.get(exp)
+                    if segment is None:
+                        continue
+                    operands = _operands_for(pid, segment)
                 total += float(pid.get_cost_from_operands(operands, exp_idx=exp, sub_idx=sub))
                 denom += int(pid._num_weighted_obs_by_exp_sub[exp][sub])
                 # The scalar observables this segment produced, for the per-item
@@ -344,6 +455,38 @@ def _ca_items(obs_info, models: dict, costs: dict) -> list:
                 entry["std_error"] = (model - observed) / sigma
         items.append(entry)
     return items
+
+
+def evaluate_features(feature_values: dict, obs_data: dict | None,
+                      output_dir: str | None = None, dt: float = 0.01,
+                      why: list | None = None) -> dict | None:
+    """Score *precomputed* observable values -- an emulator's predictions (#333).
+
+    The sibling of :func:`evaluate`, sharing its internals rather than repeating
+    them: only the step that produces the scalar per data_item differs, and
+    everything after it -- weights, std, cost funcs, cost_kwargs, CA's
+    mean-per-weighted-observable aggregation, the per-item rows -- is the same
+    code. That is what makes the two numbers comparable. A calibration with the
+    emulator on minimises *this* cost while the Output plots show the solver's,
+    and a user reading them side by side is entitled to assume the only
+    difference is which features were scored.
+
+    ``feature_values`` is keyed by circulatory_autogen's own feature labels, the
+    ones the emulator recorded when it was trained; the match is by those labels,
+    never by position (a label can repeat, and CA disambiguates it).
+
+    Returns the same dict shape :func:`evaluate` returns, or None -- no CA, no
+    obs_data, no predictions, or an observable the emulator has no value for.
+    Deliberately no fallback to the local walk here: a cost computed by a
+    different engine from the one beside it would be a comparison of two
+    functions presented as a comparison of two feature sets.
+    """
+    if not feature_values or obs_data is None:
+        if why is not None:
+            why.append('there is no obs_data loaded to score the emulator against'
+                       if obs_data is None else 'the emulator returned no predictions')
+        return None
+    return _ca_evaluate(obs_data, {}, output_dir, dt, why, feature_values=feature_values)
 
 
 def evaluate(data_items, outputs_by_experiment, output_dir: str | None = None,

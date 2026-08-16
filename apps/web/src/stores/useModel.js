@@ -13,12 +13,19 @@ export function useModel() {
   // carries no model_format, which is the empty default. It is the model's own
   // nature, not a setting — the backend to run it with follows from it.
   const modelFormat = ref('')
+  // The name of the file the model was converted from, when it was converted at
+  // import: a Myokit `.mmt` becomes CellML at the door (#27), so the model the
+  // app runs is not the file the user wrote. Null for everything else. It is
+  // what tells the Edit button to show the .mmt rather than open PhLynx, which
+  // builds CellML and has nothing to say about a Myokit model.
+  const convertedFrom = ref(null)
 
-  function setModel({ model_id, name: modelName, filename, model_format }) {
+  function setModel({ model_id, name: modelName, filename, model_format, converted_from }) {
     modelId.value = model_id
     name.value = modelName
     filePrefix.value = filename ? filename.replace(/\.[^/.]+$/, '') : (modelName ?? null)
     modelFormat.value = model_format ?? ''
+    convertedFrom.value = converted_from ?? null
   }
 
   function setVariables(vars) {
@@ -41,6 +48,7 @@ export function useModel() {
     name,
     filePrefix,
     modelFormat,
+    convertedFrom,
     variables,
     setModel,
     setVariables,

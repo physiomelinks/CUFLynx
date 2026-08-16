@@ -531,23 +531,44 @@ def external_paths(base_dir: str | None = None, *, include_modules: bool = True)
     }
 
 
-def save_model_module(source: bytes | str, base_dir: str | None = None) -> str:
-    """Store an external_python model's ``.py`` beside the study's user funcs.
+def model_source_path(suffix: str = ".py", base_dir: str | None = None) -> Path:
+    """Where the study's own copy of the model *source* lives, existing or not.
 
-    The run itself uses the copy in the uploads dir (that is what ``model_path``
-    points at); this second copy exists so the model travels with the *study* —
-    the export bundle copies every path :func:`external_paths` reports, and a
-    study whose model file is missing is no more reproducible than one whose
-    operation func is.
+    ``.py`` is the ``model`` kind's own file — the one CA is handed as
+    ``external_model_path`` and, since "Edit source", the one a run resolves to.
+    The other suffix is ``.mmt``: a Myokit model is converted to CellML at the
+    door, so the ``.mmt`` is not what runs, but it *is* the file the user wrote
+    and it travels with the study for the same reason the ``.py`` does.
+
+    One stem for both, derived from the ``model`` kind's filename rather than
+    written out again, so "where does the model source go" has a single answer.
+    """
+    suffix = suffix if suffix.startswith(".") else f".{suffix}"
+    return _user_dir(base_dir) / (Path(_kind("model").filename).stem + suffix)
+
+
+def save_model_source(source: bytes | str, suffix: str = ".py", base_dir: str | None = None) -> str:
+    """Store the model source the user wrote under the study's outputs directory.
+
+    For an ``external_python`` model this copy is **the model that runs**:
+    ``model_codegen.resolve_model_path`` prefers it over the uploaded temp file
+    whenever an outputs directory is configured. That is deliberate — the
+    uploads directory is TTL-pruned scratch space, and an "Edit source" pointing
+    at a file nothing executes would be worse than no button at all.
 
     Written verbatim: it is the user's program, and reformatting or re-emitting
     it would change the thing being reproduced.
     """
     data = source.encode("utf-8") if isinstance(source, str) else bytes(source)
-    path = _user_file("model", base_dir)
+    path = model_source_path(suffix, base_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(data)
     return str(path)
+
+
+def save_model_module(source: bytes | str, base_dir: str | None = None) -> str:
+    """:func:`save_model_source` for the ``.py`` of an external_python model."""
+    return save_model_source(source, ".py", base_dir)
 
 
 # ---------------------------------------------------------------------------

@@ -106,6 +106,68 @@ def test_a_bundle_without_held_out_points_is_not_an_error(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Whether there are samples to reuse (emulator_settings.reuse_samples)
+# ---------------------------------------------------------------------------
+def _bundle(directory, metadata=True, samples=True):
+    directory.mkdir(parents=True, exist_ok=True)
+    if metadata:
+        (directory / "emulator_metadata.json").write_text(json.dumps({"feature_r2": [0.99]}))
+    if samples:
+        (directory / "training_data.npz").write_bytes(b"not really an npz")
+    return str(directory)
+
+
+@pytest.mark.parametrize(
+    "metadata,samples,expected",
+    [(True, True, True), (True, False, False), (False, True, False), (False, False, False)],
+)
+def test_reuse_needs_both_files_just_as_ca_does(tmp_path, metadata, samples, expected):
+    """CA raises EmulatorReuseError unless the metadata *and* the saved samples
+    are there, so "an emulator exists" is not the question being asked: a bundle
+    from a circulatory_autogen that predates training_data.npz is perfectly
+    usable and still has nothing to refit."""
+    import ca_run_history
+
+    directory = _bundle(tmp_path / "emu", metadata=metadata, samples=samples)
+    assert ca_run_history.emulator_reusable(directory) is expected
+
+
+def test_reuse_is_false_for_a_directory_that_does_not_exist(tmp_path):
+    import ca_run_history
+
+    assert ca_run_history.emulator_reusable(str(tmp_path / "nope")) is False
+
+
+def test_the_info_route_says_whether_samples_can_be_reused(client, tmp_path):
+    """The panel disables the tick box off this, rather than letting the user ask
+    for a run CA will refuse minutes later."""
+    from conftest import BG_MODEL_PATH
+
+    with open(BG_MODEL_PATH, "rb") as fh:
+        model_id = client.post(
+            "/api/models/upload", files={"file": (BG_MODEL_PATH.name, fh, "application/xml")}
+        ).json()["model_id"]
+
+    def info():
+        return client.get(
+            "/api/emulator/info",
+            params={"model_id": model_id, "config_outputs_dir": str(tmp_path)},
+        ).json()
+
+    body = info()
+    assert body["metadata"] is None and body["reusable"] is False
+
+    emu_dir = Path(body["emulator_dir"])
+    _bundle(emu_dir, samples=False)
+    assert info()["reusable"] is False  # trained, but nothing saved to refit
+
+    _bundle(emu_dir)
+    body = info()
+    assert body["reusable"] is True
+    assert body["metadata"] is not None
+
+
+# ---------------------------------------------------------------------------
 # "Use the emulator" reaching circulatory_autogen
 # ---------------------------------------------------------------------------
 def test_engine_kwargs_are_empty_when_the_box_is_off():
@@ -583,3 +645,269 @@ def test_the_defaults_endpoint_probes_the_interpreter_that_would_train(client, m
     client.get("/api/emulator/defaults")
 
     assert asked["python"] == "/venv/bin/python"
+
+
+# ---------------------------------------------------------------------------
+# What the emulator's prediction costs (#333)
+#
+# The tick box puts a calibration on the surrogate, so the best cost it reports
+# is the *emulator's* -- while the cost above the Output plots is the solver's.
+# Nothing said so, and the two are not comparable. These pin the second number
+# onto the request that already predicts the features, so both describe one
+# parameter set, and pin its silence when there is no emulator to ask.
+# ---------------------------------------------------------------------------
+def _study(client):
+    """The Lotka-Volterra study loaded: model, obs_data and params_for_id."""
+    from conftest import (
+        LV_MODEL_PATH,
+        LV_OBS_DATA_PATH,
+        LV_PARAMS_CSV_PATH,
+        upload_model,
+    )
+
+    model_id = upload_model(client, LV_MODEL_PATH)["model_id"]
+    obs = json.loads(LV_OBS_DATA_PATH.read_text())
+    assert client.post(
+        "/api/obs_data/upload", json={"model_id": model_id, "obs_data": obs}
+    ).status_code == 200
+    with open(LV_PARAMS_CSV_PATH, "rb") as fh:
+        resp = client.post(
+            f"/api/params_for_id/upload?model_id={model_id}",
+            files={"file": (LV_PARAMS_CSV_PATH.name, fh, "text/csv")},
+        )
+    assert resp.status_code == 200, resp.text
+    return model_id, [p["qname"] for p in resp.json()["params"]]
+
+
+def _ca_feature_labels_for(model_id):
+    """The labels circulatory_autogen would train this study's emulator on."""
+    import main
+    import obs_cost
+
+    doc = main._obs_data_document(main._models[model_id])
+    pid = obs_cost._ca_engine(doc, None, main.engine.dt)
+    if pid is None:
+        pytest.skip("circulatory_autogen could not be reached")
+    labels = obs_cost._ca_feature_labels(pid.obs_info)
+    if labels is None:
+        pytest.skip("this circulatory_autogen has no emulator feature labels")
+    return labels
+
+
+def _install_emulator(monkeypatch, labels, values, seen=None):
+    """A trained bundle that predicts `values` for `labels`, without one existing."""
+    import main
+
+    monkeypatch.setattr(
+        main.ca_run_history, "emulator_metadata",
+        lambda _dir: {"param_entry_labels": [], "feature_labels": list(labels)},
+    )
+
+    def fake_predict(emulator_dir, theta):
+        if seen is not None:
+            seen["theta"] = list(theta)
+        return {"labels": list(labels), "values": list(values), "in_box": True}
+
+    monkeypatch.setattr(main.engine, "emulator_predict", fake_predict)
+
+
+def test_the_prediction_carries_the_cost_of_what_it_predicted(client, monkeypatch):
+    """On this response rather than on /api/simulate: the frontend already asks
+    for a prediction every time the parameters settle, so the second cost costs
+    no second round trip -- and both costs then describe the parameter values of
+    one settle rather than of two."""
+    import main
+    import obs_cost
+
+    model_id, _ = _study(client)
+    labels = _ca_feature_labels_for(model_id)
+    values = [3.0] * len(labels)
+    _install_emulator(monkeypatch, labels, values)
+
+    resp = client.post(
+        "/api/emulator/predict", json={"model_id": model_id, "params": {}, "settings": {}}
+    )
+    assert resp.status_code == 200, resp.text
+    cost = resp.json()["cost"]
+    assert cost is not None
+    # The same function, not a second implementation of it.
+    expected = obs_cost.evaluate_features(
+        dict(zip(labels, values)), main._obs_data_document(main._models[model_id]),
+        None, dt=main.engine.dt,
+    )
+    assert cost == expected
+    assert cost["computed_by"] == "circulatory_autogen"
+
+
+def test_a_prediction_that_cannot_be_matched_leaves_no_cost(client, monkeypatch):
+    """An emulator trained before the obs_data was edited predicts features this
+    study no longer has. The prediction still stands (it is drawn as an overlay);
+    the cost is simply absent, because a cost over some of the observables would
+    read as a better fit than the solver's over all of them."""
+    model_id, _ = _study(client)
+    _install_emulator(monkeypatch, ["a feature this study does not have"], [1.0])
+
+    resp = client.post(
+        "/api/emulator/predict", json={"model_id": model_id, "params": {}, "settings": {}}
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["cost"] is None
+
+
+def test_the_run_route_cost_is_untouched_when_the_emulator_is_off(client, fake_helper):
+    """The solver's cost is the one number this feature must not move. With no
+    emulator in play the run routes answer exactly as they did -- one `cost`, and
+    no second key to explain away."""
+    model_id, _ = _study(client)
+    resp = client.post(
+        "/api/simulate",
+        json={"model_id": model_id, "params": {}, "outputs": ["Lotka_Volterra_module/x"]},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert "cost" in body
+    assert "emulator_cost" not in body
+
+
+# ---------------------------------------------------------------------------
+# The same parameters, scored both ways (/api/cost_at_params)
+# ---------------------------------------------------------------------------
+def test_one_request_scores_the_same_parameters_both_ways(client, monkeypatch):
+    """Both sides in one response so they cannot be asked at two different
+    points: the errors bars in the Analysis tab describe the calibration's best
+    fit, and "the model says this, the emulator says that" is only a statement
+    about the surrogate if the parameters are identical."""
+    import main
+    import obs_cost
+
+    model_id, qnames = _study(client)
+    labels = _ca_feature_labels_for(model_id)
+    seen = {}
+    _install_emulator(monkeypatch, labels, [3.0] * len(labels), seen=seen)
+    monkeypatch.setattr(
+        main, "_solver_cost_at",
+        lambda *a, **k: {"cost": 1.0, "items": [], "n_weighted": 1,
+                         "incomplete": False, "computed_by": "circulatory_autogen"},
+    )
+
+    theta = {qname: 0.5 for qname in qnames}
+    resp = client.post(
+        "/api/cost_at_params",
+        json={"model_id": model_id, "params": theta, "analysis_params": theta},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["cost"]["cost"] == pytest.approx(1.0)
+    # The emulator was asked at the parameters that were sent, not at defaults.
+    assert seen["theta"] == [0.5] * len(qnames)
+    assert body["emulator_cost"] == obs_cost.evaluate_features(
+        dict(zip(labels, [3.0] * len(labels))),
+        main._obs_data_document(main._models[model_id]), None, dt=main.engine.dt,
+    )
+    # Both rows carry the same fields, so the bars need no special case.
+    assert body["emulator_cost"]["computed_by"] == "circulatory_autogen"
+    assert set(body["emulator_cost"]["items"][0]) == {
+        "label", "operation", "experiment_idx", "subexperiment_idx",
+        "observed", "model", "percent_error", "std_error", "cost",
+    }
+
+
+def test_without_an_emulator_only_the_model_answers(client, monkeypatch):
+    """No bundle is the normal state of most studies, and it is not an error:
+    the forward-model side is returned as usual and the toggle simply has nothing
+    to offer."""
+    import main
+
+    model_id, _ = _study(client)
+    monkeypatch.setattr(main.ca_run_history, "emulator_metadata", lambda _dir: None)
+    monkeypatch.setattr(
+        main, "_solver_cost_at",
+        lambda *a, **k: {"cost": 1.0, "items": [], "n_weighted": 1,
+                         "incomplete": False, "computed_by": "circulatory_autogen"},
+    )
+
+    resp = client.post("/api/cost_at_params", json={"model_id": model_id, "params": {}})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["cost"]["cost"] == pytest.approx(1.0)
+    assert resp.json()["emulator_cost"] is None
+
+
+def test_an_emulator_that_will_not_load_is_a_silence_not_a_failure(client, monkeypatch):
+    """No autoemulate in the configured interpreter, a stale bundle, a joblib
+    that will not unpickle: the model's own cost is still correct, and an error
+    banner over a missing second opinion would be worse than not offering one."""
+    import main
+
+    model_id, _ = _study(client)
+    monkeypatch.setattr(
+        main.ca_run_history, "emulator_metadata", lambda _dir: {"param_entry_labels": []})
+
+    def boom(*_a, **_k):
+        raise RuntimeError("emulator predictions need autoemulate")
+
+    monkeypatch.setattr(main.engine, "emulator_predict", boom)
+    monkeypatch.setattr(
+        main, "_solver_cost_at",
+        lambda *a, **k: {"cost": 1.0, "items": [], "n_weighted": 1,
+                         "incomplete": False, "computed_by": "circulatory_autogen"},
+    )
+
+    resp = client.post("/api/cost_at_params", json={"model_id": model_id, "params": {}})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["emulator_cost"] is None
+
+
+# ---------------------------------------------------------------------------
+# A protocol-less obs_data is still an obs_data
+# ---------------------------------------------------------------------------
+# An obs_data may say what to measure without saying how to drive the model --
+# CA then builds the timeline from sim_time/pre_time. The heat_fenics example
+# ships exactly that. _obs_data_document used to return None for it, so a
+# protocol-less study was reported as having no obs_data at all: the solver's
+# cost quietly fell back to the local walk, and the emulator's cost -- which
+# has no fallback, deliberately -- never appeared, saying "there is no obs_data
+# loaded to score the emulator against" while one was plainly loaded.
+_BARE_ITEM = {
+    "variable": "probe 1 mean", "name_for_plotting": "mean(T_{p1})",
+    "data_type": "constant", "operation": "mean", "operands": ["heat/T_p1"],
+    "unit": "dimensionless", "weight": 1.0, "value": 0.4, "std": 0.05,
+    "cost_type": "gaussian_MLE",
+}
+
+
+class _ObsStub:
+    def __init__(self, protocol_info):
+        self.protocol_info = protocol_info
+        self.data_items = [dict(_BARE_ITEM)]
+        self.prediction_items = []
+
+
+class _RecordStub:
+    def __init__(self, protocol_info):
+        self.obs_data = _ObsStub(protocol_info)
+
+
+def test_a_protocol_less_obs_data_still_produces_a_document():
+    import main
+
+    doc = main._obs_data_document(_RecordStub(None))
+    assert doc is not None, 'a protocol-less obs_data is not "no obs_data"'
+    assert doc["data_items"] == [dict(_BARE_ITEM)]
+    # Omitted, not None: CA's parser accepts the absence and refuses an explicit None.
+    assert "protocol_info" not in doc
+
+
+def test_a_protocol_is_carried_through_when_there_is_one():
+    import main
+
+    proto = {"pre_times": [0.0], "sim_times": [[1.0]]}
+    assert main._obs_data_document(_RecordStub(proto))["protocol_info"] == proto
+
+
+def test_no_obs_data_at_all_is_still_none():
+    import main
+
+    class _Empty:
+        obs_data = None
+
+    assert main._obs_data_document(_Empty()) is None

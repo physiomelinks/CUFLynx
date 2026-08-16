@@ -36,6 +36,7 @@ import {
   simulate,
   runProtocol,
   costSensitivity,
+  costAtParams,
   getCalibrationDefaults,
   getCalibrationPythons,
   getEmulatorDefaults,
@@ -492,6 +493,25 @@ const emuSettings = ref({})
 // own feature label. Null when no emulator is in use — which is what makes the
 // third reference line appear and disappear with the tick box.
 const emulatorFeatureMap = ref(null)
+// What those predicted features cost, from the same request and scored by the
+// same CA path the displayed cost is (#333). With the tick box on, this is the
+// cost a calibration actually minimises, so the gap between it and the solver's
+// is the surrogate's error — which is the question "why doesn't the calibration
+// cost match the panel?" turns out to be.
+const emulatorCost = ref(null)
+// The parameters each figure was measured at, serialised. Two costs are only
+// comparable at one point, and the prediction and the run are separate requests:
+// mid-drag one can land before the other, and a number from the previous slider
+// position beside one from the current is exactly the confusion this feature
+// exists to remove. Unequal keys mean the em cost simply is not shown yet.
+const emulatorCostAt = ref('')
+// Why the em cost is missing, when it is. Rendered beside the cost line so the
+// absence is diagnosable rather than silent.
+const emulatorCostWhy = ref('')
+const lastRunAt = ref('')
+function paramSignature() {
+  return JSON.stringify(sliders.analysisDict.value)
+}
 // The right-hand import column is resizable via a draggable vertical divider:
 // drag it left/right to resize, drag it fully to the right edge to hide the column
 // (giving the plots/analysis more room). When hidden, a tab sits on the right edge
@@ -619,6 +639,32 @@ const modelUnits = computed(() => model.variables.value.units ?? {})
 // backend from the run it already did. null when it cannot be known -- no
 // obs_data, no CA -- which must not read as a perfect fit of zero.
 const currentCost = computed(() => sim.cost.value ?? null)
+// The same parameters as seen by the emulator (#333). Shown only with the tick
+// box on -- with the emulator off there is nothing the calibration would have
+// minimised instead -- and only while both figures are of the same point.
+const emCostWhy = computed(() => {
+  if (!emu.useEmulator.value) return ''
+  if (emCost.value !== null) return ''
+  return emulatorCostWhy.value
+})
+const emCost = computed(() => {
+  if (!emu.useEmulator.value) return null
+  if (emulatorCostAt.value !== lastRunAt.value) return null
+  return emulatorCost.value ?? null
+})
+// Whether the last calibration was run on the emulator. The cost it reports is
+// then an *em cost*, which is the whole reason it can disagree with the number
+// above the plots -- so the tooltip that explains the gap says so.
+const lastCalibrationUsedEmulator = ref(false)
+const emCostTitle = computed(() => {
+  const base =
+    'cost is the solver\'s, em cost the emulator\'s — same parameters, same cost function, ' +
+    'different features. With "use the emulator" ticked a calibration minimises the em cost, ' +
+    'so a gap between the two is the surrogate\'s error rather than a bug.'
+  return lastCalibrationUsedEmulator.value
+    ? `${base} The last calibration ran on the emulator, so its reported best cost is an em cost.`
+    : base
+})
 // A snapshot to compare against. The comparison is the point -- a cost alone
 // says little, a cost next to the one you started from says whether you are
 // winning.
@@ -646,6 +692,19 @@ function scoredCount(cost) {
 function weightedCount(cost) {
   return cost?.n_weighted ?? (cost?.items ?? []).length
 }
+
+// "1 of 2 observables", or both coverages where the emulator's cost is shown
+// beside the model's: each figure is a mean over the observables it could
+// score, and they need not be the same ones -- so the note has to say which
+// count belongs to which number rather than appearing to describe both (#333).
+const costNote = computed(() => {
+  const cost = currentCost.value
+  if (!cost) return ''
+  const model = `${scoredCount(cost)} of ${weightedCount(cost)} observables`
+  const em = emCost.value
+  if (!em) return model
+  return `cost: ${model}, em cost: ${scoredCount(em)} of ${weightedCount(em)}`
+})
 
 // The calibration's own error vectors, offered as the baseline once a run has
 // produced them, so "current vs best fit" needs no extra simulation. Reads the
@@ -1193,6 +1252,10 @@ function runTimes() {
 }
 
 function onRunCalibration(settings) {
+  // Remembered because the cost it reports is only interpretable with it: a
+  // calibration on the emulator minimises the em cost, and the Output plots'
+  // cost is the solver's (#333).
+  lastCalibrationUsedEmulator.value = emu.useEmulator.value
   calib.start(
     model.modelId.value,
     {
@@ -1352,8 +1415,14 @@ function onTrainEmulator(settings) {
 async function refreshEmulatorFeatures() {
   if (!emu.useEmulator.value || !model.modelId.value) {
     emulatorFeatureMap.value = null
+    emulatorCost.value = null
+    emulatorCostWhy.value = ''
+    emulatorCostAt.value = ''
     return
   }
+  // Stamped before the request, not after: what came back describes the
+  // parameters it was asked about, whatever they are by the time it arrives.
+  const at = paramSignature()
   try {
     const res = await predictEmulator(
       model.modelId.value,
@@ -1365,8 +1434,20 @@ async function refreshEmulatorFeatures() {
       map[label] = res.values?.[i]
     })
     emulatorFeatureMap.value = map
-  } catch {
+    // Comes back with the prediction, so no second round trip on a slider
+    // settle. Null on a backend that predates it, or an obs_data CA cannot
+    // score — the line then shows the one cost it always showed.
+    emulatorCost.value = res.cost ?? null
+    // Why there is no number, when there is none. The dotted overlay still draws from
+    // the same response, so a silent null left lines on the plot with nothing beside
+    // them and nothing to act on.
+    emulatorCostWhy.value = res.cost ? '' : (res.cost_unavailable ?? '')
+    emulatorCostAt.value = at
+  } catch (e) {
     emulatorFeatureMap.value = null
+    emulatorCost.value = null
+    emulatorCostWhy.value = errorMessage(e)
+    emulatorCostAt.value = ''
   }
 }
 
@@ -1430,6 +1511,67 @@ watch(
   () => emu.state.value,
   (state) => {
     if (state === 'done') refreshEmulatorFeatures()
+  },
+)
+
+// ---------------------------------------------------------------------------
+// The calibration best fit, scored by the model and by the emulator (#333)
+// ---------------------------------------------------------------------------
+// The Analysis tab's per-observable errors come from the calibration's own
+// vectors, and a calibration on the emulator wrote the *emulator's*. Which of
+// the two is on screen is now the user's choice, so both have to exist —
+// measured once, at the best fit, and kept: the forward-model side is a solver
+// run, and a tick box that re-ran it on every click would be unusable.
+const bestFitScores = ref(null) // { model, emulator }
+// The best fit they were measured at, so a *new* calibration refetches and the
+// same one never does.
+const bestFitScoresAt = ref('')
+
+async function refreshBestFitScores() {
+  const best = calib.bestParams.value
+  // Only where the choice can mean something: an emulator that exists and can
+  // be loaded, and a calibration to describe. Otherwise the section stays
+  // exactly as it was, with nothing to tick.
+  if (!best || !model.hasModel.value || !obs.hasObsData.value ||
+      !emu.trained.value || emuUnavailable.value) {
+    bestFitScores.value = null
+    bestFitScoresAt.value = ''
+    return
+  }
+  const at = JSON.stringify(best)
+  if (at === bestFitScoresAt.value) return
+  try {
+    const res = await costAtParams(
+      model.modelId.value,
+      // Physical values for the solver, θ for the emulator — one best fit
+      // written the two ways its two consumers need, so both are scored at the
+      // same point (#208).
+      { ...expandBestFitParams(best, calib.bestModifiers.value) },
+      {
+        analysisParams: { ...best },
+        outputs: liveOutputs(),
+        simTime: simTime.value,
+        preTime: preTime.value,
+        outputsDir: outputsDir.value.trim() || undefined,
+      },
+    )
+    bestFitScores.value = { model: res.cost ?? null, emulator: res.emulator_cost ?? null }
+    bestFitScoresAt.value = at
+  } catch {
+    // A failed run leaves the section as it was: the calibration's own vectors
+    // are still there, and an error banner over an optional comparison would be
+    // noise about something the user did not ask for.
+    bestFitScores.value = null
+    bestFitScoresAt.value = ''
+  }
+}
+
+// A new best fit, or an emulator that has only just appeared, is the only thing
+// that can change the answer — so this is what it follows, and nothing else.
+watch(
+  () => [calib.bestParams.value, emu.trained.value, emuUnavailable.value],
+  () => {
+    refreshBestFitScores()
   },
 )
 
@@ -1780,6 +1922,9 @@ async function runSimulation() {
   if (!model.hasModel.value) return
   sim.setRunning()
   const started = performance.now()
+  // The parameters this run is about, for the em cost beside it to be checked
+  // against (#333): two costs of two different points are not a comparison.
+  const at = paramSignature()
   try {
     if (obs.hasProtocol.value) {
       // Protocol run: pre_times/sim_times come from the obs_data protocol_info.
@@ -1825,6 +1970,7 @@ async function runSimulation() {
       backendFallback.value = data.backend_fallback ?? null
       sim.setResult(data, performance.now() - started)
     }
+    lastRunAt.value = at
     // Only once the plot the user is watching is on screen, and only if they
     // asked for it (#188).
     scheduleCostSensitivity()
@@ -2205,6 +2351,7 @@ watch(
             :error="emu.error.value"
             :metadata="emu.metadata.value"
             :features="emu.features.value"
+            :reusable="emu.reusable.value"
             @run="onTrainEmulator"
             @change="(s) => (emuSettings = s)"
             @cancel="emu.cancel()"
@@ -2335,8 +2482,36 @@ watch(
         >
           <span class="cost-label">cost</span>
           <span class="cost-value" data-testid="cost-value">{{ formatCost(currentCost.cost) }}</span>
-          <span class="cost-note" data-testid="cost-note">
-            {{ scoredCount(currentCost) }} of {{ weightedCount(currentCost) }} observables
+          <!--
+            The emulator's cost of the same parameters (#333). A calibration with
+            the tick box on minimises *this* number while the plots showed the
+            solver's, so the two disagreed with nothing on screen to say why. The
+            gap is the surrogate's error, and it belongs where the question is
+            asked.
+          -->
+          <template v-if="emCost">
+            <span class="cost-label em-cost" data-testid="em-cost-label" :title="emCostTitle">
+              em cost
+            </span>
+            <span class="cost-value em-cost" data-testid="em-cost-value" :title="emCostTitle">
+              {{ formatCost(emCost.cost) }}
+            </span>
+          </template>
+          <!--
+            The emulator is in use but could not be scored. Its predicted features
+            still draw their dotted overlay, so saying nothing here leaves lines on
+            the plot with no number beside them and no way to tell why.
+          -->
+          <span
+            v-else-if="emCostWhy"
+            class="cost-note em-cost-missing"
+            data-testid="em-cost-unavailable"
+            :title="emCostWhy"
+          >
+            no em cost — {{ emCostWhy }}
+          </span>
+          <span class="cost-note" data-testid="cost-note" :title="emCost ? emCostTitle : null">
+            {{ costNote }}
             <template v-if="currentCost.incomplete">
               — not comparable with the calibration cost
             </template>
@@ -2481,6 +2656,9 @@ watch(
             :emulator-metadata="emu.metadata.value"
             :emulator-error-points="emu.errorPoints.value"
             :emulator-in-use="emu.useEmulator.value"
+            :best-fit-model-cost="bestFitScores?.model ?? null"
+            :best-fit-emulator-cost="bestFitScores?.emulator ?? null"
+            :calibration-used-emulator="lastCalibrationUsedEmulator"
             @select-result="sa.selectResult"
             @remove-result="sa.removeResult"
             @clear-results="sa.clearResults"
@@ -2527,6 +2705,8 @@ watch(
           :loaded-obs-filename="loadedObsFilename"
           :can-export="model.hasModel.value"
           :generated-model-format="generatedModelFormat"
+          :model-format="model.modelFormat.value"
+          :converted-from="model.convertedFrom.value"
           @model-loaded="onModelLoaded"
           @obs-data-loaded="onObsDataLoaded"
           @params-loaded="onParamsLoaded"
@@ -3426,6 +3606,9 @@ watch(
 
 /* The cost line above the plots (#159): quiet, but the first thing on the panel
    where parameters are being changed. */
+.em-cost-missing {
+  color: var(--p-message-warn-color, #ffc000);
+}
 .cost-line {
   display: flex;
   align-items: baseline;
@@ -3447,6 +3630,13 @@ watch(
   font-variant-numeric: tabular-nums;
   font-weight: 700;
   font-size: 1rem;
+}
+/* The emulator's figure: the same shape as the model's so they read as one
+   pair, in its own colour so they are never mistaken for each other (#333). */
+.cost-label.em-cost,
+.cost-value.em-cost {
+  color: var(--p-primary-color, #5b9bd5);
+  cursor: help;
 }
 .cost-note {
   opacity: 0.65;

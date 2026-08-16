@@ -17,9 +17,17 @@ const CheckboxStub = {
   template:
     '<input type="checkbox" :disabled="disabled" :checked="modelValue" v-bind="$attrs" @change="$emit(\'update:modelValue\', !modelValue)" />',
 }
+// A real <input>, so a number field's disabled state is an absent attribute
+// rather than the string "false" an auto-stub renders for a false prop.
+const InputNumberStub = {
+  // `size` is absorbed: PrimeVue's "small" is not a valid <input size>.
+  props: ['modelValue', 'disabled', 'size', 'min', 'max', 'invalid'],
+  emits: ['update:modelValue'],
+  template: '<input type="number" :disabled="disabled" :value="modelValue" v-bind="$attrs" />',
+}
 const stubs = {
   Select: SelectStub,
-  InputNumber: true,
+  InputNumber: InputNumberStub,
   InputText: true,
   Checkbox: CheckboxStub,
   Button: ButtonStub,
@@ -36,10 +44,15 @@ const DEFAULTS = {
     { name: 'emulator_dir', type: 'str', default: null, required: false, description: 'where' },
     { name: 'models', type: 'str', default: 'default', required: false, description: 'which' },
     { name: 'num_train_samples', type: 'int', default: 128, required: false, description: 'n' },
+    // Sits between num_train_samples and sample_type in CA's schema, and is
+    // rendered as a checkbox by the generic bool arm — the tick box is free, and
+    // the work is making it honest.
+    { name: 'reuse_samples', type: 'bool', default: false, required: false, description: 'refit' },
     {
       name: 'sample_type', type: 'enum', default: 'sobol', required: false,
       choices: ['sobol', 'latin_hypercube', 'random'], description: 'doe',
     },
+    { name: 'log_scale_params', type: 'bool', default: false, required: false, description: 'log' },
     { name: 'min_r2', type: 'float', default: 0.9, required: false, description: 'threshold' },
   ],
 }
@@ -238,6 +251,77 @@ describe('EmulatorPanel', () => {
     expect(field.exists()).toBe(true)
     expect(field.element.tagName).not.toBe('SELECT')
     expect(free.find('[data-testid="train-emulator"]').exists()).toBe(true)
+  })
+
+  // `emulator_settings.reuse_samples` refits the design and simulated features a
+  // previous run saved, running no simulations. Two things the form has to show
+  // or the tick box lies: it needs those files, and it makes three settings moot.
+  describe('reuse samples', () => {
+    const reuseBox = (w) => w.find('[data-testid="emu-opt-reuse_samples"]')
+
+    async function tickReuse(wrapper) {
+      await reuseBox(wrapper).trigger('change')
+      await wrapper.vm.$nextTick()
+    }
+
+    it('is disabled, with the reason, when there is nothing to reuse', () => {
+      const wrapper = mountPanel({ metadata: METADATA, reusable: false })
+      expect(reuseBox(wrapper).attributes('disabled')).toBeDefined()
+      const hint = wrapper.find('[data-testid="emu-reuse-unavailable"]')
+      expect(hint.exists()).toBe(true)
+      expect(hint.text()).toContain('Train an emulator first')
+    })
+
+    it('is enabled once both the metadata and the saved samples are there', () => {
+      const wrapper = mountPanel({ metadata: METADATA, reusable: true })
+      expect(reuseBox(wrapper).attributes('disabled')).toBeUndefined()
+      expect(wrapper.find('[data-testid="emu-reuse-unavailable"]').exists()).toBe(false)
+    })
+
+    it('greys exactly the three settings circulatory_autogen will ignore', async () => {
+      const wrapper = mountPanel({ metadata: METADATA, reusable: true })
+      const disabled = (name) =>
+        wrapper.find(`[data-testid="emu-opt-${name}"]`).attributes('disabled') !== undefined
+
+      for (const name of ['num_train_samples', 'sample_type', 'log_scale_params']) {
+        expect(disabled(name), `${name} before`).toBe(false)
+      }
+
+      await tickReuse(wrapper)
+
+      // Ignored on a reuse run: the saved design is what gets fitted.
+      expect(disabled('num_train_samples')).toBe(true)
+      expect(disabled('sample_type')).toBe(true)
+      expect(disabled('log_scale_params')).toBe(true)
+      // Still applied — trying these without paying for the simulations again is
+      // the whole point of reusing.
+      expect(disabled('models')).toBe(false)
+      expect(disabled('min_r2')).toBe(false)
+      expect(wrapper.find('[data-testid="emu-reuse-on"]').exists()).toBe(true)
+    })
+
+    it('carries reuse_samples in the run payload', async () => {
+      const wrapper = mountPanel({ metadata: METADATA, reusable: true })
+      await wrapper.find('[data-testid="train-emulator"]').trigger('click')
+      expect(wrapper.emitted('run')[0][0].reuse_samples).toBe(false)
+
+      await tickReuse(wrapper)
+      await wrapper.find('[data-testid="train-emulator"]').trigger('click')
+      expect(wrapper.emitted('run')[1][0].reuse_samples).toBe(true)
+    })
+
+    it('unticks itself when the emulator directory loses its samples', async () => {
+      const wrapper = mountPanel({ metadata: METADATA, reusable: true })
+      await tickReuse(wrapper)
+      // A different study, or a bundle from a CA that never saved the samples:
+      // leaving it ticked would ask for a run circulatory_autogen refuses.
+      await wrapper.setProps({ reusable: false })
+      await wrapper.vm.$nextTick()
+      expect(reuseBox(wrapper).element.checked).toBe(false)
+      await wrapper.find('[data-testid="train-emulator"]').trigger('click')
+      const emitted = wrapper.emitted('run')
+      expect(emitted[emitted.length - 1][0].reuse_samples).toBe(false)
+    })
   })
 
   it('blocks a multi-core run when there is no MPI launcher', async () => {

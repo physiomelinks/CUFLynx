@@ -109,6 +109,45 @@ export async function uploadCellML(fileOrFiles, outputDir = '') {
   return data
 }
 
+/**
+ * Direct URL to the file the user wrote, for a model that has one: the `.py` of
+ * an external python model, or the `.mmt` a CellML model was converted from
+ * (#27). Served inline as text, so it is opened in a tab rather than fetched.
+ *
+ * Not what the Edit button does any more — that opens the file in the user's own
+ * editor, which only a local backend can do. This is the read-only half, and the
+ * one a remote or headless deployment can still offer.
+ *
+ * `outputsDir` makes it serve the study's copy when there is one, so the tab and
+ * the editor never show different versions of the same model.
+ *
+ * 404s for a plain CellML model, which is edited in PhLynx instead.
+ */
+export function modelSourceUrl(modelId, outputsDir = '') {
+  const base = url(`/api/models/${encodeURIComponent(modelId)}/source`)
+  return outputsDir ? `${base}?config_outputs_dir=${encodeURIComponent(outputsDir)}` : base
+}
+
+/**
+ * Put the model's source under the outputs directory and open it in the user's
+ * editor, on the machine the backend runs on.
+ *
+ * Returns `{path, filename, opened, editor, reason, runs}`. `opened: false` is a
+ * normal answer, not an error — a headless backend has no editor to launch, and
+ * the caller should still tell the user where `path` is. `runs` says whether
+ * that copy is the file CUFLynx simulates (true for a `.py`; a `.mmt` is the
+ * source of a CellML that runs in its place).
+ *
+ * 422s when no outputs directory is set: there is nowhere the edit could safely
+ * live, and a temp directory is exactly what this replaced.
+ */
+export async function editModelSource(modelId, outputsDir = '') {
+  const { data } = await axios.post(url(`/api/models/${encodeURIComponent(modelId)}/edit`), {
+    config_outputs_dir: outputsDir || '',
+  })
+  return data
+}
+
 // Fetch a bundled example as a File, so it can be fed straight through the
 // normal upload flow (same path as a dropped file).
 //
@@ -170,6 +209,36 @@ export async function costSensitivity(modelId, params, options = {}) {
   if (options.protocolInfo != null) body.protocol_info = options.protocolInfo
   if (options.outputsDir) body.config_outputs_dir = options.outputsDir
   const { data } = await axios.post(url('/api/cost_sensitivity'), body, {
+    signal: options.signal,
+  })
+  return data
+}
+
+/**
+ * One parameter set, scored by the model and by the emulator (#333).
+ *
+ * `{ cost, emulator_cost }`, both in the shape a run's `cost` comes back in, and
+ * both from the one CA-backed scorer — so the difference between them is the
+ * surrogate's error and nothing else. Both are asked for in a single request so
+ * they cannot end up describing two different points.
+ *
+ * `analysisParams` is the same point written as θ (one value per params_for_id
+ * row, at a modifier's anchor rather than its expansion): the emulator was
+ * trained on θ and must be given θ. Omit it where the two coincide.
+ *
+ * `emulator_cost` is null whenever the emulator cannot answer — no bundle, a
+ * stale one, no autoemulate in the configured interpreter. That is a silence,
+ * not an error.
+ */
+export async function costAtParams(modelId, params, options = {}) {
+  const body = { model_id: modelId, params }
+  if (options.analysisParams != null) body.analysis_params = options.analysisParams
+  if (options.simTime != null) body.sim_time = options.simTime
+  if (options.preTime != null) body.pre_time = options.preTime
+  if (options.outputs != null) body.outputs = options.outputs
+  if (options.protocolInfo != null) body.protocol_info = options.protocolInfo
+  if (options.outputsDir) body.config_outputs_dir = options.outputsDir
+  const { data } = await axios.post(url('/api/cost_at_params'), body, {
     signal: options.signal,
   })
   return data
@@ -406,8 +475,14 @@ export async function cancelEmulatorTraining(jobId) {
 
 /**
  * The emulator's predicted features at the given parameter values.
- * `{ labels, values, in_box }` — drawn beside the model's own features so the
- * two can be compared against the ground truth while a slider moves.
+ * `{ labels, values, in_box, cost }` — drawn beside the model's own features so
+ * the two can be compared against the ground truth while a slider moves.
+ *
+ * `cost` is what those predicted features cost against the loaded obs_data,
+ * scored by the same code that scores the solver's (#333). It rides on this
+ * request because this request is already made whenever the parameters settle,
+ * so the emulator's cost and the model's describe one parameter set rather than
+ * two. Null when there is no obs_data or CA cannot score it.
  */
 export async function predictEmulator(modelId, params, settings = {}) {
   const { data } = await axios.post(url('/api/emulator/predict'), {

@@ -15,6 +15,9 @@ import {
   errorMessage,
   fetchExampleModel,
   costSensitivity,
+  costAtParams,
+  editModelSource,
+  modelSourceUrl,
 } from './api'
 
 beforeEach(() => {
@@ -86,6 +89,35 @@ describe('api client', () => {
     expect(config.signal).toBe(controller.signal)
   })
 
+  // #333: the model's cost and the emulator's, of one parameter set. Both in
+  // one request so they cannot end up describing two different points -- and the
+  // point is sent twice on purpose, as physical values for the solver and as
+  // theta for the emulator, because a modifier's theta is not its expansion.
+  it('asks for both costs of one parameter set, in the two forms they need', async () => {
+    axios.post.mockResolvedValue({ data: { cost: { cost: 2 }, emulator_cost: { cost: 1 } } })
+    const out = await costAtParams('mid', { 'a/alpha': 1.5 }, {
+      analysisParams: { 'a/alpha': 0.5 },
+      outputs: ['a/x'],
+      outputsDir: '/out',
+    })
+    const [url, body] = axios.post.mock.calls[0]
+    expect(url).toContain('/api/cost_at_params')
+    expect(body).toMatchObject({
+      model_id: 'mid',
+      params: { 'a/alpha': 1.5 },
+      analysis_params: { 'a/alpha': 0.5 },
+      outputs: ['a/x'],
+      config_outputs_dir: '/out',
+    })
+    expect(out.emulator_cost).toEqual({ cost: 1 })
+  })
+
+  it('omits theta where it is the same as the parameters themselves', async () => {
+    axios.post.mockResolvedValue({ data: { cost: null, emulator_cost: null } })
+    await costAtParams('mid', { 'a/alpha': 1.5 })
+    expect(axios.post.mock.calls[0][1].analysis_params).toBeUndefined()
+  })
+
   it('test_upload_params_for_id_posts_file', async () => {
     axios.post.mockResolvedValue({ data: { params: [] } })
     const file = new File(['a,b'], 'p.csv')
@@ -116,6 +148,26 @@ describe('api client', () => {
     await startSensitivity('mid', { method: 'local', nominal: 'current' }, cur)
     const [, body] = axios.post.mock.calls[0]
     expect(body.current_params).toEqual(cur)
+  })
+
+  it('asks the backend to open the model source, naming the outputs directory', async () => {
+    // A browser cannot start a local editor, so the copy-and-open is a server
+    // action and the outputs directory is where the editable copy has to land.
+    axios.post.mockResolvedValue({
+      data: { path: '/study/user_funcs/user_model.py', opened: true, runs: true },
+    })
+    const res = await editModelSource('abc 123', '/study')
+    const [url, body] = axios.post.mock.calls[0]
+    expect(url).toContain('/api/models/abc%20123/edit')
+    expect(body).toEqual({ config_outputs_dir: '/study' })
+    expect(res.path).toBe('/study/user_funcs/user_model.py')
+  })
+
+  it('the source URL carries the outputs dir so the tab shows the edited copy', () => {
+    expect(modelSourceUrl('abc')).toMatch(/\/api\/models\/abc\/source$/)
+    expect(modelSourceUrl('abc', '/study dir')).toContain(
+      'source?config_outputs_dir=%2Fstudy%20dir',
+    )
   })
 })
 

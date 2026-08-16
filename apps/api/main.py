@@ -5,6 +5,8 @@ Endpoints
 GET  /api/health                       liveness probe
 POST /api/models/upload                upload a .cellml file -> metadata
 GET  /api/models/{model_id}/variables  classified variable lists
+GET  /api/models/{model_id}/source     the .py / .mmt the user actually wrote
+POST /api/models/{model_id}/edit       open that source in the user's own editor
 POST /api/simulate                     single run (circulatory_autogen helper)
 POST /api/protocol/run                 multi-experiment protocol run
 POST /api/obs_data/upload              load obs_data.json (protocol + overlays)
@@ -21,6 +23,7 @@ import contextlib
 import errno
 import json
 import os
+import re
 import shutil
 import tempfile
 import time
@@ -54,6 +57,7 @@ import mmt_protocol
 import myokit_import
 import omex_import
 from aadc_check import aadc_status
+import editor_launch
 from version import __version__
 from compiler_check import compiler_status
 from engine import SimulationError, engine, _circulatory_autogen_src
@@ -93,6 +97,7 @@ from user_funcs import (
     delete_user_func,
     external_path as user_func_path,
     external_paths as user_func_paths,
+    model_source_path as study_model_source_path,
     read_user_funcs,
     save_model_module,
     save_user_func,
@@ -201,6 +206,50 @@ def _get_model(model_id: str) -> _ModelRecord:
             return record
         raise HTTPException(status_code=404, detail=f"model {model_id!r} not found")
     return record
+
+
+#: A model id is generated here (``uuid4().hex``), but on the way back in it is a
+#: client string, and the one rule for those is that they are never joined onto a
+#: path unchecked -- the same discipline ``solver_plots`` applies to its segments.
+_SAFE_MODEL_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
+
+#: The suffixes of a model *source*: the file the user wrote, as opposed to the
+#: model CUFLynx runs. Ordered by how directly they are the model -- an
+#: external_python model **is** its ``.py``, while a ``.mmt`` sits beside the
+#: CellML it was converted into at import (#27). A plain CellML model has no
+#: entry here on purpose: it is edited in PhLynx, and the flattened document
+#: CUFLynx generated is not a file the user has ever seen.
+MODEL_SOURCE_SUFFIXES = (".py", ".mmt")
+
+
+def _save_model_source(model_id: str, suffix: str, data: bytes) -> None:
+    """Keep the dropped file beside the model derived from it.
+
+    Only for a model whose source is *not* what gets simulated: a ``.mmt`` is
+    converted to CellML at the door, so without this the file the user wrote
+    exists nowhere on the server and "show me my model" has nothing to show.
+    The converted CellML is still written exactly as before -- it is what every
+    simulation path uses, and this copy is only ever read back to look at.
+    """
+    with contextlib.suppress(OSError):
+        (UPLOAD_DIR / f"{model_id}{suffix}").write_bytes(data)
+
+
+def _model_source_path(model_id: str) -> Path | None:
+    """The stored source for *model_id*, or None when it has none."""
+    if not _SAFE_MODEL_ID.match(str(model_id or "")):
+        return None
+    for suffix in MODEL_SOURCE_SUFFIXES:
+        path = UPLOAD_DIR / f"{model_id}{suffix}"
+        if path.is_file():
+            return path
+    return None
+
+
+def _display_stem(name: str, fallback: str) -> str:
+    """A filename stem safe to put in a Content-Disposition header."""
+    stem = re.sub(r"[^A-Za-z0-9._-]+", "_", str(name or "")).strip("._-")
+    return stem or fallback
 
 
 def _validate_param_keys(params: dict) -> None:
@@ -900,13 +949,19 @@ def _obs_data_document(record, protocol_info=None) -> dict | None:
     if obs is None:
         return None
     proto = protocol_info if protocol_info is not None else obs.protocol_info
-    if proto is None:
-        return None
-    return {
-        "protocol_info": proto,
+    document = {
         "data_items": obs.data_items,
         "prediction_items": obs.prediction_items,
     }
+    # An obs_data with no protocol_info is valid and common -- it says what to measure
+    # without saying how to drive the model, and CA builds the timeline from
+    # sim_time/pre_time instead. Returning None for it meant a protocol-less study was
+    # reported as having no obs_data at all, and the emulator's cost (which has no
+    # fallback, by design) simply never appeared. The key is omitted rather than set to
+    # None because CA's parser refuses an explicit None where it accepts an absence.
+    if proto is not None:
+        document["protocol_info"] = proto
+    return document
 
 
 def _with_obs_operands(outputs: list[str], record) -> list[str]:
@@ -1016,8 +1071,10 @@ async def upload_model(
         path = UPLOAD_DIR / f"{model_id}.py"
         path.write_bytes(only_bytes)
         _models[model_id] = _ModelRecord(model_id, path, meta)
-        # A second copy beside the study's user funcs, so the model travels with
-        # the export the way an operation func does (CA's external_model_path).
+        # The study's own copy, beside its user funcs (CA's external_model_path).
+        # It travels with the export the way an operation func does -- and it is
+        # what runs: resolve_model_path prefers it over the uploaded temp file,
+        # so "Edit source" opens the model rather than a doomed sibling of it.
         # Best-effort: an unwritable output dir must not fail the upload, which
         # has already succeeded everywhere that matters.
         with contextlib.suppress(OSError):
@@ -1043,6 +1100,10 @@ async def upload_model(
     converted_from = None
     converted_path = None
     protocol: dict | None = None
+    # The bytes the user dropped, kept once the model_id exists: the conversion
+    # below replaces `only_bytes` with CellML, and the .mmt would otherwise be
+    # gone the moment this request returns.
+    mmt_source: bytes | None = None
     if single and (
         myokit_import.is_myokit_filename(only_name) or myokit_import.looks_like_myokit(only_bytes)
     ):
@@ -1057,6 +1118,7 @@ async def upload_model(
         except myokit_import.MyokitImportError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         converted_from = only_name
+        mmt_source = mmt_bytes
         raw_by_name = {Path(only_name).stem + ".cellml": only_bytes}
         # The [[protocol]] section the model import deliberately leaves behind.
         # Offered rather than applied: the client decides, because a model
@@ -1088,6 +1150,8 @@ async def upload_model(
     model_id = uuid.uuid4().hex
     path = UPLOAD_DIR / f"{model_id}.cellml"
     path.write_bytes(raw)
+    if mmt_source is not None:
+        _save_model_source(model_id, ".mmt", mmt_source)
     _models[model_id] = _ModelRecord(model_id, path, meta)
 
     return {
@@ -1138,6 +1202,7 @@ async def upload_omex(
     # than like a lesser kind of study.
     converted_from = None
     protocol = None
+    mmt_source: bytes | None = None
     if len(raw_by_name) == 1 and myokit_import.is_myokit_filename(parts["master"] or ""):
         only_name = parts["master"]
         mmt_bytes = raw_by_name[only_name]
@@ -1148,6 +1213,7 @@ async def upload_omex(
         except myokit_import.MyokitImportError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         converted_from = only_name
+        mmt_source = mmt_bytes
         protocol = _protocol_from_mmt(mmt_bytes, only_name, out_dir)
         raw_by_name = {Path(only_name).stem + ".cellml": cellml_bytes}
         parts = {**parts, "master": Path(only_name).stem + ".cellml"}
@@ -1174,6 +1240,8 @@ async def upload_omex(
     model_id = uuid.uuid4().hex
     path = UPLOAD_DIR / f"{model_id}.cellml"
     path.write_bytes(raw)
+    if mmt_source is not None:
+        _save_model_source(model_id, ".mmt", mmt_source)
     _models[model_id] = _ModelRecord(model_id, path, meta)
 
     result = {
@@ -1275,6 +1343,136 @@ def get_variables(model_id: str) -> dict:
     }
 
 
+@app.get("/api/models/{model_id}/source")
+def get_model_source(model_id: str, config_outputs_dir: str = "") -> FileResponse:
+    """The file the user wrote, for a model that has one (#91 follow-up).
+
+    Two kinds of model do. An ``external_python`` model **is** its ``.py``, and a
+    Myokit model's ``.mmt`` is kept beside the CellML it was converted into at
+    import. A plain CellML model has none: it is edited in PhLynx, so this 404s
+    rather than answering with the flattened document CUFLynx generated, which is
+    not a file the user has ever seen.
+
+    Served as ``text/plain`` **inline**: a browser tab showing the source. This
+    is no longer what the Edit button does — that opens the file in the user's
+    own editor — but it is what a remote or headless deployment *can* do, and
+    reading your own model is worth a route on its own.
+
+    ``config_outputs_dir`` makes it show the same file the editor would: once a
+    study copy exists under the outputs directory, that copy is the model, and
+    answering with the uploaded original would show a version the user has since
+    edited away from.
+
+    The model id is validated before anything is joined onto a path — the same
+    rule ``solver_plots`` follows; a client string never becomes a path segment.
+    """
+    if not _SAFE_MODEL_ID.match(str(model_id or "")):
+        raise HTTPException(status_code=404, detail="model source not found")
+    record = _get_model(model_id)
+    path = _model_source_path(model_id)
+    if path is None:
+        raise HTTPException(
+            status_code=404,
+            detail="this model has no source file to show — a CellML model is edited in PhLynx",
+        )
+    base_dir = _user_func_base_dir(config_outputs_dir)
+    if base_dir:
+        study_copy = study_model_source_path(path.suffix, base_dir)
+        if study_copy.is_file():
+            path = study_copy
+    stem = _display_stem(record.meta.name, model_id)
+    return FileResponse(
+        path,
+        media_type="text/plain; charset=utf-8",
+        filename=f"{stem}{path.suffix}",
+        content_disposition_type="inline",
+    )
+
+
+class ModelEditRequest(BaseModel):
+    #: The study's outputs directory. Required in practice — see the route: the
+    #: editable copy has to live somewhere the study keeps, and there is no
+    #: sensible temp-dir default for a file the user is about to invest work in.
+    config_outputs_dir: str = ""
+
+
+@app.post("/api/models/{model_id}/edit")
+def edit_model_source(model_id: str, req: ModelEditRequest) -> dict:
+    """Put the model's source under the outputs directory and open it for editing.
+
+    Three things happen, in this order, and the order is the point:
+
+    1. **The source is copied into the study**, at
+       ``<outputs>/user_funcs/user_model.<py|mmt>`` — beside the funcs, which is
+       already where an external_python model's ``.py`` is kept and what CA is
+       handed as ``external_model_path``. Only when it is not there yet: once it
+       exists it *is* the file, and re-pressing Edit must never overwrite the
+       work the last press produced.
+    2. **For a ``.py``, that copy becomes the model that runs.**
+       ``resolve_model_path`` prefers it over the uploaded temp file, on every
+       tier — the live engine, the sim worker, and the calibration / sensitivity
+       / UQ runners. Editing a file nothing executes would be a worse trap than
+       the TTL-pruned temp copy this replaces.
+    3. **It is opened in the user's editor** (``$VISUAL`` / ``$EDITOR``, else the
+       platform's default handler). A launch that cannot happen — headless
+       server, no handler — is reported as ``opened: false`` with a reason, not
+       as a failure: the caller still knows where the file is, which is most of
+       what was wanted.
+
+    A ``.mmt`` is copied and opened the same way but is **not** what runs: it was
+    converted to CellML at import, so ``runs`` comes back false and the caller
+    says the edited file has to be dropped back in to take effect.
+
+    Editing changes the *program*, not CUFLynx's idea of it: a ``.py`` whose
+    ``parameters`` or ``output_names`` change needs a re-upload for the sliders
+    to follow, because those were read by AST at the door.
+    """
+    if not _SAFE_MODEL_ID.match(str(model_id or "")):
+        raise HTTPException(status_code=404, detail="model source not found")
+    record = _get_model(model_id)
+    source = _model_source_path(model_id)
+    if source is None:
+        raise HTTPException(
+            status_code=404,
+            detail="this model has no source file to edit — a CellML model is edited in PhLynx",
+        )
+
+    base_dir = _user_func_base_dir(req.config_outputs_dir)
+    if not base_dir:
+        # Deliberately a refusal rather than a temp-dir fallback: an edited model
+        # dropped in the same pruned scratch directory this change exists to get
+        # out of would be lost, and silently.
+        raise HTTPException(
+            status_code=422,
+            detail="no outputs directory is set, so there is nowhere to keep an "
+            "editable copy of the model. Choose an outputs directory first, then "
+            "press Edit source again.",
+        )
+
+    target = study_model_source_path(source.suffix, base_dir)
+    try:
+        if not target.is_file():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(source.read_bytes())
+    except OSError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=f"could not write the model into {target.parent}: {exc}",
+        ) from exc
+
+    launch = editor_launch.open_in_editor(target)
+    return {
+        "path": str(target),
+        "filename": f"{_display_stem(record.meta.name, model_id)}{source.suffix}",
+        "opened": bool(launch["opened"]),
+        "editor": launch["editor"],
+        "reason": launch["reason"],
+        # Whether this copy is the one CUFLynx runs. True for external_python;
+        # false for a .mmt, which is the source of a CellML that runs instead.
+        "runs": source.suffix == ".py",
+    }
+
+
 @app.get("/api/models/{model_id}/solver_plots/{token}/{index}.png")
 def get_solver_plot(model_id: str, token: str, index: str) -> FileResponse:
     """One figure an external_python model drew for itself during a run.
@@ -1343,13 +1541,18 @@ def simulate(req: SimulateRequest) -> dict:
     # of those the default is its declared output_names instead; without this
     # "just simulate it" would ask for nothing and draw an empty plot.
     outputs = req.outputs or record.meta.odes or record.meta.algebraic
+    # Resolved up front rather than beside the cost below: it also decides which
+    # copy of an external_python model is the one that runs.
+    output_dir = _user_func_base_dir(req.config_outputs_dir)
     try:
         # Resolve the path for the backend the *live* run will actually use: the
         # engine falls back when the configured format cannot run in-process
         # (#122), and a model generated for one backend is not readable by
         # another -- a generated .py handed to Myokit fails as invalid XML.
         live_type, live_solver, _fell_back = engine.live_backend()
-        model_path = resolve_model_path(str(record.path), live_type, model_id=req.model_id)
+        model_path = resolve_model_path(
+            str(record.path), live_type, model_id=req.model_id, output_dir=output_dir
+        )
         result = engine.simulate(
             model_id=req.model_id,
             model_path=model_path,
@@ -1371,7 +1574,6 @@ def simulate(req: SimulateRequest) -> dict:
     # Per data_item, the operation's series_output (transformed) series so the
     # Output plots overlay matches CA's saved figures (issue #111).
     if record.obs_data is not None:
-        output_dir = _user_func_base_dir(req.config_outputs_dir)
         result["output_series"] = compute_output_series(
             record.obs_data.data_items, result.get("outputs", {}), output_dir
         )
@@ -1399,9 +1601,13 @@ def protocol_run(req: ProtocolRunRequest) -> dict:
     # extra series is cheap; a cost that silently omits half the observables
     # looks like a better fit than it is.
     outputs = _with_obs_operands(outputs, record)
+    # See simulate(): also decides which copy of an external_python model runs.
+    output_dir = _user_func_base_dir(req.config_outputs_dir)
     try:
         live_type, live_solver, _fell_back = engine.live_backend()
-        model_path = resolve_model_path(str(record.path), live_type, model_id=req.model_id)
+        model_path = resolve_model_path(
+            str(record.path), live_type, model_id=req.model_id, output_dir=output_dir
+        )
         result = engine.run_protocol(
             model_id=req.model_id,
             model_path=model_path,
@@ -1425,7 +1631,6 @@ def protocol_run(req: ProtocolRunRequest) -> dict:
     # scoped to that experiment, keyed by its global data_item index so the
     # frontend can attach it to the matching overlay (issue #111).
     if record.obs_data is not None:
-        output_dir = _user_func_base_dir(req.config_outputs_dir)
         items = record.obs_data.data_items
         for e, exp in enumerate(result.get("experiments", [])):
             scoped = [
@@ -1469,6 +1674,38 @@ class CostSensitivityRequest(BaseModel):
     modifiers: list[dict] | None = None
 
 
+def _solver_cost_at(record, params: dict, *, model_id, model_path, protocol_info,
+                    output_dir, sim_time: float, pre_time: float,
+                    outputs: list[str] | None = None) -> dict | None:
+    """A solver run at ``params``, scored -- the cost the Output plots show.
+
+    Deliberately the *same* run the run routes make, down to which outputs are
+    requested: a superset would score observables the panel's cost does not, and
+    anything built on this -- a differenced gradient (#188), a best-fit
+    comparison against the emulator (#333) -- would then belong to a different
+    number.
+    """
+    if protocol_info is not None:
+        wanted = outputs or (record.meta.odes + record.meta.algebraic)
+        result = engine.run_protocol(
+            model_id=model_id,
+            model_path=model_path,
+            protocol_info=protocol_info,
+            params=params,
+            outputs=_with_obs_operands(wanted, record),
+        )
+        return _protocol_run_cost(record, result, protocol_info, output_dir)
+    result = engine.simulate(
+        model_id=model_id,
+        model_path=model_path,
+        params=params,
+        sim_time=sim_time,
+        pre_time=pre_time,
+        outputs=outputs or record.meta.odes,
+    )
+    return _single_run_cost(record, result, output_dir)
+
+
 @app.post("/api/cost_sensitivity")
 def cost_sensitivity_route(req: CostSensitivityRequest) -> dict:
     """``d ln(cost)/d ln(p)`` per parameter, about the current slider values (#188).
@@ -1494,7 +1731,9 @@ def cost_sensitivity_route(req: CostSensitivityRequest) -> dict:
 
     try:
         live_type, live_solver, _fell_back = engine.live_backend()
-        model_path = resolve_model_path(str(record.path), live_type, model_id=req.model_id)
+        model_path = resolve_model_path(
+            str(record.path), live_type, model_id=req.model_id, output_dir=output_dir
+        )
     except Exception as exc:  # noqa: BLE001 - a model that cannot be resolved owes a reason
         raise HTTPException(
             status_code=500, detail=engine.describe_exception(exc)
@@ -1504,25 +1743,16 @@ def cost_sensitivity_route(req: CostSensitivityRequest) -> dict:
     # outputs are requested: a superset would score observables the panel's cost
     # does not, and the gradient would then belong to a different number.
     def cost_at(params: dict) -> dict | None:
-        if protocol_info is not None:
-            outputs = req.outputs or (record.meta.odes + record.meta.algebraic)
-            result = engine.run_protocol(
-                model_id=req.model_id,
-                model_path=model_path,
-                protocol_info=protocol_info,
-                params=params,
-                outputs=_with_obs_operands(outputs, record),
-            )
-            return _protocol_run_cost(record, result, protocol_info, output_dir)
-        result = engine.simulate(
+        return _solver_cost_at(
+            record, params,
             model_id=req.model_id,
             model_path=model_path,
-            params=params,
+            protocol_info=protocol_info,
+            output_dir=output_dir,
             sim_time=req.sim_time,
             pre_time=req.pre_time,
-            outputs=req.outputs or record.meta.odes,
+            outputs=req.outputs,
         )
-        return _single_run_cost(record, result, output_dir)
 
     # The sensitivity solve first: enabling FSA/AD makes the forward solve carry
     # its own derivatives, so one run gives the cost and dJ/dp together -- about
@@ -1579,6 +1809,114 @@ def cost_sensitivity_route(req: CostSensitivityRequest) -> dict:
         raise HTTPException(
             status_code=500, detail=engine.describe_exception(exc)
         ) from exc
+
+
+class CostAtParamsRequest(BaseModel):
+    model_id: str
+    # Physical model values, the way the sliders hand them to a run.
+    params: dict[str, float] = Field(default_factory=dict)
+    # The same point written as theta -- one value per params_for_id row, at a
+    # modifier's anchor rather than its expansion (#208). The emulator was
+    # trained on theta and must be given theta; `params` alone would feed a
+    # modifier's expanded value to a surrogate that has never seen one. Absent
+    # means "they are the same", which is true of a study with no modifiers.
+    analysis_params: dict[str, float] | None = None
+    sim_time: float = 10.0
+    pre_time: float = 0.0
+    outputs: list[str] | None = None
+    protocol_info: dict | None = None
+    config_outputs_dir: str | None = None
+
+
+@app.post("/api/cost_at_params")
+def cost_at_params(req: CostAtParamsRequest) -> dict:
+    """One parameter set, scored twice: by the model and by the emulator (#333).
+
+    The question this answers is the calibration one -- a fit found on the
+    surrogate reports a cost and per-observable errors that describe the
+    *emulator's* features, and there was no way to see what the model says at the
+    same parameters. Both sides come back from a single request so that they are
+    unarguably the same point: one ``params`` in, one theta derived from it, no
+    opportunity for the two to be asked at different slider values.
+
+    Both are scored through the one CA-backed path (``obs_cost``), so the
+    difference between them is the surrogate's error and nothing else. The
+    emulator side is absent -- never an error -- when there is no bundle, when it
+    cannot be loaded, or when its features cannot be matched to the obs_data.
+    """
+    record = _get_model(req.model_id)
+    _validate_param_keys(req.params)
+    if record.obs_data is None:
+        raise HTTPException(
+            status_code=422,
+            detail="no obs_data is loaded, so there is nothing to score against",
+        )
+
+    output_dir = _user_func_base_dir(req.config_outputs_dir)
+    protocol_info = req.protocol_info
+    if protocol_info is None:
+        protocol_info = record.obs_data.protocol_info
+
+    try:
+        live_type, _live_solver, _fell_back = engine.live_backend()
+        model_path = resolve_model_path(
+            str(record.path), live_type, model_id=req.model_id, output_dir=output_dir
+        )
+        cost = _solver_cost_at(
+            record, req.params,
+            model_id=req.model_id,
+            model_path=model_path,
+            protocol_info=protocol_info,
+            output_dir=output_dir,
+            sim_time=req.sim_time,
+            pre_time=req.pre_time,
+            outputs=req.outputs,
+        )
+    except SimulationError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001 - anything else still owes a reason
+        raise HTTPException(
+            status_code=500, detail=engine.describe_exception(exc)
+        ) from exc
+
+    return {
+        "cost": cost,
+        "emulator_cost": _emulator_cost_at(
+            record,
+            req.model_id,
+            req.analysis_params if req.analysis_params is not None else req.params,
+            req.config_outputs_dir,
+            output_dir,
+            protocol_info,
+        ),
+    }
+
+
+def _emulator_cost_at(record, model_id: str, params: dict, config_outputs_dir,
+                      output_dir, protocol_info=None) -> dict | None:
+    """The emulator's cost at ``params``, or None if it cannot answer.
+
+    Every reason it might not -- no bundle, a bundle trained on a different
+    parameter set, no autoemulate in the configured interpreter -- is a silence
+    rather than a failure: the solver's cost is still correct and complete, and
+    an error banner over a missing second opinion would be worse than not
+    offering one.
+    """
+    try:
+        emu_dir = _emulator_dir_for(model_id, {"config_outputs_dir": config_outputs_dir or ""})
+        metadata = ca_run_history.emulator_metadata(emu_dir)
+        if metadata is None:
+            return None
+        theta = _emulator_theta(model_id, params, metadata)
+        prediction = engine.emulator_predict(emu_dir, theta)
+    except Exception:  # noqa: BLE001 - an emulator that cannot answer says nothing
+        return None
+    # This caller wants the cost alone: the Analysis toggle's legend says which source
+    # is displayed, so an absent emulator cost there means "no emulator side to show"
+    # rather than a state needing explanation.
+    return _emulator_feature_cost(record, prediction, output_dir, protocol_info)[0]
 
 
 @app.post("/api/obs_data/upload")
@@ -2008,7 +2346,13 @@ def calibration_run(req: CalibrationRequest) -> dict:
         output_dir = str(UPLOAD_DIR / f"calib_{req.model_id}_{uuid.uuid4().hex[:8]}")
     config = {
         "model_id": req.model_id,
-        "model_path": resolve_model_path(str(record.path), engine.model_type, model_id=req.model_id),
+        # The *configured* outputs dir, not the temp fallback below it: that is
+        # where the study keeps its own copy of an external_python model, and the
+        # runner must resolve the same file the live engine does.
+        "model_path": resolve_model_path(
+            str(record.path), engine.model_type, model_id=req.model_id,
+            output_dir=configured or None,
+        ),
         "model_type": engine.model_type,
         "solver": engine.solver,
         "solver_info": dict(engine.solver_info),
@@ -2202,7 +2546,13 @@ def sensitivity_run(req: SensitivityRequest) -> dict:
     if req.settings.get("method") == "local":
         num_cores = 1
     config = {
-        "model_path": resolve_model_path(str(record.path), engine.model_type, model_id=req.model_id),
+        # The *configured* outputs dir, not the temp fallback below it: that is
+        # where the study keeps its own copy of an external_python model, and the
+        # runner must resolve the same file the live engine does.
+        "model_path": resolve_model_path(
+            str(record.path), engine.model_type, model_id=req.model_id,
+            output_dir=configured or None,
+        ),
         "model_type": engine.model_type,
         "solver": engine.solver,
         "solver_info": dict(engine.solver_info),
@@ -2342,7 +2692,16 @@ def emulator_info(model_id: str, config_outputs_dir: str = "") -> dict:
     # route: they are what the Analysis view draws, and a caller that has one
     # without the other can only show half the picture.
     points = ca_run_history.emulator_error_points(emu_dir) if metadata else None
-    return {"emulator_dir": emu_dir, "metadata": metadata, "error_points": points}
+    return {
+        "emulator_dir": emu_dir,
+        "metadata": metadata,
+        "error_points": points,
+        # Whether `emulator_settings.reuse_samples` could run here. Its own key
+        # rather than inferred from `metadata`: CA needs the saved samples *as
+        # well as* the metadata, so a bundle can be perfectly usable and still
+        # have nothing to refit.
+        "reusable": ca_run_history.emulator_reusable(emu_dir),
+    }
 
 
 @app.post("/api/emulator/train")
@@ -2370,8 +2729,11 @@ def emulator_train(req: EmulatorTrainRequest) -> dict:
         )
     output_dir = configured or str(UPLOAD_DIR / f"emu_{req.model_id}")
     config = {
+        # See the calibration config: the configured outputs dir decides which
+        # copy of an external_python model every tier runs.
         "model_path": resolve_model_path(
-            str(record.path), engine.model_type, model_id=req.model_id
+            str(record.path), engine.model_type, model_id=req.model_id,
+            output_dir=configured or None,
         ),
         "model_type": engine.model_type,
         "solver": engine.solver,
@@ -2419,7 +2781,16 @@ def emulator_predict(req: EmulatorPredictRequest) -> dict:
 
     Values are returned keyed by the emulator's own feature labels; the caller
     matches them to its data_items rather than assuming a shared ordering.
+
+    ``cost`` rides along: what those predicted features cost against the loaded
+    obs_data, scored by the same CA path ``/api/simulate`` scores the solver's
+    features with (#333). Here rather than on the run routes because this request
+    is already made every time the parameters settle -- so the panel gets both
+    numbers without a second round trip, and, since both are asked for at the
+    same slider values, they are two costs of one parameter set rather than two
+    parameter sets. None when there is no obs_data or CA cannot score it.
     """
+    record = _get_model(req.model_id)
     emu_dir = _emulator_dir_for(req.model_id, req.settings)
     metadata = ca_run_history.emulator_metadata(emu_dir)
     if metadata is None:
@@ -2432,7 +2803,47 @@ def emulator_predict(req: EmulatorPredictRequest) -> dict:
         result = engine.emulator_predict(emu_dir, theta)
     except SimulationError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    result["cost"], result["cost_unavailable"] = _emulator_feature_cost(
+        record, result, _user_func_base_dir(req.settings.get("config_outputs_dir"))
+    )
     return result
+
+
+def _emulator_feature_cost(record, prediction: dict, output_dir,
+                           protocol_info=None) -> dict | None:
+    """What an emulator's predicted features cost, through CA's own cost path.
+
+    The prediction is matched to the data_items by circulatory_autogen's feature
+    labels -- the same rule the Output plots' overlay matches by, and the labels
+    the bundle was trained with -- and then scored by exactly the code that
+    scores a solver run (:func:`obs_cost.evaluate_features`). Two numbers meant
+    to be read against each other cannot come from two implementations.
+
+    Quiet on failure: an emulator that cannot be scored (no obs_data, an
+    obs_data CA cannot parse, a bundle whose labels no longer match) leaves the
+    solver's cost exactly as it was and simply offers no second number.
+    """
+    labels = prediction.get("labels") or []
+    values = prediction.get("values") or []
+    if not labels or len(labels) != len(values):
+        return None, "the emulator returned no usable predictions"
+    why: list[str] = []
+    try:
+        cost = obs_cost.evaluate_features(
+            dict(zip(labels, values)),
+            _obs_data_document(record, protocol_info),
+            output_dir,
+            dt=engine.dt,
+            why=why,
+        )
+    except Exception:  # noqa: BLE001 - a cost is never worth failing the prediction over
+        return None, "circulatory_autogen could not score the emulator's prediction"
+    if cost is not None:
+        return cost, None
+    # Why, not just "no". The predicted features still draw their dotted overlay, so a
+    # silent None left the user with lines on the plot and no number beside them and
+    # nothing to act on -- which is exactly how this was reported.
+    return None, (why[0] if why else "the emulator's prediction could not be scored")
 
 
 def _emulator_theta(model_id: str, params: dict, metadata: dict) -> list:
@@ -2577,7 +2988,13 @@ def uq_run(req: UQRequest) -> dict:
         output_dir = str(UPLOAD_DIR / f"uq_{req.model_id}_{uuid.uuid4().hex[:8]}")
     config = {
         "model_id": req.model_id,
-        "model_path": resolve_model_path(str(record.path), engine.model_type, model_id=req.model_id),
+        # The *configured* outputs dir, not the temp fallback below it: that is
+        # where the study keeps its own copy of an external_python model, and the
+        # runner must resolve the same file the live engine does.
+        "model_path": resolve_model_path(
+            str(record.path), engine.model_type, model_id=req.model_id,
+            output_dir=configured or None,
+        ),
         "model_type": engine.model_type,
         "solver": engine.solver,
         "solver_info": dict(engine.solver_info),

@@ -123,7 +123,7 @@ def test_resolve_model_path_is_verbatim_for_external_python(tmp_path, model_id):
     """There is nothing to generate from and nothing that could generate it: the
     path CA imports must be the path the upload wrote."""
     path = tmp_path / "user_model.py"
-    path.write_text(FIXTURE.read_text())
+    path.write_text(FIXTURE.read_text(encoding="utf-8"), encoding="utf-8")
     resolved = model_codegen.resolve_model_path(
         str(path), "external_python", model_id=model_id
     )

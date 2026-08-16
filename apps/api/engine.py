@@ -580,6 +580,29 @@ def _ensure_ca_on_path() -> None:
         sys.path.insert(0, src)
 
 
+def model_stamp(model_path) -> tuple:
+    """A cheap fingerprint of the model file: ``(path, mtime_ns, size)``.
+
+    The compiled/loaded model in a helper is a snapshot of a file on disk, and
+    since "Edit source" that file is one the user opens in their own editor and
+    saves behind the app's back. One ``stat`` before each run is what stops the
+    next slider drag from silently running the *previous* version of a model the
+    user has just changed — the failure "Edit source" exists to prevent.
+
+    The path is part of the stamp, not only its mtime: an external_python study
+    moves from the uploaded temp copy to the study's own copy the moment an
+    outputs directory exists, and that is a different file under an unchanged
+    cache key. A file that cannot be stat'd stamps as size ``-1`` rather than
+    raising: an unreadable model is the run's problem to report, not the cache's.
+    """
+    path = str(model_path)
+    try:
+        st = os.stat(path)
+    except OSError:
+        return (path, 0, -1)
+    return (path, st.st_mtime_ns, st.st_size)
+
+
 def _default_helper_factory(
     *, model_path, dt, sim_time, pre_time, solver_info, model_type=DEFAULT_MODEL_TYPE, solver=DEFAULT_SOLVER
 ):
@@ -706,6 +729,8 @@ class SimulationEngine:
         # model_id -> last protocol_info object whose pace binding is active on
         # the cached runner's helper (avoids re-binding/recreating every run).
         self._runner_protocol_info: dict[str, object] = {}
+        # cache key -> the model_stamp() the cached helper/runner was built from.
+        self._model_stamps: dict[tuple, tuple] = {}
         self._lock = threading.Lock()
 
     @property
@@ -802,9 +827,25 @@ class SimulationEngine:
             self._helpers.clear()
             self._runners.clear()
             self._runner_protocol_info.clear()
+            self._model_stamps.clear()
             worker, self._worker = self._worker, None
         if worker is not None:
             worker.stop()
+
+    def _drop_if_model_changed(self, cache_key: tuple, model_path) -> None:
+        """Forget a cached helper/runner whose model file is no longer the one it
+        was built from. Call with the lock held, before the cache lookup.
+
+        Cheap by design — one ``stat`` — because it runs on every simulation, and
+        the alternative (an explicit "reload" the user has to remember to press)
+        fails exactly when it matters: silently, in favour of the old model.
+        """
+        stamp = model_stamp(model_path)
+        if self._model_stamps.get(cache_key, stamp) != stamp:
+            self._helpers.pop(cache_key, None)
+            self._runners.pop(cache_key, None)
+            self._runner_protocol_info.pop(cache_key, None)
+        self._model_stamps[cache_key] = stamp
 
     # ------------------------------------------------------------------
     # Worker delegation (#167)
@@ -848,6 +889,7 @@ class SimulationEngine:
             self._helpers.clear()
             self._runners.clear()
             self._runner_protocol_info.clear()
+            self._model_stamps.clear()
         if worker is None:
             worker = SimWorker(python, settings)
             try:
@@ -1068,6 +1110,9 @@ class SimulationEngine:
             # Key the cache on the backend too: falling back must not hand back a
             # helper compiled for the format we could not run.
             cache_key = (model_id, model_type, solver)
+            # ...and drop it outright when the model file itself has changed, so
+            # an edit made in the user's own editor takes effect on the next run.
+            self._drop_if_model_changed(cache_key, model_path)
             helper = self._helpers.get(cache_key)
             if helper is None:
                 try:
@@ -1190,6 +1235,9 @@ class SimulationEngine:
         model_type, solver, fell_back = self.live_backend()
         with self._lock:
             cache_key = (model_id, model_type, solver)
+            # See simulate(): an edited model file invalidates what was built
+            # from it, protocol binding included.
+            self._drop_if_model_changed(cache_key, model_path)
             runner = self._runners.get(cache_key)
             if runner is None:
                 try:
