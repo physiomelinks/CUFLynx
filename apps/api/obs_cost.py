@@ -188,7 +188,7 @@ def _ca_engine(obs_data: dict, output_dir: str | None, dt: float):
         pid.protocol_info = protocol_info
         pid.cost_type = obs_info["cost_type"]
         pid.dt = float(dt)
-        pid.model_type = "cellml_only"  # only decides symbolic vs numeric; this path is numeric
+        pid.model_type = "cellml"  # only decides symbolic vs numeric; this path is numeric
         pid.cost_funcs_dict = sfp.get_cost_funcs_dict("numpy")
         pid.cost_funcs_dict_symbolic = pid.cost_funcs_dict
         pid.operation_funcs_dict = sfp.get_operation_funcs_dict("numpy")

@@ -46,10 +46,10 @@ function declaredIn(testid, sources) {
 }
 
 describe('tourSteps', () => {
-  it('ships exactly 37 steps', () => {
+  it('ships exactly 41 steps', () => {
     // A bare number, on purpose: an accidental deletion during an unrelated
     // edit is otherwise invisible -- the tour just gets shorter.
-    expect(TOUR_STEPS.length).toBe(37)
+    expect(TOUR_STEPS.length).toBe(41)
   })
 
   it('gives every step a unique, non-empty id', () => {
@@ -76,6 +76,17 @@ describe('tourSteps', () => {
     }
   })
 
+  it('points the Settings steps at the right of their control', () => {
+    // The controls sit at the right-hand edge of the dialog's rows, so a bubble
+    // on their left covers the labels the step is naming. `side` is only a
+    // preference -- TourOverlay falls back to the opposite side, then bottom,
+    // then top, when the asked-for one will not fit -- so this pins the ask,
+    // not the outcome on any particular window width.
+    for (const id of ['ca-dir', 'model-format', 'solver']) {
+      expect(TOUR_STEPS.find((s) => s.id === id).side, `step ${id}`).toBe('right')
+    }
+  })
+
   it('declares predicates as functions when it declares them at all', () => {
     for (const step of TOUR_STEPS) {
       if ('when' in step) expect(typeof step.when, `step ${step.id} when`).toBe('function')
@@ -84,16 +95,40 @@ describe('tourSteps', () => {
         expect(typeof step.advanceOn.event, `step ${step.id} advanceOn.event`).toBe('string')
       }
       if ('onNext' in step) expect(typeof step.onNext, `step ${step.id} onNext`).toBe('function')
+      if ('spanAll' in step) {
+        expect(step.spanAll, `step ${step.id} spanAll`).toMatch(/^\[data-testid="[a-z0-9-]+"\]$/)
+      }
+      if ('outro' in step) {
+        // Only ever a *second* paragraph: with nothing above it to follow on
+        // from, it is just `text` spelled differently.
+        expect(step.bullets, `step ${step.id} outro without bullets`).toBeTruthy()
+        expect(typeof step.outro, `step ${step.id} outro`).toBe('string')
+      }
+      if ('bullets' in step) {
+        expect(Array.isArray(step.bullets), `step ${step.id} bullets`).toBe(true)
+        expect(step.bullets.length, `step ${step.id} bullets`).toBeGreaterThan(1)
+        for (const b of step.bullets) expect(typeof b, `step ${step.id} bullet`).toBe('string')
+      }
+      if ('link' in step) {
+        // https only, and never a bare href with no words on it: the bubble
+        // renders the label, and an unlabelled URL in a sentence reads as noise.
+        expect(step.link.href, `step ${step.id} link.href`).toMatch(/^https:\/\//)
+        expect(step.link.label, `step ${step.id} link.label`).toBeTruthy()
+      }
     }
   })
 
-  // `onNext` is the one place a step may write to the app, so it is worth
-  // stating out loud which steps hold that permission: exactly one, the step
-  // whose subject is a modal the user would otherwise be left standing behind.
-  it('lets exactly the close-Settings step act on Next, and closes Settings with it', () => {
+  // `onNext` is the only place a step may write to the app, so the set that
+  // holds that permission is pinned rather than left to grow quietly. Both
+  // members are the same case: a step describing a modal, where Next would
+  // otherwise walk the tour on to something the mask is covering. A third entry
+  // should have to be argued for here before it is added.
+  it('lets exactly the two dialog steps act on Next', () => {
     const acting = TOUR_STEPS.filter((s) => 'onNext' in s).map((s) => s.id)
-    expect(acting).toEqual(['settings-close'])
+    expect(acting).toEqual(['settings-close', 'op-funcs-save'])
+  })
 
+  it('closes Settings from the close-Settings step', () => {
     const step = TOUR_STEPS.find((s) => s.id === 'settings-close')
     let closed = 0
     step.onNext({ closeSettings: () => (closed += 1) })
@@ -102,6 +137,48 @@ describe('tourSteps', () => {
     // ordinary way, so Next is an alternative rather than the only exit.
     expect(step.waitFor({ settingsOpen: () => false })).toBe(true)
     expect(step.waitFor({ settingsOpen: () => true })).toBe(false)
+  })
+
+  it('closes the operation-funcs editor from its own step', () => {
+    const step = TOUR_STEPS.find((s) => s.id === 'op-funcs-save')
+    const closed = []
+    step.onNext({ closeDialog: (sel) => closed.push(sel) })
+    expect(closed).toEqual(['[data-testid="edit-op-funcs"]'])
+  })
+
+  it('sends the user-func step to the outputs directory', () => {
+    // The funcs are written to <outputs>/user_funcs/ (apps/api/user_funcs.py),
+    // and the copy used to read as though they landed inside circulatory_autogen
+    // -- which would be someone else's repo, and would not travel with the study.
+    // Naming the path is what makes that unambiguous; saying where it does *not*
+    // go was answering a question nobody had asked.
+    const step = TOUR_STEPS.find((s) => s.id === 'op-funcs-save')
+    expect(step.text).toContain('outputs directory')
+    expect(step.text).toContain('user_funcs/operation_funcs_user.py')
+    expect(step.text).not.toContain('circulatory_autogen')
+  })
+
+  // The house style for these bubbles, pinned because it is the thing that
+  // decays first: a step read on a small screen is a paragraph the user skims.
+  it('keeps every bubble short enough to read', () => {
+    for (const step of TOUR_STEPS) {
+      expect(step.text.length, `step ${step.id} text`).toBeLessThan(420)
+      expect((step.outro ?? '').length, `step ${step.id} outro`).toBeLessThan(280)
+      for (const b of step.bullets ?? []) {
+        expect(b.length, `step ${step.id} bullet`).toBeLessThan(140)
+      }
+    }
+  })
+
+  // A right-arrow in prose is the tell this copy was drafted by a machine, and
+  // the places that wanted one wanted a list instead.
+  it('uses no arrow glyphs in the copy', () => {
+    for (const step of TOUR_STEPS) {
+      const all = [step.text, step.title ?? '', step.outro ?? '', ...(step.bullets ?? [])].join(
+        ' ',
+      )
+      expect(all, `step ${step.id}`).not.toMatch(/[\u2190-\u21FF\u27F0-\u27FF]/)
+    }
   })
 
   // The guard that matters. The tour points at testids from a separate file, so

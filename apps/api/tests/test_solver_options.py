@@ -23,9 +23,9 @@ import solver_options as so
 # introspected one on a dev box. That blind spot hid a real regression, so the
 # invariant tests below run against both schemas explicitly.
 CA_SCHEMA = {
-    "model_types": ["cellml_only", "python", "cpp", "casadi_python"],
+    "model_types": ["cellml", "python", "cpp", "casadi_python"],
     "solvers_by_model_type": {
-        "cellml_only": ["CVODE_opencor", "CVODE_myokit"],
+        "cellml": ["CVODE_opencor", "CVODE_myokit"],
         "python": ["solve_ivp"],
         "cpp": ["CVODE", "RK4", "PETSC"],
         "casadi_python": ["casadi_integrator"],
@@ -36,10 +36,10 @@ CA_SCHEMA = {
         "solve_ivp": ["RK45", "RK23", "DOP853", "Radau", "BDF", "LSODA", "forward_euler"],
         "casadi_integrator": ["cvodes", "idas", "collocation", "rk", "semi_implicit_euler", "bdf"],
     },
-    # CA really does default cellml_only to the OpenCOR solver, so this exercises
+    # CA really does default cellml to the OpenCOR solver, so this exercises
     # the substitution branch rather than assuming it away.
     "default_solver_by_model_type": {
-        "cellml_only": "CVODE_opencor",
+        "cellml": "CVODE_opencor",
         "python": "solve_ivp",
         "cpp": "CVODE",
         "casadi_python": "casadi_integrator",
@@ -121,7 +121,7 @@ def test_get_solver_options_entry_point_works():
     # aadc_python is conditional on a licensed library, so it may or may not be
     # here; external_python needs nothing installed and is always offered.
     assert set(opts["model_formats"]) <= {
-        "cellml_only", "python", "casadi_python", "external_python",
+        "cellml", "python", "casadi_python", "external_python",
     }
     for solver in ("CVODE_myokit", "solve_ivp", "casadi_integrator"):
         assert solver in opts["solver_info_schema"]
@@ -130,19 +130,19 @@ def test_get_solver_options_entry_point_works():
 @BOTH_SCHEMAS
 def test_cvode_opencor_not_offered_because_no_opencor_bundled(schema):
     """CUFLynx does not bundle OpenCOR, so CVODE_opencor must never be surfaced:
-    not as a selectable solver, not as the cellml_only default, and not in the
+    not as a selectable solver, not as the cellml default, and not in the
     solver_info schema. CellML runs through Myokit's CVODE instead.
 
-    Both schemas name CVODE_opencor as a cellml_only solver *and* its default, so
+    Both schemas name CVODE_opencor as a cellml solver *and* its default, so
     each exercises the substitution branch."""
     opts = so._build_options(schema, {"max": True})
     for solvers in opts["solvers_by_format"].values():
         assert "CVODE_opencor" not in solvers
     assert "CVODE_opencor" not in opts["solver_info_schema"]
     assert "CVODE_opencor" not in opts["methods_by_solver"]
-    # cellml_only falls back to the Myokit CVODE that CUFLynx can actually run.
-    assert opts["default_solver_by_format"]["cellml_only"] == "CVODE_myokit"
-    assert "CVODE_myokit" in opts["solvers_by_format"]["cellml_only"]
+    # cellml falls back to the Myokit CVODE that CUFLynx can actually run.
+    assert opts["default_solver_by_format"]["cellml"] == "CVODE_myokit"
+    assert "CVODE_myokit" in opts["solvers_by_format"]["cellml"]
 
 
 @BOTH_SCHEMAS
@@ -314,7 +314,7 @@ def test_ad_available_requires_casadi_python_and_all_differentiable():
     # Only casadi_python unlocks AD, even when everything is differentiable.
     assert so.ad_available("casadi_python", diff_all) is True
     assert so.ad_available("python", diff_all) is False
-    assert so.ad_available("cellml_only", diff_all) is False
+    assert so.ad_available("cellml", diff_all) is False
 
 
 def test_ad_unavailable_when_an_operation_is_not_differentiable():
@@ -360,15 +360,15 @@ def test_gradient_sources_fallback_mirrors_get_gradient(monkeypatch):
     assert _values(so.gradient_sources("casadi_python", "casadi_integrator", False)) == ["FD"]
     # aadc_python: AD present regardless of the differentiability gate.
     assert _values(so.gradient_sources("aadc_python", None, False)) == ["FD", "AD"]
-    # cellml_only + CVODE_myokit: FSA; other solver / model types: FD only.
-    assert _values(so.gradient_sources("cellml_only", "CVODE_myokit", True)) == ["FD", "FSA"]
-    assert _values(so.gradient_sources("cellml_only", "CVODE_opencor", True)) == ["FD"]
+    # cellml + CVODE_myokit: FSA; other solver / model types: FD only.
+    assert _values(so.gradient_sources("cellml", "CVODE_myokit", True)) == ["FD", "FSA"]
+    assert _values(so.gradient_sources("cellml", "CVODE_opencor", True)) == ["FD"]
     assert _values(so.gradient_sources("python", "solve_ivp", True)) == ["FD"]
 
     # Descriptors carry the do_ad / requires_all_differentiable flags the UI + gate use.
     ad = next(s for s in so.gradient_sources("casadi_python", None, True) if s["value"] == "AD")
     assert ad["do_ad"] is True and ad["requires_all_differentiable"] is True
-    fsa = next(s for s in so.gradient_sources("cellml_only", "CVODE_myokit", True)
+    fsa = next(s for s in so.gradient_sources("cellml", "CVODE_myokit", True)
                if s["value"] == "FSA")
     assert fsa["do_ad"] is True and fsa["requires_all_differentiable"] is False
 
@@ -391,8 +391,8 @@ def test_gradient_sources_gated_by_integrator_suitability(monkeypatch):
     # No method given -> not gated (source still offered).
     assert _values(so.gradient_sources("casadi_python", "casadi_integrator", True, None)) == ["FD", "AD"]
     # FSA: kept for CVODE, dropped for anything else.
-    assert _values(so.gradient_sources("cellml_only", "CVODE_myokit", True, "CVODE")) == ["FD", "FSA"]
-    assert _values(so.gradient_sources("cellml_only", "CVODE_myokit", True, "other")) == ["FD"]
+    assert _values(so.gradient_sources("cellml", "CVODE_myokit", True, "CVODE")) == ["FD", "FSA"]
+    assert _values(so.gradient_sources("cellml", "CVODE_myokit", True, "other")) == ["FD"]
 
 
 def test_solver_options_expose_suitability_and_default_method():
@@ -641,9 +641,9 @@ def test_uq_defaults_route_exposes_ca_mcmc_options(client, monkeypatch):
 # method 'bdf_tape'".
 # ---------------------------------------------------------------------------
 AADC_SCHEMA = {
-    "model_types": ["cellml_only", "aadc_python"],
+    "model_types": ["cellml", "aadc_python"],
     "solvers_by_model_type": {
-        "cellml_only": ["CVODE_myokit"],
+        "cellml": ["CVODE_myokit"],
         "aadc_python": ["aadc_semi_implicit"],
     },
     "methods_by_solver": {
@@ -1069,3 +1069,77 @@ def test_the_config_route_reports_a_value_for_every_field_it_offers(client):
         if f.get("default") is not None and body["solver_info"].get(f["key"]) is None
     ]
     assert missing == []
+
+
+# ---------------------------------------------------------------------------
+# The model_type rename (cellml_only -> cellml)
+# ---------------------------------------------------------------------------
+# The CA directory is chosen at runtime and can be any checkout, so CUFLynx meets
+# both spellings. It keeps one canonical name internally and translates back at
+# the moment a config is written for CA -- these pin both directions, because
+# each failure is invisible from the other side: an untranslated *inbound* name
+# puts a retired option in the Settings dropdown, and an untranslated *outbound*
+# one makes every calibration die in CA's parser before it starts.
+
+def _legacy_ca_schema():
+    """CA_SCHEMA as an older circulatory_autogen reports it."""
+    schema = {k: v for k, v in CA_SCHEMA.items()}
+    schema["model_types"] = ["cellml_only" if m == "cellml" else m for m in schema["model_types"]]
+    for key in ("solvers_by_model_type", "default_solver_by_model_type"):
+        schema[key] = {
+            ("cellml_only" if m == "cellml" else m): v for m, v in CA_SCHEMA[key].items()
+        }
+    return schema
+
+
+def test_a_current_ca_needs_no_translation_in_either_direction(monkeypatch):
+    monkeypatch.setattr(so, "_introspect_solver_schema", lambda: dict(CA_SCHEMA))
+    monkeypatch.setattr(so, "_introspect_differentiable", lambda: {"max": True})
+    so.reset_cache()
+    opts = so.get_solver_options(refresh=True)
+
+    assert "cellml" in opts["model_formats"]
+    assert so.ca_model_type("cellml") == "cellml"
+
+
+def test_an_older_ca_is_presented_under_the_current_name(monkeypatch):
+    """Inbound: the retired spelling must never reach the Settings dropdown, or
+    the GUI keeps writing it into new configs and the rename never finishes."""
+    monkeypatch.setattr(so, "_introspect_solver_schema", lambda: _legacy_ca_schema())
+    monkeypatch.setattr(so, "_introspect_differentiable", lambda: {"max": True})
+    so.reset_cache()
+    opts = so.get_solver_options(refresh=True)
+
+    assert "cellml" in opts["model_formats"]
+    assert "cellml_only" not in opts["model_formats"]
+    # And the format still carries its solvers and its default -- a rename that
+    # loses the keyed-off entries leaves the dropdown with an empty format.
+    assert opts["solvers_by_format"]["cellml"] == ["CVODE_myokit"]
+    assert opts["default_solver_by_format"]["cellml"] == "CVODE_myokit"
+
+
+def test_an_older_ca_gets_a_run_config_in_its_own_spelling(monkeypatch):
+    """Outbound: that CA's parse_user_inputs_file exits on a model_type it does
+    not know, so a run config saying `cellml` would kill every calibration."""
+    monkeypatch.setattr(so, "_introspect_solver_schema", lambda: _legacy_ca_schema())
+    monkeypatch.setattr(so, "_introspect_differentiable", lambda: {"max": True})
+    so.reset_cache()
+    so.get_solver_options(refresh=True)
+
+    assert so.ca_model_type("cellml") == "cellml_only"
+    # Only the renamed one is translated; everything else is passed straight on.
+    assert so.ca_model_type("casadi_python") == "casadi_python"
+    assert so.ca_model_type("external_python") == "external_python"
+    assert so.ca_model_type("") == ""
+    assert so.ca_model_type(None) is None
+
+
+def test_the_old_spelling_is_accepted_wherever_a_stored_setting_can_carry_it():
+    """Settings persist across upgrades, so a config written before the rename
+    still names the old format. It is canonicalised rather than rejected."""
+    assert so.canonical_model_type("cellml_only") == "cellml"
+    assert so.canonical_model_type("cellml") == "cellml"
+    assert so.canonical_model_type("casadi_python") == "casadi_python"
+    assert so.canonical_model_type("nonsense") == "nonsense"
+    assert so.canonical_model_type("") == ""
+    assert so.canonical_model_type(None) is None

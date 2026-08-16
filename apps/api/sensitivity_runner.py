@@ -150,7 +150,7 @@ def _build_local_engine(config: dict, settings: dict, solver_info: dict, model_t
     """A ``do_ad`` ``CVS0DParamID`` for the analytic (FSA) local-sensitivity path.
 
     Not ``run()`` — only its backend-agnostic ``get_observable_sensitivities``
-    accessor is used (Myokit CVODES forward sensitivities for cellml_only +
+    accessor is used (Myokit CVODES forward sensitivities for cellml +
     CVODE_myokit). Mirrors :func:`_calibrate_for_nominal`'s construction; ``do_ad``
     is forced on so CA takes the analytic-sensitivity path.
     """
@@ -258,7 +258,7 @@ def _run(config: dict) -> dict:
     output_dir = config["output_dir"]
     os.makedirs(output_dir, exist_ok=True)
 
-    model_type = config.get("model_type", "cellml_only")
+    model_type = config.get("model_type", "cellml")
     solver_info = _solver_info_from_config(config, settings)
     # Global random seed (Settings popup). When set, seed numpy's legacy global RNG
     # so Sobol/SALib sampling is repeatable, and forward it into sa_options. None =>

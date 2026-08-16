@@ -99,7 +99,7 @@ def run(config: dict) -> dict:
 
     inp = {
         "model_path": config["model_path"],
-        "model_type": config.get("model_type", "cellml_only"),
+        "model_type": config.get("model_type", "cellml"),
         "file_prefix": file_prefix,
         "param_id_method": settings.get("param_id_method", "genetic_algorithm"),
         "params_for_id_path": config["params_path"],

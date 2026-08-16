@@ -46,7 +46,7 @@ vi.mock('./lib/api', () => ({
   getConfig: vi.fn().mockResolvedValue({
     ca_dir: '',
     ca_exists: true,
-    generated_model_format: 'cellml_only',
+    generated_model_format: 'cellml',
     solver: 'CVODE_myokit',
     solver_info: {},
     differentiable_operations: {},
@@ -113,6 +113,31 @@ describe('App.vue', () => {
     expect(localStorage.getItem('cuflynx-outputs-dir')).toBe('/data/outputs')
   })
 
+  it('shows that prompt without waiting for any startup request', async () => {
+    // It used to be the last line of six sequential awaits, one of them an
+    // interpreter discovery that walks the filesystem -- so the only thing the
+    // user was actually waiting on arrived after everything they could not see.
+    // Nothing fetched at startup feeds this dialog.
+    localStorage.removeItem('cuflynx-outputs-dir')
+    let releasePythons
+    getCalibrationPythons.mockReturnValueOnce(
+      new Promise((resolve) => {
+        releasePythons = () => resolve({ pythons: [] })
+      }),
+    )
+    const wrapper = shallowMount(App)
+    await nextTick()
+
+    const setup = wrapper
+      .findAllComponents({ name: 'FileBrowserDialog' })
+      .find((d) => d.props('title') === 'Where should outputs be saved?')
+    // Open while the slowest startup request is still in flight.
+    expect(setup.props('visible')).toBe(true)
+
+    releasePythons()
+    await flushPromises()
+  })
+
   // Myokit JIT-compiles every model, so a missing C toolchain breaks all
   // simulation. The packaged desktop app can't ship a compiler, making this the
   // most likely first-run failure — warn instead of letting sims 500.
@@ -120,7 +145,7 @@ describe('App.vue', () => {
     const BASE_CONFIG = {
       ca_dir: '',
       ca_exists: true,
-      generated_model_format: 'cellml_only',
+      generated_model_format: 'cellml',
       solver: 'CVODE_myokit',
       solver_info: {},
       differentiable_operations: {},
@@ -129,7 +154,7 @@ describe('App.vue', () => {
     const NO_COMPILER = {
       present: false,
       hint: 'xcode-select --install',
-      affects: "CVODE_myokit (generated model format 'cellml_only')",
+      affects: "CVODE_myokit (generated model format 'cellml')",
       alternatives: [
         { generated_model_format: 'python', solver: 'solve_ivp', label: 'Python (scipy solve_ivp)' },
         { generated_model_format: 'casadi_python', solver: 'casadi_integrator', label: 'CasADi' },
@@ -281,7 +306,7 @@ describe('App.vue', () => {
     const BASE_CONFIG = {
       ca_dir: '',
       ca_exists: true,
-      generated_model_format: 'cellml_only',
+      generated_model_format: 'cellml',
       solver: 'CVODE_myokit',
       solver_info: {},
       differentiable_operations: {},
@@ -323,7 +348,7 @@ describe('App.vue', () => {
     const BASE_CONFIG = {
       ca_dir: '',
       ca_exists: true,
-      generated_model_format: 'cellml_only',
+      generated_model_format: 'cellml',
       solver: 'CVODE_myokit',
       solver_info: {},
       differentiable_operations: {},
@@ -366,16 +391,16 @@ describe('App.vue', () => {
 })
 
 // Regression for #84: switching the backend solver must update the LOCAL-SA
-// gradient sources shown in the Sensitivity panel (cellml_only+CVODE_myokit -> FSA;
+// gradient sources shown in the Sensitivity panel (cellml+CVODE_myokit -> FSA;
 // casadi_python -> AD). PR #95 made the panel read the reactive /api/config
 // gradient_sources; this drives the real App reactive path through a backend switch.
 describe('App.vue sensitivity gradient sources track the backend (#84)', () => {
   const cellml = {
-    ca_dir: '', ca_exists: true, generated_model_format: 'cellml_only',
+    ca_dir: '', ca_exists: true, generated_model_format: 'cellml',
     solver: 'CVODE_myokit', solver_info: {}, differentiable_operations: {},
-    model_formats: ['cellml_only', 'python', 'casadi_python'],
-    solvers_by_format: { cellml_only: ['CVODE_myokit'], python: ['solve_ivp'], casadi_python: ['casadi_integrator'] },
-    default_solver_by_format: { cellml_only: 'CVODE_myokit', python: 'solve_ivp', casadi_python: 'casadi_integrator' },
+    model_formats: ['cellml', 'python', 'casadi_python'],
+    solvers_by_format: { cellml: ['CVODE_myokit'], python: ['solve_ivp'], casadi_python: ['casadi_integrator'] },
+    default_solver_by_format: { cellml: 'CVODE_myokit', python: 'solve_ivp', casadi_python: 'casadi_integrator' },
     gradient_sources: [
       { value: 'FD', label: 'Finite difference', requires_all_differentiable: false },
       { value: 'FSA', label: 'Forward sensitivity (Myokit CVODES)', requires_all_differentiable: false },
@@ -389,14 +414,14 @@ describe('App.vue sensitivity gradient sources track the backend (#84)', () => {
     ],
   }
 
-  it('swaps FSA for AD when switching cellml_only -> casadi_python (and back)', async () => {
+  it('swaps FSA for AD when switching cellml -> casadi_python (and back)', async () => {
     getConfig.mockResolvedValue({ ...cellml })
     setConfig.mockImplementation(async (payload) =>
       payload && payload.generatedModelFormat === 'casadi_python' ? { ...casadi } : { ...cellml },
     )
     const wrapper = shallowMount(App)
     await flushPromises()
-    // initial: cellml_only -> FD + FSA
+    // initial: cellml -> FD + FSA
     expect(wrapper.vm.gradientSources.map((s) => s.value)).toEqual(['FD', 'FSA'])
 
     // user switches backend to casadi_python in Settings
@@ -405,7 +430,7 @@ describe('App.vue sensitivity gradient sources track the backend (#84)', () => {
     expect(wrapper.vm.gradientSources.map((s) => s.value)).toEqual(['FD', 'AD'])
 
     // and back
-    wrapper.vm.onFormatChange('cellml_only')
+    wrapper.vm.onFormatChange('cellml')
     await flushPromises()
     expect(wrapper.vm.gradientSources.map((s) => s.value)).toEqual(['FD', 'FSA'])
   })
@@ -416,7 +441,7 @@ describe('App.vue sensitivity gradient sources track the backend (#84)', () => {
 describe('App.vue gradient integrator suitability warning (#298)', () => {
   const base = {
     ca_dir: '', ca_exists: true, differentiable_operations: {},
-    model_formats: ['cellml_only', 'casadi_python'],
+    model_formats: ['cellml', 'casadi_python'],
     ad_suitable_methods: { casadi_integrator: ['collocation', 'rk', 'semi_implicit_euler', 'bdf'] },
     fsa_suitable_methods: { CVODE_myokit: ['CVODE'] },
     default_method_by_solver: { casadi_integrator: 'bdf' },
@@ -438,9 +463,9 @@ describe('App.vue gradient integrator suitability warning (#298)', () => {
     expect(wrapper.vm.gradientIntegratorWarning).toBe('')
   })
 
-  it('warns for FSA-unsuitable cellml_only integrators', async () => {
+  it('warns for FSA-unsuitable cellml integrators', async () => {
     getConfig.mockResolvedValue({
-      ...base, generated_model_format: 'cellml_only', solver: 'CVODE_myokit',
+      ...base, generated_model_format: 'cellml', solver: 'CVODE_myokit',
       solver_info: { method: 'other' },
     })
     const wrapper = shallowMount(App)
@@ -817,7 +842,7 @@ describe('App.vue interpreter MPI marker', () => {
   const CONFIG = {
     ca_dir: '',
     ca_exists: true,
-    generated_model_format: 'cellml_only',
+    generated_model_format: 'cellml',
     solver: 'CVODE_myokit',
     solver_info: {},
     differentiable_operations: {},
@@ -1415,7 +1440,7 @@ describe('App.vue AADC availability (#122)', () => {
   const CONFIG = {
     ca_dir: '',
     ca_exists: true,
-    generated_model_format: 'cellml_only',
+    generated_model_format: 'cellml',
     solver: 'CVODE_myokit',
     solver_info: {},
     differentiable_operations: {},
@@ -1795,15 +1820,15 @@ describe('App.vue cost sensitivities (#188)', () => {
 // be generated from a CellML model, so it is not on offer for one.
 describe('App.vue external python models own the backend', () => {
   const BASE = {
-    ca_dir: '', ca_exists: true, generated_model_format: 'cellml_only',
+    ca_dir: '', ca_exists: true, generated_model_format: 'cellml',
     solver: 'CVODE_myokit', solver_info: {}, differentiable_operations: {},
-    model_formats: ['cellml_only', 'python', 'casadi_python', 'external_python'],
+    model_formats: ['cellml', 'python', 'casadi_python', 'external_python'],
     solvers_by_format: {
-      cellml_only: ['CVODE_myokit'], python: ['solve_ivp'],
+      cellml: ['CVODE_myokit'], python: ['solve_ivp'],
       casadi_python: ['casadi_integrator'], external_python: ['external'],
     },
     default_solver_by_format: {
-      cellml_only: 'CVODE_myokit', python: 'solve_ivp',
+      cellml: 'CVODE_myokit', python: 'solve_ivp',
       casadi_python: 'casadi_integrator', external_python: 'external',
     },
   }
@@ -1811,7 +1836,7 @@ describe('App.vue external python models own the backend', () => {
   beforeEach(() => {
     getConfig.mockResolvedValue({ ...BASE })
     // The server echoes back what it was set to, as the real one does; taking a
-    // bare {} would make every save read as "reset to cellml_only".
+    // bare {} would make every save read as "reset to cellml".
     setConfig.mockImplementation(async (payload) => ({
       ...BASE,
       generated_model_format: payload?.generatedModelFormat ?? BASE.generated_model_format,
@@ -1821,7 +1846,7 @@ describe('App.vue external python models own the backend', () => {
   })
   afterEach(() => {
     setConfig.mockReset().mockResolvedValue({})
-    getConfig.mockResolvedValue({ ...BASE, model_formats: ['cellml_only'] })
+    getConfig.mockResolvedValue({ ...BASE, model_formats: ['cellml'] })
   })
 
   // Render the Settings dialog's slot: the format selector and its hint live
@@ -1865,7 +1890,7 @@ describe('App.vue external python models own the backend', () => {
   it('hides external_python from the menu for a CellML model', async () => {
     const wrapper = await loadModel({ model_id: 'c1', name: 'lotka' })
     expect(wrapper.vm.formatChoices).not.toContain('external_python')
-    expect(wrapper.vm.formatChoices).toContain('cellml_only')
+    expect(wrapper.vm.formatChoices).toContain('cellml')
     expect(
       wrapper.find('[data-testid="model-format-select"]').attributes('disabled'),
     ).toBe('false')
@@ -1879,7 +1904,7 @@ describe('App.vue external python models own the backend', () => {
     })
     await wrapper.vm.onModelLoaded({ model_id: 'c1', name: 'lotka' })
     await flushPromises()
-    expect(wrapper.vm.generatedModelFormat).toBe('cellml_only')
+    expect(wrapper.vm.generatedModelFormat).toBe('cellml')
     expect(wrapper.vm.isExternalPythonModel).toBe(false)
   })
 })
@@ -1989,7 +2014,7 @@ describe('App.vue free-form (JSON) solver_info fields', () => {
   const CONFIG = {
     ca_dir: '', ca_exists: true, generated_model_format: 'external_python',
     solver: 'external', solver_info: {}, differentiable_operations: {},
-    model_formats: ['cellml_only', 'external_python'],
+    model_formats: ['cellml', 'external_python'],
     solvers_by_format: { external_python: ['external'] },
     default_solver_by_format: { external_python: 'external' },
     solver_info_schema: {
@@ -2010,7 +2035,7 @@ describe('App.vue free-form (JSON) solver_info fields', () => {
   afterEach(() => {
     setConfig.mockReset().mockResolvedValue({})
     getConfig.mockResolvedValue({
-      ca_dir: '', ca_exists: true, generated_model_format: 'cellml_only',
+      ca_dir: '', ca_exists: true, generated_model_format: 'cellml',
       solver: 'CVODE_myokit', solver_info: {}, differentiable_operations: {},
     })
   })
@@ -2488,7 +2513,7 @@ describe('guided tour', () => {
     expect(tour.exists()).toBe(true)
     expect(tour.props('step')).toBe(0)
     expect(tour.props('steps')).toBe(TOUR_STEPS)
-    expect(tour.props('steps').length).toBe(37)
+    expect(tour.props('steps').length).toBe(41)
     // The ctx is getters over App's own state, read on the overlay's tick.
     expect(typeof tour.props('ctx').hasModel).toBe('function')
     expect(tour.props('ctx').hasModel()).toBe(false)
@@ -2507,9 +2532,27 @@ describe('guided tour', () => {
     expect(wrapper.find('[data-testid="tour-start"]').classes()).not.toContain('tour-pulse')
   })
 
-  // The step index is deliberately not persisted: resuming at step 19 into a
-  // reloaded, empty app is worse than starting again.
-  it('starts from the beginning every time', async () => {
+  // Skipping is "not now", not "never again": reopening resumes where it was
+  // left, rather than replaying from 1 -- which, with a model already loaded,
+  // then skipped forward past every step about getting one and landed the user
+  // in the middle with nothing behind them.
+  it('resumes where it was skipped', async () => {
+    const wrapper = shallowMount(App)
+    await wrapper.find('[data-testid="tour-start"]').trigger('click')
+    await nextTick()
+    overlay(wrapper).vm.$emit('update:step', 19)
+    await nextTick()
+
+    overlay(wrapper).vm.$emit('close', 'skip')
+    await nextTick()
+    await wrapper.find('[data-testid="tour-start"]').trigger('click')
+    await nextTick()
+    expect(overlay(wrapper).props('step')).toBe(19)
+  })
+
+  // Finishing is different: there is nothing left to resume, so the next run
+  // starts at the top.
+  it('starts again from the beginning once it has been finished', async () => {
     const wrapper = shallowMount(App)
     await wrapper.find('[data-testid="tour-start"]').trigger('click')
     await nextTick()

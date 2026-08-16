@@ -38,7 +38,7 @@ CUFLynx works out of the box with no compiler. Of the three solver backends
 |---|---|---|
 | `python` | scipy `solve_ivp` | no |
 | `casadi_python` | `casadi_integrator` | no |
-| `cellml_only` | `CVODE_myokit` | **yes** |
+| `cellml` | `CVODE_myokit` | **yes** |
 
 Myokit compiles each CellML model to a native extension when it runs, and that
 toolchain can't be shipped inside the app. If it's missing CUFLynx warns and you

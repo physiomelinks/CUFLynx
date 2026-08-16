@@ -23,9 +23,9 @@ FIXTURE = Path(__file__).resolve().parent / "data" / "heat1d_external_model.py"
 # _build_options reads. The solver_info descriptor is CA's own: a `dict`-typed
 # `user_config`, which is why the form builder has to render one dict field.
 CA_SCHEMA_WITH_EXTERNAL = {
-    "model_types": ["cellml_only", "python", "casadi_python", "external_python"],
+    "model_types": ["cellml", "python", "casadi_python", "external_python"],
     "solvers_by_model_type": {
-        "cellml_only": ["CVODE_myokit"],
+        "cellml": ["CVODE_myokit"],
         "python": ["solve_ivp"],
         "casadi_python": ["casadi_integrator"],
         "external_python": ["external"],
@@ -37,7 +37,7 @@ CA_SCHEMA_WITH_EXTERNAL = {
         "external": ["external"],
     },
     "default_solver_by_model_type": {
-        "cellml_only": "CVODE_myokit",
+        "cellml": "CVODE_myokit",
         "python": "solve_ivp",
         "casadi_python": "casadi_integrator",
         "external_python": "external",

@@ -41,7 +41,70 @@ from runtime_paths import default_python
 # external_python is here because CUFLynx has no build path to provide for it
 # either: the model file *is* the user's own module, so "can CUFLynx produce what
 # this format needs" is trivially yes -- it uploads it and hands CA the path.
-SUPPORTED_FORMATS = ("cellml_only", "python", "casadi_python", "external_python")
+SUPPORTED_FORMATS = ("cellml", "python", "casadi_python", "external_python")
+
+#: model_type spellings circulatory_autogen has renamed, old -> current.
+#:
+#: CA renamed ``cellml_only`` to ``cellml``. The CA directory is chosen at runtime
+#: and can be any checkout (Settings -> CA dir), so CUFLynx meets both spellings
+#: and has to translate in *both* directions:
+#:
+#: * inbound -- an older CA's SOLVER_SCHEMA advertises ``cellml_only``, and a
+#:   dropdown built straight from it would put the retired name in front of the
+#:   user and write it into new configs;
+#: * outbound -- an older CA's ``parse_user_inputs_file`` exits on a model_type it
+#:   does not recognise, so sending it ``cellml`` makes every calibration, SA and
+#:   UQ run die at startup.
+#:
+#: So: one canonical spelling everywhere inside CUFLynx, translated back to
+#: whatever the connected CA advertises at the moment a run config is written.
+#: This is also what stops the app breaking in the window between updating the
+#: two repos, which is a window every developer with a sibling checkout lands in.
+MODEL_TYPE_ALIASES = {"cellml_only": "cellml"}
+
+#: Current name -> the spelling the *connected* CA advertises. Identity unless an
+#: older CA said otherwise; rebuilt on every schema introspection.
+_ca_model_type_spelling: dict[str, str] = {}
+
+
+def canonical_model_type(model_type: str | None) -> str | None:
+    """CUFLynx's spelling of a CA model_type. Unknown names pass through."""
+    if not model_type:
+        return model_type
+    return MODEL_TYPE_ALIASES.get(model_type, model_type)
+
+
+def ca_model_type(model_type: str | None) -> str | None:
+    """The spelling to write into a config the **connected** CA will parse.
+
+    Identity for a current CA. Call this at the boundary -- a run config, an
+    exported pipeline -- never inside CUFLynx, where the canonical name is the
+    only one that should appear.
+    """
+    if not model_type:
+        return model_type
+    return _ca_model_type_spelling.get(model_type, model_type)
+
+
+def _canonicalise_model_types(schema: dict) -> dict:
+    """Rewrite a CA schema's model_type keys into CUFLynx's spelling, and record
+    what that CA actually called them so :func:`ca_model_type` can translate back.
+    """
+    global _ca_model_type_spelling
+    spelling: dict[str, str] = {}
+    for old, current in MODEL_TYPE_ALIASES.items():
+        if old in schema.get("model_types", []):
+            spelling[current] = old
+    _ca_model_type_spelling = spelling
+    if not spelling:
+        return schema
+
+    out = dict(schema)
+    out["model_types"] = [canonical_model_type(m) for m in schema.get("model_types", [])]
+    for key in ("solvers_by_model_type", "default_solver_by_model_type"):
+        if isinstance(schema.get(key), dict):
+            out[key] = {canonical_model_type(m): v for m, v in schema[key].items()}
+    return out
 
 # Formats CUFLynx can run, but only when an optional third-party library is
 # present (#122). aadc_python needs Matlogica's AADC, which is proprietary and
@@ -52,7 +115,7 @@ SUPPORTED_FORMATS = ("cellml_only", "python", "casadi_python", "external_python"
 #
 # AADC loads a generated *python* model (aadc_python_solver_helper does
 # spec_from_file_location on model_path), which resolve_model_path already
-# produces for any non-cellml_only format -- so nothing else is needed to run it.
+# produces for any non-cellml format -- so nothing else is needed to run it.
 CONDITIONAL_FORMATS = ("aadc_python",)
 
 
@@ -68,7 +131,7 @@ def _available_formats() -> tuple:
 
 # Solvers CUFLynx must NOT surface because it does **not** bundle OpenCOR (see
 # CLAUDE.md — no OpenCOR dependency is shipped). CA's schema lists CVODE_opencor as
-# a cellml_only solver (and its default), but that backend needs an OpenCOR runtime
+# a cellml solver (and its default), but that backend needs an OpenCOR runtime
 # CUFLynx doesn't have; CUFLynx runs CellML through Myokit's CVODE instead. Offering
 # CVODE_opencor would present a solver that can't run here, so it's filtered out of
 # every payload (both the CA-introspected schema and the fallback below).
@@ -209,7 +272,7 @@ def default_solver_info(solver: str) -> dict:
 
     Read from the already-filtered per-solver form schema rather than CA's
     ``get_solver_info_default(model_type)``: that one is keyed by model_type and
-    answers ``cellml_only`` with the CVODE_opencor family — the solver CUFLynx must
+    answers ``cellml`` with the CVODE_opencor family — the solver CUFLynx must
     never use, plus MaximumNumberOfSteps, which myokit_helper never reads. Going
     through the same schema the form renders means the seeded values and the offered
     controls cannot disagree.
@@ -275,9 +338,9 @@ def filter_solver_info(solver: str, solver_info: dict) -> dict:
 # have configured anything. Its one degree of freedom is `user_config`, a
 # free-form dict the wrapper hands the user's class untouched.
 FALLBACK_SOLVER_SCHEMA = {
-    "model_types": ["cellml_only", "python", "cpp", "casadi_python", "external_python"],
+    "model_types": ["cellml", "python", "cpp", "casadi_python", "external_python"],
     "solvers_by_model_type": {
-        "cellml_only": ["CVODE_opencor", "CVODE_myokit"],
+        "cellml": ["CVODE_opencor", "CVODE_myokit"],
         "python": ["solve_ivp"],
         "cpp": ["CVODE", "RK4", "PETSC"],
         "casadi_python": ["casadi_integrator"],
@@ -293,7 +356,7 @@ FALLBACK_SOLVER_SCHEMA = {
         "external": ["external"],
     },
     "default_solver_by_model_type": {
-        "cellml_only": "CVODE_opencor",
+        "cellml": "CVODE_opencor",
         "python": "solve_ivp",
         "cpp": "CVODE",
         "casadi_python": "casadi_integrator",
@@ -1126,6 +1189,10 @@ def get_solver_options(refresh: bool = False) -> dict:
     if _cache is not None and not refresh:
         return _cache
     schema, ok_schema = _safe(_introspect_solver_schema, FALLBACK_SOLVER_SCHEMA)
+    # One canonical model_type spelling from here inwards, whichever CA answered
+    # (or none at all) -- see MODEL_TYPE_ALIASES. Deliberately here rather than
+    # inside the introspection, so the fallback schema goes through it too.
+    schema = _canonicalise_model_types(schema)
     diff, ok_diff = _safe(_introspect_differentiable, dict(_FALLBACK_DIFFERENTIABLE))
     opts = _build_options(schema, diff)
     if ok_schema and ok_diff:
@@ -1338,7 +1405,7 @@ def _fallback_gradient_sources(model_type: str, solver: str | None) -> list[dict
 
     Finite difference is always available. casadi_python adds symbolic CasADi AD
     (requires every op @differentiable — enforced by the caller's gate);
-    aadc_python adds AADC AD (no differentiability gate); cellml_only + CVODE_myokit
+    aadc_python adds AADC AD (no differentiability gate); cellml + CVODE_myokit
     adds Myokit CVODES forward sensitivity (FSA).
     """
     sources = [{
@@ -1358,7 +1425,7 @@ def _fallback_gradient_sources(model_type: str, solver: str | None) -> list[dict
             "requires_all_differentiable": False,
             "description": "AADC automatic differentiation.",
         })
-    elif model_type == "cellml_only" and solver == "CVODE_myokit":
+    elif model_type == "cellml" and solver == "CVODE_myokit":
         sources.append({
             "value": "FSA", "label": "Forward sensitivity (Myokit CVODES)", "do_ad": True,
             "requires_all_differentiable": False,

@@ -110,7 +110,7 @@ const methods = computed(() =>
 )
 // Gradient sources for local SA come from the backend's CA gradient_sources
 // accessor for the current model (FD always; AD for casadi_python; FSA for
-// cellml_only + CVODE_myokit). Prefer the reactive `gradientSources` prop (the
+// cellml + CVODE_myokit). Prefer the reactive `gradientSources` prop (the
 // same /api/config source the calibration menu uses, re-fetched on every backend
 // change) so the list tracks the backend solver; the one-time sensitivity
 // defaults are only a fallback (see #84). Sources flagged
@@ -261,7 +261,7 @@ function onRun() {
       <!-- Local (derivative-based) options -->
       <template v-else>
         <label class="field">
-          <span title="Gradient source for the local sensitivity. FD (finite difference) works for any model; AD (CasADi) needs casadi_python with differentiable ops; FSA (Myokit CVODES forward sensitivities) needs cellml_only + CVODE_myokit.">Gradient source</span>
+          <span title="Gradient source for the local sensitivity. FD (finite difference) works for any model; AD (CasADi) needs casadi_python with differentiable ops; FSA (Myokit CVODES forward sensitivities) needs cellml + CVODE_myokit.">Gradient source</span>
           <Select
             v-model="settings.gradient_method"
             :options="gradientMethods"

@@ -158,7 +158,7 @@ const caBrowserOpen = ref(false)
 // capabilities/schema from /api/config (formats, solvers-per-format, solver_info
 // fields, differentiability). adAvailable gates the AD/sp_minimize options.
 const solverOpts = ref({})
-const generatedModelFormat = ref('cellml_only')
+const generatedModelFormat = ref('cellml')
 const solver = ref('CVODE_myokit')
 const solverInfo = ref({})
 
@@ -220,7 +220,7 @@ function applyConfigPayload(c) {
   caDir.value = c.ca_dir
   caExists.value = c.ca_exists
   solverOpts.value = c
-  generatedModelFormat.value = c.generated_model_format ?? 'cellml_only'
+  generatedModelFormat.value = c.generated_model_format ?? 'cellml'
   solver.value = c.solver ?? ''
   solverInfo.value = { ...(c.solver_info ?? {}) }
   cppCompiler.value = c.cpp_compiler ?? { present: true, hint: '' }
@@ -353,7 +353,7 @@ const gradientIntegratorWarning = computed(() => {
     if (ok && !ok.includes(method))
       return `Automatic differentiation (AD) is not available with the '${method}' integrator ` +
         `(it uses SUNDIALS adjoint sensitivity). For AD, choose one of: ${ok.join(', ')}.`
-  } else if (fmt === 'cellml_only') {
+  } else if (fmt === 'cellml') {
     const ok = solverOpts.value.fsa_suitable_methods?.[solver.value]
     if (ok && !ok.includes(method))
       return `Forward sensitivity (FSA) is not available with the '${method}' integrator. ` +
@@ -427,7 +427,7 @@ const isExternalPythonModel = computed(() => model.modelFormat.value === EXTERNA
 // unless that is what is loaded, the same rule that keeps unavailable backends
 // (OpenCOR, a missing AADC) out of the menu rather than in it and failing.
 const formatChoices = computed(() => {
-  const all = solverOpts.value.model_formats ?? ['cellml_only']
+  const all = solverOpts.value.model_formats ?? ['cellml']
   const kept = all.filter((f) =>
     isExternalPythonModel.value ? f === EXTERNAL_PYTHON : f !== EXTERNAL_PYTHON,
   )
@@ -445,7 +445,7 @@ function syncFormatToModel() {
   if (wanted) {
     if (generatedModelFormat.value !== wanted) onFormatChange(wanted)
   } else if (generatedModelFormat.value === EXTERNAL_PYTHON) {
-    onFormatChange(formatChoices.value[0] ?? 'cellml_only')
+    onFormatChange(formatChoices.value[0] ?? 'cellml')
   }
 }
 
@@ -660,6 +660,24 @@ const tourCtx = {
   closeSettings: () => {
     settingsOpen.value = false
   },
+  // Closing a dialog whose open flag belongs to a child component (the
+  // operation-funcs editor's lives in EditObsDataDialog). Rather than lifting
+  // that flag into App just so a tour step can reach it, press the dialog's own
+  // close button: the same element the user would click, running the same
+  // handler, so there is no second close path to keep in step with the first.
+  closeDialog: (selector) => {
+    const dialog = document.querySelector(selector)
+    if (!dialog) return
+    // Several selectors because PrimeVue has spelled this differently across
+    // versions; the header's own button is the last-resort match. If none hit,
+    // nothing happens and the step's waitFor still ends it when the user
+    // closes the dialog themselves.
+    const close = dialog.querySelector(
+      '[data-pc-name="pcclosebutton"], [data-pc-section="closebutton"],' +
+        '.p-dialog-close-button, .p-dialog-header button',
+    )
+    if (close) close.click()
+  },
 }
 
 function markTourSeen() {
@@ -667,14 +685,21 @@ function markTourSeen() {
   localStorage.setItem('cuflynx-tour-seen', '1')
 }
 function startTour() {
-  // The step index is deliberately not persisted: resuming at step 19 into a
-  // reloaded, empty app is worse than starting over.
-  tourStep.value = 0
+  // Resumes where it was left. Skipping is usually "not now" rather than "never
+  // again", and restarting at 1 then replayed the whole run -- and, with a model
+  // already loaded, silently skipped forward past every step about getting one,
+  // landing somewhere in the middle with no way back to what had just been read.
+  //
+  // Deliberately session state and not localStorage: a *reload* starts over,
+  // because resuming at step 19 into an empty app describes controls that are no
+  // longer there. `onTourClose` resets it when the run actually finished, so
+  // pressing Tutorial again after the end starts from the beginning.
   tourOpen.value = true
   markTourSeen()
 }
-function onTourClose() {
+function onTourClose(reason) {
   tourOpen.value = false
+  if (reason === 'finish') tourStep.value = 0
   markTourSeen()
 }
 
@@ -1198,35 +1223,27 @@ const calibDefaults = ref({})
 const calibPythons = ref([])
 const saDefaults = ref({})
 const uqDefaults = ref({})
-onMounted(async () => {
-  try {
-    calibDefaults.value = await getCalibrationDefaults()
-  } catch {
-    /* backend not up yet; panel falls back to built-in defaults */
-  }
-  try {
-    saDefaults.value = await getSensitivityDefaults()
-  } catch {
-    /* leave the panel on its built-in defaults */
-  }
-  await refreshEmulatorDefaults()
-  try {
-    uqDefaults.value = await getUQDefaults()
-  } catch {
-    /* backend not up yet; panel falls back to built-in defaults */
-  }
-  try {
-    calibPythons.value = (await getCalibrationPythons()).pythons ?? []
-  } catch {
-    /* interpreter discovery optional */
-  }
-  try {
-    applyConfigPayload(await getConfig())
-  } catch {
-    /* backend not up yet */
-  }
-  // First thing on open: ask where outputs should go (sets outputsDir).
+onMounted(() => {
+  // Ask where outputs should go, and mean "first": this line used to sit at the
+  // *end* of six sequential round trips below, one of which walks the filesystem
+  // looking for Python interpreters. So the one thing the user is actually
+  // waiting on arrived last, after everything they could not see. Nothing below
+  // feeds this dialog -- it opens at $HOME and only ever *writes* outputsDir --
+  // so it does not have to wait for any of it.
   outputsSetupOpen.value = true
+
+  // ...and the six are independent of each other too, so they go out together
+  // rather than in a chain: the wait is now the slowest one, not the sum. Each
+  // keeps its own failure handling, because a backend that is not up yet should
+  // leave one panel on its built-in defaults rather than abandoning the rest.
+  const settle = (promise, apply) => promise.then(apply).catch(() => {})
+
+  settle(getCalibrationDefaults(), (v) => (calibDefaults.value = v))
+  settle(getSensitivityDefaults(), (v) => (saDefaults.value = v))
+  settle(getUQDefaults(), (v) => (uqDefaults.value = v))
+  settle(getCalibrationPythons(), (v) => (calibPythons.value = v.pythons ?? []))
+  settle(getConfig(), applyConfigPayload)
+  refreshEmulatorDefaults()
 })
 
 const pythonOptions = computed(() => {

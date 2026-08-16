@@ -48,6 +48,25 @@ function zeroAnchor(testid) {
   return el
 }
 
+// A scrolling pane with the anchor inside it. The anchor is deliberately taller
+// than the pane, which is the real case: a data_items list longer than the
+// dialog area it scrolls in.
+function anchorInScroller(testid, paneRect, elRect) {
+  const pane = document.createElement('div')
+  pane.style.overflowY = 'auto'
+  document.body.appendChild(pane)
+  const el = document.createElement('div')
+  el.setAttribute('data-testid', testid)
+  pane.appendChild(el)
+  const p = rectOf(paneRect.top, paneRect.left, paneRect.width, paneRect.height)
+  const r = rectOf(elRect.top, elRect.left, elRect.width, elRect.height)
+  pane.getBoundingClientRect = () => p
+  pane.getClientRects = () => [p]
+  el.getBoundingClientRect = () => r
+  el.getClientRects = () => [r]
+  return { pane, el }
+}
+
 // jsdom has no ResizeObserver; the overlay observes its current target, so a
 // stub keeps that path exercised (and its disconnect assertable).
 class FakeResizeObserver {
@@ -338,6 +357,123 @@ describe('TourOverlay', () => {
     anchor('a')
     await mountTour()
     expect(button('next')).not.toBeNull()
+  })
+
+  it('keeps the ring inside the pane its target scrolls in', async () => {
+    // The bug: a list taller than its scroll pane has a rect that overflows the
+    // pane, so an unclipped ring was drawn over the dialog around it.
+    anchorInScroller(
+      'a',
+      { top: 100, left: 50, width: 400, height: 200 },
+      { top: 100, left: 50, width: 400, height: 900 },
+    )
+    await mountTour()
+    const r = ring()
+    expect(r.style.top).toBe('100px')
+    expect(r.style.height).toBe('200px') // the pane's, not the list's 900
+  })
+
+  it('rings the whole column when a step spans one', async () => {
+    // params_for_id's "Use" column: the head plus every row's tick box, so the
+    // highlight is the column rather than one 20px square in it.
+    anchor('head', { top: 100, left: 40, width: 30, height: 16 })
+    anchor('cell', { top: 130, left: 40, width: 20, height: 20 })
+    const steps = [
+      {
+        id: 'col',
+        target: '[data-testid="head"]',
+        spanAll: '[data-testid="cell"]',
+        text: 'The column.',
+        side: 'right',
+      },
+    ]
+    await mountTour({ steps })
+    const r = ring()
+    expect(r.style.top).toBe('100px')
+    expect(r.style.height).toBe('50px') // 100 -> 150, head through last cell
+    expect(r.style.width).toBe('30px')
+  })
+
+  it('walks on when its target goes, rather than sticking on the empty step', async () => {
+    // Regression: the 200ms tick restarted the 350ms grace period before it
+    // could finish, so a step whose dialog had closed never resolved forward --
+    // closing the obs_data editor left the tour on "the protocol" for good.
+    const a = anchor('a')
+    anchor('c')
+    const w = await mountTour()
+    a.remove()
+    // Several ticks, each of which used to cancel the pending resolution.
+    for (let i = 0; i < 6; i += 1) await wait(200)
+    expect(text()).toBe('Finally C.')
+    expect(w.emitted('update:step')).toEqual([[2]])
+  })
+
+  it('disables Back when no earlier step can be shown', async () => {
+    // Resuming with a model loaded lands past the steps about getting one, and
+    // none of them can be rendered -- a Back that silently does nothing reads as
+    // a broken button.
+    anchor('b')
+    const w = await mountTour({ step: 1 })
+    expect(w.emitted('update:step')).toBeFalsy()
+    expect(button('back').disabled).toBe(true)
+  })
+
+  it('enables Back when an earlier step is on screen', async () => {
+    anchor('a')
+    anchor('b')
+    await mountTour({ step: 1 })
+    expect(button('back').disabled).toBe(false)
+  })
+
+  it('renders a step\'s bullets as a list', async () => {
+    anchor('a')
+    const steps = FIXTURE()
+    steps[0].bullets = ['first thing', 'second thing']
+    await mountTour({ steps })
+    const items = [...document.querySelectorAll('[data-testid="tour-bullets"] li')]
+    expect(items.map((li) => li.textContent.trim())).toEqual(['first thing', 'second thing'])
+  })
+
+  it('renders no list on a step without bullets', async () => {
+    anchor('a')
+    await mountTour()
+    expect(document.querySelector('[data-testid="tour-bullets"]')).toBeNull()
+  })
+
+  it('puts an outro paragraph after the bullets, not before', async () => {
+    anchor('a')
+    const steps = FIXTURE()
+    steps[0].bullets = ['first thing', 'second thing']
+    steps[0].outro = 'And then this.'
+    await mountTour({ steps })
+    const order = [...bubble().querySelectorAll('[data-testid]')].map((n) =>
+      n.getAttribute('data-testid'),
+    )
+    expect(order.indexOf('tour-bullets')).toBeLessThan(order.indexOf('tour-outro'))
+    expect(order.indexOf('tour-text')).toBeLessThan(order.indexOf('tour-bullets'))
+    expect(document.querySelector('[data-testid="tour-outro"]').textContent.trim()).toBe(
+      'And then this.',
+    )
+  })
+
+  it('renders a step link as a real anchor, opened safely', async () => {
+    // The text is plain (no v-html), so a URL written into the prose would not
+    // be clickable -- hence a field of its own.
+    anchor('a')
+    const steps = FIXTURE()
+    steps[0].link = { href: 'https://www.autoemulate.com/', label: 'autoemulate.com' }
+    await mountTour({ steps })
+    const a = document.querySelector('[data-testid="tour-link"]')
+    expect(a.getAttribute('href')).toBe('https://www.autoemulate.com/')
+    expect(a.textContent.trim()).toBe('autoemulate.com')
+    expect(a.getAttribute('target')).toBe('_blank')
+    expect(a.getAttribute('rel')).toContain('noopener')
+  })
+
+  it('renders no link element on a step without one', async () => {
+    anchor('a')
+    await mountTour()
+    expect(document.querySelector('[data-testid="tour-link"]')).toBeNull()
   })
 
   it('re-resolves forward when its target disappears', async () => {

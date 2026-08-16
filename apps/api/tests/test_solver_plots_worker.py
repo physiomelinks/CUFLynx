@@ -73,7 +73,7 @@ out = {{
 # Also the verb-level guard: only the external backend is asked for figures.
 tee = w._Tee(sys.stderr)
 worker = w.Worker()
-worker.model_type = "cellml_only"
+worker.model_type = "cellml"
 cellml_result = {{}}
 worker._add_extra_figures(cellml_result, Helper(), {{"solver_plots_dir": {outdir!r}}}, tee)
 out["cellml_result"] = cellml_result
@@ -162,7 +162,7 @@ def test_the_childs_reply_is_what_the_parent_knows_how_to_convert(child_output):
 
 
 def test_only_the_external_backend_is_asked_for_figures(child_output):
-    """cellml_only must not pay a matplotlib import (or a hasattr probe) on every
+    """cellml must not pay a matplotlib import (or a hasattr probe) on every
     live run, and no other backend has figures to give."""
     out, _ = child_output
     assert out["cellml_result"] == {}

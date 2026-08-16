@@ -229,8 +229,8 @@ def test_the_helper_cache_is_keyed_on_the_backend_actually_used(client, fake_hel
     assert isinstance(engine_mod.engine._helpers, dict)
     # Keys are (model_id, model_type, solver) tuples, not bare model ids.
     eng = engine_mod.SimulationEngine()
-    eng._helpers[("m", "cellml_only", "CVODE_myokit")] = object()
-    assert ("m", "cellml_only", "CVODE_myokit") in eng._helpers
+    eng._helpers[("m", "cellml", "CVODE_myokit")] = object()
+    assert ("m", "cellml", "CVODE_myokit") in eng._helpers
 
 
 def test_backend_importable_does_not_import_the_library(tmp_path, monkeypatch):

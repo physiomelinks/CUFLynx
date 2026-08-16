@@ -24,5 +24,5 @@ def test_a_solver_plugin_that_will_not_load_is_not_a_tolerance_problem():
         'Assertion "handle!=nullptr" failed: PluginInterface::load_plugin: Cannot '
         "load shared library 'libcasadi_integrator_CVODE.so'"
     )
-    assert "cellml_only" in message
+    assert "cellml" in message
     assert "MaximumStep" not in message and "rtol" not in message

@@ -237,7 +237,7 @@ def test_a_model_that_draws_nothing_carries_no_solver_plots_field():
 
 
 def test_other_backends_are_never_asked_for_figures(fake_helper):
-    """cellml_only stays as it was: no matplotlib import, no hasattr probe on
+    """cellml stays as it was: no matplotlib import, no hasattr probe on
     every live run."""
     result = _simulate()
     assert "solver_plots" not in result

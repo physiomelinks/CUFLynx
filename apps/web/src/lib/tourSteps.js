@@ -31,7 +31,10 @@
  * ---------------------------------------------------------------------------
  * Renumbering
  * ---------------------------------------------------------------------------
- * The list the user wrote had 28 entries and was renumbered into a clean 1..37.
+ * The list the user wrote had 28 entries and was renumbered into a clean 1..37,
+ * then grew to 41: a Progress step before the closing one, two export steps
+ * after it (pipeline-to-python, plotting script), and a Priors step split out of
+ * the min/max one, since the two answer different questions.
  * `5.1`-`5.4` became 6-10: the gear plus three Settings popups, plus a dedicated
  * *close Settings* step so the tour is never left pointing at UI sitting behind
  * a modal. The duplicated `14`/`15` (save obs_data, edit params_for_id) became
@@ -44,7 +47,8 @@
  * (+10 close) · 6 -> 11 · 7 -> 12 · 8 -> 13 · 9,10 -> 14,15 · 11,12,13 ->
  * 16,17,18 · 14,15 (user-defined ops) -> 19,20,21 · 14dup -> 22 · 15dup -> 23 ·
  * 16,17,18 -> 24,25,26 · 19 -> 27 · 20 -> 28 · 21 -> 29 · 22 -> 30 · 23,24 ->
- * 31,32 · 25,26 -> 33,34 · 27,28 -> 35,36 · +37 closing step.
+ * 31,32 · 25,26 -> 33,34 · 27,28 -> 35,36 · +37 progress · +38 analysis ·
+ * +39,40 the two exports.
  */
 
 /** Is an anchor on the page right now? Queries `document`, not `#app`: every
@@ -81,7 +85,7 @@ export const TOUR_STEPS = Object.freeze([
     target: '[data-testid="start-build-your-own"]',
     side: 'right',
     title: 'Build your own',
-    text: 'ODE models can be built in PhLynx, the model builder. It opens in a browser tab; the CellML it gives you is dropped back onto the model box here.',
+    text: 'ODE models can be built in PhLynx, the model builder. It opens in a browser tab; the CellML it gives you is dropped back onto the model box.',
   },
   {
     id: 'pmr',
@@ -101,7 +105,12 @@ export const TOUR_STEPS = Object.freeze([
     id: 'example',
     target: '[data-testid="start-example-3compartment"]',
     side: 'right',
-    text: "For now let's start from a model that is already prepared. Click 3-compartment circulation — it brings the model, its obs_data and its params_for_id in one archive.",
+    text: "For now let's start from a model that is already prepared. Click 3-compartment circulation: it is an omex archive, and it brings all three parts of a study in one drop.",
+    bullets: [
+      'the CellML model itself',
+      'its obs_data.json — the protocol, and the data to fit',
+      'its params_for_id — which parameters may move, and between what',
+    ],
     advanceOn: { event: 'click' },
     waitFor: (ctx) => ctx.hasModel(),
   },
@@ -121,21 +130,26 @@ export const TOUR_STEPS = Object.freeze([
   {
     id: 'ca-dir',
     target: '[data-testid="ca-browse"]',
-    side: 'left',
+    side: 'right',
     title: 'CA dir',
-    text: 'Simulations run through circulatory_autogen, and CUFLynx brings its own copy — there is nothing to set up here. This box is for development: if you are working on your own circulatory_autogen against libCUFLynx, point it at your checkout and runs use it from their next launch.',
+    text: 'Simulations run through libCUFLynx, within the circulatory_autogen repo, and CUFLynx brings its own copy. There is nothing to set up here.\n\nThis box is for development: if you are working on your own circulatory_autogen/libCUFLynx, point this at your checkout and refresh your window so it uses that on next launch.',
   },
   {
     id: 'model-format',
     target: '[data-testid="model-format-select"]',
-    side: 'left',
+    side: 'right',
     title: 'Generated model format',
-    text: 'This is the backend the model runs through: cellml_only → Myokit CVODE (needs a C compiler), python → scipy, casadi_python → CasADi. Changing it regenerates and re-runs the model.',
+    text: 'This is the backend the model runs through. Changing it regenerates and re-runs the model.',
+    bullets: [
+      'cellml runs through Myokit CVODE, and needs a C compiler',
+      'python is generated code solved by scipy',
+      'casadi_python is generated code solved by CasADi, and can give analytic gradients',
+    ],
   },
   {
     id: 'solver',
     target: '[data-testid="solver-select"]',
-    side: 'left',
+    side: 'right',
     title: 'The solver and its settings',
     // The run window is the protocol's, not Settings' -- there is no pre-time
     // or sim-time control anywhere in the app to describe here.
@@ -189,7 +203,7 @@ export const TOUR_STEPS = Object.freeze([
     target: '[data-testid="eo-protocol"]',
     side: 'right',
     title: 'The protocol',
-    text: 'This is what the model is put through: one tab per experiment, and inside it the subexperiments run back to back. It is also the only source of the run window — nothing else in CUFLynx says how long a simulation is, and without a protocol nothing runs at all.',
+    text: 'This sets the pre-simulation time (for example, the time needed to reach a physiological steady state), the simulation times, and the variable inputs the model is put through. One tab per experiment, and several subexperiments per experiment — say 1. baseline, 2. drug application, 3. washout.',
   },
   {
     id: 'protocol-detail',
@@ -201,8 +215,8 @@ export const TOUR_STEPS = Object.freeze([
     id: 'data-items',
     target: '[data-testid="eo-data-items"]',
     side: 'right',
-    title: 'data_items are the ground truth',
-    text: 'One row is one number (or one series) the model is scored against — the calibration cost is built from exactly these rows.',
+    title: 'data_items contain the desired output features (observables)',
+    text: 'One row is one number (or one series) the model output features are compared against. The calibration cost is built from summing the cost from each of these rows.',
     when: (ctx) => ctx.hasObsData(),
   },
   {
@@ -230,14 +244,21 @@ export const TOUR_STEPS = Object.freeze([
     target: '[data-testid="of-templates"]',
     side: 'right',
     title: 'User-defined operations',
-    text: 'Two kinds: an operation (trace → number) and a cost (predicted vs observed → cost). Start from a template — the plain one, a multi-operand one, one with keyword arguments, a robust cost, a differentiable one.',
+    text: 'Two kinds of function can be written here.',
+    bullets: [
+      'an operation reduces a simulated trace to a number',
+      'a cost scores a predicted number against an observed one',
+    ],
+    outro:
+      'Start from a template: the plain one, a multi-operand one, one with keyword arguments, a robust cost, a differentiable one.',
   },
   {
     id: 'op-funcs-save',
     target: '[data-testid="of-save"]',
     side: 'right',
-    text: 'Edit the Python in the box and Save — it lands in your circulatory_autogen user files and appears in the operation list next to the built-ins. Mark it @differentiable if a gradient-based calibration should be allowed to use it. Close this dialog when you are done.',
+    text: 'Edit the Python in the box and Save. It is written to your outputs directory, as user_funcs/operation_funcs_user.py, and travels with the study, so a run stays reproducible. It then appears in the operation list beside the built-ins. Mark it @differentiable if a gradient-based calibration should be allowed to use it.',
     waitFor: () => gone(EDIT_OP_FUNCS),
+    onNext: (ctx) => ctx.closeDialog(EDIT_OP_FUNCS),
   },
   {
     id: 'obs-save',
@@ -261,22 +282,42 @@ export const TOUR_STEPS = Object.freeze([
   },
   {
     id: 'params-choose',
-    target: '[data-testid="ep-include"]',
+    // The column head, spanning down through every row's tick box: anchored on
+    // one row's Checkbox the ring was a 20px square that sat under the scroll
+    // bar's thumb and moved as the list was filtered.
+    target: '[data-testid="ep-use-header"]',
+    spanAll: '[data-testid="ep-include"]',
     side: 'right',
-    text: 'Tick Use for each parameter you want identified. Search to find them — every constant in the model is listed, and only the ticked ones go into the file.',
+    text: 'Tick Use for each parameter you want identified.',
+    bullets: [
+      'every constant in the model is listed — search to find the ones you want',
+      'only the ticked ones are included in the set of params to calibrate/vary/emulate',
+    ],
   },
   {
     id: 'params-range',
     target: '[data-testid="ep-min"]',
     side: 'right',
-    text: 'min / max are the bounds the calibration searches in, and the range a UQ prior spans. Keep them wide enough to contain the answer and narrow enough to be physiological. Where the backend offers priors, pick the distribution here.',
+    text: 'min / max are the bounds the calibration searches in, and the range a UQ prior spans. These should be your physical/physiologically plausible min/max, for your sensitivity analyses to be valid.',
+  },
+  {
+    id: 'params-prior',
+    // The whole Prior column, head included -- same treatment as Use. Both the
+    // head and the row selects are `v-if`'d on the backend offering priors, so
+    // this step disappears by itself on a backend that offers none, which is
+    // exactly what its copy is conditional on.
+    target: '[data-testid="ep-prior-header"]',
+    spanAll: '[data-testid="ep-prior"]',
+    side: 'left',
+    title: 'Priors',
+    text: 'Where the backend offers priors, pick the distribution here. It is what UQ samples from, and what the min / max above bound.',
   },
   {
     id: 'params-modifier',
     target: '[data-testid="ep-create-modifier"]',
     side: 'right',
     title: 'Modifier functions',
-    text: 'These let one identified parameter drive several model constants — select the rows, then create a modifier (a scale, an offset) so the calibration fits one handle instead of five.',
+    text: 'These let one identified parameter drive several model constants. Select the rows (the small check box on the left of each), then create a modifier (a scale, an offset, etc.) so the calibration fits the new modifier parameter, which modifies the selected.',
   },
   {
     id: 'params-save',
@@ -287,7 +328,7 @@ export const TOUR_STEPS = Object.freeze([
   },
 
   /* ---------------------------------------------------------------- *
-   * 28-37  Emulator, sensitivity, calibration, UQ, analysis
+   * 29-41  Emulator, sensitivity, calibration, UQ, progress, analysis, export
    *
    * Every pane below is `v-show`n, so each section opens with a step that asks
    * the user to click its tab -- the tour cannot click it for them. Those steps
@@ -306,7 +347,16 @@ export const TOUR_STEPS = Object.freeze([
     id: 'emulator-what',
     target: '[data-testid="emu-settings"]',
     side: 'right',
-    text: 'An emulator is a cheap stand-in for the model: it is trained on a sample of runs and then predicts the data_items in milliseconds instead of seconds. Choose how many samples to spend and press Train. It reports a held-out R² per output, which is how you decide whether to trust it.',
+    text: 'An emulator is a cheap stand-in for the model: trained on a sample of runs, it then predicts the observables (set in data_items) in milliseconds instead of seconds/minutes.',
+    bullets: [
+      'choose how many samples to spend, then press Train',
+      'it reports a held-out R² per output — that is how you decide whether to trust it',
+      'the emulators are built with autoemulate, which is where the model choices here come from',
+      'it is not in the default download: autoemulate pulls in torch, so it ships as a separate with-emulator build',
+      'so either take that build, or pip install "autoemulate>=2.1,<3" into the Python chosen in Settings and restart CUFLynx',
+      'either way that interpreter has to be Python >=3.10,<3.13, which is autoemulate\'s own pin',
+    ],
+    link: { href: 'https://www.autoemulate.com/', label: 'autoemulate.com' },
   },
   {
     id: 'emulator-use',
@@ -329,7 +379,7 @@ export const TOUR_STEPS = Object.freeze([
     id: 'sensitivity-run',
     target: '[data-testid="sa-settings"]',
     side: 'right',
-    text: 'Pick the method and the sample count, then Run. The result lands in Analysis as a per-output, per-parameter table — parameters that move nothing are candidates for unticking in params_for_id.',
+    text: 'Pick the method and the sample count, then Run. The result lands in Analysis as a per-output, per-parameter table, and parameters that move nothing are candidates for unticking in params_for_id.\n\nTip: including validation/prediction outputs gives more practical sensitivities than including only the outputs you calibrate against.',
   },
   {
     id: 'calibration-tab',
@@ -362,10 +412,31 @@ export const TOUR_STEPS = Object.freeze([
     text: 'Set the chains and samples, then Run. Long runs are what the emulator is for. The posterior and its intervals appear in Analysis.',
   },
   {
+    id: 'progress',
+    target: '[data-testid="tab-progress"]',
+    side: 'bottom',
+    title: 'Progress',
+    text: 'Watch a calibration or a UQ run here while it goes: the cost coming down, and the parameters moving, sample by sample.',
+  },
+  {
     id: 'analysis',
     target: '[data-testid="tab-analysis"]',
     side: 'bottom',
     title: 'Analysis',
-    text: "This collects the results of all three. That's the tour — press the Tutorial button any time to run it again.",
+    text: 'This collects the results of all three.',
+  },
+  {
+    id: 'export-pipeline',
+    target: '[data-testid="export-pipeline"]',
+    side: 'left',
+    title: 'Export pipeline to python',
+    text: 'To keep this flexible we never want you to be restricted by this GUI. If you need to do something else, export to python and run there — but please let us know in a GitHub issue what else you would like in CUFLynx, so we can keep improving system understanding through interactive calibration and keep pipelines reproducible.',
+  },
+  {
+    id: 'export-plotting',
+    target: '[data-testid="export-plotting"]',
+    side: 'left',
+    title: 'Export python plotting script',
+    text: "If you want paper- or presentation-worthy plots, edit the exported plotting script. It starts from basic plots of every output the pipeline you just ran generated.\n\nThat's the tour — press the Tutorial button any time to run it again.",
   },
 ])

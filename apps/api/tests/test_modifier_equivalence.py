@@ -117,7 +117,7 @@ def _setup(client, model_path, params_doc) -> str:
     finite-difference sensitivity RHS by sqrt(rtol) (CA #387). CA warns there.
     """
     resp = client.post("/api/config", json={
-        "generated_model_format": "cellml_only",
+        "generated_model_format": "cellml",
         "solver": "CVODE_myokit",
         "solver_info": {"rtol": 1e-8, "atol": 1e-8},
     })

@@ -128,7 +128,7 @@ def test_fd_works_on_every_backend():
     """It only runs forward simulations, so nothing gates it."""
     from local_sensitivity import local_gradient_sources
 
-    for fmt in ("aadc_python", "cellml_only", "python", "casadi_python"):
+    for fmt in ("aadc_python", "cellml", "python", "casadi_python"):
         got = local_gradient_sources([{"value": "FD", "label": "FD"}], fmt)
         assert got[0]["disabled_here"] is False
 
@@ -152,7 +152,7 @@ def test_the_refusal_message_explains_the_distinction():
 
 @pytest.mark.parametrize("spelling", ["AUTO", "auto", "ANALYTIC", ""])
 @pytest.mark.parametrize(
-    "model_type,expected", [("casadi_python", "AD"), ("cellml_only", "FSA")]
+    "model_type,expected", [("casadi_python", "AD"), ("cellml", "FSA")]
 )
 def test_cas_own_spelling_resolves_to_this_backends_arm(spelling, model_type, expected):
     """CA's schema defaults gradient_method to 'AUTO', and its own API takes
@@ -174,7 +174,7 @@ def test_a_genuinely_unknown_gradient_method_is_still_rejected():
     import local_sensitivity as ls
 
     with pytest.raises(NotImplementedError, match="not available"):
-        ls.resolve_gradient_method({"gradient_method": "MAGIC"}, "cellml_only")
+        ls.resolve_gradient_method({"gradient_method": "MAGIC"}, "cellml")
 
 
 # ---------------------------------------------------------------------------

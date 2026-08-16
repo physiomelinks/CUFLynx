@@ -165,11 +165,11 @@ def test_ad_local_sensitivity_runs_on_3compartment(tmp_path, requires_casadi):
 
 
 def _fsa_local_sa_config(tmp_path, gradient_method="FSA"):
-    """A sensitivity_runner config for a cellml_only + CVODE_myokit FSA local-SA
+    """A sensitivity_runner config for a cellml + CVODE_myokit FSA local-SA
     run on 3compartment (a single-subexperiment obs_data, which FSA requires)."""
     return {
-        "model_path": model_codegen.resolve_model_path(str(C3_MODEL_PATH), "cellml_only"),
-        "model_type": "cellml_only",
+        "model_path": model_codegen.resolve_model_path(str(C3_MODEL_PATH), "cellml"),
+        "model_type": "cellml",
         "solver": "CVODE_myokit",
         "solver_info": {"solver": "CVODE_myokit", "method": "CVODE"},
         "obs_path": str(C3_OBS_DATA_PATH),
@@ -190,8 +190,8 @@ def _fsa_local_sa_config(tmp_path, gradient_method="FSA"):
 # rejected by name, then by skipping the engine the resolution demanded).
 @pytest.mark.integration
 @pytest.mark.parametrize("gradient_method", ["FSA", "AUTO"])
-def test_fsa_local_sensitivity_runs_on_cellml_only(tmp_path, requires_simulation, gradient_method):
-    """FSA (Myokit CVODES forward sensitivities) local SA runs on a cellml_only +
+def test_fsa_local_sensitivity_runs_on_cellml(tmp_path, requires_simulation, gradient_method):
+    """FSA (Myokit CVODES forward sensitivities) local SA runs on a cellml +
     CVODE_myokit model, delegating to circulatory_autogen's backend-agnostic
     get_observable_sensitivities. Regression: FSA used to be a hard-disabled stub."""
     payload = sensitivity_runner.run(_fsa_local_sa_config(tmp_path, gradient_method))
@@ -206,11 +206,11 @@ def test_fsa_local_sensitivity_runs_on_cellml_only(tmp_path, requires_simulation
 @pytest.mark.integration
 def test_fsa_local_sensitivity_rejected_for_casadi_python(tmp_path, requires_casadi):
     """FSA is Myokit-only; requesting it for a casadi_python model must fail with a
-    clear message pointing at cellml_only + CVODE_myokit, not silently mislabel."""
+    clear message pointing at cellml + CVODE_myokit, not silently mislabel."""
     config = _local_sa_config(tmp_path, "FSA")
     with pytest.raises(NotImplementedError) as ei:
         sensitivity_runner.run(config)
-    assert "cellml_only" in str(ei.value) and "CVODE_myokit" in str(ei.value)
+    assert "cellml" in str(ei.value) and "CVODE_myokit" in str(ei.value)
 
 
 @pytest.mark.integration

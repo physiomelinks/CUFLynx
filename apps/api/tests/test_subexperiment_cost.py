@@ -150,7 +150,7 @@ def test_binding_marks_the_protocol_as_applied():
 @pytest.mark.integration
 def test_sn_subexperiments_are_scored_separately(client, requires_simulation):
     engine_mod.engine.reset()
-    engine_mod.engine.model_type, engine_mod.engine.solver = "cellml_only", "CVODE_myokit"
+    engine_mod.engine.model_type, engine_mod.engine.solver = "cellml", "CVODE_myokit"
     model_id, obs = _sn(client)
 
     r = client.post("/api/protocol/run", json={"model_id": model_id, "params": {}})
@@ -197,7 +197,7 @@ def test_the_joined_traces_match_cas_own(client, requires_simulation, tmp_path):
     import numpy as np
 
     engine_mod.engine.reset()
-    engine_mod.engine.model_type, engine_mod.engine.solver = "cellml_only", "CVODE_myokit"
+    engine_mod.engine.model_type, engine_mod.engine.solver = "cellml", "CVODE_myokit"
     model_id, obs = _sn(client)
     protocol_info = obs["protocol_info"]
 

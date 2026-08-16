@@ -517,7 +517,7 @@ def test_custom_operation_kwargs_change_the_computed_value(tmp_path, monkeypatch
     parser = ObsAndParamDataParser()
     parsed = parser.parse_obs_data_json(
         param_id_obs_path=str(obs_path), pre_time=0.0, sim_time=5.0,
-        model_type="cellml_only",
+        model_type="cellml",
     )
     obs_info = parser.process_obs_info(parsed["gt_df"], str(tmp_path), 0.01)
     assert obs_info["operations"][0] == "scaled_max"

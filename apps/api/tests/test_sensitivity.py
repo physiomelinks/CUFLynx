@@ -92,14 +92,14 @@ def _run_local_runner(monkeypatch, tmp_path, gradient_method):
         "obs_path": "obs.json",
         "params_path": str(tmp_path / "params.csv"),
         "output_dir": str(tmp_path / "out"),
-        "model_type": "cellml_only",
+        "model_type": "cellml",
         "settings": {"method": "local", "gradient_method": gradient_method},
     })
     return built, received
 
 
 def test_the_runner_builds_the_fsa_engine_for_cas_auto_spelling(tmp_path, monkeypatch):
-    """On cellml_only, CA's 'AUTO' resolves to FSA -- so the runner must build the
+    """On cellml, CA's 'AUTO' resolves to FSA -- so the runner must build the
     param-id engine. It used to test the raw string against ("FSA", "CVODES"),
     while resolve_gradient_method mapped 'AUTO' to FSA only afterwards: 'AUTO'
     skipped engine construction and then failed with "needs a param-id engine".
@@ -107,7 +107,7 @@ def test_the_runner_builds_the_fsa_engine_for_cas_auto_spelling(tmp_path, monkey
     runner catches the two sites disagreeing.
     """
     built, received = _run_local_runner(monkeypatch, tmp_path, "AUTO")
-    assert built, "AUTO on cellml_only means FSA, so the engine must be built"
+    assert built, "AUTO on cellml means FSA, so the engine must be built"
     assert received["engine"] == "ENGINE"
 
 
@@ -167,7 +167,7 @@ def test_a_local_run_never_touches_the_sobol_managers_helper(monkeypatch, tmp_pa
 
     payload = ls.compute_local_sensitivity(
         _Sa(), {"method": "local", "gradient_method": "FD", "nominal": "current"},
-        model_type="cellml_only", engine=engine,
+        model_type="cellml", engine=engine,
     )
 
     assert payload["param_names"] == ["a/x"]

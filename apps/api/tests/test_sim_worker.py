@@ -24,7 +24,7 @@ import sim_worker
 from sim_worker import SimWorker, WorkerError, worker_settings
 
 SETTINGS = worker_settings(
-    ca_src="", dt=0.01, model_type="cellml_only", solver="CVODE_myokit", solver_info={}
+    ca_src="", dt=0.01, model_type="cellml", solver="CVODE_myokit", solver_info={}
 )
 
 
@@ -550,11 +550,11 @@ def test_the_configured_backend_survives_when_a_worker_will_run_it(monkeypatch):
     eng.model_type, eng.solver = "aadc_python", "aadc_semi_implicit"
     eng.worker_python = "/some/venv/bin/python"
     monkeypatch.setattr(engine_mod, "_interpreter_prefix", lambda _p: "/some/venv")
-    # cellml_only IS importable here: with nothing importable the fallback loop
+    # cellml IS importable here: with nothing importable the fallback loop
     # falls through to the configured choice anyway, and the test would pass
     # with or without the fix. A live fallback is what makes it discriminating.
     monkeypatch.setattr(
-        engine_mod, "backend_importable", lambda fmt: fmt == "cellml_only"
+        engine_mod, "backend_importable", lambda fmt: fmt == "cellml"
     )
 
     assert eng.live_backend() == ("aadc_python", "aadc_semi_implicit", None)
@@ -566,11 +566,11 @@ def test_without_a_worker_the_fallback_still_applies(monkeypatch):
     eng.model_type, eng.solver = "aadc_python", "aadc_semi_implicit"
     eng.worker_python = None
     monkeypatch.setattr(
-        engine_mod, "backend_importable", lambda fmt: fmt == "cellml_only"
+        engine_mod, "backend_importable", lambda fmt: fmt == "cellml"
     )
 
     model_type, solver, fell_back = eng.live_backend()
-    assert (model_type, solver) == ("cellml_only", "CVODE_myokit")
+    assert (model_type, solver) == ("cellml", "CVODE_myokit")
     assert fell_back == "aadc_python"
 
 
@@ -582,7 +582,7 @@ def test_the_same_interpreter_is_not_a_worker(monkeypatch):
     eng.worker_python = sys.executable
     monkeypatch.setattr(engine_mod, "_interpreter_prefix", lambda _p: sys.prefix)
     monkeypatch.setattr(
-        engine_mod, "backend_importable", lambda fmt: fmt == "cellml_only"
+        engine_mod, "backend_importable", lambda fmt: fmt == "cellml"
     )
 
-    assert eng.live_backend()[0] == "cellml_only"
+    assert eng.live_backend()[0] == "cellml"

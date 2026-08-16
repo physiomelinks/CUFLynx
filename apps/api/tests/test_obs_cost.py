@@ -393,7 +393,7 @@ def test_the_cost_is_computed_by_ca(client, requires_simulation):
     import engine as engine_mod
 
     engine_mod.engine.reset()
-    engine_mod.engine.model_type, engine_mod.engine.solver = "cellml_only", "CVODE_myokit"
+    engine_mod.engine.model_type, engine_mod.engine.solver = "cellml", "CVODE_myokit"
     model_id, _ = _lv(client)
 
     r = client.post("/api/protocol/run", json={"model_id": model_id, "params": {}})
@@ -413,7 +413,7 @@ def test_it_matches_cas_own_cost_path(client, requires_simulation):
     from param_id.paramID import OpencorParamID
 
     engine_mod.engine.reset()
-    engine_mod.engine.model_type, engine_mod.engine.solver = "cellml_only", "CVODE_myokit"
+    engine_mod.engine.model_type, engine_mod.engine.solver = "cellml", "CVODE_myokit"
     model_id, obs = _lv(client)
 
     r = client.post("/api/protocol/run", json={"model_id": model_id, "params": {}})
@@ -438,7 +438,7 @@ def test_it_matches_cas_own_cost_path(client, requires_simulation):
     pid.obs_info, pid.protocol_info = obs_info, proto
     pid.cost_type = obs_info["cost_type"]
     pid.dt = engine_mod.engine.dt
-    pid.model_type = "cellml_only"
+    pid.model_type = "cellml"
     sfp = scriptFunctionParser()
     pid.cost_funcs_dict = pid.cost_funcs_dict_symbolic = sfp.get_cost_funcs_dict("numpy")
     pid.operation_funcs_dict = pid.operation_funcs_dict_symbolic = \

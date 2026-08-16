@@ -135,7 +135,7 @@ def run(config: dict) -> dict:
     output_dir = config["output_dir"]
     os.makedirs(output_dir, exist_ok=True)
 
-    model_type = config.get("model_type", "cellml_only")
+    model_type = config.get("model_type", "cellml")
     solver_info = _solver_info_from_config(config, settings)
     # gradient_method drives CA's gradient source for the gradient methods:
     # AD/FSA => automatic (CasADi jacobian or Myokit CVODES forward sensitivity),

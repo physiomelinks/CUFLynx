@@ -4,7 +4,7 @@
 need a generated ``.py`` module, not the raw CellML — ``get_simulation_helper``
 rejects a non-``.py`` ``model_path`` for those solvers. We generate it lazily the
 first time a run needs it (per the chosen format) using CA's ``PythonGenerator``
-and cache the result, so leaving the format at ``cellml_only`` costs nothing.
+and cache the result, so leaving the format at ``cellml`` costs nothing.
 
 ``casadi_python`` needs the CasADi-compatible transform (ternaries/division
 rewritten for symbolic execution), so python and casadi_python get distinct
@@ -65,7 +65,7 @@ def resolve_model_path(
     model_id: str | None = None,
     output_dir: str | None = None,
 ) -> str:
-    """Path to feed CA for this format: the CellML for ``cellml_only``, the user's
+    """Path to feed CA for this format: the CellML for ``cellml``, the user's
     own module for ``external_python``, else the generated ``.py`` (generating +
     caching on first use).
 
@@ -75,7 +75,7 @@ def resolve_model_path(
     two tiers disagreeing about which file is the model would be worse than
     either choice on its own.
     """
-    if model_type in (None, "", "cellml_only"):
+    if model_type in (None, "", "cellml"):
         return str(cellml_path)
     # An external_python model *is* a file the user wrote: there is nothing to
     # generate from, and nothing that could generate it. Two copies of it exist —

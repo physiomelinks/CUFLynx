@@ -226,7 +226,7 @@ describe('CalibrationPanel', () => {
     expect(payload).not.toHaveProperty('max_patience')
   })
 
-  it('populates the gradient menu from the backend (FSA visible for cellml_only)', () => {
+  it('populates the gradient menu from the backend (FSA visible for cellml)', () => {
     const wrapper = mount(CalibrationPanel, {
       props: {
         defaults: { methods: METHODS_WITH_OPTIONS, param_id_method: 'multi_start_sp_minimize' },
@@ -311,7 +311,7 @@ describe('CalibrationPanel', () => {
       },
       global: { stubs: selectStubs },
     })
-    // The model changes and AD is no longer a source (e.g. switched to cellml_only).
+    // The model changes and AD is no longer a source (e.g. switched to cellml).
     await wrapper.setProps({ gradientSources: [{ value: 'FD', label: 'Finite difference' }] })
     await wrapper.find('[data-testid="run-calibration"]').trigger('click')
     expect(wrapper.emitted('run').at(-1)[0].gradient_method).toBe('FD')

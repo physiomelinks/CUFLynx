@@ -155,7 +155,7 @@ watch(
 
 // Gradient sources (FD / AD / FSA) come from the backend, derived from the current
 // model (GET /api/config -> gradient_sources); never hardcoded, so FSA shows for
-// cellml_only + CVODE_myokit.
+// cellml + CVODE_myokit.
 //
 // Sources CA flags `requires_all_differentiable` (CasADi AD) only apply when every
 // operation the loaded obs_data uses is @differentiable. That's a per-model
