@@ -396,6 +396,16 @@ const stdBars = computed(() => {
 // asked for one and clutter when you did not.
 const compare = ref(false)
 
+// One comparison at a time: both draw a second fill into the same bar rows, so
+// having both on would put four fills in three colours on every observable, two
+// of them the same series. Ticking one clears the other.
+watch(compare, (on) => {
+  if (on) compareEmulator.value = false
+})
+watch(compareEmulator, (on) => {
+  if (on) compare.value = false
+})
+
 const hasCurrentCost = computed(() => !!props.currentCost?.items?.length)
 const comparable = computed(() => hasCurrentCost.value || !!props.baselineCost?.items?.length)
 
@@ -645,8 +655,28 @@ const uqMethodLabel = computed(() =>
         cost belonged to which series had to be read from the caption alone.
         CURRENT_COLOUR / BASELINE_COLOUR stay the single definition.
       -->
-      <div v-if="comparable" class="cost-summary" data-testid="analysis-cost">
-        <div class="cost-figure">
+      <div
+        v-if="comparable || bothSourcesAvailable"
+        class="cost-summary"
+        data-testid="analysis-cost"
+      >
+        <!--
+          The first figure is whichever series the charts are drawing against the
+          best fit: the current sliders normally, the emulator when that is what
+          is being compared. Showing "current parameters" beside emulator bars
+          would put a number on screen that no chart refers to.
+        -->
+        <div v-if="compareEmulator" class="cost-figure">
+          <span class="cost-caption">EM calibration best fit</span>
+          <strong
+            class="cost-number"
+            :style="{ color: EMULATOR_COLOUR }"
+            data-testid="analysis-cost-emulator"
+          >
+            {{ formatCost(bestFitEmulatorCost?.cost) }}
+          </strong>
+        </div>
+        <div v-else class="cost-figure">
           <span class="cost-caption">current parameters</span>
           <strong
             class="cost-number"
@@ -656,7 +686,17 @@ const uqMethodLabel = computed(() =>
             {{ formatCost(currentCost?.cost) }}
           </strong>
         </div>
-        <div v-if="baselineCost" class="cost-figure">
+        <div v-if="compareEmulator" class="cost-figure">
+          <span class="cost-caption">calibration best fit</span>
+          <strong
+            class="cost-number"
+            :style="{ color: CURRENT_COLOUR }"
+            data-testid="analysis-cost-model"
+          >
+            {{ formatCost(bestFitModelCost?.cost) }}
+          </strong>
+        </div>
+        <div v-else-if="baselineCost" class="cost-figure">
           <span class="cost-caption">{{ baselineCost.label ?? 'baseline' }}</span>
           <strong
             class="cost-number"
@@ -666,9 +706,22 @@ const uqMethodLabel = computed(() =>
             {{ formatCost(baselineCost.cost) }}
           </strong>
         </div>
+        <!--
+          One comparison at a time. Both sets of bars share the chart, so ticking
+          both would draw four fills per observable in three colours, two of which
+          are the same series -- unreadable, and not a comparison of anything.
+        -->
         <label v-if="baselineCost" class="cost-compare">
           <input v-model="compare" type="checkbox" data-testid="compare-costs" />
           compare current on the charts
+        </label>
+        <label v-if="bothSourcesAvailable" class="cost-compare" data-testid="calibration-source">
+          <input
+            v-model="compareEmulator"
+            type="checkbox"
+            data-testid="compare-with-emulator"
+          />
+          compare with the emulator
         </label>
       </div>
 
@@ -728,21 +781,6 @@ const uqMethodLabel = computed(() =>
           </div>
         </section>
       </template>
-
-      <div
-        v-if="bothSourcesAvailable"
-        class="cost-summary emulator-compare-row"
-        data-testid="calibration-source"
-      >
-        <label class="cost-compare">
-          <input
-            v-model="compareEmulator"
-            type="checkbox"
-            data-testid="compare-with-emulator"
-          />
-          compare with the emulator
-        </label>
-      </div>
 
       <p v-if="!hasCalibration && !comparable" class="empty-hint">
         Run a calibration to see per-observable fit errors.

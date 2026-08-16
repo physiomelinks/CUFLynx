@@ -295,7 +295,9 @@ def test_the_source_route_still_serves_the_file(client):
     model_id = upload_py(client)
     resp = client.get(f"/api/models/{model_id}/source")
     assert resp.status_code == 200, resp.text
-    assert resp.text == FIXTURE.read_text()
+    # splitlines() rather than ==: on Windows the fixture is read in text mode and
+    # comes back with \r\n, which says nothing about what the route served.
+    assert resp.text.splitlines() == FIXTURE.read_text().splitlines()
 
 
 def test_the_source_route_shows_the_study_copy_when_there_is_one(client, tmp_path):
@@ -306,7 +308,7 @@ def test_the_source_route_shows_the_study_copy_when_there_is_one(client, tmp_pat
         f"/api/models/{model_id}/source", params={"config_outputs_dir": str(tmp_path)}
     )
     assert resp.status_code == 200, resp.text
-    assert resp.text == "# edited\n"
+    assert resp.text.splitlines() == ["# edited"]
 
 
 # ---------------------------------------------------------------------------
@@ -459,16 +461,18 @@ def test_visual_beats_editor_beats_the_platform_handler(monkeypatch):
     monkeypatch.setattr(
         editor_launch, "_spawn", lambda argv: spawned.append(argv) or (True, "")
     )
+    target = "/study/user_model.py"
     result = editor_launch.open_in_editor(
-        "/study/user_model.py",
+        target,
         env={"VISUAL": "code -w", "EDITOR": "vim", "DISPLAY": ":0"},
         platform="linux",
     )
     assert result["opened"] is True
     assert result["editor"] == "code"
     # Split as a shell would, and the path is its own argv element -- never
-    # interpolated into a string, never handed to a shell.
-    assert spawned == [["code", "-w", "/study/user_model.py"]]
+    # interpolated into a string, never handed to a shell. str(Path(...)) because
+    # the launcher normalises the path, which swaps the separators on Windows.
+    assert spawned == [["code", "-w", str(Path(target))]]
 
 
 def test_a_broken_editor_falls_through_to_the_platform_handler(monkeypatch):
@@ -486,7 +490,7 @@ def test_a_broken_editor_falls_through_to_the_platform_handler(monkeypatch):
     )
     assert result["opened"] is True
     assert result["editor"] == "xdg-open"
-    assert spawned[-1] == ["xdg-open", "/study/user_model.py"]
+    assert spawned[-1] == ["xdg-open", str(Path("/study/user_model.py"))]
 
 
 @pytest.mark.parametrize(
@@ -506,7 +510,7 @@ def test_windows_uses_the_shell_association(monkeypatch):
     monkeypatch.setattr(editor_launch.os, "startfile", opened.append, raising=False)
     result = editor_launch.open_in_editor("/study/user_model.py", env={}, platform="win32")
     assert result["opened"] is True
-    assert opened == ["/study/user_model.py"]
+    assert opened == [str(Path("/study/user_model.py"))]
 
 
 def test_a_headless_linux_box_says_so_instead_of_pretending(monkeypatch):
@@ -563,7 +567,7 @@ def test_a_terminal_editor_is_hosted_in_a_terminal(monkeypatch, suffix, editor):
         target, env={"EDITOR": editor, "DISPLAY": ":0"}, platform="linux")
 
     assert result["opened"] is True
-    assert spawned == [["xterm", "-e", editor, target]], (
+    assert spawned == [["xterm", "-e", editor, str(Path(target))]], (
         "a terminal editor must be given a terminal, not launched detached")
 
 
@@ -578,7 +582,7 @@ def test_a_gui_editor_is_launched_directly(monkeypatch, suffix):
     result = editor_launch.open_in_editor(
         target, env={"VISUAL": "gedit", "DISPLAY": ":0"}, platform="linux")
     assert result["opened"] is True
-    assert spawned == [["gedit", target]]
+    assert spawned == [["gedit", str(Path(target))]]
 
 
 def test_a_terminal_editor_without_a_terminal_falls_through_to_the_handler(monkeypatch):
@@ -593,7 +597,7 @@ def test_a_terminal_editor_without_a_terminal_falls_through_to_the_handler(monke
         "/study/user_model.py", env={"EDITOR": "vim", "DISPLAY": ":0"}, platform="linux")
     assert result["opened"] is True
     assert result["editor"] == "xdg-open"
-    assert spawned == [["xdg-open", "/study/user_model.py"]]
+    assert spawned == [["xdg-open", str(Path("/study/user_model.py"))]]
 
 
 def test_a_terminal_editor_is_used_bare_when_there_is_no_desktop(monkeypatch):
@@ -606,4 +610,4 @@ def test_a_terminal_editor_is_used_bare_when_there_is_no_desktop(monkeypatch):
     result = editor_launch.open_in_editor(
         "/study/user_model.py", env={"EDITOR": "vim"}, platform="linux")
     assert result["opened"] is True
-    assert spawned == [["vim", "/study/user_model.py"]]
+    assert spawned == [["vim", str(Path("/study/user_model.py"))]]
