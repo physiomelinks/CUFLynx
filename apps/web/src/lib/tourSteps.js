@@ -85,7 +85,7 @@ export const TOUR_STEPS = Object.freeze([
     target: '[data-testid="start-build-your-own"]',
     side: 'right',
     title: 'Build your own',
-    text: 'ODE models can be built in PhLynx, the model builder. It opens in a browser tab; the CellML it gives you is dropped back onto the model box here.',
+    text: 'ODE models can be built in PhLynx, the model builder. It opens in a browser tab; the CellML it gives you is dropped back onto the model box.',
   },
   {
     id: 'pmr',
