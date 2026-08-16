@@ -332,6 +332,12 @@ def _ca_evaluate(obs_data, outputs_by_experiment, output_dir, dt, why=None,  # n
     """
     pid = _ca_engine(obs_data, output_dir, dt)
     if pid is None:
+        # The one failure with no better description available: CA could not be
+        # imported, or could not parse this obs_data. Saying so beats saying nothing,
+        # which is what the emulator path did before.
+        if why is not None:
+            why.append('circulatory_autogen could not read this obs_data '
+                       '(check the CA directory in Settings, and that the obs_data parses)')
         return None
 
     obs_info = pid.obs_info

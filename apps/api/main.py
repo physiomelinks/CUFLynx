@@ -949,13 +949,19 @@ def _obs_data_document(record, protocol_info=None) -> dict | None:
     if obs is None:
         return None
     proto = protocol_info if protocol_info is not None else obs.protocol_info
-    if proto is None:
-        return None
-    return {
-        "protocol_info": proto,
+    document = {
         "data_items": obs.data_items,
         "prediction_items": obs.prediction_items,
     }
+    # An obs_data with no protocol_info is valid and common -- it says what to measure
+    # without saying how to drive the model, and CA builds the timeline from
+    # sim_time/pre_time instead. Returning None for it meant a protocol-less study was
+    # reported as having no obs_data at all, and the emulator's cost (which has no
+    # fallback, by design) simply never appeared. The key is omitted rather than set to
+    # None because CA's parser refuses an explicit None where it accepts an absence.
+    if proto is not None:
+        document["protocol_info"] = proto
+    return document
 
 
 def _with_obs_operands(outputs: list[str], record) -> list[str]:
