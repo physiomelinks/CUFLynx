@@ -10,13 +10,15 @@ describe('useObsData', () => {
     expect(o.hasObsData.value).toBe(true)
   })
 
-  it('test_clear_obs_data_restores_manual_time_controls', () => {
+  it('test_clear_obs_data_drops_the_protocol_and_its_run_window', () => {
     const o = useObsData()
-    o.setObsData({ has_protocol: true, n_experiments: 1 })
+    o.setObsData({ protocol_info: { pre_times: [1], sim_times: [[5]] } })
     expect(o.hasProtocol.value).toBe(true)
-    expect(o.useManualTime.value).toBe(false)
+    expect(o.protocolSimTime.value).toBe(5)
     o.clearObsData()
-    expect(o.useManualTime.value).toBe(true)
+    expect(o.hasProtocol.value).toBe(false)
+    expect(o.protocolSimTime.value).toBe(null)
+    expect(o.protocolPreTime.value).toBe(null)
     expect(o.experimentCount.value).toBe(0)
   })
 
@@ -27,21 +29,31 @@ describe('useObsData', () => {
     expect(o.experimentCount.value).toBe(1)
   })
 
-  it('any loaded obs_data disables the manual t1/pre controls', () => {
+  // The run window: the protocol's totals, and nothing else can state them.
+  it('totals the protocol times over every experiment and sub-experiment', () => {
     const o = useObsData()
-    // data-only (3compartment): no protocol, but still an obs file -> manual off
+    o.setObsData({
+      protocol_info: { pre_times: [1, 0.5], sim_times: [[2, 3], [4]] },
+    })
+    expect(o.protocolPreTime.value).toBe(1.5)
+    expect(o.protocolSimTime.value).toBe(9)
+  })
+
+  it('has no run window for a data-only obs_data (3compartment)', () => {
+    const o = useObsData()
     o.setObsData({ has_protocol: false, n_data_items: 6, data_items: [] })
     expect(o.hasObsData.value).toBe(true)
     expect(o.hasProtocol.value).toBe(false)
-    expect(o.useManualTime.value).toBe(false)
+    expect(o.protocolSimTime.value).toBe(null)
+    expect(o.protocolPreTime.value).toBe(null)
   })
 
-  it('manual t1/pre controls are only used when no obs_data is loaded', () => {
+  // The times are user-authored JSON: a missing or unreadable entry counts as 0
+  // rather than making the whole window NaN.
+  it('reads a partial or malformed protocol as zeros, not NaN', () => {
     const o = useObsData()
-    expect(o.useManualTime.value).toBe(true)
-    o.setObsData({ has_protocol: true, n_experiments: 2 })
-    expect(o.useManualTime.value).toBe(false)
-    o.clearObsData()
-    expect(o.useManualTime.value).toBe(true)
+    o.setObsData({ protocol_info: { sim_times: [[2, 'x'], 3] } })
+    expect(o.protocolPreTime.value).toBe(0)
+    expect(o.protocolSimTime.value).toBe(5)
   })
 })

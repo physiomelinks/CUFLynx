@@ -247,3 +247,13 @@ describe('UQPanel option visibility follows the sampler library', () => {
     expect(shown(w, 'pymc_method')).toBe(true)
   })
 })
+
+describe('tour anchors', () => {
+  it('marks the settings form', () => {
+    const wrapper = mount(UQPanel, {
+      props: { canRun: true, defaults: { method: 'mcmc' } },
+      global: { stubs },
+    })
+    expect(wrapper.find('[data-testid="uq-settings"]').exists()).toBe(true)
+  })
+})

@@ -345,9 +345,13 @@ SIM_HELPER = HeatFEniCSxModel
 2. Check **Settings → Python** is the `fenicsx` environment. Nothing imports your
    file until the first run, so a wrong interpreter shows up as an `ImportError`
    on that run, not on the drop.
-3. Set the run window: **t₁** to `2.0` in the time controls, and **Time step (dt)**
-   to `0.02` in Settings — the 100 steps the model is sized for.
-4. Add sliders for `heat/k` and `heat/u_D`, and drag them.
+3. Drop `heat_fenics_obs_data.json` on the **obs_data** box. That is where the run
+   window comes from: its `protocol_info` names 2 s from `t = 0`, which with
+   **Time step (dt)** at `0.02` in Settings is the 100 steps the model is sized
+   for. Until an obs_data with a `protocol_info` is loaded there is nothing to
+   size a run with, and the top bar says so instead of running.
+4. Add sliders for `heat/k` and `heat/u_D`, and drag them. Runs fire on their own
+   as you drag — there is no Run button.
 
 `heat/T_p1`, `heat/T_p2` and `heat/T_p3` plot as ordinary traces — they come through
 the same channel a CellML model's outputs do, so overlays, added variables, unit

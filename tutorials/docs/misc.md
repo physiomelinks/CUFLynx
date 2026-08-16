@@ -3,6 +3,32 @@
 Everything here is optional reading — the app runs without any of it. See the
 [README](../../README.md) to download and start it.
 
+## The guided tour
+
+The **Tutorial** button at the top right walks through a whole study on the
+bundled 3-compartment circulation model: getting a model, the settings, the
+sliders and plots, `obs_data` and `params_for_id`, then the emulator,
+sensitivity, calibration and UQ. It is the fastest way to find out what the app
+is for.
+
+Three things about how it behaves, because they are deliberate:
+
+- **It waits for you; it never clicks for you.** A step that asks you to open a
+  dialog sits there until you open it. Every bubble also has **Next** and
+  **Back**, so a wrong click cannot strand the tour — you can always walk past a
+  step you have already done.
+- **It skips what is not on screen.** A step whose control does not exist in the
+  state you are in — a dialog you chose not to open, an emulator your Python
+  environment cannot train, a tab that is not the active one — is silently
+  passed over rather than blocking. Start it with a model already loaded and the
+  first few steps about *getting* one evaporate.
+- **Skip ends it.** There is no Escape handler, because Escape belongs to
+  whichever dialog you are in.
+
+The button asks once: until the tour has been started or skipped it pulses
+gently. After that it is an ordinary button, and pressing it starts the tour
+again from the beginning.
+
 ## Solver backends, and the one that needs a C compiler
 
 CUFLynx works out of the box with no compiler. Of the three solver backends

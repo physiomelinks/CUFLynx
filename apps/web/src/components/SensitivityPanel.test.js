@@ -270,3 +270,13 @@ describe('SensitivityPanel reacts to a backend switch (#84)', () => {
     expect(withMethod('FSA').find('[data-testid="rel-step-field"]').exists()).toBe(false)
   })
 })
+
+describe('tour anchors', () => {
+  it('marks the settings form', () => {
+    const wrapper = mount(SensitivityPanel, {
+      props: { defaults: { method: 'local', gradient_methods: GRAD_CASADI } },
+      global: { stubs },
+    })
+    expect(wrapper.find('[data-testid="sa-settings"]').exists()).toBe(true)
+  })
+})

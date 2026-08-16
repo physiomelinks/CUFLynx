@@ -49,6 +49,21 @@ so developers can point at a local checkout. (See issue #18.)
 ## Key files
 
 - `apps/web/src/App.vue` — main UI (tabs: Parameters · Emulator · Sensitivity · Calibration · UQ; center: Output plots · Progress · Analysis)
+- `apps/web/src/components/TourOverlay.vue` + `lib/tourSteps.js` — the **Tutorial**
+  button's guided tour. **Every anchor is a `data-testid`** and nothing else:
+  renaming one breaks a tour step silently in the app, which is why
+  `tourSteps.test.js` reads every `.vue` under `src/` and fails when a referenced
+  testid no longer appears anywhere. The overlay *observes* — it has no way to
+  mutate app state, so "wait for the user to act" is structural rather than a
+  convention. Steps whose anchor is absent or zero-sized are skipped, which is
+  also how inactive `v-show` panes are handled with no tab bookkeeping.
+- **The run window comes from the obs_data's `protocol_info` and from nowhere
+  else.** There are no `t₁`/`pre` controls and no Run button: `simTime`/`preTime`
+  in `App.vue` are `computed` over `useObsData`'s `protocolSimTime`/`protocolPreTime`,
+  runs fire on the debounced parameter watcher, and `canRun` blocks everything
+  when no protocol is loaded. Two owners for one window is what let a calibration
+  and the live cost score the same parameters differently; don't reintroduce a
+  second source.
 - `apps/api/main.py` — FastAPI app: `/api/*` routes + serves the built frontend
 - `apps/api/engine.py` — live simulation; delegates to `sim_worker.py` /
   `sim_worker_runner.py` when an interpreter is chosen (#167), else runs in-process

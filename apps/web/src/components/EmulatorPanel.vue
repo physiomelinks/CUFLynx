@@ -272,7 +272,7 @@ function onRun() {
 
     <template v-else>
       <!-- The use switch. First, because it is what the other tabs read. -->
-      <div class="use-row" :class="{ disabled: !metadata }">
+      <div class="use-row" :class="{ disabled: !metadata }" data-testid="emu-use-row">
         <label class="field checkbox">
           <Checkbox
             :model-value="modelValue"
@@ -331,7 +331,7 @@ function onRun() {
         </details>
       </div>
 
-      <div class="cal-form">
+      <div class="cal-form" data-testid="emu-settings">
         <!-- CA's emulation options, from ANALYSIS_OPTIONS['emulation']. -->
         <template v-for="opt in emulatorOptions" :key="opt.name">
           <label

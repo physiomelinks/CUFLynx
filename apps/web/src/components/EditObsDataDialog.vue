@@ -441,6 +441,7 @@ async function onSave() {
     <ProtocolInfoEditor
       v-else
       v-model:active-exp="activeExp"
+      data-testid="eo-protocol"
       :model="protocolModel"
       :all-names="allNames"
       :initial-values="modelVariables?.initial_values ?? {}"
@@ -477,7 +478,12 @@ async function onSave() {
       <span>sub</span>
       <span />
     </div>
-    <ul class="eo-list">
+    <ul class="eo-list" data-testid="eo-data-items">
+      <!-- The per-row testids below (eo-value / eo-std / eo-operation /
+           eo-weight / eo-cost-type) repeat on every row: they mark the first
+           data_item for the guided tour, which anchors on the first match.
+           eo-operation reaches the picker's button through SearchableSelect's
+           `testid` prop. -->
       <li
         v-for="(row, i) in editableRows"
         :key="i"
@@ -499,12 +505,14 @@ async function onSave() {
             type="number"
             step="any"
             :value="row.value"
+            data-testid="eo-value"
             @input="onNum(row, 'value', $event.target.value)"
           />
           <input
             type="number"
             step="any"
             :value="row.std"
+            data-testid="eo-std"
             @input="onNum(row, 'std', $event.target.value)"
           />
           <SearchableSelect
@@ -609,10 +617,10 @@ async function onSave() {
             <input type="text" :value="row.unit" @input="row.unit = $event.target.value" />
           </label>
           <label>weight
-            <input type="number" step="any" :value="row.weight" @input="onNum(row, 'weight', $event.target.value)" />
+            <input type="number" step="any" :value="row.weight" data-testid="eo-weight" @input="onNum(row, 'weight', $event.target.value)" />
           </label>
           <label>cost_type
-            <select :value="row.cost_type" @change="onCostTypeChange(row, $event.target.value)">
+            <select :value="row.cost_type" data-testid="eo-cost-type" @change="onCostTypeChange(row, $event.target.value)">
               <!-- Naming the default matters: "default" alone leaves the user
                    guessing which cost their unlabelled data_items are scored
                    by, and CA's answer has changed (#212). -->

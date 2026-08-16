@@ -29,7 +29,7 @@ function chooseExample(example) {
     @update:visible="emit('update:visible', $event)"
   >
     <div class="start-body">
-      <section class="start-section">
+      <section class="start-section" data-testid="start-build-your-own">
         <h3>Build your own</h3>
         <p class="start-hint">
           Design a new CellML model from scratch in PhLynx, the model builder.
@@ -45,7 +45,7 @@ function chooseExample(example) {
         </a>
       </section>
 
-      <section class="start-section">
+      <section class="start-section" data-testid="start-pmr">
         <h3>Download from the Physiome Model Repository</h3>
         <p class="start-hint">
           Browse the PMR and download a published CellML model, then drop the file here.
@@ -61,7 +61,7 @@ function chooseExample(example) {
         </a>
       </section>
 
-      <section class="start-section">
+      <section class="start-section" data-testid="start-example">
         <h3>Start from an example</h3>
         <p class="start-hint">Load a bundled example model to explore.</p>
         <ul class="example-list">
@@ -83,7 +83,7 @@ function chooseExample(example) {
         solver. CUFLynx calibrates a Python class the same way it calibrates a
         CellML model, so it belongs beside the other three starting points.
       -->
-      <section class="start-section">
+      <section class="start-section" data-testid="start-external-python">
         <h3>External Python</h3>
         <p class="start-hint">
           Bring your own solver — a Python class CUFLynx calibrates like any other
