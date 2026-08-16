@@ -195,7 +195,7 @@ def test_edit_never_overwrites_an_existing_edit(client, tmp_path, no_launch):
     study_copy = tmp_path / "user_funcs" / "user_model.py"
     study_copy.write_text("# the user's edit\n")
     client.post(f"/api/models/{model_id}/edit", json={"config_outputs_dir": str(tmp_path)})
-    assert study_copy.read_text() == "# the user's edit\n"
+    assert study_copy.read_text(encoding="utf-8").splitlines() == ["# the user's edit"]
 
 
 def test_no_outputs_dir_is_refused_rather_than_written_to_a_temp_dir(client, no_launch):
@@ -297,7 +297,7 @@ def test_the_source_route_still_serves_the_file(client):
     assert resp.status_code == 200, resp.text
     # splitlines() rather than ==: on Windows the fixture is read in text mode and
     # comes back with \r\n, which says nothing about what the route served.
-    assert resp.text.splitlines() == FIXTURE.read_text().splitlines()
+    assert resp.text.splitlines() == FIXTURE.read_text(encoding="utf-8").splitlines()
 
 
 def test_the_source_route_shows_the_study_copy_when_there_is_one(client, tmp_path):
