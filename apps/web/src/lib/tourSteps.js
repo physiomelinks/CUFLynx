@@ -244,7 +244,7 @@ export const TOUR_STEPS = Object.freeze([
     target: '[data-testid="eo-save"]',
     side: 'right',
     title: 'Save',
-    text: 'This writes a new dated obs_data.json and loads it — the plots pick up the new items straight away.',
+    text: 'This writes a new dated obs_data.json and loads it — the plots pick up the new items straight away. Save, or close the dialog, to carry on.',
     waitFor: () => gone(EDIT_OBS),
   },
 
@@ -282,7 +282,7 @@ export const TOUR_STEPS = Object.freeze([
     id: 'params-save',
     target: '[data-testid="ep-save"]',
     side: 'right',
-    text: 'Save writes a new dated params_for_id JSON and loads it — the sliders on the left rebuild from it.',
+    text: 'Save writes a new dated params_for_id JSON and loads it — the sliders on the left rebuild from it. Save, or close the dialog, to carry on.',
     waitFor: () => gone(EDIT_PARAMS),
   },
 

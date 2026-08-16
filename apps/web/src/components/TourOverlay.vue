@@ -9,6 +9,11 @@
  * when the user really clicks the control (`advanceOn`), when app state says so
  * (`waitFor`), or when they press Next.
  *
+ * A step that declares either of the first two **does not offer Next** (see
+ * `showNext`): it is waiting on an action the step after it describes the
+ * result of, so a Next there is a way to walk past the subject of the tour and
+ * land on a control that is not on screen. Back and Skip are always offered.
+ *
  * The **one** narrowing of that rule is `onNext`, which fires only from the
  * Next button and never from `advanceOn`/`waitFor`. It exists for the steps
  * whose whole subject is a modal the user is standing behind: pressing Next on
@@ -28,7 +33,7 @@
  * `ctx` is a plain object of *getters* over app state, plus the few writers the
  * `onNext` steps need. Read it; write only through those.
  */
-import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 const props = defineProps({
   steps: { type: Array, default: () => [] },
@@ -195,6 +200,30 @@ function nextFromButton() {
 function back() {
   if (current.value) resolve(current.value.index - 1, -1)
 }
+
+/**
+ * Whether to offer Next at all.
+ *
+ * A step that declares `advanceOn` or `waitFor` is waiting for the user to *do*
+ * something -- click Create, open the tab, close the dialog -- and the step
+ * after it usually describes what that action produces. Offering Next there
+ * offers a way to walk straight past the thing the tour is about, and the next
+ * bubble then points at a control that is not on screen or is behind a modal
+ * mask. It is also very easy to press by accident, since Next is where the
+ * pointer already is.
+ *
+ * The exception is a step that can do the thing itself: with `onNext`, pressing
+ * Next *is* the action, so it is offered.
+ *
+ * Back and Skip are never hidden -- this narrows how the tour goes forward, and
+ * must not become a way to trap someone in it.
+ */
+const showNext = computed(() => {
+  const s = current.value && current.value.step
+  if (!s) return false
+  if (typeof s.onNext === 'function') return true
+  return !s.advanceOn && typeof s.waitFor !== 'function'
+})
 
 /* ------------------------------------------------------------------ *
  * Measurement and placement
@@ -450,7 +479,10 @@ watch(
           >
             Back
           </button>
+          <!-- Absent, not disabled: a greyed Next reads as "the tour is stuck",
+               when in fact it is the user's turn. See showNext. -->
           <button
+            v-if="showNext"
             type="button"
             class="tour-btn tour-primary"
             data-testid="tour-next"
