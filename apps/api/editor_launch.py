@@ -35,6 +35,7 @@ from __future__ import annotations
 import os
 import shlex
 import subprocess
+import shutil
 import sys
 from pathlib import Path
 
@@ -43,6 +44,24 @@ from runtime_paths import subprocess_env
 #: Searched in order. POSIX convention: VISUAL is the full-screen editor, EDITOR
 #: the line-oriented fallback, and VISUAL wins where both are set.
 EDITOR_ENV_VARS = ("VISUAL", "EDITOR")
+
+#: Editors that need a terminal to be of any use. $EDITOR is very often one of
+#: these -- it is a *terminal* preference, set for shells -- and launching one
+#: detached with its streams on /dev/null "succeeds": Popen returns a process,
+#: which then exits immediately having drawn nothing. The user is told their
+#: editor opened and no window appears. So on a desktop these are wrapped in a
+#: terminal emulator, and only used bare when there is no desktop to speak of.
+TERMINAL_EDITORS = frozenset({
+    "vi", "vim", "nvim", "nano", "pico", "ed", "emacs", "joe", "jed", "mg",
+    "micro", "helix", "hx", "kak", "ne", "tilde",
+})
+
+#: Terminal emulators tried, in order, to host a TERMINAL_EDITORS editor.
+#: ``-e`` is the one flag they all agree on.
+TERMINAL_EMULATORS = (
+    "x-terminal-emulator", "gnome-terminal", "konsole", "xfce4-terminal",
+    "alacritty", "kitty", "wezterm", "foot", "urxvt", "xterm",
+)
 
 
 def _configured_commands(env) -> list[list[str]]:
@@ -102,6 +121,14 @@ def _spawn(argv: list[str]) -> tuple[bool, str]:
     return True, ""
 
 
+def _terminal_command(argv, target):
+    """``argv`` hosted in the first terminal emulator on PATH, or None if none is."""
+    for emulator in TERMINAL_EMULATORS:
+        if shutil.which(emulator):
+            return [emulator, "-e", *argv, target]
+    return None
+
+
 def open_in_editor(path, *, env=None, platform=None) -> dict:
     """Open ``path`` in the user's editor. Never raises.
 
@@ -117,7 +144,23 @@ def open_in_editor(path, *, env=None, platform=None) -> dict:
     platform = sys.platform if platform is None else platform
     tried: list[str] = []
 
+    desktop = platform.startswith("win") or platform == "darwin" or _has_display(env)
     for argv in _configured_commands(env):
+        name = Path(argv[0]).name
+        if name in TERMINAL_EDITORS and desktop:
+            # A terminal editor with a desktop available: give it a terminal. Without
+            # one it would "start" and vanish, which is worse than not trying.
+            hosted = _terminal_command(argv, target)
+            if hosted is None:
+                tried.append(
+                    f"{name}: a terminal editor, and no terminal emulator was found to "
+                    f"host it (tried {', '.join(TERMINAL_EMULATORS[:3])}, ...)")
+                continue
+            started, why = _spawn(hosted)
+            if started:
+                return {"opened": True, "editor": f"{hosted[0]} -e {name}", "reason": ""}
+            tried.append(f"{hosted[0]} -e {name}: {why}")
+            continue
         started, why = _spawn([*argv, target])
         if started:
             return {"opened": True, "editor": argv[0], "reason": ""}

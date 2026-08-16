@@ -315,24 +315,18 @@ const bothSourcesAvailable = computed(
   () =>
     !!props.bestFitModelCost?.items?.length && !!props.bestFitEmulatorCost?.items?.length,
 )
-const showEmulatorSource = ref(props.calibrationUsedEmulator)
-// Default to what the calibration minimised, so the numbers first shown are the
-// ones its reported cost belongs to; a later calibration re-points it.
-watch(
-  () => props.calibrationUsedEmulator,
-  (used) => {
-    showEmulatorSource.value = used
-  },
-)
+// Off by default, like `compare` below and for the same reason: a second set of
+// bars on every chart is a comparison when you asked for one and clutter when you
+// did not. It is a *comparison* toggle, not a source switch -- the single-source
+// bars stay on the forward model, and ticking this adds the emulator beside it.
+const compareEmulator = ref(false)
 const calibrationSource = computed(() => {
   if (!bothSourcesAvailable.value) return null
-  return showEmulatorSource.value ? props.bestFitEmulatorCost : props.bestFitModelCost
+  return props.bestFitModelCost
 })
 // Said in words, not only by a checked box: the two can differ a lot, and a
 // screenshot of the bars has to say which model produced them.
-const calibrationSourceLabel = computed(() =>
-  showEmulatorSource.value ? 'the emulator' : 'the forward model',
-)
+const calibrationSourceLabel = computed(() => 'the forward model')
 
 /** One side's rows for a field, with the observables it could not score dropped. */
 function sourceSeries(field) {
@@ -440,6 +434,9 @@ function costBars(payload, field, fmt, color) {
 
 const CURRENT_COLOUR = '#5b9bd5'
 const BASELINE_COLOUR = '#a142f4'
+// Distinct from both, since an emulator comparison can be on screen beside a
+// current-vs-baseline one.
+const EMULATOR_COLOUR = '#e8710a'
 
 const currentPercentBars = computed(() =>
   costBars(props.currentCost, 'percent_error', (v) => `${v.toFixed(1)}%`, CURRENT_COLOUR),
@@ -450,6 +447,21 @@ const currentStdBars = computed(() =>
 const baselinePercentBars = computed(() =>
   costBars(props.baselineCost, 'percent_error', (v) => `${v.toFixed(1)}%`, BASELINE_COLOUR),
 )
+// Forward model vs emulator at the SAME best fit -- the gap between the pairs is
+// the surrogate's error there, drawn the way the current-vs-baseline pairs are.
+const modelPercentBars = computed(() =>
+  costBars(props.bestFitModelCost, 'percent_error', (v) => `${v.toFixed(1)}%`, CURRENT_COLOUR),
+)
+const modelStdBars = computed(() =>
+  costBars(props.bestFitModelCost, 'std_error', (v) => `${v.toFixed(2)}σ`, CURRENT_COLOUR),
+)
+const emulatorPercentBars = computed(() =>
+  costBars(props.bestFitEmulatorCost, 'percent_error', (v) => `${v.toFixed(1)}%`, EMULATOR_COLOUR),
+)
+const emulatorStdBars = computed(() =>
+  costBars(props.bestFitEmulatorCost, 'std_error', (v) => `${v.toFixed(2)}σ`, EMULATOR_COLOUR),
+)
+
 const baselineStdBars = computed(() =>
   costBars(props.baselineCost, 'std_error', (v) => `${v.toFixed(2)}σ`, BASELINE_COLOUR),
 )
@@ -656,7 +668,79 @@ const uqMethodLabel = computed(() =>
         </div>
         <label v-if="baselineCost" class="cost-compare">
           <input v-model="compare" type="checkbox" data-testid="compare-costs" />
-          compare on the charts
+          compare current on the charts
+        </label>
+      </div>
+
+      <template v-if="bothSourcesAvailable && compareEmulator">
+        <section class="error-chart">
+          <h3>Percentage error — forward model vs emulator</h3>
+          <div class="chart-legend" data-testid="emulator-compare-legend">
+            <span class="legend-item">
+              <span class="legend-swatch" :style="{ background: CURRENT_COLOUR }" />
+              forward model
+            </span>
+            <span class="legend-item">
+              <span class="legend-swatch" :style="{ background: EMULATOR_COLOUR }" />
+              emulator
+            </span>
+          </div>
+          <div class="bar-list" data-testid="emulator-percent-chart">
+            <div v-for="(b, i) in modelPercentBars" :key="`em-p${i}`" class="bar-row">
+              <span class="bar-label" v-html="renderMath(b.label)" />
+              <div class="bar-track">
+                <span class="bar-zero" />
+                <span class="bar-fill" :style="{ left: b.left, width: b.width, background: b.color }" />
+                <span
+                  v-if="emulatorPercentBars[i]"
+                  class="bar-fill bar-fill-baseline"
+                  :style="{
+                    left: emulatorPercentBars[i].left,
+                    width: emulatorPercentBars[i].width,
+                    background: emulatorPercentBars[i].color,
+                  }"
+                />
+              </div>
+              <span class="bar-value">{{ b.text }}</span>
+            </div>
+          </div>
+        </section>
+        <section class="error-chart">
+          <h3>Error in standard deviations — forward model vs emulator</h3>
+          <div class="bar-list" data-testid="emulator-std-chart">
+            <div v-for="(b, i) in modelStdBars" :key="`em-s${i}`" class="bar-row">
+              <span class="bar-label" v-html="renderMath(b.label)" />
+              <div class="bar-track">
+                <span class="bar-zero" />
+                <span class="bar-fill" :style="{ left: b.left, width: b.width, background: b.color }" />
+                <span
+                  v-if="emulatorStdBars[i]"
+                  class="bar-fill bar-fill-baseline"
+                  :style="{
+                    left: emulatorStdBars[i].left,
+                    width: emulatorStdBars[i].width,
+                    background: emulatorStdBars[i].color,
+                  }"
+                />
+              </div>
+              <span class="bar-value">{{ b.text }}</span>
+            </div>
+          </div>
+        </section>
+      </template>
+
+      <div
+        v-if="bothSourcesAvailable"
+        class="cost-summary emulator-compare-row"
+        data-testid="calibration-source"
+      >
+        <label class="cost-compare">
+          <input
+            v-model="compareEmulator"
+            type="checkbox"
+            data-testid="compare-with-emulator"
+          />
+          compare with the emulator
         </label>
       </div>
 
@@ -742,25 +826,19 @@ const uqMethodLabel = computed(() =>
           half of the answer. Both were measured once, when the calibration
           finished -- ticking this switches payloads, it does not run anything.
         -->
-        <div
-          v-if="bothSourcesAvailable"
-          class="source-toggle"
-          data-testid="calibration-source"
-        >
-          <label class="cost-compare">
-            <input
-              v-model="showEmulatorSource"
-              type="checkbox"
-              data-testid="compare-with-emulator"
-            />
-            compare with the emulator
-          </label>
+        <div v-if="bothSourcesAvailable" class="source-toggle">
           <span class="cost-caption" data-testid="calibration-source-label">
             errors and cost from <strong>{{ calibrationSourceLabel }}</strong> at the
             calibration best fit —
             <span data-testid="calibration-source-cost">{{
               formatCost(calibrationSource?.cost)
             }}</span>
+            <template v-if="compareEmulator">
+              · emulator
+              <span data-testid="calibration-emulator-cost">{{
+                formatCost(bestFitEmulatorCost?.cost)
+              }}</span>
+            </template>
           </span>
         </div>
         <section class="error-chart">

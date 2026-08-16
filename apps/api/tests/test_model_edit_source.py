@@ -540,3 +540,70 @@ def test_the_study_copy_has_one_home_per_suffix(tmp_path):
     assert user_funcs.model_source_path("mmt", str(tmp_path)) == (
         tmp_path / "user_funcs" / "user_model.mmt"
     )
+
+
+# ---------------------------------------------------------------------------
+# A terminal editor needs a terminal
+# ---------------------------------------------------------------------------
+# $EDITOR is a *shell* preference and is very often vim/nano. Spawned detached
+# with its streams on /dev/null it "succeeds" -- Popen returns a process, which
+# exits immediately having drawn nothing -- so the user was told their editor
+# opened and no window ever appeared. That is the reported bug.
+@pytest.mark.parametrize("suffix", [".py", ".mmt"])
+@pytest.mark.parametrize("editor", ["vim", "nano", "/usr/bin/vi", "emacs"])
+def test_a_terminal_editor_is_hosted_in_a_terminal(monkeypatch, suffix, editor):
+    spawned = []
+    monkeypatch.setattr(
+        editor_launch, "_spawn", lambda argv: spawned.append(argv) or (True, "")
+    )
+    monkeypatch.setattr(editor_launch.shutil, "which",
+                        lambda name: "/usr/bin/xterm" if name == "xterm" else None)
+    target = f"/study/user_model{suffix}"
+    result = editor_launch.open_in_editor(
+        target, env={"EDITOR": editor, "DISPLAY": ":0"}, platform="linux")
+
+    assert result["opened"] is True
+    assert spawned == [["xterm", "-e", editor, target]], (
+        "a terminal editor must be given a terminal, not launched detached")
+
+
+@pytest.mark.parametrize("suffix", [".py", ".mmt"])
+def test_a_gui_editor_is_launched_directly(monkeypatch, suffix):
+    """The wrapping is only for editors that need a terminal."""
+    spawned = []
+    monkeypatch.setattr(
+        editor_launch, "_spawn", lambda argv: spawned.append(argv) or (True, "")
+    )
+    target = f"/study/user_model{suffix}"
+    result = editor_launch.open_in_editor(
+        target, env={"VISUAL": "gedit", "DISPLAY": ":0"}, platform="linux")
+    assert result["opened"] is True
+    assert spawned == [["gedit", target]]
+
+
+def test_a_terminal_editor_without_a_terminal_falls_through_to_the_handler(monkeypatch):
+    """No emulator on PATH: better the desktop's own handler than a process that
+    starts and vanishes."""
+    spawned = []
+    monkeypatch.setattr(
+        editor_launch, "_spawn", lambda argv: spawned.append(argv) or (True, "")
+    )
+    monkeypatch.setattr(editor_launch.shutil, "which", lambda name: None)
+    result = editor_launch.open_in_editor(
+        "/study/user_model.py", env={"EDITOR": "vim", "DISPLAY": ":0"}, platform="linux")
+    assert result["opened"] is True
+    assert result["editor"] == "xdg-open"
+    assert spawned == [["xdg-open", "/study/user_model.py"]]
+
+
+def test_a_terminal_editor_is_used_bare_when_there_is_no_desktop(monkeypatch):
+    """Headless: there is no handler to prefer and no terminal to open, so the
+    user's own editor is the only candidate left."""
+    spawned = []
+    monkeypatch.setattr(
+        editor_launch, "_spawn", lambda argv: spawned.append(argv) or (True, "")
+    )
+    result = editor_launch.open_in_editor(
+        "/study/user_model.py", env={"EDITOR": "vim"}, platform="linux")
+    assert result["opened"] is True
+    assert spawned == [["vim", "/study/user_model.py"]]
