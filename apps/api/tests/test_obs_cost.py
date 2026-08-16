@@ -7,6 +7,7 @@ and whether it moved *towards* the data was left to the eye.
 from __future__ import annotations
 
 import obs_cost
+import math
 import pytest
 
 
@@ -581,3 +582,58 @@ def test_the_solver_cost_is_untouched_by_the_emulated_path():
     if direct is None:
         pytest.skip("circulatory_autogen could not be reached")
     assert obs_cost.evaluate(obs["data_items"], run, None, obs_data=obs) == direct
+
+
+# ---------------------------------------------------------------------------
+# Why there is no em cost, when there is none
+# ---------------------------------------------------------------------------
+# The predicted features still draw their dotted overlay, so returning a bare
+# None left the user with lines on the plot, no number beside them, and no way
+# to tell a stale bundle from an edited obs_data from a series observable.
+def _six_labels():
+    return [f'{op}(T_{{p{i}}}) ({op} heat/T_p{i})'
+            for i in (1, 2, 3) for op in ('mean', 'min')]
+
+
+def _six_item_obs():
+    return [
+        {"variable": f"probe {i} {op}", "name_for_plotting": f"{op}(T_{{p{i}}})",
+         "data_type": "constant", "operation": op, "operands": [f"heat/T_p{i}"],
+         "unit": "dimensionless", "weight": 1.0, "value": 0.4, "std": 0.05,
+         "cost_type": "gaussian_MLE"}
+        for i in (1, 2, 3) for op in ("mean", "min")
+    ]
+
+
+@pytest.mark.integration
+def test_a_missing_feature_names_the_observable_and_says_to_retrain(requires_ca, tmp_path):
+    """The reported case: an obs_data item the emulator was not trained on."""
+    labels = _six_labels()
+    why = []
+    result = obs_cost.evaluate_features(
+        {lab: 0.4 for lab in labels[:-1]},   # one observable added since training
+        _six_item_obs(), str(tmp_path), dt=0.02, why=why)
+    assert result is None
+    assert why, 'the failure must say why'
+    assert labels[-1] in why[0], 'it must name the observable that has no prediction'
+    assert 'retrain' in why[0].lower()
+
+
+@pytest.mark.integration
+def test_a_complete_prediction_scores_and_says_nothing(requires_ca, tmp_path):
+    why = []
+    result = obs_cost.evaluate_features(
+        {lab: 0.4 for lab in _six_labels()}, _six_item_obs(), str(tmp_path), dt=0.02, why=why)
+    # 0.0 here is a legitimate cost: the predictions equal the ground truth, so this
+    # is a perfect fit rather than a failure -- which is exactly why "could not tell"
+    # must never be reported as a number.
+    assert result is not None and math.isfinite(result["cost"])
+    assert len(result["items"]) == 6
+    assert why == [], 'a cost that could be computed has nothing to explain'
+
+
+@pytest.mark.unit
+def test_no_obs_data_says_so_rather_than_naming_a_label():
+    why = []
+    assert obs_cost.evaluate_features({'a': 1.0}, None, None, why=why) is None
+    assert 'obs_data' in why[0]

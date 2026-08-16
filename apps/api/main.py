@@ -1907,7 +1907,10 @@ def _emulator_cost_at(record, model_id: str, params: dict, config_outputs_dir,
         prediction = engine.emulator_predict(emu_dir, theta)
     except Exception:  # noqa: BLE001 - an emulator that cannot answer says nothing
         return None
-    return _emulator_feature_cost(record, prediction, output_dir, protocol_info)
+    # This caller wants the cost alone: the Analysis toggle's legend says which source
+    # is displayed, so an absent emulator cost there means "no emulator side to show"
+    # rather than a state needing explanation.
+    return _emulator_feature_cost(record, prediction, output_dir, protocol_info)[0]
 
 
 @app.post("/api/obs_data/upload")
@@ -2794,7 +2797,7 @@ def emulator_predict(req: EmulatorPredictRequest) -> dict:
         result = engine.emulator_predict(emu_dir, theta)
     except SimulationError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    result["cost"] = _emulator_feature_cost(
+    result["cost"], result["cost_unavailable"] = _emulator_feature_cost(
         record, result, _user_func_base_dir(req.settings.get("config_outputs_dir"))
     )
     return result
@@ -2817,16 +2820,24 @@ def _emulator_feature_cost(record, prediction: dict, output_dir,
     labels = prediction.get("labels") or []
     values = prediction.get("values") or []
     if not labels or len(labels) != len(values):
-        return None
+        return None, "the emulator returned no usable predictions"
+    why: list[str] = []
     try:
-        return obs_cost.evaluate_features(
+        cost = obs_cost.evaluate_features(
             dict(zip(labels, values)),
             _obs_data_document(record, protocol_info),
             output_dir,
             dt=engine.dt,
+            why=why,
         )
     except Exception:  # noqa: BLE001 - a cost is never worth failing the prediction over
-        return None
+        return None, "circulatory_autogen could not score the emulator's prediction"
+    if cost is not None:
+        return cost, None
+    # Why, not just "no". The predicted features still draw their dotted overlay, so a
+    # silent None left the user with lines on the plot and no number beside them and
+    # nothing to act on -- which is exactly how this was reported.
+    return None, (why[0] if why else "the emulator's prediction could not be scored")
 
 
 def _emulator_theta(model_id: str, params: dict, metadata: dict) -> list:

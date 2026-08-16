@@ -2197,3 +2197,50 @@ describe('App.vue calibration errors against model or emulator (#333)', () => {
     expect(wrapper.vm.bestFitScores).toBe(null)
   })
 })
+
+// The emulator's predicted features still draw their dotted overlay when the cost
+// cannot be computed, so a silent null left lines on the plot with no number beside
+// them and nothing to act on -- which is how this was reported.
+describe('em cost says why it is missing', () => {
+  const shownWithReason = async (predictResponse) => {
+    getEmulatorInfo.mockResolvedValue({
+      emulator_dir: '/out/emulators/m_obs',
+      metadata: { feature_labels: ['u'] },
+    })
+    predictEmulator.mockResolvedValue(predictResponse)
+    simulate.mockResolvedValue({ time: [0, 1], outputs: {}, cost: { cost: 1.0, items: [] } })
+    const wrapper = shallowMount(App)
+    await flushPromises()
+    wrapper.vm.model.modelId.value = 'abc'
+    await flushPromises()
+    wrapper.vm.emu.useEmulator.value = true
+    await flushPromises()
+    await wrapper.vm.runSimulation()
+    await nextTick()
+    return wrapper
+  }
+
+  const REASON =
+    'the emulator has no prediction for "min(T_{p3}) (min heat/T_p3)". Its features were ' +
+    'fixed when it was trained, so an observable added or renamed since is not among them ' +
+    '-- retrain the emulator for this obs_data'
+
+  it('renders the backend reason where the number would be', async () => {
+    const wrapper = await shownWithReason({
+      labels: ['u'], values: [1], cost: null, cost_unavailable: REASON,
+    })
+    const note = wrapper.find('[data-testid="em-cost-unavailable"]')
+    expect(note.exists()).toBe(true)
+    expect(note.text()).toContain('min(T_{p3})')
+    // ...and no em cost value, since there is none.
+    expect(wrapper.find('[data-testid="em-cost-value"]').exists()).toBe(false)
+  })
+
+  it('says nothing once a cost is available', async () => {
+    const wrapper = await shownWithReason({
+      labels: ['u'], values: [1], cost: { cost: 2.5, items: [] },
+    })
+    expect(wrapper.find('[data-testid="em-cost-unavailable"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="em-cost-value"]').text()).toBe('2.5')
+  })
+})

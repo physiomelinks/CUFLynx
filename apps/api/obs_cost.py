@@ -247,7 +247,7 @@ def _ca_feature_labels(obs_info) -> list[str] | None:
         return None
 
 
-def _emulated_operands(pid, feature_values: dict):
+def _emulated_operands(pid, feature_values: dict, why: list | None = None):
     """CA's operand layout for features that were *predicted* rather than derived.
 
     An emulator answers with one scalar per data_item -- the value the operation
@@ -264,10 +264,18 @@ def _emulated_operands(pid, feature_values: dict):
     """
     import numpy as np  # noqa: PLC0415
 
+    def _give_up(reason):
+        # The caller shows this to the user. A silent None is why the missing number
+        # was undiagnosable: a stale bundle, an edited obs_data and a series
+        # observable all looked identical from the outside.
+        if why is not None:
+            why.append(reason)
+        return None
+
     obs_info = pid.obs_info
     labels = _ca_feature_labels(obs_info)
     if labels is None:
-        return None
+        return _give_up('circulatory_autogen could not label this obs_data\'s observables')
     num_obs = int(obs_info["num_obs"])
     const_to_obs = [int(i) for i in obs_info["const_idx_to_obs_idx"]]
     # An emulator predicts scalar features only. A series/frequency observable
@@ -275,27 +283,34 @@ def _emulated_operands(pid, feature_values: dict):
     # whole cost is reported unavailable rather than quietly computed over a
     # subset of the observables the solver's cost covers.
     if len(const_to_obs) != num_obs or len(labels) != len(const_to_obs):
-        return None
+        return _give_up(
+            'an emulator predicts scalar features only, and this obs_data has an observable '
+            'that is not one (a series or frequency item)')
 
     by_item: list[float | None] = [None] * num_obs
     for k, obs_idx in enumerate(const_to_obs):
-        value = feature_values.get(labels[k])
+        label = labels[k]
+        if label not in feature_values:
+            return _give_up(
+                f'the emulator has no prediction for "{label}". Its features were fixed when '
+                f'it was trained, so an observable added or renamed since is not among them '
+                f'-- retrain the emulator for this obs_data')
         try:
-            value = float(value)
+            value = float(feature_values[label])
         except (TypeError, ValueError):
-            return None
+            return _give_up(f'the emulator\'s prediction for "{label}" is not a number')
         if not math.isfinite(value):
-            return None
+            return _give_up(f'the emulator predicted a non-finite value for "{label}"')
         by_item[obs_idx] = value
     if any(v is None for v in by_item):
-        return None
+        return _give_up('the emulator\'s predictions do not cover every scored observable')
     return [
         [np.array([by_item[JJ]], dtype=float) for _ in obs_info["operands"][JJ]]
         for JJ in range(num_obs)
     ]
 
 
-def _ca_evaluate(obs_data, outputs_by_experiment, output_dir, dt,
+def _ca_evaluate(obs_data, outputs_by_experiment, output_dir, dt, why=None,  # noqa: PLR0913
                  feature_values: dict | None = None) -> dict | None:
     """The cost, computed by circulatory_autogen rather than reproduced here.
 
@@ -322,7 +337,7 @@ def _ca_evaluate(obs_data, outputs_by_experiment, output_dir, dt,
     obs_info = pid.obs_info
     feature_operands = None
     if feature_values is not None:
-        feature_operands = _emulated_operands(pid, feature_values)
+        feature_operands = _emulated_operands(pid, feature_values, why)
         if feature_operands is None:
             return None
         # CA's own flag for "these operands are already the reduced features".
@@ -437,7 +452,8 @@ def _ca_items(obs_info, models: dict, costs: dict) -> list:
 
 
 def evaluate_features(feature_values: dict, obs_data: dict | None,
-                      output_dir: str | None = None, dt: float = 0.01) -> dict | None:
+                      output_dir: str | None = None, dt: float = 0.01,
+                      why: list | None = None) -> dict | None:
     """Score *precomputed* observable values -- an emulator's predictions (#333).
 
     The sibling of :func:`evaluate`, sharing its internals rather than repeating
@@ -460,8 +476,11 @@ def evaluate_features(feature_values: dict, obs_data: dict | None,
     functions presented as a comparison of two feature sets.
     """
     if not feature_values or obs_data is None:
+        if why is not None:
+            why.append('there is no obs_data loaded to score the emulator against'
+                       if obs_data is None else 'the emulator returned no predictions')
         return None
-    return _ca_evaluate(obs_data, {}, output_dir, dt, feature_values=feature_values)
+    return _ca_evaluate(obs_data, {}, output_dir, dt, why, feature_values=feature_values)
 
 
 def evaluate(data_items, outputs_by_experiment, output_dir: str | None = None,

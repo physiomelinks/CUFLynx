@@ -505,6 +505,9 @@ const emulatorCost = ref(null)
 // position beside one from the current is exactly the confusion this feature
 // exists to remove. Unequal keys mean the em cost simply is not shown yet.
 const emulatorCostAt = ref('')
+// Why the em cost is missing, when it is. Rendered beside the cost line so the
+// absence is diagnosable rather than silent.
+const emulatorCostWhy = ref('')
 const lastRunAt = ref('')
 function paramSignature() {
   return JSON.stringify(sliders.analysisDict.value)
@@ -639,6 +642,11 @@ const currentCost = computed(() => sim.cost.value ?? null)
 // The same parameters as seen by the emulator (#333). Shown only with the tick
 // box on -- with the emulator off there is nothing the calibration would have
 // minimised instead -- and only while both figures are of the same point.
+const emCostWhy = computed(() => {
+  if (!emu.useEmulator.value) return ''
+  if (emCost.value !== null) return ''
+  return emulatorCostWhy.value
+})
 const emCost = computed(() => {
   if (!emu.useEmulator.value) return null
   if (emulatorCostAt.value !== lastRunAt.value) return null
@@ -1408,6 +1416,7 @@ async function refreshEmulatorFeatures() {
   if (!emu.useEmulator.value || !model.modelId.value) {
     emulatorFeatureMap.value = null
     emulatorCost.value = null
+    emulatorCostWhy.value = ''
     emulatorCostAt.value = ''
     return
   }
@@ -1429,10 +1438,15 @@ async function refreshEmulatorFeatures() {
     // settle. Null on a backend that predates it, or an obs_data CA cannot
     // score — the line then shows the one cost it always showed.
     emulatorCost.value = res.cost ?? null
+    // Why there is no number, when there is none. The dotted overlay still draws from
+    // the same response, so a silent null left lines on the plot with nothing beside
+    // them and nothing to act on.
+    emulatorCostWhy.value = res.cost ? '' : (res.cost_unavailable ?? '')
     emulatorCostAt.value = at
-  } catch {
+  } catch (e) {
     emulatorFeatureMap.value = null
     emulatorCost.value = null
+    emulatorCostWhy.value = errorMessage(e)
     emulatorCostAt.value = ''
   }
 }
@@ -2483,6 +2497,19 @@ watch(
               {{ formatCost(emCost.cost) }}
             </span>
           </template>
+          <!--
+            The emulator is in use but could not be scored. Its predicted features
+            still draw their dotted overlay, so saying nothing here leaves lines on
+            the plot with no number beside them and no way to tell why.
+          -->
+          <span
+            v-else-if="emCostWhy"
+            class="cost-note em-cost-missing"
+            data-testid="em-cost-unavailable"
+            :title="emCostWhy"
+          >
+            no em cost — {{ emCostWhy }}
+          </span>
           <span class="cost-note" data-testid="cost-note" :title="emCost ? emCostTitle : null">
             {{ costNote }}
             <template v-if="currentCost.incomplete">
@@ -3579,6 +3606,9 @@ watch(
 
 /* The cost line above the plots (#159): quiet, but the first thing on the panel
    where parameters are being changed. */
+.em-cost-missing {
+  color: var(--p-message-warn-color, #ffc000);
+}
 .cost-line {
   display: flex;
   align-items: baseline;
