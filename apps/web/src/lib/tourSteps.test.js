@@ -76,6 +76,17 @@ describe('tourSteps', () => {
     }
   })
 
+  it('points the Settings steps at the right of their control', () => {
+    // The controls sit at the right-hand edge of the dialog's rows, so a bubble
+    // on their left covers the labels the step is naming. `side` is only a
+    // preference -- TourOverlay falls back to the opposite side, then bottom,
+    // then top, when the asked-for one will not fit -- so this pins the ask,
+    // not the outcome on any particular window width.
+    for (const id of ['ca-dir', 'model-format', 'solver']) {
+      expect(TOUR_STEPS.find((s) => s.id === id).side, `step ${id}`).toBe('right')
+    }
+  })
+
   it('declares predicates as functions when it declares them at all', () => {
     for (const step of TOUR_STEPS) {
       if ('when' in step) expect(typeof step.when, `step ${step.id} when`).toBe('function')

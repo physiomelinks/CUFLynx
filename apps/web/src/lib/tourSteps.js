@@ -121,21 +121,21 @@ export const TOUR_STEPS = Object.freeze([
   {
     id: 'ca-dir',
     target: '[data-testid="ca-browse"]',
-    side: 'left',
+    side: 'right',
     title: 'CA dir',
     text: 'Simulations run through circulatory_autogen, and CUFLynx brings its own copy — there is nothing to set up here. This box is for development: if you are working on your own circulatory_autogen against libCUFLynx, point it at your checkout and runs use it from their next launch.',
   },
   {
     id: 'model-format',
     target: '[data-testid="model-format-select"]',
-    side: 'left',
+    side: 'right',
     title: 'Generated model format',
     text: 'This is the backend the model runs through: cellml → Myokit CVODE (needs a C compiler), python → scipy, casadi_python → CasADi. Changing it regenerates and re-runs the model.',
   },
   {
     id: 'solver',
     target: '[data-testid="solver-select"]',
-    side: 'left',
+    side: 'right',
     title: 'The solver and its settings',
     // The run window is the protocol's, not Settings' -- there is no pre-time
     // or sim-time control anywhere in the app to describe here.
