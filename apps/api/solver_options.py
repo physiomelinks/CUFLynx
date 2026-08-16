@@ -31,7 +31,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from engine import _circulatory_autogen_src
+from ca_imports import ca_from, ca_paths, ensure_ca_path
 from runtime_paths import default_python
 
 # model_types CUFLynx can actually run (it code-generates python/casadi from the
@@ -532,32 +532,26 @@ def reset_cache() -> None:
     _modifier_cache = None
 
 
-def _ca_paths() -> list[str]:
-    """The sys.path entries CA's parser/operation modules need to import."""
-    src = Path(_circulatory_autogen_src())
-    root = src.parent  # repo root holds funcs_user/ alongside src/
-    return [str(src), str(src / "param_id"), str(root / "funcs_user")]
-
-
-def _ensure_ca_path() -> None:
-    for p in _ca_paths():
-        if p not in sys.path:
-            sys.path.insert(0, p)
+#: The sys.path entries CA's parser/operation modules need, and the helper that
+#: applies them. Both live in :mod:`ca_imports` now — kept as module-level names
+#: because ``obs_data``/``obs_cost``/``cost_gradient``/``ca_run_history`` import
+#: them from here and from :mod:`obs_options`.
+_ca_paths = ca_paths
+_ensure_ca_path = ensure_ca_path
 
 
 def _introspect_solver_schema() -> dict:
     _ensure_ca_path()
-    from parsers.PrimitiveParsers import SOLVER_SCHEMA  # noqa: E402
-
-    return SOLVER_SCHEMA
+    return ca_from("parsers.PrimitiveParsers", "SOLVER_SCHEMA")
 
 
 def _introspect_differentiable() -> dict[str, bool]:
     """Map each CA operation_func name -> whether it's marked @differentiable."""
     _ensure_ca_path()
-    import operation_funcs  # noqa: E402
-    from param_id.differentiable import is_circulatory_differentiable  # noqa: E402
+    import operation_funcs  # noqa: E402 (CA module, resolved via sys.path)
 
+    is_circulatory_differentiable = ca_from(
+        "param_id.differentiable", "is_circulatory_differentiable")
     funcs = operation_funcs.get_operation_funcs_dict_for_mode("numpy")
     return {name: bool(is_circulatory_differentiable(fn)) for name, fn in funcs.items()}
 
@@ -571,7 +565,7 @@ def _introspect_param_id_methods() -> list[dict]:
     not shown. Same "introspect CA, never hardcode" pattern as the solver schema.
     """
     _ensure_ca_path()
-    from parsers.PrimitiveParsers import PARAM_ID_METHODS  # noqa: E402
+    PARAM_ID_METHODS = ca_from("parsers.PrimitiveParsers", "PARAM_ID_METHODS")
 
     methods = []
     for canonical, meta in PARAM_ID_METHODS.items():
@@ -598,13 +592,11 @@ def _introspect_param_prior_types() -> dict:
     and a prior it grows shows up in the params editor without a change here.
     """
     _ensure_ca_path()
-    from parsers.PrimitiveParsers import (  # noqa: E402
-        DEFAULT_PARAM_PRIOR_TYPE,
-        PARAM_PRIOR_TYPES,
-    )
+    DEFAULT_PARAM_PRIOR_TYPE, PARAM_PRIOR_TYPES = ca_from(
+        "parsers.PrimitiveParsers", "DEFAULT_PARAM_PRIOR_TYPE", "PARAM_PRIOR_TYPES")
 
     try:
-        from parsers.PrimitiveParsers import prior_supports_unbounded as supports_unbounded  # noqa: E402
+        supports_unbounded = ca_from("parsers.PrimitiveParsers", "prior_supports_unbounded")
     except ImportError:  # a CA predating unbounded parameters
         def supports_unbounded(_name):
             return False
@@ -662,7 +654,7 @@ def _introspect_analysis_options() -> dict:
     surface in the UI automatically.
     """
     _ensure_ca_path()
-    from parsers.PrimitiveParsers import ANALYSIS_OPTIONS  # noqa: E402
+    ANALYSIS_OPTIONS = ca_from("parsers.PrimitiveParsers", "ANALYSIS_OPTIONS")
 
     out = {}
     for mode, meta in ANALYSIS_OPTIONS.items():
@@ -681,12 +673,23 @@ def _introspect_analysis_options() -> dict:
     return out
 
 
-_MODEL_PROBE = (
-    "import sys, json;"
-    "sys.path.insert(0, {src!r});"
-    "from emulators.emulator_trainer import emulator_model_names;"
-    "print(json.dumps([str(n) for n in emulator_model_names()]))"
-)
+#: Source text run by *another* interpreter, so it cannot call :mod:`ca_imports`
+#: and spells the two-layout rule out inline (CA #437). Keep it in step with
+#: :func:`ca_imports.ca_import`: namespaced first, flat second.
+_MODEL_PROBE = """
+import sys, json, importlib
+sys.path.insert(0, {src!r})
+mod = None
+for _name in ("libcuflynx.emulators.emulator_trainer", "emulators.emulator_trainer"):
+    try:
+        mod = importlib.import_module(_name)
+        break
+    except ImportError:
+        pass
+if mod is None:
+    raise SystemExit("no circulatory_autogen emulator_trainer under " + {src!r})
+print(json.dumps([str(n) for n in mod.emulator_model_names()]))
+"""
 
 
 def _models_from_interpreter(python: str, src: str) -> list[str]:
@@ -758,7 +761,7 @@ def _models_in_process() -> list[str]:
     environment has no autoemulate" without needing an environment that hasn't.
     """
     try:
-        from emulators.emulator_trainer import emulator_model_names  # noqa: PLC0415
+        emulator_model_names = ca_from("emulators.emulator_trainer", "emulator_model_names")
 
         return [str(name) for name in emulator_model_names()]
     except Exception:  # noqa: BLE001 - older CA, or no autoemulate here either
@@ -1072,7 +1075,7 @@ def _apply_aadc_tape_constraint(ad_suitable: dict, methods_by_solver: dict) -> t
         if not str(solver).startswith("aadc") or ad_suitable.get(solver):
             continue
         try:
-            from param_id.aadc_backend import TAPE_CONSISTENT_METHODS  # noqa: PLC0415
+            TAPE_CONSISTENT_METHODS = ca_from("param_id.aadc_backend", "TAPE_CONSISTENT_METHODS")
         except Exception:  # noqa: BLE001 - older CA / no AADC support
             continue
         allowed = [m for m in methods if m in TAPE_CONSISTENT_METHODS]
@@ -1231,9 +1234,10 @@ def _introspect_param_modifier_operations(output_dir: str | None = None) -> dict
     operations and costs — otherwise they could save one and never select it.
     """
     _ensure_ca_path()
-    from parsers.PrimitiveParsers import (  # noqa: E402
-        DEFAULT_PARAM_MODIFIER_OPERATION,
-        param_modifier_operations,
+    DEFAULT_PARAM_MODIFIER_OPERATION, param_modifier_operations = ca_from(
+        "parsers.PrimitiveParsers",
+        "DEFAULT_PARAM_MODIFIER_OPERATION",
+        "param_modifier_operations",
     )
 
     import user_funcs
@@ -1391,7 +1395,7 @@ def _introspect_gradient_sources(
     import inspect  # noqa: E402 - only needed for the capability probe
 
     _ensure_ca_path()
-    from parsers.PrimitiveParsers import gradient_sources as ca_gradient_sources  # noqa: E402
+    ca_gradient_sources = ca_from("parsers.PrimitiveParsers", "gradient_sources")
 
     if "method" in inspect.signature(ca_gradient_sources).parameters:
         return [dict(d) for d in ca_gradient_sources(model_type, solver, method)], True

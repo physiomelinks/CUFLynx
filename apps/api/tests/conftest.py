@@ -53,6 +53,27 @@ def all_mmt_fixtures():
 # ---------------------------------------------------------------------------
 # Simulation-dependency gating
 # ---------------------------------------------------------------------------
+def ca_module_spellings(name: str) -> tuple[str, str]:
+    """Both spellings of a circulatory_autogen module (CA #437).
+
+    CA moved its modules under a ``libcuflynx.`` namespace and CUFLynx resolves
+    either (:mod:`ca_imports`), preferring the namespaced one. A test that
+    injected a fake under only the flat name would therefore be *ignored* the
+    moment the developer's CA directory is a namespaced checkout — the resolver
+    would find the real module first — so tests name both.
+    """
+    return (name, f"libcuflynx.{name}")
+
+
+def set_ca_module(monkeypatch, name: str, value) -> None:
+    """Register ``value`` as CA module ``name`` in both layouts, for the test only.
+
+    ``value=None`` is the idiom for "make importing this raise ImportError".
+    """
+    for spelling in ca_module_spellings(name):
+        monkeypatch.setitem(sys.modules, spelling, value)
+
+
 def _simulation_deps_available() -> bool:
     src = Path(engine_mod._circulatory_autogen_src())
     if not src.is_dir():
@@ -107,10 +128,11 @@ def _params_csv_converter_available() -> bool:
     no-CA behavior itself force CA away and always run.
     """
     try:
-        from engine import _ensure_ca_on_path
+        from ca_imports import ca_from, ensure_ca_path
 
-        _ensure_ca_on_path()
-        from parsers.PrimitiveParsers import ObsAndParamDataParser
+        ensure_ca_path()
+        ObsAndParamDataParser = ca_from(
+            "parsers.PrimitiveParsers", "ObsAndParamDataParser")
 
         return hasattr(ObsAndParamDataParser, "params_for_id_csv_to_json")
     except Exception:  # noqa: BLE001

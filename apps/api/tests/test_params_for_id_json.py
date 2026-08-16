@@ -19,6 +19,8 @@ from pathlib import Path
 
 import pytest
 
+from conftest import set_ca_module
+
 import params_json
 from params_for_id import ParamEntry, ParamsForIdError, parse_params_for_id
 
@@ -220,7 +222,9 @@ def requires_ca_priors():
     """CA owns the derivation of an unbounded entry's range; without a CA new
     enough to do it there is nothing to assert."""
     try:
-        from parsers.PrimitiveParsers import derive_bounds_from_prior  # noqa: F401
+        from ca_imports import ca_from
+
+        ca_from("parsers.PrimitiveParsers", "derive_bounds_from_prior")
     except Exception:
         pytest.skip("circulatory_autogen without the prior hyper-parameter schema")
 
@@ -272,8 +276,8 @@ def no_ca(monkeypatch):
     """
     import sys
 
-    monkeypatch.setitem(sys.modules, "parsers", None)
-    monkeypatch.setitem(sys.modules, "parsers.PrimitiveParsers", None)
+    set_ca_module(monkeypatch, "parsers", None)
+    set_ca_module(monkeypatch, "parsers.PrimitiveParsers", None)
 
 
 def test_reading_a_csv_without_ca_uses_the_local_mapping(no_ca):

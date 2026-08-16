@@ -62,6 +62,63 @@ except (OSError, ValueError, AttributeError):
 sys.stdout = sys.stderr
 
 
+# ---------------------------------------------------------------------------
+# circulatory_autogen import resolution
+# ---------------------------------------------------------------------------
+# DUPLICATED from ``apps/api/ca_imports.py``, deliberately. This script must stay
+# free of *every* import from the app (see CLAUDE.md): it is the live tier's
+# standalone child, executed as a file by an external interpreter. The other
+# runners may use ``ca_imports`` because it ships into ``runners/`` beside them;
+# this one does not, so the rule is spelled out here. **Keep the two in step.**
+#
+# The rule: CA moved every module under a ``libcuflynx.`` namespace (CA #437) and
+# both layouts must work, because the CA directory is chosen at runtime. Try
+# ``libcuflynx.<name>`` first -- on a shimmed CA the flat module is the one that
+# emits DeprecationWarning -- and the flat ``<name>`` second.
+_CA_NAMESPACE = "libcuflynx"
+
+
+def _ca_import(name):
+    """Import CA module ``name`` (flat spelling), preferring the namespaced one."""
+    import importlib  # noqa: PLC0415
+
+    names = [f"{_CA_NAMESPACE}.{name}", name]
+    for cand in names:
+        mod = sys.modules.get(cand)
+        if mod is not None:
+            return mod
+    errors = []
+    for cand in names:
+        try:
+            return importlib.import_module(cand)
+        except ModuleNotFoundError as exc:
+            # Only a *missing candidate* is a reason to try the other spelling.
+            # A module that is present but raises "No module named 'SALib'" must
+            # say so, not be reported as a CA that lacks the feature.
+            if not (exc.name and (cand == exc.name or cand.startswith(exc.name + "."))):
+                raise
+            errors.append(f"{cand!r} ({exc})")
+    src = os.environ.get("CIRCULATORY_AUTOGEN_SRC", "")
+    raise ImportError(
+        f"circulatory_autogen module {name!r} could not be imported (tried "
+        f"{' and '.join(errors)}). {src!r} does not look like a "
+        f"circulatory_autogen checkout."
+    )
+
+
+def _ca_from(name, *attrs):
+    """``from <name> import <attrs>``; one attr returns it, several a tuple."""
+    mod = _ca_import(name)
+    missing = [a for a in attrs if not hasattr(mod, a)]
+    if missing:
+        raise ImportError(
+            f"circulatory_autogen's {name!r} has no {', '.join(missing)} — "
+            f"this circulatory_autogen predates it."
+        )
+    values = tuple(getattr(mod, a) for a in attrs)
+    return values[0] if len(attrs) == 1 else values
+
+
 class _Tee(io.TextIOBase):
     """Collect what CA prints while still letting it reach the server log."""
 
@@ -257,7 +314,7 @@ class Worker:
         self._drop_if_model_changed(model_id, model_path)
         helper = self._helpers.get(model_id)
         if helper is None:
-            from solver_wrappers import get_simulation_helper  # noqa: PLC0415
+            get_simulation_helper = _ca_from("solver_wrappers", "get_simulation_helper")
 
             helper = get_simulation_helper(
                 model_path=str(model_path),
@@ -275,7 +332,7 @@ class Worker:
         self._drop_if_model_changed(model_id, model_path)
         runner = self._runners.get(model_id)
         if runner is None:
-            from protocol_runners import ProtocolRunner  # noqa: PLC0415
+            ProtocolRunner = _ca_from("protocol_runners", "ProtocolRunner")
 
             runner = ProtocolRunner(
                 str(model_path),
@@ -571,7 +628,7 @@ def _emulator_predict(msg):
     emulator_dir = msg["emulator_dir"]
     bundle = _EMULATOR_CACHE.get(emulator_dir)
     if bundle is None:
-        from emulators.emulator_bundle import EmulatorBundle
+        EmulatorBundle = _ca_from("emulators.emulator_bundle", "EmulatorBundle")
 
         bundle = EmulatorBundle.load(emulator_dir)
         _EMULATOR_CACHE[emulator_dir] = bundle

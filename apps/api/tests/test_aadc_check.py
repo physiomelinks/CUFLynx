@@ -134,7 +134,9 @@ def test_aadc_ad_methods_are_limited_to_what_the_tape_can_record(client):
     if not methods:
         return  # CA without AADC support; nothing to constrain
     try:
-        from param_id import aadc_backend as ab
+        from ca_imports import ca_import
+
+        ab = ca_import("param_id.aadc_backend")
     except Exception:  # pragma: no cover - older CA
         return
     suitable = opts["ad_suitable_methods"].get("aadc_semi_implicit")
@@ -151,7 +153,10 @@ def test_aadc_ad_methods_are_limited_to_what_the_tape_can_record(client):
     # the second time that happened.
     allowed = set(ab.TAPE_CONSISTENT_METHODS)
     try:
-        from parsers.PrimitiveParsers import AADC_BDF_AD_METHODS  # noqa: PLC0415
+        from ca_imports import ca_from  # noqa: PLC0415
+
+        AADC_BDF_AD_METHODS = ca_from(
+            "parsers.PrimitiveParsers", "AADC_BDF_AD_METHODS")
 
         allowed |= set(AADC_BDF_AD_METHODS)
     except ImportError:

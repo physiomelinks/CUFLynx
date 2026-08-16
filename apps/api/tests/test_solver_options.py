@@ -11,6 +11,7 @@ import types
 import pytest
 
 import solver_options as so
+from conftest import set_ca_module
 
 # A CA-shaped schema: mirrors circulatory_autogen's SOLVER_SCHEMA *including*
 # solver_info_fields_by_solver, which is what selects the introspected form
@@ -435,7 +436,7 @@ def test_gradient_sources_introspects_ca_accessor(monkeypatch):
         ]
 
     fake_mod = types.SimpleNamespace(gradient_sources=fake_gradient_sources)
-    monkeypatch.setitem(sys.modules, "parsers.PrimitiveParsers", fake_mod)
+    set_ca_module(monkeypatch, "parsers.PrimitiveParsers", fake_mod)
     monkeypatch.setattr(so, "_ensure_ca_path", lambda: None)
 
     # Gate keeps the requires_all_differentiable source when all ops differentiable...
@@ -461,8 +462,7 @@ def test_gradient_sources_delegates_method_gate_to_ca(monkeypatch):
                          "requires_all_differentiable": False, "description": ""})
         return srcs
 
-    monkeypatch.setitem(sys.modules, "parsers.PrimitiveParsers",
-                        types.SimpleNamespace(gradient_sources=fake_gradient_sources))
+    set_ca_module(monkeypatch, "parsers.PrimitiveParsers", types.SimpleNamespace(gradient_sources=fake_gradient_sources))
     monkeypatch.setattr(so, "_ensure_ca_path", lambda: None)
     monkeypatch.setattr(so, "get_solver_options", lambda refresh=False: {
         "ad_suitable_methods": {"casadi_integrator": []},  # would gate AD out entirely
@@ -488,8 +488,7 @@ def test_gradient_sources_local_gate_when_ca_accessor_lacks_method(monkeypatch):
              "requires_all_differentiable": False, "description": ""},
         ]
 
-    monkeypatch.setitem(sys.modules, "parsers.PrimitiveParsers",
-                        types.SimpleNamespace(gradient_sources=fake_gradient_sources))
+    set_ca_module(monkeypatch, "parsers.PrimitiveParsers", types.SimpleNamespace(gradient_sources=fake_gradient_sources))
     monkeypatch.setattr(so, "_ensure_ca_path", lambda: None)
     monkeypatch.setattr(so, "get_solver_options", lambda refresh=False: {
         "ad_suitable_methods": {"casadi_integrator": ["bdf"]},
@@ -513,7 +512,7 @@ def test_param_id_methods_from_ca_schema(monkeypatch):
         "CMA-ES": {"label": "CMA-ES", "aliases": ["cmaes"], "gradient_based": False},
     }
     fake_mod = types.SimpleNamespace(PARAM_ID_METHODS=fake_schema)
-    monkeypatch.setitem(sys.modules, "parsers.PrimitiveParsers", fake_mod)
+    set_ca_module(monkeypatch, "parsers.PrimitiveParsers", fake_mod)
     monkeypatch.setattr(so, "_ensure_ca_path", lambda: None)
     so.reset_cache()
 
@@ -564,7 +563,7 @@ def test_analysis_options_from_ca_schema(monkeypatch):
         },
     }
     fake_mod = types.SimpleNamespace(ANALYSIS_OPTIONS=fake)
-    monkeypatch.setitem(sys.modules, "parsers.PrimitiveParsers", fake_mod)
+    set_ca_module(monkeypatch, "parsers.PrimitiveParsers", fake_mod)
     monkeypatch.setattr(so, "_ensure_ca_path", lambda: None)
     so.reset_cache()
 
@@ -805,7 +804,7 @@ def test_param_modifier_operations_are_introspected_from_ca(monkeypatch):
                           "default_min": None, "default_max": None, "identity": None},
         },
     )
-    monkeypatch.setitem(sys.modules, "parsers.PrimitiveParsers", fake_mod)
+    set_ca_module(monkeypatch, "parsers.PrimitiveParsers", fake_mod)
     monkeypatch.setattr(so, "_ensure_ca_path", lambda: None)
     so.reset_cache()
 
@@ -844,7 +843,7 @@ def test_a_user_authored_modifier_is_offered_alongside_cas_own(monkeypatch, tmp_
         DEFAULT_PARAM_MODIFIER_OPERATION="scale",
         param_modifier_operations=_registry,
     )
-    monkeypatch.setitem(sys.modules, "parsers.PrimitiveParsers", fake_mod)
+    set_ca_module(monkeypatch, "parsers.PrimitiveParsers", fake_mod)
     monkeypatch.setattr(so, "_ensure_ca_path", lambda: None)
 
     import user_funcs
@@ -913,7 +912,7 @@ def test_param_prior_types_are_introspected_from_ca(monkeypatch):
         },
         DEFAULT_PARAM_PRIOR_TYPE="uniform",
     )
-    monkeypatch.setitem(sys.modules, "parsers.PrimitiveParsers", fake_mod)
+    set_ca_module(monkeypatch, "parsers.PrimitiveParsers", fake_mod)
     monkeypatch.setattr(so, "_ensure_ca_path", lambda: None)
     so.reset_cache()
 

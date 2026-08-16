@@ -32,9 +32,9 @@ def _load(template_key, name):
     since the arithmetic here uses only the shared subset.
     """
     try:  # pragma: no cover - depends on the environment, both paths are exercised
-        from param_id.math_backend import make_math_backend
+        from ca_imports import ca_from
 
-        mb = make_math_backend("numpy")
+        mb = ca_from("param_id.math_backend", "make_math_backend")("numpy")
     except Exception:  # noqa: BLE001 - no CA on the path
         mb = _NumpyBackend()
 
@@ -136,7 +136,9 @@ def test_alpha_2_is_bit_identical_to_cas_gaussian_mle(requires_ca):
     ``MSE = 2*gaussian_MLE``, so keeping Barron's half puts the default on a cost
     CA already has rather than on a rescaled variant of one.
     """
-    from parsers.PrimitiveParsers import scriptFunctionParser
+    from ca_imports import ca_from
+
+    scriptFunctionParser = ca_from("parsers.PrimitiveParsers", "scriptFunctionParser")
 
     funcs = scriptFunctionParser().get_cost_funcs_dict("numpy")
     robust = _load("robust", "robust_loss")

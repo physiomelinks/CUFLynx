@@ -46,6 +46,36 @@ switch fully re-points the live-plot engine only after a restart).
 **installed package** instead of the sibling dir — but keep the CA-dir override
 so developers can point at a local checkout. (See issue #18.)
 
+**Two module layouts, one resolver** (`apps/api/ca_imports.py`, CA #428/#437).
+CA moved every module under a `libcuflynx.` namespace — `parsers` →
+`libcuflynx.parsers`, and likewise `param_id`, `utilities`, `scripts`,
+`solver_wrappers`, `generators`, `emulators`, `protocol_runners`,
+`sensitivity_analysis`, `models`, `checks`, `coupler`, `solver1d`,
+`identifiabilty_analysis`. CUFLynx **cannot pick a side**: the CA directory is
+chosen at runtime, so one build is pointed at old flat checkouts and new
+namespaced ones on the same machine, and upstream's deprecation shims last
+exactly one release. So **never spell a CA module in an import statement** —
+call `ca_from("parsers.PrimitiveParsers", "SOLVER_SCHEMA")` / `ca_import(...)`
+with the *flat* name and let the resolver try `libcuflynx.<name>` first and
+`<name>` second. Namespaced wins when both work (the flat one is the shim, and
+its `DeprecationWarning`s are not the user's business). `CaImportError`
+subclasses `ImportError`, so the "older CA → built-in fallback" arms all over
+`solver_options` / `obs_options` keep working. Three rules that are easy to get
+wrong: a `ModuleNotFoundError` naming something *other* than the candidate (CA's
+`sensitivity_analysis` needing SALib) is re-raised, never turned into "this CA
+does not provide it"; `engine.reset()` clears the cached layout because a new CA
+dir can be the other one; and string targets — `mock.patch`, a probe run in
+another interpreter — must go through `ca_imports.resolved_name()` or spell both
+spellings, since neither is a literal any more. Tests inject fakes with
+`conftest.set_ca_module`, which registers **both** names.
+
+`ca_imports.py` **ships into `runners/`** alongside the other modules both tiers
+share, so the analysis runners use the one resolver. `sim_worker_runner.py` is
+the exception CLAUDE.md already carves out — it must stay free of every app
+import — and carries a deliberate duplicate (`_ca_import` / `_ca_from`); so does
+the exported `run_pipeline.py` (a string in `export_pipeline.py`), which runs in
+the user's own environment. Keep the three in step.
+
 ## Key files
 
 - `apps/web/src/App.vue` — main UI (tabs: Parameters · Emulator · Sensitivity · Calibration · UQ; center: Output plots · Progress · Analysis)
@@ -273,10 +303,12 @@ Rules it follows, and must keep following:
 - `sim_worker_runner.py` ships as **data** in the `runners/` subdir, because an
   external interpreter executes it as a file — and it must stay free of imports
   from the app, whose modules are frozen into the bundle and unreachable from
-  outside it. `_resolve_output_key`, `bind_protocol` and the sub-experiment
+  outside it. `_resolve_output_key`, `bind_protocol`, the sub-experiment
   helpers (`_sub_counts`, `_run_protocol_by_sub`, `_subexperiment_outputs`, the
-  join) are duplicated there for that reason; keep each pair in step, or the
-  cost silently depends on whether an interpreter is configured in Settings.
+  join) and the CA import resolver (`_ca_import` / `_ca_from`, mirroring
+  `ca_imports.py`) are duplicated there for that reason; keep each pair in step,
+  or the cost silently depends on whether an interpreter is configured in
+  Settings.
 - The worker returns the **captured solver output plus a fallback reason**, and
   the parent composes the message through `failure_message` — so the issue #138
   error quality lives in one place rather than on both sides of a pipe.

@@ -49,14 +49,10 @@ def _ca_call_cost_func():
     calling every cost func positionally.
     """
     try:
-        from obs_options import _ca_paths  # noqa: PLC0415
+        from ca_imports import ca_from, ensure_ca_path  # noqa: PLC0415
 
-        for path in _ca_paths():
-            if path not in sys.path:
-                sys.path.insert(0, path)
-        from param_id.cost_kwargs import call_cost_func  # noqa: PLC0415
-
-        return call_cost_func
+        ensure_ca_path()
+        return ca_from("param_id.cost_kwargs", "call_cost_func")
     except Exception:  # noqa: BLE001 - older CA without the contract, or no CA
         return None
 
@@ -155,16 +151,12 @@ def _ca_engine(obs_data: dict, output_dir: str | None, dt: float):
     the caller falls back rather than losing the panel.
     """
     try:
-        from obs_options import _ca_paths  # noqa: PLC0415
+        from ca_imports import ca_from, ensure_ca_path  # noqa: PLC0415
 
-        for path in _ca_paths():
-            if path not in sys.path:
-                sys.path.insert(0, path)
-        from param_id.paramID import OpencorParamID  # noqa: PLC0415
-        from parsers.PrimitiveParsers import (  # noqa: PLC0415
-            ObsAndParamDataParser,
-            scriptFunctionParser,
-        )
+        ensure_ca_path()
+        OpencorParamID = ca_from("param_id.paramID", "OpencorParamID")
+        ObsAndParamDataParser, scriptFunctionParser = ca_from(
+            "parsers.PrimitiveParsers", "ObsAndParamDataParser", "scriptFunctionParser")
     except Exception:  # noqa: BLE001 - no CA, or one too old
         return None
 

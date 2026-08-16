@@ -145,8 +145,10 @@ def _resolve_nominal(pid, param_names, mins, maxs, settings, best_vals, best_par
         # (apply_modifier_identity_nominals, used by its param-id nominals). The
         # slider override below still wins: analysisDict puts theta at the anchor.
         try:
-            from parsers.PrimitiveParsers import apply_modifier_identity_nominals  # noqa: PLC0415
+            from ca_imports import ca_from  # noqa: PLC0415
 
+            apply_modifier_identity_nominals = ca_from(
+                "parsers.PrimitiveParsers", "apply_modifier_identity_nominals")
             apply_modifier_identity_nominals(getattr(pid, "param_id_info", None) or {}, nominal)
         except ImportError:  # a CA predating modifiers has none to overwrite
             pass
@@ -300,8 +302,9 @@ def _ca_local_sensitivity(
     # by qname misses every such entry and reports an empty cell -- which reads
     # as "no sensitivity" rather than "asked the wrong question".
     try:
-        from parsers.PrimitiveParsers import param_entry_labels  # noqa: PLC0415
+        from ca_imports import ca_from  # noqa: PLC0415
 
+        param_entry_labels = ca_from("parsers.PrimitiveParsers", "param_entry_labels")
         labels = list(param_entry_labels(pid.param_id_info))
     except Exception:  # noqa: BLE001 - a CA predating labels keys by qname
         labels = list(param_names)
@@ -432,8 +435,10 @@ def compute_local_sensitivity(
     # paths make at setup (a no-op without modifiers). The chain rule refuses to
     # run on unresolved baselines.
     try:
-        from parsers.PrimitiveParsers import resolve_modifier_baselines  # noqa: PLC0415
+        from ca_imports import ca_from  # noqa: PLC0415
 
+        resolve_modifier_baselines = ca_from(
+            "parsers.PrimitiveParsers", "resolve_modifier_baselines")
         resolve_modifier_baselines(pid.param_id_info, pid.sim_helper)
     except ImportError:  # a CA predating modifiers has none to resolve
         pass

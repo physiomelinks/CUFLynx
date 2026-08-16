@@ -499,7 +499,10 @@ def test_custom_operation_kwargs_change_the_computed_value(tmp_path, monkeypatch
         obs_options.reset_cache()
 
     # 2) CA parses a CUFLynx-shaped obs_data.json and keeps the kwargs.
-    from parsers.PrimitiveParsers import ObsAndParamDataParser
+    from ca_imports import ca_from
+
+    ObsAndParamDataParser = ca_from(
+        "parsers.PrimitiveParsers", "ObsAndParamDataParser")
 
     obs = {
         "protocol_info": {"pre_times": [0.0], "sim_times": [[5]], "params_to_change": {}},
