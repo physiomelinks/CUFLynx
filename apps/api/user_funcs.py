@@ -138,14 +138,21 @@ import numpy as np  # noqa: F401 -- available to user cost funcs
 # Imported (not defined) so CA registers only the user funcs below, never these.
 # Two import paths because circulatory_autogen moved its modules under a
 # ``libcuflynx.`` namespace (CA #437); the flat one is what older checkouts have.
-# ``cost_funcs_user`` is the repo's own funcs_user/ file and did not move.
+# ``cost_funcs_user`` moved too (CA #433: the built-in funcs became library code
+# under ``libcuflynx.funcs``), so it needs the same pair. A CA that has moved it
+# still makes the bare name importable from a file loaded through
+# ``cost_funcs_external_path``, but that is a compatibility shim for files
+# written before the move -- newly generated ones should not rely on it.
 try:
     from libcuflynx.param_id.differentiable import differentiable  # noqa: F401
     from libcuflynx.param_id.math_backend import make_math_backend
 except ImportError:
     from param_id.differentiable import differentiable  # noqa: F401
     from param_id.math_backend import make_math_backend
-from cost_funcs_user import is_MLE, cost_combiner  # noqa: F401
+try:
+    from libcuflynx.funcs.cost_funcs_user import is_MLE, cost_combiner  # noqa: F401
+except ImportError:
+    from cost_funcs_user import is_MLE, cost_combiner  # noqa: F401
 
 # Math backend for differentiable costs: use ``mb.<op>`` instead of numpy so CA
 # can rebind it to casadi and take symbolic gradients. CA sets this per backend.

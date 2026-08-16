@@ -111,6 +111,18 @@ def _namespace_available() -> bool:
     return bool(_namespaced)
 
 
+#: Modules whose namespaced spelling is not the flat one with the namespace glued on.
+#: CA #433 moved the built-in cost/operation/modifier funcs out of the repo's
+#: ``funcs_user/`` directory and into the package as ``libcuflynx.funcs.*``. They were
+#: never reached by a dotted path -- ``funcs_user/`` was simply on ``sys.path``, so the
+#: flat spelling is the bare module name and no prefix rule can derive the new one.
+RELOCATED_MODULES = {
+    "cost_funcs_user": f"{NAMESPACE}.funcs.cost_funcs_user",
+    "operation_funcs_user": f"{NAMESPACE}.funcs.operation_funcs_user",
+    "modifier_funcs_user": f"{NAMESPACE}.funcs.modifier_funcs_user",
+}
+
+
 def candidates(name: str) -> list[str]:
     """Both spellings of CA module ``name``, most-preferred first.
 
@@ -119,6 +131,9 @@ def candidates(name: str) -> list[str]:
     spelling leads and the namespaced one stays on the list so a failure reports
     both.
     """
+    if name in RELOCATED_MODULES:
+        namespaced = RELOCATED_MODULES[name]
+        return [namespaced, name] if _namespace_available() else [name, namespaced]
     top = name.split(".", 1)[0]
     if top not in CA_PACKAGES:
         return [name]

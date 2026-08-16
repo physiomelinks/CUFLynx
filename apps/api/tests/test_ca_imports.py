@@ -20,6 +20,7 @@ from a CA checkout, so the test says what it means and runs anywhere.
 from __future__ import annotations
 
 import importlib
+import types
 import sys
 
 import pytest
@@ -384,3 +385,64 @@ def test_the_live_engine_builds_its_helper_from_a_namespaced_ca(monkeypatch):
 
     assert helper == "helper"
     assert called["model_path"] == "m.cellml"
+
+
+class TestRelocatedModules:
+    """CA #433 moved the built-in funcs out of ``funcs_user/`` and into the package.
+
+    These three are the only CA modules whose namespaced spelling is *not* the flat one
+    with ``libcuflynx.`` glued on: they were never reached by a dotted path at all --
+    ``funcs_user/`` was simply on ``sys.path``, so the flat spelling is a bare module
+    name. No prefix rule can derive ``libcuflynx.funcs.cost_funcs_user`` from
+    ``cost_funcs_user``, which is why they need an explicit map.
+
+    The regression this guards: ``obs_options.get_cost_funcs`` used a bare
+    ``import cost_funcs_user`` inside a blanket ``except Exception: return None``. Against
+    a CA that had moved the module, the import failed, the exception was swallowed, and
+    the live cost silently disappeared from the Parameters tab -- no error anywhere, just
+    a missing number. It was caught by the calibration cost-parity test, not by anything
+    that looked like an import test.
+    """
+
+    def test_relocated_names_map_to_the_funcs_subpackage(self):
+        assert ca_imports.RELOCATED_MODULES == {
+            "cost_funcs_user": "libcuflynx.funcs.cost_funcs_user",
+            "operation_funcs_user": "libcuflynx.funcs.operation_funcs_user",
+            "modifier_funcs_user": "libcuflynx.funcs.modifier_funcs_user",
+        }
+
+    def test_candidates_offer_both_spellings(self, monkeypatch):
+        monkeypatch.setattr(ca_imports, "_namespace_available", lambda: True)
+        ca_imports.reset_cache()
+        assert ca_imports.candidates("cost_funcs_user") == [
+            "libcuflynx.funcs.cost_funcs_user",
+            "cost_funcs_user",
+        ]
+
+    def test_candidates_prefer_flat_without_the_namespace(self, monkeypatch):
+        monkeypatch.setattr(ca_imports, "_namespace_available", lambda: False)
+        ca_imports.reset_cache()
+        assert ca_imports.candidates("cost_funcs_user") == [
+            "cost_funcs_user",
+            "libcuflynx.funcs.cost_funcs_user",
+        ]
+
+    def test_resolves_the_moved_module_when_only_the_package_has_it(self, monkeypatch):
+        """A current CA: the built-ins live in the package and the bare name is gone."""
+        moved = types.ModuleType("libcuflynx.funcs.cost_funcs_user")
+        moved.gaussian_MLE = lambda *a, **k: 0.0
+        monkeypatch.setattr(ca_imports, "_namespace_available", lambda: True)
+        ca_imports.reset_cache()
+        monkeypatch.setitem(sys.modules, "libcuflynx.funcs.cost_funcs_user", moved)
+        monkeypatch.setitem(sys.modules, "cost_funcs_user", None)
+        assert ca_imports.ca_import("cost_funcs_user") is moved
+
+    def test_resolves_the_bare_name_on_an_older_ca(self, monkeypatch):
+        """A CA from before the move: only ``funcs_user/cost_funcs_user.py`` exists."""
+        legacy = types.ModuleType("cost_funcs_user")
+        legacy.gaussian_MLE = lambda *a, **k: 0.0
+        monkeypatch.setattr(ca_imports, "_namespace_available", lambda: False)
+        ca_imports.reset_cache()
+        monkeypatch.setitem(sys.modules, "cost_funcs_user", legacy)
+        monkeypatch.setitem(sys.modules, "libcuflynx.funcs.cost_funcs_user", None)
+        assert ca_imports.ca_import("cost_funcs_user") is legacy

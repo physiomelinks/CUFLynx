@@ -101,7 +101,10 @@ def _introspect(output_dir: str | None = None) -> dict:
         if p not in sys.path:
             sys.path.insert(0, p)
     import operation_funcs  # noqa: E402 (CA module, resolved via sys.path)
-    import cost_funcs_user  # noqa: E402
+
+    # Not a bare import: CA #433 moved this into the package, so the module the
+    # bare name found in ``funcs_user/`` no longer exists in a current CA.
+    cost_funcs_user = ca_import("cost_funcs_user")
 
     # numpy mode keeps this light (no casadi/myokit). CUFLynx-authored funcs live
     # in external files (issue #104); hand their paths to CA's builders so the
@@ -471,7 +474,8 @@ def get_cost_funcs(output_dir: str | None = None):
         for p in _ca_paths():
             if p not in sys.path:
                 sys.path.insert(0, p)
-        import cost_funcs_user  # noqa: E402 (CA module, resolved via sys.path)
+        # See _introspect: CA #433 relocated this module into the package.
+        cost_funcs_user = ca_import("cost_funcs_user")
 
         _, cost_path = _external_func_paths(output_dir)
         return _cost_funcs_dict(cost_funcs_user, cost_path)
