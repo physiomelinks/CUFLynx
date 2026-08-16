@@ -113,6 +113,31 @@ describe('App.vue', () => {
     expect(localStorage.getItem('cuflynx-outputs-dir')).toBe('/data/outputs')
   })
 
+  it('shows that prompt without waiting for any startup request', async () => {
+    // It used to be the last line of six sequential awaits, one of them an
+    // interpreter discovery that walks the filesystem -- so the only thing the
+    // user was actually waiting on arrived after everything they could not see.
+    // Nothing fetched at startup feeds this dialog.
+    localStorage.removeItem('cuflynx-outputs-dir')
+    let releasePythons
+    getCalibrationPythons.mockReturnValueOnce(
+      new Promise((resolve) => {
+        releasePythons = () => resolve({ pythons: [] })
+      }),
+    )
+    const wrapper = shallowMount(App)
+    await nextTick()
+
+    const setup = wrapper
+      .findAllComponents({ name: 'FileBrowserDialog' })
+      .find((d) => d.props('title') === 'Where should outputs be saved?')
+    // Open while the slowest startup request is still in flight.
+    expect(setup.props('visible')).toBe(true)
+
+    releasePythons()
+    await flushPromises()
+  })
+
   // Myokit JIT-compiles every model, so a missing C toolchain breaks all
   // simulation. The packaged desktop app can't ship a compiler, making this the
   // most likely first-run failure — warn instead of letting sims 500.

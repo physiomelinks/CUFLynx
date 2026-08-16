@@ -30,6 +30,7 @@
  *     waitFor?:  (ctx) => boolean,     // polled on the tick; true => advance
  *     when?:     (ctx) => boolean,     // false => step is skipped
  *     onNext?:   (ctx) => void,        // Next button only; see above
+ *     bullets?:  ['…', '…'],           // a list under the text, for options
  *     link?:     { href, label } }     // one "read more" link under the text
  *
  * `ctx` is a plain object of *getters* over app state, plus the few writers the
@@ -587,6 +588,12 @@ watch(
         <div class="tour-count" data-testid="tour-count">{{ current.index + 1 }} / {{ steps.length }}</div>
         <h3 v-if="current.step.title" class="tour-title">{{ current.step.title }}</h3>
         <p class="tour-text" data-testid="tour-text">{{ current.step.text }}</p>
+        <!-- Options, steps and alternatives go here rather than into the
+             sentence: a paragraph listing three backends separated by dashes is
+             the shape that turns a bubble into a wall of text. -->
+        <ul v-if="current.step.bullets" class="tour-bullets" data-testid="tour-bullets">
+          <li v-for="(b, i) in current.step.bullets" :key="i">{{ b }}</li>
+        </ul>
         <!-- A real anchor rather than a URL in the prose: the text is rendered
              as plain text (no v-html), so a bare link would not be clickable.
              `noopener` because it opens in a new tab. -->
@@ -708,6 +715,14 @@ watch(
   margin: 0 0 0.55rem;
   line-height: 1.35;
   white-space: pre-line;
+}
+.tour-bullets {
+  margin: -0.25rem 0 0.55rem;
+  padding-left: 1.1rem;
+  line-height: 1.35;
+}
+.tour-bullets li + li {
+  margin-top: 0.2rem;
 }
 .tour-link {
   margin: -0.25rem 0 0.55rem;

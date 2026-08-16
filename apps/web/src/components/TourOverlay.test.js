@@ -425,6 +425,21 @@ describe('TourOverlay', () => {
     expect(button('back').disabled).toBe(false)
   })
 
+  it('renders a step\'s bullets as a list', async () => {
+    anchor('a')
+    const steps = FIXTURE()
+    steps[0].bullets = ['first thing', 'second thing']
+    await mountTour({ steps })
+    const items = [...document.querySelectorAll('[data-testid="tour-bullets"] li')]
+    expect(items.map((li) => li.textContent.trim())).toEqual(['first thing', 'second thing'])
+  })
+
+  it('renders no list on a step without bullets', async () => {
+    anchor('a')
+    await mountTour()
+    expect(document.querySelector('[data-testid="tour-bullets"]')).toBeNull()
+  })
+
   it('renders a step link as a real anchor, opened safely', async () => {
     // The text is plain (no v-html), so a URL written into the prose would not
     // be clickable -- hence a field of its own.

@@ -1223,35 +1223,27 @@ const calibDefaults = ref({})
 const calibPythons = ref([])
 const saDefaults = ref({})
 const uqDefaults = ref({})
-onMounted(async () => {
-  try {
-    calibDefaults.value = await getCalibrationDefaults()
-  } catch {
-    /* backend not up yet; panel falls back to built-in defaults */
-  }
-  try {
-    saDefaults.value = await getSensitivityDefaults()
-  } catch {
-    /* leave the panel on its built-in defaults */
-  }
-  await refreshEmulatorDefaults()
-  try {
-    uqDefaults.value = await getUQDefaults()
-  } catch {
-    /* backend not up yet; panel falls back to built-in defaults */
-  }
-  try {
-    calibPythons.value = (await getCalibrationPythons()).pythons ?? []
-  } catch {
-    /* interpreter discovery optional */
-  }
-  try {
-    applyConfigPayload(await getConfig())
-  } catch {
-    /* backend not up yet */
-  }
-  // First thing on open: ask where outputs should go (sets outputsDir).
+onMounted(() => {
+  // Ask where outputs should go, and mean "first": this line used to sit at the
+  // *end* of six sequential round trips below, one of which walks the filesystem
+  // looking for Python interpreters. So the one thing the user is actually
+  // waiting on arrived last, after everything they could not see. Nothing below
+  // feeds this dialog -- it opens at $HOME and only ever *writes* outputsDir --
+  // so it does not have to wait for any of it.
   outputsSetupOpen.value = true
+
+  // ...and the six are independent of each other too, so they go out together
+  // rather than in a chain: the wait is now the slowest one, not the sum. Each
+  // keeps its own failure handling, because a backend that is not up yet should
+  // leave one panel on its built-in defaults rather than abandoning the rest.
+  const settle = (promise, apply) => promise.then(apply).catch(() => {})
+
+  settle(getCalibrationDefaults(), (v) => (calibDefaults.value = v))
+  settle(getSensitivityDefaults(), (v) => (saDefaults.value = v))
+  settle(getUQDefaults(), (v) => (uqDefaults.value = v))
+  settle(getCalibrationPythons(), (v) => (calibPythons.value = v.pythons ?? []))
+  settle(getConfig(), applyConfigPayload)
+  refreshEmulatorDefaults()
 })
 
 const pythonOptions = computed(() => {

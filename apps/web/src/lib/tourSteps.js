@@ -105,7 +105,12 @@ export const TOUR_STEPS = Object.freeze([
     id: 'example',
     target: '[data-testid="start-example-3compartment"]',
     side: 'right',
-    text: "For now let's start from a model that is already prepared. Click 3-compartment circulation — it brings the model, its obs_data and its params_for_id in one archive.",
+    text: "For now let's start from a model that is already prepared. Click 3-compartment circulation: it is an omex archive, and it brings all three parts of a study in one drop.",
+    bullets: [
+      'the CellML model itself',
+      'its obs_data.json — the protocol, and the data to fit',
+      'its params_for_id — which parameters may move, and between what',
+    ],
     advanceOn: { event: 'click' },
     waitFor: (ctx) => ctx.hasModel(),
   },
@@ -127,14 +132,19 @@ export const TOUR_STEPS = Object.freeze([
     target: '[data-testid="ca-browse"]',
     side: 'right',
     title: 'CA dir',
-    text: 'Simulations run through circulatory_autogen, and CUFLynx brings its own copy — there is nothing to set up here. This box is for development: if you are working on your own circulatory_autogen against libCUFLynx, point it at your checkout and runs use it from their next launch.',
+    text: 'Simulations run through libCUFLynx, within the circulatory_autogen repo, and CUFLynx brings its own copy. There is nothing to set up here.\n\nThis box is for development: if you are working on your own circulatory_autogen/libCUFLynx, point this at your checkout and refresh your window so it uses that on next launch.',
   },
   {
     id: 'model-format',
     target: '[data-testid="model-format-select"]',
     side: 'right',
     title: 'Generated model format',
-    text: 'This is the backend the model runs through: cellml → Myokit CVODE (needs a C compiler), python → scipy, casadi_python → CasADi. Changing it regenerates and re-runs the model.',
+    text: 'This is the backend the model runs through. Changing it regenerates and re-runs the model.',
+    bullets: [
+      'cellml runs through Myokit CVODE, and needs a C compiler',
+      'python is generated code solved by scipy',
+      'casadi_python is generated code solved by CasADi, and can give analytic gradients',
+    ],
   },
   {
     id: 'solver',
@@ -193,7 +203,7 @@ export const TOUR_STEPS = Object.freeze([
     target: '[data-testid="eo-protocol"]',
     side: 'right',
     title: 'The protocol',
-    text: 'This is what the model is put through: one tab per experiment, and inside it the subexperiments run back to back. It is also the only source of the run window — nothing else in CUFLynx says how long a simulation is, and without a protocol nothing runs at all.',
+    text: 'This sets the pre-simulation time (for example, the time needed to reach a physiological steady state), the simulation times, and the variable inputs the model is put through. One tab per experiment, and several subexperiments per experiment — say 1. baseline, 2. drug application, 3. washout.',
   },
   {
     id: 'protocol-detail',
@@ -205,8 +215,8 @@ export const TOUR_STEPS = Object.freeze([
     id: 'data-items',
     target: '[data-testid="eo-data-items"]',
     side: 'right',
-    title: 'data_items are the ground truth',
-    text: 'One row is one number (or one series) the model is scored against — the calibration cost is built from exactly these rows.',
+    title: 'data_items contain the desired output features (observables)',
+    text: 'One row is one number (or one series) the model output features are compared against. The calibration cost is built from summing the cost from each of these rows.',
     when: (ctx) => ctx.hasObsData(),
   },
   {
@@ -234,7 +244,11 @@ export const TOUR_STEPS = Object.freeze([
     target: '[data-testid="of-templates"]',
     side: 'right',
     title: 'User-defined operations',
-    text: 'Two kinds: an operation (trace → number) and a cost (predicted vs observed → cost). Start from a template — the plain one, a multi-operand one, one with keyword arguments, a robust cost, a differentiable one.',
+    text: 'Two kinds of function can be written here. Start from a template: the plain one, a multi-operand one, one with keyword arguments, a robust cost, a differentiable one.',
+    bullets: [
+      'an operation reduces a simulated trace to a number',
+      'a cost scores a predicted number against an observed one',
+    ],
   },
   {
     id: 'op-funcs-save',
@@ -272,7 +286,11 @@ export const TOUR_STEPS = Object.freeze([
     target: '[data-testid="ep-use-header"]',
     spanAll: '[data-testid="ep-include"]',
     side: 'right',
-    text: 'Tick Use for each parameter you want identified. Search to find them — every constant in the model is listed, and only the ticked ones are included in the set of params to calibrate/vary/emulate.',
+    text: 'Tick Use for each parameter you want identified.',
+    bullets: [
+      'every constant in the model is listed — search to find the ones you want',
+      'only the ticked ones are included in the set of params to calibrate/vary/emulate',
+    ],
   },
   {
     id: 'params-range',
@@ -297,7 +315,7 @@ export const TOUR_STEPS = Object.freeze([
     target: '[data-testid="ep-create-modifier"]',
     side: 'right',
     title: 'Modifier functions',
-    text: 'These let one identified parameter drive several model constants — select the rows, then create a modifier (a scale, an offset, etc.) so the calibration fits the new modifier parameter, which modifies the selected.',
+    text: 'These let one identified parameter drive several model constants. Select the rows (the small check box on the left of each), then create a modifier (a scale, an offset, etc.) so the calibration fits the new modifier parameter, which modifies the selected.',
   },
   {
     id: 'params-save',
@@ -327,7 +345,15 @@ export const TOUR_STEPS = Object.freeze([
     id: 'emulator-what',
     target: '[data-testid="emu-settings"]',
     side: 'right',
-    text: 'An emulator is a cheap stand-in for the model: it is trained on a sample of runs and then predicts the data_items in milliseconds instead of seconds/minutes. Choose how many samples to spend and press Train. It reports a held-out R² per output, which is how you decide whether to trust it. The emulators are currently built with autoemulate, which is what the model choices here come from.',
+    text: 'An emulator is a cheap stand-in for the model: trained on a sample of runs, it then predicts the data_items in milliseconds instead of seconds/minutes.',
+    bullets: [
+      'choose how many samples to spend, then press Train',
+      'it reports a held-out R² per output — that is how you decide whether to trust it',
+      'the emulators are built with autoemulate, which is where the model choices here come from',
+      'it is not in the default install: autoemulate pulls in torch, so it ships separately',
+      'to add it, install autoemulate>=2.1,<3 into the Python chosen in Settings — pip install "autoemulate>=2.1,<3" — then restart CUFLynx',
+      'that interpreter must be Python >=3.10,<3.13, which is autoemulate\'s own pin',
+    ],
     link: { href: 'https://www.autoemulate.com/', label: 'autoemulate.com' },
   },
   {
@@ -351,7 +377,7 @@ export const TOUR_STEPS = Object.freeze([
     id: 'sensitivity-run',
     target: '[data-testid="sa-settings"]',
     side: 'right',
-    text: 'Pick the method and the sample count, then Run. The result lands in Analysis as a per-output, per-parameter table — parameters that move nothing are candidates for unticking in params_for_id.',
+    text: 'Pick the method and the sample count, then Run. The result lands in Analysis as a per-output, per-parameter table, and parameters that move nothing are candidates for unticking in params_for_id.\n\nTip: including validation/prediction outputs gives more practical sensitivities than including only the outputs you calibrate against.',
   },
   {
     id: 'calibration-tab',
@@ -409,6 +435,6 @@ export const TOUR_STEPS = Object.freeze([
     target: '[data-testid="export-plotting"]',
     side: 'left',
     title: 'Export python plotting script',
-    text: "If you want paper- or presentation-worthy plots, edit the exported plotting script. It starts from basic plots of every output the pipeline you just ran generated. That's the tour — press the Tutorial button any time to run it again.",
+    text: "If you want paper- or presentation-worthy plots, edit the exported plotting script. It starts from basic plots of every output the pipeline you just ran generated.\n\nThat's the tour — press the Tutorial button any time to run it again.",
   },
 ])

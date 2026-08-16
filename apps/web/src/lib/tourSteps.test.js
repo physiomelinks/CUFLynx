@@ -98,6 +98,11 @@ describe('tourSteps', () => {
       if ('spanAll' in step) {
         expect(step.spanAll, `step ${step.id} spanAll`).toMatch(/^\[data-testid="[a-z0-9-]+"\]$/)
       }
+      if ('bullets' in step) {
+        expect(Array.isArray(step.bullets), `step ${step.id} bullets`).toBe(true)
+        expect(step.bullets.length, `step ${step.id} bullets`).toBeGreaterThan(1)
+        for (const b of step.bullets) expect(typeof b, `step ${step.id} bullet`).toBe('string')
+      }
       if ('link' in step) {
         // https only, and never a bare href with no words on it: the bubble
         // renders the label, and an unlabelled URL in a sentence reads as noise.
@@ -145,6 +150,26 @@ describe('tourSteps', () => {
     expect(step.text).toContain('outputs directory')
     expect(step.text).toContain('user_funcs/operation_funcs_user.py')
     expect(step.text).not.toContain('circulatory_autogen')
+  })
+
+  // The house style for these bubbles, pinned because it is the thing that
+  // decays first: a step read on a small screen is a paragraph the user skims.
+  it('keeps every bubble short enough to read', () => {
+    for (const step of TOUR_STEPS) {
+      expect(step.text.length, `step ${step.id} text`).toBeLessThan(420)
+      for (const b of step.bullets ?? []) {
+        expect(b.length, `step ${step.id} bullet`).toBeLessThan(140)
+      }
+    }
+  })
+
+  // A right-arrow in prose is the tell this copy was drafted by a machine, and
+  // the places that wanted one wanted a list instead.
+  it('uses no arrow glyphs in the copy', () => {
+    for (const step of TOUR_STEPS) {
+      const all = [step.text, step.title ?? '', ...(step.bullets ?? [])].join(' ')
+      expect(all, `step ${step.id}`).not.toMatch(/[\u2190-\u21FF\u27F0-\u27FF]/)
+    }
   })
 
   // The guard that matters. The tour points at testids from a separate file, so
