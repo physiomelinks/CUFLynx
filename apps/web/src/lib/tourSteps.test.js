@@ -126,14 +126,16 @@ describe('tourSteps', () => {
     expect(closed).toEqual(['[data-testid="edit-op-funcs"]'])
   })
 
-  it('sends the user-func step to the outputs directory, not the CA checkout', () => {
+  it('sends the user-func step to the outputs directory', () => {
     // The funcs are written to <outputs>/user_funcs/ (apps/api/user_funcs.py),
     // and the copy used to read as though they landed inside circulatory_autogen
     // -- which would be someone else's repo, and would not travel with the study.
+    // Naming the path is what makes that unambiguous; saying where it does *not*
+    // go was answering a question nobody had asked.
     const step = TOUR_STEPS.find((s) => s.id === 'op-funcs-save')
     expect(step.text).toContain('outputs directory')
     expect(step.text).toContain('user_funcs/operation_funcs_user.py')
-    expect(step.text).toContain('never into the circulatory_autogen checkout')
+    expect(step.text).not.toContain('circulatory_autogen')
   })
 
   // The guard that matters. The tour points at testids from a separate file, so

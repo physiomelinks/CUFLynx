@@ -239,7 +239,7 @@ export const TOUR_STEPS = Object.freeze([
     id: 'op-funcs-save',
     target: '[data-testid="of-save"]',
     side: 'right',
-    text: 'Edit the Python in the box and Save. It is written to your outputs directory, as user_funcs/operation_funcs_user.py — never into the circulatory_autogen checkout — and travels with the study, so a run stays reproducible. It then appears in the operation list beside the built-ins. Mark it @differentiable if a gradient-based calibration should be allowed to use it.',
+    text: 'Edit the Python in the box and Save. It is written to your outputs directory, as user_funcs/operation_funcs_user.py, and travels with the study, so a run stays reproducible. It then appears in the operation list beside the built-ins. Mark it @differentiable if a gradient-based calibration should be allowed to use it.',
     waitFor: () => gone(EDIT_OP_FUNCS),
     onNext: (ctx) => ctx.closeDialog(EDIT_OP_FUNCS),
   },
