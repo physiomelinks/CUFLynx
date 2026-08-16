@@ -80,6 +80,8 @@ from runtime_paths import default_python, frontend_dist, is_frozen, resources_di
 import settings_store
 from solver_options import (
     ad_available,
+    ca_model_type,
+    canonical_model_type,
     check_solver_info,
     filter_solver_info,
     get_analysis_options,
@@ -310,7 +312,7 @@ class ConfigRequest(BaseModel):
     # "No module named 'generators'".
     ca_dir: str | None = None
     # Backend solver selection. generated_model_format is CA's `model_type`
-    # (cellml_only / python / casadi_python); solver must be compatible with it;
+    # (cellml / python / casadi_python); solver must be compatible with it;
     # solver_info holds the per-solver tuning. Blank/empty => leave unchanged.
     generated_model_format: str = ""
     solver: str = ""
@@ -393,7 +395,11 @@ def _restore_persisted_settings() -> None:
     if ca_dir and os.path.isdir(ca_dir):
         os.environ["CIRCULATORY_AUTOGEN_SRC"] = _ca_src_from_dir(ca_dir)
 
-    fmt = (saved.get("generated_model_format") or "").strip()
+    # Canonicalised on the way in: settings persist across upgrades, so a config
+    # written before CA renamed the format still names the old one. Left alone it
+    # would fail the /api/config validation below and the user would have to
+    # re-pick a setting they never changed.
+    fmt = canonical_model_type((saved.get("generated_model_format") or "").strip())
     if fmt:
         engine.model_type = fmt
     solver = (saved.get("solver") or "").strip()
@@ -569,7 +575,10 @@ def set_config(req: ConfigRequest) -> dict:
     reset_solver_options()  # capabilities come from the (possibly new) CA
     solvers_by_format = get_solver_options()["solvers_by_format"]
 
-    fmt = (req.generated_model_format or "").strip()
+    # An .omex or a saved study can carry the retired spelling too; accept it and
+    # store the current one, so it is normalised once here rather than everywhere
+    # engine.model_type is read.
+    fmt = canonical_model_type((req.generated_model_format or "").strip())
     if fmt:
         if fmt not in solvers_by_format:
             raise HTTPException(status_code=422, detail=f"unknown generated_model_format: {fmt}")
@@ -770,7 +779,10 @@ def export_pipeline_route(req: ExportPipelineRequest) -> dict:
     try:
         user_inputs = export_pipeline.build_user_inputs(
             file_prefix=file_prefix,
-            model_type=engine.model_type,
+            # The exported bundle is a user_inputs.yaml for the CA the user has,
+            # so it is written in that CA's spelling for the same reason a run
+            # config is (see ca_model_type). A current CA accepts either.
+            model_type=ca_model_type(engine.model_type),
             solver=engine.solver,
             solver_info=dict(engine.solver_info),
             dt=engine.dt,
@@ -2353,7 +2365,10 @@ def calibration_run(req: CalibrationRequest) -> dict:
             str(record.path), engine.model_type, model_id=req.model_id,
             output_dir=configured or None,
         ),
-        "model_type": engine.model_type,
+        # Translated at the boundary: an older CA parses only its own spelling
+        # of the model_type and exits on anything else (solver_options.
+        # MODEL_TYPE_ALIASES). Inside CUFLynx it stays canonical.
+        "model_type": ca_model_type(engine.model_type),
         "solver": engine.solver,
         "solver_info": dict(engine.solver_info),
         "obs_path": str(record.obs_path),
@@ -2441,7 +2456,7 @@ SENSITIVITY_DEFAULTS = {
     # Local (derivative-based) sensitivity gradient source. The available list is
     # NOT hardcoded here: sensitivity_defaults() sources it from CA's gradient_sources
     # accessor for the current model (FD always; AD for casadi_python; FSA for
-    # cellml_only + CVODE_myokit), exactly like the calibration menu.
+    # cellml + CVODE_myokit), exactly like the calibration menu.
     "gradient_method": "FD",
     "rel_step": 0.01,  # relative central-difference step about the nominal point
     # Where the nominal (linearisation) point comes from. "current" (default)
@@ -2470,7 +2485,7 @@ def sensitivity_defaults() -> dict:
     sa = get_analysis_options().get("sensitivity_analysis", {})
     # Local-SA gradient sources for the current model, from CA's gradient_sources
     # accessor (FD / AD / FSA) — same source of truth as the calibration menu, so
-    # FSA surfaces for cellml_only + CVODE_myokit and AD for casadi_python. The
+    # FSA surfaces for cellml + CVODE_myokit and AD for casadi_python. The
     # requires_all_differentiable (CasADi AD) gate is applied client-side against
     # the in-use differentiability (SensitivityPanel adAvailable), so pass True here.
     grad = gradient_sources(
@@ -2553,7 +2568,10 @@ def sensitivity_run(req: SensitivityRequest) -> dict:
             str(record.path), engine.model_type, model_id=req.model_id,
             output_dir=configured or None,
         ),
-        "model_type": engine.model_type,
+        # Translated at the boundary: an older CA parses only its own spelling
+        # of the model_type and exits on anything else (solver_options.
+        # MODEL_TYPE_ALIASES). Inside CUFLynx it stays canonical.
+        "model_type": ca_model_type(engine.model_type),
         "solver": engine.solver,
         "solver_info": dict(engine.solver_info),
         "obs_path": str(record.obs_path),
@@ -2735,7 +2753,10 @@ def emulator_train(req: EmulatorTrainRequest) -> dict:
             str(record.path), engine.model_type, model_id=req.model_id,
             output_dir=configured or None,
         ),
-        "model_type": engine.model_type,
+        # Translated at the boundary: an older CA parses only its own spelling
+        # of the model_type and exits on anything else (solver_options.
+        # MODEL_TYPE_ALIASES). Inside CUFLynx it stays canonical.
+        "model_type": ca_model_type(engine.model_type),
         "solver": engine.solver,
         "solver_info": dict(engine.solver_info),
         "obs_path": str(record.obs_path),
@@ -2995,7 +3016,10 @@ def uq_run(req: UQRequest) -> dict:
             str(record.path), engine.model_type, model_id=req.model_id,
             output_dir=configured or None,
         ),
-        "model_type": engine.model_type,
+        # Translated at the boundary: an older CA parses only its own spelling
+        # of the model_type and exits on anything else (solver_options.
+        # MODEL_TYPE_ALIASES). Inside CUFLynx it stays canonical.
+        "model_type": ca_model_type(engine.model_type),
         "solver": engine.solver,
         "solver_info": dict(engine.solver_info),
         "obs_path": str(record.obs_path),

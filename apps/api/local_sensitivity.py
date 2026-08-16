@@ -11,7 +11,7 @@ Three gradient sources are available, per the loaded model:
   sobol engine already wires up. Implemented here directly.
 * **AD** (CasADi automatic differentiation) — ``model_type: casadi_python`` with
   all-``@differentiable`` ops. Implemented here directly.
-* **FSA** (Myokit CVODES forward sensitivities) — ``cellml_only`` + ``CVODE_myokit``.
+* **FSA** (Myokit CVODES forward sensitivities) — ``cellml`` + ``CVODE_myokit``.
   Delegated to circulatory_autogen's backend-agnostic
   ``OpencorParamID.get_observable_sensitivities`` (CA #283/#284), driven through a
   ``do_ad`` ``CVS0DParamID`` engine the runner builds; we only normalise + relabel
@@ -210,7 +210,7 @@ def resolve_gradient_method(settings: dict, model_type: str) -> str:
     if method not in ("FD", "AD", "FSA"):
         raise NotImplementedError(
             f"gradient_method '{method}' is not available; use 'FD' (finite "
-            "difference), 'AD' (casadi_python), or 'FSA' (cellml_only + CVODE_myokit)."
+            "difference), 'AD' (casadi_python), or 'FSA' (cellml + CVODE_myokit)."
         )
     return method
 
@@ -344,7 +344,7 @@ def _ca_local_sensitivity(
 LOCAL_GRADIENT_SUPPORT = {
     "FD": None,  # any backend: it just runs forward simulations
     "AD": ("casadi_python",),
-    "FSA": ("cellml_only",),
+    "FSA": ("cellml",),
 }
 
 
@@ -375,7 +375,7 @@ def local_gradient_sources(sources, model_type: str) -> list:
 
 def compute_local_sensitivity(
     sa, settings: dict, best_vals=None, best_params=None,
-    model_type: str = "cellml_only", engine=None, current_params=None,
+    model_type: str = "cellml", engine=None, current_params=None,
 ) -> dict:
     """Local sensitivities ``d ln(Y)/d ln(P)`` about a nominal parameter point.
 
@@ -389,7 +389,7 @@ def compute_local_sensitivity(
     backend-agnostic accessor ``get_observable_sensitivities`` on the ``engine``
     (a ``do_ad`` ``CVS0DParamID`` the runner builds): ``FD`` central differences,
     ``AD`` the CasADi jacobian (``casadi_python`` only), ``FSA`` Myokit CVODES
-    forward sensitivities (``cellml_only`` + ``CVODE_myokit``). ``CVODES`` is
+    forward sensitivities (``cellml`` + ``CVODE_myokit``). ``CVODES`` is
     accepted as a legacy alias for ``FSA``.
 
     CUFLynx reimplemented the FD loop and the CasADi jacobian until #210's
@@ -411,7 +411,7 @@ def compute_local_sensitivity(
     if gradient_method == "FSA" and model_type not in LOCAL_GRADIENT_SUPPORT["FSA"]:
         raise NotImplementedError(
             "FSA (Myokit CVODES forward sensitivities) requires generated_model_format "
-            f"'cellml_only' with solver 'CVODE_myokit'; current format is {model_type!r}."
+            f"'cellml' with solver 'CVODE_myokit'; current format is {model_type!r}."
         )
 
     if engine is None:

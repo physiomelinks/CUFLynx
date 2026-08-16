@@ -36,8 +36,8 @@ def test_config_exposes_backend_solver_capabilities(client):
         "solver_info_schema",
         "ad_available",
     } <= set(body)
-    assert body["generated_model_format"] == "cellml_only"
-    assert body["ad_available"] is False  # cellml_only never offers AD
+    assert body["generated_model_format"] == "cellml"
+    assert body["ad_available"] is False  # cellml never offers AD
 
 
 def test_set_backend_solver_roundtrips(client):

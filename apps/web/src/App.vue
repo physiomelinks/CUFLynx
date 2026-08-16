@@ -158,7 +158,7 @@ const caBrowserOpen = ref(false)
 // capabilities/schema from /api/config (formats, solvers-per-format, solver_info
 // fields, differentiability). adAvailable gates the AD/sp_minimize options.
 const solverOpts = ref({})
-const generatedModelFormat = ref('cellml_only')
+const generatedModelFormat = ref('cellml')
 const solver = ref('CVODE_myokit')
 const solverInfo = ref({})
 
@@ -220,7 +220,7 @@ function applyConfigPayload(c) {
   caDir.value = c.ca_dir
   caExists.value = c.ca_exists
   solverOpts.value = c
-  generatedModelFormat.value = c.generated_model_format ?? 'cellml_only'
+  generatedModelFormat.value = c.generated_model_format ?? 'cellml'
   solver.value = c.solver ?? ''
   solverInfo.value = { ...(c.solver_info ?? {}) }
   cppCompiler.value = c.cpp_compiler ?? { present: true, hint: '' }
@@ -353,7 +353,7 @@ const gradientIntegratorWarning = computed(() => {
     if (ok && !ok.includes(method))
       return `Automatic differentiation (AD) is not available with the '${method}' integrator ` +
         `(it uses SUNDIALS adjoint sensitivity). For AD, choose one of: ${ok.join(', ')}.`
-  } else if (fmt === 'cellml_only') {
+  } else if (fmt === 'cellml') {
     const ok = solverOpts.value.fsa_suitable_methods?.[solver.value]
     if (ok && !ok.includes(method))
       return `Forward sensitivity (FSA) is not available with the '${method}' integrator. ` +
@@ -427,7 +427,7 @@ const isExternalPythonModel = computed(() => model.modelFormat.value === EXTERNA
 // unless that is what is loaded, the same rule that keeps unavailable backends
 // (OpenCOR, a missing AADC) out of the menu rather than in it and failing.
 const formatChoices = computed(() => {
-  const all = solverOpts.value.model_formats ?? ['cellml_only']
+  const all = solverOpts.value.model_formats ?? ['cellml']
   const kept = all.filter((f) =>
     isExternalPythonModel.value ? f === EXTERNAL_PYTHON : f !== EXTERNAL_PYTHON,
   )
@@ -445,7 +445,7 @@ function syncFormatToModel() {
   if (wanted) {
     if (generatedModelFormat.value !== wanted) onFormatChange(wanted)
   } else if (generatedModelFormat.value === EXTERNAL_PYTHON) {
-    onFormatChange(formatChoices.value[0] ?? 'cellml_only')
+    onFormatChange(formatChoices.value[0] ?? 'cellml')
   }
 }
 

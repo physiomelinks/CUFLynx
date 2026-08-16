@@ -130,7 +130,7 @@ export const TOUR_STEPS = Object.freeze([
     target: '[data-testid="model-format-select"]',
     side: 'left',
     title: 'Generated model format',
-    text: 'This is the backend the model runs through: cellml_only → Myokit CVODE (needs a C compiler), python → scipy, casadi_python → CasADi. Changing it regenerates and re-runs the model.',
+    text: 'This is the backend the model runs through: cellml → Myokit CVODE (needs a C compiler), python → scipy, casadi_python → CasADi. Changing it regenerates and re-runs the model.',
   },
   {
     id: 'solver',

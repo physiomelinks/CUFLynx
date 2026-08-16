@@ -31,7 +31,7 @@ const GRAD_CASADI = [
   { value: 'FD', label: 'Finite difference', requires_all_differentiable: false },
   { value: 'AD', label: 'Automatic differentiation (CasADi)', requires_all_differentiable: true },
 ]
-// For a cellml_only + CVODE_myokit model: FD + Myokit CVODES FSA (never AD-gated).
+// For a cellml + CVODE_myokit model: FD + Myokit CVODES FSA (never AD-gated).
 const GRAD_CELLML = [
   { value: 'FD', label: 'Finite difference', do_ad: false, requires_all_differentiable: false },
   { value: 'FSA', label: 'Forward sensitivity (Myokit CVODES)', do_ad: true,
@@ -58,7 +58,7 @@ describe('SensitivityPanel AD gating', () => {
     expect(ad.attributes('disabled')).toBeUndefined()
   })
 
-  it('offers FSA (Myokit CVODES) enabled for cellml_only, regardless of adAvailable', () => {
+  it('offers FSA (Myokit CVODES) enabled for cellml, regardless of adAvailable', () => {
     const wrapper = mount(SensitivityPanel, {
       props: { defaults: { method: 'local', gradient_methods: GRAD_CELLML }, adAvailable: false },
       global: { stubs },
@@ -84,11 +84,11 @@ describe('SensitivityPanel AD gating', () => {
 
   // Regression for #84: the gradient list must track the reactive
   // `gradientSources` prop (GET /api/config, re-fetched on every backend change),
-  // not the one-time sensitivity defaults. Switching cellml_only (FSA) ->
+  // not the one-time sensitivity defaults. Switching cellml (FSA) ->
   // casadi_python (AD) must swap FSA out for AD without a defaults refetch.
   it('tracks the reactive gradientSources prop when the backend solver switches', async () => {
     const wrapper = mount(SensitivityPanel, {
-      // defaults.gradient_methods is the stale one-time list (cellml_only / FSA);
+      // defaults.gradient_methods is the stale one-time list (cellml / FSA);
       // the reactive prop is what drives the menu.
       props: {
         defaults: { method: 'local', gradient_methods: GRAD_CELLML },
@@ -97,7 +97,7 @@ describe('SensitivityPanel AD gating', () => {
       },
       global: { stubs },
     })
-    // cellml_only + CVODE_myokit: FSA present, AD absent.
+    // cellml + CVODE_myokit: FSA present, AD absent.
     expect(gradientOptions(wrapper).find((o) => o.text().includes('Forward sensitivity'))).toBeTruthy()
     expect(gradientOptions(wrapper).find((o) => o.text().includes('Automatic'))).toBeFalsy()
 
@@ -247,7 +247,7 @@ describe('SensitivityPanel reacts to a backend switch (#84)', () => {
     const ad = gradientOptions(wrapper).find((o) => o.text().includes('Automatic'))
     expect(ad.attributes('disabled')).toBeUndefined()
 
-    // switch back to cellml_only
+    // switch back to cellml
     await wrapper.setProps({ gradientSources: GRAD_CELLML, adAvailable: false })
     opts = gradientOptions(wrapper).map((o) => o.text())
     expect(opts.some((t) => t.includes('Forward sensitivity'))).toBe(true)

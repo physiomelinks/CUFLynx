@@ -385,7 +385,7 @@ def test_the_gradient_is_of_the_cost_the_panel_shows(client, requires_simulation
     import engine as engine_mod
 
     engine_mod.engine.reset()
-    engine_mod.engine.model_type, engine_mod.engine.solver = "cellml_only", "CVODE_myokit"
+    engine_mod.engine.model_type, engine_mod.engine.solver = "cellml", "CVODE_myokit"
     model_id = _load_lv(client, None)
     params = {"Lotka_Volterra_module/alpha": 1.1, "Lotka_Volterra_module/beta": 0.4}
 
@@ -541,7 +541,7 @@ def test_the_modifier_gradient_is_analytic_and_agrees_with_differencing(
     import engine as engine_mod
 
     engine_mod.engine.reset()
-    engine_mod.engine.model_type, engine_mod.engine.solver = "cellml_only", "CVODE_myokit"
+    engine_mod.engine.model_type, engine_mod.engine.solver = "cellml", "CVODE_myokit"
     model_id = _load_lv(client, None)
 
     # α and β driven by one θ; δ stays a free parameter beside it. The

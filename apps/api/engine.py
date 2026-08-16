@@ -24,7 +24,7 @@ from pathlib import Path
 from runtime_paths import is_frozen
 
 DEFAULT_DT = 0.01
-DEFAULT_MODEL_TYPE = "cellml_only"
+DEFAULT_MODEL_TYPE = "cellml"
 DEFAULT_SOLVER = "CVODE_myokit"
 
 #: CA's model_type for a user-written solver class (``solver='external'``). It is
@@ -343,7 +343,7 @@ def join_subexperiments(results_by_sub, t_by_exp, protocol_info, dt):
 # is not introspected from CA.
 # ---------------------------------------------------------------------------
 _BACKEND_MODULE = {
-    "cellml_only": "myokit",
+    "cellml": "myokit",
     "python": "scipy",
     "casadi_python": "casadi",
     "aadc_python": "aadc",
@@ -356,7 +356,7 @@ _BACKEND_MODULE = {
 # Tried in order when the chosen format cannot run here. python/solve_ivp last:
 # it needs no compiler, so it is the one that works when nothing else does.
 _LIVE_FALLBACKS = (
-    ("cellml_only", "CVODE_myokit"),
+    ("cellml", "CVODE_myokit"),
     ("casadi_python", "casadi_integrator"),
     ("python", "solve_ivp"),
 )
@@ -512,7 +512,7 @@ _HINTS = (
         ("cannot load shared library", "load_plugin", "cannot open shared object"),
         "That solver's plugin library could not be loaded, so this backend is not "
         "usable in the Python this app is running — nothing in Settings will fix "
-        "it. Switch the model format to cellml_only with solver CVODE_myokit, or "
+        "it. Switch the model format to cellml with solver CVODE_myokit, or "
         "reinstall the backend's package (for CasADi, a build that includes its "
         "CVODE integrator plugin).",
     ),
@@ -523,7 +523,7 @@ _HINTS = (
         # which cannot possibly help and sends the user to the wrong dial.
         ("cannot drive a variable from a time series", "protocol trace name"),
         "This protocol drives a variable over time, which only the CVODE_myokit "
-        "solver can do — switch the backend to cellml_only / CVODE_myokit in "
+        "solver can do — switch the backend to cellml / CVODE_myokit in "
         "Settings, or replace the time-varying input with a constant per "
         "sub-experiment in the obs_data protocol.",
     ),

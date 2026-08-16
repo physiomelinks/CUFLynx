@@ -1,12 +1,12 @@
 """The cost gradient from the forward solve itself, not from differencing it.
 
 Issue #188. Enabling sensitivities makes each solve carry its own derivatives --
-Myokit CVODES forward sensitivities (FSA) for ``cellml_only``, CasADi/AADC AD for
+Myokit CVODES forward sensitivities (FSA) for ``cellml``, CasADi/AADC AD for
 the generated formats -- so one run yields the cost *and* ``dJ/dp`` together.
 :mod:`cost_sensitivity` remains the fallback for backends that can do neither.
 
 **Why this is the better trade, measured** (Lotka-Volterra, 4 parameters,
-cellml_only + CVODE_myokit):
+cellml + CVODE_myokit):
 
 ===============================================  ===========
 enabling FSA (one-off, a sensitivity recompile)  ~2000 ms
@@ -27,7 +27,7 @@ parameter comes back with a confident and arbitrary direction. FSA gives -0.559
 at every step size, because it never subtracts two nearly-equal numbers.
 
 **``do_ad=True`` is the switch.** ``fsa_gradient_available`` requires it
-(``fsa_backend.gradient_available``); without it a perfectly capable cellml_only
+(``fsa_backend.gradient_available``); without it a perfectly capable cellml
 + Myokit run reports no gradient at all.
 
 The gradient comes back in **real parameter units**, not normalised ones --
@@ -223,14 +223,14 @@ def _build(key, *, model_path, model_type, solver_info, dt, obs_data, sim_time,
         solver_info=dict(solver_info or {}),
         dt=float(dt),
         # The switch. Without it fsa_gradient_available() is False even on a
-        # cellml_only + Myokit run that could produce sensitivities perfectly well.
+        # cellml + Myokit run that could produce sensitivities perfectly well.
         do_ad=True,
         model_type=model_type,
         operation_funcs_external_path=external_path("operation", output_dir or None),
         cost_funcs_external_path=external_path("cost", output_dir or None),
     )
 
-    if model_type == "cellml_only" and not pid.fsa_gradient_available():
+    if model_type == "cellml" and not pid.fsa_gradient_available():
         raise GradientUnavailable(
             "this model and solver cannot produce CVODES forward sensitivities")
 

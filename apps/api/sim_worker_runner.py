@@ -208,7 +208,7 @@ class Worker:
     def __init__(self):
         self.ca_src = ""
         self.dt = 0.01
-        self.model_type = "cellml_only"
+        self.model_type = "cellml"
         self.solver = "CVODE_myokit"
         self.solver_info: dict = {}
         self._helpers: dict = {}

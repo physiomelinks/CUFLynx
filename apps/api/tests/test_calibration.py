@@ -906,8 +906,8 @@ def test_sp_minimize_starts_from_current_param_values(tmp_path, requires_simulat
         "global/E_lv_B": 2e7,
     }
     config = {
-        "model_path": model_codegen.resolve_model_path(str(C3_MODEL_PATH), "cellml_only"),
-        "model_type": "cellml_only",
+        "model_path": model_codegen.resolve_model_path(str(C3_MODEL_PATH), "cellml"),
+        "model_type": "cellml",
         "solver": "CVODE_myokit",
         "solver_info": {"solver": "CVODE_myokit", "method": "CVODE"},
         "obs_path": str(C3_OBS_DATA_PATH),
@@ -917,7 +917,7 @@ def test_sp_minimize_starts_from_current_param_values(tmp_path, requires_simulat
         "current_params": current,
         "settings": {
             "param_id_method": "sp_minimize",
-            # cellml_only gradient descent needs an analytic gradient (Myokit FSA);
+            # cellml gradient descent needs an analytic gradient (Myokit FSA);
             # the start-point override itself is independent of the gradient source.
             "gradient_method": "FSA",
             "start_from": "current",
@@ -1248,7 +1248,7 @@ def _run_calibration_runner(monkeypatch, tmp_path, gradient_method):
         "obs_path": "obs.json",
         "params_path": str(tmp_path / "params.csv"),
         "output_dir": str(tmp_path / "out"),
-        "model_type": "cellml_only",
+        "model_type": "cellml",
         "settings": {"method": "genetic_algorithm", "gradient_method": gradient_method},
     })
     return captured

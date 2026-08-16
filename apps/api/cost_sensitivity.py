@@ -16,7 +16,7 @@ number the user cannot see.
 **Why finite differences and not CA's own gradient.** ``OpencorParamID`` exposes
 ``get_gradient`` / ``get_cost_and_gradient``, and they are better -- exact, and
 one solve rather than 2M. But they need a *solver-backed* ``OpencorParamID``:
-a compiled model, ``do_ad``, and one of casadi_python / aadc_python / (cellml_only
+a compiled model, ``do_ad``, and one of casadi_python / aadc_python / (cellml
 + CVODE_myokit + FSA). CUFLynx builds one of those only in the analysis subprocess
 tier (calibration / SA / UQ runners), which costs a process launch and a model
 compile per call and would put the live drag path back on the wrong side of the

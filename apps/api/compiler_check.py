@@ -1,7 +1,7 @@
 """Detect the C/C++ compiler Myokit needs, and explain how to install it.
 
 A missing compiler is a **limitation, not a fatal error**. Only the Myokit
-backend compiles: ``CVODE_myokit`` (generated_model_format ``cellml_only``) turns
+backend compiles: ``CVODE_myokit`` (generated_model_format ``cellml``) turns
 each model into a native extension *at run time*. The other backends are pure
 Python / precompiled and need no toolchain:
 
@@ -114,6 +114,6 @@ def compiler_status() -> dict:
         "present": present,
         "hint": "" if present else compiler_hint(),
         # Only this backend JIT-compiles; everything else is unaffected.
-        "affects": "" if present else "CVODE_myokit (generated model format 'cellml_only')",
+        "affects": "" if present else "CVODE_myokit (generated model format 'cellml')",
         "alternatives": [] if present else [dict(b) for b in COMPILER_FREE_BACKENDS],
     }

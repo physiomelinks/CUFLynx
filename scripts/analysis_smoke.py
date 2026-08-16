@@ -178,14 +178,14 @@ def main() -> int:
         _check_bundled_scipy_data(args.binary)
 
         # 1. Configure CA dir + runner interpreter + backend, as a user would.
-        #    Pin the backend to cellml_only / CVODE_myokit explicitly: the analysis
+        #    Pin the backend to cellml / CVODE_myokit explicitly: the analysis
         #    runs inherit the engine's solver, and leaving it at whatever was
         #    persisted (or a CA default of CVODE_opencor, which isn't installed)
         #    makes the run non-deterministic. CVODE_myokit JIT-compiles, but every
         #    CI runner has a C compiler.
         cfg = {
             "ca_dir": str(Path(args.ca_dir).resolve()),
-            "generated_model_format": "cellml_only",
+            "generated_model_format": "cellml",
             "solver": "CVODE_myokit",
             "solver_info": {"dt": 0.01},
         }

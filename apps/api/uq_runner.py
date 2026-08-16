@@ -142,7 +142,7 @@ def _make_param_id(config, settings, obs_path, *, mcmc, options_key, options):
 
     kwargs = dict(
         model_path=config["model_path"],
-        model_type=config.get("model_type", "cellml_only"),
+        model_type=config.get("model_type", "cellml"),
         param_id_method=settings.get("param_id_method", "genetic_algorithm"),
         mcmc_instead=mcmc,
         file_name_prefix=config.get("file_prefix", "model"),
@@ -319,7 +319,7 @@ def run(config: dict) -> dict:
         )
         best = best if run_calib else _best_from_reuse(cvs, reuse_best)
         ia = IdentifiabilityAnalysis(
-            config["model_path"], config.get("model_type", "cellml_only"), config.get("file_prefix", "model"),
+            config["model_path"], config.get("model_type", "cellml"), config.get("file_prefix", "model"),
             param_id_output_dir=output_dir,
             resources_dir=os.path.dirname(config["params_path"]),
             param_id=cvs.param_id,
