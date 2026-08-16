@@ -22,6 +22,7 @@ from __future__ import annotations
 import importlib
 import types
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -265,6 +266,14 @@ def test_ca_from_raises_importerror_for_a_name_the_module_lacks(layouts, tmp_pat
 # ---------------------------------------------------------------------------
 # sys.path entries
 # ---------------------------------------------------------------------------
+#: ca_paths() returns ``str(Path(...))``, i.e. entries in the platform's own
+#: form -- which is right, since they go on ``sys.path``. Expectations here have
+#: to be built the same way or they are a POSIX assertion: on Windows the code
+#: answers ``\\ca\\src`` and a hardcoded ``/ca/src`` fails for no real reason.
+def _p(*parts):
+    return str(Path(*parts))
+
+
 def test_ca_paths_offers_both_spellings_of_the_operation_funcs_directory(monkeypatch):
     """``import operation_funcs`` is a bare-name import off a directory, so the
     directory itself moves with the namespace. The namespaced one must be
@@ -274,13 +283,15 @@ def test_ca_paths_offers_both_spellings_of_the_operation_funcs_directory(monkeyp
     monkeypatch.setattr(engine_mod, "_circulatory_autogen_src", lambda: "/ca/src")
     paths = ca_imports.ca_paths()
 
-    assert "/ca/src" in paths
-    assert "/ca/src/param_id" in paths
-    assert f"/ca/src/{ca_imports.NAMESPACE}/param_id" in paths
+    assert _p("/ca/src") in paths
+    assert _p("/ca/src/param_id") in paths
+    assert _p("/ca/src", ca_imports.NAMESPACE, "param_id") in paths
     # funcs_user/ is the user's, beside src/, and does not move.
-    assert "/ca/funcs_user" in paths
+    assert _p("/ca/funcs_user") in paths
     # ensure_ca_path() inserts at 0 in order, so the *later* entry wins.
-    assert paths.index(f"/ca/src/{ca_imports.NAMESPACE}/param_id") > paths.index("/ca/src/param_id")
+    assert paths.index(_p("/ca/src", ca_imports.NAMESPACE, "param_id")) > paths.index(
+        _p("/ca/src/param_id")
+    )
 
 
 def test_ensure_ca_path_puts_the_namespaced_funcs_dir_ahead_of_the_flat_one(monkeypatch):
@@ -290,8 +301,8 @@ def test_ensure_ca_path_puts_the_namespaced_funcs_dir_ahead_of_the_flat_one(monk
     monkeypatch.setattr(sys, "path", [p for p in sys.path])
     ca_imports.ensure_ca_path()
 
-    ns = sys.path.index(f"/ca/src/{ca_imports.NAMESPACE}/param_id")
-    flat = sys.path.index("/ca/src/param_id")
+    ns = sys.path.index(_p("/ca/src", ca_imports.NAMESPACE, "param_id"))
+    flat = sys.path.index(_p("/ca/src/param_id"))
     assert ns < flat
 
 
