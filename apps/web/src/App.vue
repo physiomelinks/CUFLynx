@@ -652,6 +652,14 @@ const tourCtx = {
   centerTab: () => centerTab.value,
   hasObsData: () => obs.hasObsData.value,
   hasEmulator: () => emu.trained.value,
+  // The one writer, for the "close Settings to carry on" step's Next button
+  // (TourOverlay's `onNext`). Setting the ref is exactly what closing the
+  // dialog does -- the regenerate-and-re-run is driven by the `settingsOpen`
+  // watch, not by the close handler -- so this is the real close, not a
+  // second path that skips half of it.
+  closeSettings: () => {
+    settingsOpen.value = false
+  },
 }
 
 function markTourSeen() {

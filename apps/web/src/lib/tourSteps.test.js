@@ -83,7 +83,25 @@ describe('tourSteps', () => {
       if ('advanceOn' in step) {
         expect(typeof step.advanceOn.event, `step ${step.id} advanceOn.event`).toBe('string')
       }
+      if ('onNext' in step) expect(typeof step.onNext, `step ${step.id} onNext`).toBe('function')
     }
+  })
+
+  // `onNext` is the one place a step may write to the app, so it is worth
+  // stating out loud which steps hold that permission: exactly one, the step
+  // whose subject is a modal the user would otherwise be left standing behind.
+  it('lets exactly the close-Settings step act on Next, and closes Settings with it', () => {
+    const acting = TOUR_STEPS.filter((s) => 'onNext' in s).map((s) => s.id)
+    expect(acting).toEqual(['settings-close'])
+
+    const step = TOUR_STEPS.find((s) => s.id === 'settings-close')
+    let closed = 0
+    step.onNext({ closeSettings: () => (closed += 1) })
+    expect(closed).toBe(1)
+    // And the step still finishes on its own if the user closes Settings the
+    // ordinary way, so Next is an alternative rather than the only exit.
+    expect(step.waitFor({ settingsOpen: () => false })).toBe(true)
+    expect(step.waitFor({ settingsOpen: () => true })).toBe(false)
   })
 
   // The guard that matters. The tour points at testids from a separate file, so

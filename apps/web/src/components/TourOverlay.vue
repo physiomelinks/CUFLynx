@@ -3,19 +3,30 @@
  * The engine for the guided tour: a bubble with an arrow pointing at a real
  * control, plus a highlight ring around it.
  *
- * It **observes**; it never drives the app. There is deliberately no `action`
- * or `prep` field in a step: the tour has no way to mutate app state, so
- * "wait for the user to do the thing" is *structural* rather than a convention
- * someone can forget. A step advances when the user really clicks the control
- * (`advanceOn`), when app state says so (`waitFor`), or when they press Next.
+ * It **observes**; it does not drive the app. There is no `action` or `prep`
+ * field that runs on entering a step, so "wait for the user to do the thing"
+ * stays structural rather than a convention someone can forget. A step advances
+ * when the user really clicks the control (`advanceOn`), when app state says so
+ * (`waitFor`), or when they press Next.
+ *
+ * The **one** narrowing of that rule is `onNext`, which fires only from the
+ * Next button and never from `advanceOn`/`waitFor`. It exists for the steps
+ * whose whole subject is a modal the user is standing behind: pressing Next on
+ * "close Settings to carry on" has to actually close Settings, or the tour
+ * walks on to a control the mask is covering. Next is the user acting, so this
+ * is still their click doing the thing -- it is not the tour moving on its own.
+ * Keep it to that: a step that uses `onNext` to *skip work the user should do*
+ * is the failure mode this design exists to prevent.
  *
  * Step shape (the step list itself lives elsewhere -- this file only consumes it):
  *   { id, target: '[data-testid="…"]', title?, text, side,   // 'top'|'bottom'|'left'|'right'
  *     advanceOn?: { target, event },   // delegated listener; target defaults to step.target
  *     waitFor?:  (ctx) => boolean,     // polled on the tick; true => advance
- *     when?:     (ctx) => boolean }    // false => step is skipped
+ *     when?:     (ctx) => boolean,     // false => step is skipped
+ *     onNext?:   (ctx) => void }       // Next button only; see above
  *
- * `ctx` is a plain object of *getters* over app state. Read it, never write it.
+ * `ctx` is a plain object of *getters* over app state, plus the few writers the
+ * `onNext` steps need. Read it; write only through those.
  */
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
@@ -163,6 +174,24 @@ function land(i) {
 function next() {
   if (current.value) resolve(current.value.index + 1, 1)
 }
+
+/**
+ * Next, pressed by the user. Separate from `next()` because `onNext` must fire
+ * from the button and *only* from the button -- `advanceOn` and `waitFor` mean
+ * the user already did the thing themselves, and running it again would undo
+ * their action (close a dialog they just reopened, say).
+ *
+ * The mutation lands before `resolve`, but Vue applies it asynchronously, so
+ * the next step is judged against a DOM that has not caught up yet. That is
+ * what the first candidate's requestAnimationFrame grace period is for: it
+ * re-checks availability each frame until the app has settled.
+ */
+function nextFromButton() {
+  const s = current.value && current.value.step
+  if (s && typeof s.onNext === 'function') s.onNext(props.ctx)
+  next()
+}
+
 function back() {
   if (current.value) resolve(current.value.index - 1, -1)
 }
@@ -421,7 +450,12 @@ watch(
           >
             Back
           </button>
-          <button type="button" class="tour-btn tour-primary" data-testid="tour-next" @click="next">
+          <button
+            type="button"
+            class="tour-btn tour-primary"
+            data-testid="tour-next"
+            @click="nextFromButton"
+          >
             Next
           </button>
           <button

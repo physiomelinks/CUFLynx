@@ -262,6 +262,37 @@ describe('TourOverlay', () => {
     expect(text()).toBe('Then B.')
   })
 
+  it('runs onNext when the user presses Next, before moving on', async () => {
+    anchor('a')
+    anchor('b')
+    const closed = []
+    const steps = FIXTURE()
+    steps[0].onNext = (ctx) => closed.push(ctx.who)
+    const w = await mountTour({ steps, ctx: { who: 'settings' } })
+    await clickOn(button('next'))
+    expect(closed).toEqual(['settings'])
+    expect(w.emitted('update:step')).toEqual([[1]])
+  })
+
+  it('does not run onNext when the step advances by itself', async () => {
+    // advanceOn and waitFor both mean the user already did the thing; running
+    // onNext then would undo it.
+    const a = anchor('a')
+    anchor('b')
+    anchor('c')
+    const ran = []
+    const steps = FIXTURE()
+    steps[0].advanceOn = { target: '[data-testid="a"]' }
+    steps[0].onNext = () => ran.push('a')
+    steps[1].waitFor = () => true
+    steps[1].onNext = () => ran.push('b')
+    await mountTour({ steps })
+    await clickOn(a)
+    await wait(250)
+    expect(text()).toBe('Finally C.')
+    expect(ran).toEqual([])
+  })
+
   it('re-resolves forward when its target disappears', async () => {
     const a = anchor('a')
     anchor('b')

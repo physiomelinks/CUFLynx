@@ -146,9 +146,13 @@ export const TOUR_STEPS = Object.freeze([
     target: '[data-testid="settings-dialog"]',
     side: 'left',
     // Exists purely so the tour is never left pointing at the sliders from
-    // behind a modal mask.
+    // behind a modal mask. Either way out closes Settings: the user closes it
+    // themselves (waitFor), or they press Next and it closes for them (onNext)
+    // -- pressing Next and being walked on to a control behind the mask is the
+    // one thing this step must not do.
     text: 'That is the lot. Close Settings to carry on.',
     waitFor: (ctx) => !ctx.settingsOpen(),
+    onNext: (ctx) => ctx.closeSettings(),
   },
 
   /* ---------------------------------------------------------------- *
