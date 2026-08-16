@@ -1,7 +1,7 @@
 # External Python models
 
 Everything here is optional reading — the app runs without any of it. See the
-[README](../../README.md) to download and start it, and [Using CUFLynx](basic.md)
+[README](../../README.md) to download and start it, and [Using CUFLynx](misc.md)
 for the CellML and Myokit paths.
 
 ## What they are
@@ -10,13 +10,12 @@ CUFLynx normally takes a *model description* — a CellML file, or a Myokit `.mm
 and generates a solver from it. An **external python model** inverts that: you
 bring the solver. It is a single `.py` file holding a class that owns its own time
 stepping, and CUFLynx drives it exactly as it drives a generated model — sliders
-change its parameters, plots redraw, and calibration, sensitivity and UQ all work
+change its parameters, plots redraw, and emulation, calibration, sensitivity and UQ all work
 against it unchanged.
 
-That is the right shape for a solver that would be ruined by being rewritten as a
-right-hand side: a finite-element code (the worked example below is
+This is well suited for a PDE solver code (the worked example below is finite element
 FEniCSx/dolfinx), a compiled library behind a thin Python binding, or a scheme
-whose particular time stepping *is* the model.
+with particular time stepping.
 
 > Not to be confused with circulatory_autogen's `python_user_defined` model type,
 > where you write the RHS and CA integrates it with scipy `solve_ivp`. Here CA
@@ -358,10 +357,15 @@ completed run: raise `heat/k` and the picture shows the plate cooling faster whi
 the probe traces fall in step; raise `heat/u_D` and the left edge warms while the
 other three stay put.
 
-![The Output plots tab for the heat model: three probe traces with their obs_data reference lines, and below them the two field heatmaps returned by extra_plots()](images/output-plots.png)
+![The heat model's parameter sliders being dragged, with the probe traces redrawing](images/drag_inputs-fenics-heat.png)
 
-*Output plots. The per-observable traces come straight from `output_names`; the
-image cells at the end are the `extra_plots()` figures, re-rendered each run.*
+*Dragging `heat/k` and `heat/u_D`. The traces are the model's `output_names`,
+plotted through the same channel a CellML model's outputs use.*
+
+![The Output plots tab showing the two field heatmaps returned by extra_plots()](images/extra-plots-fenics-heat.png)
+
+*The `extra_plots()` figures, at the end of the Output plots tab and re-rendered
+after each completed run — the view a time series cannot give you.*
 
 ## Telling CUFLynx what to fit: obs_data
 
@@ -387,7 +391,7 @@ Both the operand and the operation vocabularies are **introspected from
 circulatory_autogen**, not hardcoded — including any operation or cost func you have
 written yourself. What the dropdowns offer is exactly what CA can score.
 
-![The Edit obs_data dialog with a data_item row expanded: the measured value and std fields beside the operation, and the operand picker in the details panel](images/edit-obs-data.png)
+![The Edit obs_data dialog with a data_item row expanded: the measured value and std fields beside the operation, and the operand picker in the details panel](images/edit-obs-data-fenics-heat.png)
 
 *The obs_data editor. The ground truth for each observable goes in the row's
 `value` and `std`; the operand picker below names which output it measures.*
@@ -429,6 +433,11 @@ parameter set — a constant feature contributing nothing to the cost.
 From here nothing is specific to external python models — the parameters and outputs
 arrived through the ordinary channels, so this is the ordinary CUFLynx workflow.
 
+![The params_for_id editor with heat/k and heat/u_D and their calibration bounds](images/edit-params-for-id-fenics-heat.png)
+
+*The params_for_id editor: which parameters are calibrated, and the box the
+optimiser may search in.*
+
 **Choose what to calibrate.** Click **Edit** beside the params box and tick the
 parameters, with a range each. For the example:
 
@@ -462,7 +471,7 @@ solve. Six scalar observables and two parameters make the heat example a legitim
 target. It needs the `[emulation]` extra from step 2; without it the tab is flagged
 unavailable and says so rather than offering settings that cannot work.
 
-![The Emulator tab with an emulator trained for the external python heat model, showing the training settings and the tick box that makes calibration, SA and UQ evaluate the surrogate](images/emulator-tab.png)
+![The Emulator tab with an emulator trained for the external python heat model, showing the training settings and the tick box that makes calibration, SA and UQ evaluate the surrogate](images/emulator-settings.png)
 
 *An emulator trained against the external model. **Train** fits it against the
 solver; the tick box makes the analysis tabs use it.*
@@ -482,7 +491,7 @@ external python model the code *is* the model.
 
 **Export python plotting script** writes `plot_outputs.py`, which regenerates the
 app's plots from a run's data (see
-[Using CUFLynx](basic.md#replotting-a-run-outside-the-app)). It replots the traces;
+[Using CUFLynx](misc.md#replotting-a-run-outside-the-app)). It replots the traces;
 the `extra_plots()` figures come from your own `extra_plots()`, which is already
 portable code you can call yourself.
 

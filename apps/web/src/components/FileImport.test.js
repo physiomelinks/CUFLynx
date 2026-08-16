@@ -8,7 +8,7 @@ vi.mock('../lib/api', () => ({
   uploadParamsForId: vi.fn(),
   getObsDataOptions: vi.fn(),
   fetchExampleModel: vi.fn(),
-  modelSourceUrl: (id) => `/api/models/${id}/source`,
+  editModelSource: vi.fn(),
 }))
 
 import FileImport from './FileImport.vue'
@@ -18,6 +18,7 @@ import {
   uploadObsData,
   uploadParamsForId,
   fetchExampleModel,
+  editModelSource,
   uploadOmex,
 } from '../lib/api'
 
@@ -50,8 +51,14 @@ const StartDialogStub = {
     "@click=\"$emit('select-example', { name: '3compartment', label: '3-compartment circulation', filename: '3compartment.omex' })\">" +
     'pick</button></div>',
 }
+// Renders its slot, unlike the auto stub: the error/notice banners are read for
+// their *text* now that one of them has to name the path an edit was saved to.
+const MessageStub = {
+  props: ['severity', 'closable'],
+  template: '<div><slot /></div>',
+}
 const stubs = {
-  Message: true,
+  Message: MessageStub,
   InputText: true,
   Button: ButtonStub,
   FileBrowserDialog: true,
@@ -296,39 +303,101 @@ describe('FileImport', () => {
   })
 
   // PhLynx builds CellML, so it is nonsense to open it for a model written in
-  // Python or Myokit -- those users want their own file.
-  it('Edit opens the .py for an external python model, not PhLynx', async () => {
+  // Python or Myokit -- those users want their own file, in their own editor.
+  it('Edit source opens the .py in the user editor and says where it now lives', async () => {
     const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null)
+    editModelSource.mockResolvedValue({
+      path: '/studies/heart/user_funcs/user_model.py',
+      opened: true,
+      editor: 'xdg-open',
+      reason: '',
+      runs: true,
+    })
+    const wrapper = mount(FileImport, {
+      props: { modelId: 'abc', modelFormat: 'external_python', outputsDir: '/studies/heart' },
+      global: { stubs },
+    })
+    const btn = wrapper.find('[data-testid="start-edit"]')
+    // The button says what it will do: an editor opens, not a tab of source.
+    expect(btn.text()).toBe('Edit source')
+    expect(btn.attributes('title')).toContain('.py')
+    await btn.trigger('click')
+    await flushPromises()
+    expect(editModelSource).toHaveBeenCalledWith('abc', '/studies/heart')
+    // No browser tab: the file is open in the editor instead.
+    expect(openSpy).not.toHaveBeenCalled()
+    // The instructional message the user asked for: the full path, and that this
+    // copy is now the model.
+    const notice = wrapper.find('[data-testid="import-notice"]').text()
+    expect(notice).toContain('/studies/heart/user_funcs/user_model.py')
+    expect(notice).toContain('CUFLynx runs')
+    expect(wrapper.find('[data-testid="import-error"]').exists()).toBe(false)
+    openSpy.mockRestore()
+  })
+
+  it('Edit source opens the .mmt for a model converted from Myokit', async () => {
+    // The model itself is CellML by the time it is loaded (#27); converted_from
+    // is the only thing that still remembers it was written as a .mmt.
+    editModelSource.mockResolvedValue({
+      path: '/studies/heart/user_funcs/user_model.mmt',
+      opened: true,
+      editor: 'xdg-open',
+      reason: '',
+      // A .mmt is not what runs -- the CellML it converted into is -- so the
+      // message must not claim it is.
+      runs: false,
+    })
+    const wrapper = mount(FileImport, {
+      props: { modelId: 'abc', convertedFrom: 'br-1977.mmt', outputsDir: '/studies/heart' },
+      global: { stubs },
+    })
+    const btn = wrapper.find('[data-testid="start-edit"]')
+    expect(btn.text()).toBe('Edit source')
+    expect(btn.attributes('title')).toContain('.mmt')
+    await btn.trigger('click')
+    await flushPromises()
+    const notice = wrapper.find('[data-testid="import-notice"]').text()
+    expect(notice).toContain('/studies/heart/user_funcs/user_model.mmt')
+    expect(notice).toContain('drop the edited file back in')
+  })
+
+  // A headless or remote backend has no editor to launch. The path is still the
+  // useful half of the answer, so it is a notice, not an error banner.
+  it('a launch that could not happen shows the path rather than an error', async () => {
+    editModelSource.mockResolvedValue({
+      path: '/studies/heart/user_funcs/user_model.py',
+      opened: false,
+      editor: null,
+      reason: 'xdg-open: no desktop session (DISPLAY/WAYLAND_DISPLAY unset)',
+      runs: true,
+    })
+    const wrapper = mount(FileImport, {
+      props: { modelId: 'abc', modelFormat: 'external_python', outputsDir: '/studies/heart' },
+      global: { stubs },
+    })
+    await wrapper.find('[data-testid="start-edit"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="import-error"]').exists()).toBe(false)
+    const notice = wrapper.find('[data-testid="import-notice"]').text()
+    expect(notice).toContain('No editor could be opened')
+    expect(notice).toContain('/studies/heart/user_funcs/user_model.py')
+  })
+
+  // The one real refusal: without an outputs directory there is nowhere the
+  // edit could safely live, and the backend says so.
+  it('no outputs directory is an error banner, not a silent temp file', async () => {
+    editModelSource.mockRejectedValue({
+      response: { data: { detail: 'no outputs directory is set, so there is nowhere...' } },
+    })
     const wrapper = mount(FileImport, {
       props: { modelId: 'abc', modelFormat: 'external_python' },
       global: { stubs },
     })
-    const btn = wrapper.find('[data-testid="start-edit"]')
-    // The button says what it will do, so the user is not surprised by a tab
-    // full of source when they expected an editor.
-    expect(btn.text()).toBe('View source')
-    expect(btn.attributes('title')).toContain('.py')
-    await btn.trigger('click')
-    expect(openSpy).toHaveBeenCalledOnce()
-    expect(openSpy.mock.calls[0][0]).toBe('/api/models/abc/source')
-    openSpy.mockRestore()
-  })
-
-  it('Edit opens the .mmt for a model converted from Myokit', async () => {
-    const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null)
-    // The model itself is CellML by the time it is loaded (#27); converted_from
-    // is the only thing that still remembers it was written as a .mmt.
-    const wrapper = mount(FileImport, {
-      props: { modelId: 'abc', convertedFrom: 'br-1977.mmt' },
-      global: { stubs },
-    })
-    const btn = wrapper.find('[data-testid="start-edit"]')
-    expect(btn.text()).toBe('View source')
-    expect(btn.attributes('title')).toContain('.mmt')
-    await btn.trigger('click')
-    expect(openSpy).toHaveBeenCalledOnce()
-    expect(openSpy.mock.calls[0][0]).toBe('/api/models/abc/source')
-    openSpy.mockRestore()
+    await wrapper.find('[data-testid="start-edit"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="import-error"]').text()).toContain(
+      'no outputs directory is set',
+    )
   })
 
   it('Edit still opens PhLynx for a plain CellML model', async () => {

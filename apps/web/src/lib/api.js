@@ -112,13 +112,40 @@ export async function uploadCellML(fileOrFiles, outputDir = '') {
 /**
  * Direct URL to the file the user wrote, for a model that has one: the `.py` of
  * an external python model, or the `.mmt` a CellML model was converted from
- * (#27). Opened in a tab rather than fetched — it is served inline as text, and
- * "show me my model" is a thing to look at, not data the app needs.
+ * (#27). Served inline as text, so it is opened in a tab rather than fetched.
+ *
+ * Not what the Edit button does any more — that opens the file in the user's own
+ * editor, which only a local backend can do. This is the read-only half, and the
+ * one a remote or headless deployment can still offer.
+ *
+ * `outputsDir` makes it serve the study's copy when there is one, so the tab and
+ * the editor never show different versions of the same model.
  *
  * 404s for a plain CellML model, which is edited in PhLynx instead.
  */
-export function modelSourceUrl(modelId) {
-  return url(`/api/models/${encodeURIComponent(modelId)}/source`)
+export function modelSourceUrl(modelId, outputsDir = '') {
+  const base = url(`/api/models/${encodeURIComponent(modelId)}/source`)
+  return outputsDir ? `${base}?config_outputs_dir=${encodeURIComponent(outputsDir)}` : base
+}
+
+/**
+ * Put the model's source under the outputs directory and open it in the user's
+ * editor, on the machine the backend runs on.
+ *
+ * Returns `{path, filename, opened, editor, reason, runs}`. `opened: false` is a
+ * normal answer, not an error — a headless backend has no editor to launch, and
+ * the caller should still tell the user where `path` is. `runs` says whether
+ * that copy is the file CUFLynx simulates (true for a `.py`; a `.mmt` is the
+ * source of a CellML that runs in its place).
+ *
+ * 422s when no outputs directory is set: there is nowhere the edit could safely
+ * live, and a temp directory is exactly what this replaced.
+ */
+export async function editModelSource(modelId, outputsDir = '') {
+  const { data } = await axios.post(url(`/api/models/${encodeURIComponent(modelId)}/edit`), {
+    config_outputs_dir: outputsDir || '',
+  })
+  return data
 }
 
 // Fetch a bundled example as a File, so it can be fed straight through the

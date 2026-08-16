@@ -6,6 +6,7 @@ GET  /api/health                       liveness probe
 POST /api/models/upload                upload a .cellml file -> metadata
 GET  /api/models/{model_id}/variables  classified variable lists
 GET  /api/models/{model_id}/source     the .py / .mmt the user actually wrote
+POST /api/models/{model_id}/edit       open that source in the user's own editor
 POST /api/simulate                     single run (circulatory_autogen helper)
 POST /api/protocol/run                 multi-experiment protocol run
 POST /api/obs_data/upload              load obs_data.json (protocol + overlays)
@@ -56,6 +57,7 @@ import mmt_protocol
 import myokit_import
 import omex_import
 from aadc_check import aadc_status
+import editor_launch
 from version import __version__
 from compiler_check import compiler_status
 from engine import SimulationError, engine, _circulatory_autogen_src
@@ -95,6 +97,7 @@ from user_funcs import (
     delete_user_func,
     external_path as user_func_path,
     external_paths as user_func_paths,
+    model_source_path as study_model_source_path,
     read_user_funcs,
     save_model_module,
     save_user_func,
@@ -1062,8 +1065,10 @@ async def upload_model(
         path = UPLOAD_DIR / f"{model_id}.py"
         path.write_bytes(only_bytes)
         _models[model_id] = _ModelRecord(model_id, path, meta)
-        # A second copy beside the study's user funcs, so the model travels with
-        # the export the way an operation func does (CA's external_model_path).
+        # The study's own copy, beside its user funcs (CA's external_model_path).
+        # It travels with the export the way an operation func does -- and it is
+        # what runs: resolve_model_path prefers it over the uploaded temp file,
+        # so "Edit source" opens the model rather than a doomed sibling of it.
         # Best-effort: an unwritable output dir must not fail the upload, which
         # has already succeeded everywhere that matters.
         with contextlib.suppress(OSError):
@@ -1333,7 +1338,7 @@ def get_variables(model_id: str) -> dict:
 
 
 @app.get("/api/models/{model_id}/source")
-def get_model_source(model_id: str) -> FileResponse:
+def get_model_source(model_id: str, config_outputs_dir: str = "") -> FileResponse:
     """The file the user wrote, for a model that has one (#91 follow-up).
 
     Two kinds of model do. An ``external_python`` model **is** its ``.py``, and a
@@ -1342,9 +1347,15 @@ def get_model_source(model_id: str) -> FileResponse:
     rather than answering with the flattened document CUFLynx generated, which is
     not a file the user has ever seen.
 
-    Served as ``text/plain`` **inline**: this is the "show me my model" of the
-    Edit button, and a browser tab that displays the source is what was asked
-    for. A download would put the file somewhere the user then has to find.
+    Served as ``text/plain`` **inline**: a browser tab showing the source. This
+    is no longer what the Edit button does — that opens the file in the user's
+    own editor — but it is what a remote or headless deployment *can* do, and
+    reading your own model is worth a route on its own.
+
+    ``config_outputs_dir`` makes it show the same file the editor would: once a
+    study copy exists under the outputs directory, that copy is the model, and
+    answering with the uploaded original would show a version the user has since
+    edited away from.
 
     The model id is validated before anything is joined onto a path — the same
     rule ``solver_plots`` follows; a client string never becomes a path segment.
@@ -1358,6 +1369,11 @@ def get_model_source(model_id: str) -> FileResponse:
             status_code=404,
             detail="this model has no source file to show — a CellML model is edited in PhLynx",
         )
+    base_dir = _user_func_base_dir(config_outputs_dir)
+    if base_dir:
+        study_copy = study_model_source_path(path.suffix, base_dir)
+        if study_copy.is_file():
+            path = study_copy
     stem = _display_stem(record.meta.name, model_id)
     return FileResponse(
         path,
@@ -1365,6 +1381,90 @@ def get_model_source(model_id: str) -> FileResponse:
         filename=f"{stem}{path.suffix}",
         content_disposition_type="inline",
     )
+
+
+class ModelEditRequest(BaseModel):
+    #: The study's outputs directory. Required in practice — see the route: the
+    #: editable copy has to live somewhere the study keeps, and there is no
+    #: sensible temp-dir default for a file the user is about to invest work in.
+    config_outputs_dir: str = ""
+
+
+@app.post("/api/models/{model_id}/edit")
+def edit_model_source(model_id: str, req: ModelEditRequest) -> dict:
+    """Put the model's source under the outputs directory and open it for editing.
+
+    Three things happen, in this order, and the order is the point:
+
+    1. **The source is copied into the study**, at
+       ``<outputs>/user_funcs/user_model.<py|mmt>`` — beside the funcs, which is
+       already where an external_python model's ``.py`` is kept and what CA is
+       handed as ``external_model_path``. Only when it is not there yet: once it
+       exists it *is* the file, and re-pressing Edit must never overwrite the
+       work the last press produced.
+    2. **For a ``.py``, that copy becomes the model that runs.**
+       ``resolve_model_path`` prefers it over the uploaded temp file, on every
+       tier — the live engine, the sim worker, and the calibration / sensitivity
+       / UQ runners. Editing a file nothing executes would be a worse trap than
+       the TTL-pruned temp copy this replaces.
+    3. **It is opened in the user's editor** (``$VISUAL`` / ``$EDITOR``, else the
+       platform's default handler). A launch that cannot happen — headless
+       server, no handler — is reported as ``opened: false`` with a reason, not
+       as a failure: the caller still knows where the file is, which is most of
+       what was wanted.
+
+    A ``.mmt`` is copied and opened the same way but is **not** what runs: it was
+    converted to CellML at import, so ``runs`` comes back false and the caller
+    says the edited file has to be dropped back in to take effect.
+
+    Editing changes the *program*, not CUFLynx's idea of it: a ``.py`` whose
+    ``parameters`` or ``output_names`` change needs a re-upload for the sliders
+    to follow, because those were read by AST at the door.
+    """
+    if not _SAFE_MODEL_ID.match(str(model_id or "")):
+        raise HTTPException(status_code=404, detail="model source not found")
+    record = _get_model(model_id)
+    source = _model_source_path(model_id)
+    if source is None:
+        raise HTTPException(
+            status_code=404,
+            detail="this model has no source file to edit — a CellML model is edited in PhLynx",
+        )
+
+    base_dir = _user_func_base_dir(req.config_outputs_dir)
+    if not base_dir:
+        # Deliberately a refusal rather than a temp-dir fallback: an edited model
+        # dropped in the same pruned scratch directory this change exists to get
+        # out of would be lost, and silently.
+        raise HTTPException(
+            status_code=422,
+            detail="no outputs directory is set, so there is nowhere to keep an "
+            "editable copy of the model. Choose an outputs directory first, then "
+            "press Edit source again.",
+        )
+
+    target = study_model_source_path(source.suffix, base_dir)
+    try:
+        if not target.is_file():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(source.read_bytes())
+    except OSError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=f"could not write the model into {target.parent}: {exc}",
+        ) from exc
+
+    launch = editor_launch.open_in_editor(target)
+    return {
+        "path": str(target),
+        "filename": f"{_display_stem(record.meta.name, model_id)}{source.suffix}",
+        "opened": bool(launch["opened"]),
+        "editor": launch["editor"],
+        "reason": launch["reason"],
+        # Whether this copy is the one CUFLynx runs. True for external_python;
+        # false for a .mmt, which is the source of a CellML that runs instead.
+        "runs": source.suffix == ".py",
+    }
 
 
 @app.get("/api/models/{model_id}/solver_plots/{token}/{index}.png")
@@ -1435,13 +1535,18 @@ def simulate(req: SimulateRequest) -> dict:
     # of those the default is its declared output_names instead; without this
     # "just simulate it" would ask for nothing and draw an empty plot.
     outputs = req.outputs or record.meta.odes or record.meta.algebraic
+    # Resolved up front rather than beside the cost below: it also decides which
+    # copy of an external_python model is the one that runs.
+    output_dir = _user_func_base_dir(req.config_outputs_dir)
     try:
         # Resolve the path for the backend the *live* run will actually use: the
         # engine falls back when the configured format cannot run in-process
         # (#122), and a model generated for one backend is not readable by
         # another -- a generated .py handed to Myokit fails as invalid XML.
         live_type, live_solver, _fell_back = engine.live_backend()
-        model_path = resolve_model_path(str(record.path), live_type, model_id=req.model_id)
+        model_path = resolve_model_path(
+            str(record.path), live_type, model_id=req.model_id, output_dir=output_dir
+        )
         result = engine.simulate(
             model_id=req.model_id,
             model_path=model_path,
@@ -1463,7 +1568,6 @@ def simulate(req: SimulateRequest) -> dict:
     # Per data_item, the operation's series_output (transformed) series so the
     # Output plots overlay matches CA's saved figures (issue #111).
     if record.obs_data is not None:
-        output_dir = _user_func_base_dir(req.config_outputs_dir)
         result["output_series"] = compute_output_series(
             record.obs_data.data_items, result.get("outputs", {}), output_dir
         )
@@ -1491,9 +1595,13 @@ def protocol_run(req: ProtocolRunRequest) -> dict:
     # extra series is cheap; a cost that silently omits half the observables
     # looks like a better fit than it is.
     outputs = _with_obs_operands(outputs, record)
+    # See simulate(): also decides which copy of an external_python model runs.
+    output_dir = _user_func_base_dir(req.config_outputs_dir)
     try:
         live_type, live_solver, _fell_back = engine.live_backend()
-        model_path = resolve_model_path(str(record.path), live_type, model_id=req.model_id)
+        model_path = resolve_model_path(
+            str(record.path), live_type, model_id=req.model_id, output_dir=output_dir
+        )
         result = engine.run_protocol(
             model_id=req.model_id,
             model_path=model_path,
@@ -1517,7 +1625,6 @@ def protocol_run(req: ProtocolRunRequest) -> dict:
     # scoped to that experiment, keyed by its global data_item index so the
     # frontend can attach it to the matching overlay (issue #111).
     if record.obs_data is not None:
-        output_dir = _user_func_base_dir(req.config_outputs_dir)
         items = record.obs_data.data_items
         for e, exp in enumerate(result.get("experiments", [])):
             scoped = [
@@ -1618,7 +1725,9 @@ def cost_sensitivity_route(req: CostSensitivityRequest) -> dict:
 
     try:
         live_type, live_solver, _fell_back = engine.live_backend()
-        model_path = resolve_model_path(str(record.path), live_type, model_id=req.model_id)
+        model_path = resolve_model_path(
+            str(record.path), live_type, model_id=req.model_id, output_dir=output_dir
+        )
     except Exception as exc:  # noqa: BLE001 - a model that cannot be resolved owes a reason
         raise HTTPException(
             status_code=500, detail=engine.describe_exception(exc)
@@ -1744,7 +1853,9 @@ def cost_at_params(req: CostAtParamsRequest) -> dict:
 
     try:
         live_type, _live_solver, _fell_back = engine.live_backend()
-        model_path = resolve_model_path(str(record.path), live_type, model_id=req.model_id)
+        model_path = resolve_model_path(
+            str(record.path), live_type, model_id=req.model_id, output_dir=output_dir
+        )
         cost = _solver_cost_at(
             record, req.params,
             model_id=req.model_id,
@@ -2226,7 +2337,13 @@ def calibration_run(req: CalibrationRequest) -> dict:
         output_dir = str(UPLOAD_DIR / f"calib_{req.model_id}_{uuid.uuid4().hex[:8]}")
     config = {
         "model_id": req.model_id,
-        "model_path": resolve_model_path(str(record.path), engine.model_type, model_id=req.model_id),
+        # The *configured* outputs dir, not the temp fallback below it: that is
+        # where the study keeps its own copy of an external_python model, and the
+        # runner must resolve the same file the live engine does.
+        "model_path": resolve_model_path(
+            str(record.path), engine.model_type, model_id=req.model_id,
+            output_dir=configured or None,
+        ),
         "model_type": engine.model_type,
         "solver": engine.solver,
         "solver_info": dict(engine.solver_info),
@@ -2420,7 +2537,13 @@ def sensitivity_run(req: SensitivityRequest) -> dict:
     if req.settings.get("method") == "local":
         num_cores = 1
     config = {
-        "model_path": resolve_model_path(str(record.path), engine.model_type, model_id=req.model_id),
+        # The *configured* outputs dir, not the temp fallback below it: that is
+        # where the study keeps its own copy of an external_python model, and the
+        # runner must resolve the same file the live engine does.
+        "model_path": resolve_model_path(
+            str(record.path), engine.model_type, model_id=req.model_id,
+            output_dir=configured or None,
+        ),
         "model_type": engine.model_type,
         "solver": engine.solver,
         "solver_info": dict(engine.solver_info),
@@ -2597,8 +2720,11 @@ def emulator_train(req: EmulatorTrainRequest) -> dict:
         )
     output_dir = configured or str(UPLOAD_DIR / f"emu_{req.model_id}")
     config = {
+        # See the calibration config: the configured outputs dir decides which
+        # copy of an external_python model every tier runs.
         "model_path": resolve_model_path(
-            str(record.path), engine.model_type, model_id=req.model_id
+            str(record.path), engine.model_type, model_id=req.model_id,
+            output_dir=configured or None,
         ),
         "model_type": engine.model_type,
         "solver": engine.solver,
@@ -2845,7 +2971,13 @@ def uq_run(req: UQRequest) -> dict:
         output_dir = str(UPLOAD_DIR / f"uq_{req.model_id}_{uuid.uuid4().hex[:8]}")
     config = {
         "model_id": req.model_id,
-        "model_path": resolve_model_path(str(record.path), engine.model_type, model_id=req.model_id),
+        # The *configured* outputs dir, not the temp fallback below it: that is
+        # where the study keeps its own copy of an external_python model, and the
+        # runner must resolve the same file the live engine does.
+        "model_path": resolve_model_path(
+            str(record.path), engine.model_type, model_id=req.model_id,
+            output_dir=configured or None,
+        ),
         "model_type": engine.model_type,
         "solver": engine.solver,
         "solver_info": dict(engine.solver_info),

@@ -12,7 +12,7 @@ import {
   uploadObsData,
   uploadParamsForId,
   fetchExampleModel,
-  modelSourceUrl,
+  editModelSource,
   uploadOmex,
 } from '../lib/api'
 import { PHLYNX_URL } from '../lib/examples'
@@ -94,26 +94,50 @@ const sourceExt = computed(() => {
 
 // The box beside the CellML dropzone: "Create" (no model yet) opens the Start
 // dialog to pick an example or link to PhLynx; with a model loaded it either
-// shows the user's own source file or opens PhLynx, per `sourceExt`.
+// opens the user's own source file in their editor or opens PhLynx, per
+// `sourceExt`.
 const startEditLabel = computed(() => {
   if (!props.modelId) return 'Create'
-  return sourceExt.value ? 'View source' : 'Edit'
+  return sourceExt.value ? 'Edit source' : 'Edit'
 })
 const startEditTitle = computed(() => {
   if (!props.modelId) return 'Create a model: start from an example or build one in PhLynx'
   if (sourceExt.value) {
-    return `View the model source (${sourceExt.value}) in a new tab — edit it in your own editor and drop it again`
+    return `Open the model source (${sourceExt.value}) in your editor, saved in the outputs directory`
   }
   return 'Edit the current model in PhLynx'
 })
 
-function onStartEdit() {
+// Where the edited copy went, and what it means — the whole point of the button
+// being "Edit source" rather than "View source" is that the user knows which
+// file they are now working on.
+function editedSourceMessage(res) {
+  const where = res.runs
+    ? `Editing ${res.path} — that copy is the model CUFLynx runs from now on.`
+    : `Editing ${res.path} — CUFLynx runs the CellML converted from it, so drop the edited file back in to apply your changes.`
+  return res.opened ? where : `No editor could be opened here. ${where}`
+}
+
+async function onStartEdit() {
   if (!props.modelId) {
     startOpen.value = true
     return
   }
   if (sourceExt.value) {
-    window.open(modelSourceUrl(props.modelId), '_blank', 'noopener')
+    error.value = ''
+    notice.value = ''
+    try {
+      // The backend copies the source into the outputs directory and opens it
+      // there. A browser cannot start a local editor, so this is a server
+      // action on the same localhost assumption the file pickers already make.
+      const res = await editModelSource(props.modelId, props.outputsDir)
+      notice.value = editedSourceMessage(res)
+    } catch (e) {
+      // Only a real refusal (no outputs directory set) is an error banner. A
+      // launch that could not happen comes back 200 with `opened: false`, and
+      // is reported above as the path it wrote — which is still what was wanted.
+      error.value = e?.response?.data?.detail || String(e)
+    }
     return
   }
   // A link that opens PhLynx is enough for now; deeper integration is future
@@ -414,7 +438,7 @@ async function onParamsDrop(event) {
       </label>
       <Button
         :label="startEditLabel"
-        :icon="modelId ? (sourceExt ? 'pi pi-file' : 'pi pi-pencil') : 'pi pi-plus'"
+        :icon="modelId ? 'pi pi-pencil' : 'pi pi-plus'"
         size="small"
         class="params-edit-btn"
         data-testid="start-edit"

@@ -16,6 +16,8 @@ import {
   fetchExampleModel,
   costSensitivity,
   costAtParams,
+  editModelSource,
+  modelSourceUrl,
 } from './api'
 
 beforeEach(() => {
@@ -146,6 +148,26 @@ describe('api client', () => {
     await startSensitivity('mid', { method: 'local', nominal: 'current' }, cur)
     const [, body] = axios.post.mock.calls[0]
     expect(body.current_params).toEqual(cur)
+  })
+
+  it('asks the backend to open the model source, naming the outputs directory', async () => {
+    // A browser cannot start a local editor, so the copy-and-open is a server
+    // action and the outputs directory is where the editable copy has to land.
+    axios.post.mockResolvedValue({
+      data: { path: '/study/user_funcs/user_model.py', opened: true, runs: true },
+    })
+    const res = await editModelSource('abc 123', '/study')
+    const [url, body] = axios.post.mock.calls[0]
+    expect(url).toContain('/api/models/abc%20123/edit')
+    expect(body).toEqual({ config_outputs_dir: '/study' })
+    expect(res.path).toBe('/study/user_funcs/user_model.py')
+  })
+
+  it('the source URL carries the outputs dir so the tab shows the edited copy', () => {
+    expect(modelSourceUrl('abc')).toMatch(/\/api\/models\/abc\/source$/)
+    expect(modelSourceUrl('abc', '/study dir')).toContain(
+      'source?config_outputs_dir=%2Fstudy%20dir',
+    )
   })
 })
 

@@ -188,6 +188,22 @@ def _save_extra_figures(helper, out_dir):
     return entries
 
 
+def _model_stamp(model_path):
+    """``(path, mtime_ns, size)`` — the parent's ``engine.model_stamp``, here.
+
+    Kept identical in shape and in meaning: the path is part of it because an
+    external_python study's model moves from the uploaded copy to the study's own
+    copy the moment an outputs directory exists, and that is a different file
+    under an unchanged model_id.
+    """
+    path = str(model_path)
+    try:
+        st = os.stat(path)
+    except OSError:
+        return (path, 0, -1)
+    return (path, st.st_mtime_ns, st.st_size)
+
+
 class Worker:
     def __init__(self):
         self.ca_src = ""
@@ -198,6 +214,8 @@ class Worker:
         self._helpers: dict = {}
         self._runners: dict = {}
         self._runner_protocol_info: dict = {}
+        # model_id -> the _model_stamp() the cached helper/runner was built from.
+        self._model_stamps: dict = {}
 
     # -- setup ---------------------------------------------------------
     def configure(self, msg):
@@ -217,7 +235,26 @@ class Worker:
             sys.path.insert(0, self.ca_src)
         return {"python": sys.executable, "version": sys.version.split()[0]}
 
+    def _drop_if_model_changed(self, model_id, model_path):
+        """Forget this model's cached helper/runner when its file has changed.
+
+        The parent does the same to its own caches (``engine._drop_if_model_changed``);
+        both tiers have to, because an ``external_python`` model is a ``.py`` the
+        user edits in their own editor while the app is running, and whichever
+        tier kept a stale copy would be the one that silently ran the old model.
+        Duplicated rather than imported for the same reason the protocol helpers
+        below are: this script runs in the *user's* interpreter, and must not
+        drag the API's modules into it.
+        """
+        stamp = _model_stamp(model_path)
+        if self._model_stamps.get(model_id, stamp) != stamp:
+            self._helpers.pop(model_id, None)
+            self._runners.pop(model_id, None)
+            self._runner_protocol_info.pop(model_id, None)
+        self._model_stamps[model_id] = stamp
+
     def _helper(self, model_id, model_path, sim_time, pre_time):
+        self._drop_if_model_changed(model_id, model_path)
         helper = self._helpers.get(model_id)
         if helper is None:
             from solver_wrappers import get_simulation_helper  # noqa: PLC0415
@@ -235,6 +272,7 @@ class Worker:
         return helper
 
     def _runner(self, model_id, model_path):
+        self._drop_if_model_changed(model_id, model_path)
         runner = self._runners.get(model_id)
         if runner is None:
             from protocol_runners import ProtocolRunner  # noqa: PLC0415

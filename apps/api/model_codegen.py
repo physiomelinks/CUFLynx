@@ -16,6 +16,7 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
+import user_funcs
 from engine import _ensure_ca_on_path
 
 # Generated modules live next to the uploads, keyed by model + format so the two
@@ -57,16 +58,37 @@ def generate_python_model(cellml_path: str, *, casadi_compat: bool, module_name:
     return py_path
 
 
-def resolve_model_path(cellml_path: str, model_type: str, *, model_id: str | None = None) -> str:
+def resolve_model_path(
+    cellml_path: str,
+    model_type: str,
+    *,
+    model_id: str | None = None,
+    output_dir: str | None = None,
+) -> str:
     """Path to feed CA for this format: the CellML for ``cellml_only``, the user's
     own module for ``external_python``, else the generated ``.py`` (generating +
-    caching on first use)."""
+    caching on first use).
+
+    ``output_dir`` is the study's outputs directory (``config_outputs_dir``).
+    It only matters for ``external_python``, and there it decides *which copy of
+    the user's module is the model* — see below. Every caller passes it, because
+    two tiers disagreeing about which file is the model would be worse than
+    either choice on its own.
+    """
     if model_type in (None, "", "cellml_only"):
         return str(cellml_path)
-    # An external_python model *is* the file the user uploaded: there is nothing
-    # to generate from, and nothing that could generate it. Verbatim, so the path
-    # CA imports is the path the upload wrote.
+    # An external_python model *is* a file the user wrote: there is nothing to
+    # generate from, and nothing that could generate it. Two copies of it exist —
+    # the upload under the (TTL-pruned) temp directory, and the study's own copy
+    # at <outputs>/user_funcs/user_model.py, which travels with the export and is
+    # what "Edit source" opens. The study copy wins wherever there is one, so the
+    # file the user edits is the file that runs; the upload is the fallback for a
+    # session with no outputs directory configured yet.
     if model_type == "external_python":
+        if output_dir:
+            study_copy = user_funcs.model_source_path(".py", str(output_dir))
+            if study_copy.is_file():
+                return str(study_copy)
         return str(cellml_path)
     casadi = model_type == "casadi_python"
     stem = model_id or Path(cellml_path).stem
