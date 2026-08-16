@@ -81,3 +81,17 @@ describe('StartDialog External Python section', () => {
     expect(steps.text()).toContain('Settings')
   })
 })
+
+describe('tour anchors', () => {
+  it('marks each of the four ways in', () => {
+    const wrapper = mount(StartDialog, { props: { visible: true }, global: { stubs } })
+    for (const id of [
+      'start-build-your-own',
+      'start-pmr',
+      'start-example',
+      'start-external-python',
+    ]) {
+      expect(wrapper.find(`[data-testid="${id}"]`).exists()).toBe(true)
+    }
+  })
+})

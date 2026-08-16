@@ -1,0 +1,132 @@
+import { describe, it, expect, afterEach } from 'vitest'
+import fs from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+import { TOUR_STEPS, present, gone } from './tourSteps'
+
+const SIDES = ['top', 'right', 'bottom', 'left']
+const TESTID_SELECTOR = /^\[data-testid="[a-z0-9-]+"\]$/
+
+const SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+
+/** Every `.vue` file under `src/`, read once. */
+function vueSources() {
+  const out = []
+  const walk = (dir) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name)
+      if (entry.isDirectory()) walk(full)
+      else if (entry.name.endsWith('.vue')) out.push({ file: path.relative(SRC, full), text: fs.readFileSync(full, 'utf8') })
+    }
+  }
+  walk(SRC)
+  return out
+}
+
+const idOf = (selector) => selector.replace(/^\[data-testid="/, '').replace(/"\]$/, '')
+
+/**
+ * A testid is "declared" when it appears literally in a template, or when a
+ * template literal builds it from a prefix -- `start-example-3compartment` is
+ * written as `` :data-testid="`start-example-${ex.name}`" ``, so the literal
+ * string never appears anywhere. Anything shorter than a whole `-`-separated
+ * prefix is not accepted, so this cannot degenerate into "some substring matches".
+ */
+function declaredIn(testid, sources) {
+  const hit = sources.find((s) => s.text.includes(`"${testid}"`))
+  if (hit) return hit.file
+  const parts = testid.split('-')
+  for (let i = 1; i < parts.length; i += 1) {
+    const prefix = `${parts.slice(0, i).join('-')}-\${`
+    const dyn = sources.find((s) => s.text.includes(prefix))
+    if (dyn) return dyn.file
+  }
+  return null
+}
+
+describe('tourSteps', () => {
+  it('ships exactly 37 steps', () => {
+    // A bare number, on purpose: an accidental deletion during an unrelated
+    // edit is otherwise invisible -- the tour just gets shorter.
+    expect(TOUR_STEPS.length).toBe(37)
+  })
+
+  it('gives every step a unique, non-empty id', () => {
+    const ids = TOUR_STEPS.map((s) => s.id)
+    for (const id of ids) expect(typeof id === 'string' && id.length > 0).toBe(true)
+    expect(new Set(ids).size).toBe(ids.length)
+  })
+
+  it('anchors every step on a data-testid selector and nothing else', () => {
+    // Class and tag selectors are what makes a hand-rolled tour rot: they are
+    // not asserted anywhere else, so they break silently.
+    for (const step of TOUR_STEPS) {
+      expect(step.target, `step ${step.id}`).toMatch(TESTID_SELECTOR)
+      if (step.advanceOn && step.advanceOn.target) {
+        expect(step.advanceOn.target, `step ${step.id} advanceOn`).toMatch(TESTID_SELECTOR)
+      }
+    }
+  })
+
+  it('gives every step text and one of the four sides', () => {
+    for (const step of TOUR_STEPS) {
+      expect(typeof step.text === 'string' && step.text.trim().length > 0, `step ${step.id}`).toBe(true)
+      expect(SIDES, `step ${step.id}`).toContain(step.side)
+    }
+  })
+
+  it('declares predicates as functions when it declares them at all', () => {
+    for (const step of TOUR_STEPS) {
+      if ('when' in step) expect(typeof step.when, `step ${step.id} when`).toBe('function')
+      if ('waitFor' in step) expect(typeof step.waitFor, `step ${step.id} waitFor`).toBe('function')
+      if ('advanceOn' in step) {
+        expect(typeof step.advanceOn.event, `step ${step.id} advanceOn.event`).toBe('string')
+      }
+    }
+  })
+
+  // The guard that matters. The tour points at testids from a separate file, so
+  // renaming one (say `eo-value`) breaks a step in the app and *nothing else* --
+  // no compile error, no other test. This is that error.
+  it('points every anchor at a testid that still exists in a .vue file', () => {
+    const sources = vueSources()
+    expect(sources.length).toBeGreaterThan(0)
+    const missing = []
+    for (const step of TOUR_STEPS) {
+      for (const selector of [step.target, step.advanceOn && step.advanceOn.target].filter(Boolean)) {
+        const testid = idOf(selector)
+        if (!declaredIn(testid, sources)) missing.push(`data-testid="${testid}" (tour step '${step.id}')`)
+      }
+    }
+    expect(
+      missing,
+      `tour anchors no longer in any .vue under src/:\n  ${missing.join('\n  ')}\n` +
+        'Either restore the testid or update the step in src/lib/tourSteps.js.',
+    ).toEqual([])
+  })
+})
+
+describe('present / gone', () => {
+  afterEach(() => {
+    document.body.innerHTML = ''
+  })
+
+  it('answer against the live document', () => {
+    const sel = '[data-testid="tour-fixture"]'
+    expect(present(sel)).toBe(false)
+    expect(gone(sel)).toBe(true)
+
+    const el = document.createElement('div')
+    el.setAttribute('data-testid', 'tour-fixture')
+    document.body.appendChild(el)
+    expect(present(sel)).toBe(true)
+    expect(gone(sel)).toBe(false)
+
+    // Dialog anchors are portalled onto document.body, outside #app -- these
+    // must query `document`, never an app root.
+    el.remove()
+    expect(present(sel)).toBe(false)
+    expect(gone(sel)).toBe(true)
+  })
+})

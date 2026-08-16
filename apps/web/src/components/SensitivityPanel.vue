@@ -193,7 +193,7 @@ function onRun() {
       <span class="cal-state" :data-state="state">{{ state }}</span>
     </header>
 
-    <div class="cal-form">
+    <div class="cal-form" data-testid="sa-settings">
       <label class="field">
         <span>Method</span>
         <Select

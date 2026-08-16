@@ -842,3 +842,14 @@ describe('EditParamsDialog — modifier parameters', () => {
     expect(calc.attributes('title')).toContain('pending upstream support')
   })
 })
+
+describe('tour anchors', () => {
+  it('marks the first row include/min/max and the modifier button', async () => {
+    const wrapper = mountDialog()
+    await flushPromises() // the modifier vocabulary gates the button
+    expect(wrapper.find('[data-testid="ep-include"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="ep-min"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="ep-max"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="ep-create-modifier"]').exists()).toBe(true)
+  })
+})

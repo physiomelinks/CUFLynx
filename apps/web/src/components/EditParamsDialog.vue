@@ -452,6 +452,9 @@ async function onSave() {
     </div>
 
     <ul class="ep-list">
+      <!-- The per-row testids below (ep-include / ep-min / ep-max) repeat on
+           every row: they mark the first row for the guided tour, which anchors
+           on the first match. -->
       <li
         v-for="row in visibleRows"
         :key="row.kind === 'modifier' ? `mod:${row.name}` : row.qname"
@@ -471,7 +474,7 @@ async function onSave() {
           />
         </span>
         <span class="ep-inc">
-          <Checkbox v-model="row.included" :binary="true" />
+          <Checkbox v-model="row.included" :binary="true" data-testid="ep-include" />
         </span>
         <span v-if="row.kind === 'modifier'" class="ep-name">
           <input
@@ -499,6 +502,7 @@ async function onSave() {
           :value="row.min"
           :disabled="!row.included || row.unbounded"
           :title="row.unbounded ? 'Derived from the prior' : ''"
+          data-testid="ep-min"
           @input="onNum(row, 'min', $event.target.value)"
         />
         <input
@@ -508,6 +512,7 @@ async function onSave() {
           :value="row.max"
           :disabled="!row.included || row.unbounded"
           :title="row.unbounded ? 'Derived from the prior' : ''"
+          data-testid="ep-max"
           @input="onNum(row, 'max', $event.target.value)"
         />
         <input

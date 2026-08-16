@@ -542,3 +542,10 @@ describe('CalibrationPanel start-from selector (#65 / #83)', () => {
     expect(wrapper.vm.optionValues.num_elite).toBe(12)
   })
 })
+
+describe('tour anchors', () => {
+  it('marks the settings form', () => {
+    const wrapper = mount(CalibrationPanel, { props: { canRun: true }, global: { stubs } })
+    expect(wrapper.find('[data-testid="calib-settings"]').exists()).toBe(true)
+  })
+})

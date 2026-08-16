@@ -304,3 +304,10 @@ describe('ControlPanel — grouped parameters (issue #193)', () => {
     expect(wrapper.find('[data-testid="slider-warning"]').exists()).toBe(false)
   })
 })
+
+describe('tour anchors', () => {
+  it('marks the panel root', () => {
+    const wrapper = mount(ControlPanel, { props: { sliders: sliderState(1) }, global: { stubs } })
+    expect(wrapper.find('[data-testid="control-panel"]').exists()).toBe(true)
+  })
+})

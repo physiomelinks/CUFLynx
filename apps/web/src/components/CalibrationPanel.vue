@@ -26,10 +26,11 @@ const props = defineProps({
 const emit = defineEmits(['run', 'cancel', 'change'])
 
 // Note: pre_time / sim_time are intentionally NOT here — calibration timing
-// comes from the obs_data.json protocol_info (see #13), and for a protocol-less
-// obs_data App.vue sends the top bar's t₁/pre with the run payload, so the cost
-// the runner minimises is the cost the Output plots show. The Python interpreter
-// is chosen once in the top bar (shared across calibration/sensitivity/UQ).
+// comes from the obs_data.json protocol_info (see #13), which is now the only
+// source of the run window anywhere in the app; App.vue states its totals in the
+// run payload, so the cost the runner minimises is the cost the Output plots
+// show. The Python interpreter is chosen once in the top bar (shared across
+// calibration/sensitivity/UQ).
 // CUFLynx-level settings that apply to every method (the per-method settings come
 // from CA's schema — see optionValues below). num_cores drives mpiexec parallelism;
 // gradient_method is the gradient source for gradient-based methods.
@@ -235,7 +236,7 @@ function onRun() {
       <span class="cal-state" :data-state="state">{{ state }}</span>
     </header>
 
-    <div class="cal-form">
+    <div class="cal-form" data-testid="calib-settings">
       <label class="field">
         <span>Method</span>
         <Select

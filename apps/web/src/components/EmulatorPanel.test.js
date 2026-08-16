@@ -334,3 +334,11 @@ describe('EmulatorPanel', () => {
     ).toBeDefined()
   })
 })
+
+describe('tour anchors', () => {
+  it('marks the training settings and the use-emulator row', () => {
+    const wrapper = mountPanel()
+    expect(wrapper.find('[data-testid="emu-settings"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="emu-use-row"]').exists()).toBe(true)
+  })
+})

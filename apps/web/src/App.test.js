@@ -29,6 +29,11 @@ vi.mock('./lib/api', () => ({
   getSensitivityStatus: vi.fn().mockResolvedValue({ state: 'running', log: '' }),
   cancelSensitivity: vi.fn().mockResolvedValue({}),
   startUQ: vi.fn().mockResolvedValue({ job_id: 'job-3' }),
+  // Emulator training: started, then polled once to a terminal state so the
+  // store's poll loop does not leave a timer behind.
+  startEmulatorTraining: vi.fn().mockResolvedValue({ job_id: 'job-4' }),
+  getEmulatorStatus: vi.fn().mockResolvedValue({ state: 'error', lines: [], error: '' }),
+  cancelEmulatorTraining: vi.fn().mockResolvedValue({}),
   getUQStatus: vi.fn().mockResolvedValue({ state: 'running', log: '' }),
   getUQProgress: vi.fn().mockResolvedValue({}),
   cancelUQ: vi.fn().mockResolvedValue({}),
@@ -67,6 +72,8 @@ import {
   listSavedRuns,
   loadSavedRun,
   simulate,
+  runProtocol,
+  startEmulatorTraining,
   costSensitivity,
   predictEmulator,
   costAtParams,
@@ -74,6 +81,16 @@ import {
 } from './lib/api'
 import { setNotificationCtor } from './lib/notify'
 import App from './App.vue'
+import TourOverlay from './components/TourOverlay.vue'
+import { TOUR_STEPS } from './lib/tourSteps'
+
+// Auto-run is the only way a run starts, and it is debounced by 300ms. A test
+// that seeds its own displayed run has to let the run its study triggers happen
+// first, or that run lands mid-test and replaces what was seeded.
+const drainAutoRun = async () => {
+  await new Promise((resolve) => setTimeout(resolve, 350))
+  await flushPromises()
+}
 
 describe('App.vue', () => {
   it('mounts without a setup-time error (guards against TDZ / use-before-declare)', () => {
@@ -1052,46 +1069,53 @@ describe('App.vue saved-run overlays (#126)', () => {
   describe('covering plots that do not exist yet', () => {
     const ALL_VARS = { params: [], odes: ['m/x'], algebraic: ['m/y'], all_names: [] }
 
+    // A run is a protocol run now -- the window is the protocol's -- so the
+    // displayed run is one experiment and the wider re-run is another.
     const mountForSave = async () => {
       const wrapper = shallowMount(App)
       await flushPromises()
       wrapper.vm.model.modelId.value = 'model-1'
       wrapper.vm.model.variables.value = { ...ALL_VARS }
+      wrapper.vm.obs.setObsData({
+        protocol_info: { pre_times: [0], sim_times: [[1]] },
+        data_items: [],
+      })
+      await drainAutoRun()
       // On screen: states only, which is what a live run asks for.
-      wrapper.vm.sim.setResult({ time: [0, 1], outputs: { 'm/x': [1, 2] } })
+      wrapper.vm.sim.setExperiments([{ time: [0, 1], outputs: { 'm/x': [1, 2] } }])
       await nextTick()
       return wrapper
     }
 
     it('re-runs asking for every plottable variable', async () => {
       const wrapper = await mountForSave()
-      simulate.mockClear()
-      simulate.mockResolvedValue({
-        time: [0, 1],
-        outputs: { 'm/x': [1, 2], 'm/y': [3, 4] },
+      runProtocol.mockClear()
+      runProtocol.mockResolvedValue({
+        experiments: [{ time: [0, 1], outputs: { 'm/x': [1, 2], 'm/y': [3, 4] } }],
       })
 
       await wrapper.vm.onSaveParams({ filename: 'run_a.npy' })
       await flushPromises()
 
-      expect(simulate).toHaveBeenCalledTimes(1)
-      expect(simulate.mock.calls[0][2].outputs).toEqual(
+      expect(runProtocol).toHaveBeenCalledTimes(1)
+      expect(runProtocol.mock.calls[0][2].outputs).toEqual(
         expect.arrayContaining(['m/x', 'm/y']),
       )
       // ...and the algebraic variable, absent from the displayed run, is saved.
-      expect(saveParams.mock.calls.at(-1)[4].outputs['m/y']).toEqual([3, 4])
+      expect(saveParams.mock.calls.at(-1)[4].experiments[0].outputs['m/y']).toEqual([3, 4])
     })
 
     // A solver failure while widening the outputs must not cost the save.
     it('falls back to the displayed run when the wider run fails', async () => {
       const wrapper = await mountForSave()
-      simulate.mockRejectedValue(new Error('solver failed'))
+      runProtocol.mockRejectedValue(new Error('solver failed'))
 
       await wrapper.vm.onSaveParams({ filename: 'run_a.npy' })
       await flushPromises()
 
       expect(saveParams).toHaveBeenCalled()
-      expect(saveParams.mock.calls.at(-1)[4].outputs['m/x']).toEqual([1, 2])
+      expect(saveParams.mock.calls.at(-1)[4].experiments[0].outputs['m/x']).toEqual([1, 2])
+      runProtocol.mockResolvedValue({ experiments: [] })
     })
 
     it('saves the displayed run when no model is loaded', async () => {
@@ -1099,8 +1123,10 @@ describe('App.vue saved-run overlays (#126)', () => {
       await flushPromises()
       wrapper.vm.sim.setResult({ time: [0], outputs: { 'm/x': [1] } })
       simulate.mockClear()
+      runProtocol.mockClear()
       await wrapper.vm.onSaveParams({ filename: 'run_a.npy' })
       await flushPromises()
+      expect(runProtocol).not.toHaveBeenCalled()
       expect(simulate).not.toHaveBeenCalled()
     })
   })
@@ -1187,11 +1213,16 @@ describe('App.vue best-fit overlay (#126)', () => {
     listSavedRuns.mockResolvedValue({ runs: [] })
     const wrapper = shallowMount(App)
     await flushPromises()
-    // A model id is what makes hasModel true; the best fit has to be simulated,
-    // so without one there is nothing to run it against.
+    // A model id is what makes hasModel true, and a protocol_info is what gives
+    // the run a window -- without both there is nothing to run the fit against.
     wrapper.vm.model.modelId.value = 'model-1'
     wrapper.vm.model.variables.value = { ...VARS }
-    wrapper.vm.sim.setResult({ time: [0, 1], outputs: { 'm/x': [1, 2] } })
+    wrapper.vm.obs.setObsData({
+      protocol_info: { pre_times: [0], sim_times: [[1]] },
+      data_items: [{ variable: 'm/x', operands: ['m/x'], plot_type: 'horizontal' }],
+    })
+    await drainAutoRun()
+    wrapper.vm.sim.setExperiments([{ time: [0, 1], outputs: { 'm/x': [1, 2] } }])
     wrapper.vm.calib.bestParams.value = best
     await flushPromises()
     return wrapper
@@ -1213,20 +1244,24 @@ describe('App.vue best-fit overlay (#126)', () => {
 
   it('runs the model at the fitted values only when ticked', async () => {
     const wrapper = await mountWithFit()
-    simulate.mockClear()
-    simulate.mockResolvedValue({ time: [0, 1], outputs: { 'm/x': [5, 6] } })
+    runProtocol.mockClear()
+    runProtocol.mockResolvedValue({
+      experiments: [{ time: [0, 1], outputs: { 'm/x': [5, 6] } }],
+    })
 
     await wrapper.vm.onToggleSavedRun('best fit')
     await flushPromises()
 
-    expect(simulate).toHaveBeenCalledTimes(1)
+    expect(runProtocol).toHaveBeenCalledTimes(1)
     // The fit only names calibrated params; the rest stay where the sliders are.
-    expect(simulate.mock.calls[0][1]).toMatchObject({ 'm/alpha': 9 })
+    expect(runProtocol.mock.calls[0][1]).toMatchObject({ 'm/alpha': 9 })
   })
 
   it('the fitted trace reaches the plot cell as an overlay', async () => {
     const wrapper = await mountWithFit()
-    simulate.mockResolvedValue({ time: [0, 1], outputs: { 'm/x': [5, 6] } })
+    runProtocol.mockResolvedValue({
+      experiments: [{ time: [0, 1], outputs: { 'm/x': [5, 6] } }],
+    })
     await wrapper.vm.onToggleSavedRun('best fit')
     await nextTick()
 
@@ -1237,7 +1272,9 @@ describe('App.vue best-fit overlay (#126)', () => {
   // A second calibration under the same name is a different run.
   it('takes down a shown best fit when a new one arrives', async () => {
     const wrapper = await mountWithFit()
-    simulate.mockResolvedValue({ time: [0, 1], outputs: { 'm/x': [5, 6] } })
+    runProtocol.mockResolvedValue({
+      experiments: [{ time: [0, 1], outputs: { 'm/x': [5, 6] } }],
+    })
     await wrapper.vm.onToggleSavedRun('best fit')
     expect(wrapper.vm.savedRuns.isShown('best fit')).toBe(true)
 
@@ -1433,20 +1470,141 @@ describe('App.vue AADC availability (#122)', () => {
   })
 })
 
-// Follow-up from testing #160: two spinners in the top bar on an empty app.
-describe('App.vue time controls', () => {
-  it('does not offer t1/pre before a model is loaded', async () => {
+// The run window has ONE source: the obs_data's protocol_info. The t₁/pre
+// spinners were a second one, and a calibration then ran over one window while
+// the live cost ran over the other -- the same parameters, two different costs.
+// So the spinners are gone, and with them the Run button (auto-run is the only
+// way to run) and the Clear obs data buttons.
+describe('App.vue top bar run window', () => {
+  const PROTOCOL = {
+    protocol_info: { pre_times: [1, 1], sim_times: [[2, 3], [4]] },
+    n_experiments: 2,
+    data_items: [],
+  }
+
+  const mounted = async ({ model = true, obsData = null } = {}) => {
     const wrapper = shallowMount(App)
     await flushPromises()
-    expect(wrapper.find('[data-testid="time-controls"]').exists()).toBe(false)
+    if (model) wrapper.vm.model.modelId.value = 'abc'
+    if (obsData) wrapper.vm.obs.setObsData(obsData)
+    await nextTick()
+    return wrapper
+  }
+
+  it('offers no t1/pre spinners, at any point', async () => {
+    const empty = await mounted({ model: false })
+    expect(empty.find('[data-testid="time-controls"]').exists()).toBe(false)
+    const withModel = await mounted()
+    expect(withModel.find('[data-testid="time-controls"]').exists()).toBe(false)
+    const withProtocol = await mounted({ obsData: PROTOCOL })
+    expect(withProtocol.find('[data-testid="time-controls"]').exists()).toBe(false)
   })
 
-  it('offers them once there is a model to run', async () => {
+  it('offers no Run button and no Clear obs data', async () => {
+    const wrapper = await mounted({ obsData: PROTOCOL })
+    const labels = wrapper
+      .findAllComponents({ name: 'Button' })
+      .map((b) => b.props('label'))
+    expect(labels).not.toContain('Run')
+    expect(labels).not.toContain('Clear obs data')
+  })
+
+  // The protocol readout is now the only visible statement of the run window, so
+  // it says the window and not only the shape of the protocol.
+  it('states the window the protocol sets', async () => {
+    const wrapper = await mounted({ obsData: PROTOCOL })
+    const text = wrapper.find('[data-testid="protocol-summary"]').text()
+    expect(text).toContain('2 experiment(s)')
+    expect(text).toContain('9') // total sim_times
+    expect(text).toContain('2') // total pre_times
+    expect(wrapper.vm.simTime).toBe(9)
+    expect(wrapper.vm.preTime).toBe(2)
+  })
+
+  it('says what is missing when a model has no protocol to run over', async () => {
+    const wrapper = await mounted()
+    expect(wrapper.find('[data-testid="protocol-summary"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="no-protocol"]').text()).toContain('protocol_info')
+    // ...and a data-only obs_data is the same state: overlays, but no window.
+    wrapper.vm.obs.setObsData({ has_protocol: false, data_items: [] })
+    await nextTick()
+    expect(wrapper.find('[data-testid="no-protocol"]').exists()).toBe(true)
+  })
+
+  it('says nothing at all before a model is loaded', async () => {
+    const wrapper = await mounted({ model: false })
+    expect(wrapper.find('[data-testid="no-protocol"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="protocol-summary"]').exists()).toBe(false)
+  })
+})
+
+// No protocol, no run: a request with no window to run over could not mean
+// anything, so nothing is sent and the top bar says why (above).
+describe('App.vue blocks running without a protocol', () => {
+  // Its own model id, so "was this app run?" is answered by the calls' model id
+  // rather than by a call count another still-mounted app could add to.
+  const MODEL = 'no-protocol-model'
+  const ranThisModel = () =>
+    [...simulate.mock.calls, ...runProtocol.mock.calls].some((c) => c[0] === MODEL)
+
+  const withModel = async () => {
     const wrapper = shallowMount(App)
     await flushPromises()
-    wrapper.vm.model.modelId.value = 'abc'
+    wrapper.vm.model.modelId.value = MODEL
     await nextTick()
-    expect(wrapper.find('[data-testid="time-controls"]').exists()).toBe(true)
+    return wrapper
+  }
+
+  it('runs nothing for a model with no obs_data', async () => {
+    const wrapper = await withModel()
+    await wrapper.vm.runSimulation()
+    await flushPromises()
+    expect(ranThisModel()).toBe(false)
+    // No spinner left turning, and no error banner: nothing has gone wrong.
+    expect(wrapper.vm.sim.status.value).toBe('idle')
+    expect(wrapper.vm.sim.message.value).toBe('')
+  })
+
+  it('runs nothing for a data-only obs_data either', async () => {
+    const wrapper = await withModel()
+    wrapper.vm.obs.setObsData({ has_protocol: false, data_items: [] })
+    await flushPromises()
+    await wrapper.vm.runSimulation()
+    await flushPromises()
+    expect(ranThisModel()).toBe(false)
+  })
+
+  it('does not debounce one into existence when a slider moves', async () => {
+    vi.useFakeTimers()
+    try {
+      const wrapper = await withModel()
+      wrapper.vm.sliders.addSlider('a/alpha', { min: 0, max: 2, value: 1 })
+      wrapper.vm.sliders.setValue('a/alpha', 1.5)
+      await nextTick()
+      vi.advanceTimersByTime(1000)
+      await flushPromises()
+      expect(ranThisModel()).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  // Auto-run is the only way to run, so loading the protocol is what starts one.
+  it('runs as soon as an obs_data with a protocol arrives', async () => {
+    vi.useFakeTimers()
+    try {
+      const wrapper = await withModel()
+      wrapper.vm.onObsDataLoaded({
+        protocol_info: { pre_times: [0], sim_times: [[5]] },
+        data_items: [],
+      })
+      await nextTick()
+      vi.advanceTimersByTime(1000)
+      await flushPromises()
+      expect(runProtocol.mock.calls.filter((c) => c[0] === MODEL)).toHaveLength(1)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
 
@@ -1536,7 +1694,11 @@ describe('App.vue cost sensitivities (#188)', () => {
     const wrapper = shallowMount(App)
     await flushPromises()
     wrapper.vm.model.modelId.value = 'm1'
-    wrapper.vm.obs.setObsData({ data_items: [{ variable: 'a/x', operands: ['a/x'] }] })
+    wrapper.vm.obs.setObsData({
+      // With a protocol: without one nothing runs at all, gradient included.
+      protocol_info: { pre_times: [0], sim_times: [[1]] },
+      data_items: [{ variable: 'a/x', operands: ['a/x'] }],
+    })
     wrapper.vm.sliders.addSlider('a/alpha', { min: 0, max: 2, value: 1 })
     wrapper.vm.sim.setResult({
       time: [0, 1],
@@ -1902,24 +2064,32 @@ describe('App.vue free-form (JSON) solver_info fields', () => {
   })
 })
 
-// The top bar's t₁/pre must travel with every analysis run: for a protocol-less
-// obs_data the runner otherwise falls back to sim_time=2.0 while the Output-plots
-// cost runs at the top bar's t₁ — the same best-fit parameters then score two
-// different costs (heat1d: calibration said 24.66, the plots said otherwise).
-describe('analysis runs carry the top-bar timeline', () => {
+// The protocol's window must travel with every analysis run: a runner handed
+// none falls back to sim_time=2.0 while the Output-plots cost runs over the
+// protocol's window -- the same best-fit parameters then score two different
+// costs (heat1d: calibration said 24.66, the plots said otherwise). Now that the
+// window has one source, both sides are that source.
+describe('analysis runs carry the protocol window', () => {
+  // 7 simulated, 1.5 of warm-up, spread over two experiments -- the payload
+  // carries the totals, not any one experiment's slice.
+  const PROTOCOL = {
+    protocol_info: { pre_times: [1, 0.5], sim_times: [[3, 1], [3]] },
+    data_items: [],
+  }
+
   const mountApp = async () => {
     const wrapper = shallowMount(App)
+    await flushPromises()
+    wrapper.vm.model.modelId.value = 'abc'
+    wrapper.vm.obs.setObsData(PROTOCOL)
     await flushPromises()
     return wrapper
   }
 
-  it('calibration payload includes sim_time/pre_time from the top bar', async () => {
+  it('calibration payload includes sim_time/pre_time from the protocol', async () => {
     const { startCalibration } = await import('./lib/api')
     startCalibration.mockClear()
     const wrapper = await mountApp()
-    wrapper.vm.simTime = 7
-    wrapper.vm.preTime = 1.5
-    await nextTick()
     wrapper.vm.onRunCalibration({ param_id_method: 'genetic_algorithm' })
     await flushPromises()
     expect(startCalibration).toHaveBeenCalledTimes(1)
@@ -1928,13 +2098,10 @@ describe('analysis runs carry the top-bar timeline', () => {
     expect(settings.pre_time).toBe(1.5)
   })
 
-  it('sensitivity payload includes sim_time/pre_time from the top bar', async () => {
+  it('sensitivity payload includes sim_time/pre_time from the protocol', async () => {
     const { startSensitivity } = await import('./lib/api')
     startSensitivity.mockClear()
     const wrapper = await mountApp()
-    wrapper.vm.simTime = 7
-    wrapper.vm.preTime = 1.5
-    await nextTick()
     wrapper.vm.onRunSensitivity({ analysis_type: 'global' })
     await flushPromises()
     expect(startSensitivity).toHaveBeenCalledTimes(1)
@@ -1943,19 +2110,37 @@ describe('analysis runs carry the top-bar timeline', () => {
     expect(settings.pre_time).toBe(1.5)
   })
 
-  it('UQ payload includes sim_time/pre_time from the top bar', async () => {
+  it('UQ payload includes sim_time/pre_time from the protocol', async () => {
     const { startUQ } = await import('./lib/api')
     startUQ.mockClear()
     const wrapper = await mountApp()
-    wrapper.vm.simTime = 7
-    wrapper.vm.preTime = 1.5
-    await nextTick()
     wrapper.vm.onRunUQ({ method: 'mcmc' })
     await flushPromises()
     expect(startUQ).toHaveBeenCalledTimes(1)
     const settings = startUQ.mock.calls[0][1]
     expect(settings.sim_time).toBe(7)
     expect(settings.pre_time).toBe(1.5)
+  })
+
+  // CA's emulator staleness fingerprint covers protocol_info's times, so an
+  // emulator trained on a different window than the calibration uses is rejected
+  // as stale. One source is what keeps them equal.
+  it('emulator training uses the same window', async () => {
+    startEmulatorTraining.mockClear()
+    const wrapper = await mountApp()
+    wrapper.vm.onTrainEmulator({ model: 'GaussianProcess' })
+    await flushPromises()
+    expect(startEmulatorTraining).toHaveBeenCalledTimes(1)
+    const settings = startEmulatorTraining.mock.calls[0][1]
+    expect(settings.sim_time).toBe(7)
+    expect(settings.pre_time).toBe(1.5)
+  })
+
+  // The exported pipeline is the study written down; it has to state the same
+  // window the GUI ran.
+  it('the exported pipeline states the same window', async () => {
+    const wrapper = await mountApp()
+    expect(wrapper.vm.exportPayload()).toMatchObject({ sim_time: 7, pre_time: 1.5 })
   })
 })
 
@@ -2076,10 +2261,15 @@ describe('App.vue cost line with the emulator in use (#333)', () => {
       metadata: { feature_labels: ['u'] },
     })
     predictEmulator.mockResolvedValue({ labels: ['u'], values: [1], cost: emulatorCost })
-    simulate.mockResolvedValue({ time: [0, 1], outputs: {}, cost: SOLVER })
+    runProtocol.mockResolvedValue({ experiments: [{ time: [0, 1], outputs: {} }], cost: SOLVER })
     const wrapper = shallowMount(App)
     await flushPromises()
     wrapper.vm.model.modelId.value = 'abc'
+    // A run needs a window, and the protocol is where it comes from.
+    wrapper.vm.obs.setObsData({
+      protocol_info: { pre_times: [0], sim_times: [[1]] },
+      data_items: [],
+    })
     await flushPromises()
     wrapper.vm.emu.useEmulator.value = useEmulator
     await flushPromises()
@@ -2208,10 +2398,17 @@ describe('em cost says why it is missing', () => {
       metadata: { feature_labels: ['u'] },
     })
     predictEmulator.mockResolvedValue(predictResponse)
-    simulate.mockResolvedValue({ time: [0, 1], outputs: {}, cost: { cost: 1.0, items: [] } })
+    runProtocol.mockResolvedValue({
+      experiments: [{ time: [0, 1], outputs: {} }],
+      cost: { cost: 1.0, items: [] },
+    })
     const wrapper = shallowMount(App)
     await flushPromises()
     wrapper.vm.model.modelId.value = 'abc'
+    wrapper.vm.obs.setObsData({
+      protocol_info: { pre_times: [0], sim_times: [[1]] },
+      data_items: [],
+    })
     await flushPromises()
     wrapper.vm.emu.useEmulator.value = true
     await flushPromises()
@@ -2242,5 +2439,88 @@ describe('em cost says why it is missing', () => {
     })
     expect(wrapper.find('[data-testid="em-cost-unavailable"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="em-cost-value"]').text()).toBe('2.5')
+  })
+})
+
+// The guided tour anchors on data-testid, so the anchors are asserted the same
+// way tested elements are -- a rename that breaks the tour breaks a test first.
+describe('tour anchors', () => {
+  it('marks the Output plots pane', () => {
+    const wrapper = shallowMount(App)
+    expect(wrapper.find('[data-testid="plot-groups"]').exists()).toBe(true)
+  })
+})
+
+// The tour itself: App owns the step index and the "have they seen it" flag,
+// and the overlay is a stub under shallowMount -- so these assert on the stub's
+// props, not on rendered bubble DOM (TourOverlay.test.js covers that).
+describe('guided tour', () => {
+  beforeEach(() => {
+    localStorage.clear()
+  })
+  afterEach(() => {
+    localStorage.clear()
+  })
+
+  const overlay = (wrapper) => wrapper.findComponent(TourOverlay)
+
+  it('offers a Tutorial button in the top bar', () => {
+    const wrapper = shallowMount(App)
+    expect(wrapper.find('[data-testid="tour-start"]').exists()).toBe(true)
+    // Nothing runs until it is asked for.
+    expect(overlay(wrapper).exists()).toBe(false)
+  })
+
+  it('pulses only until the tour has been met once', async () => {
+    const fresh = shallowMount(App)
+    expect(fresh.find('[data-testid="tour-start"]').classes()).toContain('tour-pulse')
+
+    localStorage.setItem('cuflynx-tour-seen', '1')
+    const seen = shallowMount(App)
+    expect(seen.find('[data-testid="tour-start"]').classes()).not.toContain('tour-pulse')
+  })
+
+  it('opens the overlay at step 0 with the whole step list', async () => {
+    const wrapper = shallowMount(App)
+    await wrapper.find('[data-testid="tour-start"]').trigger('click')
+    await nextTick()
+    const tour = overlay(wrapper)
+    expect(tour.exists()).toBe(true)
+    expect(tour.props('step')).toBe(0)
+    expect(tour.props('steps')).toBe(TOUR_STEPS)
+    expect(tour.props('steps').length).toBe(37)
+    // The ctx is getters over App's own state, read on the overlay's tick.
+    expect(typeof tour.props('ctx').hasModel).toBe('function')
+    expect(tour.props('ctx').hasModel()).toBe(false)
+    // Starting it is itself an answer to "have they met it".
+    expect(localStorage.getItem('cuflynx-tour-seen')).toBe('1')
+  })
+
+  it('closes on the overlay saying so, and remembers', async () => {
+    const wrapper = shallowMount(App)
+    await wrapper.find('[data-testid="tour-start"]').trigger('click')
+    await nextTick()
+    overlay(wrapper).vm.$emit('close', 'skip')
+    await nextTick()
+    expect(overlay(wrapper).exists()).toBe(false)
+    expect(localStorage.getItem('cuflynx-tour-seen')).toBe('1')
+    expect(wrapper.find('[data-testid="tour-start"]').classes()).not.toContain('tour-pulse')
+  })
+
+  // The step index is deliberately not persisted: resuming at step 19 into a
+  // reloaded, empty app is worse than starting again.
+  it('starts from the beginning every time', async () => {
+    const wrapper = shallowMount(App)
+    await wrapper.find('[data-testid="tour-start"]').trigger('click')
+    await nextTick()
+    overlay(wrapper).vm.$emit('update:step', 19)
+    await nextTick()
+    expect(overlay(wrapper).props('step')).toBe(19)
+
+    overlay(wrapper).vm.$emit('close', 'finish')
+    await nextTick()
+    await wrapper.find('[data-testid="tour-start"]').trigger('click')
+    await nextTick()
+    expect(overlay(wrapper).props('step')).toBe(0)
   })
 })

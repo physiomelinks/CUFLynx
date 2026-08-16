@@ -21,6 +21,8 @@ import Select from 'primevue/select'
 import Checkbox from 'primevue/checkbox'
 import Dialog from 'primevue/dialog'
 import FileBrowserDialog from './components/FileBrowserDialog.vue'
+import TourOverlay from './components/TourOverlay.vue'
+import { TOUR_STEPS } from './lib/tourSteps'
 
 import { useModel } from './stores/useModel'
 import { useSliders, shouldUseLog } from './stores/useSliders'
@@ -33,7 +35,8 @@ import { useSensitivity } from './stores/useSensitivity'
 import { useUQ } from './stores/useUQ'
 import {
   getVariables,
-  simulate,
+  // No `simulate`: a run is a protocol run now, because the run window is the
+  // protocol's and a single run has no other way to say how long it lasts.
   runProtocol,
   costSensitivity,
   costAtParams,
@@ -61,6 +64,7 @@ import {
   withOverlayVars,
   timeUnit,
 } from './lib/plot'
+import { fmtSigFigs } from './lib/format'
 import SearchableSelect from './components/SearchableSelect.vue'
 import SaveParamsDialog from './components/SaveParamsDialog.vue'
 import { requestNotificationPermission } from './lib/notify'
@@ -85,8 +89,28 @@ const sa = useSensitivity()
 const emu = useEmulator()
 const uq = useUQ()
 
-const simTime = ref(10)
-const preTime = ref(0)
+// The run window is the obs_data's `protocol_info`, and nothing else can set it.
+// It used to be settable in two places -- these two values as top-bar spinners,
+// or the protocol -- and a calibration then ran over one window while the live
+// cost ran over the other, so the same parameters scored two different costs.
+// They are derived here, from the one source, for the payload builders that have
+// to state a window explicitly (`runTimes()`, the pipeline export, cost_at_params).
+//
+// The fallbacks are the API's own defaults and apply only where there is no
+// protocol -- a state in which nothing can be run at all (`canRun`), so they
+// describe no run the user can see; they are here so an export of a
+// protocol-less study is no worse than it was.
+const DEFAULT_SIM_TIME = 10
+const DEFAULT_PRE_TIME = 0
+const simTime = computed(() => obs.protocolSimTime.value ?? DEFAULT_SIM_TIME)
+const preTime = computed(() => obs.protocolPreTime.value ?? DEFAULT_PRE_TIME)
+
+/**
+ * Whether the model can be run at all: something to run, and a window to run it
+ * over. Without a `protocol_info` there is no window, so a request would be a
+ * guess presented as a result -- the top bar says what is missing instead.
+ */
+const canRun = computed(() => model.hasModel.value && obs.hasProtocol.value)
 
 // Where outputs are written. Chosen at startup (see the outputs-dir prompt) and
 // remembered across sessions; blank => backend uses a temp dir.
@@ -597,6 +621,55 @@ function restoreLhs() {
 // Center column tab: 'plots' | 'progress' | 'analysis'
 const centerTab = ref('plots')
 
+/* ------------------------------------------------------------------ *
+ * Guided tour
+ * ------------------------------------------------------------------ */
+
+// TourOverlay only ever *reads* the app: it waits for the user to click the
+// real control, so a wrong click can never strand them, and nothing here can
+// be driven from a step definition.
+const tourOpen = ref(false)
+const tourStep = ref(0)
+// Only "have they met it", so the button stops asking. Same `cuflynx-` key
+// convention as the theme, and read the same way (no try/catch, because
+// nothing else here guards localStorage either).
+const tourSeen = ref(localStorage.getItem('cuflynx-tour-seen') === '1')
+
+// A stable plain object of *getters*, not a computed and not watchers: the
+// overlay reads it on a 200 ms tick, and a reactive wrapper would turn every
+// tick into a dependency and a re-render.
+//
+// What is deliberately NOT here: whether the obs_data / params_for_id /
+// custom-funcs dialogs are open. Those are local refs inside FileImport and
+// EditObsDataDialog with no exposed method, and lifting them into App.vue to
+// serve a tour would invert the ownership this codebase has settled on — for a
+// 200 ms-granularity signal the DOM already carries. Those steps read the DOM
+// instead (`gone('[data-testid="edit-obs"]')`).
+const tourCtx = {
+  hasModel: () => model.hasModel.value,
+  settingsOpen: () => settingsOpen.value,
+  leftTab: () => leftTab.value,
+  centerTab: () => centerTab.value,
+  hasObsData: () => obs.hasObsData.value,
+  hasEmulator: () => emu.trained.value,
+}
+
+function markTourSeen() {
+  tourSeen.value = true
+  localStorage.setItem('cuflynx-tour-seen', '1')
+}
+function startTour() {
+  // The step index is deliberately not persisted: resuming at step 19 into a
+  // reloaded, empty app is worse than starting over.
+  tourStep.value = 0
+  tourOpen.value = true
+  markTourSeen()
+}
+function onTourClose() {
+  tourOpen.value = false
+  markTourSeen()
+}
+
 // Individual-plot maximize (issue #115): the key of the output plot expanded to
 // fill the middle window, or null for the normal grid. Toggled per plot.
 const maximizedPlot = ref(null)
@@ -754,8 +827,10 @@ let costSensAbort = null
 // is not necessarily the run that was asked for last.
 let costSensToken = 0
 
+// A gradient of the displayed cost is a run like any other -- 2M+1 of them --
+// so it needs the same window the run needs (`canRun`), not merely an obs_data.
 const costSensAvailable = computed(
-  () => obs.hasObsData.value && sliders.count.value > 0,
+  () => canRun.value && sliders.count.value > 0,
 )
 const costSensState = computed(() => {
   if (costSensStatus.value !== 'ready') return costSensStatus.value
@@ -886,6 +961,22 @@ watch(timeUnitOverride, (v) => localStorage.setItem('cuflynx-time-unit', (v || '
 const timeUnitLabel = computed(
   () => modelTimeUnit.value || timeUnitOverride.value.trim(),
 )
+
+// The run window, said out loud beside the experiment count: how long the study
+// simulates for, and how much of that is warm-up. The count alone described the
+// protocol's shape but never its length, which is the number the removed t₁/pre
+// spinners used to show — so it is stated here instead of nowhere.
+const runWindowLabel = computed(() => {
+  const unit = timeUnitLabel.value ? ` ${timeUnitLabel.value}` : ''
+  const pre = preTime.value
+    ? ` (+ ${fmtSigFigs(preTime.value, 4)}${unit} pre)`
+    : ''
+  return `${fmtSigFigs(simTime.value, 4)}${unit}${pre}`
+})
+
+const runWindowTitle =
+  'The run window comes from the obs_data protocol_info: the total of its ' +
+  'sim_times, after the total of its pre_times. Edit the protocol to change it.'
 
 // Variables the user has overlaid onto an existing plot (issue #196), as
 // cellKey -> [qname]. Keyed by the *cell* rather than by an id of its own
@@ -1242,11 +1333,12 @@ const paramLabels = computed(() => {
   return out
 })
 
-// The top bar's t₁/pre travel with every analysis run. For an obs_data with a
-// protocol they are ignored (protocol timing wins, #13); for a protocol-less
-// obs_data they are what the runner simulates over — without them, calibration
-// silently fell back to sim_time=2.0 while the Output-plots cost ran at the top
-// bar's t₁, so the same best-fit parameters scored two different costs.
+// The protocol's window travels with every analysis run. The runner takes its
+// timing from the obs_data's protocol_info (#13), so these are the same numbers
+// stated explicitly — sent because a runner handed neither silently fell back to
+// sim_time=2.0 while the Output-plots cost ran at the top bar's t₁, and the same
+// best-fit parameters then scored two different costs. Now that both come from
+// protocol_info the two cannot disagree.
 function runTimes() {
   return { sim_time: simTime.value, pre_time: preTime.value }
 }
@@ -1395,8 +1487,9 @@ function onTrainEmulator(settings) {
     ...settings,
     // The SAME window every other analysis uses. CA's staleness fingerprint covers
     // protocol_info's sim_times, so an emulator trained on the runner's fallback and
-    // then used by a calibration running at the top bar's t₁ is rejected as stale --
-    // "the model, parameter bounds, obs_data operations or protocol differ".
+    // then used by a calibration running over a different window is rejected as
+    // stale -- "the model, parameter bounds, obs_data operations or protocol
+    // differ". One source for the window is what keeps every side equal.
     ...runTimes(),
     python_path: pythonPath.value,
     config_outputs_dir: outputsDir.value.trim() || undefined,
@@ -1700,9 +1793,9 @@ async function savedRunResult() {
   const onScreen = sim.experiments.value.length
     ? { experiments: sim.experiments.value }
     : sim.result.value
-  if (!model.hasModel.value) return onScreen
+  if (!canRun.value) return onScreen
   try {
-    return await runWithParams(sliders.paramDict.value, { allOutputs: true })
+    return (await runWithParams(sliders.paramDict.value, { allOutputs: true })) ?? onScreen
   } catch {
     return onScreen
   }
@@ -1774,7 +1867,7 @@ const BEST_FIT_PREFIX = 'best fit'
 
 async function loadBestFitRun() {
   const best = calib.bestParams.value
-  if (!best || !model.hasModel.value) return null
+  if (!best || !canRun.value) return null
   // The fit only names the calibrated parameters; everything else stays where
   // the sliders are, so the comparison isolates what calibration changed. A
   // modifier's slots carry θ and must be expanded to θ·baseline before they
@@ -1784,6 +1877,7 @@ async function loadBestFitRun() {
     ...expandBestFitParams(best, calib.bestModifiers.value),
   }
   const data = await runWithParams(params)
+  if (!data) return null
   return { prefix: BEST_FIT_PREFIX, params, ...data }
 }
 
@@ -1849,7 +1943,7 @@ function onObsDataLoaded(payload) {
 
 let timer = null
 function scheduleRun() {
-  if (!model.hasModel.value) return
+  if (!canRun.value) return
   clearTimeout(timer)
   // Drop any pending or in-flight gradient first: the parameters it is about
   // have just changed, and left running it would hold the engine while the user
@@ -1861,115 +1955,64 @@ function scheduleRun() {
 /**
  * Run the model at `params` and return the raw result, without touching the
  * displayed run. Shared with runSimulation so an overlay (the best fit, #126)
- * is produced exactly the way the live trace is — same outputs, same protocol
- * vs single-run choice — instead of by a second, drifting copy of these rules.
+ * is produced exactly the way the live trace is — same outputs, same protocol —
+ * instead of by a second, drifting copy of these rules.
+ *
+ * Returns null when there is nothing runnable (no model, or no protocol to run
+ * it over): the caller keeps whatever it already had rather than showing the
+ * result of a run that could not describe anything.
  */
 async function runWithParams(params, { allOutputs = false } = {}) {
-  // Asking for every plottable variable means asking for some the solver cannot
-  // resolve -- the CellML parser classifies variables the engine has no output
-  // for (3compartment's pvn_module.R_v among them). Strict validation then
-  // failed the whole request, so the wider save silently fell back to the
-  // on-screen run and only one saved run ever covered an added plot (#150).
-  const best = allOutputs ? { bestEffortOutputs: true } : {}
+  if (!canRun.value) return null
   // `allOutputs` widens the request to every plottable variable. A live run asks
   // only for what is on screen, because every slider drag pays for it — but a
   // saved run has to answer plots that do not exist yet (#148).
   const everything = allOutputs ? plottableVariables.value : []
-  if (obs.hasProtocol.value) {
-    const outputs = [
-      ...new Set([
-        ...obs.plotVariables.value.map((v) => v.qname),
-        ...extraOutputNames.value,
-        ...everything,
-      ]),
-    ]
-    const data = await runProtocol(model.modelId.value, params, {
-      outputs,
-      outputsDir: outputsDir.value.trim() || undefined,
-    })
-    return { experiments: data.experiments }
-  }
-  if (obs.hasObsData.value) {
-    const outputs = [
-      ...new Set([
-        ...obs.plotVariables.value.map((v) => v.qname),
-        ...extraOutputNames.value,
-        ...everything,
-      ]),
-    ]
-    const data = await simulate(model.modelId.value, params, {
-      outputs,
-      outputsDir: outputsDir.value.trim() || undefined,
-      ...best,
-    })
-    return { time: data.time, outputs: data.outputs }
-  }
-  const opts = { simTime: simTime.value, preTime: preTime.value, ...best }
-  if (extraOutputNames.value.length || everything.length) {
-    opts.outputs = [
-      ...new Set([
-        ...model.defaultOutputs.value,
-        ...extraOutputNames.value,
-        ...everything,
-      ]),
-    ]
-  }
-  const data = await simulate(model.modelId.value, params, opts)
-  return { time: data.time, outputs: data.outputs }
+  const outputs = [
+    ...new Set([
+      ...obs.plotVariables.value.map((v) => v.qname),
+      ...extraOutputNames.value,
+      ...everything,
+    ]),
+  ]
+  const data = await runProtocol(model.modelId.value, params, {
+    outputs,
+    outputsDir: outputsDir.value.trim() || undefined,
+  })
+  return { experiments: data.experiments }
 }
 
 async function runSimulation() {
-  if (!model.hasModel.value) return
+  // Nothing to run, or no window to run it over — see `canRun`. Silent on
+  // purpose: the top bar already says what is missing, and a failed request or a
+  // spinner left turning would present it as a fault instead.
+  if (!canRun.value) return
   sim.setRunning()
   const started = performance.now()
   // The parameters this run is about, for the em cost beside it to be checked
   // against (#333): two costs of two different points are not a comparison.
   const at = paramSignature()
   try {
-    if (obs.hasProtocol.value) {
-      // Protocol run: pre_times/sim_times come from the obs_data protocol_info.
-      // Request the obs-referenced variables plus any user-added plots, keep
-      // every experiment, and render one plot per (experiment, variable).
-      const outputs = liveOutputs()
-      const data = await runProtocol(model.modelId.value, sliders.paramDict.value, {
-        outputs,
-        outputsDir: outputsDir.value.trim() || undefined,
-      })
-      backendFallback.value = data.backend_fallback ?? null
-      sim.setExperiments(
-        data.experiments,
-        data.warnings,
-        performance.now() - started,
-        data.cost ?? null,
-        // Figures the solver drew for this run, if it draws any (an external
-        // python model's extra_plots()). A protocol run's payload is not handed
-        // to the store wholesale, so they travel as an argument like the cost.
-        data.solver_plots ?? [],
-      )
-    } else if (obs.hasObsData.value) {
-      // Data-only obs_data: overlays only, no protocol. The manual t1/pre are
-      // not used; run with backend defaults and plot the referenced variables
-      // plus any user-added plots.
-      const outputs = liveOutputs()
-      const data = await simulate(model.modelId.value, sliders.paramDict.value, {
-        outputs,
-        outputsDir: outputsDir.value.trim() || undefined,
-      })
-      backendFallback.value = data.backend_fallback ?? null
-      sim.setResult(data, performance.now() - started)
-    } else {
-      // No obs_data: manual t1/pre drive the single run. Default outputs are the
-      // states; add any user-added plot variables so they're fetched too.
-      const opts = { simTime: simTime.value, preTime: preTime.value }
-      if (extraOutputNames.value.length) {
-        opts.outputs = [
-          ...new Set([...model.defaultOutputs.value, ...extraOutputNames.value]),
-        ]
-      }
-      const data = await simulate(model.modelId.value, sliders.paramDict.value, opts)
-      backendFallback.value = data.backend_fallback ?? null
-      sim.setResult(data, performance.now() - started)
-    }
+    // Protocol run: pre_times/sim_times come from the obs_data protocol_info,
+    // the one place the run window is stated. Request the obs-referenced
+    // variables plus any user-added plots, keep every experiment, and render one
+    // plot per (experiment, variable).
+    const outputs = liveOutputs()
+    const data = await runProtocol(model.modelId.value, sliders.paramDict.value, {
+      outputs,
+      outputsDir: outputsDir.value.trim() || undefined,
+    })
+    backendFallback.value = data.backend_fallback ?? null
+    sim.setExperiments(
+      data.experiments,
+      data.warnings,
+      performance.now() - started,
+      data.cost ?? null,
+      // Figures the solver drew for this run, if it draws any (an external
+      // python model's extra_plots()). A protocol run's payload is not handed
+      // to the store wholesale, so they travel as an argument like the cost.
+      data.solver_plots ?? [],
+    )
     lastRunAt.value = at
     // Only once the plot the user is watching is on screen, and only if they
     // asked for it (#188).
@@ -2133,11 +2176,12 @@ watch(
   },
 )
 
-watch(
-  () => ({ ...sliders.paramDict.value, _t: simTime.value, _p: preTime.value }),
-  scheduleRun,
-  { deep: true },
-)
+// Auto-run is the only way to run: moving a slider re-runs, and so does changing
+// the study it is a slider of. There is no Run button and no t₁/pre to key on —
+// the window is the protocol's, so a new (or re-edited, which re-uploads and
+// replaces) obs_data is what changes it.
+watch(() => ({ ...sliders.paramDict.value }), scheduleRun, { deep: true })
+watch(() => obs.obsData.value, scheduleRun)
 </script>
 
 <template>
@@ -2201,31 +2245,46 @@ watch(
         @click="settingsOpen = true"
       />
       <!--
-        Only once there is a model to run. They set the length of a plain manual
-        run, which is meaningless before anything is loaded, and on an empty app
-        they were two spinners in the top bar asking to be filled in.
+        The run window, in the one place it is stated. There are no t₁/pre
+        spinners to disagree with it and no Run button: the protocol says how
+        long the run is, and every parameter change re-runs it.
       -->
       <div
-        v-if="model.hasModel.value && !obs.hasObsData.value"
-        class="time-controls"
-        data-testid="time-controls"
-      >
-        <label>t₁ <InputNumber v-model="simTime" :min="0" show-buttons size="small" /></label>
-        <label>pre <InputNumber v-model="preTime" :min="0" show-buttons size="small" /></label>
-      </div>
-      <div
-        v-else-if="obs.hasProtocol.value"
+        v-if="obs.hasProtocol.value"
         class="protocol-summary"
         data-testid="protocol-summary"
+        :title="runWindowTitle"
       >
-        Protocol: {{ obs.experimentCount.value }} experiment(s)
-        <Button label="Clear obs data" size="small" text @click="obs.clearObsData()" />
+        Protocol: {{ obs.experimentCount.value }} experiment(s) · {{ runWindowLabel }}
       </div>
-      <div v-else class="protocol-summary" data-testid="obs-overlay-summary">
-        Obs overlays: {{ obs.dataItems.value.length }} item(s)
-        <Button label="Clear obs data" size="small" text @click="obs.clearObsData()" />
+      <div
+        v-else-if="model.hasModel.value"
+        class="protocol-summary no-protocol"
+        data-testid="no-protocol"
+      >
+        Load an obs_data with a protocol_info to set the run window
       </div>
-      <Button label="Run" icon="pi pi-play" size="small" @click="runSimulation" />
+      <!--
+        No auto-start: a 37-step overlay thrown over an empty app is a hijack.
+        Until the tour has been seen once, the button pulses (three cycles, and
+        nothing at all under prefers-reduced-motion) and says more in its
+        tooltip. `tourSeen` is set on first start as well as on skip/finish, so
+        it asks exactly once.
+      -->
+      <Button
+        icon="pi pi-question-circle"
+        label="Tutorial"
+        size="small"
+        text
+        :class="{ 'tour-pulse': !tourSeen }"
+        :title="
+          tourSeen
+            ? 'Guided tour'
+            : 'Guided tour: how to get from nothing to a calibrated model'
+        "
+        data-testid="tour-start"
+        @click="startTour"
+      />
     </header>
 
     <main
@@ -2546,6 +2605,7 @@ watch(
           v-show="centerTab === 'plots'"
           class="plot-groups"
           :class="{ 'has-maximized': effectiveMaximized }"
+          data-testid="plot-groups"
         >
           <section
             v-for="g in plotGroups"
@@ -3167,6 +3227,18 @@ watch(
       </template>
     </Dialog>
 
+    <!--
+      `v-if`, not `v-show`: with the tour closed nothing runs at all — no
+      interval, no delegated listeners, no ResizeObserver.
+    -->
+    <TourOverlay
+      v-if="tourOpen"
+      v-model:step="tourStep"
+      :steps="TOUR_STEPS"
+      :ctx="tourCtx"
+      @close="onTourClose"
+    />
+
   </div>
 </template>
 
@@ -3281,10 +3353,41 @@ watch(
   margin: 0.25rem 0 0;
   word-break: break-all;
 }
-.time-controls {
+.protocol-summary {
   display: flex;
-  gap: 0.75rem;
+  gap: 0.5rem;
   align-items: center;
+  font-size: 0.8rem;
+  white-space: nowrap;
+}
+/* Not an error — nothing has gone wrong, a study is simply not complete yet. */
+.no-protocol {
+  opacity: 0.85;
+  font-style: italic;
+}
+
+/* The Tutorial button's pulse is the whole of the "auto-offer": three cycles,
+   once, while the tour has never been opened — instead of throwing a 37-step
+   overlay over an app the user has not filled in yet. */
+.tour-pulse {
+  animation: tour-pulse 1.6s ease-out 3;
+  border-radius: 4px;
+}
+@keyframes tour-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+  40% {
+    box-shadow: 0 0 0 3px var(--p-primary-color, #3b82f6);
+  }
+}
+/* Asked for no motion: give none. The tooltip still says more than the
+   seen-it-already one, so nothing is lost but the animation. */
+@media (prefers-reduced-motion: reduce) {
+  .tour-pulse {
+    animation: none;
+  }
 }
 .columns {
   display: grid;

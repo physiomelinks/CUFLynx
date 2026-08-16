@@ -148,7 +148,7 @@ function onRun() {
       <span class="cal-state" :data-state="state">{{ state }}</span>
     </header>
 
-    <div class="cal-form">
+    <div class="cal-form" data-testid="uq-settings">
       <label class="field">
         <span title="MCMC (emcee) posterior, or Laplace Gaussian approximation">Method</span>
         <Select

@@ -86,7 +86,7 @@ function groupTitle(s) {
 </script>
 
 <template>
-  <section class="control-panel">
+  <section class="control-panel" data-testid="control-panel">
     <header class="panel-header">
       <h2>Parameters</h2>
     </header>

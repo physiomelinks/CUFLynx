@@ -710,3 +710,21 @@ describe('EditObsDataDialog operand field (#160)', () => {
     expect(list.getAttribute('style')).toContain('top')
   })
 })
+
+describe('tour anchors', () => {
+  it('marks protocol_info, the data_items list and the first row fields', async () => {
+    const wrapper = mountDialog()
+    await flushPromises()
+    expect(wrapper.find('[data-testid="eo-protocol"]').exists()).toBe(true)
+    // The data_items list, not prediction_items (near-identical markup).
+    expect(wrapper.find('[data-testid="eo-data-items"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="eo-value"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="eo-std"]').exists()).toBe(true)
+    // The reduction picker, via SearchableSelect's `testid` prop.
+    expect(wrapper.find('[data-testid="eo-operation"]').exists()).toBe(true)
+    // weight / cost_type live in the expanded row detail.
+    await wrapper.find('button[aria-label="details"]').trigger('click')
+    expect(wrapper.find('[data-testid="eo-weight"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="eo-cost-type"]').exists()).toBe(true)
+  })
+})

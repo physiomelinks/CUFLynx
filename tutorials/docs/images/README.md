@@ -31,9 +31,10 @@ The state every shot was taken from:
    interpreter and **CA dir** to your circulatory_autogen checkout.
 3. Drop `funcs_user/heat_fenics/heat_fenics_model.py` on the model box, and its
    `heat_fenics_obs_data.json` / `heat_fenics_params_for_id.csv` on the other two.
-4. Set **t₁** to `2.0` and **dt** to `0.02` — the grid the model is sized for.
-5. Run once, so the traces, the reference lines and the `extra_plots()` figures
-   are all on screen.
+   The obs_data's `protocol_info` is the run window (2 s from `t = 0`); set **dt**
+   to `0.02` in Settings for the grid the model is sized for.
+4. Nudge a slider so a run fires, and the traces, the reference lines and the
+   `extra_plots()` figures are all on screen.
 
 The emulator shot additionally needs a trained emulator (Emulator tab → **Train**),
 which needs `autoemulate` in the interpreter chosen in Settings — CA's optional
