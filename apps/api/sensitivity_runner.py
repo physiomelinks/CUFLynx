@@ -35,6 +35,7 @@ import traceback
 from pathlib import Path
 
 import emulator_config
+from ca_imports import ensure_ca_path
 
 # Markers the API watches for in stdout.
 DONE_MARKER = "__SENSITIVITY_DONE__"
@@ -60,13 +61,16 @@ _SA_RESERVED = {
 }
 
 
-def _ensure_ca_on_path() -> None:
-    src = os.environ.get("CIRCULATORY_AUTOGEN_SRC")
-    if not src:
-        repo_root = Path(__file__).resolve().parents[2]
-        src = str(repo_root.parent / "circulatory_autogen" / "src")
-    if src not in sys.path:
-        sys.path.insert(0, src)
+#: The one CA-path rule, from the module that ships into ``runners/`` beside this
+#: script. Four runners each carried a copy that inserted only ``src`` -- but CA
+#: #431 removed CA's own ``sys.path`` surgery, so a bare-name CA import (
+#: ``operation_funcs``, which every AD local-sensitivity run reaches through
+#: ``local_sensitivity._check_ad_operations``) no longer resolves from ``src``
+#: alone; ``ca_imports.ca_paths()`` adds the three further entries that make it
+#: work. The copies also guessed ``<runner>/../../../circulatory_autogen/src``
+#: when nothing was configured, which inside the bundle names a directory two
+#: levels above it that has never existed.
+_ensure_ca_on_path = ensure_ca_path
 
 
 def _sa_options(settings: dict, output_dir: str, seed=None) -> dict:
