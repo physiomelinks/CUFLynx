@@ -640,3 +640,97 @@ def test_no_obs_data_says_so_rather_than_naming_a_label():
     why = []
     assert obs_cost.evaluate_features({'a': 1.0}, None, None, why=why) is None
     assert 'obs_data' in why[0]
+
+
+# ---------------------------------------------------------------------------
+# The emulator's feature labels come from CA, through the resolver
+# ---------------------------------------------------------------------------
+# ``_ca_feature_labels`` used to spell the flat name outright:
+#
+#     from param_id.paramID import emulated_feature_labels
+#
+# which resolves on a 0.4.x CA only through the deprecation shim -- it is the line
+# that emits ``DeprecationWarning: param_id is now libcuflynx.param_id`` in the
+# unit run -- and stops resolving in 0.5.0, when the shim is deleted.
+#
+# The import sits inside ``except Exception: return None`` by design (a CA
+# predating emulators has no such function). So the breakage would have been
+# silent and total: None for every study, ``_emulated_operands`` gives up, and the
+# emulator's "EM COST" disappears from the panel with a generic reason, no error,
+# no log line and no failing test.
+def _namespaced_only(monkeypatch, flat_name, module):
+    """Register ``module`` under its ``libcuflynx.`` name and *only* that one.
+
+    The post-shim CA of 0.5.0: the flat spelling is set to None, which is the
+    idiom for "importing this raises ImportError".
+    """
+    import sys
+    import types
+
+    import ca_imports
+
+    ca_imports.reset_cache()
+    monkeypatch.setitem(sys.modules, ca_imports.NAMESPACE,
+                        types.ModuleType(ca_imports.NAMESPACE))
+    monkeypatch.setitem(sys.modules, f"{ca_imports.NAMESPACE}.{flat_name}", module)
+    monkeypatch.setitem(sys.modules, flat_name, None)
+
+
+def test_feature_labels_resolve_on_a_ca_with_no_flat_spelling_left(monkeypatch):
+    import types
+
+    fake = types.SimpleNamespace(
+        emulated_feature_labels=lambda obs_info: ["u_{AR} [max]", "q_{LV} [min]"]
+    )
+    _namespaced_only(monkeypatch, "param_id.paramID", fake)
+
+    assert obs_cost._ca_feature_labels({"num_obs": 2}) == ["u_{AR} [max]", "q_{LV} [min]"]
+
+
+def test_feature_labels_are_none_on_a_ca_that_has_no_such_function(monkeypatch):
+    """The case the swallowing ``except`` is *for*: a CA predating emulators. It
+    must still degrade rather than raise -- the caller reports "cannot label"."""
+    import types
+
+    _namespaced_only(monkeypatch, "param_id.paramID", types.SimpleNamespace())
+
+    assert obs_cost._ca_feature_labels({"num_obs": 2}) is None
+
+
+def test_no_module_spells_a_ca_import_flat_outside_the_resolver():
+    """A grep, deliberately: this is the rule CLAUDE.md states and the one that
+    keeps being broken by a lazy import written inside a ``try``.
+
+    ``param_id.paramID`` is the module that got it wrong; the sweep covers every
+    flat CA top-level so the next one is caught in the same place.
+    """
+    import ast
+    from pathlib import Path
+
+    import ca_imports
+
+    api_dir = Path(__file__).resolve().parents[1]
+    # sim_worker_runner and export_pipeline carry the deliberate duplicates
+    # (tests/test_ca_import_parity.py pins those); ca_imports is the resolver.
+    exempt = {"ca_imports.py", "sim_worker_runner.py", "export_pipeline.py"}
+    offenders = []
+    for path in sorted(api_dir.glob("*.py")):
+        if path.name in exempt:
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                names = [a.name for a in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                names = [node.module or ""] if node.level == 0 else []
+            else:
+                continue
+            for name in names:
+                top = name.split(".", 1)[0]
+                if top in ca_imports.CA_PACKAGES or top in ca_imports.RELOCATED_MODULES:
+                    offenders.append(f"{path.name}:{node.lineno} imports {name!r}")
+
+    assert offenders == [], (
+        "circulatory_autogen must be reached through ca_imports.ca_import / "
+        "ca_from, never by a literal import: " + "; ".join(offenders)
+    )

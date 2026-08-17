@@ -1142,3 +1142,51 @@ def test_the_old_spelling_is_accepted_wherever_a_stored_setting_can_carry_it():
     assert so.canonical_model_type("nonsense") == "nonsense"
     assert so.canonical_model_type("") == ""
     assert so.canonical_model_type(None) is None
+
+
+def test_the_ca_spelling_is_worked_out_before_the_first_run_config(monkeypatch):
+    """Outbound translation must not depend on something having asked for the
+    solver options first.
+
+    ``_ca_model_type_spelling`` started as ``{}``, which is indistinguishable from
+    "asked, and this CA uses the current names" -- so ``ca_model_type`` was the
+    identity function until some caller happened to run ``get_solver_options()``.
+    A run config written before that went out saying ``cellml`` to a CA that only
+    accepts ``cellml_only``, and every calibration, SA and UQ run against it died
+    at startup. It now introspects on first use.
+    """
+    monkeypatch.setattr(so, "_introspect_solver_schema", lambda: _legacy_ca_schema())
+    monkeypatch.setattr(so, "_introspect_differentiable", lambda: {"max": True})
+    so.reset_cache()  # nothing has been introspected yet, as at process start
+
+    assert so.ca_model_type("cellml") == "cellml_only"
+
+
+def test_the_ca_spelling_is_forgotten_when_the_ca_directory_changes(monkeypatch):
+    """It is a fact about the connected CA, so it is a cache like the other five
+    -- and it was the one ``reset_cache`` did not clear, so a new CA dir (and, in
+    the test process, the next test) inherited the previous one's answer."""
+    monkeypatch.setattr(so, "_introspect_solver_schema", lambda: _legacy_ca_schema())
+    monkeypatch.setattr(so, "_introspect_differentiable", lambda: {"max": True})
+    so.reset_cache()
+    so.get_solver_options(refresh=True)
+    assert so.ca_model_type("cellml") == "cellml_only"
+
+    # The user points Settings -> "CA dir" at a current checkout.
+    monkeypatch.setattr(so, "_introspect_solver_schema", lambda: dict(CA_SCHEMA))
+    so.reset_cache()
+
+    assert so.ca_model_type("cellml") == "cellml"
+
+
+def test_an_unreadable_ca_leaves_the_spelling_alone(monkeypatch):
+    """No CA at all: there is nothing to translate against, so the canonical name
+    is the only honest answer -- and it must not raise on the way to it."""
+    def _boom():
+        raise RuntimeError("no CA")
+
+    monkeypatch.setattr(so, "_introspect_solver_schema", _boom)
+    monkeypatch.setattr(so, "_introspect_differentiable", _boom)
+    so.reset_cache()
+
+    assert so.ca_model_type("cellml") == "cellml"

@@ -178,6 +178,95 @@ def test_a_genuinely_unknown_gradient_method_is_still_rejected():
 
 
 # ---------------------------------------------------------------------------
+# CA's model_type spelling arrives from the run config
+# ---------------------------------------------------------------------------
+# main.py writes ``"model_type": ca_model_type(engine.model_type)`` into all four
+# run configs on purpose: a CA that predates the ``cellml_only`` -> ``cellml``
+# rename exits on a model_type it does not recognise, so the config has to speak
+# its language. The runners then read that value straight back and hand it here,
+# where LOCAL_GRADIENT_SUPPORT is keyed by CUFLynx's canonical spelling -- so the
+# old word matched nothing and every gradient source was refused.
+#
+# The failure is #122 exactly, arriving by a different route: /api/settings builds
+# the *menu* from the canonical ``engine.model_type``, so the UI offered FSA and
+# the run then raised NotImplementedError.
+CA_SPELLING = "cellml_only"
+
+
+def test_cas_model_type_spelling_does_not_disable_fsa():
+    import local_sensitivity as ls
+
+    assert ls.resolve_gradient_method({"gradient_method": "FSA"}, CA_SPELLING) == "FSA"
+
+
+def test_an_fsa_run_from_a_ca_spelled_config_is_not_refused():
+    """The failure itself: the run reaches ``compute_local_sensitivity`` with the
+    config's ``cellml_only`` and its FSA guard rejects the very method
+    ``resolve_gradient_method`` had just chosen.
+
+    Getting past the guard is the assertion; the run then stops on the missing
+    engine, which is a different (and correct) complaint.
+    """
+    import local_sensitivity as ls
+
+    with pytest.raises(RuntimeError, match="param-id engine"):
+        ls.compute_local_sensitivity(
+            sa=None,
+            settings={"gradient_method": "FSA"},
+            model_type=CA_SPELLING,
+            engine=None,
+        )
+
+
+def test_cas_model_type_spelling_still_resolves_auto_to_fsa():
+    """The default a run config carries. It resolved to FSA either way, but with
+    ``cellml_only`` the very next check refused the FSA it had just chosen."""
+    import local_sensitivity as ls
+
+    assert ls.resolve_gradient_method({"gradient_method": "AUTO"}, CA_SPELLING) == "FSA"
+
+
+def test_cas_model_type_spelling_leaves_the_menu_intact():
+    import local_sensitivity as ls
+
+    sources = [{"value": "FD", "label": "FD"}, {"value": "FSA", "label": "FSA"}]
+    offered = {s["value"]: s for s in ls.local_gradient_sources(sources, CA_SPELLING)}
+
+    assert offered["FSA"]["disabled_here"] is False
+    assert offered["FD"]["disabled_here"] is False
+
+
+def test_cas_model_type_spelling_does_not_silently_enable_the_wrong_arm():
+    """Canonicalising must not become "accept anything": a format whose AD this
+    path really cannot do is still refused."""
+    import local_sensitivity as ls
+
+    offered = ls.local_gradient_sources([{"value": "AD", "label": "AD"}], CA_SPELLING)
+    assert offered[0]["disabled_here"] is True
+    assert "casadi_python" in offered[0]["reason"]
+
+
+def test_calibrations_do_ad_is_keyed_off_the_same_canonical_answer():
+    """``calibration_runner`` reads ``do_ad`` from this same call with the same
+    config value, so it shares the fix by construction.
+
+    It is worth pinning even though today's single alias (``cellml_only`` ->
+    ``cellml``) happens to land on the same 'AUTO' answer either way -- neither
+    spelling is in ``LOCAL_GRADIENT_SUPPORT["AD"]``, so both resolve to FSA. The
+    next renamed format need not be so forgiving, and the call is the same one
+    that *did* mis-answer the sensitivity path.
+    """
+    import local_sensitivity as ls
+
+    for settings in ({"gradient_method": "AUTO"}, {"gradient_method": "FSA"}):
+        do_ad = ls.resolve_gradient_method(settings, CA_SPELLING) in ("AD", "FSA")
+        assert do_ad is True
+        assert ls.resolve_gradient_method(settings, CA_SPELLING) == (
+            ls.resolve_gradient_method(settings, "cellml")
+        )
+
+
+# ---------------------------------------------------------------------------
 # The theta / anchor contract for modifier parameters (#208)
 # ---------------------------------------------------------------------------
 class _ModifierHelper:

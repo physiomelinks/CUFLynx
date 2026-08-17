@@ -18,10 +18,18 @@ CUFLynx has two execution tiers, and they have different dependency needs:
   mpi4py / matplotlib, so those are deliberately **excluded** here — bundling
   them would inflate the executable for code that never runs inside it.
 
-circulatory_autogen itself is *not* bundled: it's selected at runtime via the
-Settings "CA dir" picker. When CA becomes pip-installable it can simply be added
-to the build environment and it will be collected like any other package — no
-change to this split is needed.
+circulatory_autogen itself **is** bundled now, as the pip-installable
+``libcuflynx`` (#18) — see the ``collect_all("libcuflynx")`` below. So the app
+runs with no CA directory set at all, and the Settings "CA dir" picker becomes an
+override for developers pointing at a checkout rather than a precondition.
+
+One consequence worth stating here, because it is invisible from the runtime
+code: the pre-0.4.0 flat shim packages are deliberately not collected, so inside
+the bundle the *only* spelling that resolves is the namespaced one, and there is
+no ``<src>/param_id`` directory for a bare-name import to come off. Everything
+therefore has to go through ``ca_imports`` (which ships into ``runners/`` for the
+same reason) — a literal ``import operation_funcs`` works from a checkout and
+silently fails here.
 """
 
 import importlib

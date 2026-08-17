@@ -825,9 +825,20 @@ class SimulationEngine:
         Stops the worker too: its caches are the same caches, and it holds an
         imported copy of CA that a reset is usually trying to be rid of.
 
-        The remembered CA *layout* goes with them: a new CA directory can be
-        namespaced where the old one was flat (CA #437), and the cached answer
-        would otherwise send every import to the wrong spelling first.
+        The connected circulatory_autogen goes with them. ``ca_imports.reset_cache()``
+        drops the remembered layout (a new directory can be namespaced where the old
+        one was flat, CA #437), takes the old directory's ``sys.path`` entries back
+        out, and — the part that actually makes a mid-session switch work — removes
+        every already-imported CA module, so the next import resolves against the new
+        directory instead of returning the old one out of ``sys.modules``.
+
+        What no reset can undo is a CA object that outlives it: a class read out of
+        the old CA is still that class, so an ``isinstance`` against the re-imported
+        one would fail. Everything in this process that holds one is dropped here (the
+        helpers, the runners, the worker) or in ``solver_options`` /
+        ``obs_options.reset_cache()``, which the same ``/api/config`` handler calls.
+        Anything a caller keeps a reference to across a CA-dir change is its own to
+        discard.
         """
         ca_imports.reset_cache()
         with self._lock:
