@@ -230,10 +230,20 @@ def _ca_feature_labels(obs_info) -> list[str] | None:
     None on a CA that predates emulators; the caller then has no way to say which
     prediction belongs to which observable, and reports no cost rather than
     guessing by position.
+
+    Resolved through :func:`ca_imports.ca_from`, not a literal ``from
+    param_id.paramID import ...``. The flat spelling still works on a 0.4.x CA —
+    through the deprecation shim, which is why this line was the one emitting a
+    ``DeprecationWarning`` in the unit run — and stops working in 0.5.0. Since
+    the failure is swallowed here by design, that would have been silent: every
+    study would report ``None``, ``_emulated_operands`` would give up, and the
+    emulator's "EM COST" would vanish with a generic reason and no log.
     """
     try:
-        from param_id.paramID import emulated_feature_labels  # noqa: PLC0415
+        from ca_imports import ca_from, ensure_ca_path  # noqa: PLC0415
 
+        ensure_ca_path()
+        emulated_feature_labels = ca_from("param_id.paramID", "emulated_feature_labels")
         return [str(label) for label in emulated_feature_labels(obs_info)]
     except Exception:  # noqa: BLE001 - no CA, or one without emulators
         return None
