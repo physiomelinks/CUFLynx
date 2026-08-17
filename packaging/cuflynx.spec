@@ -279,9 +279,15 @@ hiddenimports += collect_submodules("uvicorn")
 # by CA's param_id modules, so it's required, not optional.
 _ANALYSIS_PKGS = ("matplotlib", "emcee", "corner", "SALib", "seaborn", "statsmodels",
                   "schwimmbad", "nevergrad", "numdifftools", "sklearn", "tqdm", "mpi4py")
-_REQUIRED = ("myokit", "libcellml", "casadi", "webview", "setuptools", "numpy",
-             "scipy", "pandas", "sympy", "yaml", "ruamel.yaml", "rdflib", "pint",
+_REQUIRED = ("libcuflynx", "myokit", "libcellml", "casadi", "webview", "setuptools",
+             "numpy", "scipy", "pandas", "yaml", "rdflib", "pint",
              *_ANALYSIS_PKGS)
+# sympy and ruamel.yaml were dropped from this list when circulatory_autogen stopped
+# declaring them (libcuflynx 0.4.0, CA #435): nothing under libcuflynx imports either
+# one unguarded -- sympy is used only by the RICRI frequency operations, behind a
+# try/except, and ruamel is only reached from a caller that already has it. Keeping
+# them required would fail this build on any environment that installs libcuflynx and
+# believes its metadata, which is every clean build environment.
 _missing = []
 for pkg in _REQUIRED:
     try:
@@ -302,6 +308,30 @@ for pkg in ("myokit", "libcellml", "casadi", "webview", "setuptools", "numpy"):
     datas += pkg_datas
     binaries += pkg_binaries
     hiddenimports += pkg_hidden
+
+# circulatory_autogen itself, as the pip-installable `libcuflynx` (#18). Bundling it
+# is what lets the app run with **no CA directory set**: `ca_imports` resolves CA
+# through plain importlib, so an installed package is found with no sys.path entry,
+# and a directory chosen in Settings still wins for a developer pointing at a
+# checkout.
+#
+# collect_all rather than collect_submodules, because the package ships data that is
+# not code: the CellML module library (`libcuflynx/generators/resources`, ~3 MB) that
+# every generation reads, the 1D solver's Make_files, and the C++ templates. Without
+# those the app imports CA fine and then fails at the first generate call -- the same
+# failure mode `_REQUIRED` above exists to prevent.
+#
+# Its submodules are resolved dynamically in several places (the solver factory picks
+# a backend by name, the cost/operation registries import by name), so the explicit
+# hidden imports matter as much as the data.
+_ca_datas, _ca_binaries, _ca_hidden = collect_all("libcuflynx")
+datas += _ca_datas
+binaries += _ca_binaries
+hiddenimports += _ca_hidden
+# The 11 deprecation shims are deliberately NOT collected. They exist for user code
+# written against the pre-0.4.0 flat names and warn on import; nothing in CUFLynx
+# imports them (ca_imports prefers the namespaced spelling precisely so the app never
+# sees their DeprecationWarnings), and they are removed in libcuflynx 0.5.0.
 
 # CA's analysis stack. collect_all grabs each package's data + compiled libs +
 # submodules (matplotlib's mpl-data/fonts, sklearn/statsmodels/scipy .so's,

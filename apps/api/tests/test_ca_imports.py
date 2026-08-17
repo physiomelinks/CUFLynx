@@ -457,3 +457,68 @@ class TestRelocatedModules:
         monkeypatch.setitem(sys.modules, "cost_funcs_user", legacy)
         monkeypatch.setitem(sys.modules, "libcuflynx.funcs.cost_funcs_user", None)
         assert ca_imports.ca_import("cost_funcs_user") is legacy
+
+
+class TestInstalledPackageNeedsNoDirectory:
+    """The packaged app bundles libcuflynx, so "no CA dir" stops meaning "no CA" (#18).
+
+    Before bundling, every way of reaching CA went through a *directory*: ca_paths built
+    sys.path entries from it, and ca_exists was `bool(src) and is_dir(src)`. An installed
+    package is reached by neither -- plain importlib finds it -- so both had to learn that
+    a missing directory is not a missing CA, or the packaged app would prompt for a
+    directory the user does not have and does not need.
+    """
+
+    def test_no_configured_directory_contributes_no_path_entries(self, monkeypatch):
+        """And in particular never the current working directory.
+
+        Every entry ca_paths returns derives from the configured src, and `Path("")` is
+        `.` -- so an unset CA dir used to put the cwd, `./param_id` and `./funcs_user` on
+        a server process's sys.path. That predates the bundling and is a hazard on its
+        own.
+        """
+        monkeypatch.setattr(ca_imports, "_ca_src", lambda: "")
+
+        assert ca_imports.ca_paths() == []
+
+    def test_a_configured_directory_still_wins(self, monkeypatch, tmp_path):
+        """A developer pointing the app at a checkout must still override the bundle."""
+        src = tmp_path / "circulatory_autogen" / "src"
+        src.mkdir(parents=True)
+        monkeypatch.setattr(ca_imports, "_ca_src", lambda: str(src))
+
+        paths = ca_imports.ca_paths()
+
+        assert str(src) in paths
+        assert str(src / "libcuflynx" / "param_id") in paths
+
+    def test_a_checkout_on_sys_path_does_not_count_as_installed(self, monkeypatch, tmp_path):
+        """The distinction the first-run prompt depends on.
+
+        `ensure_ca_path` inserts a configured checkout's `src` permanently, so once any
+        directory has been used, `libcuflynx` stays importable for the life of the
+        process -- even after the setting is cleared. Reporting that as an installed
+        package would say CA is present with nothing configured.
+        """
+        checkout = tmp_path / "circulatory_autogen" / "src" / "libcuflynx"
+        checkout.mkdir(parents=True)
+        (checkout / "__init__.py").write_text("")
+        spec = importlib.util.spec_from_file_location(
+            "libcuflynx", checkout / "__init__.py")
+        monkeypatch.setattr(importlib.util, "find_spec", lambda name: spec)
+
+        assert ca_imports.installed_package_available() is False
+
+    def test_a_site_packages_install_does_count(self, monkeypatch, tmp_path):
+        installed = tmp_path / "site-packages" / "libcuflynx"
+        installed.mkdir(parents=True)
+        (installed / "__init__.py").write_text("")
+        spec = importlib.util.spec_from_file_location(
+            "libcuflynx", installed / "__init__.py")
+        monkeypatch.setattr(importlib.util, "find_spec", lambda name: spec)
+
+        assert ca_imports.installed_package_available() is True
+
+    def test_absent_package_is_not_installed(self, monkeypatch):
+        monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
+        assert ca_imports.installed_package_available() is False

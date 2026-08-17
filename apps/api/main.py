@@ -449,7 +449,14 @@ def _config_payload(output_dir: str = "") -> dict:
         # `bool(src)` guard is load-bearing: when frozen and unconfigured, src is ""
         # and Path("").is_dir() is True (empty path -> cwd), which would wrongly
         # report CA as present and skip the first-run "pick a CA dir" prompt.
-        "ca_exists": bool(src) and p.is_dir(),
+        #
+        # The packaged app bundles libcuflynx (#18), so an unset directory no longer
+        # means CA is absent: an importable package is CA, and prompting for a
+        # directory the user does not need is the wrong first run. A configured
+        # directory still wins -- that is how a developer points the app at a
+        # checkout -- and this only decides whether CA is *present*, never which
+        # one is used; ca_imports owns that.
+        "ca_exists": (bool(src) and p.is_dir()) or ca_imports.installed_package_available(),
         # Remembered interpreter for analysis runs (blank = none chosen yet).
         "python_path": calibration.python or "",
         # The interpreter "server default" actually resolves to (blank when

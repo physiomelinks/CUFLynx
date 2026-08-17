@@ -289,7 +289,20 @@ def ca_paths() -> list[str]:
     - the repo's ``funcs_user/``, which holds ``cost_funcs_user.py``. That one is
       the user's, not a CA package, and does not move.
     """
-    src = Path(_ca_src())
+    src_str = _ca_src()
+    if not src_str:
+        # No directory configured. An **installed** libcuflynx (the packaged app
+        # bundles one, CUFLynx #18) needs no sys.path entry at all: it is already
+        # importable, and ca_import finds it through plain importlib. With neither
+        # a directory nor a package there is likewise nothing useful to add -- the
+        # import then fails with CaImportError, which names the CA directory.
+        #
+        # Returning early also removes a hazard that predates the bundling: every
+        # entry below derives from `src`, and `Path("")` is `.`, so an unset CA dir
+        # used to put the **current working directory** -- and `./param_id`,
+        # `./funcs_user` -- on a server process's sys.path.
+        return []
+    src = Path(src_str)
     root = src.parent  # repo root holds funcs_user/ alongside src/
     return [
         str(src),
@@ -297,6 +310,37 @@ def ca_paths() -> list[str]:
         str(src / NAMESPACE / "param_id"),
         str(root / "funcs_user"),
     ]
+
+
+def installed_package_available() -> bool:
+    """Whether ``libcuflynx`` is present as an **installed package** (or bundled).
+
+    The packaged app ships one, so "no CA dir" stops meaning "no CA" (#18). Callers
+    use this to decide whether CA is *present*, not which spelling to import --
+    :func:`ca_import` already owns that.
+
+    Importable is not enough, and the difference is not academic: ``ensure_ca_path``
+    inserts a configured checkout's ``src`` into ``sys.path`` permanently, so once
+    any directory has been used, ``libcuflynx`` stays importable for the life of the
+    process even after the setting is cleared. Treating that as "installed" would
+    report CA present with nothing configured and skip the first-run prompt -- the
+    exact failure the ``bool(src)`` guard in ``main`` exists to prevent.
+
+    So the origin has to be somewhere other than a checkout. A checkout puts the
+    package at ``<repo>/src/libcuflynx/``; an install (or the bundle) does not have
+    that ``src`` parent. This is the same shape of test circulatory_autogen applies
+    to itself in ``libcuflynx.utilities.paths.repo_root``.
+    """
+    try:
+        spec = importlib.util.find_spec(NAMESPACE)
+    except (ImportError, AttributeError, ValueError):
+        return False
+    origin = getattr(spec, "origin", None) if spec is not None else None
+    if not origin:
+        return False
+    # <...>/libcuflynx/__init__.py -> the directory holding the package
+    parent = Path(origin).resolve().parent.parent
+    return parent.name != "src"
 
 
 def ensure_ca_path() -> None:
