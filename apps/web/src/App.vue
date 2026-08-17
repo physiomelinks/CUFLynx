@@ -148,7 +148,8 @@ const packaged = ref(false)
 const mpiexecAvailable = ref(true)
 
 // circulatory_autogen source directory (top-bar "CA dir"), shared server-side via
-// /api/config. Defaults to the sibling clone; pick a different checkout to dev against.
+// /api/config. Optional since #18 -- the app bundles libCUFLynx -- and set only to
+// develop libCUFLynx itself, against the checkout that copy lives in.
 const caDir = ref('')
 const caExists = ref(true)
 const caBrowserOpen = ref(false)
@@ -2857,8 +2858,10 @@ watch(() => obs.obsData.value, scheduleRun)
           </span>
         </div>
         <p class="settings-hint">
-          Defaults to the sibling <code>circulatory_autogen</code> clone. Pick a
-          different checkout to develop against — runs use it on their next launch.
+          Not needed: <code>libCUFLynx</code> ships with the app. Set this only to
+          develop <code>libCUFLynx</code> itself — point it at the
+          <code>circulatory_autogen</code> checkout the copy you are working on lives
+          in, and runs will use that on their next launch.
         </p>
 
         <hr class="settings-sep" />
