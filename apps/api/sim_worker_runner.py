@@ -75,14 +75,54 @@ sys.stdout = sys.stderr
 # both layouts must work, because the CA directory is chosen at runtime. Try
 # ``libcuflynx.<name>`` first -- on a shimmed CA the flat module is the one that
 # emits DeprecationWarning -- and the flat ``<name>`` second.
+#
+# Three tables travel with the rule, and leaving them out is what made these
+# copies *behave* differently rather than merely read differently:
+# _CA_PACKAGES (a name that is not CA's must not acquire the prefix),
+# _RELOCATED_MODULES (a name whose namespaced spelling is not the flat one with
+# the prefix glued on), and the missing-attribute check in _ca_from.
+# ``tests/test_ca_import_parity.py`` pins all three against ``ca_imports``.
 _CA_NAMESPACE = "libcuflynx"
+
+_CA_PACKAGES = frozenset({
+    "checks",
+    "coupler",
+    "emulators",
+    "generators",
+    "identifiabilty_analysis",
+    "models",
+    "param_id",
+    "parsers",
+    "protocol_runners",
+    "scripts",
+    "sensitivity_analysis",
+    "solver1d",
+    "solver_wrappers",
+    "utilities",
+})
+
+_RELOCATED_MODULES = {
+    "cost_funcs_user": _CA_NAMESPACE + ".funcs.cost_funcs_user",
+    "operation_funcs_user": _CA_NAMESPACE + ".funcs.operation_funcs_user",
+    "modifier_funcs_user": _CA_NAMESPACE + ".funcs.modifier_funcs_user",
+    "operation_funcs": _CA_NAMESPACE + ".param_id.operation_funcs",
+}
+
+
+def _ca_candidates(name):
+    """Both spellings of CA module ``name``, most-preferred first."""
+    if name in _RELOCATED_MODULES:
+        return [_RELOCATED_MODULES[name], name]
+    if name.split(".", 1)[0] not in _CA_PACKAGES:
+        return [name]
+    return [f"{_CA_NAMESPACE}.{name}", name]
 
 
 def _ca_import(name):
     """Import CA module ``name`` (flat spelling), preferring the namespaced one."""
     import importlib  # noqa: PLC0415
 
-    names = [f"{_CA_NAMESPACE}.{name}", name]
+    names = _ca_candidates(name)
     for cand in names:
         mod = sys.modules.get(cand)
         if mod is not None:
@@ -99,10 +139,16 @@ def _ca_import(name):
                 raise
             errors.append(f"{cand!r} ({exc})")
     src = os.environ.get("CIRCULATORY_AUTOGEN_SRC", "")
+    where = (
+        f"{src!r} does not look like a circulatory_autogen checkout."
+        if src
+        else 'No circulatory_autogen directory is configured: set Settings -> "CA '
+        'dir" to the "src" folder of a circulatory_autogen clone (or install the '
+        "libcuflynx package)."
+    )
     raise ImportError(
         f"circulatory_autogen module {name!r} could not be imported (tried "
-        f"{' and '.join(errors)}). {src!r} does not look like a "
-        f"circulatory_autogen checkout."
+        f"{' and '.join(errors)}). {where}"
     )
 
 
