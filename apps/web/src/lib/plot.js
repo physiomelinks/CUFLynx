@@ -167,23 +167,44 @@ export function computeFeature(operation, time, values) {
 }
 
 /**
+ * A model variable's own short name: the part after the component prefix, so
+ * `heat/T_p1` reads as `T_p1`. A name with no `/` is already short.
+ */
+export function shortVarName(qname) {
+  const s = String(qname ?? '')
+  const cut = s.lastIndexOf('/')
+  return cut === -1 ? s : s.slice(cut + 1) || s
+}
+
+/**
  * Variables worth plotting, derived from an obs_data response: every
  * prediction_item variable plus every model variable referenced by a plottable
- * (horizontal/vertical) data_item. Returns [{ qname, label }] de-duplicated,
- * preferring a name_for_plotting label.
+ * (horizontal/vertical) data_item. Returns [{ qname, label }] de-duplicated.
+ *
+ * The label names the **series** — it becomes the cell's title, its y-axis
+ * label, and the name of the trace itself. That is why a data_item's
+ * `name_for_plotting` is deliberately *not* used here: a data_item names a
+ * scalar *feature* of the series (`mean(T_{p1})`), not the series, so titling a
+ * cell with it labels a temperature-against-time axis "mean" and, when several
+ * data_items share one variable, picks whichever happened to be listed first.
+ * Those labels still name their own reference lines in the legend, which is
+ * where a feature's name belongs.
+ *
+ * A prediction_item's `name_for_plotting` *is* used: a prediction item names a
+ * whole trace, so it is the series' own name and the user's explicit choice.
  */
 export function derivePlotVariables(obsData) {
   if (!obsData) return []
   const map = new Map()
   for (const p of obsData.prediction_items ?? []) {
     if (p.variable && !map.has(p.variable)) {
-      map.set(p.variable, p.name_for_plotting ?? p.variable)
+      map.set(p.variable, p.name_for_plotting ?? shortVarName(p.variable))
     }
   }
   for (const d of obsData.data_items ?? []) {
     if (!isPlottableOverlay(d)) continue
     const v = obsModelVar(d)
-    if (v && !map.has(v)) map.set(v, d.name_for_plotting ?? v)
+    if (v && !map.has(v)) map.set(v, shortVarName(v))
   }
   return [...map.entries()].map(([qname, label]) => ({ qname, label }))
 }

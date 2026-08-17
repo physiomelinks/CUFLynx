@@ -3,6 +3,7 @@ import {
   obsModelVar,
   isPlottableOverlay,
   derivePlotVariables,
+  shortVarName,
   overlayItemsFor,
   attachOutputSeries,
   buildChartData,
@@ -880,5 +881,69 @@ describe('timeUnit with an undeclared unit', () => {
     expect(timeUnit({ 'engine/time': 'dimensionless', 'environment/t': 'second' })).toBe(
       'second',
     )
+  })
+})
+
+
+// The fenics example's shape: several scalar features of ONE model variable, each an
+// authored `name_for_plotting` that names the feature rather than the series.
+const featureObs = {
+  data_items: [
+    { variable: 'near probe mean', name_for_plotting: 'mean(T_{p1})', data_type: 'constant',
+      operation: 'mean', operands: ['heat/T_p1'], plot_type: 'horizontal' },
+    { variable: 'near probe minimum', name_for_plotting: 'min(T_{p1})', data_type: 'constant',
+      operation: 'min', operands: ['heat/T_p1'], plot_type: 'horizontal' },
+  ],
+}
+
+describe('a plot cell is titled by its series, not by a feature of it', () => {
+  it('takes the variable name, not the first data_item name_for_plotting', () => {
+    // The cell draws T_p1 against time and hangs the mean and min on it as reference
+    // lines. Titling it `mean(T_{p1})` labelled a temperature-against-time axis "mean",
+    // and which feature won was just whichever came first in the file.
+    const vars = derivePlotVariables(featureObs)
+
+    expect(vars).toHaveLength(1)
+    expect(vars[0].qname).toBe('heat/T_p1')
+    expect(vars[0].label).toBe('T_p1')
+  })
+
+  it('still lets a prediction_item name the series', () => {
+    // A prediction item names a whole trace, so its label *is* the series' name and the
+    // user's explicit choice -- unlike a data_item's, which names a scalar.
+    const withPrediction = {
+      ...featureObs,
+      prediction_items: [{ variable: 'heat/T_p1', name_for_plotting: 'probe 1 temperature' }],
+    }
+
+    expect(derivePlotVariables(withPrediction)[0].label).toBe('probe 1 temperature')
+  })
+
+  it('the feature labels stay on their own reference lines', () => {
+    // What the title gives up, the legend keeps: each horizontal line is still named by
+    // the data_item that produced it.
+    const { datasets } = buildChartData(
+      { time: [0, 1], outputs: { 'heat/T_p1': [1, 2] } },
+      { dataItems: featureObs.data_items, varLabel: 'T_p1' },
+    )
+    const names = datasets.map((d) => d.mathLabel ?? d.label)
+
+    expect(names).toContain('mean(T_{p1})')
+    expect(names).toContain('min(T_{p1})')
+  })
+})
+
+describe('shortVarName', () => {
+  it('drops the component prefix', () => {
+    expect(shortVarName('heat/T_p1')).toBe('T_p1')
+  })
+
+  it('leaves a name that has none alone', () => {
+    expect(shortVarName('T_p1')).toBe('T_p1')
+  })
+
+  it('survives the degenerate spellings rather than returning empty', () => {
+    expect(shortVarName('heat/')).toBe('heat/')
+    expect(shortVarName(undefined)).toBe('')
   })
 })
