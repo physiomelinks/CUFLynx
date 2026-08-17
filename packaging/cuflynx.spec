@@ -283,8 +283,16 @@ hiddenimports += collect_submodules("uvicorn")
 # available"): a dev machine had it installed for CA, the CI build machine did not.
 # Fail the build instead.
 # CA's analysis-path packages are bundled too, so the app runs SA/calibration/UQ
-# itself (no external Python needed by default). mpi4py is imported unconditionally
-# by CA's param_id modules, so it's required, not optional.
+# itself (no external Python needed by default).
+#
+# mpi4py and schwimmbad come from libcuflynx's `[mpi]` extra, so the build
+# environment must install `libcuflynx[mpi]` rather than the bare distribution --
+# CA 0.4.0 made them optional (CA #435) and nothing under libcuflynx imports
+# mpi4py at module scope any more, so a bare install leaves them out and this
+# guard fires. They are still wanted *here*: the in-bundle analysis tier is the
+# whole point of the list above, a multi-rank run needs the real MPI rather than
+# CA's one-rank stub, and CA's pymc UQ backend imports mpi4py at module scope
+# regardless of that stub.
 _ANALYSIS_PKGS = ("matplotlib", "emcee", "corner", "SALib", "seaborn", "statsmodels",
                   "schwimmbad", "nevergrad", "numdifftools", "sklearn", "tqdm", "mpi4py")
 _REQUIRED = ("libcuflynx", "myokit", "libcellml", "casadi", "webview", "setuptools",
