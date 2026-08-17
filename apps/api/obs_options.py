@@ -10,7 +10,6 @@ deps), and caches a successful introspection.
 from __future__ import annotations
 
 import inspect
-import sys
 
 from ca_imports import ca_from, ca_import, ca_paths, ensure_ca_path
 
@@ -97,13 +96,14 @@ def _introspect_schema() -> tuple[list, list]:
 
 
 def _introspect(output_dir: str | None = None) -> dict:
-    for p in _ca_paths():
-        if p not in sys.path:
-            sys.path.insert(0, p)
-    import operation_funcs  # noqa: E402 (CA module, resolved via sys.path)
-
-    # Not a bare import: CA #433 moved this into the package, so the module the
-    # bare name found in ``funcs_user/`` no longer exists in a current CA.
+    _ensure_ca_path()
+    # Neither of these is a bare import any more. ``cost_funcs_user`` moved into
+    # the package (CA #433), and ``operation_funcs`` was only ever reachable by
+    # bare name off the ``<src>/param_id`` entry ``ca_paths()`` adds -- which an
+    # installed or bundled libcuflynx does not have (#18). Both resolve through
+    # RELOCATED_MODULES, which keeps the flat spelling as the second candidate for
+    # a checkout old enough to need it.
+    operation_funcs = ca_import("operation_funcs")
     cost_funcs_user = ca_import("cost_funcs_user")
 
     # numpy mode keeps this light (no casadi/myokit). CUFLynx-authored funcs live
@@ -222,7 +222,7 @@ def _introspect_operation_operands(op_funcs) -> dict:
     an older CA without the helper.
     """
     try:
-        from operation_funcs import get_operation_kwarg_spec  # noqa: PLC0415
+        get_operation_kwarg_spec = ca_from("operation_funcs", "get_operation_kwarg_spec")
     except Exception:  # noqa: BLE001 - older CA; parse the signature ourselves
         get_operation_kwarg_spec = None
 
@@ -452,10 +452,8 @@ def get_operation_funcs(output_dir: str | None = None):
     mode (no casadi/myokit).
     """
     try:
-        for p in _ca_paths():
-            if p not in sys.path:
-                sys.path.insert(0, p)
-        import operation_funcs  # noqa: E402 (CA module, resolved via sys.path)
+        _ensure_ca_path()
+        operation_funcs = ca_import("operation_funcs")
 
         op_path, _ = _external_func_paths(output_dir)
         return _op_funcs_dict(operation_funcs, op_path)
@@ -471,9 +469,7 @@ def get_cost_funcs(output_dir: str | None = None):
     disagreed would look authoritative while ranking parameter sets differently.
     """
     try:
-        for p in _ca_paths():
-            if p not in sys.path:
-                sys.path.insert(0, p)
+        _ensure_ca_path()
         # See _introspect: CA #433 relocated this module into the package.
         cost_funcs_user = ca_import("cost_funcs_user")
 

@@ -31,7 +31,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-from ca_imports import ca_from, ca_paths, ensure_ca_path
+import ca_imports
+from ca_imports import ca_from, ca_import, ca_paths, ensure_ca_path
 from runtime_paths import default_python
 
 # model_types CUFLynx can actually run (it code-generates python/casadi from the
@@ -60,18 +61,22 @@ SUPPORTED_FORMATS = ("cellml", "python", "casadi_python", "external_python")
 #: whatever the connected CA advertises at the moment a run config is written.
 #: This is also what stops the app breaking in the window between updating the
 #: two repos, which is a window every developer with a sibling checkout lands in.
-MODEL_TYPE_ALIASES = {"cellml_only": "cellml"}
+#:
+#: The table and the inbound half live in :mod:`ca_imports` and are re-exported
+#: here, because the runner tier needs them and this module does not ship into
+#: ``runners/``. Only the outbound half is this module's own: it depends on what
+#: the *connected* CA advertised, which only a schema introspection knows.
+MODEL_TYPE_ALIASES = ca_imports.MODEL_TYPE_ALIASES
+canonical_model_type = ca_imports.canonical_model_type
 
 #: Current name -> the spelling the *connected* CA advertises. Identity unless an
-#: older CA said otherwise; rebuilt on every schema introspection.
-_ca_model_type_spelling: dict[str, str] = {}
-
-
-def canonical_model_type(model_type: str | None) -> str | None:
-    """CUFLynx's spelling of a CA model_type. Unknown names pass through."""
-    if not model_type:
-        return model_type
-    return MODEL_TYPE_ALIASES.get(model_type, model_type)
+#: older CA said otherwise; rebuilt on every schema introspection. ``None`` means
+#: "no CA has been asked yet", which is **not** the same as "asked, and it uses
+#: the current names": treating it as the latter made :func:`ca_model_type` the
+#: identity function until something happened to call :func:`get_solver_options`
+#: first, so a run config written before that went out saying ``cellml`` to a CA
+#: that only accepts ``cellml_only``.
+_ca_model_type_spelling: dict[str, str] | None = None
 
 
 def ca_model_type(model_type: str | None) -> str | None:
@@ -80,10 +85,23 @@ def ca_model_type(model_type: str | None) -> str | None:
     Identity for a current CA. Call this at the boundary -- a run config, an
     exported pipeline -- never inside CUFLynx, where the canonical name is the
     only one that should appear.
+
+    Introspects the connected CA on first use rather than answering "current
+    names" by default: the answer is a property of the CA on the other side, and
+    guessing it is the failure this exists to prevent. A CA that cannot be read
+    leaves the table empty, which is the identity -- the best available guess
+    when there is nothing to translate against.
     """
     if not model_type:
         return model_type
-    return _ca_model_type_spelling.get(model_type, model_type)
+    spelling = _ca_model_type_spelling
+    if spelling is None:
+        try:
+            get_solver_options()
+        except Exception:  # noqa: BLE001 - no CA / an unreadable one: stay identity
+            pass
+        spelling = _ca_model_type_spelling or {}
+    return spelling.get(model_type, model_type)
 
 
 def _canonicalise_model_types(schema: dict) -> dict:
@@ -525,11 +543,16 @@ _modifier_cache: dict | None = None
 def reset_cache() -> None:
     """Drop the cached options (call when the CA directory changes)."""
     global _cache, _param_id_cache, _analysis_cache, _prior_cache, _modifier_cache
+    global _ca_model_type_spelling
     _cache = None
     _param_id_cache = None
     _analysis_cache = None
     _prior_cache = None
     _modifier_cache = None
+    # Which spelling the connected CA uses is a fact about *that* CA, so it is a
+    # cache like the rest -- and one that was never cleared, so a new CA dir (and,
+    # in the test process, the next test) inherited the previous one's answer.
+    _ca_model_type_spelling = None
 
 
 #: The sys.path entries CA's parser/operation modules need, and the helper that
@@ -546,9 +569,17 @@ def _introspect_solver_schema() -> dict:
 
 
 def _introspect_differentiable() -> dict[str, bool]:
-    """Map each CA operation_func name -> whether it's marked @differentiable."""
+    """Map each CA operation_func name -> whether it's marked @differentiable.
+
+    ``operation_funcs`` goes through the resolver like every other CA module: a
+    bare ``import operation_funcs`` only ever worked off the ``<src>/param_id``
+    entry :func:`ca_paths` adds, and an installed/bundled libcuflynx has no such
+    directory (#18). It failed into ``_FALLBACK_DIFFERENTIABLE`` there — silently,
+    since ``_safe`` swallows it — which is a hardcoded vocabulary standing in for
+    CA's.
+    """
     _ensure_ca_path()
-    import operation_funcs  # noqa: E402 (CA module, resolved via sys.path)
+    operation_funcs = ca_import("operation_funcs")
 
     is_circulatory_differentiable = ca_from(
         "param_id.differentiable", "is_circulatory_differentiable")
@@ -675,19 +706,38 @@ def _introspect_analysis_options() -> dict:
 
 #: Source text run by *another* interpreter, so it cannot call :mod:`ca_imports`
 #: and spells the two-layout rule out inline (CA #437). Keep it in step with
-#: :func:`ca_imports.ca_import`: namespaced first, flat second.
+#: :func:`ca_imports.ca_import`: namespaced first, flat second, and — the part
+#: that is easy to leave out — **only a missing candidate is a reason to try the
+#: other spelling**. A blanket ``except ImportError: pass`` reported
+#: ``libcuflynx.emulators.emulator_trainer`` raising ``No module named 'torch'``
+#: as "no circulatory_autogen emulator_trainer under <src>", which sent the user
+#: looking at their CA directory for a missing autoemulate install. That is the
+#: misattribution :func:`ca_imports._candidate_absent` exists to prevent.
+#:
+#: ``src`` may be "" (no CA directory configured — the packaged app's starting
+#: state, with a bundled libcuflynx that needs no path entry). ``sys.path`` must
+#: never take it: "" means the current working directory.
 _MODEL_PROBE = """
 import sys, json, importlib
-sys.path.insert(0, {src!r})
+_src = {src!r}
+if _src:
+    sys.path.insert(0, _src)
 mod = None
+_errors = []
 for _name in ("libcuflynx.emulators.emulator_trainer", "emulators.emulator_trainer"):
     try:
         mod = importlib.import_module(_name)
         break
-    except ImportError:
-        pass
+    except ModuleNotFoundError as _exc:
+        _absent = _exc.name and (_name == _exc.name or _name.startswith(_exc.name + "."))
+        if not _absent:
+            raise
+        _errors.append("%s (%s)" % (_name, _exc))
 if mod is None:
-    raise SystemExit("no circulatory_autogen emulator_trainer under " + {src!r})
+    raise SystemExit(
+        "no circulatory_autogen emulator_trainer under %r (tried %s)"
+        % (_src, " and ".join(_errors))
+    )
 print(json.dumps([str(n) for n in mod.emulator_model_names()]))
 """
 
