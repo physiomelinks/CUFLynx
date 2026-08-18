@@ -34,6 +34,11 @@ dependencies = [
     # reproducible. (A CA directory chosen in Settings still overrides it: ca_imports
     # puts that checkout ahead of the installed package.)
     "libcuflynx>=0.4.0",
+    # Myokit JIT-compiles each model to a CPython extension at run time, inside the
+    # frozen process, and that compile uses setuptools' build_ext command. Python <=3.11
+    # venvs happen to ship setuptools, which is why relying on it has worked so far; 3.12
+    # removed it from the default venv, and packaging/cuflynx.spec requires it either way.
+    "setuptools>=60",
     # CellML simulation (circulatory_autogen Myokit path).
     # Required only for the integration tier; unit tests run without them.
     "myokit>=1.39.1",
