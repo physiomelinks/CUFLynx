@@ -29,7 +29,6 @@ import json
 import os
 import subprocess
 import sys
-from pathlib import Path
 
 import ca_imports
 from ca_imports import ca_from, ca_import, ca_paths, ensure_ca_path
@@ -762,11 +761,12 @@ def _models_from_interpreter(python: str, src: str) -> list[str]:
 #: interpreter or the CA directory does -- which is exactly the cache key.
 _MODEL_CACHE: dict[tuple, list[str]] = {}
 
-#: What has to be installed for CA to have any emulator models at all. CA declares it as the
-#: optional ``emulation`` extra (not ``dev``) because autoemulate pulls torch / gpytorch /
-#: pyro-ppl / lightgbm and pins the interpreter, so it is never present by accident -- which is
-#: why "no models" needs an explanation rather than a shrug.
-AUTOEMULATE_REQUIREMENT = 'autoemulate>=2.1,<3'
+#: autoemulate is what gives CA any emulator models at all, and libcuflynx declares it as the
+#: optional ``emulation`` extra (not ``dev``) because it pulls torch / gpytorch / pyro-ppl /
+#: lightgbm and pins the interpreter. So it is never present by accident, and "no models"
+#: needs an explanation rather than a shrug. The messages below name the extra rather than
+#: the raw requirement: `libcuflynx[emulation]` is one thing to type and stays correct as
+#: the pin moves.
 #: autoemulate's own interpreter pin. A conda env built for something else (FEniCSx, say) is
 #: routinely outside it, and `pip install` then fails for a reason worth stating up front.
 AUTOEMULATE_PYTHON_RANGE = ">=3.10,<3.13"
@@ -793,10 +793,16 @@ def _probe_models(python: str | None = None) -> tuple[list[str], str | None]:
         src = None
 
     python = python or default_python()
-    if python and src:
-        key = (python, src)
+    # Not `if python and src`: since the app bundles libcuflynx (#18), a CA *directory* is
+    # optional, so `src` is empty in the ordinary packaged case. Requiring it meant that
+    # choosing an interpreter which does have autoemulate changed nothing -- the probe was
+    # skipped and the answer came from the bundle's own environment, which never has it.
+    # The probe script already treats an empty src as "import libcuflynx from wherever this
+    # interpreter finds it", which is exactly right for an interpreter that pip-installed it.
+    if python:
+        key = (python, src or "")
         if key not in _MODEL_CACHE:
-            _MODEL_CACHE[key] = _models_from_interpreter(python, src)
+            _MODEL_CACHE[key] = _models_from_interpreter(python, src or "")
         if _MODEL_CACHE[key]:
             return list(_MODEL_CACHE[key]), python
 
@@ -839,16 +845,6 @@ def emulator_models(python: str | None = None) -> list[str]:
     degraded from a menu to a free-text box and said nothing about why.
     """
     return _probe_models(python)[0]
-
-
-def _ca_dir_hint() -> str:
-    """The configured circulatory_autogen checkout, for the ``pip install -e`` hint.
-
-    Its *root*, not ``src/`` -- that is where the pyproject declaring the ``emulation`` extra
-    lives. A placeholder when no CA directory is configured, so the sentence still reads.
-    """
-    src = os.environ.get("CIRCULATORY_AUTOGEN_SRC")
-    return str(Path(src).parent) if src else "<circulatory_autogen>"
 
 
 def emulator_availability(python: str | None = None) -> dict:
@@ -900,23 +896,17 @@ def emulator_availability(python: str | None = None) -> dict:
         )
     elif interpreter:
         reason = (
-            f"The analysis interpreter {interpreter} cannot import autoemulate, which is "
-            f"what provides the emulator models, so there is nothing to train. Install it "
-            f'there with: {interpreter} -m pip install "{AUTOEMULATE_REQUIREMENT}" '
-            f"(autoemulate requires Python {AUTOEMULATE_PYTHON_RANGE}). Installing "
-            f"circulatory_autogen itself with its optional emulation extra does the same: "
-            f'pip install -e "{_ca_dir_hint()}[emulation]". Or choose an interpreter that '
-            f"already has it in Settings."
+            f"The python interpreter {interpreter} does not have autoemulate installed, "
+            f"which is what provides the emulator models. Install it there with "
+            f'{interpreter} -m pip install "libcuflynx[emulation]" (autoemulate requires '
+            f"Python {AUTOEMULATE_PYTHON_RANGE}), or choose an interpreter in Settings that "
+            f"already has it."
         )
     else:
         reason = (
-            f"CUFLynx's own environment cannot import autoemulate, which is what provides "
-            f"the emulator models, and no analysis interpreter is configured. Choose one in "
-            f"Settings that has autoemulate installed, or install it there with: "
-            f'pip install "{AUTOEMULATE_REQUIREMENT}" (autoemulate requires Python '
-            f"{AUTOEMULATE_PYTHON_RANGE}). Installing circulatory_autogen itself with its "
-            f'optional emulation extra does the same: pip install -e '
-            f'"{_ca_dir_hint()}[emulation]".'
+            "The python shipped with this CUFLynx executable does not support emulators "
+            "through autoemulate immediately. Choose a python interpreter that has "
+            'autoemulate installed or install it with pip install "libcuflynx[emulation]"'
         )
 
     return {

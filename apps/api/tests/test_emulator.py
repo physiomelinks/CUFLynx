@@ -537,7 +537,7 @@ def test_a_configured_interpreter_without_autoemulate_is_named_with_its_install_
     assert got["models"] == []
     assert got["interpreter"] == "/opt/conda/envs/fenicsx/bin/python"
     assert "/opt/conda/envs/fenicsx/bin/python" in reason, "the reason must name the interpreter"
-    assert 'pip install "autoemulate>=2.1,<3"' in reason, "give the exact install line"
+    assert 'pip install "libcuflynx[emulation]"' in reason, "give the exact install line"
     # autoemulate pins the interpreter, and a conda env built for something else is routinely
     # outside it -- so the pip line failing is the *next* thing this user would hit.
     assert ">=3.10,<3.13" in reason
@@ -546,14 +546,20 @@ def test_a_configured_interpreter_without_autoemulate_is_named_with_its_install_
     assert reason.endswith("."), "a complete sentence: the panel shows this and nothing else"
 
 
-def test_the_install_hint_points_at_the_configured_circulatory_autogen(monkeypatch, tmp_path):
-    """`pip install -e "<CA_dir>[emulation]"` is only useful with the real directory in it,
-    and it is the repo root that holds the pyproject declaring the extra -- not src/."""
+def test_the_install_hint_never_says_to_pip_install_circulatory_autogen(monkeypatch, tmp_path):
+    """The engine is installed as `libcuflynx`; `circulatory_autogen` is the repository.
+
+    The hint used to spell `pip install -e "<CA_dir>[emulation]"`, which only works from a
+    checkout -- and the app that most needs this message is the packaged one, which has no
+    checkout at all and bundles the engine. One command that is right in both places.
+    """
     solver_options = _probe_env(monkeypatch, tmp_path)
 
-    reason = solver_options.emulator_availability("/venv/bin/python")["unavailable_reason"]
-
-    assert f'"{tmp_path / "circulatory_autogen"}[emulation]"' in reason
+    for python in ("/venv/bin/python", None):
+        reason = solver_options.emulator_availability(python)["unavailable_reason"]
+        assert "libcuflynx[emulation]" in reason
+        assert "circulatory_autogen" not in reason
+        assert "pip install -e" not in reason
 
 
 def test_with_no_interpreter_configured_the_reason_points_at_settings(monkeypatch, tmp_path):
@@ -568,8 +574,10 @@ def test_with_no_interpreter_configured_the_reason_points_at_settings(monkeypatc
 
     assert got["available"] is False
     assert got["interpreter"] is None
-    assert "Settings" in reason
-    assert 'pip install "autoemulate>=2.1,<3"' in reason
+    # The packaged app's own python is the one being described, so the fix is to choose a
+    # different interpreter or to install into one -- not to point at a directory.
+    assert "shipped with this CUFLynx executable" in reason
+    assert 'pip install "libcuflynx[emulation]"' in reason
     # Must not pretend to name an interpreter it does not have.
     assert "None" not in reason
 
@@ -911,3 +919,36 @@ def test_no_obs_data_at_all_is_still_none():
         obs_data = None
 
     assert main._obs_data_document(_Empty()) is None
+
+
+def test_the_chosen_interpreter_is_probed_even_with_no_ca_directory(monkeypatch, tmp_path):
+    """Choosing an interpreter that has autoemulate must change the answer, bundle or not.
+
+    The probe used to require a configured CA *directory* as well as an interpreter. Since
+    the app bundles libcuflynx (#18) a directory is optional, so in the ordinary packaged
+    case there is none -- and the probe was skipped entirely. Picking a python that had
+    autoemulate installed then changed nothing: the answer still came from the bundle's own
+    environment, which never has it, and the emulator stayed unavailable with no way to fix
+    it from inside the app.
+    """
+    import solver_options as so
+
+    monkeypatch.delenv("CIRCULATORY_AUTOGEN_SRC", raising=False)
+    monkeypatch.setattr(so, "_ensure_ca_path", lambda: None)
+    monkeypatch.setattr(so, "_models_in_process", lambda: [])  # the bundle has none
+    so._MODEL_CACHE.clear()
+
+    probed = []
+
+    def fake_probe(python, src):
+        probed.append((python, src))
+        return ["GaussianProcessRBF"]
+
+    monkeypatch.setattr(so, "_models_from_interpreter", fake_probe)
+
+    models, interpreter = so._probe_models("/envs/emu/bin/python")
+
+    assert probed == [("/envs/emu/bin/python", "")], "the interpreter was never probed"
+    assert models == ["GaussianProcessRBF"]
+    assert interpreter == "/envs/emu/bin/python"
+    assert so.emulator_availability("/envs/emu/bin/python")["available"] is True
