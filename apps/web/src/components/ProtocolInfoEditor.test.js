@@ -157,6 +157,48 @@ describe('ProtocolInfoEditor', () => {
     expect(model.experiments[0].subexps[0].duration).toBe(7)
   })
 
+  it('does not let a backspaced duration collapse the subexp out of reach', async () => {
+    // Emptying the field leaves the value null while the user is mid-edit -- which is what
+    // lets "0.5" be typed without the leading "0" being fought over. But the strip used to
+    // be drawn at flexGrow 0.001 for a null, collapsing it to nothing: the sub-experiment
+    // disappeared, taking its own duration field with it, so there was no way to finish
+    // typing the number or to get it back.
+    const model = reactive(emptyModel())
+    const wrapper = mountEditor(model)
+    const input = wrapper.find('[data-testid="subexp-dur"]')
+
+    await input.setValue('')
+    expect(model.experiments[0].subexps[0].duration).toBe(null)
+
+    const seg = wrapper.find('.tt-seg.dim')
+    expect(Number(seg.element.style.flexGrow)).toBeGreaterThanOrEqual(1)
+  })
+
+  it('makes an emptied duration a real 1 second once the field is left', async () => {
+    // toProtocolInfo writes num(duration, 0) into sim_times, so a field left empty would
+    // persist a zero-length sub-experiment -- not a sub-experiment at all.
+    const model = reactive(emptyModel())
+    const wrapper = mountEditor(model)
+    const input = wrapper.find('[data-testid="subexp-dur"]')
+
+    await input.setValue('')
+    await input.trigger('blur')
+
+    expect(model.experiments[0].subexps[0].duration).toBe(1)
+  })
+
+  it('still lets a fractional duration be typed digit by digit', async () => {
+    // The reason the value is not coerced on input: "0.5" passes through "0" on the way.
+    const model = reactive(emptyModel())
+    const wrapper = mountEditor(model)
+    const input = wrapper.find('[data-testid="subexp-dur"]')
+
+    await input.setValue('0.5')
+    await input.trigger('blur')
+
+    expect(model.experiments[0].subexps[0].duration).toBe(0.5)
+  })
+
   it('lightly highlights the subexp given by highlightSubexp', async () => {
     const model = reactive(emptyModel())
     addSubexp(model, 0) // now 2 subexps

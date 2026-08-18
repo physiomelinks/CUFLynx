@@ -145,6 +145,30 @@ function onParamKey(event) {
 function onNum(obj, field, value) {
   obj[field] = value === '' ? null : Number(value)
 }
+// How wide a sub-experiment's strip should be drawn, given its duration.
+//
+// Backspacing the duration field leaves it empty, and an empty field is null while the
+// user is mid-edit -- deliberately, so that typing "0.5" is not fought over by a coercion
+// that turns the leading "0" into something else. But null (and 0) used to fall to a
+// flexGrow of 0.001, which collapsed the strip to nothing: the sub-experiment vanished,
+// taking its own duration field with it, and there was no way to type the rest of the
+// number or to get it back.
+//
+// So a duration that is not a positive number draws at the width of a 1-second one. It is
+// a floor on the *drawing* only; the value stays whatever the user has typed so far, and
+// the yaml keeps whatever they settle on.
+const MIN_SUBEXP_FLEX = 1
+function subexpFlex(duration) {
+  return Number.isFinite(duration) && duration > 0 ? duration : MIN_SUBEXP_FLEX
+}
+// ...and once the user leaves the field, an empty one becomes that 1 second for real.
+// Editing tolerates a half-typed value; saving must not. `toProtocolInfo` writes
+// `num(s.duration, 0)` into sim_times, so a field left empty would otherwise persist a
+// sub-experiment of zero length -- which is not a sub-experiment, and which the drawing
+// floor above would then hide rather than reveal.
+function onDurationBlur(sub) {
+  if (!(Number.isFinite(sub.duration) && sub.duration > 0)) sub.duration = MIN_SUBEXP_FLEX
+}
 // Horizontal bounds the edit popup must stay within: the window, tightened by any
 // clipping/scrolling ancestor (e.g. the obs_data dialog body) so the popup is never
 // hidden behind a clipped edge.
@@ -343,7 +367,7 @@ function shapeIcon(cell) {
           :key="s"
           class="tt-seg dim"
           :class="{ 'tt-highlight': showHighlight && s === highlightSubexp }"
-          :style="{ flexGrow: Math.max(sub.duration, 0.001) }"
+          :style="{ flexGrow: subexpFlex(sub.duration) }"
           @mouseenter="fitEditor"
           @focusin="fitEditor"
         >
@@ -357,6 +381,7 @@ function shapeIcon(cell) {
               :value="sub.duration"
               data-testid="subexp-dur"
               @input="onNum(sub, 'duration', $event.target.value)"
+              @blur="onDurationBlur(sub)"
             />
             <Button
               icon="pi pi-minus"
@@ -399,7 +424,7 @@ function shapeIcon(cell) {
             :key="s - 1"
             class="tt-seg"
             :class="{ 'tt-highlight': showHighlight && s - 1 === highlightSubexp }"
-            :style="{ flexGrow: Math.max(activeExperiment.subexps[s - 1].duration, 0.001) }"
+            :style="{ flexGrow: subexpFlex(activeExperiment.subexps[s - 1].duration) }"
             @mouseenter="fitEditor"
             @focusin="fitEditor"
           >
