@@ -38,7 +38,8 @@ import sys
 import sysconfig
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_all, collect_data_files, collect_submodules
+from PyInstaller.utils.hooks import (collect_all, collect_data_files, collect_submodules,
+                                     copy_metadata)
 
 ROOT = Path(SPECPATH).parent  # noqa: F821 - SPECPATH is injected by PyInstaller
 API_DIR = ROOT / "apps" / "api"
@@ -340,10 +341,25 @@ for pkg in ("myokit", "libcellml", "casadi", "webview", "setuptools", "numpy"):
 # Its submodules are resolved dynamically in several places (the solver factory picks
 # a backend by name, the cost/operation registries import by name), so the explicit
 # hidden imports matter as much as the data.
-_ca_datas, _ca_binaries, _ca_hidden = collect_all("libcuflynx")
-datas += _ca_datas
-binaries += _ca_binaries
-hiddenimports += _ca_hidden
+# Deliberately NOT collect_all: libcuflynx is pure Python (253 files, zero .pyd/.so),
+# so its "binaries" are empty -- but collect_all puts the package into PyInstaller's
+# collected_packages, and find_binary_dependencies then *imports* each of those in an
+# isolated subprocess to scan for DLL dependencies. Importing libcuflynx.solver_wrappers
+# pulls in every backend, and on the Windows runner that crashed the child:
+#     SubprocessDiedError: Isolated subprocess crashed while importing package
+#     'libcuflynx.solver_wrappers'
+# (Linux and both macOS runners survived it, which is what makes this easy to miss.)
+#
+# The two halves that actually matter are collected directly, and neither imports the
+# package: collect_data_files walks the distribution's file list, and collect_submodules
+# imports only `libcuflynx` itself and then walks __path__ with pkgutil. Same data, same
+# hidden imports, no import of a backend at build time.
+datas += collect_data_files("libcuflynx")
+hiddenimports += collect_submodules("libcuflynx")
+# The .dist-info too, which collect_all would have brought and collect_data_files does
+# not: without it importlib.metadata.version("libcuflynx") raises inside the bundle, and
+# "which engine is this app carrying" is a question worth being able to answer.
+datas += copy_metadata("libcuflynx")
 # The 11 deprecation shims are deliberately NOT collected. They exist for user code
 # written against the pre-0.4.0 flat names and warn on import; nothing in CUFLynx
 # imports them (ca_imports prefers the namespaced spelling precisely so the app never
