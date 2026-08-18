@@ -314,17 +314,41 @@ def test_solver_only_post_preserves_the_seed(client):
     assert body["seed"] == 99
 
 
-def test_ca_exists_is_false_when_unconfigured(client, monkeypatch):
+def test_ca_exists_is_false_when_unconfigured_and_nothing_is_installed(client, monkeypatch):
     """Regression: frozen + unconfigured, _circulatory_autogen_src() returns "",
     and Path("").is_dir() is True (empty path -> cwd). ca_exists must still be
     False so the packaged app prompts for a CA dir instead of silently proceeding
-    and failing the first run with 'No module named generators'."""
+    and failing the first run with 'No module named generators'.
+
+    Both halves are pinned explicitly rather than left to the environment: once
+    libcuflynx is installed (which is exactly what the build environment does, #18),
+    an unconfigured app is no longer a CA-less one, and a test that read the real
+    answer would flip meaning depending on whether the machine happened to have the
+    package.
+    """
     import main as main_mod
 
     monkeypatch.setattr(main_mod, "_circulatory_autogen_src", lambda: "")
+    monkeypatch.setattr(main_mod.ca_imports, "installed_package_available", lambda: False)
     body = client.get("/api/config").json()
     assert body["ca_src"] == ""
     assert body["ca_exists"] is False
+
+
+def test_ca_exists_is_true_when_the_package_is_installed(client, monkeypatch):
+    """The bundled case (#18): no directory, but CA is present as a package.
+
+    Prompting for a directory the user does not need — and cannot usefully supply
+    in a packaged app — is the wrong first run, so an installed libcuflynx counts
+    as CA being there.
+    """
+    import main as main_mod
+
+    monkeypatch.setattr(main_mod, "_circulatory_autogen_src", lambda: "")
+    monkeypatch.setattr(main_mod.ca_imports, "installed_package_available", lambda: True)
+    body = client.get("/api/config").json()
+    assert body["ca_src"] == ""
+    assert body["ca_exists"] is True
 
 
 def test_config_reports_what_the_default_interpreter_resolves_to(client):

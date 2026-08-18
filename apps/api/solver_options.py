@@ -29,9 +29,9 @@ import json
 import os
 import subprocess
 import sys
-from pathlib import Path
 
-from ca_imports import ca_from, ca_paths, ensure_ca_path
+import ca_imports
+from ca_imports import ca_from, ca_import, ca_paths, ensure_ca_path
 from runtime_paths import default_python
 
 # model_types CUFLynx can actually run (it code-generates python/casadi from the
@@ -60,18 +60,22 @@ SUPPORTED_FORMATS = ("cellml", "python", "casadi_python", "external_python")
 #: whatever the connected CA advertises at the moment a run config is written.
 #: This is also what stops the app breaking in the window between updating the
 #: two repos, which is a window every developer with a sibling checkout lands in.
-MODEL_TYPE_ALIASES = {"cellml_only": "cellml"}
+#:
+#: The table and the inbound half live in :mod:`ca_imports` and are re-exported
+#: here, because the runner tier needs them and this module does not ship into
+#: ``runners/``. Only the outbound half is this module's own: it depends on what
+#: the *connected* CA advertised, which only a schema introspection knows.
+MODEL_TYPE_ALIASES = ca_imports.MODEL_TYPE_ALIASES
+canonical_model_type = ca_imports.canonical_model_type
 
 #: Current name -> the spelling the *connected* CA advertises. Identity unless an
-#: older CA said otherwise; rebuilt on every schema introspection.
-_ca_model_type_spelling: dict[str, str] = {}
-
-
-def canonical_model_type(model_type: str | None) -> str | None:
-    """CUFLynx's spelling of a CA model_type. Unknown names pass through."""
-    if not model_type:
-        return model_type
-    return MODEL_TYPE_ALIASES.get(model_type, model_type)
+#: older CA said otherwise; rebuilt on every schema introspection. ``None`` means
+#: "no CA has been asked yet", which is **not** the same as "asked, and it uses
+#: the current names": treating it as the latter made :func:`ca_model_type` the
+#: identity function until something happened to call :func:`get_solver_options`
+#: first, so a run config written before that went out saying ``cellml`` to a CA
+#: that only accepts ``cellml_only``.
+_ca_model_type_spelling: dict[str, str] | None = None
 
 
 def ca_model_type(model_type: str | None) -> str | None:
@@ -80,10 +84,23 @@ def ca_model_type(model_type: str | None) -> str | None:
     Identity for a current CA. Call this at the boundary -- a run config, an
     exported pipeline -- never inside CUFLynx, where the canonical name is the
     only one that should appear.
+
+    Introspects the connected CA on first use rather than answering "current
+    names" by default: the answer is a property of the CA on the other side, and
+    guessing it is the failure this exists to prevent. A CA that cannot be read
+    leaves the table empty, which is the identity -- the best available guess
+    when there is nothing to translate against.
     """
     if not model_type:
         return model_type
-    return _ca_model_type_spelling.get(model_type, model_type)
+    spelling = _ca_model_type_spelling
+    if spelling is None:
+        try:
+            get_solver_options()
+        except Exception:  # noqa: BLE001 - no CA / an unreadable one: stay identity
+            pass
+        spelling = _ca_model_type_spelling or {}
+    return spelling.get(model_type, model_type)
 
 
 def _canonicalise_model_types(schema: dict) -> dict:
@@ -525,11 +542,16 @@ _modifier_cache: dict | None = None
 def reset_cache() -> None:
     """Drop the cached options (call when the CA directory changes)."""
     global _cache, _param_id_cache, _analysis_cache, _prior_cache, _modifier_cache
+    global _ca_model_type_spelling
     _cache = None
     _param_id_cache = None
     _analysis_cache = None
     _prior_cache = None
     _modifier_cache = None
+    # Which spelling the connected CA uses is a fact about *that* CA, so it is a
+    # cache like the rest -- and one that was never cleared, so a new CA dir (and,
+    # in the test process, the next test) inherited the previous one's answer.
+    _ca_model_type_spelling = None
 
 
 #: The sys.path entries CA's parser/operation modules need, and the helper that
@@ -546,9 +568,17 @@ def _introspect_solver_schema() -> dict:
 
 
 def _introspect_differentiable() -> dict[str, bool]:
-    """Map each CA operation_func name -> whether it's marked @differentiable."""
+    """Map each CA operation_func name -> whether it's marked @differentiable.
+
+    ``operation_funcs`` goes through the resolver like every other CA module: a
+    bare ``import operation_funcs`` only ever worked off the ``<src>/param_id``
+    entry :func:`ca_paths` adds, and an installed/bundled libcuflynx has no such
+    directory (#18). It failed into ``_FALLBACK_DIFFERENTIABLE`` there — silently,
+    since ``_safe`` swallows it — which is a hardcoded vocabulary standing in for
+    CA's.
+    """
     _ensure_ca_path()
-    import operation_funcs  # noqa: E402 (CA module, resolved via sys.path)
+    operation_funcs = ca_import("operation_funcs")
 
     is_circulatory_differentiable = ca_from(
         "param_id.differentiable", "is_circulatory_differentiable")
@@ -675,19 +705,38 @@ def _introspect_analysis_options() -> dict:
 
 #: Source text run by *another* interpreter, so it cannot call :mod:`ca_imports`
 #: and spells the two-layout rule out inline (CA #437). Keep it in step with
-#: :func:`ca_imports.ca_import`: namespaced first, flat second.
+#: :func:`ca_imports.ca_import`: namespaced first, flat second, and — the part
+#: that is easy to leave out — **only a missing candidate is a reason to try the
+#: other spelling**. A blanket ``except ImportError: pass`` reported
+#: ``libcuflynx.emulators.emulator_trainer`` raising ``No module named 'torch'``
+#: as "no circulatory_autogen emulator_trainer under <src>", which sent the user
+#: looking at their CA directory for a missing autoemulate install. That is the
+#: misattribution :func:`ca_imports._candidate_absent` exists to prevent.
+#:
+#: ``src`` may be "" (no CA directory configured — the packaged app's starting
+#: state, with a bundled libcuflynx that needs no path entry). ``sys.path`` must
+#: never take it: "" means the current working directory.
 _MODEL_PROBE = """
 import sys, json, importlib
-sys.path.insert(0, {src!r})
+_src = {src!r}
+if _src:
+    sys.path.insert(0, _src)
 mod = None
+_errors = []
 for _name in ("libcuflynx.emulators.emulator_trainer", "emulators.emulator_trainer"):
     try:
         mod = importlib.import_module(_name)
         break
-    except ImportError:
-        pass
+    except ModuleNotFoundError as _exc:
+        _absent = _exc.name and (_name == _exc.name or _name.startswith(_exc.name + "."))
+        if not _absent:
+            raise
+        _errors.append("%s (%s)" % (_name, _exc))
 if mod is None:
-    raise SystemExit("no circulatory_autogen emulator_trainer under " + {src!r})
+    raise SystemExit(
+        "no circulatory_autogen emulator_trainer under %r (tried %s)"
+        % (_src, " and ".join(_errors))
+    )
 print(json.dumps([str(n) for n in mod.emulator_model_names()]))
 """
 
@@ -712,11 +761,12 @@ def _models_from_interpreter(python: str, src: str) -> list[str]:
 #: interpreter or the CA directory does -- which is exactly the cache key.
 _MODEL_CACHE: dict[tuple, list[str]] = {}
 
-#: What has to be installed for CA to have any emulator models at all. CA declares it as the
-#: optional ``emulation`` extra (not ``dev``) because autoemulate pulls torch / gpytorch /
-#: pyro-ppl / lightgbm and pins the interpreter, so it is never present by accident -- which is
-#: why "no models" needs an explanation rather than a shrug.
-AUTOEMULATE_REQUIREMENT = 'autoemulate>=2.1,<3'
+#: autoemulate is what gives CA any emulator models at all, and libcuflynx declares it as the
+#: optional ``emulation`` extra (not ``dev``) because it pulls torch / gpytorch / pyro-ppl /
+#: lightgbm and pins the interpreter. So it is never present by accident, and "no models"
+#: needs an explanation rather than a shrug. The messages below name the extra rather than
+#: the raw requirement: `libcuflynx[emulation]` is one thing to type and stays correct as
+#: the pin moves.
 #: autoemulate's own interpreter pin. A conda env built for something else (FEniCSx, say) is
 #: routinely outside it, and `pip install` then fails for a reason worth stating up front.
 AUTOEMULATE_PYTHON_RANGE = ">=3.10,<3.13"
@@ -743,10 +793,16 @@ def _probe_models(python: str | None = None) -> tuple[list[str], str | None]:
         src = None
 
     python = python or default_python()
-    if python and src:
-        key = (python, src)
+    # Not `if python and src`: since the app bundles libcuflynx (#18), a CA *directory* is
+    # optional, so `src` is empty in the ordinary packaged case. Requiring it meant that
+    # choosing an interpreter which does have autoemulate changed nothing -- the probe was
+    # skipped and the answer came from the bundle's own environment, which never has it.
+    # The probe script already treats an empty src as "import libcuflynx from wherever this
+    # interpreter finds it", which is exactly right for an interpreter that pip-installed it.
+    if python:
+        key = (python, src or "")
         if key not in _MODEL_CACHE:
-            _MODEL_CACHE[key] = _models_from_interpreter(python, src)
+            _MODEL_CACHE[key] = _models_from_interpreter(python, src or "")
         if _MODEL_CACHE[key]:
             return list(_MODEL_CACHE[key]), python
 
@@ -791,16 +847,6 @@ def emulator_models(python: str | None = None) -> list[str]:
     return _probe_models(python)[0]
 
 
-def _ca_dir_hint() -> str:
-    """The configured circulatory_autogen checkout, for the ``pip install -e`` hint.
-
-    Its *root*, not ``src/`` -- that is where the pyproject declaring the ``emulation`` extra
-    lives. A placeholder when no CA directory is configured, so the sentence still reads.
-    """
-    src = os.environ.get("CIRCULATORY_AUTOGEN_SRC")
-    return str(Path(src).parent) if src else "<circulatory_autogen>"
-
-
 def emulator_availability(python: str | None = None) -> dict:
     """Whether an emulator could be trained at all, and if not, what to do about it.
 
@@ -822,37 +868,45 @@ def emulator_availability(python: str | None = None) -> dict:
     spawns no subprocess.
     """
     # Cannot train against a CA that has no emulators, whatever the interpreter has.
-    supported = bool(get_analysis_options().get("emulation", {}).get("options"))
+    #
+    # "the schema has no emulation mode" and "the schema could not be read" are the same
+    # shape here but different problems: get_analysis_options() degrades to a fallback that
+    # predates emulators, so *any* failure to introspect CA -- not just an old CA -- used to
+    # be reported as "this circulatory_autogen has no emulation support", sending the user to
+    # change a CA directory that was never the cause.
+    analysis_options, introspected = get_analysis_options(), analysis_options_introspected()
+    supported = bool(analysis_options.get("emulation", {}).get("options"))
     models, interpreter = _probe_models(python)
     available = bool(supported and models)
 
     if available:
         reason = None
+    elif not supported and introspected:
+        reason = (
+            "This circulatory_autogen predates emulator training: its analysis options "
+            "declare no emulation mode. Emulators need circulatory_autogen 0.4.0 or newer "
+            "(libcuflynx), so update it, or point Settings at a newer checkout."
+        )
     elif not supported:
         reason = (
-            "This circulatory_autogen has no emulation support: its analysis options "
-            "declare no emulation mode. Point Settings at a newer circulatory_autogen "
-            "to train emulators."
+            "The emulator options could not be read from circulatory_autogen, so there is "
+            "nothing to train against. The import failed -- this is not a schema that "
+            "predates emulators -- and the cause is usually the environment the analysis "
+            "runs in rather than the directory itself. The server log has the import error."
         )
     elif interpreter:
         reason = (
-            f"The analysis interpreter {interpreter} cannot import autoemulate, which is "
-            f"what provides the emulator models, so there is nothing to train. Install it "
-            f'there with: {interpreter} -m pip install "{AUTOEMULATE_REQUIREMENT}" '
-            f"(autoemulate requires Python {AUTOEMULATE_PYTHON_RANGE}). Installing "
-            f"circulatory_autogen itself with its optional emulation extra does the same: "
-            f'pip install -e "{_ca_dir_hint()}[emulation]". Or choose an interpreter that '
-            f"already has it in Settings."
+            f"The python interpreter {interpreter} does not have autoemulate installed, "
+            f"which is what provides the emulator models. Install it there with "
+            f'{interpreter} -m pip install "libcuflynx[emulation]" (autoemulate requires '
+            f"Python {AUTOEMULATE_PYTHON_RANGE}), or choose an interpreter in Settings that "
+            f"already has it."
         )
     else:
         reason = (
-            f"CUFLynx's own environment cannot import autoemulate, which is what provides "
-            f"the emulator models, and no analysis interpreter is configured. Choose one in "
-            f"Settings that has autoemulate installed, or install it there with: "
-            f'pip install "{AUTOEMULATE_REQUIREMENT}" (autoemulate requires Python '
-            f"{AUTOEMULATE_PYTHON_RANGE}). Installing circulatory_autogen itself with its "
-            f'optional emulation extra does the same: pip install -e '
-            f'"{_ca_dir_hint()}[emulation]".'
+            "The python shipped with this CUFLynx executable does not support emulators "
+            "through autoemulate immediately. Choose a python interpreter that has "
+            'autoemulate installed or install it with pip install "libcuflynx[emulation]"'
         )
 
     return {
@@ -1368,6 +1422,21 @@ def get_analysis_options(refresh: bool = False) -> dict:
     if ok:
         _analysis_cache = opts
     return opts
+
+
+def analysis_options_introspected() -> bool:
+    """Whether the analysis options came from circulatory_autogen or from the fallback.
+
+    The two are indistinguishable by content -- both are a dict of modes -- but they mean
+    opposite things when a mode is *missing*. Read from CA, an absent emulation mode means
+    this CA predates emulators. Fallen back to, it means CA could not be read at all, and
+    the fallback simply predates them; blaming the CA directory then sends the user to
+    change the one thing that was not the cause.
+
+    Only a successful introspection is cached, so a populated cache is the record of one.
+    """
+    get_analysis_options()
+    return _analysis_cache is not None
 
 
 def analysis_mode_options(mode: str) -> list[dict]:

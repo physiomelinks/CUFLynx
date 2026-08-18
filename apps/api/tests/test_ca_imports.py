@@ -147,9 +147,81 @@ def test_the_preference_survives_a_stale_layout_cache(layouts):
     assert ca_imports.ca_import(MOD).WHICH == "namespaced"
 
 
+def test_switching_the_ca_directory_takes_effect_without_a_restart(tmp_path, monkeypatch):
+    """The promise ``reset_cache`` makes, which it did not keep.
+
+    Clearing ``_namespaced`` could never have been enough: ``_namespace_available``
+    re-answers ``True`` straight from ``sys.modules``, ``ca_import`` returns from
+    ``sys.modules`` before it touches the filesystem at all, and once ``libcuflynx``
+    has been imported its ``__path__`` pins the directory it came from — so putting
+    a new ``src`` at ``sys.path[0]`` changes nothing. Switching from a namespaced
+    checkout to any other CA kept running the old one, which made the new layout
+    *worse* at this than the flat one had been.
+
+    It matters more now that the packaged app bundles a libcuflynx: something is
+    always importable, so the wrong CA is always available to be kept.
+
+    No hand-purging here (unlike ``_fresh``): ``reset_cache()`` is the whole
+    subject, so the test does exactly what ``engine.reset()`` does and no more.
+    """
+    import engine as engine_mod
+
+    monkeypatch.setattr(ca_imports, "CA_PACKAGES", frozenset({TOP}))
+
+    def make_checkout(name, marker):
+        src = tmp_path / name / "src"
+        src.mkdir(parents=True)
+        _write_pkg(src, ca_imports.NAMESPACE)
+        _write_pkg(src, ca_imports.NAMESPACE, TOP)
+        (src / ca_imports.NAMESPACE / TOP / "thing.py").write_text(f"WHICH = {marker!r}\n")
+        return src
+
+    first = make_checkout("first", "first")
+    second = make_checkout("second", "second")
+
+    def use(src):
+        monkeypatch.setattr(engine_mod, "_circulatory_autogen_src", lambda: str(src))
+        ca_imports.reset_cache()  # exactly what engine.reset() calls
+        ca_imports.ensure_ca_path()
+
+    try:
+        use(first)
+        assert ca_imports.ca_import(MOD).WHICH == "first"
+
+        use(second)  # Settings -> "CA dir", mid-session
+        assert ca_imports.ca_import(MOD).WHICH == "second"
+
+        use(first)  # and back again
+        assert ca_imports.ca_import(MOD).WHICH == "first"
+    finally:
+        ca_imports.reset_cache()
+        importlib.invalidate_caches()
+
+
+def test_reset_takes_the_previous_ca_directory_off_sys_path(tmp_path, monkeypatch):
+    """``ensure_ca_path`` inserts permanently, so without this the abandoned
+    checkout stays in front of everything and keeps answering for any module the
+    newly-chosen CA happens not to have."""
+    import engine as engine_mod
+
+    src = tmp_path / "src"
+    src.mkdir()
+    monkeypatch.setattr(engine_mod, "_circulatory_autogen_src", lambda: str(src))
+    try:
+        ca_imports.reset_cache()
+        ca_imports.ensure_ca_path()
+        assert str(src) in sys.path
+
+        ca_imports.reset_cache()
+        assert str(src) not in sys.path
+    finally:
+        ca_imports.reset_cache()
+
+
 def test_a_name_that_is_not_a_ca_package_is_left_alone(layouts):
-    """``operation_funcs`` and friends are loaded from a directory on sys.path,
-    not from a CA package, so they must not acquire a ``libcuflynx.`` prefix."""
+    """A name that is neither one of CA's top-level packages nor in
+    RELOCATED_MODULES must not acquire a ``libcuflynx.`` prefix — there is no
+    such module to find, and the wrong candidate only muddies the error."""
     assert ca_imports.candidates("json") == ["json"]
 
 
@@ -309,11 +381,26 @@ def test_ensure_ca_path_puts_the_namespaced_funcs_dir_ahead_of_the_flat_one(monk
 # ---------------------------------------------------------------------------
 # The duplicate in sim_worker_runner.py
 # ---------------------------------------------------------------------------
-def test_the_sim_worker_runners_copy_follows_the_same_rule(layouts):
+@pytest.fixture
+def sim_worker(monkeypatch):
+    """``sim_worker_runner`` with its own ``CA_PACKAGES`` gate pointed at TOP.
+
+    The copy carries the gate too now, so the invented top-level name has to be
+    in *its* table as well as in ``ca_imports``' — otherwise ``TOP.thing`` is
+    "not a CA module", keeps its bare name, and the test would be asserting the
+    default rather than the rule.
+    """
+    import sim_worker_runner as swr
+
+    monkeypatch.setattr(swr, "_CA_PACKAGES", frozenset({TOP}))
+    return swr
+
+
+def test_the_sim_worker_runners_copy_follows_the_same_rule(layouts, sim_worker):
     """``sim_worker_runner.py`` is executed as a file by an external interpreter
     and must stay free of app imports (CLAUDE.md), so it carries its own copy of
     this rule. The copy is what runs the sliders — pin it too."""
-    import sim_worker_runner as swr
+    swr = sim_worker
 
     layouts.flat("flat")
     layouts.namespaced("namespaced")
@@ -328,8 +415,8 @@ def test_the_sim_worker_runners_copy_follows_the_same_rule(layouts):
     assert f"{ca_imports.NAMESPACE}.{TOP}.never_existed" in str(excinfo.value)
 
 
-def test_the_sim_worker_runners_copy_falls_back_to_flat(layouts, tmp_path):
-    import sim_worker_runner as swr
+def test_the_sim_worker_runners_copy_falls_back_to_flat(layouts, tmp_path, sim_worker):
+    swr = sim_worker
 
     layouts.flat("flat")
     _fresh()
@@ -349,10 +436,13 @@ def _namespaced(monkeypatch, flat_name, module):
     namespace look importable so it is the preferred candidate."""
     import types
 
+    # Reset *before* injecting, not after: reset_cache() drops every imported CA
+    # module from sys.modules (that is what makes a CA-dir switch take effect),
+    # so a fake registered first would be thrown away by it.
+    ca_imports.reset_cache()
     monkeypatch.setitem(sys.modules, ca_imports.NAMESPACE,
                         types.ModuleType(ca_imports.NAMESPACE))
     monkeypatch.setitem(sys.modules, f"{ca_imports.NAMESPACE}.{flat_name}", module)
-    ca_imports.reset_cache()
 
 
 def test_solver_options_reads_a_namespaced_ca(monkeypatch):
@@ -398,29 +488,103 @@ def test_the_live_engine_builds_its_helper_from_a_namespaced_ca(monkeypatch):
     assert called["model_path"] == "m.cellml"
 
 
-class TestRelocatedModules:
-    """CA #433 moved the built-in funcs out of ``funcs_user/`` and into the package.
+def test_solver_options_reads_operation_funcs_from_a_namespaced_ca(monkeypatch):
+    """``import operation_funcs`` was a bare-name import off the ``<src>/param_id``
+    entry ``ca_paths()`` adds. An **installed** libcuflynx (which the packaged app
+    bundles, #18) has no directory to add, so the bare name could not resolve — and
+    ``_safe`` swallows the failure, leaving the app on ``_FALLBACK_DIFFERENTIABLE``:
+    a hardcoded copy of the very vocabulary CA is supposed to own."""
+    import types
 
-    These three are the only CA modules whose namespaced spelling is *not* the flat one
-    with ``libcuflynx.`` glued on: they were never reached by a dotted path at all --
-    ``funcs_user/`` was simply on ``sys.path``, so the flat spelling is a bare module
-    name. No prefix rule can derive ``libcuflynx.funcs.cost_funcs_user`` from
-    ``cost_funcs_user``, which is why they need an explicit map.
+    import solver_options as so
+
+    fake_ops = types.SimpleNamespace(
+        get_operation_funcs_dict_for_mode=lambda mode: {"max": max, "mean": min},
+    )
+    _namespaced(monkeypatch, "param_id.operation_funcs", fake_ops)
+    monkeypatch.setitem(sys.modules, f"{ca_imports.NAMESPACE}.param_id.differentiable",
+                        types.SimpleNamespace(
+                            is_circulatory_differentiable=lambda fn: fn is max))
+    monkeypatch.setattr(so, "_ensure_ca_path", lambda: None)
+    try:
+        assert so._introspect_differentiable() == {"max": True, "mean": False}
+    finally:
+        ca_imports.reset_cache()
+
+
+def test_obs_options_reads_operation_funcs_from_a_namespaced_ca(monkeypatch):
+    """Same import, the other half of the vocabulary: the operations offered in
+    the obs_data editor. Its bare import sat inside ``except Exception: return
+    None`` / a fallback list, so the packaged app showed a hardcoded menu."""
+    import types
+
+    import obs_options as oo
+
+    fake_ops = types.SimpleNamespace(
+        get_operation_funcs_dict_for_mode=lambda mode, external_path=None: {
+            "max": max, "spread": min,
+        },
+    )
+    _namespaced(monkeypatch, "param_id.operation_funcs", fake_ops)
+    monkeypatch.setattr(oo, "_ensure_ca_path", lambda: None)
+    monkeypatch.setattr(oo, "_external_func_paths", lambda _d=None: (None, None))
+    try:
+        assert sorted(oo.get_operation_funcs()) == ["max", "spread"]
+    finally:
+        ca_imports.reset_cache()
+
+
+class TestRelocatedModules:
+    """The CA modules whose namespaced spelling is *not* the flat one with a prefix.
+
+    They were never reached by a dotted path at all: a directory was simply on
+    ``sys.path`` and the module was imported by bare name, so no prefix rule can derive
+    ``libcuflynx.funcs.cost_funcs_user`` from ``cost_funcs_user``. Hence an explicit map.
+
+    Three of them are CA #433, which moved the built-in cost/operation/modifier funcs out
+    of the repo's ``funcs_user/`` and into the package. The fourth, ``operation_funcs``,
+    never moved -- it was always ``<src>/param_id/operation_funcs.py`` -- but the bare
+    import needed the ``<src>/param_id`` entry ``ca_paths()`` adds, and an **installed**
+    or bundled libcuflynx has no directory to add (#18): ``ca_paths()`` correctly returns
+    ``[]`` there.
 
     The regression this guards: ``obs_options.get_cost_funcs`` used a bare
     ``import cost_funcs_user`` inside a blanket ``except Exception: return None``. Against
     a CA that had moved the module, the import failed, the exception was swallowed, and
     the live cost silently disappeared from the Parameters tab -- no error anywhere, just
     a missing number. It was caught by the calibration cost-parity test, not by anything
-    that looked like an import test.
+    that looked like an import test. ``operation_funcs`` sits behind the same shape of
+    swallowed fallback in four places, and in the packaged app it would have taken the
+    whole operation/cost vocabulary down to a hardcoded copy.
     """
 
-    def test_relocated_names_map_to_the_funcs_subpackage(self):
+    def test_relocated_names_map_to_their_real_dotted_module(self):
         assert ca_imports.RELOCATED_MODULES == {
             "cost_funcs_user": "libcuflynx.funcs.cost_funcs_user",
             "operation_funcs_user": "libcuflynx.funcs.operation_funcs_user",
             "modifier_funcs_user": "libcuflynx.funcs.modifier_funcs_user",
+            "operation_funcs": "libcuflynx.param_id.operation_funcs",
         }
+
+    def test_operation_funcs_resolves_without_any_sys_path_entry(self, monkeypatch):
+        """The packaged app's state: a libcuflynx that is installed, not a checkout.
+
+        ``ca_paths()`` is then empty, so ``<src>/param_id`` is on ``sys.path``
+        nowhere and a bare ``import operation_funcs`` cannot work. The dotted
+        module must.
+        """
+        import engine as engine_mod
+
+        monkeypatch.setattr(engine_mod, "_circulatory_autogen_src", lambda: "")
+        monkeypatch.setattr(ca_imports, "_namespace_available", lambda: True)
+        assert ca_imports.ca_paths() == []
+        assert ca_imports.candidates("operation_funcs") == [
+            # importable with no path entry at all...
+            "libcuflynx.param_id.operation_funcs",
+            # ...and the flat spelling stays on the list, for a checkout predating
+            # the namespace, where param_id/operation_funcs.py is a real file.
+            "operation_funcs",
+        ]
 
     def test_candidates_offer_both_spellings(self, monkeypatch):
         monkeypatch.setattr(ca_imports, "_namespace_available", lambda: True)
@@ -457,3 +621,68 @@ class TestRelocatedModules:
         monkeypatch.setitem(sys.modules, "cost_funcs_user", legacy)
         monkeypatch.setitem(sys.modules, "libcuflynx.funcs.cost_funcs_user", None)
         assert ca_imports.ca_import("cost_funcs_user") is legacy
+
+
+class TestInstalledPackageNeedsNoDirectory:
+    """The packaged app bundles libcuflynx, so "no CA dir" stops meaning "no CA" (#18).
+
+    Before bundling, every way of reaching CA went through a *directory*: ca_paths built
+    sys.path entries from it, and ca_exists was `bool(src) and is_dir(src)`. An installed
+    package is reached by neither -- plain importlib finds it -- so both had to learn that
+    a missing directory is not a missing CA, or the packaged app would prompt for a
+    directory the user does not have and does not need.
+    """
+
+    def test_no_configured_directory_contributes_no_path_entries(self, monkeypatch):
+        """And in particular never the current working directory.
+
+        Every entry ca_paths returns derives from the configured src, and `Path("")` is
+        `.` -- so an unset CA dir used to put the cwd, `./param_id` and `./funcs_user` on
+        a server process's sys.path. That predates the bundling and is a hazard on its
+        own.
+        """
+        monkeypatch.setattr(ca_imports, "_ca_src", lambda: "")
+
+        assert ca_imports.ca_paths() == []
+
+    def test_a_configured_directory_still_wins(self, monkeypatch, tmp_path):
+        """A developer pointing the app at a checkout must still override the bundle."""
+        src = tmp_path / "circulatory_autogen" / "src"
+        src.mkdir(parents=True)
+        monkeypatch.setattr(ca_imports, "_ca_src", lambda: str(src))
+
+        paths = ca_imports.ca_paths()
+
+        assert str(src) in paths
+        assert str(src / "libcuflynx" / "param_id") in paths
+
+    def test_a_checkout_on_sys_path_does_not_count_as_installed(self, monkeypatch, tmp_path):
+        """The distinction the first-run prompt depends on.
+
+        `ensure_ca_path` inserts a configured checkout's `src` permanently, so once any
+        directory has been used, `libcuflynx` stays importable for the life of the
+        process -- even after the setting is cleared. Reporting that as an installed
+        package would say CA is present with nothing configured.
+        """
+        checkout = tmp_path / "circulatory_autogen" / "src" / "libcuflynx"
+        checkout.mkdir(parents=True)
+        (checkout / "__init__.py").write_text("")
+        spec = importlib.util.spec_from_file_location(
+            "libcuflynx", checkout / "__init__.py")
+        monkeypatch.setattr(importlib.util, "find_spec", lambda name: spec)
+
+        assert ca_imports.installed_package_available() is False
+
+    def test_a_site_packages_install_does_count(self, monkeypatch, tmp_path):
+        installed = tmp_path / "site-packages" / "libcuflynx"
+        installed.mkdir(parents=True)
+        (installed / "__init__.py").write_text("")
+        spec = importlib.util.spec_from_file_location(
+            "libcuflynx", installed / "__init__.py")
+        monkeypatch.setattr(importlib.util, "find_spec", lambda name: spec)
+
+        assert ca_imports.installed_package_available() is True
+
+    def test_absent_package_is_not_installed(self, monkeypatch):
+        monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
+        assert ca_imports.installed_package_available() is False

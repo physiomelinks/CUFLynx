@@ -1142,3 +1142,90 @@ def test_the_old_spelling_is_accepted_wherever_a_stored_setting_can_carry_it():
     assert so.canonical_model_type("nonsense") == "nonsense"
     assert so.canonical_model_type("") == ""
     assert so.canonical_model_type(None) is None
+
+
+def test_the_ca_spelling_is_worked_out_before_the_first_run_config(monkeypatch):
+    """Outbound translation must not depend on something having asked for the
+    solver options first.
+
+    ``_ca_model_type_spelling`` started as ``{}``, which is indistinguishable from
+    "asked, and this CA uses the current names" -- so ``ca_model_type`` was the
+    identity function until some caller happened to run ``get_solver_options()``.
+    A run config written before that went out saying ``cellml`` to a CA that only
+    accepts ``cellml_only``, and every calibration, SA and UQ run against it died
+    at startup. It now introspects on first use.
+    """
+    monkeypatch.setattr(so, "_introspect_solver_schema", lambda: _legacy_ca_schema())
+    monkeypatch.setattr(so, "_introspect_differentiable", lambda: {"max": True})
+    so.reset_cache()  # nothing has been introspected yet, as at process start
+
+    assert so.ca_model_type("cellml") == "cellml_only"
+
+
+def test_the_ca_spelling_is_forgotten_when_the_ca_directory_changes(monkeypatch):
+    """It is a fact about the connected CA, so it is a cache like the other five
+    -- and it was the one ``reset_cache`` did not clear, so a new CA dir (and, in
+    the test process, the next test) inherited the previous one's answer."""
+    monkeypatch.setattr(so, "_introspect_solver_schema", lambda: _legacy_ca_schema())
+    monkeypatch.setattr(so, "_introspect_differentiable", lambda: {"max": True})
+    so.reset_cache()
+    so.get_solver_options(refresh=True)
+    assert so.ca_model_type("cellml") == "cellml_only"
+
+    # The user points Settings -> "CA dir" at a current checkout.
+    monkeypatch.setattr(so, "_introspect_solver_schema", lambda: dict(CA_SCHEMA))
+    so.reset_cache()
+
+    assert so.ca_model_type("cellml") == "cellml"
+
+
+def test_an_unreadable_ca_leaves_the_spelling_alone(monkeypatch):
+    """No CA at all: there is nothing to translate against, so the canonical name
+    is the only honest answer -- and it must not raise on the way to it."""
+    def _boom():
+        raise RuntimeError("no CA")
+
+    monkeypatch.setattr(so, "_introspect_solver_schema", _boom)
+    monkeypatch.setattr(so, "_introspect_differentiable", _boom)
+    so.reset_cache()
+
+    assert so.ca_model_type("cellml") == "cellml"
+
+
+class TestEmulationUnavailableReasonNamesTheRightCause:
+    """"No emulation mode in the schema" has two causes, and they have opposite fixes.
+
+    ``get_analysis_options()`` degrades to a fallback that predates emulators, so a
+    failure to introspect circulatory_autogen at all looked identical to a genuinely old
+    CA -- and the message sent the user to change a CA directory that was never the
+    cause. In the packaged app the CA is bundled and cannot be old, so that reading was
+    wrong every time it appeared.
+    """
+
+    def _reason(self, monkeypatch, *, options, introspected):
+        monkeypatch.setattr(so, "get_analysis_options",
+                            lambda *a, **k: {"emulation": {"options": options}} if options else {})
+        monkeypatch.setattr(so, "analysis_options_introspected", lambda: introspected)
+        monkeypatch.setattr(so, "_probe_models", lambda python: ([], None))
+        return so.emulator_availability(None)["unavailable_reason"]
+
+    def test_a_genuinely_old_ca_is_told_to_update(self, monkeypatch):
+        reason = self._reason(monkeypatch, options=[], introspected=True)
+        assert "predates emulator training" in reason
+        assert "0.4.0" in reason
+
+    def test_an_unreadable_ca_does_not_blame_the_ca_version(self, monkeypatch):
+        reason = self._reason(monkeypatch, options=[], introspected=False)
+        assert "could not be read" in reason
+        assert "the environment the analysis runs in" in reason
+        # The old message's advice, which was wrong for this cause.
+        assert "newer circulatory_autogen" not in reason
+
+    def test_a_capable_ca_without_autoemulate_talks_about_the_interpreter(self, monkeypatch):
+        monkeypatch.setattr(so, "get_analysis_options",
+                            lambda *a, **k: {"emulation": {"options": [{"name": "model"}]}})
+        monkeypatch.setattr(so, "analysis_options_introspected", lambda: True)
+        monkeypatch.setattr(so, "_probe_models", lambda python: ([], "/envs/x/bin/python"))
+        reason = so.emulator_availability("/envs/x/bin/python")["unavailable_reason"]
+        assert "autoemulate" in reason
+        assert "/envs/x/bin/python" in reason

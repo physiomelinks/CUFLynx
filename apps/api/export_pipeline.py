@@ -202,18 +202,49 @@ def resolve_ca_src():
     return args.ca_src
 
 
+CA_NAMESPACE = "libcuflynx"
+
+# CA's own top-level packages: anything else keeps its bare name (an
+# ``operation_funcs`` must not become ``libcuflynx.operation_funcs``).
+CA_PACKAGES = frozenset({
+    "checks", "coupler", "emulators", "generators", "identifiabilty_analysis",
+    "models", "param_id", "parsers", "protocol_runners", "scripts",
+    "sensitivity_analysis", "solver1d", "solver_wrappers", "utilities",
+})
+
+# Modules whose namespaced spelling is not the flat one with the prefix glued on
+# (CA #433 moved the funcs into the package; operation_funcs was only ever
+# reachable by bare name off a directory).
+RELOCATED_MODULES = {
+    "cost_funcs_user": CA_NAMESPACE + ".funcs.cost_funcs_user",
+    "operation_funcs_user": CA_NAMESPACE + ".funcs.operation_funcs_user",
+    "modifier_funcs_user": CA_NAMESPACE + ".funcs.modifier_funcs_user",
+    "operation_funcs": CA_NAMESPACE + ".param_id.operation_funcs",
+}
+
+
+def ca_candidates(module):
+    """Both spellings of CA module ``module``, most-preferred first."""
+    if module in RELOCATED_MODULES:
+        return [RELOCATED_MODULES[module], module]
+    if module.split(".", 1)[0] not in CA_PACKAGES:
+        return [module]
+    return [CA_NAMESPACE + "." + module, module]
+
+
 def ca_import(module):
     """Import a circulatory_autogen module, in either of its two layouts.
 
     CA moved every module under a ``libcuflynx.`` namespace (CA #437) and older
     checkouts are flat, so an export has to run against both: try the namespaced
     spelling first, then the flat one. (Mirrors ``apps/api/ca_imports.py`` in
-    CUFLynx, which is where this rule is documented.)
+    CUFLynx, which is where this rule is documented; the tables above are pinned
+    against it by ``tests/test_ca_import_parity.py``.)
     """
     import importlib
 
     errors = []
-    for cand in ("libcuflynx." + module, module):
+    for cand in ca_candidates(module):
         try:
             return importlib.import_module(cand)
         except ModuleNotFoundError as exc:
@@ -232,8 +263,21 @@ def ca_import(module):
 
 
 def ca_from(module, *names):
-    """``from <module> import <names>``; one name returns it, several a tuple."""
+    """``from <module> import <names>``; one name returns it, several a tuple.
+
+    A name the module does not have raises **ImportError**, not AttributeError.
+    The probes below are the "older CA -> fall back" idiom and they catch
+    ImportError; a bare getattr let an AttributeError sail straight past them, so
+    a feature the connected CA simply predates crashed the exported run instead
+    of degrading it.
+    """
     mod = ca_import(module)
+    missing = [n for n in names if not hasattr(mod, n)]
+    if missing:
+        raise ImportError(
+            "circulatory_autogen's %r has no %s -- this circulatory_autogen "
+            "predates it." % (module, ", ".join(missing))
+        )
     values = tuple(getattr(mod, n) for n in names)
     return values[0] if len(names) == 1 else values
 

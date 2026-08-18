@@ -148,7 +148,8 @@ const packaged = ref(false)
 const mpiexecAvailable = ref(true)
 
 // circulatory_autogen source directory (top-bar "CA dir"), shared server-side via
-// /api/config. Defaults to the sibling clone; pick a different checkout to dev against.
+// /api/config. Optional since #18 -- the app bundles libCUFLynx -- and set only to
+// develop libCUFLynx itself, against the checkout that copy lives in.
 const caDir = ref('')
 const caExists = ref(true)
 const caBrowserOpen = ref(false)
@@ -2343,24 +2344,18 @@ watch(() => obs.obsData.value, scheduleRun)
           </button>
           <button
             class="left-tab"
-            :class="{ active: leftTab === 'emulator', warn: emuUnavailable }"
+            :class="{ active: leftTab === 'emulator' }"
             data-testid="tab-emulator"
             :title="emuUnavailable ? emuUnavailableTitle : null"
-            :aria-label="emuUnavailable ? 'Emulator — unavailable' : null"
             @click="leftTab = 'emulator'"
           >
             Emulator
-            <!-- Colour alone would not carry this: the glyph says "warning"
-                 without it, and the title/aria-label say it in words. -->
+            <!-- Deliberately unmarked. An emulator is optional, so not having one is
+                 a feature you are not using rather than something wrong, and an amber
+                 tab with a warning glyph made a healthy app look faulty. The tooltip
+                 still names what to install, and the panel says it in full. -->
             <span
-              v-if="emuUnavailable"
-              class="tab-warn-mark"
-              data-testid="tab-emulator-warn"
-              aria-hidden="true"
-              >⚠</span
-            >
-            <span
-              v-else-if="emu.running.value"
+              v-if="emu.running.value"
               class="tab-dot"
               title="emulator training"
             />
@@ -2857,8 +2852,10 @@ watch(() => obs.obsData.value, scheduleRun)
           </span>
         </div>
         <p class="settings-hint">
-          Defaults to the sibling <code>circulatory_autogen</code> clone. Pick a
-          different checkout to develop against — runs use it on their next launch.
+          Not needed: <code>libCUFLynx</code> ships with the app. Set this only to
+          develop <code>libCUFLynx</code> itself — point it at the
+          <code>circulatory_autogen</code> checkout the copy you are working on lives
+          in, and runs will use that on their next launch.
         </p>
 
         <hr class="settings-sep" />

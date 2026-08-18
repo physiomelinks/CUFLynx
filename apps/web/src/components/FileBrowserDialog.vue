@@ -1,5 +1,5 @@
 <script setup>
-import { ref, watch, computed } from 'vue'
+import { ref, watch, computed, nextTick } from 'vue'
 import Dialog from 'primevue/dialog'
 import Button from 'primevue/button'
 import Checkbox from 'primevue/checkbox'
@@ -29,6 +29,21 @@ const showHidden = ref(false)
 // Inline "new folder" creation in the current directory.
 const creatingFolder = ref(false)
 const newFolderName = ref('')
+const newFolderInput = ref(null)
+
+async function startCreatingFolder() {
+  creatingFolder.value = true
+  // Focus here rather than with the `autofocus` attribute: that one is honoured
+  // only when the browser parses the page, and this input is inserted by v-if
+  // long after. Without it the user has to click the box they just asked for.
+  // nextTick because the element does not exist until Vue has patched the DOM.
+  await nextTick()
+  // PrimeVue's InputText exposes the real <input> as $el; a plain <input> ref is
+  // the element itself.
+  const el = newFolderInput.value?.$el ?? newFolderInput.value
+  el?.focus?.()
+  el?.select?.()
+}
 
 const visibleEntries = computed(() =>
   showHidden.value
@@ -123,7 +138,7 @@ function confirm() {
         size="small"
         text
         data-testid="fb-new-folder"
-        @click="creatingFolder = true"
+        @click="startCreatingFolder"
       />
       <label class="fb-hidden-toggle" title="Show dotfiles and hidden folders">
         <Checkbox v-model="showHidden" :binary="true" data-testid="fb-show-hidden" />
@@ -132,12 +147,13 @@ function confirm() {
     </div>
     <div v-if="creatingFolder" class="fb-new-folder">
       <InputText
+        ref="newFolderInput"
         v-model="newFolderName"
         placeholder="New folder name"
         size="small"
-        autofocus
         data-testid="fb-new-folder-name"
         @keyup.enter="createFolder"
+        @keyup.escape="creatingFolder = false"
       />
       <Button label="Create" size="small" data-testid="fb-new-folder-create" @click="createFolder" />
       <Button label="Cancel" size="small" text @click="creatingFolder = false" />

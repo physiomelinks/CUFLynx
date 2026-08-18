@@ -18,10 +18,18 @@ CUFLynx has two execution tiers, and they have different dependency needs:
   mpi4py / matplotlib, so those are deliberately **excluded** here — bundling
   them would inflate the executable for code that never runs inside it.
 
-circulatory_autogen itself is *not* bundled: it's selected at runtime via the
-Settings "CA dir" picker. When CA becomes pip-installable it can simply be added
-to the build environment and it will be collected like any other package — no
-change to this split is needed.
+circulatory_autogen itself **is** bundled now, as the pip-installable
+``libcuflynx`` (#18) — see the ``collect_all("libcuflynx")`` below. So the app
+runs with no CA directory set at all, and the Settings "CA dir" picker becomes an
+override for developers pointing at a checkout rather than a precondition.
+
+One consequence worth stating here, because it is invisible from the runtime
+code: the pre-0.4.0 flat shim packages are deliberately not collected, so inside
+the bundle the *only* spelling that resolves is the namespaced one, and there is
+no ``<src>/param_id`` directory for a bare-name import to come off. Everything
+therefore has to go through ``ca_imports`` (which ships into ``runners/`` for the
+same reason) — a literal ``import operation_funcs`` works from a checkout and
+silently fails here.
 """
 
 import importlib
@@ -275,13 +283,27 @@ hiddenimports += collect_submodules("uvicorn")
 # available"): a dev machine had it installed for CA, the CI build machine did not.
 # Fail the build instead.
 # CA's analysis-path packages are bundled too, so the app runs SA/calibration/UQ
-# itself (no external Python needed by default). mpi4py is imported unconditionally
-# by CA's param_id modules, so it's required, not optional.
+# itself (no external Python needed by default).
+#
+# mpi4py and schwimmbad come from libcuflynx's `[mpi]` extra, so the build
+# environment must install `libcuflynx[mpi]` rather than the bare distribution --
+# CA 0.4.0 made them optional (CA #435) and nothing under libcuflynx imports
+# mpi4py at module scope any more, so a bare install leaves them out and this
+# guard fires. They are still wanted *here*: the in-bundle analysis tier is the
+# whole point of the list above, a multi-rank run needs the real MPI rather than
+# CA's one-rank stub, and CA's pymc UQ backend imports mpi4py at module scope
+# regardless of that stub.
 _ANALYSIS_PKGS = ("matplotlib", "emcee", "corner", "SALib", "seaborn", "statsmodels",
                   "schwimmbad", "nevergrad", "numdifftools", "sklearn", "tqdm", "mpi4py")
-_REQUIRED = ("myokit", "libcellml", "casadi", "webview", "setuptools", "numpy",
-             "scipy", "pandas", "sympy", "yaml", "ruamel.yaml", "rdflib", "pint",
+_REQUIRED = ("libcuflynx", "myokit", "libcellml", "casadi", "webview", "setuptools",
+             "numpy", "scipy", "pandas", "yaml", "rdflib", "pint",
              *_ANALYSIS_PKGS)
+# sympy and ruamel.yaml were dropped from this list when circulatory_autogen stopped
+# declaring them (libcuflynx 0.4.0, CA #435): nothing under libcuflynx imports either
+# one unguarded -- sympy is used only by the RICRI frequency operations, behind a
+# try/except, and ruamel is only reached from a caller that already has it. Keeping
+# them required would fail this build on any environment that installs libcuflynx and
+# believes its metadata, which is every clean build environment.
 _missing = []
 for pkg in _REQUIRED:
     try:
@@ -302,6 +324,30 @@ for pkg in ("myokit", "libcellml", "casadi", "webview", "setuptools", "numpy"):
     datas += pkg_datas
     binaries += pkg_binaries
     hiddenimports += pkg_hidden
+
+# circulatory_autogen itself, as the pip-installable `libcuflynx` (#18). Bundling it
+# is what lets the app run with **no CA directory set**: `ca_imports` resolves CA
+# through plain importlib, so an installed package is found with no sys.path entry,
+# and a directory chosen in Settings still wins for a developer pointing at a
+# checkout.
+#
+# collect_all rather than collect_submodules, because the package ships data that is
+# not code: the CellML module library (`libcuflynx/generators/resources`, ~3 MB) that
+# every generation reads, the 1D solver's Make_files, and the C++ templates. Without
+# those the app imports CA fine and then fails at the first generate call -- the same
+# failure mode `_REQUIRED` above exists to prevent.
+#
+# Its submodules are resolved dynamically in several places (the solver factory picks
+# a backend by name, the cost/operation registries import by name), so the explicit
+# hidden imports matter as much as the data.
+_ca_datas, _ca_binaries, _ca_hidden = collect_all("libcuflynx")
+datas += _ca_datas
+binaries += _ca_binaries
+hiddenimports += _ca_hidden
+# The 11 deprecation shims are deliberately NOT collected. They exist for user code
+# written against the pre-0.4.0 flat names and warn on import; nothing in CUFLynx
+# imports them (ca_imports prefers the namespaced spelling precisely so the app never
+# sees their DeprecationWarnings), and they are removed in libcuflynx 0.5.0.
 
 # CA's analysis stack. collect_all grabs each package's data + compiled libs +
 # submodules (matplotlib's mpl-data/fonts, sklearn/statsmodels/scipy .so's,
