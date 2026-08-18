@@ -112,15 +112,22 @@ describe('FileBrowserDialog', () => {
       .mockResolvedValueOnce({ path: '/data', parent: '/', entries: [] })
       .mockResolvedValueOnce({ path: '/data/runs', parent: '/data', entries: [] })
     makeDir.mockResolvedValue({ path: '/data/runs' })
+    // attachTo: focus is only observable through document.activeElement when the
+    // component is actually in the document.
     const wrapper = mount(FileBrowserDialog, {
       props: { visible: true, mode: 'dir' },
       global: { stubs },
+      attachTo: document.body,
     })
     await flushPromises()
 
     await wrapper.find('[data-testid="fb-new-folder"]').trigger('click')
     const input = wrapper.find('[data-testid="fb-new-folder-name"]')
     expect(input.exists()).toBe(true)
+    // Ready to type, without clicking the box you just asked for. The `autofocus`
+    // attribute cannot do this: browsers honour it when the page is parsed, and
+    // this input is inserted by v-if long afterwards.
+    expect(document.activeElement).toBe(input.element)
     await input.setValue('runs')
     await wrapper.find('[data-testid="fb-new-folder-create"]').trigger('click')
     await flushPromises()

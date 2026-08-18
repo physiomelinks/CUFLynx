@@ -2344,24 +2344,18 @@ watch(() => obs.obsData.value, scheduleRun)
           </button>
           <button
             class="left-tab"
-            :class="{ active: leftTab === 'emulator', warn: emuUnavailable }"
+            :class="{ active: leftTab === 'emulator' }"
             data-testid="tab-emulator"
             :title="emuUnavailable ? emuUnavailableTitle : null"
-            :aria-label="emuUnavailable ? 'Emulator — unavailable' : null"
             @click="leftTab = 'emulator'"
           >
             Emulator
-            <!-- Colour alone would not carry this: the glyph says "warning"
-                 without it, and the title/aria-label say it in words. -->
+            <!-- Deliberately unmarked. An emulator is optional, so not having one is
+                 a feature you are not using rather than something wrong, and an amber
+                 tab with a warning glyph made a healthy app look faulty. The tooltip
+                 still names what to install, and the panel says it in full. -->
             <span
-              v-if="emuUnavailable"
-              class="tab-warn-mark"
-              data-testid="tab-emulator-warn"
-              aria-hidden="true"
-              >⚠</span
-            >
-            <span
-              v-else-if="emu.running.value"
+              v-if="emu.running.value"
               class="tab-dot"
               title="emulator training"
             />

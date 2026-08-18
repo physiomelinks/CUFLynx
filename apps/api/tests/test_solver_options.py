@@ -1190,3 +1190,42 @@ def test_an_unreadable_ca_leaves_the_spelling_alone(monkeypatch):
     so.reset_cache()
 
     assert so.ca_model_type("cellml") == "cellml"
+
+
+class TestEmulationUnavailableReasonNamesTheRightCause:
+    """"No emulation mode in the schema" has two causes, and they have opposite fixes.
+
+    ``get_analysis_options()`` degrades to a fallback that predates emulators, so a
+    failure to introspect circulatory_autogen at all looked identical to a genuinely old
+    CA -- and the message sent the user to change a CA directory that was never the
+    cause. In the packaged app the CA is bundled and cannot be old, so that reading was
+    wrong every time it appeared.
+    """
+
+    def _reason(self, monkeypatch, *, options, introspected):
+        monkeypatch.setattr(so, "get_analysis_options",
+                            lambda *a, **k: {"emulation": {"options": options}} if options else {})
+        monkeypatch.setattr(so, "analysis_options_introspected", lambda: introspected)
+        monkeypatch.setattr(so, "_probe_models", lambda python: ([], None))
+        return so.emulator_availability(None)["unavailable_reason"]
+
+    def test_a_genuinely_old_ca_is_told_to_update(self, monkeypatch):
+        reason = self._reason(monkeypatch, options=[], introspected=True)
+        assert "predates emulator training" in reason
+        assert "0.4.0" in reason
+
+    def test_an_unreadable_ca_does_not_blame_the_ca_version(self, monkeypatch):
+        reason = self._reason(monkeypatch, options=[], introspected=False)
+        assert "could not be read" in reason
+        assert "the environment the analysis runs in" in reason
+        # The old message's advice, which was wrong for this cause.
+        assert "newer circulatory_autogen" not in reason
+
+    def test_a_capable_ca_without_autoemulate_talks_about_the_interpreter(self, monkeypatch):
+        monkeypatch.setattr(so, "get_analysis_options",
+                            lambda *a, **k: {"emulation": {"options": [{"name": "model"}]}})
+        monkeypatch.setattr(so, "analysis_options_introspected", lambda: True)
+        monkeypatch.setattr(so, "_probe_models", lambda python: ([], "/envs/x/bin/python"))
+        reason = so.emulator_availability("/envs/x/bin/python")["unavailable_reason"]
+        assert "autoemulate" in reason
+        assert "/envs/x/bin/python" in reason

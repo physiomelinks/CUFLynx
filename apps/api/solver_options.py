@@ -872,17 +872,31 @@ def emulator_availability(python: str | None = None) -> dict:
     spawns no subprocess.
     """
     # Cannot train against a CA that has no emulators, whatever the interpreter has.
-    supported = bool(get_analysis_options().get("emulation", {}).get("options"))
+    #
+    # "the schema has no emulation mode" and "the schema could not be read" are the same
+    # shape here but different problems: get_analysis_options() degrades to a fallback that
+    # predates emulators, so *any* failure to introspect CA -- not just an old CA -- used to
+    # be reported as "this circulatory_autogen has no emulation support", sending the user to
+    # change a CA directory that was never the cause.
+    analysis_options, introspected = get_analysis_options(), analysis_options_introspected()
+    supported = bool(analysis_options.get("emulation", {}).get("options"))
     models, interpreter = _probe_models(python)
     available = bool(supported and models)
 
     if available:
         reason = None
+    elif not supported and introspected:
+        reason = (
+            "This circulatory_autogen predates emulator training: its analysis options "
+            "declare no emulation mode. Emulators need circulatory_autogen 0.4.0 or newer "
+            "(libcuflynx), so update it, or point Settings at a newer checkout."
+        )
     elif not supported:
         reason = (
-            "This circulatory_autogen has no emulation support: its analysis options "
-            "declare no emulation mode. Point Settings at a newer circulatory_autogen "
-            "to train emulators."
+            "The emulator options could not be read from circulatory_autogen, so there is "
+            "nothing to train against. The import failed -- this is not a schema that "
+            "predates emulators -- and the cause is usually the environment the analysis "
+            "runs in rather than the directory itself. The server log has the import error."
         )
     elif interpreter:
         reason = (
@@ -1418,6 +1432,21 @@ def get_analysis_options(refresh: bool = False) -> dict:
     if ok:
         _analysis_cache = opts
     return opts
+
+
+def analysis_options_introspected() -> bool:
+    """Whether the analysis options came from circulatory_autogen or from the fallback.
+
+    The two are indistinguishable by content -- both are a dict of modes -- but they mean
+    opposite things when a mode is *missing*. Read from CA, an absent emulation mode means
+    this CA predates emulators. Fallen back to, it means CA could not be read at all, and
+    the fallback simply predates them; blaming the CA directory then sends the user to
+    change the one thing that was not the cause.
+
+    Only a successful introspection is cached, so a populated cache is the record of one.
+    """
+    get_analysis_options()
+    return _analysis_cache is not None
 
 
 def analysis_mode_options(mode: str) -> list[dict]:

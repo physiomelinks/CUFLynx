@@ -2190,16 +2190,17 @@ describe('Emulator tab when emulation is unavailable', () => {
       '"autoemulate>=2.1,<3".',
   }
 
-  it('warns on the tab, in words as well as in colour', async () => {
+  it('does not flag the tab, but says what is missing on hover', async () => {
+    // An emulator is optional. Marking the tab amber with a warning glyph made a
+    // healthy app look faulty for every user who simply is not using one, so the
+    // tab stays neutral and the tooltip carries the detail.
     getEmulatorDefaults.mockResolvedValueOnce(UNAVAILABLE)
     const wrapper = shallowMount(App)
     await flushPromises()
     const tab = wrapper.find('[data-testid="tab-emulator"]')
-    expect(tab.classes()).toContain('warn')
-    // Colour is never the only signal: a mark, a tooltip and a name for it.
-    expect(wrapper.find('[data-testid="tab-emulator-warn"]').exists()).toBe(true)
+    expect(tab.classes()).not.toContain('warn')
+    expect(wrapper.find('[data-testid="tab-emulator-warn"]').exists()).toBe(false)
     expect(tab.attributes('title')).toContain('autoemulate')
-    expect(tab.attributes('aria-label')).toContain('unavailable')
   })
 
   it('leaves the tab alone when emulation is available', async () => {
@@ -2209,16 +2210,18 @@ describe('Emulator tab when emulation is unavailable', () => {
     const tab = wrapper.find('[data-testid="tab-emulator"]')
     expect(tab.classes()).not.toContain('warn')
     expect(wrapper.find('[data-testid="tab-emulator-warn"]').exists()).toBe(false)
-    expect(tab.attributes('aria-label')).toBeUndefined()
+    expect(tab.attributes('title')).toBeUndefined()
   })
 
   // A circulatory_autogen with no emulators at all is the same story from the
   // user's side, and the backend reports it as unavailable too.
-  it('warns for a circulatory_autogen with no emulator support', async () => {
+  it('treats a circulatory_autogen with no emulator support the same way', async () => {
+    // Same story from the other end -- and the same restraint: the panel explains
+    // it, the tab does not raise an alarm.
     getEmulatorDefaults.mockResolvedValueOnce({ supported: false, options: [] })
     const wrapper = shallowMount(App)
     await flushPromises()
-    expect(wrapper.find('[data-testid="tab-emulator"]').classes()).toContain('warn')
+    expect(wrapper.find('[data-testid="tab-emulator"]').classes()).not.toContain('warn')
   })
 
   // The tick box is gone while unavailable, so leaving the flag on would be a
@@ -2251,7 +2254,10 @@ describe('Emulator tab when emulation is unavailable', () => {
     wrapper.vm.pythonPath = '/envs/fenicsx/bin/python'
     await flushPromises()
     expect(getEmulatorDefaults).toHaveBeenCalled()
-    expect(wrapper.find('[data-testid="tab-emulator"]').classes()).toContain('warn')
+    // The re-probe is the point; the tooltip is where its answer surfaces.
+    expect(wrapper.find('[data-testid="tab-emulator"]').attributes('title')).toContain(
+      'autoemulate',
+    )
   })
 })
 
