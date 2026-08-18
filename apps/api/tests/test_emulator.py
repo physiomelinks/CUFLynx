@@ -951,4 +951,12 @@ def test_the_chosen_interpreter_is_probed_even_with_no_ca_directory(monkeypatch,
     assert probed == [("/envs/emu/bin/python", "")], "the interpreter was never probed"
     assert models == ["GaussianProcessRBF"]
     assert interpreter == "/envs/emu/bin/python"
+
+    # And it reaches the user-visible answer. `supported` is pinned rather than read: it
+    # comes from CA's analysis options, which a machine with no circulatory_autogen at all
+    # (CI's "no Myokit" job) answers from a fallback that predates emulators -- so reading it
+    # would make this test's subject depend on whether the machine happens to have CA.
+    monkeypatch.setattr(so, "get_analysis_options",
+                        lambda *a, **k: {"emulation": {"options": [{"name": "model"}]}})
+    monkeypatch.setattr(so, "analysis_options_introspected", lambda: True)
     assert so.emulator_availability("/envs/emu/bin/python")["available"] is True
