@@ -87,12 +87,61 @@ PyInstaller packaging, not malware. Restore it and allow it, or download again.
 
 </details>
 
-**On first run**, point the app at a `circulatory_autogen` checkout under
-**Settings → CA dir** (`git clone https://github.com/physiomelinks/circulatory_autogen.git`).
-That's the only setup, and it's remembered.
+**No setup needed.** The app ships with its own Python and its own copy of
+**libCUFLynx** (the circulatory_autogen engine), so simulation, calibration,
+sensitivity and UQ all run out of the box.
 
 → **[Using CUFLynx](tutorials/docs/misc.md)** — solver backends, Myokit `.mmt`
 models, and replotting a run outside the app.
+
+## Using your own Python
+
+The app runs everything in its own bundled Python by default, and that is the
+recommended way to use it. You only need your own interpreter to use a package
+the bundle does not carry — `aadc`, a patched libCUFLynx, a specific numpy — or
+to run on a machine where you already maintain the environment.
+
+Pick it under **Settings → Python interpreter**. That one choice governs both
+tiers: live simulation (the sliders) and the analysis runs (calibration,
+sensitivity, UQ). So whatever you pick has to be able to import the engine —
+the bundled copy is inside the executable and is not importable from outside it.
+
+Install into that interpreter:
+
+```bash
+pip install "libcuflynx[mpi]"      # the engine, plus multi-rank support
+```
+
+That single package brings everything the runners need: numpy, scipy, pandas,
+myokit, libcellml, SALib, emcee, nevergrad, statsmodels and the rest. The `[mpi]`
+extra adds mpi4py and schwimmbad, needed only if you set **Cores > 1** — it
+requires an MPI toolchain (`libopenmpi-dev` or `mpich`) already present, which is
+why it is optional. Two more, only if you use those features:
+
+```bash
+pip install "libcuflynx[uq]"          # the pyMC sampler (+66 MB)
+pip install "libcuflynx[emulation]"   # surrogate models — pulls torch (+750 MB)
+```
+
+`pip install -e .` is **not** the equivalent: that installs *this* repo
+(`cuflynx-api`, the server), which is not what the runners need and does not pull
+libCUFLynx in. Use it only if you are developing CUFLynx itself, in which case see
+below. To develop the engine rather than the app, `pip install -e .` in a
+`circulatory_autogen` checkout and point **Settings → CA dir** at it.
+
+### On an HPC node, or anywhere `/tmp` is unwritable
+
+libCUFLynx caches flattened CellML in the system temp directory, which is `/tmp`
+by default. Where that is unwritable, too small, or purged mid-job, set `TMPDIR`
+before launching and everything follows it — no `sudo`, no code change:
+
+```bash
+export TMPDIR="$SCRATCH/tmp"   # or any directory you can write to
+mkdir -p "$TMPDIR"
+```
+
+Prefer node-local scratch over a shared filesystem when you have it: the cache is
+rewritten per run, and every rank of an MPI job writes the same file.
 
 ## For Developers: Install from source
 
