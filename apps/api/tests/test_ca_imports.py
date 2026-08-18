@@ -261,7 +261,12 @@ def test_an_unconfigured_ca_directory_says_so_instead(layouts, monkeypatch):
     with pytest.raises(ImportError) as excinfo:
         ca_imports.ca_import(MOD)
 
-    assert "No circulatory_autogen directory is configured" in str(excinfo.value)
+    # Both ways of providing one, since in the app either would work. (A runner gets
+    # different advice -- see TestTheAdviceMatchesTheTierItIsGivenIn.)
+    message = str(excinfo.value)
+    assert "No circulatory_autogen found" in message
+    assert "pip install libcuflynx" in message
+    assert "CA dir" in message
 
 
 def test_a_checkout_that_simply_predates_the_module_says_that(layouts, monkeypatch):
@@ -686,3 +691,45 @@ class TestInstalledPackageNeedsNoDirectory:
     def test_absent_package_is_not_installed(self, monkeypatch):
         monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
         assert ca_imports.installed_package_available() is False
+
+
+class TestTheAdviceMatchesTheTierItIsGivenIn:
+    """A runner cannot be fixed from Settings, so it must not be told to try.
+
+    The app bundles libcuflynx inside the executable, which is not importable from
+    outside it. A runner launched with the interpreter chosen in Settings therefore has
+    no engine unless that interpreter installed one -- and the old message, written when
+    a CA directory was the only way to find CA at all, told the user to set a directory.
+    Correct advice for the app; useless in a subprocess that has no Settings.
+    """
+
+    def test_a_runner_is_told_to_install_into_its_own_interpreter(self, monkeypatch):
+        monkeypatch.setattr(ca_imports, "_in_runner_tier", lambda: True)
+        monkeypatch.setattr(ca_imports, "_ca_src_quiet", lambda: "")
+        monkeypatch.setattr(ca_imports, "_checkout_found", lambda name: False)
+
+        message = ca_imports._failure_message("parsers.PrimitiveParsers", [])
+
+        assert sys.executable in message, "name the interpreter that actually needs it"
+        assert "pip install libcuflynx" in message
+        assert "CA dir" not in message, "a runner has no Settings to change"
+
+    def test_the_app_is_told_both_ways_to_provide_one(self, monkeypatch):
+        monkeypatch.setattr(ca_imports, "_in_runner_tier", lambda: False)
+        monkeypatch.setattr(ca_imports, "_ca_src_quiet", lambda: "")
+        monkeypatch.setattr(ca_imports, "_checkout_found", lambda name: False)
+
+        message = ca_imports._failure_message("parsers.PrimitiveParsers", [])
+
+        assert "pip install libcuflynx" in message
+        assert "CA dir" in message
+
+    def test_the_app_tier_is_not_mistaken_for_a_runner_when_engine_is_broken(self, monkeypatch):
+        """A broken `engine` is the app tier with a problem, not a runner."""
+        def raise_other(name):
+            raise ModuleNotFoundError("No module named 'numpy'", name="numpy")
+
+        monkeypatch.delitem(sys.modules, "engine", raising=False)
+        monkeypatch.setattr(importlib, "import_module", raise_other)
+
+        assert ca_imports._in_runner_tier() is False

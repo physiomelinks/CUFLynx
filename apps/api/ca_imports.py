@@ -284,6 +284,25 @@ def _ca_src() -> str:
     return mod._circulatory_autogen_src() or ""
 
 
+def _in_runner_tier() -> bool:
+    """Whether this is a standalone runner rather than the app.
+
+    ``engine`` is an app module; the runners are executed as files by whichever
+    interpreter the user chose, with only ``runners/`` on the path. The distinction
+    decides what the advice should be -- a runner cannot be fixed from Settings, only
+    by installing into the interpreter it is running as.
+    """
+    if "engine" in sys.modules:
+        return False
+    try:
+        importlib.import_module("engine")
+    except ModuleNotFoundError as exc:
+        return exc.name == "engine"
+    except Exception:  # noqa: BLE001 - engine is here, just broken; that is the app tier
+        return False
+    return False
+
+
 def _ca_src_quiet() -> str:
     """:func:`_ca_src` for an error message, which must never raise itself."""
     try:
@@ -323,10 +342,19 @@ def _failure_message(name: str, errors: list[tuple[str, BaseException]]) -> str:
             f"older than the feature that needs it."
         )
     if not src:
+        if _in_runner_tier():
+            # The interpreter chosen in Settings runs this, and the app's bundled
+            # libcuflynx is inside the executable -- not importable from out here. So the
+            # fix is to install into *this* interpreter, which Settings cannot do.
+            return (
+                f"{head} This interpreter has no libcuflynx: install it with "
+                f'"{sys.executable} -m pip install libcuflynx", or clear the Python '
+                f"interpreter in Settings to use the one bundled with the app."
+            )
         return (
-            f"{head} No circulatory_autogen directory is configured: set "
-            f'Settings -> "CA dir" to the "src" folder of a circulatory_autogen '
-            f"clone (or install the libcuflynx package)."
+            f"{head} No circulatory_autogen found: install it with "
+            f'"pip install libcuflynx", or point Settings -> "CA dir" at the "src" '
+            f"folder of a circulatory_autogen clone."
         )
     return (
         f"{head} {src!r} does not look like a circulatory_autogen checkout: "
