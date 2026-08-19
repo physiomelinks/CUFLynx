@@ -601,6 +601,31 @@ excludes = [
     "pytest",
     "IPython",
     "notebook",
+    # Cython is a BUILD-time tool that nothing here needs at run time -- but leaving it in
+    # the bundle breaks Myokit's CVODE backend, and only in the full bundle, because that
+    # is the only tier whose dependencies pull Cython in.
+    #
+    # Myokit compiles each model to a C extension at run time by calling setuptools'
+    # setup(), which resolves the build_ext command class. setuptools/command/build_ext.py
+    # opens with
+    #     try:
+    #         from Cython.Distutils.build_ext import build_ext as _build_ext
+    #         __import__('Cython.Compiler.Main')
+    #     except ImportError:
+    #         _build_ext = _du_build_ext
+    # -- it catches ImportError only. Importing Cython.Compiler reads its utility templates
+    # (Cython/Utility/*.c, *.cpp) from disk, and those are data files PyInstaller does not
+    # collect, so frozen it raises FileNotFoundError instead:
+    #     FileNotFoundError: /tmp/_MEIxxxxxx/Cython/Utility/CppSupport.cpp
+    # which sails straight through the except and kills every CVODE_myokit simulation with
+    # "CompilationError: Unable to compile".
+    #
+    # Excluding it restores the ImportError that the fallback is written for, so the full
+    # bundle compiles models by exactly the same path as the other four assets. The
+    # alternative -- collecting Cython/Utility so the import succeeds -- is worse: it would
+    # switch this one asset over to Cython's build_ext, making the most fragile runtime path
+    # in the app behave differently in the bundle nobody builds locally.
+    "Cython",
 ]
 
 a = Analysis(  # noqa: F821

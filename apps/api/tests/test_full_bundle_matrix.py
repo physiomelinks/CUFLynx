@@ -4,7 +4,7 @@
 `full` extra, which adds autoemulate and pymc/arviz/pytensor. Both come off the same runner
 and the same spec, gated by ``CUFLYNX_BUNDLE_FULL``.
 
-Two ways that quietly goes wrong, and neither shows up as a red build:
+Four ways that quietly goes wrong, and none shows up as a red build:
 
 * **The gate stops gating.** If ``_FULL`` were ever hardcoded true, the four ordinary bundles
   would grow ~750 MB of torch. If it were hardcoded false, the full asset would be built,
@@ -14,6 +14,13 @@ Two ways that quietly goes wrong, and neither shows up as a red build:
 * **A build asset has no analysis-e2e entry.** That job is the only thing that runs a built
   binary end to end. An asset missing from its matrix is published untested, which is how a
   mis-collected torch or pytensor would reach a user.
+* **Cython comes back into the bundle.** It breaks Myokit's compiler in the full bundle only,
+  at run time only -- see ``test_cython_is_excluded_from_the_bundle``.
+* **torch stops being the +cpu build.** The CUDA wheels add 2.7 GB and take the asset past
+  GitHub's 2 GiB release limit, which is otherwise first reported by a failed publish on a
+  tag that has already been pushed.
+
+The last three were all found by the first rehearsal build of the full bundle, not by CI.
 """
 import ast
 import os
@@ -113,4 +120,99 @@ def test_the_full_extra_is_declared_and_asks_for_the_libcuflynx_extras():
     assert "libcuflynx[emulation,uq]" in text, (
         "the full extra must pull libcuflynx's own [emulation,uq] extras, not only the "
         "packages -- CA names those extras when a feature is unavailable."
+    )
+
+
+def _spec_excludes() -> list:
+    """Lift the spec's ``excludes = [...]`` literal out without importing the spec."""
+    tree = ast.parse(_SPEC.read_text(encoding="utf-8"), filename=str(_SPEC))
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(getattr(t, "id", None) == "excludes"
+                                                for t in node.targets):
+            return ast.literal_eval(node.value)
+    raise AssertionError("packaging/cuflynx.spec no longer assigns `excludes`")
+
+
+@pytest.mark.unit
+def test_cython_is_excluded_from_the_bundle():
+    """Bundling Cython breaks CVODE_myokit -- in the full bundle only, and only at run time.
+
+    setuptools' build_ext probes for Cython behind ``except ImportError``. Frozen, that
+    import fails with FileNotFoundError (Cython/Utility/*.cpp are data files PyInstaller
+    does not collect), which the except does not catch, so every Myokit compilation dies
+    with "CompilationError: Unable to compile". Nothing pulls Cython into the four
+    ordinary bundles, so this can only ever be caught by the full one -- and only by a
+    real simulation, which is why it survived to the first rehearsal build.
+    """
+    assert "Cython" in _spec_excludes(), (
+        "Cython is back in the bundle. The [full] extra installs it, and its presence "
+        "breaks the CVODE_myokit backend at run time -- see the comment on the excludes "
+        "list. The other four assets are unaffected, so CI stays green."
+    )
+
+
+def _build_steps() -> list:
+    return _workflow()["jobs"]["build"]["steps"]
+
+
+def _step_index(predicate, what: str) -> int:
+    for i, step in enumerate(_build_steps()):
+        if predicate(step):
+            return i
+    raise AssertionError(f"no build step {what}")
+
+
+@pytest.mark.unit
+def test_the_full_bundle_installs_cpu_only_torch_before_the_extra():
+    """The CUDA wheels are 2.7 GB and put the asset over GitHub's 2 GiB release limit.
+
+    Order matters: the +cpu wheel has to be in place before ``pip install .[...,full]``
+    so the resolver sees torch as already satisfied. Installed after, it is the extra
+    that wins and the CUDA payload comes back.
+    """
+    cpu = _step_index(
+        lambda s: "download.pytorch.org/whl/cpu" in str(s.get("run", "")),
+        "installing torch from the PyTorch CPU index",
+    )
+    extra = _step_index(
+        lambda s: s.get("name") == "Install Python deps",
+        "named 'Install Python deps'",
+    )
+    assert cpu < extra, (
+        "the CPU-only torch install must come BEFORE the [full] extra; installed after, "
+        "pip resolves torch from PyPI and pulls ~2.7 GB of CUDA libraries back in."
+    )
+
+    steps = _build_steps()
+    assert steps[cpu].get("if") == "matrix.full == '1'", (
+        f"the CPU torch install is gated on {steps[cpu].get('if')!r}; it must apply to the "
+        f"full bundle only, so the other four assets are untouched."
+    )
+    # And something has to notice if the extra overrides it anyway.
+    assert any("+cpu" in str(s.get("run", "")) for s in steps[extra + 1:]), (
+        "nothing verifies that torch is still the +cpu build after the extra is installed, "
+        "so a re-pulled CUDA wheel would only surface as a failed release upload."
+    )
+
+
+@pytest.mark.unit
+def test_every_asset_is_size_checked_before_it_is_uploaded():
+    """2 GiB is a hard GitHub limit, and the upload is the last step of the pipeline.
+
+    Without a check here, an oversized bundle is first reported by a failed publish --
+    on a tag that has already been pushed.
+    """
+    steps = _build_steps()
+    guard = _step_index(
+        lambda s: "2 * 1024 ** 3" in str(s.get("run", "")),
+        "checking the asset against the 2 GiB release limit",
+    )
+    upload = _step_index(
+        lambda s: str(s.get("uses", "")).startswith("actions/upload-artifact"),
+        "uploading the artifact",
+    )
+    assert guard < upload, "the size check must run before the artifact is uploaded"
+    assert "if" not in steps[guard], (
+        "the size check is conditional; it should apply to every asset, since any of them "
+        "can grow past the limit."
     )

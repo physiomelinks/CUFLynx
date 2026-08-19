@@ -167,11 +167,42 @@ jobs:
           # Sanity: the built config must have MPI off.
           grep -q "SUNDIALS_MPI_ENABLED 0" "$HOME/sundials-serial/include/sundials/sundials_config.h"
 
+      # torch's default PyPI wheel declares the CUDA stack as hard dependencies, so
+      # `pip install autoemulate` drags in 2.7 GB of it -- cublas 423 MB, cudnn 366 MB,
+      # nccl 206 MB, cusolver 201 MB, triton 198 MB and nine more, measured in the first
+      # rehearsal build. That is unshippable twice over: a GitHub release asset is capped
+      # at 2 GiB, and the payload is dead weight regardless, since CUDA needs a matching
+      # NVIDIA driver on the user's machine and the emulator is a small-data surrogate
+      # that trains in seconds on CPU. The +cpu wheel drops every nvidia-* package and
+      # triton with it.
+      #
+      # Installed BEFORE the extra so the resolver finds torch already satisfied and
+      # leaves it alone; the check below is what makes that assumption fail loudly
+      # rather than silently re-pulling 2.7 GB.
+      - name: Install CPU-only torch (full bundle)
+        if: matrix.full == '1'
+        run: pip install --index-url https://download.pytorch.org/whl/cpu torch
+
       # [analysis] bundles CA's analysis stack (emcee/SALib/nevergrad/matplotlib/
       # mpi4py/...) so the packaged app runs SA/calibration/UQ itself.
       - name: Install Python deps
         working-directory: apps/api
         run: pip install -e ".[desktop,analysis${{ matrix.full == '1' && ',full' || '' }}]"
+
+      - name: torch must still be the CPU build
+        if: matrix.full == '1'
+        run: |
+          python - <<'PY'
+          import sys
+          import torch
+          print("torch", torch.__version__)
+          if "+cpu" not in torch.__version__:
+              sys.exit(
+                  f"torch is {torch.__version__}, not a +cpu build: the [full] extra pulled the "
+                  f"CUDA wheel back in. That adds ~2.7 GB and puts the asset over GitHub's "
+                  f"2 GiB release limit. Pin torch in the extra, or install the +cpu wheel after it."
+              )
+          PY
 
       # NB: rebuilding the PyInstaller bootloader from source (to dodge the Windows
       # AV false-positive) was attempted here and REMOVED -- it did not fire on the
@@ -352,6 +383,27 @@ jobs:
       - name: Rename artifact
         shell: bash
         run: cp "${{ matrix.binary }}" "${{ matrix.asset }}"
+
+      # A GitHub release asset is capped at 2 GiB, and the upload is the LAST step of the
+      # whole pipeline -- so without this the first thing that tells you the bundle is too
+      # big is a failed publish on a tag that has already been pushed. Fail here instead,
+      # where the fix is a dependency change and not a re-tag. Not a python one-liner:
+      # `stat` differs between GNU, BSD and Git-bash.
+      - name: Asset must fit a GitHub release
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os
+          import sys
+          asset = os.environ["ASSET"]
+          size = os.path.getsize(asset)
+          limit = 2 * 1024 ** 3
+          print(f"{asset}: {size / 1024 ** 3:.2f} GiB")
+          if size > limit:
+              sys.exit(f"{asset} is {size / 1024 ** 3:.2f} GiB; GitHub refuses release assets over 2 GiB.")
+          PY
+        env:
+          ASSET: ${{ matrix.asset }}
 
       - uses: actions/upload-artifact@v4
         with:
