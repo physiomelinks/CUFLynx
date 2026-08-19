@@ -274,6 +274,18 @@ def test_the_full_asset_is_probed_for_the_emulator_and_pymc():
     assert "def _check_full_stack" in smoke and "_check_full_stack(args.binary)" in smoke, (
         "scripts/analysis_smoke.py defines no full-stack probe, or never calls it."
     )
+    # Importing the packages is not the feature. v0.4.1 shipped a bundle that passed the
+    # import probe and whose Emulator tab still said the options could not be read, so the
+    # app's own endpoint has to be asked as well.
+    assert ("def _check_emulator_is_usable" in smoke
+            and "_check_emulator_is_usable(base)" in smoke), (
+        "scripts/analysis_smoke.py does not ask /api/emulator/defaults, so a bundle whose "
+        "Emulator tab is broken still passes: importing autoemulate and rendering the tab "
+        "are different things."
+    )
+    assert "/api/emulator/defaults" in smoke, (
+        "the emulator probe does not call the endpoint the Emulator tab calls."
+    )
     # The pytensor compile is the point of the probe, not an incidental import: pytensor
     # compiles C at run time, which is where a frozen process breaks.
     assert "pytensor.function" in smoke, (

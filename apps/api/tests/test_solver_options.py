@@ -1229,3 +1229,50 @@ class TestEmulationUnavailableReasonNamesTheRightCause:
         reason = so.emulator_availability("/envs/x/bin/python")["unavailable_reason"]
         assert "autoemulate" in reason
         assert "/envs/x/bin/python" in reason
+
+
+@pytest.mark.unit
+def test_a_failed_introspection_is_logged(monkeypatch, caplog):
+    """The user-facing reasons say "the server log has the import error" -- so it must.
+
+    ``_safe`` swallowed every exception silently, which is right for the expected case
+    (an older CA legitimately has no such schema) and wrong for a real import failure:
+    v0.4.1's packaged app told users to go and read a log line that was never written.
+    """
+    import logging
+
+    import solver_options
+
+    def boom():
+        raise ImportError("no module named 'somethingimportant'")
+
+    with caplog.at_level(logging.DEBUG, logger="solver_options"):
+        value, ok = solver_options._safe(boom, {"fallback": True})
+
+    assert (value, ok) == ({"fallback": True}, False)
+    assert any("somethingimportant" in r.getMessage() or
+               (r.exc_info and "somethingimportant" in str(r.exc_info[1]))
+               for r in caplog.records), (
+        "the swallowed exception was not logged, so the advice to read the server log "
+        "sends the user to an empty file."
+    )
+
+
+@pytest.mark.unit
+def test_the_reason_carries_the_import_error(monkeypatch):
+    """"It could not be read" is not actionable; the exception that caused it is.
+
+    The packaged app has no console, and the swallowed exception is debug-level because
+    the expected fallback is not a problem -- so pointing the user at the server log,
+    as v0.4.1 did, points them at something they cannot open.
+    """
+    import solver_options
+
+    monkeypatch.setattr(solver_options, "_analysis_cache", None)
+    monkeypatch.setattr(solver_options, "_last_introspection_error", None)
+    monkeypatch.setattr(solver_options, "_introspect_analysis_options",
+                        lambda: (_ for _ in ()).throw(ImportError("No module named 'torch'")))
+
+    assert solver_options.analysis_options_introspected() is False
+    detail = solver_options.analysis_options_error()
+    assert detail and "No module named 'torch'" in detail, detail
