@@ -19,6 +19,11 @@ jobs:
   packaging:
     name: Editable install (packaging metadata)
     runs-on: ubuntu-latest
+    # Every job here runs in seconds to ~2 minutes, so 15 is a backstop rather than a
+    # budget: without one, a job that hangs holds a runner until GitHub's 360-minute
+    # default. release.yml carries the same backstop, after `Install Sundials (Linux)`
+    # stalled in apt for 1h40m on the v0.4.0 re-tag and had to be cancelled by hand.
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: apps/api
@@ -38,6 +43,7 @@ jobs:
   backend-unit:
     name: Backend unit tests (no Myokit)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: apps/api
@@ -70,6 +76,7 @@ jobs:
   backend-unit-windows:
     name: Backend unit tests (Windows, no Myokit)
     runs-on: windows-latest
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: apps/api
@@ -96,6 +103,7 @@ jobs:
   frontend:
     name: Frontend tests + build
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: apps/web
