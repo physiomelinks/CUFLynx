@@ -300,9 +300,9 @@ _ANALYSIS_PKGS = ("matplotlib", "emcee", "corner", "SALib", "seaborn", "statsmod
 # The two features that are still "bring your own Python": surrogate emulators
 # (CA's do_emulation/use_emulator, and the Emulator tab's live prediction line) and the
 # pyMC UQ backend. Off by default and built only for the extra Linux asset, because
-# autoemulate pulls torch/gpytorch/pyro-ppl/lightgbm -- roughly 750 MB, taking the binary
-# from ~300 MB to ~1 GB -- and requires Python <3.13, which would pin the whole matrix's
-# ceiling to one optional dependency.
+# autoemulate pulls torch/gpytorch/pyro-ppl/lightgbm -- roughly 350 MB, taking the binary
+# from 294 MB to 645 MB (measured, v0.4.1) -- and requires Python <3.13, which would pin
+# the whole matrix's ceiling to one optional dependency.
 #
 # An env var rather than a second spec file: the two Linux bundles must differ in exactly
 # this list and nothing else, and two spec files drift. `CUFLYNX_BUNDLE_FULL=1` is set by

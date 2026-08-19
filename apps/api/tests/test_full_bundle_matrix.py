@@ -7,7 +7,7 @@ and the same spec, gated by ``CUFLYNX_BUNDLE_FULL``.
 Four ways that quietly goes wrong, and none shows up as a red build:
 
 * **The gate stops gating.** If ``_FULL`` were ever hardcoded true, the four ordinary bundles
-  would grow ~750 MB of torch. If it were hardcoded false, the full asset would be built,
+  would grow ~350 MB of torch. If it were hardcoded false, the full asset would be built,
   named "full", published, and contain none of what its name promises -- the exact
   silent-wrong the spec's ``_REQUIRED`` guard exists to prevent, since ``collect_all`` on an
   absent package returns empty lists rather than raising.
@@ -86,7 +86,7 @@ def test_the_emulation_stack_is_required_only_for_the_full_bundle():
     )
     assert not set(full_pkgs) & set(off), (
         f"the ordinary bundles require {sorted(set(full_pkgs) & set(off))}, which would add "
-        f"~750 MB of torch to all four platforms."
+        f"~350 MB of torch to all four platforms."
     )
     # Everything else must be identical -- the two Linux bundles differ in this and nothing else.
     assert set(on) - set(off) == set(full_pkgs)
