@@ -160,7 +160,9 @@ jobs:
           # time. 11.0 is the first macOS with Apple silicon support, so it costs
           # nothing on arm64 and keeps Intel users on Big Sur working.
           MACOSX_DEPLOYMENT_TARGET: "11.0"
-          # Stop mpi4py from calling MPI_Init while PyInstaller *analyses* it.
+          # Stop mpi4py from calling MPI_Init while PyInstaller *analyses* it —
+          # on Linux and macOS, and deliberately NOT on Windows.
+          #
           # collect_all('mpi4py.futures') enumerates submodules in an isolated
           # child process, which imports mpi4py — and mpi4py initialises MPI at
           # import. On the Linux runners MPICH's UCX transport intermittently
@@ -171,9 +173,32 @@ jobs:
           # SubprocessDiedError. It took out 2 of 3 release builds.
           #
           # The build only needs to *enumerate* mpi4py, never to run MPI, so skip
-          # the init entirely. This is a build-time env var: it is not baked into
+          # the init there. This is a build-time env var: it is not baked into
           # the executable, so MPI still initialises normally at run time.
-          MPI4PY_RC_INITIALIZE: "0"
+          #
+          # Windows is excluded because skipping the init is not free: it leaves
+          # mpi4py imported with MPI *not open*, and every MPI routine other than
+          # MPI_Initialized/MPI_Finalized is then erroneous. MS-MPI and MPICH both
+          # answer that by printing
+          #     Attempting to use an MPI routine before initializing MPI
+          # and killing the process — not raising, so no try/except survives it.
+          # PyInstaller imports every collected package into ONE isolated child:
+          # mpi4py.futures loads MPI uninitialised, and the child later imports
+          # libcuflynx.solver_wrappers, whose chain reaches PrimitiveParsers'
+          # module-scope `rank = mpi_utils.rank()`. That read killed the child and
+          # failed the v0.4.0 Windows build twice:
+          #     SubprocessDiedError: Isolated subprocess crashed while importing
+          #     package 'libcuflynx.solver_wrappers'
+          # It appeared only once #269 put libcuflynx in the bundle — before that
+          # nothing in the child asked MPI anything.
+          #
+          # Windows has no UCX, so it never needed the workaround: MS-MPI's
+          # singleton init in that child is what every release up to v0.1.1 did,
+          # and those Windows builds all passed. libcuflynx is being fixed to ask
+          # MPI_Initialized before it calls anything (CA's mpi_utils.mpi_is_live),
+          # which makes both platforms safe either way — but the pin here is
+          # `libcuflynx>=0.4.0`, so the build must not depend on that landing.
+          MPI4PY_RC_INITIALIZE: ${{ runner.os == 'Windows' && '1' || '0' }}
           # Belt and braces: if mpi4py is too old to honour the rc env var
           # (added in 3.1; the extra pins only >=3.0), keep UCX off the device
           # probe that fails. Harmless where UCX isn't present.
