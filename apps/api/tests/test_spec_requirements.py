@@ -40,7 +40,11 @@ def _spec_required() -> set[str]:
     for node in ast.walk(tree):
         if not isinstance(node, ast.Assign):
             continue
-        if not any(getattr(t, "id", None) in ("_REQUIRED", "_ANALYSIS_PKGS") for t in node.targets):
+        # _FULL_PKGS too: it is only required when CUFLYNX_BUNDLE_FULL=1 (the extra Linux
+        # asset), but the guard it feeds fires during a tagged release build just the same,
+        # so it needs declaring here exactly like the unconditional ones.
+        if not any(getattr(t, "id", None) in ("_REQUIRED", "_ANALYSIS_PKGS", "_FULL_PKGS")
+                   for t in node.targets):
             continue
         for element in ast.walk(node.value):
             if isinstance(element, ast.Constant) and isinstance(element.value, str):
@@ -67,6 +71,10 @@ def test_the_sweep_reads_both_files():
     assert _PYPROJECT.is_file(), _PYPROJECT
     required = _spec_required()
     assert "libcuflynx" in required, "the spec no longer requires libcuflynx — has it moved?"
+    assert "autoemulate" in required, (
+        "the spec no longer names autoemulate — has the full Linux bundle's _FULL_PKGS moved "
+        "or been renamed? Without it this test silently stops covering that build."
+    )
     assert len(required) > 10, required
     assert len(_declared_distributions()) > 10
 

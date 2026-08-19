@@ -123,6 +123,12 @@ pip install "libcuflynx[uq]"          # the pyMC sampler (+66 MB)
 pip install "libcuflynx[emulation]"   # surrogate models — pulls torch (+750 MB)
 ```
 
+On Linux there is a second download, **`CUFLynx-linux-x86_64-full`**, which has
+both of those built in — so the Emulator tab and pyMC sampling work with no
+interpreter to pick and nothing to install. It is about 1 GB rather than 300 MB,
+which is why it is a separate file rather than the default. Everything else is
+identical to `CUFLynx-linux-x86_64`; there is no full build for macOS or Windows.
+
 `pip install -e .` is **not** the equivalent: that installs *this* repo
 (`cuflynx-api`, the server), which is not what the runners need and does not pull
 libCUFLynx in. Use it only if you are developing CUFLynx itself, in which case see
