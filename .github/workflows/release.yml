@@ -167,53 +167,63 @@ jobs:
           # Sanity: the built config must have MPI off.
           grep -q "SUNDIALS_MPI_ENABLED 0" "$HOME/sundials-serial/include/sundials/sundials_config.h"
 
-      # torch's default PyPI wheel declares the CUDA stack as hard dependencies, so
-      # `pip install autoemulate` drags in 2.7 GB of it -- cublas 423 MB, cudnn 366 MB,
-      # nccl 206 MB, cusolver 201 MB, triton 198 MB and nine more, measured in the first
-      # rehearsal build. That is unshippable twice over: a GitHub release asset is capped
-      # at 2 GiB, and the payload is dead weight regardless, since CUDA needs a matching
-      # NVIDIA driver on the user's machine and the emulator is a small-data surrogate
-      # that trains in seconds on CPU. The +cpu wheel drops every nvidia-* package and
-      # triton with it.
-      #
-      # Installed BEFORE the extra so the resolver finds torch already satisfied and
-      # leaves it alone; the check below is what makes that assumption fail loudly
-      # rather than silently re-pulling 2.7 GB.
-      - name: Install CPU-only torch (full bundle)
-        if: matrix.full == '1'
-        run: pip install --index-url https://download.pytorch.org/whl/cpu torch
-
       # [analysis] bundles CA's analysis stack (emcee/SALib/nevergrad/matplotlib/
       # mpi4py/...) so the packaged app runs SA/calibration/UQ itself.
       - name: Install Python deps
         working-directory: apps/api
         run: pip install -e ".[desktop,analysis${{ matrix.full == '1' && ',full' || '' }}]"
 
-      - name: torch must still be the CPU build
+      # torch's PyPI wheel declares the CUDA stack as hard dependencies, so installing
+      # autoemulate drags in 2.7 GB of it -- cublas 423 MB, cudnn 366 MB, nccl 206 MB,
+      # cusolver 201 MB, triton 198 MB and nine more, measured in the first rehearsal
+      # build. That is unshippable twice over: a GitHub release asset is capped at 2 GiB,
+      # and the payload is dead weight regardless, since CUDA needs a matching NVIDIA
+      # driver on the user's machine and the emulator is a small-data surrogate that
+      # trains in seconds on CPU.
+      #
+      # AFTER the extra, not before. Installing the +cpu wheel first looks tidier and does
+      # not work: the extra re-resolves torch against its own pins and simply replaces it.
+      # The second rehearsal caught exactly that -- 2.13.0+cpu went in, and `pip install
+      # .[...,full]` downgraded it to 2.12.1+cu130 and pulled the whole CUDA set back.
+      # So let the extra pick the version, then swap that same version for its CPU build.
+      - name: Swap in CPU-only torch (full bundle)
+        if: matrix.full == '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # --no-deps: the shared dependencies (sympy, networkx, filelock, ...) are already
+          # in place and identical; only the wheel itself differs.
+          version="$(python -c 'import torch; print(torch.__version__.split("+")[0])')"
+          pip install --index-url https://download.pytorch.org/whl/cpu \
+            --force-reinstall --no-deps "torch==${version}"
+          # Nothing depends on the CUDA packages any more, but pip does not remove what it
+          # did not orphan itself -- and PyInstaller's bundled hook-nvidia.* hooks would
+          # still find and collect them, which is the whole 2.5 GB.
+          orphans="$(pip list --format=freeze | sed 's/==.*//' | grep -E '^(nvidia-|triton$|cuda-toolkit$)' || true)"
+          if [ -n "$orphans" ]; then echo "$orphans" | xargs pip uninstall -y; fi
+
+      - name: No CUDA payload may reach the bundle
         if: matrix.full == '1'
         run: |
           python - <<'PY'
           import sys
+          from importlib import metadata
+
           import torch
           print("torch", torch.__version__)
+          problems = []
           if "+cpu" not in torch.__version__:
-              sys.exit(
-                  f"torch is {torch.__version__}, not a +cpu build: the [full] extra pulled the "
-                  f"CUDA wheel back in. That adds ~2.7 GB and puts the asset over GitHub's "
-                  f"2 GiB release limit. Pin torch in the extra, or install the +cpu wheel after it."
-              )
+              problems.append(f"torch is {torch.__version__}, not a +cpu build")
+          left = sorted(d.metadata["Name"] for d in metadata.distributions()
+                        if (d.metadata["Name"] or "").lower().startswith(("nvidia-", "triton")))
+          if left:
+              problems.append(f"CUDA packages still installed: {', '.join(left)}")
+          if problems:
+              sys.exit("; ".join(problems) + ". That is ~2.7 GB, which puts the asset over "
+                       "GitHub's 2 GiB release limit -- see the swap step above.")
+          print("no CUDA payload")
           PY
 
-      # NB: rebuilding the PyInstaller bootloader from source (to dodge the Windows
-      # AV false-positive) was attempted here and REMOVED -- it did not fire on the
-      # Windows runner. PyInstaller's sdist ships a prebuilt Windows bootloader and
-      # the build reused it; even PYINSTALLER_COMPILE_BOOTLOADER=1 did not force a
-      # recompile in CI (verified: 0.07s wheel build, zero compiler output). See
-      # issue and packaging/README.md. The version resource below is the mitigation
-      # that IS applied; code signing is the durable fix.
-
-      # yarn, not npm: the repo has yarn.lock and no package-lock.json, so
-      # `npm ci` errors out. Matches ci.yml.
       - name: Install frontend deps
         working-directory: apps/web
         run: yarn install --frozen-lockfile

@@ -163,14 +163,15 @@ def _step_index(predicate, what: str) -> int:
 
 
 @pytest.mark.unit
-def test_the_full_bundle_installs_cpu_only_torch_before_the_extra():
+def test_the_full_bundle_swaps_torch_for_its_cpu_build_after_the_extra():
     """The CUDA wheels are 2.7 GB and put the asset over GitHub's 2 GiB release limit.
 
-    Order matters: the +cpu wheel has to be in place before ``pip install .[...,full]``
-    so the resolver sees torch as already satisfied. Installed after, it is the extra
-    that wins and the CUDA payload comes back.
+    Order matters, and the intuitive order is the wrong one. Installing the +cpu wheel
+    first does not survive: ``pip install .[...,full]`` re-resolves torch against the
+    extra's own pins and replaces it -- observed, 2.13.0+cpu going in and 2.12.1+cu130
+    coming out. The extra has to choose the version, and the swap has to come after it.
     """
-    cpu = _step_index(
+    swap = _step_index(
         lambda s: "download.pytorch.org/whl/cpu" in str(s.get("run", "")),
         "installing torch from the PyTorch CPU index",
     )
@@ -178,20 +179,28 @@ def test_the_full_bundle_installs_cpu_only_torch_before_the_extra():
         lambda s: s.get("name") == "Install Python deps",
         "named 'Install Python deps'",
     )
-    assert cpu < extra, (
-        "the CPU-only torch install must come BEFORE the [full] extra; installed after, "
-        "pip resolves torch from PyPI and pulls ~2.7 GB of CUDA libraries back in."
+    assert swap > extra, (
+        "the CPU torch swap must come AFTER the [full] extra: installed before, the "
+        "extra re-resolves torch against its own pins and pulls ~2.7 GB of CUDA "
+        "libraries back in."
     )
 
     steps = _build_steps()
-    assert steps[cpu].get("if") == "matrix.full == '1'", (
-        f"the CPU torch install is gated on {steps[cpu].get('if')!r}; it must apply to the "
+    assert steps[swap].get("if") == "matrix.full == '1'", (
+        f"the CPU torch swap is gated on {steps[swap].get('if')!r}; it must apply to the "
         f"full bundle only, so the other four assets are untouched."
     )
-    # And something has to notice if the extra overrides it anyway.
-    assert any("+cpu" in str(s.get("run", "")) for s in steps[extra + 1:]), (
-        "nothing verifies that torch is still the +cpu build after the extra is installed, "
-        "so a re-pulled CUDA wheel would only surface as a failed release upload."
+    # Orphaned CUDA packages are not removed by pip, and PyInstaller's bundled
+    # hook-nvidia.* would collect them even though nothing imports them.
+    assert "nvidia-" in str(steps[swap].get("run", "")), (
+        "the swap leaves the nvidia-* packages installed; swapping the wheel alone does "
+        "not shrink the bundle, because the hooks collect them regardless."
+    )
+    # And something after it has to confirm both halves actually took.
+    check = str(_build_steps()[swap + 1].get("run", ""))
+    assert "+cpu" in check and "nvidia-" in check, (
+        "nothing verifies that torch ended up as +cpu with no CUDA packages left, so a "
+        "failed swap would only surface as a failed release upload."
     )
 
 
