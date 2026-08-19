@@ -19,6 +19,13 @@ jobs:
   build:
     name: Build (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    # The slowest healthy build is macos-15-intel at ~12 minutes (v0.3.0, the last release
+    # that got all the way through). This is deliberately ~3x that rather than snug: the
+    # thing it has to survive is a slow apt/brew mirror, not a slow build. What it exists to
+    # stop is the other failure mode -- on the v0.4.0 re-tag, `Install Sundials (Linux)` sat
+    # in apt for 1h40m and had to be cancelled by hand, because with no timeout a job runs to
+    # GitHub's 360-minute default and the release publishes nothing while it does.
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
@@ -331,6 +338,11 @@ jobs:
   analysis-e2e:
     name: Analysis e2e (${{ matrix.os }})
     needs: build
+    # Runs in ~3 minutes, but analysis_smoke.py already carries its own
+    # --sensitivity-timeout 900 --calibration-timeout 900, i.e. up to 30 minutes of internal
+    # budget. This sits just above that on purpose: the script's own timeout says which stage
+    # hung, and a job timeout below it would preempt that message with a bare cancellation.
+    timeout-minutes: 35
     strategy:
       fail-fast: false
       matrix:
@@ -375,6 +387,8 @@ jobs:
     name: Publish release
     # Gate on the analysis e2e too: don't publish a build that can't run SA/calibration.
     needs: [build, analysis-e2e]
+    # Downloads and re-uploads four ~420 MB binaries; ~30 seconds when the network behaves.
+    timeout-minutes: 15
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
