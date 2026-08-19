@@ -596,7 +596,7 @@ hiddenimports += [
 # interpreter (the exe re-invokes itself as the runner). Only genuine dead weight
 # is excluded. tkinter is dropped because matplotlib defaults to the headless Agg
 # backend here (MPLBACKEND=Agg is set before any pyplot import).
-excludes = [
+_BASE_EXCLUDES = (
     "tkinter",
     "pytest",
     "IPython",
@@ -626,7 +626,18 @@ excludes = [
     # switch this one asset over to Cython's build_ext, making the most fragile runtime path
     # in the app behave differently in the bundle nobody builds locally.
     "Cython",
-]
+)
+
+# ...except that one of them is dead weight only in the ordinary bundles. autoemulate's
+# core/plotting.py does `from IPython.display import ...` at module scope, unguarded, so
+# excluding IPython does not trim a notebook helper out of the full bundle -- it makes
+# `import autoemulate` raise ModuleNotFoundError, i.e. the entire reason that asset exists
+# fails to load. Found by the runner-mode probe in scripts/analysis_smoke.py; every other
+# check in the pipeline passed on that bundle, because nothing else imports autoemulate.
+# `notebook` stays excluded: only IPython.display is reached.
+_FULL_KEEPS = ("IPython",)
+
+excludes = [m for m in _BASE_EXCLUDES if not (_FULL and m in _FULL_KEEPS)]
 
 a = Analysis(  # noqa: F821
     [str(ENTRY)],

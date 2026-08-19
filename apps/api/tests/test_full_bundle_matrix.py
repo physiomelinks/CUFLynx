@@ -44,14 +44,13 @@ def _matrix(job):
     return _workflow()["jobs"][job]["strategy"]["matrix"]["include"]
 
 
-def _required_for(full: str) -> tuple:
-    """Evaluate just the spec's guard-list assignments, with the gate set to ``full``.
+def _spec_values(full: str, wanted: set) -> dict:
+    """Evaluate just the named spec assignments, with the gate set to ``full``.
 
     The spec cannot be imported (it imports PyInstaller and reads the build environment),
-    so lift out the four assignments that decide the list and run only those.
+    so lift out the assignments that decide the lists and run only those.
     """
     tree = ast.parse(_SPEC.read_text(encoding="utf-8"), filename=str(_SPEC))
-    wanted = {"_ANALYSIS_PKGS", "_FULL", "_FULL_PKGS", "_REQUIRED"}
     picked = [n for n in tree.body
               if isinstance(n, ast.Assign)
               and any(getattr(t, "id", None) in wanted for t in n.targets)]
@@ -62,7 +61,16 @@ def _required_for(full: str) -> tuple:
     env["CUFLYNX_BUNDLE_FULL"] = full
     namespace = {"os": type("_os", (), {"environ": env})}
     exec(compile(ast.Module(body=picked, type_ignores=[]), "<spec>", "exec"), namespace)
-    return namespace["_REQUIRED"], namespace["_FULL_PKGS"]
+    return namespace
+
+
+def _required_for(full: str) -> tuple:
+    ns = _spec_values(full, {"_ANALYSIS_PKGS", "_FULL", "_FULL_PKGS", "_REQUIRED"})
+    return ns["_REQUIRED"], ns["_FULL_PKGS"]
+
+
+def _excludes_for(full: str) -> list:
+    return _spec_values(full, {"_FULL", "_BASE_EXCLUDES", "_FULL_KEEPS", "excludes"})["excludes"]
 
 
 @pytest.mark.unit
@@ -123,18 +131,8 @@ def test_the_full_extra_is_declared_and_asks_for_the_libcuflynx_extras():
     )
 
 
-def _spec_excludes() -> list:
-    """Lift the spec's ``excludes = [...]`` literal out without importing the spec."""
-    tree = ast.parse(_SPEC.read_text(encoding="utf-8"), filename=str(_SPEC))
-    for node in tree.body:
-        if isinstance(node, ast.Assign) and any(getattr(t, "id", None) == "excludes"
-                                                for t in node.targets):
-            return ast.literal_eval(node.value)
-    raise AssertionError("packaging/cuflynx.spec no longer assigns `excludes`")
-
-
 @pytest.mark.unit
-def test_cython_is_excluded_from_the_bundle():
+def test_cython_is_excluded_from_every_bundle():
     """Bundling Cython breaks CVODE_myokit -- in the full bundle only, and only at run time.
 
     setuptools' build_ext probes for Cython behind ``except ImportError``. Frozen, that
@@ -144,10 +142,31 @@ def test_cython_is_excluded_from_the_bundle():
     ordinary bundles, so this can only ever be caught by the full one -- and only by a
     real simulation, which is why it survived to the first rehearsal build.
     """
-    assert "Cython" in _spec_excludes(), (
-        "Cython is back in the bundle. The [full] extra installs it, and its presence "
-        "breaks the CVODE_myokit backend at run time -- see the comment on the excludes "
-        "list. The other four assets are unaffected, so CI stays green."
+    for full in ("0", "1"):
+        assert "Cython" in _excludes_for(full), (
+            f"Cython is back in the bundle (CUFLYNX_BUNDLE_FULL={full}). The [full] extra "
+            f"installs it, and its presence breaks the CVODE_myokit backend at run time -- "
+            f"see the comment on the excludes list. The other four assets are unaffected, "
+            f"so CI stays green."
+        )
+
+
+@pytest.mark.unit
+def test_ipython_is_kept_in_the_full_bundle_only():
+    """Excluding IPython does not trim a notebook helper -- it breaks `import autoemulate`.
+
+    autoemulate's core/plotting.py does ``from IPython.display import ...`` at module
+    scope, unguarded, so the whole package fails to import. Nothing else in the bundle
+    imports autoemulate, so every other check in the pipeline passed on a bundle whose
+    one distinguishing feature could not load; the runner-mode probe in analysis_smoke.py
+    is what caught it.
+    """
+    assert "IPython" not in _excludes_for("1"), (
+        "IPython is excluded from the full bundle, so `import autoemulate` raises "
+        "ModuleNotFoundError and the Emulator tab cannot work at all."
+    )
+    assert "IPython" in _excludes_for("0"), (
+        "IPython is now bundled into the four ordinary assets, where nothing imports it."
     )
 
 
