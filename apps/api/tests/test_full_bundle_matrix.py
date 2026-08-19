@@ -225,3 +225,39 @@ def test_every_asset_is_size_checked_before_it_is_uploaded():
         "the size check is conditional; it should apply to every asset, since any of them "
         "can grow past the limit."
     )
+
+
+@pytest.mark.unit
+def test_the_full_asset_is_probed_for_the_emulator_and_pymc():
+    """Nothing else in the pipeline touches the only two features this asset adds.
+
+    Every other check -- the smoke test's three solver backends, the sensitivity and
+    calibration run -- behaves identically in both Linux bundles, so all of them pass on
+    a "full" bundle that in fact carries neither autoemulate nor pymc. The spec's build
+    time guard does not cover it either: it proves the packages import in the *build*
+    interpreter, not in the frozen one.
+    """
+    e2e = [e for e in _matrix("analysis-e2e") if e["asset"] == _FULL_ASSET]
+    assert e2e and e2e[0].get("full") == "1", (
+        f"the {_FULL_ASSET} analysis-e2e entry does not set full, so analysis_smoke.py "
+        f"runs without --full and the emulator/pyMC stack is never executed."
+    )
+    plain = [e for e in _matrix("analysis-e2e") if e["asset"] != _FULL_ASSET]
+    assert not [e for e in plain if e.get("full")], (
+        "an ordinary asset is marked full; the probe would fail on a bundle that is not "
+        "supposed to contain the emulator at all."
+    )
+
+    step = _workflow()["jobs"]["analysis-e2e"]["steps"][-1]["run"]
+    assert "--full" in step, "analysis_smoke.py is never passed --full"
+
+    smoke = (_REPO / "scripts" / "analysis_smoke.py").read_text(encoding="utf-8")
+    assert "def _check_full_stack" in smoke and "_check_full_stack(args.binary)" in smoke, (
+        "scripts/analysis_smoke.py defines no full-stack probe, or never calls it."
+    )
+    # The pytensor compile is the point of the probe, not an incidental import: pytensor
+    # compiles C at run time, which is where a frozen process breaks.
+    assert "pytensor.function" in smoke, (
+        "the probe imports pytensor but never compiles anything with it, so it would not "
+        "catch the failure it exists for."
+    )

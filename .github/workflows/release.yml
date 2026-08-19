@@ -450,9 +450,12 @@ jobs:
             asset: CUFLynx-linux-x86_64
           # The full bundle runs the same analyses, and is where a mis-collected
           # torch/pytensor would show up: it is one asset users can download and
-          # nothing else exercises it.
+          # nothing else exercises it. `full` additionally turns on the probe of the
+          # emulator/pyMC stack, which is all this asset adds and which nothing else
+          # in the pipeline touches.
           - os: ubuntu-22.04
             asset: CUFLynx-linux-x86_64-full
+            full: "1"
           - os: macos-latest
             asset: CUFLynx-macos-arm64
           - os: macos-15-intel
@@ -485,7 +488,8 @@ jobs:
           python scripts/analysis_smoke.py \
             --binary "$PWD/${{ matrix.asset }}" \
             --ca-dir "$PWD/circulatory_autogen" \
-            --sensitivity-timeout 900 --calibration-timeout 900
+            --sensitivity-timeout 900 --calibration-timeout 900 \
+            ${{ matrix.full == '1' && '--full' || '' }}
 
   release:
     name: Publish release
