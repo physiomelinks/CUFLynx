@@ -342,3 +342,50 @@ describe('tour anchors', () => {
     expect(wrapper.find('[data-testid="emu-use-row"]').exists()).toBe(true)
   })
 })
+
+describe('opening the tab before anything is loaded', () => {
+  // Reported against v0.4.1: opening the Emulator tab on a fresh app showed only the
+  // backend's environment diagnosis ("the emulator options could not be read ... the
+  // server log has the import error"). It trained fine once a model was loaded, so the
+  // message sent the user hunting an import failure in an app that worked. What is
+  // actually blocking them is that they have loaded nothing yet, and that is the only
+  // step they can take.
+  const open = (props) => mountPanel({ canRun: false, ...props })
+
+  it('says what to load, even while the backend calls emulation unavailable', () => {
+    const w = open({
+      canRun: false,
+      defaults: {
+        supported: false,
+        available: false,
+        unavailable_reason: 'The emulator options could not be read from libcuflynx.',
+      },
+    })
+
+    const needs = w.find('[data-testid="emu-needs-study"]')
+    expect(needs.exists()).toBe(true)
+    expect(needs.text()).toMatch(/load a model/i)
+    // The diagnosis is still shown -- underneath, as context, not as the instruction.
+    expect(w.find('[data-testid="emu-unavailable"]').exists()).toBe(true)
+  })
+
+  it('says what to load when emulation is perfectly fine', () => {
+    const w = open({ canRun: false, defaults: { supported: true, available: true } })
+    expect(w.find('[data-testid="emu-needs-study"]').exists()).toBe(true)
+  })
+
+  it('says nothing once a study is loaded', () => {
+    const w = open({ canRun: true, defaults: { supported: true, available: true } })
+    expect(w.find('[data-testid="emu-needs-study"]').exists()).toBe(false)
+  })
+
+  it('calls the engine libcuflynx, not circulatory_autogen', () => {
+    // The packaged app bundles the engine; there is no circulatory_autogen checkout
+    // involved, so naming one sends a packaged-app user looking for a directory they
+    // do not have.
+    const w = open({ canRun: true, defaults: { supported: false } })
+    const text = w.find('[data-testid="emu-unsupported"]').text()
+    expect(text).toContain('libcuflynx')
+    expect(text).not.toMatch(/^This circulatory_autogen/)
+  })
+})
