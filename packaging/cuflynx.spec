@@ -296,9 +296,28 @@ hiddenimports += collect_submodules("uvicorn")
 # regardless of that stub.
 _ANALYSIS_PKGS = ("matplotlib", "emcee", "corner", "SALib", "seaborn", "statsmodels",
                   "schwimmbad", "nevergrad", "numdifftools", "sklearn", "tqdm", "mpi4py")
+
+# The two features that are still "bring your own Python": surrogate emulators
+# (CA's do_emulation/use_emulator, and the Emulator tab's live prediction line) and the
+# pyMC UQ backend. Off by default and built only for the extra Linux asset, because
+# autoemulate pulls torch/gpytorch/pyro-ppl/lightgbm -- roughly 750 MB, taking the binary
+# from ~300 MB to ~1 GB -- and requires Python <3.13, which would pin the whole matrix's
+# ceiling to one optional dependency.
+#
+# An env var rather than a second spec file: the two Linux bundles must differ in exactly
+# this list and nothing else, and two spec files drift. `CUFLYNX_BUNDLE_FULL=1` is set by
+# the `full: "1"` matrix entry in .github/workflows/release.yml.
+#
+# pytensor is named alongside pymc because it is not merely transitive here: it ships C
+# templates that it compiles at run time, so its *data* files have to be collected, the
+# same reason myokit needs its headers bundled.
+_FULL = os.environ.get("CUFLYNX_BUNDLE_FULL") == "1"
+_FULL_PKGS = ("autoemulate", "pymc", "arviz", "pytensor")
+
 _REQUIRED = ("libcuflynx", "myokit", "libcellml", "casadi", "webview", "setuptools",
              "numpy", "scipy", "pandas", "yaml", "rdflib", "pint",
-             *_ANALYSIS_PKGS)
+             *_ANALYSIS_PKGS,
+             *(_FULL_PKGS if _FULL else ()))
 # sympy and ruamel.yaml were dropped from this list when circulatory_autogen stopped
 # declaring them (libcuflynx 0.4.0, CA #435): nothing under libcuflynx imports either
 # one unguarded -- sympy is used only by the RICRI frequency operations, behind a
@@ -317,7 +336,8 @@ if _missing:
         f"installed in the build environment: {', '.join(_missing)}.\n"
         "The frozen app imports circulatory_autogen in-process, so CA's simulation "
         "and analysis dependencies must be present here. Run "
-        "`pip install -e \".[desktop,analysis]\"` in apps/api and rebuild."
+        f"`pip install -e \".[desktop,analysis{',full' if _FULL else ''}]\"` in apps/api "
+        "and rebuild."
     )
 
 for pkg in ("myokit", "libcellml", "casadi", "webview", "setuptools", "numpy"):
@@ -374,6 +394,19 @@ for pkg in _ANALYSIS_PKGS:
     datas += pkg_datas
     binaries += pkg_binaries
     hiddenimports += pkg_hidden
+
+# The emulation/UQ stack, for the full Linux bundle only. collect_all for the same reason
+# as above -- autoemulate and pymc both resolve submodules dynamically, and pytensor ships
+# the C templates it compiles against. torch, gpytorch, pyro and lightgbm are deliberately
+# NOT listed: PyInstaller ships hooks for them and collect_all on torch in particular
+# drags in test fixtures and unused CUDA payloads. They arrive as dependencies of the
+# packages named here.
+if _FULL:
+    for pkg in _FULL_PKGS:
+        pkg_datas, pkg_binaries, pkg_hidden = collect_all(pkg)
+        datas += pkg_datas
+        binaries += pkg_binaries
+        hiddenimports += pkg_hidden
 
 # scipy's *data files* are not collected by the loops above (scipy is neither in
 # _ANALYSIS_PKGS nor the numpy/etc. collect_all list -- its modules and compiled

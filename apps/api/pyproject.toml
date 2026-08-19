@@ -120,6 +120,35 @@ analysis = [
     "mpich>=4.0; platform_system != 'Windows'",
 ]
 
+# The extra Linux bundle (CUFLynx-linux-x86_64-full). Everything above gives the app
+# simulation, sensitivity, calibration and the emcee UQ sampler in its own interpreter;
+# this adds the two features that were still "install your own Python and point Settings
+# at it": surrogate emulators and the pyMC UQ backend.
+#
+# Deliberately NOT folded into [analysis]. autoemulate pulls torch, gpytorch, pyro-ppl and
+# lightgbm -- roughly 750 MB, which would take every platform's binary from ~300 MB to
+# ~1 GB for a feature most users never touch -- and it requires Python <3.13, which would
+# pin the whole matrix's ceiling to what one optional dependency supports. So it is a
+# second Linux asset rather than a change to the four existing ones.
+#
+# The packages are named here as well as coming in through libcuflynx's own extras,
+# for the same reason [analysis] duplicates CA's pins: packaging/cuflynx.spec collects
+# them by name and refuses to build without them, and tests/test_spec_requirements.py
+# checks this file declares everything the spec collects. A transitive dependency
+# satisfies the build but leaves that guard with nothing to read.
+full = [
+    "libcuflynx[emulation,uq]>=0.4.1",
+    # Surrogate models -- CA's do_emulation / use_emulator, and the Emulator tab's live
+    # prediction line, which currently needs a user-supplied interpreter.
+    "autoemulate>=2.1,<3",
+    # The pyMC UQ backend. CA's built-in emcee sampler is in [analysis] already; this is
+    # the alternative CA offers, and pytensor is named because the spec collects it
+    # explicitly (it ships C templates it compiles at run time, so its data files matter).
+    "pymc>=5.0",
+    "arviz>=0.15",
+    "pytensor>=2.18",
+]
+
 [tool.hatch.version]
 path = "version.py"
 
