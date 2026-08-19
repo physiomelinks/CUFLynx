@@ -120,12 +120,21 @@ why it is optional. Two more, only if you use those features:
 
 ```bash
 pip install "libcuflynx[uq]"          # the pyMC sampler (+66 MB)
-pip install "libcuflynx[emulation]"   # surrogate models — pulls torch (+750 MB)
+pip install "libcuflynx[emulation]"   # surrogate models — pulls torch (+2.7 GB)
+```
+
+Most of that 2.7 GB is CUDA: torch's default wheel requires the NVIDIA runtime
+whether or not you have an NVIDIA GPU. If you do not, ask for the CPU build first
+and the same install costs about 200 MB:
+
+```bash
+pip install torch --index-url https://download.pytorch.org/whl/cpu
+pip install "libcuflynx[emulation]"
 ```
 
 On Linux there is a second download, **`CUFLynx-linux-x86_64-full`**, which has
 both of those built in — so the Emulator tab and pyMC sampling work with no
-interpreter to pick and nothing to install. It is about 1 GB rather than 300 MB,
+interpreter to pick and nothing to install. It is about 645 MB rather than 295 MB,
 which is why it is a separate file rather than the default. Everything else is
 identical to `CUFLynx-linux-x86_64`; there is no full build for macOS or Windows.
 

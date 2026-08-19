@@ -47,7 +47,7 @@ jobs:
           # (the alternative UQ backend), which are the last two features that
           # otherwise need the user to install their own Python and point Settings
           # at it. Kept separate rather than merged into the asset above because
-          # torch and friends take the binary from ~300 MB to ~1 GB, and because
+          # torch and friends take the binary from 294 MB to 645 MB, and because
           # autoemulate requires Python <3.13 -- folding it in would make one
           # optional dependency the ceiling for every platform.
           - os: ubuntu-22.04
@@ -173,16 +173,57 @@ jobs:
         working-directory: apps/api
         run: pip install -e ".[desktop,analysis${{ matrix.full == '1' && ',full' || '' }}]"
 
-      # NB: rebuilding the PyInstaller bootloader from source (to dodge the Windows
-      # AV false-positive) was attempted here and REMOVED -- it did not fire on the
-      # Windows runner. PyInstaller's sdist ships a prebuilt Windows bootloader and
-      # the build reused it; even PYINSTALLER_COMPILE_BOOTLOADER=1 did not force a
-      # recompile in CI (verified: 0.07s wheel build, zero compiler output). See
-      # issue and packaging/README.md. The version resource below is the mitigation
-      # that IS applied; code signing is the durable fix.
+      # torch's PyPI wheel declares the CUDA stack as hard dependencies, so installing
+      # autoemulate drags in 2.7 GB of it -- cublas 423 MB, cudnn 366 MB, nccl 206 MB,
+      # cusolver 201 MB, triton 198 MB and nine more, measured in the first rehearsal
+      # build. That is unshippable twice over: a GitHub release asset is capped at 2 GiB,
+      # and the payload is dead weight regardless, since CUDA needs a matching NVIDIA
+      # driver on the user's machine and the emulator is a small-data surrogate that
+      # trains in seconds on CPU.
+      #
+      # AFTER the extra, not before. Installing the +cpu wheel first looks tidier and does
+      # not work: the extra re-resolves torch against its own pins and simply replaces it.
+      # The second rehearsal caught exactly that -- 2.13.0+cpu went in, and `pip install
+      # .[...,full]` downgraded it to 2.12.1+cu130 and pulled the whole CUDA set back.
+      # So let the extra pick the version, then swap that same version for its CPU build.
+      - name: Swap in CPU-only torch (full bundle)
+        if: matrix.full == '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # --no-deps: the shared dependencies (sympy, networkx, filelock, ...) are already
+          # in place and identical; only the wheel itself differs.
+          version="$(python -c 'import torch; print(torch.__version__.split("+")[0])')"
+          pip install --index-url https://download.pytorch.org/whl/cpu \
+            --force-reinstall --no-deps "torch==${version}"
+          # Nothing depends on the CUDA packages any more, but pip does not remove what it
+          # did not orphan itself -- and PyInstaller's bundled hook-nvidia.* hooks would
+          # still find and collect them, which is the whole 2.5 GB.
+          orphans="$(pip list --format=freeze | sed 's/==.*//' | grep -E '^(nvidia-|triton$|cuda-toolkit$)' || true)"
+          if [ -n "$orphans" ]; then echo "$orphans" | xargs pip uninstall -y; fi
 
-      # yarn, not npm: the repo has yarn.lock and no package-lock.json, so
-      # `npm ci` errors out. Matches ci.yml.
+      - name: No CUDA payload may reach the bundle
+        if: matrix.full == '1'
+        run: |
+          python - <<'PY'
+          import sys
+          from importlib import metadata
+
+          import torch
+          print("torch", torch.__version__)
+          problems = []
+          if "+cpu" not in torch.__version__:
+              problems.append(f"torch is {torch.__version__}, not a +cpu build")
+          left = sorted(d.metadata["Name"] for d in metadata.distributions()
+                        if (d.metadata["Name"] or "").lower().startswith(("nvidia-", "triton")))
+          if left:
+              problems.append(f"CUDA packages still installed: {', '.join(left)}")
+          if problems:
+              sys.exit("; ".join(problems) + ". That is ~2.7 GB, which puts the asset over "
+                       "GitHub's 2 GiB release limit -- see the swap step above.")
+          print("no CUDA payload")
+          PY
+
       - name: Install frontend deps
         working-directory: apps/web
         run: yarn install --frozen-lockfile
@@ -353,6 +394,27 @@ jobs:
         shell: bash
         run: cp "${{ matrix.binary }}" "${{ matrix.asset }}"
 
+      # A GitHub release asset is capped at 2 GiB, and the upload is the LAST step of the
+      # whole pipeline -- so without this the first thing that tells you the bundle is too
+      # big is a failed publish on a tag that has already been pushed. Fail here instead,
+      # where the fix is a dependency change and not a re-tag. Not a python one-liner:
+      # `stat` differs between GNU, BSD and Git-bash.
+      - name: Asset must fit a GitHub release
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os
+          import sys
+          asset = os.environ["ASSET"]
+          size = os.path.getsize(asset)
+          limit = 2 * 1024 ** 3
+          print(f"{asset}: {size / 1024 ** 3:.2f} GiB")
+          if size > limit:
+              sys.exit(f"{asset} is {size / 1024 ** 3:.2f} GiB; GitHub refuses release assets over 2 GiB.")
+          PY
+        env:
+          ASSET: ${{ matrix.asset }}
+
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.asset }}
@@ -388,9 +450,12 @@ jobs:
             asset: CUFLynx-linux-x86_64
           # The full bundle runs the same analyses, and is where a mis-collected
           # torch/pytensor would show up: it is one asset users can download and
-          # nothing else exercises it.
+          # nothing else exercises it. `full` additionally turns on the probe of the
+          # emulator/pyMC stack, which is all this asset adds and which nothing else
+          # in the pipeline touches.
           - os: ubuntu-22.04
             asset: CUFLynx-linux-x86_64-full
+            full: "1"
           - os: macos-latest
             asset: CUFLynx-macos-arm64
           - os: macos-15-intel
@@ -423,7 +488,8 @@ jobs:
           python scripts/analysis_smoke.py \
             --binary "$PWD/${{ matrix.asset }}" \
             --ca-dir "$PWD/circulatory_autogen" \
-            --sensitivity-timeout 900 --calibration-timeout 900
+            --sensitivity-timeout 900 --calibration-timeout 900 \
+            ${{ matrix.full == '1' && '--full' || '' }}
 
   release:
     name: Publish release
@@ -446,7 +512,7 @@ jobs:
             | Download | For |
             |---|---|
             | `CUFLynx-linux-x86_64` | Linux |
-            | `CUFLynx-linux-x86_64-full` | Linux, **plus surrogate emulators and the pyMC UQ backend**. ~1 GB rather than ~300 MB, because those pull in torch. Take this one only if you want the Emulator tab or pyMC sampling without installing your own Python. |
+            | `CUFLynx-linux-x86_64-full` | Linux, **plus surrogate emulators and the pyMC UQ backend**. ~645 MB rather than ~295 MB, because those pull in torch. Take this one only if you want the Emulator tab or pyMC sampling without installing your own Python. |
             | `CUFLynx-macos-arm64` | macOS, Apple silicon |
             | `CUFLynx-macos-x86_64` | macOS, Intel |
             | `CUFLynx-windows-x86_64.exe` | Windows |

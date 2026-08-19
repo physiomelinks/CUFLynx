@@ -149,6 +149,58 @@ def _check_bundled_scipy_data(binary: str) -> None:
         print("scipy data OK (Sobol direction numbers load in the bundle)")
 
 
+def _check_full_stack(binary: str) -> None:
+    """The full bundle's two headline features, exercised inside the frozen process.
+
+    Everything else here works identically in both Linux bundles, so nothing else notices
+    whether the emulator and pyMC actually survived being frozen. The build-time guard in
+    cuflynx.spec only proves they import in the *build* interpreter, which is a different
+    Python with a real site-packages -- so without this, the one asset that exists for
+    these two features is published having never run either.
+
+    The pytensor compile is the specific risk. pytensor ships C templates that it
+    compiles at *run time*, the same shape of problem as myokit's headers (the bug that
+    made every CVODE simulation fail in v0.1.x), and a frozen process is exactly where
+    that goes wrong. Compiling a trivial function and checking its answer proves the
+    templates were collected and the compiler can reach them.
+    """
+    with tempfile.TemporaryDirectory() as td:
+        probe = Path(td) / "full_stack_probe.py"
+        probe.write_text(
+            "import numpy as np\n"
+            "import torch\n"
+            # A CUDA build would mean the asset is over GitHub's 2 GiB limit; the build job
+            # checks that too, but this catches a bundle handed here from anywhere else.
+            "assert '+cpu' in torch.__version__, f'not a CPU torch: {torch.__version__}'\n"
+            "import autoemulate\n"
+            "import pytensor\n"
+            "import pytensor.tensor as pt\n"
+            "x = pt.dscalar('x')\n"
+            "f = pytensor.function([x], x * 2)\n"
+            "assert abs(float(f(3.0)) - 6.0) < 1e-9, 'pytensor compiled the wrong function'\n"
+            "import pymc as pm\n"
+            "with pm.Model() as m:\n"
+            "    mu = pm.Normal('mu', 0.0, 1.0)\n"
+            "    pm.Normal('y', mu, 1.0, observed=np.zeros(3))\n"
+            # compile_logp goes through pymc's real pytensor pipeline without paying for
+            # an MCMC run -- if the graph compiles and evaluates finite, sampling works.
+            "lp = float(m.compile_logp()(m.initial_point()))\n"
+            "assert np.isfinite(lp), f'pymc logp is {lp}'\n"
+            "print('FULL_STACK_OK', torch.__version__, pm.__version__)\n"
+        )
+        cfg = Path(td) / "cfg.json"  # runner mode expects a config-path argv[2]
+        cfg.write_text("{}")
+        out = subprocess.run(
+            [binary, RUNNER_MODE_FLAG, str(probe), str(cfg)],
+            capture_output=True, text=True, timeout=600,
+        )
+        combined = out.stdout + out.stderr
+        if "FULL_STACK_OK" not in combined:
+            _fail("the emulator / pyMC stack failed in the built app -- this is the only "
+                  "thing the -full asset adds", combined.splitlines())
+        print("full stack OK (autoemulate imports, pytensor compiles, pymc logp evaluates)")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--binary", required=True, help="path to the built CUFLynx executable")
@@ -159,6 +211,8 @@ def main() -> int:
     ap.add_argument("--port", type=int, default=8777)
     ap.add_argument("--calibration-timeout", type=int, default=600)
     ap.add_argument("--sensitivity-timeout", type=int, default=600)
+    ap.add_argument("--full", action="store_true",
+                    help="also probe the emulator / pyMC stack (the -full Linux asset)")
     args = ap.parse_args()
 
     base = f"http://127.0.0.1:{args.port}"
@@ -174,8 +228,11 @@ def main() -> int:
         if not _wait_health(base):
             _fail("app did not become healthy")
 
-        # 0. Cheap guard: scipy's runtime data files are bundled (see below).
+        # 0. Cheap guards: scipy's runtime data files are bundled (see below), and --
+        #    for the -full asset only -- the emulator/pyMC stack it exists to carry.
         _check_bundled_scipy_data(args.binary)
+        if args.full:
+            _check_full_stack(args.binary)
 
         # 1. Configure CA dir + runner interpreter + backend, as a user would.
         #    Pin the backend to cellml / CVODE_myokit explicitly: the analysis

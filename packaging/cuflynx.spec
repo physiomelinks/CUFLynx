@@ -300,9 +300,9 @@ _ANALYSIS_PKGS = ("matplotlib", "emcee", "corner", "SALib", "seaborn", "statsmod
 # The two features that are still "bring your own Python": surrogate emulators
 # (CA's do_emulation/use_emulator, and the Emulator tab's live prediction line) and the
 # pyMC UQ backend. Off by default and built only for the extra Linux asset, because
-# autoemulate pulls torch/gpytorch/pyro-ppl/lightgbm -- roughly 750 MB, taking the binary
-# from ~300 MB to ~1 GB -- and requires Python <3.13, which would pin the whole matrix's
-# ceiling to one optional dependency.
+# autoemulate pulls torch/gpytorch/pyro-ppl/lightgbm -- roughly 350 MB, taking the binary
+# from 294 MB to 645 MB (measured, v0.4.1) -- and requires Python <3.13, which would pin
+# the whole matrix's ceiling to one optional dependency.
 #
 # An env var rather than a second spec file: the two Linux bundles must differ in exactly
 # this list and nothing else, and two spec files drift. `CUFLYNX_BUNDLE_FULL=1` is set by
@@ -596,12 +596,48 @@ hiddenimports += [
 # interpreter (the exe re-invokes itself as the runner). Only genuine dead weight
 # is excluded. tkinter is dropped because matplotlib defaults to the headless Agg
 # backend here (MPLBACKEND=Agg is set before any pyplot import).
-excludes = [
+_BASE_EXCLUDES = (
     "tkinter",
     "pytest",
     "IPython",
     "notebook",
-]
+    # Cython is a BUILD-time tool that nothing here needs at run time -- but leaving it in
+    # the bundle breaks Myokit's CVODE backend, and only in the full bundle, because that
+    # is the only tier whose dependencies pull Cython in.
+    #
+    # Myokit compiles each model to a C extension at run time by calling setuptools'
+    # setup(), which resolves the build_ext command class. setuptools/command/build_ext.py
+    # opens with
+    #     try:
+    #         from Cython.Distutils.build_ext import build_ext as _build_ext
+    #         __import__('Cython.Compiler.Main')
+    #     except ImportError:
+    #         _build_ext = _du_build_ext
+    # -- it catches ImportError only. Importing Cython.Compiler reads its utility templates
+    # (Cython/Utility/*.c, *.cpp) from disk, and those are data files PyInstaller does not
+    # collect, so frozen it raises FileNotFoundError instead:
+    #     FileNotFoundError: /tmp/_MEIxxxxxx/Cython/Utility/CppSupport.cpp
+    # which sails straight through the except and kills every CVODE_myokit simulation with
+    # "CompilationError: Unable to compile".
+    #
+    # Excluding it restores the ImportError that the fallback is written for, so the full
+    # bundle compiles models by exactly the same path as the other four assets. The
+    # alternative -- collecting Cython/Utility so the import succeeds -- is worse: it would
+    # switch this one asset over to Cython's build_ext, making the most fragile runtime path
+    # in the app behave differently in the bundle nobody builds locally.
+    "Cython",
+)
+
+# ...except that one of them is dead weight only in the ordinary bundles. autoemulate's
+# core/plotting.py does `from IPython.display import ...` at module scope, unguarded, so
+# excluding IPython does not trim a notebook helper out of the full bundle -- it makes
+# `import autoemulate` raise ModuleNotFoundError, i.e. the entire reason that asset exists
+# fails to load. Found by the runner-mode probe in scripts/analysis_smoke.py; every other
+# check in the pipeline passed on that bundle, because nothing else imports autoemulate.
+# `notebook` stays excluded: only IPython.display is reached.
+_FULL_KEEPS = ("IPython",)
+
+excludes = [m for m in _BASE_EXCLUDES if not (_FULL and m in _FULL_KEEPS)]
 
 a = Analysis(  # noqa: F821
     [str(ENTRY)],
