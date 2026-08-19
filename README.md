@@ -37,12 +37,18 @@ manually explore how parameters affect your (CellML) model outputs.
 | OS | Download |
 |----|----------|
 | **Linux** (x86-64, glibc 2.35+ / Ubuntu 22.04+) | [**CUFLynx-linux-x86_64**](https://github.com/physiomelinks/CUFLynx/releases/latest/download/CUFLynx-linux-x86_64) |
+| **Linux** — same, plus emulators and pyMC | [**CUFLynx-linux-x86_64-full**](https://github.com/physiomelinks/CUFLynx/releases/latest/download/CUFLynx-linux-x86_64-full) |
 | **macOS** — Apple silicon (any M-series; macOS 11+) | [**CUFLynx-macos-arm64**](https://github.com/physiomelinks/CUFLynx/releases/latest/download/CUFLynx-macos-arm64) |
 | **macOS** — Intel (macOS 11+) | [**CUFLynx-macos-x86_64**](https://github.com/physiomelinks/CUFLynx/releases/latest/download/CUFLynx-macos-x86_64) |
 | **Windows** (x86-64) | [**CUFLynx-windows-x86_64.exe**](https://github.com/physiomelinks/CUFLynx/releases/latest/download/CUFLynx-windows-x86_64.exe) |
 
 Not sure which Mac? **Apple menu → About This Mac**: "Apple M…" is Apple silicon,
 "Intel…" is Intel. Every M-series chip runs the same `arm64` build.
+
+Take the plain Linux build unless you want the **Emulator** tab or **pyMC** sampling:
+those need torch, which is why they are a separate 645 MB download rather than part of
+every one. The two are otherwise identical, and there is no full build for macOS or
+Windows — see [Using your own Python](#using-your-own-python).
 
 The app is self-contained — it bundles Python and everything `circulatory_autogen`
 needs, so simulation **and** analysis run without any Python setup.
@@ -69,7 +75,7 @@ cleared — that's what the `xattr` line does (or right-click → **Open** → *
 
 ```bash
 cd ~/Downloads
-chmod +x CUFLynx-linux-x86_64
+chmod +x CUFLynx-linux-x86_64          # or CUFLynx-linux-x86_64-full
 ./CUFLynx-linux-x86_64
 ```
 
@@ -132,8 +138,8 @@ pip install torch --index-url https://download.pytorch.org/whl/cpu
 pip install "libcuflynx[emulation]"
 ```
 
-On Linux there is a second download, **`CUFLynx-linux-x86_64-full`**, which has
-both of those built in — so the Emulator tab and pyMC sampling work with no
+None of that applies if you take the **`CUFLynx-linux-x86_64-full`** download listed
+above: it has both built in, so the Emulator tab and pyMC sampling work with no
 interpreter to pick and nothing to install. It is about 645 MB rather than 295 MB,
 which is why it is a separate file rather than the default. Everything else is
 identical to `CUFLynx-linux-x86_64`; there is no full build for macOS or Windows.

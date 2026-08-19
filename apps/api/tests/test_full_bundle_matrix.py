@@ -280,3 +280,22 @@ def test_the_full_asset_is_probed_for_the_emulator_and_pymc():
         "the probe imports pytensor but never compiles anything with it, so it would not "
         "catch the failure it exists for."
     )
+
+
+@pytest.mark.unit
+def test_the_readme_offers_every_asset_the_release_builds():
+    """A built asset nobody can find is not published in any sense that matters.
+
+    v0.4.1 shipped five binaries and the README's download table listed four: the full
+    Linux bundle was described in prose much further down, under the "bring your own
+    Python" section, where someone picking a download would never reach it. Nothing
+    caught that, because the table is prose and the matrix is YAML.
+    """
+    readme = (_REPO / "README.md").read_text(encoding="utf-8")
+    built = {e["asset"] for e in _matrix("build")}
+    missing = sorted(a for a in built if f"/download/{a})" not in readme)
+    assert not missing, (
+        f"the README download table has no link for {missing}. Every asset the release "
+        f"workflow builds should be offered where people look for it, not only in the "
+        f"release page's own table."
+    )
