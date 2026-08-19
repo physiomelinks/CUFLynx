@@ -93,7 +93,24 @@ jobs:
       # wheel ships them.
       - name: Install Sundials (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libsundials-dev python3-dev
+        run: |
+          # The runner image points apt at a mirrorlist (/etc/apt/apt-mirrors.txt) that lists
+          # azure.archive.ubuntu.com first and archive.ubuntu.com as fallback. When the Azure
+          # mirror is down, apt does not fail over quickly -- it spends its connect timeout
+          # plus retries on the dead host for *every* index and *every* package. On the v0.4.0
+          # re-tag that turned this 32-second step into a 1h40m hang with no output at all,
+          # and it never reached apt-get install; the log showed 22 Ign: for the Azure host and
+          # zero successful fetches, while archive.ubuntu.com, packages.microsoft.com and
+          # dl.google.com all answered normally in the same run.
+          #
+          # Dropping the dead mirror is what makes that survivable. Caching the packages would
+          # not: a cache miss (a dependency bump, a new runner image) walks into the same hang.
+          # The explicit timeout is the backstop for the next mirror to go down.
+          sudo sed -i '/azure.archive.ubuntu.com/d' /etc/apt/apt-mirrors.txt || true
+          echo 'Acquire::http::Timeout "15"; Acquire::https::Timeout "15"; Acquire::Retries "3";' \
+            | sudo tee /etc/apt/apt.conf.d/99-cuflynx-timeouts > /dev/null
+          sudo apt-get update
+          sudo apt-get install -y libsundials-dev python3-dev
 
       # NB: no system OpenMPI on Linux/macOS — the [analysis] extra pip-installs a
       # self-contained MPICH (bundled by the spec), so the app needs no system MPI.
