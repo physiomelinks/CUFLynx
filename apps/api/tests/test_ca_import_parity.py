@@ -178,11 +178,20 @@ def test_every_copy_declines_a_module_that_is_still_importing(monkeypatch):
     whole.PRESENT = 1
 
     monkeypatch.setitem(sys.modules, name, half)
+    # Pin the ordering rather than inherit it. ``sim_worker_runner._ca_candidates`` always
+    # leads with the namespaced spelling, but ``ca_imports.candidates`` leads with it only
+    # when libcuflynx is importable -- true on a dev machine and in the packaged app, false
+    # on CI, which installs none. Left to the environment this test compares the two
+    # resolvers on *different* candidate lists, and passes or fails on where it is run.
+    monkeypatch.setattr(ca_imports, "_namespaced", True)
 
     def fake_import(cand):
         if cand == name:
             return whole
-        raise ImportError(cand)
+        # ModuleNotFoundError naming the candidate, because that is what "this spelling is
+        # absent" looks like: a bare ImportError means "the module is there and something
+        # *it* imports is not", which ca_import re-raises rather than trying the other.
+        raise ModuleNotFoundError(f"No module named {cand!r}", name=cand)
 
     # ca_imports.importlib *is* the importlib module, so this patches the copy
     # sim_worker_runner imports locally too.
