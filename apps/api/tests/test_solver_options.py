@@ -1358,3 +1358,141 @@ def test_a_new_ca_directory_does_not_inherit_the_old_ones_diagnosis(monkeypatch)
         "a stale reason survives a CA-dir change, so the next failure can be reported "
         "with the previous directory's error."
     )
+
+
+class TestTheBundledAutoemulateIsNotBlamedForBeingAbsent:
+    """Two bundles land on the same "no models, no interpreter" branch.
+
+    The ordinary Linux asset genuinely has no autoemulate. The ``-full`` asset ships it --
+    and that is the asset whose users came for the emulator, so "install autoemulate" is
+    wrong exactly where it is most likely to be read. It also sent this session's
+    investigation after a missing package that was present the whole time.
+    """
+
+    def _reason(self, monkeypatch, *, autoemulate):
+        monkeypatch.setattr(so, "get_analysis_options",
+                            lambda *a, **k: {"emulation": {"options": [{"key": "x"}]}})
+        monkeypatch.setattr(so, "analysis_options_introspected", lambda: True)
+        monkeypatch.setattr(so, "_probe_models", lambda python: ([], None))  # no models, bundled python
+        monkeypatch.setattr(so, "_autoemulate_importable", lambda: autoemulate)
+        return so.emulator_availability(None)["unavailable_reason"]
+
+    @pytest.mark.unit
+    def test_the_full_bundle_is_not_told_to_install_what_it_ships(self, monkeypatch):
+        reason = self._reason(monkeypatch, autoemulate=True)
+
+        assert "bundled" in reason
+        assert "pip install" not in reason, (
+            "the -full bundle ships autoemulate; telling this user to install it is advice "
+            "for a problem they do not have"
+        )
+        assert "reopen" in reason.lower(), "no action the user can actually take"
+
+    @pytest.mark.unit
+    def test_a_bundle_without_autoemulate_still_says_so(self, monkeypatch):
+        reason = self._reason(monkeypatch, autoemulate=False)
+
+        assert "pip install" in reason, (
+            "the ordinary bundle really has no autoemulate, and installing it is the fix"
+        )
+
+    @pytest.mark.unit
+    def test_the_probe_does_not_import_autoemulate(self, monkeypatch):
+        """It runs on a path that is already failing, and importing autoemulate drags torch."""
+        called = []
+        monkeypatch.setattr(so.importlib, "import_module",
+                            lambda *a, **k: called.append(a) or (_ for _ in ()).throw(
+                                AssertionError("imported autoemulate to answer a message")))
+
+        so._autoemulate_importable()
+
+        assert not called
+
+
+@pytest.mark.unit
+def test_the_autoemulate_probe_reports_what_find_spec_says(monkeypatch):
+    """The branching tests stub this out, so without this nothing covers the probe itself.
+
+    Driven through ``find_spec`` rather than the real environment: asserting on whether
+    *this* machine has autoemulate would pass or fail depending on the venv, which is the
+    kind of test that is green on CI for the wrong reason.
+    """
+    monkeypatch.setattr(so.importlib.util, "find_spec",
+                        lambda name: object() if name == "autoemulate" else None)
+    assert so._autoemulate_importable() is True
+
+    monkeypatch.setattr(so.importlib.util, "find_spec", lambda name: None)
+    assert so._autoemulate_importable() is False
+
+    def broken(name):
+        raise ValueError("half-installed autoemulate")
+
+    monkeypatch.setattr(so.importlib.util, "find_spec", broken)
+    assert so._autoemulate_importable() is False, (
+        "a broken install must read as unusable, not raise on a path that is already "
+        "reporting a failure"
+    )
+
+
+class TestTheChosenInterpretersAnswerIsFinal:
+    """The interpreter chosen in Settings is the one that will train, so its answer stands.
+
+    An empty answer used to fall through to this process. That was safe only while the
+    bundle had no autoemulate of its own; the ``-full`` asset ships it, so the fallback
+    began answering *for* an interpreter that cannot train -- the tab said 12 models and
+    ``available: true``, and the run then failed in the subprocess. Reported nowhere,
+    because nothing looked wrong until training.
+    """
+
+    def _availability(self, monkeypatch, *, from_interpreter, in_process, python):
+        monkeypatch.setattr(so, "_analysis_cache",
+                            {"emulation": {"options": [{"key": "model"}]}})
+        monkeypatch.setattr(so, "_MODEL_CACHE", {})
+        monkeypatch.setattr(so, "_models_from_interpreter",
+                            lambda p, src: list(from_interpreter))
+        monkeypatch.setattr(so, "_models_in_process", lambda: list(in_process))
+        monkeypatch.setattr(so, "_autoemulate_importable", lambda: True)
+        # Frozen and unconfigured is the only way `python` is genuinely None; from
+        # source default_python() returns the running venv and would mask that case.
+        monkeypatch.setattr(so, "default_python", lambda: None)
+        return so.emulator_availability(python)
+
+    @pytest.mark.unit
+    def test_the_bundles_own_autoemulate_does_not_answer_for_a_chosen_interpreter(
+            self, monkeypatch):
+        got = self._availability(
+            monkeypatch,
+            from_interpreter=[],                      # the chosen interpreter has none
+            in_process=[f"m{i}" for i in range(12)],  # but the -full bundle does
+            python="/envs/fenicsx/bin/python")
+
+        assert got["models"] == [], (
+            "the app answered with its own emulators for an interpreter that has none, so "
+            "the tab reads healthy and the training run fails in the subprocess"
+        )
+        assert got["available"] is False
+        assert "/envs/fenicsx/bin/python" in got["unavailable_reason"]
+
+    @pytest.mark.unit
+    def test_a_chosen_interpreter_that_has_them_still_answers(self, monkeypatch):
+        got = self._availability(
+            monkeypatch,
+            from_interpreter=["gp", "rf"],
+            in_process=[],
+            python="/envs/good/bin/python")
+
+        assert got["models"] == ["gp", "rf"]
+        assert got["available"] is True
+        assert got["unavailable_reason"] is None
+
+    @pytest.mark.unit
+    def test_with_no_interpreter_configured_this_process_still_answers(self, monkeypatch):
+        """The frozen app's default: training happens in the bundle, so the bundle answers."""
+        got = self._availability(
+            monkeypatch,
+            from_interpreter=[],
+            in_process=[f"m{i}" for i in range(12)],
+            python=None)
+
+        assert len(got["models"]) == 12
+        assert got["available"] is True

@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import copy
 import functools
+import importlib.util
 import json
 import logging
 import os
@@ -822,12 +823,25 @@ def _probe_models(python: str | None = None) -> tuple[list[str], str | None]:
     # skipped and the answer came from the bundle's own environment, which never has it.
     # The probe script already treats an empty src as "import libcuflynx from wherever this
     # interpreter finds it", which is exactly right for an interpreter that pip-installed it.
+    #
+    # **A configured interpreter's answer is final, including when it is empty.** That
+    # interpreter is the one that will do the training, so "it has no emulator models" is
+    # the answer, not a reason to ask somebody else. Falling through to this process on an
+    # empty answer was safe only while the bundle never had autoemulate -- which is what
+    # the paragraph above was written against. The `-full` asset ships it, so the fallback
+    # started answering *on behalf of* a chosen interpreter that cannot train at all: the
+    # tab reported 12 models and `available: true`, and the run then failed in the
+    # subprocess. A false green is worse than the message it replaced.
+    #
+    # The cost is that a probe which fails for an unrelated reason (the 60s timeout, a
+    # broken interpreter) now reads as "no models there" rather than quietly substituting
+    # this environment's answer. That is the better error: `emulator_availability` names
+    # the interpreter, so it is actionable, where the substitution was silent and wrong.
     if python:
         key = (python, src or "")
         if key not in _MODEL_CACHE:
             _MODEL_CACHE[key] = _models_from_interpreter(python, src or "")
-        if _MODEL_CACHE[key]:
-            return list(_MODEL_CACHE[key]), python
+        return list(_MODEL_CACHE[key]), python
 
     return _models_in_process(), python
 
@@ -868,6 +882,23 @@ def emulator_models(python: str | None = None) -> list[str]:
     degraded from a menu to a free-text box and said nothing about why.
     """
     return _probe_models(python)[0]
+
+
+def _autoemulate_importable() -> bool:
+    """Whether **this** process can import autoemulate, cheaply and without importing it.
+
+    Only ever used to decide what to *say*. Two bundles land on the same "no models"
+    branch and need opposite advice: the ordinary asset genuinely has no autoemulate,
+    while the ``-full`` one ships it -- and that is the asset whose users came for the
+    emulator, so blaming a missing autoemulate there is wrong every time it appears.
+
+    ``find_spec`` rather than an import: the answer is needed on a path that is already
+    reporting a failure, and importing autoemulate pulls in torch.
+    """
+    try:
+        return importlib.util.find_spec("autoemulate") is not None
+    except Exception:  # noqa: BLE001 - a broken or half-installed autoemulate is "not usable"
+        return False
 
 
 def emulator_availability(python: str | None = None) -> dict:
@@ -926,6 +957,18 @@ def emulator_availability(python: str | None = None) -> dict:
             f'{interpreter} -m pip install "libcuflynx[emulation]" (autoemulate requires '
             f"Python {AUTOEMULATE_PYTHON_RANGE}), or choose an interpreter in Settings that "
             f"already has it."
+        )
+    elif _autoemulate_importable():
+        # The `-full` bundle ships autoemulate. Telling that user to install it, or to go
+        # and find an interpreter that has it, is advice for a problem they do not have --
+        # and it is the branch they land on, because the emulator is why they downloaded
+        # the `-full` asset. Same message was right for the ordinary bundle and wrong here.
+        reason = (
+            "autoemulate is bundled with this CUFLynx executable, so it is not what is "
+            "missing -- it registered no emulator models. That is usually transient while "
+            "the app is still starting up: reopen the tab. If it persists, the bundled "
+            "autoemulate is failing to register, and choosing a different interpreter in "
+            "Settings is the way round it."
         )
     else:
         reason = (
