@@ -1256,6 +1256,41 @@ def test_a_failed_introspection_is_logged(monkeypatch, caplog):
         "the swallowed exception was not logged, so the advice to read the server log "
         "sends the user to an empty file."
     )
+    # The line has to say *which* introspection, or a log with several of them in it
+    # cannot be read. Bare `fn.__name__` prints "<lambda>" for the call sites that bind
+    # an argument, which is why those pass functools.partial.
+    assert any("boom" in r.getMessage() for r in caplog.records), (
+        "the log line does not name the introspection that failed."
+    )
+
+
+@pytest.mark.unit
+def test_the_log_names_an_introspection_that_had_an_argument_bound(caplog):
+    """``functools.partial``, not ``lambda``: "<lambda> failed" identifies nothing.
+
+    Two of the seven call sites bind an argument (the output dir, the gradient triple),
+    and both used a lambda -- so the log line the user is told to go and read named the
+    wrong thing in exactly the cases where several introspections are in flight.
+    """
+    import functools
+    import logging
+
+    import solver_options
+
+    def introspect_something(arg):
+        raise ImportError("nope")
+
+    with caplog.at_level(logging.DEBUG, logger="solver_options"):
+        solver_options._safe(functools.partial(introspect_something, "x"), None)
+
+    # The whole message, not a substring: a bare partial still *contains* the name
+    # inside its repr ("functools.partial(<function introspect_something at 0x...>,
+    # 'x')"), so a laxer assertion passes against the unfixed code.
+    assert any("introspection introspect_something failed" in r.getMessage()
+               for r in caplog.records), (
+        "a bound introspection logs as <lambda>/partial(...) instead of its own name: "
+        + "; ".join(r.getMessage() for r in caplog.records)
+    )
 
 
 @pytest.mark.unit
@@ -1269,10 +1304,57 @@ def test_the_reason_carries_the_import_error(monkeypatch):
     import solver_options
 
     monkeypatch.setattr(solver_options, "_analysis_cache", None)
-    monkeypatch.setattr(solver_options, "_last_introspection_error", None)
+    monkeypatch.setattr(solver_options, "_analysis_error", None)
     monkeypatch.setattr(solver_options, "_introspect_analysis_options",
                         lambda: (_ for _ in ()).throw(ImportError("No module named 'torch'")))
 
     assert solver_options.analysis_options_introspected() is False
     detail = solver_options.analysis_options_error()
     assert detail and "No module named 'torch'" in detail, detail
+
+
+@pytest.mark.unit
+def test_only_the_analysis_introspection_writes_the_analysis_reason(monkeypatch):
+    """The reason belongs to that introspection, not to whichever ``_safe`` ran last.
+
+    ``_safe`` has seven callers; ``/api/emulator/defaults`` is a sync ``def``, so FastAPI
+    runs it in a threadpool, and ``App.vue`` fires six fetches at startup. Recorded in one
+    "last error anywhere" global, any other introspection succeeding concurrently blanked
+    this one's error and any other failing one substituted its own.
+
+    Asserted on the global directly, and deliberately so. Going through
+    ``analysis_options_error()`` proves nothing: a failed introspection is never cached,
+    so that call re-runs it and overwrites the damage before the assertion can see it --
+    which is why this is a *concurrency* bug and why the single-threaded version of this
+    test passed against the broken code.
+    """
+    import solver_options
+
+    monkeypatch.setattr(solver_options, "_analysis_error", "the analysis import error")
+
+    solver_options._safe(lambda: "fine", None)
+    solver_options._safe(lambda: (_ for _ in ()).throw(ImportError("unrelated")), None)
+
+    assert solver_options._analysis_error == "the analysis import error", (
+        "an unrelated introspection wrote the analysis-options reason, so under the "
+        "app's concurrent startup fetches the user sees the wrong error, or none."
+    )
+
+
+@pytest.mark.unit
+def test_a_new_ca_directory_does_not_inherit_the_old_ones_diagnosis(monkeypatch):
+    """``_analysis_error`` is paired with ``_analysis_cache`` and must be cleared with it."""
+    import solver_options
+
+    monkeypatch.setattr(solver_options, "_analysis_cache", None)
+    monkeypatch.setattr(solver_options, "_analysis_error", None)
+    monkeypatch.setattr(solver_options, "_introspect_analysis_options",
+                        lambda: (_ for _ in ()).throw(ImportError("No module named 'torch'")))
+    assert solver_options.analysis_options_error()
+
+    solver_options.reset_cache()
+
+    assert solver_options._analysis_error is None, (
+        "a stale reason survives a CA-dir change, so the next failure can be reported "
+        "with the previous directory's error."
+    )
