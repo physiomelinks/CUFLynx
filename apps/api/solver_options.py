@@ -25,7 +25,10 @@ and falls back to a built-in copy of the schema when CA can't be imported.
 from __future__ import annotations
 
 import copy
+import functools
+import importlib.util
 import json
+import logging
 import os
 import subprocess
 import sys
@@ -542,12 +545,15 @@ _modifier_cache: dict | None = None
 def reset_cache() -> None:
     """Drop the cached options (call when the CA directory changes)."""
     global _cache, _param_id_cache, _analysis_cache, _prior_cache, _modifier_cache
-    global _ca_model_type_spelling
+    global _ca_model_type_spelling, _analysis_error
     _cache = None
     _param_id_cache = None
     _analysis_cache = None
     _prior_cache = None
     _modifier_cache = None
+    # Paired with _analysis_cache: it describes why *that* introspection failed, so a
+    # new CA directory must not inherit the previous one's diagnosis.
+    _analysis_error = None
     # Which spelling the connected CA uses is a fact about *that* CA, so it is a
     # cache like the rest -- and one that was never cleared, so a new CA dir (and,
     # in the test process, the next test) inherited the previous one's answer.
@@ -559,6 +565,24 @@ def reset_cache() -> None:
 #: because ``obs_data``/``obs_cost``/``cost_gradient``/``ca_run_history`` import
 #: them from here and from :mod:`obs_options`.
 _ca_paths = ca_paths
+logger = logging.getLogger(__name__)
+
+#: Why the **analysis-options** introspection last failed, formatted; None when it
+#: succeeded. Read by the callers that build a user-facing reason: telling someone "the
+#: server log has the import error" is only useful if they can reach that log, and in the
+#: packaged app they generally cannot -- there is no console, and the failure is
+#: debug-level because the *expected* fallback is not a problem. Carrying the error into
+#: the message is what turns "it could not be read" into something actionable. Reported
+#: against v0.4.1, whose Emulator tab said exactly that and no more.
+#:
+#: Written next to :data:`_analysis_cache`, by :func:`get_analysis_options` alone, and
+#: never by :func:`_safe`. A single "last error anywhere" global would be wrong here:
+#: ``_safe`` has seven callers, ``/api/emulator/defaults`` is a sync ``def`` that FastAPI
+#: therefore runs in a threadpool, and ``App.vue`` fires six fetches at startup — so any
+#: other introspection succeeding concurrently would blank this one's error, and any other
+#: failing would substitute its own.
+_analysis_error: str | None = None
+
 _ensure_ca_path = ensure_ca_path
 
 
@@ -799,12 +823,25 @@ def _probe_models(python: str | None = None) -> tuple[list[str], str | None]:
     # skipped and the answer came from the bundle's own environment, which never has it.
     # The probe script already treats an empty src as "import libcuflynx from wherever this
     # interpreter finds it", which is exactly right for an interpreter that pip-installed it.
+    #
+    # **A configured interpreter's answer is final, including when it is empty.** That
+    # interpreter is the one that will do the training, so "it has no emulator models" is
+    # the answer, not a reason to ask somebody else. Falling through to this process on an
+    # empty answer was safe only while the bundle never had autoemulate -- which is what
+    # the paragraph above was written against. The `-full` asset ships it, so the fallback
+    # started answering *on behalf of* a chosen interpreter that cannot train at all: the
+    # tab reported 12 models and `available: true`, and the run then failed in the
+    # subprocess. A false green is worse than the message it replaced.
+    #
+    # The cost is that a probe which fails for an unrelated reason (the 60s timeout, a
+    # broken interpreter) now reads as "no models there" rather than quietly substituting
+    # this environment's answer. That is the better error: `emulator_availability` names
+    # the interpreter, so it is actionable, where the substitution was silent and wrong.
     if python:
         key = (python, src or "")
         if key not in _MODEL_CACHE:
             _MODEL_CACHE[key] = _models_from_interpreter(python, src or "")
-        if _MODEL_CACHE[key]:
-            return list(_MODEL_CACHE[key]), python
+        return list(_MODEL_CACHE[key]), python
 
     return _models_in_process(), python
 
@@ -847,6 +884,23 @@ def emulator_models(python: str | None = None) -> list[str]:
     return _probe_models(python)[0]
 
 
+def _autoemulate_importable() -> bool:
+    """Whether **this** process can import autoemulate, cheaply and without importing it.
+
+    Only ever used to decide what to *say*. Two bundles land on the same "no models"
+    branch and need opposite advice: the ordinary asset genuinely has no autoemulate,
+    while the ``-full`` one ships it -- and that is the asset whose users came for the
+    emulator, so blaming a missing autoemulate there is wrong every time it appears.
+
+    ``find_spec`` rather than an import: the answer is needed on a path that is already
+    reporting a failure, and importing autoemulate pulls in torch.
+    """
+    try:
+        return importlib.util.find_spec("autoemulate") is not None
+    except Exception:  # noqa: BLE001 - a broken or half-installed autoemulate is "not usable"
+        return False
+
+
 def emulator_availability(python: str | None = None) -> dict:
     """Whether an emulator could be trained at all, and if not, what to do about it.
 
@@ -872,9 +926,10 @@ def emulator_availability(python: str | None = None) -> dict:
     # "the schema has no emulation mode" and "the schema could not be read" are the same
     # shape here but different problems: get_analysis_options() degrades to a fallback that
     # predates emulators, so *any* failure to introspect CA -- not just an old CA -- used to
-    # be reported as "this circulatory_autogen has no emulation support", sending the user to
-    # change a CA directory that was never the cause.
+    # be reported as "this libcuflynx has no emulation support", sending the user to change
+    # a CA directory that was never the cause.
     analysis_options, introspected = get_analysis_options(), analysis_options_introspected()
+    detail = analysis_options_error()
     supported = bool(analysis_options.get("emulation", {}).get("options"))
     models, interpreter = _probe_models(python)
     available = bool(supported and models)
@@ -883,16 +938,17 @@ def emulator_availability(python: str | None = None) -> dict:
         reason = None
     elif not supported and introspected:
         reason = (
-            "This circulatory_autogen predates emulator training: its analysis options "
-            "declare no emulation mode. Emulators need circulatory_autogen 0.4.0 or newer "
-            "(libcuflynx), so update it, or point Settings at a newer checkout."
+            "This libcuflynx predates emulator training: its analysis options declare no "
+            "emulation mode. Emulators need libcuflynx 0.4.0 or newer, so update it -- or, "
+            "if Settings points at a circulatory_autogen checkout, point it at a newer one."
         )
     elif not supported:
         reason = (
-            "The emulator options could not be read from circulatory_autogen, so there is "
-            "nothing to train against. The import failed -- this is not a schema that "
-            "predates emulators -- and the cause is usually the environment the analysis "
-            "runs in rather than the directory itself. The server log has the import error."
+            "The emulator options could not be read from libcuflynx, so there is nothing "
+            "to train against. The import failed -- this is not a schema that predates "
+            "emulators -- and the cause is usually the environment the analysis runs in "
+            "rather than the engine itself."
+            + (f" The error was: {detail}" if detail else "")
         )
     elif interpreter:
         reason = (
@@ -901,6 +957,18 @@ def emulator_availability(python: str | None = None) -> dict:
             f'{interpreter} -m pip install "libcuflynx[emulation]" (autoemulate requires '
             f"Python {AUTOEMULATE_PYTHON_RANGE}), or choose an interpreter in Settings that "
             f"already has it."
+        )
+    elif _autoemulate_importable():
+        # The `-full` bundle ships autoemulate. Telling that user to install it, or to go
+        # and find an interpreter that has it, is advice for a problem they do not have --
+        # and it is the branch they land on, because the emulator is why they downloaded
+        # the `-full` asset. Same message was right for the ordinary bundle and wrong here.
+        reason = (
+            "autoemulate is bundled with this CUFLynx executable, so it is not what is "
+            "missing -- it registered no emulator models. That is usually transient while "
+            "the app is still starting up: reopen the tab. If it persists, the bundled "
+            "autoemulate is failing to register, and choosing a different interpreter in "
+            "Settings is the way round it."
         )
     else:
         reason = (
@@ -1228,12 +1296,38 @@ def _build_options(schema: dict, differentiable: dict[str, bool]) -> dict:
     }
 
 
-def _safe(fn, fallback):
-    """Run an introspection, returning (value, ok); fall back on any failure."""
+def _introspect(fn, fallback):
+    """Run an introspection, returning ``(value, ok, error)``; fall back on any failure.
+
+    The failure is **logged**, not just counted. Falling back is silent by design --
+    an older CA legitimately lacks these schemas -- but the same silence covers a
+    genuine import error, and the user-facing reasons built on ``ok`` tell people to
+    go and read the server log. That log line has to exist for the advice to be worth
+    anything: the packaged app reported "the emulator options could not be read ...
+    the server log has the import error" while nothing anywhere had written one.
+
+    Debug level, because the expected case (an old CA, a missing optional extra) is
+    not a problem and would otherwise cry wolf on every poll.
+
+    The formatted error is **returned**, not parked in a module global, so a caller that
+    wants to show it to the user holds it from the call that produced it. Handing it over
+    through shared state instead would make it whichever introspection finished last.
+    """
     try:
-        return fn(), True
-    except Exception:  # noqa: BLE001 - CA missing / import failure
-        return fallback, False
+        return fn(), True, None
+    except Exception as exc:  # noqa: BLE001 - CA missing / import failure
+        # partial() for the call sites that need an argument bound; unwrapped so the line
+        # names the introspection rather than "<lambda>" or a partial repr.
+        target = getattr(fn, "func", fn)
+        logger.debug("introspection %s failed; using the fallback",
+                     getattr(target, "__name__", target), exc_info=True)
+        return fallback, False, f"{type(exc).__name__}: {exc}"
+
+
+def _safe(fn, fallback):
+    """:func:`_introspect` for the callers that only need ``(value, ok)``."""
+    value, ok, _ = _introspect(fn, fallback)
+    return value, ok
 
 
 def get_solver_options(refresh: bool = False) -> dict:
@@ -1349,7 +1443,7 @@ def get_param_modifier_operations(
     if not refresh and output_dir in _modifier_cache:
         return _modifier_cache[output_dir]
     ops, ok = _safe(
-        lambda: _introspect_param_modifier_operations(output_dir),
+        functools.partial(_introspect_param_modifier_operations, output_dir),
         copy.deepcopy(_FALLBACK_PARAM_MODIFIER_OPERATIONS),
     )
     if ok:
@@ -1411,16 +1505,17 @@ def get_analysis_options(refresh: bool = False) -> dict:
     schema. Caches a successful introspection; returns the fallback uncached so a
     later CA-dir change can still pick it up.
     """
-    global _analysis_cache
+    global _analysis_cache, _analysis_error
     if _analysis_cache is not None and not refresh:
         return _analysis_cache
-    opts, ok = _safe(
+    opts, ok, err = _introspect(
         _introspect_analysis_options,
         {k: dict(v, options=[dict(o) for o in v["options"]]) for k, v in _FALLBACK_ANALYSIS_OPTIONS.items()},
     )
     opts = _normalise_uq_mode_key(opts)
     if ok:
         _analysis_cache = opts
+    _analysis_error = None if ok else err
     return opts
 
 
@@ -1437,6 +1532,17 @@ def analysis_options_introspected() -> bool:
     """
     get_analysis_options()
     return _analysis_cache is not None
+
+
+def analysis_options_error() -> str | None:
+    """Why the analysis-options introspection failed, or None if it did not.
+
+    The companion to :func:`analysis_options_introspected`: that says *whether* the
+    fallback is in use, this says why, so a caller can put the cause in front of the
+    person who has to act on it instead of in a log they cannot open.
+    """
+    get_analysis_options()
+    return _analysis_error
 
 
 def analysis_mode_options(mode: str) -> list[dict]:
@@ -1547,7 +1653,8 @@ def gradient_sources(
     Each descriptor carries ``value``/``label``/``do_ad``/``requires_all_differentiable``/
     ``description``.
     """
-    result, ok = _safe(lambda: _introspect_gradient_sources(model_type, solver, method), None)
+    result, ok = _safe(
+        functools.partial(_introspect_gradient_sources, model_type, solver, method), None)
     if not ok or result is None:
         descriptors, gated_by_ca = _fallback_gradient_sources(model_type, solver), False
     else:
