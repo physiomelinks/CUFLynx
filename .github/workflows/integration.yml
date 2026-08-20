@@ -1,0 +1,321 @@
+name: Integration
+
+# What this workflow exists for, in one sentence: **nothing in CUFLynx CI has ever run
+# `pytest -m integration`.**
+#
+# `ci.yml` has four jobs. Three of them run `pytest -m "not integration"`, and their own
+# comments say the heavy stack "is exercised by the integration marker" -- but no job
+# selects that marker, so the whole tier has been dead in CI since it was written. The
+# fourth (`packaging`) installs with `--no-deps` on purpose.
+#
+# The second gap is what CA *is* during those runs. `apps/api/pyproject.toml` declares
+# `libcuflynx>=0.4.0` as an ordinary dependency, but `backend-unit` checks out
+# circulatory_autogen at a pinned commit and points `CIRCULATORY_AUTOGEN_SRC` at its
+# `src/`. So the declared dependency is never installed, and the layout under test is a
+# checkout on `sys.path` -- not what users get from `pip install`, and not what the frozen
+# app ships. `ca_imports.installed_package_available()` exists precisely because those two
+# are different questions.
+#
+# So: install libcuflynx as a package, do not set CIRCULATORY_AUTOGEN_SRC, and run the
+# tier. Then run the analyses at more than one core, which nothing anywhere does.
+
+on:
+  push:
+    branches: [main, devel_FA]
+  pull_request:
+  # Weekly, unpinned. See the `dependency-upgrade` job -- the bug that prompted all of
+  # this arrived from upstream rather than from a commit here, and a suite that only runs
+  # on pull requests can only find that kind by accident, on someone's morning run.
+  schedule:
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # The integration tier, against an installed libcuflynx
+  # ---------------------------------------------------------------------------
+  # `pytest -m integration` collects **258 tests**, none of which had ever run on CI
+  # before this workflow. `min_ran` is a floor on how many actually execute, not a target.
+  # The first run reported **258 collected, 10 skipped, 248 ran**, so the floor is 240 --
+  # tight enough that the tier collapsing is visible, loose enough to absorb an optional
+  # backend going missing on a runner. `assert_tests_ran.py` prints the real number every
+  # run; if it drifts far below 240, find out why before lowering this.
+  integration:
+    name: Integration tier (installed libcuflynx, ${{ matrix.extras }})
+    runs-on: ubuntu-latest
+    # The tier is minutes, the installs are most of the wall clock, and `full` drags in
+    # torch. Generous enough for a cold pip cache, tight enough that a hang is reported
+    # rather than held to GitHub's 360-minute default -- the failure mode that turned
+    # release.yml's Sundials step into a 1h40m stall.
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # What a user gets from `pip install cuflynx-api[analysis]`: simulation,
+          # sensitivity, calibration, the emcee sampler, and a self-contained MPICH.
+          - extras: "dev,analysis"
+            min_ran: 240
+          # Adds autoemulate + pymc + arviz -- the emulator and pyMC UQ paths, and the
+          # only leg where arviz is present at all. That matters beyond the features: it
+          # is the configuration the reported four-rank crash was running under.
+          - extras: "dev,analysis,full"
+            min_ran: 240
+    defaults:
+      run:
+        working-directory: apps/api
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      # Myokit JIT-compiles each model against Sundials at run time, so the integration
+      # tier cannot simulate anything without the headers. Same apt handling as
+      # release.yml, and for the same reason recorded there: the runner image's Azure
+      # mirror has hung this step for over an hour with no output.
+      - name: Install Sundials
+        run: |
+          sudo sed -i '/azure.archive.ubuntu.com/d' /etc/apt/apt-mirrors.txt || true
+          echo 'Acquire::http::Timeout "15"; Acquire::https::Timeout "15"; Acquire::Retries "3";' \
+            | sudo tee /etc/apt/apt.conf.d/99-cuflynx-timeouts > /dev/null
+          sudo apt-get update
+          sudo apt-get install -y libsundials-dev python3-dev
+
+      # No system MPI, deliberately: `[analysis]` pip-installs a self-contained MPICH
+      # next to the interpreter, which is what `calibration.resolve_mpiexec` looks for
+      # first and what guarantees the launcher and mpi4py come from the same MPI. A
+      # system Open MPI here would be a *different* MPI from the one mpi4py binds, and
+      # every rank would abort at MPI_Init with "unsupported PMI version PMIx" -- the
+      # exact failure resolve_mpiexec was written to avoid.
+      - name: Install the app and its dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[${{ matrix.extras }}]"
+
+      # Fail here rather than 20 minutes later in a wall of skips. Each of these is a
+      # dependency the tier silently degrades without, and the point of this job is that
+      # CA arrives as an installed distribution rather than as a checkout.
+      - name: Assert the environment is the one under test
+        run: |
+          python - <<'PY'
+          import importlib.metadata as m, pathlib, shutil, sys
+          version = m.version("libcuflynx")
+          import libcuflynx, myokit, libcellml  # noqa: F401
+          origin = pathlib.Path(libcuflynx.__file__).resolve()
+          assert origin.parent.parent.name != "src", (
+              f"libcuflynx resolved to a checkout at {origin} -- this job exists to test "
+              f"the installed package")
+          launcher = pathlib.Path(sys.executable).parent / "mpiexec"
+          assert launcher.exists() or shutil.which("mpiexec"), (
+              "no mpiexec: the parallel arm of the run matrix would silently run serially")
+          print(f"libcuflynx {version} (installed), myokit + libcellml + mpiexec present")
+          PY
+
+      # CIRCULATORY_AUTOGEN_SRC is deliberately NOT set. Everything below resolves CA
+      # through the installed package, the way a user with no CA directory configured
+      # does -- a path no other job here takes.
+      - name: Run the integration tier
+        env:
+          CUFLYNX_REQUIRE_INSTALLED_LIBCUFLYNX: "1"
+          # Turn the swallowed optional-import failures in libcuflynx back into raises.
+          # Production wants the wide catch; CI wants to know. (CA #467.)
+          CUFLYNX_STRICT_STARTUP: "1"
+        run: |
+          pytest -m integration -v --tb=short --junitxml=junit-integration.xml
+
+      # pytest exits 0 when every test skipped, so the step above can pass having run
+      # none of the tier. That is the likely failure here, not a red X.
+      - name: Fail if the tier did not actually run
+        if: always()
+        working-directory: .
+        run: |
+          python .github/scripts/assert_tests_ran.py \
+            --min-ran ${{ matrix.min_ran }} apps/api/junit-integration.xml
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-${{ matrix.extras }}
+          path: apps/api/junit-integration.xml
+
+  # ---------------------------------------------------------------------------
+  # The run matrix: every analysis, serial and parallel
+  # ---------------------------------------------------------------------------
+  run-matrix:
+    name: Run matrix (serial and parallel)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: apps/api
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install Sundials
+        run: |
+          sudo sed -i '/azure.archive.ubuntu.com/d' /etc/apt/apt-mirrors.txt || true
+          echo 'Acquire::http::Timeout "15"; Acquire::https::Timeout "15"; Acquire::Retries "3";' \
+            | sudo tee /etc/apt/apt.conf.d/99-cuflynx-timeouts > /dev/null
+          sudo apt-get update
+          sudo apt-get install -y libsundials-dev python3-dev
+
+      - name: Install the app and its dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,analysis]"
+
+      # The parallel arm is worthless without a launcher, and its absence is *silent*:
+      # every build_command falls back to one core with a warning and the run still
+      # succeeds. So assert the launcher before running, not after.
+      - name: Assert a usable MPI is present
+        run: |
+          python - <<'PY'
+          import pathlib, shutil, subprocess, sys
+          launcher = pathlib.Path(sys.executable).parent / "mpiexec"
+          launcher = str(launcher) if launcher.exists() else shutil.which("mpiexec")
+          assert launcher, "no mpiexec -- the parallel arm would quietly run serially"
+          from mpi4py import MPI  # noqa: F401
+          out = subprocess.run(
+              [launcher, "-n", "2", sys.executable, "-c",
+               "from mpi4py import MPI; print(MPI.COMM_WORLD.Get_rank())"],
+              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=120)
+          assert out.returncode == 0, f"a two-rank smoke launch failed:\n{out.stdout}"
+          print(f"{launcher} launches mpi4py cleanly")
+          PY
+
+      - name: Run the matrix
+        env:
+          CUFLYNX_STRICT_STARTUP: "1"
+        run: |
+          pytest tests/test_run_matrix.py -v --tb=short --junitxml=junit-run-matrix.xml
+
+      - name: Fail if the matrix did not actually run
+        if: always()
+        working-directory: .
+        run: |
+          python .github/scripts/assert_tests_ran.py \
+            --min-ran 14 apps/api/junit-run-matrix.xml
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: run-matrix
+          path: apps/api/junit-run-matrix.xml
+
+  # ---------------------------------------------------------------------------
+  # Weekly, with everything resolved at its newest
+  # ---------------------------------------------------------------------------
+  #
+  # The crash that prompted this workflow was not caused by any commit in either repo. It
+  # was arviz writing a once-a-day stamp file through a fixed temporary name, so
+  # concurrent MPI ranks raced and the losers died on FileNotFoundError -- reached through
+  # `corner`, which libcuflynx imported at module scope. Nothing in a pull request would
+  # ever have found it: the dependency was already pinned-compatible, the code did not
+  # change, and the failure only fires on the first run of a given day.
+  #
+  # This job is the only thing here that can find that class at all. It resolves every
+  # dependency at its newest allowed version, runs the tier, and opens an issue when it
+  # breaks -- so the next upstream surprise arrives as a notification rather than as a
+  # lost overnight job.
+  dependency-upgrade:
+    name: Weekly dependency upgrade
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      issues: write
+    defaults:
+      run:
+        working-directory: apps/api
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install Sundials
+        run: |
+          sudo sed -i '/azure.archive.ubuntu.com/d' /etc/apt/apt-mirrors.txt || true
+          echo 'Acquire::http::Timeout "15"; Acquire::https::Timeout "15"; Acquire::Retries "3";' \
+            | sudo tee /etc/apt/apt.conf.d/99-cuflynx-timeouts > /dev/null
+          sudo apt-get update
+          sudo apt-get install -y libsundials-dev python3-dev
+
+      # --upgrade --upgrade-strategy eager is the whole point: take the newest of
+      # everything the pins allow, including transitive dependencies, which is where the
+      # arviz change came from.
+      - name: Install everything at its newest allowed version
+        run: |
+          python -m pip install --upgrade pip
+          pip install --upgrade --upgrade-strategy eager -e ".[dev,analysis,full]"
+
+      - name: Record what was resolved
+        if: always()
+        run: pip freeze | tee resolved-versions.txt
+
+      - name: Run the integration tier and the run matrix
+        id: tests
+        env:
+          CUFLYNX_REQUIRE_INSTALLED_LIBCUFLYNX: "1"
+          CUFLYNX_STRICT_STARTUP: "1"
+          # The deliberate worst-case import probes. They are skipped on pull requests
+          # because they are known to fail against a libcuflynx that still imports corner
+          # at module scope; here, finding out is the job.
+          CUFLYNX_ASSERT_UPSTREAM_IMPORTS: "1"
+        run: |
+          pytest -m integration tests/test_run_matrix.py -v --tb=short \
+            --junitxml=junit-upgrade.xml
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-upgrade
+          path: |
+            apps/api/junit-upgrade.xml
+            apps/api/resolved-versions.txt
+
+      # An email nobody reads is not a signal. An issue is.
+      - name: Open an issue when the newest dependencies break the tier
+        if: failure() && github.event_name == 'schedule'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const run = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const title = "Weekly dependency upgrade is failing";
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner, repo: context.repo.repo,
+              state: "open", labels: "dependencies",
+            });
+            const already = existing.data.find(i => i.title === title);
+            const body = [
+              "The weekly job that resolves every dependency at its newest allowed",
+              "version failed. That is what this job is for: the crash it was built after",
+              "came from an upstream release, not from a commit here.",
+              "",
+              `Run: ${run}`,
+              "",
+              "`resolved-versions.txt` in the run's artifacts holds the exact resolution.",
+              "Compare it against the last green run to find what moved.",
+            ].join("\n");
+            if (already) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: already.number, body,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner, repo: context.repo.repo,
+                title, body, labels: ["dependencies"],
+              });
+            }
