@@ -363,6 +363,28 @@ def _failure_message(name: str, errors: list[tuple[str, BaseException]]) -> str:
     )
 
 
+def _finished_importing(mod) -> bool:
+    """Whether ``mod`` has finished executing, rather than being mid-import.
+
+    **This is the fix for the reported emulator failure.** Python inserts a module object
+    into ``sys.modules`` *before* running its body, so a thread that reads ``sys.modules``
+    directly, while another thread is partway through the import, gets a half-built
+    module. ``libcuflynx.parsers.PrimitiveParsers`` is 4487 lines and defines
+    ``ANALYSIS_OPTIONS`` on line 1497, so the window is wide -- and what comes out the
+    other side is ``'libcuflynx.parsers.PrimitiveParsers' has no ANALYSIS_OPTIONS``
+    against a copy that plainly has it, which is exactly what v0.4.1 reported.
+
+    ``importlib.import_module`` does not have this problem: it blocks on the per-module
+    import lock and hands back the finished module. So the fast path just has to decline
+    a module that is still initialising and let the import below do it properly.
+
+    A module the tests inject (``sys.modules[x] = ModuleType(...)``) has ``__spec__``
+    None, which reads as finished -- which is right, nothing is importing it.
+    """
+    spec = getattr(mod, "__spec__", None)
+    return not getattr(spec, "_initializing", False)
+
+
 def ca_import(name: str):
     """Import circulatory_autogen module ``name``, given in its **flat** spelling.
 
@@ -381,7 +403,7 @@ def ca_import(name: str):
     # ImportError, which the real import below then raises.
     for cand in names:
         mod = sys.modules.get(cand)
-        if mod is not None:
+        if mod is not None and _finished_importing(mod):
             return mod
     errors: list[tuple[str, BaseException]] = []
     for cand in names:
@@ -448,7 +470,7 @@ def _candidate_providing(module: str, names, already: str | None):
         if cand == already:
             continue
         mod = sys.modules.get(cand)
-        if mod is None:
+        if mod is None or not _finished_importing(mod):
             try:
                 mod = importlib.import_module(cand)
             except ImportError:

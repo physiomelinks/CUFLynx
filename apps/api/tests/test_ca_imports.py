@@ -816,3 +816,118 @@ def test_the_fallback_gives_up_when_no_reachable_copy_has_it(monkeypatch):
 
     with pytest.raises(ca_imports.CaImportError):
         ca_imports.ca_from("parsers.PrimitiveParsers", "ANALYSIS_OPTIONS")
+
+
+@pytest.mark.unit
+def test_a_module_still_being_imported_is_not_handed_out(tmp_path, monkeypatch):
+    """The reported v0.4.1 emulator failure, reproduced.
+
+    Python puts a module into ``sys.modules`` *before* executing its body, so the
+    ``sys.modules`` fast path could hand a caller a half-built module while another
+    thread was still importing it. ``libcuflynx.parsers.PrimitiveParsers`` is 4487 lines
+    and defines ``ANALYSIS_OPTIONS`` on line 1497, so the window is wide: the Emulator tab
+    reported ``'libcuflynx.parsers.PrimitiveParsers' has no ANALYSIS_OPTIONS`` against a
+    copy that had it, and the next call quietly succeeded.
+
+    ``importlib.import_module`` blocks on the per-module import lock and returns the
+    finished module, so declining an initialising one in the fast path is the whole fix.
+    """
+    import threading
+    import time
+
+    pkg = tmp_path / "slowpkg"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("")
+    (pkg / "SlowParsers.py").write_text(
+        "import time\n"
+        "EARLY = 1\n"
+        "time.sleep(0.6)\n"                       # the body of a long module, mid-execution
+        "ANALYSIS_OPTIONS = {'emulation': {'options': [1]}}\n"
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    name = "slowpkg.SlowParsers"
+    monkeypatch.setattr(ca_imports, "candidates", lambda _n: [name])
+    for mod_name in (name, "slowpkg"):
+        monkeypatch.delitem(sys.modules, mod_name, raising=False)
+
+    result = {}
+
+    def importer():
+        __import__(name)
+
+    def asker():
+        time.sleep(0.2)  # land while importer is inside the module body
+        try:
+            result["value"] = ca_imports.ca_from(name, "ANALYSIS_OPTIONS")
+        except BaseException as exc:  # noqa: BLE001 - the failure is the point
+            result["error"] = f"{type(exc).__name__}: {exc}"
+
+    threads = [threading.Thread(target=importer), threading.Thread(target=asker)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=20)
+
+    assert "error" not in result, (
+        "a half-built module was handed out while another thread was importing it: "
+        + str(result.get("error"))
+    )
+    assert result["value"] == {"emulation": {"options": [1]}}
+
+
+@pytest.mark.unit
+def test_an_initialising_module_is_not_finished(monkeypatch):
+    """The predicate itself, without the timing.
+
+    A threaded test proves the behaviour but is a poor place to notice that the
+    ``_initializing`` probe stopped working -- a wrong answer here just makes the race
+    rare again rather than failing outright.
+    """
+    import types
+
+    class _Spec:                       # what importlib puts on a module while it runs
+        _initializing = True
+
+    mod = types.ModuleType("half.built")
+    mod.__spec__ = _Spec()
+    assert ca_imports._finished_importing(mod) is False
+
+    mod.__spec__._initializing = False
+    assert ca_imports._finished_importing(mod) is True
+
+    # An injected fake has no spec at all; nothing is importing it, so it is finished.
+    assert ca_imports._finished_importing(types.ModuleType("injected")) is True
+
+
+@pytest.mark.unit
+def test_the_other_spelling_is_not_read_while_it_is_still_importing(monkeypatch):
+    """``_candidate_providing`` re-reads ``sys.modules`` and carries the same hazard.
+
+    It runs after one module has resolved without the attribute, so it is looking at a
+    *second* copy -- and reading that one out of ``sys.modules`` mid-import would report
+    "no copy has it" while the copy that does was seconds from finishing. Deterministic
+    here rather than threaded: the point is that an initialising entry is declined, and
+    ``importlib.import_module`` is asked instead.
+    """
+    class _Spec:
+        _initializing = True
+
+    half = types.ModuleType("libcuflynx.parsers.PrimitiveParsers")   # no attribute yet
+    half.__spec__ = _Spec()
+    whole = types.ModuleType("libcuflynx.parsers.PrimitiveParsers")
+    whole.ANALYSIS_OPTIONS = {"emulation": {"options": [1]}}
+
+    monkeypatch.setattr(ca_imports, "candidates",
+                        lambda _n: ["parsers.PrimitiveParsers",
+                                    "libcuflynx.parsers.PrimitiveParsers"])
+    monkeypatch.setitem(sys.modules, "libcuflynx.parsers.PrimitiveParsers", half)
+    monkeypatch.setattr(ca_imports.importlib, "import_module",
+                        lambda name: whole if name == whole.__name__ else None)
+
+    got = ca_imports._candidate_providing(
+        "parsers.PrimitiveParsers", ("ANALYSIS_OPTIONS",), "parsers.PrimitiveParsers")
+
+    assert got is whole, (
+        "the half-built copy was read straight out of sys.modules, so the caller was "
+        "told no reachable copy has the attribute"
+    )
