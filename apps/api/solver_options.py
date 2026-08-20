@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import copy
 import json
+import logging
 import os
 import subprocess
 import sys
@@ -559,6 +560,16 @@ def reset_cache() -> None:
 #: because ``obs_data``/``obs_cost``/``cost_gradient``/``ca_run_history`` import
 #: them from here and from :mod:`obs_options`.
 _ca_paths = ca_paths
+logger = logging.getLogger(__name__)
+
+#: The last exception :func:`_safe` swallowed, formatted. Read by the callers that build a
+#: user-facing reason: telling someone "the server log has the import error" is only useful
+#: if they can reach that log, and in the packaged app they generally cannot -- there is no
+#: console, and the failure is debug-level because the *expected* fallback is not a problem.
+#: Carrying the error into the message is what turns "it could not be read" into something
+#: actionable. Reported against v0.4.1, whose Emulator tab said exactly that and no more.
+_last_introspection_error = None
+
 _ensure_ca_path = ensure_ca_path
 
 
@@ -872,9 +883,10 @@ def emulator_availability(python: str | None = None) -> dict:
     # "the schema has no emulation mode" and "the schema could not be read" are the same
     # shape here but different problems: get_analysis_options() degrades to a fallback that
     # predates emulators, so *any* failure to introspect CA -- not just an old CA -- used to
-    # be reported as "this circulatory_autogen has no emulation support", sending the user to
-    # change a CA directory that was never the cause.
+    # be reported as "this libcuflynx has no emulation support", sending the user to change
+    # a CA directory that was never the cause.
     analysis_options, introspected = get_analysis_options(), analysis_options_introspected()
+    detail = analysis_options_error()
     supported = bool(analysis_options.get("emulation", {}).get("options"))
     models, interpreter = _probe_models(python)
     available = bool(supported and models)
@@ -883,16 +895,17 @@ def emulator_availability(python: str | None = None) -> dict:
         reason = None
     elif not supported and introspected:
         reason = (
-            "This circulatory_autogen predates emulator training: its analysis options "
-            "declare no emulation mode. Emulators need circulatory_autogen 0.4.0 or newer "
-            "(libcuflynx), so update it, or point Settings at a newer checkout."
+            "This libcuflynx predates emulator training: its analysis options declare no "
+            "emulation mode. Emulators need libcuflynx 0.4.0 or newer, so update it -- or, "
+            "if Settings points at a circulatory_autogen checkout, point it at a newer one."
         )
     elif not supported:
         reason = (
-            "The emulator options could not be read from circulatory_autogen, so there is "
-            "nothing to train against. The import failed -- this is not a schema that "
-            "predates emulators -- and the cause is usually the environment the analysis "
-            "runs in rather than the directory itself. The server log has the import error."
+            "The emulator options could not be read from libcuflynx, so there is nothing "
+            "to train against. The import failed -- this is not a schema that predates "
+            "emulators -- and the cause is usually the environment the analysis runs in "
+            "rather than the engine itself."
+            + (f" The error was: {detail}" if detail else "")
         )
     elif interpreter:
         reason = (
@@ -1229,10 +1242,27 @@ def _build_options(schema: dict, differentiable: dict[str, bool]) -> dict:
 
 
 def _safe(fn, fallback):
-    """Run an introspection, returning (value, ok); fall back on any failure."""
+    """Run an introspection, returning (value, ok); fall back on any failure.
+
+    The failure is **logged**, not just counted. Falling back is silent by design --
+    an older CA legitimately lacks these schemas -- but the same silence covers a
+    genuine import error, and the user-facing reasons built on ``ok`` tell people to
+    go and read the server log. That log line has to exist for the advice to be worth
+    anything: the packaged app reported "the emulator options could not be read ...
+    the server log has the import error" while nothing anywhere had written one.
+
+    Debug level, because the expected case (an old CA, a missing optional extra) is
+    not a problem and would otherwise cry wolf on every poll.
+    """
+    global _last_introspection_error
     try:
-        return fn(), True
-    except Exception:  # noqa: BLE001 - CA missing / import failure
+        value = fn(), True
+        _last_introspection_error = None
+        return value
+    except Exception as exc:  # noqa: BLE001 - CA missing / import failure
+        logger.debug("introspection %s failed; using the fallback", getattr(fn, "__name__", fn),
+                     exc_info=True)
+        _last_introspection_error = f"{type(exc).__name__}: {exc}"
         return fallback, False
 
 
@@ -1437,6 +1467,16 @@ def analysis_options_introspected() -> bool:
     """
     get_analysis_options()
     return _analysis_cache is not None
+
+
+def analysis_options_error() -> str | None:
+    """Why the analysis-options introspection failed, or None if it did not.
+
+    The companion to :func:`analysis_options_introspected`: that says *whether* the
+    fallback is in use, this says why, so a caller can put the cause in front of the
+    person who has to act on it instead of in a log they cannot open.
+    """
+    return None if analysis_options_introspected() else _last_introspection_error
 
 
 def analysis_mode_options(mode: str) -> list[dict]:

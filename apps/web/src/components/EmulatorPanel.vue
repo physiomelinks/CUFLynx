@@ -85,6 +85,20 @@ const showUnavailable = computed(
 )
 const showUnsupported = computed(() => !supported.value && !showUnavailable.value)
 
+/**
+ * Nothing has been loaded yet, so training is blocked on the user regardless of
+ * what the environment can do.
+ *
+ * This leads, because on a fresh app it is both the true blocker and the only
+ * step the user can act on. Reported against v0.4.1: opening the tab before
+ * loading anything showed only "the emulator options could not be read from
+ * circulatory_autogen ... the server log has the import error", which sent
+ * someone hunting an import failure in an app that was working — it trained
+ * fine once a model was loaded. An environment diagnosis is still worth showing
+ * when there is one, but underneath, as context rather than as the instruction.
+ */
+const needsStudy = computed(() => !props.canRun)
+
 const installUrl = EXTERNAL_PYTHON_INSTALL_URL
 
 /**
@@ -247,6 +261,10 @@ function onRun() {
          else. No settings, no Train button, no use tick box — every one of them
          would be a control that cannot work, and the degraded form is what read
          as a bug in the first place. -->
+    <p v-if="needsStudy" class="hint" data-testid="emu-needs-study">
+      Load a model, an obs_data.json and a params_for_id.csv to train an emulator.
+    </p>
+
     <div v-if="showUnavailable" class="emu-unavailable" data-testid="emu-unavailable">
       <p class="emu-reason" data-testid="emu-unavailable-reason"><template
         v-for="(p, i) in reasonParts"
@@ -266,8 +284,8 @@ function onRun() {
     </div>
 
     <p v-else-if="showUnsupported" class="hint" data-testid="emu-unsupported">
-      This circulatory_autogen has no emulator support. Update it, or point the CA
-      directory (gear icon) at a version with emulators.
+      This libcuflynx has no emulator support. Update it, or point the CA directory
+      (gear icon) at a circulatory_autogen checkout that has emulators.
     </p>
 
     <template v-else>
@@ -459,9 +477,6 @@ function onRun() {
           @click="emit('cancel')"
         />
       </div>
-      <p v-if="!canRun" class="hint">
-        Load a model, an obs_data.json and a params_for_id.csv to train an emulator.
-      </p>
       <p class="hint">
         Training runs the solver once per sample and is paid up front — worth it for
         Sobol, UQ and repeated calibrations, not for a single run.

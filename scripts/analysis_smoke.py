@@ -201,6 +201,36 @@ def _check_full_stack(binary: str) -> None:
         print("full stack OK (autoemulate imports, pytensor compiles, pymc logp evaluates)")
 
 
+def _check_emulator_is_usable(base: str) -> None:
+    """The Emulator tab must actually work in the built app, not merely import.
+
+    The previous probe re-invoked the binary in runner mode and imported autoemulate,
+    pytensor and pymc successfully -- and v0.4.1 still shipped an -full bundle whose
+    Emulator tab said "the emulator options could not be read". Importing the packages
+    is not the feature: the tab needs the app's own /api/emulator/defaults to answer,
+    which means the app process must introspect libcuflynx's ANALYSIS_OPTIONS *and*
+    find autoemulate's registered models. Ask the endpoint the tab asks.
+
+    Both flags matter and they fail for different reasons:
+
+    * ``supported`` False -- libcuflynx's schema could not be read at all, so the form
+      has nothing to render. Nothing else in this script notices, because every other
+      call still works off the fallback schema.
+    * ``available`` False -- the schema read, but no emulator models were found, so
+      there is nothing to train with.
+    """
+    _, d = _req("GET", f"{base}/api/emulator/defaults")
+    reason = d.get("unavailable_reason") or "(no reason given)"
+    if not d.get("supported"):
+        _fail("the built app cannot read libcuflynx's emulator schema, so the Emulator "
+              f"tab has no form to show. unavailable_reason: {reason}")
+    if not d.get("available"):
+        _fail("the built app has the emulator schema but no usable emulator models. "
+              f"unavailable_reason: {reason}")
+    print(f"emulator OK ({len(d.get('options') or [])} settings, "
+          f"{len(d.get('models') or [])} models)")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--binary", required=True, help="path to the built CUFLynx executable")
@@ -233,6 +263,7 @@ def main() -> int:
         _check_bundled_scipy_data(args.binary)
         if args.full:
             _check_full_stack(args.binary)
+            _check_emulator_is_usable(base)
 
         # 1. Configure CA dir + runner interpreter + backend, as a user would.
         #    Pin the backend to cellml / CVODE_myokit explicitly: the analysis

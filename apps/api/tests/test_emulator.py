@@ -582,7 +582,7 @@ def test_with_no_interpreter_configured_the_reason_points_at_settings(monkeypatc
     assert "None" not in reason
 
 
-def test_a_circulatory_autogen_without_emulators_is_a_different_answer(monkeypatch, tmp_path):
+def test_an_engine_without_emulators_is_a_different_answer(monkeypatch, tmp_path):
     """Distinct from "autoemulate is missing": installing autoemulate would fix nothing, and
     telling this user to do it sends them down the wrong path entirely."""
     solver_options = _probe_env(
@@ -592,10 +592,17 @@ def test_a_circulatory_autogen_without_emulators_is_a_different_answer(monkeypat
     got = solver_options.emulator_availability("/venv/bin/python")
     reason = got["unavailable_reason"]
 
-    # False even though the probe found names: there is no CA-side emulator to train.
+    # False even though the probe found names: there is no engine-side emulator to train.
     assert got["available"] is False
-    assert "circulatory_autogen" in reason
+    assert "libcuflynx" in reason
     assert "autoemulate" not in reason, "wrong diagnosis: the interpreter is fine"
+    # The engine is a bundled package, not a directory the user has to have. Naming
+    # circulatory_autogen here sends a packaged-app user looking for a checkout that
+    # the app does not need and that they may not have -- reported against v0.4.1.
+    assert "circulatory_autogen" not in reason, (
+        "the engine is called libcuflynx; the packaged app bundles it and needs no "
+        "circulatory_autogen checkout at all."
+    )
 
 
 def test_emulator_models_still_answers_for_its_existing_callers(monkeypatch, tmp_path):
