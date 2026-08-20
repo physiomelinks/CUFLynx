@@ -733,3 +733,52 @@ class TestTheAdviceMatchesTheTierItIsGivenIn:
         monkeypatch.setattr(importlib, "import_module", raise_other)
 
         assert ca_imports._in_runner_tier() is False
+
+
+@pytest.mark.unit
+def test_ca_from_tries_the_other_spelling_when_the_first_lacks_the_attribute(monkeypatch):
+    """An old checkout on the path must not shadow a current bundled copy.
+
+    ``candidates()`` puts the flat spelling first, and ``ca_import`` answers with the
+    first that *imports* -- which is a different question from which one carries what was
+    asked for. Both are reachable at once in the normal packaged case: the app bundles a
+    libcuflynx and can also be pointed at a checkout. So an old flat CA directory wins the
+    race and the caller loses the bundled module that has the attribute.
+
+    Reported against v0.4.1: the Emulator tab said the options "could not be read ... this
+    circulatory_autogen predates it" while a current copy was reachable the whole time.
+    """
+    flat = types.ModuleType("parsers.PrimitiveParsers")          # old checkout: no schema
+    namespaced = types.ModuleType("libcuflynx.parsers.PrimitiveParsers")
+    namespaced.ANALYSIS_OPTIONS = {"emulation": {"options": [1]}}
+    monkeypatch.setitem(sys.modules, "parsers.PrimitiveParsers", flat)
+    monkeypatch.setitem(sys.modules, "libcuflynx.parsers.PrimitiveParsers", namespaced)
+    assert ca_imports.candidates("parsers.PrimitiveParsers")[0] == "parsers.PrimitiveParsers", (
+        "this test assumes the flat spelling is tried first; if that order changed, so "
+        "must the scenario here"
+    )
+
+    got = ca_imports.ca_from("parsers.PrimitiveParsers", "ANALYSIS_OPTIONS")
+
+    assert got is namespaced.ANALYSIS_OPTIONS, (
+        "the old flat copy won even though the other spelling had the attribute"
+    )
+
+
+@pytest.mark.unit
+def test_ca_from_names_the_file_when_no_copy_has_it(monkeypatch, tmp_path):
+    """"X has no ANALYSIS_OPTIONS" is unactionable when several copies are reachable.
+
+    Which one answered is the whole question, and only the path says that.
+    """
+    stale = types.ModuleType("libcuflynx.parsers.PrimitiveParsers")
+    stale.__file__ = str(tmp_path / "somewhere" / "PrimitiveParsers.py")
+    monkeypatch.setitem(sys.modules, "libcuflynx.parsers.PrimitiveParsers", stale)
+    monkeypatch.setitem(sys.modules, "parsers.PrimitiveParsers", stale)
+
+    with pytest.raises(ca_imports.CaImportError) as excinfo:
+        ca_imports.ca_from("parsers.PrimitiveParsers", "ANALYSIS_OPTIONS")
+
+    message = str(excinfo.value)
+    assert stale.__file__ in message, f"the error does not say which copy answered: {message}"
+    assert "ANALYSIS_OPTIONS" in message
