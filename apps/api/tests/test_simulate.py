@@ -1,12 +1,7 @@
 import numpy as np
 import pytest
 
-from conftest import (
-    BG_MODEL_PATH,
-    LV_MODEL_PATH,
-    running_against_installed_ca_only,
-    upload_model,
-)
+from conftest import BG_MODEL_PATH, LV_MODEL_PATH, upload_model
 
 
 # ---------------------------------------------------------------------------
@@ -123,52 +118,87 @@ def test_simulate_different_alpha_gives_different_lv_traces(client, requires_sim
 
 
 # Issue #150: saving a run asks for every plottable variable so it can answer a
-# plot added later. Some variables the CellML parser classifies as algebraic are
-# not resolvable outputs in the solver, and failing the whole request for one of
-# those turned the wider save into no save at all.
-# Found by the integration workflow on its first run, and the finding is bigger than it
-# first looked. This request is accepted (200) against the *released* libcuflynx **and**
-# against current circulatory_autogen master; it is rejected (422) only against
-# `d2f6cf73`, the commit `backend-unit` pins. So the engine's verdict on which CellML
-# variables count as resolvable outputs changed at some point after that pin, and CI has
-# been green throughout because the pin froze it at the old answer.
+# plot added later. `best_effort_outputs` means "everything you can give me" rather
+# than a specific list, so one variable the solver cannot resolve must not turn the
+# wider save into no save at all.
 #
-# That is the drift this whole workflow exists to surface, and it is why the weekly
-# dependency-upgrade job matters: a pinned dependency does not stop upstream moving, it
-# only stops you finding out.
+# **The premise changed under us, and that is worth recording.** This used to assert
+# that asking for *every* variable of 3compartment was a 422, because some of them --
+# `pvn_module/R_v` among those the engine names -- could not be read back. They can
+# now: circulatory_autogen 8ac9f80 ("a constant is not in the log, so do not look for
+# it there", CA #453) fixed reading constants. `R_v` is a constant; CA's `_make_log`
+# deliberately omits constants because Myokit cannot log them, while `_resolve_name`
+# classified them as ordinary variables, so `_extract` went looking in a log that was
+# never going to contain them and raised KeyError. CUFLynx saw that KeyError and
+# turned it into the 422.
 #
-# Unresolved on purpose: which behaviour is *correct* has not been established, only that
-# the app behaves one way against the engine users have and another against the engine CI
-# tests. Needs triage against CA rather than a guess here.
+# So all 88 of 3compartment's variables (27 ODE + 61 algebraic) now resolve, and the
+# strict request is a 200. The new behaviour is the correct one -- the old 422 was
+# CUFLynx faithfully reporting a bug in the engine, and this test was pinning that bug
+# as expected behaviour.
 #
-# The condition is a proxy, and worth naming as one: it is really "CA is newer than the
-# pinned commit", which cannot be asked directly. It happens to be exactly right for the
-# two CI arrangements -- the integration jobs resolve an installed package and see the
-# new behaviour, `backend-unit` resolves the pinned checkout and sees the old -- but a
-# developer running against a *modern* local checkout will see this fail rather than
-# xfail. That is the honest outcome: it really does fail there.
-@pytest.mark.xfail(
-    running_against_installed_ca_only(),
-    strict=True,
-    reason="libcuflynx after CI's pinned d2f6cf73 accepts (200) outputs that commit "
-           "rejects (422); which behaviour is correct is not yet established",
-)
+# It went unnoticed for the usual reason: `backend-unit` pins circulatory_autogen at
+# d2f6cf73, which predates the fix, so CI kept seeing the old answer. It surfaced the
+# first time the integration workflow ran the tier against an installed libcuflynx.
+#
+# The two halves are now separate tests, because the model no longer supplies an
+# unresolvable variable and the `best_effort` contract still needs one.
 @pytest.mark.integration
-def test_best_effort_outputs_skips_what_the_solver_cannot_resolve(
-    client, requires_simulation
-):
+def test_every_3compartment_variable_can_be_read_back(client, requires_simulation):
+    """Asking for every variable is a 200, and returns all of them.
+
+    A regression pin on CA #453 from CUFLynx's side: if reading constants breaks again,
+    this is the test that says so, in the layer the user actually meets it.
+    """
     from conftest import RESOURCES_DIR
 
     model_id = upload_model(client, RESOURCES_DIR / "3compartment_flat.cellml")["model_id"]
     variables = client.get(f"/api/models/{model_id}/variables").json()
     every = variables["odes"] + variables["algebraic"]
+    assert len(every) > 50, f"expected the whole model, got {len(every)} variables"
+
+    resp = client.post("/api/simulate", json={
+        "model_id": model_id,
+        "params": {},
+        "sim_time": 2.0,
+        "pre_time": 10.0,
+        "outputs": every,
+    })
+    assert resp.status_code == 200, resp.text
+    got = resp.json()["outputs"]
+    missing = [v for v in every if v not in got]
+    assert not missing, (
+        f"{len(missing)} of {len(every)} variables did not come back: {missing[:10]}. "
+        f"Constants are the usual suspects -- see CA #453."
+    )
+
+
+@pytest.mark.integration
+def test_best_effort_skips_an_unresolvable_output_instead_of_failing(
+    client, requires_simulation
+):
+    """One unreadable name must not cost the caller every other trace.
+
+    The unresolvable variable is synthetic rather than borrowed from the model, and
+    deliberately so: this contract used to be tested with whichever 3compartment
+    variable happened to be unreadable at the time, which meant a fix in the engine
+    silently deleted the coverage. A name no model will ever have cannot be fixed out
+    from under the test.
+    """
+    from conftest import RESOURCES_DIR
+
+    model_id = upload_model(client, RESOURCES_DIR / "3compartment_flat.cellml")["model_id"]
+    variables = client.get(f"/api/models/{model_id}/variables").json()
+    real = (variables["odes"] + variables["algebraic"])[:5]
+    assert real, "no variables to ask for"
+    requested = real + ["no_such_module/no_such_variable"]
 
     body = {
         "model_id": model_id,
         "params": {},
         "sim_time": 2.0,
         "pre_time": 10.0,
-        "outputs": every,
+        "outputs": requested,
     }
     # Strict (the default) still fails loudly: a typo in an explicit request is a
     # mistake worth reporting.
@@ -177,7 +207,8 @@ def test_best_effort_outputs_skips_what_the_solver_cannot_resolve(
     resp = client.post("/api/simulate", json={**body, "best_effort_outputs": True})
     assert resp.status_code == 200, resp.text
     got = resp.json()["outputs"]
-    assert 0 < len(got) < len(every)  # most of them, not all, and not a failure
+    assert set(got) == set(real), (
+        f"best-effort should return exactly the resolvable ones; got {sorted(got)}")
 
 
 def test_best_effort_is_off_by_default(client, fake_helper):

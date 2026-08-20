@@ -319,13 +319,24 @@ def test_a_mis_spelled_key_is_rejected_at_upload(client, requires_ca):
 
 
 def test_missing_required_keys_are_rejected_at_upload(client, requires_ca):
+    """A data_item missing a required key is refused at upload, and the key is named.
+
+    Only ``unit`` is deleted. This used to delete ``std`` as well and assert both were
+    named, which stopped being true: circulatory_autogen gave ``std`` a NaN default in
+    #421 ("a distribution is a ground truth, not a data_type") because a distribution
+    cost supplies it through ``prob_dist_params`` instead. So ``std`` is optional now
+    and CA rightly names only ``unit``.
+
+    Do not restore ``std`` here -- the assertion would be pinning a requirement the
+    engine deliberately dropped. What this test is for is the *upload-time* surfacing of
+    CA's verdict, which is unchanged; the particular key is incidental.
+    """
     obs = _obs()
-    del obs["data_items"][0]["std"]
     del obs["data_items"][0]["unit"]
     resp = client.post("/api/obs_data/upload", json=obs)
     assert resp.status_code == 422
     detail = resp.json()["detail"]
-    assert "std" in detail and "unit" in detail
+    assert "unit" in detail, detail
 
 
 def test_the_message_is_cas_own(client, requires_ca):
