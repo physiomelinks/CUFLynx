@@ -1358,3 +1358,77 @@ def test_a_new_ca_directory_does_not_inherit_the_old_ones_diagnosis(monkeypatch)
         "a stale reason survives a CA-dir change, so the next failure can be reported "
         "with the previous directory's error."
     )
+
+
+class TestTheBundledAutoemulateIsNotBlamedForBeingAbsent:
+    """Two bundles land on the same "no models, no interpreter" branch.
+
+    The ordinary Linux asset genuinely has no autoemulate. The ``-full`` asset ships it --
+    and that is the asset whose users came for the emulator, so "install autoemulate" is
+    wrong exactly where it is most likely to be read. It also sent this session's
+    investigation after a missing package that was present the whole time.
+    """
+
+    def _reason(self, monkeypatch, *, autoemulate):
+        monkeypatch.setattr(so, "get_analysis_options",
+                            lambda *a, **k: {"emulation": {"options": [{"key": "x"}]}})
+        monkeypatch.setattr(so, "analysis_options_introspected", lambda: True)
+        monkeypatch.setattr(so, "_probe_models", lambda python: ([], None))  # no models, bundled python
+        monkeypatch.setattr(so, "_autoemulate_importable", lambda: autoemulate)
+        return so.emulator_availability(None)["unavailable_reason"]
+
+    @pytest.mark.unit
+    def test_the_full_bundle_is_not_told_to_install_what_it_ships(self, monkeypatch):
+        reason = self._reason(monkeypatch, autoemulate=True)
+
+        assert "bundled" in reason
+        assert "pip install" not in reason, (
+            "the -full bundle ships autoemulate; telling this user to install it is advice "
+            "for a problem they do not have"
+        )
+        assert "reopen" in reason.lower(), "no action the user can actually take"
+
+    @pytest.mark.unit
+    def test_a_bundle_without_autoemulate_still_says_so(self, monkeypatch):
+        reason = self._reason(monkeypatch, autoemulate=False)
+
+        assert "pip install" in reason, (
+            "the ordinary bundle really has no autoemulate, and installing it is the fix"
+        )
+
+    @pytest.mark.unit
+    def test_the_probe_does_not_import_autoemulate(self, monkeypatch):
+        """It runs on a path that is already failing, and importing autoemulate drags torch."""
+        called = []
+        monkeypatch.setattr(so.importlib, "import_module",
+                            lambda *a, **k: called.append(a) or (_ for _ in ()).throw(
+                                AssertionError("imported autoemulate to answer a message")))
+
+        so._autoemulate_importable()
+
+        assert not called
+
+
+@pytest.mark.unit
+def test_the_autoemulate_probe_reports_what_find_spec_says(monkeypatch):
+    """The branching tests stub this out, so without this nothing covers the probe itself.
+
+    Driven through ``find_spec`` rather than the real environment: asserting on whether
+    *this* machine has autoemulate would pass or fail depending on the venv, which is the
+    kind of test that is green on CI for the wrong reason.
+    """
+    monkeypatch.setattr(so.importlib.util, "find_spec",
+                        lambda name: object() if name == "autoemulate" else None)
+    assert so._autoemulate_importable() is True
+
+    monkeypatch.setattr(so.importlib.util, "find_spec", lambda name: None)
+    assert so._autoemulate_importable() is False
+
+    def broken(name):
+        raise ValueError("half-installed autoemulate")
+
+    monkeypatch.setattr(so.importlib.util, "find_spec", broken)
+    assert so._autoemulate_importable() is False, (
+        "a broken install must read as unusable, not raise on a path that is already "
+        "reporting a failure"
+    )

@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import copy
 import functools
+import importlib.util
 import json
 import logging
 import os
@@ -870,6 +871,23 @@ def emulator_models(python: str | None = None) -> list[str]:
     return _probe_models(python)[0]
 
 
+def _autoemulate_importable() -> bool:
+    """Whether **this** process can import autoemulate, cheaply and without importing it.
+
+    Only ever used to decide what to *say*. Two bundles land on the same "no models"
+    branch and need opposite advice: the ordinary asset genuinely has no autoemulate,
+    while the ``-full`` one ships it -- and that is the asset whose users came for the
+    emulator, so blaming a missing autoemulate there is wrong every time it appears.
+
+    ``find_spec`` rather than an import: the answer is needed on a path that is already
+    reporting a failure, and importing autoemulate pulls in torch.
+    """
+    try:
+        return importlib.util.find_spec("autoemulate") is not None
+    except Exception:  # noqa: BLE001 - a broken or half-installed autoemulate is "not usable"
+        return False
+
+
 def emulator_availability(python: str | None = None) -> dict:
     """Whether an emulator could be trained at all, and if not, what to do about it.
 
@@ -926,6 +944,18 @@ def emulator_availability(python: str | None = None) -> dict:
             f'{interpreter} -m pip install "libcuflynx[emulation]" (autoemulate requires '
             f"Python {AUTOEMULATE_PYTHON_RANGE}), or choose an interpreter in Settings that "
             f"already has it."
+        )
+    elif _autoemulate_importable():
+        # The `-full` bundle ships autoemulate. Telling that user to install it, or to go
+        # and find an interpreter that has it, is advice for a problem they do not have --
+        # and it is the branch they land on, because the emulator is why they downloaded
+        # the `-full` asset. Same message was right for the ordinary bundle and wrong here.
+        reason = (
+            "autoemulate is bundled with this CUFLynx executable, so it is not what is "
+            "missing -- it registered no emulator models. That is usually transient while "
+            "the app is still starting up: reopen the tab. If it persists, the bundled "
+            "autoemulate is failing to register, and choosing a different interpreter in "
+            "Settings is the way round it."
         )
     else:
         reason = (
