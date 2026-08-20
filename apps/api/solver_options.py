@@ -823,12 +823,25 @@ def _probe_models(python: str | None = None) -> tuple[list[str], str | None]:
     # skipped and the answer came from the bundle's own environment, which never has it.
     # The probe script already treats an empty src as "import libcuflynx from wherever this
     # interpreter finds it", which is exactly right for an interpreter that pip-installed it.
+    #
+    # **A configured interpreter's answer is final, including when it is empty.** That
+    # interpreter is the one that will do the training, so "it has no emulator models" is
+    # the answer, not a reason to ask somebody else. Falling through to this process on an
+    # empty answer was safe only while the bundle never had autoemulate -- which is what
+    # the paragraph above was written against. The `-full` asset ships it, so the fallback
+    # started answering *on behalf of* a chosen interpreter that cannot train at all: the
+    # tab reported 12 models and `available: true`, and the run then failed in the
+    # subprocess. A false green is worse than the message it replaced.
+    #
+    # The cost is that a probe which fails for an unrelated reason (the 60s timeout, a
+    # broken interpreter) now reads as "no models there" rather than quietly substituting
+    # this environment's answer. That is the better error: `emulator_availability` names
+    # the interpreter, so it is actionable, where the substitution was silent and wrong.
     if python:
         key = (python, src or "")
         if key not in _MODEL_CACHE:
             _MODEL_CACHE[key] = _models_from_interpreter(python, src or "")
-        if _MODEL_CACHE[key]:
-            return list(_MODEL_CACHE[key]), python
+        return list(_MODEL_CACHE[key]), python
 
     return _models_in_process(), python
 
