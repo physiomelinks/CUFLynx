@@ -125,7 +125,12 @@ def _ca_import(name):
     names = _ca_candidates(name)
     for cand in names:
         mod = sys.modules.get(cand)
-        if mod is not None:
+        # Not `if mod is not None`: sys.modules holds a module from *before* its body has
+        # run, so a concurrent import hands this thread a half-built one -- the bug behind
+        # "has no ANALYSIS_OPTIONS" on a copy that has it. importlib.import_module below
+        # blocks on the per-module lock and returns the finished module. Deliberate
+        # duplicate of ca_imports._finished_importing; see that module's header.
+        if mod is not None and not getattr(getattr(mod, "__spec__", None), "_initializing", False):
             return mod
     errors = []
     for cand in names:

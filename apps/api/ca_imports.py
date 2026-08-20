@@ -363,6 +363,28 @@ def _failure_message(name: str, errors: list[tuple[str, BaseException]]) -> str:
     )
 
 
+def _finished_importing(mod) -> bool:
+    """Whether ``mod`` has finished executing, rather than being mid-import.
+
+    **This is the fix for the reported emulator failure.** Python inserts a module object
+    into ``sys.modules`` *before* running its body, so a thread that reads ``sys.modules``
+    directly, while another thread is partway through the import, gets a half-built
+    module. ``libcuflynx.parsers.PrimitiveParsers`` is 4487 lines and defines
+    ``ANALYSIS_OPTIONS`` on line 1497, so the window is wide -- and what comes out the
+    other side is ``'libcuflynx.parsers.PrimitiveParsers' has no ANALYSIS_OPTIONS``
+    against a copy that plainly has it, which is exactly what v0.4.1 reported.
+
+    ``importlib.import_module`` does not have this problem: it blocks on the per-module
+    import lock and hands back the finished module. So the fast path just has to decline
+    a module that is still initialising and let the import below do it properly.
+
+    A module the tests inject (``sys.modules[x] = ModuleType(...)``) has ``__spec__``
+    None, which reads as finished -- which is right, nothing is importing it.
+    """
+    spec = getattr(mod, "__spec__", None)
+    return not getattr(spec, "_initializing", False)
+
+
 def ca_import(name: str):
     """Import circulatory_autogen module ``name``, given in its **flat** spelling.
 
@@ -381,7 +403,7 @@ def ca_import(name: str):
     # ImportError, which the real import below then raises.
     for cand in names:
         mod = sys.modules.get(cand)
-        if mod is not None:
+        if mod is not None and _finished_importing(mod):
             return mod
     errors: list[tuple[str, BaseException]] = []
     for cand in names:
@@ -407,14 +429,19 @@ def ca_from(module: str, *names: str):
     if missing:
         # ca_import answers with the *first* spelling that imports, and it judges only
         # whether the module loads -- not whether it is the one carrying what was asked
-        # for. Those come apart whenever two copies are reachable at once, which is the
-        # normal state of the packaged app: it bundles a libcuflynx and can also be
-        # pointed at a checkout. One stale or hollow `libcuflynx` then loses the caller a
-        # flat `parsers.PrimitiveParsers` sitting right there with the attribute in it.
+        # for. A hollow or half-written `libcuflynx` (a checkout mid-branch-switch, an
+        # interrupted install, a partially extracted bundle) imports perfectly well as a
+        # PEP 420 namespace package and then answers "no" for everything, losing the
+        # caller a flat `parsers.PrimitiveParsers` sitting right there with the attribute
+        # in it. Trying the other spelling costs one import on a path that was about to
+        # raise anyway.
         #
-        # Reported against v0.4.1: the Emulator tab said the options "could not be read
-        # ... this circulatory_autogen predates it" while a perfectly current copy was on
-        # the path, because the namespaced spelling resolved first and answered no.
+        # **What this cannot reach**, and it is the case that looks most like the bug
+        # report: two copies of the *same* spelling. A current checkout is namespaced
+        # too, so it and the bundled package are both `libcuflynx.parsers.
+        # PrimitiveParsers`; only one can be in sys.modules, `ensure_ca_path` puts the
+        # checkout's `src` at sys.path[0], and there is no second candidate to try. The
+        # resolved path in the message below is what diagnoses that one.
         alternative = _candidate_providing(module, names, getattr(mod, "__name__", None))
         if alternative is not None:
             mod, missing = alternative, []
@@ -443,7 +470,7 @@ def _candidate_providing(module: str, names, already: str | None):
         if cand == already:
             continue
         mod = sys.modules.get(cand)
-        if mod is None:
+        if mod is None or not _finished_importing(mod):
             try:
                 mod = importlib.import_module(cand)
             except ImportError:

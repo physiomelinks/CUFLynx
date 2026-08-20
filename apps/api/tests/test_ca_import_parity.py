@@ -156,3 +156,37 @@ def test_all_three_blame_the_ca_directory_rather_than_the_module(pipeline_ns):
         # the reader's checkout is in.
         assert f"{ca_imports.NAMESPACE}.{name}" in message
         assert name in message
+
+
+@pytest.mark.unit
+def test_every_copy_declines_a_module_that_is_still_importing(monkeypatch):
+    """The ``sys.modules`` fast path is duplicated, so the guard on it has to be too.
+
+    Python publishes a module before running its body; handing that out is what produced
+    "has no ANALYSIS_OPTIONS" on a copy that had it. ``ca_imports`` declines an
+    initialising entry and lets ``importlib`` block instead -- and ``sim_worker_runner``
+    carries its own copy of this resolver (it must stay free of app imports), so without
+    this the two drift and the live tier keeps the bug.
+    """
+    class _Spec:
+        _initializing = True
+
+    name = f"{ca_imports.NAMESPACE}.utilities.racy"
+    half = types.ModuleType(name)
+    half.__spec__ = _Spec()
+    whole = types.ModuleType(name)
+    whole.PRESENT = 1
+
+    monkeypatch.setitem(sys.modules, name, half)
+
+    def fake_import(cand):
+        if cand == name:
+            return whole
+        raise ImportError(cand)
+
+    # ca_imports.importlib *is* the importlib module, so this patches the copy
+    # sim_worker_runner imports locally too.
+    monkeypatch.setattr(ca_imports.importlib, "import_module", fake_import)
+
+    assert ca_imports.ca_import("utilities.racy") is whole
+    assert sim_worker_runner._ca_import("utilities.racy") is whole
