@@ -363,6 +363,28 @@ def _failure_message(name: str, errors: list[tuple[str, BaseException]]) -> str:
     )
 
 
+def _finished_importing(mod) -> bool:
+    """Whether ``mod`` has finished executing, rather than being mid-import.
+
+    **This is the fix for the reported emulator failure.** Python inserts a module object
+    into ``sys.modules`` *before* running its body, so a thread that reads ``sys.modules``
+    directly, while another thread is partway through the import, gets a half-built
+    module. ``libcuflynx.parsers.PrimitiveParsers`` is 4487 lines and defines
+    ``ANALYSIS_OPTIONS`` on line 1497, so the window is wide -- and what comes out the
+    other side is ``'libcuflynx.parsers.PrimitiveParsers' has no ANALYSIS_OPTIONS``
+    against a copy that plainly has it, which is exactly what v0.4.1 reported.
+
+    ``importlib.import_module`` does not have this problem: it blocks on the per-module
+    import lock and hands back the finished module. So the fast path just has to decline
+    a module that is still initialising and let the import below do it properly.
+
+    A module the tests inject (``sys.modules[x] = ModuleType(...)``) has ``__spec__``
+    None, which reads as finished -- which is right, nothing is importing it.
+    """
+    spec = getattr(mod, "__spec__", None)
+    return not getattr(spec, "_initializing", False)
+
+
 def ca_import(name: str):
     """Import circulatory_autogen module ``name``, given in its **flat** spelling.
 
@@ -381,7 +403,7 @@ def ca_import(name: str):
     # ImportError, which the real import below then raises.
     for cand in names:
         mod = sys.modules.get(cand)
-        if mod is not None:
+        if mod is not None and _finished_importing(mod):
             return mod
     errors: list[tuple[str, BaseException]] = []
     for cand in names:
@@ -405,12 +427,57 @@ def ca_from(module: str, *names: str):
     mod = ca_import(module)
     missing = [n for n in names if not hasattr(mod, n)]
     if missing:
+        # ca_import answers with the *first* spelling that imports, and it judges only
+        # whether the module loads -- not whether it is the one carrying what was asked
+        # for. A hollow or half-written `libcuflynx` (a checkout mid-branch-switch, an
+        # interrupted install, a partially extracted bundle) imports perfectly well as a
+        # PEP 420 namespace package and then answers "no" for everything, losing the
+        # caller a flat `parsers.PrimitiveParsers` sitting right there with the attribute
+        # in it. Trying the other spelling costs one import on a path that was about to
+        # raise anyway.
+        #
+        # **What this cannot reach**, and it is the case that looks most like the bug
+        # report: two copies of the *same* spelling. A current checkout is namespaced
+        # too, so it and the bundled package are both `libcuflynx.parsers.
+        # PrimitiveParsers`; only one can be in sys.modules, `ensure_ca_path` puts the
+        # checkout's `src` at sys.path[0], and there is no second candidate to try. The
+        # resolved path in the message below is what diagnoses that one.
+        alternative = _candidate_providing(module, names, getattr(mod, "__name__", None))
+        if alternative is not None:
+            mod, missing = alternative, []
+    if missing:
+        # Name the *file*, not just the dotted name. "libcuflynx.parsers.PrimitiveParsers
+        # has no ANALYSIS_OPTIONS" is unactionable when several copies are reachable --
+        # the whole question is which one answered, and only the path says that.
+        where = getattr(mod, "__file__", None)
         raise CaImportError(
-            f"circulatory_autogen's {getattr(mod, '__name__', module)!r} has no "
-            f"{', '.join(missing)} — this circulatory_autogen predates it."
+            f"{getattr(mod, '__name__', module)!r} has no {', '.join(missing)}"
+            + (f" (resolved to {where})" if where else "")
+            + " — that copy of libcuflynx predates it."
         )
     values = tuple(getattr(mod, n) for n in names)
     return values[0] if len(names) == 1 else values
+
+
+def _candidate_providing(module: str, names, already: str | None):
+    """The first other spelling of ``module`` that has every one of ``names``, or None.
+
+    Deliberately silent about import failures: this runs only after a module has already
+    been resolved, so a candidate that cannot be imported is not news -- the caller
+    already has something, it simply lacks the attribute.
+    """
+    for cand in candidates(module):
+        if cand == already:
+            continue
+        mod = sys.modules.get(cand)
+        if mod is None or not _finished_importing(mod):
+            try:
+                mod = importlib.import_module(cand)
+            except ImportError:
+                continue
+        if all(hasattr(mod, n) for n in names):
+            return mod
+    return None
 
 
 def resolved_name(name: str) -> str:

@@ -733,3 +733,201 @@ class TestTheAdviceMatchesTheTierItIsGivenIn:
         monkeypatch.setattr(importlib, "import_module", raise_other)
 
         assert ca_imports._in_runner_tier() is False
+
+
+@pytest.mark.unit
+def test_ca_from_names_the_file_when_no_copy_has_it(monkeypatch, tmp_path):
+    """"X has no ANALYSIS_OPTIONS" is unactionable when several copies are reachable.
+
+    Which one answered is the whole question, and only the path says that.
+    """
+    stale = types.ModuleType("libcuflynx.parsers.PrimitiveParsers")
+    stale.__file__ = str(tmp_path / "somewhere" / "PrimitiveParsers.py")
+    monkeypatch.setitem(sys.modules, "libcuflynx.parsers.PrimitiveParsers", stale)
+    monkeypatch.setitem(sys.modules, "parsers.PrimitiveParsers", stale)
+
+    with pytest.raises(ca_imports.CaImportError) as excinfo:
+        ca_imports.ca_from("parsers.PrimitiveParsers", "ANALYSIS_OPTIONS")
+
+    message = str(excinfo.value)
+    assert stale.__file__ in message, f"the error does not say which copy answered: {message}"
+    assert "ANALYSIS_OPTIONS" in message
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("namespace_available", [True, False])
+def test_a_hollow_copy_does_not_veto_the_one_that_has_the_attribute(
+    monkeypatch, namespace_available
+):
+    """``ca_import`` answers with the first spelling that *imports*, which is a different
+    question from which one carries what the caller asked for.
+
+    A hollow or half-written ``libcuflynx`` -- a checkout caught mid-branch-switch, an
+    interrupted install, a partially extracted bundle -- is a valid PEP 420 namespace
+    package. It imports, it has no attributes, and it used to end the search.
+
+    Parametrised over both candidate orderings **because the ordering is not a constant**:
+    ``candidates()`` leads with the namespaced spelling whenever ``libcuflynx`` is
+    importable, which is always true in the packaged app and on any dev machine that has
+    it installed -- but false on CI, which installs no libcuflynx. Pinning one ordering
+    wrote a test that passed only where the packaged app's condition does *not* hold, and
+    that asserted a state which cannot occur: a real import always populates the parent
+    package, so ``libcuflynx.parsers.PrimitiveParsers`` cannot sit in ``sys.modules``
+    while ``libcuflynx`` is absent.
+    """
+    monkeypatch.setattr(ca_imports, "_namespaced", namespace_available)
+    hollow_name, good_name = ca_imports.candidates("parsers.PrimitiveParsers")
+
+    hollow = types.ModuleType(hollow_name)
+    good = types.ModuleType(good_name)
+    good.ANALYSIS_OPTIONS = {"emulation": {"options": [1]}}
+    for name, mod in ((hollow_name, hollow), (good_name, good)):
+        monkeypatch.setitem(sys.modules, name, mod)
+        if "." in name:  # a dotted name is only reachable with its parent imported
+            top = name.split(".")[0]
+            monkeypatch.setitem(sys.modules, top, types.ModuleType(top))
+
+    got = ca_imports.ca_from("parsers.PrimitiveParsers", "ANALYSIS_OPTIONS")
+
+    assert got is good.ANALYSIS_OPTIONS, (
+        f"{hollow_name!r} answered no and nothing asked {good_name!r}, which had it"
+    )
+
+
+@pytest.mark.unit
+def test_the_fallback_gives_up_when_no_reachable_copy_has_it(monkeypatch):
+    """Two copies of the *same* spelling are indistinguishable here, and must be.
+
+    A current checkout is namespaced too, so it and the bundled package are both
+    ``libcuflynx.parsers.PrimitiveParsers``; only one can be in ``sys.modules``. This
+    fallback tries other *spellings*, not other *copies*, so it has nothing to offer --
+    the resolved path in the message is what diagnoses that case. The limit is written
+    down here rather than left to be rediscovered.
+
+    The failure must stay a :class:`CaImportError`. It subclasses ``ImportError`` because
+    call sites all over the app degrade to a built-in fallback on one; a candidate handed
+    back without checking it has the attribute turns this into an ``AttributeError`` at
+    the ``getattr`` below, which sails straight past every one of those arms.
+    """
+    monkeypatch.setattr(ca_imports, "_namespaced", True)
+    monkeypatch.setitem(sys.modules, "libcuflynx", types.ModuleType("libcuflynx"))
+    for name in ca_imports.candidates("parsers.PrimitiveParsers"):
+        monkeypatch.setitem(sys.modules, name, types.ModuleType(name))  # neither has it
+
+    with pytest.raises(ca_imports.CaImportError):
+        ca_imports.ca_from("parsers.PrimitiveParsers", "ANALYSIS_OPTIONS")
+
+
+@pytest.mark.unit
+def test_a_module_still_being_imported_is_not_handed_out(tmp_path, monkeypatch):
+    """The reported v0.4.1 emulator failure, reproduced.
+
+    Python puts a module into ``sys.modules`` *before* executing its body, so the
+    ``sys.modules`` fast path could hand a caller a half-built module while another
+    thread was still importing it. ``libcuflynx.parsers.PrimitiveParsers`` is 4487 lines
+    and defines ``ANALYSIS_OPTIONS`` on line 1497, so the window is wide: the Emulator tab
+    reported ``'libcuflynx.parsers.PrimitiveParsers' has no ANALYSIS_OPTIONS`` against a
+    copy that had it, and the next call quietly succeeded.
+
+    ``importlib.import_module`` blocks on the per-module import lock and returns the
+    finished module, so declining an initialising one in the fast path is the whole fix.
+    """
+    import threading
+    import time
+
+    pkg = tmp_path / "slowpkg"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("")
+    (pkg / "SlowParsers.py").write_text(
+        "import time\n"
+        "EARLY = 1\n"
+        "time.sleep(0.6)\n"                       # the body of a long module, mid-execution
+        "ANALYSIS_OPTIONS = {'emulation': {'options': [1]}}\n"
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    name = "slowpkg.SlowParsers"
+    monkeypatch.setattr(ca_imports, "candidates", lambda _n: [name])
+    for mod_name in (name, "slowpkg"):
+        monkeypatch.delitem(sys.modules, mod_name, raising=False)
+
+    result = {}
+
+    def importer():
+        __import__(name)
+
+    def asker():
+        time.sleep(0.2)  # land while importer is inside the module body
+        try:
+            result["value"] = ca_imports.ca_from(name, "ANALYSIS_OPTIONS")
+        except BaseException as exc:  # noqa: BLE001 - the failure is the point
+            result["error"] = f"{type(exc).__name__}: {exc}"
+
+    threads = [threading.Thread(target=importer), threading.Thread(target=asker)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=20)
+
+    assert "error" not in result, (
+        "a half-built module was handed out while another thread was importing it: "
+        + str(result.get("error"))
+    )
+    assert result["value"] == {"emulation": {"options": [1]}}
+
+
+@pytest.mark.unit
+def test_an_initialising_module_is_not_finished(monkeypatch):
+    """The predicate itself, without the timing.
+
+    A threaded test proves the behaviour but is a poor place to notice that the
+    ``_initializing`` probe stopped working -- a wrong answer here just makes the race
+    rare again rather than failing outright.
+    """
+    import types
+
+    class _Spec:                       # what importlib puts on a module while it runs
+        _initializing = True
+
+    mod = types.ModuleType("half.built")
+    mod.__spec__ = _Spec()
+    assert ca_imports._finished_importing(mod) is False
+
+    mod.__spec__._initializing = False
+    assert ca_imports._finished_importing(mod) is True
+
+    # An injected fake has no spec at all; nothing is importing it, so it is finished.
+    assert ca_imports._finished_importing(types.ModuleType("injected")) is True
+
+
+@pytest.mark.unit
+def test_the_other_spelling_is_not_read_while_it_is_still_importing(monkeypatch):
+    """``_candidate_providing`` re-reads ``sys.modules`` and carries the same hazard.
+
+    It runs after one module has resolved without the attribute, so it is looking at a
+    *second* copy -- and reading that one out of ``sys.modules`` mid-import would report
+    "no copy has it" while the copy that does was seconds from finishing. Deterministic
+    here rather than threaded: the point is that an initialising entry is declined, and
+    ``importlib.import_module`` is asked instead.
+    """
+    class _Spec:
+        _initializing = True
+
+    half = types.ModuleType("libcuflynx.parsers.PrimitiveParsers")   # no attribute yet
+    half.__spec__ = _Spec()
+    whole = types.ModuleType("libcuflynx.parsers.PrimitiveParsers")
+    whole.ANALYSIS_OPTIONS = {"emulation": {"options": [1]}}
+
+    monkeypatch.setattr(ca_imports, "candidates",
+                        lambda _n: ["parsers.PrimitiveParsers",
+                                    "libcuflynx.parsers.PrimitiveParsers"])
+    monkeypatch.setitem(sys.modules, "libcuflynx.parsers.PrimitiveParsers", half)
+    monkeypatch.setattr(ca_imports.importlib, "import_module",
+                        lambda name: whole if name == whole.__name__ else None)
+
+    got = ca_imports._candidate_providing(
+        "parsers.PrimitiveParsers", ("ANALYSIS_OPTIONS",), "parsers.PrimitiveParsers")
+
+    assert got is whole, (
+        "the half-built copy was read straight out of sys.modules, so the caller was "
+        "told no reachable copy has the attribute"
+    )

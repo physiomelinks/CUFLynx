@@ -156,3 +156,46 @@ def test_all_three_blame_the_ca_directory_rather_than_the_module(pipeline_ns):
         # the reader's checkout is in.
         assert f"{ca_imports.NAMESPACE}.{name}" in message
         assert name in message
+
+
+@pytest.mark.unit
+def test_every_copy_declines_a_module_that_is_still_importing(monkeypatch):
+    """The ``sys.modules`` fast path is duplicated, so the guard on it has to be too.
+
+    Python publishes a module before running its body; handing that out is what produced
+    "has no ANALYSIS_OPTIONS" on a copy that had it. ``ca_imports`` declines an
+    initialising entry and lets ``importlib`` block instead -- and ``sim_worker_runner``
+    carries its own copy of this resolver (it must stay free of app imports), so without
+    this the two drift and the live tier keeps the bug.
+    """
+    class _Spec:
+        _initializing = True
+
+    name = f"{ca_imports.NAMESPACE}.utilities.racy"
+    half = types.ModuleType(name)
+    half.__spec__ = _Spec()
+    whole = types.ModuleType(name)
+    whole.PRESENT = 1
+
+    monkeypatch.setitem(sys.modules, name, half)
+    # Pin the ordering rather than inherit it. ``sim_worker_runner._ca_candidates`` always
+    # leads with the namespaced spelling, but ``ca_imports.candidates`` leads with it only
+    # when libcuflynx is importable -- true on a dev machine and in the packaged app, false
+    # on CI, which installs none. Left to the environment this test compares the two
+    # resolvers on *different* candidate lists, and passes or fails on where it is run.
+    monkeypatch.setattr(ca_imports, "_namespaced", True)
+
+    def fake_import(cand):
+        if cand == name:
+            return whole
+        # ModuleNotFoundError naming the candidate, because that is what "this spelling is
+        # absent" looks like: a bare ImportError means "the module is there and something
+        # *it* imports is not", which ca_import re-raises rather than trying the other.
+        raise ModuleNotFoundError(f"No module named {cand!r}", name=cand)
+
+    # ca_imports.importlib *is* the importlib module, so this patches the copy
+    # sim_worker_runner imports locally too.
+    monkeypatch.setattr(ca_imports.importlib, "import_module", fake_import)
+
+    assert ca_imports.ca_import("utilities.racy") is whole
+    assert sim_worker_runner._ca_import("utilities.racy") is whole
