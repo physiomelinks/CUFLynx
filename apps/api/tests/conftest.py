@@ -75,9 +75,32 @@ def set_ca_module(monkeypatch, name: str, value) -> None:
 
 
 def _simulation_deps_available() -> bool:
+    """Whether a real CellML simulation can run here.
+
+    "A CA *directory* exists" used to be the whole question, because a sibling checkout
+    on PYTHONPATH was the only way CUFLynx ever found circulatory_autogen. Since CA #452
+    it is not: ``apps/api/pyproject.toml`` depends on ``libcuflynx>=0.4.0``, the frozen
+    app bundles one, and a user who pip-installed it and configured no directory is a
+    supported -- indeed the default -- arrangement.
+
+    Requiring the directory made the whole integration tier unreachable in exactly that
+    arrangement: every test skipped, and pytest exits 0 when everything skips, so a job
+    running the tier against an installed package would pass having run none of it. That
+    is precisely what `.github/workflows/integration.yml` exists to do, so this has to
+    accept both.
+
+    ``installed_package_available()`` rather than a bare import, deliberately: it is the
+    same distinction ``ca_imports`` draws for the app itself. ``ensure_ca_path`` inserts a
+    configured checkout's ``src`` permanently, so "libcuflynx is importable" stays true
+    for the life of the process after any directory has been used -- and would report CA
+    present when the setting has since been cleared.
+    """
     src = Path(engine_mod._circulatory_autogen_src())
     if not src.is_dir():
-        return False
+        from ca_imports import installed_package_available
+
+        if not installed_package_available():
+            return False
     try:
         import libcellml  # noqa: F401
         import myokit  # noqa: F401
