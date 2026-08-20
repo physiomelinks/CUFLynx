@@ -700,9 +700,17 @@ def test_an_export_without_user_funcs_omits_the_keys(client, tmp_path):
 # the unit tier.
 # ---------------------------------------------------------------------------
 def _render_bundle_script(tmp_path):
-    """Write the rendered run_pipeline.py into an otherwise empty directory."""
+    """Write the rendered run_pipeline.py into an otherwise empty directory.
+
+    ``encoding="utf-8"`` is load-bearing, and matches how ``main.py`` writes the real
+    bundle. ``Path.write_text`` otherwise uses the locale encoding, which on Windows is
+    cp1252: the script's docstring contains an em dash, cp1252 stores it as the single
+    byte 0x97, and Python then refuses to parse the file it just wrote --
+    "Non-UTF-8 code starting with '\\x97' ... but no encoding declared". Every test
+    here then fails on a SyntaxError instead of on what it meant to check.
+    """
     path = tmp_path / "run_pipeline.py"
-    path.write_text(ep.render_pipeline_script())
+    path.write_text(ep.render_pipeline_script(), encoding="utf-8")
     return path
 
 
@@ -799,7 +807,8 @@ def test_with_neither_it_names_both_ways_out(tmp_path):
         "    if name == 'libcuflynx':\n"
         "        return None\n"
         "    return _real(name, *a, **k)\n"
-        "importlib.util.find_spec = _blocked\n"
+        "importlib.util.find_spec = _blocked\n",
+        encoding="utf-8",
     )
     rc, out = _run_bundle(script, env_extra={"PYTHONPATH": str(tmp_path)})
     assert rc != 0
@@ -840,7 +849,7 @@ def test_the_bundle_reproduces_the_gui_simulation(client, requires_simulation, t
     # The window the bundle will use comes from the obs_data protocol_info
     # (pre_time 10, sim_time 2), so ask the app for exactly that or the two are not
     # comparable in the first place.
-    obs = json.loads(C3_OBS_DATA_PATH.read_text())
+    obs = json.loads(C3_OBS_DATA_PATH.read_text(encoding="utf-8"))
     operands = sorted({op for item in obs["data_items"] for op in item["operands"]})
     gui = client.post("/api/simulate", json={
         "model_id": model_id,
