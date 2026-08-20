@@ -736,36 +736,6 @@ class TestTheAdviceMatchesTheTierItIsGivenIn:
 
 
 @pytest.mark.unit
-def test_ca_from_tries_the_other_spelling_when_the_first_lacks_the_attribute(monkeypatch):
-    """An old checkout on the path must not shadow a current bundled copy.
-
-    ``candidates()`` puts the flat spelling first, and ``ca_import`` answers with the
-    first that *imports* -- which is a different question from which one carries what was
-    asked for. Both are reachable at once in the normal packaged case: the app bundles a
-    libcuflynx and can also be pointed at a checkout. So an old flat CA directory wins the
-    race and the caller loses the bundled module that has the attribute.
-
-    Reported against v0.4.1: the Emulator tab said the options "could not be read ... this
-    circulatory_autogen predates it" while a current copy was reachable the whole time.
-    """
-    flat = types.ModuleType("parsers.PrimitiveParsers")          # old checkout: no schema
-    namespaced = types.ModuleType("libcuflynx.parsers.PrimitiveParsers")
-    namespaced.ANALYSIS_OPTIONS = {"emulation": {"options": [1]}}
-    monkeypatch.setitem(sys.modules, "parsers.PrimitiveParsers", flat)
-    monkeypatch.setitem(sys.modules, "libcuflynx.parsers.PrimitiveParsers", namespaced)
-    assert ca_imports.candidates("parsers.PrimitiveParsers")[0] == "parsers.PrimitiveParsers", (
-        "this test assumes the flat spelling is tried first; if that order changed, so "
-        "must the scenario here"
-    )
-
-    got = ca_imports.ca_from("parsers.PrimitiveParsers", "ANALYSIS_OPTIONS")
-
-    assert got is namespaced.ANALYSIS_OPTIONS, (
-        "the old flat copy won even though the other spelling had the attribute"
-    )
-
-
-@pytest.mark.unit
 def test_ca_from_names_the_file_when_no_copy_has_it(monkeypatch, tmp_path):
     """"X has no ANALYSIS_OPTIONS" is unactionable when several copies are reachable.
 
@@ -782,3 +752,67 @@ def test_ca_from_names_the_file_when_no_copy_has_it(monkeypatch, tmp_path):
     message = str(excinfo.value)
     assert stale.__file__ in message, f"the error does not say which copy answered: {message}"
     assert "ANALYSIS_OPTIONS" in message
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("namespace_available", [True, False])
+def test_a_hollow_copy_does_not_veto_the_one_that_has_the_attribute(
+    monkeypatch, namespace_available
+):
+    """``ca_import`` answers with the first spelling that *imports*, which is a different
+    question from which one carries what the caller asked for.
+
+    A hollow or half-written ``libcuflynx`` -- a checkout caught mid-branch-switch, an
+    interrupted install, a partially extracted bundle -- is a valid PEP 420 namespace
+    package. It imports, it has no attributes, and it used to end the search.
+
+    Parametrised over both candidate orderings **because the ordering is not a constant**:
+    ``candidates()`` leads with the namespaced spelling whenever ``libcuflynx`` is
+    importable, which is always true in the packaged app and on any dev machine that has
+    it installed -- but false on CI, which installs no libcuflynx. Pinning one ordering
+    wrote a test that passed only where the packaged app's condition does *not* hold, and
+    that asserted a state which cannot occur: a real import always populates the parent
+    package, so ``libcuflynx.parsers.PrimitiveParsers`` cannot sit in ``sys.modules``
+    while ``libcuflynx`` is absent.
+    """
+    monkeypatch.setattr(ca_imports, "_namespaced", namespace_available)
+    hollow_name, good_name = ca_imports.candidates("parsers.PrimitiveParsers")
+
+    hollow = types.ModuleType(hollow_name)
+    good = types.ModuleType(good_name)
+    good.ANALYSIS_OPTIONS = {"emulation": {"options": [1]}}
+    for name, mod in ((hollow_name, hollow), (good_name, good)):
+        monkeypatch.setitem(sys.modules, name, mod)
+        if "." in name:  # a dotted name is only reachable with its parent imported
+            top = name.split(".")[0]
+            monkeypatch.setitem(sys.modules, top, types.ModuleType(top))
+
+    got = ca_imports.ca_from("parsers.PrimitiveParsers", "ANALYSIS_OPTIONS")
+
+    assert got is good.ANALYSIS_OPTIONS, (
+        f"{hollow_name!r} answered no and nothing asked {good_name!r}, which had it"
+    )
+
+
+@pytest.mark.unit
+def test_the_fallback_gives_up_when_no_reachable_copy_has_it(monkeypatch):
+    """Two copies of the *same* spelling are indistinguishable here, and must be.
+
+    A current checkout is namespaced too, so it and the bundled package are both
+    ``libcuflynx.parsers.PrimitiveParsers``; only one can be in ``sys.modules``. This
+    fallback tries other *spellings*, not other *copies*, so it has nothing to offer --
+    the resolved path in the message is what diagnoses that case. The limit is written
+    down here rather than left to be rediscovered.
+
+    The failure must stay a :class:`CaImportError`. It subclasses ``ImportError`` because
+    call sites all over the app degrade to a built-in fallback on one; a candidate handed
+    back without checking it has the attribute turns this into an ``AttributeError`` at
+    the ``getattr`` below, which sails straight past every one of those arms.
+    """
+    monkeypatch.setattr(ca_imports, "_namespaced", True)
+    monkeypatch.setitem(sys.modules, "libcuflynx", types.ModuleType("libcuflynx"))
+    for name in ca_imports.candidates("parsers.PrimitiveParsers"):
+        monkeypatch.setitem(sys.modules, name, types.ModuleType(name))  # neither has it
+
+    with pytest.raises(ca_imports.CaImportError):
+        ca_imports.ca_from("parsers.PrimitiveParsers", "ANALYSIS_OPTIONS")
