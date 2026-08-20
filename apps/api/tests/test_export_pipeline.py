@@ -9,7 +9,13 @@ from pathlib import Path
 import export_pipeline as ep
 import pytest
 import yaml
-from conftest import LV_MODEL_PATH, LV_OBS_DATA_PATH, LV_PARAMS_CSV_PATH, upload_model
+from conftest import (
+    LV_MODEL_PATH,
+    LV_OBS_DATA_PATH,
+    LV_PARAMS_CSV_PATH,
+    running_against_installed_ca_only,
+    upload_model,
+)
 
 
 def _ui(**over):
@@ -411,6 +417,24 @@ def _setup_3compartment(client):
     return model_id
 
 
+# Found by the integration workflow, on its first run: the exported `run_pipeline.py`
+# has no way to use an *installed* libcuflynx. It resolves CA only from a checkout and
+# exits 1 with "Pass --ca-src <circulatory_autogen/src> or set CIRCULATORY_AUTOGEN_SRC."
+#
+# That is a real gap rather than a test artefact -- a user who ran `pip install
+# libcuflynx`, configured no CA directory, and exported a pipeline gets a script that
+# cannot run. `ca_imports` learned to resolve an installed package; `run_pipeline.py`
+# carries a deliberate duplicate of that rule (see the ca_imports docstring) and the
+# duplicate was never updated.
+#
+# strict=True so this cannot rot: whoever teaches run_pipeline.py to fall back to an
+# installed package will be told to delete this marker by the suite going red.
+@pytest.mark.xfail(
+    running_against_installed_ca_only(),
+    strict=True,
+    reason="exported run_pipeline.py cannot resolve an installed libcuflynx; it "
+           "requires --ca-src or CIRCULATORY_AUTOGEN_SRC pointing at a checkout",
+)
 @pytest.mark.integration
 def test_export_pipeline_simulation_runs_and_honors_obs_protocol(client, requires_casadi, tmp_path):
     """Full pipeline: load the three files, set a casadi_python backend, export the

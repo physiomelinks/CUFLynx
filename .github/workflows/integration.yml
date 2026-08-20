@@ -34,12 +34,12 @@ jobs:
   # ---------------------------------------------------------------------------
   # The integration tier, against an installed libcuflynx
   # ---------------------------------------------------------------------------
-  # `pytest -m integration --collect-only` finds **258 tests**, none of which has ever
-  # run on CI. `min_ran` is a floor on how many actually execute, not a target: it is set
-  # loose on purpose for the first green run, because how many of the 258 survive a given
-  # runner's optional backends is not knowable from here. `assert_tests_ran.py` prints the
-  # real number every run -- tighten this to just under it once that number is known, so
-  # the tier collapsing becomes visible instead of merely quieter.
+  # `pytest -m integration` collects **258 tests**, none of which had ever run on CI
+  # before this workflow. `min_ran` is a floor on how many actually execute, not a target.
+  # The first run reported **258 collected, 10 skipped, 248 ran**, so the floor is 240 --
+  # tight enough that the tier collapsing is visible, loose enough to absorb an optional
+  # backend going missing on a runner. `assert_tests_ran.py` prints the real number every
+  # run; if it drifts far below 240, find out why before lowering this.
   integration:
     name: Integration tier (installed libcuflynx, ${{ matrix.extras }})
     runs-on: ubuntu-latest
@@ -55,12 +55,12 @@ jobs:
           # What a user gets from `pip install cuflynx-api[analysis]`: simulation,
           # sensitivity, calibration, the emcee sampler, and a self-contained MPICH.
           - extras: "dev,analysis"
-            min_ran: 100
+            min_ran: 240
           # Adds autoemulate + pymc + arviz -- the emulator and pyMC UQ paths, and the
           # only leg where arviz is present at all. That matters beyond the features: it
           # is the configuration the reported four-rank crash was running under.
           - extras: "dev,analysis,full"
-            min_ran: 100
+            min_ran: 240
     defaults:
       run:
         working-directory: apps/api

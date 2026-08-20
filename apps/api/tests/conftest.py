@@ -74,6 +74,19 @@ def set_ca_module(monkeypatch, name: str, value) -> None:
         monkeypatch.setitem(sys.modules, spelling, value)
 
 
+def running_against_installed_ca_only() -> bool:
+    """True when CA comes from an installed package with no checkout configured.
+
+    The arrangement `.github/workflows/integration.yml` runs in, and the one a user who
+    ran `pip install` and configured nothing is in. Every other CI job checks CA out and
+    points CIRCULATORY_AUTOGEN_SRC at it, so this is False there.
+
+    Used to scope `xfail` markers to failures that only manifest in this arrangement, so
+    a test that legitimately passes against a checkout is not marked broken everywhere.
+    """
+    return not Path(engine_mod._circulatory_autogen_src()).is_dir()
+
+
 def _simulation_deps_available() -> bool:
     """Whether a real CellML simulation can run here.
 
