@@ -385,7 +385,9 @@ describe('opening the tab before anything is loaded', () => {
     // do not have.
     const w = open({ canRun: true, defaults: { supported: false } })
     const text = w.find('[data-testid="emu-unsupported"]').text()
-    expect(text).toContain('libcuflynx')
-    expect(text).not.toMatch(/^This circulatory_autogen/)
+    // The *subject* of the sentence is the engine, and it is libcuflynx. Asserting only
+    // that "circulatory_autogen" is absent would not work here -- the second sentence
+    // mentions a checkout on purpose, for the user who has pointed Settings at one.
+    expect(text).toMatch(/^This libcuflynx has no emulator support/)
   })
 })

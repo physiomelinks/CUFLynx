@@ -25,6 +25,7 @@ and falls back to a built-in copy of the schema when CA can't be imported.
 from __future__ import annotations
 
 import copy
+import functools
 import json
 import logging
 import os
@@ -543,12 +544,15 @@ _modifier_cache: dict | None = None
 def reset_cache() -> None:
     """Drop the cached options (call when the CA directory changes)."""
     global _cache, _param_id_cache, _analysis_cache, _prior_cache, _modifier_cache
-    global _ca_model_type_spelling
+    global _ca_model_type_spelling, _analysis_error
     _cache = None
     _param_id_cache = None
     _analysis_cache = None
     _prior_cache = None
     _modifier_cache = None
+    # Paired with _analysis_cache: it describes why *that* introspection failed, so a
+    # new CA directory must not inherit the previous one's diagnosis.
+    _analysis_error = None
     # Which spelling the connected CA uses is a fact about *that* CA, so it is a
     # cache like the rest -- and one that was never cleared, so a new CA dir (and,
     # in the test process, the next test) inherited the previous one's answer.
@@ -562,13 +566,21 @@ def reset_cache() -> None:
 _ca_paths = ca_paths
 logger = logging.getLogger(__name__)
 
-#: The last exception :func:`_safe` swallowed, formatted. Read by the callers that build a
-#: user-facing reason: telling someone "the server log has the import error" is only useful
-#: if they can reach that log, and in the packaged app they generally cannot -- there is no
-#: console, and the failure is debug-level because the *expected* fallback is not a problem.
-#: Carrying the error into the message is what turns "it could not be read" into something
-#: actionable. Reported against v0.4.1, whose Emulator tab said exactly that and no more.
-_last_introspection_error = None
+#: Why the **analysis-options** introspection last failed, formatted; None when it
+#: succeeded. Read by the callers that build a user-facing reason: telling someone "the
+#: server log has the import error" is only useful if they can reach that log, and in the
+#: packaged app they generally cannot -- there is no console, and the failure is
+#: debug-level because the *expected* fallback is not a problem. Carrying the error into
+#: the message is what turns "it could not be read" into something actionable. Reported
+#: against v0.4.1, whose Emulator tab said exactly that and no more.
+#:
+#: Written next to :data:`_analysis_cache`, by :func:`get_analysis_options` alone, and
+#: never by :func:`_safe`. A single "last error anywhere" global would be wrong here:
+#: ``_safe`` has seven callers, ``/api/emulator/defaults`` is a sync ``def`` that FastAPI
+#: therefore runs in a threadpool, and ``App.vue`` fires six fetches at startup — so any
+#: other introspection succeeding concurrently would blank this one's error, and any other
+#: failing would substitute its own.
+_analysis_error: str | None = None
 
 _ensure_ca_path = ensure_ca_path
 
@@ -1241,8 +1253,8 @@ def _build_options(schema: dict, differentiable: dict[str, bool]) -> dict:
     }
 
 
-def _safe(fn, fallback):
-    """Run an introspection, returning (value, ok); fall back on any failure.
+def _introspect(fn, fallback):
+    """Run an introspection, returning ``(value, ok, error)``; fall back on any failure.
 
     The failure is **logged**, not just counted. Falling back is silent by design --
     an older CA legitimately lacks these schemas -- but the same silence covers a
@@ -1253,17 +1265,26 @@ def _safe(fn, fallback):
 
     Debug level, because the expected case (an old CA, a missing optional extra) is
     not a problem and would otherwise cry wolf on every poll.
+
+    The formatted error is **returned**, not parked in a module global, so a caller that
+    wants to show it to the user holds it from the call that produced it. Handing it over
+    through shared state instead would make it whichever introspection finished last.
     """
-    global _last_introspection_error
     try:
-        value = fn(), True
-        _last_introspection_error = None
-        return value
+        return fn(), True, None
     except Exception as exc:  # noqa: BLE001 - CA missing / import failure
-        logger.debug("introspection %s failed; using the fallback", getattr(fn, "__name__", fn),
-                     exc_info=True)
-        _last_introspection_error = f"{type(exc).__name__}: {exc}"
-        return fallback, False
+        # partial() for the call sites that need an argument bound; unwrapped so the line
+        # names the introspection rather than "<lambda>" or a partial repr.
+        target = getattr(fn, "func", fn)
+        logger.debug("introspection %s failed; using the fallback",
+                     getattr(target, "__name__", target), exc_info=True)
+        return fallback, False, f"{type(exc).__name__}: {exc}"
+
+
+def _safe(fn, fallback):
+    """:func:`_introspect` for the callers that only need ``(value, ok)``."""
+    value, ok, _ = _introspect(fn, fallback)
+    return value, ok
 
 
 def get_solver_options(refresh: bool = False) -> dict:
@@ -1379,7 +1400,7 @@ def get_param_modifier_operations(
     if not refresh and output_dir in _modifier_cache:
         return _modifier_cache[output_dir]
     ops, ok = _safe(
-        lambda: _introspect_param_modifier_operations(output_dir),
+        functools.partial(_introspect_param_modifier_operations, output_dir),
         copy.deepcopy(_FALLBACK_PARAM_MODIFIER_OPERATIONS),
     )
     if ok:
@@ -1441,16 +1462,17 @@ def get_analysis_options(refresh: bool = False) -> dict:
     schema. Caches a successful introspection; returns the fallback uncached so a
     later CA-dir change can still pick it up.
     """
-    global _analysis_cache
+    global _analysis_cache, _analysis_error
     if _analysis_cache is not None and not refresh:
         return _analysis_cache
-    opts, ok = _safe(
+    opts, ok, err = _introspect(
         _introspect_analysis_options,
         {k: dict(v, options=[dict(o) for o in v["options"]]) for k, v in _FALLBACK_ANALYSIS_OPTIONS.items()},
     )
     opts = _normalise_uq_mode_key(opts)
     if ok:
         _analysis_cache = opts
+    _analysis_error = None if ok else err
     return opts
 
 
@@ -1476,7 +1498,8 @@ def analysis_options_error() -> str | None:
     fallback is in use, this says why, so a caller can put the cause in front of the
     person who has to act on it instead of in a log they cannot open.
     """
-    return None if analysis_options_introspected() else _last_introspection_error
+    get_analysis_options()
+    return _analysis_error
 
 
 def analysis_mode_options(mode: str) -> list[dict]:
@@ -1587,7 +1610,8 @@ def gradient_sources(
     Each descriptor carries ``value``/``label``/``do_ad``/``requires_all_differentiable``/
     ``description``.
     """
-    result, ok = _safe(lambda: _introspect_gradient_sources(model_type, solver, method), None)
+    result, ok = _safe(
+        functools.partial(_introspect_gradient_sources, model_type, solver, method), None)
     if not ok or result is None:
         descriptors, gated_by_ca = _fallback_gradient_sources(model_type, solver), False
     else:
