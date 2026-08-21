@@ -169,8 +169,12 @@ This export folder is self-contained:
     output/                      results are written here
 
 Usage:
+    python run_pipeline.py
+    # needs the engine: `pip install libcuflynx` (any environment with it will do)
+
     python run_pipeline.py --ca-src /path/to/circulatory_autogen/src
-    # or set CIRCULATORY_AUTOGEN_SRC in the environment
+    # or set CIRCULATORY_AUTOGEN_SRC -- a checkout wins over an installed package,
+    # so this is how you run the bundle against your own circulatory_autogen
 """
 import argparse
 import csv
@@ -194,12 +198,73 @@ def load_config():
 
 
 def resolve_ca_src():
+    """Where circulatory_autogen is coming from, or None for an installed package.
+
+    Three arrangements, in the order the app itself uses (see ca_imports):
+
+      1. ``--ca-src`` or ``CIRCULATORY_AUTOGEN_SRC`` naming a real directory wins.
+         A checkout the user deliberately pointed at is always preferred, so someone
+         developing against their own circulatory_autogen keeps doing so.
+      2. Otherwise, ``libcuflynx`` installed as an ordinary package is enough.
+      3. Only if neither is there does this give up, and then it names both ways out
+         rather than only the checkout.
+
+    Arrangement 2 used to be missing entirely, so a user who ran
+    ``pip install libcuflynx``, configured no CA directory in the GUI and exported a
+    pipeline got a bundle that could not run: it exited 1 asking for a checkout they
+    had no reason to have. ``ca_imports`` learned to resolve an installed package when
+    the distribution went to PyPI; this script carries a deliberate duplicate of that
+    rule (see the ca_imports docstring) and the duplicate was not updated with it.
+    """
     ap = argparse.ArgumentParser()
-    ap.add_argument("--ca-src", default=os.environ.get("CIRCULATORY_AUTOGEN_SRC"))
+    ap.add_argument("--ca-src", default=None)
     args, _ = ap.parse_known_args()
-    if not args.ca_src or not os.path.isdir(args.ca_src):
-        sys.exit("Pass --ca-src <circulatory_autogen/src> or set CIRCULATORY_AUTOGEN_SRC.")
-    return args.ca_src
+
+    explicit = args.ca_src
+    configured = explicit or os.environ.get("CIRCULATORY_AUTOGEN_SRC")
+
+    if configured:
+        if os.path.isdir(configured):
+            return configured
+        if explicit:
+            # Named on the command line: a wrong path is a mistake to report, not
+            # something to paper over by quietly running a different engine.
+            sys.exit("--ca-src %r is not a directory." % (configured,))
+        # A bundle often outlives the machine it was made on, so a stale
+        # CIRCULATORY_AUTOGEN_SRC in someone's profile is ordinary rather than an
+        # error. Say so, and carry on if there is an installed package to carry on
+        # with.
+        sys.stderr.write(
+            "warning: CIRCULATORY_AUTOGEN_SRC=%r is not a directory; looking for an "
+            "installed libcuflynx instead.\\n" % (configured,)
+        )
+
+    if installed_libcuflynx_available():
+        return None
+
+    sys.exit(
+        "circulatory_autogen was not found. Either install the engine:\\n"
+        "    pip install libcuflynx\\n"
+        "or point this bundle at a checkout of it:\\n"
+        "    python run_pipeline.py --ca-src /path/to/circulatory_autogen/src\\n"
+        "    # or set CIRCULATORY_AUTOGEN_SRC in the environment"
+    )
+
+
+def installed_libcuflynx_available():
+    """Whether ``libcuflynx`` can be imported without help from ``--ca-src``.
+
+    ``find_spec`` rather than an import: this only has to answer whether the package
+    is present, and importing it costs seconds the failure path should not pay. It
+    raises rather than returning None when a parent is missing or is not a package,
+    so catching that is part of the answer.
+    """
+    import importlib.util
+
+    try:
+        return importlib.util.find_spec(CA_NAMESPACE) is not None
+    except (ImportError, AttributeError, ValueError):
+        return False
 
 
 CA_NAMESPACE = "libcuflynx"
@@ -469,7 +534,11 @@ def save_uq_samples(out_dir, flat, qnames):
 
 
 def main():
-    sys.path.insert(0, resolve_ca_src())
+    # None means "an installed libcuflynx answers already" -- leave sys.path alone
+    # rather than prepending a bogus entry.
+    ca_src = resolve_ca_src()
+    if ca_src:
+        sys.path.insert(0, ca_src)
     cfg = load_config()
 
     output_dir = os.path.join(HERE, "output")

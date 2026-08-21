@@ -13,7 +13,6 @@ from conftest import (
     LV_MODEL_PATH,
     LV_OBS_DATA_PATH,
     LV_PARAMS_CSV_PATH,
-    running_against_installed_ca_only,
     upload_model,
 )
 
@@ -417,24 +416,6 @@ def _setup_3compartment(client):
     return model_id
 
 
-# Found by the integration workflow, on its first run: the exported `run_pipeline.py`
-# has no way to use an *installed* libcuflynx. It resolves CA only from a checkout and
-# exits 1 with "Pass --ca-src <circulatory_autogen/src> or set CIRCULATORY_AUTOGEN_SRC."
-#
-# That is a real gap rather than a test artefact -- a user who ran `pip install
-# libcuflynx`, configured no CA directory, and exported a pipeline gets a script that
-# cannot run. `ca_imports` learned to resolve an installed package; `run_pipeline.py`
-# carries a deliberate duplicate of that rule (see the ca_imports docstring) and the
-# duplicate was never updated.
-#
-# strict=True so this cannot rot: whoever teaches run_pipeline.py to fall back to an
-# installed package will be told to delete this marker by the suite going red.
-@pytest.mark.xfail(
-    running_against_installed_ca_only(),
-    strict=True,
-    reason="exported run_pipeline.py cannot resolve an installed libcuflynx; it "
-           "requires --ca-src or CIRCULATORY_AUTOGEN_SRC pointing at a checkout",
-)
 @pytest.mark.integration
 def test_export_pipeline_simulation_runs_and_honors_obs_protocol(client, requires_casadi, tmp_path):
     """Full pipeline: load the three files, set a casadi_python backend, export the
@@ -478,9 +459,15 @@ def test_export_pipeline_simulation_runs_and_honors_obs_protocol(client, require
     assert resp.status_code == 200, resp.text
     export_dir = resp.json()["export_dir"]
 
+    # Pass --ca-src only when there really is a checkout to point at. With none
+    # configured the bundle now resolves an installed libcuflynx by itself, and handing
+    # it a path that does not exist is -- correctly -- an error rather than something to
+    # ignore. Before that fix this line passed a non-existent path and the whole test
+    # died on it, which is how the gap was found.
     ca_src = engine_mod._circulatory_autogen_src()
+    args = ["--ca-src", ca_src] if ca_src and os.path.isdir(ca_src) else []
     proc = subprocess.run(
-        [sys.executable, "run_pipeline.py", "--ca-src", ca_src],
+        [sys.executable, "run_pipeline.py", *args],
         cwd=export_dir, capture_output=True, text=True, timeout=600,
     )
     assert proc.returncode == 0, f"pipeline failed:\n{proc.stdout}\n{proc.stderr}"
@@ -691,3 +678,262 @@ def test_an_export_without_user_funcs_omits_the_keys(client, tmp_path):
     ui = yaml.safe_load(next(Path(resp.json()["export_dir"]).glob("user_inputs_*.yaml")).read_text())
     assert "operation_funcs_external_path" not in ui
     assert "cost_funcs_external_path" not in ui
+
+
+# ---------------------------------------------------------------------------
+# The bundle finds circulatory_autogen the same three ways the app does
+#
+# An exported bundle used to insist on a checkout: `resolve_ca_src` accepted only
+# --ca-src / CIRCULATORY_AUTOGEN_SRC and exited 1 otherwise. Since CA #452 put the
+# engine on PyPI as `libcuflynx`, a user who ran `pip install libcuflynx`, configured
+# no CA directory in the GUI and exported a pipeline got a bundle that could not run,
+# asking them for a checkout they had no reason to have.
+#
+# The app's own resolver (`ca_imports`) already accepted an installed package; this
+# script carries a deliberate duplicate of that rule and the duplicate was not updated
+# with it. These pin all three arrangements so it cannot drift back.
+#
+# Driven as a subprocess against the *rendered* script rather than by importing
+# `resolve_ca_src`: what ships is the rendered text, and exercising the generator's own
+# source would not notice a rendering bug. Each run stops at `load_config` (no yaml
+# beside it), which is far enough to prove CA resolution happened and cheap enough for
+# the unit tier.
+# ---------------------------------------------------------------------------
+def _render_bundle_script(tmp_path):
+    """Write the rendered run_pipeline.py into an otherwise empty directory.
+
+    ``encoding="utf-8"`` is load-bearing, and matches how ``main.py`` writes the real
+    bundle. ``Path.write_text`` otherwise uses the locale encoding, which on Windows is
+    cp1252: the script's docstring contains an em dash, cp1252 stores it as the single
+    byte 0x97, and Python then refuses to parse the file it just wrote --
+    "Non-UTF-8 code starting with '\\x97' ... but no encoding declared". Every test
+    here then fails on a SyntaxError instead of on what it meant to check.
+    """
+    path = tmp_path / "run_pipeline.py"
+    path.write_text(ep.render_pipeline_script(), encoding="utf-8")
+    return path
+
+
+def _run_bundle(script_path, args=(), env_extra=None, timeout=600):
+    """Run the rendered script; return (returncode, combined output).
+
+    CIRCULATORY_AUTOGEN_SRC is stripped unless a case sets it, so a developer's own
+    environment cannot silently decide which arrangement is under test.
+    """
+    import subprocess
+    import sys
+
+    env = dict(os.environ)
+    env.pop("CIRCULATORY_AUTOGEN_SRC", None)
+    env.update(env_extra or {})
+    proc = subprocess.run(
+        [sys.executable, str(script_path), *args],
+        cwd=str(script_path.parent), capture_output=True, text=True, timeout=timeout,
+        env=env,
+    )
+    return proc.returncode, (proc.stdout + proc.stderr)
+
+
+#: What the old code exited with. Named once so the assertions read as "it no longer
+#: says this" rather than repeating a string.
+_OLD_REFUSAL = "Pass --ca-src <circulatory_autogen/src> or set CIRCULATORY_AUTOGEN_SRC."
+
+
+def _libcuflynx_is_installed():
+    from ca_imports import installed_package_available
+
+    return installed_package_available()
+
+
+def test_the_bundle_runs_against_an_installed_libcuflynx_with_no_checkout(tmp_path):
+    """No --ca-src, no env var: an installed libcuflynx must be enough.
+
+    The regression test for the reported failure. "It got past CA resolution" is
+    asserted by what it complains about *instead* -- the missing yaml, which is the next
+    thing main() does. Asserting merely a non-zero exit would pass against the old code
+    too, which also exited non-zero.
+    """
+    if not _libcuflynx_is_installed():
+        pytest.skip("libcuflynx is not installed as a package in this environment")
+    script = _render_bundle_script(tmp_path)
+    rc, out = _run_bundle(script)
+    assert _OLD_REFUSAL not in out, (
+        "the bundle still demands a checkout though libcuflynx is installed:\n" + out)
+    assert "circulatory_autogen was not found" not in out, out
+    assert "No user_inputs_*.yaml found" in out, (
+        "expected it to get as far as looking for its config; got:\n" + out)
+
+
+def test_a_named_ca_src_that_does_not_exist_is_an_error_not_a_fallback(tmp_path):
+    """--ca-src is an instruction, so a wrong path is reported rather than ignored.
+
+    Quietly running a different engine than the one named would make a typo look like
+    success, with results from an engine the user did not choose.
+    """
+    script = _render_bundle_script(tmp_path)
+    rc, out = _run_bundle(script, ["--ca-src", str(tmp_path / "nope")])
+    assert rc != 0
+    assert "is not a directory" in out, out
+
+
+def test_a_stale_environment_variable_falls_back_with_a_warning(tmp_path):
+    """A bundle outlives the machine it was made on, so a stale env var is ordinary.
+
+    Unlike --ca-src this is ambient rather than an instruction, so it degrades to the
+    installed package -- but it has to say so, or the run silently uses an engine other
+    than the one the environment names.
+    """
+    if not _libcuflynx_is_installed():
+        pytest.skip("libcuflynx is not installed as a package in this environment")
+    script = _render_bundle_script(tmp_path)
+    rc, out = _run_bundle(
+        script, env_extra={"CIRCULATORY_AUTOGEN_SRC": str(tmp_path / "gone")})
+    assert "looking for an installed libcuflynx instead" in out, out
+    assert "No user_inputs_*.yaml found" in out, out
+
+
+def test_with_neither_it_names_both_ways_out(tmp_path):
+    """The failure message must offer the install, not only the checkout.
+
+    Simulated by making the package unfindable in the child, since this environment has
+    it installed: without that the case is unreachable and the message goes untested --
+    and it is the message a user in exactly this situation reads.
+    """
+    script = _render_bundle_script(tmp_path)
+    (tmp_path / "sitecustomize.py").write_text(
+        "import importlib.util\n"
+        "_real = importlib.util.find_spec\n"
+        "def _blocked(name, *a, **k):\n"
+        "    if name == 'libcuflynx':\n"
+        "        return None\n"
+        "    return _real(name, *a, **k)\n"
+        "importlib.util.find_spec = _blocked\n",
+        encoding="utf-8",
+    )
+    rc, out = _run_bundle(script, env_extra={"PYTHONPATH": str(tmp_path)})
+    assert rc != 0
+    assert "pip install libcuflynx" in out, out
+    assert "--ca-src" in out, out
+
+
+# ---------------------------------------------------------------------------
+# The bundle and the GUI agree
+#
+# The export exists so a study can be reproduced outside CUFLynx. That promise is only
+# worth anything if the bundle computes the *same thing* the app did -- and nothing
+# checked it: the existing end-to-end test asserts the bundle runs and that its traces
+# are finite and pulsatile, which a subtly different simulation would also satisfy.
+#
+# So this runs the same model twice, once through /api/simulate and once through the
+# exported bundle driven by an installed libcuflynx, and compares the traces.
+# ---------------------------------------------------------------------------
+@pytest.mark.integration
+def test_the_bundle_reproduces_the_gui_simulation(client, requires_simulation, tmp_path):
+    """Same model, same window: the exported bundle's traces match the app's.
+
+    Compared by interpolating the app's series onto the bundle's time grid -- the two
+    choose their own sample points, so comparing element-wise would fail on grid shape
+    rather than on physics. The tolerance is relative to each trace's own range, so a
+    pressure in Pa and a flow in m^3/s are held to the same standard.
+
+    Run with **no --ca-src**, so this is also the end-to-end proof that a bundle works
+    against an installed libcuflynx: before the fix it could not get this far at all.
+    """
+    import subprocess
+    import sys
+
+    import numpy as np
+
+    model_id = _setup_3compartment(client)
+
+    # The window the bundle will use comes from the obs_data protocol_info
+    # (pre_time 10, sim_time 2), so ask the app for exactly that or the two are not
+    # comparable in the first place.
+    obs = json.loads(C3_OBS_DATA_PATH.read_text(encoding="utf-8"))
+    operands = sorted({op for item in obs["data_items"] for op in item["operands"]})
+    gui = client.post("/api/simulate", json={
+        "model_id": model_id,
+        "params": {},
+        "pre_time": 10.0,
+        "sim_time": 2.0,
+        "outputs": operands,
+    })
+    assert gui.status_code == 200, gui.text
+    gui_body = gui.json()
+    gui_time = np.asarray(gui_body["time"], dtype=float)
+    gui_outputs = {k: np.asarray(v, dtype=float) for k, v in gui_body["outputs"].items()}
+
+    resp = client.post("/api/export/pipeline", json={
+        "model_id": model_id,
+        "file_prefix": "3compartment_flat",
+        "pre_time": 10.0,
+        "sim_time": 2.0,
+        "enabled": {"do_simulation": True},
+        "config_outputs_dir": str(tmp_path),
+    })
+    assert resp.status_code == 200, resp.text
+    export_dir = resp.json()["export_dir"]
+
+    env = dict(os.environ)
+    env.pop("CIRCULATORY_AUTOGEN_SRC", None)
+    proc = subprocess.run(
+        [sys.executable, "run_pipeline.py"],
+        cwd=export_dir, capture_output=True, text=True, timeout=900, env=env,
+    )
+    assert proc.returncode == 0, (
+        "the bundle failed to run against an installed libcuflynx:\n"
+        + proc.stdout + proc.stderr
+    )
+
+    npz = os.path.join(export_dir, "output", "all_outputs_exp_0.npz")
+    assert os.path.isfile(npz), "all_outputs_exp_0.npz not written"
+    data = np.load(npz, allow_pickle=False)
+    bundle_time = np.asarray(data["time"], dtype=float)
+
+    # The two layers name the same variable differently, which is worth stating rather
+    # than quietly papering over: the app answers in CellML component/variable form
+    # ("aortic_root/u"), while circulatory_autogen's own npz uses the flattened Myokit
+    # spelling with the module suffix intact ("aortic_root_module.u"). Neither is wrong
+    # -- they are different layers' conventions -- but a comparison has to bridge them,
+    # and doing it by rule rather than by a hand-written table means a model with other
+    # components is still covered.
+    def _bundle_key(gui_name):
+        component, _, variable = gui_name.partition("/")
+        for candidate in (f"{component}.{variable}", f"{component}_module.{variable}"):
+            if candidate in data.files:
+                return candidate
+        return None
+
+    pairs = [(op, _bundle_key(op)) for op in operands if op in gui_outputs]
+    pairs = [(gui_name, key) for gui_name, key in pairs if key]
+    # Every operand must be paired, not merely one of them. Falling to a subset is how
+    # this would keep passing while comparing almost nothing -- and a renamed component
+    # would do exactly that.
+    assert len(pairs) == len(operands), (
+        f"only paired {len(pairs)} of {len(operands)} obs operands. app gave "
+        f"{sorted(gui_outputs)}; bundle gave {sorted(data.files)[:20]}...")
+
+    # Both windows start wherever their own pre_time ended; compare shape, not offset.
+    gui_t = gui_time - gui_time[0]
+    bundle_t = bundle_time - bundle_time[0]
+    assert abs(gui_t[-1] - bundle_t[-1]) < 0.2, (
+        f"the two ran different windows: app {gui_t[-1]:.3f}s, bundle {bundle_t[-1]:.3f}s")
+
+    for gui_name, key in pairs:
+        want = np.interp(bundle_t, gui_t, gui_outputs[gui_name])
+        got = np.asarray(data[key], dtype=float)
+        assert np.all(np.isfinite(got)), f"{key}: bundle produced non-finite values"
+        scale = float(np.ptp(want)) or float(np.max(np.abs(want))) or 1.0
+        worst = float(np.max(np.abs(got - want))) / scale
+        # Measured at exactly 0.0 on all three traces -- same 201 samples, same 2.000 s
+        # window, identical values -- because both routes drive the same libcuflynx
+        # solver with the same config. So this is a tight bound deliberately: a loose
+        # one (2% was the first draft) would let a real divergence through while still
+        # looking like an equivalence test. The 1e-6 is headroom for platform floating
+        # point, not for a difference in what was computed.
+        assert worst < 1e-6, (
+            f"{gui_name} (bundle: {key}): the two disagree by {worst:.2e} of the "
+            f"trace's range. They agreed exactly when this was written, so any "
+            f"visible difference means the bundle now reproduces something other than "
+            f"the study the app ran."
+        )
