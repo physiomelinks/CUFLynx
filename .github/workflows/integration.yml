@@ -89,10 +89,14 @@ jobs:
       # system Open MPI here would be a *different* MPI from the one mpi4py binds, and
       # every rank would abort at MPI_Init with "unsupported PMI version PMIx" -- the
       # exact failure resolve_mpiexec was written to avoid.
+      # --build-constraint, not a runtime pin: the `full` extra reaches `harmonic`,
+      # which has no cp310 wheel, so pip builds its sdist here. See
+      # build-constraints.txt for what that ceiling is holding back.
       - name: Install the app and its dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[${{ matrix.extras }}]"
+          pip install --build-constraint "${{ github.workspace }}/build-constraints.txt" \
+            -e ".[${{ matrix.extras }}]"
 
       # Fail here rather than 20 minutes later in a wall of skips. Each of these is a
       # dependency the tier silently degrades without, and the point of this job is that
@@ -257,7 +261,9 @@ jobs:
       - name: Install everything at its newest allowed version
         run: |
           python -m pip install --upgrade pip
-          pip install --upgrade --upgrade-strategy eager -e ".[dev,analysis,full]"
+          pip install --upgrade --upgrade-strategy eager \
+            --build-constraint "${{ github.workspace }}/build-constraints.txt" \
+            -e ".[dev,analysis,full]"
 
       - name: Record what was resolved
         if: always()
