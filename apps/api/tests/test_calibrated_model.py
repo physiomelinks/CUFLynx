@@ -20,7 +20,16 @@ def test_substitutes_best_fit_into_flat_model_parameters():
     best = {"aortic_root/C": 9.99e-09, "global/E_lv_A": 3.33e8, "global/q_lv_init": 1.234e-4}
     new_text, report = calibrated_cellml(text, best)
 
-    assert report == {"updated": list(best), "unresolved": []}
+    assert report["updated"] == list(best)
+    assert report["unresolved"] == []
+    # Where each name landed, so a caller can say which component was written
+    # without redoing the resolution (the PhLynx send warns on anything outside
+    # `parameters` / `parameters_global`, #287).
+    assert report["resolved"] == {
+        "aortic_root/C": "parameters/C_aortic_root",
+        "global/E_lv_A": "parameters_global/E_lv_A",
+        "global/q_lv_init": "parameters_global/q_lv_init",
+    }
     iv = _reparse(new_text)
     # Written onto the right flat-model constants (parameters / parameters_global).
     assert iv["parameters/C_aortic_root"] == pytest.approx(9.99e-09)

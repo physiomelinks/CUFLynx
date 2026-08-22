@@ -9,10 +9,12 @@ vi.mock('../lib/api', () => ({
   getObsDataOptions: vi.fn(),
   fetchExampleModel: vi.fn(),
   editModelSource: vi.fn(),
+  sendToPhlynx: vi.fn(),
+  phlynxDownloadRequest: vi.fn(),
 }))
 
 import FileImport from './FileImport.vue'
-import { PHLYNX_URL } from '../lib/examples'
+import { PHLYNX_URL, phlynxOpenUrl } from '../lib/examples'
 import {
   uploadCellML,
   uploadObsData,
@@ -20,6 +22,8 @@ import {
   fetchExampleModel,
   editModelSource,
   uploadOmex,
+  sendToPhlynx,
+  phlynxDownloadRequest,
 } from '../lib/api'
 
 // Real <button> stub so the Edit button's disabled state + click are observable;
@@ -57,8 +61,15 @@ const MessageStub = {
   props: ['severity', 'closable'],
   template: '<div><slot /></div>',
 }
+// PrimeVue's Dialog needs its plugin config; the send dialog is only read for
+// its options and buttons, so a slot-rendering stub is enough.
+const DialogStub = {
+  props: ['visible', 'header', 'modal'],
+  template: '<div v-if="visible" v-bind="$attrs"><slot /><slot name="footer" /></div>',
+}
 const stubs = {
   Message: MessageStub,
+  Dialog: DialogStub,
   InputText: true,
   Button: ButtonStub,
   FileBrowserDialog: true,
@@ -80,6 +91,8 @@ beforeEach(() => {
   uploadParamsForId.mockReset()
   fetchExampleModel.mockReset()
   uploadOmex.mockReset()
+  sendToPhlynx.mockReset()
+  phlynxDownloadRequest.mockReset()
 })
 
 describe('FileImport', () => {
@@ -292,13 +305,15 @@ describe('FileImport', () => {
     expect(uploadCellML).toHaveBeenCalledOnce()
   })
 
-  it('Edit opens PhLynx instead of the Start dialog when a model is loaded', async () => {
+  it('Edit opens the send dialog instead of the Start dialog when a model is loaded', async () => {
     const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null)
     const wrapper = mount(FileImport, { props: { modelId: 'abc' }, global: { stubs } })
     await wrapper.find('[data-testid="start-edit"]').trigger('click')
     expect(wrapper.find('[data-testid="start-dialog"]').exists()).toBe(false)
-    expect(openSpy).toHaveBeenCalledOnce()
-    expect(openSpy.mock.calls[0][0]).toBe(PHLYNX_URL)
+    // The whole study travels, so the user picks which values go with it (#290);
+    // opening a bare PhLynx tab was the #91 placeholder this replaces.
+    expect(wrapper.find('[data-testid="phlynx-send-dialog"]').exists()).toBe(true)
+    expect(openSpy).not.toHaveBeenCalled()
     openSpy.mockRestore()
   })
 
@@ -400,8 +415,7 @@ describe('FileImport', () => {
     )
   })
 
-  it('Edit still opens PhLynx for a plain CellML model', async () => {
-    const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null)
+  it('Edit still targets PhLynx for a plain CellML model', async () => {
     const wrapper = mount(FileImport, {
       props: { modelId: 'abc', modelFormat: '', convertedFrom: null },
       global: { stubs },
@@ -410,8 +424,125 @@ describe('FileImport', () => {
     expect(btn.text()).toBe('Edit')
     expect(btn.attributes('title')).toContain('PhLynx')
     await btn.trigger('click')
-    expect(openSpy.mock.calls[0][0]).toBe(PHLYNX_URL)
+    expect(wrapper.find('[data-testid="phlynx-send-dialog"]').exists()).toBe(true)
+  })
+
+  // --- Sending the study to PhLynx (#290) ------------------------------------
+  const SEND_OK = {
+    base64: 'UEsDBBQ=',
+    bytes: 120,
+    too_large: false,
+    filename: 'heart.omex',
+    members: ['manifest.xml', 'model.cellml'],
+    member_count: 2,
+    updated: ['aortic_root/C'],
+    unresolved: [],
+    outside_parameters: [],
+  }
+
+  async function openSend(props = {}) {
+    const wrapper = mount(FileImport, {
+      props: { modelId: 'abc', ...props },
+      global: { stubs },
+    })
+    await wrapper.find('[data-testid="start-edit"]').trigger('click')
+    return wrapper
+  }
+
+  it('sends the current slider values and opens PhLynx at the archive', async () => {
+    const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null)
+    sendToPhlynx.mockResolvedValue(SEND_OK)
+    const wrapper = await openSend({
+      paramValues: { 'aortic_root/C': 1.5 },
+      outputsDir: '/studies/heart',
+    })
+
+    await wrapper.find('[data-testid="phlynx-send-confirm"]').trigger('click')
+    await flushPromises()
+
+    expect(sendToPhlynx).toHaveBeenCalledWith('abc', {
+      source: 'current',
+      values: { 'aortic_root/C': 1.5 },
+      outputDir: '/studies/heart',
+    })
+    // PhLynx picks its loader from `?open=`, and its own decoder builds the
+    // data URI, so the fragment is bare base64.
+    expect(openSpy.mock.calls[0][0]).toBe(`${PHLYNX_URL}/?open=omex#UEsDBBQ=`)
+    expect(openSpy.mock.calls[0][0]).toBe(phlynxOpenUrl('UEsDBBQ='))
+    expect(wrapper.find('[data-testid="phlynx-send-dialog"]').exists()).toBe(false)
     openSpy.mockRestore()
+  })
+
+  it('sends no values for "as imported"', async () => {
+    const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null)
+    sendToPhlynx.mockResolvedValue(SEND_OK)
+    const wrapper = await openSend({ paramValues: { 'aortic_root/C': 1.5 } })
+    await wrapper.find('[data-testid="phlynx-source-as_imported"]').setValue()
+    await wrapper.find('[data-testid="phlynx-send-confirm"]').trigger('click')
+    await flushPromises()
+    expect(sendToPhlynx.mock.calls[0][1].source).toBe('as_imported')
+    expect(sendToPhlynx.mock.calls[0][1].values).toEqual({})
+    openSpy.mockRestore()
+  })
+
+  it('the best-fit option needs an outputs directory to read it from', async () => {
+    const withDir = await openSend({ outputsDir: '/studies/heart' })
+    expect(
+      withDir.find('[data-testid="phlynx-source-best_fit"]').attributes('disabled'),
+    ).toBeUndefined()
+
+    const without = await openSend({ outputsDir: '' })
+    expect(
+      without.find('[data-testid="phlynx-source-best_fit"]').attributes('disabled'),
+    ).toBeDefined()
+  })
+
+  it('names parameters the model could not take, and ones PhLynx will ignore', async () => {
+    const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null)
+    sendToPhlynx.mockResolvedValue({
+      ...SEND_OK,
+      unresolved: ['ghost/param'],
+      outside_parameters: ['heart/E -> heart/E_es'],
+    })
+    const wrapper = await openSend()
+    await wrapper.find('[data-testid="phlynx-send-confirm"]').trigger('click')
+    await flushPromises()
+    const text = wrapper.find('[data-testid="import-notice"]').text()
+    expect(text).toContain('ghost/param')
+    expect(text).toContain('heart/E -> heart/E_es')
+    openSpy.mockRestore()
+  })
+
+  it('an archive too big for a URL is downloaded instead of opened', async () => {
+    const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null)
+    sendToPhlynx.mockResolvedValue({ ...SEND_OK, too_large: true, bytes: 3_000_000 })
+    phlynxDownloadRequest.mockResolvedValue({ data: new Blob(['zip']) })
+    // jsdom has no object-URL support.
+    URL.createObjectURL = vi.fn(() => 'blob:archive')
+    URL.revokeObjectURL = vi.fn()
+    const wrapper = await openSend()
+
+    await wrapper.find('[data-testid="phlynx-send-confirm"]').trigger('click')
+    await flushPromises()
+
+    expect(phlynxDownloadRequest).toHaveBeenCalledOnce()
+    expect(openSpy).not.toHaveBeenCalled()
+    expect(wrapper.find('[data-testid="import-notice"]').text()).toContain('heart.omex')
+    openSpy.mockRestore()
+  })
+
+  it('a refused send is reported and the dialog stays open to retry', async () => {
+    sendToPhlynx.mockRejectedValue({
+      response: { data: { detail: 'no calibration best fit was found' } },
+    })
+    const wrapper = await openSend({ outputsDir: '/studies/heart' })
+    await wrapper.find('[data-testid="phlynx-source-best_fit"]').setValue()
+    await wrapper.find('[data-testid="phlynx-send-confirm"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="import-error"]').text()).toContain(
+      'no calibration best fit',
+    )
+    expect(wrapper.find('[data-testid="phlynx-send-dialog"]').exists()).toBe(true)
   })
 
   it('with no model loaded the button still opens the Start dialog', async () => {

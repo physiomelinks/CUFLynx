@@ -1,6 +1,19 @@
 // PhLynx — the sibling model-builder web app. "Create" links here to build a
-// model from scratch; "Edit" opens the current model there.
+// model from scratch; "Edit" sends the current study there.
 export const PHLYNX_URL = 'https://www.phlynx.com'
+
+// How PhLynx takes a model from a link. Its `useLoadFromUrl` reads `?open=<keyword>`
+// to pick a loader and hands that loader the raw URL fragment; `urlLoaders.js`
+// registers the keyword below for a COMBINE archive.
+//
+// The fragment is **bare base64**, not a data URI: PhLynx's `base64ToBlob` builds
+// `data:application/zip;base64,<payload>` itself, so a data URI would arrive
+// double-prefixed and fail to decode. (Upstream's answer on #290 says a data URI
+// will be passed — that is not what the loader does today, so this is the one
+// place to change if they land the tolerant version.)
+export function phlynxOpenUrl(base64) {
+  return `${PHLYNX_URL}/?open=omex#${base64}`
+}
 
 // The Physiome Model Repository — browse/download existing CellML models to drop in.
 export const PMR_URL = 'https://models.physiomeproject.org'

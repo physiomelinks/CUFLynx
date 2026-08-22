@@ -258,6 +258,29 @@ export async function uploadOmex(file, outputDir = '') {
 // `save` (#215) asks the server to also write the dated copy where the study
 // lives — { outputsDir, filename } — instead of the browser downloading it.
 // Omitted for a plain upload, which already has a file on disk.
+// Build the study as a COMBINE archive for PhLynx (#290). The server assembles
+// and base64s it, so the writer lives in one place and the frontend keeps
+// assuming nothing about a local backend — all it does with the result is
+// `window.open`. `source` is 'current' | 'best_fit' | 'as_imported'.
+export async function sendToPhlynx(modelId, { source = 'current', values = {}, outputDir = '' } = {}) {
+  const { data } = await axios.post(url('/api/phlynx/send'), {
+    model_id: modelId,
+    source,
+    values,
+    output_dir: outputDir,
+  })
+  return data
+}
+
+// The same archive as a file, for when it is too big to survive a URL fragment.
+export function phlynxDownloadRequest(modelId, { source = 'current', values = {}, outputDir = '' } = {}) {
+  return axios.post(
+    url('/api/phlynx/send'),
+    { model_id: modelId, source, values, output_dir: outputDir, download: true },
+    { responseType: 'blob' },
+  )
+}
+
 export async function uploadObsData(modelId, obsData, save = null) {
   const { data } = await axios.post(
     url('/api/obs_data/upload'),
