@@ -30,6 +30,23 @@ on:
     - cron: "17 4 * * 1"
   workflow_dispatch:
 
+# Keep UCX off the RDMA devices the Azure runners expose but cannot use. Every job
+# below launches mpiexec, and on a runner whose VM presents a MANA NIC with verbs
+# support UCX probes it, fails, and takes MPI_Init down with it:
+#
+#     ib_iface.c:1316 UCX ERROR mana_0: iface ... failed to create UD QP ...
+#         failed: Operation not supported
+#     Abort(941770127): Fatal error in internal_Init_thread ... MPIDI_UCX_init_local
+#
+# The job dies at exit 143 before a single test runs, and only on the runners that
+# happen to have the device -- so it presents as an intermittent failure unrelated to
+# whatever was pushed. release.yml already pins the same variable for the same reason
+# (it lost 2 of 3 release builds to the sibling "invalid bandwidth 0.00" form); this is
+# that fix, in the workflow that actually runs MPI rather than just importing it.
+# Two ranks on one VM need no fabric, so nothing is given up by saying so.
+env:
+  UCX_TLS: "tcp,self"
+
 jobs:
   # ---------------------------------------------------------------------------
   # The integration tier, against an installed libcuflynx
