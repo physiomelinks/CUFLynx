@@ -38,8 +38,8 @@ DT = 0.01
 # and the bug cannot occur. Bare data_items are exactly the heat1d example's shape.
 OBS_DATA = [
     {
-        "variable": f"probe {i} mean temperature",
-        "name_for_plotting": f"mean(T_p{i})",
+        "data_item_name": f"probe {i} mean temperature",
+        "trace_name_for_plotting": f"mean(T_p{i})",
         "data_type": "constant",
         "operation": "mean",
         "operands": [f"heat/T_p{i}"],

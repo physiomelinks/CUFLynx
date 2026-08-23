@@ -169,7 +169,7 @@ def test_a_nonsense_duration_is_refused():
 # Merging into an existing obs_data document
 # ---------------------------------------------------------------------------
 def test_filling_leaves_the_rest_of_the_document_alone():
-    doc = {"data_items": [{"variable": "membrane/V"}], "protocol_info": {"sim_times": [[1]]}}
+    doc = {"data_items": [{"data_item_name": "membrane/V"}], "protocol_info": {"sim_times": [[1]]}}
     out = mmt_protocol.fill_protocol_info(doc, {"sim_times": [[2.0]]})
     assert out["data_items"] == doc["data_items"]
     assert out["protocol_info"]["sim_times"] == [[2.0]]
@@ -318,14 +318,14 @@ def test_the_script_updates_an_existing_file_without_losing_its_data_items(
     mmt = tmp_path / "paced.mmt"
     mmt.write_bytes(PACED)
     out = tmp_path / "existing.json"
-    out.write_text(json.dumps({"data_items": [{"variable": "membrane/V"}], "protocol_info": {}}))
+    out.write_text(json.dumps({"data_items": [{"data_item_name": "membrane/V"}], "protocol_info": {}}))
 
     r = subprocess.run(
         [sys.executable, str(SCRIPT), str(mmt), "-o", str(out)], capture_output=True, text=True
     )
     assert r.returncode == 0, r.stderr
     doc = json.loads(out.read_text())
-    assert doc["data_items"] == [{"variable": "membrane/V"}]
+    assert doc["data_items"] == [{"data_item_name": "membrane/V"}]
     assert doc["protocol_info"]["sim_times"] == [[2000.0]]
     assert doc["protocol_info"]["protocol_shapes"]["engine_pace"]["events"][0]["period"] == 1000.0
 

@@ -80,6 +80,115 @@ def test_module_config_is_never_mistaken_for_obs_data():
     assert parts["module_config"][0] == "module_config.json"
 
 
+# A PhLynx OMEX as their exporter writes it (services/compress.js): SED-ML is
+# the master, the CellML is `model.cellml`, and `simulation.json` rides along as
+# plain `application/json` -- exactly the format a real obs_data carries.
+PHLYNX_MANIFEST = """<?xml version="1.0" encoding="UTF-8"?>
+<omexManifest xmlns="http://identifiers.org/combine.specifications/omex-manifest">
+  <content location="." format="http://identifiers.org/combine.specifications/omex"/>
+  <content location="./manifest.xml" format="http://identifiers.org/combine.specifications/omex-manifest"/>
+  <content location="./document.sedml" format="http://identifiers.org/combine.specifications/sed-ml" master="true"/>
+  <content location="./model.cellml" format="http://identifiers.org/combine.specifications/cellml"/>
+  <content location="./simulation.json" format="http://purl.org/NET/mediatypes/application/json"/>
+  <content location="./flow.json" format="application/x.vnd.phlynx-flow+json"/>
+  <content location="./changes.json" format="application/x.vnd.phlynx-changes+json"/>
+</omexManifest>
+"""
+
+
+def _phlynx_archive(**extra) -> bytes:
+    members = {
+        "manifest.xml": PHLYNX_MANIFEST,
+        "model.cellml": "<model/>",
+        "document.sedml": "<sedML/>",
+        "simulation.json": json.dumps({"plots": [], "settings": {}}),
+        "flow.json": json.dumps({"id": "phlynx-flow", "nodes": []}),
+        "changes.json": json.dumps({"id": "phlynx-changes", "version": "1.0.0", "modified": True}),
+    }
+    members.update(extra)
+    return _zip(members)
+
+
+def test_a_phlynx_archive_has_no_obs_data_rather_than_a_broken_one():
+    """`_classify` used to take *any* leftover .json as observations, so a PhLynx
+    archive imported as a parse-error banner: `simulation.json` is declared with
+    the same `application/json` a real obs_data carries, and `flow.json` /
+    `changes.json` were not known at all (#287/#290)."""
+    parts = omex_import.unpack(_phlynx_archive())
+    assert parts["obs"] is None
+    assert list(parts["cellml"]) == ["model.cellml"]
+    # Nothing was dropped on the way in -- an archive that cannot be re-emitted
+    # verbatim is one PhLynx's own state does not survive.
+    assert set(parts["members"]) == {
+        "manifest.xml",
+        "model.cellml",
+        "document.sedml",
+        "simulation.json",
+        "flow.json",
+        "changes.json",
+    }
+
+
+def test_a_real_obs_data_beside_phlynx_state_is_still_found():
+    """The exclusion is of declared non-observations, not of every JSON."""
+    obs = json.dumps({"protocol_info": {"sim_times": [1.0]}, "data_items": []})
+    parts = omex_import.unpack(_phlynx_archive(**{"study_obs_data.json": obs}))
+    assert parts["obs"][0] == "study_obs_data.json"
+
+
+def test_an_unnamed_obs_data_is_recognised_by_its_contents():
+    """With no manifest and no `obs` in the name, the document's own shape is
+    what separates observations from a companion file."""
+    parts = omex_import.unpack(
+        _zip(
+            {
+                "m.cellml": "<model/>",
+                "simulation.json": json.dumps({"plots": []}),
+                "measurements.json": json.dumps([{"variable": "a/b"}]),
+            }
+        )
+    )
+    assert parts["obs"][0] == "measurements.json"
+
+
+def test_a_params_for_id_json_is_params_not_obs_data():
+    """CUFLynx stores params_for_id as JSON (`_save_params_file`), so an archive
+    it writes has to be readable by it -- a params member falling through to the
+    obs_data pool means the study comes back without its parameters."""
+    parts = omex_import.unpack(
+        _zip(
+            {
+                "m.cellml": "<model/>",
+                "study_params_for_id.json": json.dumps({"parameters": []}),
+                "study_obs_data.json": json.dumps([{"variable": "a/b"}]),
+            }
+        )
+    )
+    assert parts["params"][0] == "study_params_for_id.json"
+    assert parts["obs"][0] == "study_obs_data.json"
+
+
+def test_the_manifest_is_returned_parsed():
+    parts = omex_import.unpack(_phlynx_archive())
+    entries = parts["manifest"]["entries"]
+    flow = [e for e in entries if e["location"].endswith("flow.json")][0]
+    assert flow["format"] == "application/x.vnd.phlynx-flow+json"
+    assert [e for e in entries if e["master"]][0]["location"].endswith("document.sedml")
+
+
+def test_a_phlynx_archive_imports_through_the_route_without_an_error(client):
+    """The user-visible half of the classify fix: no obs_data, no banner."""
+    model = (RESOURCES_DIR / "Lotka_Volterra_forced.cellml").read_bytes()
+    data = _phlynx_archive(**{"model.cellml": model})
+    resp = client.post(
+        "/api/omex/upload", files={"file": ("phlynx.omex", data, "application/zip")}
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["obs_data"] is None
+    assert body["params_for_id"] is None
+
+
 def test_the_manifest_picks_the_master_model():
     """Which CellML is the main model is the one thing file names cannot say."""
     parts = omex_import.unpack(

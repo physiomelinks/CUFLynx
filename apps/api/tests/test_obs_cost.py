@@ -13,7 +13,7 @@ import pytest
 
 def _item(**over):
     item = {
-        "variable": "pressure",
+        "data_item_name": "pressure",
         "name_for_plotting": "u_{AR}",
         "operation": "max",
         "operands": ["a/u"],
@@ -160,7 +160,7 @@ def test_a_cost_func_that_takes_no_std_is_not_handed_one(monkeypatch):
 
 def _obs_data(**over):
     item = {
-        "variable": "a/u", "name_for_plotting": "u", "operation": "max",
+        "data_item_name": "a/u", "name_for_plotting": "u", "operation": "max",
         "operands": ["a/u"], "unit": "dimensionless", "value": 10.0, "std": 1.0,
         "weight": 1.0, "experiment_idx": 0, "subexperiment_idx": 0,
         "data_type": "constant", "cost_type": "tolerant",
@@ -472,7 +472,7 @@ def test_without_ca_the_panel_still_reports(monkeypatch):
     monkeypatch.setattr(
         obs_cost, "get_cost_funcs", lambda _d=None: {"MSE": _mse})
 
-    item = {"variable": "x", "operation": "max", "operands": ["a/u"], "value": 1.0,
+    item = {"data_item_name": "x", "operation": "max", "operands": ["a/u"], "value": 1.0,
             "std": 1.0, "weight": 1.0, "cost_type": "MSE"}
     out = obs_cost.evaluate([item], {0: {"a/u": [3.0]}},
                             obs_data={"protocol_info": {}, "data_items": [item]})
@@ -594,13 +594,22 @@ def test_the_solver_cost_is_untouched_by_the_emulated_path():
 # None left the user with lines on the plot, no number beside them, and no way
 # to tell a stale bundle from an edited obs_data from a series observable.
 def _six_labels():
-    return [f'{op}(T_{{p{i}}}) ({op} heat/T_p{i})'
-            for i in (1, 2, 3) for op in ('mean', 'min')]
+    """CA's feature labels for :func:`_six_item_obs`, in the emulator's output order.
+
+    Since CA #466 a feature is labelled by the item's **identity** -- its
+    `data_item_name` -- not by a label composed from `name_for_plotting` and the
+    operation (`'mean(T_{p1}) (mean heat/T_p1)'`). The composed form could not be an
+    identity: two items on one trace shared it, which is the collision #466 was opened
+    for. Written out rather than derived from the fixture so that a change in CA's
+    labelling fails here, which is the whole point of matching by label.
+    """
+    return [f'probe {i} {op}' for i in (1, 2, 3) for op in ('mean', 'min')]
 
 
 def _six_item_obs():
     return [
-        {"variable": f"probe {i} {op}", "name_for_plotting": f"{op}(T_{{p{i}}})",
+        {"data_item_name": f"probe {i} {op}",
+         "trace_name_for_plotting": f"{op}(T_{{p{i}}})",
          "data_type": "constant", "operation": op, "operands": [f"heat/T_p{i}"],
          "unit": "dimensionless", "weight": 1.0, "value": 0.4, "std": 0.05,
          "cost_type": "gaussian_MLE"}

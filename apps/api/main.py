@@ -19,6 +19,7 @@ work (and are unit-tested) without Myokit installed.
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import errno
 import json
@@ -34,7 +35,7 @@ import yaml
 
 from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -56,6 +57,8 @@ import solver_plots
 import mmt_protocol
 import myokit_import
 import omex_import
+import omex_export
+from inbox import APP_NAME, RECEIVE_PORTS, inbox  # noqa: F401 - RECEIVE_PORTS is the contract
 from aadc_check import aadc_status
 import editor_launch
 from version import __version__
@@ -112,13 +115,54 @@ from uq import uq
 
 app = FastAPI(title="CUFLynx API", version=__version__)
 
+#: Origins allowed to reach the API from a *page* rather than from the app's own
+#: frontend. The first two are the Vite dev server; the rest are PhLynx, which
+#: hands a study to a running CUFLynx by posting it to the inbox (#287).
+#:
+#: An explicit list, never ``*``: this is the only door into an API that is
+#: otherwise trusted because nothing off-machine can reach it, and widening it is
+#: meant to be one reviewable line.
+ALLOWED_ORIGINS = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "https://www.phlynx.com",
+    "https://phlynx.com",
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def _allow_private_network(request: Request, call_next):
+    """Answer Chrome's Private Network Access preflight.
+
+    A page on the public internet reaching 127.0.0.1 is a private-network request:
+    Chrome sends ``Access-Control-Request-Private-Network: true`` on the preflight
+    and refuses the real request unless the response grants it. ``CORSMiddleware``
+    knows nothing about this header, so the grant has to be added here.
+
+    Only ever added for an origin already in ``ALLOWED_ORIGINS`` -- the CORS layer
+    decides *who* may talk to us, and this only says "yes, I know I am local".
+
+    This corner of the platform is moving: Chrome's successor proposal (Local
+    Network Access) intends to put a browser permission prompt in front of these
+    requests. That would add a prompt rather than break this, but the flow's UX is
+    not entirely ours.
+    """
+    response = await call_next(request)
+    if (
+        request.method == "OPTIONS"
+        and request.headers.get("access-control-request-private-network") == "true"
+        and request.headers.get("origin") in ALLOWED_ORIGINS
+    ):
+        response.headers["Access-Control-Allow-Private-Network"] = "true"
+    return response
 
 UPLOAD_DIR = Path(tempfile.gettempdir()) / "cuflynx_uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
@@ -176,6 +220,9 @@ class _ModelRecord:
         # Raw input files persisted on disk for circulatory_autogen calibration.
         self.obs_path: Path | None = None
         self.params_path: Path | None = None
+        # The .omex this study was loaded from, kept whole so it can be sent back
+        # with every member CUFLynx does not understand intact (#287/#290).
+        self.archive_path: Path | None = None
 
 
 # In-memory registry of uploaded models (process-scoped session store).
@@ -206,6 +253,7 @@ def _get_model(model_id: str) -> _ModelRecord:
             except failure:
                 continue
             record = _ModelRecord(model_id, path, meta)
+            record.archive_path = _model_archive_path(model_id)
             _models[model_id] = record
             return record
         raise HTTPException(status_code=404, detail=f"model {model_id!r} not found")
@@ -248,6 +296,31 @@ def _model_source_path(model_id: str) -> Path | None:
         if path.is_file():
             return path
     return None
+
+
+#: The archive a study was loaded from, kept whole beside the model derived from
+#: it. Deliberately **not** in ``MODEL_SOURCE_SUFFIXES``: that tuple drives the
+#: "Edit source" button, and an ``.omex`` there would try to open a zip in the
+#: user's text editor. Its only reader is the PhLynx send, which has to return
+#: every member CUFLynx does not understand byte-for-byte (#287/#290).
+MODEL_ARCHIVE_SUFFIX = ".omex"
+
+
+def _save_model_archive(model_id: str, data: bytes) -> Path | None:
+    """Keep the uploaded archive; never fatal, the study still loaded without it."""
+    path = UPLOAD_DIR / f"{model_id}{MODEL_ARCHIVE_SUFFIX}"
+    with contextlib.suppress(OSError):
+        path.write_bytes(data)
+        return path
+    return None
+
+
+def _model_archive_path(model_id: str) -> Path | None:
+    """The stored source archive for *model_id*, or None when it has none."""
+    if not _SAFE_MODEL_ID.match(str(model_id or "")):
+        return None
+    path = UPLOAD_DIR / f"{model_id}{MODEL_ARCHIVE_SUFFIX}"
+    return path if path.is_file() else None
 
 
 def _display_stem(name: str, fallback: str) -> str:
@@ -297,7 +370,14 @@ class ProtocolRunRequest(BaseModel):
 # ---------------------------------------------------------------------------
 @app.get("/api/health")
 def health() -> dict:
-    return {"status": "ok"}
+    """Liveness, and *which* app is alive.
+
+    ``app`` and ``version`` exist for PhLynx: it finds a running CUFLynx by
+    probing a small range of ports (:data:`RECEIVE_PORTS`), and without a marker
+    it could not tell us from anything else that answers ``/api/health`` on 8787 --
+    and would post a study at it.
+    """
+    return {"status": "ok", "app": APP_NAME, "version": __version__}
 
 
 # ---------------------------------------------------------------------------
@@ -1210,7 +1290,17 @@ async def upload_omex(
     Each part is loaded through the same code path a dropped file would take, so
     an archive cannot behave differently from its own contents.
     """
-    data = await file.read()
+    return import_omex_bytes(await file.read(), output_dir)
+
+
+def import_omex_bytes(data: bytes, output_dir: str | None = None) -> dict:
+    """Load an archive's bytes, whatever delivered them.
+
+    Split out from the upload route so the PhLynx inbox loads a study through the
+    **same** code, rather than growing a second importer beside it: an archive
+    that arrived over localhost has to behave exactly like one that was dropped,
+    and the way to guarantee that is for there to be one body.
+    """
     try:
         parts = omex_import.unpack(data)
     except omex_import.OmexImportError as exc:
@@ -1268,6 +1358,11 @@ async def upload_omex(
     if mmt_source is not None:
         _save_model_source(model_id, ".mmt", mmt_source)
     _models[model_id] = _ModelRecord(model_id, path, meta)
+    # The archive itself, whole. Everything CUFLynx does not understand -- the
+    # manifest, SED-ML, `simulation.json`, PhLynx's `flow.json` -- has to come
+    # back untouched when the study is sent on (#287), and it cannot come back
+    # from four extracted roles.
+    _models[model_id].archive_path = _save_model_archive(model_id, data)
 
     result = {
         "model_id": model_id,
@@ -1351,6 +1446,180 @@ async def upload_omex(
             }
 
     return result
+
+
+class PhlynxSendRequest(BaseModel):
+    model_id: str
+    #: Which parameter values are written into the model on the way out.
+    #: ``current`` -- the sliders, ``best_fit`` -- the last calibration,
+    #: ``as_imported`` -- none, the model exactly as CUFLynx holds it.
+    source: str = "current"
+    values: dict[str, float] = Field(default_factory=dict)  # for source="current"
+    output_dir: str = ""  # for source="best_fit"
+    #: Return the archive as a file instead of base64, for the size fallback: a
+    #: browser silently drops an over-long URL, so past a point the send becomes
+    #: a download the user drops into PhLynx by hand.
+    download: bool = False
+
+
+#: Base64 longer than this is not worth putting in a URL fragment -- browsers
+#: differ on where they truncate and none of them says so. Above it the frontend
+#: offers the archive as a file instead.
+PHLYNX_URL_LIMIT = 1_500_000
+
+
+@app.post("/api/phlynx/send")
+def phlynx_send(req: PhlynxSendRequest):
+    """Build the study as a COMBINE archive for PhLynx (#290).
+
+    The archive is assembled here rather than in the browser so there is one
+    writer, and so the frontend keeps assuming nothing about a local backend: it
+    receives base64 and does ``window.open``.
+
+    Every member of the archive the study was loaded from is returned
+    byte-for-byte except the model (flattened, with the chosen values
+    substituted) and params_for_id (refreshed from the study). obs_data is never
+    replaced, only added when the archive has none. See :mod:`omex_export`.
+    """
+    record = _get_model(req.model_id)
+    if record.path.suffix.lower() != ".cellml":
+        raise HTTPException(
+            status_code=422,
+            detail="only a CellML model can be sent to PhLynx, which is a CellML builder",
+        )
+
+    if req.source == "current":
+        values = dict(req.values)
+    elif req.source == "best_fit":
+        out_dir = _user_func_base_dir(req.output_dir)
+        best = ca_run_history.best_param_values(out_dir or "")["params"] if out_dir else {}
+        if not best:
+            raise HTTPException(
+                status_code=422,
+                detail="no calibration best fit was found in the outputs directory",
+            )
+        values = best
+    elif req.source == "as_imported":
+        values = {}
+    else:
+        raise HTTPException(status_code=422, detail=f"unknown source {req.source!r}")
+
+    _validate_param_keys(values)
+
+    stem = _display_stem(record.meta.name, "study")
+    archive = record.archive_path.read_bytes() if record.archive_path else None
+    try:
+        blob, report = omex_export.build_archive(
+            cellml_text=record.path.read_text(encoding="utf-8"),
+            values=values,
+            source_archive=archive,
+            obs_bytes=record.obs_path.read_bytes() if record.obs_path else None,
+            obs_name=f"{stem}_obs_data.json",
+            params_bytes=record.params_path.read_bytes() if record.params_path else None,
+            params_name=f"{stem}_params_for_id{record.params_path.suffix}"
+            if record.params_path
+            else "params_for_id.json",
+        )
+    except omex_export.OmexExportError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"could not read the study: {exc}") from exc
+
+    filename = f"{stem}.omex"
+    if req.download:
+        return Response(
+            content=blob,
+            media_type="application/zip",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    encoded = base64.b64encode(blob).decode("ascii")
+    return {
+        "base64": encoded,
+        "bytes": len(blob),
+        "too_large": len(encoded) > PHLYNX_URL_LIMIT,
+        "limit": PHLYNX_URL_LIMIT,
+        "filename": filename,
+        "members": report["members"],
+        "member_count": len(report["members"]),
+        "updated": report["updated"],
+        # Named, never silently dropped: a parameter that could not be written
+        # into the model is a value PhLynx will not see.
+        "unresolved": report["unresolved"],
+        # Written, but into a component PhLynx does not read parameter changes
+        # back out of (#287) -- so the value travels and is ignored.
+        "outside_parameters": report["outside_parameters"],
+    }
+
+
+#: A delivered archive is a payload from a web page, so it is capped well below
+#: anything a real study reaches. The point is that an accidental or hostile
+#: multi-gigabyte post cannot sit in this process's memory.
+MAX_INBOX_BYTES = 64 * 1024 * 1024
+
+
+@app.post("/api/inbox")
+async def deliver_to_inbox(request: Request) -> dict:
+    """Accept a study from PhLynx and **stage** it for the user to confirm (#287).
+
+    Deliberately not an import. CORS stops a page reading our responses; it does
+    not stop it sending, so anything running in the user's browser can reach this.
+    Staging is what makes the confirmation in the UI possible -- a route that
+    imported on arrival would have nothing left to ask about.
+
+    The archive is validated far enough to fail *here* rather than at accept time,
+    so PhLynx learns it sent something unreadable instead of the user learning it
+    a minute later.
+    """
+    data = await request.body()
+    if not data:
+        raise HTTPException(status_code=422, detail="no archive in the request body")
+    if len(data) > MAX_INBOX_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"archive is larger than the {MAX_INBOX_BYTES // (1024 * 1024)} MB limit",
+        )
+    try:
+        omex_import.unpack(data)
+    except omex_import.OmexImportError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    origin = request.headers.get("origin") or "an unknown page"
+    filename = _display_stem(request.query_params.get("filename") or "", "study") + ".omex"
+    return inbox.deliver(data, origin, filename)
+
+
+@app.get("/api/inbox")
+def peek_inbox() -> dict:
+    """What is waiting, if anything -- metadata only, never the archive.
+
+    Polled by the UI, which has no push channel: the frontend deliberately assumes
+    no local backend, and giving it one for this would be a bigger change than the
+    feature.
+    """
+    return {"pending": inbox.peek()}
+
+
+@app.post("/api/inbox/accept")
+def accept_inbox(output_dir: str | None = Query(default=None)) -> dict:
+    """Load the staged study, returning exactly what ``/api/omex/upload`` returns.
+
+    Same body, so the frontend feeds it into the same `model-loaded` /
+    `obs-data-loaded` / `params-loaded` flow a dropped archive takes -- there is
+    one importer (:func:`import_omex_bytes`) and one set of emits, not a second
+    pair that can drift from the first.
+    """
+    pending = inbox.take()
+    if pending is None:
+        raise HTTPException(status_code=404, detail="nothing is waiting in the inbox")
+    result = import_omex_bytes(pending.data, output_dir)
+    return {**result, "delivered_from": pending.origin}
+
+
+@app.post("/api/inbox/reject")
+def reject_inbox() -> dict:
+    """Discard without importing."""
+    return {"discarded": inbox.clear()}
 
 
 @app.get("/api/models/{model_id}/variables")

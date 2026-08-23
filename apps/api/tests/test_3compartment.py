@@ -54,7 +54,7 @@ def test_bare_list_obs_data_is_still_supported():
     parsed = obs_mod.parse_obs_data(
         [
             {
-                "variable": "flow",
+                "data_item_name": "flow",
                 "operands": ["aortic_root/v"],
                 "data_type": "constant",
                 "plot_type": "horizontal",
