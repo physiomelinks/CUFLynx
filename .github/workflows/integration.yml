@@ -30,6 +30,23 @@ on:
     - cron: "17 4 * * 1"
   workflow_dispatch:
 
+# Keep UCX off the RDMA devices the Azure runners expose but cannot use. Every job
+# below launches mpiexec, and on a runner whose VM presents a MANA NIC with verbs
+# support UCX probes it, fails, and takes MPI_Init down with it:
+#
+#     ib_iface.c:1316 UCX ERROR mana_0: iface ... failed to create UD QP ...
+#         failed: Operation not supported
+#     Abort(941770127): Fatal error in internal_Init_thread ... MPIDI_UCX_init_local
+#
+# The job dies at exit 143 before a single test runs, and only on the runners that
+# happen to have the device -- so it presents as an intermittent failure unrelated to
+# whatever was pushed. release.yml already pins the same variable for the same reason
+# (it lost 2 of 3 release builds to the sibling "invalid bandwidth 0.00" form); this is
+# that fix, in the workflow that actually runs MPI rather than just importing it.
+# Two ranks on one VM need no fabric, so nothing is given up by saying so.
+env:
+  UCX_TLS: "tcp,self"
+
 jobs:
   # ---------------------------------------------------------------------------
   # The integration tier, against an installed libcuflynx
@@ -89,10 +106,26 @@ jobs:
       # system Open MPI here would be a *different* MPI from the one mpi4py binds, and
       # every rank would abort at MPI_Init with "unsupported PMI version PMIx" -- the
       # exact failure resolve_mpiexec was written to avoid.
+      # --build-constraint, not a runtime pin: the `full` extra reaches `harmonic`,
+      # which has no cp310 wheel, so pip builds its sdist here. See
+      # build-constraints.txt for what that ceiling is holding back.
       - name: Install the app and its dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[${{ matrix.extras }}]"
+          pip install --build-constraint "${{ github.workspace }}/build-constraints.txt" \
+            -e ".[${{ matrix.extras }}]"
+
+      # INTEGRATION WIRING -- revert before merge. The declared dependency is
+      # `libcuflynx>=0.4.0` from PyPI, which is 0.4.1 and predates the CA changes this
+      # release ships with. Installed *after* the app so it overrides that resolution,
+      # and still as a real distribution in site-packages -- so
+      # CUFLYNX_REQUIRE_INSTALLED_LIBCUFLYNX below still means what it says.
+      - name: Install libcuflynx from the CA integration branch
+        run: |
+          python -m pip install --upgrade pip
+          pip install --force-reinstall --no-cache-dir \
+            --build-constraint "${{ github.workspace }}/build-constraints.txt" \
+            "libcuflynx[emulation,uq] @ git+https://github.com/physiomelinks/circulatory_autogen@integration/next"
 
       # Fail here rather than 20 minutes later in a wall of skips. Each of these is a
       # dependency the tier silently degrades without, and the point of this job is that
@@ -170,6 +203,18 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[dev,analysis]"
+
+      # INTEGRATION WIRING -- revert before merge. The declared dependency is
+      # `libcuflynx>=0.4.0` from PyPI, which is 0.4.1 and predates the CA changes this
+      # release ships with. Installed *after* the app so it overrides that resolution,
+      # and still as a real distribution in site-packages -- so
+      # CUFLYNX_REQUIRE_INSTALLED_LIBCUFLYNX below still means what it says.
+      - name: Install libcuflynx from the CA integration branch
+        run: |
+          python -m pip install --upgrade pip
+          pip install --force-reinstall --no-cache-dir \
+            --build-constraint "${{ github.workspace }}/build-constraints.txt" \
+            "libcuflynx[emulation,uq] @ git+https://github.com/physiomelinks/circulatory_autogen@integration/next"
 
       # The parallel arm is worthless without a launcher, and its absence is *silent*:
       # every build_command falls back to one core with a warning and the run still
@@ -257,7 +302,21 @@ jobs:
       - name: Install everything at its newest allowed version
         run: |
           python -m pip install --upgrade pip
-          pip install --upgrade --upgrade-strategy eager -e ".[dev,analysis,full]"
+          pip install --upgrade --upgrade-strategy eager \
+            --build-constraint "${{ github.workspace }}/build-constraints.txt" \
+            -e ".[dev,analysis,full]"
+
+      # INTEGRATION WIRING -- revert before merge. The declared dependency is
+      # `libcuflynx>=0.4.0` from PyPI, which is 0.4.1 and predates the CA changes this
+      # release ships with. Installed *after* the app so it overrides that resolution,
+      # and still as a real distribution in site-packages -- so
+      # CUFLYNX_REQUIRE_INSTALLED_LIBCUFLYNX below still means what it says.
+      - name: Install libcuflynx from the CA integration branch
+        run: |
+          python -m pip install --upgrade pip
+          pip install --force-reinstall --no-cache-dir \
+            --build-constraint "${{ github.workspace }}/build-constraints.txt" \
+            "libcuflynx[emulation,uq] @ git+https://github.com/physiomelinks/circulatory_autogen@integration/next"
 
       - name: Record what was resolved
         if: always()

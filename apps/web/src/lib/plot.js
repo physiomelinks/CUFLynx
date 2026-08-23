@@ -84,23 +84,27 @@ export function obsModelVar(item) {
     )
     if (v) return v
   }
-  return item.variable
+  return item.data_item_name ?? item.variable
 }
 
 /**
  * The emulator's prediction for one data_item, or null.
  *
- * Matched on circulatory_autogen's own feature label — `name (operation operand)`,
- * disambiguated by experiment when a study repeats one — because that is what the
- * emulator recorded when it was trained. Falling back to the plotting name alone
- * keeps a single-experiment study working when nothing needed disambiguating.
+ * Since CA #466 the emulator records each feature under the data_item's own
+ * `data_item_name` — unique by construction, and stable when a plotting label is
+ * reworded — so the usual case is a direct lookup. The composed forms below are kept
+ * for a bundle trained before that, when the key was `name (operation operand)`,
+ * disambiguated by experiment only when a study repeated one.
  */
 export function emulatorFeatureFor(features, item) {
   if (!features || !item) return null
-  const name = item.name_for_plotting ?? item.variable ?? ''
+  const itemName = item.data_item_name ?? ''
+  const name = item.trace_name_for_plotting ?? item.name_for_plotting ?? item.variable ?? ''
   const op = item.operation
   const operand = (item.operands ?? [])[0] ?? item.variable ?? ''
   const candidates = [
+    itemName,
+    item.item_name_for_plotting,
     `${name} (${op} ${operand})`,
     `${name} (${operand})`,
     name,
@@ -170,20 +174,21 @@ export function computeFeature(operation, time, values) {
  * Variables worth plotting, derived from an obs_data response: every
  * prediction_item variable plus every model variable referenced by a plottable
  * (horizontal/vertical) data_item. Returns [{ qname, label }] de-duplicated,
- * preferring a name_for_plotting label.
+ * preferring a trace_name_for_plotting label.
  */
 export function derivePlotVariables(obsData) {
   if (!obsData) return []
   const map = new Map()
   for (const p of obsData.prediction_items ?? []) {
-    if (p.variable && !map.has(p.variable)) {
-      map.set(p.variable, p.name_for_plotting ?? p.variable)
+    const qname = (Array.isArray(p.operands) && p.operands[0]) || p.variable
+    if (qname && !map.has(qname)) {
+      map.set(qname, p.trace_name_for_plotting ?? p.name_for_plotting ?? qname)
     }
   }
   for (const d of obsData.data_items ?? []) {
     if (!isPlottableOverlay(d)) continue
     const v = obsModelVar(d)
-    if (v && !map.has(v)) map.set(v, d.name_for_plotting ?? v)
+    if (v && !map.has(v)) map.set(v, d.trace_name_for_plotting ?? d.name_for_plotting ?? v)
   }
   return [...map.entries()].map(([qname, label]) => ({ qname, label }))
 }
@@ -507,7 +512,7 @@ export function buildChartData(simResult, options = {}) {
     if (overrides && overrides.length) {
       // Plot the operation's transformed series instead of the raw operand.
       for (const item of overrides) {
-        const name = item.name_for_plotting ?? item.variable ?? qname
+        const name = item.trace_name_for_plotting ?? item.name_for_plotting ?? item.variable ?? qname
         pushLine(name, nameFor(name), item.output_series)
         first = false
       }
@@ -560,7 +565,7 @@ export function buildChartData(simResult, options = {}) {
   for (const item of dataItems) {
     const c = color(colorIdx)
     colorIdx += 1
-    const name = item.name_for_plotting ?? item.variable ?? 'obs'
+    const name = item.trace_name_for_plotting ?? item.name_for_plotting ?? item.variable ?? 'obs'
     const op = item.operation
 
     if (item.data_type === 'series') {

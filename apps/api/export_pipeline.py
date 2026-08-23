@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from datetime import date
 
+from ca_imports import CaImportError, ca_from
 from obs_data import data_items_of
 
 
@@ -1061,12 +1062,15 @@ def observed(doc=None):
     for item in obs_data_items(doc):
         operands = list(item.get("operands") or [])
         series = tuple(o for o in operands if not is_time(o))
-        variable = series[0] if series else (operands[0] if operands else item.get("variable"))
+        variable = series[0] if series else (operands[0] if operands else None)
         out.append(
             {
                 "variable": variable,
                 "series": series or (variable,),
-                "label": item.get("name_for_plotting") or item.get("variable") or variable,
+                "label": (item.get("trace_name_for_plotting")
+                          or item.get("name_for_plotting")
+                          or item.get("data_item_name")
+                          or item.get("variable") or variable),
                 "operation": item.get("operation") or "",
                 "value": item.get("value"),
                 "experiment": int(item.get("experiment_idx", 0) or 0),
@@ -1560,7 +1564,7 @@ def _panel_functions(obs_data: dict | list | None) -> str:
             o for o in operands
             if str(o).replace("/", ".").split(".")[-1].strip().lower() not in ("time", "t")
         )
-        variable = series[0] if series else (operands[0] if operands else item.get("variable"))
+        variable = series[0] if series else (operands[0] if operands else None)
         if not variable:
             continue
         key = series or (variable,)
@@ -1568,8 +1572,12 @@ def _panel_functions(obs_data: dict | list | None) -> str:
         if group is None:
             group = {
                 "variable": variable,
-                "label": item.get("name_for_plotting") or item.get("variable") or variable,
-                "described": item.get("variable") or "",
+                "label": (item.get("trace_name_for_plotting")
+                          or item.get("name_for_plotting")
+                          or item.get("data_item_name")
+                          or variable),
+                "described": (item.get("data_item_name")
+                              or item.get("variable") or ""),
                 "targets": [],
             }
             index[key] = group
@@ -1626,8 +1634,23 @@ def _panel_functions(obs_data: dict | list | None) -> str:
 
 
 def render_pipeline_script() -> str:
-    """The standalone pipeline driver (reads the sibling dated yaml)."""
-    return PIPELINE_SCRIPT
+    """The standalone pipeline driver (reads the sibling dated yaml).
+
+    Prefer the engine's own copy. ``run_pipeline.py`` drives circulatory_autogen,
+    so the version that ships *with* circulatory_autogen is the one that matches
+    it -- and it carries stages this module's copy never had (emulator training,
+    CA #470). Exporting our own would pin a bundle to whatever the GUI was built
+    against, and quietly drop a stage the user had enabled.
+
+    ``PIPELINE_SCRIPT`` below stays as the fallback for an engine that predates
+    the generator, which is the same contract every other CA import here has: work
+    with the circulatory_autogen the user actually has, and say so when it is old.
+    """
+    try:
+        return ca_from(
+            "scripts.generate_pipeline_script", "render_pipeline_script")()
+    except CaImportError:
+        return PIPELINE_SCRIPT
 
 
 PLOT_UTILITIES_NAME = "plot_utilities.py"

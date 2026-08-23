@@ -937,3 +937,41 @@ def test_the_bundle_reproduces_the_gui_simulation(client, requires_simulation, t
             f"visible difference means the bundle now reproduces something other than "
             f"the study the app ran."
         )
+
+
+# --- the engine's copy of run_pipeline.py wins -----------------------------------
+
+def test_pipeline_script_comes_from_the_engine_when_it_has_one(monkeypatch):
+    """run_pipeline.py drives circulatory_autogen, so the copy that ships with the
+    engine is the one that matches it -- and it carries stages ours never had.
+    Exporting ours would pin a bundle to whatever the GUI was built against."""
+    monkeypatch.setattr(
+        ep, "ca_from", lambda module, *names: (lambda: "# from the engine\n"))
+
+    assert ep.render_pipeline_script() == "# from the engine\n"
+
+
+def test_pipeline_script_falls_back_when_the_engine_predates_it(monkeypatch):
+    """Same contract as every other CA import here: work with the
+    circulatory_autogen the user actually has."""
+    def _missing(module, *names):
+        raise ep.CaImportError("no generate_pipeline_script in this CA")
+
+    monkeypatch.setattr(ep, "ca_from", _missing)
+
+    assert ep.render_pipeline_script() == ep.PIPELINE_SCRIPT
+
+
+def test_the_fallback_is_still_a_working_pipeline(monkeypatch):
+    """The fallback is only reached on an old engine, so nothing else would catch
+    it rotting."""
+    def _missing(module, *names):
+        raise ep.CaImportError("no generate_pipeline_script in this CA")
+
+    monkeypatch.setattr(ep, "ca_from", _missing)
+    src = ep.render_pipeline_script()
+
+    ast.parse(src)
+    assert "user_inputs_*.yaml" in src
+    for flag in ("do_simulation", "do_sensitivity", "do_calibration"):
+        assert f'cfg.get("{flag}")' in src

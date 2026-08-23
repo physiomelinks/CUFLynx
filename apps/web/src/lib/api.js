@@ -255,9 +255,53 @@ export async function uploadOmex(file, outputDir = '') {
   return data
 }
 
+// PhLynx hands a study to a running CUFLynx by posting it to the inbox (#287).
+// It is *staged*, not imported: CORS stops a page reading our responses, not
+// sending requests, so the confirmation in the UI is the security control and
+// these three calls are what drives it.
+export async function peekInbox() {
+  const { data } = await axios.get(url('/api/inbox'))
+  return data.pending
+}
+
+export async function acceptInbox(outputDir = '') {
+  const { data } = await axios.post(url('/api/inbox/accept'), null, {
+    params: outputDir ? { output_dir: outputDir } : {},
+  })
+  return data
+}
+
+export async function rejectInbox() {
+  const { data } = await axios.post(url('/api/inbox/reject'))
+  return data
+}
+
 // `save` (#215) asks the server to also write the dated copy where the study
 // lives — { outputsDir, filename } — instead of the browser downloading it.
 // Omitted for a plain upload, which already has a file on disk.
+// Build the study as a COMBINE archive for PhLynx (#290). The server assembles
+// and base64s it, so the writer lives in one place and the frontend keeps
+// assuming nothing about a local backend — all it does with the result is
+// `window.open`. `source` is 'current' | 'best_fit' | 'as_imported'.
+export async function sendToPhlynx(modelId, { source = 'current', values = {}, outputDir = '' } = {}) {
+  const { data } = await axios.post(url('/api/phlynx/send'), {
+    model_id: modelId,
+    source,
+    values,
+    output_dir: outputDir,
+  })
+  return data
+}
+
+// The same archive as a file, for when it is too big to survive a URL fragment.
+export function phlynxDownloadRequest(modelId, { source = 'current', values = {}, outputDir = '' } = {}) {
+  return axios.post(
+    url('/api/phlynx/send'),
+    { model_id: modelId, source, values, output_dir: outputDir, download: true },
+    { responseType: 'blob' },
+  )
+}
+
 export async function uploadObsData(modelId, obsData, save = null) {
   const { data } = await axios.post(
     url('/api/obs_data/upload'),

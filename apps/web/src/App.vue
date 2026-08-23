@@ -2789,6 +2789,7 @@ watch(() => obs.obsData.value, scheduleRun)
           :generated-model-format="generatedModelFormat"
           :model-format="model.modelFormat.value"
           :converted-from="model.convertedFrom.value"
+          :param-values="sliders.paramDict.value"
           @model-loaded="onModelLoaded"
           @obs-data-loaded="onObsDataLoaded"
           @params-loaded="onParamsLoaded"
