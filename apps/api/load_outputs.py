@@ -17,6 +17,7 @@ rather than raising, so the UI can say what it could not load.
 """
 from __future__ import annotations
 
+import glob
 import json
 import os
 
@@ -90,10 +91,29 @@ def _calibration(output_dir, file_prefix, missing):
         "error_vectors": _safely(
             "error vectors", lambda: ca_run_history.error_vectors(output_dir), missing),
         "calibrated_model": _safely(
-            "calibrated model",
-            lambda: ca_run_history.calibrated_model_path(output_dir, file_prefix),
-            missing),
+            "calibrated model", lambda: _calibrated_model(output_dir, file_prefix), missing),
     }
+
+
+def _calibrated_model(output_dir, file_prefix):
+    """``<prefix>_calibrated.cellml``, found even when the caller could not name the prefix.
+
+    The convention is ``file_prefix``-driven, and the frontend passes the *loaded model's*
+    name -- which is empty in exactly the case this feature exists for: opening a directory
+    before any model is loaded. So the lookup returned None and the calibrated model went
+    unreported for a folder that had one sitting at its top level.
+
+    Falling back to the file itself rather than parsing a prefix out of the run directory's
+    name: run directories are ``<method>_<prefix>_<hash>_obs_data`` and a prefix may itself
+    contain underscores, so that split has no unambiguous answer. The file does.
+    """
+    named = ca_run_history.calibrated_model_path(output_dir, file_prefix)
+    if named:
+        return named
+    matches = sorted(glob.glob(os.path.join(output_dir, "*_calibrated.cellml")))
+    # More than one means several studies shared this directory, and picking one would be
+    # picking a model for results it may not belong to. Reported as absent instead.
+    return matches[0] if len(matches) == 1 else None
 
 
 def _sensitivity(output_dir, missing):
@@ -115,9 +135,35 @@ def _uq(output_dir, run_dir, missing):
     # would resolve the newest run for itself, so picking an earlier one showed
     # its coverage next to a different run's posterior.
     source = run_dir or output_dir
+
+    # Where the posterior was actually read from, so the panel can say so when it is not the
+    # run being shown elsewhere.
+    uq_source = {"path": source}
+
+    def posteriors():
+        # The chosen run is the newest of *any* kind, and `uq_distributions` resolves the
+        # newest run for itself -- so in a directory whose newest run is a calibration, both
+        # land on a run holding no chain and the answer was "no UQ" for a folder with a
+        # finished UQ in it. Observed on a real outputs directory.
+        found = ca_run_history.uq_distributions(source)
+        if found:
+            return found
+        # Newest first, so "the UQ" means the most recent one, consistent with how the run
+        # itself is chosen. An explicit run_dir that *has* a chain never reaches here, so a
+        # deliberate choice is still honoured.
+        for entry in list_run_dirs(output_dir):
+            candidate = entry["path"]
+            if candidate == source:
+                continue
+            found = ca_run_history.uq_distributions(candidate)
+            if found:
+                uq_source["path"] = candidate
+                return found
+        return found
+
     payload = {
-        "params": _safely("UQ posteriors",
-                          lambda: ca_run_history.uq_distributions(source), missing),
+        "params": _safely("UQ posteriors", posteriors, missing),
+        "run_dir": uq_source["path"],
         "coverage": None,
         "has_posterior_predictive": False,
         "has_sample_traces": False,

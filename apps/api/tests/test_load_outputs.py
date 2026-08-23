@@ -238,3 +238,75 @@ class TestFindingTheEmulator:
         assert loaded["emulator"]["dir"].endswith("SN_full_joint")
         assert loaded["emulator"]["metadata"]["feature_r2"] == [0.9]
         assert "emulator" in loaded["found"]
+
+
+# --- the newest run is not necessarily the run you are looking for -------------------
+
+@pytest.mark.unit
+def test_a_newer_calibration_does_not_hide_a_uq_in_the_same_directory(tmp_path):
+    """A directory whose newest run is a calibration still reports its UQ.
+
+    The chosen run is the newest of *any* kind. Reading the posterior only from that run
+    meant a folder holding a finished calibration and a finished UQ reported "no UQ" --
+    with `uq_posterior_samples.npy` sitting one level up, in plain sight. Observed on a
+    real outputs directory whose newest run was a GA calibration.
+    """
+    write_run(tmp_path, "mcmc_run", chain=True, best=False, when=1_000_000)
+    write_run(tmp_path, "genetic_algorithm_run", chain=False, best=True, when=3_000_000)
+
+    result = load_outputs.load_outputs(str(tmp_path))
+
+    assert result["run_dir"].endswith("genetic_algorithm_run"), "the newest run is the calibration"
+    assert "uq" in result["found"], result["found"]
+    assert result["uq"]["params"], "the posterior is in the directory and must be reported"
+
+
+@pytest.mark.unit
+def test_an_explicitly_chosen_run_with_a_chain_is_still_the_one_read(tmp_path):
+    """The fallback must not override an explicit choice that has its own answer."""
+    a = write_run(tmp_path, "run_a", when=1_000_000)
+    write_run(tmp_path, "run_b", when=3_000_000)
+    np.save(os.path.join(a, "mcmc_chain.npy"), np.full((10, 2, 3), 7.0))
+
+    result = load_outputs.load_outputs(str(tmp_path), run_dir=a)
+    assert result["uq"]["params"][0]["mean"] == pytest.approx(7.0)
+
+
+# --- the calibrated model -------------------------------------------------------------
+
+@pytest.mark.unit
+def test_the_calibrated_model_is_found_without_being_told_the_prefix(tmp_path):
+    """Opening a directory before any model is loaded is the whole point of the feature.
+
+    The lookup is ``file_prefix``-driven and the frontend passes the *loaded model's* name,
+    which is empty in exactly that case -- so a directory with a calibrated model at its top
+    level reported none.
+    """
+    write_run(tmp_path, "genetic_algorithm_run", chain=False, best=True)
+    model = tmp_path / "CardiovascularSystem_calibrated.cellml"
+    model.write_text("<model/>", encoding="utf-8")
+
+    result = load_outputs.load_outputs(str(tmp_path))
+    assert result["calibration"]["calibrated_model"] == str(model)
+
+
+@pytest.mark.unit
+def test_a_named_prefix_still_wins_over_the_fallback(tmp_path):
+    write_run(tmp_path, "genetic_algorithm_run", chain=False, best=True)
+    (tmp_path / "wanted_calibrated.cellml").write_text("<model/>", encoding="utf-8")
+
+    result = load_outputs.load_outputs(str(tmp_path), file_prefix="wanted")
+    assert result["calibration"]["calibrated_model"].endswith("wanted_calibrated.cellml")
+
+
+@pytest.mark.unit
+def test_two_calibrated_models_are_reported_as_absent_rather_than_guessed(tmp_path):
+    """Several studies sharing one directory is ordinary. Picking one of their models
+    would attach a model to results it may not belong to, which is worse than saying
+    nothing -- the numbers would look right."""
+    write_run(tmp_path, "genetic_algorithm_run", chain=False, best=True)
+    (tmp_path / "one_calibrated.cellml").write_text("<model/>", encoding="utf-8")
+    (tmp_path / "two_calibrated.cellml").write_text("<model/>", encoding="utf-8")
+
+    result = load_outputs.load_outputs(str(tmp_path))
+    assert result["calibration"]["calibrated_model"] is None
