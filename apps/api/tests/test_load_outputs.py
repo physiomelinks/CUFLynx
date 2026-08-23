@@ -458,3 +458,121 @@ def test_a_reloaded_uq_carries_its_posterior_coverage_and_artefacts(tmp_path):
     assert uq["has_posterior_predictive"] is True
     assert uq["has_sample_traces"] is True
     assert uq["run_dir"] == run, "the panel must be able to say which run answered"
+
+
+# --- the inputs the run was made from -------------------------------------------------
+
+def write_snapshots(run, stamps, *, obs=True, params=True):
+    """CA's timestamped snapshots, all sharing one mtime as they do on a real run."""
+    made = []
+    for stamp in stamps:
+        if obs:
+            q = os.path.join(run, f"abc_obs_data_{stamp}.json")
+            with open(q, "w") as h:
+                json.dump({"stamp": stamp}, h)
+            made.append(q)
+        if params:
+            q = os.path.join(run, f"abc_params_for_id_{stamp}.json")
+            with open(q, "w") as h:
+                json.dump({"stamp": stamp}, h)
+            made.append(q)
+    for q in made:                      # one write, one mtime -- as CA leaves them
+        os.utime(q, (1_000_000, 1_000_000))
+
+
+@pytest.mark.unit
+def test_the_study_inputs_are_reported_so_a_directory_can_be_reopened(tmp_path):
+    run = write_run(tmp_path, "genetic_algorithm_run", chain=False, best=True)
+    write_snapshots(run, ["260824_091622"])
+    (tmp_path / "CardiovascularSystem_calibrated.cellml").write_text("<model/>", encoding="utf-8")
+
+    study = load_outputs.load_outputs(str(tmp_path))["study"]
+
+    assert study["file_prefix"] == "CardiovascularSystem"
+    assert study["model"].endswith("CardiovascularSystem_calibrated.cellml")
+    assert study["model_is_calibrated"] is True
+    assert study["obs_data"].endswith("abc_obs_data_260824_091622.json")
+    assert study["params_for_id"].endswith("abc_params_for_id_260824_091622.json")
+
+
+@pytest.mark.unit
+def test_the_obs_data_and_params_come_from_the_same_run(tmp_path):
+    """The pairing bug, from a real directory.
+
+    CA writes both snapshots in one go, so on disk all of them carry the *same* mtime --
+    to the microsecond. Picking "the newest file" therefore came down to whatever order the
+    glob returned, and it paired one run's obs_data with another run's params_for_id: two
+    files that were never used together, presented as the study.
+    """
+    run = write_run(tmp_path, "genetic_algorithm_run", chain=False, best=True)
+    write_snapshots(run, ["260824_091622", "260824_092846"])
+
+    study = load_outputs.load_outputs(str(tmp_path))["study"]
+
+    assert study["obs_data"].endswith("abc_obs_data_260824_092846.json"), "the newest run"
+    assert study["params_for_id"].endswith("abc_params_for_id_260824_092846.json")
+    # ...and above all, the same stamp on both.
+    assert _stamp_of(study["obs_data"]) == _stamp_of(study["params_for_id"])
+
+
+def _stamp_of(path):
+    return os.path.basename(path).rsplit("_", 2)[-2:]
+
+
+@pytest.mark.unit
+def test_a_run_whose_newest_stamp_has_only_one_half_still_reports_it(tmp_path):
+    """Half a study is worth reporting; the caller can see the stamps differ."""
+    run = write_run(tmp_path, "genetic_algorithm_run", chain=False, best=True)
+    write_snapshots(run, ["260824_091622"])
+    write_snapshots(run, ["260824_092846"], params=False)
+
+    study = load_outputs.load_outputs(str(tmp_path))["study"]
+    # The complete pair wins over a newer half-pair -- that is the run that finished.
+    assert study["obs_data"].endswith("abc_obs_data_260824_091622.json")
+    assert study["params_for_id"].endswith("abc_params_for_id_260824_091622.json")
+
+
+@pytest.mark.unit
+def test_a_generated_model_is_preferred_over_the_calibrated_one(tmp_path):
+    """`generated_models/<prefix>` is the source model; the calibrated file is the output."""
+    write_run(tmp_path, "genetic_algorithm_run", chain=False, best=True)
+    (tmp_path / "Heart_calibrated.cellml").write_text("<model/>", encoding="utf-8")
+    generated = tmp_path / "generated_models" / "Heart"
+    generated.mkdir(parents=True)
+    (generated / "Heart.cellml").write_text("<model/>", encoding="utf-8")
+
+    study = load_outputs.load_outputs(str(tmp_path))["study"]
+    assert study["model"] == str(generated / "Heart.cellml")
+    assert study["model_is_calibrated"] is False
+
+
+@pytest.mark.unit
+def test_a_generated_model_for_another_study_is_not_used(tmp_path):
+    """An outputs directory reused across studies is ordinary. A `generated_models` entry
+    whose prefix does not match these runs belongs to a different study, and attaching it
+    would produce numbers that look right."""
+    write_run(tmp_path, "genetic_algorithm_run", chain=False, best=True)
+    (tmp_path / "Heart_calibrated.cellml").write_text("<model/>", encoding="utf-8")
+    stray = tmp_path / "generated_models" / "3compartment_flat"
+    stray.mkdir(parents=True)
+    (stray / "3compartment_flat.cellml").write_text("<model/>", encoding="utf-8")
+
+    study = load_outputs.load_outputs(str(tmp_path))["study"]
+    assert study["model"].endswith("Heart_calibrated.cellml"), study["model"]
+
+
+@pytest.mark.unit
+def test_a_missing_user_inputs_is_reported_rather_than_treated_as_a_fault(tmp_path):
+    write_run(tmp_path, "genetic_algorithm_run", chain=False, best=True)
+    result = load_outputs.load_outputs(str(tmp_path))
+    assert result["study"]["user_inputs"] is None
+    assert not [m for m in result["missing"] if "user_inputs" in m]
+
+
+@pytest.mark.unit
+def test_a_generated_user_inputs_is_picked_up_when_the_directory_has_one(tmp_path):
+    write_run(tmp_path, "genetic_algorithm_run", chain=False, best=True)
+    (tmp_path / "user_inputs_260824.yaml").write_text("do_generation: false\n", encoding="utf-8")
+
+    study = load_outputs.load_outputs(str(tmp_path))["study"]
+    assert study["user_inputs"].endswith("user_inputs_260824.yaml")
