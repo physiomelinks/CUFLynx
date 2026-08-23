@@ -1,8 +1,9 @@
 <script setup>
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import Message from 'primevue/message'
 import InputText from 'primevue/inputtext'
 import Button from 'primevue/button'
+import Dialog from 'primevue/dialog'
 import FileBrowserDialog from './FileBrowserDialog.vue'
 import EditParamsDialog from './EditParamsDialog.vue'
 import EditObsDataDialog from './EditObsDataDialog.vue'
@@ -14,8 +15,13 @@ import {
   fetchExampleModel,
   editModelSource,
   uploadOmex,
+  sendToPhlynx,
+  phlynxDownloadRequest,
+  peekInbox,
+  acceptInbox,
+  rejectInbox,
 } from '../lib/api'
-import { PHLYNX_URL } from '../lib/examples'
+import { phlynxOpenUrl } from '../lib/examples'
 
 const props = defineProps({
   modelId: { type: String, default: null },
@@ -44,6 +50,10 @@ const props = defineProps({
   // The filename a converted model came from -- set for a .mmt, which becomes
   // CellML at import (#27). Also decides what Edit does.
   convertedFrom: { type: String, default: null },
+  // The current slider values, {qname: value}. Sent to PhLynx as the study's
+  // parameter values -- a drag never rewrites the stored model, so the values
+  // only exist here until something asks for them (#290).
+  paramValues: { type: Object, default: () => ({}) },
 })
 const emit = defineEmits([
   'model-loaded',
@@ -105,7 +115,7 @@ const startEditTitle = computed(() => {
   if (sourceExt.value) {
     return `Open the model source (${sourceExt.value}) in your editor, saved in the outputs directory`
   }
-  return 'Edit the current model in PhLynx'
+  return 'Send the current study to PhLynx to edit it there'
 })
 
 // Where the edited copy went, and what it means — the whole point of the button
@@ -140,9 +150,95 @@ async function onStartEdit() {
     }
     return
   }
-  // A link that opens PhLynx is enough for now; deeper integration is future
-  // work (issue #91).
-  window.open(PHLYNX_URL, '_blank', 'noopener')
+  // A CellML model goes to PhLynx as the whole study, so the user first says
+  // which parameter values should travel with it (#290).
+  sendOpen.value = true
+}
+
+// Which values are written into the model on the way out. "As imported" is the
+// escape hatch: it sends the model exactly as CUFLynx holds it, which is what
+// you want when the sliders are mid-experiment and the point is to edit the
+// structure rather than to carry a fit across.
+const SEND_SOURCES = [
+  { value: 'current', label: 'Current slider values' },
+  { value: 'best_fit', label: 'Last calibration best fit' },
+  { value: 'as_imported', label: 'As imported (no substitution)' },
+]
+const sendOpen = ref(false)
+const sendSource = ref('current')
+const sending = ref(false)
+
+// A best fit is read from the outputs directory, so without one there is
+// nowhere to read it from. It can come from a *previous* session's run, which
+// is why this is not gated on a calibration having finished in this one.
+const bestFitAvailable = computed(() => !!props.outputsDir.trim())
+
+function sendSourceDisabled(value) {
+  return value === 'best_fit' && !bestFitAvailable.value
+}
+
+// Everything the server needs to build the archive. `values` only matters for
+// the "current" source; sending it always keeps the payload one shape.
+function sendOptions() {
+  return {
+    source: sendSource.value,
+    values: sendSource.value === 'current' ? props.paramValues : {},
+    outputDir: props.outputsDir.trim(),
+  }
+}
+
+// What the send did, beyond opening the tab: a parameter that could not be
+// written is a value PhLynx will not see, and one written outside
+// `parameters` / `parameters_global` is one PhLynx will not read back (#287).
+// Both are reported rather than left for the user to discover downstream.
+function sendNotice(res) {
+  const parts = [`Sent ${res.member_count} files to PhLynx.`]
+  if (res.unresolved?.length) {
+    parts.push(`Not written into the model: ${res.unresolved.join(', ')}.`)
+  }
+  if (res.outside_parameters?.length) {
+    parts.push(
+      `Written outside parameters/parameters_global, so PhLynx will not pick ` +
+        `them up: ${res.outside_parameters.join(', ')}.`,
+    )
+  }
+  return parts.join(' ')
+}
+
+// Above the size guard the archive cannot ride in a URL — browsers truncate a
+// long one silently — so it is handed over as a file to drop into PhLynx.
+async function downloadArchive(filename) {
+  const { data } = await phlynxDownloadRequest(props.modelId, sendOptions())
+  const href = URL.createObjectURL(data)
+  const a = document.createElement('a')
+  a.href = href
+  a.download = filename
+  a.click()
+  URL.revokeObjectURL(href)
+}
+
+async function onSendConfirm() {
+  error.value = ''
+  notice.value = ''
+  sending.value = true
+  try {
+    const res = await sendToPhlynx(props.modelId, sendOptions())
+    if (res.too_large) {
+      await downloadArchive(res.filename)
+      notice.value =
+        `${sendNotice(res)} The archive is too large to travel in a link ` +
+        `(${Math.round(res.bytes / 1024)} kB), so it was downloaded as ` +
+        `${res.filename} — open PhLynx and import it.`
+    } else {
+      window.open(phlynxOpenUrl(res.base64), '_blank', 'noopener')
+      notice.value = sendNotice(res)
+    }
+    sendOpen.value = false
+  } catch (e) {
+    error.value = e?.response?.data?.detail || String(e)
+  } finally {
+    sending.value = false
+  }
 }
 
 // The Start dialog chose an example: fetch it and feed it through the normal
@@ -242,6 +338,66 @@ async function adoptDerivedObs() {
     (notes ? ` ${notes}` : '')
 }
 
+// --- A study delivered by PhLynx (#287) ------------------------------------
+//
+// PhLynx posts the archive to `/api/inbox` on localhost, where it is *staged*.
+// It is never imported on arrival: CORS stops a page reading our responses, it
+// does not stop it sending them, so anything running in the user's browser can
+// deliver a study. This dialog is the security control, which is why it names
+// the origin the archive came from rather than just asking "load this?".
+const pendingStudy = ref(null)
+const inboxBusy = ref(false)
+let inboxTimer = null
+
+// Polled because the frontend has no push channel and deliberately assumes no
+// local backend; giving it one for this would be a bigger change than the
+// feature. Paused when the window is hidden -- nobody can answer the dialog then.
+const INBOX_POLL_MS = 2000
+
+async function pollInbox() {
+  if (document.hidden || pendingStudy.value || inboxBusy.value) return
+  try {
+    pendingStudy.value = await peekInbox()
+  } catch {
+    // The server is not up yet, or this build is served without it. A delivery
+    // the user never asked for must not produce an error banner.
+  }
+}
+
+async function onAcceptStudy() {
+  inboxBusy.value = true
+  error.value = ''
+  try {
+    const data = await acceptInbox(props.outputsDir)
+    applyImportedStudy(data, pendingStudy.value?.filename || 'the delivered study')
+    pendingStudy.value = null
+  } catch (e) {
+    error.value = e?.response?.data?.detail || String(e)
+  } finally {
+    inboxBusy.value = false
+  }
+}
+
+async function onRejectStudy() {
+  inboxBusy.value = true
+  try {
+    await rejectInbox()
+    pendingStudy.value = null
+  } catch (e) {
+    error.value = e?.response?.data?.detail || String(e)
+  } finally {
+    inboxBusy.value = false
+  }
+}
+
+onMounted(() => {
+  inboxTimer = setInterval(pollInbox, INBOX_POLL_MS)
+  pollInbox()
+})
+onUnmounted(() => {
+  if (inboxTimer) clearInterval(inboxTimer)
+})
+
 function filesFrom(event) {
   if (event.dataTransfer?.files?.length) return Array.from(event.dataTransfer.files)
   if (event.target?.files?.length) return Array.from(event.target.files)
@@ -275,32 +431,43 @@ function unreadableDrop(file) {
  *
  * Returns true when the drop was an archive and has been handled.
  */
+/**
+ * Fan a loaded archive out to the stores, and say what happened.
+ *
+ * Shared by the drop path and the PhLynx inbox because both receive the *same*
+ * response body -- `/api/inbox/accept` runs the same importer `/api/omex/upload`
+ * does. A study delivered over localhost has to behave exactly like one that was
+ * dropped, and the way to guarantee that is for there to be one function.
+ */
+function applyImportedStudy(data, label) {
+  // The model first: obs_data and params attach to it.
+  emit('model-loaded', { ...data, filename: data.model_filename || label })
+  if (data.obs_data && !data.obs_data.error) {
+    emit('obs-data-loaded', { ...data.obs_data, model_id: data.model_id })
+  }
+  if (data.params_for_id && !data.params_for_id.error) {
+    emit('params-loaded', {
+      params: data.params_for_id.params,
+      filename: data.params_for_id.filename,
+    })
+  }
+  // A part that failed to parse is reported without losing the rest -- an
+  // archive with a bad obs_data still gave us a model worth having.
+  const failed = [data.obs_data, data.params_for_id]
+    .filter((p) => p?.error)
+    .map((p) => `${p.filename}: ${p.error}`)
+  notice.value = failed.length
+    ? `Loaded ${label}, but ${failed.join('; ')}`
+    : `Loaded ${label}` + (data.module_config_path ? ' (PhLynx layout kept)' : '')
+}
+
 async function handleOmex(files) {
   const omex = files.find((f) => isOmexName(f.name))
   if (!omex) return false
   error.value = ''
   try {
     const data = await uploadOmex(omex, props.outputsDir)
-    // The model first: obs_data and params attach to it.
-    emit('model-loaded', { ...data, filename: data.model_filename || omex.name })
-    if (data.obs_data && !data.obs_data.error) {
-      emit('obs-data-loaded', { ...data.obs_data, model_id: data.model_id })
-    }
-    if (data.params_for_id && !data.params_for_id.error) {
-      emit('params-loaded', {
-        params: data.params_for_id.params,
-        filename: data.params_for_id.filename,
-      })
-    }
-    // A part that failed to parse is reported without losing the rest -- an
-    // archive with a bad obs_data still gave us a model worth having.
-    const failed = [data.obs_data, data.params_for_id]
-      .filter((p) => p?.error)
-      .map((p) => `${p.filename}: ${p.error}`)
-    notice.value = failed.length
-      ? `Loaded ${omex.name}, but ${failed.join('; ')}`
-      : `Loaded ${omex.name}` +
-        (data.module_config_path ? ' (PhLynx layout kept)' : '')
+    applyImportedStudy(data, omex.name)
   } catch (e) {
     error.value = e?.response?.data?.detail || String(e)
   }
@@ -575,6 +742,80 @@ async function onParamsDrop(event) {
       @select-example="onSelectExample"
     />
 
+    <Dialog
+      v-model:visible="sendOpen"
+      modal
+      header="Send to PhLynx"
+      :style="{ width: '30rem' }"
+      data-testid="phlynx-send-dialog"
+    >
+      <p class="send-intro">
+        The whole study travels — model, obs_data, params_for_id, and every file
+        the archive came with. Which parameter values should be written into the
+        model?
+      </p>
+      <div v-for="opt in SEND_SOURCES" :key="opt.value" class="send-option">
+        <label>
+          <input
+            v-model="sendSource"
+            type="radio"
+            name="phlynx-send-source"
+            :value="opt.value"
+            :disabled="sendSourceDisabled(opt.value)"
+            :data-testid="`phlynx-source-${opt.value}`"
+          />
+          <span :class="{ disabled: sendSourceDisabled(opt.value) }">{{ opt.label }}</span>
+        </label>
+      </div>
+      <p v-if="!bestFitAvailable" class="send-hint">
+        Set an outputs directory to send a calibration best fit.
+      </p>
+      <template #footer>
+        <Button label="Cancel" severity="secondary" text @click="sendOpen = false" />
+        <Button
+          label="Send"
+          :loading="sending"
+          data-testid="phlynx-send-confirm"
+          @click="onSendConfirm"
+        />
+      </template>
+    </Dialog>
+
+    <Dialog
+      :visible="!!pendingStudy"
+      modal
+      header="A study was sent to CUFLynx"
+      :closable="false"
+      :style="{ width: '32rem' }"
+      data-testid="inbox-dialog"
+    >
+      <p class="inbox-intro">
+        <strong data-testid="inbox-origin">{{ pendingStudy?.origin }}</strong>
+        sent <strong>{{ pendingStudy?.filename }}</strong>
+        ({{ Math.max(1, Math.round((pendingStudy?.bytes || 0) / 1024)) }} kB).
+        Loading it replaces the study you have open.
+      </p>
+      <ul class="inbox-members" data-testid="inbox-members">
+        <li v-for="m in pendingStudy?.members || []" :key="m">{{ m }}</li>
+      </ul>
+      <template #footer>
+        <Button
+          label="Discard"
+          severity="secondary"
+          text
+          :disabled="inboxBusy"
+          data-testid="inbox-reject"
+          @click="onRejectStudy"
+        />
+        <Button
+          label="Load study"
+          :loading="inboxBusy"
+          data-testid="inbox-accept"
+          @click="onAcceptStudy"
+        />
+      </template>
+    </Dialog>
+
     <FileBrowserDialog
       v-model:visible="outputsBrowserOpen"
       mode="dir"
@@ -611,6 +852,40 @@ async function onParamsDrop(event) {
 </template>
 
 <style scoped>
+.send-intro {
+  margin: 0 0 0.75rem;
+  font-size: 0.85rem;
+  color: var(--text-muted, #666);
+}
+.send-option {
+  padding: 0.15rem 0;
+}
+.send-option label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  cursor: pointer;
+}
+.send-option .disabled {
+  opacity: 0.5;
+}
+.send-hint {
+  margin: 0.5rem 0 0;
+  font-size: 0.8rem;
+  color: var(--text-muted, #666);
+}
+.inbox-intro {
+  margin: 0 0 0.5rem;
+  font-size: 0.9rem;
+}
+.inbox-members {
+  margin: 0;
+  padding-left: 1.1rem;
+  max-height: 9rem;
+  overflow-y: auto;
+  font-size: 0.8rem;
+  color: var(--text-muted, #666);
+}
 .file-import {
   display: flex;
   flex-direction: column;

@@ -500,7 +500,17 @@ def get_obs_data_options(refresh: bool = False, output_dir: str | None = None) -
             # Empty, not guessed: an older CA's default is not knowable from
             # here, and the editor says plain "default" rather than naming the
             # wrong cost function.
-            "default_cost_type": "",
+            # Asked again rather than blanked. This whole payload falls back when *any*
+            # part of the introspection raises, and the part that most often does is the
+            # operation/cost func probe -- it imports CA's func modules, which need the
+            # simulation stack (`operation_funcs_user` imports `scipy.signal`). The default
+            # cost type needs none of that: it is a constant in `utilities.obs_data_helpers`.
+            # Blanking it here made the editor say plain "default" on a CA that had told us
+            # the answer perfectly well.
+            #
+            # Still "" when CA really is unreachable -- _introspect_default_cost_type
+            # returns that for exactly the case the comment above describes.
+            "default_cost_type": _introspect_default_cost_type(),
             "cost_func_metadata": {},
             "cost_kwargs_schema": {},
             "cost_kwargs_accepts_any": {},

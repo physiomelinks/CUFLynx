@@ -11,8 +11,10 @@ The structure above is parsed here directly -- enough to load a protocol and dra
 overlays without the simulation stack. Whether the document is one
 circulatory_autogen can actually *calibrate* is CA's own question, and
 :func:`ca_schema_error` asks it rather than reimplementing the answer: CA marks
-``variable``, ``data_type``, ``unit``, ``operands``, ``value`` and ``std``
-REQUIRED and rejects any key outside its schema, none of which was checked here.
+``data_item_name``, ``data_type``, ``unit``, ``operands``, ``value`` and ``std``
+REQUIRED, requires ``data_item_name`` to be unique across ``data_items`` and
+``prediction_items`` (CA #466), and rejects any key outside its schema -- none of
+which was checked here.
 A typo'd ``opperation`` used to upload cleanly, plot, and show a cost, and only
 fail when a calibration subprocess started.
 """

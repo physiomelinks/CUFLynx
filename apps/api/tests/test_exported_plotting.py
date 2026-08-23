@@ -442,11 +442,11 @@ def _calibration_run(run: Path, *, module_suffix=True):
         json.dumps(
             {
                 "data_items": [
-                    {"variable": "flow", "name_for_plotting": "v_{AR}", "operation": "mean",
+                    {"data_item_name": "flow", "name_for_plotting": "v_{AR}", "operation": "mean",
                      "operands": ["aortic_root/v"], "value": 1e-4, "data_type": "constant"},
-                    {"variable": "flow", "name_for_plotting": "v_{AR}", "operation": "max",
+                    {"data_item_name": "flow", "name_for_plotting": "v_{AR}", "operation": "max",
                      "operands": ["aortic_root/v"], "value": 5e-4, "data_type": "constant"},
-                    {"variable": "pressure", "name_for_plotting": "u_{AR}", "operation": "mean",
+                    {"data_item_name": "pressure", "name_for_plotting": "u_{AR}", "operation": "mean",
                      "operands": ["aortic_root/u"], "value": 12000.0, "data_type": "constant"},
                 ]
             }
@@ -623,11 +623,11 @@ def test_one_figure_carries_every_target_for_its_series(tmp_path):
 OBS_DOC = {
     "data_items": [
         {"operands": ["aortic_root/v"], "operation": "mean", "value": 1e-4,
-         "name_for_plotting": "v_{AR}", "variable": "flow aortic root"},
+         "name_for_plotting": "v_{AR}", "data_item_name": "flow aortic root"},
         {"operands": ["aortic_root/v"], "operation": "max", "value": 5e-4,
-         "name_for_plotting": "v_{AR}", "variable": "flow aortic root"},
+         "name_for_plotting": "v_{AR}", "data_item_name": "flow aortic root"},
         {"operands": ["heart/q_lv"], "operation": "max_minus_min", "value": 1.04e-4,
-         "name_for_plotting": "q_{lv}", "variable": "stroke volume"},
+         "name_for_plotting": "q_{lv}", "data_item_name": "stroke volume"},
     ]
 }
 
@@ -675,8 +675,8 @@ def test_one_function_per_series_not_per_operation():
 
 def test_a_name_collision_does_not_produce_two_functions_alike():
     doc = {"data_items": [
-        {"operands": ["a/u"], "operation": "mean", "value": 1, "name_for_plotting": "u"},
-        {"operands": ["b/u"], "operation": "mean", "value": 2, "name_for_plotting": "u"},
+        {"operands": ["a/u"], "operation": "mean", "value": 1, "trace_name_for_plotting": "u"},
+        {"operands": ["b/u"], "operation": "mean", "value": 2, "trace_name_for_plotting": "u"},
     ]}
     src = export_pipeline.render_plotting_script(doc)
     assert "def panel_u(ax, t, series):" in src

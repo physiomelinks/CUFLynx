@@ -58,8 +58,14 @@ def calibrated_cellml(cellml_text: str, best_params: dict[str, float]) -> tuple[
     """Return ``(new_cellml_text, report)`` with each best-fit value substituted.
 
     ``best_params`` maps ``"vessel/param"`` -> value. ``report`` is
-    ``{"updated": [...], "unresolved": [...]}`` — full names that were written vs
-    that couldn't be mapped to a model constant (never silently dropped).
+    ``{"updated": [...], "unresolved": [...], "resolved": {...}}`` — full names
+    that were written vs that couldn't be mapped to a model constant (never
+    silently dropped), plus where each written name landed as ``component/var``.
+
+    ``resolved`` exists so a caller can say *which component* a value went into
+    without redoing the resolution: sending a study to PhLynx has to warn when a
+    parameter is written outside ``parameters`` / ``parameters_global``, because
+    per #287 that is a change PhLynx will not pick up.
     """
     meta = parse_cellml(cellml_text)
     gen_index = _build_gen_index(meta.initial_values)
@@ -69,6 +75,7 @@ def calibrated_cellml(cellml_text: str, best_params: dict[str, float]) -> tuple[
     by_component: dict[str, dict[str, float]] = {}
     updated: list[str] = []
     unresolved: list[str] = []
+    resolved: dict[str, str] = {}
     for full_name, value in best_params.items():
         vessel, _, param = full_name.partition("/")
         key = resolve_model_qname(vessel, param, meta.initial_values, gen_index)
@@ -78,9 +85,11 @@ def calibrated_cellml(cellml_text: str, best_params: dict[str, float]) -> tuple[
         comp, _, var = key.partition("/")
         by_component.setdefault(comp, {})[var] = value
         updated.append(full_name)
+        resolved[full_name] = key
 
+    report = {"updated": updated, "unresolved": unresolved, "resolved": resolved}
     if not by_component:
-        return cellml_text, {"updated": updated, "unresolved": unresolved}
+        return cellml_text, report
 
     def repl_component(match: re.Match) -> str:
         block = match.group(0)
@@ -92,4 +101,4 @@ def calibrated_cellml(cellml_text: str, best_params: dict[str, float]) -> tuple[
         return block
 
     new_text = _COMPONENT.sub(repl_component, cellml_text)
-    return new_text, {"updated": updated, "unresolved": unresolved}
+    return new_text, report

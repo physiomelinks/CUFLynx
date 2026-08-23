@@ -35,7 +35,7 @@ import uq_runner
 def _item(variable="aortic_root/u", **kw):
     """One CA data_item, minimally complete."""
     item = {
-        "variable": variable,
+        "data_item_name": variable,
         "operands": [variable],
         "data_type": "constant",
         "operation": "mean",

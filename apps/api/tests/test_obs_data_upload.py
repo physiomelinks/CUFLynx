@@ -32,7 +32,7 @@ def test_upload_series_without_obs_dt_returns_422(client):
     obs = {
         "protocol_info": {"pre_times": [0.0], "sim_times": [[5]]},
         "data_items": [
-            {"variable": "x", "data_type": "series", "experiment_idx": 0}
+            {"data_item_name": "x", "data_type": "series", "experiment_idx": 0}
         ],
     }
     resp = client.post("/api/obs_data/upload", json=obs)
@@ -44,7 +44,7 @@ def test_upload_experiment_idx_out_of_range_returns_422(client):
     obs = {
         "protocol_info": {"pre_times": [0.0], "sim_times": [[5]]},
         "data_items": [
-            {"variable": "x", "data_type": "constant", "experiment_idx": 5}
+            {"data_item_name": "x", "data_type": "constant", "experiment_idx": 5}
         ],
     }
     resp = client.post("/api/obs_data/upload", json=obs)
@@ -59,12 +59,12 @@ def test_obs_editor_object_form_round_trips(client):
         "prediction_items": [],
         "data_items": [
             {
-                "variable": "x_max", "data_type": "constant", "operation": "max",
+                "data_item_name": "x_max", "data_type": "constant", "operation": "max",
                 "operands": ["m/x"], "unit": "dimensionless", "value": 30, "std": 3,
                 "experiment_idx": 0, "plot_type": "horizontal",
             },
             {
-                "variable": "s", "data_type": "series", "obs_dt": 0.1,
+                "data_item_name": "s", "data_type": "series", "obs_dt": 0.1,
                 "value": [1, 2], "std": 0.1, "experiment_idx": 0,
             },
         ],
@@ -118,7 +118,7 @@ def test_obs_editor_data_only_array_form(client):
     # Data-only files round-trip as a bare array (no protocol_info).
     obs = [
         {
-            "variable": "x_max", "data_type": "constant", "operation": "max",
+            "data_item_name": "x_max", "data_type": "constant", "operation": "max",
             "operands": ["m/x"], "unit": "dimensionless", "value": 30, "std": 3,
             "experiment_idx": 0,
         },
@@ -293,7 +293,7 @@ def test_a_dangling_name_still_says_where_it_was_looked_for(client):
 # ---------------------------------------------------------------------------
 def _obs(**item_over):
     item = {
-        "variable": "a/x",
+        "data_item_name": "a/x",
         "data_type": "constant",
         "unit": "dimensionless",
         "operands": ["a/x"],

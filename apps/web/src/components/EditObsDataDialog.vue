@@ -322,7 +322,14 @@ function removeRow(i) {
 }
 function onOperandChange(row, i, val) {
   row.operands[i] = val
-  if (!row.variable && row.operands[0]) row.variable = row.operands[0]
+  // seed the item's name from its first operand, so the common one-operand case needs no
+  // typing -- but only while the name is still blank, since it must end up unique (CA #466)
+  if (!row.data_item_name && row.operands[0]) row.data_item_name = row.operands[0]
+}
+
+function onPredVariableChange(row, val) {
+  row.operands = val ? [val] : []
+  if (!row.data_item_name && val) row.data_item_name = val
 }
 
 /** What CA says this operation consumes; null when we have no schema for it. */
@@ -470,7 +477,7 @@ async function onSave() {
       />
     </div>
     <div class="eo-head">
-      <span>Variable</span>
+      <span>name</span>
       <span>value</span>
       <span>std</span>
       <span>operation</span>
@@ -498,8 +505,8 @@ async function onSave() {
           <input
             type="text"
             class="eo-var"
-            :value="row.variable"
-            @input="row.variable = $event.target.value"
+            :value="row.data_item_name"
+            @input="row.data_item_name = $event.target.value"
           />
           <input
             type="number"
@@ -610,8 +617,8 @@ async function onSave() {
               />
             </span>
           </label>
-          <label>plot label
-            <input type="text" :value="row.name_for_plotting" @input="row.name_for_plotting = $event.target.value" />
+          <label>trace label
+            <input type="text" :value="row.trace_name_for_plotting" @input="row.trace_name_for_plotting = $event.target.value" />
           </label>
           <label>unit
             <input type="text" :value="row.unit" @input="row.unit = $event.target.value" />
@@ -711,12 +718,12 @@ async function onSave() {
       <ul class="eo-list">
         <li v-for="(row, i) in predRows" :key="i" data-testid="eo-pred-row">
           <div class="eo-pred">
-            <select :value="row.variable" @change="row.variable = $event.target.value">
+            <select :value="row.operands[0] ?? ''" @change="onPredVariableChange(row, $event.target.value)">
               <option value="">—</option>
               <option v-for="name in allNames" :key="name" :value="name">{{ name }}</option>
             </select>
             <input type="text" placeholder="unit" :value="row.unit" @input="row.unit = $event.target.value" />
-            <input type="text" placeholder="plot label" :value="row.name_for_plotting" @input="row.name_for_plotting = $event.target.value" />
+            <input type="text" placeholder="trace label" :value="row.trace_name_for_plotting" @input="row.trace_name_for_plotting = $event.target.value" />
             <select :value="row.experiment_idx" @change="row.experiment_idx = Number($event.target.value)">
               <option v-for="e in expOptions" :key="e" :value="e">{{ e }}</option>
             </select>
