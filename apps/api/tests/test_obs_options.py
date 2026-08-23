@@ -308,6 +308,37 @@ def test_the_default_cost_type_comes_from_ca(requires_ca):
         oo.reset_cache()
 
 
+def test_the_default_survives_a_func_probe_that_cannot_import(monkeypatch, requires_ca):
+    """A failed operation-func probe must not blank the rest of the payload.
+
+    ``get_obs_data_options`` wraps the whole introspection in one ``except``, so any part of
+    it raising returns the fallback payload -- fallback operations, fallback cost types, and
+    (until this) an empty default_cost_type. The part that actually fails in the wild is the
+    func probe: it imports CA's operation/cost func modules, which reach the simulation stack
+    (``operation_funcs_user`` imports ``scipy.signal``), and CI's unit tier installs none of
+    it. The default cost type needs none of that -- it is a constant in
+    ``utilities.obs_data_helpers``.
+
+    So one unavailable dependency reported the *whole* obs-data editor as an older CA's, in
+    plausible-looking defaults rather than an error. The editor said plain "default" while CA
+    was sitting there with the answer.
+    """
+    import obs_options as oo
+    from ca_imports import ca_from
+
+    expected = ca_from("utilities.obs_data_helpers", "DEFAULT_COST_TYPE")
+
+    def _explode(*a, **k):
+        raise ImportError("no scipy here, as in the unit tier")
+
+    monkeypatch.setattr(oo, "_op_funcs_dict", _explode)
+    oo.reset_cache()
+    try:
+        assert oo.get_obs_data_options()["default_cost_type"] == expected
+    finally:
+        oo.reset_cache()
+
+
 def test_an_older_ca_reports_no_default_rather_than_guessing(monkeypatch):
     """The editor then says plain "default" -- naming the wrong cost function
     would be worse than naming none."""
