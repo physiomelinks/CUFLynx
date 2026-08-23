@@ -212,6 +212,46 @@ analytic `get_gradient` is better and unused: it needs a solver-backed
 `OpencorParamID` (compile per call, casadi/aadc/FSA only), which is the subprocess
 tier this is avoiding. Opt-in and off by default: 2M+1 simulations per settle.
 
+**Exchange with PhLynx** (`apps/api/omex_import.py` + `omex_export.py`, #287/#290).
+A study travels between the two apps as a **COMBINE archive**, and the contract is
+asymmetric: CUFLynx owns the model's constants and **nothing else in the archive**.
+So `unpack` returns every member and the parsed manifest — not just the four roles
+it understands — and `build_archive` copies them all back byte-for-byte with exactly
+two exceptions: the model CellML (flattened, with the chosen values substituted) and
+params_for_id (refreshed from the study, so range/selection edits travel). **obs_data
+is never replaced** — verbatim when the archive has one, *added* only when it does
+not. PhLynx's `flow.json` / `changes.json` / `module_config.json` / SED-ML /
+`simulation.json` are never parsed, authored or mutated; whichever arrived is exactly
+what leaves, and none is invented when absent (#287 has not settled which editor-state
+file is authoritative, and this is what keeps CUFLynx from having to care).
+
+Three traps:
+
+- **Classify JSON members by manifest format and content, never by "leftover
+  `.json`".** A PhLynx archive ships `simulation.json` declared as plain
+  `application/json` — the same format a real obs_data carries — so the manifest
+  alone cannot separate them; `_looks_like_obs_data` sniffs for the two shapes
+  `obs_data.parse_obs_data` accepts. Upstream is explicit that `flow.json` may be
+  **renamed**, so its format specifier (`application/x.vnd.phlynx-flow+json`) is the
+  contract and its name is not. A params_for_id must be matched against `.json` too:
+  CUFLynx stores the canonical JSON form, so without that an archive CUFLynx writes
+  is not one CUFLynx can read.
+- **The send URL is `${PHLYNX_URL}/?open=omex#<bare base64>`** (`phlynxOpenUrl` in
+  `lib/examples.js`). PhLynx has no `phlynx://openFile/` scheme — `useLoadFromUrl`
+  reads `?open=<keyword>` and `urlLoaders` registers `omex` — and its `base64ToBlob`
+  builds the `data:` URI itself, so a data URI in the fragment arrives
+  double-prefixed. One function owns the URL for when that changes.
+- **The source archive has to be kept to be returned.** `UPLOAD_DIR/<model_id>.omex`,
+  `_ModelRecord.archive_path`, restored by `_get_model`'s disk-recovery path.
+  Deliberately **not** in `MODEL_SOURCE_SUFFIXES`: that tuple drives "Edit source",
+  which would try to open a zip in the user's text editor.
+
+Value substitution goes through `calibrated_model.calibrated_cellml` — the same
+writer the calibrated-model save uses, so a send and a saved best fit produce the
+same file for the same values. Its report now names the owning `component/var` per
+parameter, which is how the send warns about a value written outside
+`parameters` / `parameters_global`: per #287 PhLynx will not read those back.
+
 **GUI config editing** (edit CA config files in the browser → download dated copy → apply immediately):
 
 - **obs_data.json** — `EditObsDataDialog.vue` + `apps/web/src/lib/obsDataJson.js`; its operand and operation pickers are `SearchableSelect.vue` (type-to-filter, #160) because those lists are a model's whole variable set and every registered operation; edits `data_items`/`prediction_items` (incl. `source`/`comment` notes) and embeds `ProtocolInfoEditor.vue` (+ `lib/protocolInfo.js`) for `protocol_info` (experiments, params_to_change, constant/ramp/step/pulse/paced inputs, time-view plots). Time-varying inputs are written as **`protocol_shapes`** — declarations in Myokit's `[[protocol]]` vocabulary (`level`/`start`/`length`/`period`/`multiplier`), which CA expands into `protocol_traces` on read (CA#339). Declarations, not expansions, because a point table cannot be read back into the fields that produced it. `expandShape()` in `lib/protocolInfo.js` mirrors CA's expansion for the plots; **the two must agree** — change both. Hand-written `protocol_traces` are still accepted and preserved verbatim, as is any shape the editor has no form for. Dropdown vocabularies come from `apps/api/obs_options.py` (`GET /api/obs_data/options`), which introspects CA registries — **never hardcode** operations/cost_types/data_types/plot_types. A data_item's `operation_kwargs` and `cost_kwargs` (CA#304 / CA#370) are edited the same way: an input per keyword argument, from a schema introspected off the chosen func's signature (`operation_kwargs_schema` / `cost_kwargs_schema`). A stored kwarg is only ever deleted when CA has said the newly chosen func cannot accept it (`cost_kwargs_accepts_any` is a *full* map so "accepts nothing else" is distinguishable from "CA never answered") — otherwise it round-trips untouched, because dropping a key is data loss. `apps/api/obs_cost.py` calls cost funcs through CA's `call_cost_func`, so the panel's cost is the call the calibration makes: `std`/`weight` only when the signature declares them, plus the data_item's `cost_kwargs`.

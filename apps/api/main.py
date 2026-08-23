@@ -19,6 +19,7 @@ work (and are unit-tested) without Myokit installed.
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import errno
 import json
@@ -34,7 +35,7 @@ import yaml
 
 from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -56,6 +57,7 @@ import solver_plots
 import mmt_protocol
 import myokit_import
 import omex_import
+import omex_export
 from aadc_check import aadc_status
 import editor_launch
 from version import __version__
@@ -175,6 +177,9 @@ class _ModelRecord:
         # Raw input files persisted on disk for circulatory_autogen calibration.
         self.obs_path: Path | None = None
         self.params_path: Path | None = None
+        # The .omex this study was loaded from, kept whole so it can be sent back
+        # with every member CUFLynx does not understand intact (#287/#290).
+        self.archive_path: Path | None = None
 
 
 # In-memory registry of uploaded models (process-scoped session store).
@@ -205,6 +210,7 @@ def _get_model(model_id: str) -> _ModelRecord:
             except failure:
                 continue
             record = _ModelRecord(model_id, path, meta)
+            record.archive_path = _model_archive_path(model_id)
             _models[model_id] = record
             return record
         raise HTTPException(status_code=404, detail=f"model {model_id!r} not found")
@@ -247,6 +253,31 @@ def _model_source_path(model_id: str) -> Path | None:
         if path.is_file():
             return path
     return None
+
+
+#: The archive a study was loaded from, kept whole beside the model derived from
+#: it. Deliberately **not** in ``MODEL_SOURCE_SUFFIXES``: that tuple drives the
+#: "Edit source" button, and an ``.omex`` there would try to open a zip in the
+#: user's text editor. Its only reader is the PhLynx send, which has to return
+#: every member CUFLynx does not understand byte-for-byte (#287/#290).
+MODEL_ARCHIVE_SUFFIX = ".omex"
+
+
+def _save_model_archive(model_id: str, data: bytes) -> Path | None:
+    """Keep the uploaded archive; never fatal, the study still loaded without it."""
+    path = UPLOAD_DIR / f"{model_id}{MODEL_ARCHIVE_SUFFIX}"
+    with contextlib.suppress(OSError):
+        path.write_bytes(data)
+        return path
+    return None
+
+
+def _model_archive_path(model_id: str) -> Path | None:
+    """The stored source archive for *model_id*, or None when it has none."""
+    if not _SAFE_MODEL_ID.match(str(model_id or "")):
+        return None
+    path = UPLOAD_DIR / f"{model_id}{MODEL_ARCHIVE_SUFFIX}"
+    return path if path.is_file() else None
 
 
 def _display_stem(name: str, fallback: str) -> str:
@@ -1267,6 +1298,11 @@ async def upload_omex(
     if mmt_source is not None:
         _save_model_source(model_id, ".mmt", mmt_source)
     _models[model_id] = _ModelRecord(model_id, path, meta)
+    # The archive itself, whole. Everything CUFLynx does not understand -- the
+    # manifest, SED-ML, `simulation.json`, PhLynx's `flow.json` -- has to come
+    # back untouched when the study is sent on (#287), and it cannot come back
+    # from four extracted roles.
+    _models[model_id].archive_path = _save_model_archive(model_id, data)
 
     result = {
         "model_id": model_id,
@@ -1350,6 +1386,110 @@ async def upload_omex(
             }
 
     return result
+
+
+class PhlynxSendRequest(BaseModel):
+    model_id: str
+    #: Which parameter values are written into the model on the way out.
+    #: ``current`` -- the sliders, ``best_fit`` -- the last calibration,
+    #: ``as_imported`` -- none, the model exactly as CUFLynx holds it.
+    source: str = "current"
+    values: dict[str, float] = Field(default_factory=dict)  # for source="current"
+    output_dir: str = ""  # for source="best_fit"
+    #: Return the archive as a file instead of base64, for the size fallback: a
+    #: browser silently drops an over-long URL, so past a point the send becomes
+    #: a download the user drops into PhLynx by hand.
+    download: bool = False
+
+
+#: Base64 longer than this is not worth putting in a URL fragment -- browsers
+#: differ on where they truncate and none of them says so. Above it the frontend
+#: offers the archive as a file instead.
+PHLYNX_URL_LIMIT = 1_500_000
+
+
+@app.post("/api/phlynx/send")
+def phlynx_send(req: PhlynxSendRequest):
+    """Build the study as a COMBINE archive for PhLynx (#290).
+
+    The archive is assembled here rather than in the browser so there is one
+    writer, and so the frontend keeps assuming nothing about a local backend: it
+    receives base64 and does ``window.open``.
+
+    Every member of the archive the study was loaded from is returned
+    byte-for-byte except the model (flattened, with the chosen values
+    substituted) and params_for_id (refreshed from the study). obs_data is never
+    replaced, only added when the archive has none. See :mod:`omex_export`.
+    """
+    record = _get_model(req.model_id)
+    if record.path.suffix.lower() != ".cellml":
+        raise HTTPException(
+            status_code=422,
+            detail="only a CellML model can be sent to PhLynx, which is a CellML builder",
+        )
+
+    if req.source == "current":
+        values = dict(req.values)
+    elif req.source == "best_fit":
+        out_dir = _user_func_base_dir(req.output_dir)
+        best = ca_run_history.best_param_values(out_dir or "")["params"] if out_dir else {}
+        if not best:
+            raise HTTPException(
+                status_code=422,
+                detail="no calibration best fit was found in the outputs directory",
+            )
+        values = best
+    elif req.source == "as_imported":
+        values = {}
+    else:
+        raise HTTPException(status_code=422, detail=f"unknown source {req.source!r}")
+
+    _validate_param_keys(values)
+
+    stem = _display_stem(record.meta.name, "study")
+    archive = record.archive_path.read_bytes() if record.archive_path else None
+    try:
+        blob, report = omex_export.build_archive(
+            cellml_text=record.path.read_text(encoding="utf-8"),
+            values=values,
+            source_archive=archive,
+            obs_bytes=record.obs_path.read_bytes() if record.obs_path else None,
+            obs_name=f"{stem}_obs_data.json",
+            params_bytes=record.params_path.read_bytes() if record.params_path else None,
+            params_name=f"{stem}_params_for_id{record.params_path.suffix}"
+            if record.params_path
+            else "params_for_id.json",
+        )
+    except omex_export.OmexExportError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"could not read the study: {exc}") from exc
+
+    filename = f"{stem}.omex"
+    if req.download:
+        return Response(
+            content=blob,
+            media_type="application/zip",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    encoded = base64.b64encode(blob).decode("ascii")
+    return {
+        "base64": encoded,
+        "bytes": len(blob),
+        "too_large": len(encoded) > PHLYNX_URL_LIMIT,
+        "limit": PHLYNX_URL_LIMIT,
+        "filename": filename,
+        "members": report["members"],
+        "member_count": len(report["members"]),
+        "updated": report["updated"],
+        # Named, never silently dropped: a parameter that could not be written
+        # into the model is a value PhLynx will not see.
+        "unresolved": report["unresolved"],
+        # Written, but into a component PhLynx does not read parameter changes
+        # back out of (#287) -- so the value travels and is ignored.
+        "outside_parameters": report["outside_parameters"],
+    }
 
 
 @app.get("/api/models/{model_id}/variables")

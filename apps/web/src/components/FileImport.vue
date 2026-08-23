@@ -3,6 +3,7 @@ import { ref, computed, watch } from 'vue'
 import Message from 'primevue/message'
 import InputText from 'primevue/inputtext'
 import Button from 'primevue/button'
+import Dialog from 'primevue/dialog'
 import FileBrowserDialog from './FileBrowserDialog.vue'
 import EditParamsDialog from './EditParamsDialog.vue'
 import EditObsDataDialog from './EditObsDataDialog.vue'
@@ -14,8 +15,10 @@ import {
   fetchExampleModel,
   editModelSource,
   uploadOmex,
+  sendToPhlynx,
+  phlynxDownloadRequest,
 } from '../lib/api'
-import { PHLYNX_URL } from '../lib/examples'
+import { phlynxOpenUrl } from '../lib/examples'
 
 const props = defineProps({
   modelId: { type: String, default: null },
@@ -44,6 +47,10 @@ const props = defineProps({
   // The filename a converted model came from -- set for a .mmt, which becomes
   // CellML at import (#27). Also decides what Edit does.
   convertedFrom: { type: String, default: null },
+  // The current slider values, {qname: value}. Sent to PhLynx as the study's
+  // parameter values -- a drag never rewrites the stored model, so the values
+  // only exist here until something asks for them (#290).
+  paramValues: { type: Object, default: () => ({}) },
 })
 const emit = defineEmits([
   'model-loaded',
@@ -105,7 +112,7 @@ const startEditTitle = computed(() => {
   if (sourceExt.value) {
     return `Open the model source (${sourceExt.value}) in your editor, saved in the outputs directory`
   }
-  return 'Edit the current model in PhLynx'
+  return 'Send the current study to PhLynx to edit it there'
 })
 
 // Where the edited copy went, and what it means — the whole point of the button
@@ -140,9 +147,95 @@ async function onStartEdit() {
     }
     return
   }
-  // A link that opens PhLynx is enough for now; deeper integration is future
-  // work (issue #91).
-  window.open(PHLYNX_URL, '_blank', 'noopener')
+  // A CellML model goes to PhLynx as the whole study, so the user first says
+  // which parameter values should travel with it (#290).
+  sendOpen.value = true
+}
+
+// Which values are written into the model on the way out. "As imported" is the
+// escape hatch: it sends the model exactly as CUFLynx holds it, which is what
+// you want when the sliders are mid-experiment and the point is to edit the
+// structure rather than to carry a fit across.
+const SEND_SOURCES = [
+  { value: 'current', label: 'Current slider values' },
+  { value: 'best_fit', label: 'Last calibration best fit' },
+  { value: 'as_imported', label: 'As imported (no substitution)' },
+]
+const sendOpen = ref(false)
+const sendSource = ref('current')
+const sending = ref(false)
+
+// A best fit is read from the outputs directory, so without one there is
+// nowhere to read it from. It can come from a *previous* session's run, which
+// is why this is not gated on a calibration having finished in this one.
+const bestFitAvailable = computed(() => !!props.outputsDir.trim())
+
+function sendSourceDisabled(value) {
+  return value === 'best_fit' && !bestFitAvailable.value
+}
+
+// Everything the server needs to build the archive. `values` only matters for
+// the "current" source; sending it always keeps the payload one shape.
+function sendOptions() {
+  return {
+    source: sendSource.value,
+    values: sendSource.value === 'current' ? props.paramValues : {},
+    outputDir: props.outputsDir.trim(),
+  }
+}
+
+// What the send did, beyond opening the tab: a parameter that could not be
+// written is a value PhLynx will not see, and one written outside
+// `parameters` / `parameters_global` is one PhLynx will not read back (#287).
+// Both are reported rather than left for the user to discover downstream.
+function sendNotice(res) {
+  const parts = [`Sent ${res.member_count} files to PhLynx.`]
+  if (res.unresolved?.length) {
+    parts.push(`Not written into the model: ${res.unresolved.join(', ')}.`)
+  }
+  if (res.outside_parameters?.length) {
+    parts.push(
+      `Written outside parameters/parameters_global, so PhLynx will not pick ` +
+        `them up: ${res.outside_parameters.join(', ')}.`,
+    )
+  }
+  return parts.join(' ')
+}
+
+// Above the size guard the archive cannot ride in a URL — browsers truncate a
+// long one silently — so it is handed over as a file to drop into PhLynx.
+async function downloadArchive(filename) {
+  const { data } = await phlynxDownloadRequest(props.modelId, sendOptions())
+  const href = URL.createObjectURL(data)
+  const a = document.createElement('a')
+  a.href = href
+  a.download = filename
+  a.click()
+  URL.revokeObjectURL(href)
+}
+
+async function onSendConfirm() {
+  error.value = ''
+  notice.value = ''
+  sending.value = true
+  try {
+    const res = await sendToPhlynx(props.modelId, sendOptions())
+    if (res.too_large) {
+      await downloadArchive(res.filename)
+      notice.value =
+        `${sendNotice(res)} The archive is too large to travel in a link ` +
+        `(${Math.round(res.bytes / 1024)} kB), so it was downloaded as ` +
+        `${res.filename} — open PhLynx and import it.`
+    } else {
+      window.open(phlynxOpenUrl(res.base64), '_blank', 'noopener')
+      notice.value = sendNotice(res)
+    }
+    sendOpen.value = false
+  } catch (e) {
+    error.value = e?.response?.data?.detail || String(e)
+  } finally {
+    sending.value = false
+  }
 }
 
 // The Start dialog chose an example: fetch it and feed it through the normal
@@ -575,6 +668,45 @@ async function onParamsDrop(event) {
       @select-example="onSelectExample"
     />
 
+    <Dialog
+      v-model:visible="sendOpen"
+      modal
+      header="Send to PhLynx"
+      :style="{ width: '30rem' }"
+      data-testid="phlynx-send-dialog"
+    >
+      <p class="send-intro">
+        The whole study travels — model, obs_data, params_for_id, and every file
+        the archive came with. Which parameter values should be written into the
+        model?
+      </p>
+      <div v-for="opt in SEND_SOURCES" :key="opt.value" class="send-option">
+        <label>
+          <input
+            v-model="sendSource"
+            type="radio"
+            name="phlynx-send-source"
+            :value="opt.value"
+            :disabled="sendSourceDisabled(opt.value)"
+            :data-testid="`phlynx-source-${opt.value}`"
+          />
+          <span :class="{ disabled: sendSourceDisabled(opt.value) }">{{ opt.label }}</span>
+        </label>
+      </div>
+      <p v-if="!bestFitAvailable" class="send-hint">
+        Set an outputs directory to send a calibration best fit.
+      </p>
+      <template #footer>
+        <Button label="Cancel" severity="secondary" text @click="sendOpen = false" />
+        <Button
+          label="Send"
+          :loading="sending"
+          data-testid="phlynx-send-confirm"
+          @click="onSendConfirm"
+        />
+      </template>
+    </Dialog>
+
     <FileBrowserDialog
       v-model:visible="outputsBrowserOpen"
       mode="dir"
@@ -611,6 +743,28 @@ async function onParamsDrop(event) {
 </template>
 
 <style scoped>
+.send-intro {
+  margin: 0 0 0.75rem;
+  font-size: 0.85rem;
+  color: var(--text-muted, #666);
+}
+.send-option {
+  padding: 0.15rem 0;
+}
+.send-option label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  cursor: pointer;
+}
+.send-option .disabled {
+  opacity: 0.5;
+}
+.send-hint {
+  margin: 0.5rem 0 0;
+  font-size: 0.8rem;
+  color: var(--text-muted, #666);
+}
 .file-import {
   display: flex;
   flex-direction: column;

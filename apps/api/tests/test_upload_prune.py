@@ -72,3 +72,15 @@ def test_the_default_ttl_applies_when_none_is_passed(tmp_path):
 
     assert main_mod.prune_upload_dir(tmp_path) == 1
     assert not stale.exists()
+
+
+def test_a_stored_source_archive_ages_out_like_any_upload(tmp_path):
+    """The `.omex` a study was loaded from is kept whole so it can be sent back
+    to PhLynx (#290). It is the largest thing in the uploads dir, so it must be
+    swept by the same TTL rather than accumulating forever."""
+    archive = tmp_path / f"abc123{main_mod.MODEL_ARCHIVE_SUFFIX}"
+    archive.write_bytes(b"PK\x05\x06" + b"\x00" * 18)
+    _age(archive, 30)
+
+    assert main_mod.prune_upload_dir(tmp_path, ttl_days=7) == 1
+    assert not archive.exists()
