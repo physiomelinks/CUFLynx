@@ -166,3 +166,75 @@ def test_the_predictive_artefacts_are_reported_when_present(tmp_path):
     result = load_outputs.load_outputs(str(tmp_path))
     assert result["uq"]["has_posterior_predictive"] is True
     assert result["uq"]["has_sample_traces"] is True
+
+
+# --- finding an emulator that is not where the convention says --------------------
+
+class TestFindingTheEmulator:
+    """``emulator_dir`` is a setting, not only a convention.
+
+    A study that trains one emulator and reuses it across several obs_data has to
+    set it: the conventional name embeds the obs file, so the runs would otherwise
+    each look in a different directory and only the first would find a bundle.
+    Reading such a run means finding the bundle that is there, not the one the
+    convention predicts.
+    """
+
+    def _bundle(self, path, mtime=None):
+        os.makedirs(path, exist_ok=True)
+        with open(os.path.join(path, "emulator_metadata.json"), "w") as handle:
+            json.dump({"feature_r2": [0.9]}, handle)
+        with open(os.path.join(path, "training_data.npz"), "wb") as handle:
+            handle.write(b"not really an npz")
+        if mtime is not None:
+            os.utime(os.path.join(path, "emulator_metadata.json"), (mtime, mtime))
+        return path
+
+    def test_the_conventional_place_is_still_preferred(self, tmp_path):
+        out = str(tmp_path)
+        wanted = self._bundle(os.path.join(out, "emulators", "3compartment_obs"))
+        self._bundle(os.path.join(out, "emulators", "something_else"))
+        assert ca_run_history.find_emulator_dir(out, "3compartment", "obs.json") == wanted
+
+    def test_a_bundle_under_another_name_is_found(self, tmp_path):
+        """The case that made this necessary: emulator_dir set to a shared path."""
+        out = str(tmp_path)
+        wanted = self._bundle(os.path.join(out, "emulators", "SN_full_joint"))
+        assert ca_run_history.find_emulator_dir(out, "SN_full", "cpvt_obs_data.json") == wanted
+
+    def test_a_directory_that_only_half_holds_a_bundle_is_not_offered(self, tmp_path):
+        """CA's trainer needs both files; metadata alone loads and then refuses."""
+        out = str(tmp_path)
+        half = os.path.join(out, "emulators", "SN_full_joint")
+        os.makedirs(half)
+        with open(os.path.join(half, "emulator_metadata.json"), "w") as handle:
+            json.dump({}, handle)
+        assert ca_run_history.find_emulator_dir(out, "SN_full", None) is None
+
+    def test_the_model_prefix_breaks_a_tie(self, tmp_path):
+        out = str(tmp_path)
+        self._bundle(os.path.join(out, "emulators", "other_study"), mtime=2_000_000_000)
+        wanted = self._bundle(os.path.join(out, "emulators", "SN_full_joint"),
+                              mtime=1_000_000_000)
+        assert ca_run_history.find_emulator_dir(out, "SN_full", None) == wanted
+
+    def test_the_newest_wins_among_equals(self, tmp_path):
+        out = str(tmp_path)
+        self._bundle(os.path.join(out, "emulators", "a_study"), mtime=1_000_000_000)
+        wanted = self._bundle(os.path.join(out, "emulators", "b_study"),
+                              mtime=2_000_000_000)
+        assert ca_run_history.find_emulator_dir(out, None, None) == wanted
+
+    def test_no_emulators_directory_is_not_an_error(self, tmp_path):
+        assert ca_run_history.find_emulator_dir(str(tmp_path), "SN_full", None) is None
+
+    def test_a_directory_that_does_not_exist_is_not_an_error(self):
+        assert ca_run_history.find_emulator_dir("/no/such/place", "SN_full", None) is None
+
+    def test_the_loader_reports_the_metadata_it_found_off_convention(self, tmp_path):
+        out = str(tmp_path)
+        self._bundle(os.path.join(out, "emulators", "SN_full_joint"))
+        loaded = load_outputs.load_outputs(out, file_prefix="SN_full")
+        assert loaded["emulator"]["dir"].endswith("SN_full_joint")
+        assert loaded["emulator"]["metadata"]["feature_r2"] == [0.9]
+        assert "emulator" in loaded["found"]

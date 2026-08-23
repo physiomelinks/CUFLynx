@@ -139,9 +139,12 @@ def _uq(output_dir, run_dir, missing):
 
 
 def _emulator(output_dir, file_prefix, obs_path, missing):
+    # find_ rather than the plain resolver: this reads a run it did not produce,
+    # and emulator_dir is a setting a study can point anywhere -- one trained
+    # emulator reused across several obs_data has to.
     emu_dir = _safely(
         "emulator directory",
-        lambda: ca_run_history.emulator_dir(output_dir, file_prefix, obs_path),
+        lambda: ca_run_history.find_emulator_dir(output_dir, file_prefix, obs_path),
         missing)
     if not emu_dir:
         return {"dir": None, "metadata": None, "error_points": None}

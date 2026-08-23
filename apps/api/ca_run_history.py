@@ -447,6 +447,54 @@ def emulator_dir(output_dir: str, file_prefix: str, obs_path: str | None) -> str
     return os.path.join(output_dir, EMULATOR_SUBDIR, f"{file_prefix}_{obs_prefix}")
 
 
+def find_emulator_dir(output_dir: str, file_prefix: str | None,
+                      obs_path: str | None) -> str | None:
+    """Where this run's emulator actually is, or None.
+
+    :func:`emulator_dir` computes where CA *would* put one, which is the right
+    question when this app is the thing training: both sides derive the path and
+    neither has to pass it. It is only a guess when reading a run someone else
+    produced, because ``emulator_settings.emulator_dir`` is a setting, and a study
+    that trains one emulator and reuses it across several obs_data has to set it
+    -- the conventional name embeds the obs file, so the three runs would
+    otherwise each look in a different directory and only the first would find a
+    bundle.
+
+    So: the convention first, since that is what an unconfigured run does, and
+    otherwise whatever bundle is actually sitting under ``emulators/``. When
+    several are, one whose name starts with the model prefix wins over one that
+    does not, and the most recently written wins among equals -- the same rule
+    ``list_run_dirs`` uses for run directories, and for the same reason.
+    """
+    if not output_dir or not os.path.isdir(output_dir):
+        return None
+
+    if file_prefix:
+        conventional = emulator_dir(output_dir, file_prefix, obs_path)
+        if emulator_reusable(conventional):
+            return conventional
+
+    root = os.path.join(output_dir, EMULATOR_SUBDIR)
+    if not os.path.isdir(root):
+        return None
+    try:
+        candidates = [entry.path for entry in os.scandir(root) if entry.is_dir()]
+    except OSError:
+        return None
+
+    bundles = [path for path in candidates if emulator_reusable(path)]
+    if not bundles:
+        return None
+
+    def rank(path):
+        name = os.path.basename(path)
+        matches_prefix = bool(file_prefix) and name.startswith(file_prefix)
+        return (matches_prefix, os.path.getmtime(
+            os.path.join(path, EMULATOR_METADATA_FILE)))
+
+    return max(bundles, key=rank)
+
+
 def emulator_error_points(emu_dir: str) -> dict | None:
     """The emulator's held-out points, as the Analysis view plots them.
 
