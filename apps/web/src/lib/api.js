@@ -512,6 +512,19 @@ export async function getUQStatus(jobId, offset = 0) {
 }
 
 /**
+ * Posterior draws pushed back through the model, against the measurements.
+ *
+ * Fetched once when a run finishes rather than polled: it is a whole sweep of the model, so it
+ * does not exist until the run is over and does not change afterwards. Everything comes back in
+ * units of each measurement's own standard deviation -- scaled on the server, so two clients
+ * cannot draw two different figures from one run.
+ */
+export async function getUQPosteriorPredictive(jobId) {
+  const { data } = await axios.get(url(`/api/uq/${jobId}/posterior-predictive`))
+  return data
+}
+
+/**
  * The growing MCMC chain, as the three views the Progress tab draws (#244).
  *
  * Separate from getUQStatus because it is the heaviest thing a run produces: status is polled
