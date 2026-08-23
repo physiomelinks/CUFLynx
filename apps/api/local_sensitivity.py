@@ -337,7 +337,7 @@ def _ca_local_sensitivity(
     for _k, obs_idx in enumerate(obs["const_idx_to_obs_idx"]):
         label = pid._observable_label(obs_idx)
         oname = format_output_name(
-            obs["names_for_plotting"][obs_idx],
+            (obs.get("item_names_for_plotting") or obs["names_for_plotting"])[obs_idx],
             obs["experiment_idxs"][obs_idx],
             obs["subexperiment_idxs"][obs_idx],
             obs["operations"][obs_idx],

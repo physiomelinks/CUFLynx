@@ -391,7 +391,8 @@ def _generate_error_vectors(param_id, output_dir: str) -> dict:
             out["percent_error"] = [float(x) for x in np.load(pe)]
             out["std_error"] = [float(x) for x in np.load(se)]
             obs_info = getattr(param_id, "obs_info", {}) or {}
-            names = obs_info.get("names_for_plotting", [])
+            names = (obs_info.get("item_names_for_plotting")
+                     or obs_info.get("names_for_plotting", []))
             out["error_labels"] = [str(n) for n in names]
     except Exception as exc:  # noqa: BLE001
         print(f"warning: could not load error vectors: {exc}", flush=True)

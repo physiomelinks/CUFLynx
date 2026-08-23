@@ -12,6 +12,23 @@ import {
 const OPS = ['', 'max', 'min', 'mean']
 
 describe('splitItems', () => {
+  it('reads a pre-#466 item and writes back only the current keys', () => {
+    // CA #466 split `variable` into data_item_name + operands and `name_for_plotting` into
+    // trace/item labels. An older saved study must still open, and must not be written back
+    // with both spellings -- CA rejects an item that sets a legacy key beside its replacement.
+    const row = itemToRow({
+      variable: 'a', name_for_plotting: 'A_{max}', data_type: 'constant',
+      operation: 'max', operands: ['m/x'], value: 1, std: 0.1,
+    })
+    expect(row.data_item_name).toBe('a')
+    expect(row.trace_name_for_plotting).toBe('A_{max}')
+    const out = rowToItem(row)
+    expect(out.data_item_name).toBe('a')
+    expect(out.trace_name_for_plotting).toBe('A_{max}')
+    expect('variable' in out).toBe(false)
+    expect('name_for_plotting' in out).toBe(false)
+  })
+
   it('editable = constant with a known operation; everything else preserved', () => {
     const items = [
       { variable: 'a', data_type: 'constant', operation: 'max', value: 1, std: 0.1 },
@@ -19,7 +36,7 @@ describe('splitItems', () => {
       { variable: 'c', data_type: 'constant', operation: 'calc_spike', value: 0, std: 0.1 },
     ]
     const { editable, preserved } = splitItems(items, OPS)
-    expect(editable.map((r) => r.variable)).toEqual(['a'])
+    expect(editable.map((r) => r.data_item_name)).toEqual(['a'])
     expect(preserved.map((i) => i.variable)).toEqual(['s', 'c'])
   })
 
