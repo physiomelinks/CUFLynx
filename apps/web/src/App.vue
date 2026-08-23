@@ -53,6 +53,7 @@ import {
   saveParams,
   loadParams,
   errorMessage,
+  loadOutputsDirectory,
 } from './lib/api'
 import {
   overlayItemsFor,
@@ -116,6 +117,76 @@ const canRun = computed(() => model.hasModel.value && obs.hasProtocol.value)
 // remembered across sessions; blank => backend uses a temp dir.
 const outputsDir = ref(localStorage.getItem('cuflynx-outputs-dir') || '')
 watch(outputsDir, (v) => localStorage.setItem('cuflynx-outputs-dir', v || ''))
+
+// What the outputs directory already holds, once someone asks for it (#255).
+const loadedOutputs = ref(null)
+const loadingOutputs = ref(false)
+// What the last load actually found, so an empty panel is never left to be
+// interpreted: "there was nothing" and "it could not be read" look identical.
+const loadedOutputsSummary = ref('')
+
+async function loadOutputsFromDirectory(runDir) {
+  const dir = outputsDir.value.trim()
+  if (!dir || loadingOutputs.value) return
+  loadingOutputs.value = true
+  try {
+    const found = await loadOutputsDirectory(dir, model.name.value || undefined, runDir)
+    loadedOutputs.value = found
+    if (found.error) {
+      sim.setError(found.error)
+      return
+    }
+    applyLoadedOutputs(found)
+    // Say what was loaded. Empty panels are ambiguous -- "there was nothing" and
+    // "it could not be read" look identical until someone is told which.
+    const parts = found.found.length
+      ? `Loaded ${found.found.join(', ')}`
+      : 'Found no results in that directory'
+    const which = found.run_dir ? ` from ${found.run_dir.split('/').pop()}` : ''
+    const missed = found.missing?.length ? ` (could not read: ${found.missing.join('; ')})` : ''
+    loadedOutputsSummary.value = parts + which + missed
+    if (!found.found.length) sim.setError(loadedOutputsSummary.value)
+  } catch (e) {
+    sim.setError(`Could not read ${dir}: ${errorMessage(e)}`)
+  } finally {
+    loadingOutputs.value = false
+  }
+}
+
+function applyLoadedOutputs(found) {
+  const best = found.calibration?.best
+  if (best?.params && Object.keys(best.params).length) {
+    calib.bestParams.value = best.params
+    calib.cost.value = best.cost ?? null
+    calib.bestModifiers.value = found.calibration.modifiers ?? []
+    calib.calibratedModelPath.value = found.calibration.calibrated_model || null
+    const errors = found.calibration.error_vectors ?? {}
+    calib.percentError.value = errors.percent ?? null
+    calib.stdError.value = errors.std ?? null
+  }
+
+  const sobol = found.sensitivity?.sobol
+  const local = found.sensitivity?.local
+  if (sobol || local) {
+    sa.indices.value = (sobol ?? local)?.indices ?? null
+    sa.paramNames.value = (sobol ?? local)?.param_names ?? []
+    sa.outputNames.value = (sobol ?? local)?.output_names ?? []
+  }
+
+  if (found.uq?.params?.length) {
+    uq.params.value = found.uq.params
+    uq.method.value = found.uq.method ?? 'mcmc'
+  }
+  // null is "not scored", which the panel says out loud -- so it is assigned
+  // either way rather than only when present.
+  uq.coverage.value = found.uq?.coverage ?? null
+  uq.posteriorPredictive.value = null
+
+  if (found.emulator?.metadata) {
+    emu.metadata.value = found.emulator.metadata
+    emu.errorPoints.value = found.emulator.error_points ?? null
+  }
+}
 // On open, ask the user where outputs should go (the first thing they see).
 const outputsSetupOpen = ref(false)
 
@@ -2775,6 +2846,7 @@ watch(() => obs.obsData.value, scheduleRun)
         <div class="rhs-content">
         <FileImport
           v-model:outputs-dir="outputsDir"
+          @load-outputs="loadOutputsFromDirectory"
           :model-id="model.modelId.value"
           :current-params="loadedParamsRaw"
           :model-variables="model.variables.value"

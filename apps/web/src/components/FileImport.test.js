@@ -791,3 +791,30 @@ describe('FileImport accepts an external python model (.py)', () => {
     for (const ext of ['.cellml', '.mmt', '.py', '.omex']) expect(accept).toContain(ext)
   })
 })
+
+// --- reading what is already in the outputs directory (#255) -----------------
+
+describe('FileImport — load outputs', () => {
+  it('offers a button to read the directory, disabled until one is set', async () => {
+    const wrapper = mount(FileImport, {
+      props: { outputsDir: '' }, global: { stubs },
+    })
+    const button = wrapper.find('[data-testid="outputs-load"]')
+
+    expect(button.exists()).toBe(true)
+    expect(button.attributes('disabled')).toBeDefined()
+  })
+
+  it('asks to load once a directory is set', async () => {
+    const wrapper = mount(FileImport, {
+      props: { outputsDir: '/tmp/outputs' }, global: { stubs },
+    })
+    const button = wrapper.find('[data-testid="outputs-load"]')
+    expect(button.attributes('disabled')).toBeUndefined()
+
+    await button.trigger('click')
+    // A press, not a watcher: reading a directory is real work, and results
+    // found there may not match what is loaded.
+    expect(wrapper.emitted('load-outputs')).toBeTruthy()
+  })
+})
