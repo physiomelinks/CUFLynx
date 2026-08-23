@@ -48,7 +48,7 @@ def _funcs(monkeypatch):
 
 def _item(**over):
     item = {
-        "variable": "x",
+        "data_item_name": "x",
         "operation": "max",
         "operands": ["a/u"],
         "value": 0.0,

@@ -508,7 +508,7 @@ def test_custom_operation_kwargs_change_the_computed_value(tmp_path, monkeypatch
         "protocol_info": {"pre_times": [0.0], "sim_times": [[5]], "params_to_change": {}},
         "prediction_items": [],
         "data_items": [
-            {"variable": "x_max", "name_for_plotting": "x_max", "data_type": "constant",
+            {"data_item_name": "x_max", "trace_name_for_plotting": "x_max", "data_type": "constant",
              "operation": "scaled_max", "operands": ["m/x"], "unit": "dimensionless",
              "weight": 1.0, "value": 30, "std": 3, "experiment_idx": 0,
              "subexperiment_idx": 0, "operation_kwargs": {"factor": 2.0}},

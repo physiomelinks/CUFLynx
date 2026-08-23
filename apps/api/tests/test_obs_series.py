@@ -241,8 +241,8 @@ def test_simulate_response_includes_output_series(client, fake_helper, monkeypat
         "protocol_info": {"pre_times": [0.0], "sim_times": [[5]], "params_to_change": {}},
         "data_items": [
             {
-                "variable": "hr",
-                "name_for_plotting": "HR",
+                "data_item_name": "hr",
+                "trace_name_for_plotting": "HR",
                 "data_type": "constant",
                 "operation": "dbl",
                 "operands": ["Lotka_Volterra_module/x"],

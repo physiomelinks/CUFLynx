@@ -421,18 +421,20 @@ You can now tell by number, not by eye, whether a drag moved *towards* the data.
 
 **The heat example.** The obs_data that ships with CA holds six scalars: the `mean`
 and the `min` of **each** of the three probes, so every probe is scored rather than
-just the centre one. Two of the six:
+just the centre one. Two of the six. Note `data_item_name` differs between them -- it is the
+item's identity and must be unique -- while `trace_name_for_plotting` is shared, because the
+mean and the minimum are two features of the same probe trace (CA #466):
 
 ```json
 [
-  { "variable": "near probe mean",
-    "name_for_plotting": "mean(T_{p1})",
+  { "data_item_name": "near probe mean",
+    "trace_name_for_plotting": "T_{p1}",
     "data_type": "constant", "operation": "mean",
     "operands": ["heat/T_p1"], "unit": "dimensionless",
     "weight": 1.0, "value": 0.47, "std": 0.02,
     "cost_type": "gaussian_MLE", "plot_type": "horizontal" },
-  { "variable": "near probe minimum",
-    "name_for_plotting": "min(T_{p1})",
+  { "data_item_name": "near probe minimum",
+    "trace_name_for_plotting": "T_{p1}",
     "data_type": "constant", "operation": "min",
     "operands": ["heat/T_p1"], "unit": "dimensionless",
     "weight": 1.0, "value": 0.215, "std": 0.015,

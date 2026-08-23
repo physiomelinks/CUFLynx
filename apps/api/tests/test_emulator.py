@@ -883,7 +883,7 @@ def test_an_emulator_that_will_not_load_is_a_silence_not_a_failure(client, monke
 # has no fallback, deliberately -- never appeared, saying "there is no obs_data
 # loaded to score the emulator against" while one was plainly loaded.
 _BARE_ITEM = {
-    "variable": "probe 1 mean", "name_for_plotting": "mean(T_{p1})",
+    "data_item_name": "probe 1 mean", "trace_name_for_plotting": "mean(T_{p1})",
     "data_type": "constant", "operation": "mean", "operands": ["heat/T_p1"],
     "unit": "dimensionless", "weight": 1.0, "value": 0.4, "std": 0.05,
     "cost_type": "gaussian_MLE",

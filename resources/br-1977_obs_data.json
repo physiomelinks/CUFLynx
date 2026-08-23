@@ -37,8 +37,8 @@
     },
     "data_items": [
         {
-            "variable": "peak membrane potential",
-            "name_for_plotting": "V_{peak}",
+            "data_item_name": "peak membrane potential",
+            "trace_name_for_plotting": "V_{peak}",
             "operands": [
                 "membrane/V"
             ],
@@ -52,8 +52,8 @@
             "experiment_idx": 0
         },
         {
-            "variable": "resting membrane potential",
-            "name_for_plotting": "V_{rest}",
+            "data_item_name": "resting membrane potential",
+            "trace_name_for_plotting": "V_{rest}",
             "operands": [
                 "membrane/V"
             ],
@@ -67,8 +67,8 @@
             "experiment_idx": 0
         },
         {
-            "variable": "peak intracellular calcium",
-            "name_for_plotting": "Ca_{i,peak}",
+            "data_item_name": "peak intracellular calcium",
+            "trace_name_for_plotting": "Ca_{i,peak}",
             "operands": [
                 "isi/Cai"
             ],

@@ -51,8 +51,13 @@ export function splitItems(dataItems = [], operations = FALLBACK_OPERATIONS) {
 export function itemToRow(item) {
   return {
     _orig: item, // keep the full original so extra keys round-trip
-    variable: item.variable ?? '',
-    name_for_plotting: item.name_for_plotting ?? item.variable ?? '',
+    // CA #466 split the two overloaded keys. `data_item_name` is the item's identity and must
+    // be unique across data_items + prediction_items; `trace_name_for_plotting` labels the
+    // trace and may repeat (the mean and the max of one variable share it). The legacy
+    // `variable` / `name_for_plotting` are still read so an older file opens.
+    data_item_name: item.data_item_name ?? item.variable ?? '',
+    trace_name_for_plotting:
+      item.trace_name_for_plotting ?? item.name_for_plotting ?? item.data_item_name ?? item.variable ?? '',
     operation: item.operation ?? '',
     // Per-data_item values for the operation's keyword args (e.g. threshold,
     // window). Cloned so edits don't mutate the source; round-tripped on save.
@@ -85,8 +90,8 @@ export function newRow(experimentIdx = 0) {
   return {
     _orig: null,
     data_type: SCALAR_DATA_TYPE,
-    variable: '',
-    name_for_plotting: '',
+    data_item_name: '',
+    trace_name_for_plotting: '',
     operation: 'max',
     operation_kwargs: {},
     operands: [],
@@ -111,8 +116,12 @@ function num(v, fallback) {
 export function rowToItem(row) {
   const out = { ...(row._orig ?? {}) } // preserve extra keys (operation_kwargs, …)
   out.data_type = SCALAR_DATA_TYPE
-  out.variable = row.variable
-  out.name_for_plotting = row.name_for_plotting || row.variable
+  out.data_item_name = row.data_item_name
+  out.trace_name_for_plotting = row.trace_name_for_plotting || row.data_item_name
+  // never write both spellings back out -- CA rejects an item that sets a legacy key
+  // alongside its replacement
+  delete out.variable
+  delete out.name_for_plotting
   // Empties dropped: clearing an operand in the editor is how one is removed,
   // so a blank must not survive into the file as a nameless operand.
   out.operands = (row.operands ?? []).filter((o) => o)
@@ -152,9 +161,15 @@ export function rowToItem(row) {
 export function predToRow(pred) {
   return {
     _orig: pred,
-    variable: pred.variable ?? '',
+    // a prediction_item now names its model variable in `operands`, like a data_item;
+    // `variable` used to be both the qname and the item's name
+    data_item_name: pred.data_item_name ?? pred.variable ?? '',
+    operands: Array.isArray(pred.operands)
+      ? [...pred.operands]
+      : (pred.variable ? [pred.variable] : []),
     unit: pred.unit ?? 'dimensionless',
-    name_for_plotting: pred.name_for_plotting ?? pred.variable ?? '',
+    trace_name_for_plotting:
+      pred.trace_name_for_plotting ?? pred.name_for_plotting ?? pred.data_item_name ?? pred.variable ?? '',
     experiment_idx: pred.experiment_idx ?? 0,
   }
 }
@@ -162,19 +177,24 @@ export function predToRow(pred) {
 export function newPredRow(experimentIdx = 0) {
   return {
     _orig: null,
-    variable: '',
+    data_item_name: '',
+    operands: [],
     unit: 'dimensionless',
-    name_for_plotting: '',
+    trace_name_for_plotting: '',
     experiment_idx: experimentIdx,
   }
 }
 
 export function predRowToItem(row) {
   const out = { ...(row._orig ?? {}) }
-  out.variable = row.variable
+  out.data_item_name = row.data_item_name
+  out.operands = (row.operands ?? []).filter((o) => o)
+  if (!out.operands.length && row.data_item_name) out.operands = [row.data_item_name]
   out.unit = row.unit
-  out.name_for_plotting = row.name_for_plotting || row.variable
+  out.trace_name_for_plotting = row.trace_name_for_plotting || row.data_item_name
   out.experiment_idx = num(row.experiment_idx, 0)
+  delete out.variable
+  delete out.name_for_plotting
   return out
 }
 

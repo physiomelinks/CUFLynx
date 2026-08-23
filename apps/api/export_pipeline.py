@@ -1061,12 +1061,15 @@ def observed(doc=None):
     for item in obs_data_items(doc):
         operands = list(item.get("operands") or [])
         series = tuple(o for o in operands if not is_time(o))
-        variable = series[0] if series else (operands[0] if operands else item.get("variable"))
+        variable = series[0] if series else (operands[0] if operands else None)
         out.append(
             {
                 "variable": variable,
                 "series": series or (variable,),
-                "label": item.get("name_for_plotting") or item.get("variable") or variable,
+                "label": (item.get("trace_name_for_plotting")
+                          or item.get("name_for_plotting")
+                          or item.get("data_item_name")
+                          or item.get("variable") or variable),
                 "operation": item.get("operation") or "",
                 "value": item.get("value"),
                 "experiment": int(item.get("experiment_idx", 0) or 0),
@@ -1560,7 +1563,7 @@ def _panel_functions(obs_data: dict | list | None) -> str:
             o for o in operands
             if str(o).replace("/", ".").split(".")[-1].strip().lower() not in ("time", "t")
         )
-        variable = series[0] if series else (operands[0] if operands else item.get("variable"))
+        variable = series[0] if series else (operands[0] if operands else None)
         if not variable:
             continue
         key = series or (variable,)
@@ -1568,8 +1571,12 @@ def _panel_functions(obs_data: dict | list | None) -> str:
         if group is None:
             group = {
                 "variable": variable,
-                "label": item.get("name_for_plotting") or item.get("variable") or variable,
-                "described": item.get("variable") or "",
+                "label": (item.get("trace_name_for_plotting")
+                          or item.get("name_for_plotting")
+                          or item.get("data_item_name")
+                          or variable),
+                "described": (item.get("data_item_name")
+                              or item.get("variable") or ""),
                 "targets": [],
             }
             index[key] = group

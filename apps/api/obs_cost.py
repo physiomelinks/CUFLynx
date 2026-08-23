@@ -439,7 +439,8 @@ def _ca_items(obs_info, models: dict, costs: dict) -> list:
         model = models.get(obs_idx)
         observed = gt.get(obs_idx)
         entry = {
-            "label": str(obs_info["names_for_plotting"][obs_idx]),
+            "label": str((obs_info.get("item_names_for_plotting")
+                          or obs_info["names_for_plotting"])[obs_idx]),
             "operation": str(obs_info["operations"][obs_idx] or ""),
             "experiment_idx": int(obs_info["experiment_idxs"][obs_idx]),
             "subexperiment_idx": int(obs_info["subexperiment_idxs"][obs_idx]),
@@ -545,7 +546,9 @@ def evaluate(data_items, outputs_by_experiment, output_dir: str | None = None,
             if (exp, sub) in outputs_by_experiment
             else outputs_by_experiment.get(exp)
         ) or {}
-        label = item.get("name_for_plotting") or item.get("variable") or ""
+        label = (item.get("item_name_for_plotting") or item.get("trace_name_for_plotting")
+                 or item.get("data_item_name") or item.get("name_for_plotting")
+                 or item.get("variable") or "")
         entry = {
             "label": label,
             "operation": item.get("operation") or "",

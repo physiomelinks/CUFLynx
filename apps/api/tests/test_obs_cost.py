@@ -13,7 +13,7 @@ import pytest
 
 def _item(**over):
     item = {
-        "variable": "pressure",
+        "data_item_name": "pressure",
         "name_for_plotting": "u_{AR}",
         "operation": "max",
         "operands": ["a/u"],
@@ -160,7 +160,7 @@ def test_a_cost_func_that_takes_no_std_is_not_handed_one(monkeypatch):
 
 def _obs_data(**over):
     item = {
-        "variable": "a/u", "name_for_plotting": "u", "operation": "max",
+        "data_item_name": "a/u", "name_for_plotting": "u", "operation": "max",
         "operands": ["a/u"], "unit": "dimensionless", "value": 10.0, "std": 1.0,
         "weight": 1.0, "experiment_idx": 0, "subexperiment_idx": 0,
         "data_type": "constant", "cost_type": "tolerant",
@@ -472,7 +472,7 @@ def test_without_ca_the_panel_still_reports(monkeypatch):
     monkeypatch.setattr(
         obs_cost, "get_cost_funcs", lambda _d=None: {"MSE": _mse})
 
-    item = {"variable": "x", "operation": "max", "operands": ["a/u"], "value": 1.0,
+    item = {"data_item_name": "x", "operation": "max", "operands": ["a/u"], "value": 1.0,
             "std": 1.0, "weight": 1.0, "cost_type": "MSE"}
     out = obs_cost.evaluate([item], {0: {"a/u": [3.0]}},
                             obs_data={"protocol_info": {}, "data_items": [item]})
@@ -600,7 +600,7 @@ def _six_labels():
 
 def _six_item_obs():
     return [
-        {"variable": f"probe {i} {op}", "name_for_plotting": f"{op}(T_{{p{i}}})",
+        {"data_item_name": f"probe {i} {op}", "name_for_plotting": f"{op}(T_{{p{i}}})",
          "data_type": "constant", "operation": op, "operands": [f"heat/T_p{i}"],
          "unit": "dimensionless", "weight": 1.0, "value": 0.4, "std": 0.05,
          "cost_type": "gaussian_MLE"}
