@@ -72,7 +72,7 @@ jobs:
       # sim-worker child degrades to "no extra figures" by design, which
       # would silently gut test_solver_plots_worker's drift guards.
       - name: Install unit-test deps
-        run: pip install fastapi "uvicorn[standard]" numpy pandas pyyaml python-multipart httpx matplotlib pytest pytest-cov
+        run: pip install fastapi "uvicorn[standard]" numpy scipy pandas pyyaml python-multipart httpx matplotlib pytest pytest-cov
       - name: Run unit tests
         run: pytest -m "not integration" -q
 
@@ -102,7 +102,7 @@ jobs:
       # extra-figure drift guards); the heavy simulation stack
       # (myokit/libcellml) is exercised by the integration marker, skipped here.
       - name: Install unit-test deps
-        run: pip install fastapi "uvicorn[standard]" numpy pandas pyyaml python-multipart httpx matplotlib pytest pytest-cov
+        run: pip install fastapi "uvicorn[standard]" numpy scipy pandas pyyaml python-multipart httpx matplotlib pytest pytest-cov
       - name: Run unit tests
         run: pytest -m "not integration" -q
 
