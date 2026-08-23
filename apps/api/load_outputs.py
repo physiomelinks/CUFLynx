@@ -20,6 +20,7 @@ from __future__ import annotations
 import glob
 import json
 import os
+import re
 
 import ca_run_history
 
@@ -114,6 +115,114 @@ def _calibrated_model(output_dir, file_prefix):
     # More than one means several studies shared this directory, and picking one would be
     # picking a model for results it may not belong to. Reported as absent instead.
     return matches[0] if len(matches) == 1 else None
+
+
+def _newest(paths):
+    """The most recently modified of ``paths``, or None."""
+    existing = [q for q in paths if os.path.isfile(q)]
+    if not existing:
+        return None
+    return max(existing, key=os.path.getmtime)
+
+
+_STAMP = re.compile(r"_(\d{6}_\d{6})\.json$")
+
+
+def _stamped(paths):
+    """``{stamp: path}`` for the snapshots whose name carries a run stamp."""
+    out = {}
+    for q in paths:
+        match = _STAMP.search(os.path.basename(q))
+        if match:
+            out[match.group(1)] = q
+    return out
+
+
+def _snapshot_pair(run_dir):
+    """The obs_data and params_for_id the run finished with, as a matched pair.
+
+    Chosen by the stamp in the filename, **not** by mtime. On a real run directory all four
+    snapshots carried the same mtime to the microsecond -- CA writes them in one go -- so
+    "newest file" was decided by whatever order the glob happened to return, and the obs_data
+    of one run was paired with the params_for_id of another. Two files that were never used
+    together, presented as the study.
+
+    The stamp is the run's own, so it orders them and it pairs them. A params_for_id with no
+    matching obs_data stamp falls back to its own newest rather than to nothing: half a study
+    is still worth reporting, and the caller can see the two stamps differ.
+    """
+    obs_by_stamp = _stamped(glob.glob(os.path.join(run_dir, "*_obs_data_*.json")))
+    par_by_stamp = _stamped(glob.glob(os.path.join(run_dir, "*_params_for_id_*.json")))
+    if not obs_by_stamp and not par_by_stamp:
+        return (_newest(glob.glob(os.path.join(run_dir, "*_obs_data_*.json"))),
+                _newest(glob.glob(os.path.join(run_dir, "*_params_for_id_*.json"))))
+
+    stamps = sorted(set(obs_by_stamp) | set(par_by_stamp), reverse=True)
+    # Prefer the newest stamp that has both halves; that is the run that completed.
+    for stamp in stamps:
+        if stamp in obs_by_stamp and stamp in par_by_stamp:
+            return obs_by_stamp[stamp], par_by_stamp[stamp]
+    newest = stamps[0]
+    return obs_by_stamp.get(newest), par_by_stamp.get(newest)
+
+
+def _study(output_dir, run_dir, file_prefix, missing):
+    """The inputs the run was made from, so a loaded directory is a study and not just
+    a set of result panels.
+
+    A run directory keeps timestamped snapshots of the obs_data and params_for_id it
+    actually used -- ``<hash>_obs_data_<yymmdd_HHMMSS>.json`` -- which is what makes a
+    finished run re-openable at all. The newest snapshot in the chosen run is the one that
+    run finished with; earlier ones are from re-runs against the same directory.
+
+    The model is resolved by ``file_prefix`` rather than by picking whatever CellML is
+    lying about: a directory may hold artefacts from several studies (this is ordinary --
+    outputs directories get reused), and attaching one study's model to another's results
+    produces numbers that look right.
+    """
+    prefix = file_prefix or _prefix_from_calibrated_model(output_dir)
+    generated = None
+    if prefix:
+        candidate = os.path.join(output_dir, "generated_models", prefix)
+        if os.path.isdir(candidate):
+            models = sorted(glob.glob(os.path.join(candidate, "*.cellml")))
+            generated = models[0] if len(models) == 1 else None
+
+    model = generated or _calibrated_model(output_dir, file_prefix)
+
+    obs = params = None
+    if run_dir and os.path.isdir(run_dir):
+        obs, params = _snapshot_pair(run_dir)
+
+    # Looked for in the outputs directory, which is where a generated pipeline bundle puts
+    # it. Absent is ordinary -- a run started from this app has never written one -- so it
+    # is reported rather than treated as a fault.
+    user_inputs = _newest(
+        glob.glob(os.path.join(output_dir, "user_inputs*.yaml"))
+        + glob.glob(os.path.join(output_dir, "user_inputs*.yml"))
+    )
+
+    return {
+        "model": model,
+        "model_is_calibrated": bool(model) and model.endswith("_calibrated.cellml"),
+        "obs_data": obs,
+        "params_for_id": params,
+        "user_inputs": user_inputs,
+        "file_prefix": prefix,
+    }
+
+
+def _prefix_from_calibrated_model(output_dir):
+    """The study's prefix, taken from the one artefact that carries it unambiguously.
+
+    Run directories are ``<method>_<prefix>_<hash>_obs_data`` and a prefix may itself
+    contain underscores, so splitting those has no single answer. ``<prefix>_calibrated``
+    does -- everything before the final ``_calibrated``.
+    """
+    matches = sorted(glob.glob(os.path.join(output_dir, "*_calibrated.cellml")))
+    if len(matches) != 1:
+        return None
+    return os.path.basename(matches[0])[: -len("_calibrated.cellml")]
 
 
 def _sensitivity(output_dir, missing):
@@ -243,6 +352,8 @@ def load_outputs(output_dir: str, file_prefix: str | None = None,
         "sensitivity": _sensitivity(output_dir, missing),
         "uq": _uq(output_dir, run_dir, missing),
         "emulator": _emulator(output_dir, file_prefix, obs_path, missing),
+        "study": _safely("study inputs",
+                         lambda: _study(output_dir, run_dir, file_prefix, missing), missing),
         "saved_runs_dir": output_dir,
         "run_dirs": runs,
     }
@@ -255,6 +366,12 @@ def load_outputs(output_dir: str, file_prefix: str | None = None,
         found.append("sensitivity")
     if (result["uq"] or {}).get("params"):
         found.append("uq")
+    # Reported separately from the result panels: a directory can hold the inputs a run was
+    # made from without holding the run's results, and vice versa, and "what can be reopened"
+    # is a different question from "what can be shown".
+    study = result["study"] or {}
+    if any(study.get(k) for k in ("model", "obs_data", "params_for_id", "user_inputs")):
+        found.append("study inputs")
     if (result["emulator"] or {}).get("metadata"):
         found.append("emulator")
 
