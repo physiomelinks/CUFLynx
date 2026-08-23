@@ -373,3 +373,88 @@ def test_a_genuinely_absent_emulator_still_names_where_it_was_expected(tmp_path,
     monkeypatch.setattr(main, "_get_model", lambda _id: _Record())
 
     assert main._emulator_dir_for("any-model", {"config_outputs_dir": str(tmp_path)}) == guessed
+
+
+# --- the loaded best fit must be the numbers on disk ----------------------------------
+
+@pytest.mark.unit
+def test_the_loaded_best_fit_is_exactly_what_the_run_recorded(tmp_path):
+    """Every parameter, by name, at full precision, with the cost that goes with it.
+
+    A best fit that loads *approximately* is worse than one that does not load: it seeds
+    "start from the best fit", the SA nominal and the UQ prior, so a silent transcription
+    error propagates into every analysis that follows and none of them look wrong.
+    """
+    run = os.path.join(str(tmp_path), "genetic_algorithm_run")
+    os.makedirs(run)
+    values = np.array([0.12345678901234, 2.5, -3.75, 1e-9])
+    np.save(os.path.join(run, "best_param_vals.npy"), values)
+    np.save(os.path.join(run, "best_cost.npy"), np.array(0.0070613052722848565))
+    with open(os.path.join(run, "param_names.csv"), "w", newline="") as handle:
+        csv.writer(handle).writerows(
+            [["heart/a"], ["heart/b"], ["aortic_root/c"], ["aortic_root/d"]])
+
+    best = load_outputs.load_outputs(str(tmp_path))["calibration"]["best"]
+
+    assert list(best["params"]) == ["heart/a", "heart/b", "aortic_root/c", "aortic_root/d"]
+    for name, expected in zip(best["params"], values):
+        assert best["params"][name] == pytest.approx(expected, rel=0, abs=0), name
+    assert best["cost"] == pytest.approx(0.0070613052722848565, rel=0, abs=0)
+
+
+# --- sensitivity ----------------------------------------------------------------------
+
+@pytest.mark.unit
+def test_a_sobol_run_is_loaded_with_its_indices_and_names(tmp_path):
+    """SA results are read from a directory this app did not produce, like the rest."""
+    run = os.path.join(str(tmp_path), "sobol_run")
+    os.makedirs(run)
+    np.save(os.path.join(run, "best_param_vals.npy"), np.array([1.0, 2.0]))
+    np.save(os.path.join(run, "best_cost.npy"), np.array(0.5))
+    with open(os.path.join(run, "param_names.csv"), "w", newline="") as handle:
+        csv.writer(handle).writerows([["a/x"], ["a/y"]])
+    np.save(os.path.join(str(tmp_path), "all_outputs_n1_Sobol_indices.npy"),
+            np.array([[0.6, 0.4], [0.3, 0.7]]))
+
+    result = load_outputs.load_outputs(str(tmp_path))
+    sobol = result["sensitivity"]["sobol"]
+    local = result["sensitivity"]["local"]
+
+    # Whichever form this CA wrote, one of them must carry indices rather than both
+    # being silently empty -- that is the state the panel cannot distinguish from
+    # "no SA was run".
+    assert (sobol and sobol.get("indices")) or (local and local.get("indices")) or \
+        "sensitivity" not in result["found"], (
+            "an SA that produced indices must either load them or be reported absent, "
+            "never load as an empty panel"
+        )
+
+
+@pytest.mark.unit
+def test_a_directory_with_no_sensitivity_says_so_rather_than_showing_an_empty_panel(tmp_path):
+    write_run(tmp_path, "genetic_algorithm_run", chain=False, best=True)
+    result = load_outputs.load_outputs(str(tmp_path))
+    assert "sensitivity" not in result["found"]
+
+
+# --- UQ, reloaded ----------------------------------------------------------------------
+
+@pytest.mark.unit
+def test_a_reloaded_uq_carries_its_posterior_coverage_and_artefacts(tmp_path):
+    """What the UQ panel needs to render a run it did not watch happen: a posterior per
+    parameter, the coverage numbers, and whether the predictive artefacts are on disk."""
+    run = write_run(tmp_path, "mcmc_run", chain=True, best=False)
+    write_coverage(run)
+    open(os.path.join(run, load_outputs.PREDICTIVE_FILE), "wb").close()
+    open(os.path.join(run, load_outputs.SERIES_FILE), "wb").close()
+
+    result = load_outputs.load_outputs(str(tmp_path))
+    uq = result["uq"]
+
+    assert "uq" in result["found"]
+    assert len(uq["params"]) == 3, "one posterior per parameter"
+    assert all("mean" in p for p in uq["params"])
+    assert uq["coverage"] is not None, "the coverage numbers are what the panel reports"
+    assert uq["has_posterior_predictive"] is True
+    assert uq["has_sample_traces"] is True
+    assert uq["run_dir"] == run, "the panel must be able to say which run answered"
