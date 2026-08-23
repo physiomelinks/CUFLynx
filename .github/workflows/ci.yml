@@ -41,9 +41,17 @@ jobs:
           python -c "import importlib.metadata as m; print(m.version('cuflynx-api'))"
 
   backend-unit:
-    name: Backend unit tests (no Myokit)
+    name: Backend unit tests (no Myokit, ${{ matrix.python-version }})
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.12 is the top deliberately: autoemulate declares requires-python <3.13, and while
+        # this tier does not install it, moving past the engine's own ceiling would test an
+        # interpreter libcuflynx cannot fully support (circulatory_autogen#459). 3.10 stays as
+        # the floor because that is what libcuflynx requires (#278).
+        python-version: ["3.10", "3.11", "3.12"]
     defaults:
       run:
         working-directory: apps/api
@@ -64,7 +72,7 @@ jobs:
           path: circulatory_autogen
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.10"
+          python-version: ${{ matrix.python-version }}
       # Install only the light deps needed by the unit tier; the heavy
       # simulation stack (myokit/libcellml) is exercised by the integration
       # marker, which is skipped here. pyyaml is for CA's parser module.
@@ -77,9 +85,17 @@ jobs:
         run: pytest -m "not integration" -q
 
   backend-unit-windows:
-    name: Backend unit tests (Windows, no Myokit)
+    name: Backend unit tests (Windows, no Myokit, ${{ matrix.python-version }})
     runs-on: windows-latest
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.12 is the top deliberately: autoemulate declares requires-python <3.13, and while
+        # this tier does not install it, moving past the engine's own ceiling would test an
+        # interpreter libcuflynx cannot fully support (circulatory_autogen#459). 3.10 stays as
+        # the floor because that is what libcuflynx requires (#278).
+        python-version: ["3.10", "3.11", "3.12"]
     defaults:
       run:
         working-directory: apps/api
@@ -97,7 +113,7 @@ jobs:
           path: circulatory_autogen
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python-version }}
       # Same light deps as the Ubuntu unit job (matplotlib included for the
       # extra-figure drift guards); the heavy simulation stack
       # (myokit/libcellml) is exercised by the integration marker, skipped here.
