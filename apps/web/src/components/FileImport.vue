@@ -60,6 +60,10 @@ const emit = defineEmits([
   'obs-data-loaded',
   'params-loaded',
   'update:outputsDir',
+  // Read what is already in the outputs directory, rather than only what this
+  // session ran (#255). A press, not a watcher: reading a directory is real work
+  // and the results found may not match what is loaded.
+  'load-outputs',
   'export-pipeline',
   'export-plotting',
 ])
@@ -713,6 +717,15 @@ async function onParamsDrop(event) {
           title="Browse for an outputs directory"
           data-testid="outputs-browse"
           @click="outputsBrowserOpen = true"
+        />
+        <Button
+          icon="pi pi-refresh"
+          size="small"
+          text
+          :disabled="!outputsDir"
+          title="Load the results already in this directory (calibration, sensitivity, UQ, emulator)"
+          data-testid="outputs-load"
+          @click="emit('load-outputs')"
         />
       </span>
     </label>

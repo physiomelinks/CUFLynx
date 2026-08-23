@@ -447,6 +447,54 @@ def emulator_dir(output_dir: str, file_prefix: str, obs_path: str | None) -> str
     return os.path.join(output_dir, EMULATOR_SUBDIR, f"{file_prefix}_{obs_prefix}")
 
 
+def find_emulator_dir(output_dir: str, file_prefix: str | None,
+                      obs_path: str | None) -> str | None:
+    """Where this run's emulator actually is, or None.
+
+    :func:`emulator_dir` computes where CA *would* put one, which is the right
+    question when this app is the thing training: both sides derive the path and
+    neither has to pass it. It is only a guess when reading a run someone else
+    produced, because ``emulator_settings.emulator_dir`` is a setting, and a study
+    that trains one emulator and reuses it across several obs_data has to set it
+    -- the conventional name embeds the obs file, so the three runs would
+    otherwise each look in a different directory and only the first would find a
+    bundle.
+
+    So: the convention first, since that is what an unconfigured run does, and
+    otherwise whatever bundle is actually sitting under ``emulators/``. When
+    several are, one whose name starts with the model prefix wins over one that
+    does not, and the most recently written wins among equals -- the same rule
+    ``list_run_dirs`` uses for run directories, and for the same reason.
+    """
+    if not output_dir or not os.path.isdir(output_dir):
+        return None
+
+    if file_prefix:
+        conventional = emulator_dir(output_dir, file_prefix, obs_path)
+        if emulator_reusable(conventional):
+            return conventional
+
+    root = os.path.join(output_dir, EMULATOR_SUBDIR)
+    if not os.path.isdir(root):
+        return None
+    try:
+        candidates = [entry.path for entry in os.scandir(root) if entry.is_dir()]
+    except OSError:
+        return None
+
+    bundles = [path for path in candidates if emulator_reusable(path)]
+    if not bundles:
+        return None
+
+    def rank(path):
+        name = os.path.basename(path)
+        matches_prefix = bool(file_prefix) and name.startswith(file_prefix)
+        return (matches_prefix, os.path.getmtime(
+            os.path.join(path, EMULATOR_METADATA_FILE)))
+
+    return max(bundles, key=rank)
+
+
 def emulator_error_points(emu_dir: str) -> dict | None:
     """The emulator's held-out points, as the Analysis view plots them.
 
@@ -537,21 +585,59 @@ def write_uq_samples(output_dir: str, flat, qnames) -> str:
     return path
 
 
+def _chain_samples(output_dir: str):
+    """``(draws, params)`` and their names from CA's own chain, or ``(None, None)``.
+
+    ``mcmc_chain.npy`` is ``(steps, walkers, params)``. The first half is dropped:
+    the walkers start scattered over the prior box, so the early steps describe
+    where they were initialised rather than the posterior, and a histogram drawn
+    over them is not the posterior at all.
+    """
+    import numpy as np  # noqa: PLC0415
+
+    run_dir = find_run_dir(output_dir) or output_dir
+    chain_path = os.path.join(run_dir, "mcmc_chain.npy")
+    if not os.path.isfile(chain_path):
+        return None, None
+    try:
+        chain = np.load(chain_path, allow_pickle=False)
+    except Exception:  # noqa: BLE001 - a reader must never fail a finished run
+        return None, None
+    if getattr(chain, "ndim", 0) != 3 or chain.shape[0] == 0:
+        return None, None
+
+    names = [row[0] for row in param_names(run_dir) or []]
+    if len(names) < chain.shape[2]:
+        names = names + ["parameter %d" % (i + 1)
+                         for i in range(len(names), chain.shape[2])]
+
+    burn_in = chain.shape[0] // 2
+    return chain[burn_in:].reshape(-1, chain.shape[2]), names[: chain.shape[2]]
+
+
 def uq_distributions(output_dir: str) -> list | None:
     """Per-parameter posterior summary + histogram, or None if nothing was written.
 
     ``{qname, mean, std, q05, q50, q95, bins, counts}`` per parameter -- the shape
     the UQ panel plots.
     """
-    path = os.path.join(output_dir, UQ_SAMPLES_FILE)
-    names_path = os.path.join(output_dir, "uq_param_names.csv")
-    if not os.path.isfile(path) or not os.path.isfile(names_path):
-        return None
     import numpy as np  # noqa: PLC0415
 
-    flat = np.load(path, allow_pickle=False)
-    with open(names_path, newline="", encoding="utf-8") as fh:
-        qnames = [row[0].strip() for row in csv.reader(fh) if row]
+    path = os.path.join(output_dir, UQ_SAMPLES_FILE)
+    names_path = os.path.join(output_dir, "uq_param_names.csv")
+    if os.path.isfile(path) and os.path.isfile(names_path):
+        flat = np.load(path, allow_pickle=False)
+        with open(names_path, newline="", encoding="utf-8") as fh:
+            qnames = [row[0].strip() for row in csv.reader(fh) if row]
+    else:
+        # A run this app did not produce. uq_posterior_samples.npy is written by
+        # our own runner; circulatory_autogen writes the chain itself, and a run
+        # from cuflynx-param-id or a generated run_pipeline.py has only that --
+        # so without this the UQ panel was empty for every run made outside the
+        # app, with the samples sitting right there (#255).
+        flat, qnames = _chain_samples(output_dir)
+        if flat is None:
+            return None
 
     out = []
     for i, qname in enumerate(qnames):

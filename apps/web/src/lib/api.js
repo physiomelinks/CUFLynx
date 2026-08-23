@@ -563,6 +563,22 @@ export async function getUQStatus(jobId, offset = 0) {
  * units of each measurement's own standard deviation -- scaled on the server, so two clients
  * cannot draw two different figures from one run.
  */
+/**
+ * Everything a finished run left in an outputs directory (#255).
+ *
+ * The panels are filled by job polls, so without this a run made outside the app -- by
+ * cuflynx-param-id, by a generated run_pipeline.py, or by this app yesterday -- is invisible
+ * even though every file is there. Returns `found` and `missing` alongside the data, so the
+ * caller can say what it loaded rather than leaving empty panels to be interpreted.
+ */
+export async function loadOutputsDirectory(dir, filePrefix, runDir) {
+  const params = new URLSearchParams({ dir })
+  if (filePrefix) params.set('file_prefix', filePrefix)
+  if (runDir) params.set('run_dir', runDir)
+  const { data } = await axios.get(url(`/api/outputs/load?${params.toString()}`))
+  return data
+}
+
 export async function getUQPosteriorPredictive(jobId) {
   const { data } = await axios.get(url(`/api/uq/${jobId}/posterior-predictive`))
   return data

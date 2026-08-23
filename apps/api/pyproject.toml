@@ -167,4 +167,5 @@ testpaths = ["tests"]
 pythonpath = ["."]
 markers = [
     "integration: requires myokit and circulatory_autogen (real CellML simulation)",
+    "slow: runs a real pipeline stage; minutes rather than seconds",
 ]
