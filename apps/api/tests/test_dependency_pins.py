@@ -224,3 +224,84 @@ def test_in_process_cost_gradient_deps_are_core_not_analysis(package):
         "through circulatory_autogen. Declaring it only in [analysis] leaves a source "
         "install silently differencing every cost gradient."
     )
+
+
+# ---------------------------------------------------------------------------
+# Build-time constraints (as opposed to what the app runs against)
+# ---------------------------------------------------------------------------
+REPO_ROOT = Path(__file__).resolve().parents[3]
+BUILD_CONSTRAINTS = REPO_ROOT / "build-constraints.txt"
+WORKFLOWS = REPO_ROOT / ".github" / "workflows"
+
+
+def _run_steps() -> list[tuple[str, str]]:
+    """``(workflow, run script)`` for every workflow step that runs a shell script.
+
+    Parsed as YAML rather than scanned as text: the interesting property is "this
+    *step* installs the extra and this *same step* passes the flag", and a regex
+    over the file cannot tell a step's script from the comment above the next one.
+    """
+    import yaml
+
+    out = []
+    for path in sorted(WORKFLOWS.glob("*.yml")):
+        doc = yaml.safe_load(path.read_text()) or {}
+        for job in (doc.get("jobs") or {}).values():
+            for step in job.get("steps") or []:
+                script = step.get("run")
+                if isinstance(script, str):
+                    out.append((path.name, script))
+    return out
+
+
+def _installs_of_the_full_extra() -> list[tuple[str, str]]:
+    """Steps whose pip install reaches the ``full`` extra.
+
+    Matched on the extras list rather than on a literal, because release.yml builds
+    it with a matrix expression (``,full`` appended conditionally) and integration.yml
+    takes it from ``matrix.extras``.
+    """
+    return [
+        (workflow, " ".join(script.split()))
+        for workflow, script in _run_steps()
+        if "pip install" in script and ("full]" in script or "matrix.extras" in script)
+    ]
+
+
+def test_the_build_constraints_file_holds_the_cython_ceiling():
+    """`harmonic` has no cp310 wheel, so CI and the Linux `-full` release build
+    compile its sdist. Cython 3.3.0 made an implicit double->long assignment an
+    error and harmonic 1.3.0's `model_legacy.pyx:433` does exactly that, which
+    broke `pip install -e ".[...,full]"` outright. harmonic's own build-system
+    requires an unpinned Cython, so the ceiling can only come from here."""
+    assert BUILD_CONSTRAINTS.is_file(), f"{BUILD_CONSTRAINTS} is missing"
+    assert re.search(r"^Cython<3\.3", BUILD_CONSTRAINTS.read_text(), re.M), (
+        "the Cython ceiling is what keeps the `full` extra installable on 3.10"
+    )
+
+
+def test_every_full_install_passes_the_build_constraints():
+    """A workflow that installs `[full]` without the constraint file builds
+    harmonic against whatever Cython PyPI serves that day. That is not a
+    hypothetical: it is how this broke, hours after Cython 3.3.0 was published,
+    on a branch that had touched nothing related."""
+    installs = _installs_of_the_full_extra()
+    assert installs, "no workflow pip install reaching [full] was found -- has the matrix moved?"
+    missing = [(wf, cmd) for wf, cmd in installs if "--build-constraint" not in cmd]
+    assert not missing, (
+        "these installs reach the `full` extra without --build-constraint:\n"
+        + "\n".join(f"  {wf}: {cmd}" for wf, cmd in missing)
+    )
+
+
+def test_the_full_installs_upgrade_pip_first():
+    """`--build-constraint` is a pip 25.1+ option, and a runner image ships
+    whatever pip it ships. Passing it to an older pip is a "no such option"
+    failure, i.e. the same red build by a different route."""
+    for workflow, script in _run_steps():
+        if "--build-constraint" not in script:
+            continue
+        assert "pip install --upgrade pip" in script, (
+            f"{workflow}: a step passes --build-constraint without upgrading pip "
+            f"first:\n{script.strip()[:400]}"
+        )
