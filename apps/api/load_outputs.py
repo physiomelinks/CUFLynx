@@ -163,15 +163,23 @@ def _uq(output_dir, run_dir, missing):
 
     payload = {
         "params": _safely("UQ posteriors", posteriors, missing),
-        "run_dir": uq_source["path"],
         "coverage": None,
         "has_posterior_predictive": False,
         "has_sample_traces": False,
     }
-    if not run_dir:
+    # After the read, because that is what decides which run answered.
+    payload["run_dir"] = uq_source["path"]
+    # Follow the run that actually supplied the posterior, not the one chosen for the
+    # directory as a whole. This module's own docstring says the coverage and the posterior
+    # have to describe the same run -- and once the posterior can come from a different run
+    # than the newest, reading the artefacts from the newest breaks exactly that promise:
+    # a calibration run holds no coverage, so the numbers vanished beside a posterior that
+    # had loaded fine.
+    answered = uq_source["path"]
+    if not answered or not os.path.isdir(answered):
         return payload
 
-    coverage_path = os.path.join(run_dir, COVERAGE_FILE)
+    coverage_path = os.path.join(answered, COVERAGE_FILE)
     if os.path.isfile(coverage_path):
         def read():
             with open(coverage_path) as handle:
@@ -179,8 +187,8 @@ def _uq(output_dir, run_dir, missing):
         payload["coverage"] = _safely("posterior predictive coverage", read, missing)
 
     payload["has_posterior_predictive"] = os.path.isfile(
-        os.path.join(run_dir, PREDICTIVE_FILE))
-    payload["has_sample_traces"] = os.path.isfile(os.path.join(run_dir, SERIES_FILE))
+        os.path.join(answered, PREDICTIVE_FILE))
+    payload["has_sample_traces"] = os.path.isfile(os.path.join(answered, SERIES_FILE))
     return payload
 
 
