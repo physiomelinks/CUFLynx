@@ -57,10 +57,10 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: physiomelinks/circulatory_autogen
-          # INTEGRATION WIRING -- revert before merge. Points at the CA
-          # integration branch (physiomelinks/circulatory_autogen#477) so this
-          # PR is tested against the CA release it ships with, not the old pin.
-          ref: integration/next
+          # A commit on master, bumped deliberately -- upstream drift must not break
+          # CUFLynx CI. This one is the merge of circulatory_autogen#477, the first CA
+          # carrying the #466 obs_data vocabulary this app now speaks.
+          ref: 42136538e92e7afbc6749e39e5b8b5dfcddd67d6
           path: circulatory_autogen
       - uses: actions/setup-python@v5
         with:
@@ -90,10 +90,10 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: physiomelinks/circulatory_autogen
-          # INTEGRATION WIRING -- revert before merge. Points at the CA
-          # integration branch (physiomelinks/circulatory_autogen#477) so this
-          # PR is tested against the CA release it ships with, not the old pin.
-          ref: integration/next
+          # A commit on master, bumped deliberately -- upstream drift must not break
+          # CUFLynx CI. This one is the merge of circulatory_autogen#477, the first CA
+          # carrying the #466 obs_data vocabulary this app now speaks.
+          ref: 42136538e92e7afbc6749e39e5b8b5dfcddd67d6
           path: circulatory_autogen
       - uses: actions/setup-python@v5
         with:
