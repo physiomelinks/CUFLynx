@@ -2924,11 +2924,23 @@ def _emulator_dir_for(model_id: str, settings: dict) -> str:
     record = _get_model(model_id)
     configured = (settings.get("config_outputs_dir") or "").strip()
     output_dir = configured or str(UPLOAD_DIR / f"emu_{model_id}")
-    return ca_run_history.emulator_dir(
-        output_dir,
-        record.meta.name or "model",
-        str(record.obs_path) if record.obs_path else None,
-    )
+    prefix = record.meta.name or "model"
+    obs = str(record.obs_path) if record.obs_path else None
+    conventional = ca_run_history.emulator_dir(output_dir, prefix, obs)
+    if ca_run_history.emulator_metadata(conventional) is not None:
+        return conventional
+    # The convention is the right question while *this* app is the thing training: both
+    # sides derive the path and neither has to pass it. It is only a guess for a directory
+    # someone else produced -- `emulator_settings.emulator_dir` is a setting, and the
+    # conventional name embeds the obs file. So the Analysis panel would list the emulator
+    # it had found while this route, asking the convention, answered "no trained emulator
+    # for this study; train one in the Emulator tab" about the very bundle on screen.
+    #
+    # Same search the loader uses, so what was found is what gets predicted with.
+    found = ca_run_history.find_emulator_dir(output_dir, prefix, obs)
+    # Falls back to the conventional path rather than None so a genuinely absent emulator
+    # still reports the place it was expected, which is what makes that message actionable.
+    return found or conventional
 
 
 def _emulator_run_config(model_id: str, settings: dict) -> dict:

@@ -310,3 +310,66 @@ def test_two_calibrated_models_are_reported_as_absent_rather_than_guessed(tmp_pa
 
     result = load_outputs.load_outputs(str(tmp_path))
     assert result["calibration"]["calibrated_model"] is None
+
+
+# --- the emulator the panel found must be the one predictions use ---------------------
+
+@pytest.mark.unit
+def test_the_predict_route_finds_the_same_emulator_the_loader_does(tmp_path, monkeypatch):
+    """The reported case: results load, then the panel says there is no emulator.
+
+    ``_emulator_dir_for`` asked the *convention* -- where CA would put an emulator for this
+    model name and obs file -- while the loader searched for where one actually is. For a
+    directory this app did not produce those differ, because ``emulator_settings.emulator_dir``
+    is a setting and the conventional name embeds the obs file. So the Analysis panel listed a
+    trained emulator while ``/api/emulator/predict`` answered 404 "no trained emulator for this
+    study" about that same bundle.
+    """
+    import main
+
+    # An emulator that is present, but not where the convention would put it.
+    elsewhere = tmp_path / "emulators" / "somewhere_else"
+    elsewhere.mkdir(parents=True)
+    (elsewhere / "emulator_metadata.json").write_text(
+        json.dumps({"model": "RadialBasisFunctions", "feature_labels": ["u"]}), encoding="utf-8"
+    )
+
+    monkeypatch.setattr(
+        ca_run_history, "emulator_dir", lambda *a, **k: str(tmp_path / "emulators" / "guessed")
+    )
+    monkeypatch.setattr(ca_run_history, "find_emulator_dir", lambda *a, **k: str(elsewhere))
+
+    class _Meta:
+        name = "CardiovascularSystem"
+
+    class _Record:
+        meta = _Meta()
+        obs_path = None
+
+    monkeypatch.setattr(main, "_get_model", lambda _id: _Record())
+
+    resolved = main._emulator_dir_for("any-model", {"config_outputs_dir": str(tmp_path)})
+    assert resolved == str(elsewhere), "predictions must use the emulator that was found"
+    assert ca_run_history.emulator_metadata(resolved) is not None
+
+
+@pytest.mark.unit
+def test_a_genuinely_absent_emulator_still_names_where_it_was_expected(tmp_path, monkeypatch):
+    """The fallback must not turn a real absence into a confusing one: the message is only
+    actionable if it points at the place the emulator was looked for."""
+    import main
+
+    guessed = str(tmp_path / "emulators" / "guessed")
+    monkeypatch.setattr(ca_run_history, "emulator_dir", lambda *a, **k: guessed)
+    monkeypatch.setattr(ca_run_history, "find_emulator_dir", lambda *a, **k: None)
+
+    class _Meta:
+        name = "m"
+
+    class _Record:
+        meta = _Meta()
+        obs_path = None
+
+    monkeypatch.setattr(main, "_get_model", lambda _id: _Record())
+
+    assert main._emulator_dir_for("any-model", {"config_outputs_dir": str(tmp_path)}) == guessed
