@@ -620,8 +620,8 @@ const coverageStub = (predictive = 0.81, dataInterval = 0.79) => ({
   coverage: {
     num_observables: 12,
     levels: {
-      '0.8': { predictive_coverage: predictive, data_interval_coverage: dataInterval },
-      '0.95': { predictive_coverage: 0.94, data_interval_coverage: 0.96 },
+      '0.8': { predictive_coverage: predictive, sample_interval_coverage: dataInterval },
+      '0.95': { predictive_coverage: 0.94, sample_interval_coverage: 0.96 },
     },
   },
 })

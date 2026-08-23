@@ -548,7 +548,9 @@ const coverageRows = computed(() => {
         label: `${Math.round(level * 100)}%`,
         nominal: level,
         predictive: row.predictive_coverage,
-        dataInterval: row.data_interval_coverage,
+        // Over draws, not over medians: a median can sit dead centre while
+        // most of the posterior is nowhere near the data.
+        sampleInterval: row.sample_interval_coverage ?? row.data_interval_coverage,
       }
     })
 })
@@ -1150,7 +1152,7 @@ const predictiveBandWidth = computed(() => `${(2 / (2 * PREDICTIVE_LIMIT)) * 100
                 <th>level</th>
                 <th>nominal</th>
                 <th>data inside model interval</th>
-                <th>model median inside data interval</th>
+                <th>posterior draws inside data interval</th>
               </tr>
             </thead>
             <tbody>
@@ -1160,8 +1162,8 @@ const predictiveBandWidth = computed(() => `${(2 / (2 * PREDICTIVE_LIMIT)) * 100
                 <td :class="{ 'coverage-low': row.predictive < row.nominal - 0.15 }">
                   {{ Math.round(row.predictive * 100) }}%
                 </td>
-                <td :class="{ 'coverage-low': row.dataInterval < row.nominal - 0.15 }">
-                  {{ Math.round(row.dataInterval * 100) }}%
+                <td :class="{ 'coverage-low': row.sampleInterval < row.nominal - 0.15 }">
+                  {{ Math.round(row.sampleInterval * 100) }}%
                 </td>
               </tr>
             </tbody>
