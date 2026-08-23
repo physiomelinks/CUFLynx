@@ -16,9 +16,11 @@ the calibration missing, or their workspace gone.
 The tier is `integration` because the calibration is real: a short genetic
 algorithm on the 3compartment model through circulatory_autogen and Myokit.
 
-**One test in here is expected to fail until PhLynx lands its half** -- see
-`test_a_genuine_phlynx_export_is_available_to_test_against`. That is deliberate,
-and the PR carrying this is not to be merged until it passes.
+Everything here builds the archive to #287's *written* contract, which proves
+CUFLynx honours the spec and proves nothing about whether the spec matches what
+PhLynx actually serialises. Only PhLynx's own bytes settle that, and PhLynx cannot
+produce them yet -- so those checks live in a follow-up rather than as a red test
+sitting on this one. See `resources/phlynx_export.omex` in that PR.
 """
 
 from __future__ import annotations
@@ -26,12 +28,10 @@ from __future__ import annotations
 import io
 import json
 import zipfile
-from pathlib import Path
 
 import omex_import
 import pytest
 from cellml_meta import parse_cellml
-from conftest import RESOURCES_DIR
 from params_for_id import parse_params_for_id
 
 from test_calibration import (
@@ -40,10 +40,6 @@ from test_calibration import (
     C3_PARAMS_CSV_PATH,
     _wait,
 )
-
-#: Where a real PhLynx export is expected to live once PhLynx can produce one.
-#: Not a fixture we can author: the point of it is to be PhLynx's own bytes.
-REAL_PHLYNX_EXPORT = RESOURCES_DIR / "phlynx_export.omex"
 
 #: PhLynx's editor state, as #287 specifies it. Opaque to CUFLynx by design --
 #: these are here to be returned unread, not to be understood.
@@ -287,64 +283,3 @@ def test_a_second_round_trip_does_not_erode_the_archive(
     assert out["model.cellml"] == arrived["model.cellml"], (
         "an as-imported send changed the model, so the archive is not a fixed point"
     )
-
-
-# ---------------------------------------------------------------------------
-# Pending PhLynx (expected to fail until their half lands)
-# ---------------------------------------------------------------------------
-def test_a_genuine_phlynx_export_is_available_to_test_against():
-    """EXPECTED TO FAIL until PhLynx can export a CUFLynx archive.
-
-    Every other test here builds the archive to #287's written contract, which
-    proves CUFLynx honours the spec -- and proves nothing about whether the spec
-    matches what PhLynx actually serialises. Only PhLynx's own bytes can do that,
-    and PhLynx cannot produce them yet:
-
-      * `EXPORT_KEYS.CUFLYNX` is declared `disabled: true` with no `action`, and
-        `SEND_KEYS.CUFLYNX` exists in `constants.js` but is absent from
-        `sendOptions` -- so there is no PhLynx -> CUFLynx path at all.
-      * `generateOmexArchive` (services/compress.js) writes manifest, model.cellml,
-        document.sedml and simulation.json. Neither `flow.json` nor `changes.json`
-        is emitted yet, so no archive PhLynx makes today carries the two files
-        #287 says the exchange turns on.
-
-    Drop the export at the path below when it exists. Do not delete this test to
-    make the suite green: a green suite with no real fixture is exactly the state
-    #287 was written to end.
-    """
-    assert REAL_PHLYNX_EXPORT.is_file(), (
-        f"no genuine PhLynx export at {REAL_PHLYNX_EXPORT}.\n"
-        "This failure is expected and tracked: PhLynx must first enable its CUFLynx "
-        "export/send and emit flow.json + changes.json (#287). Until then the round "
-        "trip is only verified against the written contract, not against PhLynx."
-    )
-
-
-@pytest.mark.integration
-def test_a_genuine_phlynx_export_round_trips(client, requires_simulation, tmp_path):
-    """The same journey as above, against PhLynx's own bytes rather than our
-    rendering of its contract.
-
-    Skipped rather than failed while the fixture is absent: the *one* failure that
-    should be reporting "PhLynx has not landed its half" is
-    `test_a_genuine_phlynx_export_is_available_to_test_against`, and a second copy
-    of it here would only make the real signal harder to find. This arms itself the
-    moment the export exists -- nobody has to remember to enable it.
-    """
-    if not REAL_PHLYNX_EXPORT.is_file():
-        pytest.skip(
-            "no genuine PhLynx export yet -- tracked by "
-            "test_a_genuine_phlynx_export_is_available_to_test_against"
-        )
-    original = REAL_PHLYNX_EXPORT.read_bytes()
-    body = _receive(client, original)
-    sent = _send_back(client, body["model_id"], source="current", values={})
-    returned, arrived = _members(_decoded(sent)), _members(original)
-
-    model_member = omex_import.unpack(original)["roles"]["cellml"][0]
-    untouched = set(arrived) - {model_member, "manifest.xml"}
-    # params_for_id is refreshed from the study by design, so it is the one other
-    # member allowed to differ.
-    untouched -= {n for n in untouched if "param" in Path(n).name.lower()}
-    for name in sorted(untouched):
-        assert returned[name] == arrived[name], f"{name} was not returned verbatim"
