@@ -70,6 +70,35 @@ def free_port() -> int:
         return int(s.getsockname()[1])
 
 
+def _port_is_free(port: int) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        try:
+            s.bind(("127.0.0.1", port))
+        except OSError:
+            return False
+        return True
+
+
+def choose_port() -> tuple[int, bool]:
+    """``(port, reachable_by_phlynx)`` -- a predictable port when one is free.
+
+    PhLynx hands a study to a running CUFLynx by posting to it on localhost, and a
+    browser cannot discover a random port. So we try the agreed range first
+    (``inbox.RECEIVE_PORTS``, which PhLynx probes in the same order) and only then
+    fall back to whatever the OS gives us.
+
+    Falling back is **not** an error: a user with something else on 8787 still gets
+    a working app, they just do not get deliveries. Saying so plainly beats
+    refusing to start over a convenience.
+    """
+    from inbox import RECEIVE_PORTS  # noqa: PLC0415 - after sys.path is set up
+
+    for port in RECEIVE_PORTS:
+        if _port_is_free(port):
+            return port, True
+    return free_port(), False
+
+
 def wait_for_health(url: str, timeout: float = 60.0) -> bool:
     """Poll ``/api/health`` until the server answers, or give up."""
     import time
@@ -95,6 +124,12 @@ def start_server(port: int):
     server = uvicorn.Server(config)
     threading.Thread(target=server.run, daemon=True).start()
     return server
+
+
+def _receive_ports():
+    from inbox import RECEIVE_PORTS  # noqa: PLC0415 - after sys.path is set up
+
+    return RECEIVE_PORTS
 
 
 def warn_if_no_compiler() -> None:
@@ -131,10 +166,23 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    port = args.port or free_port()
+    if args.port:
+        port, reachable = args.port, args.port in _receive_ports()
+    else:
+        port, reachable = choose_port()
     url = f"http://127.0.0.1:{port}"
 
     warn_if_no_compiler()
+    if not reachable:
+        ports = _receive_ports()
+        print(
+            f"note: {APP_NAME} is on port {port}, outside the range PhLynx probes "
+            f"({ports[0]}-{ports[-1]}), so PhLynx cannot send a study to this "
+            f"window. Everything else works; free one of those ports and restart "
+            f"to enable it.",
+            file=sys.stderr,
+            flush=True,
+        )
     server = start_server(port)
     if not wait_for_health(url):
         print(f"error: {APP_NAME} server did not start on {url}", file=sys.stderr)

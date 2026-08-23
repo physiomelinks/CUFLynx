@@ -9,6 +9,9 @@ vi.mock('../lib/api', () => ({
   getObsDataOptions: vi.fn(),
   fetchExampleModel: vi.fn(),
   editModelSource: vi.fn(),
+  peekInbox: vi.fn(),
+  acceptInbox: vi.fn(),
+  rejectInbox: vi.fn(),
 }))
 
 import FileImport from './FileImport.vue'
@@ -20,6 +23,9 @@ import {
   fetchExampleModel,
   editModelSource,
   uploadOmex,
+  peekInbox,
+  acceptInbox,
+  rejectInbox,
 } from '../lib/api'
 
 // Real <button> stub so the Edit button's disabled state + click are observable;
@@ -57,8 +63,15 @@ const MessageStub = {
   props: ['severity', 'closable'],
   template: '<div><slot /></div>',
 }
+// PrimeVue's Dialog needs its plugin config; the inbox dialog is only read for
+// its text and buttons, so a slot-rendering stub is enough.
+const DialogStub = {
+  props: ['visible', 'header', 'modal', 'closable'],
+  template: '<div v-if="visible" v-bind="$attrs"><slot /><slot name="footer" /></div>',
+}
 const stubs = {
   Message: MessageStub,
+  Dialog: DialogStub,
   InputText: true,
   Button: ButtonStub,
   FileBrowserDialog: true,
@@ -80,6 +93,10 @@ beforeEach(() => {
   uploadParamsForId.mockReset()
   fetchExampleModel.mockReset()
   uploadOmex.mockReset()
+  peekInbox.mockReset()
+  acceptInbox.mockReset()
+  rejectInbox.mockReset()
+  peekInbox.mockResolvedValue(null)
 })
 
 describe('FileImport', () => {
@@ -789,5 +806,112 @@ describe('FileImport accepts an external python model (.py)', () => {
       .find('[data-testid="cellml-drop"] input[type="file"]')
       .attributes('accept')
     for (const ext of ['.cellml', '.mmt', '.py', '.omex']) expect(accept).toContain(ext)
+  })
+})
+
+
+// --- A study delivered by PhLynx over localhost (#287) ----------------------
+//
+// The dialog is the security control, not a courtesy: CORS stops a page reading
+// our responses, not sending requests, so anything running in the user's browser
+// can put a study in the inbox. These tests pin that it is shown, that it names
+// where the study came from, and that nothing loads until the user says so.
+describe('FileImport — the PhLynx inbox', () => {
+  const PENDING = {
+    origin: 'https://www.phlynx.com',
+    filename: 'heart.omex',
+    bytes: 10350,
+    members: ['manifest.xml', 'model.cellml', 'heart_obs_data.json'],
+  }
+
+  const LOADED = {
+    model_id: 'm1',
+    name: 'heart',
+    model_filename: 'model.cellml',
+    obs_data: { filename: 'heart_obs_data.json', data_items: [{}] },
+    params_for_id: { filename: 'heart_params_for_id.json', params: [{ qname: 'a/b' }] },
+  }
+
+  async function mounted() {
+    const wrapper = mount(FileImport, { global: { stubs } })
+    await flushPromises()
+    return wrapper
+  }
+
+  it('shows nothing when the inbox is empty', async () => {
+    const wrapper = await mounted()
+    expect(wrapper.find('[data-testid="inbox-dialog"]').exists()).toBe(false)
+  })
+
+  it('names the origin, the file and what is inside it', async () => {
+    peekInbox.mockResolvedValue(PENDING)
+    const wrapper = await mounted()
+    expect(wrapper.find('[data-testid="inbox-dialog"]').exists()).toBe(true)
+    // The origin is the whole basis on which a user can judge a payload they
+    // never asked for, so it is shown rather than summarised away.
+    expect(wrapper.find('[data-testid="inbox-origin"]').text()).toBe(
+      'https://www.phlynx.com',
+    )
+    const members = wrapper.find('[data-testid="inbox-members"]').text()
+    expect(members).toContain('model.cellml')
+    expect(members).toContain('heart_obs_data.json')
+  })
+
+  it('loads nothing until the user accepts', async () => {
+    peekInbox.mockResolvedValue(PENDING)
+    const wrapper = await mounted()
+    expect(acceptInbox).not.toHaveBeenCalled()
+    expect(wrapper.emitted('model-loaded')).toBeFalsy()
+  })
+
+  it('accepting loads the study through the same flow a dropped archive takes', async () => {
+    peekInbox.mockResolvedValue(PENDING)
+    acceptInbox.mockResolvedValue(LOADED)
+    const wrapper = await mounted()
+
+    await wrapper.find('[data-testid="inbox-accept"]').trigger('click')
+    await flushPromises()
+
+    expect(acceptInbox).toHaveBeenCalledOnce()
+    expect(wrapper.emitted('model-loaded')[0][0]).toMatchObject({ model_id: 'm1' })
+    expect(wrapper.emitted('obs-data-loaded')[0][0]).toMatchObject({ model_id: 'm1' })
+    expect(wrapper.emitted('params-loaded')[0][0].params).toHaveLength(1)
+    expect(wrapper.find('[data-testid="inbox-dialog"]').exists()).toBe(false)
+  })
+
+  it('discarding imports nothing', async () => {
+    peekInbox.mockResolvedValue(PENDING)
+    rejectInbox.mockResolvedValue({ discarded: true })
+    const wrapper = await mounted()
+
+    await wrapper.find('[data-testid="inbox-reject"]').trigger('click')
+    await flushPromises()
+
+    expect(rejectInbox).toHaveBeenCalledOnce()
+    expect(acceptInbox).not.toHaveBeenCalled()
+    expect(wrapper.emitted('model-loaded')).toBeFalsy()
+    expect(wrapper.find('[data-testid="inbox-dialog"]').exists()).toBe(false)
+  })
+
+  it('a failed accept is reported and the dialog is not left half-open', async () => {
+    peekInbox.mockResolvedValue(PENDING)
+    acceptInbox.mockRejectedValue({ response: { data: { detail: 'archive is unreadable' } } })
+    const wrapper = await mounted()
+
+    await wrapper.find('[data-testid="inbox-accept"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="import-error"]').text()).toContain(
+      'archive is unreadable',
+    )
+  })
+
+  it('a server that is not answering does not produce an error banner', async () => {
+    // A delivery the user never asked for must not turn into a banner about a
+    // feature they may not know exists.
+    peekInbox.mockRejectedValue(new Error('Network Error'))
+    const wrapper = await mounted()
+    expect(wrapper.find('[data-testid="import-error"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="inbox-dialog"]').exists()).toBe(false)
   })
 })

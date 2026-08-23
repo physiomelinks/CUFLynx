@@ -212,6 +212,45 @@ analytic `get_gradient` is better and unused: it needs a solver-backed
 `OpencorParamID` (compile per call, casadi/aadc/FSA only), which is the subprocess
 tier this is avoiding. Opt-in and off by default: 2M+1 simulations per settle.
 
+**Receiving a study from PhLynx** (`apps/api/inbox.py`, #287). PhLynx hands a study
+to a *running* CUFLynx by posting the archive to `/api/inbox` on localhost. Four
+things about it are load-bearing:
+
+- **CORS stops a page reading our responses; it does not stop it sending
+  requests.** So anything running in the user's browser can reach the inbox, and
+  the endpoint therefore **stages** rather than imports. The confirmation dialog in
+  `FileImport.vue` is the security control — it names the *sending origin*, which
+  is the only basis a user has for judging a payload they never asked for — and a
+  route that imported on arrival would leave nothing to confirm.
+- **The port range is a contract.** `inbox.RECEIVE_PORTS` (8787–8791) is written
+  down once and imported by both the API and `apps/desktop/app.py`, which tries
+  those ports before falling back to a random one. A browser cannot discover a
+  random port, so a range that drifted between the two tiers would leave the app
+  listening where PhLynx never looks. Falling back past the range is **not** an
+  error: the app works, deliveries just do not, and it says so.
+- **`/api/health` names the app.** PhLynx probes the range and checks
+  `app == "CUFLynx"` before sending, so it cannot post a study at some unrelated
+  service that also answers `/api/health` on 8787.
+- **One importer.** `/api/inbox/accept` runs `main.import_omex_bytes`, the same
+  body `/api/omex/upload` runs, and returns the same shape — which the frontend
+  feeds into the same `applyImportedStudy` the drop path uses. A delivered study
+  has to behave exactly like a dropped one, and the way to guarantee that is for
+  there to be one function on each side, not two that agree today.
+
+`ALLOWED_ORIGINS` is an explicit list and never `*`: it is the only door into an
+API that is otherwise trusted because nothing off-machine can reach it. Chrome
+additionally treats public→private as Private Network Access, so a small
+middleware answers its preflight with `Access-Control-Allow-Private-Network` —
+`CORSMiddleware` knows nothing about that header. That corner of the platform is
+moving (Local Network Access will likely add a browser permission prompt), so the
+flow's UX is not entirely ours.
+
+**Not** a `cuflynx://` URL scheme: a scheme handler delivers the URI through the OS
+process-launch path, where truncation bites in the low thousands of characters, and
+`3compartment.omex` is already ~14 KB base64. Registering CUFLynx as the `.omex`
+file handler is the planned next step — it needs a macOS `.app` bundle, which the
+single-file spec does not produce.
+
 **GUI config editing** (edit CA config files in the browser → download dated copy → apply immediately):
 
 - **obs_data.json** — `EditObsDataDialog.vue` + `apps/web/src/lib/obsDataJson.js`; its operand and operation pickers are `SearchableSelect.vue` (type-to-filter, #160) because those lists are a model's whole variable set and every registered operation; edits `data_items`/`prediction_items` (incl. `source`/`comment` notes) and embeds `ProtocolInfoEditor.vue` (+ `lib/protocolInfo.js`) for `protocol_info` (experiments, params_to_change, constant/ramp/step/pulse/paced inputs, time-view plots). Time-varying inputs are written as **`protocol_shapes`** — declarations in Myokit's `[[protocol]]` vocabulary (`level`/`start`/`length`/`period`/`multiplier`), which CA expands into `protocol_traces` on read (CA#339). Declarations, not expansions, because a point table cannot be read back into the fields that produced it. `expandShape()` in `lib/protocolInfo.js` mirrors CA's expansion for the plots; **the two must agree** — change both. Hand-written `protocol_traces` are still accepted and preserved verbatim, as is any shape the editor has no form for. Dropdown vocabularies come from `apps/api/obs_options.py` (`GET /api/obs_data/options`), which introspects CA registries — **never hardcode** operations/cost_types/data_types/plot_types. A data_item's `operation_kwargs` and `cost_kwargs` (CA#304 / CA#370) are edited the same way: an input per keyword argument, from a schema introspected off the chosen func's signature (`operation_kwargs_schema` / `cost_kwargs_schema`). A stored kwarg is only ever deleted when CA has said the newly chosen func cannot accept it (`cost_kwargs_accepts_any` is a *full* map so "accepts nothing else" is distinguishable from "CA never answered") — otherwise it round-trips untouched, because dropping a key is data loss. `apps/api/obs_cost.py` calls cost funcs through CA's `call_cost_func`, so the panel's cost is the call the calibration makes: `std`/`weight` only when the signature declares them, plus the data_item's `cost_kwargs`.
