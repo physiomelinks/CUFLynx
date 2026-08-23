@@ -74,6 +74,7 @@ import cost_sensitivity
 from obs_series import compute_output_series
 import params_json
 import ca_run_history
+import load_outputs
 from params_for_id import ParamsForIdError, parse_params_for_id
 import saved_runs
 from param_io import ParamIOError, load_param_values, save_param_values
@@ -2185,6 +2186,27 @@ def list_saved_runs(dir: str | None = Query(default=None)) -> dict:
     """
     base = _user_func_base_dir(dir or "") or str(UPLOAD_DIR)
     return {"dir": base, "runs": saved_runs.list_runs(base)}
+
+
+@app.get("/api/outputs/load")
+def load_outputs_directory(
+    dir: str = Query(...),
+    file_prefix: str | None = Query(default=None),
+    obs_path: str | None = Query(default=None),
+    run_dir: str | None = Query(default=None),
+) -> dict:
+    """Everything a finished run left in an outputs directory (#255, #256).
+
+    The panels are filled by job polls, so today they only fill for a run
+    started in this session -- a run produced by cuflynx-param-id, by a
+    generated run_pipeline.py, or by this app yesterday, is invisible even
+    though every file is there.
+
+    Tolerant on purpose: a folder with a calibration and no UQ is a perfectly
+    ordinary folder, so what could not be read is returned in ``missing`` rather
+    than raising, and ``found`` says which panels have something to show.
+    """
+    return load_outputs.load_outputs(dir, file_prefix, obs_path, run_dir)
 
 
 @app.get("/api/runs/load")

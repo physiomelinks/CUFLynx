@@ -537,21 +537,59 @@ def write_uq_samples(output_dir: str, flat, qnames) -> str:
     return path
 
 
+def _chain_samples(output_dir: str):
+    """``(draws, params)`` and their names from CA's own chain, or ``(None, None)``.
+
+    ``mcmc_chain.npy`` is ``(steps, walkers, params)``. The first half is dropped:
+    the walkers start scattered over the prior box, so the early steps describe
+    where they were initialised rather than the posterior, and a histogram drawn
+    over them is not the posterior at all.
+    """
+    import numpy as np  # noqa: PLC0415
+
+    run_dir = find_run_dir(output_dir) or output_dir
+    chain_path = os.path.join(run_dir, "mcmc_chain.npy")
+    if not os.path.isfile(chain_path):
+        return None, None
+    try:
+        chain = np.load(chain_path, allow_pickle=False)
+    except Exception:  # noqa: BLE001 - a reader must never fail a finished run
+        return None, None
+    if getattr(chain, "ndim", 0) != 3 or chain.shape[0] == 0:
+        return None, None
+
+    names = [row[0] for row in param_names(run_dir) or []]
+    if len(names) < chain.shape[2]:
+        names = names + ["parameter %d" % (i + 1)
+                         for i in range(len(names), chain.shape[2])]
+
+    burn_in = chain.shape[0] // 2
+    return chain[burn_in:].reshape(-1, chain.shape[2]), names[: chain.shape[2]]
+
+
 def uq_distributions(output_dir: str) -> list | None:
     """Per-parameter posterior summary + histogram, or None if nothing was written.
 
     ``{qname, mean, std, q05, q50, q95, bins, counts}`` per parameter -- the shape
     the UQ panel plots.
     """
-    path = os.path.join(output_dir, UQ_SAMPLES_FILE)
-    names_path = os.path.join(output_dir, "uq_param_names.csv")
-    if not os.path.isfile(path) or not os.path.isfile(names_path):
-        return None
     import numpy as np  # noqa: PLC0415
 
-    flat = np.load(path, allow_pickle=False)
-    with open(names_path, newline="", encoding="utf-8") as fh:
-        qnames = [row[0].strip() for row in csv.reader(fh) if row]
+    path = os.path.join(output_dir, UQ_SAMPLES_FILE)
+    names_path = os.path.join(output_dir, "uq_param_names.csv")
+    if os.path.isfile(path) and os.path.isfile(names_path):
+        flat = np.load(path, allow_pickle=False)
+        with open(names_path, newline="", encoding="utf-8") as fh:
+            qnames = [row[0].strip() for row in csv.reader(fh) if row]
+    else:
+        # A run this app did not produce. uq_posterior_samples.npy is written by
+        # our own runner; circulatory_autogen writes the chain itself, and a run
+        # from cuflynx-param-id or a generated run_pipeline.py has only that --
+        # so without this the UQ panel was empty for every run made outside the
+        # app, with the samples sitting right there (#255).
+        flat, qnames = _chain_samples(output_dir)
+        if flat is None:
+            return None
 
     out = []
     for i, qname in enumerate(qnames):
