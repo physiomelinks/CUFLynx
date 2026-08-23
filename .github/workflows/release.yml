@@ -75,6 +75,17 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
+          # Stays on 3.10 on purpose. This job produces the shipped artifact, and moving
+          # it is a separate decision with its own risk -- worth doing only after the
+          # backend matrix (#278) has been green on 3.12 for a release cycle.
+          #
+          # What to check when it does move: Python 3.12 dropped setuptools from the
+          # default venv and removed distutils, and packaging/cuflynx.spec needs both --
+          # Myokit JIT-compiles each model to a CPython extension inside the frozen
+          # process using build_ext. setuptools is declared in apps/api/pyproject.toml
+          # and tests/test_spec_requirements.py keeps it declared, but whether
+          # PyInstaller's distutils hidden-import list still resolves under 3.12 is
+          # worth verifying rather than assuming, and it only shows up in a tagged build.
           python-version: "3.10"
 
       - uses: actions/setup-node@v4
