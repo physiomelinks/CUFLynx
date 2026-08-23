@@ -3336,6 +3336,22 @@ def uq_status(job_id: str, offset: int = 0) -> dict:
     return status
 
 
+@app.get("/api/uq/{job_id}/posterior-predictive")
+def uq_posterior_predictive(job_id: str) -> dict:
+    """Posterior draws pushed back through the model, against the measurements.
+
+    Everything is returned in units of each measurement's own standard
+    deviation, so observables on different scales share one axis and "inside the
+    error bar" means the same distance for all of them. ``available: false``
+    when the run predates the check or the engine could not run it -- that is
+    not an error, it is a run that was not scored.
+    """
+    payload = uq.posterior_predictive(job_id)
+    if payload is None:
+        raise HTTPException(status_code=404, detail="UQ job not found")
+    return payload
+
+
 @app.get("/api/uq/{job_id}/progress")
 def uq_progress(job_id: str) -> dict:
     """The chain so far, as the three views the Progress tab draws (#244).

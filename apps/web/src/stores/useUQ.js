@@ -1,5 +1,5 @@
 import { ref, computed } from 'vue'
-import { startUQ, getUQStatus, getUQProgress, cancelUQ } from '../lib/api'
+import { startUQ, getUQStatus, getUQProgress, getUQPosteriorPredictive, cancelUQ } from '../lib/api'
 
 /**
  * Drives a UQ job: start, poll status, expose the streamed log, the chain as it grows, and
@@ -19,6 +19,10 @@ export function useUQ(options = {}) {
   const method = ref(null) // 'mcmc' | 'laplace'
   // [{ qname, mean, std, q05, q50, q95, bins, counts }, ...]
   const params = ref([])
+  // Whether the posterior reproduces the data it was fitted to. null means the
+  // run was not scored, which is not the same as scoring badly.
+  const coverage = ref(null)
+  const posteriorPredictive = ref(null)
   const error = ref('')
   // Set when a result is real but qualified -- a posterior from a cancelled run's partial chain.
   const warning = ref('')
@@ -41,6 +45,8 @@ export function useUQ(options = {}) {
     lines.value = []
     method.value = null
     params.value = []
+    coverage.value = null
+    posteriorPredictive.value = null
     error.value = ''
     warning.value = ''
     progress.value = null
@@ -76,6 +82,10 @@ export function useUQ(options = {}) {
         params.value = s.params ?? []
         error.value = s.error || ''
         warning.value = s.warning || ''
+        coverage.value = s.coverage ?? null
+        // Fetched once, on the way out. It is a whole sweep of the model, so it
+        // exists only after the run has finished, and it never changes after.
+        await fetchPosteriorPredictive()
         // One last look at the chain now the run has stopped.
         //
         // CA writes the finished chain as the very last thing it does, *after* the poll that
@@ -164,6 +174,18 @@ export function useUQ(options = {}) {
 
   const running = computed(() => state.value === 'running')
 
-  return { state, lines, method, params, error, warning, running, progress, start, cancel,
+  async function fetchPosteriorPredictive() {
+    if (!jobId) return
+    try {
+      posteriorPredictive.value = await getUQPosteriorPredictive(jobId)
+    } catch {
+      // Not scored is not an error: an older engine has no check to run, and a
+      // run that produced a posterior has not failed because it was not graded.
+      posteriorPredictive.value = null
+    }
+  }
+
+  return { state, lines, method, params, coverage, posteriorPredictive,
+    error, warning, running, progress, start, cancel,
     reset }
 }
