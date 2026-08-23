@@ -795,6 +795,40 @@ const predictiveBandWidth = computed(() => `${(2 / (2 * PREDICTIVE_LIMIT)) * 100
         </label>
       </div>
 
+      <!--
+        Which model the errors below describe (#333). A calibration on the
+        emulator fits the surrogate, so its errors and its cost are the
+        emulator's; the forward model's, at the same best fit, are the other
+        half of the answer. Both were measured once, when the calibration
+        finished -- ticking this switches payloads, it does not run anything.
+      -->
+      <div v-if="bothSourcesAvailable" class="source-toggle">
+        <span class="cost-caption" data-testid="calibration-source-label">
+          errors and cost from <strong>{{ calibrationSourceLabel }}</strong> at the
+          calibration best fit —
+          <span data-testid="calibration-source-cost">{{
+            formatCost(calibrationSource?.cost)
+          }}</span>
+          <template v-if="compareEmulator">
+            · emulator
+            <span data-testid="calibration-emulator-cost">{{
+              formatCost(bestFitEmulatorCost?.cost)
+            }}</span>
+          </template>
+        </span>
+      </div>
+
+      <p v-if="!hasCalibration && !comparable" class="empty-hint">
+        Run a calibration to see per-observable fit errors.
+      </p>
+
+      <!--
+        One chain, so a comparison *replaces* the plain charts instead of appearing beside
+        them. `compare` was already an else-if against the plain charts below; this block
+        was a separate v-if, so ticking "compare with the emulator" left the plain charts
+        up and added a second pair underneath -- two sets of bars for the same observables,
+        one of which nothing on screen said was superseded.
+      -->
       <template v-if="bothSourcesAvailable && compareEmulator">
         <section class="error-chart">
           <h3>Percentage error — forward model vs emulator</h3>
@@ -852,10 +886,7 @@ const predictiveBandWidth = computed(() => `${(2 / (2 * PREDICTIVE_LIMIT)) * 100
         </section>
       </template>
 
-      <p v-if="!hasCalibration && !comparable" class="empty-hint">
-        Run a calibration to see per-observable fit errors.
-      </p>
-      <template v-if="comparable && compare">
+      <template v-else-if="comparable && compare">
         <section class="error-chart">
           <h3>Percentage error — current vs {{ baselineCost?.label ?? 'baseline' }}</h3>
           <div class="chart-legend" data-testid="compare-legend">
@@ -927,28 +958,6 @@ const predictiveBandWidth = computed(() => `${(2 / (2 * PREDICTIVE_LIMIT)) * 100
         series, so leaving these below would plot the same numbers twice.
       -->
       <template v-else-if="hasCalibration">
-        <!--
-          Which model the errors below describe (#333). A calibration on the
-          emulator fits the surrogate, so its errors and its cost are the
-          emulator's; the forward model's, at the same best fit, are the other
-          half of the answer. Both were measured once, when the calibration
-          finished -- ticking this switches payloads, it does not run anything.
-        -->
-        <div v-if="bothSourcesAvailable" class="source-toggle">
-          <span class="cost-caption" data-testid="calibration-source-label">
-            errors and cost from <strong>{{ calibrationSourceLabel }}</strong> at the
-            calibration best fit —
-            <span data-testid="calibration-source-cost">{{
-              formatCost(calibrationSource?.cost)
-            }}</span>
-            <template v-if="compareEmulator">
-              · emulator
-              <span data-testid="calibration-emulator-cost">{{
-                formatCost(bestFitEmulatorCost?.cost)
-              }}</span>
-            </template>
-          </span>
-        </div>
         <section class="error-chart">
           <h3>Percentage error per observable</h3>
           <div class="bar-list" data-testid="percent-error-chart">

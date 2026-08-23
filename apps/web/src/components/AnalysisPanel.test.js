@@ -594,14 +594,36 @@ describe('AnalysisPanel calibration source (#333)', () => {
     expect(w.find('[data-testid="emulator-compare-legend"]').text()).toContain('emulator')
   })
 
-  it('leaves the single-source bars on the forward model while comparing', async () => {
+  // The comparison *replaces* the plain charts, exactly as "compare current" does. It used
+  // to be a separate v-if outside that chain, so ticking it left the single-source charts up
+  // and added a second pair below: two sets of bars for the same observables, with nothing
+  // on screen saying the first pair was superseded.
+  it('replaces the single-source bars rather than adding a second pair', async () => {
     const w = mountIt()
+    expect(w.find('[data-testid="percent-error-chart"]').exists()).toBe(true)
+
     await w.find('[data-testid="compare-with-emulator"]').setValue(true)
-    expect(w.find('[data-testid="percent-error-chart"]').text()).toContain('-10.0%')
+
+    expect(w.find('[data-testid="percent-error-chart"]').exists()).toBe(false)
+    expect(w.find('[data-testid="std-error-chart"]').exists()).toBe(false)
     const labels = w
       .findAll('[data-testid="emulator-percent-chart"] .bar-label')
       .map((n) => n.text())
     expect(labels).toEqual(['u', 'v'])
+
+    // ...and unticking brings them back, rather than leaving nothing.
+    await w.find('[data-testid="compare-with-emulator"]').setValue(false)
+    expect(w.find('[data-testid="percent-error-chart"]').exists()).toBe(true)
+    expect(w.find('[data-testid="emulator-percent-chart"]').exists()).toBe(false)
+  })
+
+  // Which model the bars describe matters more while comparing, not less -- so the readout
+  // is above the chain rather than inside the branch it used to share with the plain charts.
+  it('keeps the calibration-source readout visible while comparing', async () => {
+    const w = mountIt()
+    await w.find('[data-testid="compare-with-emulator"]').setValue(true)
+    expect(w.find('[data-testid="calibration-source-label"]').exists()).toBe(true)
+    expect(w.find('[data-testid="calibration-emulator-cost"]').exists()).toBe(true)
   })
 
   it('falls back to the calibration\'s own vectors when there is nothing to switch', () => {

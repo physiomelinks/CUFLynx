@@ -605,6 +605,12 @@ const emulatorCostAt = ref('')
 // absence is diagnosable rather than silent.
 const emulatorCostWhy = ref('')
 const lastRunAt = ref('')
+// Which prediction request is the current one. `refreshEmulatorFeatures` is async and
+// unguarded: two overlapping calls could land in either order, and the *earlier* one
+// landing last wrote its own (older) signature into `emulatorCostAt`. That never matched
+// `lastRunAt` again, so the em cost vanished until something triggered another refresh --
+// the "about one run in ten it does not come back" case. Only the newest request may write.
+let emulatorRequestSeq = 0
 function paramSignature() {
   return JSON.stringify(sliders.analysisDict.value)
 }
@@ -825,11 +831,24 @@ const emCostWhy = computed(() => {
   if (emCost.value !== null) return ''
   return emulatorCostWhy.value
 })
+const emCostStaleTitle =
+  'this em cost is of the previous parameters and is being recomputed — it is shown ' +
+  'rather than blanked so the figure does not flicker on every run'
+// The em cost we have, whether or not it is of the parameters currently on screen.
+// Withholding it entirely -- which is what this did -- meant every re-run blanked the
+// figure and then brought it back a moment later, a flicker on a number that had not
+// actually become unknown. It is shown, and marked, instead.
 const emCost = computed(() => {
   if (!emu.useEmulator.value) return null
-  if (emulatorCostAt.value !== lastRunAt.value) return null
   return emulatorCost.value ?? null
 })
+// True while the figure describes an earlier set of parameters than the run beside it.
+// The original reason for withholding stands -- two costs of two different parameter sets
+// are not a comparison -- but "not current" is a thing to say about a number, not a reason
+// to remove it. Mid-drag it reads as trailing; on a re-run it reads as recomputing.
+const emCostStale = computed(
+  () => emCost.value !== null && emulatorCostAt.value !== lastRunAt.value,
+)
 // Whether the last calibration was run on the emulator. The cost it reports is
 // then an *em cost*, which is the whole reason it can disagree with the number
 // above the plots -- so the tooltip that explains the gap says so.
@@ -1613,6 +1632,7 @@ async function refreshEmulatorFeatures() {
   // Stamped before the request, not after: what came back describes the
   // parameters it was asked about, whatever they are by the time it arrives.
   const at = paramSignature()
+  const seq = ++emulatorRequestSeq
   try {
     const res = await predictEmulator(
       model.modelId.value,
@@ -1623,6 +1643,11 @@ async function refreshEmulatorFeatures() {
     ;(res.labels ?? []).forEach((label, i) => {
       map[label] = res.values?.[i]
     })
+    // A newer request is already in flight; this answer is about parameters that are no
+    // longer the ones on screen. Dropping it is what keeps `emulatorCostAt` converging on
+    // the latest signature instead of being overwritten by whichever reply happened to be
+    // slowest.
+    if (seq !== emulatorRequestSeq) return
     emulatorFeatureMap.value = map
     // Comes back with the prediction, so no second round trip on a slider
     // settle. Null on a backend that predates it, or an obs_data CA cannot
@@ -1634,6 +1659,7 @@ async function refreshEmulatorFeatures() {
     emulatorCostWhy.value = res.cost ? '' : (res.cost_unavailable ?? '')
     emulatorCostAt.value = at
   } catch (e) {
+    if (seq !== emulatorRequestSeq) return
     emulatorFeatureMap.value = null
     emulatorCost.value = null
     emulatorCostWhy.value = errorMessage(e)
@@ -2640,10 +2666,21 @@ watch(() => obs.obsData.value, scheduleRun)
             asked.
           -->
           <template v-if="emCost">
-            <span class="cost-label em-cost" data-testid="em-cost-label" :title="emCostTitle">
+            <span
+              class="cost-label em-cost"
+              :class="{ 'em-cost-stale': emCostStale }"
+              data-testid="em-cost-label"
+              :title="emCostStale ? emCostStaleTitle : emCostTitle"
+            >
               em cost
             </span>
-            <span class="cost-value em-cost" data-testid="em-cost-value" :title="emCostTitle">
+            <span
+              class="cost-value em-cost"
+              :class="{ 'em-cost-stale': emCostStale }"
+              data-testid="em-cost-value"
+              :data-stale="emCostStale ? 'true' : 'false'"
+              :title="emCostStale ? emCostStaleTitle : emCostTitle"
+            >
               {{ formatCost(emCost.cost) }}
             </span>
           </template>
@@ -3837,6 +3874,14 @@ watch(() => obs.obsData.value, scheduleRun)
 .cost-value.em-cost {
   color: var(--p-primary-color, #5b9bd5);
   cursor: help;
+}
+
+/* Shown, but visibly not of the parameters beside it. The alternative -- removing the
+   number until the recompute lands -- made every run flicker, and a flicker reads as a
+   fault in the figure rather than as "one moment". */
+.em-cost-stale {
+  opacity: 0.55;
+  font-style: italic;
 }
 .cost-note {
   opacity: 0.65;

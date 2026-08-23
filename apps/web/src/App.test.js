@@ -2347,14 +2347,56 @@ describe('App.vue cost line with the emulator in use (#333)', () => {
     expect(wrapper.find('[data-testid="em-cost-value"]').exists()).toBe(false)
   })
 
-  // Two costs of two different parameter sets are not a comparison. The
-  // prediction and the run are separate requests, so mid-drag one can be a
-  // slider position ahead of the other -- and then the em cost waits.
-  it('withholds the em cost until it is of the same parameters as the run', async () => {
+  // Two costs of two different parameter sets are not a comparison -- but that is a thing
+  // to say about the number, not a reason to remove it. It used to be withheld, which made
+  // every re-run blank the figure and bring it back a moment later: a flicker on a value
+  // that had not become unknown. It is shown and marked instead.
+  it('marks the em cost stale rather than hiding it when it trails the run', async () => {
     const wrapper = await shown()
     wrapper.vm.emulatorCostAt = '{"a/alpha":2}'
     await nextTick()
-    expect(wrapper.find('[data-testid="em-cost-value"]').exists()).toBe(false)
+    const value = wrapper.find('[data-testid="em-cost-value"]')
+    expect(value.exists()).toBe(true)
+    expect(value.attributes('data-stale')).toBe('true')
+    expect(value.classes()).toContain('em-cost-stale')
+    expect(value.attributes('title')).toMatch(/recomputed/)
+  })
+
+  // ...and once it catches up it is an ordinary current figure again.
+  it('drops the stale marking once the em cost is of the run on screen', async () => {
+    const wrapper = await shown()
+    wrapper.vm.emulatorCostAt = wrapper.vm.lastRunAt
+    await nextTick()
+    const value = wrapper.find('[data-testid="em-cost-value"]')
+    expect(value.exists()).toBe(true)
+    expect(value.attributes('data-stale')).toBe('false')
+    expect(value.classes()).not.toContain('em-cost-stale')
+  })
+
+  // The "about one run in ten it never comes back" case. Two refreshes overlap and the
+  // *earlier* one resolves last; unguarded, it wrote its own older signature into
+  // emulatorCostAt, which then never matched the run again.
+  it('ignores a prediction that is overtaken by a newer one', async () => {
+    const wrapper = await shown()
+    const slow = { labels: ['u'], values: [1], cost: { cost: 111 } }
+    const fresh = { labels: ['u'], values: [2], cost: { cost: 222 } }
+
+    let releaseSlow
+    predictEmulator.mockImplementationOnce(
+      () => new Promise((resolve) => { releaseSlow = () => resolve(slow) }),
+    )
+    predictEmulator.mockResolvedValueOnce(fresh)
+
+    const first = wrapper.vm.refreshEmulatorFeatures()
+    const second = wrapper.vm.refreshEmulatorFeatures()
+    await second
+    releaseSlow()
+    await first
+    await nextTick()
+
+    // The newer answer stands, and the older one did not overwrite the signature.
+    expect(wrapper.vm.emulatorCost.cost).toBe(222)
+    expect(wrapper.vm.emulatorCostAt).toBe(wrapper.vm.paramSignature())
   })
 })
 
