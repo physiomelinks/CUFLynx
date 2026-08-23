@@ -55,6 +55,14 @@ _NON_OBS_FORMAT_MARKERS = (
 
 OMEX_SUFFIXES = (".omex",)
 
+#: Ceiling on an archive's *uncompressed* size. Zip compresses XML by an order of
+#: magnitude and then some, so a small download can expand into far more than this
+#: process has, and every member is read into memory below. Harmless for a file
+#: the user chose; the reason it is enforced is that an archive can now also
+#: arrive from a web page (the PhLynx inbox, #287). Generous enough that no real
+#: study is anywhere near it.
+MAX_UNCOMPRESSED_BYTES = 512 * 1024 * 1024
+
 # The model formats an archive may carry. A .mmt is converted to CellML on the
 # way in exactly as a dropped one is (#27), so an archive built around a Myokit
 # model is not a second kind of study.
@@ -242,6 +250,15 @@ def unpack(data: bytes) -> dict:
         names = [n for n in zf.namelist() if not n.endswith("/")]
         if not names:
             raise OmexImportError("the archive is empty")
+        # Checked against the *declared* sizes, before a single member is read:
+        # the point is to refuse a decompression bomb, not to notice one after it
+        # has already been unpacked into memory.
+        declared = sum(i.file_size for i in zf.infolist() if not i.filename.endswith("/"))
+        if declared > MAX_UNCOMPRESSED_BYTES:
+            raise OmexImportError(
+                f"the archive expands to {declared // (1024 * 1024)} MB, over the "
+                f"{MAX_UNCOMPRESSED_BYTES // (1024 * 1024)} MB limit"
+            )
         members = {n: zf.read(n) for n in names}
         manifest = read_manifest(zf)
         entries = manifest["entries"] if manifest else []

@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import Message from 'primevue/message'
 import InputText from 'primevue/inputtext'
 import Button from 'primevue/button'
@@ -17,6 +17,9 @@ import {
   uploadOmex,
   sendToPhlynx,
   phlynxDownloadRequest,
+  peekInbox,
+  acceptInbox,
+  rejectInbox,
 } from '../lib/api'
 import { phlynxOpenUrl } from '../lib/examples'
 
@@ -335,6 +338,66 @@ async function adoptDerivedObs() {
     (notes ? ` ${notes}` : '')
 }
 
+// --- A study delivered by PhLynx (#287) ------------------------------------
+//
+// PhLynx posts the archive to `/api/inbox` on localhost, where it is *staged*.
+// It is never imported on arrival: CORS stops a page reading our responses, it
+// does not stop it sending them, so anything running in the user's browser can
+// deliver a study. This dialog is the security control, which is why it names
+// the origin the archive came from rather than just asking "load this?".
+const pendingStudy = ref(null)
+const inboxBusy = ref(false)
+let inboxTimer = null
+
+// Polled because the frontend has no push channel and deliberately assumes no
+// local backend; giving it one for this would be a bigger change than the
+// feature. Paused when the window is hidden -- nobody can answer the dialog then.
+const INBOX_POLL_MS = 2000
+
+async function pollInbox() {
+  if (document.hidden || pendingStudy.value || inboxBusy.value) return
+  try {
+    pendingStudy.value = await peekInbox()
+  } catch {
+    // The server is not up yet, or this build is served without it. A delivery
+    // the user never asked for must not produce an error banner.
+  }
+}
+
+async function onAcceptStudy() {
+  inboxBusy.value = true
+  error.value = ''
+  try {
+    const data = await acceptInbox(props.outputsDir)
+    applyImportedStudy(data, pendingStudy.value?.filename || 'the delivered study')
+    pendingStudy.value = null
+  } catch (e) {
+    error.value = e?.response?.data?.detail || String(e)
+  } finally {
+    inboxBusy.value = false
+  }
+}
+
+async function onRejectStudy() {
+  inboxBusy.value = true
+  try {
+    await rejectInbox()
+    pendingStudy.value = null
+  } catch (e) {
+    error.value = e?.response?.data?.detail || String(e)
+  } finally {
+    inboxBusy.value = false
+  }
+}
+
+onMounted(() => {
+  inboxTimer = setInterval(pollInbox, INBOX_POLL_MS)
+  pollInbox()
+})
+onUnmounted(() => {
+  if (inboxTimer) clearInterval(inboxTimer)
+})
+
 function filesFrom(event) {
   if (event.dataTransfer?.files?.length) return Array.from(event.dataTransfer.files)
   if (event.target?.files?.length) return Array.from(event.target.files)
@@ -368,32 +431,43 @@ function unreadableDrop(file) {
  *
  * Returns true when the drop was an archive and has been handled.
  */
+/**
+ * Fan a loaded archive out to the stores, and say what happened.
+ *
+ * Shared by the drop path and the PhLynx inbox because both receive the *same*
+ * response body -- `/api/inbox/accept` runs the same importer `/api/omex/upload`
+ * does. A study delivered over localhost has to behave exactly like one that was
+ * dropped, and the way to guarantee that is for there to be one function.
+ */
+function applyImportedStudy(data, label) {
+  // The model first: obs_data and params attach to it.
+  emit('model-loaded', { ...data, filename: data.model_filename || label })
+  if (data.obs_data && !data.obs_data.error) {
+    emit('obs-data-loaded', { ...data.obs_data, model_id: data.model_id })
+  }
+  if (data.params_for_id && !data.params_for_id.error) {
+    emit('params-loaded', {
+      params: data.params_for_id.params,
+      filename: data.params_for_id.filename,
+    })
+  }
+  // A part that failed to parse is reported without losing the rest -- an
+  // archive with a bad obs_data still gave us a model worth having.
+  const failed = [data.obs_data, data.params_for_id]
+    .filter((p) => p?.error)
+    .map((p) => `${p.filename}: ${p.error}`)
+  notice.value = failed.length
+    ? `Loaded ${label}, but ${failed.join('; ')}`
+    : `Loaded ${label}` + (data.module_config_path ? ' (PhLynx layout kept)' : '')
+}
+
 async function handleOmex(files) {
   const omex = files.find((f) => isOmexName(f.name))
   if (!omex) return false
   error.value = ''
   try {
     const data = await uploadOmex(omex, props.outputsDir)
-    // The model first: obs_data and params attach to it.
-    emit('model-loaded', { ...data, filename: data.model_filename || omex.name })
-    if (data.obs_data && !data.obs_data.error) {
-      emit('obs-data-loaded', { ...data.obs_data, model_id: data.model_id })
-    }
-    if (data.params_for_id && !data.params_for_id.error) {
-      emit('params-loaded', {
-        params: data.params_for_id.params,
-        filename: data.params_for_id.filename,
-      })
-    }
-    // A part that failed to parse is reported without losing the rest -- an
-    // archive with a bad obs_data still gave us a model worth having.
-    const failed = [data.obs_data, data.params_for_id]
-      .filter((p) => p?.error)
-      .map((p) => `${p.filename}: ${p.error}`)
-    notice.value = failed.length
-      ? `Loaded ${omex.name}, but ${failed.join('; ')}`
-      : `Loaded ${omex.name}` +
-        (data.module_config_path ? ' (PhLynx layout kept)' : '')
+    applyImportedStudy(data, omex.name)
   } catch (e) {
     error.value = e?.response?.data?.detail || String(e)
   }
@@ -707,6 +781,41 @@ async function onParamsDrop(event) {
       </template>
     </Dialog>
 
+    <Dialog
+      :visible="!!pendingStudy"
+      modal
+      header="A study was sent to CUFLynx"
+      :closable="false"
+      :style="{ width: '32rem' }"
+      data-testid="inbox-dialog"
+    >
+      <p class="inbox-intro">
+        <strong data-testid="inbox-origin">{{ pendingStudy?.origin }}</strong>
+        sent <strong>{{ pendingStudy?.filename }}</strong>
+        ({{ Math.max(1, Math.round((pendingStudy?.bytes || 0) / 1024)) }} kB).
+        Loading it replaces the study you have open.
+      </p>
+      <ul class="inbox-members" data-testid="inbox-members">
+        <li v-for="m in pendingStudy?.members || []" :key="m">{{ m }}</li>
+      </ul>
+      <template #footer>
+        <Button
+          label="Discard"
+          severity="secondary"
+          text
+          :disabled="inboxBusy"
+          data-testid="inbox-reject"
+          @click="onRejectStudy"
+        />
+        <Button
+          label="Load study"
+          :loading="inboxBusy"
+          data-testid="inbox-accept"
+          @click="onAcceptStudy"
+        />
+      </template>
+    </Dialog>
+
     <FileBrowserDialog
       v-model:visible="outputsBrowserOpen"
       mode="dir"
@@ -762,6 +871,18 @@ async function onParamsDrop(event) {
 }
 .send-hint {
   margin: 0.5rem 0 0;
+  font-size: 0.8rem;
+  color: var(--text-muted, #666);
+}
+.inbox-intro {
+  margin: 0 0 0.5rem;
+  font-size: 0.9rem;
+}
+.inbox-members {
+  margin: 0;
+  padding-left: 1.1rem;
+  max-height: 9rem;
+  overflow-y: auto;
   font-size: 0.8rem;
   color: var(--text-muted, #666);
 }

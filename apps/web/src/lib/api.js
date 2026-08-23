@@ -255,6 +255,27 @@ export async function uploadOmex(file, outputDir = '') {
   return data
 }
 
+// PhLynx hands a study to a running CUFLynx by posting it to the inbox (#287).
+// It is *staged*, not imported: CORS stops a page reading our responses, not
+// sending requests, so the confirmation in the UI is the security control and
+// these three calls are what drives it.
+export async function peekInbox() {
+  const { data } = await axios.get(url('/api/inbox'))
+  return data.pending
+}
+
+export async function acceptInbox(outputDir = '') {
+  const { data } = await axios.post(url('/api/inbox/accept'), null, {
+    params: outputDir ? { output_dir: outputDir } : {},
+  })
+  return data
+}
+
+export async function rejectInbox() {
+  const { data } = await axios.post(url('/api/inbox/reject'))
+  return data
+}
+
 // `save` (#215) asks the server to also write the dated copy where the study
 // lives — { outputsDir, filename } — instead of the browser downloading it.
 // Omitted for a plain upload, which already has a file on disk.

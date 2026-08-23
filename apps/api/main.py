@@ -58,6 +58,7 @@ import mmt_protocol
 import myokit_import
 import omex_import
 import omex_export
+from inbox import APP_NAME, RECEIVE_PORTS, inbox  # noqa: F401 - RECEIVE_PORTS is the contract
 from aadc_check import aadc_status
 import editor_launch
 from version import __version__
@@ -113,13 +114,54 @@ from uq import uq
 
 app = FastAPI(title="CUFLynx API", version=__version__)
 
+#: Origins allowed to reach the API from a *page* rather than from the app's own
+#: frontend. The first two are the Vite dev server; the rest are PhLynx, which
+#: hands a study to a running CUFLynx by posting it to the inbox (#287).
+#:
+#: An explicit list, never ``*``: this is the only door into an API that is
+#: otherwise trusted because nothing off-machine can reach it, and widening it is
+#: meant to be one reviewable line.
+ALLOWED_ORIGINS = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "https://www.phlynx.com",
+    "https://phlynx.com",
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def _allow_private_network(request: Request, call_next):
+    """Answer Chrome's Private Network Access preflight.
+
+    A page on the public internet reaching 127.0.0.1 is a private-network request:
+    Chrome sends ``Access-Control-Request-Private-Network: true`` on the preflight
+    and refuses the real request unless the response grants it. ``CORSMiddleware``
+    knows nothing about this header, so the grant has to be added here.
+
+    Only ever added for an origin already in ``ALLOWED_ORIGINS`` -- the CORS layer
+    decides *who* may talk to us, and this only says "yes, I know I am local".
+
+    This corner of the platform is moving: Chrome's successor proposal (Local
+    Network Access) intends to put a browser permission prompt in front of these
+    requests. That would add a prompt rather than break this, but the flow's UX is
+    not entirely ours.
+    """
+    response = await call_next(request)
+    if (
+        request.method == "OPTIONS"
+        and request.headers.get("access-control-request-private-network") == "true"
+        and request.headers.get("origin") in ALLOWED_ORIGINS
+    ):
+        response.headers["Access-Control-Allow-Private-Network"] = "true"
+    return response
 
 UPLOAD_DIR = Path(tempfile.gettempdir()) / "cuflynx_uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
@@ -327,7 +369,14 @@ class ProtocolRunRequest(BaseModel):
 # ---------------------------------------------------------------------------
 @app.get("/api/health")
 def health() -> dict:
-    return {"status": "ok"}
+    """Liveness, and *which* app is alive.
+
+    ``app`` and ``version`` exist for PhLynx: it finds a running CUFLynx by
+    probing a small range of ports (:data:`RECEIVE_PORTS`), and without a marker
+    it could not tell us from anything else that answers ``/api/health`` on 8787 --
+    and would post a study at it.
+    """
+    return {"status": "ok", "app": APP_NAME, "version": __version__}
 
 
 # ---------------------------------------------------------------------------
@@ -1240,7 +1289,17 @@ async def upload_omex(
     Each part is loaded through the same code path a dropped file would take, so
     an archive cannot behave differently from its own contents.
     """
-    data = await file.read()
+    return import_omex_bytes(await file.read(), output_dir)
+
+
+def import_omex_bytes(data: bytes, output_dir: str | None = None) -> dict:
+    """Load an archive's bytes, whatever delivered them.
+
+    Split out from the upload route so the PhLynx inbox loads a study through the
+    **same** code, rather than growing a second importer beside it: an archive
+    that arrived over localhost has to behave exactly like one that was dropped,
+    and the way to guarantee that is for there to be one body.
+    """
     try:
         parts = omex_import.unpack(data)
     except omex_import.OmexImportError as exc:
@@ -1490,6 +1549,76 @@ def phlynx_send(req: PhlynxSendRequest):
         # back out of (#287) -- so the value travels and is ignored.
         "outside_parameters": report["outside_parameters"],
     }
+
+
+#: A delivered archive is a payload from a web page, so it is capped well below
+#: anything a real study reaches. The point is that an accidental or hostile
+#: multi-gigabyte post cannot sit in this process's memory.
+MAX_INBOX_BYTES = 64 * 1024 * 1024
+
+
+@app.post("/api/inbox")
+async def deliver_to_inbox(request: Request) -> dict:
+    """Accept a study from PhLynx and **stage** it for the user to confirm (#287).
+
+    Deliberately not an import. CORS stops a page reading our responses; it does
+    not stop it sending, so anything running in the user's browser can reach this.
+    Staging is what makes the confirmation in the UI possible -- a route that
+    imported on arrival would have nothing left to ask about.
+
+    The archive is validated far enough to fail *here* rather than at accept time,
+    so PhLynx learns it sent something unreadable instead of the user learning it
+    a minute later.
+    """
+    data = await request.body()
+    if not data:
+        raise HTTPException(status_code=422, detail="no archive in the request body")
+    if len(data) > MAX_INBOX_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"archive is larger than the {MAX_INBOX_BYTES // (1024 * 1024)} MB limit",
+        )
+    try:
+        omex_import.unpack(data)
+    except omex_import.OmexImportError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    origin = request.headers.get("origin") or "an unknown page"
+    filename = _display_stem(request.query_params.get("filename") or "", "study") + ".omex"
+    return inbox.deliver(data, origin, filename)
+
+
+@app.get("/api/inbox")
+def peek_inbox() -> dict:
+    """What is waiting, if anything -- metadata only, never the archive.
+
+    Polled by the UI, which has no push channel: the frontend deliberately assumes
+    no local backend, and giving it one for this would be a bigger change than the
+    feature.
+    """
+    return {"pending": inbox.peek()}
+
+
+@app.post("/api/inbox/accept")
+def accept_inbox(output_dir: str | None = Query(default=None)) -> dict:
+    """Load the staged study, returning exactly what ``/api/omex/upload`` returns.
+
+    Same body, so the frontend feeds it into the same `model-loaded` /
+    `obs-data-loaded` / `params-loaded` flow a dropped archive takes -- there is
+    one importer (:func:`import_omex_bytes`) and one set of emits, not a second
+    pair that can drift from the first.
+    """
+    pending = inbox.take()
+    if pending is None:
+        raise HTTPException(status_code=404, detail="nothing is waiting in the inbox")
+    result = import_omex_bytes(pending.data, output_dir)
+    return {**result, "delivered_from": pending.origin}
+
+
+@app.post("/api/inbox/reject")
+def reject_inbox() -> dict:
+    """Discard without importing."""
+    return {"discarded": inbox.clear()}
 
 
 @app.get("/api/models/{model_id}/variables")
