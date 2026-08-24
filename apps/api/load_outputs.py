@@ -25,7 +25,7 @@ import re
 import ca_run_history
 
 #: What a caller can ask for, and the order the summary lists them in.
-SECTIONS = ("calibration", "sensitivity", "uq", "emulator")
+SECTIONS = ("calibration", "progress", "sensitivity", "uq", "emulator")
 
 COVERAGE_FILE = "posterior_predictive_coverage.json"
 PREDICTIVE_FILE = "posterior_predictive.npz"
@@ -225,6 +225,25 @@ def _prefix_from_calibrated_model(output_dir):
     return os.path.basename(matches[0])[: -len("_calibrated.cellml")]
 
 
+def _progress(run_dir, output_dir, missing):
+    """The per-generation history the Progress tab draws.
+
+    The result files say where a calibration *ended*; this is how it got there,
+    and it is written by every run into the same directory. Left out, a loaded
+    calibration showed its best fit and an empty Progress tab -- which reads as
+    "this run recorded nothing", not as "nobody asked for it".
+
+    Read from the chosen run directory, so the history belongs to the run whose
+    best fit is being shown beside it rather than to whichever run
+    ``read_run_history`` would have resolved for itself.
+    """
+    return _safely(
+        "progress history",
+        lambda: ca_run_history.progress_history(run_dir or output_dir),
+        missing,
+    )
+
+
 def _sensitivity(output_dir, missing):
     return {
         "local": _safely("local sensitivity",
@@ -349,6 +368,7 @@ def load_outputs(output_dir: str, file_prefix: str | None = None,
         "dir": output_dir,
         "run_dir": run_dir,
         "calibration": _calibration(output_dir, file_prefix, missing),
+        "progress": _progress(run_dir, output_dir, missing),
         "sensitivity": _sensitivity(output_dir, missing),
         "uq": _uq(output_dir, run_dir, missing),
         "emulator": _emulator(output_dir, file_prefix, obs_path, missing),
@@ -361,6 +381,8 @@ def load_outputs(output_dir: str, file_prefix: str | None = None,
     found = []
     if (result["calibration"] or {}).get("best"):
         found.append("calibration")
+    if (result["progress"] or {}).get("cost_history"):
+        found.append("progress")
     sensitivity = result["sensitivity"] or {}
     if sensitivity.get("local") or sensitivity.get("sobol"):
         found.append("sensitivity")

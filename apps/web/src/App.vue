@@ -54,6 +54,7 @@ import {
   loadParams,
   errorMessage,
   loadOutputsDirectory,
+  openStudyFromOutputs,
 } from './lib/api'
 import {
   overlayItemsFor,
@@ -136,6 +137,9 @@ async function loadOutputsFromDirectory(runDir) {
       sim.setError(found.error)
       return
     }
+    // The study first: installing a model clears the obs_data, the params and
+    // every derived store, so results applied before it would be wiped by it.
+    const study = await openLoadedStudy(dir, found)
     applyLoadedOutputs(found)
     // Say what was loaded. Empty panels are ambiguous -- "there was nothing" and
     // "it could not be read" look identical until someone is told which.
@@ -144,12 +148,68 @@ async function loadOutputsFromDirectory(runDir) {
       : 'Found no results in that directory'
     const which = found.run_dir ? ` from ${found.run_dir.split('/').pop()}` : ''
     const missed = found.missing?.length ? ` (could not read: ${found.missing.join('; ')})` : ''
-    loadedOutputsSummary.value = parts + which + missed
+    // The study is reported separately from the panels: "which model am I now
+    // looking at" is the question a reopened directory raises first, and the
+    // answer is not always the model the run started from -- a directory whose
+    // only CellML is the calibrated one is reopened at its fitted values.
+    const opened = study?.opened
+      ? `. Opened ${study.name || 'the study'}${study.calibrated ? ' (calibrated model)' : ''}`
+      : ''
+    const studyFailed = study?.error ? `. Could not open the study: ${study.error}` : ''
+    loadedOutputsSummary.value = parts + which + missed + opened + studyFailed
     if (!found.found.length) sim.setError(loadedOutputsSummary.value)
   } catch (e) {
     sim.setError(`Could not read ${dir}: ${errorMessage(e)}`)
   } finally {
     loadingOutputs.value = false
+  }
+}
+
+/**
+ * Install the model, obs_data and params_for_id the run was made from (#255).
+ *
+ * `/api/outputs/load` reports these as paths, which fill no panel: reopening a
+ * directory gave its results and an empty Parameters tab, and the only way to
+ * get the study back was to find the same three files on disk and drop them in
+ * -- which cleared the results that had just been loaded.
+ *
+ * Applied through the very handlers a dropped .omex goes through, in the order
+ * that import uses, so a reopened study and a dropped one cannot diverge.
+ *
+ * Never fatal: results are worth showing even when the model that produced them
+ * cannot be opened, so a failure is reported and the panels still fill.
+ */
+async function openLoadedStudy(dir, found) {
+  const study = found.study || {}
+  if (!study.model && !study.obs_data && !study.params_for_id) return null
+  try {
+    const opened = await openStudyFromOutputs(dir, found.run_dir ?? null,
+                                              model.name.value || null)
+    await onModelLoaded({ ...opened, filename: opened.model_filename })
+    if (opened.obs_data && !opened.obs_data.error) {
+      onObsDataLoaded({ ...opened.obs_data, model_id: opened.model_id })
+    }
+    if (opened.params_for_id && !opened.params_for_id.error) {
+      onParamsLoaded({
+        params: opened.params_for_id.params,
+        filename: opened.params_for_id.filename,
+      })
+    }
+    // A part that would not parse is the same failure a dropped archive has,
+    // and is reported the same way rather than leaving a tab quietly empty.
+    const parts = [opened.obs_data, opened.params_for_id].filter((part) => part?.error)
+    const trouble = [
+      ...parts.map((part) => `${part.filename}: ${part.error}`),
+      ...(opened.warnings ?? []),
+    ]
+    return {
+      opened: true,
+      name: opened.name,
+      calibrated: !!opened.model_is_calibrated,
+      error: trouble.length ? trouble.join('; ') : '',
+    }
+  } catch (e) {
+    return { opened: false, error: errorMessage(e) }
   }
 }
 
@@ -165,13 +225,32 @@ function applyLoadedOutputs(found) {
     calib.stdError.value = errors.std ?? null
   }
 
+  // Sensitivity is *saved* rather than assigned: the panel reads a selected run
+  // out of `results`, and `indices` is a computed over it -- so the assignments
+  // this used to make were writes to a read-only ref that changed nothing, and
+  // a loaded directory left the heatmap empty while every other panel filled.
   const sobol = found.sensitivity?.sobol
   const local = found.sensitivity?.local
-  if (sobol || local) {
-    sa.indices.value = (sobol ?? local)?.indices ?? null
-    sa.paramNames.value = (sobol ?? local)?.param_names ?? []
-    sa.outputNames.value = (sobol ?? local)?.output_names ?? []
+  const where = found.run_dir || found.dir || ''
+  if (sobol) {
+    sa.addLoadedResult(sobol, {
+      label: `Loaded · Sobol${where ? ` · ${where.split('/').pop()}` : ''}`,
+      source: `${where}:sobol`,
+      method: 'sobol',
+    })
   }
+  if (local) {
+    sa.addLoadedResult(local, {
+      label: `Loaded · Local${where ? ` · ${where.split('/').pop()}` : ''}`,
+      source: `${where}:local`,
+      method: 'local',
+    })
+  }
+
+  // The per-generation history behind the best fit. Without it a reopened
+  // calibration showed its result and an empty Progress tab, which reads as
+  // "this run recorded nothing".
+  if (found.progress?.cost_history?.length) calib.applyProgress(found.progress)
 
   if (found.uq?.params?.length) {
     uq.params.value = found.uq.params

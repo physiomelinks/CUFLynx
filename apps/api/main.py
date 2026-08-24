@@ -22,6 +22,7 @@ from __future__ import annotations
 import base64
 import contextlib
 import errno
+import io
 import json
 import os
 import re
@@ -29,6 +30,7 @@ import shutil
 import tempfile
 import time
 import uuid
+import zipfile
 from pathlib import Path
 
 import yaml
@@ -1304,7 +1306,7 @@ async def upload_omex(
     return import_omex_bytes(await file.read(), output_dir)
 
 
-def _no_obs_data_warning(parts: dict) -> list[str]:
+def _no_obs_data_warning(parts: dict, source: str = "archive") -> list[str]:
     """Why an archive's observations tab is empty, in one sentence.
 
     An archive with no obs_data is perfectly valid and must still load (#149), so
@@ -1321,10 +1323,11 @@ def _no_obs_data_warning(parts: dict) -> list[str]:
             "its name is always taken as the obs_data."
         ]
     missing = "obs_data" if parts.get("params") else "obs_data or params_for_id"
-    return [f"This archive carries no {missing}, so the observations tab is empty."]
+    return [f"This {source} carries no {missing}, so the observations tab is empty."]
 
 
-def import_omex_bytes(data: bytes, output_dir: str | None = None) -> dict:
+def import_omex_bytes(data: bytes, output_dir: str | None = None,
+                      source: str = "archive") -> dict:
     """Load an archive's bytes, whatever delivered them.
 
     Split out from the upload route so the PhLynx inbox loads a study through the
@@ -1510,7 +1513,7 @@ def import_omex_bytes(data: bytes, output_dir: str | None = None) -> dict:
     # is not told it carries none: the slot is what matters, not where it was
     # filled from.
     if result["obs_data"] is None:
-        load_warnings.extend(_no_obs_data_warning(parts))
+        load_warnings.extend(_no_obs_data_warning(parts, source))
 
     return result
 
@@ -2546,6 +2549,86 @@ def load_outputs_directory(
     than raising, and ``found`` says which panels have something to show.
     """
     return load_outputs.load_outputs(dir, file_prefix, obs_path, run_dir)
+
+
+class OpenStudyRequest(BaseModel):
+    #: The outputs directory the user picked, the same one `/api/outputs/load` reads.
+    dir: str
+    #: Which run's snapshots to open, when the directory holds several. Omitted
+    #: takes the one `/api/outputs/load` chose.
+    run_dir: str | None = None
+    #: The loaded model's name, when there is one, for resolving `<prefix>_calibrated`.
+    file_prefix: str | None = None
+
+
+@app.post("/api/outputs/study")
+def open_study_from_outputs(req: OpenStudyRequest) -> dict:
+    """Load the model, obs_data and params_for_id a finished run was made from.
+
+    ``/api/outputs/load`` reports the study's files as *paths*, which fill no
+    panel: a user who reopened a directory got its results and an empty
+    Parameters tab, and had to find the same three files on disk and drop them
+    in by hand -- after which the results they had just loaded were replaced by
+    an empty study.
+
+    The three files are packed into an archive in memory and handed to
+    :func:`import_omex_bytes`, rather than loaded by a second copy of the same
+    logic. A study opened from a directory then behaves exactly like one dropped
+    as a .omex or delivered by PhLynx -- same parsing, same warnings, same
+    response shape -- which is the only way the three stay in step.
+    """
+    found = load_outputs.load_outputs(req.dir, req.file_prefix, run_dir=req.run_dir)
+    if found.get("error"):
+        raise HTTPException(status_code=422, detail=found["error"])
+
+    study = found.get("study") or {}
+    members: dict[str, bytes] = {}
+    unreadable: list[str] = []
+
+    def take(path, name):
+        if not path:
+            return
+        try:
+            members[name] = Path(path).read_bytes()
+        except OSError as exc:
+            unreadable.append(f"{os.path.basename(path)} ({exc.strerror or exc})")
+
+    model_path = study.get("model")
+    if model_path:
+        take(model_path, os.path.basename(model_path))
+    take(study.get("obs_data"), "study_obs_data.json")
+    take(study.get("params_for_id"), "study_params_for_id.json")
+
+    if not members.get(os.path.basename(model_path or "")):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"no model to open in {req.dir}: a study needs the CellML the run was "
+                f"made from, under generated_models/<prefix>/ or as <prefix>_calibrated.cellml"
+                + (f". Could not read: {'; '.join(unreadable)}" if unreadable else "")
+            ),
+        )
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        for name, blob in members.items():
+            zf.writestr(name, blob)
+
+    result = import_omex_bytes(buf.getvalue(), req.dir, source="run directory")
+    # Where each part came from, so the UI can say which run it reopened rather
+    # than implying the user dropped these files.
+    result["study_paths"] = {
+        "model": model_path,
+        "obs_data": study.get("obs_data"),
+        "params_for_id": study.get("params_for_id"),
+        "run_dir": found.get("run_dir"),
+    }
+    result["model_is_calibrated"] = bool(study.get("model_is_calibrated"))
+    if unreadable:
+        result["warnings"].append(
+            "Some of the run's inputs could not be read: " + "; ".join(unreadable)
+        )
+    return result
 
 
 @app.get("/api/runs/load")

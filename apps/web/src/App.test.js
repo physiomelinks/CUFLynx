@@ -58,6 +58,8 @@ vi.mock('./lib/api', () => ({
   loadSavedRun: vi.fn().mockResolvedValue({}),
   exportPipeline: vi.fn().mockResolvedValue({}),
   exportPlotting: vi.fn().mockResolvedValue({}),
+  loadOutputsDirectory: vi.fn().mockResolvedValue({ found: [], missing: [] }),
+  openStudyFromOutputs: vi.fn().mockResolvedValue({}),
   // The real one; a failure path that reports "undefined is not a function"
   // instead of the server's reason would pass a test and fail a user.
   errorMessage: (e) => String(e?.response?.data?.detail || e?.message || e),
@@ -71,6 +73,8 @@ import {
   saveParams,
   listSavedRuns,
   loadSavedRun,
+  loadOutputsDirectory,
+  openStudyFromOutputs,
   simulate,
   runProtocol,
   startEmulatorTraining,
@@ -2613,5 +2617,154 @@ describe('guided tour', () => {
     await wrapper.find('[data-testid="tour-start"]').trigger('click')
     await nextTick()
     expect(overlay(wrapper).props('step')).toBe(0)
+  })
+})
+
+// Reopening an outputs directory (#255). Everything a finished run left is on
+// disk; before this, clicking Load filled the result panels and left the study
+// itself -- the model, its obs_data, its params_for_id -- on the floor, and the
+// Progress tab and the sensitivity heatmap empty beside results that had loaded.
+describe('App.vue reopening an outputs directory', () => {
+  const STUDY = {
+    model: '/out/Model_calibrated.cellml',
+    model_is_calibrated: true,
+    obs_data: '/out/run/abc_obs_data_260824_091622.json',
+    params_for_id: '/out/run/abc_params_for_id_260824_091622.json',
+    file_prefix: 'Model',
+  }
+  const OPENED = {
+    model_id: 'reopened-1',
+    name: 'Model',
+    model_filename: 'Model_calibrated.cellml',
+    model_is_calibrated: true,
+    variable_count: 12,
+    params: [],
+    odes: [],
+    obs_data: {
+      filename: 'abc_obs_data_260824_091622.json',
+      data_items: [{ data_item_name: 'x' }],
+      prediction_items: [],
+      protocol_info: { pre_times: [0], sim_times: [[1]] },
+      n_experiments: 1,
+    },
+    params_for_id: {
+      filename: 'abc_params_for_id_260824_091622.json',
+      params: [{ name: 'a/alpha', qnames: ['a/alpha'], min: 0.1, max: 3 }],
+    },
+    warnings: [],
+    study_paths: { run_dir: '/out/run' },
+  }
+  const FOUND = (over = {}) => ({
+    dir: '/out',
+    run_dir: '/out/run',
+    found: ['calibration', 'progress', 'sensitivity', 'study inputs'],
+    missing: [],
+    study: STUDY,
+    calibration: { best: { params: { 'a/alpha': 2 }, cost: 0.5 }, modifiers: [] },
+    progress: {
+      param_names: ['a/alpha'],
+      cost_history: [[0.9], [0.5]],
+      param_history: [[0.2], [0.4]],
+      start_costs: [],
+      start_params: { param_names: [], starts: [] },
+      grad_history: [],
+      start_grads: { param_names: [], starts: [] },
+    },
+    sensitivity: {
+      sobol: {
+        indices: { S1: { 'a/x': { 'a/alpha': 0.4 } } },
+        param_names: ['a/alpha'],
+        output_names: ['a/x'],
+      },
+      local: null,
+    },
+    uq: {},
+    emulator: {},
+    ...over,
+  })
+
+  beforeEach(() => {
+    loadOutputsDirectory.mockReset()
+    openStudyFromOutputs.mockReset()
+  })
+
+  const load = async (found = FOUND()) => {
+    loadOutputsDirectory.mockResolvedValue(found)
+    openStudyFromOutputs.mockResolvedValue(OPENED)
+    const wrapper = shallowMount(App)
+    await flushPromises()
+    wrapper.vm.outputsDir = '/out'
+    await nextTick()
+    await wrapper.vm.loadOutputsFromDirectory()
+    await flushPromises()
+    return wrapper
+  }
+
+  it('brings back the model, obs_data and params_for_id the run was made from', async () => {
+    const wrapper = await load()
+    expect(openStudyFromOutputs).toHaveBeenCalledWith('/out', '/out/run', null)
+    expect(wrapper.vm.model.modelId.value).toBe('reopened-1')
+    expect(wrapper.vm.obs.dataItems.value).toHaveLength(1)
+    expect(Object.keys(wrapper.vm.paramsForId.paramSpecs.value)).toEqual(['a/alpha'])
+    expect(wrapper.vm.paramsForId.filename.value).toBe('abc_params_for_id_260824_091622.json')
+  })
+
+  it('installs the study before the results, which a model load would clear', async () => {
+    // onModelLoaded clears the obs/params stores and every derived one, so a
+    // best fit applied first would be wiped by the study that produced it.
+    const wrapper = await load()
+    expect(wrapper.vm.calib.bestParams.value).toEqual({ 'a/alpha': 2 })
+    expect(wrapper.vm.obs.dataItems.value).toHaveLength(1)
+  })
+
+  it('fills the Progress tab from the history the run recorded', async () => {
+    const wrapper = await load()
+    expect(wrapper.vm.calib.costHistory.value).toEqual([[0.9], [0.5]])
+    expect(wrapper.vm.calib.paramHistory.value.generations).toEqual([[0.2], [0.4]])
+    expect(wrapper.vm.calib.paramHistory.value.paramNames).toEqual(['a/alpha'])
+  })
+
+  it('fills the sensitivity heatmap, which is read off a saved run', async () => {
+    // `sa.indices` is a computed over the selected result: the old code assigned
+    // to it, which changed nothing at all and left this panel empty.
+    const wrapper = await load()
+    expect(wrapper.vm.sa.indices.value).toEqual({ S1: { 'a/x': { 'a/alpha': 0.4 } } })
+    expect(wrapper.vm.sa.paramNames.value).toEqual(['a/alpha'])
+    expect(wrapper.vm.sa.results.value).toHaveLength(1)
+  })
+
+  it('reloading the same directory refreshes its run rather than stacking copies', async () => {
+    const wrapper = await load()
+    await wrapper.vm.loadOutputsFromDirectory()
+    await flushPromises()
+    expect(wrapper.vm.sa.results.value).toHaveLength(1)
+  })
+
+  it('says which study it opened, and that the model is the calibrated one', async () => {
+    const wrapper = await load()
+    expect(wrapper.vm.loadedOutputsSummary).toContain('Opened Model')
+    expect(wrapper.vm.loadedOutputsSummary).toContain('calibrated model')
+  })
+
+  it('still shows the results when the study cannot be opened', async () => {
+    // Results are worth showing even when the model that produced them is not
+    // loadable -- but the failure is said out loud rather than left as an empty
+    // Parameters tab beside a full Analysis one.
+    openStudyFromOutputs.mockRejectedValue({
+      response: { data: { detail: 'no model to open in /out' } },
+    })
+    loadOutputsDirectory.mockResolvedValue(FOUND())
+    const wrapper = shallowMount(App)
+    await flushPromises()
+    wrapper.vm.outputsDir = '/out'
+    await wrapper.vm.loadOutputsFromDirectory()
+    await flushPromises()
+    expect(wrapper.vm.calib.bestParams.value).toEqual({ 'a/alpha': 2 })
+    expect(wrapper.vm.loadedOutputsSummary).toContain('no model to open')
+  })
+
+  it('does not ask for a study when the directory holds only results', async () => {
+    await load(FOUND({ study: { model: null, obs_data: null, params_for_id: null } }))
+    expect(openStudyFromOutputs).not.toHaveBeenCalled()
   })
 })

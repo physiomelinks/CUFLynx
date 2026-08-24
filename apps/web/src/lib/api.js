@@ -581,6 +581,22 @@ export async function getUQStatus(jobId, offset = 0) {
  * even though every file is there. Returns `found` and `missing` alongside the data, so the
  * caller can say what it loaded rather than leaving empty panels to be interpreted.
  */
+/**
+ * Open the model, obs_data and params_for_id a finished run was made from (#255).
+ *
+ * Answers in the same shape as an archive upload, because the server loads them
+ * through the same importer -- so the caller applies it exactly as it applies a
+ * dropped .omex, rather than growing a second way to install a study.
+ */
+export async function openStudyFromOutputs(dir, runDir = null, filePrefix = null) {
+  const { data } = await axios.post(url('/api/outputs/study'), {
+    dir,
+    run_dir: runDir,
+    file_prefix: filePrefix,
+  })
+  return data
+}
+
 export async function loadOutputsDirectory(dir, filePrefix, runDir) {
   const params = new URLSearchParams({ dir })
   if (filePrefix) params.set('file_prefix', filePrefix)

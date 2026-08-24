@@ -576,3 +576,189 @@ def test_a_generated_user_inputs_is_picked_up_when_the_directory_has_one(tmp_pat
 
     study = load_outputs.load_outputs(str(tmp_path))["study"]
     assert study["user_inputs"].endswith("user_inputs_260824.yaml")
+
+
+# --- the history behind the best fit --------------------------------------------------
+#
+# The result files say where a calibration ended; the history is how it got there, and CA
+# writes it into the same directory on every run. It was the one artefact `load_outputs`
+# never asked for, so a reopened calibration showed its best fit beside an empty Progress
+# tab -- which reads as "this run recorded nothing".
+
+def write_history(run, costs, params, *, labels=("a/x", "a/y"), bounds=True):
+    """CA's per-generation history files, in the format its own reader expects."""
+    with open(os.path.join(run, "best_cost_history.csv"), "w") as handle:
+        for row in costs:
+            handle.write(", ".join(f"{v:.9f}" for v in row) + "\n")
+    with open(os.path.join(run, "best_param_vals_history.csv"), "w") as handle:
+        handle.write(",".join(label.replace("/", " ") for label in labels) + "\n")
+        for row in params:
+            handle.write(", ".join(f"{v:.5e}" for v in row) + "\n")
+    if bounds:
+        with open(os.path.join(run, "param_bounds.json"), "w") as handle:
+            json.dump({"param_labels": list(labels),
+                       "param_mins": [0.0] * len(labels),
+                       "param_maxs": [1.0] * len(labels)}, handle)
+
+
+@pytest.mark.unit
+def test_the_progress_history_is_loaded_with_the_results(tmp_path, requires_ca):
+    run = write_run(tmp_path, "genetic_algorithm_run", chain=False)
+    write_history(run, [[0.5, 0.6], [0.25, 0.4]], [[0.1, 0.2], [0.3, 0.4]])
+
+    found = load_outputs.load_outputs(str(tmp_path))
+
+    assert "progress" in found["found"], found["found"]
+    progress = found["progress"]
+    assert progress["cost_history"] == [[0.5, 0.6], [0.25, 0.4]]
+    assert progress["param_history"] == [[0.1, 0.2], [0.3, 0.4]]
+    assert len(progress["param_names"]) == 2
+
+
+@pytest.mark.unit
+def test_the_progress_history_comes_from_the_run_that_was_chosen(tmp_path, requires_ca):
+    """A directory holds one history per run. Reading whichever the resolver picks for
+    itself would draw one run's generations under another run's best fit."""
+    older = write_run(tmp_path, "genetic_algorithm_older", chain=False, when=1_000_000)
+    newer = write_run(tmp_path, "genetic_algorithm_newer", chain=False, when=2_000_000)
+    write_history(older, [[9.0]], [[0.9, 0.9]])
+    write_history(newer, [[1.0]], [[0.1, 0.1]])
+
+    chosen = load_outputs.load_outputs(str(tmp_path), run_dir=older)
+
+    assert chosen["run_dir"] == older
+    assert chosen["progress"]["cost_history"] == [[9.0]], "the other run's history was read"
+
+
+@pytest.mark.unit
+def test_a_directory_with_no_history_says_so_rather_than_drawing_an_empty_tab(tmp_path):
+    write_run(tmp_path, "genetic_algorithm_run", chain=False)
+
+    found = load_outputs.load_outputs(str(tmp_path))
+
+    assert "progress" not in found["found"]
+    assert found["progress"]["cost_history"] == []
+    # Absent history is ordinary, not a failure: the run's own results are still there.
+    assert "calibration" in found["found"]
+
+
+# --- reopening the study itself (POST /api/outputs/study) -----------------------------
+#
+# `/api/outputs/load` reports the study's files as paths, which fill no panel. Reopening a
+# directory gave its results and an empty Parameters tab, and the only way back to the
+# study was to find the same three files on disk and drop them in -- which cleared the
+# results that had just been loaded.
+
+def write_study(tmp_path, *, obs=True, params=True, model=True, stamp="260824_091622"):
+    """A directory as a finished run leaves it: results, and the inputs they came from."""
+    from conftest import RESOURCES_DIR
+
+    run = write_run(tmp_path, "genetic_algorithm_run", chain=False)
+    if model:
+        (tmp_path / "Lotka_Volterra_forced_calibrated.cellml").write_bytes(
+            (RESOURCES_DIR / "Lotka_Volterra_forced.cellml").read_bytes())
+    if obs:
+        (tmp_path / f"genetic_algorithm_run/abc_obs_data_{stamp}.json").write_text(
+            (RESOURCES_DIR / "Lotka_Volterra_obs_data.json").read_text(), encoding="utf-8")
+    if params:
+        entries = {"version": 1, "defaults": {}, "params": [
+            {"targets": ["Lotka_Volterra_module/alpha"], "name": "Lotka_Volterra_module/alpha",
+             "param_type": "const", "name_for_plotting": "alpha", "min": "0.1", "max": "3.0"},
+        ]}
+        (tmp_path / f"genetic_algorithm_run/abc_params_for_id_{stamp}.json").write_text(
+            json.dumps(entries), encoding="utf-8")
+    return run
+
+
+def test_opening_a_directory_brings_back_the_model_obs_data_and_params(client, tmp_path):
+    write_study(tmp_path)
+
+    resp = client.post("/api/outputs/study", json={"dir": str(tmp_path)})
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["model_id"] and body["variable_count"] > 0
+    assert body["obs_data"]["data_items"], body["obs_data"]
+    assert body["params_for_id"]["params"], body["params_for_id"]
+    # Loaded through the archive importer, so the response is the shape the app already
+    # applies for a dropped study -- there is no second way to install one.
+    assert set(body) >= {"model_id", "name", "params", "odes", "obs_data", "params_for_id"}
+
+
+def test_the_reopened_study_says_where_each_part_came_from(client, tmp_path):
+    """"Which model am I looking at" is the first question a reopened directory raises,
+    and the answer is not always the model the run started from."""
+    run = write_study(tmp_path)
+
+    body = client.post("/api/outputs/study", json={"dir": str(tmp_path)}).json()
+
+    assert body["model_is_calibrated"] is True
+    paths = body["study_paths"]
+    assert paths["run_dir"] == run
+    assert paths["obs_data"].endswith("abc_obs_data_260824_091622.json")
+    assert paths["params_for_id"].endswith("abc_params_for_id_260824_091622.json")
+
+
+def test_the_model_actually_loads_and_can_be_simulated_like_any_other(client, tmp_path):
+    write_study(tmp_path)
+    body = client.post("/api/outputs/study", json={"dir": str(tmp_path)}).json()
+
+    assert client.get(f"/api/models/{body['model_id']}/variables").status_code == 200
+
+
+def test_the_run_the_caller_chose_is_the_run_that_is_reopened(client, tmp_path):
+    """A directory reused across datasets holds several runs, and the study that is
+    reopened has to be the one whose results are on screen beside it."""
+    write_study(tmp_path, stamp="260824_091622")
+    other = write_run(tmp_path, "genetic_algorithm_other", chain=False)
+    write_snapshots(other, ["260824_120000"])
+
+    body = client.post(
+        "/api/outputs/study", json={"dir": str(tmp_path), "run_dir": other}
+    ).json()
+
+    assert body["study_paths"]["run_dir"] == other
+    assert "260824_120000" in body["study_paths"]["obs_data"]
+
+
+def test_a_study_part_that_will_not_parse_is_reported_not_swallowed(client, tmp_path):
+    """The same contract a dropped archive has: the model still loads, and the part that
+    did not is named rather than leaving a tab quietly empty."""
+    run = write_study(tmp_path, obs=False)
+    (tmp_path / f"{os.path.basename(run)}/abc_obs_data_260824_091622.json").write_text(
+        "{not json", encoding="utf-8")
+
+    body = client.post("/api/outputs/study", json={"dir": str(tmp_path)}).json()
+
+    assert body["model_id"]
+    assert body["obs_data"]["error"]
+    assert body["params_for_id"]["params"]
+
+
+def test_a_directory_with_no_model_is_refused_with_a_reason(client, tmp_path):
+    """Nothing to open, and the message says what was looked for -- rather than a study
+    that half-loads into a model the user cannot see."""
+    write_study(tmp_path, model=False)
+
+    resp = client.post("/api/outputs/study", json={"dir": str(tmp_path)})
+
+    assert resp.status_code == 422
+    assert "no model to open" in resp.json()["detail"]
+    assert "generated_models" in resp.json()["detail"]
+
+
+def test_a_missing_directory_is_a_422_not_a_crash(client, tmp_path):
+    resp = client.post("/api/outputs/study", json={"dir": str(tmp_path / "nope")})
+    assert resp.status_code == 422
+    assert "no such directory" in resp.json()["detail"]
+
+
+def test_a_run_without_observations_says_run_directory_not_archive(client, tmp_path):
+    """The importer is shared with the .omex path, so its warnings have to name what was
+    actually read -- a user reopening a folder was told about "this archive"."""
+    write_study(tmp_path, obs=False, params=False)
+
+    body = client.post("/api/outputs/study", json={"dir": str(tmp_path)}).json()
+
+    assert any("run directory" in w for w in body["warnings"]), body["warnings"]
+    assert not any("archive carries no" in w for w in body["warnings"]), body["warnings"]
