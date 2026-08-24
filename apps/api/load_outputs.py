@@ -23,6 +23,7 @@ import os
 import re
 
 import ca_run_history
+import mcmc_progress
 
 #: What a caller can ask for, and the order the summary lists them in.
 SECTIONS = ("calibration", "progress", "sensitivity", "uq", "emulator")
@@ -292,6 +293,7 @@ def _uq(output_dir, run_dir, missing):
     payload = {
         "params": _safely("UQ posteriors", posteriors, missing),
         "coverage": None,
+        "progress": None,
         "has_posterior_predictive": False,
         "has_sample_traces": False,
     }
@@ -317,6 +319,24 @@ def _uq(output_dir, run_dir, missing):
     payload["has_posterior_predictive"] = os.path.isfile(
         os.path.join(answered, PREDICTIVE_FILE))
     payload["has_sample_traces"] = os.path.isfile(os.path.join(answered, SERIES_FILE))
+
+    # The chain itself, as the three views the UQ Progress tab draws (#244). The posterior
+    # says where the sampler ended up; this is the run that got there, and it is the same
+    # file -- so a reopened UQ that showed its distributions beside three empty trace plots
+    # was only ever missing this call.
+    #
+    # Read from the run that supplied the posterior, for the reason above it: traces and
+    # distributions describing different runs is worse than no traces.
+    #
+    # `burn_in` is the sampler's default rather than the setting the run used: a finished
+    # directory does not record it, and the alternative -- no cumulative-mean view at all --
+    # loses more than a default that matches what most runs asked for.
+    def chain_progress():
+        labels = [row[0] for row in ca_run_history.param_names(answered) or []]
+        return mcmc_progress.progress(answered, labels)
+
+    progress = _safely("MCMC progress", chain_progress, missing)
+    payload["progress"] = progress if (progress or {}).get("steps") else None
     return payload
 
 

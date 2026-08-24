@@ -256,6 +256,10 @@ function applyLoadedOutputs(found) {
     uq.params.value = found.uq.params
     uq.method.value = found.uq.method ?? 'mcmc'
   }
+  // The chain behind those distributions -- the trace, cumulative-mean and
+  // autocorrelation views. Same rule the live poll uses: a payload with no steps
+  // in it is not a chain, and must not replace one already on screen.
+  if (found.uq?.progress?.steps) uq.progress.value = found.uq.progress
   // null is "not scored", which the panel says out loud -- so it is assigned
   // either way rather than only when present.
   uq.coverage.value = found.uq?.coverage ?? null

@@ -2678,7 +2678,20 @@ describe('App.vue reopening an outputs directory', () => {
       },
       local: null,
     },
-    uq: {},
+    uq: {
+      params: [{ name: 'a/alpha', mean: 1, sd: 0.1 }],
+      progress: {
+        steps: 40,
+        walkers: 4,
+        num_params: 1,
+        param_labels: ['a/alpha'],
+        walkers_shown: 4,
+        trace_steps: [0, 39],
+        traces: [[[1, 2]]],
+        cumulative_mean: { steps: [0, 39], means: [[1, 1.1]] },
+        autocorrelation: { lags: [0, 1], values: [[1, 0.5]] },
+      },
+    },
     emulator: {},
     ...over,
   })
@@ -2738,6 +2751,27 @@ describe('App.vue reopening an outputs directory', () => {
     await wrapper.vm.loadOutputsFromDirectory()
     await flushPromises()
     expect(wrapper.vm.sa.results.value).toHaveLength(1)
+  })
+
+  it('fills the UQ Progress tab from the chain behind the posterior', async () => {
+    // The posterior says where the sampler ended up; these are the trace,
+    // cumulative-mean and autocorrelation views of the run that got there.
+    const wrapper = await load()
+    expect(wrapper.vm.uq.progress.value.steps).toBe(40)
+    expect(wrapper.vm.uq.progress.value.param_labels).toEqual(['a/alpha'])
+    expect(wrapper.vm.uq.params.value).toHaveLength(1)
+  })
+
+  it('a directory with no chain leaves the trace plots as they were', async () => {
+    // Same rule the live poll follows: a payload with no steps is not a chain,
+    // and must not replace one already on screen.
+    const wrapper = await load()
+    await wrapper.vm.loadOutputsFromDirectory()
+    await flushPromises()
+    loadOutputsDirectory.mockResolvedValue(FOUND({ uq: { params: [], progress: null } }))
+    await wrapper.vm.loadOutputsFromDirectory()
+    await flushPromises()
+    expect(wrapper.vm.uq.progress.value.steps).toBe(40)
   })
 
   it('says which study it opened, and that the model is the calibrated one', async () => {

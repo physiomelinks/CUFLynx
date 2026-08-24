@@ -762,3 +762,64 @@ def test_a_run_without_observations_says_run_directory_not_archive(client, tmp_p
 
     assert any("run directory" in w for w in body["warnings"]), body["warnings"]
     assert not any("archive carries no" in w for w in body["warnings"]), body["warnings"]
+
+
+# --- the chain behind the posterior (#244) --------------------------------------------
+#
+# The posterior says where the sampler ended up; the chain is the run that got there, and
+# the UQ Progress tab draws three views of it. A reopened UQ showed its distributions
+# beside three empty plots, because the loader read the samples and never the chain.
+
+@pytest.mark.unit
+def test_the_chain_is_loaded_so_the_uq_progress_tab_can_draw_it(tmp_path):
+    run = write_run(tmp_path, "genetic_algorithm_uq", best=False)
+
+    uq = load_outputs.load_outputs(str(tmp_path))["uq"]
+
+    progress = uq["progress"]
+    assert progress["steps"] == 40 and progress["walkers"] == 4
+    assert progress["num_params"] == 3
+    assert len(progress["traces"]) == 3
+    assert progress["cumulative_mean"] and progress["autocorrelation"]
+    assert progress["param_labels"] == ["a/x", "a/y", "a/z"], "named from the run's own file"
+    assert uq["run_dir"] == run
+
+
+@pytest.mark.unit
+def test_the_chain_comes_from_the_run_that_supplied_the_posterior(tmp_path):
+    """Traces and distributions describing different runs is worse than no traces. The
+    newest run here is a calibration, so the posterior comes from an older one -- and the
+    chain has to follow it rather than the directory's chosen run."""
+    calibration = write_run(tmp_path, "genetic_algorithm_fit", chain=False, when=2_000_000)
+    sampled = write_run(tmp_path, "genetic_algorithm_uq", best=False, when=1_000_000)
+
+    uq = load_outputs.load_outputs(str(tmp_path))["uq"]
+
+    assert uq["run_dir"] == sampled != calibration
+    assert uq["progress"]["steps"] == 40
+
+
+@pytest.mark.unit
+def test_a_directory_with_no_chain_reports_no_progress_rather_than_an_empty_one(tmp_path):
+    """`None`, not a zero-step payload: the panel keeps whatever it is showing, exactly as
+    the live poll does when a run has not checkpointed yet."""
+    write_run(tmp_path, "genetic_algorithm_fit", chain=False)
+
+    uq = load_outputs.load_outputs(str(tmp_path))["uq"]
+
+    assert uq["progress"] is None
+    assert not uq["params"]
+
+
+@pytest.mark.unit
+def test_an_unreadable_chain_is_named_rather_than_losing_the_rest_of_the_uq(tmp_path):
+    run = write_run(tmp_path, "genetic_algorithm_uq", best=False)
+    with open(os.path.join(run, "mcmc_chain.npy"), "wb") as handle:
+        handle.write(b"not a numpy file")
+
+    found = load_outputs.load_outputs(str(tmp_path))
+
+    # A chain that cannot be read is "no chain yet" to the reader, so the directory still
+    # loads -- what must not happen is an exception taking the other panels with it.
+    assert found["uq"]["progress"] is None
+    assert found["dir"] == str(tmp_path)
