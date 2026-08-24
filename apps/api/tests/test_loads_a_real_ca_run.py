@@ -7,10 +7,11 @@ stops being able to open a real folder.
 
 So this one asks CA to build a run -- sensitivity, an emulator, a calibration, a
 chain and a posterior predictive check, all tiny -- and then points the loader at
-the result. The builder lives in the engine
-(``libcuflynx.checks.full_pipeline_run``) precisely so that both sides check
-against one real run rather than against each other's assumptions; CA's own test
-asserts the same directory from the writing side.
+the result. The builder is shipped in the engine
+(``libcuflynx.external_testing.full_pipeline_run``) precisely so that both sides
+check against one real run rather than against each other's assumptions; CA's own
+test asserts the same directory from the writing side. CA's wheel carries no
+``tests/``, so a builder kept there would be unreachable from here.
 
 Skips, rather than fails, when the engine has no builder or is missing the
 optional extras. A CUFLynx that cannot reach a full-featured CA has not broken;
@@ -31,7 +32,7 @@ def _builder():
     pytest.importorskip("emcee", reason="the chain needs CA's [uq]")
     try:
         from ca_imports import ca_from
-        return ca_from("checks.full_pipeline_run", "build_full_pipeline_run")
+        return ca_from("external_testing.full_pipeline_run", "build_full_pipeline_run")
     except Exception as exc:  # noqa: BLE001 - an older CA simply has no builder
         pytest.skip("this circulatory_autogen has no full-pipeline builder: %s" % exc)
 
