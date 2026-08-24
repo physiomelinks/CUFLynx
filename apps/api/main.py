@@ -214,10 +214,23 @@ prune_upload_dir()
 
 
 class _ModelRecord:
-    def __init__(self, model_id: str, path: Path, meta: CellMLModel):
+    def __init__(self, model_id: str, path: Path, meta: CellMLModel,
+                 file_prefix: str | None = None):
         self.model_id = model_id
         self.path = path
         self.meta = meta
+        #: The study's ``file_prefix``: the stem of the file the user loaded, and
+        #: the name circulatory_autogen builds everything else out of -- the run
+        #: directory ``<method>_<file_prefix>_<obs_prefix>``, the generated model
+        #: under ``generated_models/<file_prefix>/``, ``<file_prefix>_calibrated``,
+        #: ``emulators/<file_prefix>_<obs_prefix>``.
+        #:
+        #: **Not the CellML ``<model name>``.** These used to be the model name,
+        #: so a study loaded from ``3compartment_flat.cellml`` ran as
+        #: ``CardiovascularSystem`` -- the name inside the file -- and its results
+        #: landed under a prefix nothing else in the app used. CA keys on
+        #: file_prefix, and one study cannot have two names.
+        self.file_prefix = file_prefix or None
         self.obs_data: ObsData | None = None
         # Raw input files persisted on disk for circulatory_autogen calibration.
         self.obs_path: Path | None = None
@@ -254,7 +267,7 @@ def _get_model(model_id: str) -> _ModelRecord:
                 meta = parse(path.read_bytes())
             except failure:
                 continue
-            record = _ModelRecord(model_id, path, meta)
+            record = _ModelRecord(model_id, path, meta, _recover_prefix(model_id))
             record.archive_path = _model_archive_path(model_id)
             _models[model_id] = record
             return record
@@ -323,6 +336,40 @@ def _model_archive_path(model_id: str) -> Path | None:
         return None
     path = UPLOAD_DIR / f"{model_id}{MODEL_ARCHIVE_SUFFIX}"
     return path if path.is_file() else None
+
+
+#: Where a model's ``file_prefix`` is kept so it survives the in-memory registry.
+#: ``_get_model`` re-derives a record from the uploaded file after a dev-server
+#: reload, and the uploaded file is named by model_id -- so without this the study
+#: would quietly change prefix mid-session and its next run would land in a second
+#: directory beside the first.
+PREFIX_SUFFIX = ".prefix"
+
+
+def _remember_prefix(model_id: str, filename: str | None) -> str:
+    """The study's prefix from the file it was loaded as, kept beside the upload."""
+    prefix = _display_stem(Path(str(filename or "")).stem, "model")
+    with contextlib.suppress(OSError):
+        (UPLOAD_DIR / f"{model_id}{PREFIX_SUFFIX}").write_text(prefix, encoding="utf-8")
+    return prefix
+
+
+def _recover_prefix(model_id: str) -> str | None:
+    try:
+        return (UPLOAD_DIR / f"{model_id}{PREFIX_SUFFIX}").read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+
+
+def _record_prefix(record: "_ModelRecord", fallback: str = "model") -> str:
+    """The study's ``file_prefix`` -- what CA names its outputs after.
+
+    Every analysis run, the export bundle and the model's own directory ask here,
+    so a study has exactly one name on disk. Falls back rather than raising: a
+    record recovered after a dev-server reload may predate its sidecar, and a run
+    under "model" is better than a 500.
+    """
+    return _display_stem(getattr(record, "file_prefix", None) or "", fallback)
 
 
 def _display_stem(name: str, fallback: str) -> str:
@@ -826,7 +873,7 @@ def export_pipeline_route(req: ExportPipelineRequest) -> dict:
 
     # Use the loaded CellML file's prefix (e.g. "3compartment"), not the internal
     # <model name> (often a generic "cardiovascularSystem"). The client passes it.
-    file_prefix = req.file_prefix.strip() or record.meta.name or "model"
+    file_prefix = req.file_prefix.strip() or _record_prefix(record)
     # The model lives where circulatory_autogen resolves model_path:
     # generated_models/<prefix>/<prefix>.cellml. obs/params go in resources/.
     # The suffix is the uploaded file's own: an external_python model is a .py,
@@ -1188,7 +1235,8 @@ async def upload_model(
         model_id = uuid.uuid4().hex
         path = UPLOAD_DIR / f"{model_id}.py"
         path.write_bytes(only_bytes)
-        _models[model_id] = _ModelRecord(model_id, path, meta)
+        _models[model_id] = _ModelRecord(
+            model_id, path, meta, _remember_prefix(model_id, only_name))
         # The study's own copy, beside its user funcs (CA's external_model_path).
         # It travels with the export the way an operation func does -- and it is
         # what runs: resolve_model_path prefers it over the uploaded temp file,
@@ -1270,7 +1318,12 @@ async def upload_model(
     path.write_bytes(raw)
     if mmt_source is not None:
         _save_model_source(model_id, ".mmt", mmt_source)
-    _models[model_id] = _ModelRecord(model_id, path, meta)
+    # The file the user dropped names the study, whatever the CellML calls itself
+    # inside. A .mmt converted at the door keeps its own stem for the same reason:
+    # the study is the thing the user has a name for.
+    source_name = converted_from or (main_name if not single else only_name)
+    _models[model_id] = _ModelRecord(
+        model_id, path, meta, _remember_prefix(model_id, source_name))
 
     return {
         "model_id": model_id,
@@ -1391,7 +1444,8 @@ def import_omex_bytes(data: bytes, output_dir: str | None = None,
     path.write_bytes(raw)
     if mmt_source is not None:
         _save_model_source(model_id, ".mmt", mmt_source)
-    _models[model_id] = _ModelRecord(model_id, path, meta)
+    _models[model_id] = _ModelRecord(
+        model_id, path, meta, _remember_prefix(model_id, converted_from or parts["master"]))
     # The archive itself, whole. Everything CUFLynx does not understand -- the
     # manifest, SED-ML, `simulation.json`, PhLynx's `flow.json` -- has to come
     # back untouched when the study is sent on (#287), and it cannot come back
@@ -1463,7 +1517,7 @@ def import_omex_bytes(data: bytes, output_dir: str | None = None,
         # anything. Same layout the export bundle uses, so the archive round-trips
         # into a folder CA already understands.
         result["module_config_path"] = omex_import.save_module_config(
-            blob, _model_dir(out_dir, Path(parts["master"] or "").stem or meta.name)
+            blob, _model_dir(out_dir, _record_prefix(_models[model_id]))
         )
         # Only when there was somewhere to put it. With no outputs directory this
         # copy is simply not made, and nothing is lost: the archive is kept whole
@@ -1576,7 +1630,7 @@ def phlynx_send(req: PhlynxSendRequest):
 
     _validate_param_keys(values)
 
-    stem = _display_stem(record.meta.name, "study")
+    stem = _record_prefix(record, "study")
     archive = record.archive_path.read_bytes() if record.archive_path else None
     try:
         blob, report = omex_export.build_archive(
@@ -1744,7 +1798,7 @@ def get_model_source(model_id: str, config_outputs_dir: str = "") -> FileRespons
         study_copy = study_model_source_path(path.suffix, base_dir)
         if study_copy.is_file():
             path = study_copy
-    stem = _display_stem(record.meta.name, model_id)
+    stem = _record_prefix(record, model_id)
     return FileResponse(
         path,
         media_type="text/plain; charset=utf-8",
@@ -1827,7 +1881,7 @@ def edit_model_source(model_id: str, req: ModelEditRequest) -> dict:
     launch = editor_launch.open_in_editor(target)
     return {
         "path": str(target),
-        "filename": f"{_display_stem(record.meta.name, model_id)}{source.suffix}",
+        "filename": f"{_record_prefix(record, model_id)}{source.suffix}",
         "opened": bool(launch["opened"]),
         "editor": launch["editor"],
         "reason": launch["reason"],
@@ -2834,7 +2888,7 @@ def calibration_run(req: CalibrationRequest) -> dict:
         "operation_funcs_external_path": user_func_path("operation", configured or None),
         "cost_funcs_external_path": user_func_path("cost", configured or None),
         "output_dir": output_dir,
-        "file_prefix": record.meta.name or "model",
+        "file_prefix": _record_prefix(record),
         "num_cores": int(req.settings.get("num_cores", 1) or 1),
         "python": python_path,
         "settings": req.settings,
@@ -3037,7 +3091,7 @@ def sensitivity_run(req: SensitivityRequest) -> dict:
         "operation_funcs_external_path": user_func_path("operation", configured or None),
         "cost_funcs_external_path": user_func_path("cost", configured or None),
         "output_dir": output_dir,
-        "file_prefix": record.meta.name or "model",
+        "file_prefix": _record_prefix(record),
         "num_cores": num_cores,
         "python": python_path,
         "settings": req.settings,
@@ -3077,7 +3131,7 @@ def _emulator_dir_for(model_id: str, settings: dict) -> str:
     record = _get_model(model_id)
     configured = (settings.get("config_outputs_dir") or "").strip()
     output_dir = configured or str(UPLOAD_DIR / f"emu_{model_id}")
-    prefix = record.meta.name or "model"
+    prefix = _record_prefix(record)
     obs = str(record.obs_path) if record.obs_path else None
     conventional = ca_run_history.emulator_dir(output_dir, prefix, obs)
     if ca_run_history.emulator_metadata(conventional) is not None:
@@ -3232,7 +3286,7 @@ def emulator_train(req: EmulatorTrainRequest) -> dict:
         "operation_funcs_external_path": user_func_path("operation", configured or None),
         "cost_funcs_external_path": user_func_path("cost", configured or None),
         "output_dir": output_dir,
-        "file_prefix": record.meta.name or "model",
+        "file_prefix": _record_prefix(record),
         "num_cores": int(req.settings.get("num_cores", 1) or 1),
         "python": python_path,
         "settings": req.settings,
@@ -3497,7 +3551,7 @@ def uq_run(req: UQRequest) -> dict:
         "operation_funcs_external_path": user_func_path("operation", configured or None),
         "cost_funcs_external_path": user_func_path("cost", configured or None),
         "output_dir": output_dir,
-        "file_prefix": record.meta.name or "model",
+        "file_prefix": _record_prefix(record),
         "num_cores": int(req.settings.get("num_cores", 1) or 1),
         "python": python_path,
         "settings": req.settings,

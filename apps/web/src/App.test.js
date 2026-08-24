@@ -2715,6 +2715,9 @@ describe('App.vue reopening an outputs directory', () => {
 
   it('brings back the model, obs_data and params_for_id the run was made from', async () => {
     const wrapper = await load()
+    // Asked for by the study's file_prefix -- the stem of the file the user
+    // loaded, which is what CA names its outputs after. Passing the CellML
+    // <model name> here is what made `generated_models/<prefix>` unfindable.
     expect(openStudyFromOutputs).toHaveBeenCalledWith('/out', '/out/run', null)
     expect(wrapper.vm.model.modelId.value).toBe('reopened-1')
     expect(wrapper.vm.obs.dataItems.value).toHaveLength(1)
@@ -2772,6 +2775,18 @@ describe('App.vue reopening an outputs directory', () => {
     await wrapper.vm.loadOutputsFromDirectory()
     await flushPromises()
     expect(wrapper.vm.uq.progress.value.steps).toBe(40)
+  })
+
+  it('asks by file_prefix, not by the name inside the CellML', async () => {
+    const wrapper = await load()
+    wrapper.vm.model.setModel({
+      model_id: 'm', name: 'CardiovascularSystem', filename: '3compartment_flat.cellml',
+    })
+    await nextTick()
+    await wrapper.vm.loadOutputsFromDirectory()
+    await flushPromises()
+    expect(loadOutputsDirectory.mock.calls.at(-1)[1]).toBe('3compartment_flat')
+    expect(openStudyFromOutputs.mock.calls.at(-1)[2]).toBe('3compartment_flat')
   })
 
   it('says which study it opened, and that the model is the calibrated one', async () => {

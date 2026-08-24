@@ -131,7 +131,8 @@ async function loadOutputsFromDirectory(runDir) {
   if (!dir || loadingOutputs.value) return
   loadingOutputs.value = true
   try {
-    const found = await loadOutputsDirectory(dir, model.name.value || undefined, runDir)
+    const found = await loadOutputsDirectory(
+      dir, model.filePrefix.value || undefined, runDir)
     loadedOutputs.value = found
     if (found.error) {
       sim.setError(found.error)
@@ -184,7 +185,7 @@ async function openLoadedStudy(dir, found) {
   if (!study.model && !study.obs_data && !study.params_for_id) return null
   try {
     const opened = await openStudyFromOutputs(dir, found.run_dir ?? null,
-                                              model.name.value || null)
+                                              model.filePrefix.value || null)
     await onModelLoaded({ ...opened, filename: opened.model_filename })
     if (opened.obs_data && !opened.obs_data.error) {
       onObsDataLoaded({ ...opened.obs_data, model_id: opened.model_id })
