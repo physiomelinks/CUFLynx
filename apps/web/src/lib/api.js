@@ -154,7 +154,17 @@ export async function editModelSource(modelId, outputsDir = '') {
 // As a blob, not text: an example ships as a .omex, and decoding a zip through
 // the text codec mangles every byte of it.
 export async function fetchExampleModel(name, filename) {
-  const { data } = await axios.get(url(`/api/examples/${name}`), { responseType: 'blob' })
+  // Fetched here and posted straight back to the upload route, so the browser
+  // cache -- not the server -- decides which version of the example is imported.
+  // The route sends `Cache-Control: no-cache`, but an entry cached *before* it
+  // did is still reusable without revalidation: a user who once loaded a stale
+  // example goes on loading it, from a server that is serving the current one.
+  // A URL that never repeats cannot match any of those entries.
+  const { data } = await axios.get(url(`/api/examples/${name}`), {
+    params: { _: Date.now() },
+    responseType: 'blob',
+    headers: { 'Cache-Control': 'no-cache' },
+  })
   return new File([data], filename, { type: data?.type || 'application/octet-stream' })
 }
 
