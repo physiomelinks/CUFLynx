@@ -13,9 +13,9 @@ quotient* lives here. A gradient of a slightly different cost than the one on
 screen would be worse than no gradient at all: it would rank parameters against a
 number the user cannot see.
 
-**Why finite differences and not CA's own gradient.** ``OpencorParamID`` exposes
+**Why finite differences and not CA's own gradient.** ``ParamID`` exposes
 ``get_gradient`` / ``get_cost_and_gradient``, and they are better -- exact, and
-one solve rather than 2M. But they need a *solver-backed* ``OpencorParamID``:
+one solve rather than 2M. But they need a *solver-backed* ``ParamID``:
 a compiled model, ``do_ad``, and one of casadi_python / aadc_python / (cellml
 + CVODE_myokit + FSA). CUFLynx builds one of those only in the analysis subprocess
 tier (calibration / SA / UQ runners), which costs a process launch and a model
