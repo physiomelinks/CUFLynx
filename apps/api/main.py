@@ -1041,7 +1041,18 @@ def get_example_model(name: str) -> FileResponse:
     path = resources_dir() / filename
     if not path.is_file():
         raise HTTPException(status_code=404, detail=f"example model file missing: {filename}")
-    return FileResponse(path, media_type=example_media_type(filename), filename=filename)
+    return FileResponse(
+        path,
+        media_type=example_media_type(filename),
+        filename=filename,
+        # An example is a file that ships with the app, so it changes when the app
+        # does -- and the browser is the one that fetches it and posts the bytes
+        # back to the upload route. Without this the response carried only an
+        # etag, which lets a browser reuse a cached copy without asking: an
+        # updated example then imports as the old one, from a server that is
+        # serving the new one. `no-cache` still allows a 304 on the etag.
+        headers={"Cache-Control": "no-cache"},
+    )
 
 
 def _obs_data_document(record, protocol_info=None) -> dict | None:
@@ -1304,17 +1315,13 @@ def _no_obs_data_warning(parts: dict) -> list[str]:
     """
     skipped = parts.get("obs_skipped") or []
     if skipped:
-        looked_at = "; ".join(f"{s['name']}, because {s['reason']}" for s in skipped)
+        looked_at = "; ".join(f"{s['name']} ({s['reason']})" for s in skipped)
         return [
-            "No obs_data was loaded from this archive. What was passed over: "
-            f"{looked_at}. A member whose name contains 'obs' is always taken as the "
-            "obs_data, so the reason above is what has to be fixed."
+            f"No obs_data was loaded. Passed over: {looked_at}. A member with 'obs' in "
+            "its name is always taken as the obs_data."
         ]
     missing = "obs_data" if parts.get("params") else "obs_data or params_for_id"
-    return [
-        f"This archive carries no {missing} -- only the model, so the observations "
-        "tab is empty because there was nothing in the archive to fill it."
-    ]
+    return [f"This archive carries no {missing}, so the observations tab is empty."]
 
 
 def import_omex_bytes(data: bytes, output_dir: str | None = None) -> dict:
@@ -1463,10 +1470,9 @@ def import_omex_bytes(data: bytes, output_dir: str | None = None) -> dict:
         # banner nobody reads is how the real failure below gets missed.
         if out_dir and result["module_config_path"] is None:
             load_warnings.append(
-                f"The archive carried PhLynx's {cfg_name}, but it could not be kept beside "
-                "the model: it is not valid JSON, or the directory could not be written. The "
-                "study loaded, and the archive still round-trips -- but reopening the study "
-                "from disk in PhLynx will not restore its layout."
+                f"PhLynx's {cfg_name} could not be kept beside the model: it is not valid "
+                "JSON, or the directory could not be written. The study loaded, and the "
+                "archive still round-trips."
             )
 
     # An obs_data in the archive is the author's own and always wins; only when
@@ -1480,8 +1486,8 @@ def import_omex_bytes(data: bytes, output_dir: str | None = None) -> dict:
             # empty one -- which is exactly the kind of thing that used to happen
             # without a word.
             load_warnings.append(
-                f"The protocol taken from {converted_from or 'the .mmt'} could not be used as "
-                f"an obs_data: {exc}"
+                f"The protocol in {converted_from or 'the .mmt'} could not be used as an "
+                f"obs_data: {exc}"
             )
             parsed = None
         else:

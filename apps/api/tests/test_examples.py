@@ -27,6 +27,16 @@ def test_example_model_served(client):
     assert len(resp.content) > 0
 
 
+def test_the_example_is_served_with_no_cache(client):
+    """The browser fetches the example and posts the bytes back to the upload
+    route, so its cache decides which version is imported. Without this the
+    response carried only an etag, which a browser may reuse without asking --
+    and an updated example then loads as the old one from a server that is
+    serving the new one, with nothing on either side to say so."""
+    resp = client.get("/api/examples/3compartment")
+    assert "no-cache" in resp.headers.get("cache-control", ""), dict(resp.headers)
+
+
 def test_unknown_example_is_404(client):
     resp = client.get("/api/examples/does-not-exist")
     assert resp.status_code == 404

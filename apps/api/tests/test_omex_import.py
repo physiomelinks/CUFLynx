@@ -746,7 +746,7 @@ def test_a_pre_466_archive_is_told_what_changed_and_how_to_convert_it(client, re
     # CA's own complaint, unparaphrased, so it matches what a run would say...
     assert "Duplicate 'data_item_name'" in error
     # ...and then the part CA cannot know: why this file has duplicates at all.
-    assert "before its #466 split" in error
+    assert "uses the old" in error
     assert "cuflynx-migrate-obs-data" in error
     assert "'variable'" in error and "'name_for_plotting'" in error
 

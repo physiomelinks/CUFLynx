@@ -1118,8 +1118,7 @@ describe('FileImport says what an import could not do', () => {
       ...LOADED,
       obs_data: null,
       warnings: [
-        'No obs_data was loaded from this archive. What was passed over: ' +
-          'measurements.json, because it is not valid JSON.',
+        'No obs_data was loaded. Passed over: measurements.json (it is not valid JSON).',
       ],
     })
     expect(banner(wrapper).text()).toContain('measurements.json')

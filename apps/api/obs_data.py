@@ -82,20 +82,18 @@ class ObsData:
         }
 
 
-#: obs_data entry keys that CA #466 replaced. A file still using them was written for
-#: a CA that has since changed under it, and CA's own complaint is about the
-#: *consequence* -- a duplicate ``data_item_name`` -- rather than the cause, so the
-#: cause is said here, along with the migrator that fixes it.
+#: obs_data entry keys superseded by circulatory_autogen's newer vocabulary. A file
+#: still using them was written for a CA that has since changed under it, and CA's own
+#: complaint is about the *consequence* -- a duplicate ``data_item_name`` -- rather than
+#: the cause, so the cause is said here, along with the migrator that fixes it.
 LEGACY_ITEM_KEYS = ("variable", "name_for_plotting")
 
+#: Kept to two sentences: what is out of date, and the command that fixes it. The
+#: reader is trying to load a file, not read a changelog.
 _MIGRATION_HINT = (
-    "This obs_data is written in the vocabulary circulatory_autogen used before its #466 "
-    "split ({keys}): 'variable' both named an item and supplied its operand, and one name "
-    "was allowed to repeat across the mean/max/min of a trace. 'data_item_name' now has to "
-    "be unique. Convert the file with `cuflynx-migrate-obs-data <file>` (it ships with "
-    "circulatory_autogen): it qualifies a colliding name by whatever distinguishes the "
-    "items, so 'pressure aortic root' becomes 'mean pressure aortic root', 'max pressure "
-    "aortic root' and 'min pressure aortic root'."
+    "This obs_data uses the old {keys}, replaced by 'data_item_name' (which must now be "
+    "unique) and 'trace_name_for_plotting'. Convert it with `cuflynx-migrate-obs-data "
+    "<file>`."
 )
 
 
@@ -116,7 +114,7 @@ def legacy_vocabulary_hint(obj) -> str | None:
     )
     if not found:
         return None
-    return _MIGRATION_HINT.format(keys=", ".join(f"'{k}'" for k in found))
+    return _MIGRATION_HINT.format(keys=" and ".join(f"'{k}'" for k in found))
 
 
 def data_items_of(obj) -> list:
@@ -295,9 +293,8 @@ def ca_verdict(obj) -> CaVerdict:
         return CaVerdict(
             skipped=(
                 f"circulatory_autogen could not be consulted{detail}, so this obs_data was "
-                "accepted on CUFLynx's structural checks alone. Anything only CA rejects -- a "
-                "typo'd 'opperation', a repeated 'data_item_name', a key outside its schema -- "
-                "will not be caught until a run starts."
+                "only checked structurally. Anything only CA rejects will surface when a "
+                "run starts."
             )
         )
 
@@ -316,9 +313,8 @@ def ca_verdict(obj) -> CaVerdict:
         # but do not pass it off as a clean check either.
         return CaVerdict(
             skipped=(
-                f"circulatory_autogen's parser raised {type(exc).__name__}: {exc}. That is a "
-                "problem in CA rather than in this obs_data, so the document was loaded -- but "
-                "its schema was not checked."
+                f"circulatory_autogen's parser raised {type(exc).__name__}: {exc}, so this "
+                "obs_data was loaded without a schema check."
             )
         )
     return CaVerdict()
