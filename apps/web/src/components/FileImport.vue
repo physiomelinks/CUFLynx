@@ -747,7 +747,7 @@ async function onParamsDrop(event) {
           size="small"
           text
           :disabled="!outputsDir"
-          title="Load the results already in this directory (calibration, sensitivity, UQ, emulator)"
+          title="Reopen the study in this directory: the model, obs_data and params_for_id the run was made from, its calibration, progress, sensitivity, UQ and emulator"
           data-testid="outputs-load"
           @click="emit('load-outputs')"
         />
