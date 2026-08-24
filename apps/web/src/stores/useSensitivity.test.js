@@ -78,3 +78,47 @@ describe('the saved run label names the gradient method that actually ran', () =
     expect(sa.results.value[0].label).toBe('#1 Sobol · saltelli · n64')
   })
 })
+
+// Loading a run off disk (#255). The panel reads its heatmap out of the selected
+// *saved* result -- `indices` is a computed over it -- so a loader that assigned
+// to `indices` wrote to a read-only ref and left the panel empty while every
+// other panel filled.
+describe('a run loaded from an outputs directory', () => {
+  const LOADED = {
+    indices: { S1: { 'y [max]': { 'a/x': 0.4 } } },
+    param_names: ['a/x'],
+    output_names: ['y [max]'],
+  }
+
+  it('reaches the panel, which reads the selected saved run', () => {
+    const sa = useSensitivity()
+    sa.addLoadedResult(LOADED, { label: 'Loaded · Sobol', source: '/out:sobol' })
+    expect(sa.indices.value).toEqual(LOADED.indices)
+    expect(sa.paramNames.value).toEqual(['a/x'])
+    expect(sa.outputNames.value).toEqual(['y [max]'])
+    expect(sa.results.value).toHaveLength(1)
+    expect(sa.results.value[0].label).toBe('Loaded · Sobol')
+  })
+
+  it('reloading one directory refreshes its entry instead of stacking copies', () => {
+    const sa = useSensitivity()
+    sa.addLoadedResult(LOADED, { source: '/out:sobol' })
+    sa.addLoadedResult(LOADED, { source: '/out:sobol' })
+    expect(sa.results.value).toHaveLength(1)
+  })
+
+  it('a different run is kept beside it, which is what saved runs are for', () => {
+    const sa = useSensitivity()
+    sa.addLoadedResult(LOADED, { source: '/out/run-a:sobol', label: 'A' })
+    sa.addLoadedResult(LOADED, { source: '/out/run-b:sobol', label: 'B' })
+    expect(sa.results.value.map((r) => r.label)).toEqual(['A', 'B'])
+    // The newest is the one shown.
+    expect(sa.results.value.at(-1).id).toBe(sa.selectedId.value)
+  })
+
+  it('a payload with no indices adds nothing to compare against', () => {
+    const sa = useSensitivity()
+    expect(sa.addLoadedResult({ param_names: [] }, {})).toBeNull()
+    expect(sa.results.value).toHaveLength(0)
+  })
+})

@@ -88,6 +88,7 @@ _CA_PACKAGES = frozenset({
     "checks",
     "coupler",
     "emulators",
+    "external_testing",
     "generators",
     "identifiabilty_analysis",
     "models",

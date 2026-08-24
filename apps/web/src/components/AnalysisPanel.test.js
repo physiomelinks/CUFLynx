@@ -594,19 +594,139 @@ describe('AnalysisPanel calibration source (#333)', () => {
     expect(w.find('[data-testid="emulator-compare-legend"]').text()).toContain('emulator')
   })
 
-  it('leaves the single-source bars on the forward model while comparing', async () => {
+  // The comparison *replaces* the plain charts, exactly as "compare current" does. It used
+  // to be a separate v-if outside that chain, so ticking it left the single-source charts up
+  // and added a second pair below: two sets of bars for the same observables, with nothing
+  // on screen saying the first pair was superseded.
+  it('replaces the single-source bars rather than adding a second pair', async () => {
     const w = mountIt()
+    expect(w.find('[data-testid="percent-error-chart"]').exists()).toBe(true)
+
     await w.find('[data-testid="compare-with-emulator"]').setValue(true)
-    expect(w.find('[data-testid="percent-error-chart"]').text()).toContain('-10.0%')
+
+    expect(w.find('[data-testid="percent-error-chart"]').exists()).toBe(false)
+    expect(w.find('[data-testid="std-error-chart"]').exists()).toBe(false)
     const labels = w
       .findAll('[data-testid="emulator-percent-chart"] .bar-label')
       .map((n) => n.text())
     expect(labels).toEqual(['u', 'v'])
+
+    // ...and unticking brings them back, rather than leaving nothing.
+    await w.find('[data-testid="compare-with-emulator"]').setValue(false)
+    expect(w.find('[data-testid="percent-error-chart"]').exists()).toBe(true)
+    expect(w.find('[data-testid="emulator-percent-chart"]').exists()).toBe(false)
+  })
+
+  // Which model the bars describe matters more while comparing, not less -- so the readout
+  // is above the chain rather than inside the branch it used to share with the plain charts.
+  it('keeps the calibration-source readout visible while comparing', async () => {
+    const w = mountIt()
+    await w.find('[data-testid="compare-with-emulator"]').setValue(true)
+    expect(w.find('[data-testid="calibration-source-label"]').exists()).toBe(true)
+    expect(w.find('[data-testid="calibration-emulator-cost"]').exists()).toBe(true)
   })
 
   it('falls back to the calibration\'s own vectors when there is nothing to switch', () => {
     const w = mount(AnalysisPanel, { props: { ...CALIB } })
     expect(w.find('[data-testid="percent-error-chart"]').text()).toContain('-4.0%')
     expect(w.find('[data-testid="calibration-source"]').exists()).toBe(false)
+  })
+})
+
+// --- posterior predictive ---------------------------------------------------
+// A chain says what the parameters could be; these say whether the model at
+// those parameters reproduces what was measured.
+
+const coverageStub = (predictive = 0.81, dataInterval = 0.79) => ({
+  used_emulator: false,
+  coverage: {
+    num_observables: 12,
+    levels: {
+      '0.8': { predictive_coverage: predictive, sample_interval_coverage: dataInterval },
+      '0.95': { predictive_coverage: 0.94, sample_interval_coverage: 0.96 },
+    },
+  },
+})
+
+const predictiveStub = () => ({
+  available: true,
+  labels: ['obs_a', 'obs_b'],
+  lo: [-1.5, 3.0],
+  median: [0.2, 4.0],
+  hi: [1.4, 5.0],
+  num_samples: 100,
+})
+
+describe('AnalysisPanel — posterior predictive', () => {
+  it('says a run was not scored rather than showing it as zero', () => {
+    const wrapper = mount(AnalysisPanel, {
+      props: { uqParams: UQ_PARAMS, uqMethod: 'mcmc' },
+    })
+    expect(wrapper.find('[data-testid="no-coverage"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="coverage-table"]').exists()).toBe(false)
+  })
+
+  it('shows nothing at all until a UQ run exists', () => {
+    const wrapper = mount(AnalysisPanel, {
+      props: { coverage: coverageStub(), posteriorPredictive: predictiveStub() },
+    })
+    expect(wrapper.find('[data-testid="coverage"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="posterior-predictive"]').exists()).toBe(false)
+  })
+
+  it('reports coverage against its nominal level', () => {
+    const wrapper = mount(AnalysisPanel, {
+      props: {
+        uqParams: UQ_PARAMS, uqMethod: 'mcmc', coverage: coverageStub(),
+      },
+    })
+    const text = wrapper.find('[data-testid="coverage-table"]').text()
+    expect(text).toContain('80%')
+    expect(text).toContain('81%')
+    expect(text).toContain('79%')
+  })
+
+  it('marks coverage that is well below nominal', () => {
+    const wrapper = mount(AnalysisPanel, {
+      props: {
+        uqParams: UQ_PARAMS, uqMethod: 'mcmc', coverage: coverageStub(0.0, 0.08),
+      },
+    })
+    // The finding is the gap, not the number -- left unmarked it has to be
+    // spotted by comparing two columns of small numbers.
+    expect(wrapper.findAll('.coverage-low').length).toBeGreaterThan(0)
+  })
+
+  it('says when the check ran against the emulator', () => {
+    const withEmulator = { ...coverageStub(), used_emulator: true }
+    const wrapper = mount(AnalysisPanel, {
+      props: { uqParams: UQ_PARAMS, uqMethod: 'mcmc', coverage: withEmulator },
+    })
+    expect(wrapper.find('[data-testid="coverage"]').text()).toContain('emulator')
+  })
+
+  it('draws one interval per observable, with its median', () => {
+    const wrapper = mount(AnalysisPanel, {
+      props: {
+        uqParams: UQ_PARAMS, uqMethod: 'mcmc',
+        coverage: coverageStub(), posteriorPredictive: predictiveStub(),
+      },
+    })
+    const rows = wrapper.find('[data-testid="predictive-chart"]').findAll('.bar-row')
+    expect(rows).toHaveLength(2)
+    expect(rows[0].text()).toContain('obs_a')
+    expect(rows[0].text()).toContain('+0.2σ')
+    expect(rows[1].text()).toContain('+4.0σ')
+    expect(wrapper.findAll('.predictive-median')).toHaveLength(2)
+  })
+
+  it('does not draw the chart when the run was not scored', () => {
+    const wrapper = mount(AnalysisPanel, {
+      props: {
+        uqParams: UQ_PARAMS, uqMethod: 'mcmc',
+        posteriorPredictive: { available: false },
+      },
+    })
+    expect(wrapper.find('[data-testid="posterior-predictive"]').exists()).toBe(false)
   })
 })

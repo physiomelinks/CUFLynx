@@ -125,19 +125,31 @@ export function useCalibration(options = {}) {
     errorLabels.value = []
   }
 
+  /**
+   * Put a progress payload into the store, however it was obtained.
+   *
+   * Shared by the live poll and by reopening a finished run from its outputs
+   * directory (#255): CA writes the same history either way, and a run loaded
+   * from disk that drew an empty Progress tab was only ever missing this call.
+   * One mapping, so the two cannot disagree about which key feeds which chart.
+   */
+  function applyProgress(p) {
+    if (!p) return
+    costHistory.value = p.cost_history ?? []
+    startCosts.value = p.start_costs ?? []
+    startParams.value = p.start_params ?? { param_names: [], starts: [] }
+    gradHistory.value = p.grad_history ?? []
+    startGrads.value = p.start_grads ?? { param_names: [], starts: [] }
+    paramHistory.value = {
+      paramNames: p.param_names ?? [],
+      generations: p.param_history ?? [],
+    }
+  }
+
   async function fetchProgress() {
     if (!jobId) return
     try {
-      const p = await getCalibrationProgress(jobId)
-      costHistory.value = p.cost_history ?? []
-      startCosts.value = p.start_costs ?? []
-      startParams.value = p.start_params ?? { param_names: [], starts: [] }
-      gradHistory.value = p.grad_history ?? []
-      startGrads.value = p.start_grads ?? { param_names: [], starts: [] }
-      paramHistory.value = {
-        paramNames: p.param_names ?? [],
-        generations: p.param_history ?? [],
-      }
+      applyProgress(await getCalibrationProgress(jobId))
     } catch {
       /* history not written yet (early run) or job gone; keep last values */
     }
@@ -231,6 +243,7 @@ export function useCalibration(options = {}) {
     stdError,
     errorLabels,
     running,
+    applyProgress,
     start,
     cancel,
     reset,

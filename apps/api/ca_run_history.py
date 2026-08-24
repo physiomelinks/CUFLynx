@@ -263,18 +263,67 @@ def error_vectors(output_dir: str) -> dict:
     }
 
 
+#: The suffix CUFLynx's runner gives a calibrated model. **The one definition.**
+#: It was spelled out in four places -- the runner that writes it, the reader
+#: below, the loader that hunts for one, and the loader's prefix parser -- which
+#: is three places for it to drift from the file on disk.
+#:
+#: The name is CUFLynx's own: circulatory_autogen does not write this artefact.
+#: CA's equivalent flow (``do_generation_with_fit_parameters``) writes the fitted
+#: model as ``generated_models/<file_prefix>/<file_prefix>.cellml``, replacing the
+#: generated model rather than sitting beside the run; :func:`ca_calibrated_model`
+#: reads that layout, so a directory produced by CA's own scripts is as loadable
+#: as one produced here.
+CALIBRATED_SUFFIX = "_calibrated.cellml"
+
+
+def calibrated_model_name(file_prefix: str) -> str:
+    """``<file_prefix>_calibrated.cellml`` -- the name, in one place."""
+    return f"{file_prefix}{CALIBRATED_SUFFIX}"
+
+
+def prefix_from_calibrated_model(path: str) -> str | None:
+    """The study prefix a calibrated model's name carries, or None.
+
+    The inverse of :func:`calibrated_model_name`, and the only unambiguous way
+    back to a prefix: run directories are ``<method>_<prefix>_<obs_prefix>`` and a
+    prefix may itself contain underscores, so splitting those has no single
+    answer. This does.
+    """
+    name = os.path.basename(str(path or ""))
+    if not name.endswith(CALIBRATED_SUFFIX):
+        return None
+    return name[: -len(CALIBRATED_SUFFIX)] or None
+
+
 def calibrated_model_path(output_dir: str, file_prefix: str | None) -> str | None:
     """The calibrated CellML the run wrote, if it wrote one (#114).
 
     Derived rather than round-tripped: the runner writes
-    ``<prefix>_calibrated.cellml`` into the same directory the manager chose, so
+    :func:`calibrated_model_name` into the same directory the manager chose, so
     the manager already knows both halves of the name. It is best-effort in the
     runner (a model with nothing resolvable is not written), hence the existence
     check rather than an assumption.
     """
     if not output_dir or not file_prefix:
         return None
-    path = os.path.join(output_dir, f"{file_prefix}_calibrated.cellml")
+    path = os.path.join(output_dir, calibrated_model_name(file_prefix))
+    return path if os.path.isfile(path) else None
+
+
+def ca_calibrated_model(output_dir: str, file_prefix: str | None) -> str | None:
+    """The fitted model CA's own generation step writes, if there is one.
+
+    ``generated_models/<file_prefix>/<file_prefix>.cellml``, which is where CA
+    puts the model *with the best fit substituted in* when a run is configured to
+    generate with fit parameters. A run produced by ``cuflynx-param-id`` or by a
+    generated ``run_pipeline.py`` leaves it there and no ``*_calibrated.cellml``
+    anywhere -- so a reader that only knows CUFLynx's own name reports "no
+    calibrated model" for a directory that has one.
+    """
+    if not output_dir or not file_prefix:
+        return None
+    path = os.path.join(output_dir, "generated_models", file_prefix, f"{file_prefix}.cellml")
     return path if os.path.isfile(path) else None
 
 
@@ -437,14 +486,93 @@ def emulator_reusable(emu_dir: str) -> bool:
 def emulator_dir(output_dir: str, file_prefix: str, obs_path: str | None) -> str:
     """The directory CA's trainer will write this study's emulator into.
 
-    Computed the same way on both sides rather than passed around, so a run that
-    trains and a run that uses agree on where the bundle is without a second
-    setting to keep in step.
+    **Asked of CA rather than recomputed.** ``emulator_trainer.resolve_emulator_dir``
+    is the function the trainer itself calls, so the answer cannot drift from what
+    the trainer does. This used to rebuild the same join here, which is a copy of
+    upstream's rule living in another repo -- and the failure mode of such a copy
+    is that training writes to one directory and using looks in another.
+
+    A study that points ``emulator_settings.emulator_dir`` elsewhere is not
+    resolved here (the callers do not carry that setting); that case is
+    :func:`find_emulator_dir`'s, which searches for the bundle that is actually
+    there.
+
+    The local composition remains as the fallback for a CA too old to expose the
+    helper: an unconfigured study is exactly the case the convention describes,
+    and refusing to answer would take the emulator panel down with it.
     """
+    inp_data_dict = {
+        "param_id_output_dir": output_dir,
+        "file_prefix": file_prefix,
+        "param_id_obs_path": obs_path or "",
+    }
+    try:
+        from ca_imports import ca_from, ensure_ca_path  # noqa: PLC0415
+
+        ensure_ca_path()
+        resolve = ca_from("emulators.emulator_trainer", "resolve_emulator_dir")
+    except Exception:  # noqa: BLE001 - CA absent or too old; use the convention
+        resolve = None
+    if resolve is not None:
+        try:
+            resolved = resolve(inp_data_dict)
+        except Exception:  # noqa: BLE001 - a CA that raises here must not lose the panel
+            resolved = None
+        if resolved:
+            return str(resolved)
+
     obs_prefix = "obs"
     if obs_path:
         obs_prefix = os.path.splitext(os.path.basename(obs_path))[0]
     return os.path.join(output_dir, EMULATOR_SUBDIR, f"{file_prefix}_{obs_prefix}")
+
+
+def find_emulator_dir(output_dir: str, file_prefix: str | None,
+                      obs_path: str | None) -> str | None:
+    """Where this run's emulator actually is, or None.
+
+    :func:`emulator_dir` computes where CA *would* put one, which is the right
+    question when this app is the thing training: both sides derive the path and
+    neither has to pass it. It is only a guess when reading a run someone else
+    produced, because ``emulator_settings.emulator_dir`` is a setting, and a study
+    that trains one emulator and reuses it across several obs_data has to set it
+    -- the conventional name embeds the obs file, so the three runs would
+    otherwise each look in a different directory and only the first would find a
+    bundle.
+
+    So: the convention first, since that is what an unconfigured run does, and
+    otherwise whatever bundle is actually sitting under ``emulators/``. When
+    several are, one whose name starts with the model prefix wins over one that
+    does not, and the most recently written wins among equals -- the same rule
+    ``list_run_dirs`` uses for run directories, and for the same reason.
+    """
+    if not output_dir or not os.path.isdir(output_dir):
+        return None
+
+    if file_prefix:
+        conventional = emulator_dir(output_dir, file_prefix, obs_path)
+        if emulator_reusable(conventional):
+            return conventional
+
+    root = os.path.join(output_dir, EMULATOR_SUBDIR)
+    if not os.path.isdir(root):
+        return None
+    try:
+        candidates = [entry.path for entry in os.scandir(root) if entry.is_dir()]
+    except OSError:
+        return None
+
+    bundles = [path for path in candidates if emulator_reusable(path)]
+    if not bundles:
+        return None
+
+    def rank(path):
+        name = os.path.basename(path)
+        matches_prefix = bool(file_prefix) and name.startswith(file_prefix)
+        return (matches_prefix, os.path.getmtime(
+            os.path.join(path, EMULATOR_METADATA_FILE)))
+
+    return max(bundles, key=rank)
 
 
 def emulator_error_points(emu_dir: str) -> dict | None:
@@ -537,21 +665,59 @@ def write_uq_samples(output_dir: str, flat, qnames) -> str:
     return path
 
 
+def _chain_samples(output_dir: str):
+    """``(draws, params)`` and their names from CA's own chain, or ``(None, None)``.
+
+    ``mcmc_chain.npy`` is ``(steps, walkers, params)``. The first half is dropped:
+    the walkers start scattered over the prior box, so the early steps describe
+    where they were initialised rather than the posterior, and a histogram drawn
+    over them is not the posterior at all.
+    """
+    import numpy as np  # noqa: PLC0415
+
+    run_dir = find_run_dir(output_dir) or output_dir
+    chain_path = os.path.join(run_dir, "mcmc_chain.npy")
+    if not os.path.isfile(chain_path):
+        return None, None
+    try:
+        chain = np.load(chain_path, allow_pickle=False)
+    except Exception:  # noqa: BLE001 - a reader must never fail a finished run
+        return None, None
+    if getattr(chain, "ndim", 0) != 3 or chain.shape[0] == 0:
+        return None, None
+
+    names = [row[0] for row in param_names(run_dir) or []]
+    if len(names) < chain.shape[2]:
+        names = names + ["parameter %d" % (i + 1)
+                         for i in range(len(names), chain.shape[2])]
+
+    burn_in = chain.shape[0] // 2
+    return chain[burn_in:].reshape(-1, chain.shape[2]), names[: chain.shape[2]]
+
+
 def uq_distributions(output_dir: str) -> list | None:
     """Per-parameter posterior summary + histogram, or None if nothing was written.
 
     ``{qname, mean, std, q05, q50, q95, bins, counts}`` per parameter -- the shape
     the UQ panel plots.
     """
-    path = os.path.join(output_dir, UQ_SAMPLES_FILE)
-    names_path = os.path.join(output_dir, "uq_param_names.csv")
-    if not os.path.isfile(path) or not os.path.isfile(names_path):
-        return None
     import numpy as np  # noqa: PLC0415
 
-    flat = np.load(path, allow_pickle=False)
-    with open(names_path, newline="", encoding="utf-8") as fh:
-        qnames = [row[0].strip() for row in csv.reader(fh) if row]
+    path = os.path.join(output_dir, UQ_SAMPLES_FILE)
+    names_path = os.path.join(output_dir, "uq_param_names.csv")
+    if os.path.isfile(path) and os.path.isfile(names_path):
+        flat = np.load(path, allow_pickle=False)
+        with open(names_path, newline="", encoding="utf-8") as fh:
+            qnames = [row[0].strip() for row in csv.reader(fh) if row]
+    else:
+        # A run this app did not produce. uq_posterior_samples.npy is written by
+        # our own runner; circulatory_autogen writes the chain itself, and a run
+        # from cuflynx-param-id or a generated run_pipeline.py has only that --
+        # so without this the UQ panel was empty for every run made outside the
+        # app, with the samples sitting right there (#255).
+        flat, qnames = _chain_samples(output_dir)
+        if flat is None:
+            return None
 
     out = []
     for i, qname in enumerate(qnames):

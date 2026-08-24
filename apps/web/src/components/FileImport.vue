@@ -60,12 +60,22 @@ const emit = defineEmits([
   'obs-data-loaded',
   'params-loaded',
   'update:outputsDir',
+  // Read what is already in the outputs directory, rather than only what this
+  // session ran (#255). A press, not a watcher: reading a directory is real work
+  // and the results found may not match what is loaded.
+  'load-outputs',
   'export-pipeline',
   'export-plotting',
 ])
 
 const error = ref('')
 const notice = ref('')
+// Everything an import could not do while still succeeding: a part that was
+// never found, a check that could not run, a file in a vocabulary on its way
+// out. Its own banner, at its own severity -- these used to ride along on the
+// end of the blue "Loaded X" line, where a study whose observations had been
+// rejected looked exactly like one that had loaded perfectly.
+const warnings = ref([])
 const outputsBrowserOpen = ref(false)
 const editParamsOpen = ref(false)
 const editObsOpen = ref(false)
@@ -245,6 +255,7 @@ async function onSendConfirm() {
 // upload flow, so a loaded example is indistinguishable from a drop.
 async function onSelectExample(example) {
   error.value = ''
+  warnings.value = []
   try {
     const file = await fetchExampleModel(example.name, example.filename)
     // Examples ship as archives so one click loads the whole study — model,
@@ -288,6 +299,9 @@ function extOk(filename, exts) {
 
 async function attachObs(obsData, filename) {
   const summary = await uploadObsData(props.modelId, obsData)
+  // Same channel as an archive's: a document CA could not be asked about loads
+  // either way, and only the banner distinguishes that from a checked one.
+  if (summary?.warnings?.length) warnings.value = [...summary.warnings]
   emit('obs-data-loaded', { ...summary, filename })
 }
 
@@ -452,19 +466,22 @@ function applyImportedStudy(data, label) {
     })
   }
   // A part that failed to parse is reported without losing the rest -- an
-  // archive with a bad obs_data still gave us a model worth having.
+  // archive with a bad obs_data still gave us a model worth having. What it does
+  // not do is pass for success: the failure goes in the warning banner, and the
+  // notice says only what actually loaded.
   const failed = [data.obs_data, data.params_for_id]
     .filter((p) => p?.error)
-    .map((p) => `${p.filename}: ${p.error}`)
-  notice.value = failed.length
-    ? `Loaded ${label}, but ${failed.join('; ')}`
-    : `Loaded ${label}` + (data.module_config_path ? ' (PhLynx layout kept)' : '')
+    .map((p) => `${p.filename || 'a part of the archive'} was not loaded: ${p.error}`)
+  notice.value =
+    `Loaded ${label}` + (data.module_config_path ? ' (PhLynx layout kept)' : '')
+  warnings.value = [...failed, ...(data.warnings || [])]
 }
 
 async function handleOmex(files) {
   const omex = files.find((f) => isOmexName(f.name))
   if (!omex) return false
   error.value = ''
+  warnings.value = []
   try {
     const data = await uploadOmex(omex, props.outputsDir)
     applyImportedStudy(data, omex.name)
@@ -481,6 +498,7 @@ function isOmexName(name) {
 async function onCellmlDrop(event) {
   event.preventDefault?.()
   error.value = ''
+  warnings.value = []
   // Accept a whole bundle: a non-flattened model plus the sister files it
   // imports. The server picks the main file, resolves imports and flattens to
   // one CellML 2.0 document. A single self-contained file is just a bundle of 1.
@@ -522,6 +540,7 @@ async function onCellmlDrop(event) {
 async function onObsDrop(event) {
   event.preventDefault?.()
   error.value = ''
+  warnings.value = []
   const [file] = filesFrom(event)
   resetPicker(event)
   if (!file) return
@@ -551,6 +570,7 @@ async function onObsDrop(event) {
 async function onParamsDrop(event) {
   event.preventDefault?.()
   error.value = ''
+  warnings.value = []
   const [file] = filesFrom(event)
   resetPicker(event)
   if (!file) return
@@ -694,6 +714,14 @@ async function onParamsDrop(event) {
     >
       {{ notice }}
     </Message>
+    <Message
+      v-if="warnings.length && !error"
+      severity="warn"
+      data-testid="import-warning"
+      :closable="false"
+    >
+      <div v-for="w in warnings" :key="w" class="import-warning-line">{{ w }}</div>
+    </Message>
 
     <h2 class="exports-heading">Exports</h2>
     <label class="outputs-dir">
@@ -713,6 +741,15 @@ async function onParamsDrop(event) {
           title="Browse for an outputs directory"
           data-testid="outputs-browse"
           @click="outputsBrowserOpen = true"
+        />
+        <Button
+          icon="pi pi-refresh"
+          size="small"
+          text
+          :disabled="!outputsDir"
+          title="Load the results already in this directory (calibration, sensitivity, UQ, emulator)"
+          data-testid="outputs-load"
+          @click="emit('load-outputs')"
         />
       </span>
     </label>
@@ -989,5 +1026,8 @@ async function onParamsDrop(event) {
 .hint {
   opacity: 0.6;
   font-size: 0.75rem;
+}
+.import-warning-line + .import-warning-line {
+  margin-top: 0.4rem;
 }
 </style>

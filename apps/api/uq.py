@@ -49,6 +49,9 @@ class UQJob:
         self.error: str | None = None
         # Set when the run finished but its process failed on the way out.
         self.warning: str | None = None
+        # How well the posterior reproduces the data it was fitted to, if the
+        # engine could run the check. None means "not measured", not "bad".
+        self.coverage: dict | None = None
         self.proc: subprocess.Popen | None = None
         # The temp file the runner was handed as argv[1], removed when it exits.
         self.config_path: str | None = None
@@ -143,6 +146,24 @@ class UQManager:
             self._finalize(job, code)
             clear_run_config(job.config_path)
 
+    @staticmethod
+    def _read_coverage(output_dir: str) -> dict | None:
+        """The coverage summary the runner's posterior predictive check wrote.
+
+        Read from the run directory rather than passed over the pipe, for the
+        same reason the posterior is: the file is the result, and a run that was
+        salvaged or reattached to has the file but not the pipe.
+        """
+        run_dir = ca_run_history.find_run_dir(output_dir) or output_dir
+        path = os.path.join(run_dir, "posterior_predictive_coverage.json")
+        if not os.path.isfile(path):
+            return None
+        try:
+            with open(path) as handle:
+                return json.load(handle)
+        except (OSError, ValueError):
+            return None
+
     def _finalize(self, job: UQJob, code: int) -> None:
         with job.lock:
             if job.state == "cancelled":
@@ -166,6 +187,7 @@ class UQManager:
                     job.method = read_meta_line(job.lines, META_MARKER).get("method")
                     job.params = params
                     job.state = "done"
+                    job.coverage = self._read_coverage(job.output_dir)
                     if code != 0:
                         job.warning = teardown_warning(code, job.lines)
                 except Exception as exc:  # noqa: BLE001
@@ -232,6 +254,7 @@ class UQManager:
                 "params": job.params,
                 "error": job.error,
                 "warning": job.warning,
+                "coverage": job.coverage,
             }
 
     def progress(self, job_id: str) -> dict | None:
@@ -253,6 +276,58 @@ class UQManager:
             "job_id": job.id,
             "state": job.state,
             **mcmc_progress.progress(job.output_dir, labels, job.burn_in, job.target_steps),
+        }
+
+    def posterior_predictive(self, job_id: str) -> dict | None:
+        """The predictive check for this run, scaled for plotting.
+
+        Scaled here rather than in the browser because the scaling is what makes
+        the numbers comparable, and two clients doing it differently would draw
+        two different figures from one run.
+        """
+        job = self._job
+        if job is None or job.id != job_id:
+            return None
+
+        run_dir = ca_run_history.find_run_dir(job.output_dir) or job.output_dir
+        path = os.path.join(run_dir, "posterior_predictive.npz")
+        if not os.path.isfile(path):
+            return {"available": False, "coverage": job.coverage}
+
+        import numpy as np  # noqa: PLC0415 (only needed on this path)
+
+        try:
+            with np.load(path, allow_pickle=True) as data:
+                preds = np.asarray(data["predictions"], dtype=float)
+                truth = np.asarray(data["ground_truth"], dtype=float)
+                std = np.asarray(data["std"], dtype=float)
+                labels = [str(x) for x in data["labels"]]
+        except Exception as exc:  # noqa: BLE001
+            # numpy's failure modes for a damaged .npz are varied -- OSError,
+            # ValueError, KeyError and UnpicklingError have all been seen -- and
+            # a file that cannot be read is a missing figure, not a 500.
+            return {"available": False, "error": str(exc),
+                    "coverage": job.coverage}
+
+        keep = ~np.all(np.isnan(preds), axis=0)
+        idx = np.where(keep)[0]
+        if idx.size == 0:
+            return {"available": False, "coverage": job.coverage}
+
+        # A zero std would divide the whole observable away; leave those in real
+        # units rather than dropping the row.
+        scale = np.where(np.abs(std[idx]) > 0, np.abs(std[idx]), 1.0)
+        centred = lambda values: ((values - truth[idx]) / scale).tolist()  # noqa: E731
+
+        return {
+            "available": True,
+            "coverage": job.coverage,
+            "labels": [labels[i] for i in idx],
+            "lo": centred(np.nanpercentile(preds[:, idx], 2.5, axis=0)),
+            "median": centred(np.nanmedian(preds[:, idx], axis=0)),
+            "hi": centred(np.nanpercentile(preds[:, idx], 97.5, axis=0)),
+            "num_samples": int(preds.shape[0]),
+            "units": "measurement standard deviations from the measured value",
         }
 
     def cancel(self, job_id: str) -> bool:

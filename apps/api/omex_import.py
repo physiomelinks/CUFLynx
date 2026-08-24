@@ -169,15 +169,42 @@ def _looks_like_obs_data(blob: bytes | None) -> bool:
     real obs_data -- stay out of the observations slot instead of importing as a
     parse-error banner.
     """
-    if not blob:
-        return False
+    return not why_not_obs_data(blob)
+
+
+def why_not_obs_data(blob: bytes | None) -> str:
+    """Why a JSON member is not plausibly an obs_data -- "" when it is.
+
+    The reason, not merely the verdict, because an archive whose observations
+    were passed over used to import as *silence*: the model landed, the
+    observations tab stayed empty, and nothing said which member had been looked
+    at or what was wrong with it. A file one typo'd key away from loading looks
+    exactly like an archive that never carried observations at all.
+
+    :func:`unpack` carries these out as ``obs_skipped`` so the importer can say
+    which member it read and why it did not take it.
+    """
+    if blob is None:
+        return "it is not in the archive"
+    if not blob.strip():
+        return "it is empty"
     try:
         doc = json.loads(blob.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError):
-        return False
+    except UnicodeDecodeError:
+        return "it is not UTF-8 text"
+    except ValueError as exc:
+        return f"it is not valid JSON ({exc})"
     if isinstance(doc, list):
-        return True
-    return isinstance(doc, dict) and ("data_items" in doc or "protocol_info" in doc)
+        return ""
+    if isinstance(doc, dict):
+        if "data_items" in doc or "protocol_info" in doc:
+            return ""
+        keys = ", ".join(repr(k) for k in list(doc)[:6]) or "no keys at all"
+        return (
+            "it is a JSON object with neither 'data_items' nor 'protocol_info' "
+            f"(it has {keys})"
+        )
+    return f"it is a JSON {type(doc).__name__}, not an obs_data object or array"
 
 
 def _classify(
@@ -217,7 +244,27 @@ def _classify(
     obs_named = named(candidates, r"obs")
     obs = obs_named or [n for n in candidates if _looks_like_obs_data(members.get(n))]
 
+    # Only when nothing was found. With an obs_data in hand the leftover JSON is
+    # simply not observations -- a PhLynx `simulation.json` is the normal case --
+    # and reporting it would be noise. With nothing found, the same silence is
+    # the whole problem, so every member that could have been the obs_data is
+    # listed with the reason it was passed over.
+    obs_skipped = []
+    if not obs:
+        for name in jsons:
+            if name in spoken_for:
+                continue  # loaded as the params_for_id or PhLynx's own state
+            if _declared_non_obs(name, formats):
+                declared = formats.get(Path(name).name.lower(), "")
+                reason = f"the manifest declares it as {declared!r}"
+            elif not members:
+                reason = "its contents were not read"
+            else:
+                reason = why_not_obs_data(members.get(name))
+            obs_skipped.append({"name": name, "reason": reason})
+
     return {
+        "obs_skipped": obs_skipped,
         # A .mmt only counts when there is no CellML: an archive holding both has
         # presumably already been converted, and the CellML is the authoritative
         # copy -- re-converting would silently prefer the source over the file the
@@ -299,6 +346,8 @@ def unpack(data: bytes) -> dict:
         "manifest": manifest,
         # The role members by archive-relative name, so a writer can tell which
         # member to replace without re-running the name heuristics.
+        # Why no observations were loaded, when none were (see `_classify`).
+        "obs_skipped": roles["obs_skipped"],
         "roles": {
             "cellml": ordered,
             "obs": list(roles["obs"]),
