@@ -55,11 +55,13 @@ class GradientUnavailable(Exception):
 
 
 def _ca_imports():
-    from ca_imports import ca_from, ensure_ca_path  # noqa: PLC0415
+    from ca_imports import ca_first_of, ca_from, ensure_ca_path  # noqa: PLC0415
 
     ensure_ca_path()
     return (
-        ca_from("param_id.paramID", "OpencorParamID"),
+        # Renamed in CA: OpencorParamID was never about OpenCOR. Both spellings are
+        # accepted so CUFLynx works either side of that change.
+        ca_first_of("param_id.paramID", "ParamID", "OpencorParamID"),
         ca_from("parsers.PrimitiveParsers", "ObsAndParamDataParser"),
     )
 
@@ -111,7 +113,7 @@ def _param_id_info(
     columns into ``dJ/dtheta = sum_i w_i * dJ/dp_i`` -- so the chain rule is
     CA's, not a second implementation here.
 
-    ``baselines`` is left ``None`` deliberately: ``OpencorParamID.__init__``
+    ``baselines`` is left ``None`` deliberately: ``ParamID.__init__``
     calls ``resolve_modifier_baselines`` against its freshly-built sim helper,
     before any parameter has been written. Filling them from the request would
     trust numbers the *client* resolved and could compound across drags.
@@ -195,7 +197,7 @@ def _check_baselines(pid, modifiers) -> None:
 
 def _build(key, *, model_path, model_type, solver_info, dt, obs_data, sim_time,
            pre_time, names, values, bounds, output_dir, modifiers=None):
-    OpencorParamID, ObsAndParamDataParser = _ca_imports()
+    ParamID, ObsAndParamDataParser = _ca_imports()
 
     parser = ObsAndParamDataParser()
     parsed = parser.parse_obs_data_json(
@@ -210,7 +212,7 @@ def _build(key, *, model_path, model_type, solver_info, dt, obs_data, sim_time,
 
     from user_funcs import external_path  # noqa: PLC0415
 
-    pid = OpencorParamID(
+    pid = ParamID(
         model_path=str(model_path),
         param_id_method="genetic_algorithm",  # unused: nothing here optimises
         obs_info=obs_info,

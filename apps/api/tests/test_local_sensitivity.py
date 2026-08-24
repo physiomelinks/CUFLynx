@@ -31,7 +31,7 @@ class _FakeHelper:
 
 
 class _FakePid:
-    """Stands in for CA's ``OpencorParamID``.
+    """Stands in for CA's ``ParamID``.
 
     The local path reads the study from the param-id engine, never from the
     Sobol sampling manager -- both parse the same files and each owns a

@@ -94,7 +94,7 @@ def _solver_info_from_config(config: dict, settings: dict) -> dict:
 def _apply_start_point(param_id, values: dict, source_label: str) -> None:
     """Override the gradient-descent start point with a ``{qname: value}`` map.
 
-    CA seeds ``OpencorParamID.param_init`` (the sp_minimize x0) from the model's
+    CA seeds ``ParamID.param_init`` (the sp_minimize x0) from the model's
     built-in initial values; this replaces it with ``values`` so the descent starts
     from a chosen point instead — the user's current slider values (issue #65) or the
     previous completed calibration's best fit, so a stopped run can be continued

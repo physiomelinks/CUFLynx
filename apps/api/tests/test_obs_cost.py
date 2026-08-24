@@ -409,11 +409,11 @@ def test_it_matches_cas_own_cost_path(client, requires_simulation):
     import numpy as np
     import tempfile
     import engine as engine_mod
-    from ca_imports import ca_from
+    from ca_imports import ca_first_of, ca_from
 
     ObsAndParamDataParser, scriptFunctionParser = ca_from(
         "parsers.PrimitiveParsers", "ObsAndParamDataParser", "scriptFunctionParser")
-    OpencorParamID = ca_from("param_id.paramID", "OpencorParamID")
+    ParamID = ca_first_of("param_id.paramID", "ParamID", "OpencorParamID")
 
     engine_mod.engine.reset()
     engine_mod.engine.model_type, engine_mod.engine.solver = "cellml", "CVODE_myokit"
@@ -437,7 +437,7 @@ def test_it_matches_cas_own_cost_path(client, requires_simulation):
         gt_df=parsed["gt_df"], protocol_info=parsed["protocol_info"],
         dt=engine_mod.engine.dt)
 
-    pid = OpencorParamID.__new__(OpencorParamID)
+    pid = ParamID.__new__(ParamID)
     pid.obs_info, pid.protocol_info = obs_info, proto
     pid.cost_type = obs_info["cost_type"]
     pid.dt = engine_mod.engine.dt

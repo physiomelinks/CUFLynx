@@ -133,7 +133,7 @@ def traces(samples: np.ndarray) -> list[list[list[float]]]:
 def burn_in_index(num_steps, burn_in=0.5, target_steps=None):
     """CA's own rule: below 1 is a fraction, 1 or above is a number of steps.
 
-    Mirrors ``OpencorMCMC.burn_in_index`` so the line starts where CA will actually cut the
+    Mirrors ``MCMC.burn_in_index`` so the line starts where CA will actually cut the
     chain. The fraction is taken against ``target_steps`` -- the run's configured num_steps --
     not the chain so far, or the burn-in point would crawl forward as the chain grew and the
     line would never mean one thing.

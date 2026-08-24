@@ -305,7 +305,7 @@ def run(config: dict) -> dict:
     # ---- run the chosen method --------------------------------------------
     if method == "mcmc":
         # Reuse the calibration engine when one was just built: CA's run_UQ
-        # promotes it in place (OpencorMCMC.from_param_id), so the model
+        # promotes it in place (MCMC.from_param_id), so the model
         # compiled for the GA is the one UQ samples with. Before CA #392 the
         # only way in was mcmc_instead=True at construction, which forced a
         # second CVS0DParamID and a second compile (CUFLynx #216/#217).

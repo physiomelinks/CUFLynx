@@ -421,6 +421,30 @@ def ca_import(name: str):
     raise CaImportError(_failure_message(name, errors)) from errors[0][1]
 
 
+def ca_first_of(module: str, *names: str):
+    """The first of ``names`` the module actually has.
+
+    For a thing CA has renamed. ``ParamID`` and ``MCMC`` were called
+    ``OpencorParamID`` and ``OpencorMCMC`` until circulatory_autogen renamed them --
+    they were never about OpenCOR, they are the parameter-identification and MCMC
+    engines and run against myokit/CVODE, casadi and emulators alike.
+
+    CUFLynx has to work against a CA from either side of that rename, so it asks for
+    the new name and accepts the old one. Written as "first of these spellings" rather
+    than as a try/except around two ``ca_from`` calls because the fallback is data, not
+    control flow, and because a genuinely absent class should still raise the one
+    diagnostic :func:`ca_from` produces -- naming the file that answered, which is what
+    tells a hollow checkout apart from an old one.
+    """
+    mod = ca_import(module)
+    for name in names:
+        if hasattr(mod, name):
+            return getattr(mod, name)
+    # Nothing matched: let ca_from raise, so the message and its resolved-path
+    # diagnostics are identical to every other missing-attribute failure.
+    return ca_from(module, names[0])
+
+
 def ca_from(module: str, *names: str):
     """``from <module> import <names>``, resolved through :func:`ca_import`.
 
