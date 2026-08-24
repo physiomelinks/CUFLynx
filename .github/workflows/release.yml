@@ -182,6 +182,14 @@ jobs:
       # mpi4py/...) so the packaged app runs SA/calibration/UQ itself.
       - name: Install Python deps
         working-directory: apps/api
+        # bash on every runner, including Windows. This step became a multi-line `run`
+        # with a backslash continuation when the build constraint was added; PowerShell
+        # -- the default shell on windows-latest -- does not continue lines on `\`, so
+        # pip was handed it as a positional argument and answered
+        #   ERROR: Directory '\' is not installable.
+        # The Windows release build has failed that way since, which only shows up in a
+        # tagged build or a rehearsal, both of which are rare.
+        shell: bash
         # pip is upgraded first because --build-constraint is a pip 25.1+ option and
         # the runner image's pip is whatever it happens to ship. The constraint is
         # there because the `full` extra reaches `harmonic`, which has no cp310 wheel
