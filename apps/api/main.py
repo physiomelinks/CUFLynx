@@ -361,6 +361,36 @@ def _recover_prefix(model_id: str) -> str | None:
         return None
 
 
+def _study_dir(model_id: str) -> Path:
+    """This model's own corner of the upload directory.
+
+    The study's obs_data and params_for_id are named after the study rather than
+    after the session -- see :func:`_study_file` -- so they need somewhere the
+    name cannot collide with another model loaded in the same session. The
+    directory carries the model_id; the files carry the study's name.
+    """
+    directory = UPLOAD_DIR / model_id
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory
+
+
+def _study_file(record: "_ModelRecord", suffix: str) -> Path:
+    """Where a study's obs_data / params_for_id is kept for CA to read.
+
+    **The name matters to circulatory_autogen.** CA takes its
+    ``param_id_obs_file_prefix`` from the obs_data's *filename*, and builds the
+    run directory (``<method>_<file_prefix>_<obs_prefix>``) and the emulator
+    directory out of it. These files used to be named ``<model_id>_obs_data.json``
+    -- a session uuid -- so a real run landed in
+    ``genetic_algorithm_Study_2e40cca71775406d85df803806997208_obs_data``, and
+    re-uploading the same obs_data produced a *different* uuid and therefore a
+    different run directory: results for one study scattered across as many
+    directories as the session had upload events, none of them reopening as the
+    same study.
+    """
+    return _study_dir(record.model_id) / f"{_record_prefix(record)}{suffix}"
+
+
 def _record_prefix(record: "_ModelRecord", fallback: str = "model") -> str:
     """The study's ``file_prefix`` -- what CA names its outputs after.
 
@@ -1484,7 +1514,7 @@ def import_omex_bytes(data: bytes, output_dir: str | None = None,
         try:
             parsed = parse_obs_data(json.loads(blob))
             _models[model_id].obs_data = parsed
-            obs_path = UPLOAD_DIR / f"{model_id}_obs_data.json"
+            obs_path = _study_file(_models[model_id], "_obs_data.json")
             obs_path.write_bytes(blob)
             _models[model_id].obs_path = obs_path
             result["obs_data"] = {
@@ -1502,7 +1532,7 @@ def import_omex_bytes(data: bytes, output_dir: str | None = None,
         name, blob = parts["params"]
         try:
             entries = parse_params_for_id(blob, meta.initial_values)
-            _models[model_id].params_path = _save_params_file(model_id, blob)
+            _models[model_id].params_path = _save_params_file(_models[model_id], blob)
             result["params_for_id"] = {
                 "filename": name,
                 "params": [e.as_dict() for e in entries],
@@ -1551,7 +1581,7 @@ def import_omex_bytes(data: bytes, output_dir: str | None = None,
             load_warnings.extend(parsed.warnings)
         if parsed is not None:
             _models[model_id].obs_data = parsed
-            obs_path = UPLOAD_DIR / f"{model_id}_obs_data.json"
+            obs_path = _study_file(_models[model_id], "_obs_data.json")
             obs_path.write_text(json.dumps(protocol["obs_data"], indent=4), encoding="utf-8")
             _models[model_id].obs_path = obs_path
             result["obs_data"] = {
@@ -2375,7 +2405,7 @@ async def upload_obs_data(
 
     if model_id and model_id in _models:
         _models[model_id].obs_data = parsed
-        obs_path = UPLOAD_DIR / f"{model_id}_obs_data.json"
+        obs_path = _study_file(_models[model_id], "_obs_data.json")
         obs_path.write_text(json.dumps(obj), encoding="utf-8")
         _models[model_id].obs_path = obs_path
 
@@ -2705,7 +2735,7 @@ def load_params(req: LoadParamsRequest) -> dict:
     return {"values": values}
 
 
-def _save_params_file(model_id: str, data: bytes | str) -> Path:
+def _save_params_file(record: "_ModelRecord", data: bytes | str) -> Path:
     """Persist an uploaded params_for_id, canonicalised to JSON.
 
     **A CSV is converted on the way in** (by CA, which owns the conversion), so
@@ -2732,10 +2762,11 @@ def _save_params_file(model_id: str, data: bytes | str) -> Path:
         else:
             raw = json.dumps(doc, indent=2).encode()
     suffix = ".json" if params_json.looks_like_json(raw) else ".csv"
-    path = UPLOAD_DIR / f"{model_id}_params_for_id{suffix}"
+    # Named after the study, like the obs_data beside it -- see `_study_file`.
+    path = _study_file(record, f"_params_for_id{suffix}")
     path.write_bytes(raw)
     other_suffix = ".csv" if suffix == ".json" else ".json"
-    (UPLOAD_DIR / f"{model_id}_params_for_id{other_suffix}").unlink(missing_ok=True)
+    _study_file(record, f"_params_for_id{other_suffix}").unlink(missing_ok=True)
     return path
 
 
@@ -2768,7 +2799,7 @@ async def upload_params_for_id(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     if model_id and model_id in _models:
-        _models[model_id].params_path = _save_params_file(model_id, data)
+        _models[model_id].params_path = _save_params_file(_models[model_id], data)
 
     raw = data if isinstance(data, bytes) else data.encode()
     saved_path = _save_edited_copy(output_dir, filename, raw)

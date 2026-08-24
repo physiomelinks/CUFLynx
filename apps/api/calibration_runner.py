@@ -346,7 +346,12 @@ def _write_calibrated_cellml(config: dict, params: dict, output_dir: str) -> str
         if not report["updated"]:
             return None
         prefix = config.get("file_prefix") or Path(cellml_path).stem
-        out_path = os.path.join(output_dir, f"{prefix}_calibrated.cellml")
+        # The name comes from `ca_run_history`, which is what reads it back and
+        # ships beside this runner for exactly that reason -- writer and readers
+        # spelling it separately is how the file and the lookup drift apart.
+        from ca_run_history import calibrated_model_name  # local: runners/ sibling
+
+        out_path = os.path.join(output_dir, calibrated_model_name(prefix))
         Path(out_path).write_text(new_text, encoding="utf-8")
         if report["unresolved"]:
             print(

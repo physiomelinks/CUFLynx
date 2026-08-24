@@ -823,3 +823,71 @@ def test_an_unreadable_chain_is_named_rather_than_losing_the_rest_of_the_uq(tmp_
     # loads -- what must not happen is an exception taking the other panels with it.
     assert found["uq"]["progress"] is None
     assert found["dir"] == str(tmp_path)
+
+
+# --- the naming conventions have one owner each ---------------------------------------
+
+@pytest.mark.unit
+def test_the_emulator_directory_is_the_one_cas_trainer_resolves(tmp_path, requires_ca):
+    """Asked of CA's own `resolve_emulator_dir` rather than rebuilt from the convention:
+    a copy of upstream's rule living here drifts, and when it does, training writes to
+    one directory and using looks in another."""
+    from ca_imports import ca_from, ensure_ca_path
+
+    ensure_ca_path()
+    resolve = ca_from("emulators.emulator_trainer", "resolve_emulator_dir")
+    obs = str(tmp_path / "study_obs_data.json")
+
+    ours = ca_run_history.emulator_dir(str(tmp_path), "study", obs)
+    theirs = resolve({"param_id_output_dir": str(tmp_path), "file_prefix": "study",
+                      "param_id_obs_path": obs})
+
+    assert ours == str(theirs)
+
+
+@pytest.mark.unit
+def test_the_emulator_directory_still_answers_without_ca(tmp_path, monkeypatch):
+    """An unconfigured study is exactly the case the convention describes, so a CA that
+    cannot be imported must not take the emulator panel down with it."""
+    monkeypatch.setattr(ca_run_history, "EMULATOR_SUBDIR", "emulators")
+    monkeypatch.setitem(__import__("sys").modules, "ca_imports", None)
+
+    path = ca_run_history.emulator_dir(str(tmp_path), "study", str(tmp_path / "obs.json"))
+
+    assert path == os.path.join(str(tmp_path), "emulators", "study_obs")
+
+
+@pytest.mark.unit
+def test_the_calibrated_model_name_is_composed_and_parsed_in_one_place():
+    """It used to be spelled out in four -- the runner that writes it, the reader, the
+    loader that hunts for one, and the loader's prefix parser."""
+    name = ca_run_history.calibrated_model_name("my_study")
+
+    assert name == "my_study" + ca_run_history.CALIBRATED_SUFFIX
+    assert ca_run_history.prefix_from_calibrated_model(name) == "my_study"
+    # A prefix containing underscores round-trips, which is why the parsing hangs off
+    # this name rather than off the run directory's.
+    assert ca_run_history.prefix_from_calibrated_model(
+        ca_run_history.calibrated_model_name("a_b_c")) == "a_b_c"
+    assert ca_run_history.prefix_from_calibrated_model("something_else.cellml") is None
+
+
+@pytest.mark.unit
+def test_a_run_from_cas_own_scripts_has_its_fitted_model_found(tmp_path):
+    """`cuflynx-param-id` and a generated `run_pipeline.py` write the fitted model as
+    CA does -- `generated_models/<prefix>/<prefix>.cellml`, replacing the generated model
+    -- and no `*_calibrated.cellml` anywhere. A reader that only knows CUFLynx's own name
+    calls that directory uncalibrated."""
+    run = write_run(tmp_path, "genetic_algorithm_run", chain=False)
+    write_snapshots(run, ["260824_091622"])
+    model_dir = tmp_path / "generated_models" / "my_study"
+    model_dir.mkdir(parents=True)
+    (model_dir / "my_study.cellml").write_text("<model/>", encoding="utf-8")
+    (model_dir / "my_study.json").write_text("{}", encoding="utf-8")  # not the only file
+
+    study = load_outputs.load_outputs(str(tmp_path), "my_study")["study"]
+
+    assert study["model"] == str(model_dir / "my_study.cellml")
+    # It is a fitted model, but not one carrying CUFLynx's name -- the flag follows the
+    # name, and saying "calibrated" for CA's layout would need CA to record that it was.
+    assert study["model_is_calibrated"] is False

@@ -263,18 +263,67 @@ def error_vectors(output_dir: str) -> dict:
     }
 
 
+#: The suffix CUFLynx's runner gives a calibrated model. **The one definition.**
+#: It was spelled out in four places -- the runner that writes it, the reader
+#: below, the loader that hunts for one, and the loader's prefix parser -- which
+#: is three places for it to drift from the file on disk.
+#:
+#: The name is CUFLynx's own: circulatory_autogen does not write this artefact.
+#: CA's equivalent flow (``do_generation_with_fit_parameters``) writes the fitted
+#: model as ``generated_models/<file_prefix>/<file_prefix>.cellml``, replacing the
+#: generated model rather than sitting beside the run; :func:`ca_calibrated_model`
+#: reads that layout, so a directory produced by CA's own scripts is as loadable
+#: as one produced here.
+CALIBRATED_SUFFIX = "_calibrated.cellml"
+
+
+def calibrated_model_name(file_prefix: str) -> str:
+    """``<file_prefix>_calibrated.cellml`` -- the name, in one place."""
+    return f"{file_prefix}{CALIBRATED_SUFFIX}"
+
+
+def prefix_from_calibrated_model(path: str) -> str | None:
+    """The study prefix a calibrated model's name carries, or None.
+
+    The inverse of :func:`calibrated_model_name`, and the only unambiguous way
+    back to a prefix: run directories are ``<method>_<prefix>_<obs_prefix>`` and a
+    prefix may itself contain underscores, so splitting those has no single
+    answer. This does.
+    """
+    name = os.path.basename(str(path or ""))
+    if not name.endswith(CALIBRATED_SUFFIX):
+        return None
+    return name[: -len(CALIBRATED_SUFFIX)] or None
+
+
 def calibrated_model_path(output_dir: str, file_prefix: str | None) -> str | None:
     """The calibrated CellML the run wrote, if it wrote one (#114).
 
     Derived rather than round-tripped: the runner writes
-    ``<prefix>_calibrated.cellml`` into the same directory the manager chose, so
+    :func:`calibrated_model_name` into the same directory the manager chose, so
     the manager already knows both halves of the name. It is best-effort in the
     runner (a model with nothing resolvable is not written), hence the existence
     check rather than an assumption.
     """
     if not output_dir or not file_prefix:
         return None
-    path = os.path.join(output_dir, f"{file_prefix}_calibrated.cellml")
+    path = os.path.join(output_dir, calibrated_model_name(file_prefix))
+    return path if os.path.isfile(path) else None
+
+
+def ca_calibrated_model(output_dir: str, file_prefix: str | None) -> str | None:
+    """The fitted model CA's own generation step writes, if there is one.
+
+    ``generated_models/<file_prefix>/<file_prefix>.cellml``, which is where CA
+    puts the model *with the best fit substituted in* when a run is configured to
+    generate with fit parameters. A run produced by ``cuflynx-param-id`` or by a
+    generated ``run_pipeline.py`` leaves it there and no ``*_calibrated.cellml``
+    anywhere -- so a reader that only knows CUFLynx's own name reports "no
+    calibrated model" for a directory that has one.
+    """
+    if not output_dir or not file_prefix:
+        return None
+    path = os.path.join(output_dir, "generated_models", file_prefix, f"{file_prefix}.cellml")
     return path if os.path.isfile(path) else None
 
 
@@ -437,10 +486,41 @@ def emulator_reusable(emu_dir: str) -> bool:
 def emulator_dir(output_dir: str, file_prefix: str, obs_path: str | None) -> str:
     """The directory CA's trainer will write this study's emulator into.
 
-    Computed the same way on both sides rather than passed around, so a run that
-    trains and a run that uses agree on where the bundle is without a second
-    setting to keep in step.
+    **Asked of CA rather than recomputed.** ``emulator_trainer.resolve_emulator_dir``
+    is the function the trainer itself calls, so the answer cannot drift from what
+    the trainer does. This used to rebuild the same join here, which is a copy of
+    upstream's rule living in another repo -- and the failure mode of such a copy
+    is that training writes to one directory and using looks in another.
+
+    A study that points ``emulator_settings.emulator_dir`` elsewhere is not
+    resolved here (the callers do not carry that setting); that case is
+    :func:`find_emulator_dir`'s, which searches for the bundle that is actually
+    there.
+
+    The local composition remains as the fallback for a CA too old to expose the
+    helper: an unconfigured study is exactly the case the convention describes,
+    and refusing to answer would take the emulator panel down with it.
     """
+    inp_data_dict = {
+        "param_id_output_dir": output_dir,
+        "file_prefix": file_prefix,
+        "param_id_obs_path": obs_path or "",
+    }
+    try:
+        from ca_imports import ca_from, ensure_ca_path  # noqa: PLC0415
+
+        ensure_ca_path()
+        resolve = ca_from("emulators.emulator_trainer", "resolve_emulator_dir")
+    except Exception:  # noqa: BLE001 - CA absent or too old; use the convention
+        resolve = None
+    if resolve is not None:
+        try:
+            resolved = resolve(inp_data_dict)
+        except Exception:  # noqa: BLE001 - a CA that raises here must not lose the panel
+            resolved = None
+        if resolved:
+            return str(resolved)
+
     obs_prefix = "obs"
     if obs_path:
         obs_prefix = os.path.splitext(os.path.basename(obs_path))[0]

@@ -150,3 +150,64 @@ def test_an_explicit_prefix_from_the_client_still_wins_for_an_export(client, tmp
         pytest.skip(f"export unavailable in this environment: {resp.text[:120]}")
     exports = sorted(tmp_path.glob("export_*/generated_models/my_study"))
     assert exports, sorted(p.name for p in tmp_path.iterdir())
+
+
+# --- the files CA is handed are named after the study, not after the session ----------
+#
+# CA takes its `param_id_obs_file_prefix` from the obs_data's *filename* and builds the
+# run directory and the emulator directory out of it. These were named
+# `<model_id>_obs_data.json` -- a session uuid -- so a real run landed in
+# `genetic_algorithm_Study_2e40cca71775406d85df803806997208_obs_data`, and re-uploading
+# the same obs_data made a *new* uuid and therefore a new run directory: one study's
+# results scattered across as many directories as the session had uploads.
+
+@pytest.mark.unit
+def test_the_obs_data_ca_reads_is_named_after_the_study(client):
+    model_id = upload_model(client, LV_MODEL_PATH)["model_id"]
+    obs = json.loads(LV_OBS_DATA_PATH.read_text())
+    client.post("/api/obs_data/upload", json={"model_id": model_id, "obs_data": obs})
+
+    obs_path = main._models[model_id].obs_path
+
+    assert obs_path.name == "Lotka_Volterra_forced_obs_data.json"
+    assert model_id not in obs_path.name, "the session id is not part of the study's name"
+
+
+@pytest.mark.unit
+def test_the_params_file_is_named_the_same_way(client):
+    model_id = upload_model(client, LV_MODEL_PATH)["model_id"]
+    with open(LV_PARAMS_CSV_PATH, "rb") as fh:
+        client.post(f"/api/params_for_id/upload?model_id={model_id}",
+                    files={"file": (LV_PARAMS_CSV_PATH.name, fh, "text/csv")})
+
+    assert main._models[model_id].params_path.name.startswith("Lotka_Volterra_forced_params_for_id")
+
+
+@pytest.mark.unit
+def test_two_studies_in_one_session_do_not_collide(client):
+    """The uuid was doing one useful job -- keeping two loaded models apart. It moves to
+    the directory, so the filename can be the study's."""
+    first = upload_model(client, LV_MODEL_PATH)["model_id"]
+    second = upload_model(client, LV_MODEL_PATH)["model_id"]
+    obs = json.loads(LV_OBS_DATA_PATH.read_text())
+    for model_id in (first, second):
+        client.post("/api/obs_data/upload", json={"model_id": model_id, "obs_data": obs})
+
+    one = main._models[first].obs_path
+    two = main._models[second].obs_path
+    assert one != two and one.name == two.name
+    assert one.parent.name == first and two.parent.name == second
+
+
+@pytest.mark.unit
+def test_reloading_the_same_study_reuses_the_same_run_directory_name(client):
+    """The point of the change: CA derives the run directory from this name, so a second
+    upload of the same study has to produce the same one."""
+    obs = json.loads(LV_OBS_DATA_PATH.read_text())
+    names = []
+    for _ in range(2):
+        model_id = upload_model(client, LV_MODEL_PATH)["model_id"]
+        client.post("/api/obs_data/upload", json={"model_id": model_id, "obs_data": obs})
+        names.append(main._models[model_id].obs_path.stem)
+
+    assert names[0] == names[1] == "Lotka_Volterra_forced_obs_data"

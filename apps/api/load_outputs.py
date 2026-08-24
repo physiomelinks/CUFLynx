@@ -112,7 +112,8 @@ def _calibrated_model(output_dir, file_prefix):
     named = ca_run_history.calibrated_model_path(output_dir, file_prefix)
     if named:
         return named
-    matches = sorted(glob.glob(os.path.join(output_dir, "*_calibrated.cellml")))
+    matches = sorted(glob.glob(
+        os.path.join(output_dir, f"*{ca_run_history.CALIBRATED_SUFFIX}")))
     # More than one means several studies shared this directory, and picking one would be
     # picking a model for results it may not belong to. Reported as absent instead.
     return matches[0] if len(matches) == 1 else None
@@ -189,7 +190,13 @@ def _study(output_dir, run_dir, file_prefix, missing):
             models = sorted(glob.glob(os.path.join(candidate, "*.cellml")))
             generated = models[0] if len(models) == 1 else None
 
-    model = generated or _calibrated_model(output_dir, file_prefix)
+    # CA's own generation step writes the fitted model *as* the generated model, so a
+    # directory produced by cuflynx-param-id has one there and no `*_calibrated.cellml`
+    # at all. `generated` above already found it when there is exactly one CellML in the
+    # prefix's folder; this names it when the folder holds more than the model.
+    model = (generated
+             or ca_run_history.ca_calibrated_model(output_dir, prefix)
+             or _calibrated_model(output_dir, file_prefix))
 
     obs = params = None
     if run_dir and os.path.isdir(run_dir):
@@ -205,7 +212,8 @@ def _study(output_dir, run_dir, file_prefix, missing):
 
     return {
         "model": model,
-        "model_is_calibrated": bool(model) and model.endswith("_calibrated.cellml"),
+        "model_is_calibrated": bool(model) and model.endswith(
+            ca_run_history.CALIBRATED_SUFFIX),
         "obs_data": obs,
         "params_for_id": params,
         "user_inputs": user_inputs,
@@ -217,13 +225,14 @@ def _prefix_from_calibrated_model(output_dir):
     """The study's prefix, taken from the one artefact that carries it unambiguously.
 
     Run directories are ``<method>_<prefix>_<hash>_obs_data`` and a prefix may itself
-    contain underscores, so splitting those has no single answer. ``<prefix>_calibrated``
-    does -- everything before the final ``_calibrated``.
+    contain underscores, so splitting those has no single answer. The calibrated model's
+    name does -- and the parsing lives with the naming, in ``ca_run_history``.
     """
-    matches = sorted(glob.glob(os.path.join(output_dir, "*_calibrated.cellml")))
+    matches = sorted(glob.glob(
+        os.path.join(output_dir, f"*{ca_run_history.CALIBRATED_SUFFIX}")))
     if len(matches) != 1:
         return None
-    return os.path.basename(matches[0])[: -len("_calibrated.cellml")]
+    return ca_run_history.prefix_from_calibrated_model(matches[0])
 
 
 def _progress(run_dir, output_dir, missing):
