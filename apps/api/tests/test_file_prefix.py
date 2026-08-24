@@ -14,6 +14,7 @@ directory could not match them up.
 from __future__ import annotations
 
 import json
+import pathlib
 
 import pytest
 from conftest import (
@@ -102,9 +103,13 @@ def test_the_models_own_directory_uses_the_same_prefix(client, tmp_path):
         files={"file": ("3compartment.omex", blob, "application/zip")},
     ).json()
 
-    saved = body["module_config_path"]
-    assert saved is not None
-    assert f"generated_models/{main._models[body['model_id']].file_prefix}/" in saved
+    saved = pathlib.Path(body["module_config_path"])
+    assert body["module_config_path"] is not None
+    # By path parts, not by a "generated_models/<prefix>/" substring: the separator is a
+    # backslash on Windows, where that assertion could only ever fail.
+    prefix = main._models[body["model_id"]].file_prefix
+    assert saved.parent.name == prefix
+    assert saved.parent.parent.name == "generated_models"
 
 
 @pytest.mark.unit
@@ -122,19 +127,20 @@ def test_the_prefix_survives_the_registry_being_lost(client):
     assert recovered.file_prefix == before == "Lotka_Volterra_forced"
 
 
-@pytest.mark.unit
-def test_a_myokit_model_keeps_the_stem_of_the_file_that_was_dropped(client):
+def test_a_myokit_model_keeps_the_stem_of_the_file_that_was_dropped(client, requires_simulation):
     """A .mmt becomes CellML at the door (#27), and the CellML it becomes is named
-    by the converter -- but the study is still the file the user has."""
+    by the converter -- but the study is still the file the user has.
+
+    Needs Myokit: without it the conversion is refused at the door and there is no
+    model to have a name (the unit tier runs without it)."""
     mmt = RESOURCES_DIR / "br-1977.mmt"
     if not mmt.is_file():
         pytest.skip("no .mmt fixture in resources/")
     with open(mmt, "rb") as fh:
-        body = client.post(
-            "/api/models/upload", files={"file": (mmt.name, fh, "text/plain")}
-        ).json()
+        resp = client.post("/api/models/upload", files={"file": (mmt.name, fh, "text/plain")})
+    assert resp.status_code == 200, resp.text
 
-    assert main._models[body["model_id"]].file_prefix == "br-1977"
+    assert main._models[resp.json()["model_id"]].file_prefix == "br-1977"
 
 
 @pytest.mark.unit

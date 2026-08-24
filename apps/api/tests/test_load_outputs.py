@@ -831,16 +831,25 @@ def test_an_unreadable_chain_is_named_rather_than_losing_the_rest_of_the_uq(tmp_
 def test_the_emulator_directory_is_the_one_cas_trainer_resolves(tmp_path, requires_ca):
     """Asked of CA's own `resolve_emulator_dir` rather than rebuilt from the convention:
     a copy of upstream's rule living here drifts, and when it does, training writes to
-    one directory and using looks in another."""
+    one directory and using looks in another.
+
+    Skipped where CA's emulator module cannot be imported at all -- it pulls scipy, which
+    the unit tier deliberately does without. That is the case the fallback below covers,
+    and it is tested separately; there is nothing to compare against here.
+    """
     from ca_imports import ca_from, ensure_ca_path
 
     ensure_ca_path()
-    resolve = ca_from("emulators.emulator_trainer", "resolve_emulator_dir")
+    try:
+        resolve = ca_from("emulators.emulator_trainer", "resolve_emulator_dir")
+    except Exception as exc:  # noqa: BLE001 - CA present, its emulator deps are not
+        pytest.skip(f"CA's emulator module is not importable here: {exc}")
     obs = str(tmp_path / "study_obs_data.json")
 
     ours = ca_run_history.emulator_dir(str(tmp_path), "study", obs)
     theirs = resolve({"param_id_output_dir": str(tmp_path), "file_prefix": "study",
                       "param_id_obs_path": obs})
+
 
     assert ours == str(theirs)
 
