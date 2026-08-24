@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import copy
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 class ObsDataError(ValueError):
@@ -31,10 +31,29 @@ class ObsDataError(ValueError):
 
 
 @dataclass
+class CaVerdict:
+    """What circulatory_autogen said about a document -- including "nothing".
+
+    ``error`` is CA's own schema complaint, the user's to answer for. ``skipped``
+    is set when CA could not be *asked* (no clone, an import that failed, a crash
+    inside its parser): the document is still accepted, because a missing CA is
+    not a fault in the user's file, but the fact that nobody checked it must not
+    be indistinguishable from a clean bill of health.
+    """
+
+    error: str | None = None
+    skipped: str | None = None
+
+
+@dataclass
 class ObsData:
     protocol_info: dict | None
     data_items: list[dict]
     prediction_items: list[dict]
+    #: Things worth saying about a document that was nonetheless loaded: the
+    #: checks that could not run, the deprecated vocabulary it is written in.
+    #: Surfaced by every route that parses one, so nothing loads quietly.
+    warnings: list[str] = field(default_factory=list)
 
     @property
     def has_protocol(self) -> bool:
@@ -61,6 +80,43 @@ class ObsData:
             "n_prediction_items": len(self.prediction_items),
             "experiment_labels": labels,
         }
+
+
+#: obs_data entry keys that CA #466 replaced. A file still using them was written for
+#: a CA that has since changed under it, and CA's own complaint is about the
+#: *consequence* -- a duplicate ``data_item_name`` -- rather than the cause, so the
+#: cause is said here, along with the migrator that fixes it.
+LEGACY_ITEM_KEYS = ("variable", "name_for_plotting")
+
+_MIGRATION_HINT = (
+    "This obs_data is written in the vocabulary circulatory_autogen used before its #466 "
+    "split ({keys}): 'variable' both named an item and supplied its operand, and one name "
+    "was allowed to repeat across the mean/max/min of a trace. 'data_item_name' now has to "
+    "be unique. Convert the file with `cuflynx-migrate-obs-data <file>` (it ships with "
+    "circulatory_autogen): it qualifies a colliding name by whatever distinguishes the "
+    "items, so 'pressure aortic root' becomes 'mean pressure aortic root', 'max pressure "
+    "aortic root' and 'min pressure aortic root'."
+)
+
+
+def legacy_vocabulary_hint(obj) -> str | None:
+    """How to bring a pre-#466 obs_data up to date, or None if it already is.
+
+    Both an error's second paragraph (when the collision CA reports *is* the
+    split) and a warning of its own (when the old keys happen not to collide, so
+    the file loads today and fails at some later CA release).
+    """
+    items = list(data_items_of(obj))
+    if isinstance(obj, dict):
+        predictions = obj.get("prediction_items")
+        if isinstance(predictions, list):
+            items = items + predictions
+    found = sorted(
+        {k for it in items if isinstance(it, dict) for k in LEGACY_ITEM_KEYS if k in it}
+    )
+    if not found:
+        return None
+    return _MIGRATION_HINT.format(keys=", ".join(f"'{k}'" for k in found))
 
 
 def data_items_of(obj) -> list:
@@ -150,15 +206,37 @@ def parse_obs_data(obj) -> ObsData:
 
     # Last, so the structural messages above (which name the offending index)
     # win when both apply.
-    ca_error = ca_schema_error(obj)
-    if ca_error:
-        raise ObsDataError(f"circulatory_autogen rejected this obs_data: {ca_error}")
+    verdict = ca_verdict(obj)
+    hint = legacy_vocabulary_hint(obj)
+    if verdict.error:
+        message = f"circulatory_autogen rejected this obs_data: {verdict.error}"
+        # The duplicate-name complaint on a pre-#466 file reads as a mistake the
+        # author made, when in fact the file was correct when it was written and
+        # the schema moved. Say which it is, and how to convert it.
+        if hint:
+            message = f"{message}\n\n{hint}"
+        raise ObsDataError(message)
+
+    warnings = []
+    if verdict.skipped:
+        warnings.append(verdict.skipped)
+    if hint:
+        # Accepted -- CA's migration shim still reads the old keys -- but on
+        # borrowed time, and silently only until the names happen to collide.
+        warnings.append(hint)
 
     return ObsData(
         protocol_info=protocol_info,
         data_items=data_items,
         prediction_items=prediction_items,
+        warnings=warnings,
     )
+
+
+#: Why the last :func:`_ca_parser` call came back empty-handed, for the message that
+#: says the document went unchecked. Module-level because the reason is discovered
+#: inside the import and is of no interest to the callers that only want the parser.
+_ca_unavailable_reason: str | None = None
 
 
 def _ca_parser():
@@ -170,25 +248,42 @@ def _ca_parser():
     nor libCellML, which is why consulting it here does not drag the simulation
     stack into the upload path.
     """
+    global _ca_unavailable_reason
     try:
         from ca_imports import ca_from, ensure_ca_path  # noqa: PLC0415
 
         ensure_ca_path()
         ObsAndParamDataParser = ca_from(
             "parsers.PrimitiveParsers", "ObsAndParamDataParser")
-    except Exception:  # noqa: BLE001 - CA absent or too old; nothing to ask
+    except Exception as exc:  # noqa: BLE001 - CA absent or too old; nothing to ask
+        _ca_unavailable_reason = f"{type(exc).__name__}: {exc}"
         return None
+    _ca_unavailable_reason = None
     return ObsAndParamDataParser()
 
 
 def ca_schema_error(obj) -> str | None:
-    """circulatory_autogen's verdict on this obs_data, or None if it has none.
+    """circulatory_autogen's complaint about this obs_data, or None.
+
+    The verdict without the reason it may be missing -- see :func:`ca_verdict`,
+    which is what the upload paths use.
+    """
+    return ca_verdict(obj).error
+
+
+def ca_verdict(obj) -> CaVerdict:
+    """What circulatory_autogen makes of this obs_data.
 
     Returns CA's own complaint, so the message the user sees at upload is the
     message the calibration would have failed with. Never invents a verdict:
     when CA cannot be imported -- no clone configured, or one predating the
-    schema -- this returns None and the upload proceeds on the structural checks
-    alone, exactly as it did before.
+    schema -- the upload proceeds on the structural checks alone, exactly as it
+    did before.
+
+    What is new is that "CA said nothing" and "CA was never asked" are no longer
+    the same answer. Both let the document through; only the second means the
+    schema was not checked, and a user whose typo'd key will fail a calibration
+    twenty minutes from now is owed that distinction at upload time.
 
     The document is deep-copied first. CA's parser materialises protocol shapes
     and normalises series std in place, and validation must not quietly rewrite
@@ -196,7 +291,15 @@ def ca_schema_error(obj) -> str | None:
     """
     parser = _ca_parser()
     if parser is None:
-        return None
+        detail = f" ({_ca_unavailable_reason})" if _ca_unavailable_reason else ""
+        return CaVerdict(
+            skipped=(
+                f"circulatory_autogen could not be consulted{detail}, so this obs_data was "
+                "accepted on CUFLynx's structural checks alone. Anything only CA rejects -- a "
+                "typo'd 'opperation', a repeated 'data_item_name', a key outside its schema -- "
+                "will not be caught until a run starts."
+            )
+        )
 
     try:
         # pre_time/sim_time are only consulted when protocol_info omits
@@ -206,12 +309,19 @@ def ca_schema_error(obj) -> str | None:
             obs_data_dict=copy.deepcopy(obj), pre_time=0.0, sim_time=1.0
         )
     except ValueError as exc:
-        return str(exc)
-    except Exception:  # noqa: BLE001
+        return CaVerdict(error=str(exc))
+    except Exception as exc:  # noqa: BLE001
         # Something other than a schema complaint -- a CA bug, a missing optional
-        # dependency. Not the user's document to answer for, so don't block them.
-        return None
-    return None
+        # dependency. Not the user's document to answer for, so don't block them;
+        # but do not pass it off as a clean check either.
+        return CaVerdict(
+            skipped=(
+                f"circulatory_autogen's parser raised {type(exc).__name__}: {exc}. That is a "
+                "problem in CA rather than in this obs_data, so the document was loaded -- but "
+                "its schema was not checked."
+            )
+        )
+    return CaVerdict()
 
 
 def _validate_protocol_info(protocol_info: dict) -> None:

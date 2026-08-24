@@ -364,11 +364,66 @@ def test_upload_still_works_when_ca_cannot_be_consulted(client, monkeypatch):
     obs_data unloadable -- it degrades to the structural checks."""
     import obs_data as obs_mod
 
-    monkeypatch.setattr(obs_mod, "ca_schema_error", lambda _obj: None)
+    monkeypatch.setattr(obs_mod, "_ca_parser", lambda: None)
     obs = _obs()
     del obs["data_items"][0]["std"]
     resp = client.post("/api/obs_data/upload", json=obs)
     assert resp.status_code == 200, resp.text
+
+
+def test_a_document_nobody_checked_says_that_it_was_not_checked(client, monkeypatch):
+    """Degrading to the structural checks is right; doing it silently is not.
+    "CA said nothing" and "CA was never asked" both load, and only one of them
+    means the schema was verified -- so the second says so, at upload time,
+    rather than at the start of a calibration twenty minutes later."""
+    import obs_data as obs_mod
+
+    monkeypatch.setattr(obs_mod, "_ca_parser", lambda: None)
+    resp = client.post("/api/obs_data/upload", json=_obs())
+    assert resp.status_code == 200, resp.text
+    warnings = resp.json()["warnings"]
+    assert any("could not be consulted" in w for w in warnings), warnings
+    assert any("will not be caught until a run starts" in w for w in warnings), warnings
+
+
+def test_a_checked_document_is_not_given_a_warning_to_ignore(client, requires_ca):
+    """The other half: a clean document comes back clean, so the banner means
+    something when it does appear."""
+    resp = client.post("/api/obs_data/upload", json=_obs())
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["warnings"] == []
+
+
+def test_a_ca_crash_is_reported_as_unchecked_rather_than_as_clean(client, monkeypatch):
+    """A CA bug is not the user's document to answer for, so it still loads --
+    but passing the crash off as a clean bill of health is the quiet failure."""
+    import obs_data as obs_mod
+
+    class _Boom:
+        def parse_obs_data_json(self, **_kw):
+            raise RuntimeError("some CA internal failure")
+
+    monkeypatch.setattr(obs_mod, "_ca_parser", lambda: _Boom())
+    resp = client.post("/api/obs_data/upload", json=_obs())
+    assert resp.status_code == 200, resp.text
+    warnings = resp.json()["warnings"]
+    assert any("RuntimeError: some CA internal failure" in w for w in warnings), warnings
+    assert any("its schema was not checked" in w for w in warnings), warnings
+
+
+def test_an_old_vocabulary_that_happens_not_to_collide_still_warns(client, monkeypatch):
+    """A pre-#466 file whose names are unique loads today and breaks whenever CA
+    drops the migration shim. It is the one case the duplicate-name error cannot
+    catch, which is why the advice hangs off the keys rather than off the error."""
+    import obs_data as obs_mod
+
+    monkeypatch.setattr(obs_mod, "_ca_parser", lambda: None)
+    obs = _obs()
+    item = obs["data_items"][0]
+    item["variable"] = item.pop("data_item_name")
+    resp = client.post("/api/obs_data/upload", json=obs)
+    assert resp.status_code == 200, resp.text
+    assert any("cuflynx-migrate-obs-data" in w for w in resp.json()["warnings"])
 
 
 def test_a_ca_crash_does_not_block_the_upload(monkeypatch):

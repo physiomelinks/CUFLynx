@@ -1293,6 +1293,30 @@ async def upload_omex(
     return import_omex_bytes(await file.read(), output_dir)
 
 
+def _no_obs_data_warning(parts: dict) -> list[str]:
+    """Why an archive's observations tab is empty, in one sentence.
+
+    An archive with no obs_data is perfectly valid and must still load (#149), so
+    this is a warning and not an error. But "the study had no observations" and
+    "the observations were there and CUFLynx passed over them" produced the same
+    thing on screen -- nothing -- and the second is a bug in the file that the
+    user could fix in a minute if anyone told them about it.
+    """
+    skipped = parts.get("obs_skipped") or []
+    if skipped:
+        looked_at = "; ".join(f"{s['name']}, because {s['reason']}" for s in skipped)
+        return [
+            "No obs_data was loaded from this archive. What was passed over: "
+            f"{looked_at}. A member whose name contains 'obs' is always taken as the "
+            "obs_data, so the reason above is what has to be fixed."
+        ]
+    missing = "obs_data" if parts.get("params") else "obs_data or params_for_id"
+    return [
+        f"This archive carries no {missing} -- only the model, so the observations "
+        "tab is empty because there was nothing in the archive to fill it."
+    ]
+
+
 def import_omex_bytes(data: bytes, output_dir: str | None = None) -> dict:
     """Load an archive's bytes, whatever delivered them.
 
@@ -1364,8 +1388,15 @@ def import_omex_bytes(data: bytes, output_dir: str | None = None) -> dict:
     # from four extracted roles.
     _models[model_id].archive_path = _save_model_archive(model_id, data)
 
+    # Everything the import could not do, in the user's words rather than in
+    # silence: a part that was never found, a check that could not run, editor
+    # state that could not be kept. The study still loads -- but an empty tab
+    # must never be the only thing that says so.
+    load_warnings: list[str] = []
+
     result = {
         "model_id": model_id,
+        "warnings": load_warnings,
         "name": meta.name,
         "variable_count": meta.variable_count,
         "params": meta.params,
@@ -1399,6 +1430,7 @@ def import_omex_bytes(data: bytes, output_dir: str | None = None) -> dict:
                 "prediction_items": parsed.prediction_items,
                 "protocol_info": parsed.protocol_info,
             }
+            load_warnings.extend(parsed.warnings)
         except (ValueError, ObsDataError) as exc:
             result["obs_data"] = {"filename": name, "error": str(exc)}
 
@@ -1415,7 +1447,7 @@ def import_omex_bytes(data: bytes, output_dir: str | None = None) -> dict:
             result["params_for_id"] = {"filename": name, "error": str(exc)}
 
     if parts["module_config"]:
-        _name, blob = parts["module_config"]
+        cfg_name, blob = parts["module_config"]
         # Beside the model in `generated_models/<prefix>/`, not among the run
         # outputs: this is PhLynx's editor state for that model, not a result of
         # anything. Same layout the export bundle uses, so the archive round-trips
@@ -1423,14 +1455,37 @@ def import_omex_bytes(data: bytes, output_dir: str | None = None) -> dict:
         result["module_config_path"] = omex_import.save_module_config(
             blob, _model_dir(out_dir, Path(parts["master"] or "").stem or meta.name)
         )
+        # Only when there was somewhere to put it. With no outputs directory this
+        # copy is simply not made, and nothing is lost: the archive is kept whole
+        # (`_save_model_archive`) and `omex_export` re-emits every member it did
+        # not understand byte-for-byte, so PhLynx's state still round-trips. A
+        # banner on every import until a directory is set would be noise -- and a
+        # banner nobody reads is how the real failure below gets missed.
+        if out_dir and result["module_config_path"] is None:
+            load_warnings.append(
+                f"The archive carried PhLynx's {cfg_name}, but it could not be kept beside "
+                "the model: it is not valid JSON, or the directory could not be written. The "
+                "study loaded, and the archive still round-trips -- but reopening the study "
+                "from disk in PhLynx will not restore its layout."
+            )
 
     # An obs_data in the archive is the author's own and always wins; only when
     # there is none does the .mmt's protocol become the study's protocol.
     if result["obs_data"] is None and protocol and protocol.get("obs_data"):
         try:
             parsed = parse_obs_data(protocol["obs_data"])
-        except (ValueError, ObsDataError):
+        except (ValueError, ObsDataError) as exc:
+            # The fallback failing is not the archive's fault, but it is the
+            # difference between an observations tab with a protocol in it and an
+            # empty one -- which is exactly the kind of thing that used to happen
+            # without a word.
+            load_warnings.append(
+                f"The protocol taken from {converted_from or 'the .mmt'} could not be used as "
+                f"an obs_data: {exc}"
+            )
             parsed = None
+        else:
+            load_warnings.extend(parsed.warnings)
         if parsed is not None:
             _models[model_id].obs_data = parsed
             obs_path = UPLOAD_DIR / f"{model_id}_obs_data.json"
@@ -1444,6 +1499,12 @@ def import_omex_bytes(data: bytes, output_dir: str | None = None) -> dict:
                 "protocol_info": parsed.protocol_info,
                 "derived_from_mmt": True,
             }
+
+    # Last, so that an archive whose observations came from its own .mmt protocol
+    # is not told it carries none: the slot is what matters, not where it was
+    # filled from.
+    if result["obs_data"] is None:
+        load_warnings.extend(_no_obs_data_warning(parts))
 
     return result
 
@@ -2263,6 +2324,9 @@ async def upload_obs_data(
         "model_id": model_id,
         # Where Save put the dated copy, so the panel can say it (#215).
         "saved_path": saved_path,
+        # What could not be checked, or is written in a vocabulary on its way
+        # out. The document loaded; these are the things a silent load hid.
+        "warnings": parsed.warnings,
         **parsed.summary(),
         "data_items": parsed.data_items,
         "prediction_items": parsed.prediction_items,
