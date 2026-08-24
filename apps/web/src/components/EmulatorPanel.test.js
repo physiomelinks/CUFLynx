@@ -411,8 +411,13 @@ describe('sampling stages', () => {
     {
       name: 'method_per_stage', type: 'str', default: null, required: false,
       per_stage: true,
-      item_choices: ['sobol', 'latin_hypercube', 'random', 'gradient_weighted'],
+      item_choices: ['sobol', 'latin_hypercube', 'random', 'gradient_weighted',
+                     'error_weighted'],
       description: 'methods',
+    },
+    {
+      name: 'weight_per_stage', type: 'str', default: null, required: false,
+      per_stage: true, description: 'weights',
     },
   ]
 
@@ -532,5 +537,32 @@ describe('sampling stages', () => {
     expect(latest.num_stages).toBe(2)
     expect(latest.frac_per_stage).toEqual([0.5, 0.5])
     expect(latest.method_per_stage).toEqual(['sobol', 'gradient_weighted'])
+    expect(latest.weight_per_stage).toEqual([1, 1])
+  })
+
+  it('offers a weight only for a stage that has scores to follow', async () => {
+    // A space-filling stage has none, and CA ignores the value — a box for it would be
+    // asking for a number that does nothing.
+    const wrapper = mountStages()
+    await setStages(wrapper, 2)
+    expect(wrapper.find('[data-testid="emu-stage-weight-0"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="emu-stage-weight-1"]').exists()).toBe(true)
+
+    wrapper.vm.optionValues.method_per_stage[0] = 'gradient_weighted'
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('[data-testid="emu-stage-weight-0"]').exists()).toBe(true)
+  })
+
+  it('treats error_weighted as an adaptive stage too', async () => {
+    const wrapper = mountStages()
+    await setStages(wrapper, 2)
+    wrapper.vm.optionValues.method_per_stage[1] = 'error_weighted'
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('[data-testid="emu-stage-weight-1"]').exists()).toBe(true)
+
+    // ...including when it is put first, which CA refuses.
+    wrapper.vm.optionValues.method_per_stage[0] = 'error_weighted'
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('[data-testid="emu-stages-first"]').exists()).toBe(true)
   })
 })

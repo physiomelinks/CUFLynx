@@ -189,8 +189,9 @@ const REUSE_IGNORES = [
  * where neither setting does anything.
  */
 const STAGE_COUNT = 'num_stages'
-const STAGE_OPTIONS = ['frac_per_stage', 'method_per_stage']
-const ADAPTIVE_METHOD = 'gradient_weighted'
+const STAGE_OPTIONS = ['frac_per_stage', 'method_per_stage', 'weight_per_stage']
+const ADAPTIVE_METHODS = ['gradient_weighted', 'error_weighted']
+const ADAPTIVE_METHOD = ADAPTIVE_METHODS[0]
 
 const stageCount = computed(() => Math.max(1, Number(optionValues[STAGE_COUNT] ?? 1) || 1))
 const multiStage = computed(() => stageCount.value > 1)
@@ -207,9 +208,14 @@ const stageFractionTotal = computed(() =>
   asList(optionValues.frac_per_stage).reduce((sum, value) => sum + (Number(value) || 0), 0),
 )
 const fractionsSumToOne = computed(() => Math.abs(stageFractionTotal.value - 1) <= 1e-6)
-const adaptiveFirst = computed(
-  () => asList(optionValues.method_per_stage)[0] === ADAPTIVE_METHOD,
+const adaptiveFirst = computed(() =>
+  ADAPTIVE_METHODS.includes(asList(optionValues.method_per_stage)[0]),
 )
+
+/** A weight only means something for a stage that has scores to follow. */
+function weightApplies(i) {
+  return ADAPTIVE_METHODS.includes(asList(optionValues.method_per_stage)[i])
+}
 
 const generalOptions = computed(() =>
   emulatorOptions.value.filter((o) => !STAGE_OPTIONS.includes(o.name)),
@@ -239,6 +245,11 @@ function resizeStages(count) {
   optionValues.method_per_stage = Array.from(
     { length: count },
     (_, i) => previous[i] ?? (i === 0 ? (optionValues.sample_type ?? 'sobol') : ADAPTIVE_METHOD),
+  )
+  const weights = asList(optionValues.weight_per_stage)
+  optionValues.weight_per_stage = Array.from(
+    { length: count },
+    (_, i) => Number(weights[i] ?? 1),
   )
 }
 
@@ -522,11 +533,14 @@ function onRun() {
           <span class="emu-stages-title">Sampling stages</span>
           <p class="hint">
             The sample budget is split across these stages in order. A
-            <code>{{ ADAPTIVE_METHOD }}</code> stage places its points between the
-            neighbouring samples whose features differ most, spending the rest of the
-            budget on thresholds and cliffs instead of on regions where the model barely
-            moves. It can only sharpen what an earlier stage already found, so leave the
-            first stage big enough to find it — and it cannot be the first stage.
+            <code>gradient_weighted</code> stage places its points between the
+            neighbouring samples whose features differ most; an
+            <code>error_weighted</code> one places them where a cheap surrogate of the
+            samples so far is worst. Either can only sharpen what an earlier stage found,
+            so leave the first stage big enough to find it — and neither can be the first
+            stage. Clustering points on a cliff helps an emulator that can represent one
+            (a forest, or a <code>two_phase_</code> model) and hurts a smooth global fit,
+            so match the stage to the emulator you are fitting.
           </p>
           <div v-for="(_, i) in stageCount" :key="i" class="emu-stage-row">
             <span class="emu-stage-label">Stage {{ i + 1 }}</span>
@@ -551,6 +565,23 @@ function onRun() {
                 :disabled="optionDisabled('method_per_stage')"
                 size="small"
                 :data-testid="'emu-stage-method-' + i"
+              />
+            </label>
+            <!-- Only shown for a stage that has scores to follow; a space-filling
+                 stage has none, and CA ignores the value. -->
+            <label v-if="weightApplies(i)" class="field">
+              <span
+                title="0 ignores the scores, 0.5 half-follows them, 1 draws in proportion to them, above 1 concentrates harder."
+                >Weight</span
+              >
+              <InputNumber
+                v-model="optionValues.weight_per_stage[i]"
+                :min="0"
+                :min-fraction-digits="1"
+                :max-fraction-digits="3"
+                :disabled="optionDisabled('weight_per_stage')"
+                size="small"
+                :data-testid="'emu-stage-weight-' + i"
               />
             </label>
           </div>
