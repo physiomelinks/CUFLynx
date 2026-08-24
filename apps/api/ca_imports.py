@@ -60,11 +60,16 @@ NAMESPACE = "libcuflynx"
 #: CA's top-level packages, in their flat spelling. Anything else handed to
 #: :func:`ca_import` is left alone (``operation_funcs`` and ``cost_funcs_user``
 #: are loaded from a directory on ``sys.path``, not from a CA package).
-#: ``identifiabilty_analysis`` really is spelled that way upstream.
+#: ``identifiabilty_analysis`` really is spelled that way upstream, and
+#: ``external_testing`` is CA's builder of a real run, which only tests import --
+#: it is listed for the same reason as the rest: without it the namespaced
+#: spelling is never tried and the import silently falls back to a flat name
+#: that no CA has ever had.
 CA_PACKAGES = frozenset({
     "checks",
     "coupler",
     "emulators",
+    "external_testing",
     "generators",
     "identifiabilty_analysis",
     "models",
