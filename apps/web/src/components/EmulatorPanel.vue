@@ -167,7 +167,91 @@ function optionLabel(name) {
  *    is the entire point of reusing.
  */
 const REUSE_FLAG = 'reuse_samples'
-const REUSE_IGNORES = ['num_train_samples', 'sample_type', 'log_scale_params']
+const REUSE_IGNORES = [
+  'num_train_samples',
+  'sample_type',
+  'log_scale_params',
+  'num_stages',
+  'frac_per_stage',
+  'method_per_stage',
+]
+
+/**
+ * CA can draw the design in several stages, each with its own share of the sample
+ * budget and its own method — so that a later stage can place its points using the
+ * features the earlier ones actually returned, rather than over the box in ignorance
+ * of the response. `frac_per_stage` and `method_per_stage` carry one entry per stage.
+ *
+ * A comma-separated box for each would be a poor way to ask for that, and a silent one:
+ * the two lists have to stay the same length as `num_stages` or CA refuses the run. So
+ * they are rendered as one row per stage, built from `num_stages`, and are hidden
+ * entirely while it is 1 — which is the single-stage design every existing study has,
+ * where neither setting does anything.
+ */
+const STAGE_COUNT = 'num_stages'
+const STAGE_OPTIONS = ['frac_per_stage', 'method_per_stage']
+const ADAPTIVE_METHOD = 'gradient_weighted'
+
+const stageCount = computed(() => Math.max(1, Number(optionValues[STAGE_COUNT] ?? 1) || 1))
+const multiStage = computed(() => stageCount.value > 1)
+
+// Per-stage menus come from the descriptor, so a method added in CA appears here
+// without a change to this file — the same contract as `models`.
+const stageMethods = computed(() => {
+  const opt = emulatorOptions.value.find((o) => o.name === 'method_per_stage')
+  return opt?.item_choices ?? []
+})
+
+/** The options rendered by the generic loop: the per-stage pair has its own block. */
+const stageFractionTotal = computed(() =>
+  asList(optionValues.frac_per_stage).reduce((sum, value) => sum + (Number(value) || 0), 0),
+)
+const fractionsSumToOne = computed(() => Math.abs(stageFractionTotal.value - 1) <= 1e-6)
+const adaptiveFirst = computed(
+  () => asList(optionValues.method_per_stage)[0] === ADAPTIVE_METHOD,
+)
+
+const generalOptions = computed(() =>
+  emulatorOptions.value.filter((o) => !STAGE_OPTIONS.includes(o.name)),
+)
+
+function asList(value) {
+  if (Array.isArray(value)) return [...value]
+  if (typeof value === 'string' && value.trim())
+    return value.split(',').map((part) => part.trim())
+  return []
+}
+
+/**
+ * Keep the two lists exactly `num_stages` long whenever the count changes.
+ *
+ * Fractions are re-split evenly rather than preserved: they have to sum to 1, and
+ * carrying old values across a change in stage count is how a form ends up asking CA
+ * for a budget that does not add up. Methods are preserved where they still apply,
+ * because the choice of method is a real decision the user made; new stages default to
+ * the adaptive one, which is the reason to have asked for more than one stage.
+ */
+function resizeStages(count) {
+  optionValues.frac_per_stage = Array.from({ length: count }, () =>
+    Number((1 / count).toFixed(4)),
+  )
+  const previous = asList(optionValues.method_per_stage)
+  optionValues.method_per_stage = Array.from(
+    { length: count },
+    (_, i) => previous[i] ?? (i === 0 ? (optionValues.sample_type ?? 'sobol') : ADAPTIVE_METHOD),
+  )
+}
+
+watch(
+  stageCount,
+  (count) => {
+    if (count > 1) resizeStages(count)
+    // Back to one stage: send nothing, so CA applies its own single-stage default
+    // rather than a one-element list this form happened to leave behind.
+    else for (const name of STAGE_OPTIONS) optionValues[name] = null
+  },
+  { immediate: true },
+)
 
 const reuseOn = computed(() => optionValues[REUSE_FLAG] === true)
 
@@ -351,7 +435,7 @@ function onRun() {
 
       <div class="cal-form" data-testid="emu-settings">
         <!-- CA's emulation options, from ANALYSIS_OPTIONS['emulation']. -->
-        <template v-for="opt in emulatorOptions" :key="opt.name">
+        <template v-for="opt in generalOptions" :key="opt.name">
           <label
             v-if="opt.type === 'bool'"
             class="field checkbox"
@@ -429,6 +513,59 @@ function onRun() {
             below are ignored. The fit settings still apply.
           </small>
         </template>
+
+        <!-- One row per sampling stage, shown only once there is more than one.
+             CA needs frac_per_stage and method_per_stage to be exactly num_stages
+             long and the fractions to sum to 1, so the rows are generated from the
+             count rather than typed as lists. -->
+        <div v-if="multiStage" class="emu-stages" data-testid="emu-stages">
+          <span class="emu-stages-title">Sampling stages</span>
+          <p class="hint">
+            The sample budget is split across these stages in order. A
+            <code>{{ ADAPTIVE_METHOD }}</code> stage places its points between the
+            neighbouring samples whose features differ most, spending the rest of the
+            budget on thresholds and cliffs instead of on regions where the model barely
+            moves. It can only sharpen what an earlier stage already found, so leave the
+            first stage big enough to find it — and it cannot be the first stage.
+          </p>
+          <div v-for="(_, i) in stageCount" :key="i" class="emu-stage-row">
+            <span class="emu-stage-label">Stage {{ i + 1 }}</span>
+            <label class="field">
+              <span title="Share of num_train_samples drawn in this stage.">Fraction</span>
+              <InputNumber
+                v-model="optionValues.frac_per_stage[i]"
+                :min="0"
+                :max="1"
+                :min-fraction-digits="1"
+                :max-fraction-digits="4"
+                :disabled="optionDisabled('frac_per_stage')"
+                size="small"
+                :data-testid="'emu-stage-frac-' + i"
+              />
+            </label>
+            <label class="field">
+              <span title="How this stage draws its points.">Method</span>
+              <Select
+                v-model="optionValues.method_per_stage[i]"
+                :options="stageMethods"
+                :disabled="optionDisabled('method_per_stage')"
+                size="small"
+                :data-testid="'emu-stage-method-' + i"
+              />
+            </label>
+          </div>
+          <!-- CA refuses a plan whose shares do not add up, and refuses it after the
+               model has been generated. Said here instead. -->
+          <small v-if="!fractionsSumToOne" class="hint" data-testid="emu-stages-sum">
+            The fractions add up to {{ stageFractionTotal.toFixed(3) }}, not 1 — CA will
+            refuse this plan.
+          </small>
+          <small v-if="adaptiveFirst" class="hint" data-testid="emu-stages-first">
+            Stage 1 cannot be <code>{{ ADAPTIVE_METHOD }}</code>: it places points using
+            features an earlier stage simulated, and at the first stage there are none.
+          </small>
+        </div>
+
 
         <label class="field" :class="{ 'opt-off': reuseOn }">
           <span
@@ -612,5 +749,29 @@ function onRun() {
   max-height: 14rem;
   overflow: auto;
   white-space: pre-wrap;
+}
+
+.emu-stages {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--p-content-border-color, #d4d4d8);
+  border-radius: 6px;
+}
+.emu-stages-title {
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+.emu-stage-row {
+  display: flex;
+  align-items: end;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+.emu-stage-label {
+  min-width: 4.5rem;
+  font-variant-numeric: tabular-nums;
+  padding-bottom: 0.4rem;
 }
 </style>
