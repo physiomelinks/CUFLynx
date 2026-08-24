@@ -23,6 +23,7 @@ import os
 import re
 
 import ca_run_history
+import study_manifest
 import mcmc_progress
 
 #: What a caller can ask for, and the order the summary lists them in.
@@ -349,14 +350,20 @@ def _uq(output_dir, run_dir, missing):
     return payload
 
 
-def _emulator(output_dir, file_prefix, obs_path, missing):
-    # find_ rather than the plain resolver: this reads a run it did not produce,
-    # and emulator_dir is a setting a study can point anywhere -- one trained
-    # emulator reused across several obs_data has to.
-    emu_dir = _safely(
-        "emulator directory",
-        lambda: ca_run_history.find_emulator_dir(output_dir, file_prefix, obs_path),
-        missing)
+def _emulator(output_dir, file_prefix, obs_path, missing, declared=None):
+    # A manifest naming the emulator is believed outright. It is the only way to reach
+    # one bundle shared by several studies, which is what a jointly-trained emulator is
+    # for -- the conventional search only ever looks inside the selected directory.
+    if declared:
+        emu_dir = declared
+    else:
+        # find_ rather than the plain resolver: this reads a run it did not produce,
+        # and emulator_dir is a setting a study can point anywhere -- one trained
+        # emulator reused across several obs_data has to.
+        emu_dir = _safely(
+            "emulator directory",
+            lambda: ca_run_history.find_emulator_dir(output_dir, file_prefix, obs_path),
+            missing)
     if not emu_dir:
         return {"dir": None, "metadata": None, "error_points": None}
     return {
@@ -384,11 +391,39 @@ def load_outputs(output_dir: str, file_prefix: str | None = None,
         }
 
     missing: list[str] = []
+
+    # A study may say where its own parts are. Read first, because everything below is
+    # otherwise inferred from where files happen to sit, and an inference here does not
+    # fail loudly -- it returns another study's numbers.
+    manifest = None
+    manifest_error = None
+    try:
+        manifest = study_manifest.read(output_dir)
+    except study_manifest.ManifestError as error:
+        # Not swallowed into the conventions: a manifest that exists and cannot be read
+        # means this directory is not what it claims, and answering from guesses would
+        # hide that behind a plausible result.
+        manifest_error = str(error)
+    if manifest:
+        file_prefix = file_prefix or manifest.get("file_prefix")
+        obs_path = obs_path or manifest.get("obs_data")
+        missing.extend(manifest.get("missing") or [])
+
     runs = list_run_dirs(output_dir)
-    # An explicit choice wins; otherwise the newest, which is what find_run_dir
-    # would have picked anyway -- but now the caller can see the alternatives.
+    declared_runs = [entry["dir"] for entry in (manifest or {}).get("runs") or []]
+    if declared_runs:
+        # Only the runs the study claims. A directory can accumulate runs from other
+        # studies, and "the most recent" then picks one at random with respect to what
+        # was asked for.
+        runs = [run for run in runs if run["path"] in declared_runs] or runs
+
+    # An explicit choice wins; otherwise the manifest's first run, otherwise the newest,
+    # which is what find_run_dir would have picked anyway -- but now the caller can see
+    # the alternatives.
     if run_dir and any(run["path"] == run_dir for run in runs):
         chosen = run_dir
+    elif declared_runs:
+        chosen = declared_runs[0]
     else:
         chosen = ca_run_history.find_run_dir(output_dir)
     run_dir = chosen
@@ -400,11 +435,14 @@ def load_outputs(output_dir: str, file_prefix: str | None = None,
         "progress": _progress(run_dir, output_dir, missing),
         "sensitivity": _sensitivity(output_dir, missing),
         "uq": _uq(output_dir, run_dir, missing),
-        "emulator": _emulator(output_dir, file_prefix, obs_path, missing),
+        "emulator": _emulator(output_dir, file_prefix, obs_path, missing,
+                              declared=(manifest or {}).get("emulator")),
         "study": _safely("study inputs",
                          lambda: _study(output_dir, run_dir, file_prefix, missing), missing),
         "saved_runs_dir": output_dir,
         "run_dirs": runs,
+        "manifest": manifest,
+        "manifest_error": manifest_error,
     }
 
     found = []
