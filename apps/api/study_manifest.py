@@ -161,7 +161,14 @@ def _relative_if_sensible(base: str, value: str) -> str:
     is, which is the case this file exists to stop being an assumption.
     """
     full = os.path.abspath(str(value))
-    relative = os.path.relpath(full, base)
+    try:
+        relative = os.path.relpath(full, base)
+    except ValueError:
+        # Windows raises rather than answering when the two paths are on different
+        # drives, and "on another drive" is the strongest possible form of outside the
+        # study -- no relative path exists at all. Exactly the shared-emulator case: a
+        # study on D: referencing a bundle on C:.
+        return full
     if relative.split(os.sep)[0] == os.pardir:
         return full
     return relative

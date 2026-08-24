@@ -135,3 +135,26 @@ def test_a_shared_artefact_is_stored_absolutely(tmp_path):
     # ...while the study's own files stay relative, which is what makes it movable.
     assert not os.path.isabs(record["model"])
     assert not os.path.isabs(record["runs"][0]["dir"])
+
+
+def test_a_target_with_no_relative_path_at_all_is_stored_absolutely(tmp_path, monkeypatch):
+    """Windows raises rather than answering when two paths are on different drives.
+
+    A study on ``D:`` referencing a bundle on ``C:`` is not an edge case here -- it is the
+    shared-emulator arrangement this file exists to support. ``os.path.relpath`` does not
+    return something awkward there, it raises, so the writer has to treat "no relative
+    path exists" as the strongest possible form of outside the study.
+
+    Simulated rather than skipped-on-Windows: the branch is what matters and it is
+    reachable on any platform once relpath refuses.
+    """
+    def refuse(*args, **kwargs):
+        raise ValueError("path is on mount 'D:', start on mount 'C:'")
+
+    output = tmp_path / "study"
+    output.mkdir()
+    monkeypatch.setattr(study_manifest.os.path, "relpath", refuse)
+    study_manifest.write(str(output), {"emulator": str(tmp_path / "elsewhere" / "bundle")})
+
+    record = json.loads((output / study_manifest.MANIFEST_NAME).read_text())
+    assert os.path.isabs(record["emulator"])
