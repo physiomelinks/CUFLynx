@@ -273,9 +273,10 @@ CA_NAMESPACE = "libcuflynx"
 # CA's own top-level packages: anything else keeps its bare name (an
 # ``operation_funcs`` must not become ``libcuflynx.operation_funcs``).
 CA_PACKAGES = frozenset({
-    "checks", "coupler", "emulators", "generators", "identifiabilty_analysis",
-    "models", "param_id", "parsers", "protocol_runners", "scripts",
-    "sensitivity_analysis", "solver1d", "solver_wrappers", "utilities",
+    "checks", "coupler", "emulators", "external_testing", "generators",
+    "identifiabilty_analysis", "models", "param_id", "parsers",
+    "protocol_runners", "scripts", "sensitivity_analysis", "solver1d",
+    "solver_wrappers", "utilities",
 })
 
 # Modules whose namespaced spelling is not the flat one with the prefix glued on
