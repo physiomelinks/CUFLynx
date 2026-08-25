@@ -126,7 +126,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install --force-reinstall --no-cache-dir \
             --build-constraint "${{ github.workspace }}/build-constraints.txt" \
-            "libcuflynx[emulation,uq] @ git+https://github.com/physiomelinks/circulatory_autogen@feat/easyml-import"
+            "libcuflynx[emulation,uq] @ git+https://github.com/physiomelinks/circulatory_autogen@master"
 
       # Fail here rather than 20 minutes later in a wall of skips. Each of these is a
       # dependency the tier silently degrades without, and the point of this job is that
@@ -216,7 +216,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install --force-reinstall --no-cache-dir \
             --build-constraint "${{ github.workspace }}/build-constraints.txt" \
-            "libcuflynx[emulation,uq] @ git+https://github.com/physiomelinks/circulatory_autogen@feat/easyml-import"
+            "libcuflynx[emulation,uq] @ git+https://github.com/physiomelinks/circulatory_autogen@master"
 
       # The parallel arm is worthless without a launcher, and its absence is *silent*:
       # every build_command falls back to one core with a warning and the run still
@@ -319,7 +319,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install --force-reinstall --no-cache-dir \
             --build-constraint "${{ github.workspace }}/build-constraints.txt" \
-            "libcuflynx[emulation,uq] @ git+https://github.com/physiomelinks/circulatory_autogen@feat/easyml-import"
+            "libcuflynx[emulation,uq] @ git+https://github.com/physiomelinks/circulatory_autogen@master"
 
       - name: Record what was resolved
         if: always()
