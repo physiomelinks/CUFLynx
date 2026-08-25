@@ -882,3 +882,63 @@ describe('timeUnit with an undeclared unit', () => {
     )
   })
 })
+
+// A recorded trace carried at weight 0 (resources/3compartment_recorded_trace.omex).
+// The measurement *is* a series: the point of carrying it is to see it behind the
+// simulation, and it scores nothing. `buildChartData` has always known how to draw one
+// -- but `isPlottableOverlay` refused it, so it never reached a cell and that drawing
+// code was unreachable from the panel.
+describe('a recorded trace carried at weight zero', () => {
+  const trace = {
+    data_item_name: 'recorded aortic root pressure',
+    trace_name_for_plotting: 'u_{AR} recorded',
+    data_type: 'series',
+    operands: ['aortic_root/u'],
+    operation: null,
+    unit: 'J_per_m3',
+    weight: 0,
+    obs_dt: 0.02,
+    value: [10500, 11000, 12000, 11500],
+    plot_type: 'series',
+  }
+
+  it('is plottable, so it reaches a cell', () => {
+    expect(isPlottableOverlay(trace)).toBe(true)
+  })
+
+  it('gives its variable a plot cell', () => {
+    const vars = derivePlotVariables({ data_items: [trace] })
+    expect(vars).toEqual([{ qname: 'aortic_root/u', label: 'u_{AR} recorded' }])
+  })
+
+  it('is selected as an overlay for the variable it was measured on', () => {
+    const items = overlayItemsFor({ data_items: [trace] }, 0, 'aortic_root/u')
+    expect(items).toHaveLength(1)
+    expect(items[0].data_item_name).toBe('recorded aortic root pressure')
+  })
+
+  it('is drawn as points on the obs_dt time axis, against the model line', () => {
+    const chart = buildChartData(
+      { time: [0, 0.02, 0.04, 0.06], outputs: { 'aortic_root/u': [10400, 11100, 11900, 11600] } },
+      { qnames: ['aortic_root/u'], dataItems: [trace] },
+    )
+    const drawn = chart.datasets.find((d) => d.kind === 'obs-series')
+    expect(drawn, 'the recorded trace was not drawn').toBeTruthy()
+    expect(drawn.data.map((p) => [Number(p.x.toFixed(3)), p.y])).toEqual([
+      [0, 10500],
+      [0.02, 11000],
+      [0.04, 12000],
+      [0.06, 11500],
+    ])
+    // Points, not a line: it is a measurement, and joining the samples would invite
+    // reading the interpolation between them as data.
+    expect(drawn.showLine).toBe(false)
+    // And the model's own trace is still there to compare it against.
+    expect(chart.datasets.some((d) => d.kind !== 'obs-series')).toBe(true)
+  })
+
+  it('a zero weight does not hide it -- weight is about the cost, not the plot', () => {
+    expect(isPlottableOverlay({ ...trace, weight: 0 })).toBe(true)
+    expect(isPlottableOverlay({ ...trace, weight: 5 })).toBe(true)
+  })
+})

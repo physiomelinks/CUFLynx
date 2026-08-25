@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import obs_cost
 import pytest
+from conftest import RESOURCES_DIR
 
 
 def _scalar(**over):
@@ -128,3 +129,55 @@ def test_a_run_of_only_ground_truth_scores_nothing(funcs):
     """Not zero -- "nothing to score" and "scores perfectly" must not look the
     same, which is why evaluate returns None rather than a cost of 0."""
     assert obs_cost.evaluate([_ground_truth()], OUTPUTS) is None
+
+
+# --- the shipped example of one (resources/3compartment_recorded_trace.omex) ----------
+#
+# Everything above is about what a zero-weighted trace does to the *cost*. This is the
+# artefact a user opens to see one: the 3compartment study with a measured trace of the
+# same variable its scalar features are taken from, generated from the model itself and
+# carried at weight 0 so it is drawn behind the simulation without being fitted.
+
+TRACE_ARCHIVE = RESOURCES_DIR / "3compartment_recorded_trace.omex"
+
+
+@pytest.mark.unit
+def test_the_recorded_trace_example_exists_and_carries_one():
+    import json
+    import zipfile
+
+    assert TRACE_ARCHIVE.is_file(), f"{TRACE_ARCHIVE.name} is missing from resources/"
+    with zipfile.ZipFile(TRACE_ARCHIVE) as zf:
+        name = next(n for n in zf.namelist() if n.endswith("_obs_data.json"))
+        doc = json.loads(zf.read(name))
+
+    traces = [i for i in doc["data_items"] if i.get("data_type") == "series"]
+    assert len(traces) == 1, f"expected exactly one recorded trace, got {len(traces)}"
+    trace = traces[0]
+    assert trace["weight"] == 0, "the point of this example is that it is not fitted"
+    assert trace["obs_dt"], "a series is reconstructed on i * obs_dt; without it there is no time axis"
+    assert len(trace["value"]) > 10, trace["value"][:5]
+    # Measured on a variable the study also fits scalars from, so the trace and the
+    # features it summarises are drawn in the same cell.
+    assert trace["operands"] == ["aortic_root/u"]
+    assert any(i.get("operands") == ["aortic_root/u"] and i.get("data_type") == "constant"
+               for i in doc["data_items"])
+
+
+@pytest.mark.unit
+def test_the_recorded_trace_example_loads_whole(client):
+    """It has to survive the engine's schema, not just look right: a series carries keys
+    the scalars do not, and a key present on one row and absent on the rest turns that
+    column to floats in CA's frame -- which it then rejects, naming the *other* rows."""
+    with open(TRACE_ARCHIVE, "rb") as fh:
+        resp = client.post("/api/omex/upload",
+                           files={"file": (TRACE_ARCHIVE.name, fh, "application/zip")})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    obs = body["obs_data"]
+    assert not obs.get("error"), obs["error"]
+    assert body["warnings"] == [], body["warnings"]
+    assert len(obs["data_items"]) == 7, "six scalar features plus the recorded trace"
+    trace = [i for i in obs["data_items"] if i.get("data_type") == "series"][0]
+    assert trace["weight"] == 0
+    assert len(trace["value"]) == 101

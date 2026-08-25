@@ -123,6 +123,12 @@ export function emulatorFeatureFor(features, item) {
 /** A data_item that renders as a reference line (horizontal or vertical). */
 export function isPlottableOverlay(item) {
   if (item.data_type === 'frequency') return false // frequency overlays: future work
+  // A recorded trace: the measurement *is* a series, and `buildChartData` draws it as
+  // points against the model's own line. It reaches a cell only through here, so
+  // excluding it made that drawing code unreachable from the panel -- a study carrying
+  // a trace (typically at weight 0, purely so it can be seen behind the simulation)
+  // showed nothing at all.
+  if (item.data_type === 'series') return true
   const pt = item.plot_type
   // 'horizontal', 'horizontal_from_min', ... and 'vertical'.
   return (typeof pt === 'string' && pt.startsWith('horizontal')) || pt === 'vertical'
