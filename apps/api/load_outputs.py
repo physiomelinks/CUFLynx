@@ -128,9 +128,7 @@ def _newest(paths):
     return max(existing, key=os.path.getmtime)
 
 
-# The obs_data snapshot is JSON and the params_for_id snapshot is CSV, so the stamp has to
-# be readable off either or the pairing sees only half the run.
-_STAMP = re.compile(r"_(\d{6}_\d{6})\.(?:json|csv)$")
+_STAMP = re.compile(r"_(\d{6}_\d{6})\.json$")
 
 
 def _stamped(paths):
@@ -155,22 +153,12 @@ def _snapshot_pair(run_dir):
     The stamp is the run's own, so it orders them and it pairs them. A params_for_id with no
     matching obs_data stamp falls back to its own newest rather than to nothing: half a study
     is still worth reporting, and the caller can see the two stamps differ.
-
-    The two snapshots are not the same file type. CA writes the obs_data snapshot as JSON
-    and the params_for_id snapshot as **CSV** -- ``SN_full_params_for_id_260825_102226.csv``
-    -- because that is the format params_for_id is authored in. Globbing both as ``.json``
-    matched no params_for_id snapshot that CA has ever written, in any run directory, so
-    every loaded study reported ``params_for_id: null``. Both extensions are accepted here:
-    csv is what CA writes today, and a study that has been through a JSON-producing path
-    should still be readable.
     """
-    obs_paths = glob.glob(os.path.join(run_dir, "*_obs_data_*.json"))
-    par_paths = (glob.glob(os.path.join(run_dir, "*_params_for_id_*.csv"))
-                 + glob.glob(os.path.join(run_dir, "*_params_for_id_*.json")))
-    obs_by_stamp = _stamped(obs_paths)
-    par_by_stamp = _stamped(par_paths)
+    obs_by_stamp = _stamped(glob.glob(os.path.join(run_dir, "*_obs_data_*.json")))
+    par_by_stamp = _stamped(glob.glob(os.path.join(run_dir, "*_params_for_id_*.json")))
     if not obs_by_stamp and not par_by_stamp:
-        return _newest(obs_paths), _newest(par_paths)
+        return (_newest(glob.glob(os.path.join(run_dir, "*_obs_data_*.json"))),
+                _newest(glob.glob(os.path.join(run_dir, "*_params_for_id_*.json"))))
 
     stamps = sorted(set(obs_by_stamp) | set(par_by_stamp), reverse=True)
     # Prefer the newest stamp that has both halves; that is the run that completed.
@@ -181,7 +169,7 @@ def _snapshot_pair(run_dir):
     return obs_by_stamp.get(newest), par_by_stamp.get(newest)
 
 
-def _study(output_dir, run_dir, file_prefix, missing, manifest=None):
+def _study(output_dir, run_dir, file_prefix, missing):
     """The inputs the run was made from, so a loaded directory is a study and not just
     a set of result panels.
 
@@ -194,18 +182,8 @@ def _study(output_dir, run_dir, file_prefix, missing, manifest=None):
     lying about: a directory may hold artefacts from several studies (this is ordinary --
     outputs directories get reused), and attaching one study's model to another's results
     produces numbers that look right.
-
-    A manifest changes both of those from a search into a reading. ``model`` is taken
-    from it outright -- the whole contract of the file is that a declaration is believed
-    -- and it is the only way to reach a model that lives outside the study directory,
-    which is where a CA pipeline's ``generated_models/`` actually is. ``params_for_id``
-    prefers the run's own snapshot, because that is the copy the run was made from, and
-    falls back to the declaration for a study that has been trained but not yet
-    calibrated and so has no run to snapshot.
     """
-    declared = manifest or {}
-    prefix = file_prefix or declared.get("file_prefix") or _prefix_from_calibrated_model(
-        output_dir)
+    prefix = file_prefix or _prefix_from_calibrated_model(output_dir)
     generated = None
     if prefix:
         candidate = os.path.join(output_dir, "generated_models", prefix)
@@ -217,16 +195,13 @@ def _study(output_dir, run_dir, file_prefix, missing, manifest=None):
     # directory produced by cuflynx-param-id has one there and no `*_calibrated.cellml`
     # at all. `generated` above already found it when there is exactly one CellML in the
     # prefix's folder; this names it when the folder holds more than the model.
-    model = (declared.get("model")
-             or generated
+    model = (generated
              or ca_run_history.ca_calibrated_model(output_dir, prefix)
              or _calibrated_model(output_dir, file_prefix))
 
     obs = params = None
     if run_dir and os.path.isdir(run_dir):
         obs, params = _snapshot_pair(run_dir)
-    obs = obs or declared.get("obs_data")
-    params = params or declared.get("params_for_id")
 
     # Looked for in the outputs directory, which is where a generated pipeline bundle puts
     # it. Absent is ordinary -- a run started from this app has never written one -- so it
@@ -375,22 +350,6 @@ def _uq(output_dir, run_dir, missing):
     return payload
 
 
-def _bundles_in(directory):
-    """Bundle names directly under ``directory``, or ``[]`` if it is a bundle itself.
-
-    A bundle is a directory holding ``emulator_metadata.json``; a container holds
-    bundles and no metadata of its own.
-    """
-    if not directory or not os.path.isdir(directory):
-        return []
-    if os.path.isfile(os.path.join(directory, "emulator_metadata.json")):
-        return []
-    return sorted(
-        entry.name for entry in os.scandir(directory)
-        if entry.is_dir() and os.path.isfile(
-            os.path.join(entry.path, "emulator_metadata.json")))
-
-
 def _emulator(output_dir, file_prefix, obs_path, missing, declared=None):
     # A manifest naming the emulator is believed outright. It is the only way to reach
     # one bundle shared by several studies, which is what a jointly-trained emulator is
@@ -407,18 +366,6 @@ def _emulator(output_dir, file_prefix, obs_path, missing, declared=None):
             missing)
     if not emu_dir:
         return {"dir": None, "metadata": None, "error_points": None}
-    # A manifest may declare the *container* rather than one bundle -- that is how a
-    # study says "these several, choose one". Choosing is not implemented here, so say
-    # so out loud: reading it as a bundle finds no metadata and would otherwise present
-    # a study with several trained emulators as one with none.
-    bundles = _bundles_in(emu_dir)
-    if bundles:
-        missing.append(
-            "emulator (%s declares a container of %d bundles: %s; this build reads a "
-            "single bundle, so point the manifest at one of them)"
-            % (os.path.basename(emu_dir), len(bundles), ", ".join(bundles)))
-        return {"dir": emu_dir, "metadata": None, "error_points": None,
-                "bundles": bundles}
     return {
         "dir": emu_dir,
         "metadata": _safely("emulator metadata",
@@ -491,8 +438,7 @@ def load_outputs(output_dir: str, file_prefix: str | None = None,
         "emulator": _emulator(output_dir, file_prefix, obs_path, missing,
                               declared=(manifest or {}).get("emulator")),
         "study": _safely("study inputs",
-                         lambda: _study(output_dir, run_dir, file_prefix, missing,
-                                        manifest=manifest), missing),
+                         lambda: _study(output_dir, run_dir, file_prefix, missing), missing),
         "saved_runs_dir": output_dir,
         "run_dirs": runs,
         "manifest": manifest,

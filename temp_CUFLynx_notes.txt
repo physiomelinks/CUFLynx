@@ -1,3 +1,0 @@
-This message comes up when I first open the -full app: "The emulator options could not be read from circulatory_autogen, so there is nothing to train against. The import failed -- this is not a schema that predates emulators -- and the cause is usually the environment the analysis runs in rather than the directory itself. The server log has the import error." - There should be a test ensuring that the built executable can run the emulator??
-
-
