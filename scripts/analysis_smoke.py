@@ -427,9 +427,14 @@ def main() -> int:
 
             # Training is where the ranks do the expensive part -- CA splits the design
             # across them -- and it is what the bug above was reported from.
+            # A seeded Sobol design and a capped model search, as CA's own emulator
+            # tests use: the point here is that N ranks can train at all, not how good
+            # the emulator is, and an uncapped autoemulate search would dominate the job.
             _, r = _req("POST", f"{base}/api/emulator/train",
                         data={"model_id": model_id,
-                              "settings": {"num_train_samples": 12, "dt": 0.01,
+                              "settings": {"num_train_samples": 24, "dt": 0.01,
+                                           "sample_type": "sobol", "random_seed": 0,
+                                           "n_iter": 2, "n_splits": 2,
                                            "num_cores": args.num_cores}})
             emu = _poll_job(base, "emulator", r["job_id"], args.calibration_timeout)
             if emu["state"] != "done":

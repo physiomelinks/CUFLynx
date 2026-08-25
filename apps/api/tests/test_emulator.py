@@ -984,25 +984,42 @@ def test_the_chosen_interpreter_is_probed_even_with_no_ca_directory(monkeypatch,
 # how *good* the emulator is; what these assert is that the pipeline runs, the
 # bundle lands, and the three analyses accept it.
 # ---------------------------------------------------------------------------
-EMULATOR_SAMPLES = 12
+# The fixture is CA's own analytic benchmark (its `tests/test_emulator_training.py`):
+# ``dx/dt = -x + p``, ``dy/dt = -3y + q``, observed as the steady-state averages of x and
+# y -- so the two features *are* ``p`` and ``q/3``, in closed form. It is the right model
+# for an emulator test precisely because it is dull: smooth and monotone, with nothing for
+# a surrogate to miss, so a poor fit means the pipeline is wrong rather than the problem
+# being hard. It is also cheap -- one run is ~5 ms after the compile -- which is what keeps
+# a real training inside a test suite instead of in a nightly.
+#
+# The settings mirror CA's: a seeded Sobol design so the run is deterministic, and
+# `n_iter`/`n_splits` at 2, which is what stops autoemulate's model search dominating the
+# wall clock. 64 samples over two parameters is enough for a good fit -- CA asserts R2 >=
+# 0.99 on this model at that size -- so these tests use a *correctly trained* emulator and
+# leave CA's quality gate at its default.
+EMULATOR_SETTINGS = {
+    "num_train_samples": 64,
+    "sample_type": "sobol",
+    "random_seed": 0,
+    "n_iter": 2,
+    "n_splits": 2,
+}
 
 
-def _setup_3compartment(client, out_dir=None):
-    """The three files of the shipped example study, loaded as a user would.
+def _setup_benchmark(client, out_dir=None):
+    """CA's Simple_ODE_Benchmark: model + obs_data + params_for_id, as a user loads them."""
+    from conftest import RESOURCES_DIR, upload_model
 
-    The archive rather than the loose files: it is one call, and it is the path the
-    Start dialog uses -- so a study set up here is the study a user has.
-    """
-    from conftest import RESOURCES_DIR
-
-    blob = (RESOURCES_DIR / "3compartment.omex").read_bytes()
-    params = {"output_dir": str(out_dir)} if out_dir else {}
-    resp = client.post("/api/omex/upload", params=params,
-                       files={"file": ("3compartment.omex", blob, "application/zip")})
+    model_id = upload_model(client, RESOURCES_DIR / "Simple_ODE_Benchmark_flat.cellml")["model_id"]
+    obs = json.loads((RESOURCES_DIR / "Simple_ODE_Benchmark_obs_data.json").read_text())
+    assert client.post("/api/obs_data/upload",
+                       json={"model_id": model_id, "obs_data": obs}).status_code == 200
+    params = RESOURCES_DIR / "Simple_ODE_Benchmark_params_for_id.csv"
+    with open(params, "rb") as fh:
+        resp = client.post(f"/api/params_for_id/upload?model_id={model_id}",
+                           files={"file": (params.name, fh, "text/csv")})
     assert resp.status_code == 200, resp.text
-    body = resp.json()
-    assert not (body.get("obs_data") or {}).get("error"), body["obs_data"]
-    return body["model_id"]
+    return model_id
 
 
 @pytest.fixture
@@ -1022,12 +1039,8 @@ def _train_emulator(client, model_id, out_dir, num_cores=1, timeout=900):
 
     resp = client.post("/api/emulator/train", json={
         "model_id": model_id,
-        "settings": {
-            "config_outputs_dir": str(out_dir),
-            "num_train_samples": EMULATOR_SAMPLES,
-            "num_cores": num_cores,
-            "dt": 0.01,
-        },
+        "settings": {**EMULATOR_SETTINGS, "config_outputs_dir": str(out_dir),
+                     "num_cores": num_cores, "dt": 0.05},
     })
     assert resp.status_code == 200, resp.text
     return _wait(client, "emulator", resp.json()["job_id"], timeout)
@@ -1048,7 +1061,7 @@ def test_a_trained_emulator_can_drive_sensitivity_calibration_and_uq(
     """
     from test_run_matrix import _wait
 
-    model_id = _setup_3compartment(client, tmp_path)
+    model_id = _setup_benchmark(client, tmp_path)
 
     trained, train_log = _train_emulator(client, model_id, tmp_path)
     assert trained.get("state") == "done", (
@@ -1066,23 +1079,20 @@ def test_a_trained_emulator_can_drive_sensitivity_calibration_and_uq(
         ("sensitivity", "/api/sensitivity/run",
          {"method": "local", "gradient_method": "FD", "nominal": "current",
           "rel_step": 0.05, "num_cores": 1}),
+        # DEBUG, as the other calibration tests do: without it CA sizes the genetic
+        # algorithm's population from the parameter count and refuses a run whose
+        # evaluation budget is smaller than one generation ("n_calls=6 must be greater
+        # than the gen alg population (num_pop=744)").
         ("calibration", "/api/calibration/run",
-         {"num_calls_to_function": 6, "num_cores": 1}),
+         {"param_id_method": "genetic_algorithm", "num_calls_to_function": 30,
+          "DEBUG": True, "num_cores": 1}),
         ("uq", "/api/uq/run",
-         {"num_steps": 20, "num_walkers": 8, "num_cores": 1,
-          "run_calibration_first": True}),
+         {"num_steps": 20, "num_walkers": 8, "num_cores": 1, "DEBUG": True,
+          "run_calibration_first": True, "num_calls_to_function": 30}),
     ):
         payload = {"model_id": model_id,
                    "settings": {**settings, "config_outputs_dir": str(tmp_path),
-                                "use_emulator": True, "dt": 0.01,
-                                # The design is deliberately tiny, so the emulator is
-                                # bad -- CA's quality gate refuses one below `min_r2`
-                                # (it measured R2 = -2.2 here at the 0.9 default), which
-                                # is the right behaviour and not what this asks about.
-                                # What is under test is whether the bundle is *accepted
-                                # for this study*; a mismatch raises EmulatorQualityError
-                                # with a different message, asserted below.
-                                "min_r2": -1e9}}
+                                "use_emulator": True, "dt": 0.05}}
         resp = client.post(route, json=payload)
         assert resp.status_code == 200, f"{kind} refused the emulator up front: {resp.text}"
         state, lines = _wait(client, kind, resp.json()["job_id"], 900)
@@ -1110,7 +1120,7 @@ def test_training_runs_across_ranks_when_asked_for_more_than_one(
     """
     from test_run_matrix import PARALLEL_CORES, _assert_parallelism
 
-    model_id = _setup_3compartment(client, tmp_path)
+    model_id = _setup_benchmark(client, tmp_path)
     state, lines = _train_emulator(client, model_id, tmp_path, num_cores=PARALLEL_CORES)
 
     log = "\n".join(lines)
