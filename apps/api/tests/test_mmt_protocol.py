@@ -18,13 +18,14 @@ from pathlib import Path
 import pytest
 
 import mmt_protocol
+import myokit_import
 from conftest import RESOURCES_DIR, all_mmt_fixtures
 
 SCRIPT = Path(__file__).resolve().parents[3] / "scripts" / "mmt_to_obs_data.py"
 
 
 @pytest.fixture
-def requires_protocol_shapes(requires_simulation):
+def requires_protocol_shapes(requires_simulation, requires_myokit_parser):
     """protocol_shapes is expanded by circulatory_autogen, so running one needs a
     CA that has it (physiomelinks/circulatory_autogen#339)."""
     # Checked on disk rather than by import: CA is put on sys.path lazily, by the
@@ -34,6 +35,20 @@ def requires_protocol_shapes(requires_simulation):
     src = Path(_circulatory_autogen_src() or "")
     if not (src / "utilities" / "protocol_shapes.py").is_file():
         pytest.skip("this circulatory_autogen has no protocol_shapes support yet")
+
+def _requires_engine_reader():
+    """Myokit, and a circulatory_autogen new enough to carry the reader.
+
+    The conversion lives in ``libcuflynx.parsers.MyokitParsers`` and this app
+    delegates to it with no local fallback, so a CA predating it cannot convert
+    anything. That is a skip, not a failure: CI pins the unit tier at a commit
+    on purpose, and the integration tier tracks CA's master, so both trail this
+    app by however long the engine side takes to land.
+    """
+    pytest.importorskip("myokit")
+    if myokit_import._ca_parser() is None:
+        pytest.skip("this circulatory_autogen has no libcuflynx.parsers.MyokitParsers")
+
 
 # A model whose only purpose is to carry a binding and a protocol.
 PACED = b"""[[model]]
@@ -67,7 +82,7 @@ def test_the_events_cross_over_verbatim():
     """The five numbers in the .mmt appear as the five numbers in the file. The
     alternative -- expanding them into durations and levels -- describes the same
     stimulus in a form nobody can read back as "1 Hz"."""
-    pytest.importorskip("myokit")
+    _requires_engine_reader()
     info, _ = _convert(PACED)
     (shape,) = info["protocol_shapes"].values()
     assert shape["events"] == [
@@ -76,7 +91,7 @@ def test_the_events_cross_over_verbatim():
 
 
 def test_it_is_one_sub_experiment_named_by_the_shape():
-    pytest.importorskip("myokit")
+    _requires_engine_reader()
     info, _ = _convert(PACED)
     assert info["sim_times"] == [[2000.0]]
     (rows,) = info["params_to_change"].values()
@@ -85,7 +100,7 @@ def test_it_is_one_sub_experiment_named_by_the_shape():
 
 def test_the_shape_name_is_the_parameter_it_drives():
     """So a file with several controlled parameters stays readable."""
-    pytest.importorskip("myokit")
+    _requires_engine_reader()
     info, _ = _convert(PACED)
     assert list(info["protocol_shapes"]) == ["engine_pace"]
 
@@ -93,7 +108,7 @@ def test_the_shape_name_is_the_parameter_it_drives():
 def test_beats_controls_how_much_of_an_endless_protocol_is_taken():
     """The events are unchanged -- multiplier stays 0 -- so it is the length of
     the sub-experiment that decides how many stimuli land."""
-    pytest.importorskip("myokit")
+    _requires_engine_reader()
     one, _ = _convert(PACED, beats=1)
     three, _ = _convert(PACED, beats=3)
     assert one["sim_times"] == [[1000.0]]
@@ -102,7 +117,7 @@ def test_beats_controls_how_much_of_an_endless_protocol_is_taken():
 
 
 def test_an_explicit_duration_wins_over_beats():
-    pytest.importorskip("myokit")
+    _requires_engine_reader()
     info, _ = _convert(PACED, beats=10, duration=1500)
     assert info["sim_times"] == [[1500.0]]
 
@@ -110,20 +125,20 @@ def test_an_explicit_duration_wins_over_beats():
 def test_the_cut_is_reported_rather_than_left_to_be_inferred():
     """Truncating an indefinite protocol is a choice, not a conversion, so the
     caller has to be told it was made."""
-    pytest.importorskip("myokit")
+    _requires_engine_reader()
     _, notes = _convert(PACED)
     assert any("repeats indefinitely" in n and "2 beat" in n for n in notes)
 
 
 def test_pre_time_is_carried_through():
-    pytest.importorskip("myokit")
+    _requires_engine_reader()
     info, _ = _convert(PACED, pre_time=5000)
     assert info["pre_times"] == [5000.0]
 
 
 def test_the_parameter_is_named_the_way_ca_names_parameters():
     """Myokit says engine.pace; CA and params_for_id say engine/pace."""
-    pytest.importorskip("myokit")
+    _requires_engine_reader()
     info, _ = _convert(PACED)
     assert list(info["params_to_change"]) == ["engine/pace"]
 
@@ -132,13 +147,13 @@ def test_the_parameter_is_named_the_way_ca_names_parameters():
 # Refusals -- each has to say what is wrong with the file
 # ---------------------------------------------------------------------------
 def test_a_model_with_no_pace_binding_is_refused():
-    pytest.importorskip("myokit")
+    _requires_engine_reader()
     with pytest.raises(mmt_protocol.MmtProtocolError, match="bound to `pace`"):
         _convert(UNPACED)
 
 
 def test_a_file_with_no_protocol_section_is_refused():
-    pytest.importorskip("myokit")
+    _requires_engine_reader()
     with pytest.raises(mmt_protocol.MmtProtocolError, match="no \\[\\[protocol\\]\\] events"):
         _convert(NO_PROTOCOL)
 
@@ -147,20 +162,20 @@ def test_a_zero_amplitude_stimulus_is_refused_rather_than_converted():
     """dn-1985-if-gna.mmt declares `0 10 0.5 1000 0` -- a stimulus of amplitude
     zero, because that example is about the model's own currents. Converting it
     yields a protocol_info that looks like pacing and applies none."""
-    pytest.importorskip("myokit")
+    _requires_engine_reader()
     flat = PACED.replace(b"1.0      100      2        1000     0", b"0 100 2 1000 0")
     with pytest.raises(mmt_protocol.MmtProtocolError, match="amplitude 0"):
         _convert(flat)
 
 
 def test_unreadable_input_is_refused_with_the_parser_reason():
-    pytest.importorskip("myokit")
+    _requires_engine_reader()
     with pytest.raises(mmt_protocol.MmtProtocolError, match="could not read"):
         _convert(b"this is not a myokit file at all")
 
 
 def test_a_nonsense_duration_is_refused():
-    pytest.importorskip("myokit")
+    _requires_engine_reader()
     with pytest.raises(mmt_protocol.MmtProtocolError, match="greater than zero"):
         _convert(PACED, duration=0)
 
@@ -210,7 +225,7 @@ def test_filling_an_empty_document_works():
 # The fixture: the generated protocol must equal the hand-written one
 # ---------------------------------------------------------------------------
 @pytest.mark.integration
-def test_it_reproduces_the_hand_written_br_1977_protocol(requires_simulation):
+def test_it_reproduces_the_hand_written_br_1977_protocol(requires_simulation, requires_myokit_parser):
     """The fixture is now generated by the script rather than hand-written, so
     this is a regression lock on the file rather than an independent check --
     the independent one is the Myokit comparison below. It still earns its
@@ -228,7 +243,7 @@ def test_it_reproduces_the_hand_written_br_1977_protocol(requires_simulation):
 # ---------------------------------------------------------------------------
 @pytest.mark.integration
 @pytest.mark.parametrize("path", all_mmt_fixtures(), ids=lambda p: p.name)
-def test_every_mmt_fixture_converts_or_is_refused_clearly(path, requires_simulation):
+def test_every_mmt_fixture_converts_or_is_refused_clearly(path, requires_simulation, requires_myokit_parser):
     """Either the protocol comes out as a usable schedule, or the file is
     refused for a reason a user can act on. A conversion that produced an empty
     or misaligned schedule would be worse than either."""
@@ -258,7 +273,7 @@ def test_every_mmt_fixture_converts_or_is_refused_clearly(path, requires_simulat
 
 @pytest.mark.integration
 @pytest.mark.parametrize("path", all_mmt_fixtures(), ids=lambda p: p.name)
-def test_the_converted_protocol_paces_at_the_same_instants_as_the_mmt(path, requires_simulation):
+def test_the_converted_protocol_paces_at_the_same_instants_as_the_mmt(path, requires_simulation, requires_myokit_parser):
     """Rebuild a Myokit protocol from the emitted events and check it against the
     one in the file, over the length the conversion chose.
 
@@ -266,7 +281,7 @@ def test_the_converted_protocol_paces_at_the_same_instants_as_the_mmt(path, requ
     why it is worth checking: `duration()` is the .mmt's `Length` column, and a
     field read from the wrong accessor still produces a plausible protocol.
     """
-    myokit = pytest.importorskip("myokit")
+    myokit = _requires_engine_reader()
 
     try:
         info, _ = mmt_protocol.protocol_info_from_mmt(path.read_bytes(), filename=path.name)
@@ -295,7 +310,7 @@ def test_the_converted_protocol_paces_at_the_same_instants_as_the_mmt(path, requ
 # The script
 # ---------------------------------------------------------------------------
 @pytest.mark.integration
-def test_the_script_writes_an_obs_data_file(requires_simulation, tmp_path):
+def test_the_script_writes_an_obs_data_file(requires_simulation, requires_myokit_parser, tmp_path):
     mmt = tmp_path / "paced.mmt"
     mmt.write_bytes(PACED)
     r = subprocess.run(
@@ -311,7 +326,7 @@ def test_the_script_writes_an_obs_data_file(requires_simulation, tmp_path):
 
 @pytest.mark.integration
 def test_the_script_updates_an_existing_file_without_losing_its_data_items(
-    requires_simulation, tmp_path
+    requires_simulation, requires_myokit_parser, tmp_path
 ):
     """The whole point of "fill" rather than "write": data_items are hand-made
     and not reproducible from the .mmt."""
@@ -331,7 +346,7 @@ def test_the_script_updates_an_existing_file_without_losing_its_data_items(
 
 
 @pytest.mark.integration
-def test_the_script_refuses_a_file_it_cannot_convert(requires_simulation, tmp_path):
+def test_the_script_refuses_a_file_it_cannot_convert(requires_simulation, requires_myokit_parser, tmp_path):
     mmt = tmp_path / "unpaced.mmt"
     mmt.write_bytes(UNPACED)
     r = subprocess.run(
@@ -343,7 +358,7 @@ def test_the_script_refuses_a_file_it_cannot_convert(requires_simulation, tmp_pa
 
 
 @pytest.mark.integration
-def test_the_script_will_not_clobber_an_unreadable_obs_data(requires_simulation, tmp_path):
+def test_the_script_will_not_clobber_an_unreadable_obs_data(requires_simulation, requires_myokit_parser, tmp_path):
     mmt = tmp_path / "paced.mmt"
     mmt.write_bytes(PACED)
     out = tmp_path / "broken.json"
@@ -357,7 +372,7 @@ def test_the_script_will_not_clobber_an_unreadable_obs_data(requires_simulation,
 
 
 @pytest.mark.integration
-def test_the_script_can_print_instead_of_writing(requires_simulation, tmp_path):
+def test_the_script_can_print_instead_of_writing(requires_simulation, requires_myokit_parser, tmp_path):
     mmt = tmp_path / "paced.mmt"
     mmt.write_bytes(PACED)
     r = subprocess.run(
@@ -409,7 +424,7 @@ def _upload_mmt(client, path: Path, out_dir: str | None = None):
 
 
 @pytest.mark.integration
-def test_uploading_a_mmt_offers_its_protocol_as_obs_data(client, requires_simulation, tmp_path):
+def test_uploading_a_mmt_offers_its_protocol_as_obs_data(client, requires_simulation, requires_myokit_parser, tmp_path):
     r = _upload_mmt(client, RESOURCES_DIR / "br-1977.mmt", str(tmp_path))
     assert r.status_code == 200, r.text
     offered = r.json()["protocol_obs_data"]
@@ -423,7 +438,7 @@ def test_uploading_a_mmt_offers_its_protocol_as_obs_data(client, requires_simula
 
 @pytest.mark.integration
 def test_the_offered_obs_data_is_written_beside_the_converted_cellml(
-    client, requires_simulation, tmp_path
+    client, requires_simulation, requires_myokit_parser, tmp_path
 ):
     r = _upload_mmt(client, RESOURCES_DIR / "br-1977.mmt", str(tmp_path))
     offered = r.json()["protocol_obs_data"]
@@ -433,7 +448,7 @@ def test_the_offered_obs_data_is_written_beside_the_converted_cellml(
 
 
 @pytest.mark.integration
-def test_an_existing_obs_data_on_disk_is_never_overwritten(client, requires_simulation, tmp_path):
+def test_an_existing_obs_data_on_disk_is_never_overwritten(client, requires_simulation, requires_myokit_parser, tmp_path):
     """It may hold hand-written data_items that nothing here could reconstruct."""
     existing = tmp_path / "br-1977_obs_data.json"
     existing.write_text('{"mine": true}')
@@ -469,7 +484,7 @@ def test_the_offered_obs_data_is_accepted_and_paces_the_model(client, requires_p
 
 
 @pytest.mark.integration
-def test_a_model_whose_protocol_cannot_be_converted_still_uploads(client, requires_simulation):
+def test_a_model_whose_protocol_cannot_be_converted_still_uploads(client, requires_simulation, requires_myokit_parser):
     """The protocol is a bonus. Losing it must not cost the user the model."""
     path = next(p for p in all_mmt_fixtures() if p.name == "stewart-2009.mmt")
     r = _upload_mmt(client, path)
@@ -480,7 +495,7 @@ def test_a_model_whose_protocol_cannot_be_converted_still_uploads(client, requir
 
 
 @pytest.mark.integration
-def test_a_cellml_upload_offers_nothing(client, requires_simulation):
+def test_a_cellml_upload_offers_nothing(client, requires_simulation, requires_myokit_parser):
     from conftest import LV_MODEL_PATH
 
     with open(LV_MODEL_PATH, "rb") as fh:
@@ -494,7 +509,7 @@ def test_a_cellml_upload_offers_nothing(client, requires_simulation):
 @pytest.mark.integration
 @pytest.mark.parametrize("path", all_mmt_fixtures(), ids=lambda p: p.name)
 def test_every_mmt_upload_either_offers_a_usable_protocol_or_says_why(
-    path, client, requires_simulation
+    path, client, requires_simulation, requires_myokit_parser
 ):
     upload = _upload_mmt(client, path)
     if upload.status_code == 422:

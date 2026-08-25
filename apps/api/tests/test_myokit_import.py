@@ -14,6 +14,20 @@ from pathlib import Path
 import myokit_import
 import pytest
 
+def _requires_engine_reader():
+    """Myokit, and a circulatory_autogen new enough to carry the reader.
+
+    The conversion lives in ``libcuflynx.parsers.MyokitParsers`` and this app
+    delegates to it with no local fallback, so a CA predating it cannot convert
+    anything. That is a skip, not a failure: CI pins the unit tier at a commit
+    on purpose, and the integration tier tracks CA's master, so both trail this
+    app by however long the engine side takes to land.
+    """
+    pytest.importorskip("myokit")
+    if myokit_import._ca_parser() is None:
+        pytest.skip("this circulatory_autogen has no libcuflynx.parsers.MyokitParsers")
+
+
 MMT = b"""[[model]]
 name: tiny
 membrane.V = -80
@@ -53,7 +67,7 @@ def test_arbitrary_text_is_not_a_model():
 # Conversion
 # ---------------------------------------------------------------------------
 @pytest.mark.integration
-def test_converts_a_real_myokit_model_to_cellml(requires_simulation, tmp_path):
+def test_converts_a_real_myokit_model_to_cellml(requires_simulation, requires_myokit_parser, tmp_path):
     import myokit
 
     src = sorted(
@@ -74,7 +88,7 @@ def test_converts_a_real_myokit_model_to_cellml(requires_simulation, tmp_path):
 
 
 @pytest.mark.integration
-def test_the_converted_model_parses_as_cellml(requires_simulation, tmp_path):
+def test_the_converted_model_parses_as_cellml(requires_simulation, requires_myokit_parser, tmp_path):
     """The point of converting is that the rest of the pipeline can read it."""
     from cellml_meta import parse_cellml
 
@@ -84,7 +98,7 @@ def test_the_converted_model_parses_as_cellml(requires_simulation, tmp_path):
 
 
 @pytest.mark.integration
-def test_conversion_still_returns_without_an_output_dir(requires_simulation):
+def test_conversion_still_returns_without_an_output_dir(requires_simulation, requires_myokit_parser):
     """Keeping a copy is a convenience, not a precondition."""
     cellml, saved = myokit_import.cellml_from_myokit(MMT, filename="tiny.mmt", out_dir=None)
     assert cellml
@@ -92,7 +106,7 @@ def test_conversion_still_returns_without_an_output_dir(requires_simulation):
 
 
 @pytest.mark.integration
-def test_an_unwritable_output_dir_does_not_fail_the_conversion(requires_simulation, tmp_path):
+def test_an_unwritable_output_dir_does_not_fail_the_conversion(requires_simulation, requires_myokit_parser, tmp_path):
     import stat
 
     ro = tmp_path / "ro"
@@ -107,13 +121,13 @@ def test_an_unwritable_output_dir_does_not_fail_the_conversion(requires_simulati
 
 
 def test_a_file_with_no_model_section_is_rejected_clearly(tmp_path):
-    pytest.importorskip("myokit")
+    _requires_engine_reader()
     with pytest.raises(myokit_import.MyokitImportError):
         myokit_import.cellml_from_myokit(b"[[protocol]]\n", filename="x.mmt", out_dir=None)
 
 
 def test_unreadable_myokit_source_is_a_clear_error():
-    pytest.importorskip("myokit")
+    _requires_engine_reader()
     with pytest.raises(myokit_import.MyokitImportError, match="could not read"):
         myokit_import.cellml_from_myokit(b"[[model]]\n!!! nonsense", filename="x.mmt", out_dir=None)
 
@@ -122,7 +136,7 @@ def test_unreadable_myokit_source_is_a_clear_error():
 # Through the upload route
 # ---------------------------------------------------------------------------
 @pytest.mark.integration
-def test_dropping_a_myokit_model_yields_a_usable_model(client, requires_simulation, tmp_path):
+def test_dropping_a_myokit_model_yields_a_usable_model(client, requires_simulation, requires_myokit_parser, tmp_path):
     resp = client.post(
         "/api/models/upload",
         params={"output_dir": str(tmp_path)},
@@ -169,7 +183,7 @@ def test_the_mmt_fixture_exists_and_has_all_three_sections():
 
 
 @pytest.mark.integration
-def test_only_the_model_section_is_imported(requires_simulation, tmp_path):
+def test_only_the_model_section_is_imported(requires_simulation, requires_myokit_parser, tmp_path):
     """The pacing events belong to the .mmt's [[protocol]], not to the model.
 
     CUFLynx gets its protocol from obs_data's protocol_info, so importing
@@ -190,7 +204,7 @@ def test_only_the_model_section_is_imported(requires_simulation, tmp_path):
 
 
 @pytest.mark.integration
-def test_the_fixture_imports_and_simulates(client, requires_simulation, tmp_path):
+def test_the_fixture_imports_and_simulates(client, requires_simulation, requires_myokit_parser, tmp_path):
     with open(_mmt_fixture(), "rb") as fh:
         body = client.post(
             "/api/models/upload",
@@ -217,7 +231,7 @@ def test_the_fixture_imports_and_simulates(client, requires_simulation, tmp_path
 
 
 @pytest.mark.integration
-def test_the_pacing_becomes_a_parameter_to_drive(client, requires_simulation):
+def test_the_pacing_becomes_a_parameter_to_drive(client, requires_simulation, requires_myokit_parser):
     """Without the protocol the model rests, and `pace` is exposed as a
     parameter -- so the stimulus is CUFLynx's to supply, from a slider or from
     obs_data's params_to_change."""
@@ -286,7 +300,7 @@ def test_the_obs_protocol_matches_the_mmt_protocol():
 
 
 @pytest.mark.integration
-def test_the_protocol_paces_the_model(client, requires_simulation):
+def test_the_protocol_paces_the_model(client, requires_simulation, requires_myokit_parser):
     """Two stimuli, so two action potentials -- the point of replicating it."""
     import json
 
@@ -314,7 +328,7 @@ def test_the_protocol_paces_the_model(client, requires_simulation):
 
 
 @pytest.mark.integration
-def test_the_obs_targets_are_the_model_own_features(client, requires_simulation):
+def test_the_obs_targets_are_the_model_own_features(client, requires_simulation, requires_myokit_parser):
     """So the cost sits near zero at the defaults and a calibration over gNaBar
     should recover ~4 -- which makes the fixture self-checking."""
     import json
@@ -341,7 +355,7 @@ def test_the_obs_targets_are_the_model_own_features(client, requires_simulation)
 
 
 @pytest.mark.integration
-def test_the_calibration_parameter_actually_moves_the_observable(client, requires_simulation):
+def test_the_calibration_parameter_actually_moves_the_observable(client, requires_simulation, requires_myokit_parser):
     """A parameter the observables are insensitive to would make the fixture
     useless for testing calibration."""
     import json
@@ -397,7 +411,7 @@ def test_there_is_at_least_one_mmt_fixture():
 
 @pytest.mark.integration
 @pytest.mark.parametrize("path", _all_mmt(), ids=lambda p: p.name)
-def test_every_mmt_fixture_converts_or_is_refused_clearly(path, requires_simulation, tmp_path):
+def test_every_mmt_fixture_converts_or_is_refused_clearly(path, requires_simulation, requires_myokit_parser, tmp_path):
     """Either it yields a usable model, or it is refused with a reason.
 
     Myokit's example set includes files whose [[model]] is a stub, because they
@@ -422,7 +436,7 @@ def test_every_mmt_fixture_converts_or_is_refused_clearly(path, requires_simulat
 
 @pytest.mark.integration
 @pytest.mark.parametrize("path", _all_mmt(), ids=lambda p: p.name)
-def test_every_mmt_fixture_loads_through_the_upload_route(path, client, requires_simulation):
+def test_every_mmt_fixture_loads_through_the_upload_route(path, client, requires_simulation, requires_myokit_parser):
     with open(path, "rb") as fh:
         resp = client.post(
             "/api/models/upload", files={"file": (path.name, fh, "text/plain")}
@@ -440,7 +454,7 @@ def test_every_mmt_fixture_loads_through_the_upload_route(path, client, requires
 
 
 @pytest.mark.integration
-def test_a_stub_model_is_refused_rather_than_imported_empty(client, requires_simulation):
+def test_a_stub_model_is_refused_rather_than_imported_empty(client, requires_simulation, requires_myokit_parser):
     """It used to import with zero ODEs, so the emptiness only surfaced later as
     a simulation with no outputs."""
     from conftest import RESOURCES_DIR
@@ -457,7 +471,7 @@ def test_a_stub_model_is_refused_rather_than_imported_empty(client, requires_sim
 
 
 @pytest.mark.integration
-def test_a_voltage_clamp_model_converts_as_well_as_a_stimulus_one(requires_simulation, tmp_path):
+def test_a_voltage_clamp_model_converts_as_well_as_a_stimulus_one(requires_simulation, requires_myokit_parser, tmp_path):
     """hh-1952d drives its membrane with a voltage clamp gated on `pace` rather
     than a stimulus current, so it exercises a different shape of protocol
     binding from br-1977."""

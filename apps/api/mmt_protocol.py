@@ -89,9 +89,28 @@ def fill_protocol_info(
     new schedule: those are the parts a user writes for themselves ("1 Hz
     pacing" reads better than "pacing, period 1000"), and re-deriving the timings
     is no reason to throw them away.
+
+    A bare array of data_items -- CA's other accepted shape, and what the
+    3compartment / heat_fenics studies ship -- becomes the object form carrying
+    those same items, which is the only shape that can hold a protocol_info at
+    all. ``dict(obs_data or {})`` used to raise on one, so
+    ``scripts/mmt_to_obs_data.py`` died rather than updating a data-only file.
+
+    **Local, unlike the rest of this module.** Everything else here delegates to
+    the engine because it needs Myokit or CA's protocol vocabulary; this needs
+    neither. It is document plumbing -- put a key in a dict, keep the labels --
+    so routing it through circulatory_autogen would make a pure function fail
+    when the engine is old or Myokit is absent, which is precisely what it did.
     """
-    parser = _parser_or_raise()
-    try:
-        return parser.fill_protocol_info(obs_data, protocol_info)
-    except ValueError as exc:
-        raise MmtProtocolError(str(exc)) from exc
+    if isinstance(obs_data, list):
+        obs_data = {"data_items": obs_data}
+    out = dict(obs_data or {})
+    existing = out.get("protocol_info") or {}
+    merged = dict(protocol_info)
+    n = len(protocol_info.get("sim_times", []))
+    for key in ("experiment_labels", "experiment_colors"):
+        kept = existing.get(key)
+        if isinstance(kept, list) and len(kept) == n:
+            merged[key] = kept
+    out["protocol_info"] = merged
+    return out
