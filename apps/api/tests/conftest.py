@@ -148,6 +148,30 @@ def requires_ca():
 
 
 @pytest.fixture
+def requires_easyml():
+    """For the EasyML reader, which is circulatory_autogen's alone.
+
+    There is no local fallback -- a second reader of a format this implicit would
+    not agree with the first for long -- so without CA these tests have nothing
+    to exercise. The tests about the *no-CA* behaviour itself force CA away and
+    always run.
+    """
+    import easyml_import
+
+    if easyml_import._ca_parser("parsers.EasyMLParsers") is None:
+        pytest.skip("libcuflynx.parsers.EasyMLParsers not importable")
+
+
+@pytest.fixture
+def requires_myokit_parser():
+    """Likewise for the Myokit reader, which moved into circulatory_autogen."""
+    import myokit_import
+
+    if myokit_import._ca_parser() is None:
+        pytest.skip("libcuflynx.parsers.MyokitParsers not importable")
+
+
+@pytest.fixture
 def requires_casadi(requires_simulation):
     """For the casadi_python backend (generated model + CasADi AD)."""
     try:

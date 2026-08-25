@@ -562,9 +562,9 @@ def model_source_path(suffix: str = ".py", base_dir: str | None = None) -> Path:
 
     ``.py`` is the ``model`` kind's own file — the one CA is handed as
     ``external_model_path`` and, since "Edit source", the one a run resolves to.
-    The other suffix is ``.mmt``: a Myokit model is converted to CellML at the
-    door, so the ``.mmt`` is not what runs, but it *is* the file the user wrote
-    and it travels with the study for the same reason the ``.py`` does.
+    The other suffixes are ``.mmt`` and EasyML's ``.model``: both are converted
+    to CellML at the door, so neither is what runs, but each *is* the file the
+    user wrote and travels with the study for the same reason the ``.py`` does.
 
     One stem for both, derived from the ``model`` kind's filename rather than
     written out again, so "where does the model source go" has a single answer.

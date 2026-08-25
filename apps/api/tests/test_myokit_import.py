@@ -474,3 +474,40 @@ def test_a_voltage_clamp_model_converts_as_well_as_a_stimulus_one(requires_simul
     meta = parse_cellml(cellml)
     # Hodgkin-Huxley 1952: membrane potential plus the m/h/n gates.
     assert len(meta.odes) == 4
+
+
+# ---------------------------------------------------------------------------
+# The shim contract
+#
+# The conversion itself moved into circulatory_autogen
+# (``libcuflynx.parsers.MyokitParsers``): it is engine work, and the protocol
+# half has to speak CA's own ``protocol_shapes`` vocabulary, which cannot be kept
+# honest from here. What is left in this module is what stays CUFLynx's.
+# ---------------------------------------------------------------------------
+def test_the_sniff_does_not_need_circulatory_autogen(monkeypatch):
+    """It runs on every upload, before anything knows whether CA is reachable."""
+    monkeypatch.setattr(myokit_import, "_ca_parser", lambda *a, **k: None)
+    assert myokit_import.is_myokit_filename("x.mmt")
+    assert myokit_import.looks_like_myokit(b"[[model]]\nname: x\n")
+
+
+def test_without_the_engine_reader_the_error_says_what_to_do(monkeypatch):
+    monkeypatch.setattr(myokit_import, "_ca_parser", lambda *a, **k: None)
+    with pytest.raises(myokit_import.MyokitImportError) as exc:
+        myokit_import.cellml_from_myokit(MMT, filename="tiny.mmt")
+    assert "libcuflynx.parsers.MyokitParsers" in str(exc.value)
+    assert "Update circulatory_autogen" in str(exc.value)
+
+
+def test_the_engine_error_class_does_not_leak_through(monkeypatch):
+    """The CA directory can be re-pointed at runtime, so an error class imported
+    from CA would change identity mid-session and ``except`` would stop
+    matching. The class the call sites catch is this module's own."""
+    class Boom:
+        @staticmethod
+        def cellml_from_myokit(*a, **k):
+            raise ValueError("engine said no")
+
+    monkeypatch.setattr(myokit_import, "_ca_parser", lambda *a, **k: Boom)
+    with pytest.raises(myokit_import.MyokitImportError, match="engine said no"):
+        myokit_import.cellml_from_myokit(MMT, filename="tiny.mmt")

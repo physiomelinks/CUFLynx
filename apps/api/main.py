@@ -58,6 +58,7 @@ from py_model_meta import PyModelParseError, looks_like_py_filename, parse_py_mo
 import solver_plots
 import mmt_protocol
 import myokit_import
+import easyml_import
 import omex_import
 import omex_export
 from inbox import APP_NAME, RECEIVE_PORTS, inbox  # noqa: F401 - RECEIVE_PORTS is the contract
@@ -282,11 +283,12 @@ _SAFE_MODEL_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 
 #: The suffixes of a model *source*: the file the user wrote, as opposed to the
 #: model CUFLynx runs. Ordered by how directly they are the model -- an
-#: external_python model **is** its ``.py``, while a ``.mmt`` sits beside the
-#: CellML it was converted into at import (#27). A plain CellML model has no
+#: external_python model **is** its ``.py``, while a ``.mmt`` or an EasyML
+#: ``.model`` sits beside the CellML it was converted into at import (#27).
+#: A plain CellML model has no
 #: entry here on purpose: it is edited in PhLynx, and the flattened document
 #: CUFLynx generated is not a file the user has ever seen.
-MODEL_SOURCE_SUFFIXES = (".py", ".mmt")
+MODEL_SOURCE_SUFFIXES = (".py", ".mmt", ".model")
 
 
 def _save_model_source(model_id: str, suffix: str, data: bytes) -> None:
@@ -1192,16 +1194,45 @@ def _protocol_from_mmt(data: bytes, filename: str, out_dir: str) -> dict:
     rather than nothing: "no protocol appeared" is a question, and the answer is
     usually a one-line fact about the file.
     """
-    stem = Path(filename).stem or "model"
-    obs_name = f"{stem}_obs_data.json"
     try:
         info, notes = mmt_protocol.protocol_info_from_mmt(data, filename=filename)
     except mmt_protocol.MmtProtocolError as exc:
-        return {"filename": obs_name, "obs_data": None, "notes": [], "reason": str(exc)}
+        return _offer_protocol(None, [], filename, out_dir, reason=str(exc))
+    return _offer_protocol(info, notes, filename, out_dir)
+
+
+def _protocol_from_easyml(read: dict, filename: str, out_dir: str) -> dict:
+    """The stimulus synthesised for an EasyML model, as an obs_data document.
+
+    An EasyML file carries no stimulus at all -- openCARP's own driver supplies
+    one from the command line -- so unlike a ``.mmt`` there is nothing here to
+    convert, only a default to propose. That is the more important reason to
+    offer it rather than apply it, and the reason the notes say what was chosen.
+    """
+    return _offer_protocol(
+        read.get("protocol_info"),
+        list(read.get("protocol_notes") or []),
+        filename,
+        out_dir,
+        reason=read.get("protocol_reason"),
+    )
+
+
+def _offer_protocol(info, notes, filename: str, out_dir: str, reason: str | None = None) -> dict:
+    """One protocol offer, however it was arrived at.
+
+    Shared because the two callers differ only in where the schedule came from,
+    and the part after that -- what the document looks like, where the copy goes,
+    and the refusal to overwrite -- is the part worth having in one place.
+    """
+    stem = Path(filename).stem or "model"
+    obs_name = f"{stem}_obs_data.json"
+    if info is None:
+        return {"filename": obs_name, "obs_data": None, "notes": [], "reason": reason}
 
     # data_items are the user's to write -- what the model should be measured
-    # against is not in the .mmt. An empty list is a valid obs_data document, and
-    # is enough to run the protocol.
+    # against is not in the model file. An empty list is a valid obs_data
+    # document, and is enough to run the protocol.
     obs_data = {"protocol_info": info, "data_items": []}
 
     # Keep a file beside the converted CellML, for the same reason: a conversion
@@ -1296,10 +1327,15 @@ async def upload_model(
     converted_from = None
     converted_path = None
     protocol: dict | None = None
+    # Anything the reader had to decide for itself. Empty for CellML; for an
+    # EasyML model it is never empty, because that format leaves the membrane
+    # equation out and something had to be put in its place.
+    import_warnings: list[str] = []
     # The bytes the user dropped, kept once the model_id exists: the conversion
-    # below replaces `only_bytes` with CellML, and the .mmt would otherwise be
-    # gone the moment this request returns.
-    mmt_source: bytes | None = None
+    # below replaces `only_bytes` with CellML, and the original would otherwise
+    # be gone the moment this request returns.
+    source_suffix: str | None = None
+    source_bytes: bytes | None = None
     if single and (
         myokit_import.is_myokit_filename(only_name) or myokit_import.looks_like_myokit(only_bytes)
     ):
@@ -1314,12 +1350,36 @@ async def upload_model(
         except myokit_import.MyokitImportError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         converted_from = only_name
-        mmt_source = mmt_bytes
+        source_suffix, source_bytes = ".mmt", mmt_bytes
         raw_by_name = {Path(only_name).stem + ".cellml": only_bytes}
         # The [[protocol]] section the model import deliberately leaves behind.
         # Offered rather than applied: the client decides, because a model
         # dropped alongside an obs_data the user wrote must not be overridden.
         protocol = _protocol_from_mmt(mmt_bytes, only_name, out_base)
+    elif single and easyml_import.wants_easyml(only_name, only_bytes):
+        # openCARP's EasyML rides the same rail, for the same reason: by the time
+        # the model reaches the engine it is CellML, so no solver, model type or
+        # packaging anywhere downstream has to know this format exists.
+        out_base = _user_func_base_dir(output_dir or "")
+        easyml_bytes = only_bytes
+        try:
+            read = easyml_import.import_easyml(
+                only_bytes,
+                filename=only_name,
+                out_dir=out_base,
+            )
+        except easyml_import.EasyMLImportError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        only_bytes = read["cellml"]
+        converted_path = read["cellml_path"]
+        converted_from = only_name
+        source_suffix, source_bytes = ".model", easyml_bytes
+        raw_by_name = {Path(only_name).stem + ".cellml": only_bytes}
+        # These are not diagnostics. A synthesised membrane equation and a gate
+        # started at its steady state are places where the imported model differs
+        # from the file, and the user is the only one who can judge them.
+        import_warnings = list(read["warnings"])
+        protocol = _protocol_from_easyml(read, only_name, out_base)
 
     if single and not has_imports(only_bytes):
         # Self-contained single file: save as-is (unchanged behaviour).
@@ -1346,8 +1406,8 @@ async def upload_model(
     model_id = uuid.uuid4().hex
     path = UPLOAD_DIR / f"{model_id}.cellml"
     path.write_bytes(raw)
-    if mmt_source is not None:
-        _save_model_source(model_id, ".mmt", mmt_source)
+    if source_bytes is not None and source_suffix is not None:
+        _save_model_source(model_id, source_suffix, source_bytes)
     # The file the user dropped names the study, whatever the CellML calls itself
     # inside. A .mmt converted at the door keeps its own stem for the same reason:
     # the study is the thing the user has a name for.
@@ -1365,10 +1425,14 @@ async def upload_model(
         # say the model it is showing is not the file that was dropped.
         "converted_from": converted_from,
         "converted_cellml_path": converted_path,
-        # The .mmt's [[protocol]] section as obs_data, for the client to adopt if
-        # it has no obs_data of its own. None for CellML, and for a .mmt whose
-        # protocol cannot be converted -- in which case `reason` says why.
+        # The .mmt's [[protocol]] section -- or an EasyML model's synthesised
+        # stimulus -- as obs_data, for the client to adopt if it has no obs_data
+        # of its own. None for CellML, and when the protocol cannot be produced
+        # -- in which case `reason` says why.
         "protocol_obs_data": protocol,
+        # What the import had to decide. Shown, not logged: see the comment
+        # where import_warnings is set.
+        "warnings": import_warnings,
     }
 
 
@@ -1434,7 +1498,9 @@ def import_omex_bytes(data: bytes, output_dir: str | None = None,
     # than like a lesser kind of study.
     converted_from = None
     protocol = None
-    mmt_source: bytes | None = None
+    import_warnings: list[str] = []
+    source_suffix: str | None = None
+    source_bytes: bytes | None = None
     if len(raw_by_name) == 1 and myokit_import.is_myokit_filename(parts["master"] or ""):
         only_name = parts["master"]
         mmt_bytes = raw_by_name[only_name]
@@ -1445,9 +1511,26 @@ def import_omex_bytes(data: bytes, output_dir: str | None = None,
         except myokit_import.MyokitImportError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         converted_from = only_name
-        mmt_source = mmt_bytes
+        source_suffix, source_bytes = ".mmt", mmt_bytes
         protocol = _protocol_from_mmt(mmt_bytes, only_name, out_dir)
         raw_by_name = {Path(only_name).stem + ".cellml": cellml_bytes}
+        parts = {**parts, "master": Path(only_name).stem + ".cellml"}
+    elif len(raw_by_name) == 1 and easyml_import.wants_easyml(
+        parts["master"] or "", next(iter(raw_by_name.values()))
+    ):
+        only_name = parts["master"]
+        easyml_bytes = raw_by_name[only_name]
+        try:
+            read = easyml_import.import_easyml(
+                easyml_bytes, filename=only_name, out_dir=out_dir
+            )
+        except easyml_import.EasyMLImportError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        converted_from = only_name
+        source_suffix, source_bytes = ".model", easyml_bytes
+        protocol = _protocol_from_easyml(read, only_name, out_dir)
+        import_warnings = list(read["warnings"])
+        raw_by_name = {Path(only_name).stem + ".cellml": read["cellml"]}
         parts = {**parts, "master": Path(only_name).stem + ".cellml"}
 
     if len(raw_by_name) == 1 and not has_imports(next(iter(raw_by_name.values()))):
@@ -1472,8 +1555,8 @@ def import_omex_bytes(data: bytes, output_dir: str | None = None,
     model_id = uuid.uuid4().hex
     path = UPLOAD_DIR / f"{model_id}.cellml"
     path.write_bytes(raw)
-    if mmt_source is not None:
-        _save_model_source(model_id, ".mmt", mmt_source)
+    if source_bytes is not None and source_suffix is not None:
+        _save_model_source(model_id, source_suffix, source_bytes)
     _models[model_id] = _ModelRecord(
         model_id, path, meta, _remember_prefix(model_id, converted_from or parts["master"]))
     # The archive itself, whole. Everything CUFLynx does not understand -- the
@@ -1486,7 +1569,7 @@ def import_omex_bytes(data: bytes, output_dir: str | None = None,
     # silence: a part that was never found, a check that could not run, editor
     # state that could not be kept. The study still loads -- but an empty tab
     # must never be the only thing that says so.
-    load_warnings: list[str] = []
+    load_warnings: list[str] = list(import_warnings)
 
     result = {
         "model_id": model_id,
@@ -1795,9 +1878,10 @@ def get_variables(model_id: str) -> dict:
 def get_model_source(model_id: str, config_outputs_dir: str = "") -> FileResponse:
     """The file the user wrote, for a model that has one (#91 follow-up).
 
-    Two kinds of model do. An ``external_python`` model **is** its ``.py``, and a
-    Myokit model's ``.mmt`` is kept beside the CellML it was converted into at
-    import. A plain CellML model has none: it is edited in PhLynx, so this 404s
+    Two kinds of model do. An ``external_python`` model **is** its ``.py``; a
+    Myokit ``.mmt`` and an EasyML ``.model`` are kept beside the CellML they were
+    converted into at import. A plain CellML model has none: it is edited in
+    PhLynx, so this 404s
     rather than answering with the flattened document CUFLynx generated, which is
     not a file the user has ever seen.
 
@@ -1916,7 +2000,8 @@ def edit_model_source(model_id: str, req: ModelEditRequest) -> dict:
         "editor": launch["editor"],
         "reason": launch["reason"],
         # Whether this copy is the one CUFLynx runs. True for external_python;
-        # false for a .mmt, which is the source of a CellML that runs instead.
+        # false for a .mmt or an EasyML .model, each of which is the source of a
+        # CellML that runs instead.
         "runs": source.suffix == ".py",
     }
 

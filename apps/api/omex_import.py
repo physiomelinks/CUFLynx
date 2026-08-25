@@ -63,10 +63,10 @@ OMEX_SUFFIXES = (".omex",)
 #: study is anywhere near it.
 MAX_UNCOMPRESSED_BYTES = 512 * 1024 * 1024
 
-# The model formats an archive may carry. A .mmt is converted to CellML on the
-# way in exactly as a dropped one is (#27), so an archive built around a Myokit
-# model is not a second kind of study.
-MODEL_SUFFIXES = (".cellml", ".mmt")
+# The model formats an archive may carry. A .mmt or an EasyML .model is
+# converted to CellML on the way in exactly as a dropped one is (#27), so an
+# archive built around either is not a second kind of study.
+MODEL_SUFFIXES = (".cellml", ".mmt", ".model")
 
 
 class OmexImportError(ValueError):
@@ -218,6 +218,7 @@ def _classify(
 
     cellml = [n for n in names if n.lower().endswith(".cellml")]
     myokit = [n for n in names if n.lower().endswith(".mmt")]
+    easyml = [n for n in names if n.lower().endswith(".model")]
     csvs = [n for n in names if n.lower().endswith(".csv")]
     jsons = [n for n in names if n.lower().endswith(".json")]
 
@@ -265,11 +266,14 @@ def _classify(
 
     return {
         "obs_skipped": obs_skipped,
-        # A .mmt only counts when there is no CellML: an archive holding both has
-        # presumably already been converted, and the CellML is the authoritative
-        # copy -- re-converting would silently prefer the source over the file the
-        # author chose to ship.
-        "cellml": cellml or myokit,
+        # A .mmt or an EasyML .model only counts when there is no CellML: an
+        # archive holding both has presumably already been converted, and the
+        # CellML is the authoritative copy -- re-converting would silently prefer
+        # the source over the file the author chose to ship. EasyML comes last
+        # for the same reason plus one of its own: `.model` is a generic suffix
+        # that other tools use, so it is the least trustworthy claim to be a
+        # model in the archive.
+        "cellml": cellml or myokit or easyml,
         "params": params_csv or params_json or csvs,
         "obs": obs,
         "module_config": module_config,
