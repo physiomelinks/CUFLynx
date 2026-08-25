@@ -33,6 +33,7 @@ import sys
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -231,6 +232,74 @@ def _check_emulator_is_usable(base: str) -> None:
           f"{len(d.get('models') or [])} models)")
 
 
+class HttpTransport:
+    """`apps/api/tests/acceptance`'s transport, over HTTP to a launched binary.
+
+    The checks themselves live with the test suite and run there on every push;
+    this is the same list asked of the artifact a user downloads. See that module
+    for why they are not written twice.
+    """
+
+    def __init__(self, base: str):
+        self.base = base
+
+    def get(self, path):
+        _, body = _req("GET", f"{self.base}{path}", timeout=120)
+        return body
+
+    def get_raw(self, path):
+        request = urllib.request.Request(f"{self.base}{path}", method="GET")
+        with urllib.request.urlopen(request, timeout=120) as response:
+            return response.read(), dict(response.headers)
+
+    def post(self, path, payload=None):
+        _, body = _req("POST", f"{self.base}{path}", data=payload or {}, timeout=600)
+        return body
+
+    def upload(self, path, filename, blob, field="file", content_type="application/zip"):
+        boundary = "----cuflynxacceptance"
+        body = (f"--{boundary}\r\nContent-Disposition: form-data; name=\"{field}\"; "
+                f"filename=\"{filename}\"\r\nContent-Type: {content_type}\r\n\r\n").encode()
+        body += blob + f"\r\n--{boundary}--\r\n".encode()
+        request = urllib.request.Request(
+            f"{self.base}{path}", data=body,
+            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
+        with urllib.request.urlopen(request, timeout=600) as response:
+            return json.loads(response.read())
+
+    @staticmethod
+    def quote(value):
+        return urllib.parse.quote(value)
+
+
+def _run_shared_acceptance_checks(base: str) -> None:
+    """The checks the test suite runs in-process, asked of the built app.
+
+    Run *before* a CA directory is configured, so what answers them is the engine
+    inside the bundle -- which is what a user who never opens Settings has, and
+    which nothing else in this pipeline exercises: every other step here points the
+    app at a checked-out circulatory_autogen.
+    """
+    sys.path.insert(0, str(ROOT / "apps" / "api" / "tests"))
+    import acceptance  # noqa: PLC0415 - path is set up immediately above
+
+    app = HttpTransport(base)
+    config = app.get("/api/config")
+    if config.get("ca_dir"):
+        _fail(f"a CA directory is already configured ({config['ca_dir']}), so these "
+              f"checks would not be testing the bundled engine")
+
+    for name, check in (
+        ("engine vocabulary", lambda: acceptance.check_engine_vocabulary(app)),
+        ("example is current", lambda: acceptance.check_example_is_current(app)),
+        ("example loads whole", lambda: acceptance.check_example_loads_whole(app)),
+    ):
+        try:
+            print(f"  bundled engine -- {name}: {check()}")
+        except AssertionError as exc:
+            _fail(f"{name} failed against the bundled engine: {exc}")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--binary", required=True, help="path to the built CUFLynx executable")
@@ -243,6 +312,9 @@ def main() -> int:
     ap.add_argument("--sensitivity-timeout", type=int, default=600)
     ap.add_argument("--full", action="store_true",
                     help="also probe the emulator / pyMC stack (the -full Linux asset)")
+    ap.add_argument("--num-cores", type=int, default=1,
+                    help="with --full, also run sensitivity, calibration and emulator "
+                         "training across this many MPI ranks (the bundle-as-runner path)")
     args = ap.parse_args()
 
     base = f"http://127.0.0.1:{args.port}"
@@ -264,6 +336,10 @@ def main() -> int:
         if args.full:
             _check_full_stack(args.binary)
             _check_emulator_is_usable(base)
+
+        # 0b. The shared acceptance checks, while no CA directory is configured --
+        #     so the bundled engine is what answers them.
+        _run_shared_acceptance_checks(base)
 
         # 1. Configure CA dir + runner interpreter + backend, as a user would.
         #    Pin the backend to cellml / CVODE_myokit explicitly: the analysis
@@ -320,6 +396,46 @@ def main() -> int:
         if not best or not all(isinstance(v, (int, float)) for v in best.values()):
             _fail(f"calibration produced no usable best_params: {best!r}", cal.get("_lines"))
         print(f"calibration OK (state=done, {len(best)} best params, cost={cal.get('cost')})")
+
+        # 5. The same analyses again across MPI ranks. Only for the full asset, which
+        #    is the one that runs analysis in its own interpreter for users who never
+        #    configure one -- and therefore the only one where `mpiexec` launches the
+        #    *bundle* rather than a Python. That path has its own failure mode: the
+        #    ranks are children of mpiexec while inheriting this process's PyInstaller
+        #    parent state, and their bootloader refuses to start ("Security validation
+        #    failure: parent process has different executable!", exit 255, no
+        #    traceback). Nothing here ran multi-core, so it shipped.
+        if args.full and args.num_cores > 1:
+            print(f"\n--- multi-core arm ({args.num_cores} ranks) ---")
+            _, r = _req("POST", f"{base}/api/sensitivity/run",
+                        data={"model_id": model_id,
+                              "settings": {**sa_settings, "num_cores": args.num_cores}})
+            sa_par = _poll_job(base, "sensitivity", r["job_id"], args.sensitivity_timeout)
+            if sa_par["state"] != "done":
+                _fail(f"a {args.num_cores}-rank sensitivity ended in state "
+                      f"{sa_par['state']!r}", sa_par.get("_lines"))
+            print(f"sensitivity on {args.num_cores} ranks OK")
+
+            _, r = _req("POST", f"{base}/api/calibration/run",
+                        data={"model_id": model_id,
+                              "settings": {**cal_settings, "num_cores": args.num_cores}})
+            cal_par = _poll_job(base, "calibration", r["job_id"], args.calibration_timeout)
+            if cal_par["state"] != "done":
+                _fail(f"a {args.num_cores}-rank calibration ended in state "
+                      f"{cal_par['state']!r}", cal_par.get("_lines"))
+            print(f"calibration on {args.num_cores} ranks OK")
+
+            # Training is where the ranks do the expensive part -- CA splits the design
+            # across them -- and it is what the bug above was reported from.
+            _, r = _req("POST", f"{base}/api/emulator/train",
+                        data={"model_id": model_id,
+                              "settings": {"num_train_samples": 12, "dt": 0.01,
+                                           "num_cores": args.num_cores}})
+            emu = _poll_job(base, "emulator", r["job_id"], args.calibration_timeout)
+            if emu["state"] != "done":
+                _fail(f"a {args.num_cores}-rank emulator training ended in state "
+                      f"{emu['state']!r}", emu.get("_lines"))
+            print(f"emulator training on {args.num_cores} ranks OK")
 
         print("\nANALYSIS SMOKE PASSED: sensitivity + calibration ran in the built app")
         return 0

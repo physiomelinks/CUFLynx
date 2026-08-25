@@ -7,6 +7,7 @@ here is refusal and provenance, not happy paths.
 """
 
 import json
+import time
 from pathlib import Path
 
 import pytest
@@ -967,3 +968,295 @@ def test_the_chosen_interpreter_is_probed_even_with_no_ca_directory(monkeypatch,
                         lambda *a, **k: {"emulation": {"options": [{"name": "model"}]}})
     monkeypatch.setattr(so, "analysis_options_introspected", lambda: True)
     assert so.emulator_availability("/envs/emu/bin/python")["available"] is True
+
+
+# ---------------------------------------------------------------------------
+# Choosing between several emulators trained on one design
+# ---------------------------------------------------------------------------
+def _family(directory, model_name, r2, samples=True):
+    """A bundle that reports a family and a set of held-out scores."""
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "emulator_metadata.json").write_text(json.dumps({
+        "model_name": model_name,
+        "feature_r2": r2,
+        "feature_labels": [f"f{i}" for i in range(len(r2))],
+        "design": {"num_used": 12000, "num_stages": 3},
+    }))
+    if samples:
+        (directory / "training_data.npz").write_bytes(b"not really an npz")
+    return str(directory)
+
+
+def test_a_directory_of_bundles_enumerates_them(tmp_path):
+    """A study that fits one design with several families keeps them side by side."""
+    import ca_run_history
+
+    root = tmp_path / "emulators"
+    _family(root / "s_two_phase_RBF", "two_phase_RadialBasisFunctions", [0.9])
+    _family(root / "s_two_phase_MLP", "two_phase_MLP", [0.8])
+
+    found = [Path(p).name for p in ca_run_history.emulator_bundles(str(root))]
+    assert sorted(found) == ["s_two_phase_MLP", "s_two_phase_RBF"]
+
+
+def test_a_bundle_names_only_itself(tmp_path):
+    """The container shape must not swallow the one-bundle case it also has to serve."""
+    import ca_run_history
+
+    bundle = _family(tmp_path / "emu", "two_phase_MLP", [0.7])
+    assert ca_run_history.emulator_bundles(bundle) == [bundle]
+
+
+def test_bundles_of_a_missing_directory_is_empty_not_an_error(tmp_path):
+    import ca_run_history
+
+    assert ca_run_history.emulator_bundles(str(tmp_path / "nope")) == []
+
+
+def test_a_summary_carries_what_a_chooser_needs(tmp_path):
+    import ca_run_history
+
+    bundle = _family(tmp_path / "emu", "two_phase_MLP", [0.5, 0.9, 0.7])
+    row = ca_run_history.emulator_summary(bundle)
+    assert row["model_name"] == "two_phase_MLP"
+    assert row["worst_r2"] == 0.5
+    assert row["median_r2"] == 0.7
+    assert row["num_features"] == 3
+    assert row["num_samples"] == 12000
+    assert row["reusable"] is True
+
+
+def test_choices_are_ordered_by_the_worst_feature(tmp_path):
+    """Worst-first, because that is the number that bounds what a bundle can be
+    trusted for -- an emulator misleads a calibration where it is weakest."""
+    import ca_run_history
+
+    root = tmp_path / "emulators"
+    _family(root / "s_two_phase_RBF", "two_phase_RadialBasisFunctions", [0.30, 0.95])
+    _family(root / "s_two_phase_MLP", "two_phase_MLP", [0.28, 0.99])
+    _family(root / "s_two_phase_RandomForest", "two_phase_RandomForest", [0.21, 0.85])
+
+    rows = ca_run_history.emulator_choices(str(tmp_path), "s", None,
+                                           declared=str(root))
+    assert [r["model_name"] for r in rows] == [
+        "two_phase_RadialBasisFunctions", "two_phase_MLP", "two_phase_RandomForest",
+    ]
+
+
+def test_choices_without_a_declaration_still_find_the_conventional_bundle(tmp_path):
+    """The list can never omit the bundle the old search would have chosen."""
+    import ca_run_history
+
+    conventional = ca_run_history.emulator_dir(str(tmp_path), "model", None)
+    _family(Path(conventional), "two_phase_MLP", [0.6])
+
+    rows = ca_run_history.emulator_choices(str(tmp_path), "model", None)
+    assert [Path(r["dir"]).name for r in rows] == [Path(conventional).name]
+
+
+def test_a_bundle_whose_scores_cannot_be_read_sorts_last_not_worst(tmp_path):
+    """Unknown is not the same as known-bad, and must not be ranked as though it were."""
+    import ca_run_history
+
+    root = tmp_path / "emulators"
+    _family(root / "s_scored", "two_phase_MLP", [-5.0])
+    _family(root / "s_unscored", "two_phase_RandomForest", [])
+
+    rows = ca_run_history.emulator_choices(str(tmp_path), "s", None, declared=str(root))
+    assert rows[0]["model_name"] == "two_phase_MLP"
+    assert rows[-1]["worst_r2"] is None
+
+
+def test_a_directory_name_can_disagree_with_the_reported_family(tmp_path):
+    """A refit that died after its metadata was copied in looks exactly like this.
+
+    CUFLynx does not repair it -- it cannot know which is right -- but the summary
+    must carry both, because the name alone and the family alone each read as a
+    healthy bundle and only the pair shows the problem.
+    """
+    import ca_run_history
+
+    bundle = _family(tmp_path / "s_two_phase_MLP", "two_phase_RadialBasisFunctions", [0.4])
+    row = ca_run_history.emulator_summary(bundle)
+    assert row["name"] == "s_two_phase_MLP"
+    assert row["model_name"] == "two_phase_RadialBasisFunctions"
+
+
+def test_a_chosen_emulator_must_be_one_that_was_offered(tmp_path):
+    """The panel has no free-text path, and the chooser must not become one.
+
+    Deriving the location on both sides is what stops training writing to one
+    directory and a later run reading from another. A choice constrained to the
+    discovered set keeps that property; a choice taken at its word would hand the
+    caller an arbitrary path to read a bundle out of.
+    """
+    import main
+
+    offered = _family(tmp_path / "emulators" / "s_two_phase_MLP", "two_phase_MLP", [0.7])
+    choices = [{"dir": offered}]
+
+    assert main._chosen_emulator_dir({"emulator_dir": offered}, choices) == offered
+    assert main._chosen_emulator_dir({"emulator_dir": "/etc"}, choices) is None
+    assert main._chosen_emulator_dir({"emulator_dir": ""}, choices) is None
+    assert main._chosen_emulator_dir({}, choices) is None
+
+
+def test_a_manifest_may_declare_the_container_rather_than_one_bundle(tmp_path):
+    """Naming one of several would tell a reader the others are not this study's."""
+    import json as _json
+
+    import load_outputs
+
+    root = tmp_path / "study"
+    emulators = root / "emulators"
+    _family(emulators / "s_two_phase_RBF", "two_phase_RadialBasisFunctions", [0.30])
+    _family(emulators / "s_two_phase_MLP", "two_phase_MLP", [0.28])
+    (root / "cuflynx_study.json").write_text(_json.dumps({
+        "schema": 1, "file_prefix": "s", "emulator": "emulators",
+    }))
+
+    result = load_outputs.load_outputs(str(root))
+    names = sorted(Path(row["dir"]).name for row in result["emulator"]["choices"])
+    assert names == ["s_two_phase_MLP", "s_two_phase_RBF"]
+    # Best-first, so the default is the safest rather than the most recent.
+    assert Path(result["emulator"]["dir"]).name == "s_two_phase_RBF"
+
+
+# ---------------------------------------------------------------------------
+# End to end: train one, then use it
+#
+# Everything above tests the wiring around an emulator -- where its directory is,
+# what its metadata says, which kwargs a runner passes. Nothing trained one and
+# then ran an analysis on it, so the question a user actually asks ("I trained an
+# emulator; can I calibrate against it?") had no answer in this suite. It is also
+# the shape of the failures that reached users: a bundle that trains and then
+# cannot reload, an engine whose fingerprint no longer matches the study.
+#
+# Deliberately tiny. The design is the expensive part and its size decides only
+# how *good* the emulator is; what these assert is that the pipeline runs, the
+# bundle lands, and the three analyses accept it.
+# ---------------------------------------------------------------------------
+EMULATOR_SAMPLES = 12
+
+
+def _setup_3compartment(client, out_dir=None):
+    """The three files of the shipped example study, loaded as a user would.
+
+    The archive rather than the loose files: it is one call, and it is the path the
+    Start dialog uses -- so a study set up here is the study a user has.
+    """
+    from conftest import RESOURCES_DIR
+
+    blob = (RESOURCES_DIR / "3compartment.omex").read_bytes()
+    params = {"output_dir": str(out_dir)} if out_dir else {}
+    resp = client.post("/api/omex/upload", params=params,
+                       files={"file": ("3compartment.omex", blob, "application/zip")})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert not (body.get("obs_data") or {}).get("error"), body["obs_data"]
+    return body["model_id"]
+
+
+@pytest.fixture
+def requires_autoemulate():
+    """Training needs autoemulate in *this* interpreter (the tests run in-process)."""
+    pytest.importorskip("autoemulate", reason="autoemulate is not installed here")
+
+
+def _train_emulator(client, model_id, out_dir, num_cores=1, timeout=900):
+    """Train an emulator through the app; returns ``(state, log lines)``.
+
+    Polls through ``test_run_matrix._wait``, which already speaks the
+    offset/next_offset protocol every analysis status route uses -- a second
+    hand-rolled poller here would be one more thing to keep in step with it.
+    """
+    from test_run_matrix import _wait
+
+    resp = client.post("/api/emulator/train", json={
+        "model_id": model_id,
+        "settings": {
+            "config_outputs_dir": str(out_dir),
+            "num_train_samples": EMULATOR_SAMPLES,
+            "num_cores": num_cores,
+            "dt": 0.01,
+        },
+    })
+    assert resp.status_code == 200, resp.text
+    return _wait(client, "emulator", resp.json()["job_id"], timeout)
+
+
+@pytest.mark.integration
+def test_a_trained_emulator_can_drive_sensitivity_calibration_and_uq(
+    client, requires_simulation, requires_autoemulate, tmp_path
+):
+    """Train once, then run all three analyses against it.
+
+    The reuse check is CA's (`EmulatorBundle.check_matches`), and it compares a
+    fingerprint of the model file, the parameter bounds and the protocol. So a run
+    that accepts the bundle is evidence that the study the app hands each analysis
+    is the study the emulator was trained on -- which is exactly what breaks when
+    the app renames a study, reopens it against a different model, or writes its
+    obs_data under a name that changes between uploads.
+    """
+    from test_run_matrix import _wait
+
+    model_id = _setup_3compartment(client, tmp_path)
+
+    trained, train_log = _train_emulator(client, model_id, tmp_path)
+    assert trained.get("state") == "done", (
+        f"training ended {trained.get('state')}: {trained.get('error')}\n"
+        + "\n".join(train_log[-40:]))
+
+    info = client.get("/api/emulator/info", params={
+        "model_id": model_id, "config_outputs_dir": str(tmp_path)}).json()
+    assert info.get("metadata"), f"no bundle written: {info}"
+
+    # Each analysis, with the emulator ticked on. What is under test is that CA
+    # accepts the bundle for this study -- a mismatch raises EmulatorQualityError
+    # inside the run and the job ends in error, which is what these would catch.
+    for kind, route, settings in (
+        ("sensitivity", "/api/sensitivity/run",
+         {"method": "local", "gradient_method": "FD", "nominal": "current",
+          "rel_step": 0.05, "num_cores": 1}),
+        ("calibration", "/api/calibration/run",
+         {"num_calls_to_function": 6, "num_cores": 1}),
+        ("uq", "/api/uq/run",
+         {"num_steps": 20, "num_walkers": 8, "num_cores": 1,
+          "run_calibration_first": True}),
+    ):
+        payload = {"model_id": model_id,
+                   "settings": {**settings, "config_outputs_dir": str(tmp_path),
+                                "use_emulator": True, "dt": 0.01}}
+        resp = client.post(route, json=payload)
+        assert resp.status_code == 200, f"{kind} refused the emulator up front: {resp.text}"
+        state, lines = _wait(client, kind, resp.json()["job_id"], 900)
+        log = "\n".join(lines)
+        assert state.get("state") == "done", (
+            f"{kind} on the emulator ended {state.get('state')}: {state.get('error')}\n"
+            f"{log[-2000:]}")
+        assert "EmulatorQualityError" not in log, (
+            f"{kind} rejected the bundle as stale -- the study it was handed is not the "
+            f"study the emulator was trained on:\n{log[-2000:]}")
+
+
+@pytest.mark.integration
+def test_training_runs_across_ranks_when_asked_for_more_than_one(
+    client, requires_simulation, requires_autoemulate, tmp_path, recorded_commands
+):
+    """Training spreads its simulations across MPI ranks, and says so on the argv.
+
+    The design is the expensive half of training and CA splits it across ranks, so
+    this is the parallel path users reach for. Asserted on the launched command as
+    well as on the result: a run that quietly drops to one core finishes and reports
+    success just the same.
+    """
+    from test_run_matrix import PARALLEL_CORES, _assert_parallelism
+
+    model_id = _setup_3compartment(client, tmp_path)
+    state, lines = _train_emulator(client, model_id, tmp_path, num_cores=PARALLEL_CORES)
+
+    log = "\n".join(lines)
+    assert state.get("state") == "done", (
+        f"a {PARALLEL_CORES}-rank training ended {state.get('state')}:\n{log[-3000:]}")
+    assert "MPI_ABORT" not in log, f"a rank aborted:\n{log[-3000:]}"
+    _assert_parallelism(recorded_commands, PARALLEL_CORES)
