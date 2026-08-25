@@ -155,11 +155,17 @@ def requires_easyml():
     not agree with the first for long -- so without CA these tests have nothing
     to exercise. The tests about the *no-CA* behaviour itself force CA away and
     always run.
+
+    Myokit is checked too, and separately from ``requires_simulation``: the
+    reader builds a ``myokit.Model``, so the unit tier -- which installs neither
+    Myokit nor libCellML -- cannot run these even with CA present. libCellML is
+    *not* required, because reading an EasyML file never touches it.
     """
     import easyml_import
 
     if easyml_import._ca_parser("parsers.EasyMLParsers") is None:
         pytest.skip("libcuflynx.parsers.EasyMLParsers not importable")
+    pytest.importorskip("myokit")
 
 
 @pytest.fixture
@@ -169,6 +175,7 @@ def requires_myokit_parser():
 
     if myokit_import._ca_parser() is None:
         pytest.skip("libcuflynx.parsers.MyokitParsers not importable")
+    pytest.importorskip("myokit")
 
 
 @pytest.fixture
