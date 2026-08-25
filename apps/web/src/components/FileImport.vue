@@ -103,12 +103,14 @@ const paramsLoaded = computed(() => !!props.loadedFilename)
 // model's is the .mmt it was converted from — opening a CellML builder on either
 // would show the user a model they did not write and cannot edit there.
 //
-// `.mmt` is spotted through `converted_from` rather than through the model
-// format: the conversion is what makes the loaded model CellML, so by the time
-// it is loaded nothing else remembers the file was Myokit.
+// `.mmt` and EasyML's `.model` are spotted through `converted_from` rather than
+// through the model format: the conversion is what makes the loaded model
+// CellML, so by the time it is loaded nothing else remembers what the file was.
 const sourceExt = computed(() => {
   if (props.modelFormat === 'external_python') return '.py'
-  if (/\.mmt$/i.test(String(props.convertedFrom || ''))) return '.mmt'
+  const from = String(props.convertedFrom || '')
+  if (/\.mmt$/i.test(from)) return '.mmt'
+  if (/\.model$/i.test(from)) return '.model'
   return ''
 })
 
@@ -506,16 +508,17 @@ async function onCellmlDrop(event) {
   resetPicker(event)
   if (!files.length) return
   // An archive is taken whole and returns early; what follows is the loose-file
-  // path. .mmt is accepted there and converted to CellML server-side (#27) -- a
-  // Myokit model is a single file, so it never joins a sister-file bundle.
+  // path. .mmt and openCARP's EasyML .model are accepted there and converted to
+  // CellML server-side (#27) -- both are single files, so neither ever joins a
+  // sister-file bundle.
   if (await handleOmex(files)) return
   // `.py` is an *external python* model: a file holding the solver class itself
   // rather than a model description CUFLynx generates a solver from. It travels
   // the same upload route, and the server answers with model_format:
   // "external_python" so the app can lock the backend to it.
-  const bad = files.find((f) => !extOk(f.name, ['.cellml', '.xml', '.mmt', '.py']))
+  const bad = files.find((f) => !extOk(f.name, ['.cellml', '.xml', '.mmt', '.py', '.model']))
   if (bad) {
-    error.value = `Expected a .cellml, .mmt, .py or .omex file, got "${bad.name}"`
+    error.value = `Expected a .cellml, .mmt, .model, .py or .omex file, got "${bad.name}"`
     return
   }
   const unreadable = files.map(unreadableDrop).find(Boolean)
@@ -528,6 +531,10 @@ async function onCellmlDrop(event) {
   const main = files.find((f) => f.name.toLowerCase().endsWith('.cellml')) ?? files[0]
   try {
     const data = await uploadCellML(files, props.outputsDir)
+    // What the import had to decide for itself. An EasyML model always has some:
+    // the format leaves the membrane equation out, so something was put in its
+    // place, and that is the user's to check rather than the log's to keep.
+    warnings.value = [...(data.warnings || [])]
     // Picked up by the modelId watcher, which runs after the parent has cleared
     // its obs store and after any pending obs_data has been re-attached.
     derivedObs.value = data.protocol_obs_data || null
@@ -618,10 +625,11 @@ async function onParamsDrop(event) {
         </template>
         <template v-else>
           <i class="pi pi-file" /> Drop <strong>CellML</strong> (.cellml),
-          <strong>Myokit</strong> (.mmt) or <strong>External Python</strong> (.py)
+          <strong>Myokit</strong> (.mmt), <strong>EasyML</strong> (.model) or
+          <strong>External Python</strong> (.py)
           <small>one file, a non-flattened model with its sisters, or a .omex archive</small>
         </template>
-        <input type="file" accept=".cellml,.xml,.mmt,.py,.omex" multiple @change="onCellmlDrop" />
+        <input type="file" accept=".cellml,.xml,.mmt,.model,.py,.omex" multiple @change="onCellmlDrop" />
       </label>
       <Button
         :label="startEditLabel"

@@ -363,7 +363,7 @@ def test_an_archive_with_neither_says_what_it_wanted():
 
 @pytest.mark.integration
 def test_the_myokit_archive_loads_model_and_params_in_one_drop(
-    client, requires_simulation, tmp_path
+    client, requires_simulation, requires_myokit_parser, tmp_path
 ):
     with open(MMT_EXAMPLE, "rb") as fh:
         resp = client.post(
@@ -382,7 +382,9 @@ def test_the_myokit_archive_loads_model_and_params_in_one_drop(
 
 
 @pytest.mark.integration
-def test_the_archives_protocol_comes_from_the_mmt(client, requires_simulation):
+def test_the_archives_protocol_comes_from_the_mmt(
+    client, requires_simulation, requires_myokit_parser
+):
     """The archive carries no obs_data. Without this the study would load unpaced
     -- a model and a parameter to fit, and nothing driving it."""
     with open(MMT_EXAMPLE, "rb") as fh:
@@ -409,7 +411,9 @@ def test_the_archives_protocol_comes_from_the_mmt(client, requires_simulation):
 
 
 @pytest.mark.integration
-def test_the_archive_and_the_bare_mmt_give_the_same_protocol(client, requires_simulation):
+def test_the_archive_and_the_bare_mmt_give_the_same_protocol(
+    client, requires_simulation, requires_myokit_parser
+):
     """Two routes into the same conversion, so they must not drift apart. The
     archive path is easy to leave behind: it has its own upload route, and this
     is the assertion that notices."""
@@ -427,7 +431,9 @@ def test_the_archive_and_the_bare_mmt_give_the_same_protocol(client, requires_si
 
 
 @pytest.mark.integration
-def test_an_obs_data_in_the_archive_beats_the_mmts_own_protocol(client, requires_simulation):
+def test_an_obs_data_in_the_archive_beats_the_mmts_own_protocol(
+    client, requires_simulation, requires_myokit_parser
+):
     """The author's file is the author's intent; a derived protocol must not
     displace one they shipped."""
     mine = {
@@ -453,7 +459,9 @@ def test_an_obs_data_in_the_archive_beats_the_mmts_own_protocol(client, requires
 
 
 @pytest.mark.integration
-def test_the_whole_archive_simulates_as_dropped(client, requires_simulation):
+def test_the_whole_archive_simulates_as_dropped(
+    client, requires_simulation, requires_myokit_parser
+):
     """The point of the archive: drop it, and the study runs. Two stimuli in the
     .mmt's protocol, so two action potentials."""
     with open(MMT_EXAMPLE, "rb") as fh:
@@ -473,7 +481,9 @@ def test_the_whole_archive_simulates_as_dropped(client, requires_simulation):
 
 
 @pytest.mark.integration
-def test_the_calibration_parameter_from_the_archive_moves_the_model(client, requires_simulation):
+def test_the_calibration_parameter_from_the_archive_moves_the_model(
+    client, requires_simulation, requires_myokit_parser
+):
     """params_for_id and the protocol have to reach the same model: a parameter
     loaded against a model the protocol does not drive would look fine and fit
     nothing."""
@@ -763,7 +773,7 @@ def test_the_migration_hint_is_offered_from_the_document_alone():
 
 
 def test_an_mmt_archive_whose_protocol_filled_the_slot_is_not_told_it_has_none(
-    client, requires_simulation
+    client, requires_simulation, requires_myokit_parser
 ):
     """The .mmt's own `[[protocol]]` becomes the study's obs_data when the
     archive carries none (#27). The slot is what matters, not where it was

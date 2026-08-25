@@ -141,6 +141,57 @@ describe('FileImport', () => {
     expect(wrapper.emitted('model-loaded')[0][0].filename).toBe('3compartment.cellml')
   })
 
+  it('accepts an EasyML .model and shows what the reader had to decide', async () => {
+    // An EasyML file leaves the membrane equation out -- openCARP's tissue
+    // solver owns V -- so something was invented on the way in. That is not a
+    // log line; it is the one thing the user has to check.
+    uploadCellML.mockResolvedValue({
+      model_id: 'abc',
+      name: 'Courtemanche',
+      converted_from: 'Courtemanche.model',
+      warnings: [
+        'the file declares V as external, so it carries no membrane equation; ' +
+          'dot(V) = -(Iion + i_stim) was added, with i_stim for a protocol to drive.',
+      ],
+    })
+    const wrapper = mount(FileImport, { global: { stubs } })
+    const file = new File(['V; .nodal();'], 'Courtemanche.model', { type: 'text/plain' })
+    await wrapper
+      .find('[data-testid="cellml-drop"]')
+      .trigger('drop', { dataTransfer: { files: [file] } })
+    await flushPromises()
+    expect(uploadCellML).toHaveBeenCalledOnce()
+    expect(wrapper.find('[data-testid="import-error"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="import-warning"]').text()).toContain(
+      'membrane equation',
+    )
+  })
+
+  it('Edit source opens the .model for a model converted from EasyML', async () => {
+    editModelSource.mockResolvedValue({
+      path: '/studies/heart/user_funcs/user_model.model',
+      opened: true,
+      editor: 'xdg-open',
+      reason: '',
+      runs: false,
+    })
+    const wrapper = mount(FileImport, {
+      props: {
+        modelId: 'abc',
+        convertedFrom: 'Courtemanche.model',
+        outputsDir: '/studies/heart',
+      },
+      global: { stubs },
+    })
+    const btn = wrapper.find('[data-testid="start-edit"]')
+    expect(btn.attributes('title')).toContain('.model')
+    await btn.trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="import-notice"]').text()).toContain(
+      '/studies/heart/user_funcs/user_model.model',
+    )
+  })
+
   it('rejects a bundle if any file is not .cellml/.xml', async () => {
     const wrapper = mount(FileImport, { global: { stubs } })
     const files = [
