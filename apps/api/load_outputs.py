@@ -350,12 +350,33 @@ def _uq(output_dir, run_dir, missing):
     return payload
 
 
-def _emulator(output_dir, file_prefix, obs_path, missing, declared=None):
-    # A manifest naming the emulator is believed outright. It is the only way to reach
-    # one bundle shared by several studies, which is what a jointly-trained emulator is
-    # for -- the conventional search only ever looks inside the selected directory.
-    if declared:
+def _emulator(output_dir, file_prefix, obs_path, missing, declared=None, chosen=None):
+    """The emulator to report, and every one this study could be read with.
+
+    A manifest naming the emulator is believed outright. It is the only way to reach
+    one bundle shared by several studies, which is what a jointly-trained emulator is
+    for -- the conventional search only ever looks inside the selected directory. What
+    it names may be a bundle or a directory of them: a study that fits one design with
+    several emulator families has no single emulator to declare, and declaring the
+    container is how it says "these, pick one" instead of silently nominating whichever
+    happened to be written last.
+    """
+    choices = _safely(
+        "emulator choices",
+        lambda: ca_run_history.emulator_choices(output_dir, file_prefix, obs_path,
+                                                declared),
+        missing) or []
+
+    emu_dir = None
+    if chosen and any(os.path.abspath(row["dir"]) == os.path.abspath(chosen)
+                      for row in choices):
+        emu_dir = chosen
+    elif declared and ca_run_history.emulator_metadata(declared) is not None:
+        # A declaration that names one bundle outright still means that bundle, even
+        # when the search below would have ranked another above it.
         emu_dir = declared
+    elif choices:
+        emu_dir = choices[0]["dir"]
     else:
         # find_ rather than the plain resolver: this reads a run it did not produce,
         # and emulator_dir is a setting a study can point anywhere -- one trained
@@ -365,7 +386,7 @@ def _emulator(output_dir, file_prefix, obs_path, missing, declared=None):
             lambda: ca_run_history.find_emulator_dir(output_dir, file_prefix, obs_path),
             missing)
     if not emu_dir:
-        return {"dir": None, "metadata": None, "error_points": None}
+        return {"dir": None, "metadata": None, "error_points": None, "choices": []}
     return {
         "dir": emu_dir,
         "metadata": _safely("emulator metadata",
@@ -373,11 +394,13 @@ def _emulator(output_dir, file_prefix, obs_path, missing, declared=None):
         "error_points": _safely(
             "emulator error points",
             lambda: ca_run_history.emulator_error_points(emu_dir), missing),
+        "choices": choices,
     }
 
 
 def load_outputs(output_dir: str, file_prefix: str | None = None,
-                 obs_path: str | None = None, run_dir: str | None = None) -> dict:
+                 obs_path: str | None = None, run_dir: str | None = None,
+                 emulator_dir: str | None = None) -> dict:
     """Everything readable in ``output_dir``, plus what was found and what wasn't.
 
     ``found`` is the point of the return value as much as the data is: "this
@@ -436,7 +459,8 @@ def load_outputs(output_dir: str, file_prefix: str | None = None,
         "sensitivity": _sensitivity(output_dir, missing),
         "uq": _uq(output_dir, run_dir, missing),
         "emulator": _emulator(output_dir, file_prefix, obs_path, missing,
-                              declared=(manifest or {}).get("emulator")),
+                              declared=(manifest or {}).get("emulator"),
+                              chosen=emulator_dir),
         "study": _safely("study inputs",
                          lambda: _study(output_dir, run_dir, file_prefix, missing), missing),
         "saved_runs_dir": output_dir,

@@ -5,6 +5,7 @@ import Checkbox from 'primevue/checkbox'
 import InputNumber from 'primevue/inputnumber'
 import InputText from 'primevue/inputtext'
 import Select from 'primevue/select'
+import EmulatorBundleDialog from './EmulatorBundleDialog.vue'
 import { EXTERNAL_PYTHON_INSTALL_URL } from '../lib/examples'
 
 /**
@@ -37,10 +38,19 @@ const props = defineProps({
    * samples it saved — the two files `emulator_settings.reuse_samples` needs.
    */
   reusable: { type: Boolean, default: false },
+  /**
+   * Every bundle this study could be read with. More than one means a choice has
+   * to be made rather than derived -- see EmulatorBundleDialog.
+   */
+  choices: { type: Array, default: () => [] },
+  /** Directory of the bundle on screen. */
+  emulatorDir: { type: String, default: '' },
+  /** Whether that bundle is an explicit pick rather than the fallback. */
+  chosen: { type: Boolean, default: false },
   /** v-model for the "use the emulator" tick box. */
   modelValue: { type: Boolean, default: false },
 })
-const emit = defineEmits(['run', 'cancel', 'change', 'update:modelValue'])
+const emit = defineEmits(['run', 'cancel', 'change', 'update:modelValue', 'select-bundle'])
 
 // CUFLynx-level settings; every CA emulator option comes from the schema below.
 const settings = reactive({
@@ -309,6 +319,10 @@ const coresInvalid = computed(
 )
 
 const worstR2 = computed(() => props.metadata?.worst_r2 ?? null)
+
+/** Whether there is anything to choose between. One bundle is not a decision. */
+const hasChoice = computed(() => (props.choices?.length ?? 0) > 1)
+const showBundleDialog = ref(false)
 /** The configured refusal threshold, so the panel judges by the same number CA will. */
 const minR2 = computed(() => Number(optionValues.min_r2 ?? 0.9))
 const belowThreshold = computed(
@@ -409,6 +423,29 @@ function onRun() {
           circulatory_autogen will refuse to use this emulator. Train it with more
           samples, or lower the threshold if you accept the error.
         </p>
+      </div>
+
+      <!--
+        Which emulator, when the study holds more than one. Above the numbers
+        rather than below, because every number under it belongs to the bundle
+        named here and reading them without knowing which is to read them wrong.
+      -->
+      <div v-if="metadata && hasChoice" class="emu-choice" data-testid="emu-choice">
+        <span class="emu-choice-text">
+          <strong>{{ (metadata.model_name ?? 'emulator').replace(/^two_phase_/, '') }}</strong>
+          <span v-if="!chosen" class="emu-choice-warn">
+            — most recent of {{ choices.length }}, not chosen
+          </span>
+          <span v-else class="emu-choice-of">of {{ choices.length }} trained</span>
+        </span>
+        <Button
+          label="Choose…"
+          size="small"
+          severity="secondary"
+          outlined
+          data-testid="emu-choose"
+          @click="showBundleDialog = true"
+        />
       </div>
 
       <!-- What was trained: the numbers that decide whether to trust it. -->
@@ -654,9 +691,38 @@ function onRun() {
       <pre ref="term" class="terminal" data-testid="emu-terminal">{{ lines.join('\n') }}</pre>
     </template>
   </section>
+
+    <EmulatorBundleDialog
+      v-model:visible="showBundleDialog"
+      :choices="choices"
+      :current-dir="emulatorDir"
+      :chosen="chosen"
+      @select="(dir) => emit('select-bundle', dir)"
+    />
 </template>
 
 <style scoped>
+.emu-choice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin: 0.5rem 0;
+  padding: 0.4rem 0.55rem;
+  border: 1px solid var(--p-content-border-color, #d4d4d8);
+  border-radius: 6px;
+}
+.emu-choice-text {
+  font-size: 0.85rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.emu-choice-warn {
+  color: var(--p-orange-400, #d97706);
+}
+.emu-choice-of {
+  opacity: 0.7;
+}
 .calibration-panel {
   display: flex;
   flex-direction: column;
