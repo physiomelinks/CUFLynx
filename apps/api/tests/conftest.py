@@ -361,3 +361,32 @@ def write_ca_results(out_dir, param_names=(["a/x"],), values=(1.0,), cost=0.0):
 '''
 
 exec(WRITE_CA_RESULTS_SRC, globals())  # noqa: S102 - one definition, two uses
+
+
+@pytest.fixture
+def recorded_commands(monkeypatch):
+    """Record the argv each manager builds, so a run can be checked for being parallel.
+
+    Without this the integration arms below assert only that the analysis *finished*,
+    which a silently-serial run does just as well. Not hypothetical: the first draft of
+    these tests posted their settings flat instead of under ``settings``, so the endpoint
+    ignored ``num_cores`` entirely -- the "parallel" arm ran on one core and passed.
+    Closing the loop on the argv is what makes the arm mean what it says.
+    """
+    seen = []
+
+    def spy(manager):
+        original = manager.build_command
+
+        def wrapper(config, config_path):
+            cmd = original(config, config_path)
+            seen.append(cmd)
+            return cmd
+
+        monkeypatch.setattr(manager, "build_command", wrapper, raising=False)
+
+    from test_run_matrix import MANAGERS  # noqa: PLC0415 - the table lives with its tests
+
+    for _, manager in MANAGERS:
+        spy(manager)
+    return seen
