@@ -152,16 +152,51 @@ def test_the_recorded_trace_example_exists_and_carries_one():
         doc = json.loads(zf.read(name))
 
     traces = [i for i in doc["data_items"] if i.get("data_type") == "series"]
-    assert len(traces) == 1, f"expected exactly one recorded trace, got {len(traces)}"
-    trace = traces[0]
-    assert trace["weight"] == 0, "the point of this example is that it is not fitted"
-    assert trace["obs_dt"], "a series is reconstructed on i * obs_dt; without it there is no time axis"
-    assert len(trace["value"]) > 10, trace["value"][:5]
-    # Measured on a variable the study also fits scalars from, so the trace and the
-    # features it summarises are drawn in the same cell.
-    assert trace["operands"] == ["aortic_root/u"]
-    assert any(i.get("operands") == ["aortic_root/u"] and i.get("data_type") == "constant"
-               for i in doc["data_items"])
+    assert len(traces) == 3, f"expected a trace per measured variable, got {len(traces)}"
+    for trace in traces:
+        assert trace["weight"] == 0, "the point of this example is that it is not fitted"
+        assert trace["obs_dt"], ("a series is reconstructed on i * obs_dt; without it there "
+                                 "is no time axis")
+        assert len(trace["value"]) > 10, trace["value"][:5]
+    # One per variable the study fits scalars from, so every feature is drawn in a cell
+    # that also holds the trace it was taken from.
+    assert {t["operands"][0] for t in traces} == {
+        i["operands"][0] for i in doc["data_items"] if i.get("data_type") == "constant"}
+
+
+@pytest.mark.unit
+def test_each_feature_is_its_own_traces_statistic():
+    """The property that makes this example worth looking at.
+
+    A feature drawn from a measurement taken elsewhere sits *off* the recorded points --
+    the horizontal line and the scatter disagree, and the picture invites the reader to
+    conclude something about the model from what is really a mismatch between two data
+    sources. Here each scalar is exactly its own trace's mean, max, min or range, so the
+    line lands on the points and any daylight between them and the simulation is the
+    model's.
+    """
+    import json
+    import zipfile
+
+    ops = {"mean": lambda v: sum(v) / len(v), "max": max, "min": min,
+           "max_minus_min": lambda v: max(v) - min(v)}
+    with zipfile.ZipFile(TRACE_ARCHIVE) as zf:
+        name = next(n for n in zf.namelist() if n.endswith("_obs_data.json"))
+        doc = json.loads(zf.read(name))
+
+    by_variable = {i["operands"][0]: i["value"]
+                   for i in doc["data_items"] if i.get("data_type") == "series"}
+    checked = 0
+    for item in doc["data_items"]:
+        if item.get("data_type") == "series":
+            continue
+        samples = by_variable[item["operands"][0]]
+        expected = ops[item["operation"]](samples)
+        assert abs(expected - item["value"]) <= 1e-9 * max(1.0, abs(expected)), (
+            f"{item['data_item_name']} is {item['value']}, but {item['operation']} of its "
+            f"recorded trace is {expected} -- the drawn feature would not sit on the points")
+        checked += 1
+    assert checked == 6, f"expected six scalar features, checked {checked}"
 
 
 @pytest.mark.unit
@@ -177,7 +212,7 @@ def test_the_recorded_trace_example_loads_whole(client):
     obs = body["obs_data"]
     assert not obs.get("error"), obs["error"]
     assert body["warnings"] == [], body["warnings"]
-    assert len(obs["data_items"]) == 7, "six scalar features plus the recorded trace"
-    trace = [i for i in obs["data_items"] if i.get("data_type") == "series"][0]
-    assert trace["weight"] == 0
-    assert len(trace["value"]) == 101
+    assert len(obs["data_items"]) == 9, "six scalar features plus a trace per variable"
+    traces = [i for i in obs["data_items"] if i.get("data_type") == "series"]
+    assert len(traces) == 3
+    assert all(t["weight"] == 0 and len(t["value"]) == 101 for t in traces)
