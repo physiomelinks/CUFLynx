@@ -127,7 +127,9 @@ def test_the_prefix_survives_the_registry_being_lost(client):
     assert recovered.file_prefix == before == "Lotka_Volterra_forced"
 
 
-def test_a_myokit_model_keeps_the_stem_of_the_file_that_was_dropped(client, requires_simulation):
+def test_a_myokit_model_keeps_the_stem_of_the_file_that_was_dropped(
+    client, requires_simulation, requires_myokit_parser
+):
     """A .mmt becomes CellML at the door (#27), and the CellML it becomes is named
     by the converter -- but the study is still the file the user has.
 
