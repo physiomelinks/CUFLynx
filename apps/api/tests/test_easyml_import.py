@@ -20,6 +20,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import main
+from conftest import all_easyml_fixtures
 
 # A whole model in miniature: an external V (so the membrane equation has to be
 # synthesised), a current sum, one explicit state and one gate.
@@ -258,3 +259,147 @@ def test_a_param_group_variable_can_be_changed(client, requires_easyml, requires
         return max(r.json()["outputs"]["TinyCell/V"])
 
     assert peak(16.0) != pytest.approx(peak(1.0)), "g_Na had no effect on the model"
+
+
+# ---------------------------------------------------------------------------
+# The shipped examples, swept the way the .mmt fixtures are
+#
+# resources/ carries EasyML written *for* this repository rather than exported
+# from the .mmt files next door. openCARP's own model library is under the
+# openCARP Academic Public License and is not redistributable from here, and a
+# Myokit export of a third-party .mmt would be a derivative of a file this
+# repository only aggregates -- weaker ground than the verbatim aggregation
+# resources/models/third_party/README.md relies on.
+#
+# Reader correctness against real published models is circulatory_autogen's
+# round-trip test, which exports Myokit's own examples and reads them back
+# without committing anything. What these cover is the route through this app.
+# ---------------------------------------------------------------------------
+@pytest.mark.integration
+@pytest.mark.parametrize("path", all_easyml_fixtures(), ids=lambda p: p.name)
+def test_every_easyml_fixture_converts_to_a_model_worth_running(
+    path, requires_easyml, tmp_path
+):
+    from cellml_meta import parse_cellml
+
+    read = easyml_import.import_easyml(
+        path.read_bytes(), filename=path.name, out_dir=str(tmp_path)
+    )
+    meta = parse_cellml(read["cellml"])
+    assert meta.variable_count > 0
+    assert meta.odes, "no states, so there would be nothing to integrate"
+    assert Path(read["cellml_path"]).is_file()
+    assert read["warnings"], (
+        "an EasyML import always decides something -- at minimum the membrane "
+        "equation the format leaves out -- and must say so"
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("path", all_easyml_fixtures(), ids=lambda p: p.name)
+def test_every_easyml_fixture_loads_through_the_upload_route(
+    path, client, requires_easyml
+):
+    body = upload(client, data=path.read_bytes(), name=path.name).json()
+    assert body["converted_from"] == path.name
+    assert body["odes"], "the synthesised membrane equation should give it states"
+    assert body["warnings"]
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("path", all_easyml_fixtures(), ids=lambda p: p.name)
+def test_every_easyml_fixture_offers_an_obs_data_the_validator_accepts(
+    path, client, requires_easyml
+):
+    """A protocol the UI would adopt and the next request would reject is worse
+    than no protocol at all, so the offer goes through the real validator."""
+    body = upload(client, data=path.read_bytes(), name=path.name).json()
+    offered = body["protocol_obs_data"]
+    assert offered is not None
+    if offered["obs_data"] is None:
+        assert offered["reason"], "no protocol, and no reason given"
+        return
+    r = client.post(
+        "/api/obs_data/upload",
+        json={"model_id": body["model_id"], "obs_data": offered["obs_data"]},
+    )
+    assert r.status_code == 200, r.text
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("path", all_easyml_fixtures(), ids=lambda p: p.name)
+def test_every_easyml_fixture_simulates(
+    path, client, requires_easyml, requires_simulation
+):
+    """Loading is half of it. By this point the model is ordinary CellML, so
+    this is the assertion that the whole rail works end to end."""
+    body = upload(client, data=path.read_bytes(), name=path.name).json()
+    r = client.post(
+        "/api/simulate",
+        json={"model_id": body["model_id"], "params": {}, "outputs": body["odes"][:4]},
+    )
+    assert r.status_code == 200, r.text
+    out = r.json()
+    assert len(out["time"]) > 1
+    for name, series in out["outputs"].items():
+        assert len(series) == len(out["time"]), name
+        assert all(v == v for v in series), f"{name} went NaN"
+
+
+# ---------------------------------------------------------------------------
+# ...and one of them is a real cell, so it can be held to a real standard
+# ---------------------------------------------------------------------------
+HH = "hodgkin_huxley_1952.model"
+
+
+@pytest.mark.integration
+def test_the_hodgkin_huxley_example_rests_where_the_paper_says(
+    client, requires_easyml, requires_simulation
+):
+    """The gates carry no initial values, so the reader had to derive them. The
+    published resting values are m~0.05, h~0.6, n~0.32, and getting those right
+    is the difference between a cell at rest and one that drifts for a beat."""
+    from conftest import RESOURCES_DIR
+
+    body = upload(client, data=(RESOURCES_DIR / HH).read_bytes(), name=HH).json()
+    r = client.get(f"/api/models/{body['model_id']}/variables")
+    initial = r.json()["initial_values"]
+    assert initial["HodgkinHuxley1952/V"] == pytest.approx(-65.0)
+    assert initial["HodgkinHuxley1952/m"] == pytest.approx(0.053, abs=0.005)
+    assert initial["HodgkinHuxley1952/h"] == pytest.approx(0.596, abs=0.005)
+    assert initial["HodgkinHuxley1952/n"] == pytest.approx(0.318, abs=0.005)
+
+
+@pytest.mark.integration
+def test_the_hodgkin_huxley_example_fires_an_action_potential(
+    client, requires_easyml, requires_simulation
+):
+    """Driven by the stimulus the import offers, the squid axon should do what
+    it is famous for: a fast upstroke past 0 mV and an undershoot below rest.
+
+    The protocol handed to the runner is the offered one, edited only in the
+    ways a user would edit it -- the import cannot know a model's stimulus
+    amplitude, because an EasyML file carries none.
+    """
+    from conftest import RESOURCES_DIR
+
+    body = upload(client, data=(RESOURCES_DIR / HH).read_bytes(), name=HH).json()
+    info = body["protocol_obs_data"]["obs_data"]["protocol_info"]
+    (shape,) = info["protocol_shapes"].values()
+    shape["events"][0].update({"level": -20.0, "start": 5.0, "period": 50.0})
+    info["sim_times"] = [[50.0]]
+
+    r = client.post(
+        "/api/protocol/run",
+        json={
+            "model_id": body["model_id"],
+            "protocol_info": info,
+            "params": {},
+            "outputs": ["HodgkinHuxley1952/V"],
+        },
+    )
+    assert r.status_code == 200, r.text
+    v = r.json()["experiments"][0]["outputs"]["HodgkinHuxley1952/V"]
+    assert v[0] == pytest.approx(-65.0, abs=1.0), "should start at rest"
+    assert max(v) > 0.0, f"no upstroke; peak {max(v):.1f} mV"
+    assert min(v) < -66.0, f"no undershoot; minimum {min(v):.1f} mV"
