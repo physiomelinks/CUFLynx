@@ -1074,7 +1074,15 @@ def test_a_trained_emulator_can_drive_sensitivity_calibration_and_uq(
     ):
         payload = {"model_id": model_id,
                    "settings": {**settings, "config_outputs_dir": str(tmp_path),
-                                "use_emulator": True, "dt": 0.01}}
+                                "use_emulator": True, "dt": 0.01,
+                                # The design is deliberately tiny, so the emulator is
+                                # bad -- CA's quality gate refuses one below `min_r2`
+                                # (it measured R2 = -2.2 here at the 0.9 default), which
+                                # is the right behaviour and not what this asks about.
+                                # What is under test is whether the bundle is *accepted
+                                # for this study*; a mismatch raises EmulatorQualityError
+                                # with a different message, asserted below.
+                                "min_r2": -1e9}}
         resp = client.post(route, json=payload)
         assert resp.status_code == 200, f"{kind} refused the emulator up front: {resp.text}"
         state, lines = _wait(client, kind, resp.json()["job_id"], 900)
@@ -1082,9 +1090,11 @@ def test_a_trained_emulator_can_drive_sensitivity_calibration_and_uq(
         assert state.get("state") == "done", (
             f"{kind} on the emulator ended {state.get('state')}: {state.get('error')}\n"
             f"{log[-2000:]}")
-        assert "EmulatorQualityError" not in log, (
+        assert "has changed since it was trained" not in log, (
             f"{kind} rejected the bundle as stale -- the study it was handed is not the "
             f"study the emulator was trained on:\n{log[-2000:]}")
+        assert "was trained for parameters" not in log and "trained for observables" not in log, (
+            f"{kind} was handed an emulator built for a different study:\n{log[-2000:]}")
 
 
 @pytest.mark.integration
