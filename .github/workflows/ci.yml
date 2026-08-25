@@ -66,9 +66,10 @@ jobs:
         with:
           repository: physiomelinks/circulatory_autogen
           # A commit on master, bumped deliberately -- upstream drift must not break
-          # CUFLynx CI. This one is the merge of circulatory_autogen#477, the first CA
-          # carrying the #466 obs_data vocabulary this app now speaks.
-          ref: 42136538e92e7afbc6749e39e5b8b5dfcddd67d6
+          # CUFLynx CI. This one is the merge of circulatory_autogen#495, the first CA
+          # carrying libcuflynx.parsers.MyokitParsers and .EasyMLParsers, which this
+          # app delegates every .mmt and .model conversion to with no local fallback.
+          ref: ad312754613793ebdd9d11f9cf2658c6a01ccc52
           path: circulatory_autogen
       - uses: actions/setup-python@v5
         with:
@@ -107,9 +108,10 @@ jobs:
         with:
           repository: physiomelinks/circulatory_autogen
           # A commit on master, bumped deliberately -- upstream drift must not break
-          # CUFLynx CI. This one is the merge of circulatory_autogen#477, the first CA
-          # carrying the #466 obs_data vocabulary this app now speaks.
-          ref: 42136538e92e7afbc6749e39e5b8b5dfcddd67d6
+          # CUFLynx CI. This one is the merge of circulatory_autogen#495, the first CA
+          # carrying libcuflynx.parsers.MyokitParsers and .EasyMLParsers, which this
+          # app delegates every .mmt and .model conversion to with no local fallback.
+          ref: ad312754613793ebdd9d11f9cf2658c6a01ccc52
           path: circulatory_autogen
       - uses: actions/setup-python@v5
         with:
