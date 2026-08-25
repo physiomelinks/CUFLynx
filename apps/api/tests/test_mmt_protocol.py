@@ -45,9 +45,10 @@ def _requires_engine_reader():
     on purpose, and the integration tier tracks CA's master, so both trail this
     app by however long the engine side takes to land.
     """
-    pytest.importorskip("myokit")
+    myokit = pytest.importorskip("myokit")
     if myokit_import._ca_parser() is None:
         pytest.skip("this circulatory_autogen has no libcuflynx.parsers.MyokitParsers")
+    return myokit
 
 
 # A model whose only purpose is to carry a binding and a protocol.
