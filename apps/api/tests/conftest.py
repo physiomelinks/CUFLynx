@@ -22,6 +22,7 @@ if str(API_DIR) not in sys.path:
 os.environ["CUFLYNX_CONFIG_DIR"] = tempfile.mkdtemp(prefix="cuflynx-test-config-")
 
 import calibration as calibration_mod  # noqa: E402
+import emulator as emulator_mod  # noqa: E402
 import engine as engine_mod  # noqa: E402
 import main  # noqa: E402
 import model_codegen as model_codegen_mod  # noqa: E402
@@ -239,11 +240,20 @@ def _analysis_pythons() -> tuple:
     choice as the three analysis managers (#167), so a test that changes the
     interpreter would otherwise leave the *engine* pointed at it and send every
     later test's simulate through a worker.
+
+    So does the emulator manager, which was added after this list and left out
+    of it. ``test_config`` configures ``/venv/bin/python`` -- a path chosen
+    because it does not exist -- and every emulator test after it in the same
+    session then tried to train with that, failing on a missing interpreter or
+    on ranks that died at once. CI never saw it: it runs the unit and
+    integration tiers as separate sessions, and the test that sets the
+    interpreter is in one while the tests that spawn it are in the other.
     """
     return (
         calibration_mod.calibration.python,
         sensitivity_mod.sensitivity.python,
         uq_mod.uq.python,
+        emulator_mod.emulator.python,
         engine_mod.engine.worker_python,
     )
 
@@ -253,6 +263,7 @@ def _set_analysis_pythons(pythons: tuple) -> None:
         calibration_mod.calibration.python,
         sensitivity_mod.sensitivity.python,
         uq_mod.uq.python,
+        emulator_mod.emulator.python,
         engine_mod.engine.worker_python,
     ) = pythons
 
