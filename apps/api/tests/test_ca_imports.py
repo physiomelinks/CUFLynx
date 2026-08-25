@@ -977,5 +977,12 @@ class TestCaFirstOf:
 
         module = types.SimpleNamespace(__name__="libcuflynx.param_id.paramID")
         monkeypatch.setattr(ca_imports, "ca_import", lambda name: module)
+        # `ca_from` also tries the *other* spelling of the module before giving up (the
+        # hollow-namespace-package case). Left live, that reaches the real
+        # circulatory_autogen on this machine -- which, on any CA from after the rename,
+        # has `ParamID` and answers happily, so nothing raises and this test passes or
+        # fails according to which engine is installed rather than according to the code.
+        monkeypatch.setattr(ca_imports, "_candidate_providing",
+                            lambda module, names, resolved: None)
         with pytest.raises(ca_imports.CaImportError, match="has no ParamID"):
             ca_imports.ca_first_of("param_id.paramID", "ParamID", "OpencorParamID")

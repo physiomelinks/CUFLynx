@@ -7,6 +7,7 @@ here is refusal and provenance, not happy paths.
 """
 
 import json
+import time
 from pathlib import Path
 
 import pytest
@@ -967,3 +968,163 @@ def test_the_chosen_interpreter_is_probed_even_with_no_ca_directory(monkeypatch,
                         lambda *a, **k: {"emulation": {"options": [{"name": "model"}]}})
     monkeypatch.setattr(so, "analysis_options_introspected", lambda: True)
     assert so.emulator_availability("/envs/emu/bin/python")["available"] is True
+
+
+# ---------------------------------------------------------------------------
+# End to end: train one, then use it
+#
+# Everything above tests the wiring around an emulator -- where its directory is,
+# what its metadata says, which kwargs a runner passes. Nothing trained one and
+# then ran an analysis on it, so the question a user actually asks ("I trained an
+# emulator; can I calibrate against it?") had no answer in this suite. It is also
+# the shape of the failures that reached users: a bundle that trains and then
+# cannot reload, an engine whose fingerprint no longer matches the study.
+#
+# Deliberately tiny. The design is the expensive part and its size decides only
+# how *good* the emulator is; what these assert is that the pipeline runs, the
+# bundle lands, and the three analyses accept it.
+# ---------------------------------------------------------------------------
+# The fixture is CA's own analytic benchmark (its `tests/test_emulator_training.py`):
+# ``dx/dt = -x + p``, ``dy/dt = -3y + q``, observed as the steady-state averages of x and
+# y -- so the two features *are* ``p`` and ``q/3``, in closed form. It is the right model
+# for an emulator test precisely because it is dull: smooth and monotone, with nothing for
+# a surrogate to miss, so a poor fit means the pipeline is wrong rather than the problem
+# being hard. It is also cheap -- one run is ~5 ms after the compile -- which is what keeps
+# a real training inside a test suite instead of in a nightly.
+#
+# The settings mirror CA's: a seeded Sobol design so the run is deterministic, and
+# `n_iter`/`n_splits` at 2, which is what stops autoemulate's model search dominating the
+# wall clock. 64 samples over two parameters is enough for a good fit -- CA asserts R2 >=
+# 0.99 on this model at that size -- so these tests use a *correctly trained* emulator and
+# leave CA's quality gate at its default.
+EMULATOR_SETTINGS = {
+    "num_train_samples": 64,
+    "sample_type": "sobol",
+    "random_seed": 0,
+    "n_iter": 2,
+    "n_splits": 2,
+}
+
+
+def _setup_benchmark(client, out_dir=None):
+    """CA's Simple_ODE_Benchmark: model + obs_data + params_for_id, as a user loads them."""
+    from conftest import RESOURCES_DIR, upload_model
+
+    model_id = upload_model(client, RESOURCES_DIR / "Simple_ODE_Benchmark_flat.cellml")["model_id"]
+    obs = json.loads((RESOURCES_DIR / "Simple_ODE_Benchmark_obs_data.json").read_text())
+    assert client.post("/api/obs_data/upload",
+                       json={"model_id": model_id, "obs_data": obs}).status_code == 200
+    params = RESOURCES_DIR / "Simple_ODE_Benchmark_params_for_id.csv"
+    with open(params, "rb") as fh:
+        resp = client.post(f"/api/params_for_id/upload?model_id={model_id}",
+                           files={"file": (params.name, fh, "text/csv")})
+    assert resp.status_code == 200, resp.text
+    return model_id
+
+
+@pytest.fixture
+def requires_autoemulate():
+    """Training needs autoemulate in *this* interpreter (the tests run in-process)."""
+    pytest.importorskip("autoemulate", reason="autoemulate is not installed here")
+
+
+def _train_emulator(client, model_id, out_dir, num_cores=1, timeout=900):
+    """Train an emulator through the app; returns ``(state, log lines)``.
+
+    Polls through ``test_run_matrix._wait``, which already speaks the
+    offset/next_offset protocol every analysis status route uses -- a second
+    hand-rolled poller here would be one more thing to keep in step with it.
+    """
+    from test_run_matrix import _wait
+
+    resp = client.post("/api/emulator/train", json={
+        "model_id": model_id,
+        "settings": {**EMULATOR_SETTINGS, "config_outputs_dir": str(out_dir),
+                     "num_cores": num_cores, "dt": 0.05},
+    })
+    assert resp.status_code == 200, resp.text
+    return _wait(client, "emulator", resp.json()["job_id"], timeout)
+
+
+@pytest.mark.integration
+def test_a_trained_emulator_can_drive_sensitivity_calibration_and_uq(
+    client, requires_simulation, requires_autoemulate, tmp_path
+):
+    """Train once, then run all three analyses against it.
+
+    The reuse check is CA's (`EmulatorBundle.check_matches`), and it compares a
+    fingerprint of the model file, the parameter bounds and the protocol. So a run
+    that accepts the bundle is evidence that the study the app hands each analysis
+    is the study the emulator was trained on -- which is exactly what breaks when
+    the app renames a study, reopens it against a different model, or writes its
+    obs_data under a name that changes between uploads.
+    """
+    from test_run_matrix import _wait
+
+    model_id = _setup_benchmark(client, tmp_path)
+
+    trained, train_log = _train_emulator(client, model_id, tmp_path)
+    assert trained.get("state") == "done", (
+        f"training ended {trained.get('state')}: {trained.get('error')}\n"
+        + "\n".join(train_log[-40:]))
+
+    info = client.get("/api/emulator/info", params={
+        "model_id": model_id, "config_outputs_dir": str(tmp_path)}).json()
+    assert info.get("metadata"), f"no bundle written: {info}"
+
+    # Each analysis, with the emulator ticked on. What is under test is that CA
+    # accepts the bundle for this study -- a mismatch raises EmulatorQualityError
+    # inside the run and the job ends in error, which is what these would catch.
+    for kind, route, settings in (
+        ("sensitivity", "/api/sensitivity/run",
+         {"method": "local", "gradient_method": "FD", "nominal": "current",
+          "rel_step": 0.05, "num_cores": 1}),
+        # DEBUG, as the other calibration tests do: without it CA sizes the genetic
+        # algorithm's population from the parameter count and refuses a run whose
+        # evaluation budget is smaller than one generation ("n_calls=6 must be greater
+        # than the gen alg population (num_pop=744)").
+        ("calibration", "/api/calibration/run",
+         {"param_id_method": "genetic_algorithm", "num_calls_to_function": 30,
+          "DEBUG": True, "num_cores": 1}),
+        ("uq", "/api/uq/run",
+         {"num_steps": 20, "num_walkers": 8, "num_cores": 1, "DEBUG": True,
+          "run_calibration_first": True, "num_calls_to_function": 30}),
+    ):
+        payload = {"model_id": model_id,
+                   "settings": {**settings, "config_outputs_dir": str(tmp_path),
+                                "use_emulator": True, "dt": 0.05}}
+        resp = client.post(route, json=payload)
+        assert resp.status_code == 200, f"{kind} refused the emulator up front: {resp.text}"
+        state, lines = _wait(client, kind, resp.json()["job_id"], 900)
+        log = "\n".join(lines)
+        assert state.get("state") == "done", (
+            f"{kind} on the emulator ended {state.get('state')}: {state.get('error')}\n"
+            f"{log[-2000:]}")
+        assert "has changed since it was trained" not in log, (
+            f"{kind} rejected the bundle as stale -- the study it was handed is not the "
+            f"study the emulator was trained on:\n{log[-2000:]}")
+        assert "was trained for parameters" not in log and "trained for observables" not in log, (
+            f"{kind} was handed an emulator built for a different study:\n{log[-2000:]}")
+
+
+@pytest.mark.integration
+def test_training_runs_across_ranks_when_asked_for_more_than_one(
+    client, requires_simulation, requires_autoemulate, tmp_path, recorded_commands
+):
+    """Training spreads its simulations across MPI ranks, and says so on the argv.
+
+    The design is the expensive half of training and CA splits it across ranks, so
+    this is the parallel path users reach for. Asserted on the launched command as
+    well as on the result: a run that quietly drops to one core finishes and reports
+    success just the same.
+    """
+    from test_run_matrix import PARALLEL_CORES, _assert_parallelism
+
+    model_id = _setup_benchmark(client, tmp_path)
+    state, lines = _train_emulator(client, model_id, tmp_path, num_cores=PARALLEL_CORES)
+
+    log = "\n".join(lines)
+    assert state.get("state") == "done", (
+        f"a {PARALLEL_CORES}-rank training ended {state.get('state')}:\n{log[-3000:]}")
+    assert "MPI_ABORT" not in log, f"a rank aborted:\n{log[-3000:]}"
+    _assert_parallelism(recorded_commands, PARALLEL_CORES)

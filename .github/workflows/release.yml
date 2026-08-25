@@ -463,11 +463,12 @@ jobs:
     # (ubuntu-22.04)" twice in the checks list says nothing about which one failed.
     name: Analysis e2e (${{ matrix.asset }})
     needs: build
-    # Runs in ~3 minutes, but analysis_smoke.py already carries its own
-    # --sensitivity-timeout 900 --calibration-timeout 900, i.e. up to 30 minutes of internal
-    # budget. This sits just above that on purpose: the script's own timeout says which stage
-    # hung, and a job timeout below it would preempt that message with a bare cancellation.
-    timeout-minutes: 35
+    # Runs in ~3 minutes for the ordinary assets, longer for the full one now that it
+    # repeats the analyses across ranks and trains an emulator. analysis_smoke.py carries
+    # its own --sensitivity-timeout 900 --calibration-timeout 900 per stage; this sits
+    # above the sum on purpose, because the script's own timeout says which stage hung
+    # and a job timeout below it would preempt that message with a bare cancellation.
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -479,6 +480,14 @@ jobs:
           # nothing else exercises it. `full` additionally turns on the probe of the
           # emulator/pyMC stack, which is all this asset adds and which nothing else
           # in the pipeline touches.
+          #
+          # `--num-cores 2` runs sensitivity, calibration and emulator training again
+          # across MPI ranks. Only meaningful here: this is the asset that runs analysis
+          # in its own interpreter for a user who never configures one, so `mpiexec`
+          # launches *the bundle*, and the ranks are children of mpiexec while carrying
+          # this process's PyInstaller parent state. Their bootloader refused to start
+          # ("Security validation failure: parent process has different executable!",
+          # exit 255, no traceback) and nothing here ran multi-core, so it shipped.
           - os: ubuntu-22.04
             asset: CUFLynx-linux-x86_64-full
             full: "1"
@@ -515,7 +524,7 @@ jobs:
             --binary "$PWD/${{ matrix.asset }}" \
             --ca-dir "$PWD/circulatory_autogen" \
             --sensitivity-timeout 900 --calibration-timeout 900 \
-            ${{ matrix.full == '1' && '--full' || '' }}
+            ${{ matrix.full == '1' && '--full --num-cores 2' || '' }}
 
   release:
     name: Publish release
