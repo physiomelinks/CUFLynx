@@ -50,6 +50,19 @@ def all_mmt_fixtures():
     return sorted(RESOURCES_DIR.rglob("*.mmt"))
 
 
+def all_easyml_fixtures():
+    """Every EasyML .model under resources/.
+
+    Same rglob rule as the .mmt sweep and for the same reason. The set is
+    smaller on purpose: openCARP's own model library is under the openCARP
+    Academic Public License and is not redistributable from here, and a Myokit
+    *export* of one of the third-party .mmt files next door would be a
+    derivative work of a file this repository only aggregates. So what is here
+    is written for this repository -- see resources/hodgkin_huxley_1952.model.
+    """
+    return sorted(RESOURCES_DIR.rglob("*.model"))
+
+
 # ---------------------------------------------------------------------------
 # Simulation-dependency gating
 # ---------------------------------------------------------------------------
