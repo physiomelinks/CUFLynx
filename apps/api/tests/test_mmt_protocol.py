@@ -184,20 +184,20 @@ def test_a_nonsense_duration_is_refused():
 # ---------------------------------------------------------------------------
 # Merging into an existing obs_data document
 # ---------------------------------------------------------------------------
-def test_filling_leaves_the_rest_of_the_document_alone():
+def test_filling_leaves_the_rest_of_the_document_alone(requires_obs_data_helpers):
     doc = {"data_items": [{"data_item_name": "membrane/V"}], "protocol_info": {"sim_times": [[1]]}}
     out = mmt_protocol.fill_protocol_info(doc, {"sim_times": [[2.0]]})
     assert out["data_items"] == doc["data_items"]
     assert out["protocol_info"]["sim_times"] == [[2.0]]
 
 
-def test_filling_does_not_mutate_the_document_it_was_given():
+def test_filling_does_not_mutate_the_document_it_was_given(requires_obs_data_helpers):
     doc = {"protocol_info": {"sim_times": [[1]]}}
     mmt_protocol.fill_protocol_info(doc, {"sim_times": [[2.0]]})
     assert doc["protocol_info"]["sim_times"] == [[1]]
 
 
-def test_a_hand_written_label_survives_a_re_derivation():
+def test_a_hand_written_label_survives_a_re_derivation(requires_obs_data_helpers):
     """"1 Hz pacing" is worth more than "pacing, period 1000", and re-deriving
     the timings is no reason to lose it."""
     doc = {"protocol_info": {"experiment_labels": ["1 Hz pacing"], "experiment_colors": ["b"]}}
@@ -208,7 +208,7 @@ def test_a_hand_written_label_survives_a_re_derivation():
     assert out["protocol_info"]["experiment_colors"] == ["b"]
 
 
-def test_a_label_that_no_longer_fits_is_replaced():
+def test_a_label_that_no_longer_fits_is_replaced(requires_obs_data_helpers):
     """Keeping one label against two experiments would fail CA's own shape check."""
     doc = {"protocol_info": {"experiment_labels": ["only one"]}}
     out = mmt_protocol.fill_protocol_info(
@@ -217,7 +217,7 @@ def test_a_label_that_no_longer_fits_is_replaced():
     assert out["protocol_info"]["experiment_labels"] == ["a", "b"]
 
 
-def test_filling_an_empty_document_works():
+def test_filling_an_empty_document_works(requires_obs_data_helpers):
     out = mmt_protocol.fill_protocol_info({}, {"sim_times": [[1.0]]})
     assert out["protocol_info"]["sim_times"] == [[1.0]]
 

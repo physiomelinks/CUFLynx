@@ -221,7 +221,7 @@ def test_panels_are_generated_from_either_shape(obs):
 # ---------------------------------------------------------------------------
 # Site 6: filling a protocol_info into an existing document
 # ---------------------------------------------------------------------------
-def test_a_protocol_can_be_filled_into_a_data_only_document():
+def test_a_protocol_can_be_filled_into_a_data_only_document(requires_obs_data_helpers):
     """``dict(obs_data or {})`` raised on a bare array, so scripts/mmt_to_obs_data.py
     refused to update a data-only file. Adding a protocol turns it into the object
     form -- the only shape that can hold one -- carrying the same items."""
@@ -231,7 +231,7 @@ def test_a_protocol_can_be_filled_into_a_data_only_document():
     assert out["data_items"] == BARE_LIST
 
 
-def test_filling_a_protocol_does_not_mutate_the_bare_list_it_was_given():
+def test_filling_a_protocol_does_not_mutate_the_bare_list_it_was_given(requires_obs_data_helpers):
     original = [_item()]
     mmt_protocol.fill_protocol_info(original, {"sim_times": [[1.0]]})
     assert original == [_item()], "the caller's document was rewritten in place"
