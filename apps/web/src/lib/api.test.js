@@ -43,6 +43,22 @@ describe('api client', () => {
     expect(file.type).toBe('application/zip')
   })
 
+  it('never fetches the example from the browser cache', async () => {
+    // The bytes go straight back to the upload route, so a cached copy decides
+    // which version is imported -- and an entry cached before the route grew its
+    // no-cache header is still reusable without asking the server. That is a
+    // stale example loading from a server serving the current one.
+    const blob = new Blob([new Uint8Array([0x50, 0x4b])], { type: 'application/zip' })
+    axios.get.mockResolvedValue({ data: blob })
+    await fetchExampleModel('3compartment', '3compartment.omex')
+    await fetchExampleModel('3compartment', '3compartment.omex')
+    const [first, second] = axios.get.mock.calls.map((call) => call[1])
+    expect(first.headers).toMatchObject({ 'Cache-Control': 'no-cache' })
+    expect(first.params._).toBeTruthy()
+    // Two loads, two URLs: neither can be answered by what the other left behind.
+    expect(second.params._).toBeGreaterThanOrEqual(first.params._)
+  })
+
   it('test_upload_cellml_resolves_model_id', async () => {
     axios.post.mockResolvedValue({ data: { model_id: 'abc123', name: 'm' } })
     const file = new File(['<model/>'], 'm.cellml')

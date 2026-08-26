@@ -391,3 +391,178 @@ describe('opening the tab before anything is loaded', () => {
     expect(text).toMatch(/^This libcuflynx has no emulator support/)
   })
 })
+
+/**
+ * Multi-stage sampling.
+ *
+ * CA draws the design in one stage by default and can draw it in several, each with a
+ * share of the sample budget and its own method. The two per-stage settings are lists
+ * that must be exactly `num_stages` long, with fractions summing to 1 — CA refuses the
+ * plan otherwise, after the model has been generated. So the form's job is to make an
+ * invalid plan hard to express and an unused one invisible.
+ */
+describe('sampling stages', () => {
+  const STAGE_OPTIONS = [
+    { name: 'num_stages', type: 'int', default: 1, required: false, description: 'stages' },
+    {
+      name: 'frac_per_stage', type: 'str', default: null, required: false,
+      per_stage: true, description: 'shares',
+    },
+    {
+      name: 'method_per_stage', type: 'str', default: null, required: false,
+      per_stage: true,
+      item_choices: ['sobol', 'latin_hypercube', 'random', 'gradient_weighted',
+                     'error_weighted'],
+      description: 'methods',
+    },
+    {
+      name: 'weight_per_stage', type: 'str', default: null, required: false,
+      per_stage: true, description: 'weights',
+    },
+  ]
+
+  const withStages = { ...DEFAULTS, options: [...DEFAULTS.options, ...STAGE_OPTIONS] }
+
+  function mountStages(props = {}) {
+    return mount(EmulatorPanel, {
+      props: { defaults: withStages, canRun: true, ...props },
+      global: { stubs },
+    })
+  }
+
+  async function setStages(wrapper, count) {
+    wrapper.vm.optionValues.num_stages = count
+    await wrapper.vm.$nextTick()
+    await wrapper.vm.$nextTick()
+  }
+
+  it('shows nothing about stages for the single-stage default', async () => {
+    const wrapper = mountStages()
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('[data-testid="emu-stages"]').exists()).toBe(false)
+    // The lists mean nothing with one stage, and sending a one-element list would
+    // override CA's own default with this form's guess at it.
+    expect(wrapper.vm.optionValues.frac_per_stage).toBe(null)
+    expect(wrapper.vm.optionValues.method_per_stage).toBe(null)
+  })
+
+  it('reveals one row per stage as soon as there is more than one', async () => {
+    const wrapper = mountStages()
+    await setStages(wrapper, 3)
+    expect(wrapper.find('[data-testid="emu-stages"]').exists()).toBe(true)
+    for (const i of [0, 1, 2]) {
+      expect(wrapper.find(`[data-testid="emu-stage-frac-${i}"]`).exists()).toBe(true)
+      expect(wrapper.find(`[data-testid="emu-stage-method-${i}"]`).exists()).toBe(true)
+    }
+    expect(wrapper.find('[data-testid="emu-stage-frac-3"]').exists()).toBe(false)
+  })
+
+  it('defaults to an even split that adds up, and to adapting after the first stage', async () => {
+    const wrapper = mountStages()
+    await setStages(wrapper, 2)
+    const { frac_per_stage: fractions, method_per_stage: methods } = wrapper.vm.optionValues
+    expect(fractions).toEqual([0.5, 0.5])
+    expect(fractions.reduce((a, b) => a + b, 0)).toBeCloseTo(1)
+    // Space-filling first — an adaptive stage has no earlier features to place points
+    // from — then the adaptive one, which is the reason to ask for two stages at all.
+    expect(methods).toEqual(['sobol', 'gradient_weighted'])
+  })
+
+  it('keeps the lists the same length as the count when it changes', async () => {
+    const wrapper = mountStages()
+    await setStages(wrapper, 2)
+    await setStages(wrapper, 4)
+    expect(wrapper.vm.optionValues.frac_per_stage).toHaveLength(4)
+    expect(wrapper.vm.optionValues.method_per_stage).toHaveLength(4)
+    expect(wrapper.vm.optionValues.frac_per_stage.reduce((a, b) => a + b, 0)).toBeCloseTo(1)
+  })
+
+  it('keeps a method the user chose when another stage is added', async () => {
+    const wrapper = mountStages()
+    await setStages(wrapper, 2)
+    wrapper.vm.optionValues.method_per_stage[1] = 'latin_hypercube'
+    await setStages(wrapper, 3)
+    expect(wrapper.vm.optionValues.method_per_stage[1]).toBe('latin_hypercube')
+  })
+
+  it('offers the methods CA advertises, not a list of its own', async () => {
+    const wrapper = mountStages()
+    await setStages(wrapper, 2)
+    expect(wrapper.vm.stageMethods).toEqual(STAGE_OPTIONS[2].item_choices)
+  })
+
+  it('says so when the shares do not add up, instead of leaving CA to refuse', async () => {
+    const wrapper = mountStages()
+    await setStages(wrapper, 2)
+    expect(wrapper.find('[data-testid="emu-stages-sum"]').exists()).toBe(false)
+    wrapper.vm.optionValues.frac_per_stage[1] = 0.2
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('[data-testid="emu-stages-sum"]').text()).toContain('0.700')
+  })
+
+  it('says so when the first stage is the adaptive one', async () => {
+    const wrapper = mountStages()
+    await setStages(wrapper, 2)
+    expect(wrapper.find('[data-testid="emu-stages-first"]').exists()).toBe(false)
+    wrapper.vm.optionValues.method_per_stage[0] = 'gradient_weighted'
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('[data-testid="emu-stages-first"]').exists()).toBe(true)
+  })
+
+  it('drops the stage lists again on the way back to a single stage', async () => {
+    const wrapper = mountStages()
+    await setStages(wrapper, 3)
+    await setStages(wrapper, 1)
+    expect(wrapper.find('[data-testid="emu-stages"]').exists()).toBe(false)
+    expect(wrapper.vm.optionValues.frac_per_stage).toBe(null)
+  })
+
+  it('greys the stage settings out when the design is being reused', async () => {
+    // Reuse refits samples already on disk, so nothing about the design applies —
+    // the same reason num_train_samples and sample_type are greyed.
+    const wrapper = mountStages({ reusable: true })
+    await setStages(wrapper, 2)
+    wrapper.vm.optionValues.reuse_samples = true
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('[data-testid="emu-stage-frac-0"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.find('[data-testid="emu-stage-method-0"]').attributes('disabled')).toBeDefined()
+  })
+
+  it('sends the stage plan to the runner as lists', async () => {
+    const wrapper = mountStages()
+    await setStages(wrapper, 2)
+    await wrapper.vm.$nextTick()
+    const emitted = wrapper.emitted('change')
+    const latest = emitted[emitted.length - 1][0]
+    expect(latest.num_stages).toBe(2)
+    expect(latest.frac_per_stage).toEqual([0.5, 0.5])
+    expect(latest.method_per_stage).toEqual(['sobol', 'gradient_weighted'])
+    expect(latest.weight_per_stage).toEqual([1, 1])
+  })
+
+  it('offers a weight only for a stage that has scores to follow', async () => {
+    // A space-filling stage has none, and CA ignores the value — a box for it would be
+    // asking for a number that does nothing.
+    const wrapper = mountStages()
+    await setStages(wrapper, 2)
+    expect(wrapper.find('[data-testid="emu-stage-weight-0"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="emu-stage-weight-1"]').exists()).toBe(true)
+
+    wrapper.vm.optionValues.method_per_stage[0] = 'gradient_weighted'
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('[data-testid="emu-stage-weight-0"]').exists()).toBe(true)
+  })
+
+  it('treats error_weighted as an adaptive stage too', async () => {
+    const wrapper = mountStages()
+    await setStages(wrapper, 2)
+    wrapper.vm.optionValues.method_per_stage[1] = 'error_weighted'
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('[data-testid="emu-stage-weight-1"]').exists()).toBe(true)
+
+    // ...including when it is put first, which CA refuses.
+    wrapper.vm.optionValues.method_per_stage[0] = 'error_weighted'
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('[data-testid="emu-stages-first"]').exists()).toBe(true)
+  })
+})

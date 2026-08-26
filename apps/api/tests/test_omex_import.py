@@ -363,7 +363,7 @@ def test_an_archive_with_neither_says_what_it_wanted():
 
 @pytest.mark.integration
 def test_the_myokit_archive_loads_model_and_params_in_one_drop(
-    client, requires_simulation, tmp_path
+    client, requires_simulation, requires_myokit_parser, tmp_path
 ):
     with open(MMT_EXAMPLE, "rb") as fh:
         resp = client.post(
@@ -382,7 +382,9 @@ def test_the_myokit_archive_loads_model_and_params_in_one_drop(
 
 
 @pytest.mark.integration
-def test_the_archives_protocol_comes_from_the_mmt(client, requires_simulation):
+def test_the_archives_protocol_comes_from_the_mmt(
+    client, requires_simulation, requires_myokit_parser
+):
     """The archive carries no obs_data. Without this the study would load unpaced
     -- a model and a parameter to fit, and nothing driving it."""
     with open(MMT_EXAMPLE, "rb") as fh:
@@ -409,7 +411,9 @@ def test_the_archives_protocol_comes_from_the_mmt(client, requires_simulation):
 
 
 @pytest.mark.integration
-def test_the_archive_and_the_bare_mmt_give_the_same_protocol(client, requires_simulation):
+def test_the_archive_and_the_bare_mmt_give_the_same_protocol(
+    client, requires_simulation, requires_myokit_parser
+):
     """Two routes into the same conversion, so they must not drift apart. The
     archive path is easy to leave behind: it has its own upload route, and this
     is the assertion that notices."""
@@ -427,7 +431,9 @@ def test_the_archive_and_the_bare_mmt_give_the_same_protocol(client, requires_si
 
 
 @pytest.mark.integration
-def test_an_obs_data_in_the_archive_beats_the_mmts_own_protocol(client, requires_simulation):
+def test_an_obs_data_in_the_archive_beats_the_mmts_own_protocol(
+    client, requires_simulation, requires_myokit_parser
+):
     """The author's file is the author's intent; a derived protocol must not
     displace one they shipped."""
     mine = {
@@ -453,7 +459,9 @@ def test_an_obs_data_in_the_archive_beats_the_mmts_own_protocol(client, requires
 
 
 @pytest.mark.integration
-def test_the_whole_archive_simulates_as_dropped(client, requires_simulation):
+def test_the_whole_archive_simulates_as_dropped(
+    client, requires_simulation, requires_myokit_parser
+):
     """The point of the archive: drop it, and the study runs. Two stimuli in the
     .mmt's protocol, so two action potentials."""
     with open(MMT_EXAMPLE, "rb") as fh:
@@ -473,7 +481,9 @@ def test_the_whole_archive_simulates_as_dropped(client, requires_simulation):
 
 
 @pytest.mark.integration
-def test_the_calibration_parameter_from_the_archive_moves_the_model(client, requires_simulation):
+def test_the_calibration_parameter_from_the_archive_moves_the_model(
+    client, requires_simulation, requires_myokit_parser
+):
     """params_for_id and the protocol have to reach the same model: a parameter
     loaded against a model the protocol does not drive would look fine and fit
     nothing."""
@@ -496,3 +506,283 @@ def test_the_calibration_parameter_from_the_archive_moves_the_model(client, requ
         return max(r.json()["experiments"][0]["outputs"]["membrane/V"])
 
     assert peak(1.0) != pytest.approx(peak(8.0), abs=1e-3)
+
+
+# ---------------------------------------------------------------------------
+# Nothing loads quietly
+#
+# Every way an import can come up short of a whole study, and the sentence the
+# user gets for it. The failure that prompted these: a pre-#466 obs_data in the
+# archive was read, rejected by CA, and reported as a clause on the end of a
+# blue "Loaded 3compartment.omex" -- so the study looked loaded and the
+# observations tab was simply empty. An empty tab must never be the only thing
+# that says something went wrong.
+# ---------------------------------------------------------------------------
+def _model_bytes() -> bytes:
+    return (RESOURCES_DIR / "Lotka_Volterra_forced.cellml").read_bytes()
+
+
+def _example_obs_data() -> dict:
+    """The shipped example's obs_data, read out of the archive it travels in."""
+    with zipfile.ZipFile(EXAMPLE) as zf:
+        name = next(n for n in zf.namelist() if n.endswith("_obs_data.json"))
+        return json.loads(zf.read(name))
+
+
+def _upload(client, members: dict, **params):
+    return client.post(
+        "/api/omex/upload",
+        params=params,
+        files={"file": ("study.omex", _zip(members), "application/zip")},
+    )
+
+
+def test_a_json_that_could_have_been_the_obs_data_is_named_with_the_reason(client):
+    """The quiet case: a member that is neither named `obs` nor shaped like an
+    obs_data is passed over by the sniff, and used to leave no trace at all."""
+    resp = _upload(client, {"m.cellml": _model_bytes(),
+                            "measurements.json": json.dumps({"readings": [1, 2, 3]})})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["model_id"]  # the model still landed
+    warning = " ".join(body["warnings"])
+    assert "measurements.json" in warning
+    assert "data_items" in warning and "protocol_info" in warning
+
+
+def test_an_unparseable_json_beside_the_model_is_reported_not_ignored(client):
+    resp = _upload(client, {"m.cellml": _model_bytes(), "study.json": "{not json"})
+    assert resp.status_code == 200, resp.text
+    warning = " ".join(resp.json()["warnings"])
+    assert "study.json" in warning and "not valid JSON" in warning
+
+
+def test_an_empty_json_member_says_it_is_empty(client):
+    resp = _upload(client, {"m.cellml": _model_bytes(), "study.json": ""})
+    assert resp.status_code == 200, resp.text
+    assert "empty" in " ".join(resp.json()["warnings"])
+
+
+def test_an_archive_carrying_no_observations_at_all_says_so(client):
+    """Valid, and it must still load (#149) -- but the reason the observations
+    tab is empty is "there were none", which is worth one sentence."""
+    resp = _upload(client, {"m.cellml": _model_bytes()})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["obs_data"] is None
+    assert "carries no obs_data" in " ".join(body["warnings"])
+
+
+def test_a_member_the_manifest_rules_out_is_reported_as_ruled_out(client):
+    """Excluded by its declared format rather than by its contents, so the
+    reason has to name the manifest -- the file itself looks fine."""
+    resp = _upload(
+        client,
+        {
+            "manifest.xml": PHLYNX_MANIFEST,
+            "model.cellml": _model_bytes(),
+            "flow.json": json.dumps({"id": "phlynx-flow", "nodes": []}),
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    warning = " ".join(resp.json()["warnings"])
+    assert "flow.json" in warning and "manifest declares it" in warning
+
+
+def test_a_rejected_obs_data_is_a_failure_not_a_quiet_omission(client, requires_ca):
+    """The shape of the bug this section exists for: the member was found and
+    read, and the study still has to come back saying it was not loaded.
+
+    A typo'd key is CA's to catch, so this needs one. The structural refusals
+    below are CUFLynx's own and hold with no CA at all."""
+    obs = json.dumps({"protocol_info": {"pre_times": [0.0], "sim_times": [[1.0]]},
+                      "data_items": [{"data_item_name": "x", "opperation": "max"}]})
+    resp = _upload(client, {"m.cellml": _model_bytes(), "obs_data.json": obs})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["obs_data"]["error"]
+    assert body["obs_data"]["filename"] == "obs_data.json"
+    # Not half-loaded: nothing claims there are data_items when there are none.
+    assert "data_items" not in body["obs_data"]
+
+
+def test_an_obs_data_out_of_range_of_its_protocol_names_the_item(client):
+    """A structural refusal from CUFLynx's own checks, which name the index --
+    those messages must survive the archive path, not be flattened into "bad"."""
+    obs = json.dumps(
+        {
+            "protocol_info": {"pre_times": [0.0], "sim_times": [[1.0]]},
+            "data_items": [{"data_item_name": "x", "experiment_idx": 4}],
+        }
+    )
+    resp = _upload(client, {"m.cellml": _model_bytes(), "obs_data.json": obs})
+    body = resp.json()
+    assert "experiment_idx 4 out of range" in body["obs_data"]["error"]
+    assert "data_items[0]" in body["obs_data"]["error"]
+
+
+def test_a_series_without_its_obs_dt_is_refused_with_the_missing_key(client):
+    obs = json.dumps(
+        {
+            "protocol_info": {"pre_times": [0.0], "sim_times": [[1.0]]},
+            "data_items": [{"data_item_name": "x", "data_type": "series"}],
+        }
+    )
+    resp = _upload(client, {"m.cellml": _model_bytes(), "obs_data.json": obs})
+    assert "obs_dt is required" in resp.json()["obs_data"]["error"]
+
+
+def test_a_params_for_id_that_cannot_be_read_is_reported_beside_a_loaded_obs(client):
+    """One bad part does not take the others down, and does not hide either."""
+    obs = json.dumps({"protocol_info": {"pre_times": [0.0], "sim_times": [[1.0]]},
+                      "data_items": []})
+    resp = _upload(
+        client,
+        {"m.cellml": _model_bytes(), "obs_data.json": obs, "params_for_id.csv": "not,a,params\n"},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["params_for_id"]["error"]
+    assert body["obs_data"].get("error") is None
+    assert body["obs_data"]["n_data_items"] == 0
+
+
+def test_phlynx_state_that_could_not_be_kept_is_reported(client, tmp_path):
+    """It is the study's layout in the sibling editor, and losing it silently
+    means the archive stops round-tripping with no one the wiser (#149)."""
+    resp = _upload(
+        client,
+        {"m.cellml": _model_bytes(), "module_config.json": "{not json"},
+        output_dir=str(tmp_path),
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["module_config_path"] is None
+    assert "module_config.json" in " ".join(body["warnings"])
+
+
+def test_no_outputs_directory_is_not_reported_as_a_loss(client):
+    """The copy beside the model is a convenience: the archive itself is kept
+    whole and `omex_export` re-emits PhLynx's members verbatim, so nothing is
+    actually lost. Warning here would put a banner on every import until an
+    outputs directory is set -- which is how the real one stops being read."""
+    resp = _upload(client, {"m.cellml": _model_bytes(), "module_config.json": "{}"})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["module_config_path"] is None
+    assert not any("module_config" in w for w in body["warnings"]), body["warnings"]
+
+
+def test_a_study_that_loaded_whole_warns_about_nothing(client, tmp_path, requires_ca):
+    """The other half of the contract: warnings that cry wolf get ignored, so a
+    complete archive has to come back with an empty list.
+
+    Needs CA, because without one the honest answer is not silence -- it is the
+    "nobody checked this" warning that this whole change exists to produce."""
+    with open(EXAMPLE, "rb") as fh:
+        resp = client.post(
+            "/api/omex/upload",
+            params={"output_dir": str(tmp_path)},
+            files={"file": (EXAMPLE.name, fh, "application/zip")},
+        )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["obs_data"]["data_items"] and body["params_for_id"]["params"]
+    assert body["warnings"] == []
+
+
+def test_the_reasons_are_carried_out_of_unpack_for_every_passed_over_member():
+    """Reported per member, so an archive with two candidates does not have one
+    of them silently stand for both."""
+    parts = omex_import.unpack(
+        _zip(
+            {
+                "m.cellml": "<model/>",
+                "a.json": "{not json",
+                "b.json": json.dumps({"settings": {}}),
+            }
+        )
+    )
+    assert parts["obs"] is None
+    by_name = {s["name"]: s["reason"] for s in parts["obs_skipped"]}
+    assert set(by_name) == {"a.json", "b.json"}
+    assert "not valid JSON" in by_name["a.json"]
+    assert "data_items" in by_name["b.json"]
+
+
+def test_a_found_obs_data_leaves_the_other_members_unremarked():
+    """With observations in hand a leftover `simulation.json` is simply not
+    observations -- reporting it would train the user to ignore the banner."""
+    obs = json.dumps({"protocol_info": {"sim_times": [1.0]}, "data_items": []})
+    parts = omex_import.unpack(_phlynx_archive(**{"study_obs_data.json": obs}))
+    assert parts["obs_skipped"] == []
+
+
+# ---------------------------------------------------------------------------
+# An obs_data written before CA #466
+#
+# The archive the user had was correct when it was written: `variable` named the
+# item and was allowed to repeat across the mean/max/min of one trace. CA's
+# complaint is about the consequence (a duplicate `data_item_name`), so the
+# cause -- and the migrator that fixes it -- has to come from here.
+# ---------------------------------------------------------------------------
+def _legacy_obs() -> str:
+    return json.dumps(
+        {
+            "protocol_info": {"pre_times": [0.0], "sim_times": [[1.0]], "params_to_change": {}},
+            "data_items": [
+                {
+                    "variable": "pressure aortic root",
+                    "name_for_plotting": "u_{AR}",
+                    "data_type": "constant",
+                    "operation": op,
+                    "operands": ["aortic_root/u"],
+                    "unit": "J_per_m3",
+                    "weight": 1.0,
+                    "value": 1.0,
+                    "std": 0.1,
+                    "cost_type": "gaussian_MLE",
+                }
+                for op in ("mean", "max", "min")
+            ],
+        }
+    )
+
+
+def test_a_pre_466_archive_is_told_what_changed_and_how_to_convert_it(client, requires_ca):
+    resp = _upload(client, {"m.cellml": _model_bytes(), "obs_data.json": _legacy_obs()})
+    assert resp.status_code == 200, resp.text
+    error = resp.json()["obs_data"]["error"]
+    # CA's own complaint, unparaphrased, so it matches what a run would say...
+    assert "Duplicate 'data_item_name'" in error
+    # ...and then the part CA cannot know: why this file has duplicates at all.
+    assert "uses the old" in error
+    assert "cuflynx-migrate-obs-data" in error
+    assert "'variable'" in error and "'name_for_plotting'" in error
+
+
+def test_the_migration_hint_is_offered_from_the_document_alone():
+    """No CA needed: the old keys are in the file, and the advice is about them.
+    So a frozen app with no clone configured still explains the failure."""
+    import obs_data as obs_mod
+
+    hint = obs_mod.legacy_vocabulary_hint(json.loads(_legacy_obs()))
+    assert hint and "cuflynx-migrate-obs-data" in hint
+    # And it stays quiet about a file already in the current vocabulary.
+    assert obs_mod.legacy_vocabulary_hint(_example_obs_data()) is None
+
+
+def test_an_mmt_archive_whose_protocol_filled_the_slot_is_not_told_it_has_none(
+    client, requires_simulation, requires_myokit_parser
+):
+    """The .mmt's own `[[protocol]]` becomes the study's obs_data when the
+    archive carries none (#27). The slot is what matters, not where it was
+    filled from -- so the "no obs_data" sentence has to be decided after that."""
+    with open(MMT_EXAMPLE, "rb") as fh:
+        resp = client.post(
+            "/api/omex/upload", files={"file": (MMT_EXAMPLE.name, fh, "application/zip")}
+        )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["obs_data"] and body["obs_data"].get("derived_from_mmt")
+    assert not any("carries no obs_data" in w for w in body["warnings"]), body["warnings"]

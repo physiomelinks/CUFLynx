@@ -13,7 +13,7 @@ Three gradient sources are available, per the loaded model:
   all-``@differentiable`` ops. Implemented here directly.
 * **FSA** (Myokit CVODES forward sensitivities) — ``cellml`` + ``CVODE_myokit``.
   Delegated to circulatory_autogen's backend-agnostic
-  ``OpencorParamID.get_observable_sensitivities`` (CA #283/#284), driven through a
+  ``ParamID.get_observable_sensitivities`` (CA #283/#284), driven through a
   ``do_ad`` ``CVS0DParamID`` engine the runner builds; we only normalise + relabel
   its output to match the FD/AD payload.
 
@@ -279,7 +279,7 @@ def _ca_local_sensitivity(
     pid, param_names, nominal, mins, maxs, gradient_method=None, rel_step=None
 ):
     """Local sensitivities via circulatory_autogen's backend-agnostic accessor
-    ``OpencorParamID.get_observable_sensitivities``.
+    ``ParamID.get_observable_sensitivities``.
 
     **All three gradient sources come through here.** CA implements each of them
     -- FD (``fd_backend``), AD (``casadi_backend``, which flattens grouped and

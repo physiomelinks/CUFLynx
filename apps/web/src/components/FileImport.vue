@@ -60,12 +60,22 @@ const emit = defineEmits([
   'obs-data-loaded',
   'params-loaded',
   'update:outputsDir',
+  // Read what is already in the outputs directory, rather than only what this
+  // session ran (#255). A press, not a watcher: reading a directory is real work
+  // and the results found may not match what is loaded.
+  'load-outputs',
   'export-pipeline',
   'export-plotting',
 ])
 
 const error = ref('')
 const notice = ref('')
+// Everything an import could not do while still succeeding: a part that was
+// never found, a check that could not run, a file in a vocabulary on its way
+// out. Its own banner, at its own severity -- these used to ride along on the
+// end of the blue "Loaded X" line, where a study whose observations had been
+// rejected looked exactly like one that had loaded perfectly.
+const warnings = ref([])
 const outputsBrowserOpen = ref(false)
 const editParamsOpen = ref(false)
 const editObsOpen = ref(false)
@@ -93,12 +103,14 @@ const paramsLoaded = computed(() => !!props.loadedFilename)
 // model's is the .mmt it was converted from — opening a CellML builder on either
 // would show the user a model they did not write and cannot edit there.
 //
-// `.mmt` is spotted through `converted_from` rather than through the model
-// format: the conversion is what makes the loaded model CellML, so by the time
-// it is loaded nothing else remembers the file was Myokit.
+// `.mmt` and EasyML's `.model` are spotted through `converted_from` rather than
+// through the model format: the conversion is what makes the loaded model
+// CellML, so by the time it is loaded nothing else remembers what the file was.
 const sourceExt = computed(() => {
   if (props.modelFormat === 'external_python') return '.py'
-  if (/\.mmt$/i.test(String(props.convertedFrom || ''))) return '.mmt'
+  const from = String(props.convertedFrom || '')
+  if (/\.mmt$/i.test(from)) return '.mmt'
+  if (/\.model$/i.test(from)) return '.model'
   return ''
 })
 
@@ -245,6 +257,7 @@ async function onSendConfirm() {
 // upload flow, so a loaded example is indistinguishable from a drop.
 async function onSelectExample(example) {
   error.value = ''
+  warnings.value = []
   try {
     const file = await fetchExampleModel(example.name, example.filename)
     // Examples ship as archives so one click loads the whole study — model,
@@ -288,6 +301,9 @@ function extOk(filename, exts) {
 
 async function attachObs(obsData, filename) {
   const summary = await uploadObsData(props.modelId, obsData)
+  // Same channel as an archive's: a document CA could not be asked about loads
+  // either way, and only the banner distinguishes that from a checked one.
+  if (summary?.warnings?.length) warnings.value = [...summary.warnings]
   emit('obs-data-loaded', { ...summary, filename })
 }
 
@@ -452,19 +468,22 @@ function applyImportedStudy(data, label) {
     })
   }
   // A part that failed to parse is reported without losing the rest -- an
-  // archive with a bad obs_data still gave us a model worth having.
+  // archive with a bad obs_data still gave us a model worth having. What it does
+  // not do is pass for success: the failure goes in the warning banner, and the
+  // notice says only what actually loaded.
   const failed = [data.obs_data, data.params_for_id]
     .filter((p) => p?.error)
-    .map((p) => `${p.filename}: ${p.error}`)
-  notice.value = failed.length
-    ? `Loaded ${label}, but ${failed.join('; ')}`
-    : `Loaded ${label}` + (data.module_config_path ? ' (PhLynx layout kept)' : '')
+    .map((p) => `${p.filename || 'a part of the archive'} was not loaded: ${p.error}`)
+  notice.value =
+    `Loaded ${label}` + (data.module_config_path ? ' (PhLynx layout kept)' : '')
+  warnings.value = [...failed, ...(data.warnings || [])]
 }
 
 async function handleOmex(files) {
   const omex = files.find((f) => isOmexName(f.name))
   if (!omex) return false
   error.value = ''
+  warnings.value = []
   try {
     const data = await uploadOmex(omex, props.outputsDir)
     applyImportedStudy(data, omex.name)
@@ -481,6 +500,7 @@ function isOmexName(name) {
 async function onCellmlDrop(event) {
   event.preventDefault?.()
   error.value = ''
+  warnings.value = []
   // Accept a whole bundle: a non-flattened model plus the sister files it
   // imports. The server picks the main file, resolves imports and flattens to
   // one CellML 2.0 document. A single self-contained file is just a bundle of 1.
@@ -488,16 +508,17 @@ async function onCellmlDrop(event) {
   resetPicker(event)
   if (!files.length) return
   // An archive is taken whole and returns early; what follows is the loose-file
-  // path. .mmt is accepted there and converted to CellML server-side (#27) -- a
-  // Myokit model is a single file, so it never joins a sister-file bundle.
+  // path. .mmt and openCARP's EasyML .model are accepted there and converted to
+  // CellML server-side (#27) -- both are single files, so neither ever joins a
+  // sister-file bundle.
   if (await handleOmex(files)) return
   // `.py` is an *external python* model: a file holding the solver class itself
   // rather than a model description CUFLynx generates a solver from. It travels
   // the same upload route, and the server answers with model_format:
   // "external_python" so the app can lock the backend to it.
-  const bad = files.find((f) => !extOk(f.name, ['.cellml', '.xml', '.mmt', '.py']))
+  const bad = files.find((f) => !extOk(f.name, ['.cellml', '.xml', '.mmt', '.py', '.model']))
   if (bad) {
-    error.value = `Expected a .cellml, .mmt, .py or .omex file, got "${bad.name}"`
+    error.value = `Expected a .cellml, .mmt, .model, .py or .omex file, got "${bad.name}"`
     return
   }
   const unreadable = files.map(unreadableDrop).find(Boolean)
@@ -510,6 +531,10 @@ async function onCellmlDrop(event) {
   const main = files.find((f) => f.name.toLowerCase().endsWith('.cellml')) ?? files[0]
   try {
     const data = await uploadCellML(files, props.outputsDir)
+    // What the import had to decide for itself. An EasyML model always has some:
+    // the format leaves the membrane equation out, so something was put in its
+    // place, and that is the user's to check rather than the log's to keep.
+    warnings.value = [...(data.warnings || [])]
     // Picked up by the modelId watcher, which runs after the parent has cleared
     // its obs store and after any pending obs_data has been re-attached.
     derivedObs.value = data.protocol_obs_data || null
@@ -522,6 +547,7 @@ async function onCellmlDrop(event) {
 async function onObsDrop(event) {
   event.preventDefault?.()
   error.value = ''
+  warnings.value = []
   const [file] = filesFrom(event)
   resetPicker(event)
   if (!file) return
@@ -551,6 +577,7 @@ async function onObsDrop(event) {
 async function onParamsDrop(event) {
   event.preventDefault?.()
   error.value = ''
+  warnings.value = []
   const [file] = filesFrom(event)
   resetPicker(event)
   if (!file) return
@@ -598,10 +625,11 @@ async function onParamsDrop(event) {
         </template>
         <template v-else>
           <i class="pi pi-file" /> Drop <strong>CellML</strong> (.cellml),
-          <strong>Myokit</strong> (.mmt) or <strong>External Python</strong> (.py)
+          <strong>Myokit</strong> (.mmt), <strong>EasyML</strong> (.model) or
+          <strong>External Python</strong> (.py)
           <small>one file, a non-flattened model with its sisters, or a .omex archive</small>
         </template>
-        <input type="file" accept=".cellml,.xml,.mmt,.py,.omex" multiple @change="onCellmlDrop" />
+        <input type="file" accept=".cellml,.xml,.mmt,.model,.py,.omex" multiple @change="onCellmlDrop" />
       </label>
       <Button
         :label="startEditLabel"
@@ -694,6 +722,14 @@ async function onParamsDrop(event) {
     >
       {{ notice }}
     </Message>
+    <Message
+      v-if="warnings.length && !error"
+      severity="warn"
+      data-testid="import-warning"
+      :closable="false"
+    >
+      <div v-for="w in warnings" :key="w" class="import-warning-line">{{ w }}</div>
+    </Message>
 
     <h2 class="exports-heading">Exports</h2>
     <label class="outputs-dir">
@@ -713,6 +749,15 @@ async function onParamsDrop(event) {
           title="Browse for an outputs directory"
           data-testid="outputs-browse"
           @click="outputsBrowserOpen = true"
+        />
+        <Button
+          icon="pi pi-refresh"
+          size="small"
+          text
+          :disabled="!outputsDir"
+          title="Reopen the study in this directory: the model, obs_data and params_for_id the run was made from, its calibration, progress, sensitivity, UQ and emulator"
+          data-testid="outputs-load"
+          @click="emit('load-outputs')"
         />
       </span>
     </label>
@@ -989,5 +1034,8 @@ async function onParamsDrop(event) {
 .hint {
   opacity: 0.6;
   font-size: 0.75rem;
+}
+.import-warning-line + .import-warning-line {
+  margin-top: 0.4rem;
 }
 </style>

@@ -115,7 +115,8 @@ jobs:
           pip install --build-constraint "${{ github.workspace }}/build-constraints.txt" \
             -e ".[${{ matrix.extras }}]"
 
-      # INTEGRATION WIRING -- revert before merge. The declared dependency is
+      # TEMPORARY, until circulatory_autogen publishes a release containing #466. The
+      # declared dependency is
       # `libcuflynx>=0.4.0` from PyPI, which is 0.4.1 and predates the CA changes this
       # release ships with. Installed *after* the app so it overrides that resolution,
       # and still as a real distribution in site-packages -- so
@@ -125,7 +126,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install --force-reinstall --no-cache-dir \
             --build-constraint "${{ github.workspace }}/build-constraints.txt" \
-            "libcuflynx[emulation,uq] @ git+https://github.com/physiomelinks/circulatory_autogen@integration/next"
+            "libcuflynx[emulation,uq] @ git+https://github.com/physiomelinks/circulatory_autogen@master"
 
       # Fail here rather than 20 minutes later in a wall of skips. Each of these is a
       # dependency the tier silently degrades without, and the point of this job is that
@@ -204,7 +205,8 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev,analysis]"
 
-      # INTEGRATION WIRING -- revert before merge. The declared dependency is
+      # TEMPORARY, until circulatory_autogen publishes a release containing #466. The
+      # declared dependency is
       # `libcuflynx>=0.4.0` from PyPI, which is 0.4.1 and predates the CA changes this
       # release ships with. Installed *after* the app so it overrides that resolution,
       # and still as a real distribution in site-packages -- so
@@ -214,7 +216,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install --force-reinstall --no-cache-dir \
             --build-constraint "${{ github.workspace }}/build-constraints.txt" \
-            "libcuflynx[emulation,uq] @ git+https://github.com/physiomelinks/circulatory_autogen@integration/next"
+            "libcuflynx[emulation,uq] @ git+https://github.com/physiomelinks/circulatory_autogen@master"
 
       # The parallel arm is worthless without a launcher, and its absence is *silent*:
       # every build_command falls back to one core with a warning and the run still
@@ -306,7 +308,8 @@ jobs:
             --build-constraint "${{ github.workspace }}/build-constraints.txt" \
             -e ".[dev,analysis,full]"
 
-      # INTEGRATION WIRING -- revert before merge. The declared dependency is
+      # TEMPORARY, until circulatory_autogen publishes a release containing #466. The
+      # declared dependency is
       # `libcuflynx>=0.4.0` from PyPI, which is 0.4.1 and predates the CA changes this
       # release ships with. Installed *after* the app so it overrides that resolution,
       # and still as a real distribution in site-packages -- so
@@ -316,7 +319,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install --force-reinstall --no-cache-dir \
             --build-constraint "${{ github.workspace }}/build-constraints.txt" \
-            "libcuflynx[emulation,uq] @ git+https://github.com/physiomelinks/circulatory_autogen@integration/next"
+            "libcuflynx[emulation,uq] @ git+https://github.com/physiomelinks/circulatory_autogen@master"
 
       - name: Record what was resolved
         if: always()

@@ -22,6 +22,7 @@ if str(API_DIR) not in sys.path:
 os.environ["CUFLYNX_CONFIG_DIR"] = tempfile.mkdtemp(prefix="cuflynx-test-config-")
 
 import calibration as calibration_mod  # noqa: E402
+import emulator as emulator_mod  # noqa: E402
 import engine as engine_mod  # noqa: E402
 import main  # noqa: E402
 import model_codegen as model_codegen_mod  # noqa: E402
@@ -48,6 +49,19 @@ def all_mmt_fixtures():
     import tests and the protocol tests cannot drift onto different model sets.
     """
     return sorted(RESOURCES_DIR.rglob("*.mmt"))
+
+
+def all_easyml_fixtures():
+    """Every EasyML .model under resources/.
+
+    Same rglob rule as the .mmt sweep and for the same reason. The set is
+    smaller on purpose: openCARP's own model library is under the openCARP
+    Academic Public License and is not redistributable from here, and a Myokit
+    *export* of one of the third-party .mmt files next door would be a
+    derivative work of a file this repository only aggregates. So what is here
+    is written for this repository -- see resources/hodgkin_huxley_1952.model.
+    """
+    return sorted(RESOURCES_DIR.rglob("*.model"))
 
 
 # ---------------------------------------------------------------------------
@@ -148,6 +162,37 @@ def requires_ca():
 
 
 @pytest.fixture
+def requires_easyml():
+    """For the EasyML reader, which is circulatory_autogen's alone.
+
+    There is no local fallback -- a second reader of a format this implicit would
+    not agree with the first for long -- so without CA these tests have nothing
+    to exercise. The tests about the *no-CA* behaviour itself force CA away and
+    always run.
+
+    Myokit is checked too, and separately from ``requires_simulation``: the
+    reader builds a ``myokit.Model``, so the unit tier -- which installs neither
+    Myokit nor libCellML -- cannot run these even with CA present. libCellML is
+    *not* required, because reading an EasyML file never touches it.
+    """
+    import easyml_import
+
+    if easyml_import._ca_parser("parsers.EasyMLParsers") is None:
+        pytest.skip("libcuflynx.parsers.EasyMLParsers not importable")
+    pytest.importorskip("myokit")
+
+
+@pytest.fixture
+def requires_myokit_parser():
+    """Likewise for the Myokit reader, which moved into circulatory_autogen."""
+    import myokit_import
+
+    if myokit_import._ca_parser() is None:
+        pytest.skip("libcuflynx.parsers.MyokitParsers not importable")
+    pytest.importorskip("myokit")
+
+
+@pytest.fixture
 def requires_casadi(requires_simulation):
     """For the casadi_python backend (generated model + CasADi AD)."""
     try:
@@ -208,11 +253,20 @@ def _analysis_pythons() -> tuple:
     choice as the three analysis managers (#167), so a test that changes the
     interpreter would otherwise leave the *engine* pointed at it and send every
     later test's simulate through a worker.
+
+    So does the emulator manager, which was added after this list and left out
+    of it. ``test_config`` configures ``/venv/bin/python`` -- a path chosen
+    because it does not exist -- and every emulator test after it in the same
+    session then tried to train with that, failing on a missing interpreter or
+    on ranks that died at once. CI never saw it: it runs the unit and
+    integration tiers as separate sessions, and the test that sets the
+    interpreter is in one while the tests that spawn it are in the other.
     """
     return (
         calibration_mod.calibration.python,
         sensitivity_mod.sensitivity.python,
         uq_mod.uq.python,
+        emulator_mod.emulator.python,
         engine_mod.engine.worker_python,
     )
 
@@ -222,6 +276,7 @@ def _set_analysis_pythons(pythons: tuple) -> None:
         calibration_mod.calibration.python,
         sensitivity_mod.sensitivity.python,
         uq_mod.uq.python,
+        emulator_mod.emulator.python,
         engine_mod.engine.worker_python,
     ) = pythons
 
@@ -361,3 +416,32 @@ def write_ca_results(out_dir, param_names=(["a/x"],), values=(1.0,), cost=0.0):
 '''
 
 exec(WRITE_CA_RESULTS_SRC, globals())  # noqa: S102 - one definition, two uses
+
+
+@pytest.fixture
+def recorded_commands(monkeypatch):
+    """Record the argv each manager builds, so a run can be checked for being parallel.
+
+    Without this the integration arms below assert only that the analysis *finished*,
+    which a silently-serial run does just as well. Not hypothetical: the first draft of
+    these tests posted their settings flat instead of under ``settings``, so the endpoint
+    ignored ``num_cores`` entirely -- the "parallel" arm ran on one core and passed.
+    Closing the loop on the argv is what makes the arm mean what it says.
+    """
+    seen = []
+
+    def spy(manager):
+        original = manager.build_command
+
+        def wrapper(config, config_path):
+            cmd = original(config, config_path)
+            seen.append(cmd)
+            return cmd
+
+        monkeypatch.setattr(manager, "build_command", wrapper, raising=False)
+
+    from test_run_matrix import MANAGERS  # noqa: PLC0415 - the table lives with its tests
+
+    for _, manager in MANAGERS:
+        spy(manager)
+    return seen

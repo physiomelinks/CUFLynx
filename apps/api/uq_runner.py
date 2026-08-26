@@ -305,7 +305,7 @@ def run(config: dict) -> dict:
     # ---- run the chosen method --------------------------------------------
     if method == "mcmc":
         # Reuse the calibration engine when one was just built: CA's run_UQ
-        # promotes it in place (OpencorMCMC.from_param_id), so the model
+        # promotes it in place (MCMC.from_param_id), so the model
         # compiled for the GA is the one UQ samples with. Before CA #392 the
         # only way in was mcmc_instead=True at construction, which forced a
         # second CVS0DParamID and a second compile (CUFLynx #216/#217).
@@ -325,6 +325,7 @@ def run(config: dict) -> dict:
             return {"rank": rank}
         flat = mcmc.get_mcmc_samples()[0]
         qnames = _flat_param_names(mcmc)
+        engine = mcmc
     elif method == "laplace":
         cvs = ga or _make_param_id(
             config, settings, obs_path, mcmc=False, options_key="optimiser_options",
@@ -352,6 +353,7 @@ def run(config: dict) -> dict:
             laplace_mean, ia.covariance_matrix_Laplace, size=LAPLACE_SAMPLES
         )
         qnames = _flat_param_names(cvs)
+        engine = cvs
     else:
         raise RuntimeError(f"unknown UQ method: {method!r}")
 
@@ -361,8 +363,60 @@ def run(config: dict) -> dict:
     import ca_run_history  # noqa: E402 (CA output formats live in one place)
 
     ca_run_history.write_uq_samples(output_dir, np.asarray(flat), qnames)
+
+    coverage = _posterior_predictive(config, settings, output_dir, engine)
     print(META_MARKER + json.dumps({"method": method}), flush=True)
-    return {"rank": 0, "method": method, "params": _distributions(np.asarray(flat), qnames)}
+    result = {"rank": 0, "method": method,
+              "params": _distributions(np.asarray(flat), qnames)}
+    if coverage is not None:
+        result["coverage"] = coverage
+    return result
+
+
+def _posterior_predictive(config, settings, output_dir, engine):
+    """Push posterior draws back through the model and report coverage.
+
+    A chain says what the parameters could be; it does not say whether the model
+    at those parameters reproduces what was measured. Run here rather than left
+    to the user because the engine is already built and the chain is already on
+    disk -- the check costs one sweep and answers the question the chain cannot.
+
+    Returns None, quietly, when the engine predates the check or the user turned
+    it off. A UQ run that produced a posterior has not failed because it could
+    not also score it.
+    """
+    if not settings.get("posterior_predictive", True):
+        return None
+
+    # Imported here for the same reason every other CA import in this file is:
+    # the runner is shipped into runners/ and resolves CA at call time.
+    from ca_imports import CaImportError, ca_from  # noqa: PLC0415
+
+    try:
+        run_check = ca_from(
+            "param_id.posterior_predictive", "posterior_predictive")
+    except CaImportError:
+        print("This circulatory_autogen has no posterior predictive check; "
+              "skipping coverage.", flush=True)
+        return None
+
+    num_samples = int(settings.get("posterior_predictive_samples", 100))
+    print(f"Posterior predictive: {num_samples} draws through the model",
+          flush=True)
+    try:
+        result = run_check(client=engine, num_samples=num_samples,
+                           output_dir=output_dir, save=True)
+    except Exception as exc:  # noqa: BLE001 - the posterior is still the result
+        print(f"WARNING: posterior predictive check failed: {exc}", flush=True)
+        return None
+
+    print(result.summary(), flush=True)
+    return {
+        "coverage": result.coverage,
+        "num_samples": int(result.predictions.shape[0]),
+        "used_emulator": bool(result.used_emulator),
+        "samples_that_failed_to_simulate": int(result.failures),
+    }
 
 
 def main(argv: list[str]) -> int:

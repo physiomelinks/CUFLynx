@@ -29,6 +29,11 @@ const props = defineProps({
   // UQ: per-parameter posteriors [{qname, mean, std, q05, q50, q95, bins, counts}].
   uqParams: { type: Array, default: () => [] },
   uqMethod: { type: String, default: null },
+  // How well the posterior reproduces the data it was fitted to. null means the
+  // run was not scored -- an older engine, or the check turned off -- which is
+  // not the same as scoring badly, so the panel says so rather than showing 0.
+  coverage: { type: Object, default: null },
+  posteriorPredictive: { type: Object, default: null },
   // Saved sensitivity runs for comparison: [{ id, label, at }]. The currently
   // shown run's matrix is in `indices`; this list lets the user switch between
   // saved runs (e.g. global Sobol vs local FD) without overwriting.
@@ -525,6 +530,71 @@ const uqPlots = computed(() =>
 const uqMethodLabel = computed(() =>
   props.uqMethod === 'laplace' ? 'Laplace' : props.uqMethod === 'mcmc' ? 'MCMC' : '',
 )
+
+// --- posterior predictive -------------------------------------------------
+// A chain says what the parameters could be. It does not say whether the model
+// at those parameters reproduces what was measured, and a bad fit can still
+// produce a tidy posterior.
+const coverageRows = computed(() => {
+  const levels = props.coverage?.coverage?.levels
+  if (!levels) return []
+  return Object.keys(levels)
+    .map(Number)
+    .sort((a, b) => a - b)
+    .map((level) => {
+      const row = levels[String(level)]
+      return {
+        level,
+        label: `${Math.round(level * 100)}%`,
+        nominal: level,
+        predictive: row.predictive_coverage,
+        // Over draws, not over medians: a median can sit dead centre while
+        // most of the posterior is nowhere near the data.
+        sampleInterval: row.sample_interval_coverage ?? row.data_interval_coverage,
+      }
+    })
+})
+
+const coverageUsedEmulator = computed(() => props.coverage?.used_emulator === true)
+
+const coverageObservables = computed(
+  () => props.coverage?.coverage?.num_observables ?? null,
+)
+
+// Everything arrives already scaled to each measurement's own std, so the axis
+// is shared and "inside the error bar" is the same distance for every row.
+const PREDICTIVE_LIMIT = 10
+
+const predictiveBars = computed(() => {
+  const pp = props.posteriorPredictive
+  if (!pp?.available || !Array.isArray(pp.labels) || !pp.labels.length) return []
+
+  const clamp = (v) => Math.max(-PREDICTIVE_LIMIT, Math.min(PREDICTIVE_LIMIT, v))
+  const pct = (v) => ((clamp(v) + PREDICTIVE_LIMIT) / (2 * PREDICTIVE_LIMIT)) * 100
+
+  return pp.labels.map((label, i) => {
+    const lo = pp.lo[i]
+    const hi = pp.hi[i]
+    const median = pp.median[i]
+    const left = pct(lo)
+    const width = Math.max(pct(hi) - left, 0.6)
+    return {
+      label,
+      left: `${left}%`,
+      width: `${width}%`,
+      medianLeft: `${pct(median)}%`,
+      // One std either side of the measurement, the band a fit should land in.
+      text: `${median >= 0 ? '+' : ''}${median.toFixed(1)}σ`,
+      offScale: Math.abs(median) > PREDICTIVE_LIMIT,
+    }
+  })
+})
+
+const hasPredictive = computed(() => predictiveBars.value.length > 0)
+const predictiveBandLeft = computed(
+  () => `${((PREDICTIVE_LIMIT - 1) / (2 * PREDICTIVE_LIMIT)) * 100}%`,
+)
+const predictiveBandWidth = computed(() => `${(2 / (2 * PREDICTIVE_LIMIT)) * 100}%`)
 </script>
 
 <template>
@@ -725,6 +795,40 @@ const uqMethodLabel = computed(() =>
         </label>
       </div>
 
+      <!--
+        Which model the errors below describe (#333). A calibration on the
+        emulator fits the surrogate, so its errors and its cost are the
+        emulator's; the forward model's, at the same best fit, are the other
+        half of the answer. Both were measured once, when the calibration
+        finished -- ticking this switches payloads, it does not run anything.
+      -->
+      <div v-if="bothSourcesAvailable" class="source-toggle">
+        <span class="cost-caption" data-testid="calibration-source-label">
+          errors and cost from <strong>{{ calibrationSourceLabel }}</strong> at the
+          calibration best fit —
+          <span data-testid="calibration-source-cost">{{
+            formatCost(calibrationSource?.cost)
+          }}</span>
+          <template v-if="compareEmulator">
+            · emulator
+            <span data-testid="calibration-emulator-cost">{{
+              formatCost(bestFitEmulatorCost?.cost)
+            }}</span>
+          </template>
+        </span>
+      </div>
+
+      <p v-if="!hasCalibration && !comparable" class="empty-hint">
+        Run a calibration to see per-observable fit errors.
+      </p>
+
+      <!--
+        One chain, so a comparison *replaces* the plain charts instead of appearing beside
+        them. `compare` was already an else-if against the plain charts below; this block
+        was a separate v-if, so ticking "compare with the emulator" left the plain charts
+        up and added a second pair underneath -- two sets of bars for the same observables,
+        one of which nothing on screen said was superseded.
+      -->
       <template v-if="bothSourcesAvailable && compareEmulator">
         <section class="error-chart">
           <h3>Percentage error — forward model vs emulator</h3>
@@ -782,10 +886,7 @@ const uqMethodLabel = computed(() =>
         </section>
       </template>
 
-      <p v-if="!hasCalibration && !comparable" class="empty-hint">
-        Run a calibration to see per-observable fit errors.
-      </p>
-      <template v-if="comparable && compare">
+      <template v-else-if="comparable && compare">
         <section class="error-chart">
           <h3>Percentage error — current vs {{ baselineCost?.label ?? 'baseline' }}</h3>
           <div class="chart-legend" data-testid="compare-legend">
@@ -857,28 +958,6 @@ const uqMethodLabel = computed(() =>
         series, so leaving these below would plot the same numbers twice.
       -->
       <template v-else-if="hasCalibration">
-        <!--
-          Which model the errors below describe (#333). A calibration on the
-          emulator fits the surrogate, so its errors and its cost are the
-          emulator's; the forward model's, at the same best fit, are the other
-          half of the answer. Both were measured once, when the calibration
-          finished -- ticking this switches payloads, it does not run anything.
-        -->
-        <div v-if="bothSourcesAvailable" class="source-toggle">
-          <span class="cost-caption" data-testid="calibration-source-label">
-            errors and cost from <strong>{{ calibrationSourceLabel }}</strong> at the
-            calibration best fit —
-            <span data-testid="calibration-source-cost">{{
-              formatCost(calibrationSource?.cost)
-            }}</span>
-            <template v-if="compareEmulator">
-              · emulator
-              <span data-testid="calibration-emulator-cost">{{
-                formatCost(bestFitEmulatorCost?.cost)
-              }}</span>
-            </template>
-          </span>
-        </div>
         <section class="error-chart">
           <h3>Percentage error per observable</h3>
           <div class="bar-list" data-testid="percent-error-chart">
@@ -1058,6 +1137,87 @@ const uqMethodLabel = computed(() =>
           </div>
         </div>
       </div>
+
+      <!-- Does the posterior reproduce the data it was fitted to? ----------->
+      <template v-if="hasUQ">
+        <section v-if="coverageRows.length" class="error-chart" data-testid="coverage">
+          <h3>
+            Coverage
+            <span v-if="coverageObservables" class="uq-method">
+              · {{ coverageObservables }} observables
+            </span>
+            <span v-if="coverageUsedEmulator" class="uq-method">
+              · emulator, not solver
+            </span>
+          </h3>
+          <p class="empty-hint">
+            An 80% interval that contains 80% of the measurements is calibrated.
+            Far below and the posterior is too narrow or biased; far above and it
+            is too wide to be saying much.
+          </p>
+          <table class="coverage-table" data-testid="coverage-table">
+            <thead>
+              <tr>
+                <th>level</th>
+                <th>nominal</th>
+                <th>data inside model interval</th>
+                <th>posterior draws inside data interval</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="row in coverageRows" :key="row.level">
+                <td>{{ row.label }}</td>
+                <td>{{ Math.round(row.nominal * 100) }}%</td>
+                <td :class="{ 'coverage-low': row.predictive < row.nominal - 0.15 }">
+                  {{ Math.round(row.predictive * 100) }}%
+                </td>
+                <td :class="{ 'coverage-low': row.sampleInterval < row.nominal - 0.15 }">
+                  {{ Math.round(row.sampleInterval * 100) }}%
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </section>
+
+        <section v-if="hasPredictive" class="error-chart" data-testid="posterior-predictive">
+          <h3>Posterior predictive against the data</h3>
+          <p class="empty-hint">
+            Each bar is the model's 95% interval over posterior draws, in units of
+            that measurement's own standard deviation. The shaded band is the
+            measurement ± 1 std, so a bar that misses it is an observable the fit
+            does not reproduce.
+          </p>
+          <div class="bar-list" data-testid="predictive-chart">
+            <div v-for="(b, i) in predictiveBars" :key="`pp${i}`" class="bar-row">
+              <span class="bar-label">{{ b.label }}</span>
+              <div class="bar-track">
+                <span
+                  class="predictive-band"
+                  :style="{ left: predictiveBandLeft, width: predictiveBandWidth }"
+                />
+                <span class="bar-zero" />
+                <span
+                  class="bar-fill predictive-interval"
+                  :style="{ left: b.left, width: b.width }"
+                />
+                <span class="predictive-median" :style="{ left: b.medianLeft }" />
+              </div>
+              <span class="bar-value" :class="{ 'coverage-low': b.offScale }">
+                {{ b.text }}
+              </span>
+            </div>
+          </div>
+        </section>
+
+        <p
+          v-else-if="!coverageRows.length"
+          class="empty-hint"
+          data-testid="no-coverage"
+        >
+          This run was not scored against its data — the engine it ran on has no
+          posterior predictive check, or it was turned off for the run.
+        </p>
+      </template>
     </section>
   </div>
 </template>
@@ -1474,4 +1634,47 @@ const uqMethodLabel = computed(() =>
   top: 27%;
   opacity: 0.95;
 }
+/* Posterior predictive ---------------------------------------------------- */
+.coverage-table {
+  border-collapse: collapse;
+  font-size: 0.82rem;
+  margin-top: 0.4rem;
+}
+.coverage-table th,
+.coverage-table td {
+  padding: 0.2rem 0.7rem 0.2rem 0;
+  text-align: left;
+  white-space: nowrap;
+}
+.coverage-table th {
+  font-weight: 500;
+  opacity: 0.7;
+}
+/* Well under nominal is the finding, so it is marked rather than left to be
+   spotted by comparing two columns of small numbers. */
+.coverage-low {
+  color: #c0392b;
+  font-weight: 600;
+}
+.predictive-band {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.08);
+}
+.predictive-interval {
+  background: #2a78d6;
+  opacity: 0.55;
+}
+.predictive-median {
+  position: absolute;
+  top: 50%;
+  width: 7px;
+  height: 7px;
+  margin-left: -3.5px;
+  margin-top: -3.5px;
+  border-radius: 50%;
+  background: #2a78d6;
+}
+
 </style>

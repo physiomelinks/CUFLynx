@@ -203,3 +203,47 @@ describe('useCalibration', () => {
     expect(s.sliders['a/x'].value).toBe(6)
   })
 })
+
+// Reopening a finished run (#255): CA writes the same history whether the run is
+// being polled live or was finished yesterday, so both go through one mapping --
+// otherwise a loaded run draws its charts from the wrong keys, or not at all.
+describe('progress applied from a loaded run', () => {
+  const PROGRESS = {
+    param_names: ['a/x', 'a/y'],
+    cost_history: [[0.9, 1.0], [0.5, 0.6]],
+    param_history: [[0.2, 0.3], [0.4, 0.5]],
+    start_costs: [[0.9]],
+    start_params: { param_names: ['a/x'], starts: [[0.2]] },
+    grad_history: [[0.01, 0.02]],
+    start_grads: { param_names: ['a/x'], starts: [[0.01]] },
+  }
+
+  it('fills every chart the live poll fills', () => {
+    const calib = useCalibration()
+    calib.applyProgress(PROGRESS)
+    expect(calib.costHistory.value).toEqual(PROGRESS.cost_history)
+    expect(calib.paramHistory.value).toEqual({
+      paramNames: ['a/x', 'a/y'],
+      generations: PROGRESS.param_history,
+    })
+    expect(calib.startCosts.value).toEqual(PROGRESS.start_costs)
+    expect(calib.startParams.value).toEqual(PROGRESS.start_params)
+    expect(calib.gradHistory.value).toEqual(PROGRESS.grad_history)
+    expect(calib.startGrads.value).toEqual(PROGRESS.start_grads)
+  })
+
+  it('a payload missing the optional halves leaves usable empties', () => {
+    const calib = useCalibration()
+    calib.applyProgress({ cost_history: [[1.0]] })
+    expect(calib.costHistory.value).toEqual([[1.0]])
+    expect(calib.startParams.value).toEqual({ param_names: [], starts: [] })
+    expect(calib.paramHistory.value.generations).toEqual([])
+  })
+
+  it('nothing to apply leaves the charts untouched', () => {
+    const calib = useCalibration()
+    calib.applyProgress(PROGRESS)
+    calib.applyProgress(null)
+    expect(calib.costHistory.value).toEqual(PROGRESS.cost_history)
+  })
+})

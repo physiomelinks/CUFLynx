@@ -127,7 +127,7 @@ def test_the_runner_builds_the_engine_for_fd_too(tmp_path, monkeypatch):
 def test_a_local_run_never_touches_the_sobol_managers_helper(monkeypatch, tmp_path):
     """One simulation helper per local SA, not two (#216).
 
-    ``sobol_SA`` and ``OpencorParamID`` each parse the same study and each own a
+    ``sobol_SA`` and ``ParamID`` each parse the same study and each own a
     helper, and building one compiles the model. circulatory_autogen made
     ``sobol_SA.sim_helper`` lazy precisely so a local run never pays for the half
     it does not use -- so reading the study from the SA manager, as this used to,

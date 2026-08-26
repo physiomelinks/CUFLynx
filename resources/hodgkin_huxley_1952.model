@@ -1,0 +1,81 @@
+/*
+name: HodgkinHuxley1952
+
+desc: The Hodgkin-Huxley squid giant axon, written in EasyML.
+
+An example of openCARP's ionic-model language, encoded here from the equations
+published in Hodgkin & Huxley (1952) rather than converted from anyone else's
+file, so it carries CUFLynx's own licence.
+
+It is deliberately a *whole* EasyML model rather than a minimal one: V is
+external (openCARP's tissue solver owns it, so there is no dV/dt here), Iion is
+the sum of currents, the three gates are given as alpha/beta pairs with no
+initial values -- so a reader has to generate both their equations and their
+steady states -- and the integration methods openCARP would use are declared.
+
+Units follow EasyML's conventions: V in mV, t in ms, currents in A/F. The
+membrane capacitance of 1 uF/cm^2 is why no capacitance appears: with it,
+A/F and mV/ms are the same quantity.
+
+reference: Hodgkin AL, Huxley AF (1952). A quantitative description of membrane
+current and its application to conduction and excitation in nerve. J Physiol
+117(4):500-544. doi:10.1113/jphysiol.1952.sp004764
+*/
+
+V; .nodal(); .external(Vm);
+Iion; .nodal(); .external();
+
+V_init = -65.0;
+
+// Maximal conductances (A/F per mV) and reversal potentials (mV).
+g_Na = 120.0;
+g_K = 36.0;
+g_L = 0.3;
+E_Na = 50.0;
+E_K = -77.0;
+E_L = -54.387;
+
+// Sodium activation. The rate is 0/0 at V = -40, where its limit is 1; the
+// guard is the same one openCARP's own conversion notes call for. expm1 is
+// EasyML's exp(x) - 1, which is what keeps the denominator accurate near zero.
+alpha_m = (fabs(V + 40.0) < 1e-6) ? 1.0 : 0.1 * (V + 40.0) / (-expm1(-(V + 40.0) / 10.0));
+beta_m = 4.0 * exp(-(V + 65.0) / 18.0);
+
+// Sodium inactivation.
+alpha_h = 0.07 * exp(-(V + 65.0) / 20.0);
+beta_h = 1.0 / (1.0 + exp(-(V + 35.0) / 10.0));
+
+// Potassium activation. 0/0 at V = -55, limit 0.1.
+alpha_n = (fabs(V + 55.0) < 1e-6) ? 0.1 : 0.01 * (V + 55.0) / (-expm1(-(V + 55.0) / 10.0));
+beta_n = 0.125 * exp(-(V + 65.0) / 80.0);
+
+// Currents.
+I_Na = g_Na * m * m * m * h * (V - E_Na);
+I_K = g_K * n * n * n * n * (V - E_K);
+I_L = g_L * (V - E_L);
+
+Iion = I_Na + I_K + I_L;
+
+// Gates are unconditionally stable under Rush-Larsen, which is why openCARP
+// steps them that way and why the group is here to be read.
+group {
+  m;
+  h;
+  n;
+}.method(rush_larsen);
+
+group {
+  V;
+  I_Na;
+  I_K;
+  I_L;
+}.trace();
+
+group {
+  g_Na;
+  g_K;
+  g_L;
+  E_Na;
+  E_K;
+  E_L;
+}.param();

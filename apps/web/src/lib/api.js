@@ -154,7 +154,17 @@ export async function editModelSource(modelId, outputsDir = '') {
 // As a blob, not text: an example ships as a .omex, and decoding a zip through
 // the text codec mangles every byte of it.
 export async function fetchExampleModel(name, filename) {
-  const { data } = await axios.get(url(`/api/examples/${name}`), { responseType: 'blob' })
+  // Fetched here and posted straight back to the upload route, so the browser
+  // cache -- not the server -- decides which version of the example is imported.
+  // The route sends `Cache-Control: no-cache`, but an entry cached *before* it
+  // did is still reusable without revalidation: a user who once loaded a stale
+  // example goes on loading it, from a server that is serving the current one.
+  // A URL that never repeats cannot match any of those entries.
+  const { data } = await axios.get(url(`/api/examples/${name}`), {
+    params: { _: Date.now() },
+    responseType: 'blob',
+    headers: { 'Cache-Control': 'no-cache' },
+  })
   return new File([data], filename, { type: data?.type || 'application/octet-stream' })
 }
 
@@ -552,6 +562,51 @@ export async function startUQ(modelId, settings) {
 
 export async function getUQStatus(jobId, offset = 0) {
   const { data } = await axios.get(url(`/api/uq/${jobId}/status?offset=${offset}`))
+  return data
+}
+
+/**
+ * Posterior draws pushed back through the model, against the measurements.
+ *
+ * Fetched once when a run finishes rather than polled: it is a whole sweep of the model, so it
+ * does not exist until the run is over and does not change afterwards. Everything comes back in
+ * units of each measurement's own standard deviation -- scaled on the server, so two clients
+ * cannot draw two different figures from one run.
+ */
+/**
+ * Everything a finished run left in an outputs directory (#255).
+ *
+ * The panels are filled by job polls, so without this a run made outside the app -- by
+ * cuflynx-param-id, by a generated run_pipeline.py, or by this app yesterday -- is invisible
+ * even though every file is there. Returns `found` and `missing` alongside the data, so the
+ * caller can say what it loaded rather than leaving empty panels to be interpreted.
+ */
+/**
+ * Open the model, obs_data and params_for_id a finished run was made from (#255).
+ *
+ * Answers in the same shape as an archive upload, because the server loads them
+ * through the same importer -- so the caller applies it exactly as it applies a
+ * dropped .omex, rather than growing a second way to install a study.
+ */
+export async function openStudyFromOutputs(dir, runDir = null, filePrefix = null) {
+  const { data } = await axios.post(url('/api/outputs/study'), {
+    dir,
+    run_dir: runDir,
+    file_prefix: filePrefix,
+  })
+  return data
+}
+
+export async function loadOutputsDirectory(dir, filePrefix, runDir) {
+  const params = new URLSearchParams({ dir })
+  if (filePrefix) params.set('file_prefix', filePrefix)
+  if (runDir) params.set('run_dir', runDir)
+  const { data } = await axios.get(url(`/api/outputs/load?${params.toString()}`))
+  return data
+}
+
+export async function getUQPosteriorPredictive(jobId) {
+  const { data } = await axios.get(url(`/api/uq/${jobId}/posterior-predictive`))
   return data
 }
 

@@ -116,6 +116,43 @@ export function useSensitivity(options = {}) {
     selectedId.value = id
   }
 
+  /**
+   * Add a run that was read off disk rather than produced this session (#255).
+   *
+   * `indices`, `paramNames` and `outputNames` are *computed* off the selected
+   * result -- assigning to them silently did nothing, which is exactly how a
+   * loaded directory filled every other panel and left the heatmap empty. The
+   * only way into the panel is a saved result, so loading makes one.
+   *
+   * Keyed by where it came from: clicking Load twice on the same directory
+   * refreshes that entry instead of stacking identical copies beside it, while
+   * a different directory (or a different run in it) is a separate run to
+   * compare against, which is what `results` is for.
+   */
+  function addLoadedResult(payload, { label, source, method = null } = {}) {
+    if (!payload?.indices) return null
+    if (source) results.value = results.value.filter((r) => r.source !== source)
+    const id = nextId++
+    results.value = [
+      ...results.value,
+      {
+        id,
+        label: label || 'Loaded',
+        source: source ?? null,
+        at: new Date().toLocaleTimeString(),
+        method,
+        settings: null,
+        indices: payload.indices,
+        paramNames: payload.param_names ?? [],
+        outputNames: payload.output_names ?? [],
+        nominal: payload.nominal ?? null,
+        nominalSource: payload.nominal_source ?? null,
+      },
+    ]
+    selectedId.value = id
+    return id
+  }
+
   async function start(modelId, settings, currentParams = null) {
     reset()
     pendingSettings = settings ? { ...settings } : null
@@ -182,6 +219,7 @@ export function useSensitivity(options = {}) {
     selectResult,
     removeResult,
     clearResults,
+    addLoadedResult,
     start,
     cancel,
     reset,

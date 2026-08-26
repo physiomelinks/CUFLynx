@@ -58,6 +58,8 @@ vi.mock('./lib/api', () => ({
   loadSavedRun: vi.fn().mockResolvedValue({}),
   exportPipeline: vi.fn().mockResolvedValue({}),
   exportPlotting: vi.fn().mockResolvedValue({}),
+  loadOutputsDirectory: vi.fn().mockResolvedValue({ found: [], missing: [] }),
+  openStudyFromOutputs: vi.fn().mockResolvedValue({}),
   // The real one; a failure path that reports "undefined is not a function"
   // instead of the server's reason would pass a test and fail a user.
   errorMessage: (e) => String(e?.response?.data?.detail || e?.message || e),
@@ -71,6 +73,8 @@ import {
   saveParams,
   listSavedRuns,
   loadSavedRun,
+  loadOutputsDirectory,
+  openStudyFromOutputs,
   simulate,
   runProtocol,
   startEmulatorTraining,
@@ -2347,14 +2351,56 @@ describe('App.vue cost line with the emulator in use (#333)', () => {
     expect(wrapper.find('[data-testid="em-cost-value"]').exists()).toBe(false)
   })
 
-  // Two costs of two different parameter sets are not a comparison. The
-  // prediction and the run are separate requests, so mid-drag one can be a
-  // slider position ahead of the other -- and then the em cost waits.
-  it('withholds the em cost until it is of the same parameters as the run', async () => {
+  // Two costs of two different parameter sets are not a comparison -- but that is a thing
+  // to say about the number, not a reason to remove it. It used to be withheld, which made
+  // every re-run blank the figure and bring it back a moment later: a flicker on a value
+  // that had not become unknown. It is shown and marked instead.
+  it('marks the em cost stale rather than hiding it when it trails the run', async () => {
     const wrapper = await shown()
     wrapper.vm.emulatorCostAt = '{"a/alpha":2}'
     await nextTick()
-    expect(wrapper.find('[data-testid="em-cost-value"]').exists()).toBe(false)
+    const value = wrapper.find('[data-testid="em-cost-value"]')
+    expect(value.exists()).toBe(true)
+    expect(value.attributes('data-stale')).toBe('true')
+    expect(value.classes()).toContain('em-cost-stale')
+    expect(value.attributes('title')).toMatch(/recomputed/)
+  })
+
+  // ...and once it catches up it is an ordinary current figure again.
+  it('drops the stale marking once the em cost is of the run on screen', async () => {
+    const wrapper = await shown()
+    wrapper.vm.emulatorCostAt = wrapper.vm.lastRunAt
+    await nextTick()
+    const value = wrapper.find('[data-testid="em-cost-value"]')
+    expect(value.exists()).toBe(true)
+    expect(value.attributes('data-stale')).toBe('false')
+    expect(value.classes()).not.toContain('em-cost-stale')
+  })
+
+  // The "about one run in ten it never comes back" case. Two refreshes overlap and the
+  // *earlier* one resolves last; unguarded, it wrote its own older signature into
+  // emulatorCostAt, which then never matched the run again.
+  it('ignores a prediction that is overtaken by a newer one', async () => {
+    const wrapper = await shown()
+    const slow = { labels: ['u'], values: [1], cost: { cost: 111 } }
+    const fresh = { labels: ['u'], values: [2], cost: { cost: 222 } }
+
+    let releaseSlow
+    predictEmulator.mockImplementationOnce(
+      () => new Promise((resolve) => { releaseSlow = () => resolve(slow) }),
+    )
+    predictEmulator.mockResolvedValueOnce(fresh)
+
+    const first = wrapper.vm.refreshEmulatorFeatures()
+    const second = wrapper.vm.refreshEmulatorFeatures()
+    await second
+    releaseSlow()
+    await first
+    await nextTick()
+
+    // The newer answer stands, and the older one did not overwrite the signature.
+    expect(wrapper.vm.emulatorCost.cost).toBe(222)
+    expect(wrapper.vm.emulatorCostAt).toBe(wrapper.vm.paramSignature())
   })
 })
 
@@ -2571,5 +2617,203 @@ describe('guided tour', () => {
     await wrapper.find('[data-testid="tour-start"]').trigger('click')
     await nextTick()
     expect(overlay(wrapper).props('step')).toBe(0)
+  })
+})
+
+// Reopening an outputs directory (#255). Everything a finished run left is on
+// disk; before this, clicking Load filled the result panels and left the study
+// itself -- the model, its obs_data, its params_for_id -- on the floor, and the
+// Progress tab and the sensitivity heatmap empty beside results that had loaded.
+describe('App.vue reopening an outputs directory', () => {
+  const STUDY = {
+    model: '/out/Model_calibrated.cellml',
+    model_is_calibrated: true,
+    obs_data: '/out/run/abc_obs_data_260824_091622.json',
+    params_for_id: '/out/run/abc_params_for_id_260824_091622.json',
+    file_prefix: 'Model',
+  }
+  const OPENED = {
+    model_id: 'reopened-1',
+    name: 'Model',
+    model_filename: 'Model_calibrated.cellml',
+    model_is_calibrated: true,
+    variable_count: 12,
+    params: [],
+    odes: [],
+    obs_data: {
+      filename: 'abc_obs_data_260824_091622.json',
+      data_items: [{ data_item_name: 'x' }],
+      prediction_items: [],
+      protocol_info: { pre_times: [0], sim_times: [[1]] },
+      n_experiments: 1,
+    },
+    params_for_id: {
+      filename: 'abc_params_for_id_260824_091622.json',
+      params: [{ name: 'a/alpha', qnames: ['a/alpha'], min: 0.1, max: 3 }],
+    },
+    warnings: [],
+    study_paths: { run_dir: '/out/run' },
+  }
+  const FOUND = (over = {}) => ({
+    dir: '/out',
+    run_dir: '/out/run',
+    found: ['calibration', 'progress', 'sensitivity', 'study inputs'],
+    missing: [],
+    study: STUDY,
+    calibration: { best: { params: { 'a/alpha': 2 }, cost: 0.5 }, modifiers: [] },
+    progress: {
+      param_names: ['a/alpha'],
+      cost_history: [[0.9], [0.5]],
+      param_history: [[0.2], [0.4]],
+      start_costs: [],
+      start_params: { param_names: [], starts: [] },
+      grad_history: [],
+      start_grads: { param_names: [], starts: [] },
+    },
+    sensitivity: {
+      sobol: {
+        indices: { S1: { 'a/x': { 'a/alpha': 0.4 } } },
+        param_names: ['a/alpha'],
+        output_names: ['a/x'],
+      },
+      local: null,
+    },
+    uq: {
+      params: [{ name: 'a/alpha', mean: 1, sd: 0.1 }],
+      progress: {
+        steps: 40,
+        walkers: 4,
+        num_params: 1,
+        param_labels: ['a/alpha'],
+        walkers_shown: 4,
+        trace_steps: [0, 39],
+        traces: [[[1, 2]]],
+        cumulative_mean: { steps: [0, 39], means: [[1, 1.1]] },
+        autocorrelation: { lags: [0, 1], values: [[1, 0.5]] },
+      },
+    },
+    emulator: {},
+    ...over,
+  })
+
+  beforeEach(() => {
+    loadOutputsDirectory.mockReset()
+    openStudyFromOutputs.mockReset()
+  })
+
+  const load = async (found = FOUND()) => {
+    loadOutputsDirectory.mockResolvedValue(found)
+    openStudyFromOutputs.mockResolvedValue(OPENED)
+    const wrapper = shallowMount(App)
+    await flushPromises()
+    wrapper.vm.outputsDir = '/out'
+    await nextTick()
+    await wrapper.vm.loadOutputsFromDirectory()
+    await flushPromises()
+    return wrapper
+  }
+
+  it('brings back the model, obs_data and params_for_id the run was made from', async () => {
+    const wrapper = await load()
+    // Asked for by the study's file_prefix -- the stem of the file the user
+    // loaded, which is what CA names its outputs after. Passing the CellML
+    // <model name> here is what made `generated_models/<prefix>` unfindable.
+    expect(openStudyFromOutputs).toHaveBeenCalledWith('/out', '/out/run', null)
+    expect(wrapper.vm.model.modelId.value).toBe('reopened-1')
+    expect(wrapper.vm.obs.dataItems.value).toHaveLength(1)
+    expect(Object.keys(wrapper.vm.paramsForId.paramSpecs.value)).toEqual(['a/alpha'])
+    expect(wrapper.vm.paramsForId.filename.value).toBe('abc_params_for_id_260824_091622.json')
+  })
+
+  it('installs the study before the results, which a model load would clear', async () => {
+    // onModelLoaded clears the obs/params stores and every derived one, so a
+    // best fit applied first would be wiped by the study that produced it.
+    const wrapper = await load()
+    expect(wrapper.vm.calib.bestParams.value).toEqual({ 'a/alpha': 2 })
+    expect(wrapper.vm.obs.dataItems.value).toHaveLength(1)
+  })
+
+  it('fills the Progress tab from the history the run recorded', async () => {
+    const wrapper = await load()
+    expect(wrapper.vm.calib.costHistory.value).toEqual([[0.9], [0.5]])
+    expect(wrapper.vm.calib.paramHistory.value.generations).toEqual([[0.2], [0.4]])
+    expect(wrapper.vm.calib.paramHistory.value.paramNames).toEqual(['a/alpha'])
+  })
+
+  it('fills the sensitivity heatmap, which is read off a saved run', async () => {
+    // `sa.indices` is a computed over the selected result: the old code assigned
+    // to it, which changed nothing at all and left this panel empty.
+    const wrapper = await load()
+    expect(wrapper.vm.sa.indices.value).toEqual({ S1: { 'a/x': { 'a/alpha': 0.4 } } })
+    expect(wrapper.vm.sa.paramNames.value).toEqual(['a/alpha'])
+    expect(wrapper.vm.sa.results.value).toHaveLength(1)
+  })
+
+  it('reloading the same directory refreshes its run rather than stacking copies', async () => {
+    const wrapper = await load()
+    await wrapper.vm.loadOutputsFromDirectory()
+    await flushPromises()
+    expect(wrapper.vm.sa.results.value).toHaveLength(1)
+  })
+
+  it('fills the UQ Progress tab from the chain behind the posterior', async () => {
+    // The posterior says where the sampler ended up; these are the trace,
+    // cumulative-mean and autocorrelation views of the run that got there.
+    const wrapper = await load()
+    expect(wrapper.vm.uq.progress.value.steps).toBe(40)
+    expect(wrapper.vm.uq.progress.value.param_labels).toEqual(['a/alpha'])
+    expect(wrapper.vm.uq.params.value).toHaveLength(1)
+  })
+
+  it('a directory with no chain leaves the trace plots as they were', async () => {
+    // Same rule the live poll follows: a payload with no steps is not a chain,
+    // and must not replace one already on screen.
+    const wrapper = await load()
+    await wrapper.vm.loadOutputsFromDirectory()
+    await flushPromises()
+    loadOutputsDirectory.mockResolvedValue(FOUND({ uq: { params: [], progress: null } }))
+    await wrapper.vm.loadOutputsFromDirectory()
+    await flushPromises()
+    expect(wrapper.vm.uq.progress.value.steps).toBe(40)
+  })
+
+  it('asks by file_prefix, not by the name inside the CellML', async () => {
+    const wrapper = await load()
+    wrapper.vm.model.setModel({
+      model_id: 'm', name: 'CardiovascularSystem', filename: '3compartment_flat.cellml',
+    })
+    await nextTick()
+    await wrapper.vm.loadOutputsFromDirectory()
+    await flushPromises()
+    expect(loadOutputsDirectory.mock.calls.at(-1)[1]).toBe('3compartment_flat')
+    expect(openStudyFromOutputs.mock.calls.at(-1)[2]).toBe('3compartment_flat')
+  })
+
+  it('says which study it opened, and that the model is the calibrated one', async () => {
+    const wrapper = await load()
+    expect(wrapper.vm.loadedOutputsSummary).toContain('Opened Model')
+    expect(wrapper.vm.loadedOutputsSummary).toContain('calibrated model')
+  })
+
+  it('still shows the results when the study cannot be opened', async () => {
+    // Results are worth showing even when the model that produced them is not
+    // loadable -- but the failure is said out loud rather than left as an empty
+    // Parameters tab beside a full Analysis one.
+    openStudyFromOutputs.mockRejectedValue({
+      response: { data: { detail: 'no model to open in /out' } },
+    })
+    loadOutputsDirectory.mockResolvedValue(FOUND())
+    const wrapper = shallowMount(App)
+    await flushPromises()
+    wrapper.vm.outputsDir = '/out'
+    await wrapper.vm.loadOutputsFromDirectory()
+    await flushPromises()
+    expect(wrapper.vm.calib.bestParams.value).toEqual({ 'a/alpha': 2 })
+    expect(wrapper.vm.loadedOutputsSummary).toContain('no model to open')
+  })
+
+  it('does not ask for a study when the directory holds only results', async () => {
+    await load(FOUND({ study: { model: null, obs_data: null, params_for_id: null } }))
+    expect(openStudyFromOutputs).not.toHaveBeenCalled()
   })
 })

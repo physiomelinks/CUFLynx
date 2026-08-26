@@ -931,3 +931,58 @@ def test_the_other_spelling_is_not_read_while_it_is_still_importing(monkeypatch)
         "the half-built copy was read straight out of sys.modules, so the caller was "
         "told no reachable copy has the attribute"
     )
+
+
+class TestCaFirstOf:
+    """Resolving a class CA has renamed, from either side of the rename.
+
+    ``ParamID`` and ``MCMC`` were ``OpencorParamID`` and ``OpencorMCMC`` until CA renamed
+    them -- they were never about OpenCOR, they are the parameter-identification and MCMC
+    engines and run against myokit/CVODE, casadi and emulators alike. CUFLynx has to work
+    against an engine from either side of that change, so it asks for the new name and
+    accepts the old one.
+    """
+
+    def test_the_new_name_wins_when_both_are_there(self, monkeypatch):
+        """CA keeps the old name as an alias, so both are present on a current engine.
+
+        Order matters rather than being cosmetic: whichever is returned is what appears in
+        tracebacks and error messages for the rest of the run.
+        """
+        import ca_imports
+
+        module = types.SimpleNamespace(ParamID="new", OpencorParamID="old")
+        monkeypatch.setattr(ca_imports, "ca_import", lambda name: module)
+        assert ca_imports.ca_first_of("param_id.paramID", "ParamID",
+                                      "OpencorParamID") == "new"
+
+    def test_the_old_name_is_accepted_on_an_engine_that_predates_the_rename(
+            self, monkeypatch):
+        """The whole point: an older CA has only the old spelling and must still work."""
+        import ca_imports
+
+        module = types.SimpleNamespace(OpencorParamID="old")
+        monkeypatch.setattr(ca_imports, "ca_import", lambda name: module)
+        assert ca_imports.ca_first_of("param_id.paramID", "ParamID",
+                                      "OpencorParamID") == "old"
+
+    def test_neither_spelling_raises_the_usual_diagnostic(self, monkeypatch):
+        """A genuinely absent class must fail the way every other missing one does.
+
+        ``ca_from``'s message names the file that answered, which is what tells a hollow
+        checkout apart from an old engine -- losing it here would make exactly this
+        failure the hardest one to read.
+        """
+        import ca_imports
+
+        module = types.SimpleNamespace(__name__="libcuflynx.param_id.paramID")
+        monkeypatch.setattr(ca_imports, "ca_import", lambda name: module)
+        # `ca_from` also tries the *other* spelling of the module before giving up (the
+        # hollow-namespace-package case). Left live, that reaches the real
+        # circulatory_autogen on this machine -- which, on any CA from after the rename,
+        # has `ParamID` and answers happily, so nothing raises and this test passes or
+        # fails according to which engine is installed rather than according to the code.
+        monkeypatch.setattr(ca_imports, "_candidate_providing",
+                            lambda module, names, resolved: None)
+        with pytest.raises(ca_imports.CaImportError, match="has no ParamID"):
+            ca_imports.ca_first_of("param_id.paramID", "ParamID", "OpencorParamID")

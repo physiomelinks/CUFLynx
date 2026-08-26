@@ -532,20 +532,29 @@ def test_a_csv_is_kept_as_csv_when_ca_cannot_convert_it(monkeypatch):
     files disagreeing about which is current. The runners read whichever path
     the record holds, but a human inspecting the upload dir would find both.
     """
+    import pathlib
+
     import main
     import params_json
+    from conftest import LV_MODEL_PATH
 
     def _no_ca(_data):
         raise params_json.ParamsJsonError("circulatory_autogen is not available")
 
     monkeypatch.setattr(params_json, "csv_to_json", _no_ca)
 
-    model_id = "twin-test"
-    json_path = main._save_params_file(model_id, b'{"params": []}')
+    # The study's files are named after the study now, so this needs a record to
+    # ask -- the collision the model_id used to prevent is handled by the
+    # per-model directory `_study_file` puts them in.
+    record = main._ModelRecord("twin-test", pathlib.Path("unused.cellml"),
+                               main.parse_cellml(LV_MODEL_PATH.read_bytes()),
+                               "twin_study")
+    json_path = main._save_params_file(record, b'{"params": []}')
     assert json_path.suffix == ".json"
+    assert json_path.name.startswith("twin_study"), json_path.name
 
     csv_path = main._save_params_file(
-        model_id, b"vessel_name,param_name,param_type,min,max\nheart,C,constant,1,2\n"
+        record, b"vessel_name,param_name,param_type,min,max\nheart,C,constant,1,2\n"
     )
     assert csv_path.suffix == ".csv"
     assert not json_path.exists(), "stale .json twin left beside the .csv"

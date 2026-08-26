@@ -139,7 +139,7 @@ def _model_value(item: dict, outputs: dict, op_funcs) -> float | None:
 
 
 def _ca_engine(obs_data: dict, output_dir: str | None, dt: float):
-    """A cost-only ``OpencorParamID`` built from an in-memory obs_data.
+    """A cost-only ``ParamID`` built from an in-memory obs_data.
 
     ``__init__`` is bypassed deliberately: it instantiates a solver for a model
     path we do not have and would compile it, while the cost path touches none of
@@ -151,10 +151,11 @@ def _ca_engine(obs_data: dict, output_dir: str | None, dt: float):
     the caller falls back rather than losing the panel.
     """
     try:
-        from ca_imports import ca_from, ensure_ca_path  # noqa: PLC0415
+        from ca_imports import ca_first_of, ca_from, ensure_ca_path  # noqa: PLC0415
 
         ensure_ca_path()
-        OpencorParamID = ca_from("param_id.paramID", "OpencorParamID")
+        # Both spellings: CA renamed this, and CUFLynx supports engines either side.
+        ParamID = ca_first_of("param_id.paramID", "ParamID", "OpencorParamID")
         ObsAndParamDataParser, scriptFunctionParser = ca_from(
             "parsers.PrimitiveParsers", "ObsAndParamDataParser", "scriptFunctionParser")
     except Exception:  # noqa: BLE001 - no CA, or one too old
@@ -175,7 +176,7 @@ def _ca_engine(obs_data: dict, output_dir: str | None, dt: float):
             operation_funcs_external_path=_external(output_dir, "operation"),
             cost_funcs_external_path=_external(output_dir, "cost"),
         )
-        pid = OpencorParamID.__new__(OpencorParamID)
+        pid = ParamID.__new__(ParamID)
         pid.obs_info = obs_info
         pid.protocol_info = protocol_info
         pid.cost_type = obs_info["cost_type"]

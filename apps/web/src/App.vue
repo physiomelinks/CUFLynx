@@ -53,6 +53,8 @@ import {
   saveParams,
   loadParams,
   errorMessage,
+  loadOutputsDirectory,
+  openStudyFromOutputs,
 } from './lib/api'
 import {
   overlayItemsFor,
@@ -116,6 +118,159 @@ const canRun = computed(() => model.hasModel.value && obs.hasProtocol.value)
 // remembered across sessions; blank => backend uses a temp dir.
 const outputsDir = ref(localStorage.getItem('cuflynx-outputs-dir') || '')
 watch(outputsDir, (v) => localStorage.setItem('cuflynx-outputs-dir', v || ''))
+
+// What the outputs directory already holds, once someone asks for it (#255).
+const loadedOutputs = ref(null)
+const loadingOutputs = ref(false)
+// What the last load actually found, so an empty panel is never left to be
+// interpreted: "there was nothing" and "it could not be read" look identical.
+const loadedOutputsSummary = ref('')
+
+async function loadOutputsFromDirectory(runDir) {
+  const dir = outputsDir.value.trim()
+  if (!dir || loadingOutputs.value) return
+  loadingOutputs.value = true
+  try {
+    const found = await loadOutputsDirectory(
+      dir, model.filePrefix.value || undefined, runDir)
+    loadedOutputs.value = found
+    if (found.error) {
+      sim.setError(found.error)
+      return
+    }
+    // The study first: installing a model clears the obs_data, the params and
+    // every derived store, so results applied before it would be wiped by it.
+    const study = await openLoadedStudy(dir, found)
+    applyLoadedOutputs(found)
+    // Say what was loaded. Empty panels are ambiguous -- "there was nothing" and
+    // "it could not be read" look identical until someone is told which.
+    const parts = found.found.length
+      ? `Loaded ${found.found.join(', ')}`
+      : 'Found no results in that directory'
+    const which = found.run_dir ? ` from ${found.run_dir.split('/').pop()}` : ''
+    const missed = found.missing?.length ? ` (could not read: ${found.missing.join('; ')})` : ''
+    // The study is reported separately from the panels: "which model am I now
+    // looking at" is the question a reopened directory raises first, and the
+    // answer is not always the model the run started from -- a directory whose
+    // only CellML is the calibrated one is reopened at its fitted values.
+    const opened = study?.opened
+      ? `. Opened ${study.name || 'the study'}${study.calibrated ? ' (calibrated model)' : ''}`
+      : ''
+    const studyFailed = study?.error ? `. Could not open the study: ${study.error}` : ''
+    loadedOutputsSummary.value = parts + which + missed + opened + studyFailed
+    if (!found.found.length) sim.setError(loadedOutputsSummary.value)
+  } catch (e) {
+    sim.setError(`Could not read ${dir}: ${errorMessage(e)}`)
+  } finally {
+    loadingOutputs.value = false
+  }
+}
+
+/**
+ * Install the model, obs_data and params_for_id the run was made from (#255).
+ *
+ * `/api/outputs/load` reports these as paths, which fill no panel: reopening a
+ * directory gave its results and an empty Parameters tab, and the only way to
+ * get the study back was to find the same three files on disk and drop them in
+ * -- which cleared the results that had just been loaded.
+ *
+ * Applied through the very handlers a dropped .omex goes through, in the order
+ * that import uses, so a reopened study and a dropped one cannot diverge.
+ *
+ * Never fatal: results are worth showing even when the model that produced them
+ * cannot be opened, so a failure is reported and the panels still fill.
+ */
+async function openLoadedStudy(dir, found) {
+  const study = found.study || {}
+  if (!study.model && !study.obs_data && !study.params_for_id) return null
+  try {
+    const opened = await openStudyFromOutputs(dir, found.run_dir ?? null,
+                                              model.filePrefix.value || null)
+    await onModelLoaded({ ...opened, filename: opened.model_filename })
+    if (opened.obs_data && !opened.obs_data.error) {
+      onObsDataLoaded({ ...opened.obs_data, model_id: opened.model_id })
+    }
+    if (opened.params_for_id && !opened.params_for_id.error) {
+      onParamsLoaded({
+        params: opened.params_for_id.params,
+        filename: opened.params_for_id.filename,
+      })
+    }
+    // A part that would not parse is the same failure a dropped archive has,
+    // and is reported the same way rather than leaving a tab quietly empty.
+    const parts = [opened.obs_data, opened.params_for_id].filter((part) => part?.error)
+    const trouble = [
+      ...parts.map((part) => `${part.filename}: ${part.error}`),
+      ...(opened.warnings ?? []),
+    ]
+    return {
+      opened: true,
+      name: opened.name,
+      calibrated: !!opened.model_is_calibrated,
+      error: trouble.length ? trouble.join('; ') : '',
+    }
+  } catch (e) {
+    return { opened: false, error: errorMessage(e) }
+  }
+}
+
+function applyLoadedOutputs(found) {
+  const best = found.calibration?.best
+  if (best?.params && Object.keys(best.params).length) {
+    calib.bestParams.value = best.params
+    calib.cost.value = best.cost ?? null
+    calib.bestModifiers.value = found.calibration.modifiers ?? []
+    calib.calibratedModelPath.value = found.calibration.calibrated_model || null
+    const errors = found.calibration.error_vectors ?? {}
+    calib.percentError.value = errors.percent ?? null
+    calib.stdError.value = errors.std ?? null
+  }
+
+  // Sensitivity is *saved* rather than assigned: the panel reads a selected run
+  // out of `results`, and `indices` is a computed over it -- so the assignments
+  // this used to make were writes to a read-only ref that changed nothing, and
+  // a loaded directory left the heatmap empty while every other panel filled.
+  const sobol = found.sensitivity?.sobol
+  const local = found.sensitivity?.local
+  const where = found.run_dir || found.dir || ''
+  if (sobol) {
+    sa.addLoadedResult(sobol, {
+      label: `Loaded · Sobol${where ? ` · ${where.split('/').pop()}` : ''}`,
+      source: `${where}:sobol`,
+      method: 'sobol',
+    })
+  }
+  if (local) {
+    sa.addLoadedResult(local, {
+      label: `Loaded · Local${where ? ` · ${where.split('/').pop()}` : ''}`,
+      source: `${where}:local`,
+      method: 'local',
+    })
+  }
+
+  // The per-generation history behind the best fit. Without it a reopened
+  // calibration showed its result and an empty Progress tab, which reads as
+  // "this run recorded nothing".
+  if (found.progress?.cost_history?.length) calib.applyProgress(found.progress)
+
+  if (found.uq?.params?.length) {
+    uq.params.value = found.uq.params
+    uq.method.value = found.uq.method ?? 'mcmc'
+  }
+  // The chain behind those distributions -- the trace, cumulative-mean and
+  // autocorrelation views. Same rule the live poll uses: a payload with no steps
+  // in it is not a chain, and must not replace one already on screen.
+  if (found.uq?.progress?.steps) uq.progress.value = found.uq.progress
+  // null is "not scored", which the panel says out loud -- so it is assigned
+  // either way rather than only when present.
+  uq.coverage.value = found.uq?.coverage ?? null
+  uq.posteriorPredictive.value = null
+
+  if (found.emulator?.metadata) {
+    emu.metadata.value = found.emulator.metadata
+    emu.errorPoints.value = found.emulator.error_points ?? null
+  }
+}
 // On open, ask the user where outputs should go (the first thing they see).
 const outputsSetupOpen = ref(false)
 
@@ -534,6 +689,12 @@ const emulatorCostAt = ref('')
 // absence is diagnosable rather than silent.
 const emulatorCostWhy = ref('')
 const lastRunAt = ref('')
+// Which prediction request is the current one. `refreshEmulatorFeatures` is async and
+// unguarded: two overlapping calls could land in either order, and the *earlier* one
+// landing last wrote its own (older) signature into `emulatorCostAt`. That never matched
+// `lastRunAt` again, so the em cost vanished until something triggered another refresh --
+// the "about one run in ten it does not come back" case. Only the newest request may write.
+let emulatorRequestSeq = 0
 function paramSignature() {
   return JSON.stringify(sliders.analysisDict.value)
 }
@@ -754,11 +915,24 @@ const emCostWhy = computed(() => {
   if (emCost.value !== null) return ''
   return emulatorCostWhy.value
 })
+const emCostStaleTitle =
+  'this em cost is of the previous parameters and is being recomputed — it is shown ' +
+  'rather than blanked so the figure does not flicker on every run'
+// The em cost we have, whether or not it is of the parameters currently on screen.
+// Withholding it entirely -- which is what this did -- meant every re-run blanked the
+// figure and then brought it back a moment later, a flicker on a number that had not
+// actually become unknown. It is shown, and marked, instead.
 const emCost = computed(() => {
   if (!emu.useEmulator.value) return null
-  if (emulatorCostAt.value !== lastRunAt.value) return null
   return emulatorCost.value ?? null
 })
+// True while the figure describes an earlier set of parameters than the run beside it.
+// The original reason for withholding stands -- two costs of two different parameter sets
+// are not a comparison -- but "not current" is a thing to say about a number, not a reason
+// to remove it. Mid-drag it reads as trailing; on a re-run it reads as recomputing.
+const emCostStale = computed(
+  () => emCost.value !== null && emulatorCostAt.value !== lastRunAt.value,
+)
 // Whether the last calibration was run on the emulator. The cost it reports is
 // then an *em cost*, which is the whole reason it can disagree with the number
 // above the plots -- so the tooltip that explains the gap says so.
@@ -1542,6 +1716,7 @@ async function refreshEmulatorFeatures() {
   // Stamped before the request, not after: what came back describes the
   // parameters it was asked about, whatever they are by the time it arrives.
   const at = paramSignature()
+  const seq = ++emulatorRequestSeq
   try {
     const res = await predictEmulator(
       model.modelId.value,
@@ -1552,6 +1727,11 @@ async function refreshEmulatorFeatures() {
     ;(res.labels ?? []).forEach((label, i) => {
       map[label] = res.values?.[i]
     })
+    // A newer request is already in flight; this answer is about parameters that are no
+    // longer the ones on screen. Dropping it is what keeps `emulatorCostAt` converging on
+    // the latest signature instead of being overwritten by whichever reply happened to be
+    // slowest.
+    if (seq !== emulatorRequestSeq) return
     emulatorFeatureMap.value = map
     // Comes back with the prediction, so no second round trip on a slider
     // settle. Null on a backend that predates it, or an obs_data CA cannot
@@ -1563,6 +1743,7 @@ async function refreshEmulatorFeatures() {
     emulatorCostWhy.value = res.cost ? '' : (res.cost_unavailable ?? '')
     emulatorCostAt.value = at
   } catch (e) {
+    if (seq !== emulatorRequestSeq) return
     emulatorFeatureMap.value = null
     emulatorCost.value = null
     emulatorCostWhy.value = errorMessage(e)
@@ -2569,10 +2750,21 @@ watch(() => obs.obsData.value, scheduleRun)
             asked.
           -->
           <template v-if="emCost">
-            <span class="cost-label em-cost" data-testid="em-cost-label" :title="emCostTitle">
+            <span
+              class="cost-label em-cost"
+              :class="{ 'em-cost-stale': emCostStale }"
+              data-testid="em-cost-label"
+              :title="emCostStale ? emCostStaleTitle : emCostTitle"
+            >
               em cost
             </span>
-            <span class="cost-value em-cost" data-testid="em-cost-value" :title="emCostTitle">
+            <span
+              class="cost-value em-cost"
+              :class="{ 'em-cost-stale': emCostStale }"
+              data-testid="em-cost-value"
+              :data-stale="emCostStale ? 'true' : 'false'"
+              :title="emCostStale ? emCostStaleTitle : emCostTitle"
+            >
               {{ formatCost(emCost.cost) }}
             </span>
           </template>
@@ -2733,6 +2925,8 @@ watch(() => obs.obsData.value, scheduleRun)
             :baseline-cost="activeBaseline"
             :uq-params="uq.params.value"
             :uq-method="uq.method.value"
+            :coverage="uq.coverage.value"
+            :posterior-predictive="uq.posteriorPredictive.value"
             :emulator-metadata="emu.metadata.value"
             :emulator-error-points="emu.errorPoints.value"
             :emulator-in-use="emu.useEmulator.value"
@@ -2773,6 +2967,7 @@ watch(() => obs.obsData.value, scheduleRun)
         <div class="rhs-content">
         <FileImport
           v-model:outputs-dir="outputsDir"
+          @load-outputs="loadOutputsFromDirectory"
           :model-id="model.modelId.value"
           :current-params="loadedParamsRaw"
           :model-variables="model.variables.value"
@@ -3763,6 +3958,14 @@ watch(() => obs.obsData.value, scheduleRun)
 .cost-value.em-cost {
   color: var(--p-primary-color, #5b9bd5);
   cursor: help;
+}
+
+/* Shown, but visibly not of the parameters beside it. The alternative -- removing the
+   number until the recompute lands -- made every run flicker, and a flicker reads as a
+   fault in the figure rather than as "one moment". */
+.em-cost-stale {
+  opacity: 0.55;
+  font-style: italic;
 }
 .cost-note {
   opacity: 0.65;

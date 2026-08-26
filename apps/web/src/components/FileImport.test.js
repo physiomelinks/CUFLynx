@@ -141,6 +141,57 @@ describe('FileImport', () => {
     expect(wrapper.emitted('model-loaded')[0][0].filename).toBe('3compartment.cellml')
   })
 
+  it('accepts an EasyML .model and shows what the reader had to decide', async () => {
+    // An EasyML file leaves the membrane equation out -- openCARP's tissue
+    // solver owns V -- so something was invented on the way in. That is not a
+    // log line; it is the one thing the user has to check.
+    uploadCellML.mockResolvedValue({
+      model_id: 'abc',
+      name: 'Courtemanche',
+      converted_from: 'Courtemanche.model',
+      warnings: [
+        'the file declares V as external, so it carries no membrane equation; ' +
+          'dot(V) = -(Iion + i_stim) was added, with i_stim for a protocol to drive.',
+      ],
+    })
+    const wrapper = mount(FileImport, { global: { stubs } })
+    const file = new File(['V; .nodal();'], 'Courtemanche.model', { type: 'text/plain' })
+    await wrapper
+      .find('[data-testid="cellml-drop"]')
+      .trigger('drop', { dataTransfer: { files: [file] } })
+    await flushPromises()
+    expect(uploadCellML).toHaveBeenCalledOnce()
+    expect(wrapper.find('[data-testid="import-error"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="import-warning"]').text()).toContain(
+      'membrane equation',
+    )
+  })
+
+  it('Edit source opens the .model for a model converted from EasyML', async () => {
+    editModelSource.mockResolvedValue({
+      path: '/studies/heart/user_funcs/user_model.model',
+      opened: true,
+      editor: 'xdg-open',
+      reason: '',
+      runs: false,
+    })
+    const wrapper = mount(FileImport, {
+      props: {
+        modelId: 'abc',
+        convertedFrom: 'Courtemanche.model',
+        outputsDir: '/studies/heart',
+      },
+      global: { stubs },
+    })
+    const btn = wrapper.find('[data-testid="start-edit"]')
+    expect(btn.attributes('title')).toContain('.model')
+    await btn.trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="import-notice"]').text()).toContain(
+      '/studies/heart/user_funcs/user_model.model',
+    )
+  })
+
   it('rejects a bundle if any file is not .cellml/.xml', async () => {
     const wrapper = mount(FileImport, { global: { stubs } })
     const files = [
@@ -861,7 +912,10 @@ describe('FileImport omex (#149)', () => {
     const wrapper = await dropOn('obs-drop')
     expect(wrapper.emitted('model-loaded')).toBeTruthy()
     expect(wrapper.emitted('obs-data-loaded')).toBeFalsy()
-    expect(wrapper.vm.notice).toContain('invalid JSON')
+    // In the warning banner, not on the end of the "Loaded" line: a study whose
+    // observations were rejected must not read as a study that loaded.
+    expect(wrapper.vm.warnings.join(' ')).toContain('invalid JSON')
+    expect(wrapper.vm.notice).not.toContain('invalid JSON')
   })
 
   it('leaves an ordinary file to its own dropzone', async () => {
@@ -933,6 +987,32 @@ describe('FileImport accepts an external python model (.py)', () => {
   })
 })
 
+// --- reading what is already in the outputs directory (#255) -----------------
+
+describe('FileImport — load outputs', () => {
+  it('offers a button to read the directory, disabled until one is set', async () => {
+    const wrapper = mount(FileImport, {
+      props: { outputsDir: '' }, global: { stubs },
+    })
+    const button = wrapper.find('[data-testid="outputs-load"]')
+
+    expect(button.exists()).toBe(true)
+    expect(button.attributes('disabled')).toBeDefined()
+  })
+
+  it('asks to load once a directory is set', async () => {
+    const wrapper = mount(FileImport, {
+      props: { outputsDir: '/tmp/outputs' }, global: { stubs },
+    })
+    const button = wrapper.find('[data-testid="outputs-load"]')
+    expect(button.attributes('disabled')).toBeUndefined()
+
+    await button.trigger('click')
+    // A press, not a watcher: reading a directory is real work, and results
+    // found there may not match what is loaded.
+    expect(wrapper.emitted('load-outputs')).toBeTruthy()
+  })
+})
 
 // --- A study delivered by PhLynx over localhost (#287) ----------------------
 //
@@ -1037,5 +1117,108 @@ describe('FileImport — the PhLynx inbox', () => {
     const wrapper = await mounted()
     expect(wrapper.find('[data-testid="import-error"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="inbox-dialog"]').exists()).toBe(false)
+  })
+})
+
+// Nothing loads quietly. An import that came up short of a whole study says so
+// in its own banner: a part that was rejected, a member that was passed over, a
+// check that could not run. The bug behind this: a pre-#466 obs_data in an
+// archive was read, rejected, and reported as a clause on a blue "Loaded
+// 3compartment.omex" -- so the study looked loaded and the observations tab was
+// simply empty.
+describe('FileImport says what an import could not do', () => {
+  const omexFile = () => new File(['PK'], 'study.omex', { type: 'application/zip' })
+  const LOADED = {
+    model_id: 'abc',
+    name: 'CardiovascularSystem',
+    model_filename: 'm.cellml',
+    obs_data: { filename: 'obs.json', data_items: [{}], protocol_info: null },
+    params_for_id: { filename: 'params.csv', params: [{ qname: 'a/b' }] },
+    warnings: [],
+  }
+
+  const dropArchive = async (response) => {
+    uploadOmex.mockReset().mockResolvedValue(response)
+    const wrapper = mount(FileImport, { global: { stubs } })
+    await wrapper
+      .find('[data-testid="cellml-drop"]')
+      .trigger('drop', { dataTransfer: { files: [omexFile()] } })
+    await flushPromises()
+    return wrapper
+  }
+
+  const banner = (wrapper) => wrapper.find('[data-testid="import-warning"]')
+
+  it('shows a rejected obs_data at warning severity, not as an info notice', async () => {
+    const wrapper = await dropArchive({
+      ...LOADED,
+      obs_data: {
+        filename: '3compartment_obs_data.json',
+        error: "circulatory_autogen rejected this obs_data: Duplicate 'data_item_name'",
+      },
+    })
+    expect(banner(wrapper).exists()).toBe(true)
+    expect(banner(wrapper).text()).toContain('3compartment_obs_data.json')
+    expect(banner(wrapper).text()).toContain("Duplicate 'data_item_name'")
+    // The model did load, and the notice says only that.
+    expect(wrapper.find('[data-testid="import-notice"]').text()).toContain('Loaded study.omex')
+  })
+
+  it('shows the backend warning for a member that was passed over', async () => {
+    const wrapper = await dropArchive({
+      ...LOADED,
+      obs_data: null,
+      warnings: [
+        'No obs_data was loaded. Passed over: measurements.json (it is not valid JSON).',
+      ],
+    })
+    expect(banner(wrapper).text()).toContain('measurements.json')
+    expect(banner(wrapper).text()).toContain('not valid JSON')
+  })
+
+  it('lists every warning rather than only the first', async () => {
+    const wrapper = await dropArchive({
+      ...LOADED,
+      warnings: ['the first thing', 'the second thing'],
+    })
+    const lines = banner(wrapper).findAll('.import-warning-line')
+    expect(lines).toHaveLength(2)
+    expect(lines[1].text()).toBe('the second thing')
+  })
+
+  it('shows no banner when the whole study loaded', async () => {
+    const wrapper = await dropArchive(LOADED)
+    expect(banner(wrapper).exists()).toBe(false)
+    expect(wrapper.find('[data-testid="import-notice"]').exists()).toBe(true)
+  })
+
+  it('clears the banner when the next import has nothing to report', async () => {
+    const wrapper = await dropArchive({ ...LOADED, warnings: ['something was wrong'] })
+    expect(banner(wrapper).exists()).toBe(true)
+    uploadOmex.mockResolvedValue(LOADED)
+    await wrapper
+      .find('[data-testid="cellml-drop"]')
+      .trigger('drop', { dataTransfer: { files: [omexFile()] } })
+    await flushPromises()
+    expect(banner(wrapper).exists()).toBe(false)
+  })
+
+  // A loose obs_data goes up its own route, and carries the same warnings: a
+  // document CA could not be asked about loads either way, and the banner is
+  // the only thing that distinguishes it from a checked one.
+  it('surfaces a warning from a directly uploaded obs_data', async () => {
+    uploadObsData.mockReset().mockResolvedValue({
+      model_id: 'abc',
+      warnings: ['circulatory_autogen could not be consulted, so this obs_data was accepted...'],
+    })
+    const wrapper = mount(FileImport, { props: { modelId: 'abc' }, global: { stubs } })
+    const obs = jsonFile('obs.json', '{"protocol_info":{}}')
+    await wrapper
+      .find('[data-testid="obs-drop"]')
+      .trigger('drop', { dataTransfer: { files: [obs] } })
+    await flushPromises()
+    expect(banner(wrapper).text()).toContain('could not be consulted')
+    // It still loaded -- the warning is about what was not checked, not a refusal.
+    expect(wrapper.emitted('obs-data-loaded')).toBeTruthy()
   })
 })
