@@ -352,3 +352,41 @@ def test_a_genuine_phlynx_export_round_trips(client, requires_simulation, tmp_pa
     untouched -= {n for n in untouched if "param" in Path(n).name.lower()}
     for name in sorted(untouched):
         assert returned[name] == arrived[name], f"{name} was not returned verbatim"
+
+
+# ---------------------------------------------------------------------------
+# What the genuine export turned up
+# ---------------------------------------------------------------------------
+@pytest.mark.integration
+def test_the_genuine_export_carries_its_state_under_the_new_names(client, tmp_path):
+    """The mismatch this whole PR existed to find.
+
+    #287 was written against `flow.json`; PhLynx ships `flow-snapshot.json`
+    (phlynx#542 flattened the workspace format). Matching on the name meant the
+    editor state was not recognised at all -- so it was not kept beside the
+    model, and both files were reported as obs_data candidates. Recognising it by
+    the declared format, which is what upstream said was the stable half, fixes
+    both.
+    """
+    if not REAL_PHLYNX_EXPORT.is_file():
+        pytest.skip("no genuine PhLynx export to check against")
+    with open(REAL_PHLYNX_EXPORT, "rb") as fh:
+        resp = client.post(
+            "/api/omex/upload",
+            params={"output_dir": str(tmp_path)},
+            files={"file": (REAL_PHLYNX_EXPORT.name, fh, "application/zip")},
+        )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+
+    # It carries no observations and no parameters, and that is not worth saying.
+    assert body["obs_data"] is None
+    assert body["params_for_id"] is None
+    assert body["warnings"] == []
+
+    kept = {p.name for p in tmp_path.rglob("*.json")}
+    assert {"flow-snapshot.json", "changes.json"} <= kept, (
+        "PhLynx's editor state was not kept beside the model, so reopening the "
+        "study there would lose the layout"
+    )
+    assert body["module_config_path"], "nothing reported as kept"

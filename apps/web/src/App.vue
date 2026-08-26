@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, watch, onMounted } from 'vue'
+import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import ControlPanel from './components/ControlPanel.vue'
 import VariableList from './components/VariableList.vue'
 import PlotPanel from './components/PlotPanel.vue'
@@ -736,6 +736,94 @@ function startRhsDrag(e) {
   document.body.style.userSelect = 'none'
   document.body.style.cursor = 'col-resize'
 }
+// ---------------------------------------------------------------------------
+// A study can be dropped anywhere on the page
+//
+// An archive *is* the study -- model, observations and parameters at once -- so
+// there is no box it belongs to more than another, and requiring the user to
+// find the CellML one is a rule they have to learn for no reason. Every other
+// kind of file still goes to its own box, because for those the box is the only
+// thing that says what the file is *for*: the same .json can be an obs_data or a
+// params_for_id.
+//
+// Without a window-level handler the browser handles the drop itself and
+// navigates away from the app, which looks exactly like nothing happening.
+const fileImport = ref(null)
+const draggingFile = ref(false)
+const dropHint = ref('')
+let dragDepth = 0
+
+function dropHasFiles(event) {
+  const types = event?.dataTransfer?.types
+  return !!types && Array.from(types).includes('Files')
+}
+
+function onWindowDragEnter(event) {
+  if (!dropHasFiles(event)) return
+  dragDepth += 1
+  draggingFile.value = true
+}
+
+function onWindowDragLeave(event) {
+  if (!dropHasFiles(event)) return
+  // dragenter/dragleave fire for every element crossed, so a counter is what
+  // distinguishes "left the window" from "moved onto a child".
+  dragDepth = Math.max(0, dragDepth - 1)
+  if (dragDepth === 0) draggingFile.value = false
+}
+
+function onWindowDragOver(event) {
+  if (!dropHasFiles(event)) return
+  // Both required: without preventDefault the drop event never fires, and the
+  // browser opens the file in place of the app.
+  event.preventDefault()
+}
+
+async function onWindowDrop(event) {
+  if (!dropHasFiles(event)) return
+  dragDepth = 0
+  draggingFile.value = false
+  // A box already took it -- including a file the box rejected, which is its
+  // business to report and not ours to second-guess. Read from an explicit mark
+  // rather than `defaultPrevented`: anything on the way up may set that, and it
+  // cannot say *who* handled the drop.
+  if (event.cuflynxHandledByBox) return
+  event.preventDefault()
+
+  const files = Array.from(event.dataTransfer?.files || [])
+  const importer = fileImport.value
+  // The ref can be empty or half-built -- a drop landing during teardown, or
+  // before the child has mounted -- and a page-wide listener is exactly the
+  // place that shows up.
+  if (!files.length || typeof importer?.isOmexName !== 'function') return
+  if (files.some((f) => importer.isOmexName(f.name))) {
+    dropHint.value = ''
+    await importer.handleOmex(files)
+    return
+  }
+  // Deliberately not guessed at. A .cellml could be the model or a sister file,
+  // and a .json could be either of the two studies files -- the box is what says
+  // which, so the honest answer is to name the box rather than pick one.
+  dropHint.value =
+    `Only a .omex study can be dropped anywhere on the page. Drop ` +
+    `${files.length > 1 ? 'these files' : `"${files[0].name}"`} on the model, ` +
+    `obs_data or params box to say which it is.`
+}
+
+onMounted(() => {
+  window.addEventListener('dragenter', onWindowDragEnter)
+  window.addEventListener('dragleave', onWindowDragLeave)
+  window.addEventListener('dragover', onWindowDragOver)
+  window.addEventListener('drop', onWindowDrop)
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('dragenter', onWindowDragEnter)
+  window.removeEventListener('dragleave', onWindowDragLeave)
+  window.removeEventListener('dragover', onWindowDragOver)
+  window.removeEventListener('drop', onWindowDrop)
+})
+
 function restoreRhs() {
   rhsWidth.value = RHS_DEFAULT_WIDTH
 }
@@ -2392,6 +2480,19 @@ watch(() => obs.obsData.value, scheduleRun)
 </script>
 
 <template>
+  <!-- Dropping a study anywhere is only a feature if the page says so while the
+       file is in the air; otherwise it reads as a thing that might work. -->
+  <div v-if="draggingFile" class="page-drop-veil" data-testid="page-drop-veil">
+    <div class="page-drop-card">
+      <i class="pi pi-inbox" />
+      <strong>Drop a .omex study anywhere</strong>
+      <small>Models, obs_data and params_for_id go to their own boxes</small>
+    </div>
+  </div>
+  <p v-if="dropHint" class="page-drop-hint" data-testid="page-drop-hint">
+    {{ dropHint }}
+    <button type="button" class="page-drop-dismiss" @click="dropHint = ''">Dismiss</button>
+  </p>
   <div class="layout">
     <header class="topbar">
       <h1>CUFLynx</h1>
@@ -2966,6 +3067,7 @@ watch(() => obs.obsData.value, scheduleRun)
         </div>
         <div class="rhs-content">
         <FileImport
+          ref="fileImport"
           v-model:outputs-dir="outputsDir"
           @load-outputs="loadOutputsFromDirectory"
           :model-id="model.modelId.value"
@@ -3990,5 +4092,58 @@ watch(() => obs.obsData.value, scheduleRun)
 .cost-pin.on {
   background: var(--p-highlight-background, #eef3fb);
   border-color: var(--p-primary-color, #6f9fd8);
+}
+
+/* Sits above everything and takes no pointer events: the drop has to reach the
+   dropzone underneath when the user does aim at one. */
+.page-drop-veil {
+  position: fixed;
+  inset: 0;
+  z-index: 3000;
+  pointer-events: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--p-content-background, #fff) 55%, transparent);
+  border: 3px dashed var(--p-primary-color, #6366f1);
+}
+.page-drop-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 1.25rem 2rem;
+  border-radius: 12px;
+  background: var(--p-content-background, #fff);
+  box-shadow: 0 8px 30px rgb(0 0 0 / 18%);
+}
+.page-drop-card .pi {
+  font-size: 1.8rem;
+  color: var(--p-primary-color, #6366f1);
+}
+.page-drop-card small {
+  opacity: 0.7;
+}
+.page-drop-hint {
+  position: fixed;
+  bottom: 1rem;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 3001;
+  max-width: 46rem;
+  margin: 0;
+  padding: 0.6rem 0.9rem;
+  border-radius: 8px;
+  background: var(--p-content-background, #fff);
+  border: 1px solid var(--p-content-border-color, #d4d4d8);
+  box-shadow: 0 6px 20px rgb(0 0 0 / 15%);
+}
+.page-drop-dismiss {
+  margin-left: 0.6rem;
+  border: 0;
+  background: none;
+  color: var(--p-primary-color, #6366f1);
+  cursor: pointer;
+  text-decoration: underline;
 }
 </style>

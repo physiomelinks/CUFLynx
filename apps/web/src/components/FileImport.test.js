@@ -860,6 +860,28 @@ describe('FileImport adopts the .mmt protocol as obs_data (#27)', () => {
 
 // Issue #149: a COMBINE archive is the study, not any one of its files, so it is
 // accepted on every import box rather than making the user unzip it.
+describe('FileImport exposes the archive path (#300)', () => {
+  // App.vue's page-wide drop calls straight into these. Asserted on a real mount
+  // because the App-level tests shallow-mount and would pass against a stub even
+  // if the component exposed nothing at all.
+  it('exposes handleOmex and isOmexName', () => {
+    const wrapper = mount(FileImport, { global: { stubs } })
+    expect(typeof wrapper.vm.handleOmex).toBe('function')
+    expect(wrapper.vm.isOmexName('study.omex')).toBe(true)
+    expect(wrapper.vm.isOmexName('model.cellml')).toBe(false)
+  })
+
+  it('the exposed handler imports, so the page drop and the box drop are one path', async () => {
+    uploadOmex.mockReset().mockResolvedValue({ model_id: 'abc', name: 'S' })
+    const wrapper = mount(FileImport, { global: { stubs } })
+    const file = new File(['PK'], 'study.omex', { type: 'application/zip' })
+    expect(await wrapper.vm.handleOmex([file])).toBe(true)
+    await flushPromises()
+    expect(uploadOmex).toHaveBeenCalledTimes(1)
+    expect(wrapper.emitted('model-loaded')).toBeTruthy()
+  })
+})
+
 describe('FileImport omex (#149)', () => {
   const omexFile = () => new File(['PK'], 'study.omex', { type: 'application/zip' })
   const RESPONSE = {

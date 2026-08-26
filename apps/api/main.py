@@ -1462,13 +1462,28 @@ def _no_obs_data_warning(parts: dict, source: str = "archive") -> list[str]:
     thing on screen -- nothing -- and the second is a bug in the file that the
     user could fix in a minute if anyone told them about it.
     """
-    skipped = parts.get("obs_skipped") or []
-    if skipped:
-        looked_at = "; ".join(f"{s['name']} ({s['reason']})" for s in skipped)
+    # Only the members CUFLynx could not read. One it *could* read and ruled out
+    # is not observations, and neither is an archive that simply carries none --
+    # a PhLynx project export has a model, an editor state and a simulation
+    # settings file and was never going to have observations. Saying so every
+    # time is how a banner becomes something people click past, which costs the
+    # one case below that is worth reading.
+    unreadable = [s for s in (parts.get("obs_skipped") or []) if not s.get("identified")]
+    if unreadable:
+        looked_at = "; ".join(f"{s['name']} ({s['reason']})" for s in unreadable)
         return [
-            f"No obs_data was loaded. Passed over: {looked_at}. A member with 'obs' in "
+            f"No obs_data was loaded. Could not read: {looked_at}. A member with 'obs' in "
             "its name is always taken as the obs_data."
         ]
+    if source == "archive":
+        # Neither an obs_data nor a params_for_id is required to drop a study in,
+        # and most archives that carry a model carry neither -- a PhLynx project
+        # export never does. The empty tabs already say so, and a banner on the
+        # ordinary case is how people learn to click past the one below.
+        return []
+    # Reopening a run directory is a different claim: this is a study that was
+    # *run*, so observations are what it was scored against, and their absence is
+    # worth the one sentence.
     missing = "obs_data" if parts.get("params") else "obs_data or params_for_id"
     return [f"This {source} carries no {missing}, so the observations tab is empty."]
 
@@ -1623,22 +1638,26 @@ def import_omex_bytes(data: bytes, output_dir: str | None = None,
         except ParamsForIdError as exc:
             result["params_for_id"] = {"filename": name, "error": str(exc)}
 
-    if parts["module_config"]:
-        cfg_name, blob = parts["module_config"]
+    for cfg_name, blob in parts.get("phlynx_state") or []:
         # Beside the model in `generated_models/<prefix>/`, not among the run
         # outputs: this is PhLynx's editor state for that model, not a result of
         # anything. Same layout the export bundle uses, so the archive round-trips
         # into a folder CA already understands.
-        result["module_config_path"] = omex_import.save_module_config(
-            blob, _model_dir(out_dir, _record_prefix(_models[model_id]))
+        saved = omex_import.save_module_config(
+            blob, _model_dir(out_dir, _record_prefix(_models[model_id])), cfg_name
         )
+        # The first one kept is the one reported: the field predates PhLynx
+        # splitting its workspace across two files, and a client that reads it is
+        # asking "was the layout kept", not "where is each part".
+        if result["module_config_path"] is None:
+            result["module_config_path"] = saved
         # Only when there was somewhere to put it. With no outputs directory this
         # copy is simply not made, and nothing is lost: the archive is kept whole
         # (`_save_model_archive`) and `omex_export` re-emits every member it did
         # not understand byte-for-byte, so PhLynx's state still round-trips. A
         # banner on every import until a directory is set would be noise -- and a
         # banner nobody reads is how the real failure below gets missed.
-        if out_dir and result["module_config_path"] is None:
+        if out_dir and saved is None:
             load_warnings.append(
                 f"PhLynx's {cfg_name} could not be kept beside the model: it is not valid "
                 "JSON, or the directory could not be written. The study loaded, and the "
