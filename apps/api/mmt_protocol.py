@@ -24,7 +24,25 @@ from __future__ import annotations
 
 from typing import Any
 
-from myokit_import import NO_PARSER_HINT, _ca_parser
+from myokit_import import NO_PARSER_HINT, _ca_parser, no_parser_hint
+
+
+def _ca_fill_protocol_info():
+    """CA's ``fill_protocol_info``, or None when this CA does not have it.
+
+    Asked for **by name**, not by module: ``utilities.obs_data_helpers`` has
+    existed for far longer than this function has lived in it (CA #496), so a
+    module-level probe answers "yes" against a CA that would then raise
+    AttributeError. ``ca_from`` raises for a missing name, which is the
+    distinction that matters.
+    """
+    try:
+        from ca_imports import ca_from, ensure_ca_path  # noqa: PLC0415
+
+        ensure_ca_path()
+        return ca_from("utilities.obs_data_helpers", "fill_protocol_info")
+    except Exception:  # noqa: BLE001 - CA absent or too old; nothing to ask
+        return None
 
 #: Beats an indefinite protocol is cut to when the caller names no duration. One
 #: beat cannot show that a model returns to its diastolic state, and two can.
@@ -85,32 +103,22 @@ def fill_protocol_info(
 ) -> dict[str, Any]:
     """Put ``protocol_info`` into an obs_data document, returning a new dict.
 
-    An existing document's labels and colours are kept when they still fit the
-    new schedule: those are the parts a user writes for themselves ("1 Hz
-    pacing" reads better than "pacing, period 1000"), and re-deriving the timings
-    is no reason to throw them away.
-
-    A bare array of data_items -- CA's other accepted shape, and what the
-    3compartment / heat_fenics studies ship -- becomes the object form carrying
-    those same items, which is the only shape that can hold a protocol_info at
-    all. ``dict(obs_data or {})`` used to raise on one, so
-    ``scripts/mmt_to_obs_data.py`` died rather than updating a data-only file.
-
-    **Local, unlike the rest of this module.** Everything else here delegates to
-    the engine because it needs Myokit or CA's protocol vocabulary; this needs
-    neither. It is document plumbing -- put a key in a dict, keep the labels --
-    so routing it through circulatory_autogen would make a pure function fail
-    when the engine is old or Myokit is absent, which is precisely what it did.
+    Delegated like the rest of this module, to
+    ``libcuflynx.utilities.obs_data_helpers`` -- not to the Myokit reader, because
+    it has nothing to do with Myokit: the EasyML reader produces a protocol_info
+    too, and so could anything else. Every key it writes (``protocol_info``,
+    ``data_items``, ``experiment_labels``, ``experiment_colors``) is that module's
+    vocabulary, and that module is where those names get migrated when they change
+    (CA #466 renamed several). A copy here would keep writing the old spelling with
+    nothing to catch it, which is why the copy that lived here is gone.
     """
-    if isinstance(obs_data, list):
-        obs_data = {"data_items": obs_data}
-    out = dict(obs_data or {})
-    existing = out.get("protocol_info") or {}
-    merged = dict(protocol_info)
-    n = len(protocol_info.get("sim_times", []))
-    for key in ("experiment_labels", "experiment_colors"):
-        kept = existing.get(key)
-        if isinstance(kept, list) and len(kept) == n:
-            merged[key] = kept
-    out["protocol_info"] = merged
-    return out
+    fill = _ca_fill_protocol_info()
+    if fill is None:
+        raise MmtProtocolError(
+            "could not update that obs_data: "
+            + no_parser_hint("obs_data", "libcuflynx.utilities.obs_data_helpers")
+        )
+    try:
+        return fill(obs_data, protocol_info)
+    except ValueError as exc:
+        raise MmtProtocolError(str(exc)) from exc

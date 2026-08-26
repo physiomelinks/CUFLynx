@@ -183,6 +183,20 @@ def requires_easyml():
 
 
 @pytest.fixture
+def requires_obs_data_helpers():
+    """For ``fill_protocol_info``, which lives in CA's obs_data helpers (CA #496).
+
+    A different CA module from the readers, and a different vintage: it moved
+    there after the .mmt reader did. Needs no Myokit -- putting a key in an
+    obs_data document is not a simulation -- so this asks only for the module.
+    """
+    import mmt_protocol
+
+    if mmt_protocol._ca_fill_protocol_info() is None:
+        pytest.skip("libcuflynx.utilities.obs_data_helpers has no fill_protocol_info")
+
+
+@pytest.fixture
 def requires_myokit_parser():
     """Likewise for the Myokit reader, which moved into circulatory_autogen."""
     import myokit_import
