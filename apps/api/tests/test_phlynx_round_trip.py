@@ -390,3 +390,129 @@ def test_the_genuine_export_carries_its_state_under_the_new_names(client, tmp_pa
         "study there would lose the layout"
     )
     assert body["module_config_path"], "nothing reported as kept"
+
+
+# ---------------------------------------------------------------------------
+# Send and come back — the half no fixture can settle
+#
+# EXPECTED TO FAIL. Every other test here settles what CUFLynx does with bytes
+# it is handed. This one asks the other question: is the archive CUFLynx *sends*
+# one PhLynx can open, and does a study survive the trip out and back?
+#
+# It cannot be answered by a saved export, because a saved export only shows what
+# PhLynx writes -- not what it accepts. So the two halves of PhLynx's own source
+# are mirrored here, and the assertions are against those rules rather than
+# against our reading of #287.
+# ---------------------------------------------------------------------------
+PHLYNX_RETURN_MANIFEST = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<omexManifest xmlns="http://identifiers.org/combine.specifications/omex-manifest">
+  <content location="." format="http://identifiers.org/combine.specifications/omex"/>
+  <content location="document.sedml" format="http://identifiers.org/combine.specifications/sed-ml" master="true"/>
+  <content location="model.cellml" format="http://identifiers.org/combine.specifications/cellml"/>
+  <content location="flow-snapshot.json" format="application/x.vnd.phlynx-flow+json"/>
+  <content location="changes.json" format="application/x.vnd.phlynx-changes+json"/>
+  <content location="simulation.json" format="http://purl.org/NET/mediatypes/application/json"/>
+</omexManifest>
+"""
+
+
+class PhlynxCannotOpen(Exception):
+    """What PhLynx's URL loader raises, spelled the way it spells it."""
+
+
+def _phlynx_opens(archive: bytes) -> str:
+    """PhLynx's `urlLoaders.js` `omex` loader, transcribed.
+
+        const cellmlEntry = zip.file('model.cellml')
+        if (!cellmlEntry) throw new Error('OMEX archive has no model.cellml entry.')
+
+    Its own comment says `// TODO: this currently assumes a fixed member name`.
+    Transcribed rather than paraphrased, so that when PhLynx relaxes it this test
+    is edited against their source and not against someone's memory of it.
+    """
+    members = _members(archive)
+    if "model.cellml" not in members:
+        raise PhlynxCannotOpen(
+            "OMEX archive has no model.cellml entry. CUFLynx sent "
+            f"{sorted(n for n in members if n.endswith('.cellml'))}."
+        )
+    return members["model.cellml"].decode("utf-8")
+
+
+def _phlynx_returns(edited_cellml: str, state: dict) -> bytes:
+    """What PhLynx's exporter writes (`services/compress.js` generateOmexArchive).
+
+    Model, SED-ML, simulation settings and its own workspace -- and **no**
+    obs_data and **no** params_for_id, because PhLynx neither reads nor keeps
+    them. That absence is the point of the test below: they have to survive the
+    trip on CUFLynx's side, since nothing brings them back.
+    """
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("manifest.xml", PHLYNX_RETURN_MANIFEST)
+        zf.writestr("model.cellml", edited_cellml)
+        zf.writestr("document.sedml", "<sedML/>")
+        zf.writestr("simulation.json", json.dumps({"input": [], "output": [], "parameters": []}))
+        for name, blob in state.items():
+            zf.writestr(name, blob)
+    return buf.getvalue()
+
+
+@pytest.mark.integration
+def test_a_study_sent_to_phlynx_comes_back_without_losing_its_study(
+    client, requires_simulation
+):
+    """EXPECTED TO FAIL until the exchange works in both directions.
+
+    The journey a user actually asks for: open the model in PhLynx, change it
+    there, bring it back, and carry on calibrating the study you already had.
+
+    Two things have to become true, and neither is CUFLynx's to decide alone:
+
+    1. **PhLynx has to be able to open what CUFLynx sends.** Its loader looks the
+       model up as `model.cellml`; CUFLynx keeps the member name the archive
+       arrived with, because #287 says members come back verbatim. For a study
+       that came from an archive -- the 3compartment example, every PhLynx
+       export -- those disagree and the send fails at PhLynx's first line. Either
+       PhLynx looks up the CellML by its manifest entry, or the verbatim rule
+       gets an exception for this one member. That is a contract question, so
+       this test does not presume the answer; it only refuses to go green while
+       neither has happened.
+
+    2. **What comes back must not take the study with it.** PhLynx's exporter
+       writes no obs_data and no params_for_id, so a returned archive loaded as
+       a fresh study replaces a calibrated one with an empty one. The model is
+       PhLynx's to change; the observations and parameters are not, and they are
+       not in the file to be restored from.
+
+    Do not delete this to make the suite green, and do not weaken it to whatever
+    CUFLynx happens to do today -- a green suite that never sends anywhere is the
+    state #287 was written to end.
+    """
+    with open(RESOURCES_DIR / "3compartment.omex", "rb") as fh:
+        loaded = _receive(client, fh.read())
+    assert loaded["obs_data"], "the fixture is meant to carry observations"
+    assert loaded["params_for_id"], "the fixture is meant to carry parameters"
+    obs_before = loaded["obs_data"]
+    params_before = loaded["params_for_id"]
+
+    sent = _decoded(_send_back(client, loaded["model_id"]))
+    state = {n: b for n, b in _members(sent).items() if n.endswith(".json") and "flow" in n}
+
+    # (1) PhLynx opens it.
+    cellml = _phlynx_opens(sent)
+
+    # (2) PhLynx edits the model and hands it back.
+    edited = cellml.replace("<model", "<!-- edited in PhLynx -->\n<model", 1)
+    returned = _receive(client, _phlynx_returns(edited, state))
+
+    assert "edited in PhLynx" in _members(_decoded(
+        _send_back(client, returned["model_id"]))).get("model.cellml", b"").decode("utf-8", "ignore"), (
+        "PhLynx's edit did not survive the return trip"
+    )
+    assert returned["obs_data"] == obs_before, (
+        "the observations were lost coming back from PhLynx, which does not carry them"
+    )
+    assert returned["params_for_id"] == params_before, (
+        "the parameters were lost coming back from PhLynx, which does not carry them"
+    )
