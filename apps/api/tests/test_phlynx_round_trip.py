@@ -482,16 +482,20 @@ def _phlynx_opens(archive: bytes) -> str:
     return members[masters[0]].decode("utf-8")
 
 
-def _phlynx_returns(edited_cellml: str, state: dict, cellml_name: str) -> bytes:
+def _phlynx_returns(edited_cellml: str, state: dict, cellml_name: str,
+                    extras: dict | None = None) -> bytes:
     """What PhLynx's exporter writes (`generateOmexArchive`, same branch).
 
-    It keeps the model's filename now, which the old one did not. What it still
-    does **not** write is an obs_data or a params_for_id: its importer sorts them
-    into `extras` and the exporter never re-emits them. That absence is the whole
-    of the gate below -- a study that goes to PhLynx and comes back has to arrive
-    with its observations and parameters intact, and nothing in the returned file
-    could supply them.
+    Two things it does now that it did not: it keeps the model's filename, and it
+    restores `omexStore.preservedExtras` -- every member its importer did not
+    recognise, written back with its manifest entry, skipping the locations it
+    owns itself. That is what carries a CUFLynx study's obs_data and
+    params_for_id across, since PhLynx neither reads nor authors either.
     """
+    reserved = {"manifest.xml", "document.sedml", cellml_name,
+                "flow-snapshot.json", "changes.json"}
+    kept = {loc: blob for loc, blob in (extras or {}).items() if loc not in reserved}
+
     entries = [
         ("document.sedml", "http://identifiers.org/combine.specifications/sed-ml", True),
         (cellml_name, CELLML_FORMAT, False),
@@ -499,6 +503,11 @@ def _phlynx_returns(edited_cellml: str, state: dict, cellml_name: str) -> bytes:
         ("changes.json", "application/x.vnd.phlynx-changes+json", False),
         ("simulation.json", "http://purl.org/NET/mediatypes/application/json", False),
     ]
+    # The format each extra arrived with, which is what PhLynx stores alongside
+    # it -- an extra whose format changed on the way through would be a different
+    # member as far as the next reader is concerned.
+    entries += [(loc, _EXTRA_FORMATS.get(loc, "application/json"), False) for loc in kept]
+
     def _entry(loc: str, fmt: str, master: bool) -> str:
         flag = ' master="true"' if master else ""
         return f'  <content location="{loc}" format="{fmt}"{flag}/>'
@@ -510,6 +519,7 @@ def _phlynx_returns(edited_cellml: str, state: dict, cellml_name: str) -> bytes:
         f'  <content location="." format="http://identifiers.org/combine.specifications/omex"/>\n'
         f"{lines}\n</omexManifest>\n"
     )
+
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
         zf.writestr("manifest.xml", manifest)
@@ -518,6 +528,8 @@ def _phlynx_returns(edited_cellml: str, state: dict, cellml_name: str) -> bytes:
         zf.writestr("simulation.json", json.dumps({"input": [], "output": [], "parameters": []}))
         zf.writestr("flow-snapshot.json", state.get("flow-snapshot.json", b'{"nodes": []}'))
         zf.writestr("changes.json", state.get("changes.json", b'{"modified": true}'))
+        for loc, blob in kept.items():
+            zf.writestr(loc, blob)
     return buf.getvalue()
 
 
@@ -559,6 +571,42 @@ def _outputs(client, model_id: str, names: list[str], sim_time: float = 1.0) -> 
     return {name: series[name][-1] for name in names}
 
 
+#: Formats PhLynx carries with each preserved extra, keyed by member. Filled in
+#: by the journey below from the manifest that arrived, because that is where
+#: PhLynx gets them from too.
+_EXTRA_FORMATS: dict[str, str] = {}
+
+#: Members PhLynx's importer recognises and therefore does **not** hold as an
+#: extra: the model, the SED-ML, its own workspace, and the simulation settings.
+_PHLYNX_KNOWS = {"manifest.xml", "document.sedml", "flow-snapshot.json",
+                 "changes.json", "simulation.json"}
+
+
+def _phlynx_extras(archive: bytes) -> dict:
+    """What PhLynx's importer sorts into `extras` and its exporter restores.
+
+    Everything the manifest declares that PhLynx has no meaning for -- a CUFLynx
+    obs_data and params_for_id among them. Classified from the manifest rather
+    than from the filenames, the way their importer does it.
+    """
+    from xml.etree import ElementTree as ET
+
+    members = _members(archive)
+    extras: dict[str, bytes] = {}
+    _EXTRA_FORMATS.clear()
+    root = ET.fromstring(members["manifest.xml"])
+    for content in root.iter(f"{{{MANIFEST_NS}}}content"):
+        location, fmt = content.get("location") or "", content.get("format") or ""
+        location = location[2:] if location.startswith("./") else location
+        if location in ("", ".") or location in _PHLYNX_KNOWS:
+            continue
+        if fmt == CELLML_FORMAT or location not in members:
+            continue
+        extras[location] = members[location]
+        _EXTRA_FORMATS[location] = fmt
+    return extras
+
+
 def _through_phlynx(client, loaded: dict, edit) -> dict:
     """Send the study out, let PhLynx open and change it, and bring it back.
 
@@ -575,7 +623,9 @@ def _through_phlynx(client, loaded: dict, edit) -> dict:
     # PhLynx keeps the model's filename now (#517), so the return carries the
     # name that went out rather than inventing one.
     name = next(n for n in _members(sent) if n.endswith(".cellml"))
-    return _receive(client, _phlynx_returns(edit(cellml), state, name))
+    return _receive(
+        client, _phlynx_returns(edit(cellml), state, name, _phlynx_extras(sent))
+    )
 
 
 @pytest.mark.integration
@@ -623,8 +673,15 @@ def test_a_study_sent_to_phlynx_comes_back_without_losing_its_study(
     assert returned["obs_data"] == obs_before, (
         "the observations were lost coming back from PhLynx, which does not carry them"
     )
-    assert returned["params_for_id"] == params_before, (
-        "the parameters were lost coming back from PhLynx, which does not carry them"
+    # The parameters, not the filename. CUFLynx refreshes params_for_id from the
+    # study on the way out and writes its canonical JSON, so a study loaded from
+    # a `.csv` legitimately comes back as `.json` -- that is the range and
+    # selection edits travelling, which is the point of refreshing it.
+    assert returned["params_for_id"], (
+        "the parameters were lost coming back from PhLynx"
+    )
+    assert returned["params_for_id"]["params"] == params_before["params"], (
+        "the parameters changed on the way through PhLynx, which does not read them"
     )
 
 
