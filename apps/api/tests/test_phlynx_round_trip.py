@@ -400,6 +400,27 @@ def test_the_genuine_export_carries_its_state_under_the_new_names(client, tmp_pa
 # user does next: give the study its observations and its parameters, and press
 # run. Both went wrong on a real PhLynx study and neither was covered.
 # ---------------------------------------------------------------------------
+def _ca_resolves_hoisted_names() -> bool:
+    """Whether the pinned libcuflynx knows PhLynx's parameter-hoisting spelling.
+
+    circulatory_autogen#500. Probed by asking it the question rather than by
+    version, because a version says what was released and this says what is on
+    the path. Until CI's CA pin moves past that merge the two tests below have
+    nothing to prove -- the failure would be the resolver's, and it is asserted
+    in CA's own suite.
+    """
+    try:
+        from ca_imports import ca_from, ensure_ca_path
+
+        ensure_ca_path()
+        resolver = ca_from("solver_wrappers.name_resolver", "VariableNameResolver")
+        return resolver.resolve_key(
+            "soma/g", [("var", {"parameters.g": 1})], separator="."
+        ) == ("var", "parameters.g")
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _attach_study_files(client, model_id: str) -> dict:
     """The obs_data and params_for_id for the SN study, the way the UI sends them.
 
@@ -447,6 +468,8 @@ def test_a_phlynx_study_runs_once_it_has_obs_data_and_params(
     """
     if not REAL_PHLYNX_EXPORT.is_file():
         pytest.skip("no genuine PhLynx export to run")
+    if not _ca_resolves_hoisted_names():
+        pytest.skip("libcuflynx on the path predates circulatory_autogen#500")
     loaded = _receive(client, REAL_PHLYNX_EXPORT.read_bytes())
     _attach_study_files(client, loaded["model_id"])
 
@@ -475,6 +498,8 @@ def test_a_phlynx_studys_parameters_reach_the_solver(client, requires_simulation
     """
     if not REAL_PHLYNX_EXPORT.is_file():
         pytest.skip("no genuine PhLynx export to run")
+    if not _ca_resolves_hoisted_names():
+        pytest.skip("libcuflynx on the path predates circulatory_autogen#500")
     loaded = _receive(client, REAL_PHLYNX_EXPORT.read_bytes())
     _attach_study_files(client, loaded["model_id"])
 
