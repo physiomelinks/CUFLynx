@@ -29,13 +29,14 @@ from __future__ import annotations
 
 import io
 import json
+import re
 import zipfile
 from pathlib import Path
 
 import omex_import
 import pytest
 from cellml_meta import parse_cellml
-from conftest import RESOURCES_DIR
+from conftest import RESOURCES_DIR, SN_OBS_DATA_PATH, SN_PARAMS_CSV_PATH
 from params_for_id import parse_params_for_id
 
 from test_calibration import (
@@ -393,6 +394,109 @@ def test_the_genuine_export_carries_its_state_under_the_new_names(client, tmp_pa
 
 
 # ---------------------------------------------------------------------------
+# A PhLynx study, run
+#
+# Arriving whole is not the same as being usable. These are the two things a
+# user does next: give the study its observations and its parameters, and press
+# run. Both went wrong on a real PhLynx study and neither was covered.
+# ---------------------------------------------------------------------------
+def _attach_study_files(client, model_id: str) -> dict:
+    """The obs_data and params_for_id for the SN study, the way the UI sends them.
+
+    The archive carries neither -- PhLynx does not author them -- so a user
+    supplies them, and `resources/SN_simple_*` are the study's own.
+    """
+    up = client.post(
+        "/api/obs_data/upload",
+        json={"model_id": model_id, "obs_data": json.loads(SN_OBS_DATA_PATH.read_text())},
+    )
+    assert up.status_code == 200, up.text
+    assert up.json()["has_protocol"] is True
+
+    with open(SN_PARAMS_CSV_PATH, "rb") as fh:
+        pf = client.post(
+            "/api/params_for_id/upload",
+            data={"model_id": model_id},
+            files={"file": (SN_PARAMS_CSV_PATH.name, fh, "text/csv")},
+        )
+    assert pf.status_code == 200, pf.text
+    return {"obs": up.json(), "params": pf.json()}
+
+
+@pytest.mark.integration
+def test_a_phlynx_study_runs_once_it_has_obs_data_and_params(
+    client, requires_simulation
+):
+    """Load PhLynx's own archive, give it a study, and press run.
+
+    This failed on the real thing with
+
+        Pacing parameter soma_SN/I_in must resolve to a valid variable
+
+    followed by five hundred names the user had never typed. The cause is not in
+    this repository: PhLynx hoists a module's constants into a `parameters`
+    component under names of its own (`soma_SN_c_ER`, or plain `g_Na` when that
+    is already unique), Myokit's importer then *merges* each connected pair so
+    only the hoisted copy keeps a qname, and libcuflynx's resolver knew only
+    circulatory_autogen's mirror-image convention (`c_ER_soma_SN`). Every name in
+    the user's obs_data and params_for_id resolved to nothing.
+
+    Fixed in circulatory_autogen (`VariableNameResolver._aliases`); asserted here
+    because this is where it is user-visible, and because nothing else in either
+    repository runs a *PhLynx-generated* model.
+    """
+    if not REAL_PHLYNX_EXPORT.is_file():
+        pytest.skip("no genuine PhLynx export to run")
+    loaded = _receive(client, REAL_PHLYNX_EXPORT.read_bytes())
+    _attach_study_files(client, loaded["model_id"])
+
+    # No protocol_info in the body: the obs_data just uploaded drives the run,
+    # exactly as the app does it.
+    resp = client.post(
+        "/api/protocol/run",
+        json={"model_id": loaded["model_id"], "params": {}, "outputs": ["soma_SN/V"]},
+    )
+    assert resp.status_code == 200, resp.text
+    experiments = resp.json()["experiments"]
+    assert len(experiments) == 3, "one per protocol experiment"
+    for exp in experiments:
+        trace = exp["outputs"]["soma_SN/V"]
+        assert len(trace) > 1
+        assert all(v == v for v in trace), "the membrane voltage went NaN"
+
+
+@pytest.mark.integration
+def test_a_phlynx_studys_parameters_reach_the_solver(client, requires_simulation):
+    """Resolving the name is only half of it -- the value has to land.
+
+    A name that resolves to the wrong variable, or to none, shows up as a slider
+    that does nothing: the study calibrates, reports a best fit, and the model
+    never moved. Moving one conductance has to move the trace.
+    """
+    if not REAL_PHLYNX_EXPORT.is_file():
+        pytest.skip("no genuine PhLynx export to run")
+    loaded = _receive(client, REAL_PHLYNX_EXPORT.read_bytes())
+    _attach_study_files(client, loaded["model_id"])
+
+    def peak(g_Na: float) -> float:
+        resp = client.post(
+            "/api/protocol/run",
+            json={
+                "model_id": loaded["model_id"],
+                "params": {"soma_SN/g_Na": g_Na},
+                "outputs": ["soma_SN/V"],
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        return max(resp.json()["experiments"][0]["outputs"]["soma_SN/V"])
+
+    assert peak(6.0) != pytest.approx(peak(1.0), abs=1e-9), (
+        "the sodium conductance did not reach the model -- the parameter name "
+        "resolved to nothing and the write was silently dropped"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Send and come back — the half no fixture can settle
 #
 # EXPECTED TO FAIL. Every other test here settles what CUFLynx does with bytes
@@ -480,6 +584,66 @@ def _phlynx_opens(archive: bytes) -> str:
             "multiple CellML files require exactly one master CellML file"
         )
     return members[masters[0]].decode("utf-8")
+
+
+#: The manifest formats PhLynx will look inside for one of its own JSON files.
+#: `/^application\/(?:json|.+\+json)$/i` in their `omex.js`, plus the one purl
+#: spelling they special-case.
+_JSON_FORMAT = re.compile(r"^application/(?:json|.+\+json)$", re.I)
+_PURL_JSON = "http://purl.org/NET/mediatypes/application/json"
+
+
+def _is_flow_snapshot(blob: bytes) -> bool:
+    """`isPhlynxFlowSnapshotFile`, transcribed from `import/omexClassifiers.js`.
+
+    Content, not filename: PhLynx renamed this member once already (#542, when
+    `flow.json` became `flow-snapshot.json`), and the sniff is what survived.
+    """
+    try:
+        parsed = json.loads(blob)
+    except (ValueError, UnicodeDecodeError):
+        return False
+    return (
+        isinstance(parsed, dict)
+        and isinstance(parsed.get("nodeData"), list)
+        and isinstance(parsed.get("edges"), list)
+        and parsed.get("id") == "phlynx-flow-snapshot"
+        and str(parsed.get("version", "")).startswith("1.0")
+    )
+
+
+def _phlynx_workspace(archive: bytes) -> list[str]:
+    """The modules PhLynx puts **on the canvas**, per `processImportedOmexArchive`.
+
+    This is the step `_phlynx_opens` stops short of, and the gap a user found by
+    hand: an archive can open perfectly and still leave the workspace empty.
+    PhLynx builds the canvas from `flow-snapshot.json` alone --
+
+        if (result.files?.flowSnapshot) { await loadFlowSnapshot(...) }
+        else if (result.files?.cellml)  { await loadCellMLData(...) }
+
+    -- and `loadCellMLData` registers the CellML's components in the *library*
+    (`libraryStore.addMathFile`), which is not the canvas. So a study with no
+    snapshot opens with nothing in the workspace no matter how good its model is.
+
+    Returns the node names `loadFlowSnapshot` would add, empty when there is no
+    snapshot to load.
+    """
+    from xml.etree import ElementTree as ET
+
+    members = _members(archive)
+    root = ET.fromstring(members["manifest.xml"])
+    for content in root.iter(f"{{{MANIFEST_NS}}}content"):
+        location, fmt = content.get("location") or "", content.get("format") or ""
+        location = location[2:] if location.startswith("./") else location
+        if location in ("", ".", "manifest.xml") or location not in members:
+            continue
+        if not (_JSON_FORMAT.match(fmt) or fmt == _PURL_JSON):
+            continue
+        if _is_flow_snapshot(members[location]):
+            snapshot = json.loads(members[location])
+            return [node["data"]["name"] for node in snapshot["nodeData"]]
+    return []
 
 
 def _phlynx_returns(edited_cellml: str, state: dict, cellml_name: str,
@@ -736,3 +900,57 @@ def test_maths_changed_in_phlynx_changes_the_outputs(client, requires_simulation
         f"identical ({before}), so the maths edit did not reach the solver"
     )
     assert returned["obs_data"] and returned["params_for_id"]
+
+
+# ---------------------------------------------------------------------------
+# The workspace, not just the model
+#
+# `_phlynx_opens` proves an archive is *readable*. It says nothing about whether
+# the study is *usable* once it is open, and the difference is what a user hit:
+# PhLynx loaded, and the workspace was empty. See `_phlynx_workspace`.
+# ---------------------------------------------------------------------------
+def test_a_phlynx_studys_workspace_survives_the_send(client):
+    """Out and back with the canvas intact -- the reason to press Edit at all.
+
+    CUFLynx never reads or writes `flow-snapshot.json`; it returns it with every
+    other member it did not author. This is the assertion that the policy is
+    enough: the same three modules come back, so PhLynx reopens the study the
+    user left rather than a bag of components.
+    """
+    if not REAL_PHLYNX_EXPORT.is_file():
+        pytest.skip("no genuine PhLynx export to send")
+    original = REAL_PHLYNX_EXPORT.read_bytes()
+    arrived = _phlynx_workspace(original)
+    assert arrived, "the fixture has no workspace, so it cannot show one surviving"
+
+    loaded = _receive(client, original)
+    sent = _decoded(_send_back(client, loaded["model_id"]))
+    assert _phlynx_workspace(sent) == arrived
+
+
+def test_a_study_cuflynx_assembled_reaches_phlynx_with_no_workspace(client):
+    """The other half of the same question, and the answer is: it does not.
+
+    A study that never came from PhLynx -- the bundled examples, or three files
+    dropped one at a time -- has no `flow-snapshot.json`, and CUFLynx has none to
+    give it. A snapshot is not derivable from what CUFLynx holds: its nodes carry
+    port couplings, handle ids, positions and a `mathRef` into a module library,
+    none of which survives into the flattened CellML CUFLynx simulates, and
+    inventing them would be authoring PhLynx's editor state -- exactly what
+    `omex_export` refuses to do so that a real one is never overwritten.
+
+    So this is pinned rather than fixed, and it is pinned here so that "PhLynx
+    opened empty" is a documented consequence with a named cause instead of a
+    bug report. Closing it needs PhLynx to build a workspace from the CellML when
+    an archive brings no snapshot; when they do, this test is the one to delete.
+    """
+    with open(RESOURCES_DIR / "3compartment.omex", "rb") as fh:
+        loaded = _receive(client, fh.read())
+    sent = _decoded(_send_back(client, loaded["model_id"]))
+
+    assert _phlynx_opens(sent), "the model itself still travels"
+    assert _phlynx_workspace(sent) == [], (
+        "a snapshot appeared in an archive CUFLynx assembled -- if CUFLynx has "
+        "started authoring PhLynx's editor state, that is a decision to make "
+        "deliberately (#287), not a side effect"
+    )
