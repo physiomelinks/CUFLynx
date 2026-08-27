@@ -417,45 +417,165 @@ PHLYNX_RETURN_MANIFEST = """<?xml version="1.0" encoding="UTF-8" standalone="yes
 
 
 class PhlynxCannotOpen(Exception):
-    """What PhLynx's URL loader raises, spelled the way it spells it."""
+    """What PhLynx's importer raises, spelled the way it spells it."""
+
+
+#: Transcribed from `services/import/omex.js` on **phlynx PR #517**
+#: (`hsorby:197-import-omex`), which is open and not yet on their main. That PR
+#: replaced the fixed `zip.file('model.cellml')` lookup with a manifest-driven
+#: one, so the member name no longer has to be guessed -- which is what let the
+#: send start working at all.
+CELLML_FORMAT = "http://identifiers.org/combine.specifications/cellml"
+MANIFEST_NS = "http://identifiers.org/combine.specifications/omex-manifest"
 
 
 def _phlynx_opens(archive: bytes) -> str:
-    """PhLynx's `urlLoaders.js` `omex` loader, transcribed.
+    """PhLynx's `importOmexFile`, transcribed.
 
-        const cellmlEntry = zip.file('model.cellml')
-        if (!cellmlEntry) throw new Error('OMEX archive has no model.cellml entry.')
+    Transcribed rather than paraphrased, so that when PhLynx changes it this test
+    is edited against their source and not against someone's memory of it -- as
+    it was just now, when #517 landed and the old fixed-name lookup went away.
 
-    Its own comment says `// TODO: this currently assumes a fixed member name`.
-    Transcribed rather than paraphrased, so that when PhLynx relaxes it this test
-    is edited against their source and not against someone's memory of it.
+    The rules it enforces, in its order: a `manifest.xml` must exist; the root
+    must be an `omexManifest` in the OMEX namespace; every `<content>` must carry
+    both a location and a format; every location referenced must be present; and
+    the CellML is whichever entry declares the CellML format -- one of them, or
+    exactly one marked master.
     """
+    from xml.etree import ElementTree as ET
+
     members = _members(archive)
-    if "model.cellml" not in members:
+    if "manifest.xml" not in members:
+        raise PhlynxCannotOpen("Invalid OMEX file: missing manifest.xml")
+    try:
+        root = ET.fromstring(members["manifest.xml"])
+    except ET.ParseError as exc:
+        raise PhlynxCannotOpen(f"manifest.xml is not valid XML: {exc}") from exc
+    if not root.tag.endswith("omexManifest"):
+        raise PhlynxCannotOpen("manifest.xml is not a valid omexManifest")
+
+    cellmls: list[tuple[str, bool]] = []
+    for content in root.iter(f"{{{MANIFEST_NS}}}content"):
+        location, fmt = content.get("location"), content.get("format")
+        if not location or not fmt:
+            raise PhlynxCannotOpen(
+                f"manifest.xml contains a content entry missing location or format "
+                f"({location!r}, {fmt!r})"
+            )
+        location = location[2:] if location.startswith("./") else location
+        if location in (".", "manifest.xml"):
+            continue
+        if location not in members:
+            raise PhlynxCannotOpen(f'manifest.xml references missing file "{location}"')
+        if fmt == CELLML_FORMAT:
+            cellmls.append((location, content.get("master") == "true"))
+
+    if not cellmls:
+        raise PhlynxCannotOpen("Invalid OMEX file: no CellML files found.")
+    if len(cellmls) == 1:
+        return members[cellmls[0][0]].decode("utf-8")
+    masters = [loc for loc, is_master in cellmls if is_master]
+    if len(masters) != 1:
         raise PhlynxCannotOpen(
-            "OMEX archive has no model.cellml entry. CUFLynx sent "
-            f"{sorted(n for n in members if n.endswith('.cellml'))}."
+            "multiple CellML files require exactly one master CellML file"
         )
-    return members["model.cellml"].decode("utf-8")
+    return members[masters[0]].decode("utf-8")
 
 
-def _phlynx_returns(edited_cellml: str, state: dict) -> bytes:
-    """What PhLynx's exporter writes (`services/compress.js` generateOmexArchive).
+def _phlynx_returns(edited_cellml: str, state: dict, cellml_name: str) -> bytes:
+    """What PhLynx's exporter writes (`generateOmexArchive`, same branch).
 
-    Model, SED-ML, simulation settings and its own workspace -- and **no**
-    obs_data and **no** params_for_id, because PhLynx neither reads nor keeps
-    them. That absence is the point of the test below: they have to survive the
-    trip on CUFLynx's side, since nothing brings them back.
+    It keeps the model's filename now, which the old one did not. What it still
+    does **not** write is an obs_data or a params_for_id: its importer sorts them
+    into `extras` and the exporter never re-emits them. That absence is the whole
+    of the gate below -- a study that goes to PhLynx and comes back has to arrive
+    with its observations and parameters intact, and nothing in the returned file
+    could supply them.
     """
+    entries = [
+        ("document.sedml", "http://identifiers.org/combine.specifications/sed-ml", True),
+        (cellml_name, CELLML_FORMAT, False),
+        ("flow-snapshot.json", "application/x.vnd.phlynx-flow+json", False),
+        ("changes.json", "application/x.vnd.phlynx-changes+json", False),
+        ("simulation.json", "http://purl.org/NET/mediatypes/application/json", False),
+    ]
+    def _entry(loc: str, fmt: str, master: bool) -> str:
+        flag = ' master="true"' if master else ""
+        return f'  <content location="{loc}" format="{fmt}"{flag}/>'
+
+    lines = "\n".join(_entry(*entry) for entry in entries)
+    manifest = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+        f'<omexManifest xmlns="{MANIFEST_NS}">\n'
+        f'  <content location="." format="http://identifiers.org/combine.specifications/omex"/>\n'
+        f"{lines}\n</omexManifest>\n"
+    )
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
-        zf.writestr("manifest.xml", PHLYNX_RETURN_MANIFEST)
-        zf.writestr("model.cellml", edited_cellml)
+        zf.writestr("manifest.xml", manifest)
+        zf.writestr(cellml_name, edited_cellml)
         zf.writestr("document.sedml", "<sedML/>")
         zf.writestr("simulation.json", json.dumps({"input": [], "output": [], "parameters": []}))
-        for name, blob in state.items():
-            zf.writestr(name, blob)
+        zf.writestr("flow-snapshot.json", state.get("flow-snapshot.json", b'{"nodes": []}'))
+        zf.writestr("changes.json", state.get("changes.json", b'{"modified": true}'))
     return buf.getvalue()
+
+
+#: A parameter, as CUFLynx understands one: a `<variable>`'s `initial_value`.
+#: Unique in the flattened 3compartment model, and doubling it moves the outputs.
+PARAM_BEFORE = '<variable name="R_pvn" units="Js_per_m6" initial_value="1333000" interface="public"/>'
+PARAM_AFTER = PARAM_BEFORE.replace('1333000', '2666000')
+
+#: Maths, as distinct from a parameter: a literal coefficient *inside* an
+#: equation. CUFLynx cannot reach this -- it can write an `initial_value` and
+#: nothing else -- so it is exactly the kind of change PhLynx is opened for.
+MATHS_BEFORE = '<cn cellml:units="dimensionless">0.25</cn>'
+MATHS_AFTER = '<cn cellml:units="dimensionless">0.75</cn>'
+
+
+def _edit(before: str, after: str):
+    """Replace one occurrence, refusing to silently do nothing.
+
+    An edit that matched nothing would leave the outputs identical and the
+    assertion below would read as "the change did not come back" when the truth
+    is that no change was made -- so the model moving underneath this test has to
+    say so in its own words.
+    """
+
+    def apply(cellml: str) -> str:
+        assert before in cellml, f"the model no longer contains {before!r} to edit"
+        return cellml.replace(before, after, 1)
+
+    return apply
+
+
+def _outputs(client, model_id: str, names: list[str], sim_time: float = 1.0) -> dict:
+    resp = client.post(
+        "/api/simulate",
+        json={"model_id": model_id, "params": {}, "outputs": names, "sim_time": sim_time},
+    )
+    assert resp.status_code == 200, resp.text
+    series = resp.json()["outputs"]
+    return {name: series[name][-1] for name in names}
+
+
+def _through_phlynx(client, loaded: dict, edit) -> dict:
+    """Send the study out, let PhLynx open and change it, and bring it back.
+
+    The step that fails today is ``_phlynx_opens``; everything after it is what
+    has to hold once the send works, and is written to run unchanged then.
+    """
+    sent = _decoded(_send_back(client, loaded["model_id"]))
+    state = {
+        name: blob
+        for name, blob in _members(sent).items()
+        if name.endswith(".json") and ("flow" in name or "changes" in name)
+    }
+    cellml = _phlynx_opens(sent)
+    # PhLynx keeps the model's filename now (#517), so the return carries the
+    # name that went out rather than inventing one.
+    name = next(n for n in _members(sent) if n.endswith(".cellml"))
+    return _receive(client, _phlynx_returns(edit(cellml), state, name))
 
 
 @pytest.mark.integration
@@ -496,23 +616,66 @@ def test_a_study_sent_to_phlynx_comes_back_without_losing_its_study(
     obs_before = loaded["obs_data"]
     params_before = loaded["params_for_id"]
 
-    sent = _decoded(_send_back(client, loaded["model_id"]))
-    state = {n: b for n, b in _members(sent).items() if n.endswith(".json") and "flow" in n}
-
-    # (1) PhLynx opens it.
-    cellml = _phlynx_opens(sent)
-
-    # (2) PhLynx edits the model and hands it back.
-    edited = cellml.replace("<model", "<!-- edited in PhLynx -->\n<model", 1)
-    returned = _receive(client, _phlynx_returns(edited, state))
-
-    assert "edited in PhLynx" in _members(_decoded(
-        _send_back(client, returned["model_id"]))).get("model.cellml", b"").decode("utf-8", "ignore"), (
-        "PhLynx's edit did not survive the return trip"
+    returned = _through_phlynx(
+        client, loaded, _edit("<model", "<!-- edited in PhLynx -->\n<model")
     )
+
     assert returned["obs_data"] == obs_before, (
         "the observations were lost coming back from PhLynx, which does not carry them"
     )
     assert returned["params_for_id"] == params_before, (
         "the parameters were lost coming back from PhLynx, which does not carry them"
     )
+
+
+@pytest.mark.integration
+def test_a_parameter_changed_in_phlynx_changes_the_outputs(client, requires_simulation):
+    """EXPECTED TO FAIL with the two above, and for the same first reason.
+
+    A value edited in PhLynx has to reach the solver, not merely the file. So
+    this simulates before and after rather than diffing XML: a model that comes
+    back carrying the new text but running the old numbers passes a byte
+    comparison and fails the user.
+
+    `R_pvn` is a resistance the flattened 3compartment model declares once;
+    doubling it moves every output measured here.
+    """
+    with open(RESOURCES_DIR / "3compartment.omex", "rb") as fh:
+        loaded = _receive(client, fh.read())
+    watched = loaded["odes"][:3]
+    before = _outputs(client, loaded["model_id"], watched)
+
+    returned = _through_phlynx(client, loaded, _edit(PARAM_BEFORE, PARAM_AFTER))
+    after = _outputs(client, returned["model_id"], watched)
+
+    assert after != before, (
+        f"doubling R_pvn in PhLynx left the outputs identical ({before}), so the "
+        f"edit did not reach the solver"
+    )
+    # And the study it belongs to is still there to be calibrated against.
+    assert returned["obs_data"] and returned["params_for_id"]
+
+
+@pytest.mark.integration
+def test_maths_changed_in_phlynx_changes_the_outputs(client, requires_simulation):
+    """EXPECTED TO FAIL with the two above, and for the same first reason.
+
+    The change CUFLynx cannot make itself, which is the reason to open PhLynx at
+    all: a coefficient *inside* an equation. CUFLynx can write a variable's
+    `initial_value` and nothing else, so an equation edit can only arrive from
+    the outside -- and if it does not survive the trip, the whole exchange is
+    only good for numbers the user could already have changed with a slider.
+    """
+    with open(RESOURCES_DIR / "3compartment.omex", "rb") as fh:
+        loaded = _receive(client, fh.read())
+    watched = loaded["odes"][:3]
+    before = _outputs(client, loaded["model_id"], watched)
+
+    returned = _through_phlynx(client, loaded, _edit(MATHS_BEFORE, MATHS_AFTER))
+    after = _outputs(client, returned["model_id"], watched)
+
+    assert after != before, (
+        f"changing a coefficient inside an equation in PhLynx left the outputs "
+        f"identical ({before}), so the maths edit did not reach the solver"
+    )
+    assert returned["obs_data"] and returned["params_for_id"]
