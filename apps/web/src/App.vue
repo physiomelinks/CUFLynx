@@ -2055,6 +2055,24 @@ function onResetBest() {
   runSimulation()
 }
 
+// Whether the UQ on screen carries a posterior median, to gate the "Reset to UQ
+// median" button. Present for a run loaded from an outputs directory as much as
+// for one just finished here: both fill `uq.params` from the same summary.
+const hasUqMedian = computed(() => uq.medianParams.value != null)
+
+// Reset all parameter values to the posterior median of the UQ on screen.
+//
+// Reuses the best-fit write-back rather than a second one: a UQ parameter name is
+// a member qname just as a best-fit name is, so the same `paramSpecs` lookup puts
+// a grouped parameter on its anchor slider (#193) instead of adding a stray
+// slider per member.
+function onResetUqMedian() {
+  const median = uq.medianParams.value
+  if (!median) return
+  applyBestParams(sliders, paramsForId.paramSpecs.value, median)
+  runSimulation()
+}
+
 // --- Save / load slider values to a file (.npy default, .csv) — issue #106 ---
 const saveParamsOpen = ref(false)
 const savedParamsBrowserOpen = ref(false)
@@ -2691,10 +2709,12 @@ watch(() => obs.obsData.value, scheduleRun)
           <ControlPanel
             :sliders="sliders.sliders"
             :has-best-fit="hasBestFit"
+            :has-uq-median="hasUqMedian"
             @update="onSliderUpdate"
             @remove="({ qname }) => sliders.removeSlider(qname)"
             @reset-init="onResetInit"
             @reset-best="onResetBest"
+            @reset-uq-median="onResetUqMedian"
             :saved-runs="savedRuns.items.value"
             @save-current="saveParamsOpen = true"
             @reset-saved="savedParamsBrowserOpen = true"
