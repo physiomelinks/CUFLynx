@@ -2749,6 +2749,54 @@ class OpenStudyRequest(BaseModel):
     file_prefix: str | None = None
 
 
+def _finest_scored_obs_dt(obs_data_path) -> float | None:
+    """The smallest ``obs_dt`` among series an obs_data will actually score, or None.
+
+    This is the constraint CA enforces before it will compare a run against the data: the
+    solver output has to be at least as finely sampled as the series it is resampled onto.
+    Read from the obs_data itself rather than from the study manifest, which does not
+    record a timestep, and rather than from a user_inputs.yaml, which a finished run
+    directory need not contain.
+
+    Only *scored* series count, matching CA: a zero-weighted item is dropped from the cost
+    and an empty one has nothing to compare, so neither can require anything of dt.
+    SN_full ships eight empty zero-weighted series at 1e-4, and honouring those would drop
+    the app's timestep a hundredfold to satisfy placeholders that are never read.
+
+    Unreadable is None, not an error: opening a study whose obs_data has moved should
+    still show the results that are there.
+    """
+    if not obs_data_path or not os.path.isfile(str(obs_data_path)):
+        return None
+    try:
+        with open(obs_data_path) as handle:
+            document = json.load(handle)
+    except (OSError, ValueError):
+        return None
+    items = document.get("data_items") if isinstance(document, dict) else document
+    if not isinstance(items, list):
+        return None
+    finest = None
+    for item in items:
+        if not isinstance(item, dict) or item.get("data_type") != "series":
+            continue
+        try:
+            if float(item.get("weight", 1.0)) == 0.0:
+                continue
+        except (TypeError, ValueError):
+            pass
+        value = item.get("value")
+        if not isinstance(value, list) or not value:
+            continue
+        try:
+            obs_dt = float(item["obs_dt"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if obs_dt > 0 and (finest is None or obs_dt < finest):
+            finest = obs_dt
+    return finest
+
+
 @app.post("/api/outputs/study")
 def open_study_from_outputs(req: OpenStudyRequest) -> dict:
     """Load the model, obs_data and params_for_id a finished run was made from.
@@ -2812,6 +2860,21 @@ def open_study_from_outputs(req: OpenStudyRequest) -> dict:
         "run_dir": found.get("run_dir"),
     }
     result["model_is_calibrated"] = bool(study.get("model_is_calibrated"))
+
+    # Adopt the timestep the study's own data requires. The app otherwise keeps
+    # DEFAULT_DT, and a study whose series are sampled finer than that cannot be scored
+    # at all: CA refuses to compare a solver output against data it cannot resample onto.
+    # Reported rather than applied quietly, because it can make every subsequent
+    # simulation markedly slower and the user is entitled to know why.
+    required = _finest_scored_obs_dt(study.get("obs_data"))
+    if required is not None and required < engine.dt:
+        result["warnings"].append(
+            f"Solver dt lowered from {engine.dt:g} s to {required:g} s: this study's "
+            f"series data is sampled that finely, and a coarser solver output cannot be "
+            f"compared against it. Simulations will be slower."
+        )
+        engine.dt = required
+
     if unreadable:
         result["warnings"].append(
             "Some of the run's inputs could not be read: " + "; ".join(unreadable)
