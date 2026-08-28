@@ -493,12 +493,22 @@ async function handleOmex(files) {
   return true
 }
 
+// Exposed so a drop anywhere on the page reaches this same handler rather than a
+// second copy of it: a study delivered by dropping on the page has to behave
+// exactly like one dropped on a box, and the way to guarantee that is for there
+// to be one function.
+defineExpose({ handleOmex, isOmexName })
+
 function isOmexName(name) {
   return /\.omex$/i.test(String(name || ''))
 }
 
 async function onCellmlDrop(event) {
   event.preventDefault?.()
+  // Claimed, so the page-wide handler in App.vue leaves it alone. An explicit
+  // mark rather than `defaultPrevented`, which anything on the way up may set --
+  // and which, being shared, cannot say *who* handled the drop.
+  if (event) event.cuflynxHandledByBox = true
   error.value = ''
   warnings.value = []
   // Accept a whole bundle: a non-flattened model plus the sister files it
@@ -546,6 +556,10 @@ async function onCellmlDrop(event) {
 
 async function onObsDrop(event) {
   event.preventDefault?.()
+  // Claimed, so the page-wide handler in App.vue leaves it alone. An explicit
+  // mark rather than `defaultPrevented`, which anything on the way up may set --
+  // and which, being shared, cannot say *who* handled the drop.
+  if (event) event.cuflynxHandledByBox = true
   error.value = ''
   warnings.value = []
   const [file] = filesFrom(event)
@@ -576,6 +590,10 @@ async function onObsDrop(event) {
 
 async function onParamsDrop(event) {
   event.preventDefault?.()
+  // Claimed, so the page-wide handler in App.vue leaves it alone. An explicit
+  // mark rather than `defaultPrevented`, which anything on the way up may set --
+  // and which, being shared, cannot say *who* handled the drop.
+  if (event) event.cuflynxHandledByBox = true
   error.value = ''
   warnings.value = []
   const [file] = filesFrom(event)

@@ -174,6 +174,29 @@ export function useUQ(options = {}) {
 
   const running = computed(() => state.value === 'running')
 
+  /**
+   * The posterior median as a `{qname: value}` parameter point, or null when the
+   * UQ on screen does not carry one.
+   *
+   * `q50` is the median of the very draws the distribution plots are drawn from,
+   * so this is the point those plots mark -- not a separately-fitted one. It is
+   * filled the same way for a run finished here and for one read back out of an
+   * outputs directory, so the two behave alike.
+   *
+   * A parameter whose `q50` is missing or non-finite is dropped rather than
+   * written as a zero: a partial median is still a usable point, a fabricated
+   * one is not. Null when nothing survives that, so a caller can gate on it.
+   */
+  const medianParams = computed(() => {
+    const out = {}
+    for (const entry of params.value || []) {
+      if (!entry?.qname) continue
+      if (typeof entry.q50 !== 'number' || !Number.isFinite(entry.q50)) continue
+      out[entry.qname] = entry.q50
+    }
+    return Object.keys(out).length ? out : null
+  })
+
   async function fetchPosteriorPredictive() {
     if (!jobId) return
     try {
@@ -185,7 +208,7 @@ export function useUQ(options = {}) {
     }
   }
 
-  return { state, lines, method, params, coverage, posteriorPredictive,
+  return { state, lines, method, params, medianParams, coverage, posteriorPredictive,
     error, warning, running, progress, start, cancel,
     reset }
 }

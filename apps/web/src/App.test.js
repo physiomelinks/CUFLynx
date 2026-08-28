@@ -215,6 +215,104 @@ describe('App.vue', () => {
   // The RHS import column (model / obs_data / params uploads) is resized by a
   // draggable divider: drag it to resize, drag fully right to hide, drag the tab
   // (or double-click) to bring it back. Frees width for plots/analysis.
+  describe('a study dropped anywhere on the page', () => {
+    // An archive *is* the study, so no box owns it more than another. Every other
+    // kind of file still goes to its own box: the same .json can be an obs_data
+    // or a params_for_id, and the box is the only thing that says which.
+    const fileDrop = (names) => {
+      const event = new Event('drop', { bubbles: true, cancelable: true })
+      event.dataTransfer = {
+        types: ['Files'],
+        files: names.map((n) => new File(['PK'], n, { type: 'application/zip' })),
+      }
+      return event
+    }
+
+    const dragEvent = (type) => {
+      const event = new Event(type, { bubbles: true, cancelable: true })
+      event.dataTransfer = { types: ['Files'] }
+      return event
+    }
+
+    it('imports an archive dropped on the page body', async () => {
+      const wrapper = shallowMount(App, { attachTo: document.body })
+      await flushPromises()
+      const importer = wrapper.findComponent({ name: 'FileImport' })
+      const handleOmex = vi.fn().mockResolvedValue(true)
+      importer.vm.handleOmex = handleOmex
+      importer.vm.isOmexName = (n) => /\.omex$/i.test(n)
+
+      window.dispatchEvent(fileDrop(['study.omex']))
+      await flushPromises()
+      expect(handleOmex).toHaveBeenCalledTimes(1)
+      wrapper.unmount()
+    })
+
+    it('says which box to use for anything that is not an archive', async () => {
+      const wrapper = shallowMount(App, { attachTo: document.body })
+      await flushPromises()
+      const importer = wrapper.findComponent({ name: 'FileImport' })
+      const handleOmex = vi.fn()
+      importer.vm.handleOmex = handleOmex
+      importer.vm.isOmexName = (n) => /\.omex$/i.test(n)
+
+      window.dispatchEvent(fileDrop(['obs.json']))
+      await flushPromises()
+      expect(handleOmex).not.toHaveBeenCalled()
+      const hint = wrapper.find('[data-testid="page-drop-hint"]')
+      expect(hint.exists()).toBe(true)
+      expect(hint.text()).toContain('obs.json')
+      wrapper.unmount()
+    })
+
+    it('leaves a drop a box already handled alone', async () => {
+      // The zone handlers mark the event; without this check an archive dropped
+      // on the CellML box would be imported twice -- and a .cellml dropped on the
+      // CellML box would be answered with a hint telling the user to drop it on
+      // the CellML box.
+      const wrapper = shallowMount(App, { attachTo: document.body })
+      await flushPromises()
+      const importer = wrapper.findComponent({ name: 'FileImport' })
+      const handleOmex = vi.fn()
+      importer.vm.handleOmex = handleOmex
+      importer.vm.isOmexName = (n) => /\.omex$/i.test(n)
+
+      const event = fileDrop(['study.omex'])
+      event.cuflynxHandledByBox = true
+      window.dispatchEvent(event)
+      await flushPromises()
+      expect(handleOmex).not.toHaveBeenCalled()
+      wrapper.unmount()
+    })
+
+    it('shows the overlay only while files are over the page', async () => {
+      const wrapper = shallowMount(App, { attachTo: document.body })
+      await flushPromises()
+      expect(wrapper.find('[data-testid="page-drop-veil"]').exists()).toBe(false)
+
+      window.dispatchEvent(dragEvent('dragenter'))
+      await flushPromises()
+      expect(wrapper.find('[data-testid="page-drop-veil"]').exists()).toBe(true)
+
+      window.dispatchEvent(dragEvent('dragleave'))
+      await flushPromises()
+      expect(wrapper.find('[data-testid="page-drop-veil"]').exists()).toBe(false)
+      wrapper.unmount()
+    })
+
+    it('ignores a drag that is not carrying files', async () => {
+      // Dragging a slider handle or selected text must not veil the page.
+      const wrapper = shallowMount(App, { attachTo: document.body })
+      await flushPromises()
+      const event = new Event('dragenter', { bubbles: true })
+      event.dataTransfer = { types: ['text/plain'] }
+      window.dispatchEvent(event)
+      await flushPromises()
+      expect(wrapper.find('[data-testid="page-drop-veil"]').exists()).toBe(false)
+      wrapper.unmount()
+    })
+  })
+
   describe('resizable RHS import column', () => {
     const dragTo = async (wrapper, clientX) => {
       await wrapper.find('[data-testid="rhs-handle"]').trigger('mousedown')

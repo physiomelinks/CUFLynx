@@ -154,6 +154,18 @@ def formats_by_member(entries: list[dict]) -> dict[str, str]:
     return out
 
 
+def _declared_phlynx_state(name: str, formats: dict[str, str]) -> bool:
+    """Whether the manifest declares this member as PhLynx's own editor state.
+
+    ``application/x.vnd.phlynx-flow+json`` and ``-changes+json``. Kept beside the
+    model like ``module_config.json`` so a study can be reopened in PhLynx with
+    the same memory (#149), and -- as importantly -- kept *out* of the obs_data
+    candidate pool, which is where an unrecognised JSON otherwise lands.
+    """
+    fmt = str(formats.get(Path(name).name.lower(), "")).lower()
+    return any(marker in fmt for marker in (PHLYNX_FLOW_FORMAT, PHLYNX_CHANGES_FORMAT))
+
+
 def _declared_non_obs(name: str, formats: dict[str, str]) -> bool:
     fmt = str(formats.get(Path(name).name.lower(), "")).lower()
     return any(marker in fmt for marker in _NON_OBS_FORMAT_MARKERS)
@@ -170,6 +182,32 @@ def _looks_like_obs_data(blob: bytes | None) -> bool:
     parse-error banner.
     """
     return not why_not_obs_data(blob)
+
+
+def obs_verdict(blob: bytes | None) -> tuple[str, bool]:
+    """``(reason, identified)`` for a JSON member that was not taken as obs_data.
+
+    ``identified`` is the half that decides whether the user hears about it. A
+    member CUFLynx could *read* and positively rule out -- a JSON object with
+    neither ``data_items`` nor ``protocol_info``, or one the manifest declares as
+    something else -- is simply not observations, and saying so for every such
+    member turns the import banner into a list of files nobody was wondering
+    about. PhLynx's own archives carry three.
+
+    A member CUFLynx could **not** read is a different matter: an obs_data one
+    typo away from loading is indistinguishable, from the outside, from an
+    archive that never carried observations. Those stay reported, which is the
+    whole reason this function returns a reason rather than a boolean.
+    """
+    reason = why_not_obs_data(blob)
+    if not reason:
+        return "", False
+    unreadable = (
+        blob is None
+        or not blob.strip()
+        or reason.startswith(("it is not valid JSON", "it is not UTF-8"))
+    )
+    return reason, not unreadable
 
 
 def why_not_obs_data(blob: bytes | None) -> str:
@@ -231,7 +269,19 @@ def _classify(
     # params member would fall through to the obs_data pool and the study would
     # come back missing its parameters.
     params_json = named(jsons, r"param")
-    module_config = [n for n in jsons if Path(n).name == MODULE_CONFIG_NAME]
+    # PhLynx's editor state, by what the manifest calls it rather than by what it
+    # is named. PhLynx flattened its workspace format (phlynx#542) and now writes
+    # `flow-snapshot.json` + `changes.json` where it used to write
+    # `module_config.json`, so matching on the filename stopped recognising any of
+    # it: the layout was no longer kept beside the model, and -- because an
+    # unrecognised member falls through to the observations pool -- both files were
+    # then reported as candidates that had been "passed over" for an obs_data they
+    # never claimed to be. The declared format is the part PhLynx controls and has
+    # kept stable across that rename.
+    module_config = [
+        n for n in jsons
+        if Path(n).name == MODULE_CONFIG_NAME or _declared_phlynx_state(n, formats)
+    ]
 
     spoken_for = set(module_config) | set(params_json)
     candidates = [
@@ -255,14 +305,28 @@ def _classify(
         for name in jsons:
             if name in spoken_for:
                 continue  # loaded as the params_for_id or PhLynx's own state
+            declared = (formats or {}).get(Path(name).name.lower())
             if _declared_non_obs(name, formats):
-                declared = formats.get(Path(name).name.lower(), "")
                 reason = f"the manifest declares it as {declared!r}"
+                readable = True
             elif not members:
                 reason = "its contents were not read"
+                readable = False
             else:
-                reason = why_not_obs_data(members.get(name))
-            obs_skipped.append({"name": name, "reason": reason})
+                reason, readable = obs_verdict(members.get(name))
+            # Reported unless the archive's own manifest accounts for it. A member
+            # the producer listed and described is the producer's business --
+            # PhLynx's `simulation.json` is one, and naming it on every import is
+            # how a banner becomes something people click past. A member nothing
+            # explains might be the observations under a name the sniff did not
+            # recognise, and that is worth one sentence. Anything unreadable is
+            # reported whatever the manifest says: a corrupt obs_data is exactly
+            # the case this exists for.
+            obs_skipped.append({
+                "name": name,
+                "reason": reason,
+                "identified": readable and declared is not None,
+            })
 
     return {
         "obs_skipped": obs_skipped,
@@ -338,6 +402,11 @@ def unpack(data: bytes) -> dict:
         obs_name, obs_bytes = read_first(roles["obs"])
         params_name, params_bytes = read_first(roles["params"])
         cfg_name, cfg_bytes = read_first(roles["module_config"])
+        # All of them: PhLynx used to keep its state in one file and now keeps it
+        # in two, so "the first one found" silently drops half of it.
+        phlynx_state = [
+            (Path(n).name, members[n]) for n in roles["module_config"] if n in members
+        ]
 
     out = {
         "cellml": cellml,
@@ -345,6 +414,10 @@ def unpack(data: bytes) -> dict:
         "obs": (obs_name, obs_bytes) if obs_bytes is not None else None,
         "params": (params_name, params_bytes) if params_bytes is not None else None,
         "module_config": (cfg_name, cfg_bytes) if cfg_bytes is not None else None,
+        #: Every PhLynx state member as ``(name, bytes)``. ``module_config`` above
+        #: is the first of these, kept because callers predate there being more
+        #: than one.
+        "phlynx_state": phlynx_state,
         # Everything, under its archive-relative name, for re-emission (#290).
         "members": members,
         "manifest": manifest,
@@ -362,8 +435,13 @@ def unpack(data: bytes) -> dict:
     return out
 
 
-def save_module_config(data: bytes, out_dir: str | None) -> str | None:
+def save_module_config(data: bytes, out_dir: str | None, name: str | None = None) -> str | None:
     """Keep PhLynx's editor state beside the outputs so it can be reopened (#149).
+
+    Written under the name it arrived with, defaulting to ``module_config.json``
+    for the single-file shape that predates PhLynx splitting its workspace in
+    two. Saving both under one name would keep whichever was written last and
+    silently lose the other.
 
     Validated as JSON before saving -- writing a corrupt file under a name PhLynx
     will try to read is worse than not writing one. Never fatal: the model still
@@ -376,7 +454,7 @@ def save_module_config(data: bytes, out_dir: str | None) -> str | None:
     except (UnicodeDecodeError, ValueError):
         return None
     try:
-        target = Path(out_dir) / MODULE_CONFIG_NAME
+        target = Path(out_dir) / (Path(name).name if name else MODULE_CONFIG_NAME)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(data)
         return str(target)

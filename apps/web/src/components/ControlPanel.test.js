@@ -66,6 +66,40 @@ describe('ControlPanel', () => {
     expect(wrapper.emitted('reset-best')).toBeTruthy()
   })
 
+  it('test_reset_uq_median_gated_on_hasUqMedian', async () => {
+    const wrapper = mount(ControlPanel, {
+      props: { sliders: sliderState(1), hasUqMedian: false },
+      global: { stubs: { ...stubs, Button: false } },
+    })
+    // No UQ posterior yet -> disabled. A median is only meaningful once a chain
+    // has been sampled, so an app that has never run UQ must not offer one.
+    expect(
+      wrapper.find('[data-testid="reset-uq-median"]').attributes('disabled'),
+    ).toBeDefined()
+
+    await wrapper.setProps({ hasUqMedian: true })
+    expect(
+      wrapper.find('[data-testid="reset-uq-median"]').attributes('disabled'),
+    ).toBeUndefined()
+    await wrapper.find('[data-testid="reset-uq-median"]').trigger('click')
+    expect(wrapper.emitted('reset-uq-median')).toBeTruthy()
+  })
+
+  it('test_reset_uq_median_sits_immediately_after_reset_best', () => {
+    // The two are the same kind of thing -- a point the pipeline produced, applied
+    // to the sliders -- so they read as a pair rather than the UQ one landing at
+    // the end among the file commands.
+    const wrapper = mount(ControlPanel, {
+      props: { sliders: sliderState(1), hasBestFit: true, hasUqMedian: true },
+      global: { stubs: { ...stubs, Button: false } },
+    })
+    const ids = wrapper
+      .find('[data-testid="param-commands"]')
+      .findAll('[data-testid]')
+      .map((el) => el.attributes('data-testid'))
+    expect(ids.indexOf('reset-uq-median')).toBe(ids.indexOf('reset-best') + 1)
+  })
+
   it('test_save_current_emits (issue #106)', async () => {
     const wrapper = mount(ControlPanel, {
       props: { sliders: sliderState(1) },
@@ -106,8 +140,14 @@ describe('ControlPanel', () => {
     })
     const cmds = wrapper.find('[data-testid="param-commands"]')
     expect(cmds.exists()).toBe(true)
-    // Four commands, two per row.
-    for (const id of ['reset-init', 'reset-best', 'save-current', 'reset-saved']) {
+    // The commands, two per row.
+    for (const id of [
+      'reset-init',
+      'reset-best',
+      'reset-uq-median',
+      'save-current',
+      'reset-saved',
+    ]) {
       expect(cmds.find(`[data-testid="${id}"]`).exists()).toBe(true)
     }
     // Removed affordances.

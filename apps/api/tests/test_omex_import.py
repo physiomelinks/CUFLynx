@@ -129,6 +129,40 @@ def test_a_phlynx_archive_has_no_obs_data_rather_than_a_broken_one():
     }
 
 
+def test_phlynx_state_is_recognised_after_it_is_renamed():
+    """The format specifier is the contract; the filename is not.
+
+    PhLynx flattened its workspace format (phlynx#542) and now writes
+    `flow-snapshot.json` where it wrote `flow.json`. Matching on the name stopped
+    recognising it, with two consequences: the layout was no longer kept beside
+    the model, and an unrecognised JSON falls through to the observations pool --
+    so both state files were then reported as candidates "passed over" for an
+    obs_data neither ever claimed to be.
+    """
+    renamed = PHLYNX_MANIFEST.replace("flow.json", "flow-snapshot.json")
+    members = {
+        "manifest.xml": renamed,
+        "model.cellml": "<model/>",
+        "document.sedml": "<sedML/>",
+        "simulation.json": json.dumps({"plots": []}),
+        "flow-snapshot.json": json.dumps({"nodes": []}),
+        "changes.json": json.dumps({"modified": True}),
+    }
+    parts = omex_import.unpack(_zip(members))
+    assert parts["roles"]["module_config"] == ["flow-snapshot.json", "changes.json"]
+    assert [n for n, _ in parts["phlynx_state"]] == ["flow-snapshot.json", "changes.json"]
+    # And therefore out of the obs pool entirely.
+    assert [s["name"] for s in parts["obs_skipped"]] == ["simulation.json"]
+
+
+def test_every_phlynx_state_member_is_carried_not_just_the_first():
+    """PhLynx used to keep its state in one file and now keeps it in two, so
+    "the first one found" silently drops half of it."""
+    parts = omex_import.unpack(_phlynx_archive())
+    assert len(parts["phlynx_state"]) == 2
+    assert parts["module_config"][0] == parts["phlynx_state"][0][0]
+
+
 def test_a_real_obs_data_beside_phlynx_state_is_still_found():
     """The exclusion is of declared non-observations, not of every JSON."""
     obs = json.dumps({"protocol_info": {"sim_times": [1.0]}, "data_items": []})
@@ -563,31 +597,39 @@ def test_an_empty_json_member_says_it_is_empty(client):
     assert "empty" in " ".join(resp.json()["warnings"])
 
 
-def test_an_archive_carrying_no_observations_at_all_says_so(client):
-    """Valid, and it must still load (#149) -- but the reason the observations
-    tab is empty is "there were none", which is worth one sentence."""
+def test_an_archive_carrying_no_observations_at_all_loads_quietly(client):
+    """Neither an obs_data nor a params_for_id is required to drop a study in.
+
+    This used to spend a sentence saying the archive had none, which is true of
+    every model-only archive and of every PhLynx project export -- so it was a
+    banner that fired on the ordinary case. The tabs being empty already says
+    it. What still gets said is the case below: a member that *might* have been
+    the observations and could not be read."""
     resp = _upload(client, {"m.cellml": _model_bytes()})
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["obs_data"] is None
-    assert "carries no obs_data" in " ".join(body["warnings"])
+    assert body["params_for_id"] is None
+    assert body["warnings"] == []
 
 
-def test_a_member_the_manifest_rules_out_is_reported_as_ruled_out(client):
-    """Excluded by its declared format rather than by its contents, so the
-    reason has to name the manifest -- the file itself looks fine."""
-    resp = _upload(
-        client,
-        {
-            "manifest.xml": PHLYNX_MANIFEST,
-            "model.cellml": _model_bytes(),
-            "flow.json": json.dumps({"id": "phlynx-flow", "nodes": []}),
-        },
+def test_a_member_the_manifest_accounts_for_is_not_reported(client):
+    """The producer listed it and said what it is, so it is their business.
+
+    A PhLynx archive carries three such members -- the flow snapshot, the changes
+    log and the simulation settings -- and naming all three on every import,
+    under a heading about missing observations, is how a banner becomes
+    something people click past. A member nothing explains is still reported;
+    see `test_a_json_that_could_have_been_the_obs_data_is_named_with_the_reason`.
+    """
+    model = (RESOURCES_DIR / "Lotka_Volterra_forced.cellml").read_bytes()
+    resp = client.post(
+        "/api/omex/upload",
+        files={"file": ("phlynx.omex", _phlynx_archive(**{"model.cellml": model}),
+                        "application/zip")},
     )
     assert resp.status_code == 200, resp.text
-    warning = " ".join(resp.json()["warnings"])
-    assert "flow.json" in warning and "manifest declares it" in warning
-
+    assert resp.json()["warnings"] == []
 
 def test_a_rejected_obs_data_is_a_failure_not_a_quiet_omission(client, requires_ca):
     """The shape of the bug this section exists for: the member was found and
