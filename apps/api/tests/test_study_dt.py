@@ -1,18 +1,23 @@
-"""Opening a study adopts the timestep its own data requires.
+"""Opening a study solves it the way the study was solved.
 
-The app keeps ``DEFAULT_DT`` (0.01 s) until something changes it, and opening a finished run
-from its output directory never did. A study whose series are sampled finer than that cannot
-be scored at all -- CA refuses to compare a solver output against data it cannot be resampled
-onto -- so ``POST /api/protocol/run`` failed on an SN_full study, and because the CA guard of
-the day called ``exit()`` rather than raising, it failed as a bare 500.
+The app keeps ``DEFAULT_DT`` until something changes it, and opening a finished run from its
+output directory used to adopt nothing at all. Two things went wrong with that, and these
+tests cover both routes out.
 
-``_finest_scored_obs_dt`` reads that requirement off the obs_data itself. Not off the study
-manifest, which records no timestep; not off a ``user_inputs.yaml``, which a finished run
-directory need not contain.
+**The trace.** ``dt`` is the *output* interval. A study run at 1e-4 reopened at 0.01 samples
+straight over every 1-4 ms action potential, so the trace shows only the voltage between
+spikes and appears to sit near -20 mV. Nothing is wrong with the resting potential or the
+parameters, and nothing on screen says so. ``_adopt_study_solver_info`` applies what the
+manifest now records -- dt, solver, and options such as ``MaximumStep``.
 
-The subtlety these tests exist for is *scored*. SN_full ships eight placeholder series --
-zero weight, no samples, ``obs_dt`` 1e-4 -- and honouring those would drop the app's timestep
-a hundredfold to satisfy items nothing ever reads.
+**The cost.** A study whose series are sampled finer than the app's dt cannot be scored at
+all: CA will not compare a solver output against data it cannot be resampled onto.
+``_finest_scored_obs_dt`` recovers that requirement from the obs_data, for the manifests
+written before solver settings were recorded in them.
+
+The subtlety the second half exists for is *scored*. SN_full ships eight placeholder series
+-- zero weight, no samples, ``obs_dt`` 1e-4 -- and honouring those would drop the app's
+timestep a hundredfold to satisfy items nothing ever reads.
 """
 import json
 
@@ -103,3 +108,70 @@ def test_a_bare_list_document_is_accepted(tmp_path):
     path = tmp_path / "obs_data.json"
     path.write_text(json.dumps([series(obs_dt=1e-4)]))
     assert _finest_scored_obs_dt(str(path)) == pytest.approx(1e-4)
+
+
+# ------------------------------------------------- solver settings recorded by the manifest
+
+from engine import engine  # noqa: E402
+from main import _adopt_study_solver_info  # noqa: E402
+
+
+@pytest.fixture
+def restore_engine():
+    """The engine is a module-level singleton, so a test that changes it must put it back."""
+    before = (engine.dt, engine.solver, dict(getattr(engine, "solver_info", {}) or {}))
+    yield
+    engine.dt, engine.solver = before[0], before[1]
+    engine.solver_info = before[2]
+
+
+def test_a_recorded_dt_is_adopted_and_reported(restore_engine):
+    """The -20 mV case. dt is the *output* interval, so a 10 ms grid samples over every
+    1-4 ms action potential and the trace appears to sit between spikes."""
+    engine.dt = 0.01
+    notes = _adopt_study_solver_info({"solver": "CVODE_myokit", "dt": 1e-4})
+    assert engine.dt == pytest.approx(1e-4)
+    assert any("0.0001" in n and "0.01" in n for n in notes), \
+        'the change must be reported, not applied silently -- it makes runs 100x slower'
+
+
+def test_solver_options_are_carried_onto_the_engine(restore_engine):
+    engine.solver_info = {"rtol": 1e-6}
+    _adopt_study_solver_info({"dt": 1e-4, "MaximumStep": 1e-4})
+    assert engine.solver_info["MaximumStep"] == pytest.approx(1e-4)
+    assert engine.solver_info["rtol"] == pytest.approx(1e-6), 'existing options survive'
+
+
+def test_the_solver_is_adopted(restore_engine):
+    engine.solver = "something_else"
+    notes = _adopt_study_solver_info({"solver": "CVODE_myokit"})
+    assert engine.solver == "CVODE_myokit"
+    assert any("CVODE_myokit" in n for n in notes)
+
+
+def test_an_unchanged_dt_is_not_reported(restore_engine):
+    """Opening a study already solved the way the app is set up should say nothing."""
+    engine.dt = 1e-4
+    assert _adopt_study_solver_info({"dt": 1e-4}) == []
+
+
+def test_a_manifest_without_solver_settings_changes_nothing(restore_engine):
+    """Every manifest written before this existed. They must still open."""
+    before = engine.dt
+    assert _adopt_study_solver_info(None) == []
+    assert _adopt_study_solver_info({}) == []
+    assert engine.dt == before
+
+
+def test_a_nonsense_dt_is_ignored(restore_engine):
+    before = engine.dt
+    for bad in ({"dt": "fast"}, {"dt": None}, {"dt": 0}, {"dt": -1}):
+        _adopt_study_solver_info(bad)
+        assert engine.dt == before
+
+
+def test_cas_method_key_is_not_mistaken_for_a_solver_option(restore_engine):
+    """CA writes `method: CVODE` beside `solver: CVODE_myokit`; only the latter is ours."""
+    engine.solver_info = {}
+    _adopt_study_solver_info({"solver": "CVODE_myokit", "method": "CVODE", "dt": 1e-4})
+    assert "method" not in engine.solver_info

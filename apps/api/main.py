@@ -2749,6 +2749,45 @@ class OpenStudyRequest(BaseModel):
     file_prefix: str | None = None
 
 
+def _adopt_study_solver_info(solver_info) -> list[str]:
+    """Apply a study's recorded solver settings to the engine. Returns what to report.
+
+    Same shape, and the same handling, as the ``solver_info`` in a saved config: ``dt`` is
+    folded in beside the solver's own keys and popped out here. Unsupported keys are
+    dropped rather than rejected, because a manifest written by a newer pipeline must not
+    stop an older app from opening the study at all.
+
+    Reported rather than applied quietly. Adopting dt = 1e-4 where the app was at 0.01
+    makes every subsequent simulation a hundred times slower, and a user watching that
+    happen deserves the reason.
+    """
+    if not isinstance(solver_info, dict) or not solver_info:
+        return []
+    notes, si = [], dict(solver_info)
+    if "dt" in si:
+        try:
+            new_dt = float(si.pop("dt"))
+        except (TypeError, ValueError):
+            new_dt = None
+        if new_dt and new_dt > 0 and new_dt != engine.dt:
+            notes.append(
+                f"Solver dt set to {new_dt:g} s (was {engine.dt:g} s), as this study was "
+                f"run. At the coarser step the output grid misses the fast parts of a "
+                f"trace; simulations will be slower."
+            )
+            engine.dt = new_dt
+    solver = si.pop("solver", None)
+    if isinstance(solver, str) and solver and solver != engine.solver:
+        notes.append(f"Solver set to {solver}, as this study was run.")
+        engine.solver = solver
+    si.pop("method", None)          # CA's own spelling of the solver; not a solver_info key here
+    if si:
+        engine.solver_info = {**getattr(engine, "solver_info", {}), **si}
+        notes.append("Solver options taken from the study: "
+                     + ", ".join(f"{k}={v}" for k, v in sorted(si.items())) + ".")
+    return notes
+
+
 def _finest_scored_obs_dt(obs_data_path) -> float | None:
     """The smallest ``obs_dt`` among series an obs_data will actually score, or None.
 
@@ -2861,19 +2900,35 @@ def open_study_from_outputs(req: OpenStudyRequest) -> dict:
     }
     result["model_is_calibrated"] = bool(study.get("model_is_calibrated"))
 
-    # Adopt the timestep the study's own data requires. The app otherwise keeps
-    # DEFAULT_DT, and a study whose series are sampled finer than that cannot be scored
-    # at all: CA refuses to compare a solver output against data it cannot resample onto.
-    # Reported rather than applied quietly, because it can make every subsequent
-    # simulation markedly slower and the user is entitled to know why.
-    required = _finest_scored_obs_dt(study.get("obs_data"))
-    if required is not None and required < engine.dt:
-        result["warnings"].append(
-            f"Solver dt lowered from {engine.dt:g} s to {required:g} s: this study's "
-            f"series data is sampled that finely, and a coarser solver output cannot be "
-            f"compared against it. Simulations will be slower."
-        )
-        engine.dt = required
+    # Solve the study the way the study was solved. Opening a directory used to adopt
+    # nothing, so a run configured for dt = 1e-4 with CVODE bounded by MaximumStep = 1e-4
+    # was reopened at the app's DEFAULT_DT of 0.01 and no maximum step.
+    #
+    # For a spiking model that is not cosmetic. dt is the *output* interval, so a 10 ms
+    # grid samples straight over every 1-4 ms action potential: the trace comes back
+    # showing only the voltage between spikes and appears to sit at about -20 mV. Nothing
+    # is wrong with the resting potential or the parameters, and there is nothing on
+    # screen to say so.
+    # From the manifest rather than from ``study``, which is a narrower projection built for
+    # the panels and carries only the study's file paths.
+    manifest = found.get("manifest") or {}
+    adopted = _adopt_study_solver_info(
+        manifest.get("solver_info") or study.get("solver_info"))
+    for note in adopted:
+        result["warnings"].append(note)
+
+    # A study written before the manifest recorded solver settings has none, so fall back
+    # to what its obs_data requires: CA will not compare a solver output against series
+    # sampled finer than it. Only if the manifest did not already say.
+    if not adopted:
+        required = _finest_scored_obs_dt(study.get("obs_data"))
+        if required is not None and required < engine.dt:
+            result["warnings"].append(
+                f"Solver dt lowered from {engine.dt:g} s to {required:g} s: this study's "
+                f"series data is sampled that finely, and a coarser solver output cannot "
+                f"be compared against it. Simulations will be slower."
+            )
+            engine.dt = required
 
     if unreadable:
         result["warnings"].append(
