@@ -17,6 +17,7 @@ import {
 } from '../lib/obsDataJson'
 import { uploadObsData, getObsDataOptions } from '../lib/api'
 import ProtocolInfoEditor from './ProtocolInfoEditor.vue'
+import AddFromDatasetDialog from './AddFromDatasetDialog.vue'
 import EditOperationFuncsDialog from './EditOperationFuncsDialog.vue'
 import SearchableSelect from './SearchableSelect.vue'
 import {
@@ -42,6 +43,12 @@ const props = defineProps({
   outputsDir: { type: String, default: '' },
 })
 const emit = defineEmits(['update:visible', 'saved'])
+
+// "Add from dataset": discover recordings in a folder and extract observables
+// from them. A child dialog, the way EditOperationFuncsDialog already is.
+const fromDatasetOpen = ref(false)
+// The last extraction, held until the user says what to do with it.
+const extracted = ref(null)
 
 const editableRows = ref([])
 const preservedItems = ref([])
@@ -306,6 +313,33 @@ function selectRow(row) {
 function toggleRow(row) {
   if (row._expanded) row._expanded = false
   else selectRow(row)
+}
+
+/** Whether adopting an extraction would discard work already in the editor. */
+const hasExistingWork = computed(
+  () => editableRows.value.length > 0 || predRows.value.length > 0
+        || preservedItems.value.length > 0,
+)
+
+function onExtracted(payload) {
+  extracted.value = payload
+  fromDatasetOpen.value = false
+  // Nothing to lose: adopt straight away rather than asking a question with one
+  // sensible answer.
+  if (!hasExistingWork.value) adoptExtracted()
+}
+
+function adoptExtracted() {
+  const doc = extracted.value?.obsData
+  if (!doc) return
+  const split = splitItems(doc.data_items ?? [], operations.value)
+  editableRows.value = split.editable
+  preservedItems.value = split.preserved
+  predRows.value = (doc.prediction_items ?? []).map(predToRow)
+  protocolModel.value = doc.protocol_info
+    ? protocolToModel(doc.protocol_info)
+    : null
+  extracted.value = null
 }
 
 function addRow() {
@@ -711,7 +745,46 @@ async function onSave() {
       </li>
       <li v-if="!editableRows.length" class="eo-empty">No editable data_items. Add one below.</li>
     </ul>
-    <Button label="Add data item" icon="pi pi-plus" size="small" text data-testid="obs-add-row" @click="addRow" />
+    <div class="eo-add-actions">
+      <Button label="Add data item" icon="pi pi-plus" size="small" text data-testid="obs-add-row" @click="addRow" />
+      <Button
+        label="Add from dataset"
+        icon="pi pi-folder-open"
+        size="small"
+        text
+        data-testid="obs-add-from-dataset"
+        title="Discover recordings in a folder and extract observables from them"
+        @click="fromDatasetOpen = true"
+      />
+    </div>
+    <!--
+      Extraction produces a whole obs_data -- a protocol_info plus items whose
+      experiment_idx only mean anything against it -- so it is offered rather
+      than appended, the way a converted .mmt protocol is (main.py _offer_protocol).
+      Appending items whose indices point into a different protocol is the one
+      outcome that would look like it worked.
+    -->
+    <Message
+      v-if="extracted"
+      severity="info"
+      :closable="false"
+      data-testid="obs-extract-offer"
+    >
+      Extracted {{ extracted.obsData?.data_items?.length ?? 0 }} data item(s).
+      <template v-if="extracted.texPath">
+        Report: {{ extracted.pdfPath || extracted.texPath }}.
+      </template>
+      <div class="eo-extract-actions">
+        <Button
+          :label="hasExistingWork ? 'Replace what is loaded' : 'Use these'"
+          size="small"
+          data-testid="obs-extract-adopt"
+          @click="adoptExtracted"
+        />
+        <Button label="Keep mine" size="small" text data-testid="obs-extract-discard"
+                @click="extracted = null" />
+      </div>
+    </Message>
 
     <template v-if="hasProtocol">
       <h3 class="eo-section">prediction_items</h3>
@@ -752,6 +825,13 @@ async function onSave() {
     </template>
 
     <EditOperationFuncsDialog v-model:visible="opFuncsOpen" @saved="onOpFuncsSaved" />
+    <AddFromDatasetDialog
+      v-model:visible="fromDatasetOpen"
+      :model-id="modelId"
+      :model-variables="modelVariables"
+      :outputs-dir="outputsDir"
+      @extracted="onExtracted"
+    />
   </Dialog>
 </template>
 
