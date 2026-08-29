@@ -115,6 +115,11 @@ def build_obs_data(
         "data_items": [],
     }
     names_used: set[str] = set()
+    series_dir = None
+    if output_dir:
+        series_dir = os.path.join(
+            output_dir,
+            (config.get("outputs") or {}).get("series_subdir") or "series_data")
 
     for dataset in datasets:
         if cancelled():
@@ -140,7 +145,8 @@ def build_obs_data(
 
         used = _extract_dataset(
             doc, config, dataset, group, features, recording, binding, modifiers,
-            prep, provenance, operation_funcs, names_used, outcome, log, cancelled)
+            prep, provenance, operation_funcs, names_used, outcome, log, cancelled,
+            series_dir)
         if used:
             outcome.datasets_used += 1
 
@@ -204,7 +210,7 @@ def _sweep_indices(dataset: dict, config: dict, recording) -> list[int]:
 
 def _extract_dataset(doc, config, dataset, group, features, recording, binding,
                      modifiers, prep, provenance, operation_funcs, names_used,
-                     outcome, log, cancelled) -> bool:
+                     outcome, log, cancelled, series_dir=None) -> bool:
     case = dataset.get("case_name")
     stimulus = group.get("input") or "current"
     timeline = config_mod.timeline_for(group)
@@ -257,7 +263,7 @@ def _extract_dataset(doc, config, dataset, group, features, recording, binding,
         emitted = _emit_features(
             doc, features, operation_funcs, binding, stimulus, t, signals,
             measured_name, window, experiment, timeline, case, sweep_index,
-            provenance, names_used, outcome, log, recording, group)
+            provenance, names_used, outcome, log, recording, group, series_dir)
         if emitted:
             used_any = True
             outcome.sweeps_used += 1
@@ -351,7 +357,8 @@ def _trace_name(stimulus: str, experiment: int, case: str, sweep: int) -> str:
 # ---------------------------------------------------------------------------
 def _emit_features(doc, features, operation_funcs, binding, stimulus, t, signals,
                    measured_name, window, experiment, timeline, case, sweep_index,
-                   provenance, names_used, outcome, log, recording, group) -> bool:
+                   provenance, names_used, outcome, log, recording, group,
+                   series_dir=None) -> bool:
     measured_variable = binding.measured_variable(stimulus)
     x = signals[measured_name]
     stim_sub = int(timeline.get("stim_subexperiment_index") or 0)
@@ -362,7 +369,13 @@ def _emit_features(doc, features, operation_funcs, binding, stimulus, t, signals
     for feature in features:
         operation = feature.get("operation")
         if operation == SERIES_FEATURE:
-            continue  # series items are a separate concern (PR 3)
+            item = _series_item(feature, measured_variable, t, x, window,
+                                experiment, stim_sub, case, sweep_index,
+                                provenance, names_used, recording, series_dir)
+            if item is not None:
+                doc["data_items"].append(item)
+                emitted = True
+            continue
         fn = (operation_funcs or {}).get(operation)
         if fn is None:
             outcome.skip(case, f"operation {operation!r} is not available",
@@ -406,6 +419,54 @@ def _emit_features(doc, features, operation_funcs, binding, stimulus, t, signals
         doc["data_items"].append(item)
         emitted = True
     return emitted
+
+
+def _series_item(feature, measured_variable, t, x, window, experiment,
+                 subexperiment, case, sweep_index, provenance, names_used,
+                 recording, series_dir) -> dict | None:
+    """The recorded sweep itself, as a series data_item.
+
+    Written as ``.npy`` sidecars rather than inline: a sweep is tens of
+    thousands of samples and an obs_data carrying a hundred of them inline is a
+    file no editor can open. ``weight`` defaults to 0 -- the usual reason to
+    include a trace is to see it plotted against the simulation, and a weighted
+    series would quietly dominate a cost made of a dozen scalars.
+
+    Returns None when there is nowhere to write the sidecars, with the caller
+    left to carry on: losing a plot-only trace is not worth failing a run for.
+    """
+    if not series_dir:
+        return None
+    os.makedirs(series_dir, exist_ok=True)
+    stem = f"{_slug(case)}_sw{sweep_index}"
+    t_win, x_win = window.slice(t), window.slice(x)
+    t_path = os.path.join(series_dir, f"{stem}_t.npy")
+    v_path = os.path.join(series_dir, f"{stem}_v.npy")
+    np.save(t_path, np.asarray(t_win, dtype=float) - float(t_win[0]) if t_win.size
+            else np.asarray(t_win, dtype=float))
+    np.save(v_path, np.asarray(x_win, dtype=float))
+
+    dt = float(np.median(np.diff(t_win))) if t_win.size > 1 else 0.0
+    name = _unique_name({"name_suffix": feature.get("name_suffix") or "gt"},
+                        type("P", (), {"operation": "series"})(), case,
+                        sweep_index, names_used)
+    return {
+        "data_item_name": name,
+        "trace_name_for_plotting": f"{case} sw{sweep_index}",
+        "item_name_for_plotting": name,
+        "data_type": "series",
+        "operands": ["time", measured_variable],
+        "unit": feature.get("unit") or "dimensionless",
+        "weight": float(feature.get("weight", 0.0)),
+        "std": float(_std_for(feature, float(np.max(np.abs(x_win))) if x_win.size else 1.0)),
+        "obs_dt": dt,
+        "t_path": t_path,
+        "value_path": v_path,
+        "experiment_idx": int(experiment),
+        "subexperiment_idx": int(subexperiment),
+        "plot_type": "series",
+        "source": _source(recording, case, sweep_index, provenance),
+    }
 
 
 def _data_item(feature, plan, value, experiment, subexperiment, case, sweep_index,
