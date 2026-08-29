@@ -365,12 +365,19 @@ const compilerAlternatives = computed(() =>
 // UQ reproducible. Persisted server-side via /api/config, so it survives a restart.
 const seed = ref(null)
 
+// Where the "Edit" button sends a study (Settings popup, developer setting).
+// Blank = the production PhLynx that `lib/examples.js` names. Persisted
+// server-side via /api/config, so it survives a restart.
+const phlynxUrl = ref('')
+
 // Last value the server told us about. Hydrating pythonPath from /api/config
 // triggers the watch below, and without this it would POST the value straight
 // back on every load.
 let serverPythonPath = ''
 // Same guard for the seed: hydrating it must not immediately POST it back.
 let serverSeed = null
+// And for the PhLynx URL.
+let serverPhlynxUrl = ''
 
 function applyConfigPayload(c) {
   caDir.value = c.ca_dir
@@ -391,6 +398,8 @@ function applyConfigPayload(c) {
   serverPythonPath = pythonPath.value
   seed.value = c.seed ?? null
   serverSeed = seed.value
+  phlynxUrl.value = c.phlynx_url ?? ''
+  serverPhlynxUrl = phlynxUrl.value
   packaged.value = c.packaged ?? false
   mpiexecAvailable.value = c.mpiexec_available ?? true
 }
@@ -430,6 +439,18 @@ watch(seed, async (s) => {
   try {
     serverSeed = s
     await setConfig({ seed: s == null ? '' : s })
+  } catch {
+    /* keep the in-session choice even if persisting fails */
+  }
+})
+
+// Persist the PhLynx URL. Clearing it is a real choice -- "back to the production
+// PhLynx" -- so an empty string POSTs too rather than being skipped.
+watch(phlynxUrl, async (u) => {
+  if (u === serverPhlynxUrl) return
+  try {
+    serverPhlynxUrl = u
+    applyConfigPayload(await setConfig({ phlynxUrl: u }))
   } catch {
     /* keep the in-session choice even if persisting fails */
   }
@@ -3091,6 +3112,7 @@ watch(() => obs.obsData.value, scheduleRun)
           v-model:outputs-dir="outputsDir"
           @load-outputs="loadOutputsFromDirectory"
           :model-id="model.modelId.value"
+          :phlynx-url="phlynxUrl"
           :current-params="loadedParamsRaw"
           :model-variables="model.variables.value"
           :model-name="model.name.value"
@@ -3365,6 +3387,34 @@ watch(() => obs.obsData.value, scheduleRun)
         <p class="settings-hint">
           Set a seed to make calibration / sensitivity / UQ runs repeatable. Leave
           blank (clear it) for non-deterministic runs.
+        </p>
+
+        <hr class="settings-sep" />
+
+        <!--
+          Developer setting. phlynx.com serves PhLynx's `main`, so the exchange
+          cannot be checked against a PhLynx branch without pointing "Edit"
+          somewhere else. Blank is production, which is what every ordinary user
+          wants -- hence the hint rather than a prominent control.
+        -->
+        <label class="settings-row">
+          <span
+            class="settings-label"
+            title="Where the Edit button sends a study. Leave blank for the production PhLynx at phlynx.com."
+          >
+            PhLynx URL (developer)
+          </span>
+          <InputText
+            v-model="phlynxUrl"
+            size="small"
+            placeholder="https://www.phlynx.com"
+            data-testid="phlynx-url-input"
+          />
+        </label>
+        <p class="settings-hint">
+          Where <strong>Edit</strong> sends a study. Leave blank for the production
+          PhLynx. Set it to a dev server (e.g. <code>http://localhost:5174</code>) to
+          check the exchange against a PhLynx branch before it is merged.
         </p>
 
         <hr class="settings-sep" />

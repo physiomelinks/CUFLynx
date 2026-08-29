@@ -85,6 +85,8 @@ export async function setConfig(opts = {}) {
     if (opts.pythonPath != null) body.python_path = opts.pythonPath
     // Global random seed: a number sets it, '' clears it; omit to leave unchanged.
     if (opts.seed !== undefined) body.seed = opts.seed
+    // Where "Edit" sends a study: a URL sets it, '' restores production PhLynx.
+    if (opts.phlynxUrl != null) body.phlynx_url = opts.phlynxUrl
   }
   const { data } = await axios.post(url('/api/config'), body)
   return data

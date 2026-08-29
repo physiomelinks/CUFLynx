@@ -485,6 +485,9 @@ class ConfigRequest(BaseModel):
     # The default is the bundled interpreter (packaged) or the serving one (source),
     # so "" lets the user switch back to "Bundled" after picking an external venv.
     python_path: str | None = None
+    # Where the "Edit" button sends a study.
+    #   omitted (None) -> leave unchanged   |   "" -> back to production PhLynx
+    phlynx_url: str | None = None
     # Global random seed for analysis runs (calibration / sensitivity / UQ). When
     # set, it makes CA's random processes (GA, multi-start sampling, Sobol/SALib
     # sampling, MCMC) reproducible. Default is no seed (non-deterministic).
@@ -496,6 +499,14 @@ class ConfigRequest(BaseModel):
 # Set via POST /api/config, persisted like ca_dir / python_path, and injected into
 # every calibration / sensitivity / UQ run config so CA's random processes repeat.
 _analysis_seed: int | None = None
+
+#: Where the "Edit" button sends a study. Blank means the production PhLynx that
+#: `lib/examples.js` defaults to. A developer setting: the two halves of this
+#: exchange live in separate repos, phlynx.com serves PhLynx's `main`, and a
+#: PhLynx change under review is not there -- so checking the exchange against a
+#: branch means pointing the button at a dev server. Persisted like any other
+#: setting so the packaged app remembers it too.
+_phlynx_url: str = ""
 
 
 def _parse_seed(value) -> int | None:
@@ -594,6 +605,11 @@ def _restore_persisted_settings() -> None:
         global _analysis_seed
         _analysis_seed = seed
 
+    phlynx_url = (saved.get("phlynx_url") or "").strip().rstrip("/")
+    if phlynx_url.startswith(("http://", "https://")):
+        global _phlynx_url
+        _phlynx_url = phlynx_url
+
 
 _restore_persisted_settings()
 
@@ -630,6 +646,8 @@ def _config_payload(output_dir: str = "") -> dict:
         "python_default": default_python() or "",
         # Global random seed for analysis runs (null = none / non-deterministic).
         "seed": _analysis_seed,
+        # Where "Edit" sends a study; blank = the production PhLynx.
+        "phlynx_url": _phlynx_url,
         # Current backend solver selection (engine is the source of truth). dt is
         # carried in solver_info for the UI but stored separately on the engine.
         "generated_model_format": engine.model_type,
@@ -797,6 +815,19 @@ def set_config(req: ConfigRequest) -> dict:
             ) from None
         global _analysis_seed
         _analysis_seed = seed
+
+    # Where "Edit" sends a study. Only http(s), and only a bare origin-ish URL:
+    # this value is handed to `window.open`, so accepting `javascript:` here
+    # would turn a settings field into script execution in the app's own page.
+    if req.phlynx_url is not None:
+        candidate = req.phlynx_url.strip().rstrip("/")
+        if candidate and not candidate.startswith(("http://", "https://")):
+            raise HTTPException(
+                status_code=422,
+                detail=f"phlynx_url must start with http:// or https://, got {req.phlynx_url!r}",
+            )
+        global _phlynx_url
+        _phlynx_url = candidate
 
     os.environ["CUFLYNX_MODEL_TYPE"] = engine.model_type
     os.environ["CUFLYNX_SOLVER"] = engine.solver

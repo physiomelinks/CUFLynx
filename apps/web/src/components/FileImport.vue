@@ -39,6 +39,9 @@ const props = defineProps({
   obsProtocolInfo: { type: Object, default: null },
   experimentCount: { type: Number, default: 0 },
   loadedObsFilename: { type: String, default: null },
+  // Where "Edit" sends the study. Blank = the production PhLynx; set from the
+  // developer setting so the exchange can be checked against a PhLynx branch.
+  phlynxUrl: { type: String, default: '' },
   // Enables the pipeline/plotting export buttons (a model must be loaded).
   canExport: { type: Boolean, default: false },
   // Gates the group/modifier buttons in the params editor: the CasADi backend
@@ -242,7 +245,7 @@ async function onSendConfirm() {
         `(${Math.round(res.bytes / 1024)} kB), so it was downloaded as ` +
         `${res.filename} — open PhLynx and import it.`
     } else {
-      window.open(phlynxOpenUrl(res.base64), '_blank', 'noopener')
+      window.open(phlynxOpenUrl(res.base64, props.phlynxUrl), '_blank', 'noopener')
       notice.value = sendNotice(res)
     }
     sendOpen.value = false

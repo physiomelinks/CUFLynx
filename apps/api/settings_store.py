@@ -31,6 +31,7 @@ PERSISTED_KEYS = (
     "solver_info",
     "python_path",
     "seed",
+    "phlynx_url",
 )
 
 CONFIG_FILENAME = "config.json"
