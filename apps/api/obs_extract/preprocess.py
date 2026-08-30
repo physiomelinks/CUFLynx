@@ -29,8 +29,17 @@ from __future__ import annotations
 from typing import Tuple
 
 import numpy as np
-from scipy.interpolate import interp1d
-from scipy.signal import savgol_filter
+
+from .errors import ObsExtractError
+
+# scipy is imported inside the two functions that use it, not here.
+#
+# `main.py` imports obs_extract at module scope, so anything this package pulls
+# in at import time is pulled in by the whole app -- and the backend unit CI tier
+# deliberately installs a minimal set (fastapi, numpy, pandas, matplotlib) with
+# no scipy, to prove the app's routes work without the simulation stack. A
+# module-level scipy import here stops `import main` dead and takes every backend
+# test with it. No other module in apps/api imports scipy at module level either.
 
 #: How far the window shrinks each attempt, and how small it may get.
 PEAK_GUARD_SHRINK = 0.6
@@ -77,6 +86,8 @@ class SmoothDownsampleSignal:
         self, t: np.ndarray, y: np.ndarray,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Interpolates ``y`` onto a uniform grid at median sample spacing."""
+        from scipy.interpolate import interp1d  # noqa: PLC0415
+
         t = np.asarray(t, dtype=np.float64).ravel()
         y = np.asarray(y, dtype=np.float64).ravel()
 
@@ -113,6 +124,8 @@ class SmoothDownsampleSignal:
         self, t_uni: np.ndarray, y_uni: np.ndarray,
     ) -> np.ndarray:
         """Savitzky-Golay on uniform ``y_uni``."""
+        from scipy.signal import savgol_filter  # noqa: PLC0415
+
         n = len(y_uni)
         if n < 5:
             return np.asarray(y_uni, dtype=np.float64)
@@ -143,6 +156,8 @@ class SmoothDownsampleSignal:
         y_smooth: np.ndarray,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Linear interpolation onto spacing ``1/output_hz`` from ``t_start``."""
+        from scipy.interpolate import interp1d  # noqa: PLC0415
+
         dt_out = 1.0 / self.output_hz
 
         duration = float(t_end - t_start)
@@ -251,6 +266,15 @@ def command_trace(
     notes: list[str] = []
     if t.size < 2:
         return t, values, notes
+    try:
+        import scipy  # noqa: F401,PLC0415
+    except ImportError as exc:
+        # scipy is a declared core dependency, so this only happens on an
+        # install thinner than the declaration. Say which package, rather than
+        # letting a ModuleNotFoundError surface from inside the smoother.
+        raise ObsExtractError(
+            "building a clamp command trace needs scipy, which is not installed "
+            "here.") from exc
 
     if kind != "voltage":
         pre = SmoothDownsampleSignal(output_hz=output_hz,

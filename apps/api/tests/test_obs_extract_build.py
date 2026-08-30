@@ -6,6 +6,9 @@ voltage clamp does not, and the stimulus is measured in a different
 sub-experiment as a result -- and the **shape of params_to_change**, which CA
 indexes positionally and which is therefore the one place this pipeline can
 corrupt a run silently.
+
+The corpus is CSV: what is under test is the obs_data a config produces, not
+the format it was read from, and CSV needs no reader dependency.
 """
 
 from __future__ import annotations
@@ -14,9 +17,10 @@ import numpy as np
 import pytest
 
 from obs_extract import ObsExtractError, build_obs_data, config as C, discover
-from obs_extract_fixtures import ramp, step, write_wcp
+from obs_extract_fixtures import ramp, step, write_csv
 
-pytestmark = pytest.mark.unit
+# Every extraction here builds a clamp command trace, which needs scipy.
+pytestmark = [pytest.mark.unit, pytest.mark.usefixtures("requires_scipy")]
 
 
 def _ops():
@@ -56,7 +60,7 @@ def _corpus(root, n_sweeps=3, n=400):
         im = step(n, 0.0, 20.0 * (s + 1), lo=100, hi=300)
         vm = step(n, -70.0, -70.0 + 8.0 * (s + 1), lo=100, hi=300)
         sweeps.append([vm, im])
-    write_wcp(root / "4AP" / "200926_001.1.Currentsteps.1.wcp", sweeps)
+    write_csv(root / "4AP" / "200926_001.1.Currentsteps.1.csv", sweeps, dt=1e-4)
     return root
 
 
@@ -212,7 +216,7 @@ def test_every_item_records_where_it_came_from(tmp_path):
     for item in doc["data_items"]:
         assert "sweep" in item["source"]
         assert "Currentsteps" in item["source"]
-        assert "wcp" in item["source"]
+        assert "csv" in item["source"]
 
 
 def test_provenance_reaches_the_items(tmp_path):
@@ -317,7 +321,7 @@ def test_no_used_datasets_is_a_clear_error(tmp_path):
 
 def test_an_unreadable_file_is_skipped_with_its_reason(tmp_path):
     root = _corpus(tmp_path)
-    (root / "4AP" / "broken.1.Currentsteps.1.wcp").write_bytes(b"nope")
+    (root / "4AP" / "broken.1.Currentsteps.1.csv").write_bytes(b"nope")
     cfg = _config(root)
     doc, outcome = _build(cfg)
     assert outcome.n_experiments == 3, "the good file still contributed"
@@ -375,8 +379,8 @@ def test_an_undetected_stimulus_is_warned_about(tmp_path):
     root = tmp_path
     (root / "4AP").mkdir(exist_ok=True)
     n = 200
-    write_wcp(root / "4AP" / "flat.1.Currentsteps.1.wcp",
-              [[ramp(n, -70, -70), np.zeros(n)]])
+    write_csv(root / "4AP" / "flat.1.Currentsteps.1.csv",
+              [[ramp(n, -70, -70), np.zeros(n)]], dt=1e-4)
     cfg = _config(root)
     _, outcome = _build(cfg)
     assert any("no stimulus was detected" in w for w in outcome.warnings)
