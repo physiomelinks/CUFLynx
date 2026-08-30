@@ -3,6 +3,8 @@
 matplotlib is declared only in the ``[analysis]`` extra, so a bare install may
 not have it. A picture is a convenience; the numbers are not, and an extraction
 must still succeed without one.
+
+The recording is CSV: the drawing is under test, not the format.
 """
 
 from __future__ import annotations
@@ -15,7 +17,7 @@ import pytest
 from obs_extract import open_recording
 from obs_extract.figures import available, save, sweep_figure
 from obs_extract.windows import detect_stim_window
-from obs_extract_fixtures import step, write_wcp
+from obs_extract_fixtures import step, write_csv
 
 pytestmark = pytest.mark.unit
 
@@ -24,7 +26,7 @@ def _recording(tmp_path, n_sweeps=2, n=200):
     sweeps = [[step(n, -70.0, -60.0 + s, lo=50, hi=150),
                step(n, 0.0, 20.0 * (s + 1), lo=50, hi=150)]
               for s in range(n_sweeps)]
-    return open_recording(write_wcp(tmp_path / "a.1.Currentsteps.1.wcp", sweeps))
+    return open_recording(write_csv(tmp_path / "a.1.Currentsteps.1.csv", sweeps, dt=1e-4))
 
 
 def test_a_figure_is_drawn_and_saved(tmp_path):

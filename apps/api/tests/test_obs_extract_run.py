@@ -8,6 +8,9 @@ both the ordering and the progress, and a few hundred recordings take minutes.
 It runs on a **thread** rather than a subprocess -- there is no heavy dependency
 set to escape -- so cancellation is cooperative and these tests check that a
 stopped run stops and does not wedge the next one.
+
+The corpus is CSV, for the same reason as the build tests: the routes are
+under test, not the file format.
 """
 
 from __future__ import annotations
@@ -20,9 +23,10 @@ import numpy as np
 import pytest
 
 from obs_extract import config as C, discover
-from obs_extract_fixtures import step, write_wcp
+from obs_extract_fixtures import step, write_csv
 
-pytestmark = pytest.mark.unit
+# Every extraction here builds a clamp command trace, which needs scipy.
+pytestmark = [pytest.mark.unit, pytest.mark.usefixtures("requires_scipy")]
 
 
 def _corpus(root, n_sweeps=2, n=200):
@@ -30,7 +34,7 @@ def _corpus(root, n_sweeps=2, n=200):
     sweeps = [[step(n, -70.0, -70.0 + 8.0 * (s + 1), lo=50, hi=150),
                step(n, 0.0, 20.0 * (s + 1), lo=50, hi=150)]
               for s in range(n_sweeps)]
-    write_wcp(root / "4AP" / "200926_001.1.Currentsteps.1.wcp", sweeps)
+    write_csv(root / "4AP" / "200926_001.1.Currentsteps.1.csv", sweeps, dt=1e-4)
     return root
 
 
