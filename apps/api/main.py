@@ -73,7 +73,9 @@ import ca_imports
 import export_pipeline
 from model_codegen import resolve_model_path, reset_cache as reset_codegen
 from obs_data import ObsData, ObsDataError, parse_obs_data
-from obs_options import get_obs_data_options, reset_cache as reset_obs_options
+import obs_extract
+from obs_extract.job import obs_extract_jobs
+from obs_options import get_obs_data_options, get_operation_funcs, reset_cache as reset_obs_options
 import obs_cost
 import cost_gradient
 import cost_sensitivity
@@ -2542,6 +2544,147 @@ def obs_data_options(refresh: bool = False, output_dir: str = "") -> dict:
     they appear in the lists.
     """
     return get_obs_data_options(refresh=refresh, output_dir=_user_func_base_dir(output_dir))
+
+
+# --- Add from dataset: build obs_data from raw recordings -------------------
+# Six thin routes over `obs_extract`, which is a package rather than a module so
+# it can be lifted into its own repository. Each body parses, delegates and maps
+# ObsExtractError to a 422; keeping them this thin is what keeps the directory
+# movable. There is no APIRouter in this codebase and six endpoints is not the
+# reason to introduce one.
+
+
+class ObsExtractScanRequest(BaseModel):
+    root: str
+    recurse: bool = True
+    suffixes: list[str] | None = None
+    exclude: list[str] = []
+    #: Per case_name reader settings from a config being re-scanned, so a .npy
+    #: whose sample rate the user supplied stays readable across a rescan.
+    reader_opts: dict = {}
+    #: When given, the scan also suggests a model binding from its variables.
+    model_id: str = ""
+
+
+class ObsExtractConfigRequest(BaseModel):
+    config: dict
+    output_dir: str = ""
+    filename: str = "obs_extraction_config.json"
+
+
+class ObsExtractRunRequest(BaseModel):
+    config: dict
+    output_dir: str = ""
+    model_id: str = ""
+
+
+def _obs_extract_dir(output_dir: str) -> str:
+    """Where this extraction's artefacts go.
+
+    The outputs directory the user already chose, falling back to the config dir
+    the way ``_save_edited_copy`` does -- so a Save never silently loses work
+    because no directory was set.
+    """
+    base = _user_func_base_dir(output_dir) or str(settings_store.config_dir())
+    return base
+
+
+@app.get("/api/obs_extract/formats")
+def obs_extract_formats() -> dict:
+    """Which recording formats this install can read, and what is missing."""
+    return {"formats": obs_extract.available_formats()}
+
+
+@app.post("/api/obs_extract/scan")
+def obs_extract_scan(req: ObsExtractScanRequest) -> dict:
+    """Discover recordings under a directory, grouped and probed.
+
+    In-request rather than a job: the probe reads headers only, and the full
+    488-file reference corpus scans in a few seconds.
+    """
+    try:
+        found = obs_extract.discover(
+            req.root, recurse=req.recurse,
+            suffixes=tuple(req.suffixes or obs_extract.SUPPORTED_SUFFIXES),
+            exclude=tuple(req.exclude), reader_opts=req.reader_opts)
+    except obs_extract.ObsExtractError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    if req.model_id:
+        record = _get_model(req.model_id)
+        meta = record.meta
+        found["suggested_binding"] = obs_extract.suggested_binding({
+            "params": meta.params, "odes": meta.odes, "algebraic": meta.algebraic,
+            "all_names": meta.all_names, "units": meta.units,
+        }).to_dict()
+    return found
+
+
+@app.get("/api/obs_extract/config")
+def obs_extract_load_config(path: str) -> dict:
+    """Read a saved extraction config.
+
+    The one place a client-supplied path is read here. Same posture as
+    ``/api/fs/list``, which is already a localhost filesystem tool: the suffix is
+    checked so a mis-click cannot try to parse an arbitrary file as JSON.
+    """
+    if not str(path).lower().endswith(".json"):
+        raise HTTPException(status_code=422,
+                            detail="an extraction config must be a .json file")
+    try:
+        return {"config": obs_extract.config.load(path), "path": path}
+    except obs_extract.ObsExtractError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/api/obs_extract/config")
+def obs_extract_save_config(req: ObsExtractConfigRequest) -> dict:
+    """Save the decisions, so the afternoon spent making them happens once."""
+    name = os.path.basename(req.filename or "obs_extraction_config.json")
+    path = os.path.join(_obs_extract_dir(req.output_dir), name)
+    try:
+        obs_extract.config.save(req.config, path)
+    except obs_extract.ObsExtractError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"path": path}
+
+
+@app.post("/api/obs_extract/run")
+def obs_extract_run(req: ObsExtractRunRequest) -> dict:
+    """Start an extraction. The per-sweep log is the product, so this is a job."""
+    variables = None
+    if req.model_id:
+        meta = _get_model(req.model_id).meta
+        variables = {"params": meta.params, "odes": meta.odes,
+                     "algebraic": meta.algebraic, "all_names": meta.all_names,
+                     "units": meta.units}
+    output_dir = _obs_extract_dir(req.output_dir)
+    try:
+        job_id = obs_extract_jobs.start(
+            req.config,
+            operation_funcs=get_operation_funcs(_user_func_base_dir(req.output_dir)),
+            variables=variables, output_dir=output_dir,
+            cuflynx_version=__version__)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except obs_extract.ObsExtractError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"job_id": job_id, "output_dir": output_dir}
+
+
+@app.get("/api/obs_extract/{job_id}/status")
+def obs_extract_status(job_id: str, offset: int = 0) -> dict:
+    status = obs_extract_jobs.status(job_id, offset)
+    if status is None:
+        raise HTTPException(status_code=404, detail="extraction job not found")
+    return status
+
+
+@app.post("/api/obs_extract/{job_id}/cancel")
+def obs_extract_cancel(job_id: str) -> dict:
+    if not obs_extract_jobs.cancel(job_id):
+        raise HTTPException(status_code=404, detail="extraction job not found")
+    return {"cancelled": True}
 
 
 class UserFuncRequest(BaseModel):
