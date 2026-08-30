@@ -149,6 +149,33 @@ def _unit_role(unit_obj) -> str | None:
     return None
 
 
+#: Unit spellings recognised without myokit, by their base symbol. myokit parses
+#: the general case; this covers what instruments actually write, so a CSV or
+#: .npy carrying "pA"/"mV" still resolves its roles on an install that has no
+#: myokit -- where the alternative is falling through to the positional guess,
+#: which can be backwards.
+_SI_PREFIXES = ("", "y", "z", "a", "f", "p", "n", "u", "\u00b5", "m", "c", "d",
+                "da", "h", "k", "M", "G", "T")
+_UNIT_BASES = {"v": VOLTAGE, "volt": VOLTAGE, "volts": VOLTAGE,
+               "a": CURRENT, "amp": CURRENT, "amps": CURRENT, "ampere": CURRENT,
+               "amperes": CURRENT}
+
+
+def _unit_role_from_text(unit: str) -> str | None:
+    """VOLTAGE/CURRENT from a unit string like ``[mV]`` or ``pA``, or None."""
+    text = str(unit or "").strip().strip("[]").strip()
+    if not text:
+        return None
+    for prefix in sorted(_SI_PREFIXES, key=len, reverse=True):
+        if prefix and not text.startswith(prefix):
+            continue
+        rest = text[len(prefix):]
+        role = _UNIT_BASES.get(rest.lower())
+        if role:
+            return role
+    return None
+
+
 def _myokit_units_from_strings(units: list[str]) -> list:
     """myokit Units parsed from rendered strings, for readers that carry text.
 
@@ -211,6 +238,10 @@ def resolve_roles(
             role, source = explicit[ch.index], "explicit"
         if role is None and unit_objects is not None and ch.index < len(unit_objects):
             role = _unit_role(unit_objects[ch.index])
+            source = "unit" if role else ""
+        if role is None:
+            # myokit may be absent, or the unit may be one it does not parse.
+            role = _unit_role_from_text(ch.unit)
             source = "unit" if role else ""
         if role is None:
             role = _name_role(ch.name, patterns)
@@ -385,8 +416,22 @@ def _read_wcp_myokit(path: str, opts: dict) -> Recording | None:
 # ---------------------------------------------------------------------------
 # .abf -- myokit only; pyabf is deliberately not a dependency
 # ---------------------------------------------------------------------------
+def _has_myokit() -> bool:
+    try:
+        import myokit  # noqa: F401,PLC0415
+
+        return True
+    except ImportError:
+        return False
+
+
 def _read_abf(path: str, opts: dict) -> Recording:
-    from myokit.formats.axon import AbfFile  # noqa: PLC0415
+    try:
+        from myokit.formats.axon import AbfFile  # noqa: PLC0415
+    except ImportError as exc:
+        raise ObsExtractError(
+            f"{os.path.basename(path)}: reading ABF needs myokit, which is not "
+            f"installed here.") from exc
 
     try:
         f = AbfFile(path)
@@ -770,13 +815,27 @@ def available_formats() -> list[dict]:
     carries the neo hint, because "available" and "reads every file you have" are
     not the same claim and the difference was measured at a third of a corpus.
     """
-    has_neo = _has_neo()
+    has_neo, has_myokit = _has_neo(), _has_myokit()
+
+    if has_neo:
+        wcp_note = None
+    elif has_myokit:
+        wcp_note = ("myokit reads most WCP files; install neo (the 'dataimport' "
+                    "extra) for the ones recorded at more than one sampling rate.")
+    else:
+        wcp_note = ("reading WCP needs neo (the 'dataimport' extra) or myokit; "
+                    "neither is installed here.")
+
     return [
-        {"suffix": ".wcp", "available": True, "needs": None if has_neo else "neo",
-         "note": None if has_neo else
-                 "myokit reads most WCP files; install neo (the 'dataimport' "
-                 "extra) for the ones recorded at more than one sampling rate."},
-        {"suffix": ".abf", "available": True, "needs": None, "note": None},
+        # Available when *either* reader is importable -- and honestly false when
+        # neither is. Claiming a format the GUI then cannot open is worse than
+        # greying it out with a reason.
+        {"suffix": ".wcp", "available": has_neo or has_myokit,
+         "needs": None if has_neo else ("neo" if has_myokit else "neo or myokit"),
+         "note": wcp_note},
+        {"suffix": ".abf", "available": has_myokit,
+         "needs": None if has_myokit else "myokit",
+         "note": None if has_myokit else "reading ABF needs myokit."},
         {"suffix": ".csv", "available": True, "needs": None, "note": None},
         {"suffix": ".npy", "available": True, "needs": None,
          "note": "needs a sample rate, from a <name>.json sidecar or the dataset settings."},
