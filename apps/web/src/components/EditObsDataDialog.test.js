@@ -9,6 +9,15 @@ vi.mock('../lib/api', () => ({
   getUserFuncs: vi.fn(),
   saveUserFunc: vi.fn(),
   deleteUserFunc: vi.fn(),
+  // Used by the embedded AddFromDatasetDialog ("Add from dataset").
+  scanDatasets: vi.fn(),
+  startObsExtract: vi.fn(),
+  getObsExtractStatus: vi.fn(),
+  cancelObsExtract: vi.fn(),
+  saveObsExtractConfig: vi.fn(),
+  loadObsExtractConfig: vi.fn(),
+  listDir: vi.fn(async () => ({ path: '/', parent: null, entries: [] })),
+  makeDir: vi.fn(),
 }))
 
 import EditObsDataDialog from './EditObsDataDialog.vue'
@@ -726,5 +735,89 @@ describe('tour anchors', () => {
     await wrapper.find('button[aria-label="details"]').trigger('click')
     expect(wrapper.find('[data-testid="eo-weight"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="eo-cost-type"]').exists()).toBe(true)
+  })
+})
+
+// --- "Add from dataset" (the extraction dialog) -----------------------------
+describe('EditObsDataDialog add-from-dataset', () => {
+  it('the button sits beside "Add data item"', async () => {
+    const wrapper = mountDialog()
+    await flushPromises()
+    const ids = wrapper
+      .findAll('[data-testid]')
+      .map((el) => el.attributes('data-testid'))
+    expect(ids).toContain('obs-add-from-dataset')
+    expect(ids.indexOf('obs-add-from-dataset')).toBe(ids.indexOf('obs-add-row') + 1)
+  })
+
+  it('an extraction into an empty editor is adopted without asking', async () => {
+    // There is nothing to lose, so a confirmation would be a question with one
+    // sensible answer.
+    const wrapper = mountDialog({ currentDataItems: [], currentPredictionItems: [],
+                                  protocolInfo: null })
+    await flushPromises()
+    wrapper.vm.onExtracted({
+      obsData: {
+        protocol_info: { pre_times: [0], sim_times: [[1]], params_to_change: {} },
+        data_items: [{ data_item_name: 'x', data_type: 'constant', operation: 'max',
+                       operands: ['a/b'], unit: 'mV', value: 1, std: 1 }],
+        prediction_items: [],
+      },
+      texPath: '/out/r.tex',
+    })
+    await flushPromises()
+    expect(wrapper.vm.editableRows.length).toBe(1)
+    expect(wrapper.find('[data-testid="obs-extract-offer"]').exists()).toBe(false)
+  })
+
+  it('an extraction over existing work is offered, not applied', async () => {
+    // The items' experiment_idx only mean anything against the protocol_info
+    // they came with, so appending them to a different one is the outcome that
+    // would look like it worked.
+    const wrapper = mountDialog()
+    await flushPromises()
+    const before = wrapper.vm.editableRows.length
+    expect(before).toBeGreaterThan(0)
+
+    wrapper.vm.onExtracted({
+      obsData: {
+        protocol_info: { pre_times: [0], sim_times: [[1]], params_to_change: {} },
+        data_items: [{ data_item_name: 'x', data_type: 'constant', operation: 'max',
+                       operands: ['a/b'], unit: 'mV', value: 1, std: 1 }],
+        prediction_items: [],
+      },
+      texPath: '/out/r.tex',
+    })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="obs-extract-offer"]').exists()).toBe(true)
+    expect(wrapper.vm.editableRows.length).toBe(before)
+
+    await wrapper.find('[data-testid="obs-extract-adopt"]').trigger('click')
+    expect(wrapper.vm.editableRows.length).toBe(1)
+  })
+
+  it('keeping mine discards the extraction and leaves the rows alone', async () => {
+    const wrapper = mountDialog()
+    await flushPromises()
+    const before = wrapper.vm.editableRows.length
+    wrapper.vm.onExtracted({
+      obsData: { protocol_info: null, data_items: [], prediction_items: [] },
+      texPath: '/out/r.tex',
+    })
+    await flushPromises()
+    await wrapper.find('[data-testid="obs-extract-discard"]').trigger('click')
+    expect(wrapper.find('[data-testid="obs-extract-offer"]').exists()).toBe(false)
+    expect(wrapper.vm.editableRows.length).toBe(before)
+  })
+
+  it('the offer names where the report went', async () => {
+    const wrapper = mountDialog()
+    await flushPromises()
+    wrapper.vm.onExtracted({
+      obsData: { protocol_info: null, data_items: [], prediction_items: [] },
+      texPath: '/out/r.tex', pdfPath: '/out/r.pdf',
+    })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="obs-extract-offer"]').text()).toContain('/out/r.pdf')
   })
 })
