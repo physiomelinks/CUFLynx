@@ -28,6 +28,9 @@ added later fails a test rather than quietly welding the package to the app.
 
 from __future__ import annotations
 
+from . import config
+from .binding import ModelBinding, suggest, suggested_binding
+from .build import build_obs_data
 from .discovery import (
     case_name,
     date_from_filename,
@@ -37,6 +40,10 @@ from .discovery import (
     subprotocol_from_filename,
 )
 from .errors import ObsExtractError
+from .features import accepts_range, kwarg_defaults, plan_call
+from .modifiers import apply_modifiers, compile_expression, load_modifiers
+from .preprocess import command_trace
+from .windows import StimWindow, detect_stim_window, resolve_range
 from .readers import (
     CURRENT,
     SUPPORTED_SUFFIXES,
@@ -51,19 +58,34 @@ from .readers import (
 
 __all__ = [
     "CURRENT",
+    "ModelBinding",
+    "StimWindow",
     "SUPPORTED_SUFFIXES",
     "VOLTAGE",
     "ChannelInfo",
     "ObsExtractError",
     "Recording",
+    "accepts_range",
+    "apply_modifiers",
     "available_formats",
+    "build_obs_data",
     "case_name",
+    "command_trace",
+    "compile_expression",
+    "config",
+    "detect_stim_window",
     "date_from_filename",
     "discover",
     "group_key",
+    "kwarg_defaults",
+    "load_modifiers",
     "open_recording",
+    "plan_call",
     "probe",
+    "resolve_range",
     "resolve_roles",
+    "suggest",
+    "suggested_binding",
     "split_group_key",
     "subprotocol_from_filename",
 ]
