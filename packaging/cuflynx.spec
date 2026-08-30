@@ -106,6 +106,13 @@ for runner in (
 ):
     datas.append((str(API_DIR / runner), "runners"))
 
+# `obs_extract` is deliberately absent from that list. This subdir exists for
+# modules an *external interpreter* executes as real .py files on disk, and
+# nothing in obs_extract is one: reading recordings and building an obs_data
+# document happens in the API process, on a worker thread, with no MPI and no
+# CA simulation stack to escape. Analysis(pathex=[API_DIR]) already follows
+# main.py's imports into the package and freezes it, so there is nothing to add.
+
 # The bundled example studies the "Start" dialog offers. Their filenames come
 # from apps/api/examples.py -- the same manifest the route serves from -- because
 # a hand-maintained copy here is exactly how issue #180 happened: the route read

@@ -305,3 +305,38 @@ def test_the_full_installs_upgrade_pip_first():
             f"{workflow}: a step passes --build-constraint without upgrading pip "
             f"first:\n{script.strip()[:400]}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Raw-recording readers (apps/api/obs_extract)
+# ---------------------------------------------------------------------------
+def test_neo_is_declared_for_wcp_reading():
+    """neo is what makes a whole WCP corpus readable, so it must stay declared.
+
+    myokit is the fallback and reads most files, which is exactly why this needs
+    a test: dropping neo would not fail any test that uses a synthesised WCP --
+    it would only stop about a third of a real corpus from opening, on the user's
+    machine, months later.
+    """
+    text = PYPROJECT.read_text()
+    assert re.search(r'^\s*"neo[^"]*"', text, re.MULTILINE), (
+        "neo must stay in the [dataimport] extra: over 60 real .wcp files myokit "
+        "read 41 and neo read 60."
+    )
+
+
+def test_pyabf_is_not_declared():
+    """ABF is myokit's job. A second reader for it would be duplication.
+
+    ``myokit.formats.axon.AbfFile`` read 21/21 of the .abf corpus, on the same
+    ``SweepSource`` interface the WCP reader uses, and myokit is already a core
+    dependency. The sympathetic_neuron CLI this replaces uses pyabf; porting that
+    choice across would add a dependency for nothing.
+    """
+    text = PYPROJECT.read_text()
+    assert not re.search(r'^\s*"pyabf[^"]*"', text, re.MULTILINE), (
+        "pyabf must not be a dependency: myokit already reads ABF via "
+        "myokit.formats.axon.AbfFile (21/21 on the reference corpus). If you are "
+        "adding it because an .abf would not open, fix the reader in "
+        "obs_extract/readers.py rather than adding a second ABF library."
+    )
