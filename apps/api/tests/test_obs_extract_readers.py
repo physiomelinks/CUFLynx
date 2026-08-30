@@ -31,6 +31,33 @@ pytestmark = pytest.mark.unit
 WCP_QUANTISATION = 0.02
 
 
+def _skip_without_wcp_reader():
+    """Skip when neither WCP reader is installed.
+
+    The backend unit tier installs a minimal dependency set on purpose -- no
+    myokit, no neo -- so there is nothing here for a WCP test to run on. Skipping
+    is the call conftest's other gating fixtures make; the tiers that install the
+    dependencies still cover it.
+    """
+    try:
+        import neo  # noqa: F401,PLC0415
+
+        return
+    except ImportError:
+        pass
+    try:
+        import myokit.formats.wcp  # noqa: F401,PLC0415
+    except ImportError:
+        pytest.skip("no WCP reader here (neither neo nor myokit is installed)")
+
+
+def _skip_without_myokit():
+    try:
+        import myokit  # noqa: F401,PLC0415
+    except ImportError:
+        pytest.skip("myokit is not installed")
+
+
 def _sweeps(n_sweeps=3, n=64):
     """Distinct per sweep, so a reader that returns the wrong one is caught."""
     return [[ramp(n, -80 + 5 * s, -20 + 5 * s), ramp(n, 0, 100 * (s + 1))]
@@ -38,7 +65,7 @@ def _sweeps(n_sweeps=3, n=64):
 
 
 @pytest.fixture(params=["wcp", "csv", "npy"])
-def recording(request, tmp_path):
+def recording(request, tmp_path):  # noqa: PT004
     """One synthesised recording per format, plus the values it was built from.
 
     ``.abf`` is absent here on purpose: nothing can write one, so it is covered
@@ -48,6 +75,7 @@ def recording(request, tmp_path):
     data = _sweeps()
     fmt = request.param
     if fmt == "wcp":
+        _skip_without_wcp_reader()
         path = write_wcp(tmp_path / "cell.1.Currentsteps.1.wcp", data)
         tol = WCP_QUANTISATION
     elif fmt == "csv":
@@ -95,6 +123,7 @@ def test_probe_reports_without_decoding(recording):
 
 
 def test_probe_never_raises_for_a_bad_file(tmp_path):
+    _skip_without_wcp_reader()
     """A scan of hundreds must not fail because one file is corrupt."""
     bad = tmp_path / "junk.1.Currentsteps.1.wcp"
     bad.write_bytes(b"this is not a WCP file at all")
@@ -121,6 +150,7 @@ def test_sweep_index_out_of_range(recording):
 # Role resolution
 # ---------------------------------------------------------------------------
 def test_wcp_channel_order_does_not_decide_the_role(tmp_path):
+    _skip_without_wcp_reader()
     """Units decide, not position.
 
     The real corpus records ``Im0`` first and ``Vm0`` second. A positional rule
@@ -179,6 +209,8 @@ def test_two_channels_claiming_one_role_keeps_the_first_and_warns():
 
 
 def _units(names):
+    """myokit Unit objects, for the dimension-comparison path specifically."""
+    _skip_without_myokit()
     import myokit
 
     return [myokit.parse_unit(n) for n in names]
@@ -310,6 +342,7 @@ ABF_CORPUS = os.path.expanduser("~/Documents/data/Sympathetic_Neuron")
 
 @pytest.mark.integration
 def test_abf_reads_a_real_recording():
+    _skip_without_myokit()
     import glob
 
     files = sorted(glob.glob(os.path.join(ABF_CORPUS, "**", "*.abf"), recursive=True))
@@ -324,12 +357,35 @@ def test_abf_reads_a_real_recording():
     assert np.all(np.diff(t) > 0)
 
 
-def test_available_formats_covers_every_supported_suffix():
+def test_available_formats_tells_the_truth_about_this_install():
+    """Availability is measured, not asserted.
+
+    An earlier version of this test claimed all four read on a bare install.
+    They do not: .wcp needs neo or myokit and .abf needs myokit, and the backend
+    unit tier has neither -- so the GUI would have offered formats it could not
+    open. What every install can do is CSV and .npy, which need only numpy and
+    pandas.
+    """
     got = {f["suffix"]: f for f in available_formats()}
     assert set(got) == {".wcp", ".abf", ".csv", ".npy"}
-    assert all(f["available"] for f in got.values()), "all four read on a bare install"
-    # .abf is myokit's, and myokit is a core dependency -- pyabf is not needed.
-    assert got[".abf"]["needs"] is None
+    assert got[".csv"]["available"] and got[".npy"]["available"]
+
+    has_myokit = _importable("myokit")
+    has_neo = _importable("neo")
+    assert got[".abf"]["available"] is has_myokit
+    assert got[".wcp"]["available"] is (has_myokit or has_neo)
+    for suffix in (".wcp", ".abf"):
+        if not got[suffix]["available"]:
+            assert got[suffix]["needs"], f"{suffix} must say what it is missing"
+            assert got[suffix]["note"]
+
+
+def _importable(name):
+    try:
+        __import__(name)
+        return True
+    except ImportError:
+        return False
 
 
 def test_npy_sidecar_is_read_from_beside_the_file(tmp_path):
@@ -354,6 +410,7 @@ def test_a_recording_with_no_sweeps_is_refused(tmp_path):
 
 
 def test_when_both_wcp_readers_fail_the_error_names_both(tmp_path, monkeypatch):
+    _skip_without_wcp_reader()
     """A one-sided message misleads: which reader was even tried depends on the
     machine, so a file that neither can open must say so about both."""
     from obs_extract import readers
@@ -373,6 +430,7 @@ def test_when_both_wcp_readers_fail_the_error_names_both(tmp_path, monkeypatch):
 
 
 def test_myokit_is_tried_after_neo_fails_not_only_when_neo_is_absent(tmp_path, monkeypatch):
+    _skip_without_wcp_reader()
     """The two libraries reject different files, so the second chance is real."""
     from obs_extract import readers
 
