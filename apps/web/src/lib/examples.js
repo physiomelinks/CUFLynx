@@ -11,8 +11,15 @@ export const PHLYNX_URL = 'https://www.phlynx.com'
 // double-prefixed and fail to decode. (Upstream's answer on #290 says a data URI
 // will be passed — that is not what the loader does today, so this is the one
 // place to change if they land the tolerant version.)
-export function phlynxOpenUrl(base64) {
-  return `${PHLYNX_URL}/?open=omex#${base64}`
+//
+// `baseUrl` overrides where it goes, for the "PhLynx URL" developer setting: the
+// two halves of this exchange live in separate repos, phlynx.com serves PhLynx's
+// `main`, and a PhLynx change under review is not there -- so checking the
+// exchange against a branch means pointing this at a dev server. Blank/absent is
+// the production PhLynx, which is what every ordinary user gets.
+export function phlynxOpenUrl(base64, baseUrl = '') {
+  const base = (baseUrl || PHLYNX_URL).replace(/\/+$/, '')
+  return `${base}/?open=omex#${base64}`
 }
 
 // The Physiome Model Repository — browse/download existing CellML models to drop in.

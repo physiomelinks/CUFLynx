@@ -485,6 +485,9 @@ class ConfigRequest(BaseModel):
     # The default is the bundled interpreter (packaged) or the serving one (source),
     # so "" lets the user switch back to "Bundled" after picking an external venv.
     python_path: str | None = None
+    # Where the "Edit" button sends a study.
+    #   omitted (None) -> leave unchanged   |   "" -> back to production PhLynx
+    phlynx_url: str | None = None
     # Global random seed for analysis runs (calibration / sensitivity / UQ). When
     # set, it makes CA's random processes (GA, multi-start sampling, Sobol/SALib
     # sampling, MCMC) reproducible. Default is no seed (non-deterministic).
@@ -496,6 +499,14 @@ class ConfigRequest(BaseModel):
 # Set via POST /api/config, persisted like ca_dir / python_path, and injected into
 # every calibration / sensitivity / UQ run config so CA's random processes repeat.
 _analysis_seed: int | None = None
+
+#: Where the "Edit" button sends a study. Blank means the production PhLynx that
+#: `lib/examples.js` defaults to. A developer setting: the two halves of this
+#: exchange live in separate repos, phlynx.com serves PhLynx's `main`, and a
+#: PhLynx change under review is not there -- so checking the exchange against a
+#: branch means pointing the button at a dev server. Persisted like any other
+#: setting so the packaged app remembers it too.
+_phlynx_url: str = ""
 
 
 def _parse_seed(value) -> int | None:
@@ -594,6 +605,11 @@ def _restore_persisted_settings() -> None:
         global _analysis_seed
         _analysis_seed = seed
 
+    phlynx_url = (saved.get("phlynx_url") or "").strip().rstrip("/")
+    if phlynx_url.startswith(("http://", "https://")):
+        global _phlynx_url
+        _phlynx_url = phlynx_url
+
 
 _restore_persisted_settings()
 
@@ -630,6 +646,8 @@ def _config_payload(output_dir: str = "") -> dict:
         "python_default": default_python() or "",
         # Global random seed for analysis runs (null = none / non-deterministic).
         "seed": _analysis_seed,
+        # Where "Edit" sends a study; blank = the production PhLynx.
+        "phlynx_url": _phlynx_url,
         # Current backend solver selection (engine is the source of truth). dt is
         # carried in solver_info for the UI but stored separately on the engine.
         "generated_model_format": engine.model_type,
@@ -797,6 +815,19 @@ def set_config(req: ConfigRequest) -> dict:
             ) from None
         global _analysis_seed
         _analysis_seed = seed
+
+    # Where "Edit" sends a study. Only http(s), and only a bare origin-ish URL:
+    # this value is handed to `window.open`, so accepting `javascript:` here
+    # would turn a settings field into script execution in the app's own page.
+    if req.phlynx_url is not None:
+        candidate = req.phlynx_url.strip().rstrip("/")
+        if candidate and not candidate.startswith(("http://", "https://")):
+            raise HTTPException(
+                status_code=422,
+                detail=f"phlynx_url must start with http:// or https://, got {req.phlynx_url!r}",
+            )
+        global _phlynx_url
+        _phlynx_url = candidate
 
     os.environ["CUFLYNX_MODEL_TYPE"] = engine.model_type
     os.environ["CUFLYNX_SOLVER"] = engine.solver
@@ -1462,13 +1493,28 @@ def _no_obs_data_warning(parts: dict, source: str = "archive") -> list[str]:
     thing on screen -- nothing -- and the second is a bug in the file that the
     user could fix in a minute if anyone told them about it.
     """
-    skipped = parts.get("obs_skipped") or []
-    if skipped:
-        looked_at = "; ".join(f"{s['name']} ({s['reason']})" for s in skipped)
+    # Only the members CUFLynx could not read. One it *could* read and ruled out
+    # is not observations, and neither is an archive that simply carries none --
+    # a PhLynx project export has a model, an editor state and a simulation
+    # settings file and was never going to have observations. Saying so every
+    # time is how a banner becomes something people click past, which costs the
+    # one case below that is worth reading.
+    unreadable = [s for s in (parts.get("obs_skipped") or []) if not s.get("identified")]
+    if unreadable:
+        looked_at = "; ".join(f"{s['name']} ({s['reason']})" for s in unreadable)
         return [
-            f"No obs_data was loaded. Passed over: {looked_at}. A member with 'obs' in "
+            f"No obs_data was loaded. Could not read: {looked_at}. A member with 'obs' in "
             "its name is always taken as the obs_data."
         ]
+    if source == "archive":
+        # Neither an obs_data nor a params_for_id is required to drop a study in,
+        # and most archives that carry a model carry neither -- a PhLynx project
+        # export never does. The empty tabs already say so, and a banner on the
+        # ordinary case is how people learn to click past the one below.
+        return []
+    # Reopening a run directory is a different claim: this is a study that was
+    # *run*, so observations are what it was scored against, and their absence is
+    # worth the one sentence.
     missing = "obs_data" if parts.get("params") else "obs_data or params_for_id"
     return [f"This {source} carries no {missing}, so the observations tab is empty."]
 
@@ -1623,22 +1669,26 @@ def import_omex_bytes(data: bytes, output_dir: str | None = None,
         except ParamsForIdError as exc:
             result["params_for_id"] = {"filename": name, "error": str(exc)}
 
-    if parts["module_config"]:
-        cfg_name, blob = parts["module_config"]
+    for cfg_name, blob in parts.get("phlynx_state") or []:
         # Beside the model in `generated_models/<prefix>/`, not among the run
         # outputs: this is PhLynx's editor state for that model, not a result of
         # anything. Same layout the export bundle uses, so the archive round-trips
         # into a folder CA already understands.
-        result["module_config_path"] = omex_import.save_module_config(
-            blob, _model_dir(out_dir, _record_prefix(_models[model_id]))
+        saved = omex_import.save_module_config(
+            blob, _model_dir(out_dir, _record_prefix(_models[model_id])), cfg_name
         )
+        # The first one kept is the one reported: the field predates PhLynx
+        # splitting its workspace across two files, and a client that reads it is
+        # asking "was the layout kept", not "where is each part".
+        if result["module_config_path"] is None:
+            result["module_config_path"] = saved
         # Only when there was somewhere to put it. With no outputs directory this
         # copy is simply not made, and nothing is lost: the archive is kept whole
         # (`_save_model_archive`) and `omex_export` re-emits every member it did
         # not understand byte-for-byte, so PhLynx's state still round-trips. A
         # banner on every import until a directory is set would be noise -- and a
         # banner nobody reads is how the real failure below gets missed.
-        if out_dir and result["module_config_path"] is None:
+        if out_dir and saved is None:
             load_warnings.append(
                 f"PhLynx's {cfg_name} could not be kept beside the model: it is not valid "
                 "JSON, or the directory could not be written. The study loaded, and the "
@@ -2730,6 +2780,93 @@ class OpenStudyRequest(BaseModel):
     file_prefix: str | None = None
 
 
+def _adopt_study_solver_info(solver_info) -> list[str]:
+    """Apply a study's recorded solver settings to the engine. Returns what to report.
+
+    Same shape, and the same handling, as the ``solver_info`` in a saved config: ``dt`` is
+    folded in beside the solver's own keys and popped out here. Unsupported keys are
+    dropped rather than rejected, because a manifest written by a newer pipeline must not
+    stop an older app from opening the study at all.
+
+    Reported rather than applied quietly. Adopting dt = 1e-4 where the app was at 0.01
+    makes every subsequent simulation a hundred times slower, and a user watching that
+    happen deserves the reason.
+    """
+    if not isinstance(solver_info, dict) or not solver_info:
+        return []
+    notes, si = [], dict(solver_info)
+    if "dt" in si:
+        try:
+            new_dt = float(si.pop("dt"))
+        except (TypeError, ValueError):
+            new_dt = None
+        if new_dt and new_dt > 0 and new_dt != engine.dt:
+            notes.append(
+                f"Solver dt set to {new_dt:g} s (was {engine.dt:g} s), as this study was "
+                f"run. At the coarser step the output grid misses the fast parts of a "
+                f"trace; simulations will be slower."
+            )
+            engine.dt = new_dt
+    solver = si.pop("solver", None)
+    if isinstance(solver, str) and solver and solver != engine.solver:
+        notes.append(f"Solver set to {solver}, as this study was run.")
+        engine.solver = solver
+    si.pop("method", None)          # CA's own spelling of the solver; not a solver_info key here
+    if si:
+        engine.solver_info = {**getattr(engine, "solver_info", {}), **si}
+        notes.append("Solver options taken from the study: "
+                     + ", ".join(f"{k}={v}" for k, v in sorted(si.items())) + ".")
+    return notes
+
+
+def _finest_scored_obs_dt(obs_data_path) -> float | None:
+    """The smallest ``obs_dt`` among series an obs_data will actually score, or None.
+
+    This is the constraint CA enforces before it will compare a run against the data: the
+    solver output has to be at least as finely sampled as the series it is resampled onto.
+    Read from the obs_data itself rather than from the study manifest, which does not
+    record a timestep, and rather than from a user_inputs.yaml, which a finished run
+    directory need not contain.
+
+    Only *scored* series count, matching CA: a zero-weighted item is dropped from the cost
+    and an empty one has nothing to compare, so neither can require anything of dt.
+    SN_full ships eight empty zero-weighted series at 1e-4, and honouring those would drop
+    the app's timestep a hundredfold to satisfy placeholders that are never read.
+
+    Unreadable is None, not an error: opening a study whose obs_data has moved should
+    still show the results that are there.
+    """
+    if not obs_data_path or not os.path.isfile(str(obs_data_path)):
+        return None
+    try:
+        with open(obs_data_path) as handle:
+            document = json.load(handle)
+    except (OSError, ValueError):
+        return None
+    items = document.get("data_items") if isinstance(document, dict) else document
+    if not isinstance(items, list):
+        return None
+    finest = None
+    for item in items:
+        if not isinstance(item, dict) or item.get("data_type") != "series":
+            continue
+        try:
+            if float(item.get("weight", 1.0)) == 0.0:
+                continue
+        except (TypeError, ValueError):
+            pass
+        value = item.get("value")
+        if not isinstance(value, list) or not value:
+            continue
+        try:
+            obs_dt = float(item["obs_dt"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if obs_dt > 0 and (finest is None or obs_dt < finest):
+            finest = obs_dt
+    return finest
+
+
 @app.post("/api/outputs/study")
 def open_study_from_outputs(req: OpenStudyRequest) -> dict:
     """Load the model, obs_data and params_for_id a finished run was made from.
@@ -2793,6 +2930,37 @@ def open_study_from_outputs(req: OpenStudyRequest) -> dict:
         "run_dir": found.get("run_dir"),
     }
     result["model_is_calibrated"] = bool(study.get("model_is_calibrated"))
+
+    # Solve the study the way the study was solved. Opening a directory used to adopt
+    # nothing, so a run configured for dt = 1e-4 with CVODE bounded by MaximumStep = 1e-4
+    # was reopened at the app's DEFAULT_DT of 0.01 and no maximum step.
+    #
+    # For a spiking model that is not cosmetic. dt is the *output* interval, so a 10 ms
+    # grid samples straight over every 1-4 ms action potential: the trace comes back
+    # showing only the voltage between spikes and appears to sit at about -20 mV. Nothing
+    # is wrong with the resting potential or the parameters, and there is nothing on
+    # screen to say so.
+    # From the manifest rather than from ``study``, which is a narrower projection built for
+    # the panels and carries only the study's file paths.
+    manifest = found.get("manifest") or {}
+    adopted = _adopt_study_solver_info(
+        manifest.get("solver_info") or study.get("solver_info"))
+    for note in adopted:
+        result["warnings"].append(note)
+
+    # A study written before the manifest recorded solver settings has none, so fall back
+    # to what its obs_data requires: CA will not compare a solver output against series
+    # sampled finer than it. Only if the manifest did not already say.
+    if not adopted:
+        required = _finest_scored_obs_dt(study.get("obs_data"))
+        if required is not None and required < engine.dt:
+            result["warnings"].append(
+                f"Solver dt lowered from {engine.dt:g} s to {required:g} s: this study's "
+                f"series data is sampled that finely, and a coarser solver output cannot "
+                f"be compared against it. Simulations will be slower."
+            )
+            engine.dt = required
+
     if unreadable:
         result["warnings"].append(
             "Some of the run's inputs could not be read: " + "; ".join(unreadable)

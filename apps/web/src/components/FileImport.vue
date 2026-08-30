@@ -39,6 +39,9 @@ const props = defineProps({
   obsProtocolInfo: { type: Object, default: null },
   experimentCount: { type: Number, default: 0 },
   loadedObsFilename: { type: String, default: null },
+  // Where "Edit" sends the study. Blank = the production PhLynx; set from the
+  // developer setting so the exchange can be checked against a PhLynx branch.
+  phlynxUrl: { type: String, default: '' },
   // Enables the pipeline/plotting export buttons (a model must be loaded).
   canExport: { type: Boolean, default: false },
   // Gates the group/modifier buttons in the params editor: the CasADi backend
@@ -242,7 +245,7 @@ async function onSendConfirm() {
         `(${Math.round(res.bytes / 1024)} kB), so it was downloaded as ` +
         `${res.filename} — open PhLynx and import it.`
     } else {
-      window.open(phlynxOpenUrl(res.base64), '_blank', 'noopener')
+      window.open(phlynxOpenUrl(res.base64, props.phlynxUrl), '_blank', 'noopener')
       notice.value = sendNotice(res)
     }
     sendOpen.value = false
@@ -493,12 +496,22 @@ async function handleOmex(files) {
   return true
 }
 
+// Exposed so a drop anywhere on the page reaches this same handler rather than a
+// second copy of it: a study delivered by dropping on the page has to behave
+// exactly like one dropped on a box, and the way to guarantee that is for there
+// to be one function.
+defineExpose({ handleOmex, isOmexName })
+
 function isOmexName(name) {
   return /\.omex$/i.test(String(name || ''))
 }
 
 async function onCellmlDrop(event) {
   event.preventDefault?.()
+  // Claimed, so the page-wide handler in App.vue leaves it alone. An explicit
+  // mark rather than `defaultPrevented`, which anything on the way up may set --
+  // and which, being shared, cannot say *who* handled the drop.
+  if (event) event.cuflynxHandledByBox = true
   error.value = ''
   warnings.value = []
   // Accept a whole bundle: a non-flattened model plus the sister files it
@@ -546,6 +559,10 @@ async function onCellmlDrop(event) {
 
 async function onObsDrop(event) {
   event.preventDefault?.()
+  // Claimed, so the page-wide handler in App.vue leaves it alone. An explicit
+  // mark rather than `defaultPrevented`, which anything on the way up may set --
+  // and which, being shared, cannot say *who* handled the drop.
+  if (event) event.cuflynxHandledByBox = true
   error.value = ''
   warnings.value = []
   const [file] = filesFrom(event)
@@ -576,6 +593,10 @@ async function onObsDrop(event) {
 
 async function onParamsDrop(event) {
   event.preventDefault?.()
+  // Claimed, so the page-wide handler in App.vue leaves it alone. An explicit
+  // mark rather than `defaultPrevented`, which anything on the way up may set --
+  // and which, being shared, cannot say *who* handled the drop.
+  if (event) event.cuflynxHandledByBox = true
   error.value = ''
   warnings.value = []
   const [file] = filesFrom(event)
