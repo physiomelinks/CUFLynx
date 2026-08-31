@@ -69,7 +69,7 @@ jobs:
           # CUFLynx CI. This one is the merge of circulatory_autogen#495, the first CA
           # carrying libcuflynx.parsers.MyokitParsers and .EasyMLParsers, which this
           # app delegates every .mmt and .model conversion to with no local fallback.
-          ref: ad312754613793ebdd9d11f9cf2658c6a01ccc52
+          ref: 621d6c141958e5292db27f1fbf846b0726d988a0
           path: circulatory_autogen
       - uses: actions/setup-python@v5
         with:
@@ -111,7 +111,7 @@ jobs:
           # CUFLynx CI. This one is the merge of circulatory_autogen#495, the first CA
           # carrying libcuflynx.parsers.MyokitParsers and .EasyMLParsers, which this
           # app delegates every .mmt and .model conversion to with no local fallback.
-          ref: ad312754613793ebdd9d11f9cf2658c6a01ccc52
+          ref: 621d6c141958e5292db27f1fbf846b0726d988a0
           path: circulatory_autogen
       - uses: actions/setup-python@v5
         with:
