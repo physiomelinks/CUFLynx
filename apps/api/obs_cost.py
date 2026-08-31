@@ -431,6 +431,9 @@ def _ca_evaluate(obs_data, outputs_by_experiment, output_dir, dt, why=None,  # n
 
 def _ca_items(obs_info, models: dict, costs: dict) -> list:
     """Per-observable rows for the panel, from CA's own obs_info."""
+    from ca_imports import ca_from  # noqa: PLC0415
+
+    obs_item_labels = ca_from("utilities.obs_data_helpers", "obs_item_labels")
     items = []
     gt = {int(o): float(v) for o, v in
           zip(obs_info["const_idx_to_obs_idx"], obs_info["ground_truth_const"])}
@@ -440,8 +443,7 @@ def _ca_items(obs_info, models: dict, costs: dict) -> list:
         model = models.get(obs_idx)
         observed = gt.get(obs_idx)
         entry = {
-            "label": str((obs_info.get("item_names_for_plotting")
-                          or obs_info["names_for_plotting"])[obs_idx]),
+            "label": str(obs_item_labels(obs_info)[obs_idx]),
             "operation": str(obs_info["operations"][obs_idx] or ""),
             "experiment_idx": int(obs_info["experiment_idxs"][obs_idx]),
             "subexperiment_idx": int(obs_info["subexperiment_idxs"][obs_idx]),
