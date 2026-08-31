@@ -33,12 +33,16 @@ dependencies = [
     # PYTHONPATH; now that it is on PyPI, saying so is what makes a build environment
     # reproducible. (A CA directory chosen in Settings still overrides it: ca_imports
     # puts that checkout ahead of the installed package.)
-    # 0.5.0 is the floor, not 0.4.x: this app speaks the obs_data vocabulary CA's #466
-    # introduced there -- `data_item_name` (unique) and the two plotting labels -- and it
-    # tells a user with an older file to convert it with `cuflynx-migrate-obs-data`, which
-    # 0.5.0 is what ships. Resolving 0.4.1 underneath would leave the app explaining a
-    # migration to an engine that has not made it.
-    "libcuflynx>=0.6.0",
+    # 0.7.0 is the floor: this app reads the parsed obs_info through CA's accessors, and
+    # 0.7.0 is where the parsed dicts stopped carrying their old key names (CA #507). An
+    # older engine still answers -- the accessors exist there too -- but it writes a
+    # vocabulary this app no longer speaks anywhere else, so pinning the floor keeps one
+    # spelling in play rather than two.
+    #
+    # It also speaks the obs_data *file* vocabulary CA's #466 introduced, and tells a user
+    # with an older file to convert it with `cuflynx-migrate-obs-data` -- which resolving an
+    # older engine underneath would leave explaining a migration the engine has not made.
+    "libcuflynx>=0.7.0",
     # Myokit JIT-compiles each model to a CPython extension at run time, inside the
     # frozen process, and that compile uses setuptools' build_ext command. Python <=3.11
     # venvs happen to ship setuptools, which is why relying on it has worked so far; 3.12
@@ -142,7 +146,7 @@ analysis = [
 # checks this file declares everything the spec collects. A transitive dependency
 # satisfies the build but leaves that guard with nothing to read.
 full = [
-    "libcuflynx[emulation,uq]>=0.6.0",
+    "libcuflynx[emulation,uq]>=0.7.0",
     # Surrogate models -- CA's do_emulation / use_emulator, and the Emulator tab's live
     # prediction line, which currently needs a user-supplied interpreter.
     "autoemulate>=2.1,<3",
