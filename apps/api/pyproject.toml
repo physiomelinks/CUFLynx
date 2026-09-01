@@ -42,7 +42,7 @@ dependencies = [
     # It also speaks the obs_data *file* vocabulary CA's #466 introduced, and tells a user
     # with an older file to convert it with `cuflynx-migrate-obs-data` -- which resolving an
     # older engine underneath would leave explaining a migration the engine has not made.
-    "libcuflynx>=0.7.0",
+    "libcuflynx>=0.7.1",
     # Myokit JIT-compiles each model to a CPython extension at run time, inside the
     # frozen process, and that compile uses setuptools' build_ext command. Python <=3.11
     # venvs happen to ship setuptools, which is why relying on it has worked so far; 3.12
@@ -146,7 +146,7 @@ analysis = [
 # checks this file declares everything the spec collects. A transitive dependency
 # satisfies the build but leaves that guard with nothing to read.
 full = [
-    "libcuflynx[emulation,uq]>=0.7.0",
+    "libcuflynx[emulation,uq]>=0.7.1",
     # Surrogate models -- CA's do_emulation / use_emulator, and the Emulator tab's live
     # prediction line, which currently needs a user-supplied interpreter.
     "autoemulate>=2.1,<3",
