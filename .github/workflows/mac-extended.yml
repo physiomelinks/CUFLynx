@@ -368,12 +368,29 @@ jobs:
               echo "$NAME: failed with HTTP $CODE for some other reason" >> mac-logs/summary.txt
             fi
 
-            # The assertion. A state where the app SAYS it has a compiler and then
-            # cannot simulate is the bug in the report: nothing warned the user,
-            # and the reason went to a console that does not exist.
+            # The assertions. The app is allowed to be unable to compile; it is not
+            # allowed to be WRONG about whether it can, and it is not allowed to
+            # explain the failure as something the user could fix in Settings.
             if [ "$CLAIMS" = "True" ] && [ "$CODE" != "200" ]; then
+              # The bug as reported: nothing warned the user, and the reason went
+              # to a console a double-clicked macOS app does not have.
               echo "::error::[$NAME] the app reported a working C compiler and then failed to simulate (HTTP $CODE)"
               FAILURES=$((FAILURES + 1))
+            fi
+            if [ "$CLAIMS" = "False" ] && [ "$CODE" = "200" ]; then
+              # The opposite error: detection gone pessimistic and telling users a
+              # backend is unavailable while it demonstrably works.
+              echo "::error::[$NAME] the app reported NO C compiler, yet the simulation succeeded"
+              FAILURES=$((FAILURES + 1))
+            fi
+            if [ "$CODE" != "200" ]; then
+              # Whatever the cause, the message must point at the toolchain rather
+              # than at solver tolerances -- the generic tail used to send a Mac
+              # user with no clang off to lower MaximumStep, which cannot help.
+              if grep -qE "MaximumStep|rtol" "mac-logs/$NAME-sim.json" 2>/dev/null; then
+                echo "::error::[$NAME] a compile failure was explained as a solver-tolerance problem"
+                FAILURES=$((FAILURES + 1))
+              fi
             fi
             echo "::endgroup::"
           }
@@ -411,14 +428,42 @@ jobs:
           #
           # Hiding just the include dir leaves the frozen binary fully runnable
           # (it carries its own libpython) and removes exactly what a user lacks.
-          PYINC="$(python -c 'import sysconfig; print(sysconfig.get_paths()["include"])')"
-          if [ -d "$PYINC" ]; then
-            echo "hiding $PYINC to imitate a Mac with no python.org framework"
-            sudo mv "$PYINC" "$PYINC.hidden"
+          # EVERY candidate, not just one. The first version of this state hid only
+          # sysconfig's include path and passed on the Intel runner -- which proved
+          # nothing, because that image also carries a python.org framework at
+          # /Library/Frameworks, and the compile quietly used *its* headers
+          # instead. A user's Mac has neither. Hiding one of two header sources
+          # tests nothing, so enumerate them: sysconfig's path, the baked-in
+          # INCLUDEPY (which need not be the same -- setup-python is a framework
+          # build on arm64 and a hostedtoolcache build on Intel), and any
+          # python.org framework on the machine.
+          python - <<'PY' > hide-list.txt
+          import glob, sysconfig
+          candidates = {
+              sysconfig.get_paths()["include"],
+              sysconfig.get_config_var("INCLUDEPY") or "",
+          }
+          candidates.update(
+              glob.glob("/Library/Frameworks/Python.framework/Versions/*/include/python*")
+          )
+          for c in sorted(x for x in candidates if x):
+              print(c)
+          PY
+          echo "header directories to hide:"; cat hide-list.txt
+
+          HID=""
+          while read -r d; do
+            [ -d "$d" ] || continue
+            echo "hiding $d"
+            sudo mv "$d" "$d.hidden"
+            HID="$HID $d"
+          done < hide-list.txt
+
+          if [ -n "$HID" ]; then
             run_state "no-python-headers" 8126
-            sudo mv "$PYINC.hidden" "$PYINC"
+            for d in $HID; do sudo mv "$d.hidden" "$d"; done
           else
-            echo "::warning::$PYINC does not exist; skipping no-python-headers"
+            echo "::warning::found no Python header directories to hide; skipping"
           fi
 
           echo "===== summary ====="

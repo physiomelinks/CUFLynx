@@ -126,6 +126,15 @@ datas += examples.example_datas()
 # by platform, so the headers must land where the *frozen* interpreter will look:
 #   - posix (Linux/macOS): <bundle>/include/python<X.Y>
 #   - nt (Windows):        <bundle>/Include   (capital I, no version dir)
+#
+# On macOS shipping them here is necessary but NOT sufficient, and for a while it
+# was not even used. distutils resolves the include directory from the *build*
+# interpreter's baked-in INCLUDEPY, an absolute path — /Library/Frameworks/... on
+# a framework build — so the frozen app looked on the build machine's disk and
+# never at the copy beside it. That path exists on a GitHub runner, which is why
+# every smoke test passed while users got 'Python.h' file not found from a
+# perfectly healthy Xcode. packaging/rthook_myokit.py puts this directory back on
+# the compiler's search path at run time; keep the two in step.
 # Shipping to the posix location on Windows is why CVODE_myokit there died with
 #   fatal error C1083: Cannot open include file: 'Python.h'
 # even though MSVC ran fine. (Build machine needs python3-dev / the Xcode CLT / the

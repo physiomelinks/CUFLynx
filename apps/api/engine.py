@@ -23,6 +23,7 @@ from pathlib import Path
 
 import ca_imports
 from ca_imports import ca_from
+from compiler_check import compiler_hint
 from runtime_paths import is_frozen
 
 DEFAULT_DT = 0.01
@@ -464,6 +465,32 @@ def _solver_reason(captured: str) -> str:
 # Actionable follow-ups keyed by what CVODE actually said. Matching on the flag
 # rather than the prose keeps these stable across Sundials wordings.
 _HINTS = (
+    (
+        # FIRST, because it must win: this message is long, quotes a compiler
+        # command line and a whole traceback, and so is wide open to matching a
+        # later entry's needles by accident -- a temp path containing "inf", say.
+        #
+        # CVODE_myokit compiles each model to a native extension *when it runs*, so
+        # a failed compile is a toolchain problem and no solver setting can touch
+        # it. Without this entry the generic tail advised tightening tolerances,
+        # which is advice for a different failure entirely. Both confirmed causes
+        # look identical here -- no working compiler behind macOS's /usr/bin/clang
+        # shim, and (before the runtime hook shipped the fix) a bundle pointing at
+        # the build machine's Python headers -- and both are answered the same way:
+        # use a backend that needs no compiler, or repair the toolchain.
+        (
+            "unable to compile",
+            "compilationerror",
+            "failed with exit code",
+            "python.h",
+        ),
+        "The CVODE_myokit backend builds each model into a native extension when it "
+        "runs, and that build failed — so this is a toolchain problem on this "
+        "machine, not a solver setting, and nothing in Settings will change it. "
+        "Either switch the model format to python (scipy solve_ivp) or "
+        "casadi_python, neither of which needs a compiler, or install one:\n"
+        + compiler_hint(),
+    ),
     (
         # A missing backend library is not a solver-settings problem, and the
         # generic "try a smaller MaximumStep" advice sent users to fiddle with

@@ -150,3 +150,57 @@ jobs:
         run: yarn test
       - name: Build
         run: yarn build
+
+  # The one macOS job on the PR path, and deliberately small.
+  #
+  # A user opening the packaged macOS app hit
+  #   DistutilsExecError: command '/usr/bin/clang' failed with exit code 1
+  # because compiler detection asked shutil.which(), and on macOS /usr/bin/cc,
+  # /usr/bin/gcc and /usr/bin/clang are xcrun shims shipped by the OS that are
+  # ALWAYS present -- exiting 1 when no toolchain is installed behind them. The
+  # app promised CVODE_myokit and the run died inside distutils, with the reason
+  # going to a console a double-clicked app does not have.
+  #
+  # tests/test_compiler_check.py pins the logic hermetically and runs in the unit
+  # tiers on all three OSes. What it *cannot* check is whether real macOS behaves
+  # as those tests assume, since it builds its own fake shims. This job is that
+  # check, and only that: two states on one architecture, ~3 minutes.
+  #
+  # The full grid -- four toolchain states x both architectures, plus the packaged
+  # binary opened under each -- is .github/workflows/mac-extended.yml, which is
+  # far too slow for a PR and runs weekly and on demand instead.
+  macos-compiler-detection:
+    name: Compiler detection is true on macOS (${{ matrix.state }})
+    runs-on: macos-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        # xcode: detection must not have gone pessimistic on a healthy machine.
+        # no-toolchain: the reported bug, which the shipped code fails.
+        state: [xcode, no-toolchain]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          # The interpreter the release build freezes.
+          python-version: "3.10"
+      # setuptools is what Myokit compiles through, and is no longer in a default
+      # 3.12+ venv -- install it rather than inherit the image's.
+      - name: Install setuptools
+        run: python -m pip install --upgrade pip setuptools
+      - name: Probe the toolchain
+        run: |
+          set -uo pipefail
+          # Exported here, not in an `env:` block: a falsy expression there sets
+          # the variable to the empty string rather than leaving it unset, and an
+          # empty DEVELOPER_DIR is not the same as none -- it would perturb the
+          # baseline this is compared against.
+          if [ "${{ matrix.state }}" = "no-toolchain" ]; then
+            export DEVELOPER_DIR=/var/empty
+            EXPECT=absent
+          else
+            EXPECT=present
+          fi
+          python scripts/mac_toolchain_probe.py \
+            --label "${{ matrix.state }}" --expect "$EXPECT"
