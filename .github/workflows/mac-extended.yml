@@ -154,17 +154,31 @@ jobs:
           esac
 
           # xcode and clt-only are both configurations a user is entitled to
-          # expect to work, so they assert a working compile. The other two are
-          # reproductions: they assert the compile is broken — and the probe fails
-          # them anyway if has_cpp_compiler() claimed otherwise, which is the
-          # actual defect.
+          # expect to work, so they assert a working compile. no-toolchain asserts
+          # the compile is broken *and* that has_cpp_compiler() said so — that
+          # agreement is the whole bug guard, and the shipped code failed it.
+          #
+          # stale-sdk is the one state where the two questions legitimately come
+          # apart, so it states the detection expectation rather than inheriting
+          # the agreement rule. clang there is perfectly healthy and detection is
+          # right to say so; the compile fails only because this state injects
+          # CFLAGS naming an SDK that does not exist. Asking has_cpp_compiler() to
+          # predict that would be asking it whether the ambient build flags are
+          # usable, which is a different question from whether a compiler is
+          # installed, and not one it claims to answer. The state still earns its
+          # place: it pins that a missing -isysroot is fatal and that CPython only
+          # warns about it, which is what makes it worth guarding against the day a
+          # runner image starts baking one in.
+          EXPECT_DETECTION=""
           case "${{ matrix.state }}" in
             xcode|clt-only) EXPECT=present ;;
+            stale-sdk)      EXPECT=absent; EXPECT_DETECTION="--expect-detection present" ;;
             *)              EXPECT=absent  ;;
           esac
+          # shellcheck disable=SC2086 - EXPECT_DETECTION is a flag pair or empty
           python scripts/mac_toolchain_probe.py \
             --label "${{ matrix.state }}-${{ matrix.os }}" \
-            --expect "$EXPECT" \
+            --expect "$EXPECT" $EXPECT_DETECTION \
             --json "probe-${{ matrix.state }}.json"
 
       - name: Upload the probe report

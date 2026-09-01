@@ -267,6 +267,15 @@ def main() -> int:
     )
     ap.add_argument("--expect", choices=("present", "absent"),
                     help="assert what a real compile does on this machine")
+    ap.add_argument(
+        "--expect-detection", choices=("present", "absent"),
+        help=(
+            "assert what has_cpp_compiler() says, when that is legitimately NOT "
+            "the same as whether a compile succeeds. Without this the probe "
+            "requires the two to agree, which is the bug guard; pass it only for "
+            "a state where they are *supposed* to differ, and say why."
+        ),
+    )
     ap.add_argument("--label", default=os.environ.get("PROBE_LABEL", "probe"),
                     help="name for this toolchain state, echoed into the report")
     ap.add_argument("--json", type=Path, help="also write the full report here")
@@ -306,10 +315,23 @@ def main() -> int:
         return 0
 
     failures = []
-    # The bug, stated as an assertion: detection must match reality. A false
-    # positive is the one that hurts — the app promises CVODE_myokit and then
-    # dies inside distutils with no console to print the reason to.
-    if report["detection"].get("importable") and detected is not None and detected != can_compile:
+    if args.expect_detection:
+        # An explicitly stated expectation replaces the agreement rule, for the
+        # states where the two questions genuinely come apart. `stale-sdk` is the
+        # case: clang is healthy and has_cpp_compiler() is right to say so, while
+        # the compile still fails because the ambient CFLAGS name an SDK that is
+        # not there. "Is there a working compiler" and "are the flags in this
+        # environment usable" are different questions, and only the first is
+        # has_cpp_compiler()'s to answer.
+        want = args.expect_detection == "present"
+        if detected is not None and detected != want:
+            failures.append(
+                f"expected compiler detection to say {want}, but it said {detected}"
+            )
+    elif report["detection"].get("importable") and detected is not None and detected != can_compile:
+        # The bug, stated as an assertion: detection must match reality. A false
+        # positive is the one that hurts — the app promises CVODE_myokit and then
+        # dies inside distutils with no console to print the reason to.
         failures.append(
             f"compiler detection says {detected} but a real compile "
             f"{'succeeded' if can_compile else 'failed'} — "
