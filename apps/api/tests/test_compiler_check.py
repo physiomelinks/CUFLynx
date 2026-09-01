@@ -105,9 +105,18 @@ def test_a_broken_first_candidate_does_not_mask_a_working_later_one(
     assert compiler_check.has_cpp_compiler() is True
 
 
+@pytest.mark.skipif(
+    platform.system() == "Windows", reason="the posix branch is what is under test"
+)
 def test_a_compiler_binary_that_vanishes_is_not_an_error(monkeypatch):
     """which() can win a race it then loses. Detection reports absence; it must
-    never raise into GET /api/config."""
+    never raise into GET /api/config.
+
+    Windows-skipped like its siblings, and for a reason worth stating: there
+    ``has_cpp_compiler`` takes the MSVC branch, which only *looks* for cl.exe and
+    never runs it — so patching ``which`` to name a missing file makes that branch
+    answer True quite correctly, and the test would be asserting the opposite of
+    what the code means. Running the compiler is a POSIX-branch concern."""
     monkeypatch.setattr(
         compiler_check.shutil, "which", lambda name: "/definitely/not/here/cc"
     )
