@@ -26,6 +26,18 @@ name: Extended macOS tests
 #     _osx_support.compiler_fixup only WARNS about a missing SDK; it does not
 #     strip the flag, and clang then cannot find stdio.h.
 #
+#   * NO python.org FRAMEWORK. The frozen app hands clang
+#       -I/Library/Frameworks/Python.framework/Versions/3.10/include/python3.10
+#     — the BUILD machine's header path — instead of the copy cuflynx.spec ships
+#     to <bundle>/include/python3.10. On Linux the two coincide, because
+#     PyInstaller points sys.prefix at _MEIPASS and sysconfig's include path is
+#     prefix-relative; on a macOS *framework* build it is absolute, so the
+#     bundled headers are never consulted. A user who has never installed
+#     python.org Python has no such directory, and the compile dies on Python.h
+#     with a perfectly healthy toolchain. actions/setup-python installs exactly
+#     that framework on the runner, which is why no CI job can see this by
+#     accident — the `no-python-headers` state hides it on purpose.
+#
 # So this workflow varies the toolchain, not the code. It is deliberately not on
 # every push: the packaged tier builds the real binary on both architectures and
 # takes ~30 minutes a leg.
@@ -377,8 +389,36 @@ jobs:
             sudo xcode-select --switch /Library/Developer/CommandLineTools
             xcode-select -p
             run_state "clt-only" 8125
+            sudo xcode-select --reset
           else
             echo "::warning::no /Library/Developer/CommandLineTools on this image; skipping clt-only"
+          fi
+
+          # A machine that has never installed python.org's Python — which is
+          # every ordinary user's Mac, and the one state the runner can otherwise
+          # never be in, because actions/setup-python puts that framework here.
+          #
+          # This is NOT a toolchain state: the compiler is left perfectly healthy.
+          # It exists because the reproduction above showed the frozen app handing
+          # clang
+          #     -I/Library/Frameworks/Python.framework/Versions/3.10/include/python3.10
+          # — the BUILD machine's header path — rather than the copy the spec ships
+          # to <bundle>/include/python3.10. On Linux those coincide, because
+          # PyInstaller points sys.prefix at _MEIPASS and sysconfig's include path
+          # is prefix-relative; on a macOS *framework* build it is absolute and
+          # framework-rooted, so the bundled headers are never consulted and the
+          # app depends on a directory the user has no reason to have.
+          #
+          # Hiding just the include dir leaves the frozen binary fully runnable
+          # (it carries its own libpython) and removes exactly what a user lacks.
+          PYINC="$(python -c 'import sysconfig; print(sysconfig.get_paths()["include"])')"
+          if [ -d "$PYINC" ]; then
+            echo "hiding $PYINC to imitate a Mac with no python.org framework"
+            sudo mv "$PYINC" "$PYINC.hidden"
+            run_state "no-python-headers" 8126
+            sudo mv "$PYINC.hidden" "$PYINC"
+          else
+            echo "::warning::$PYINC does not exist; skipping no-python-headers"
           fi
 
           echo "===== summary ====="
