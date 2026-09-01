@@ -29,6 +29,7 @@ import sys
 import traceback
 from pathlib import Path
 
+import ca_obs
 import emulator_config
 from ca_imports import ensure_ca_path
 
@@ -109,10 +110,7 @@ def _apply_start_point(param_id, values: dict, source_label: str) -> None:
     """
     try:
         pid = param_id.param_id
-        names = [
-            n[0] if isinstance(n, (list, tuple)) else n
-            for n in pid.param_id_info["param_names"]
-        ]
+        names = ca_obs.param_row_keys(pid.param_id_info)
         current = list(pid.param_init) if pid.param_init is not None else [None] * len(names)
         applied = 0
         for i, name in enumerate(names):
@@ -396,9 +394,7 @@ def _generate_error_vectors(param_id, output_dir: str) -> dict:
             out["percent_error"] = [float(x) for x in np.load(pe)]
             out["std_error"] = [float(x) for x in np.load(se)]
             obs_info = getattr(param_id, "obs_info", {}) or {}
-            from ca_imports import ca_from  # noqa: PLC0415
-            names = ca_from("utilities.obs_data_helpers", "obs_item_labels")(obs_info)
-            out["error_labels"] = [str(n) for n in names]
+            out["error_labels"] = [str(n) for n in ca_obs.item_labels(obs_info)]
     except Exception as exc:  # noqa: BLE001
         print(f"warning: could not load error vectors: {exc}", flush=True)
     return out

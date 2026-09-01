@@ -33,6 +33,7 @@ import math
 import sys
 import tempfile
 
+import ca_obs
 from obs_options import get_cost_funcs, get_operation_funcs
 
 # The cost when a data_item names none. CA's own default for a data_item with no
@@ -179,7 +180,7 @@ def _ca_engine(obs_data: dict, output_dir: str | None, dt: float):
         pid = ParamID.__new__(ParamID)
         pid.obs_info = obs_info
         pid.protocol_info = protocol_info
-        pid.cost_type = obs_info["cost_type"]
+        pid.cost_type = ca_obs.cost_types(obs_info)
         pid.dt = float(dt)
         pid.model_type = "cellml"  # only decides symbolic vs numeric; this path is numeric
         pid.cost_funcs_dict = sfp.get_cost_funcs_dict("numpy")
@@ -213,8 +214,8 @@ def _operands_for(pid, segment: dict):
 
     return [
         [np.asarray(segment.get(name, []), dtype=float)
-         for name in pid.obs_info["operands"][JJ]]
-        for JJ in range(pid.obs_info["num_obs"])
+         for name in ca_obs.operand_lists(pid.obs_info)[JJ]]
+        for JJ in range(ca_obs.count(pid.obs_info))
     ]
 
 
@@ -279,8 +280,8 @@ def _emulated_operands(pid, feature_values: dict, why: list | None = None):
     labels = _ca_feature_labels(obs_info)
     if labels is None:
         return _give_up('circulatory_autogen could not label this obs_data\'s observables')
-    num_obs = int(obs_info["num_obs"])
-    const_to_obs = [int(i) for i in obs_info["const_idx_to_obs_idx"]]
+    num_obs = ca_obs.count(obs_info)
+    const_to_obs = [int(i) for i in ca_obs.scalar_rows(obs_info)]
     # An emulator predicts scalar features only. A series/frequency observable
     # has no prediction, and CA would score whatever stood in for it -- so the
     # whole cost is reported unavailable rather than quietly computed over a
@@ -308,7 +309,7 @@ def _emulated_operands(pid, feature_values: dict, why: list | None = None):
     if any(v is None for v in by_item):
         return _give_up('the emulator\'s predictions do not cover every scored observable')
     return [
-        [np.array([by_item[JJ]], dtype=float) for _ in obs_info["operands"][JJ]]
+        [np.array([by_item[JJ]], dtype=float) for _ in ca_obs.operand_lists(obs_info)[JJ]]
         for JJ in range(num_obs)
     ]
 
@@ -353,14 +354,23 @@ def _ca_evaluate(obs_data, outputs_by_experiment, output_dir, dt, why=None,  # n
         pid.emulates_features = True
     # Absent on a CA that predates cost_kwargs; then no data_item can carry any.
     kwargs_for = getattr(pid, "_cost_kwargs_for", None)
-    num_sub = pid.protocol_info["num_sub_per_exp"]
+    num_sub = ca_obs.subexperiment_counts(pid.protocol_info)
+    # Bound above the exp/sub/observable triple below. `evaluate` runs on every simulation --
+    # every slider move -- so a lookup here is a lookup per observable per sub-experiment per
+    # experiment. These are the columns that loop reads.
+    obs_info = pid.obs_info
+    scalar_rows = ca_obs.scalar_rows(obs_info)
+    scalar_ground_truth = ca_obs.scalar_ground_truth(obs_info)
+    scalar_std = ca_obs.scalar_std(obs_info)
+    experiment_idxs = ca_obs.experiment_indices(obs_info)
+    subexperiment_idxs = ca_obs.subexperiment_indices(obs_info)
     total = 0.0
     denom = 0
     models: dict[int, float] = {}
     costs: dict[int, float] = {}
 
     try:
-        for exp in range(len(pid.protocol_info["sim_times"])):
+        for exp in range(len(ca_obs.sim_times(pid.protocol_info))):
             for sub in range(num_sub[exp]):
                 if feature_operands is not None:
                     # The emulator predicts every data_item's feature at once,
@@ -380,12 +390,11 @@ def _ca_evaluate(obs_data, outputs_by_experiment, output_dir, dt, why=None,  # n
                 # rows; taken from CA's own evaluation rather than recomputed.
                 const = pid.get_obs_output_dict(operands).get("const")
                 if const is not None:
-                    weights = pid.protocol_info[
-                        "scaled_weight_const_from_exp_sub"][exp][sub]
-                    for k, obs_idx in enumerate(obs_info["const_idx_to_obs_idx"]):
+                    weights = ca_obs.scaled_scalar_weights(pid.protocol_info)[exp][sub]
+                    for k, obs_idx in enumerate(scalar_rows):
                         obs_idx = int(obs_idx)
-                        if int(obs_info["experiment_idxs"][obs_idx]) != exp or \
-                                int(obs_info["subexperiment_idxs"][obs_idx]) != sub:
+                        if int(experiment_idxs[obs_idx]) != exp or \
+                                int(subexperiment_idxs[obs_idx]) != sub:
                             continue
                         models[obs_idx] = float(const[k])
                         # This item's own contribution, from the same call
@@ -403,8 +412,8 @@ def _ca_evaluate(obs_data, outputs_by_experiment, output_dir, dt, why=None,  # n
                             value = float(_call_cost(
                                 func,
                                 float(const[k]),
-                                float(obs_info["ground_truth_const"][k]),
-                                std=float(obs_info["std_const_vec"][k]),
+                                float(scalar_ground_truth[k]),
+                                std=float(scalar_std[k]),
                                 weight=weight,
                                 # The data_item's own cost_kwargs, read through CA's
                                 # accessor so the per-item column indexes them the
@@ -431,22 +440,25 @@ def _ca_evaluate(obs_data, outputs_by_experiment, output_dir, dt, why=None,  # n
 
 def _ca_items(obs_info, models: dict, costs: dict) -> list:
     """Per-observable rows for the panel, from CA's own obs_info."""
-    from ca_imports import ca_from  # noqa: PLC0415
+    # All bound once. The labels were previously resolved *and* called per observable, in a
+    # function `evaluate` reaches on every simulation -- i.e. every slider move.
+    labels = ca_obs.item_labels(obs_info)
+    operations = ca_obs.operations(obs_info)
+    experiment_idxs = ca_obs.experiment_indices(obs_info)
+    subexperiment_idxs = ca_obs.subexperiment_indices(obs_info)
+    rows = ca_obs.scalar_rows(obs_info)
 
-    obs_item_labels = ca_from("utilities.obs_data_helpers", "obs_item_labels")
     items = []
-    gt = {int(o): float(v) for o, v in
-          zip(obs_info["const_idx_to_obs_idx"], obs_info["ground_truth_const"])}
-    std = {int(o): float(v) for o, v in
-           zip(obs_info["const_idx_to_obs_idx"], obs_info["std_const_vec"])}
-    for obs_idx in range(obs_info["num_obs"]):
+    gt = {int(o): float(v) for o, v in zip(rows, ca_obs.scalar_ground_truth(obs_info))}
+    std = {int(o): float(v) for o, v in zip(rows, ca_obs.scalar_std(obs_info))}
+    for obs_idx in range(ca_obs.count(obs_info)):
         model = models.get(obs_idx)
         observed = gt.get(obs_idx)
         entry = {
-            "label": str(obs_item_labels(obs_info)[obs_idx]),
-            "operation": str(obs_info["operations"][obs_idx] or ""),
-            "experiment_idx": int(obs_info["experiment_idxs"][obs_idx]),
-            "subexperiment_idx": int(obs_info["subexperiment_idxs"][obs_idx]),
+            "label": str(labels[obs_idx]),
+            "operation": str(operations[obs_idx] or ""),
+            "experiment_idx": int(experiment_idxs[obs_idx]),
+            "subexperiment_idx": int(subexperiment_idxs[obs_idx]),
             "observed": observed,
             "model": model,
             "percent_error": None,

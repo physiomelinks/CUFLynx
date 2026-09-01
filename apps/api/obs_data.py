@@ -21,6 +21,7 @@ fail when a calibration subprocess started.
 
 from __future__ import annotations
 
+import ca_obs
 import copy
 import sys
 from dataclasses import dataclass, field
@@ -182,7 +183,7 @@ def parse_obs_data(obj) -> ObsData:
         raise ObsDataError("'data_items' must be a list")
 
     if protocol_info is not None:
-        n_experiments = len(protocol_info["sim_times"])
+        n_experiments = len(ca_obs.sim_times(protocol_info))
     else:
         idxs = [it.get("experiment_idx", 0) for it in data_items if isinstance(it, dict)]
         n_experiments = (max(idxs) + 1) if idxs else 1

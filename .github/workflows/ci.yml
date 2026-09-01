@@ -40,6 +40,14 @@ jobs:
         run: |
           python -c "import importlib.metadata as m; print(m.version('cuflynx-api'))"
 
+      # A repo-level check, so it belongs in a job that runs once rather than in the
+      # per-Python matrix. `working-directory` explicitly, because this job defaults to
+      # apps/api and the script lives at the root -- which is exactly how the first attempt
+      # at this failed, and passed on Windows only because that job never got the step.
+      - name: The version is in sync across its three files
+        working-directory: ${{ github.workspace }}
+        run: python scripts/sync_version.py --check
+
   backend-unit:
     name: Backend unit tests (no Myokit, ${{ matrix.python-version }})
     runs-on: ubuntu-latest
