@@ -22,6 +22,7 @@ Shared by ``scripts/install.py`` (prompt to install) and ``GET /api/config``
 
 from __future__ import annotations
 
+import functools
 import os
 import platform
 import shutil
@@ -42,11 +43,22 @@ _HINTS = {
     "Linux": (
         "Install a C compiler, e.g.:\n"
         "  sudo apt install build-essential   # Debian/Ubuntu\n"
-        "  sudo dnf groupinstall 'Development Tools'   # Fedora/RHEL"
+        "  sudo dnf groupinstall 'Development Tools'   # Fedora/RHEL\n"
+        "Then restart CUFLynx so the compiler is picked up."
     ),
+    # `xcode-select -p` matters as much as the install: macOS ships /usr/bin/clang
+    # as an xcrun shim whatever happens, so the toolchain can also be "installed"
+    # yet unusable because the active developer directory points at an Xcode that
+    # has since been deleted. Both states fail identically, and both are fixed
+    # from here.
     "Darwin": (
         "Install the Xcode command-line tools:\n"
-        "  xcode-select --install"
+        "  xcode-select --install\n"
+        "If they are already installed, check that the active developer directory "
+        "still exists:\n"
+        "  xcode-select -p            # then, if it names a missing folder:\n"
+        "  sudo xcode-select --reset\n"
+        "Then restart CUFLynx so the compiler is picked up."
     ),
 }
 
@@ -80,11 +92,50 @@ def _has_msvc() -> bool:
         return False
 
 
+def _compiler_runs(path: str) -> bool:
+    """True if this compiler binary actually runs.
+
+    ``shutil.which`` is not enough on macOS, and that is not a detail: ``/usr/bin/cc``,
+    ``/usr/bin/gcc`` and ``/usr/bin/clang`` are shipped by macOS **itself** as
+    ``xcrun`` shims and are therefore *always* present, whether or not any toolchain
+    is installed behind them. With none installed they exit 1 with
+
+        xcode-select: note: No developer tools were found, requesting install.
+
+    so a which-only check reports a compiler on a machine that cannot compile. The
+    app then offered CVODE_myokit and the run died much later, inside distutils,
+    with the opaque
+
+        DistutilsExecError: command '/usr/bin/clang' failed with exit code 1
+
+    and no console for a packaged app to print the reason to. Running the thing is
+    the only question worth asking; ``--version`` is the cheapest way to ask it
+    (~50 ms, and the broken shims fail it immediately).
+    """
+    try:
+        proc = subprocess.run(
+            [path, "--version"], capture_output=True, timeout=30, check=False
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return proc.returncode == 0
+
+
+@functools.lru_cache(maxsize=1)
 def has_cpp_compiler() -> bool:
-    """True if Myokit will be able to compile a model on this machine."""
+    """True if Myokit will be able to compile a model on this machine.
+
+    Cached: ``GET /api/config`` asks on every settings open, and this spawns
+    processes. A toolchain installed while the app is running therefore needs a
+    restart to be picked up, which is what every ``_HINTS`` entry now says.
+    """
     if platform.system() == "Windows":
         return _has_msvc()
-    return any(shutil.which(cc) for cc in ("cc", "gcc", "clang"))
+    return any(
+        _compiler_runs(path)
+        for cc in ("cc", "gcc", "clang")
+        if (path := shutil.which(cc))
+    )
 
 
 def compiler_hint() -> str:
