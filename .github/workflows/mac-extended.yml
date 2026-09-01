@@ -1,0 +1,396 @@
+name: Extended macOS tests
+
+# Why this workflow exists
+# ========================
+# A user opening the packaged macOS app hit
+#
+#     File "setuptools/_distutils/spawn.py", line 70, in spawn
+#     distutils.errors.DistutilsExecError: command '/usr/bin/clang' failed with exit code 1
+#
+# and release.yml's smoke test cannot see it. That test runs the CVODE_myokit
+# backend on a GitHub macOS runner, which has a full Xcode.app — the one macOS
+# toolchain configuration almost no user has. Every other configuration is
+# untested, and two of them are known to break a run-time C compile:
+#
+#   * NO TOOLCHAIN. /usr/bin/cc, /usr/bin/gcc and /usr/bin/clang are shipped by
+#     macOS itself as xcrun shims and are ALWAYS present. With nothing installed
+#     behind them they exit 1. compiler_check.has_cpp_compiler() asks
+#     shutil.which(), so it answers True on a machine that cannot compile: the
+#     app promises CVODE_myokit, then dies inside distutils.
+#
+#   * COMMAND LINE TOOLS ONLY, the ordinary developer Mac. Its SDK lives at
+#     /Library/Developer/CommandLineTools/SDKs/..., not under Xcode.app. The
+#     frozen interpreter carries the BUILD machine's _sysconfigdata, and
+#     distutils reads CFLAGS from it — so an -isysroot baked in on the runner
+#     names a path that does not exist on the user's Mac. CPython's
+#     _osx_support.compiler_fixup only WARNS about a missing SDK; it does not
+#     strip the flag, and clang then cannot find stdio.h.
+#
+# So this workflow varies the toolchain, not the code. It is deliberately not on
+# every push: the packaged tier builds the real binary on both architectures and
+# takes ~30 minutes a leg.
+#
+# Read the result as: a red `no-toolchain` leg reproduces the user's crash, and a
+# red `clt-only` leg means the shipped binary cannot compile on an ordinary
+# developer Mac either.
+
+on:
+  workflow_dispatch:
+    inputs:
+      packaged:
+        description: "Also build the real binary and run it under each toolchain state (slow)"
+        type: boolean
+        default: true
+  schedule:
+    # Weekly. The macOS runner images roll forward (Xcode version, SDK version,
+    # default developer dir), and every one of those rolls can change the answer
+    # here without a single line of this repo changing.
+    - cron: "0 5 * * 1"
+  push:
+    # An escape hatch for iterating on this workflow itself without burning a
+    # dispatch on every push to a feature branch.
+    branches: ["mac/**"]
+
+concurrency:
+  group: mac-extended-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Tier 1 — fast (~3 min a leg). No PyInstaller, no Sundials: just "can this
+  # machine compile a CPython extension, and does CUFLynx know?"
+  #
+  # This is the tier that isolates the *detection* bug, which is independent of
+  # packaging and reproduces from source just as well.
+  # ---------------------------------------------------------------------------
+  toolchain:
+    name: ${{ matrix.state }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        # Both architectures: the Intel image and the Apple-silicon image ship
+        # different Xcode versions and different default SDKs, and the -isysroot
+        # baked into the two shipped binaries therefore differs too.
+        os: [macos-latest, macos-15-intel]
+        state: [xcode, clt-only, no-toolchain, stale-sdk]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          # The interpreter the release build freezes. Its _sysconfigdata is what
+          # ends up inside the executable, so probing any other version would
+          # answer a question nobody asked.
+          python-version: "3.10"
+
+      # setuptools is what Myokit compiles through, and 3.12+ venvs no longer
+      # ship it. Install it explicitly so this tier does not silently depend on
+      # the runner image's default.
+      - name: Install setuptools
+        run: python -m pip install --upgrade pip setuptools
+
+      - name: Record the toolchain this runner starts with
+        run: |
+          set -x
+          sw_vers
+          xcode-select -p || true
+          xcrun --show-sdk-path || true
+          ls -d /Library/Developer/CommandLineTools 2>/dev/null || echo "no CommandLineTools"
+          ls -d /Applications/Xcode*.app 2>/dev/null || echo "no Xcode.app"
+
+      # The ordinary developer Mac: Command Line Tools installed, no Xcode.app.
+      # Switching the active developer dir is the closest a runner can get
+      # without uninstalling Xcode, and it is enough — it moves the SDK, which is
+      # the thing the frozen CFLAGS name.
+      - name: Select Command Line Tools only
+        if: matrix.state == 'clt-only'
+        run: |
+          set -euo pipefail
+          if [ ! -d /Library/Developer/CommandLineTools ]; then
+            echo "::error::This runner image has no /Library/Developer/CommandLineTools, so the ordinary-developer-Mac state cannot be simulated here."
+            exit 1
+          fi
+          sudo xcode-select --switch /Library/Developer/CommandLineTools
+          xcode-select -p
+          xcrun --show-sdk-path
+
+      - name: Probe the toolchain
+        run: |
+          set -uo pipefail
+          # Exported here rather than in an `env:` block on purpose: an `env:`
+          # entry with a falsy expression sets the variable to the EMPTY STRING
+          # rather than leaving it unset, and an empty DEVELOPER_DIR is not the
+          # same thing as no DEVELOPER_DIR — it would perturb the very baseline
+          # the other states are compared against.
+          case "${{ matrix.state }}" in
+            no-toolchain)
+              # A Mac with no developer tools behind the /usr/bin shims. Pointing
+              # DEVELOPER_DIR at a directory with no toolchain in it makes
+              # /usr/bin/clang's xcrun shim exit 1 exactly as it does on a Mac
+              # that has never run `xcode-select --install`.
+              export DEVELOPER_DIR=/var/empty
+              ;;
+            stale-sdk)
+              # An SDK path that does not exist, injected the same way the frozen
+              # interpreter injects the build machine's: through the CFLAGS
+              # distutils reads. Proves a missing -isysroot is fatal on its own,
+              # even when the compiler behind it is perfectly healthy.
+              export CFLAGS="-isysroot /Applications/Xcode_99.9.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX99.sdk"
+              ;;
+          esac
+
+          # xcode and clt-only are both configurations a user is entitled to
+          # expect to work, so they assert a working compile. The other two are
+          # reproductions: they assert the compile is broken — and the probe fails
+          # them anyway if has_cpp_compiler() claimed otherwise, which is the
+          # actual defect.
+          case "${{ matrix.state }}" in
+            xcode|clt-only) EXPECT=present ;;
+            *)              EXPECT=absent  ;;
+          esac
+          python scripts/mac_toolchain_probe.py \
+            --label "${{ matrix.state }}-${{ matrix.os }}" \
+            --expect "$EXPECT" \
+            --json "probe-${{ matrix.state }}.json"
+
+      - name: Upload the probe report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: probe-${{ matrix.os }}-${{ matrix.state }}
+          path: probe-*.json
+          if-no-files-found: ignore
+
+  # ---------------------------------------------------------------------------
+  # Tier 2 — the real thing (~30 min a leg). Build the shipped binary, then open
+  # it under each toolchain state and run a CVODE_myokit simulation, which is the
+  # code path that raised DistutilsExecError in the user's hands.
+  #
+  # Everything before the launch loop is release.yml's build, verbatim in intent:
+  # a bundle built any other way is not the bundle under test.
+  # ---------------------------------------------------------------------------
+  packaged:
+    name: Packaged binary on ${{ matrix.os }}
+    if: github.event_name != 'workflow_dispatch' || inputs.packaged
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            asset: CUFLynx-macos-arm64
+          - os: macos-15-intel
+            asset: CUFLynx-macos-x86_64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # NOT `brew install sundials`: Homebrew's build is MPI-enabled and aborts at
+      # run time with "MPI_Comm_dup() called before MPI_INIT" even for a serial
+      # model. Same source build, same flags, same env var as release.yml.
+      - name: Build serial Sundials
+        run: |
+          set -euo pipefail
+          VER=6.5.1
+          curl -fsSL "https://github.com/LLNL/sundials/releases/download/v${VER}/sundials-${VER}.tar.gz" -o sundials.tar.gz
+          tar xzf sundials.tar.gz
+          cmake -S "sundials-${VER}" -B sundials-build \
+            -DCMAKE_INSTALL_PREFIX="$HOME/sundials-serial" \
+            -DBUILD_SHARED_LIBS=ON -DBUILD_STATIC_LIBS=OFF \
+            -DENABLE_MPI=OFF -DEXAMPLES_ENABLE_C=OFF -DEXAMPLES_INSTALL=OFF \
+            -DBUILD_TESTING=OFF \
+            -DCMAKE_INSTALL_NAME_DIR=@rpath
+          cmake --build sundials-build --target install -j3
+          echo "CUFLYNX_SUNDIALS_ROOT=$HOME/sundials-serial" >> "$GITHUB_ENV"
+          grep -q "SUNDIALS_MPI_ENABLED 0" "$HOME/sundials-serial/include/sundials/sundials_config.h"
+
+      - name: Install Python deps
+        working-directory: apps/api
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          pip install --build-constraint "${{ github.workspace }}/build-constraints.txt" \
+            -e ".[desktop,analysis]"
+
+      # The single most useful diagnostic in this workflow, and it costs seconds:
+      # the build interpreter's sysconfig is what gets frozen into the binary, so
+      # whatever -isysroot it names here is what every user's clang will be handed.
+      # If that path lives under Xcode.app, the shipped binary cannot compile on a
+      # Command-Line-Tools-only Mac, no matter how healthy that Mac is.
+      - name: What the frozen interpreter will bake in
+        run: |
+          python scripts/mac_toolchain_probe.py \
+            --label "build-interpreter-${{ matrix.os }}" \
+            --report-only --json build-interpreter.json
+          python - <<'PY'
+          import json, os, sys
+          r = json.load(open("build-interpreter.json"))
+          sdks = r["environment"]["isysroot"]
+          print("baked -isysroot:", sdks or "none")
+          for entry in sdks:
+              sdk = entry["sdk"]
+              # An SDK under Xcode.app is absent on a machine that only ever ran
+              # `xcode-select --install`, which is most users.
+              if "/Applications/Xcode" in sdk:
+                  print(f"::warning::the shipped binary will hand clang -isysroot {sdk}, "
+                        "which does not exist on a Command-Line-Tools-only Mac")
+          PY
+
+      - name: Install frontend deps
+        working-directory: apps/web
+        run: yarn install --frozen-lockfile
+
+      - name: Build executable
+        run: python scripts/package.py
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "11.0"
+          MPI4PY_RC_INITIALIZE: "0"
+          UCX_TLS: "tcp,self"
+
+      # Deliberately NOT checked out and NOT pointed at. release.yml's smoke test
+      # sets ca_dir to a checkout, which means it never exercises the libcuflynx
+      # bundled inside the binary — the thing a user actually runs. A fresh config
+      # dir matters for the same reason: a saved ca_dir from an earlier session
+      # silently wins over the bundle.
+      - name: Open the binary under each toolchain state
+        shell: bash
+        run: |
+          set -uo pipefail
+          BIN="dist/CUFLynx"
+          mkdir -p mac-logs
+          FAILURES=0
+
+          run_state () {
+            local NAME="$1"; shift
+            local PORT="$1"; shift
+            echo "::group::toolchain state: $NAME"
+            local CFG; CFG="$(mktemp -d)"
+            local LOG="mac-logs/$NAME.log"
+
+            # `env -u` so the state's variables are the ONLY difference, and so a
+            # ca_dir from nowhere can leak in.
+            env -u CIRCULATORY_AUTOGEN_SRC CUFLYNX_CONFIG_DIR="$CFG" "$@" \
+              "$BIN" --port "$PORT" --browser > "$LOG" 2>&1 &
+            local APP=$!
+
+            local UP=0
+            for _ in $(seq 1 90); do
+              if curl -sf "http://127.0.0.1:$PORT/api/health" > /dev/null; then UP=1; break; fi
+              sleep 2
+            done
+            if [ "$UP" -ne 1 ]; then
+              echo "::error::[$NAME] the app never became healthy"
+              kill "$APP" 2>/dev/null || true
+              FAILURES=$((FAILURES + 1))
+              echo "::endgroup::"
+              return
+            fi
+
+            curl -sf "http://127.0.0.1:$PORT/api/config" -o "mac-logs/$NAME-config.json"
+
+            # Prove we are testing the BUNDLED engine and not a checkout:
+            # packaged, an empty ca_dir, and CA nevertheless present.
+            python - "$NAME" "mac-logs/$NAME-config.json" <<'PY'
+          import json, sys
+          name, path = sys.argv[1], sys.argv[2]
+          d = json.load(open(path))
+          print(f"[{name}] packaged={d.get('packaged')} ca_dir={d.get('ca_dir')!r} "
+                f"ca_exists={d.get('ca_exists')} cpp_compiler={d.get('cpp_compiler')}")
+          if not (d.get("packaged") and not d.get("ca_dir") and d.get("ca_exists")):
+              sys.exit(f"[{name}] not running the bundled engine")
+          PY
+            if [ $? -ne 0 ]; then
+              kill "$APP" 2>/dev/null || true
+              FAILURES=$((FAILURES + 1))
+              echo "::endgroup::"
+              return
+            fi
+
+            # What the app TELLS the user about the compiler, recorded before we
+            # find out whether it is true.
+            local CLAIMS
+            CLAIMS=$(python -c "import json;print(json.load(open('mac-logs/$NAME-config.json')).get('cpp_compiler',{}).get('present'))")
+
+            local MODEL_ID
+            MODEL_ID=$(curl -sf -F "file=@resources/Lotka_Volterra_forced.cellml" \
+              "http://127.0.0.1:$PORT/api/models/upload" \
+              | python -c "import json,sys; print(json.load(sys.stdin)['model_id'])")
+
+            curl -sf -X POST "http://127.0.0.1:$PORT/api/config" \
+              -H 'Content-Type: application/json' \
+              -d '{"generated_model_format":"cellml","solver":"CVODE_myokit","solver_info":{"method":"CVODE","dt":0.01}}' \
+              > /dev/null
+
+            local CODE
+            CODE=$(curl -s -o "mac-logs/$NAME-sim.json" -w '%{http_code}' --max-time 600 \
+              -X POST "http://127.0.0.1:$PORT/api/simulate" \
+              -H 'Content-Type: application/json' \
+              -d "{\"model_id\":\"$MODEL_ID\",\"params\":{},\"sim_time\":2.0}")
+
+            kill "$APP" 2>/dev/null || true
+            wait "$APP" 2>/dev/null || true
+
+            echo "[$NAME] simulate -> HTTP $CODE ; app claimed compiler present=$CLAIMS"
+            # The compiler's own words. This is the line a user never sees: a
+            # double-clicked macOS app has no console for stderr to land in.
+            echo "--- app log ---"; tail -c 8000 "$LOG" || true
+            echo "--- response ---"; head -c 4000 "mac-logs/$NAME-sim.json" || true; echo
+
+            if grep -qE "DistutilsExecError|CompileError|failed with exit code" \
+                 "$LOG" "mac-logs/$NAME-sim.json" 2>/dev/null; then
+              echo "::notice::[$NAME] REPRODUCED the reported compile failure"
+              echo "$NAME: reproduced the compile failure (HTTP $CODE, app claimed compiler=$CLAIMS)" >> mac-logs/summary.txt
+            elif [ "$CODE" = "200" ]; then
+              echo "$NAME: simulation succeeded" >> mac-logs/summary.txt
+            else
+              echo "$NAME: failed with HTTP $CODE for some other reason" >> mac-logs/summary.txt
+            fi
+
+            # The assertion. A state where the app SAYS it has a compiler and then
+            # cannot simulate is the bug in the report: nothing warned the user,
+            # and the reason went to a console that does not exist.
+            if [ "$CLAIMS" = "True" ] && [ "$CODE" != "200" ]; then
+              echo "::error::[$NAME] the app reported a working C compiler and then failed to simulate (HTTP $CODE)"
+              FAILURES=$((FAILURES + 1))
+            fi
+            echo "::endgroup::"
+          }
+
+          # Baseline: the configuration release.yml already tests. Must pass.
+          run_state "xcode" 8123
+
+          # A machine with no developer tools behind the /usr/bin shims.
+          run_state "no-toolchain" 8124 env DEVELOPER_DIR=/var/empty
+
+          # The ordinary developer Mac.
+          if [ -d /Library/Developer/CommandLineTools ]; then
+            sudo xcode-select --switch /Library/Developer/CommandLineTools
+            xcode-select -p
+            run_state "clt-only" 8125
+          else
+            echo "::warning::no /Library/Developer/CommandLineTools on this image; skipping clt-only"
+          fi
+
+          echo "===== summary ====="
+          cat mac-logs/summary.txt || true
+          exit "$FAILURES"
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mac-extended-${{ matrix.asset }}
+          path: |
+            mac-logs/
+            build-interpreter.json
+          if-no-files-found: ignore
