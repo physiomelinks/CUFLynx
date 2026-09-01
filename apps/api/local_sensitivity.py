@@ -42,6 +42,7 @@ import re
 
 import numpy as np
 
+import ca_obs
 from ca_imports import canonical_model_type
 
 _TINY = 1e-12
@@ -133,10 +134,7 @@ def _resolve_nominal(pid, param_names, mins, maxs, settings, best_vals, best_par
             "reused calibration best fit",
         )
     if mode == "current":
-        first_members = [
-            n[0] if isinstance(n, (list, tuple)) else n
-            for n in pid.param_id_info["param_names"]
-        ]
+        first_members = ca_obs.param_row_keys(pid.param_id_info)
         vals = pid.sim_helper.get_init_param_vals(first_members)
         nominal = np.asarray(
             [v[0] if isinstance(v, (list, tuple)) else v for v in vals], dtype=float
@@ -271,7 +269,7 @@ def _ca_feature_values(pid, nominal) -> dict:
     if not operands_list or operands_list[0] is None:
         raise RuntimeError("Local sensitivity nominal simulation failed to converge.")
     const = np.asarray(pid.get_obs_output_dict(operands_list[0])["const"], dtype=float)
-    c2o = pid.obs_info["const_idx_to_obs_idx"]
+    c2o = ca_obs.scalar_rows(pid.obs_info)
     return {pid._observable_label(o): float(const[k]) for k, o in enumerate(c2o)}
 
 
@@ -324,24 +322,24 @@ def _ca_local_sensitivity(
     # sensitivity is d/dtheta over all of that entry's members. Looking them up
     # by qname misses every such entry and reports an empty cell -- which reads
     # as "no sensitivity" rather than "asked the wrong question".
-    try:
-        from ca_imports import ca_from  # noqa: PLC0415
+    labels = ca_obs.param_row_labels(pid.param_id_info) or list(param_names)
 
-        param_entry_labels = ca_from("parsers.PrimitiveParsers", "param_entry_labels")
-        obs_item_labels = ca_from("utilities.obs_data_helpers", "obs_item_labels")
-        labels = list(param_entry_labels(pid.param_id_info))
-    except Exception:  # noqa: BLE001 - a CA predating labels keys by qname
-        labels = list(param_names)
+    # Bound once. Each of these was a dict read (or, for the labels, a CA resolution) inside
+    # the loop below, which runs per constant observable per parameter.
+    item_labels = ca_obs.item_labels(obs)
+    experiment_idxs = ca_obs.experiment_indices(obs)
+    subexperiment_idxs = ca_obs.subexperiment_indices(obs)
+    operations = ca_obs.operations(obs)
 
     local: dict[str, dict[str, float | None]] = {}
     output_names: list[str] = []
-    for _k, obs_idx in enumerate(obs["const_idx_to_obs_idx"]):
+    for _k, obs_idx in enumerate(ca_obs.scalar_rows(obs)):
         label = pid._observable_label(obs_idx)
         oname = format_output_name(
-            obs_item_labels(obs)[obs_idx],
-            obs["experiment_idxs"][obs_idx],
-            obs["subexperiment_idxs"][obs_idx],
-            obs["operations"][obs_idx],
+            item_labels[obs_idx],
+            experiment_idxs[obs_idx],
+            subexperiment_idxs[obs_idx],
+            operations[obs_idx],
         )
         output_names.append(oname)
         denom = y0.get(label, float("nan"))
@@ -476,12 +474,10 @@ def compute_local_sensitivity(
         resolve_modifier_baselines(pid.param_id_info, pid.sim_helper)
     except ImportError:  # a CA predating modifiers has none to resolve
         pass
-    param_names = [
-        name[0] if isinstance(name, (list, tuple)) else name
-        for name in pid.param_id_info["param_names"]
-    ]
-    mins = np.asarray(pid.param_id_info["param_mins"], dtype=float)
-    maxs = np.asarray(pid.param_id_info["param_maxs"], dtype=float)
+    param_names = ca_obs.param_row_keys(pid.param_id_info)
+    mins_raw, maxs_raw = ca_obs.param_bounds(pid.param_id_info)
+    mins = np.asarray(mins_raw, dtype=float)
+    maxs = np.asarray(maxs_raw, dtype=float)
     nominal, nominal_source = _resolve_nominal(
         pid, param_names, mins, maxs, settings, best_vals, best_params, current_params
     )

@@ -416,9 +416,18 @@ jobs:
 
           kill $APP || true
 
+      # `mv`, not `cp`: there is no reason to write a second copy of a ~200-600 MB binary,
+      # and the write is what hangs. On the v0.5.0 build this step stalled for 38 minutes on
+      # Windows -- almost certainly Defender scanning a freshly written executable -- until
+      # the job timeout cancelled the leg, and a cancelled leg skips `Publish release`. Four
+      # good assets were discarded because the fifth could not copy a file.
+      #
+      # The timeout is the other half: three minutes is far beyond a rename and far below the
+      # job budget, so a hang fails here, loudly, instead of consuming the whole build.
       - name: Rename artifact
         shell: bash
-        run: cp "${{ matrix.binary }}" "${{ matrix.asset }}"
+        timeout-minutes: 3
+        run: mv "${{ matrix.binary }}" "${{ matrix.asset }}"
 
       # A GitHub release asset is capped at 2 GiB, and the upload is the LAST step of the
       # whole pipeline -- so without this the first thing that tells you the bundle is too

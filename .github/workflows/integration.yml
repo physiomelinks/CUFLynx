@@ -272,6 +272,56 @@ jobs:
   # dependency at its newest allowed version, runs the tier, and opens an issue when it
   # breaks -- so the next upstream surprise arrives as a notification rather than as a
   # lost overnight job.
+  # The pin in ci.yml names a circulatory_autogen *commit*, and a commit does not age
+  # visibly: it sat at ad312754 for months while the tier below tested an engine nobody was
+  # shipping, and nothing said so. Weekly, because that is the cadence at which "our CI is
+  # testing something no user runs" is worth hearing about, and not on pull requests, where
+  # it would fail somebody's unrelated change.
+  ca-pin-freshness:
+    name: The pinned CA is not far behind
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compare the pin against the latest libcuflynx release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # How many releases behind is tolerable. One allows the normal window between a
+          # libcuflynx release and the CUFLynx release that adopts it.
+          ALLOWED_BEHIND: "1"
+        run: |
+          set -euo pipefail
+          pin="$(grep -oE 'ref: [0-9a-f]{40}' .github/workflows/ci.yml | head -1 | cut -d' ' -f2)"
+          if [ -z "$pin" ]; then
+            echo "::error::no 40-character CA ref found in ci.yml -- has the pin moved or changed shape?"
+            exit 1
+          fi
+          echo "pinned CA commit: $pin"
+
+          # Every release tag newer than the pinned commit. `--paginate` because the list
+          # grows, and the pin can legitimately be several tags back.
+          behind=0
+          while read -r tag sha; do
+            [ -z "$tag" ] && continue
+            if [ "$sha" = "$pin" ]; then break; fi
+            # Is the pin an ancestor of this tag? If so the tag is newer than the pin.
+            if gh api "repos/physiomelinks/circulatory_autogen/compare/$pin...$tag" \
+                 --jq '.status' 2>/dev/null | grep -qx "ahead"; then
+              behind=$((behind + 1))
+            fi
+          done < <(gh api repos/physiomelinks/circulatory_autogen/releases --paginate \
+                     --jq '.[] | "\(.tag_name) \(.target_commitish)"' | head -20)
+
+          echo "libcuflynx releases newer than the pin: $behind (tolerated: $ALLOWED_BEHIND)"
+          if [ "$behind" -gt "$ALLOWED_BEHIND" ]; then
+            echo "::error::the CA pin in ci.yml is $behind libcuflynx releases behind. The"
+            echo "::error::integration tier is testing an engine no user runs. Bump both"
+            echo "::error::`ref:` lines to the current release's merge commit."
+            exit 1
+          fi
+
   dependency-upgrade:
     name: Weekly dependency upgrade
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
