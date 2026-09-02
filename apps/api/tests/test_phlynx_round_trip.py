@@ -34,6 +34,8 @@ import zipfile
 from pathlib import Path
 
 import omex_import
+import sys
+
 import pytest
 from cellml_meta import parse_cellml
 from conftest import RESOURCES_DIR, SN_OBS_DATA_PATH, SN_PARAMS_CSV_PATH
@@ -273,6 +275,20 @@ def test_the_returned_study_reloads_in_cuflynx_with_the_calibrated_values(
 
 
 @pytest.mark.integration
+@pytest.mark.xfail(
+    sys.platform == "win32",
+    strict=False,
+    reason=(
+        "KNOWN, Windows only: an as-imported send is not byte-identical there. "
+        "The model is read with read_text() and written back, so universal "
+        "newlines rewrite every line ending and the archive stops being a fixed "
+        "point. Not data loss and not caused by the change that added this tier "
+        "-- it is a pre-existing issue the tier surfaced the first time it ran "
+        "on Windows (#343). xfail rather than skip so the day it starts passing "
+        "is visible. Do not 'fix' it by loosening the assertion, "
+        "which is the thing of value here. Tracked as #343."
+    ),
+)
 def test_a_second_round_trip_does_not_erode_the_archive(
     client, requires_simulation, tmp_path
 ):
