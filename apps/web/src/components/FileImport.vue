@@ -16,7 +16,6 @@ import {
   editModelSource,
   uploadOmex,
   sendToPhlynx,
-  phlynxDownloadRequest,
   peekInbox,
   acceptInbox,
   rejectInbox,
@@ -167,6 +166,9 @@ async function onStartEdit() {
   }
   // A CellML model goes to PhLynx as the whole study, so the user first says
   // which parameter values should travel with it (#290).
+  // Clear any previous result: its links point at the *previous* study's
+  // bytes, and offering those again would silently send the wrong thing.
+  sendResult.value = null
   sendOpen.value = true
 }
 
@@ -222,33 +224,40 @@ function sendNotice(res) {
 
 // Above the size guard the archive cannot ride in a URL — browsers truncate a
 // long one silently — so it is handed over as a file to drop into PhLynx.
-async function downloadArchive(filename) {
-  const { data } = await phlynxDownloadRequest(props.modelId, sendOptions())
-  const href = URL.createObjectURL(data)
-  const a = document.createElement('a')
-  a.href = href
-  a.download = filename
-  a.click()
-  URL.revokeObjectURL(href)
-}
+// What a completed send offers the user. Held rather than acted on: the links
+// below are real anchors the user clicks, never a scripted `window.open`.
+//
+// pywebview's macOS backend forwards a new-window request only when the
+// navigation type is `WKNavigationTypeLinkActivated` -- a genuine link click.
+// A scripted open is `WKNavigationTypeOther`, so it was dropped silently and the
+// packaged Mac app reported a successful send while doing nothing (#340). Linux
+// happened to work because the GTK backend keys off the `_blank` frame name
+// instead. Do not "simplify" this back into a `window.open`.
+const sendResult = ref(null)
 
 async function onSendConfirm() {
   error.value = ''
   notice.value = ''
+  sendResult.value = null
   sending.value = true
   try {
     const res = await sendToPhlynx(props.modelId, sendOptions())
-    if (res.too_large) {
-      await downloadArchive(res.filename)
-      notice.value =
-        `${sendNotice(res)} The archive is too large to travel in a link ` +
-        `(${Math.round(res.bytes / 1024)} kB), so it was downloaded as ` +
-        `${res.filename} — open PhLynx and import it.`
-    } else {
-      window.open(phlynxOpenUrl(res.base64, props.phlynxUrl), '_blank', 'noopener')
-      notice.value = sendNotice(res)
+    sendResult.value = {
+      // Built once, here. Computing it on click would be a scripted navigation
+      // again, or a mousedown that races the click.
+      openUrl: res.too_large ? '' : phlynxOpenUrl(res.base64, props.phlynxUrl),
+      downloadUrl: res.download_url,
+      filename: res.filename,
+      tooLarge: !!res.too_large,
     }
-    sendOpen.value = false
+    notice.value = res.too_large
+      ? `${sendNotice(res)} The archive is too large to travel in a link ` +
+        `(${Math.round(res.bytes / 1024)} kB) — download it below and import it ` +
+        `into PhLynx by hand.`
+      : sendNotice(res)
+    // The dialog stays open: it is where the links live. Putting them in the
+    // notice banner would leave a stale href pointing at a previous study's
+    // bytes, and would keep ~1.5 MB of base64 in the DOM after the fact.
   } catch (e) {
     error.value = e?.response?.data?.detail || String(e)
   } finally {
@@ -815,35 +824,75 @@ async function onParamsDrop(event) {
       :style="{ width: '30rem' }"
       data-testid="phlynx-send-dialog"
     >
-      <p class="send-intro">
-        The whole study travels — model, obs_data, params_for_id, and every file
-        the archive came with. Which parameter values should be written into the
-        model?
-      </p>
-      <div v-for="opt in SEND_SOURCES" :key="opt.value" class="send-option">
-        <label>
-          <input
-            v-model="sendSource"
-            type="radio"
-            name="phlynx-send-source"
-            :value="opt.value"
-            :disabled="sendSourceDisabled(opt.value)"
-            :data-testid="`phlynx-source-${opt.value}`"
-          />
-          <span :class="{ disabled: sendSourceDisabled(opt.value) }">{{ opt.label }}</span>
-        </label>
-      </div>
-      <p v-if="!bestFitAvailable" class="send-hint">
-        Set an outputs directory to send a calibration best fit.
-      </p>
+      <template v-if="!sendResult">
+        <p class="send-intro">
+          The whole study travels — model, obs_data, params_for_id, and every file
+          the archive came with. Which parameter values should be written into the
+          model?
+        </p>
+        <div v-for="opt in SEND_SOURCES" :key="opt.value" class="send-option">
+          <label>
+            <input
+              v-model="sendSource"
+              type="radio"
+              name="phlynx-send-source"
+              :value="opt.value"
+              :disabled="sendSourceDisabled(opt.value)"
+              :data-testid="`phlynx-source-${opt.value}`"
+            />
+            <span :class="{ disabled: sendSourceDisabled(opt.value) }">{{ opt.label }}</span>
+          </label>
+        </div>
+        <p v-if="!bestFitAvailable" class="send-hint">
+          Set an outputs directory to send a calibration best fit.
+        </p>
+      </template>
+
+      <!-- The archive is ready. These are REAL anchors on purpose: the user's
+           click is what makes the navigation a `WKNavigationTypeLinkActivated`
+           one, which is the only kind pywebview's macOS backend forwards to the
+           system browser. A scripted `window.open` here is silently dropped in
+           the packaged Mac app (#340). -->
+      <template v-else>
+        <p class="send-intro">
+          <template v-if="sendResult.tooLarge">
+            The archive is ready, but too large to travel in a link.
+          </template>
+          <template v-else>The archive is ready.</template>
+        </p>
+        <p class="send-hint">
+          The download is always offered: a very long link can be truncated on the
+          way to the browser, and this is the way through when it is.
+        </p>
+      </template>
+
       <template #footer>
-        <Button label="Cancel" severity="secondary" text @click="sendOpen = false" />
-        <Button
-          label="Send"
-          :loading="sending"
-          data-testid="phlynx-send-confirm"
-          @click="onSendConfirm"
-        />
+        <template v-if="!sendResult">
+          <Button label="Cancel" severity="secondary" text @click="sendOpen = false" />
+          <Button
+            label="Send"
+            :loading="sending"
+            data-testid="phlynx-send-confirm"
+            @click="onSendConfirm"
+          />
+        </template>
+        <template v-else>
+          <a
+            v-if="!sendResult.tooLarge"
+            class="send-link"
+            :href="sendResult.openUrl"
+            target="_blank"
+            rel="noopener"
+            data-testid="phlynx-open-link"
+          >Open in PhLynx</a>
+          <a
+            class="send-link secondary"
+            :href="sendResult.downloadUrl"
+            :download="sendResult.filename"
+            data-testid="phlynx-download-link"
+          >Download the archive</a>
+          <Button label="Close" severity="secondary" text @click="sendOpen = false" />
+        </template>
       </template>
     </Dialog>
 
@@ -939,6 +988,21 @@ async function onParamsDrop(event) {
   margin: 0.5rem 0 0;
   font-size: 0.8rem;
   color: var(--text-muted, #666);
+}
+/* Anchors, not buttons -- see the template. Styled to sit with PrimeVue's
+   footer buttons so the difference is invisible to the user. */
+.send-link {
+  display: inline-block;
+  padding: 0.5rem 1rem;
+  border-radius: 6px;
+  background: var(--p-primary-color, #10b981);
+  color: #fff;
+  font-size: 0.875rem;
+  text-decoration: none;
+}
+.send-link.secondary {
+  background: transparent;
+  color: var(--p-primary-color, #10b981);
 }
 .inbox-intro {
   margin: 0 0 0.5rem;

@@ -10,7 +10,6 @@ vi.mock('../lib/api', () => ({
   fetchExampleModel: vi.fn(),
   editModelSource: vi.fn(),
   sendToPhlynx: vi.fn(),
-  phlynxDownloadRequest: vi.fn(),
   peekInbox: vi.fn(),
   acceptInbox: vi.fn(),
   rejectInbox: vi.fn(),
@@ -26,7 +25,6 @@ import {
   editModelSource,
   uploadOmex,
   sendToPhlynx,
-  phlynxDownloadRequest,
   peekInbox,
   acceptInbox,
   rejectInbox,
@@ -98,7 +96,6 @@ beforeEach(() => {
   fetchExampleModel.mockReset()
   uploadOmex.mockReset()
   sendToPhlynx.mockReset()
-  phlynxDownloadRequest.mockReset()
   peekInbox.mockReset()
   acceptInbox.mockReset()
   rejectInbox.mockReset()
@@ -499,6 +496,7 @@ describe('FileImport', () => {
     updated: ['aortic_root/C'],
     unresolved: [],
     outside_parameters: [],
+    download_url: '/api/phlynx/archive/tok1/heart.omex',
   }
 
   async function openSend(props = {}) {
@@ -510,7 +508,11 @@ describe('FileImport', () => {
     return wrapper
   }
 
-  it('sends the current slider values and opens PhLynx at the archive', async () => {
+  it('sends the current slider values and offers a real link to PhLynx', async () => {
+    // The link must be an anchor the user clicks, never a scripted open:
+    // pywebview's macOS backend forwards only WKNavigationTypeLinkActivated, so
+    // a `window.open` here is dropped and the packaged Mac app sends nothing
+    // while reporting success (#340).
     const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null)
     sendToPhlynx.mockResolvedValue(SEND_OK)
     const wrapper = await openSend({
@@ -528,9 +530,15 @@ describe('FileImport', () => {
     })
     // PhLynx picks its loader from `?open=`, and its own decoder builds the
     // data URI, so the fragment is bare base64.
-    expect(openSpy.mock.calls[0][0]).toBe(`${PHLYNX_URL}/?open=omex#UEsDBBQ=`)
-    expect(openSpy.mock.calls[0][0]).toBe(phlynxOpenUrl('UEsDBBQ='))
-    expect(wrapper.find('[data-testid="phlynx-send-dialog"]').exists()).toBe(false)
+    const link = wrapper.find('[data-testid="phlynx-open-link"]')
+    expect(link.attributes('href')).toBe(`${PHLYNX_URL}/?open=omex#UEsDBBQ=`)
+    expect(link.attributes('href')).toBe(phlynxOpenUrl('UEsDBBQ='))
+    expect(link.attributes('target')).toBe('_blank')
+    expect(link.attributes('rel')).toContain('noopener')
+    // The behavioural half of the contract.
+    expect(openSpy).not.toHaveBeenCalled()
+    // The dialog now stays open: it is where the links live.
+    expect(wrapper.find('[data-testid="phlynx-send-dialog"]').exists()).toBe(true)
     openSpy.mockRestore()
   })
 
@@ -574,22 +582,36 @@ describe('FileImport', () => {
     openSpy.mockRestore()
   })
 
-  it('an archive too big for a URL is downloaded instead of opened', async () => {
-    const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null)
+  it('an archive too big for a URL is offered as a download link only', async () => {
     sendToPhlynx.mockResolvedValue({ ...SEND_OK, too_large: true, bytes: 3_000_000 })
-    phlynxDownloadRequest.mockResolvedValue({ data: new Blob(['zip']) })
-    // jsdom has no object-URL support.
-    URL.createObjectURL = vi.fn(() => 'blob:archive')
-    URL.revokeObjectURL = vi.fn()
     const wrapper = await openSend()
 
     await wrapper.find('[data-testid="phlynx-send-confirm"]').trigger('click')
     await flushPromises()
 
-    expect(phlynxDownloadRequest).toHaveBeenCalledOnce()
-    expect(openSpy).not.toHaveBeenCalled()
-    expect(wrapper.find('[data-testid="import-notice"]').text()).toContain('heart.omex')
-    openSpy.mockRestore()
+    // No PhLynx link: the fragment would be truncated somewhere unreported.
+    expect(wrapper.find('[data-testid="phlynx-open-link"]').exists()).toBe(false)
+    const dl = wrapper.find('[data-testid="phlynx-download-link"]')
+    expect(dl.attributes('href')).toBe('/api/phlynx/archive/tok1/heart.omex')
+    expect(dl.attributes('download')).toBe('heart.omex')
+    // The filename now rides on the link rather than in the prose; what the
+    // notice owes the user is why there is no PhLynx link to click.
+    expect(wrapper.find('[data-testid="import-notice"]').text()).toContain('too large')
+  })
+
+  it('the download is offered even when the link would have worked', async () => {
+    // The packaged macOS path hands the href to `webbrowser.open` -> osascript ->
+    // LaunchServices, whose URL ceiling is separate from PHLYNX_URL_LIMIT and
+    // unmeasured. The download is the way through when a long link is truncated.
+    sendToPhlynx.mockResolvedValue(SEND_OK)
+    const wrapper = await openSend()
+    await wrapper.find('[data-testid="phlynx-send-confirm"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="phlynx-open-link"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="phlynx-download-link"]').attributes('href')).toBe(
+      '/api/phlynx/archive/tok1/heart.omex',
+    )
   })
 
   it('a refused send is reported and the dialog stays open to retry', async () => {

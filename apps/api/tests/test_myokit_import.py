@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import glob
 import os
+import sys
 from pathlib import Path
 
 import myokit_import
@@ -107,6 +108,16 @@ def test_conversion_still_returns_without_an_output_dir(requires_simulation, req
 
 
 @pytest.mark.integration
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason=(
+        "the premise is POSIX-only: os.chmod on Windows toggles the read-only "
+        "flag on files and does not stop a file being created inside a "
+        "directory, so the copy succeeds and there is no 'unwritable' case to "
+        "test. Surfaced the first time this tier ran on Windows; the behaviour "
+        "under test (a failed copy must not fail the import) is unchanged."
+    ),
+)
 def test_an_unwritable_output_dir_does_not_fail_the_conversion(requires_simulation, requires_myokit_parser, tmp_path):
     import stat
 

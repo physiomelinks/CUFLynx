@@ -36,16 +36,43 @@ _MPI_INSTALL_HINTS = {
         "https://www.microsoft.com/en-us/download/details.aspx?id=57467\n"
         "    then reopen your terminal so mpiexec is on PATH."
     ),
+    # Linux and macOS both get the pip wheel rather than a system package, and
+    # that is not a stylistic preference -- see PACKAGING_MPI_NOTE below. It is
+    # also the runtime the shipped binaries actually contain, so a developer
+    # following this ends up testing what users run.
     "Linux": (
-        "Install OpenMPI (or MPICH), e.g.:\n"
-        "      sudo apt install openmpi-bin        # Debian/Ubuntu\n"
-        "      sudo dnf install openmpi            # Fedora/RHEL"
+        "Install the self-contained MPICH wheel (what the released app bundles):\n"
+        "      pip install mpich\n"
+        "    A system OpenMPI (apt install openmpi-bin) also works for running\n"
+        "    from source, but see the note below before packaging with one."
     ),
     "Darwin": (
-        "Install OpenMPI via Homebrew:\n"
-        "      brew install open-mpi"
+        "Install the self-contained MPICH wheel (what the released app bundles):\n"
+        "      pip install mpich\n"
+        "    A Homebrew OpenMPI (brew install open-mpi) also works for running\n"
+        "    from source, but see the note below before packaging with one."
     ),
 }
+
+#: Why the hints above point at a wheel rather than a system MPI (#330).
+#:
+#: A locally built macOS app aborted on its first simulation with
+#:     The MPI_Comm_dup() function was called before MPI_INIT was invoked
+#:     Local abort before MPI_INIT completed
+#: while the *downloaded* build of the same version was fine. That wording is
+#: OpenMPI's, and the asymmetry is the diagnosis: the release installs
+#: `.[analysis]`, which brings the pip `mpich` wheel, and MPICH is a single
+#: shared library. OpenMPI is not -- it loads its MCA components as separate
+#: plugins from `<prefix>/lib/openmpi/*.so`, which PyInstaller does not collect.
+#: Frozen, its MPI_Init cannot complete, and the next MPI call aborts exactly
+#: like that. So an OpenMPI that works perfectly from source produces a broken
+#: bundle, and nothing says so until a user runs it.
+PACKAGING_MPI_NOTE = (
+    "Note for packaging: only the MPICH wheel survives PyInstaller. OpenMPI loads\n"
+    "  its components as plugins that do not get collected into the bundle, so a\n"
+    "  build made against it aborts at the first simulation with\n"
+    "  'MPI_Comm_dup() ... called before MPI_INIT'. scripts/package.py checks this."
+)
 
 
 def warn_if_no_mpiexec() -> None:
@@ -66,7 +93,8 @@ def warn_if_no_mpiexec() -> None:
         "\nWARNING: 'mpiexec' was not found on PATH.\n"
         "  Multi-core (num_cores > 1) calibration / sensitivity / UQ runs need MPI;\n"
         "  without it those runs fall back to a single core (slower, still correct).\n"
-        f"  To enable parallel runs:\n    {hint}",
+        f"  To enable parallel runs:\n    {hint}\n"
+        f"  {PACKAGING_MPI_NOTE}",
         flush=True,
     )
 
