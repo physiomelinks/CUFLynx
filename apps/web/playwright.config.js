@@ -34,9 +34,15 @@ export default defineConfig({
     { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
   ],
   webServer: {
-    command: 'yarn preview --port 4173 --strictPort',
+    // `npx vite` rather than `yarn preview`: the flags reach vite directly, with
+    // no package-manager argument forwarding in between, and --host pins the
+    // interface so it matches `url` below. The first CI run timed out waiting for
+    // the server, which is the failure this shape removes the ambiguity from.
+    command: 'npx vite preview --port 4173 --strictPort --host 127.0.0.1',
     url: 'http://127.0.0.1:4173',
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,
+    stdout: 'pipe',
+    stderr: 'pipe',
   },
 })
