@@ -8,6 +8,7 @@ and any member CUFLynx has never heard of, all come back byte-for-byte.
 
 from __future__ import annotations
 
+import base64
 import io
 import json
 import zipfile
@@ -346,15 +347,39 @@ def test_an_unknown_source_is_refused(client):
     assert resp.status_code == 422
 
 
-def test_the_download_form_returns_the_archive_as_a_file(client):
+def test_every_send_offers_the_archive_as_a_downloadable_url(client):
+    """The download is a plain GET so the frontend can use a real `<a download>`.
+
+    It replaced a `download: true` variant of the POST that handed back a blob
+    for the browser to save by script. That could not work in the packaged app:
+    pywebview's macOS download path cancels the navigation and re-fetches the URL
+    with `NSURLSession`, which cannot read a `blob:` URL (#340). And it is
+    offered on *every* send, not only an over-long one, because the packaged
+    macOS link path has its own unmeasured URL ceiling.
+    """
     model_id = _upload_example(client)
-    resp = client.post(
-        "/api/phlynx/send", json={"model_id": model_id, "source": "as_imported", "download": True}
+    sent = client.post(
+        "/api/phlynx/send", json={"model_id": model_id, "source": "as_imported"}
     )
+    assert sent.status_code == 200, sent.text
+    url = sent.json()["download_url"]
+    assert url.startswith("/api/phlynx/archive/")
+    assert url.endswith(".omex")
+
+    resp = client.get(url)
     assert resp.status_code == 200, resp.text
     assert resp.headers["content-type"] == "application/zip"
     assert ".omex" in resp.headers["content-disposition"]
     assert zipfile.is_zipfile(io.BytesIO(resp.content))
+    # The same bytes the link form carries, not a second build of the study.
+    assert resp.content == base64.b64decode(sent.json()["base64"])
+
+
+def test_an_unknown_archive_token_is_a_404_not_a_traversal(client):
+    """The filename in the URL is decoration: what is served is the name recorded
+    when the archive was built, so a crafted segment has nothing to reach."""
+    assert client.get("/api/phlynx/archive/nope/x.omex").status_code == 404
+    assert client.get("/api/phlynx/archive/..%2f..%2fetc/passwd").status_code in (404, 422)
 
 
 def test_a_study_that_never_came_from_an_archive_can_still_be_sent(client):

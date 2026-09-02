@@ -26,11 +26,13 @@ import io
 import json
 import os
 import re
+import secrets
 import shutil
 import tempfile
 import time
 import uuid
 import zipfile
+from collections import OrderedDict
 from pathlib import Path
 
 import yaml
@@ -816,9 +818,12 @@ def set_config(req: ConfigRequest) -> dict:
         global _analysis_seed
         _analysis_seed = seed
 
-    # Where "Edit" sends a study. Only http(s), and only a bare origin-ish URL:
-    # this value is handed to `window.open`, so accepting `javascript:` here
-    # would turn a settings field into script execution in the app's own page.
+    # Where "Edit" sends a study. Only http(s), and only a bare origin-ish URL.
+    # This value becomes the `href` of an anchor the app renders in its own page
+    # (#340 moved it there from `window.open`), and `href="javascript:..."`
+    # executes on click -- so accepting one here would turn a settings field into
+    # script execution. The reason is if anything stronger than it was; keep the
+    # check exactly as it stands.
     if req.phlynx_url is not None:
         candidate = req.phlynx_url.strip().rstrip("/")
         if candidate and not candidate.startswith(("http://", "https://")):
@@ -1743,16 +1748,32 @@ class PhlynxSendRequest(BaseModel):
     source: str = "current"
     values: dict[str, float] = Field(default_factory=dict)  # for source="current"
     output_dir: str = ""  # for source="best_fit"
-    #: Return the archive as a file instead of base64, for the size fallback: a
-    #: browser silently drops an over-long URL, so past a point the send becomes
-    #: a download the user drops into PhLynx by hand.
-    download: bool = False
 
 
 #: Base64 longer than this is not worth putting in a URL fragment -- browsers
 #: differ on where they truncate and none of them says so. Above it the frontend
-#: offers the archive as a file instead.
+#: offers *only* the download.
+#:
+#: Note this limit is a browser one, and the packaged macOS app has a second,
+#: **separate and unmeasured** ceiling underneath it: a link click there is
+#: handed to `webbrowser.open`, which on darwin is MacOSXOSAScript -- an
+#: `open location "<url>"` written into osascript and passed to LaunchServices.
+#: Neither AppleScript's literal nor LaunchServices' URL length is documented.
+#: That is why the download link below is offered on *every* send rather than
+#: only past this limit: it is the escape hatch when a long URL is truncated
+#: somewhere none of us can see. (#340)
 PHLYNX_URL_LIMIT = 1_500_000
+
+#: Archives built for a send, keyed by a single-use-ish token so the frontend can
+#: offer them as an ordinary link. Bounded to the last two: this exists to serve
+#: the download the user is looking at, not to be a store.
+#:
+#: Held in memory rather than written under UPLOAD_DIR on purpose -- the client
+#: never names a path, so there is no traversal surface to validate, and the
+#: bytes are already in hand. The filename in the URL is cosmetic (it gives the
+#: saved file its name in the browser); what is served is the name recorded here.
+_PHLYNX_ARCHIVES: "OrderedDict[str, tuple[str, bytes]]" = OrderedDict()
+_PHLYNX_ARCHIVE_KEEP = 2
 
 
 @app.post("/api/phlynx/send")
@@ -1761,7 +1782,14 @@ def phlynx_send(req: PhlynxSendRequest):
 
     The archive is assembled here rather than in the browser so there is one
     writer, and so the frontend keeps assuming nothing about a local backend: it
-    receives base64 and does ``window.open``.
+    receives base64 and renders it into an anchor's ``href``, plus
+    ``download_url`` as a second anchor. It never *scripts* a navigation.
+
+    That distinction is the whole of #340 and must not be "simplified" back.
+    pywebview's macOS backend forwards a new-window request only when
+    ``navigationType() == WKNavigationTypeLinkActivated``; a scripted
+    ``window.open`` is ``WKNavigationTypeOther``, so it was dropped on the floor
+    and the packaged Mac app sent nothing while reporting success.
 
     Every member of the archive the study was loaded from is returned
     byte-for-byte except the model (flattened, with the chosen values
@@ -1813,12 +1841,13 @@ def phlynx_send(req: PhlynxSendRequest):
         raise HTTPException(status_code=500, detail=f"could not read the study: {exc}") from exc
 
     filename = f"{stem}.omex"
-    if req.download:
-        return Response(
-            content=blob,
-            media_type="application/zip",
-            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-        )
+
+    # Park the bytes so the frontend can offer them as a plain link. Every send
+    # gets one, not only an over-long one -- see PHLYNX_URL_LIMIT.
+    token = secrets.token_urlsafe(16)
+    _PHLYNX_ARCHIVES[token] = (filename, blob)
+    while len(_PHLYNX_ARCHIVES) > _PHLYNX_ARCHIVE_KEEP:
+        _PHLYNX_ARCHIVES.popitem(last=False)
 
     encoded = base64.b64encode(blob).decode("ascii")
     return {
@@ -1827,6 +1856,7 @@ def phlynx_send(req: PhlynxSendRequest):
         "too_large": len(encoded) > PHLYNX_URL_LIMIT,
         "limit": PHLYNX_URL_LIMIT,
         "filename": filename,
+        "download_url": f"/api/phlynx/archive/{token}/{filename}",
         "members": report["members"],
         "member_count": len(report["members"]),
         "updated": report["updated"],
@@ -1837,6 +1867,34 @@ def phlynx_send(req: PhlynxSendRequest):
         # back out of (#287) -- so the value travels and is ignored.
         "outside_parameters": report["outside_parameters"],
     }
+
+
+@app.get("/api/phlynx/archive/{token}/{filename}")
+def phlynx_archive(token: str, filename: str) -> Response:
+    """Serve an archive built by a previous send, as an ordinary download.
+
+    This exists so the frontend can hand the user a real ``<a download>`` link
+    rather than scripting the save. A blob URL cannot do that job in the packaged
+    app: pywebview's macOS backend cancels the navigation and re-fetches the URL
+    with ``NSURLSession``, which has never heard of ``blob:`` -- and the same
+    applies to the Windows and GTK download paths in their own ways. A plain
+    ``http://127.0.0.1:<port>/...`` URL works down all of them. (#340)
+
+    ``filename`` is decoration -- it gives the saved file its name in the browser
+    and is *not* used to find anything. What is served is the name recorded when
+    the archive was built, so a crafted path segment has nothing to reach.
+    """
+    entry = _PHLYNX_ARCHIVES.get(token)
+    if entry is None:
+        # Expired (only the last few are kept) or never existed. Same answer for
+        # both: there is nothing here.
+        raise HTTPException(status_code=404, detail="that archive is no longer available — send it again")
+    stored_name, blob = entry
+    return Response(
+        content=blob,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{stored_name}"'},
+    )
 
 
 #: A delivered archive is a payload from a web page, so it is capped well below
