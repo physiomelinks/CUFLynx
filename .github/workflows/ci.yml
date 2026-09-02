@@ -183,3 +183,43 @@ jobs:
           fi
           python scripts/mac_toolchain_probe.py \
             --label "${{ matrix.state }}" --expect "$EXPECT"
+
+  # Browser-engine tests. Ubuntu only and one engine pair: this tier exists for
+  # WebKit's user-activation rule, which is the same wherever WebKit runs.
+  #
+  # Worth being explicit about its scope, because it is easy to over-credit:
+  # it would NOT have caught #340. That bug is in the embedder -- pywebview's
+  # macOS backend forwards a new window only for WKNavigationTypeLinkActivated --
+  # and no browser engine has such a filter, WebKit included. #340 is guarded by
+  # apps/web/src/lib/externalLinks.test.js, a source contract in the vitest tier.
+  # What this catches is the neighbouring bug class: a scripted open reintroduced
+  # after an await, which Safari refuses and Chromium tolerates.
+  frontend-e2e:
+    name: Frontend e2e (WebKit + Chromium)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install
+        run: yarn install --frozen-lockfile
+      # Only the two engines the config declares; `--with-deps` pulls the system
+      # libraries WebKit needs on a bare runner.
+      - name: Install browsers
+        run: yarn playwright install --with-deps webkit chromium
+      - name: Build
+        run: yarn build
+      # The API is stubbed with page.route, so no Python and no backend here.
+      - name: End-to-end tests
+        run: yarn test:e2e
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: apps/web/playwright-report/
+          if-no-files-found: ignore
