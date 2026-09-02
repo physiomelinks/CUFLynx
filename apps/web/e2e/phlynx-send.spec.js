@@ -32,14 +32,18 @@ test.describe('leaving the page', () => {
     // rule, which is the premise the app's design rests on. If a future engine
     // changes it, the reasoning in externalLinks.test.js and CLAUDE.md should be
     // revisited — and this is what will say so.
+    // Absolute URLs: setContent leaves the document without a real origin, so a
+    // relative href has nothing to resolve against and the popup never lands
+    // anywhere assertable.
+    const base = 'http://127.0.0.1:4173'
     await page.setContent(`
       <button id="scripted">scripted</button>
-      <a id="anchor" href="/?opened=anchor" target="_blank" rel="noopener">anchor</a>
+      <a id="anchor" href="${base}/?opened=anchor" target="_blank" rel="noopener">anchor</a>
       <script>
         document.getElementById('scripted').addEventListener('click', async () => {
           // The shape onSendConfirm had: activation is consumed by the await.
           await new Promise((r) => setTimeout(r, 250))
-          window.__opened = window.open('/?opened=scripted', '_blank', 'noopener')
+          window.__opened = window.open('${base}/?opened=scripted', '_blank', 'noopener')
         })
       </script>
     `)
