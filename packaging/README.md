@@ -141,3 +141,24 @@ Not notarized (`codesign_identity=None`). A downloaded build is Gatekeeper-
 quarantined; users right-click → Open or `xattr -d com.apple.quarantine`. See the
 main README. Deployment target is pinned via `MACOSX_DEPLOYMENT_TARGET=11.0` in
 `release.yml`.
+
+## MPI: it must be MPICH, not OpenMPI
+
+The bundle brings its own MPI — the pip `mpich` wheel, via the `[analysis]`
+extra — and that is not interchangeable with a system OpenMPI. MPICH is a single
+shared library. **OpenMPI loads its MCA components as separate plugins** from
+`<prefix>/lib/openmpi/*.so`, and PyInstaller does not collect them, so inside the
+bundle `MPI_Init` never completes and the first simulation dies with
+
+```
+*** The MPI_Comm_dup() function was called before MPI_INIT was invoked.
+*** Local abort before MPI_INIT completed
+```
+
+The trap is that the same OpenMPI works perfectly when running from source, so a
+developer sees nothing wrong until the built app is run — which is exactly how
+#330 was reported: a local build failed while the downloaded one worked, on the
+same version. `scripts/package.py`'s `check_mpi_is_freezable()` now refuses that
+build, and `scripts/install.py` points at the wheel rather than at Homebrew.
+
+Verify inside a build with `MPI.Get_library_version()`; it must say MPICH.
