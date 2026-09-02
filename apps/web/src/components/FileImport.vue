@@ -255,9 +255,27 @@ async function onSendConfirm() {
         `(${Math.round(res.bytes / 1024)} kB) — download it below and import it ` +
         `into PhLynx by hand.`
       : sendNotice(res)
-    // The dialog stays open: it is where the links live. Putting them in the
-    // notice banner would leave a stale href pointing at a previous study's
-    // bytes, and would keep ~1.5 MB of base64 in the DOM after the fact.
+
+    // Try to open it for them, and fall back to the panel when that does not
+    // work. `window.open` returns null exactly where it must not be relied on:
+    // pywebview's macOS backend answers a scripted open with nil (#340), and a
+    // browser popup blocker does the same. Where it returns a window -- Linux's
+    // GTK backend, and every browser that allows it -- the send is one click, as
+    // it was before.
+    //
+    // The reason this is an *optimisation over* the links rather than the
+    // mechanism is that a non-null return is not proof: it is what the embedder
+    // chose to hand back. So the panel below is what makes the send work, and
+    // this only spares a click where it demonstrably can. If a future embedder
+    // lies about it, the failure is a dialog that closed too eagerly -- not a
+    // send that silently did nothing, which is what #340 was.
+    if (!res.too_large && window.open(sendResult.value.openUrl, '_blank', 'noopener')) {
+      sendOpen.value = false
+      return
+    }
+    // Otherwise the dialog stays open: it is where the links live. Putting them
+    // in the notice banner would leave a stale href pointing at a previous
+    // study's bytes, and would keep ~1.5 MB of base64 in the DOM after the fact.
   } catch (e) {
     error.value = e?.response?.data?.detail || String(e)
   } finally {
@@ -853,16 +871,16 @@ async function onParamsDrop(event) {
            one, which is the only kind pywebview's macOS backend forwards to the
            system browser. A scripted `window.open` here is silently dropped in
            the packaged Mac app (#340). -->
+      <!-- Only reached when the automatic open did not happen: either the archive
+           is too large for a link, or the embedder refused the scripted open. So
+           this says what to do, without explaining a corner case on every send. -->
       <template v-else>
         <p class="send-intro">
           <template v-if="sendResult.tooLarge">
-            The archive is ready, but too large to travel in a link.
+            The archive is ready, but too large to travel in a link — download it
+            and import it into PhLynx.
           </template>
           <template v-else>The archive is ready.</template>
-        </p>
-        <p class="send-hint">
-          The download is always offered: a very long link can be truncated on the
-          way to the browser, and this is the way through when it is.
         </p>
       </template>
 

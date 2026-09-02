@@ -1007,10 +1007,33 @@ describe('App.vue interpreter MPI marker', () => {
     expect(chip.attributes('title')).toContain('Cores > 1 unavailable')
   })
 
-  it('says nothing about MPI for an interpreter that was never probed', async () => {
-    // A browsed path the server didn't discover: unknown, not "no MPI".
+  it('says nothing about MPI when the server reported no status at all', async () => {
+    // A browsed path the server didn't discover, on a config carrying no
+    // `mpiexec_available`: unknown, not "no MPI". Saying nothing is only right
+    // while there is genuinely nothing to say -- see the two tests below, where
+    // the server *has* answered.
     const wrapper = await mountWith([MPI_PY], '/elsewhere/python')
     expect(wrapper.find('[data-testid="python-mpi"]').exists()).toBe(false)
+  })
+
+  // The packaged app's default: no interpreter configured, so nothing matches
+  // the probed list, and analyses run in the bundle -- whose own MPICH the
+  // server resolves happily. The badge used to vanish entirely here, which was
+  // reported as "I don't have the MPI tick, but MPI is working fine". The
+  // server's answer is not a guess: `mpiexec_available` comes from the same
+  // `resolve_mpiexec` the run itself calls.
+  it('reports MPI from the server when no interpreter is configured', async () => {
+    const wrapper = await mountWith([], '', { mpiexec_available: true })
+    const chip = wrapper.find('[data-testid="python-mpi"]')
+    expect(chip.exists()).toBe(true)
+    expect(chip.text()).toContain('MPI ✓')
+  })
+
+  it('reports the absence the same way, rather than hiding it', async () => {
+    const wrapper = await mountWith([], '', { mpiexec_available: false })
+    const chip = wrapper.find('[data-testid="python-mpi"]')
+    expect(chip.text()).toContain('MPI ✗')
+    expect(chip.attributes('title')).toContain('Cores > 1 unavailable')
   })
 
   // A PATH launcher still runs (resolve_mpiexec falls back to it), so reporting

@@ -301,6 +301,12 @@ const packaged = ref(false)
 // analysis panels mark the Cores field invalid and block the run until it's set
 // back to 1. Tracks the selected interpreter.
 const mpiexecAvailable = ref(true)
+// Whether the server actually told us. The permissive default above is right for
+// *gating* (never block Cores > 1 on a question nobody answered), but wrong for
+// *reporting*: a badge claiming "MPI ✓" on no information would be a guess. A
+// real server always sends the field, so this is only false in tests and before
+// the first /api/config.
+const mpiexecKnown = ref(false)
 
 // circulatory_autogen source directory (top-bar "CA dir"), shared server-side via
 // /api/config. Optional since #18 -- the app bundles libCUFLynx -- and set only to
@@ -402,6 +408,7 @@ function applyConfigPayload(c) {
   serverPhlynxUrl = phlynxUrl.value
   packaged.value = c.packaged ?? false
   mpiexecAvailable.value = c.mpiexec_available ?? true
+  mpiexecKnown.value = c.mpiexec_available !== undefined
 }
 
 // Persist the interpreter choice server-side (it's what spawns the runners).
@@ -1589,7 +1596,34 @@ const pythonNotReady = computed(() => {
 // configuration that can mismatch mpi4py's runtime.
 const pythonMpi = computed(() => {
   const p = selectedPython.value
-  if (!p) return null
+  if (!p) {
+    // No *probed* entry for the selection. That is not the rare case it reads
+    // as: it is the packaged app's default, where no interpreter is configured
+    // and analyses run in the bundle itself, and it is also any path the user
+    // browsed to rather than picked from the list. Showing nothing there meant
+    // the badge vanished on a machine whose multi-core runs work perfectly --
+    // reported as "I don't have the MPI tick, but MPI is working fine".
+    //
+    // The server has already answered this: `mpiexec_available` resolves the
+    // launcher for the *selected* interpreter, by the same `resolve_mpiexec`
+    // the run itself calls. So defer to it rather than staying silent. It
+    // cannot distinguish the environment's own launcher from a PATH one, so
+    // this arm has two states where the probed arm has three.
+    if (!mpiexecKnown.value) return null
+    return mpiexecAvailable.value
+      ? {
+          mpi: true,
+          label: 'MPI ✓',
+          title:
+            'An MPI launcher resolves for the interpreter analyses run in: ' +
+            'Cores > 1 available.',
+        }
+      : {
+          mpi: false,
+          label: 'MPI ✗',
+          title: 'No MPI launcher resolves for this interpreter: Cores > 1 unavailable.',
+        }
+  }
   if (p.mpi) {
     return {
       mpi: true,
