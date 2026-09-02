@@ -535,10 +535,42 @@ describe('FileImport', () => {
     expect(link.attributes('href')).toBe(phlynxOpenUrl('UEsDBBQ='))
     expect(link.attributes('target')).toBe('_blank')
     expect(link.attributes('rel')).toContain('noopener')
-    // The behavioural half of the contract.
-    expect(openSpy).not.toHaveBeenCalled()
-    // The dialog now stays open: it is where the links live.
+    // The shortcut is attempted at the same URL...
+    expect(openSpy.mock.calls[0][0]).toBe(phlynxOpenUrl('UEsDBBQ='))
+    // ...and because this spy returns null -- what pywebview's macOS backend and
+    // a popup blocker both do -- the dialog stays open on the links that work.
     expect(wrapper.find('[data-testid="phlynx-send-dialog"]').exists()).toBe(true)
+    openSpy.mockRestore()
+  })
+
+  it('closes the dialog when the browser did open the tab', async () => {
+    // The everyday path on Linux and in a browser: window.open returns a window,
+    // so the send is one click and there is nothing left to show. The panel is
+    // the fallback, not the flow.
+    const openSpy = vi.spyOn(window, 'open').mockImplementation(() => ({}))
+    sendToPhlynx.mockResolvedValue(SEND_OK)
+    const wrapper = await openSend()
+
+    await wrapper.find('[data-testid="phlynx-send-confirm"]').trigger('click')
+    await flushPromises()
+
+    expect(openSpy).toHaveBeenCalledOnce()
+    expect(wrapper.find('[data-testid="phlynx-send-dialog"]').exists()).toBe(false)
+    openSpy.mockRestore()
+  })
+
+  it('does not try to open a link for an archive too large to be one', async () => {
+    // No point attempting a URL already known to be over the limit, and doing so
+    // would open a tab at a truncated fragment.
+    const openSpy = vi.spyOn(window, 'open').mockImplementation(() => ({}))
+    sendToPhlynx.mockResolvedValue({ ...SEND_OK, too_large: true, bytes: 3_000_000 })
+    const wrapper = await openSend()
+
+    await wrapper.find('[data-testid="phlynx-send-confirm"]').trigger('click')
+    await flushPromises()
+
+    expect(openSpy).not.toHaveBeenCalled()
+    expect(wrapper.find('[data-testid="phlynx-download-link"]').exists()).toBe(true)
     openSpy.mockRestore()
   })
 
