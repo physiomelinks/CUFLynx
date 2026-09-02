@@ -324,6 +324,32 @@ future is to drop the shell and serve the same app remotely. Keep it that way:
 **never** reach for pywebview APIs from Vue, and never let the frontend assume a
 local filesystem/backend. `--browser` runs server-only and opens a normal browser.
 
+**The webview is not a browser, and its backend differs per OS.** pywebview picks
+Cocoa/**WKWebView** on macOS, GTK/**WebKitGTK** on Linux and **WebView2** on
+Windows, and they do not agree on what the page is allowed to do. Two rules follow,
+both learned from shipped bugs (#340, #114):
+
+- **Never open an external URL from script.** Render a real
+  `<a target="_blank" rel="noopener">` and let the user click it. pywebview's macOS
+  backend forwards a new-window request only when
+  `action.navigationType() == WKNavigationTypeLinkActivated` — a genuine link
+  click — so a `window.open()` is `WKNavigationTypeOther` and is dropped silently.
+  Linux happened to work because the GTK backend keys off the `_blank` frame name
+  instead, which is why "Send to PhLynx" worked everywhere except the packaged Mac
+  app. `apps/web/src/lib/externalLinks.test.js` pins this as a *source* contract,
+  because no DOM-level runner — jsdom, happy-dom, even Playwright's WebKit — models
+  the embedder that breaks it.
+- **Never download from a `blob:` URL.** Serve the bytes from the API and link to
+  that URL (`/api/phlynx/archive/...`, `CalibrationPanel.vue`'s
+  `calibratedModelUrl`). The macOS download path cancels the navigation and
+  re-fetches with `NSURLSession`, which cannot read `blob:`. Downloads also need
+  `webview.settings['ALLOW_DOWNLOADS'] = True`, set in the shell before `start()`;
+  pywebview defaults it off, which had silently disabled every download in the
+  packaged app on all three platforms.
+
+Setting pywebview *settings* in `apps/desktop/app.py` is shell configuration and
+does not breach the no-JS-bridge rule above — the frontend stays untouched.
+
 **What is and isn't bundled.** The app has two execution tiers with different needs:
 
 | Tier | Runs | Deps come from |

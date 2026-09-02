@@ -68,6 +68,27 @@ findings above). A CI frozen build per OS should still confirm the end-to-end:
 - `mpiexec -n 2 <CUFLynx> --_cuflynx-run-analysis ...` extracts both ranks under
   that cache dir (off `$TMPDIR`), confirming Hydra forwards `TMPDIR` to the ranks.
 
+## Manual check: the webview, on a real Mac
+
+CI cannot cover this. The packaged app runs inside pywebview, whose macOS backend
+applies rules no browser-based runner models — that is how #340 and #114 both
+shipped green. Run this against the built macOS asset before a release, launching
+it as a **packaged app** (not `--browser`, which is a real browser and will pass
+regardless):
+
+1. Load `resources/3compartment.omex`, press **Edit**, choose values, **Send**.
+2. Click **Open in PhLynx** → a tab opens in the *system* browser with the study
+   loaded. (Nothing happening is #340 returning: something has gone back to
+   scripting the navigation.)
+3. Click **Download the archive** → a save panel appears and writes the `.omex`.
+   This also re-verifies the calibrated-model download (#114), which shares the
+   `ALLOW_DOWNLOADS` setting.
+4. **Near the limit:** send a study whose base64 approaches `PHLYNX_URL_LIMIT`
+   (1,500,000 chars) and confirm the opened tab really carries the whole
+   fragment. The packaged path hands the href to `webbrowser.open` → osascript →
+   LaunchServices, whose URL ceiling is separate from that limit and undocumented.
+   **Record the size that works** — if it is below the limit, lower the limit.
+
 ## Windows antivirus false positives
 
 The Windows executable is a PyInstaller **onefile** build, and Windows Defender
