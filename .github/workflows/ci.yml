@@ -48,17 +48,27 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: python scripts/sync_version.py --check
 
+  # ONE job for every OS, not one per OS. This was two near-identical copies --
+  # ubuntu and windows -- which is exactly how a platform-specific check goes
+  # missing: the macOS half of #340 and #330 both reached users because nothing
+  # above the Linux unit tier ran anywhere else. A matrix cannot drift from
+  # itself.
+  #
+  # macOS and Windows runners are billed at 10x and 2x, but this repository is
+  # public, so Actions minutes are free; the real cost here is wall clock, and
+  # this tier is minutes.
   backend-unit:
-    name: Backend unit tests (no Myokit, ${{ matrix.python-version }})
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
+    name: Backend unit (${{ matrix.os }}, no Myokit, ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        # 3.12 is the top deliberately: autoemulate declares requires-python <3.13, and while
-        # this tier does not install it, moving past the engine's own ceiling would test an
-        # interpreter libcuflynx cannot fully support (circulatory_autogen#459). 3.10 stays as
-        # the floor because that is what libcuflynx requires (#278).
+        # 3.12 is the top deliberately: autoemulate declares requires-python <3.13, and
+        # while this tier does not install it, moving past the engine's own ceiling would
+        # test an interpreter libcuflynx cannot fully support (circulatory_autogen#459).
+        # 3.10 stays as the floor because that is what libcuflynx requires (#278).
+        os: [ubuntu-latest, macos-latest, windows-latest]
         python-version: ["3.10", "3.11", "3.12"]
     defaults:
       run:
@@ -93,49 +103,18 @@ jobs:
       - name: Run unit tests
         run: pytest -m "not integration" -q
 
-  backend-unit-windows:
-    name: Backend unit tests (Windows, no Myokit, ${{ matrix.python-version }})
-    runs-on: windows-latest
-    timeout-minutes: 15
+  frontend:
+    name: Frontend tests + build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     strategy:
       fail-fast: false
+      # All three, because the frontend suite now carries source-level contracts
+      # about how the app leaves the page (externalLinks.test.js), and those read
+      # files off disk -- a path or line-ending assumption that only breaks on
+      # Windows is exactly the kind of thing this catches.
       matrix:
-        # 3.12 is the top deliberately: autoemulate declares requires-python <3.13, and while
-        # this tier does not install it, moving past the engine's own ceiling would test an
-        # interpreter libcuflynx cannot fully support (circulatory_autogen#459). 3.10 stays as
-        # the floor because that is what libcuflynx requires (#278).
-        python-version: ["3.10", "3.11", "3.12"]
-    defaults:
-      run:
-        working-directory: apps/api
-    env:
-      CIRCULATORY_AUTOGEN_SRC: ${{ github.workspace }}/circulatory_autogen/src
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
-        with:
-          repository: physiomelinks/circulatory_autogen
-          # A commit on master, bumped deliberately -- upstream drift must not break
-          # CUFLynx CI. This one is the merge of circulatory_autogen#495, the first CA
-          # carrying libcuflynx.parsers.MyokitParsers and .EasyMLParsers, which this
-          # app delegates every .mmt and .model conversion to with no local fallback.
-          ref: 577cd4efea063f1b0b9dce79399eaad6386eac58
-          path: circulatory_autogen
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
-      # Same light deps as the Ubuntu unit job (matplotlib included for the
-      # extra-figure drift guards); the heavy simulation stack
-      # (myokit/libcellml) is exercised by the integration marker, skipped here.
-      - name: Install unit-test deps
-        run: pip install fastapi "uvicorn[standard]" numpy pandas pyyaml python-multipart httpx matplotlib pytest pytest-cov
-      - name: Run unit tests
-        run: pytest -m "not integration" -q
-
-  frontend:
-    name: Frontend tests + build
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
+        os: [ubuntu-latest, macos-latest, windows-latest]
     defaults:
       run:
         working-directory: apps/web

@@ -178,6 +178,110 @@ jobs:
   # ---------------------------------------------------------------------------
   # The run matrix: every analysis, serial and parallel
   # ---------------------------------------------------------------------------
+  # The simulation half of the integration tier, on the two platforms nothing
+  # above the unit tier has ever run on.
+  #
+  # Reduced on purpose, in one specific way: it installs `[dev]` and NOT
+  # `[analysis]`, so there is no mpi4py and no MPI. That is not a shortcut -- MPI
+  # is where per-OS integration testing gets expensive and flaky (MS-MPI on
+  # Windows, and the MPICH-vs-OpenMPI trap of #330 on macOS), while the bugs that
+  # actually reached users were in simulation and packaging. The parallel arm
+  # stays Ubuntu-only in `run-matrix` below.
+  #
+  # No test deselection is needed to achieve that: the analysis tests take the
+  # `requires_simulation` / optional-dependency fixtures and skip themselves when
+  # emcee/SALib/mpi4py are absent. `assert_tests_ran` is what stops that from
+  # quietly becoming a job that runs nothing.
+  integration-simulation:
+    name: Simulation tier (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    defaults:
+      run:
+        working-directory: apps/api
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      # Myokit compiles each model against Sundials at run time. The Windows
+      # myokit wheel ships its own, so only macOS needs this -- and it is the
+      # same serial, non-MPI build release.yml makes, for the same reason:
+      # Homebrew's Sundials is MPI-enabled and aborts at run time with
+      # "MPI_Comm_dup() called before MPI_INIT" even for a serial model.
+      - name: Build serial Sundials (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          VER=6.5.1
+          curl -fsSL "https://github.com/LLNL/sundials/releases/download/v${VER}/sundials-${VER}.tar.gz" -o sundials.tar.gz
+          tar xzf sundials.tar.gz
+          cmake -S "sundials-${VER}" -B sundials-build \
+            -DCMAKE_INSTALL_PREFIX="$HOME/sundials-serial" \
+            -DBUILD_SHARED_LIBS=ON -DBUILD_STATIC_LIBS=OFF \
+            -DENABLE_MPI=OFF -DEXAMPLES_ENABLE_C=OFF -DEXAMPLES_INSTALL=OFF \
+            -DBUILD_TESTING=OFF \
+            -DCMAKE_INSTALL_NAME_DIR=@rpath
+          cmake --build sundials-build --target install -j3
+          grep -q "SUNDIALS_MPI_ENABLED 0" "$HOME/sundials-serial/include/sundials/sundials_config.h"
+        working-directory: .
+
+      - name: Install the app and the simulation stack
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          pip install --build-constraint "${{ github.workspace }}/build-constraints.txt" -e ".[dev]"
+
+      - name: Install libcuflynx from the CA integration branch
+        shell: bash
+        run: |
+          pip install --force-reinstall --no-cache-dir \
+            --build-constraint "${{ github.workspace }}/build-constraints.txt" \
+            "libcuflynx @ git+https://github.com/physiomelinks/circulatory_autogen@master"
+
+      # Fail here rather than in a wall of skips 20 minutes later. Deliberately
+      # does NOT require mpiexec -- its absence is the point of this job.
+      - name: Assert the environment is the one under test
+        shell: bash
+        env:
+          SUNDIALS_INC: ${{ runner.os == 'macOS' && '/Users/runner/sundials-serial/include' || '' }}
+        run: |
+          python - <<'PY'
+          import importlib.metadata as m, libcuflynx, myokit, libcellml  # noqa: F401
+          print(f"libcuflynx {m.version('libcuflynx')}, myokit {myokit.__version__}, libcellml present")
+          PY
+
+      - name: Run the simulation tier
+        shell: bash
+        env:
+          CUFLYNX_STRICT_STARTUP: "1"
+          # macOS: point Myokit at the serial Sundials built above.
+          CUFLYNX_SUNDIALS_ROOT: ${{ runner.os == 'macOS' && '/Users/runner/sundials-serial' || '' }}
+        run: |
+          pytest -m integration -v --tb=short --junitxml=junit-simulation.xml
+
+      # pytest exits 0 when everything skipped, so without this the job can pass
+      # having run none of the tier -- which is the likely failure here, not a red X.
+      - name: Fail if the tier did not actually run
+        if: always()
+        working-directory: .
+        shell: bash
+        run: |
+          python .github/scripts/assert_tests_ran.py --min-ran 40 apps/api/junit-simulation.xml
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: simulation-${{ matrix.os }}
+          path: apps/api/junit-simulation.xml
+          if-no-files-found: ignore
+
   run-matrix:
     name: Run matrix (serial and parallel)
     runs-on: ubuntu-latest
