@@ -36,7 +36,14 @@ function vueSources() {
       const full = path.join(dir, entry.name)
       if (entry.isDirectory()) walk(full)
       else if (entry.name.endsWith('.vue'))
-        out.push({ file: path.relative(SRC, full), text: fs.readFileSync(full, 'utf8') })
+        out.push({
+          // POSIX separators always: `path.relative` yields backslashes on
+          // Windows, so an allowlist written as 'components/FileImport.vue'
+          // matched nothing there and the whole suite failed on that leg only.
+          // Found by the Windows frontend job the day it was added.
+          file: path.relative(SRC, full).split(path.sep).join('/'),
+          text: fs.readFileSync(full, 'utf8'),
+        })
     }
   }
   walk(SRC)
