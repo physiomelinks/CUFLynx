@@ -222,13 +222,18 @@ jobs:
           curl -fsSL "https://github.com/LLNL/sundials/releases/download/v${VER}/sundials-${VER}.tar.gz" -o sundials.tar.gz
           tar xzf sundials.tar.gz
           cmake -S "sundials-${VER}" -B sundials-build \
-            -DCMAKE_INSTALL_PREFIX="$HOME/sundials-serial" \
+            -DCMAKE_INSTALL_PREFIX=/usr/local \
             -DBUILD_SHARED_LIBS=ON -DBUILD_STATIC_LIBS=OFF \
             -DENABLE_MPI=OFF -DEXAMPLES_ENABLE_C=OFF -DEXAMPLES_INSTALL=OFF \
             -DBUILD_TESTING=OFF \
             -DCMAKE_INSTALL_NAME_DIR=@rpath
-          cmake --build sundials-build --target install -j3
-          grep -q "SUNDIALS_MPI_ENABLED 0" "$HOME/sundials-serial/include/sundials/sundials_config.h"
+          sudo cmake --build sundials-build --target install -j3
+          # /usr/local because that is where Myokit *looks*: it hard-codes
+          # /usr/local, /opt/local and /opt/homebrew as its include path and reads
+          # no env var for this. CUFLYNX_SUNDIALS_ROOT steers the PyInstaller spec,
+          # not a run-time compile, so installing under $HOME found nothing and
+          # every simulation died on "sundials/sundials_config.h file not found".
+          grep -q "SUNDIALS_MPI_ENABLED 0" /usr/local/include/sundials/sundials_config.h
         working-directory: .
 
       - name: Install the app and the simulation stack
@@ -249,8 +254,6 @@ jobs:
       # does NOT require mpiexec -- its absence is the point of this job.
       - name: Assert the environment is the one under test
         shell: bash
-        env:
-          SUNDIALS_INC: ${{ runner.os == 'macOS' && '/Users/runner/sundials-serial/include' || '' }}
         run: |
           python - <<'PY'
           import importlib.metadata as m, libcuflynx, myokit, libcellml  # noqa: F401
@@ -261,8 +264,12 @@ jobs:
         shell: bash
         env:
           CUFLYNX_STRICT_STARTUP: "1"
-          # macOS: point Myokit at the serial Sundials built above.
-          CUFLYNX_SUNDIALS_ROOT: ${{ runner.os == 'macOS' && '/Users/runner/sundials-serial' || '' }}
+          # setup-python's macOS build is universal2, so distutils compiles every
+          # extension `-arch arm64 -arch x86_64`. The Sundials above is built for
+          # this runner's own architecture only, so a universal object could not
+          # link against it. Pin the compile to one arch -- `_osx_support` honours
+          # ARCHFLAGS and strips the pair.
+          ARCHFLAGS: ${{ runner.os == 'macOS' && '-arch arm64' || '' }}
         run: |
           pytest -m integration -v --tb=short --junitxml=junit-simulation.xml
 
