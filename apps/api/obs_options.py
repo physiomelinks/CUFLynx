@@ -9,7 +9,9 @@ deps), and caches a successful introspection.
 
 from __future__ import annotations
 
+import ast
 import inspect
+import textwrap
 
 from ca_imports import ca_from, ca_import, ca_paths, ensure_ca_path
 
@@ -281,6 +283,22 @@ def _introspect_operation_kwargs(op_funcs) -> dict:
             params = inspect.signature(fn).parameters
         except (ValueError, TypeError):  # C funcs / builtins without signatures
             continue
+        # A func that takes its inputs by name out of **kwargs is described by those
+        # names and nothing else (#349). They are typed `data_item` because that is
+        # what they hold: CA resolves a string kwarg matching a data_item_name to
+        # that item's computed value, which is the whole mechanism.
+        #
+        # This *replaces* the signature walk for such a func rather than adding to
+        # it. The declared parameters left over are the operand placeholder
+        # (`x=None` on calculate_two_observable_difference, which an op taking no
+        # operands never receives) -- offering it as a tunable would put a box on
+        # the form that does nothing.
+        from_body = _operation_kwarg_names_from_body(fn)
+        if from_body:
+            out[name] = [
+                {"name": key, "default": None, "type": "data_item"} for key in from_body
+            ]
+            continue
         kwargs = []
         for pname, p in params.items():
             if pname in _RESERVED_OP_KWARGS:
@@ -299,6 +317,64 @@ def _introspect_operation_kwargs(op_funcs) -> dict:
         if kwargs:
             out[name] = kwargs
     return out
+
+
+def _operation_kwarg_names_from_body(fn) -> list:
+    """The keys an operation func reads out of its own ``**kwargs``, in source order.
+
+    A func like ``calculate_two_observable_difference(x=None, series_output=False,
+    **kwargs)`` names its real inputs *in the body* -- ``kwargs["pred1"]``,
+    ``kwargs["pred2"]`` -- so the signature says only "anything goes". The editor
+    cannot ask the user to invent those names: they are the function's, and a typo
+    is a run that fails or, worse, resolves to the wrong observable. So read them
+    off the source (#349).
+
+    Recognises the three ways a body reaches for a key: ``kwargs["k"]``,
+    ``"k" in kwargs`` and ``kwargs.get("k")``. Returns ``[]`` for a func whose
+    source is unavailable (a C callable, an exec'd lambda) or which builds its keys
+    dynamically -- the caller then falls back to letting the user name them, which
+    is the only thing left to do.
+    """
+    try:
+        source = textwrap.dedent(inspect.getsource(fn))
+        tree = ast.parse(source)
+    except (OSError, TypeError, SyntaxError, IndentationError):
+        return []
+
+    definition = next(
+        (n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))),
+        None,
+    )
+    if definition is None or definition.args.kwarg is None:
+        return []
+    bag = definition.args.kwarg.arg
+
+    names: list[str] = []
+
+    def remember(value):
+        if isinstance(value, str) and value not in names:
+            names.append(value)
+
+    for node in ast.walk(definition):
+        # kwargs["pred1"]
+        if (isinstance(node, ast.Subscript)
+                and isinstance(node.value, ast.Name) and node.value.id == bag
+                and isinstance(node.slice, ast.Constant)):
+            remember(node.slice.value)
+        # "pred1" in kwargs
+        elif isinstance(node, ast.Compare) and isinstance(node.left, ast.Constant):
+            for op, comparator in zip(node.ops, node.comparators):
+                if (isinstance(op, ast.In)
+                        and isinstance(comparator, ast.Name) and comparator.id == bag):
+                    remember(node.left.value)
+        # kwargs.get("pred1")
+        elif (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "get"
+                and isinstance(node.func.value, ast.Name) and node.func.value.id == bag
+                and node.args and isinstance(node.args[0], ast.Constant)):
+            remember(node.args[0].value)
+
+    return names
 
 
 def _introspect_operation_kwargs_accepts_any(op_funcs) -> dict:

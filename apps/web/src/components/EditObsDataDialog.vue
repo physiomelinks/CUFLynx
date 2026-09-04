@@ -245,6 +245,12 @@ function kwargVal(row, kw) {
 // Persist an edited kwarg value on the row (coerced to the kwarg's type).
 function onKwarg(row, kw, raw) {
   if (!row.operation_kwargs || typeof row.operation_kwargs !== 'object') row.operation_kwargs = {}
+  // Choosing the blank option means "not set", so drop the key rather than write
+  // an empty string: CA would take '' as a name to resolve and fail to find it.
+  if (kw.type === 'data_item' && !raw) {
+    delete row.operation_kwargs[kw.name]
+    return
+  }
   let val = raw
   if (kw.type === 'boolean') val = !!raw
   else if (kw.type === 'integer' || kw.type === 'number') val = raw === '' || raw == null ? null : Number(raw)
@@ -311,6 +317,24 @@ function referenceableItems(row) {
   return editableRows.value
     .filter((r) => r !== row && r.data_item_name)
     .map((r) => r.data_item_name)
+}
+
+/**
+ * The options for one data_item kwarg: the other items, plus whatever is already
+ * stored if that no longer names one of them.
+ *
+ * A select cannot display a value it has no option for, so a reference to an item
+ * since renamed or deleted would render as blank -- indistinguishable from unset,
+ * and saving the row would then quietly drop it. Keeping the dangling name in the
+ * list means it stays visible, stays saved, and the user can see what to fix.
+ */
+function referenceOptions(row, kw) {
+  const options = referenceableItems(row)
+  const stored = row.operation_kwargs?.[kw.name]
+  if (typeof stored === 'string' && stored && !options.includes(stored)) {
+    return [...options, stored]
+  }
+  return options
 }
 
 // The tunable keyword args for a row's current cost func, or [] when it has none
@@ -772,6 +796,23 @@ async function onSave() {
               :checked="!!kwargVal(row, kw)"
               @change="onKwarg(row, kw, $event.target.checked)"
             />
+            <!--
+              A kwarg the operation reads by name out of **kwargs holds another
+              data_item's name (#349), so it is chosen, not typed: CA resolves the
+              string against the study's data_item_names, and a typo is a run that
+              fails or silently reads the wrong observable.
+            -->
+            <select
+              v-else-if="kw.type === 'data_item'"
+              :value="kwargVal(row, kw) ?? ''"
+              :data-testid="`eo-kwarg-select-${kw.name}`"
+              @change="onKwarg(row, kw, $event.target.value)"
+            >
+              <option value="">—</option>
+              <option v-for="name in referenceOptions(row, kw)" :key="name" :value="name">
+                {{ name }}
+              </option>
+            </select>
             <input
               v-else
               :type="kw.type === 'number' || kw.type === 'integer' ? 'number' : 'text'"
@@ -781,14 +822,18 @@ async function onSave() {
             />
           </label>
           <!--
-            Operations that declare **kwargs take inputs the schema cannot name,
-            so the user names them. A value that matches another data_item_name is
-            resolved by CA to that item's computed value, which is how
-            calculate_two_observable_difference gets its pred1/pred2 (#349); the
-            datalist offers those names without forcing one, since a plain string
-            or number is still a legitimate value.
+            The fallback, and only that. An operation that declares **kwargs
+            normally has its key names read off its body and rendered above as
+            fixed fields (#349) -- the user does not invent them, because they are
+            the function's. This appears only for a func whose names could not be
+            read at all (source unavailable, or keys built at run time), where
+            letting the user name them is the one thing left to do.
           -->
-          <div v-if="acceptsAnyKwargs(row)" class="eo-wide eo-custom-kwargs" data-testid="eo-custom-kwargs">
+          <div
+            v-if="acceptsAnyKwargs(row) && !kwargsForRow(row).length"
+            class="eo-wide eo-custom-kwargs"
+            data-testid="eo-custom-kwargs"
+          >
             <span class="eo-custom-kwargs-title">
               operation kwargs — a value naming another data_item is replaced by that item's value
             </span>

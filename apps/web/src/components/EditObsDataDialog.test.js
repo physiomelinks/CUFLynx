@@ -737,10 +737,14 @@ describe('operations that take named data_item references (#349)', () => {
   const DIFF_FETCH = {
     ...FETCH,
     operations: ['', 'max', 'min', 'calculate_two_observable_difference'],
-    // `x` has a default so CA reports it as an accepted kwarg, and there are no
-    // positional operands -- which is exactly why an operand must not be required.
+    // The names the func reads out of its own **kwargs, as the backend recovers
+    // them from the body. `data_item` because that is what they hold -- another
+    // item's name, which CA resolves to its computed value.
     operation_kwargs_schema: {
-      calculate_two_observable_difference: [{ name: 'x', default: null, type: 'string' }],
+      calculate_two_observable_difference: [
+        { name: 'pred1', default: null, type: 'data_item' },
+        { name: 'pred2', default: null, type: 'data_item' },
+      ],
     },
     operation_kwargs_accepts_any: {
       max: false,
@@ -793,36 +797,64 @@ describe('operations that take named data_item references (#349)', () => {
     expect(item.operands).toEqual([])
   })
 
-  it('offers a name/value editor only for an operation that accepts any kwarg', async () => {
-    const wrapper = await mountDiff([difference, peakUnforced])
-    const details = wrapper.findAll('button[aria-label="details"]')
-    await details[0].trigger('click')
-    expect(wrapper.find('[data-testid="eo-custom-kwargs"]').exists()).toBe(true)
-    // The plain `max` row gets the fixed fields it always had, and no free-form editor.
-    await details[1].trigger('click')
-    expect(wrapper.findAll('[data-testid="eo-custom-kwargs"]').length).toBe(1)
-  })
-
-  it('shows each stored reference as an editable name/value pair', async () => {
+  it('renders one field per kwarg the operation declares, and no way to add more', async () => {
+    // The names are the function's, not the user's: it reads kwargs["pred1"] and
+    // kwargs["pred2"], so those are the fields, and inventing a third is not a
+    // thing the form should let you do.
     const wrapper = await mountDiff([difference])
     await wrapper.find('button[aria-label="details"]').trigger('click')
-    const names = wrapper.findAll('[data-testid="eo-custom-kwarg-name"]')
-    expect(names.map((n) => n.element.value)).toEqual(['pred1', 'pred2'])
-    const values = wrapper.findAll('[data-testid="eo-custom-kwarg-value"]')
-    expect(values.map((v) => v.element.value)).toEqual(['peak unforced', 'peak forced'])
+    expect(wrapper.find('[data-testid="eo-kwarg-select-pred1"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="eo-kwarg-select-pred2"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="eo-custom-kwargs"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="eo-custom-kwarg-add"]').exists()).toBe(false)
   })
 
-  it('adds a named kwarg and persists the data_item it points at', async () => {
+  it('each field is a dropdown of the other data_items, never the row itself', async () => {
+    const wrapper = await mountDiff([peakUnforced, difference])
+    await wrapper.findAll('button[aria-label="details"]')[1].trigger('click')
+    const options = wrapper
+      .find('[data-testid="eo-kwarg-select-pred1"]')
+      .findAll('option')
+      .map((o) => o.attributes('value'))
+    expect(options).toContain('peak unforced')
+    // An item cannot be its own input; CA would raise on the self-reference.
+    expect(options).not.toContain('forcing response')
+    // And a blank, so a kwarg can be left unset.
+    expect(options).toContain('')
+  })
+
+  it('shows the stored reference as the selected option', async () => {
+    const peakForced = { ...peakUnforced, variable: 'peak forced' }
+    const wrapper = await mountDiff([peakUnforced, peakForced, difference])
+    await wrapper.findAll('button[aria-label="details"]')[2].trigger('click')
+    expect(wrapper.find('[data-testid="eo-kwarg-select-pred1"]').element.value)
+      .toBe('peak unforced')
+    expect(wrapper.find('[data-testid="eo-kwarg-select-pred2"]').element.value)
+      .toBe('peak forced')
+  })
+
+  it('keeps a reference to an item that no longer exists visible, not blank', async () => {
+    // A select cannot show a value it has no option for. Without keeping the
+    // dangling name, a reference to a renamed item would render as unset --
+    // indistinguishable from empty -- and saving would quietly drop it.
+    const wrapper = await mountDiff([difference]) // neither pred is present
+    await wrapper.find('button[aria-label="details"]').trigger('click')
+    expect(wrapper.find('[data-testid="eo-kwarg-select-pred1"]').element.value)
+      .toBe('peak unforced')
+
+    await wrapper.find('[data-testid="eo-save"]').trigger('click')
+    await flushPromises()
+    const item = uploadObsData.mock.calls[0][1].data_items[0]
+    expect(item.operation_kwargs).toEqual({ pred1: 'peak unforced', pred2: 'peak forced' })
+  })
+
+  it('choosing a data_item in the dropdown persists it', async () => {
     const wrapper = await mountDiff([
       peakUnforced,
       { ...difference, operation_kwargs: { pred1: 'peak unforced' } },
     ])
     await wrapper.findAll('button[aria-label="details"]')[1].trigger('click')
-    await wrapper.find('[data-testid="eo-custom-kwarg-add"]').trigger('click')
-    const names = wrapper.findAll('[data-testid="eo-custom-kwarg-name"]')
-    await names[names.length - 1].setValue('pred2')
-    const values = wrapper.findAll('[data-testid="eo-custom-kwarg-value"]')
-    await values[values.length - 1].setValue('peak unforced')
+    await wrapper.find('[data-testid="eo-kwarg-select-pred2"]').setValue('peak unforced')
     await wrapper.find('[data-testid="eo-save"]').trigger('click')
     await flushPromises()
     const saved = uploadObsData.mock.calls[0][1].data_items
@@ -830,23 +862,30 @@ describe('operations that take named data_item references (#349)', () => {
     expect(item.operation_kwargs).toEqual({ pred1: 'peak unforced', pred2: 'peak unforced' })
   })
 
-  it('removes a named kwarg', async () => {
+  it('clearing a dropdown drops the key rather than writing an empty name', async () => {
+    // '' is not a data_item CA can resolve; writing it would turn "not set" into
+    // a reference that fails to find anything.
     const wrapper = await mountDiff([difference])
     await wrapper.find('button[aria-label="details"]').trigger('click')
-    await wrapper.findAll('[data-testid="eo-custom-kwarg-remove"]')[1].trigger('click')
+    await wrapper.find('[data-testid="eo-kwarg-select-pred2"]').setValue('')
     await wrapper.find('[data-testid="eo-save"]').trigger('click')
     await flushPromises()
     const item = uploadObsData.mock.calls[0][1].data_items[0]
     expect(item.operation_kwargs).toEqual({ pred1: 'peak unforced' })
   })
 
-  it('offers the other data_items as reference values, never the row itself', async () => {
-    const wrapper = await mountDiff([peakUnforced, difference])
-    await wrapper.findAll('button[aria-label="details"]')[1].trigger('click')
-    const offered = wrapper.findAll('datalist option').map((o) => o.attributes('value'))
-    expect(offered).toContain('peak unforced')
-    // An item cannot be its own input; CA would raise on the self-reference.
-    expect(offered).not.toContain('forcing response')
+  it('still offers a free-form editor when the names could not be read at all', async () => {
+    // A custom op that builds its keys at run time reports no schema; the user
+    // naming them is then the only thing left, so that path stays.
+    getObsDataOptions.mockReset().mockResolvedValue({
+      ...DIFF_FETCH,
+      operation_kwargs_schema: {},
+    })
+    uploadObsData.mockResolvedValue({})
+    const wrapper = mountDialog({ currentDataItems: [difference] })
+    await flushPromises()
+    await wrapper.find('button[aria-label="details"]').trigger('click')
+    expect(wrapper.find('[data-testid="eo-custom-kwargs"]').exists()).toBe(true)
   })
 
   it('keeps unrecognised kwargs when switching to an operation that accepts any', async () => {
