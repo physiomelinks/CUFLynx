@@ -729,18 +729,26 @@ describe('tour anchors', () => {
   })
 })
 
-// An operation that declares **kwargs takes its inputs by name rather than from a
-// model variable -- calculate_two_observable_difference differences two other
-// data_items named in subtract_from/subtract_this. The editor could not express
-// that: it demanded
-// an operand, and deleted any kwarg its schema did not name (#349).
+// Some operations take their inputs by name rather than from a model variable.
+// `calculate_two_observable_difference` reduces no trace at all: it differences two
+// other data_items, named in its `operation_kwargs` as `subtract_from` and
+// `subtract_this`, and CA resolves each of those names to that item's computed
+// value. So the item has no operands, and its inputs are its kwargs.
+//
+// The editor could not express that (#349): it required at least one operand, so
+// the row was permanently invalid and Save stayed disabled.
+//
+// Nothing here is about `**kwargs` any more. The operation declares both inputs in
+// its signature (circulatory_autogen#517), which is how the backend knows their
+// names -- what these tests pin is an operation with *no operands*, whichever way
+// its inputs happen to be declared.
 describe('operations that take named data_item references (#349)', () => {
   const DIFF_FETCH = {
     ...FETCH,
     operations: ['', 'max', 'min', 'calculate_two_observable_difference'],
-    // The names the func reads out of its own **kwargs, as the backend recovers
-    // them from the body. `data_item` because that is what they hold -- another
-    // item's name, which CA resolves to its computed value.
+    // The two inputs the func declares, as the backend reports them off its
+    // signature. `data_item` because that is what they hold -- another item's
+    // name, which CA resolves to its computed value.
     operation_kwargs_schema: {
       calculate_two_observable_difference: [
         { name: 'subtract_from', default: null, type: 'data_item' },

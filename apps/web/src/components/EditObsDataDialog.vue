@@ -735,7 +735,7 @@ async function onSave() {
               @change="onKwarg(row, kw, $event.target.checked)"
             />
             <!--
-              A kwarg the operation reads by name out of **kwargs holds another
+              A kwarg of an operation that reduces no trace holds another
               data_item's name (#349), so it is chosen, not typed: CA resolves the
               string against the study's data_item_names, and a typo is a run that
               fails or silently reads the wrong observable.
