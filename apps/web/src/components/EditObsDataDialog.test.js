@@ -731,7 +731,8 @@ describe('tour anchors', () => {
 
 // An operation that declares **kwargs takes its inputs by name rather than from a
 // model variable -- calculate_two_observable_difference differences two other
-// data_items named in pred1/pred2. The editor could not express that: it demanded
+// data_items named in subtract_from/subtract_this. The editor could not express
+// that: it demanded
 // an operand, and deleted any kwarg its schema did not name (#349).
 describe('operations that take named data_item references (#349)', () => {
   const DIFF_FETCH = {
@@ -742,8 +743,8 @@ describe('operations that take named data_item references (#349)', () => {
     // item's name, which CA resolves to its computed value.
     operation_kwargs_schema: {
       calculate_two_observable_difference: [
-        { name: 'pred1', default: null, type: 'data_item' },
-        { name: 'pred2', default: null, type: 'data_item' },
+        { name: 'subtract_from', default: null, type: 'data_item' },
+        { name: 'subtract_this', default: null, type: 'data_item' },
       ],
     },
     operation_operands: {
@@ -758,7 +759,7 @@ describe('operations that take named data_item references (#349)', () => {
   const difference = {
     variable: 'forcing response', data_type: 'constant',
     operation: 'calculate_two_observable_difference', operands: [],
-    operation_kwargs: { pred1: 'peak unforced', pred2: 'peak forced' },
+    operation_kwargs: { subtract_from: 'peak forced', subtract_this: 'peak unforced' },
     unit: 'dimensionless', value: -2.04, std: 0.5, experiment_idx: 0, plot_type: 'horizontal',
   }
 
@@ -782,31 +783,32 @@ describe('operations that take named data_item references (#349)', () => {
     expect(wrapper.find('[data-testid="eo-save"]').attributes('disabled')).toBeDefined()
   })
 
-  it('round-trips the pred1/pred2 references through a save', async () => {
+  it('round-trips the item references through a save', async () => {
     const wrapper = await mountDiff([peakUnforced, difference])
     await wrapper.find('[data-testid="eo-save"]').trigger('click')
     await flushPromises()
     const saved = uploadObsData.mock.calls[0][1].data_items
     const item = saved.find((d) => d.operation === 'calculate_two_observable_difference')
-    expect(item.operation_kwargs).toEqual({ pred1: 'peak unforced', pred2: 'peak forced' })
+    expect(item.operation_kwargs).toEqual({ subtract_from: 'peak forced', subtract_this: 'peak unforced' })
     expect(item.operands).toEqual([])
   })
 
   it('renders one field per kwarg the operation declares, and no way to add more', async () => {
-    // The names are the function's, not the user's: it declares pred1 and pred2,
+    // The names are the function's, not the user's: it declares subtract_from and
+    // subtract_this,
     // so those are the fields, and inventing a third is not a thing the form
     // should let you do.
     const wrapper = await mountDiff([difference])
     await wrapper.find('button[aria-label="details"]').trigger('click')
-    expect(wrapper.find('[data-testid="eo-kwarg-select-pred1"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="eo-kwarg-select-pred2"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="eo-kwarg-select-subtract_from"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="eo-kwarg-select-subtract_this"]').exists()).toBe(true)
   })
 
   it('each field is a dropdown of the other data_items, never the row itself', async () => {
     const wrapper = await mountDiff([peakUnforced, difference])
     await wrapper.findAll('button[aria-label="details"]')[1].trigger('click')
     const options = wrapper
-      .find('[data-testid="eo-kwarg-select-pred1"]')
+      .find('[data-testid="eo-kwarg-select-subtract_from"]')
       .findAll('option')
       .map((o) => o.attributes('value'))
     expect(options).toContain('peak unforced')
@@ -820,39 +822,39 @@ describe('operations that take named data_item references (#349)', () => {
     const peakForced = { ...peakUnforced, variable: 'peak forced' }
     const wrapper = await mountDiff([peakUnforced, peakForced, difference])
     await wrapper.findAll('button[aria-label="details"]')[2].trigger('click')
-    expect(wrapper.find('[data-testid="eo-kwarg-select-pred1"]').element.value)
-      .toBe('peak unforced')
-    expect(wrapper.find('[data-testid="eo-kwarg-select-pred2"]').element.value)
+    expect(wrapper.find('[data-testid="eo-kwarg-select-subtract_from"]').element.value)
       .toBe('peak forced')
+    expect(wrapper.find('[data-testid="eo-kwarg-select-subtract_this"]').element.value)
+      .toBe('peak unforced')
   })
 
   it('keeps a reference to an item that no longer exists visible, not blank', async () => {
     // A select cannot show a value it has no option for. Without keeping the
     // dangling name, a reference to a renamed item would render as unset --
     // indistinguishable from empty -- and saving would quietly drop it.
-    const wrapper = await mountDiff([difference]) // neither pred is present
+    const wrapper = await mountDiff([difference]) // neither referenced item is present
     await wrapper.find('button[aria-label="details"]').trigger('click')
-    expect(wrapper.find('[data-testid="eo-kwarg-select-pred1"]').element.value)
-      .toBe('peak unforced')
+    expect(wrapper.find('[data-testid="eo-kwarg-select-subtract_from"]').element.value)
+      .toBe('peak forced')
 
     await wrapper.find('[data-testid="eo-save"]').trigger('click')
     await flushPromises()
     const item = uploadObsData.mock.calls[0][1].data_items[0]
-    expect(item.operation_kwargs).toEqual({ pred1: 'peak unforced', pred2: 'peak forced' })
+    expect(item.operation_kwargs).toEqual({ subtract_from: 'peak forced', subtract_this: 'peak unforced' })
   })
 
   it('choosing a data_item in the dropdown persists it', async () => {
     const wrapper = await mountDiff([
       peakUnforced,
-      { ...difference, operation_kwargs: { pred1: 'peak unforced' } },
+      { ...difference, operation_kwargs: { subtract_from: 'peak forced' } },
     ])
     await wrapper.findAll('button[aria-label="details"]')[1].trigger('click')
-    await wrapper.find('[data-testid="eo-kwarg-select-pred2"]').setValue('peak unforced')
+    await wrapper.find('[data-testid="eo-kwarg-select-subtract_this"]').setValue('peak unforced')
     await wrapper.find('[data-testid="eo-save"]').trigger('click')
     await flushPromises()
     const saved = uploadObsData.mock.calls[0][1].data_items
     const item = saved.find((d) => d.operation === 'calculate_two_observable_difference')
-    expect(item.operation_kwargs).toEqual({ pred1: 'peak unforced', pred2: 'peak unforced' })
+    expect(item.operation_kwargs).toEqual({ subtract_from: 'peak forced', subtract_this: 'peak unforced' })
   })
 
   it('clearing a dropdown drops the key rather than writing an empty name', async () => {
@@ -860,11 +862,11 @@ describe('operations that take named data_item references (#349)', () => {
     // a reference that fails to find anything.
     const wrapper = await mountDiff([difference])
     await wrapper.find('button[aria-label="details"]').trigger('click')
-    await wrapper.find('[data-testid="eo-kwarg-select-pred2"]').setValue('')
+    await wrapper.find('[data-testid="eo-kwarg-select-subtract_this"]').setValue('')
     await wrapper.find('[data-testid="eo-save"]').trigger('click')
     await flushPromises()
     const item = uploadObsData.mock.calls[0][1].data_items[0]
-    expect(item.operation_kwargs).toEqual({ pred1: 'peak unforced' })
+    expect(item.operation_kwargs).toEqual({ subtract_from: 'peak forced' })
   })
 
   it('drops stale kwargs when the operation changes', async () => {

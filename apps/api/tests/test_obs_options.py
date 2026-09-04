@@ -128,22 +128,24 @@ def test_operation_kwargs_schema_parses_signature():
 
 
 def test_an_operation_with_no_operands_takes_data_item_names(monkeypatch):
-    """`calculate_two_observable_difference(pred1=None, pred2=None, ...)` reduces no
+    """`calculate_two_observable_difference(subtract_from=None, subtract_this=None, ...)`
+    reduces no
     model variable -- it differences two other data_items. A kwarg of such an
     operation that defaults to None is therefore the *name of an item*, which CA
     resolves to that item's computed value, so the editor offers a list of items
     rather than a text box (#349)."""
     import obs_options
 
-    def calculate_two_observable_difference(pred1=None, pred2=None, series_output=False):
-        return pred2 - pred1
+    def calculate_two_observable_difference(subtract_from=None, subtract_this=None,
+                                            series_output=False):
+        return subtract_from - subtract_this
 
     schema = obs_options._introspect_operation_kwargs(
         {"calculate_two_observable_difference": calculate_two_observable_difference})
 
     assert schema["calculate_two_observable_difference"] == [
-        {"name": "pred1", "default": None, "type": "data_item"},
-        {"name": "pred2", "default": None, "type": "data_item"},
+        {"name": "subtract_from", "default": None, "type": "data_item"},
+        {"name": "subtract_this", "default": None, "type": "data_item"},
     ]
 
 
@@ -180,8 +182,9 @@ def test_the_real_ca_operation_is_typed_as_taking_data_item_names():
     schema = obs_options._introspect_operation_kwargs(
         {"calculate_two_observable_difference": fn})
     entries = schema.get("calculate_two_observable_difference", [])
-    if [k["name"] for k in entries] != ["pred1", "pred2"]:
-        _pytest.skip("this circulatory_autogen predates the declared pred1/pred2 kwargs")
+    if [k["name"] for k in entries] != ["subtract_from", "subtract_this"]:
+        _pytest.skip(
+            "this circulatory_autogen predates the declared subtract_from/subtract_this kwargs")
     assert {k["type"] for k in entries} == {"data_item"}
 
 

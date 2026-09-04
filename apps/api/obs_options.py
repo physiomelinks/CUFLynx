@@ -276,7 +276,8 @@ def _introspect_operation_kwargs(op_funcs) -> dict:
         # An operation with no operands has no model variable to reduce, so a kwarg
         # of its that defaults to None is not a tunable number -- it is the name of
         # another data_item, which CA resolves to that item's computed value
-        # (`calculate_two_observable_difference`'s pred1/pred2, #349). Typing it
+        # (`calculate_two_observable_difference`'s subtract_from / subtract_this,
+        # #349). Typing it
         # says so, and the editor offers a list of items instead of a text box.
         takes_no_operands = not any(
             p.default is inspect.Parameter.empty
