@@ -2295,6 +2295,31 @@ function onParamsLoaded(data) {
   // Keep the raw entries (with param_type) + filename for the Edit dialog.
   loadedParamsRaw.value = data.params
   loadedParamsFilename.value = data.filename
+  applyBaselines(data.baselines)
+}
+
+/**
+ * Apply the params editor's baseline column (#350), after importParams has
+ * rebuilt the sliders.
+ *
+ * A calibrated parameter's baseline is where its slider starts, so it goes
+ * through applyValues (which clamps it into the slider's range). One that is not
+ * calibrated has no slider, so it becomes a fixed value the solver is given --
+ * without which editing a non-calibrated parameter would change nothing at all,
+ * which is the gap this closes.
+ *
+ * Only called with what the editor sends; a params file loaded from disk carries
+ * no baselines and leaves both untouched.
+ */
+function applyBaselines(baselines) {
+  if (!baselines || typeof baselines !== 'object') return
+  sliders.clearFixedValues()
+  sliders.applyValues(baselines)
+  for (const [qname, value] of Object.entries(baselines)) {
+    // setFixedValue ignores a qname that has a slider, so the two halves cannot
+    // both claim the same parameter.
+    sliders.setFixedValue(qname, value)
+  }
 }
 
 function onObsDataLoaded(payload) {

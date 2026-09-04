@@ -273,6 +273,18 @@ def _introspect_operation_kwargs(op_funcs) -> dict:
             params = inspect.signature(fn).parameters
         except (ValueError, TypeError):  # C funcs / builtins without signatures
             continue
+        # An operation with no operands has no model variable to reduce, so a kwarg
+        # of its that defaults to None is not a tunable number -- it is the name of
+        # another data_item, which CA resolves to that item's computed value
+        # (`calculate_two_observable_difference`'s subtract_from / subtract_this,
+        # #349). Typing it
+        # says so, and the editor offers a list of items instead of a text box.
+        takes_no_operands = not any(
+            p.default is inspect.Parameter.empty
+            and p.kind not in (p.VAR_POSITIONAL, p.VAR_KEYWORD)
+            and pname not in _RESERVED_OP_KWARGS
+            for pname, p in params.items()
+        )
         kwargs = []
         for pname, p in params.items():
             if pname in _RESERVED_OP_KWARGS:
@@ -285,7 +297,8 @@ def _introspect_operation_kwargs(op_funcs) -> dict:
                 {
                     "name": pname,
                     "default": _jsonable_default(p.default),
-                    "type": _infer_kwarg_type(p.default),
+                    "type": ("data_item" if takes_no_operands and p.default is None
+                             else _infer_kwarg_type(p.default)),
                 }
             )
         if kwargs:

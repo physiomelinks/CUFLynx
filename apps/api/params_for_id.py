@@ -26,10 +26,25 @@ from dataclasses import dataclass, field
 
 import params_json
 
-# Components a circulatory_autogen *flat* model puts its constants in. When a
-# params_for_id row's ``vessel/param`` name doesn't exist directly (flat models
-# rename constants), the value lives here under the CA "gen name".
-_PARAM_COMPONENTS = ("parameters", "parameters_global")
+#: Components a model puts its constants in. When a params_for_id row's
+#: ``vessel/param`` name doesn't exist directly (flat models rename constants),
+#: the value lives here under the CA "gen name".
+#:
+#: Two conventions, both live (#345). ``parameters`` / ``parameters_global`` is
+#: circulatory_autogen's and what #287 was written against;
+#: ``instance_parameters`` / ``global_parameters`` is what PhLynx emits now. Both
+#: are listed rather than swapped: an archive exported by an older PhLynx, and
+#: every model CA generated, still use the first pair, and a rename that dropped
+#: them would stop resolving parameters in models that resolve today.
+PARAM_COMPONENTS = (
+    "parameters",
+    "parameters_global",
+    "instance_parameters",
+    "global_parameters",
+)
+
+# Kept as the module-private spelling this file has always used internally.
+_PARAM_COMPONENTS = PARAM_COMPONENTS
 
 
 class ParamsForIdError(ValueError):

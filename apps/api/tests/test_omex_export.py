@@ -145,6 +145,65 @@ def test_the_model_carries_the_current_values():
     assert report["outside_parameters"] == []
 
 
+def test_a_parameter_no_calibration_touches_is_still_written():
+    """#350's baseline column: a value typed for a parameter that is *not* being
+    calibrated has to reach the exported model.
+
+    `pvn/R` has no row in `3compartment_params_for_id.csv` -- that is the point of
+    the case. The writer must key off the model, not off params_for_id membership,
+    or a baseline set on an uncalibrated parameter would be silently dropped on the
+    way out while the live plot showed it applied.
+    """
+    from cellml_meta import parse_cellml
+
+    out, report = omex_export.build_archive(
+        cellml_text=FLAT_MODEL.read_text(),
+        values={"pvn/R": 4.2e6},
+        source_archive=_phlynx_archive(),
+    )
+
+    iv = parse_cellml(_read(out)["model.cellml"]).initial_values
+    assert iv["parameters/R_pvn"] == pytest.approx(4.2e6)
+    assert report["unresolved"] == []
+    # And it lands somewhere PhLynx reads back, so the send is not merely written
+    # but actually picked up (#287).
+    assert report["outside_parameters"] == []
+
+
+def test_writing_an_uncalibrated_parameter_leaves_every_other_value_alone():
+    """The other half: substituting one baseline must not disturb the constants
+    around it, calibrated or not."""
+    from cellml_meta import parse_cellml
+
+    before = parse_cellml(FLAT_MODEL.read_text()).initial_values
+    out, _report = omex_export.build_archive(
+        cellml_text=FLAT_MODEL.read_text(),
+        values={"pvn/R": 4.2e6},
+        source_archive=_phlynx_archive(),
+    )
+    after = parse_cellml(_read(out)["model.cellml"]).initial_values
+
+    changed = {k for k in before if before[k] != after.get(k)}
+    assert changed == {"parameters/R_pvn"}
+
+
+def test_an_uncalibrated_parameter_may_be_named_by_its_model_qname():
+    """The params editor lists a parameter the study does not calibrate under the
+    model's own qname, so that is the key the baseline arrives as. It must resolve
+    as readily as the `vessel/param` spelling a params_for_id row would use."""
+    from cellml_meta import parse_cellml
+
+    out, report = omex_export.build_archive(
+        cellml_text=FLAT_MODEL.read_text(),
+        values={"parameters/R_pvn": 7.5e6},
+        source_archive=_phlynx_archive(),
+    )
+
+    iv = parse_cellml(_read(out)["model.cellml"]).initial_values
+    assert iv["parameters/R_pvn"] == pytest.approx(7.5e6)
+    assert report["unresolved"] == []
+
+
 def test_a_value_that_cannot_be_written_is_named():
     _out, report = omex_export.build_archive(
         cellml_text=FLAT_MODEL.read_text(),
@@ -416,3 +475,35 @@ def test_the_archive_survives_losing_the_in_memory_registry(client):
     import base64
 
     assert "module_config.json" in _read(base64.b64decode(resp.json()["base64"]))
+
+
+# --- PhLynx renamed its parameter components (#345) -------------------------
+def test_a_value_in_a_renamed_phlynx_component_is_not_reported_as_unread():
+    """PhLynx reads parameter changes back out of its parameter components. It
+    renamed them to `instance_parameters` / `global_parameters`, and CUFLynx was
+    still checking only the old pair -- so every value written into a current
+    PhLynx model was reported as one PhLynx would not pick up."""
+    report = {
+        "resolved": {
+            "aortic_root/C": "instance_parameters/C_aortic_root",
+            "global/E_lv_A": "global_parameters/E_lv_A",
+        }
+    }
+    assert omex_export.outside_parameter_components(report) == []
+
+
+def test_the_older_component_names_are_still_accepted():
+    """Both conventions are live; the new names must not cost the old ones."""
+    report = {
+        "resolved": {
+            "aortic_root/C": "parameters/C_aortic_root",
+            "global/E_lv_A": "parameters_global/E_lv_A",
+        }
+    }
+    assert omex_export.outside_parameter_components(report) == []
+
+
+def test_a_value_written_somewhere_else_is_still_reported():
+    """The check still has to fire, or the warning becomes decorative."""
+    report = {"resolved": {"heart/E": "heart_module/E_lv", "a/C": "parameters/C_a"}}
+    assert omex_export.outside_parameter_components(report) == ["heart/E -> heart_module/E_lv"]

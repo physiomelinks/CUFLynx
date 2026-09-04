@@ -2938,3 +2938,75 @@ describe('App.vue reopening an outputs directory', () => {
     expect(openStudyFromOutputs).not.toHaveBeenCalled()
   })
 })
+
+// The params editor's baseline column (#350) is only useful if the value it sets
+// leaves the dialog. This is the join between the two halves that are unit-tested
+// either side of it: the dialog emits `baselines`, useSliders holds fixed values,
+// and App is what connects them to the values the model is actually given.
+describe('a baseline set on a parameter that is not calibrated (#350)', () => {
+  function paramValues(wrapper) {
+    // The same object App hands FileImport as `:param-values`, which is what a
+    // PhLynx send with source "current" posts and what the writer substitutes
+    // into the CellML.
+    return wrapper.findComponent({ name: 'FileImport' }).props('paramValues')
+  }
+
+  it('reaches the values the model is given, for calibrated and uncalibrated alike', async () => {
+    const wrapper = shallowMount(App, { attachTo: document.body })
+    await flushPromises()
+
+    wrapper.findComponent({ name: 'FileImport' }).vm.$emit('params-loaded', {
+      params: [{ qname: 'aortic_root/C', min: 1e-9, max: 5e-8, initial_value: 1e-8 }],
+      filename: 'p.json',
+      baselines: {
+        'aortic_root/C': 2e-8, // calibrated: becomes the slider's start point
+        'parameters/R_pvn': 4.2e6, // not calibrated: has no slider at all
+      },
+    })
+    await flushPromises()
+
+    const values = paramValues(wrapper)
+    // Without the fixed-value half, this key is simply absent and the solver --
+    // and the exported CellML -- keep the model's own value.
+    expect(values['parameters/R_pvn']).toBe(4.2e6)
+    expect(values['aortic_root/C']).toBe(2e-8)
+    wrapper.unmount()
+  })
+
+  it('lets a later slider move win over the baseline it started from', async () => {
+    // The calibrated half is a *starting point*, not a fixed value: a fixed value
+    // shadowing the slider would let the run and the handle disagree.
+    const wrapper = shallowMount(App, { attachTo: document.body })
+    await flushPromises()
+
+    wrapper.findComponent({ name: 'FileImport' }).vm.$emit('params-loaded', {
+      params: [{ qname: 'aortic_root/C', min: 1e-9, max: 5e-8, initial_value: 1e-8 }],
+      filename: 'p.json',
+      baselines: { 'aortic_root/C': 2e-8 },
+    })
+    await flushPromises()
+
+    wrapper.vm.sliders.setValue('aortic_root/C', 3e-8)
+    await nextTick()
+    expect(paramValues(wrapper)['aortic_root/C']).toBe(3e-8)
+    wrapper.unmount()
+  })
+
+  it('a params file with no baselines leaves the values alone', async () => {
+    // Loading a params_for_id from disk carries none, and must not clear
+    // anything or invent a fixed value.
+    const wrapper = shallowMount(App, { attachTo: document.body })
+    await flushPromises()
+
+    wrapper.findComponent({ name: 'FileImport' }).vm.$emit('params-loaded', {
+      params: [{ qname: 'aortic_root/C', min: 1e-9, max: 5e-8, initial_value: 1e-8 }],
+      filename: 'p.json',
+    })
+    await flushPromises()
+
+    const values = paramValues(wrapper)
+    expect(values['aortic_root/C']).toBe(1e-8)
+    expect(Object.keys(values)).toEqual(['aortic_root/C'])
+    wrapper.unmount()
+  })
+})

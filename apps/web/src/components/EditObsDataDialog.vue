@@ -200,8 +200,22 @@ function rowInvalid(row) {
     !Number.isFinite(Number(row.value)) ||
     !Number.isFinite(Number(row.std)) ||
     Number(row.std) <= 0 ||
-    (row.operands ?? []).filter((o) => o).length < 1
+    !rowHasInputs(row)
   )
+}
+
+/**
+ * An item needs *somewhere* to get its inputs from: an operand, or a keyword
+ * argument. This is CA's own rule (paramID.py: "need ensure 'operands' or
+ * 'operation_kwargs' exist"), and requiring an operand unconditionally is what
+ * made `calculate_two_observable_difference` unsaveable here (#349) -- it reduces
+ * no model variable at all, it differences two other data_items named in its
+ * kwargs, so its operands are legitimately empty.
+ */
+function rowHasInputs(row) {
+  if ((row.operands ?? []).filter((o) => o).length >= 1) return true
+  const kw = row.operation_kwargs
+  return !!row.operation && !!kw && typeof kw === 'object' && Object.keys(kw).length > 0
 }
 
 // True when this row's operation is a real op CA reports as NOT @differentiable,
@@ -227,11 +241,46 @@ function kwargVal(row, kw) {
 // Persist an edited kwarg value on the row (coerced to the kwarg's type).
 function onKwarg(row, kw, raw) {
   if (!row.operation_kwargs || typeof row.operation_kwargs !== 'object') row.operation_kwargs = {}
+  // Choosing the blank option means "not set", so drop the key rather than write
+  // an empty string: CA would take '' as a name to resolve and fail to find it.
+  if (kw.type === 'data_item' && !raw) {
+    delete row.operation_kwargs[kw.name]
+    return
+  }
   let val = raw
   if (kw.type === 'boolean') val = !!raw
   else if (kw.type === 'integer' || kw.type === 'number') val = raw === '' || raw == null ? null : Number(raw)
   row.operation_kwargs[kw.name] = val
 }
+/**
+ * The other data_items this row's kwargs may reference by name. CA resolves *any*
+ * string kwarg whose value matches a data_item_name to that item's computed value,
+ * so this is the whole list, minus the row itself (an item cannot be its own input).
+ */
+function referenceableItems(row) {
+  return editableRows.value
+    .filter((r) => r !== row && r.data_item_name)
+    .map((r) => r.data_item_name)
+}
+
+/**
+ * The options for one data_item kwarg: the other items, plus whatever is already
+ * stored if that no longer names one of them.
+ *
+ * A select cannot display a value it has no option for, so a reference to an item
+ * since renamed or deleted would render as blank -- indistinguishable from unset,
+ * and saving the row would then quietly drop it. Keeping the dangling name in the
+ * list means it stays visible, stays saved, and the user can see what to fix.
+ */
+function referenceOptions(row, kw) {
+  const options = referenceableItems(row)
+  const stored = row.operation_kwargs?.[kw.name]
+  if (typeof stored === 'string' && stored && !options.includes(stored)) {
+    return [...options, stored]
+  }
+  return options
+}
+
 // The tunable keyword args for a row's current cost func, or [] when it has none
 // / CA didn't report a schema. Same shape as the operation kwargs, so the two
 // render through the same inputs.
@@ -269,9 +318,11 @@ function onCostTypeChange(row, costType) {
 // operation, so stale values from a previous operation never leak into the save.
 function onOperationChange(row, operation) {
   row.operation = operation
-  const valid = new Set(kwargsForRow(row).map((kw) => kw.name))
+  // Every operation now declares what it accepts, so a key the new one does not
+  // name is stale by definition and would be refused by CA at run time.
   const kw = row.operation_kwargs
   if (kw && typeof kw === 'object') {
+    const valid = new Set(kwargsForRow(row).map((k) => k.name))
     for (const key of Object.keys(kw)) if (!valid.has(key)) delete kw[key]
   }
   // The operand count belongs to the operation too (#147).
@@ -683,6 +734,23 @@ async function onSave() {
               :checked="!!kwargVal(row, kw)"
               @change="onKwarg(row, kw, $event.target.checked)"
             />
+            <!--
+              A kwarg of an operation that reduces no trace holds another
+              data_item's name (#349), so it is chosen, not typed: CA resolves the
+              string against the study's data_item_names, and a typo is a run that
+              fails or silently reads the wrong observable.
+            -->
+            <select
+              v-else-if="kw.type === 'data_item'"
+              :value="kwargVal(row, kw) ?? ''"
+              :data-testid="`eo-kwarg-select-${kw.name}`"
+              @change="onKwarg(row, kw, $event.target.value)"
+            >
+              <option value="">—</option>
+              <option v-for="name in referenceOptions(row, kw)" :key="name" :value="name">
+                {{ name }}
+              </option>
+            </select>
             <input
               v-else
               :type="kw.type === 'number' || kw.type === 'integer' ? 'number' : 'text'"

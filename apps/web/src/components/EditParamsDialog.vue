@@ -331,6 +331,30 @@ const canSave = computed(
   () => includedCount.value > 0 && !savedRows.value.some(rowInvalid) && !saving.value,
 )
 
+/**
+ * Every parameter's baseline value, as `{ qname: value }`, one entry per *member*
+ * so a grouped row sets all of its variables (#350).
+ *
+ * Deliberately not part of the saved params_for_id: CA validates that file's
+ * entry keys against a fixed set and refuses an unknown one, and a parameter the
+ * study does not calibrate has no entry in it to hang a value on. So the values
+ * are handed to the app, which points the calibrated parameters' sliders at them
+ * and gives the rest to the solver as fixed values.
+ *
+ * Modifier rows are skipped: their initial_value is the operation's identity
+ * theta, not a value any model variable takes.
+ */
+function baselineValues() {
+  const out = {}
+  for (const row of rows.value) {
+    if (row.kind === 'modifier' || row.groupedInto || row.modifiedBy) continue
+    const value = Number(row.initial_value)
+    if (row.initial_value == null || !Number.isFinite(value)) continue
+    for (const qname of row.qnames?.length ? row.qnames : [row.qname]) out[qname] = value
+  }
+  return out
+}
+
 async function onSave() {
   error.value = ''
   // Saved as the JSON form from here on: the CSV cannot express an override of
@@ -347,7 +371,10 @@ async function onSave() {
       filename,
       outputsDir: props.outputsDir,
     })
-    emit('saved', { ...data, filename })
+    // The baselines travel beside the file rather than in it: CA rejects a
+    // params_for_id entry carrying a key it does not know, and a parameter that
+    // is not calibrated has no entry there at all. See baselineValues.
+    emit('saved', { ...data, filename, baselines: baselineValues() })
     emit('update:visible', false)
   } catch (e) {
     error.value = e?.response?.data?.detail || String(e)
@@ -441,6 +468,15 @@ async function onSave() {
            row's ep-include, so the highlight is the whole Use column. -->
       <span class="ep-inc" data-testid="ep-use-header">Use</span>
       <span class="ep-name">Parameter</span>
+      <!-- Editable on every row, including the ones Use is off for: setting the
+           value of a parameter you are *not* calibrating is the whole point (#350). -->
+      <span
+        class="ep-num"
+        data-testid="ep-baseline-header"
+        title="The parameter's value. For a calibrated parameter this is where its slider starts; for one that is not, it is the fixed value the solver is given."
+      >
+        baseline
+      </span>
       <span class="ep-num">min</span>
       <span class="ep-num">max</span>
       <span class="ep-plot">Plot label</span>
@@ -505,6 +541,26 @@ async function onSave() {
             >&times;{{ row.qnames.length }}</span
           >
         </span>
+        <!--
+          Deliberately NOT gated on row.included: a parameter you are not
+          calibrating still has a value, and changing it is what #350 asks for.
+          A modifier row is the exception -- its initial_value is the operation's
+          identity theta, not a model quantity, so it is not a value to type over.
+        -->
+        <input
+          type="number"
+          step="any"
+          class="ep-num"
+          :value="row.initial_value"
+          :disabled="row.kind === 'modifier'"
+          :title="
+            row.kind === 'modifier'
+              ? 'A modifier carries theta, not a model value'
+              : 'The value this parameter takes'
+          "
+          data-testid="ep-baseline"
+          @input="onNum(row, 'initial_value', $event.target.value)"
+        />
         <input
           type="number"
           step="any"
@@ -716,7 +772,8 @@ async function onSave() {
 .ep-head,
 .ep-list li {
   display: grid;
-  grid-template-columns: 1.4rem 2.5rem 1fr 6rem 6rem 7rem 2rem 2rem;
+  /* baseline sits between the name and min (#350), so one more 6rem track. */
+  grid-template-columns: 1.4rem 2.5rem 1fr 6rem 6rem 6rem 7rem 2rem 2rem;
   align-items: center;
   gap: 0.5rem;
 }
@@ -724,7 +781,7 @@ async function onSave() {
    track list has to match — otherwise the note button lands under "Prior". */
 .ep-head.has-prior,
 .ep-list li.has-prior {
-  grid-template-columns: 1.4rem 2.5rem 1fr 6rem 6rem 7rem 7rem 2rem 2rem;
+  grid-template-columns: 1.4rem 2.5rem 1fr 6rem 6rem 6rem 7rem 7rem 2rem 2rem;
 }
 .ep-sel {
   text-align: center;
