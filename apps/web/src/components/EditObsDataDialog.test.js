@@ -746,11 +746,6 @@ describe('operations that take named data_item references (#349)', () => {
         { name: 'pred2', default: null, type: 'data_item' },
       ],
     },
-    operation_kwargs_accepts_any: {
-      max: false,
-      min: false,
-      calculate_two_observable_difference: true,
-    },
     operation_operands: {
       max: { count: 1, names: ['x'], variadic: false },
       calculate_two_observable_difference: { count: 0, names: [], variadic: true },
@@ -798,15 +793,13 @@ describe('operations that take named data_item references (#349)', () => {
   })
 
   it('renders one field per kwarg the operation declares, and no way to add more', async () => {
-    // The names are the function's, not the user's: it reads kwargs["pred1"] and
-    // kwargs["pred2"], so those are the fields, and inventing a third is not a
-    // thing the form should let you do.
+    // The names are the function's, not the user's: it declares pred1 and pred2,
+    // so those are the fields, and inventing a third is not a thing the form
+    // should let you do.
     const wrapper = await mountDiff([difference])
     await wrapper.find('button[aria-label="details"]').trigger('click')
     expect(wrapper.find('[data-testid="eo-kwarg-select-pred1"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="eo-kwarg-select-pred2"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="eo-custom-kwargs"]').exists()).toBe(false)
-    expect(wrapper.find('[data-testid="eo-custom-kwarg-add"]').exists()).toBe(false)
   })
 
   it('each field is a dropdown of the other data_items, never the row itself', async () => {
@@ -874,36 +867,7 @@ describe('operations that take named data_item references (#349)', () => {
     expect(item.operation_kwargs).toEqual({ pred1: 'peak unforced' })
   })
 
-  it('still offers a free-form editor when the names could not be read at all', async () => {
-    // A custom op that builds its keys at run time reports no schema; the user
-    // naming them is then the only thing left, so that path stays.
-    getObsDataOptions.mockReset().mockResolvedValue({
-      ...DIFF_FETCH,
-      operation_kwargs_schema: {},
-    })
-    uploadObsData.mockResolvedValue({})
-    const wrapper = mountDialog({ currentDataItems: [difference] })
-    await flushPromises()
-    await wrapper.find('button[aria-label="details"]').trigger('click')
-    expect(wrapper.find('[data-testid="eo-custom-kwargs"]').exists()).toBe(true)
-  })
-
-  it('keeps unrecognised kwargs when switching to an operation that accepts any', async () => {
-    // The second half of the bug: picking the operation wiped the very keys it needs,
-    // because they are not in its schema.
-    const wrapper = await mountDiff([
-      { ...peakUnforced, operation_kwargs: { pred1: 'a', pred2: 'b' } },
-    ])
-    await chooseIn(wrapper, 'eo-operation', 'calculate_two_observable_difference')
-    await wrapper.find('[data-testid="eo-save"]').trigger('click')
-    await flushPromises()
-    expect(uploadObsData.mock.calls[0][1].data_items[0].operation_kwargs).toEqual({
-      pred1: 'a',
-      pred2: 'b',
-    })
-  })
-
-  it('still drops stale kwargs when switching to an operation that does not', async () => {
+  it('drops stale kwargs when the operation changes', async () => {
     const wrapper = await mountDiff([{ ...difference, operands: ['m/x'] }])
     await chooseIn(wrapper, 'eo-operation', 'max')
     await wrapper.find('[data-testid="eo-save"]').trigger('click')

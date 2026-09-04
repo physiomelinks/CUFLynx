@@ -9,9 +9,7 @@ deps), and caches a successful introspection.
 
 from __future__ import annotations
 
-import ast
 import inspect
-import textwrap
 
 from ca_imports import ca_from, ca_import, ca_paths, ensure_ca_path
 
@@ -149,14 +147,6 @@ def _introspect(output_dir: str | None = None) -> dict:
         # op name -> [{name, default, type}] tunable keyword args, so the editor
         # can render an input per kwarg on each data_item that selects that op.
         "operation_kwargs_schema": _introspect_operation_kwargs(op_funcs),
-        # op name -> declares ``**kwargs``, the operation twin of
-        # cost_kwargs_accepts_any. An op that accepts any key takes its inputs by
-        # name rather than positionally -- `calculate_two_observable_difference`
-        # reads `pred1`/`pred2`, each naming another data_item (#349) -- so the
-        # editor cannot enumerate its kwargs from a signature and has to let the
-        # user name them. Full map for the same reason as the cost one: "accepts
-        # nothing else" and "never answered" must not look alike.
-        "operation_kwargs_accepts_any": _introspect_operation_kwargs_accepts_any(op_funcs),
         # How many operands each operation consumes, so the editor can offer the
         # right number of fields instead of leaving the user to guess (#147).
         "operation_operands": _introspect_operation_operands(op_funcs),
@@ -283,22 +273,17 @@ def _introspect_operation_kwargs(op_funcs) -> dict:
             params = inspect.signature(fn).parameters
         except (ValueError, TypeError):  # C funcs / builtins without signatures
             continue
-        # A func that takes its inputs by name out of **kwargs is described by those
-        # names and nothing else (#349). They are typed `data_item` because that is
-        # what they hold: CA resolves a string kwarg matching a data_item_name to
-        # that item's computed value, which is the whole mechanism.
-        #
-        # This *replaces* the signature walk for such a func rather than adding to
-        # it. The declared parameters left over are the operand placeholder
-        # (`x=None` on calculate_two_observable_difference, which an op taking no
-        # operands never receives) -- offering it as a tunable would put a box on
-        # the form that does nothing.
-        from_body = _operation_kwarg_names_from_body(fn)
-        if from_body:
-            out[name] = [
-                {"name": key, "default": None, "type": "data_item"} for key in from_body
-            ]
-            continue
+        # An operation with no operands has no model variable to reduce, so a kwarg
+        # of its that defaults to None is not a tunable number -- it is the name of
+        # another data_item, which CA resolves to that item's computed value
+        # (`calculate_two_observable_difference`'s pred1/pred2, #349). Typing it
+        # says so, and the editor offers a list of items instead of a text box.
+        takes_no_operands = not any(
+            p.default is inspect.Parameter.empty
+            and p.kind not in (p.VAR_POSITIONAL, p.VAR_KEYWORD)
+            and pname not in _RESERVED_OP_KWARGS
+            for pname, p in params.items()
+        )
         kwargs = []
         for pname, p in params.items():
             if pname in _RESERVED_OP_KWARGS:
@@ -311,106 +296,12 @@ def _introspect_operation_kwargs(op_funcs) -> dict:
                 {
                     "name": pname,
                     "default": _jsonable_default(p.default),
-                    "type": _infer_kwarg_type(p.default),
+                    "type": ("data_item" if takes_no_operands and p.default is None
+                             else _infer_kwarg_type(p.default)),
                 }
             )
         if kwargs:
             out[name] = kwargs
-    return out
-
-
-def _operation_kwarg_names_from_body(fn) -> list:
-    """The keys an operation func reads out of its own ``**kwargs``, in source order.
-
-    A func like ``calculate_two_observable_difference(x=None, series_output=False,
-    **kwargs)`` names its real inputs *in the body* -- ``kwargs["pred1"]``,
-    ``kwargs["pred2"]`` -- so the signature says only "anything goes". The editor
-    cannot ask the user to invent those names: they are the function's, and a typo
-    is a run that fails or, worse, resolves to the wrong observable. So read them
-    off the source (#349).
-
-    Recognises the three ways a body reaches for a key: ``kwargs["k"]``,
-    ``"k" in kwargs`` and ``kwargs.get("k")``. Returns ``[]`` for a func whose
-    source is unavailable (a C callable, an exec'd lambda) or which builds its keys
-    dynamically -- the caller then falls back to letting the user name them, which
-    is the only thing left to do.
-    """
-    try:
-        source = textwrap.dedent(inspect.getsource(fn))
-        tree = ast.parse(source)
-    except (OSError, TypeError, SyntaxError, IndentationError):
-        return []
-
-    definition = next(
-        (n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))),
-        None,
-    )
-    if definition is None or definition.args.kwarg is None:
-        return []
-    bag = definition.args.kwarg.arg
-
-    names: list[str] = []
-
-    def remember(value):
-        if isinstance(value, str) and value not in names:
-            names.append(value)
-
-    for node in ast.walk(definition):
-        # kwargs["pred1"]
-        if (isinstance(node, ast.Subscript)
-                and isinstance(node.value, ast.Name) and node.value.id == bag
-                and isinstance(node.slice, ast.Constant)):
-            remember(node.slice.value)
-        # "pred1" in kwargs
-        elif isinstance(node, ast.Compare) and isinstance(node.left, ast.Constant):
-            for op, comparator in zip(node.ops, node.comparators):
-                if (isinstance(op, ast.In)
-                        and isinstance(comparator, ast.Name) and comparator.id == bag):
-                    remember(node.left.value)
-        # kwargs.get("pred1")
-        elif (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-                and node.func.attr == "get"
-                and isinstance(node.func.value, ast.Name) and node.func.value.id == bag
-                and node.args and isinstance(node.args[0], ast.Constant)):
-            remember(node.args[0].value)
-
-    return names
-
-
-def _introspect_operation_kwargs_accepts_any(op_funcs) -> dict:
-    """Map each operation name -> whether it declares ``**kwargs``.
-
-    The operation twin of the ``accepts_any`` half of :func:`_introspect_cost_kwargs`.
-    Such an op takes named inputs the signature cannot enumerate, so the editor has
-    to let the user name them instead of rendering a fixed set of fields -- and must
-    not delete a stored kwarg it does not recognise (#349).
-
-    Asks CA's ``get_operation_kwarg_spec`` first, since that is the same helper the
-    user's obs_data will actually be validated against; a second signature parse here
-    could disagree with it. Falls back to a local parse for an older CA. A func whose
-    signature cannot be read is reported as ``True``, matching CA's own choice to let
-    a legitimate call through rather than block it.
-    """
-    try:
-        get_operation_kwarg_spec = ca_from("operation_funcs", "get_operation_kwarg_spec")
-    except Exception:  # noqa: BLE001 - older CA; parse the signature ourselves
-        get_operation_kwarg_spec = None
-
-    out: dict[str, bool] = {}
-    for name, fn in op_funcs.items():
-        if get_operation_kwarg_spec is not None:
-            try:
-                _accepted, _from_operands, accepts_any = get_operation_kwarg_spec(fn)
-                out[name] = bool(accepts_any)
-                continue
-            except Exception:  # noqa: BLE001 - fall through to the local parse
-                pass
-        try:
-            params = inspect.signature(fn).parameters
-        except (ValueError, TypeError):
-            out[name] = True
-            continue
-        out[name] = any(p.kind == p.VAR_KEYWORD for p in params.values())
     return out
 
 
@@ -637,7 +528,6 @@ def get_obs_data_options(refresh: bool = False, output_dir: str | None = None) -
             "cost_kwargs_accepts_any": {},
             "differentiable_operations": {},
             "operation_kwargs_schema": {},
-            "operation_kwargs_accepts_any": {},
             "operation_operands": {k: dict(v) for k, v in FALLBACK_OPERATION_OPERANDS.items()},
             "data_types": list(FALLBACK_DATA_TYPES),
             "plot_types": list(FALLBACK_PLOT_TYPES),

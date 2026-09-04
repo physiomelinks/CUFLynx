@@ -32,7 +32,6 @@ def test_obs_data_options_fallback_when_ca_unavailable(monkeypatch):
     assert opts["operation_kwargs_schema"] == {}
     assert opts["cost_kwargs_schema"] == {}
     assert opts["cost_kwargs_accepts_any"] == {}
-    assert opts["operation_kwargs_accepts_any"] == {}
     assert opts["data_types"] == obs_options.FALLBACK_DATA_TYPES
     assert opts["plot_types"] == obs_options.FALLBACK_PLOT_TYPES
     obs_options.reset_cache()
@@ -128,6 +127,64 @@ def test_operation_kwargs_schema_parses_signature():
     assert by_name["label"] == {"name": "label", "default": "p", "type": "string"}
 
 
+def test_an_operation_with_no_operands_takes_data_item_names(monkeypatch):
+    """`calculate_two_observable_difference(pred1=None, pred2=None, ...)` reduces no
+    model variable -- it differences two other data_items. A kwarg of such an
+    operation that defaults to None is therefore the *name of an item*, which CA
+    resolves to that item's computed value, so the editor offers a list of items
+    rather than a text box (#349)."""
+    import obs_options
+
+    def calculate_two_observable_difference(pred1=None, pred2=None, series_output=False):
+        return pred2 - pred1
+
+    schema = obs_options._introspect_operation_kwargs(
+        {"calculate_two_observable_difference": calculate_two_observable_difference})
+
+    assert schema["calculate_two_observable_difference"] == [
+        {"name": "pred1", "default": None, "type": "data_item"},
+        {"name": "pred2", "default": None, "type": "data_item"},
+    ]
+
+
+def test_an_operation_that_reduces_a_variable_keeps_its_ordinary_kwarg_types():
+    """The rule is about operations with no operands. One that reduces a trace has
+    tunables, not references, however they default."""
+    import obs_options
+
+    def mean_in_range(x, start_frac=0.0, end_frac=1.0, series_output=False):
+        return x
+
+    def windowed(x, label=None):  # a None default, but `x` is an operand
+        return x
+
+    schema = obs_options._introspect_operation_kwargs(
+        {"mean_in_range": mean_in_range, "windowed": windowed})
+
+    assert {k["type"] for k in schema["mean_in_range"]} == {"number"}
+    assert schema["windowed"][0]["type"] == "string"
+
+
+def test_the_real_ca_operation_is_typed_as_taking_data_item_names():
+    """Against the shipped func, so a change to its signature upstream shows up
+    here rather than as a form that silently offers the wrong widget."""
+    import pytest as _pytest
+
+    import obs_options
+
+    funcs = _pytest.importorskip("libcuflynx.funcs.operation_funcs_user")
+    fn = getattr(funcs, "calculate_two_observable_difference", None)
+    if fn is None:
+        _pytest.skip("this circulatory_autogen has no calculate_two_observable_difference")
+
+    schema = obs_options._introspect_operation_kwargs(
+        {"calculate_two_observable_difference": fn})
+    entries = schema.get("calculate_two_observable_difference", [])
+    if [k["name"] for k in entries] != ["pred1", "pred2"]:
+        _pytest.skip("this circulatory_autogen predates the declared pred1/pred2 kwargs")
+    assert {k["type"] for k in entries} == {"data_item"}
+
+
 def test_operation_kwargs_schema_handles_uninspectable_and_varargs():
     """Callables without a usable signature are skipped (not fatal); *args/**kwargs
     are ignored, and a None default falls back to a free-text string input."""
@@ -193,145 +250,6 @@ def test_a_cost_that_takes_star_kwargs_is_marked_accepts_any():
     schema, accepts_any = obs_options._introspect_cost_kwargs({"MSE": MSE})
     assert schema == {}
     assert accepts_any == {"MSE": True}
-
-
-def test_an_operation_that_takes_star_kwargs_is_marked_accepts_any():
-    """`calculate_two_observable_difference` names its inputs (pred1/pred2, each a
-    data_item_name) instead of taking them positionally, so its keys cannot come
-    from a signature. The editor needs telling, or it deletes them (#349)."""
-    import obs_options
-
-    def calculate_two_observable_difference(x=None, series_output=False, **kwargs):
-        return 0.0
-
-    accepts_any = obs_options._introspect_operation_kwargs_accepts_any(
-        {"calculate_two_observable_difference": calculate_two_observable_difference}
-    )
-    assert accepts_any == {"calculate_two_observable_difference": True}
-
-
-def test_the_kwargs_an_op_reads_out_of_star_kwargs_are_recovered_from_its_body():
-    """`calculate_two_observable_difference` names its real inputs in the body, not
-    the signature. The editor must not ask the user to invent them (#349): they are
-    the function's, and a typo silently reads the wrong observable."""
-    import obs_options
-
-    def calculate_two_observable_difference(x=None, series_output=False, **kwargs):
-        if "pred1" in kwargs:
-            k1 = kwargs["pred1"]
-        else:
-            raise RuntimeError
-        k2 = kwargs["pred2"]
-        return k2 - k1
-
-    names = obs_options._operation_kwarg_names_from_body(
-        calculate_two_observable_difference)
-    assert names == ["pred1", "pred2"]
-
-
-def test_kwargs_read_via_get_are_recovered_too():
-    import obs_options
-
-    def op(**kwargs):
-        return kwargs.get("lower", 0) + kwargs.get("upper", 1)
-
-    assert obs_options._operation_kwarg_names_from_body(op) == ["lower", "upper"]
-
-
-def test_an_op_that_reads_no_named_key_recovers_nothing():
-    """A func building its keys at run time reports none, and the editor falls back
-    to letting the user name them -- the only thing left to do."""
-    import obs_options
-
-    def op(**kwargs):
-        return sum(kwargs.values())
-
-    assert obs_options._operation_kwarg_names_from_body(op) == []
-
-
-def test_a_func_with_no_star_kwargs_recovers_nothing():
-    import obs_options
-
-    def mean_in_range(x, start_frac=0.0, end_frac=1.0, series_output=False):
-        return x
-
-    assert obs_options._operation_kwarg_names_from_body(mean_in_range) == []
-
-
-def test_the_schema_for_such_an_op_is_exactly_its_named_kwargs():
-    """And nothing else. `x=None` is the operand placeholder of an op that takes no
-    operands -- offering it would put a box on the form that does nothing."""
-    import obs_options
-
-    def calculate_two_observable_difference(x=None, series_output=False, **kwargs):
-        return kwargs["pred2"] - kwargs["pred1"]
-
-    schema = obs_options._introspect_operation_kwargs(
-        {"calculate_two_observable_difference": calculate_two_observable_difference})
-
-    assert schema["calculate_two_observable_difference"] == [
-        {"name": "pred2", "default": None, "type": "data_item"},
-        {"name": "pred1", "default": None, "type": "data_item"},
-    ]
-
-
-def test_the_real_ca_operation_reports_pred1_and_pred2():
-    """Against the shipped func rather than a lookalike, so that if CA renames its
-    keys the form stops offering the old ones instead of quietly offering names
-    the engine no longer reads."""
-    import pytest
-
-    import obs_options
-
-    funcs = pytest.importorskip("libcuflynx.funcs.operation_funcs_user")
-    fn = getattr(funcs, "calculate_two_observable_difference", None)
-    if fn is None:
-        pytest.skip("this circulatory_autogen has no calculate_two_observable_difference")
-
-    assert obs_options._operation_kwarg_names_from_body(fn) == ["pred1", "pred2"]
-
-
-def test_an_ordinary_operation_keeps_its_signature_derived_kwargs():
-    """The recovery is for **kwargs funcs only; everything else is unchanged."""
-    import obs_options
-
-    def mean_in_range(x, start_frac=0.0, end_frac=1.0, series_output=False):
-        return x
-
-    schema = obs_options._introspect_operation_kwargs({"mean_in_range": mean_in_range})
-    assert [k["name"] for k in schema["mean_in_range"]] == ["start_frac", "end_frac"]
-    assert {k["type"] for k in schema["mean_in_range"]} == {"number"}
-
-
-def test_an_ordinary_operation_is_not_marked_accepts_any():
-    """The other half: "accepts nothing else" is what justifies dropping a stale
-    kwarg, so it must stay distinguishable from "never answered"."""
-    import obs_options
-
-    def max(x, series_output=False):
-        return x
-
-    def mean_in_range(x, start_frac=0.0, end_frac=1.0, series_output=False):
-        return x
-
-    accepts_any = obs_options._introspect_operation_kwargs_accepts_any(
-        {"max": max, "mean_in_range": mean_in_range}
-    )
-    assert accepts_any == {"max": False, "mean_in_range": False}
-
-
-def test_an_unreadable_operation_signature_is_permissive():
-    """Matching CA's own choice in get_operation_kwarg_spec: a func it cannot
-    introspect is treated as accepting anything, so validation never blocks a
-    legitimate call -- and the editor never deletes that func's kwargs."""
-    import time
-
-    import obs_options
-
-    # A C builtin with no __text_signature__: inspect.signature raises ValueError.
-    # (`len` is not one -- Argument Clinic gives it a signature.)
-    accepts_any = obs_options._introspect_operation_kwargs_accepts_any({"builtin": time.time})
-    assert accepts_any == {"builtin": True}
 
 
 def test_cost_kwargs_reserved_names_come_from_ca(monkeypatch):
