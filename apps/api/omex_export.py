@@ -35,11 +35,16 @@ from xml.sax.saxutils import quoteattr
 
 import omex_import
 from calibrated_model import calibrated_cellml
+from params_for_id import PARAM_COMPONENTS
 
 #: The components #287 says PhLynx will read parameter changes back out of. A
 #: value written anywhere else is still written -- CUFLynx does not own the
 #: model's layout -- but the caller is told, because PhLynx will not pick it up.
-PHLYNX_PARAMETER_COMPONENTS = ("parameters", "parameters_global")
+#:
+#: One list, shared with the resolver, so the components CUFLynx *finds* a
+#: parameter in and the ones it reports as readable cannot drift apart -- which
+#: is how #345 was noticed: PhLynx renamed these and only one side knew.
+PHLYNX_PARAMETER_COMPONENTS = PARAM_COMPONENTS
 
 #: The name a synthesised archive gives its model. PhLynx's URL loader looks the
 #: member up by this exact name today, and per #287 the filename is ours to

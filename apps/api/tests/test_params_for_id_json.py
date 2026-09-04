@@ -88,6 +88,49 @@ def test_a_global_row_keeps_its_gen_name_fallback(requires_params_csv):
 
 
 # ---------------------------------------------------------------------------
+# PhLynx renamed its parameter components (#345)
+# ---------------------------------------------------------------------------
+def test_a_phlynx_instance_parameters_component_is_preferred(requires_params_csv):
+    """PhLynx now emits `instance_parameters` / `global_parameters` where it used
+    to emit `parameters` / `parameters_global`. The bare gen name is ambiguous in
+    such a model, and the parameter component is the one that resolves it."""
+    initial_values = {
+        "instance_parameters/C_aortic_root": 1e-8,
+        "elsewhere/C_aortic_root": 9e-9,
+    }
+    csv = "vessel_name,param_name,min,max\naortic_root,C,1e-9,1e-7\n"
+    entries = parse_params_for_id(csv, initial_values)
+
+    # The ambiguity is resolved in favour of the parameter component, so the
+    # row picks up that component's value instead of resolving to nothing.
+    assert entries[0].initial_value == pytest.approx(1e-8)
+
+
+def test_a_phlynx_global_parameters_component_is_preferred(requires_params_csv):
+    initial_values = {
+        "global_parameters/q_lv_init": 5e-4,
+        "elsewhere/q_lv_init": 1e-4,
+    }
+    csv = "vessel_name,param_name,min,max\nglobal,q_lv_init,1e-4,1e-3\n"
+    entries = parse_params_for_id(csv, initial_values)
+
+    assert entries[0].initial_value == pytest.approx(5e-4)
+
+
+def test_the_older_component_names_still_resolve(requires_params_csv):
+    """Both conventions are live: CA generates the first pair, and archives from
+    an older PhLynx carry it. Adding the new names must not cost the old ones."""
+    initial_values = {
+        "parameters/C_aortic_root": 1e-8,
+        "elsewhere/C_aortic_root": 9e-9,
+    }
+    csv = "vessel_name,param_name,min,max\naortic_root,C,1e-9,1e-7\n"
+    entries = parse_params_for_id(csv, initial_values)
+
+    assert entries[0].initial_value == pytest.approx(1e-8)
+
+
+# ---------------------------------------------------------------------------
 # What the JSON form makes possible
 # ---------------------------------------------------------------------------
 def test_targets_may_name_different_parameters():

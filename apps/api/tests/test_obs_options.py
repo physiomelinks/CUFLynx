@@ -32,6 +32,7 @@ def test_obs_data_options_fallback_when_ca_unavailable(monkeypatch):
     assert opts["operation_kwargs_schema"] == {}
     assert opts["cost_kwargs_schema"] == {}
     assert opts["cost_kwargs_accepts_any"] == {}
+    assert opts["operation_kwargs_accepts_any"] == {}
     assert opts["data_types"] == obs_options.FALLBACK_DATA_TYPES
     assert opts["plot_types"] == obs_options.FALLBACK_PLOT_TYPES
     obs_options.reset_cache()
@@ -192,6 +193,52 @@ def test_a_cost_that_takes_star_kwargs_is_marked_accepts_any():
     schema, accepts_any = obs_options._introspect_cost_kwargs({"MSE": MSE})
     assert schema == {}
     assert accepts_any == {"MSE": True}
+
+
+def test_an_operation_that_takes_star_kwargs_is_marked_accepts_any():
+    """`calculate_two_observable_difference` names its inputs (pred1/pred2, each a
+    data_item_name) instead of taking them positionally, so its keys cannot come
+    from a signature. The editor needs telling, or it deletes them (#349)."""
+    import obs_options
+
+    def calculate_two_observable_difference(x=None, series_output=False, **kwargs):
+        return 0.0
+
+    accepts_any = obs_options._introspect_operation_kwargs_accepts_any(
+        {"calculate_two_observable_difference": calculate_two_observable_difference}
+    )
+    assert accepts_any == {"calculate_two_observable_difference": True}
+
+
+def test_an_ordinary_operation_is_not_marked_accepts_any():
+    """The other half: "accepts nothing else" is what justifies dropping a stale
+    kwarg, so it must stay distinguishable from "never answered"."""
+    import obs_options
+
+    def max(x, series_output=False):
+        return x
+
+    def mean_in_range(x, start_frac=0.0, end_frac=1.0, series_output=False):
+        return x
+
+    accepts_any = obs_options._introspect_operation_kwargs_accepts_any(
+        {"max": max, "mean_in_range": mean_in_range}
+    )
+    assert accepts_any == {"max": False, "mean_in_range": False}
+
+
+def test_an_unreadable_operation_signature_is_permissive():
+    """Matching CA's own choice in get_operation_kwarg_spec: a func it cannot
+    introspect is treated as accepting anything, so validation never blocks a
+    legitimate call -- and the editor never deletes that func's kwargs."""
+    import time
+
+    import obs_options
+
+    # A C builtin with no __text_signature__: inspect.signature raises ValueError.
+    # (`len` is not one -- Argument Clinic gives it a signature.)
+    accepts_any = obs_options._introspect_operation_kwargs_accepts_any({"builtin": time.time})
+    assert accepts_any == {"builtin": True}
 
 
 def test_cost_kwargs_reserved_names_come_from_ca(monkeypatch):

@@ -416,3 +416,35 @@ def test_the_archive_survives_losing_the_in_memory_registry(client):
     import base64
 
     assert "module_config.json" in _read(base64.b64decode(resp.json()["base64"]))
+
+
+# --- PhLynx renamed its parameter components (#345) -------------------------
+def test_a_value_in_a_renamed_phlynx_component_is_not_reported_as_unread():
+    """PhLynx reads parameter changes back out of its parameter components. It
+    renamed them to `instance_parameters` / `global_parameters`, and CUFLynx was
+    still checking only the old pair -- so every value written into a current
+    PhLynx model was reported as one PhLynx would not pick up."""
+    report = {
+        "resolved": {
+            "aortic_root/C": "instance_parameters/C_aortic_root",
+            "global/E_lv_A": "global_parameters/E_lv_A",
+        }
+    }
+    assert omex_export.outside_parameter_components(report) == []
+
+
+def test_the_older_component_names_are_still_accepted():
+    """Both conventions are live; the new names must not cost the old ones."""
+    report = {
+        "resolved": {
+            "aortic_root/C": "parameters/C_aortic_root",
+            "global/E_lv_A": "parameters_global/E_lv_A",
+        }
+    }
+    assert omex_export.outside_parameter_components(report) == []
+
+
+def test_a_value_written_somewhere_else_is_still_reported():
+    """The check still has to fire, or the warning becomes decorative."""
+    report = {"resolved": {"heart/E": "heart_module/E_lv", "a/C": "parameters/C_a"}}
+    assert omex_export.outside_parameter_components(report) == ["heart/E -> heart_module/E_lv"]

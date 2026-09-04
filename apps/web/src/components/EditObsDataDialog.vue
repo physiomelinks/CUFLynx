@@ -57,6 +57,9 @@ const diffOps = ref({})
 // to render an editable input per kwarg on each data_item. Empty when CA can't
 // report it (older CA / offline), in which case no kwarg inputs show.
 const opKwargsSchema = ref({})
+// op name -> declares **kwargs. Such an op names its inputs instead of taking them
+// positionally, so its keys cannot be enumerated from a signature (#349).
+const opKwargsAcceptAny = ref({})
 const costTypes = ref(FALLBACK_COST_TYPES)
 // What CA applies when a data_item names no cost_type (#212). From CA, never
 // restated here — empty on an older CA, and the option then says plain
@@ -96,6 +99,7 @@ async function loadOptions(refresh = false) {
     if (opts?.operations?.length) operations.value = opts.operations
     if (opts?.differentiable_operations) diffOps.value = opts.differentiable_operations
     if (opts?.operation_kwargs_schema) opKwargsSchema.value = opts.operation_kwargs_schema
+    if (opts?.operation_kwargs_accepts_any) opKwargsAcceptAny.value = opts.operation_kwargs_accepts_any
     if (opts?.operation_operands) opOperands.value = opts.operation_operands
     if (opts?.cost_types?.length) costTypes.value = opts.cost_types
     defaultCostType.value = opts?.default_cost_type || ''
@@ -200,8 +204,22 @@ function rowInvalid(row) {
     !Number.isFinite(Number(row.value)) ||
     !Number.isFinite(Number(row.std)) ||
     Number(row.std) <= 0 ||
-    (row.operands ?? []).filter((o) => o).length < 1
+    !rowHasInputs(row)
   )
+}
+
+/**
+ * An item needs *somewhere* to get its inputs from: an operand, or a keyword
+ * argument. This is CA's own rule (paramID.py: "need ensure 'operands' or
+ * 'operation_kwargs' exist"), and requiring an operand unconditionally is what
+ * made `calculate_two_observable_difference` unsaveable here (#349) -- it reduces
+ * no model variable at all, it differences two other data_items named in its
+ * kwargs, so its operands are legitimately empty.
+ */
+function rowHasInputs(row) {
+  if ((row.operands ?? []).filter((o) => o).length >= 1) return true
+  const kw = row.operation_kwargs
+  return !!row.operation && !!kw && typeof kw === 'object' && Object.keys(kw).length > 0
 }
 
 // True when this row's operation is a real op CA reports as NOT @differentiable,
@@ -232,6 +250,69 @@ function onKwarg(row, kw, raw) {
   else if (kw.type === 'integer' || kw.type === 'number') val = raw === '' || raw == null ? null : Number(raw)
   row.operation_kwargs[kw.name] = val
 }
+// True when CA says this row's operation declares **kwargs, i.e. it takes named
+// inputs the schema cannot list. Only an explicit true opens the free-form editor:
+// an unknown op (older CA, offline) keeps the fixed fields it already had.
+function acceptsAnyKwargs(row) {
+  return opKwargsAcceptAny.value[row.operation] === true
+}
+
+/**
+ * The row's stored kwargs that the operation's schema does not name -- the ones the
+ * user has to supply by name, such as `pred1`/`pred2` (#349). Returned as
+ * {name, value} so the template can edit the key as well as the value.
+ */
+function customKwargsForRow(row) {
+  const kw = row.operation_kwargs
+  if (!kw || typeof kw !== 'object') return []
+  const declared = new Set(kwargsForRow(row).map((k) => k.name))
+  return Object.keys(kw)
+    .filter((name) => !declared.has(name))
+    .map((name) => ({ name, value: kw[name] }))
+}
+
+function addCustomKwarg(row) {
+  if (!row.operation_kwargs || typeof row.operation_kwargs !== 'object') row.operation_kwargs = {}
+  // Named so it is obvious what to replace, and unique so a second click does not
+  // silently overwrite the first still-unnamed one.
+  let name = 'arg'
+  let n = 1
+  while (name in row.operation_kwargs) name = `arg${++n}`
+  row.operation_kwargs[name] = ''
+}
+
+// Rename a custom kwarg, preserving insertion order so the fields do not jump
+// around under the cursor as the user types the name.
+function renameCustomKwarg(row, oldName, newName) {
+  const kw = row.operation_kwargs
+  if (!kw || oldName === newName) return
+  const rebuilt = {}
+  for (const [key, val] of Object.entries(kw)) rebuilt[key === oldName ? newName : key] = val
+  row.operation_kwargs = rebuilt
+}
+
+function setCustomKwarg(row, name, value) {
+  if (!row.operation_kwargs || typeof row.operation_kwargs !== 'object') row.operation_kwargs = {}
+  row.operation_kwargs[name] = value
+}
+
+function removeCustomKwarg(row, name) {
+  if (row.operation_kwargs && typeof row.operation_kwargs === 'object') {
+    delete row.operation_kwargs[name]
+  }
+}
+
+/**
+ * The other data_items this row's kwargs may reference by name. CA resolves *any*
+ * string kwarg whose value matches a data_item_name to that item's computed value,
+ * so this is the whole list, minus the row itself (an item cannot be its own input).
+ */
+function referenceableItems(row) {
+  return editableRows.value
+    .filter((r) => r !== row && r.data_item_name)
+    .map((r) => r.data_item_name)
+}
+
 // The tunable keyword args for a row's current cost func, or [] when it has none
 // / CA didn't report a schema. Same shape as the operation kwargs, so the two
 // render through the same inputs.
@@ -269,9 +350,17 @@ function onCostTypeChange(row, costType) {
 // operation, so stale values from a previous operation never leak into the save.
 function onOperationChange(row, operation) {
   row.operation = operation
-  const valid = new Set(kwargsForRow(row).map((kw) => kw.name))
+  // Only when CA actually said the new op accepts nothing else. An op declaring
+  // **kwargs takes keys no schema can list, so deleting the ones we do not
+  // recognise would erase the user's `pred1`/`pred2` the moment they picked the
+  // operation that needs them (#349) -- the same rule onCostTypeChange follows.
   const kw = row.operation_kwargs
-  if (kw && typeof kw === 'object') {
+  if (!kw || typeof kw !== 'object') {
+    syncOperands(row)
+    return
+  }
+  if (opKwargsAcceptAny.value[operation] !== true) {
+    const valid = new Set(kwargsForRow(row).map((k) => k.name))
     for (const key of Object.keys(kw)) if (!valid.has(key)) delete kw[key]
   }
   // The operand count belongs to the operation too (#147).
@@ -691,6 +780,66 @@ async function onSave() {
               @input="onKwarg(row, kw, $event.target.value)"
             />
           </label>
+          <!--
+            Operations that declare **kwargs take inputs the schema cannot name,
+            so the user names them. A value that matches another data_item_name is
+            resolved by CA to that item's computed value, which is how
+            calculate_two_observable_difference gets its pred1/pred2 (#349); the
+            datalist offers those names without forcing one, since a plain string
+            or number is still a legitimate value.
+          -->
+          <div v-if="acceptsAnyKwargs(row)" class="eo-wide eo-custom-kwargs" data-testid="eo-custom-kwargs">
+            <span class="eo-custom-kwargs-title">
+              operation kwargs — a value naming another data_item is replaced by that item's value
+            </span>
+            <div
+              v-for="ck in customKwargsForRow(row)"
+              :key="ck.name"
+              class="eo-custom-kwarg"
+              data-testid="eo-custom-kwarg"
+            >
+              <input
+                type="text"
+                class="eo-custom-kwarg-name"
+                placeholder="name"
+                aria-label="keyword argument name"
+                :value="ck.name"
+                data-testid="eo-custom-kwarg-name"
+                @change="renameCustomKwarg(row, ck.name, $event.target.value)"
+              />
+              <input
+                type="text"
+                class="eo-custom-kwarg-value"
+                placeholder="value or data_item name"
+                aria-label="keyword argument value"
+                :list="`eo-refs-${i}`"
+                :value="ck.value"
+                data-testid="eo-custom-kwarg-value"
+                @input="setCustomKwarg(row, ck.name, $event.target.value)"
+              />
+              <Button
+                icon="pi pi-times"
+                text
+                rounded
+                size="small"
+                severity="danger"
+                aria-label="remove keyword argument"
+                data-testid="eo-custom-kwarg-remove"
+                @click="removeCustomKwarg(row, ck.name)"
+              />
+            </div>
+            <datalist :id="`eo-refs-${i}`">
+              <option v-for="name in referenceableItems(row)" :key="name" :value="name" />
+            </datalist>
+            <Button
+              icon="pi pi-plus"
+              label="keyword argument"
+              text
+              size="small"
+              data-testid="eo-custom-kwarg-add"
+              @click="addCustomKwarg(row)"
+            />
+          </div>
           <label class="eo-wide">source — where this data came from (e.g. paper / dataset / DOI)
             <textarea
               rows="2"
@@ -852,6 +1001,28 @@ async function onSave() {
 /* Free-text notes (source / comment) span the full detail width, stretchable. */
 .eo-wide {
   grid-column: 1 / -1;
+}
+/* Name/value pairs for an operation that declares **kwargs (#349). */
+.eo-custom-kwargs {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.eo-custom-kwargs-title {
+  font-size: 0.7rem;
+  opacity: 0.8;
+}
+.eo-custom-kwarg {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+.eo-custom-kwarg-name {
+  flex: 0 0 8rem;
+}
+.eo-custom-kwarg-value {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 .eo-detail textarea {
   width: 100%;

@@ -69,6 +69,11 @@ export function sliderToValue(s, pos) {
  */
 export function useSliders() {
   const sliders = reactive({})
+  // qname -> value for parameters that are *not* calibrated but whose value the
+  // user set in the params editor (#350). Kept apart from `sliders` because they
+  // have no range, no handle and nothing to drag: they are a fixed point the
+  // solver is given, not a degree of freedom.
+  const fixedValues = reactive({})
 
   function addSlider(qname, opts = {}) {
     const min = opts.min ?? 0
@@ -132,6 +137,25 @@ export function useSliders() {
 
   function clear() {
     for (const key of Object.keys(sliders)) delete sliders[key]
+    for (const key of Object.keys(fixedValues)) delete fixedValues[key]
+  }
+
+  /**
+   * Set (or clear, with null) the value of a parameter that is not calibrated,
+   * so the solver is given it instead of the model's own (#350).
+   *
+   * A qname that has a slider is ignored: that parameter *is* calibrated, its
+   * slider owns the value, and storing a second one would mean the run and the
+   * handle on screen could disagree.
+   */
+  function setFixedValue(qname, value) {
+    if (sliders[qname]) return
+    if (value == null || !Number.isFinite(Number(value))) delete fixedValues[qname]
+    else fixedValues[qname] = Number(value)
+  }
+
+  function clearFixedValues() {
+    for (const key of Object.keys(fixedValues)) delete fixedValues[key]
   }
 
   /**
@@ -145,6 +169,13 @@ export function useSliders() {
    */
   const paramDict = computed(() => {
     const out = {}
+    // Parameters the study does not calibrate, whose value the user set in the
+    // params editor's baseline column (#350). They have no slider -- that is what
+    // "not calibrated" means here -- so without this the solver would keep using
+    // the model's own value and the edit would appear to do nothing. Written
+    // first so a slider always wins: for a calibrated parameter the slider is the
+    // live handle, and a stale fixed value must not override where it was dragged.
+    for (const [qname, value] of Object.entries(fixedValues)) out[qname] = value
     for (const key of Object.keys(sliders)) {
       const s = sliders[key]
       if (s.kind === 'modifier') {
@@ -205,9 +236,12 @@ export function useSliders() {
 
   return {
     sliders,
+    fixedValues,
     addSlider,
     removeSlider,
     setValue,
+    setFixedValue,
+    clearFixedValues,
     resetToInit,
     applyValues,
     clear,

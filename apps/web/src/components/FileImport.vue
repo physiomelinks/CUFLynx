@@ -205,9 +205,14 @@ function sendOptions() {
 }
 
 // What the send did, beyond opening the tab: a parameter that could not be
-// written is a value PhLynx will not see, and one written outside
-// `parameters` / `parameters_global` is one PhLynx will not read back (#287).
+// written is a value PhLynx will not see, and one written outside a parameter
+// component is one PhLynx will not read back (#287).
 // Both are reported rather than left for the user to discover downstream.
+//
+// The components are not named here any more: there are two conventions now
+// (PhLynx renamed them to instance_parameters / global_parameters, #345) and a
+// message naming one pair reads as a bug on a model using the other. The offending
+// names carry their own component, which is the part the user has to act on.
 function sendNotice(res) {
   const parts = [`Sent ${res.member_count} files to PhLynx.`]
   if (res.unresolved?.length) {
@@ -215,8 +220,8 @@ function sendNotice(res) {
   }
   if (res.outside_parameters?.length) {
     parts.push(
-      `Written outside parameters/parameters_global, so PhLynx will not pick ` +
-        `them up: ${res.outside_parameters.join(', ')}.`,
+      `Written outside the model's parameter components, so PhLynx will not ` +
+        `pick them up: ${res.outside_parameters.join(', ')}.`,
     )
   }
   return parts.join(' ')

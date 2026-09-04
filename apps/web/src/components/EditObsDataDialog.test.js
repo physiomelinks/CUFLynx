@@ -728,3 +728,147 @@ describe('tour anchors', () => {
     expect(wrapper.find('[data-testid="eo-cost-type"]').exists()).toBe(true)
   })
 })
+
+// An operation that declares **kwargs takes its inputs by name rather than from a
+// model variable -- calculate_two_observable_difference differences two other
+// data_items named in pred1/pred2. The editor could not express that: it demanded
+// an operand, and deleted any kwarg its schema did not name (#349).
+describe('operations that take named data_item references (#349)', () => {
+  const DIFF_FETCH = {
+    ...FETCH,
+    operations: ['', 'max', 'min', 'calculate_two_observable_difference'],
+    // `x` has a default so CA reports it as an accepted kwarg, and there are no
+    // positional operands -- which is exactly why an operand must not be required.
+    operation_kwargs_schema: {
+      calculate_two_observable_difference: [{ name: 'x', default: null, type: 'string' }],
+    },
+    operation_kwargs_accepts_any: {
+      max: false,
+      min: false,
+      calculate_two_observable_difference: true,
+    },
+    operation_operands: {
+      max: { count: 1, names: ['x'], variadic: false },
+      calculate_two_observable_difference: { count: 0, names: [], variadic: true },
+    },
+  }
+  const peakUnforced = {
+    variable: 'peak unforced', data_type: 'constant', operation: 'max', operands: ['m/x'],
+    unit: 'dimensionless', value: 23.6, std: 0.5, experiment_idx: 0, plot_type: 'horizontal',
+  }
+  const difference = {
+    variable: 'forcing response', data_type: 'constant',
+    operation: 'calculate_two_observable_difference', operands: [],
+    operation_kwargs: { pred1: 'peak unforced', pred2: 'peak forced' },
+    unit: 'dimensionless', value: -2.04, std: 0.5, experiment_idx: 0, plot_type: 'horizontal',
+  }
+
+  async function mountDiff(items) {
+    getObsDataOptions.mockResolvedValueOnce(DIFF_FETCH)
+    uploadObsData.mockResolvedValue({})
+    const wrapper = mountDialog({ currentDataItems: items })
+    await flushPromises()
+    return wrapper
+  }
+
+  it('lets an item with no operand be saved when its kwargs supply the inputs', async () => {
+    // The reported bug: the row was permanently invalid, so Save stayed disabled
+    // and the item could not be entered at all.
+    const wrapper = await mountDiff([difference])
+    expect(wrapper.find('[data-testid="eo-save"]').attributes('disabled')).toBeUndefined()
+  })
+
+  it('still refuses an item that has neither an operand nor a kwarg', async () => {
+    const wrapper = await mountDiff([{ ...difference, operation_kwargs: {} }])
+    expect(wrapper.find('[data-testid="eo-save"]').attributes('disabled')).toBeDefined()
+  })
+
+  it('round-trips the pred1/pred2 references through a save', async () => {
+    const wrapper = await mountDiff([peakUnforced, difference])
+    await wrapper.find('[data-testid="eo-save"]').trigger('click')
+    await flushPromises()
+    const saved = uploadObsData.mock.calls[0][1].data_items
+    const item = saved.find((d) => d.operation === 'calculate_two_observable_difference')
+    expect(item.operation_kwargs).toEqual({ pred1: 'peak unforced', pred2: 'peak forced' })
+    expect(item.operands).toEqual([])
+  })
+
+  it('offers a name/value editor only for an operation that accepts any kwarg', async () => {
+    const wrapper = await mountDiff([difference, peakUnforced])
+    const details = wrapper.findAll('button[aria-label="details"]')
+    await details[0].trigger('click')
+    expect(wrapper.find('[data-testid="eo-custom-kwargs"]').exists()).toBe(true)
+    // The plain `max` row gets the fixed fields it always had, and no free-form editor.
+    await details[1].trigger('click')
+    expect(wrapper.findAll('[data-testid="eo-custom-kwargs"]').length).toBe(1)
+  })
+
+  it('shows each stored reference as an editable name/value pair', async () => {
+    const wrapper = await mountDiff([difference])
+    await wrapper.find('button[aria-label="details"]').trigger('click')
+    const names = wrapper.findAll('[data-testid="eo-custom-kwarg-name"]')
+    expect(names.map((n) => n.element.value)).toEqual(['pred1', 'pred2'])
+    const values = wrapper.findAll('[data-testid="eo-custom-kwarg-value"]')
+    expect(values.map((v) => v.element.value)).toEqual(['peak unforced', 'peak forced'])
+  })
+
+  it('adds a named kwarg and persists the data_item it points at', async () => {
+    const wrapper = await mountDiff([
+      peakUnforced,
+      { ...difference, operation_kwargs: { pred1: 'peak unforced' } },
+    ])
+    await wrapper.findAll('button[aria-label="details"]')[1].trigger('click')
+    await wrapper.find('[data-testid="eo-custom-kwarg-add"]').trigger('click')
+    const names = wrapper.findAll('[data-testid="eo-custom-kwarg-name"]')
+    await names[names.length - 1].setValue('pred2')
+    const values = wrapper.findAll('[data-testid="eo-custom-kwarg-value"]')
+    await values[values.length - 1].setValue('peak unforced')
+    await wrapper.find('[data-testid="eo-save"]').trigger('click')
+    await flushPromises()
+    const saved = uploadObsData.mock.calls[0][1].data_items
+    const item = saved.find((d) => d.operation === 'calculate_two_observable_difference')
+    expect(item.operation_kwargs).toEqual({ pred1: 'peak unforced', pred2: 'peak unforced' })
+  })
+
+  it('removes a named kwarg', async () => {
+    const wrapper = await mountDiff([difference])
+    await wrapper.find('button[aria-label="details"]').trigger('click')
+    await wrapper.findAll('[data-testid="eo-custom-kwarg-remove"]')[1].trigger('click')
+    await wrapper.find('[data-testid="eo-save"]').trigger('click')
+    await flushPromises()
+    const item = uploadObsData.mock.calls[0][1].data_items[0]
+    expect(item.operation_kwargs).toEqual({ pred1: 'peak unforced' })
+  })
+
+  it('offers the other data_items as reference values, never the row itself', async () => {
+    const wrapper = await mountDiff([peakUnforced, difference])
+    await wrapper.findAll('button[aria-label="details"]')[1].trigger('click')
+    const offered = wrapper.findAll('datalist option').map((o) => o.attributes('value'))
+    expect(offered).toContain('peak unforced')
+    // An item cannot be its own input; CA would raise on the self-reference.
+    expect(offered).not.toContain('forcing response')
+  })
+
+  it('keeps unrecognised kwargs when switching to an operation that accepts any', async () => {
+    // The second half of the bug: picking the operation wiped the very keys it needs,
+    // because they are not in its schema.
+    const wrapper = await mountDiff([
+      { ...peakUnforced, operation_kwargs: { pred1: 'a', pred2: 'b' } },
+    ])
+    await chooseIn(wrapper, 'eo-operation', 'calculate_two_observable_difference')
+    await wrapper.find('[data-testid="eo-save"]').trigger('click')
+    await flushPromises()
+    expect(uploadObsData.mock.calls[0][1].data_items[0].operation_kwargs).toEqual({
+      pred1: 'a',
+      pred2: 'b',
+    })
+  })
+
+  it('still drops stale kwargs when switching to an operation that does not', async () => {
+    const wrapper = await mountDiff([{ ...difference, operands: ['m/x'] }])
+    await chooseIn(wrapper, 'eo-operation', 'max')
+    await wrapper.find('[data-testid="eo-save"]').trigger('click')
+    await flushPromises()
+    expect('operation_kwargs' in uploadObsData.mock.calls[0][1].data_items[0]).toBe(false)
+  })
+})

@@ -147,6 +147,14 @@ def _introspect(output_dir: str | None = None) -> dict:
         # op name -> [{name, default, type}] tunable keyword args, so the editor
         # can render an input per kwarg on each data_item that selects that op.
         "operation_kwargs_schema": _introspect_operation_kwargs(op_funcs),
+        # op name -> declares ``**kwargs``, the operation twin of
+        # cost_kwargs_accepts_any. An op that accepts any key takes its inputs by
+        # name rather than positionally -- `calculate_two_observable_difference`
+        # reads `pred1`/`pred2`, each naming another data_item (#349) -- so the
+        # editor cannot enumerate its kwargs from a signature and has to let the
+        # user name them. Full map for the same reason as the cost one: "accepts
+        # nothing else" and "never answered" must not look alike.
+        "operation_kwargs_accepts_any": _introspect_operation_kwargs_accepts_any(op_funcs),
         # How many operands each operation consumes, so the editor can offer the
         # right number of fields instead of leaving the user to guess (#147).
         "operation_operands": _introspect_operation_operands(op_funcs),
@@ -290,6 +298,43 @@ def _introspect_operation_kwargs(op_funcs) -> dict:
             )
         if kwargs:
             out[name] = kwargs
+    return out
+
+
+def _introspect_operation_kwargs_accepts_any(op_funcs) -> dict:
+    """Map each operation name -> whether it declares ``**kwargs``.
+
+    The operation twin of the ``accepts_any`` half of :func:`_introspect_cost_kwargs`.
+    Such an op takes named inputs the signature cannot enumerate, so the editor has
+    to let the user name them instead of rendering a fixed set of fields -- and must
+    not delete a stored kwarg it does not recognise (#349).
+
+    Asks CA's ``get_operation_kwarg_spec`` first, since that is the same helper the
+    user's obs_data will actually be validated against; a second signature parse here
+    could disagree with it. Falls back to a local parse for an older CA. A func whose
+    signature cannot be read is reported as ``True``, matching CA's own choice to let
+    a legitimate call through rather than block it.
+    """
+    try:
+        get_operation_kwarg_spec = ca_from("operation_funcs", "get_operation_kwarg_spec")
+    except Exception:  # noqa: BLE001 - older CA; parse the signature ourselves
+        get_operation_kwarg_spec = None
+
+    out: dict[str, bool] = {}
+    for name, fn in op_funcs.items():
+        if get_operation_kwarg_spec is not None:
+            try:
+                _accepted, _from_operands, accepts_any = get_operation_kwarg_spec(fn)
+                out[name] = bool(accepts_any)
+                continue
+            except Exception:  # noqa: BLE001 - fall through to the local parse
+                pass
+        try:
+            params = inspect.signature(fn).parameters
+        except (ValueError, TypeError):
+            out[name] = True
+            continue
+        out[name] = any(p.kind == p.VAR_KEYWORD for p in params.values())
     return out
 
 
@@ -516,6 +561,7 @@ def get_obs_data_options(refresh: bool = False, output_dir: str | None = None) -
             "cost_kwargs_accepts_any": {},
             "differentiable_operations": {},
             "operation_kwargs_schema": {},
+            "operation_kwargs_accepts_any": {},
             "operation_operands": {k: dict(v) for k, v in FALLBACK_OPERATION_OPERANDS.items()},
             "data_types": list(FALLBACK_DATA_TYPES),
             "plot_types": list(FALLBACK_PLOT_TYPES),
