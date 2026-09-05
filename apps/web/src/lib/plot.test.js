@@ -1,4 +1,7 @@
 import { describe, it, expect } from 'vitest'
+import { readFileSync } from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import {
   obsModelVar,
   isPlottableOverlay,
@@ -16,6 +19,8 @@ import {
   withOverlayVars,
   timeUnit,
   emulatorFeatureFor,
+  constantLineRange,
+  sliceByTime,
 } from './plot'
 
 // Mirrors the SN_simple obs_data shape (3 experiments, predictions + overlays).
@@ -908,7 +913,11 @@ describe('a recorded trace carried at weight zero', () => {
 
   it('gives its variable a plot cell', () => {
     const vars = derivePlotVariables({ data_items: [trace] })
-    expect(vars).toEqual([{ qname: 'aortic_root/u', label: 'u_{AR} recorded' }])
+    // `qnames` carries every spelling of the variable this plot covers (#347);
+    // one here, since only one names it.
+    expect(vars).toEqual([
+      { qname: 'aortic_root/u', label: 'u_{AR} recorded', qnames: ['aortic_root/u'] },
+    ])
   })
 
   it('is selected as an overlay for the variable it was measured on', () => {
@@ -940,5 +949,227 @@ describe('a recorded trace carried at weight zero', () => {
   it('a zero weight does not hide it -- weight is about the cost, not the plot', () => {
     expect(isPlottableOverlay({ ...trace, weight: 0 })).toBe(true)
     expect(isPlottableOverlay({ ...trace, weight: 5 })).toBe(true)
+  })
+})
+
+// A reference line has to describe the window its operation actually reduced
+// (#347). Drawn across the whole experiment, a value measured on the second
+// sub-experiment sits over the first as well -- which is how a max measured on
+// one reads as though it were the other's.
+describe('constant reference lines are confined to the window they describe (#347)', () => {
+  // Two sub-experiments, 1 s each, laid end to end. u_AR ramps 0 -> 4 over the
+  // first and 10 -> 14 over the second, so a max is unmistakably one or other.
+  const TIME = [0, 0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2]
+  const U_AR = [0, 1, 2, 3, 4, 10, 11, 12, 13]
+  const SIM = { time: TIME, outputs: { 'ar/u': U_AR } }
+  const SUBEXP = [1, 1]
+
+  const item = (over) => ({
+    data_item_name: over.data_item_name ?? 'x',
+    trace_name_for_plotting: 'u_{AR}',
+    operands: ['ar/u'],
+    data_type: 'constant',
+    plot_type: 'horizontal',
+    experiment_idx: 0,
+    subexperiment_idx: 0,
+    value: 1,
+    ...over,
+  })
+
+  const kinds = (datasets, kind) => datasets.filter((d) => d.kind === kind)
+  const spanOf = (d) => [d.data[0].x, d.data[1].x]
+
+  it('spans only the sub-experiment the item belongs to', () => {
+    const first = item({ data_item_name: 'max sub0', operation: 'max', subexperiment_idx: 0 })
+    const second = item({ data_item_name: 'max sub1', operation: 'max', subexperiment_idx: 1 })
+    const { datasets } = buildChartData(SIM, {
+      dataItems: [first, second],
+      subexpTimes: SUBEXP,
+    })
+
+    const obs = kinds(datasets, 'obs-constant')
+    expect(spanOf(obs[0])).toEqual([0, 1])
+    expect(spanOf(obs[1])).toEqual([1, 2])
+  })
+
+  it('computes the feature from that sub-experiment, not the whole trace', () => {
+    // The extraction half of the bug: over the whole trace both maxima are 13.
+    const { datasets } = buildChartData(SIM, {
+      dataItems: [
+        item({ data_item_name: 'max sub0', operation: 'max', subexperiment_idx: 0 }),
+        item({ data_item_name: 'max sub1', operation: 'max', subexperiment_idx: 1 }),
+      ],
+      subexpTimes: SUBEXP,
+    })
+
+    const calc = kinds(datasets, 'calc-constant').map((d) => d.data[0].y)
+    expect(calc).toEqual([4, 13])
+  })
+
+  it('narrows further to start_frac/end_frac within the sub-experiment', () => {
+    const { datasets } = buildChartData(SIM, {
+      dataItems: [
+        item({
+          operation: 'max_in_range',
+          subexperiment_idx: 1,
+          operation_kwargs: { start_frac: 0.5, end_frac: 1 },
+        }),
+      ],
+      subexpTimes: SUBEXP,
+    })
+
+    // Second sub-experiment is [1, 2]; the back half of it is [1.5, 2].
+    expect(spanOf(kinds(datasets, 'obs-constant')[0])).toEqual([1.5, 2])
+  })
+
+  it('keeps the full axis when there is no protocol to narrow by', () => {
+    const { datasets } = buildChartData(SIM, {
+      dataItems: [item({ operation: 'max' })],
+    })
+    expect(spanOf(kinds(datasets, 'obs-constant')[0])).toEqual([0, 2])
+  })
+
+  it('leaves a vertical line alone -- it marks a time, not a window', () => {
+    const { datasets } = buildChartData(SIM, {
+      dataItems: [item({ operation: 'first_peak_time', plot_type: 'vertical', value: 0.5 })],
+      subexpTimes: SUBEXP,
+    })
+    const v = kinds(datasets, 'obs-vertical')[0]
+    expect(v.data[0].x).toBe(0.5)
+    expect(v.data[1].x).toBe(0.5)
+  })
+})
+
+// What the figure should contain, counted rather than eyeballed: one plot per
+// trace, and on each of them one dashed ground-truth line and one solid model
+// line per data_item measured on that trace (#347).
+// The obs_data from the issue itself, not a stand-in: two sub-experiments of
+// 10 s, seven data_items over three traces, and -- the part that made the figure
+// wrong -- the sub-experiment-1 max naming its variable as `aortic_root_module/u`
+// where the other u_{AR} items say `aortic_root/u`. The flat model connects those
+// two components, so they are one variable under two spellings.
+describe('the multi-sub-experiment study from #347', () => {
+  // The repo's own resources/, resolved the way tourSteps.test.js does -- the
+  // fixture is the file from the issue, kept where the other study fixtures live
+  // rather than copied into the test.
+  const OBS = JSON.parse(
+    readFileSync(
+      path.resolve(
+        path.dirname(fileURLToPath(import.meta.url)),
+        '../../../../resources/3compartment_obs_data_multi_subexp.json',
+      ),
+      'utf-8',
+    ),
+  )
+  const SUBEXP = OBS.protocol_info.sim_times[0] // [10, 10]
+
+  // A trace per plotted variable. u ramps 0 -> 4 over the first sub-experiment
+  // and 10 -> 13 over the second, so a max is unmistakably one or the other.
+  const TIME = [0, 5, 10, 15, 20]
+  const OUTPUTS = {
+    'aortic_root/u': [0, 2, 4, 11, 13],
+    'aortic_root/v': [0, 5, 9, 3, 1],
+    'heart/q_lv': [1, 4, 7, 2, 0],
+  }
+
+  const uniqueTraceLabels = new Set(
+    OBS.data_items.map((d) => d.trace_name_for_plotting),
+  )
+
+  const cellFor = (v) => {
+    const items = overlayItemsFor(OBS, 0, v.qnames ?? [v.qname])
+    const { datasets } = buildChartData(
+      { time: TIME, outputs: { [v.qname]: OUTPUTS[v.qname] } },
+      { dataItems: items, subexpTimes: SUBEXP },
+    )
+    return {
+      items: items.length,
+      gt: datasets.filter((d) => d.kind === 'obs-constant').length,
+      model: datasets.filter((d) => d.kind === 'calc-constant').length,
+    }
+  }
+
+  it('draws one plot per unique trace label', () => {
+    // Three labels: v_{AR}, q_{lv}, u_{AR}. Keyed by qname this gave four --
+    // two of them both titled u_{AR}, with the features split between them.
+    expect(uniqueTraceLabels.size).toBe(3)
+    const vars = derivePlotVariables(OBS)
+    expect(vars).toHaveLength(uniqueTraceLabels.size)
+    expect(new Set(vars.map((v) => v.label))).toEqual(uniqueTraceLabels)
+  })
+
+  it('keeps both spellings of one variable on the same plot', () => {
+    const u = derivePlotVariables(OBS).find((v) => v.label === 'u_{AR}')
+    expect(u.qnames).toEqual(['aortic_root/u', 'aortic_root_module/u'])
+  })
+
+  it('draws one ground-truth and one model line per data_item on each plot', () => {
+    const perLabel = Object.fromEntries(
+      derivePlotVariables(OBS).map((v) => [v.label, cellFor(v)]),
+    )
+
+    // u_{AR} carries four features (mean, max, min on sub 0; max on sub 1),
+    // v_{AR} two, q_{lv} one -- seven in all, each contributing exactly one
+    // measured line and one model line, with nothing leaking between traces.
+    expect(perLabel['u_{AR}']).toEqual({ items: 4, gt: 4, model: 4 })
+    expect(perLabel['v_{AR}']).toEqual({ items: 2, gt: 2, model: 2 })
+    expect(perLabel['q_{lv}']).toEqual({ items: 1, gt: 1, model: 1 })
+
+    const total = Object.values(perLabel).reduce((a, c) => a + c.items, 0)
+    expect(total).toBe(OBS.data_items.length)
+  })
+
+  it('puts each u_{AR} line on the sub-experiment it was measured on', () => {
+    const u = derivePlotVariables(OBS).find((v) => v.label === 'u_{AR}')
+    const items = overlayItemsFor(OBS, 0, u.qnames)
+    const { datasets } = buildChartData(
+      { time: TIME, outputs: { 'aortic_root/u': OUTPUTS['aortic_root/u'] } },
+      { dataItems: items, subexpTimes: SUBEXP },
+    )
+    const model = datasets.filter((d) => d.kind === 'calc-constant')
+
+    // mean/max/min over [0, 10] -> 2 / 4 / 0; the post max over [10, 20] -> 13.
+    // Before the fix the last one spanned the whole axis and reported 13 for a
+    // window it never looked at, which is the reported symptom.
+    expect(model.map((d) => [d.data[0].x, d.data[1].x, d.data[0].y])).toEqual([
+      [0, 10, 2],
+      [0, 10, 4],
+      [0, 10, 0],
+      [10, 20, 13],
+    ])
+  })
+})
+
+describe('constantLineRange', () => {
+  it('falls back to the full axis on a degenerate protocol', () => {
+    const bounds = { xMin: 0, xMax: 2, subexpTimes: [1, 0] }
+    expect(constantLineRange({ subexperiment_idx: 1 }, bounds)).toEqual({ lo: 0, hi: 2 })
+  })
+
+  it('ignores an out-of-range subexperiment_idx rather than reading past the end', () => {
+    const bounds = { xMin: 0, xMax: 2, subexpTimes: [1, 1] }
+    expect(constantLineRange({ subexperiment_idx: 7 }, bounds)).toEqual({ lo: 0, hi: 2 })
+  })
+
+  it('ignores fractions that are not a fraction of the window', () => {
+    const bounds = { xMin: 0, xMax: 2, subexpTimes: [] }
+    const wild = { operation_kwargs: { start_frac: -1, end_frac: 3 } }
+    expect(constantLineRange(wild, bounds)).toEqual({ lo: 0, hi: 2 })
+  })
+})
+
+describe('sliceByTime', () => {
+  it('slices time and values together, so an index still names its own sample', () => {
+    const out = sliceByTime([0, 1, 2, 3], [10, 11, 12, 13], 1, 2)
+    expect(out).toEqual({ time: [1, 2], values: [11, 12] })
+  })
+
+  it('returns everything rather than nothing when the window catches no sample', () => {
+    const out = sliceByTime([0, 1], [5, 6], 90, 99)
+    expect(out).toEqual({ time: [0, 1], values: [5, 6] })
+  })
+
+  it('passes mismatched inputs through untouched', () => {
+    expect(sliceByTime([0, 1], [5], 0, 1)).toEqual({ time: [0, 1], values: [5] })
   })
 })

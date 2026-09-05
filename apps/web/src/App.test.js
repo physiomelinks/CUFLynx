@@ -444,6 +444,32 @@ describe('App.vue', () => {
     })
   })
 
+  // The CA dir is persisted machine-level and re-applied at every launch, so
+  // without a way to clear it the picker was a one-way door: once set, the only
+  // route back to the engine in the bundle was editing config.json by hand.
+  describe('resetting the CA dir to the shipped libCUFLynx', () => {
+    it('POSTs the empty string, which is the backend\'s reset signal', async () => {
+      getConfig.mockResolvedValueOnce({ ca_dir: '/home/me/circulatory_autogen' })
+      const wrapper = shallowMount(App)
+      await flushPromises()
+      setConfig.mockClear()
+
+      await wrapper.vm.resetCaDir()
+      await flushPromises()
+
+      // '' rather than omitting the field: POST /api/config leaves the CA dir
+      // alone when it is absent and clears it only when explicitly empty.
+      expect(setConfig).toHaveBeenCalledWith('')
+    })
+
+    it('offers the reset only when a directory is actually set', async () => {
+      getConfig.mockResolvedValueOnce({ ca_dir: '' })
+      const wrapper = shallowMount(App)
+      await flushPromises()
+      expect(wrapper.vm.caDir).toBe('')
+    })
+  })
+
   // The global random seed (Settings popup) makes analysis runs reproducible; it
   // persists server-side like the interpreter choice, and defaults to none.
   describe('global random seed', () => {
