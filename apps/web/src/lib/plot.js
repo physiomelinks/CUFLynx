@@ -184,19 +184,42 @@ export function computeFeature(operation, time, values) {
  */
 export function derivePlotVariables(obsData) {
   if (!obsData) return []
-  const map = new Map()
+  // Keyed by *label*, not by qname (#347). One trace can be named by more than
+  // one qname -- CA's flat models connect an instance component to its module
+  // component, so `aortic_root/u` and `aortic_root_module/u` are the same
+  // variable under two spellings, and a study that uses both got two plots with
+  // the same title, its features split arbitrarily between them. That is the
+  // "labelled and extracted incorrectly" half of #347.
+  //
+  // `qname` stays the representative (the first seen) so every caller that reads
+  // one still works; `qnames` carries the rest, for matching a data_item to the
+  // plot it belongs on.
+  const byLabel = new Map()
+  // A qname is placed once, under the first label that claimed it -- the rule
+  // this has always followed. Without it a variable named once with a label and
+  // once without would land in two groups and be drawn twice, which is the
+  // failure this whole function exists to avoid.
+  const placed = new Map()
+  const add = (qname, label) => {
+    if (!qname || placed.has(qname)) return
+    const key = label || qname
+    let group = byLabel.get(key)
+    if (!group) {
+      group = { qname, label: key, qnames: [] }
+      byLabel.set(key, group)
+    }
+    group.qnames.push(qname)
+    placed.set(qname, group)
+  }
   for (const p of obsData.prediction_items ?? []) {
     const qname = (Array.isArray(p.operands) && p.operands[0]) || p.variable
-    if (qname && !map.has(qname)) {
-      map.set(qname, p.trace_name_for_plotting ?? p.name_for_plotting ?? qname)
-    }
+    add(qname, p.trace_name_for_plotting ?? p.name_for_plotting)
   }
   for (const d of obsData.data_items ?? []) {
     if (!isPlottableOverlay(d)) continue
-    const v = obsModelVar(d)
-    if (v && !map.has(v)) map.set(v, d.trace_name_for_plotting ?? d.name_for_plotting ?? v)
+    add(obsModelVar(d), d.trace_name_for_plotting ?? d.name_for_plotting)
   }
-  return [...map.entries()].map(([qname, label]) => ({ qname, label }))
+  return [...byLabel.values()]
 }
 
 /**
@@ -385,11 +408,15 @@ export function timeUnit(units) {
 /** data_items overlaying a given (experiment, variable) plot cell. */
 export function overlayItemsFor(obsData, expIdx, qname) {
   if (!obsData) return []
+  // Accepts the plot's whole set of qnames, not only its representative, so a
+  // data_item naming the same variable by another spelling lands on the plot it
+  // belongs to rather than on one of its own (#347). A bare string still works.
+  const wanted = new Set(Array.isArray(qname) ? qname : [qname])
   return (obsData.data_items ?? []).filter(
     (d) =>
       isPlottableOverlay(d) &&
       (d.experiment_idx ?? 0) === expIdx &&
-      obsModelVar(d) === qname,
+      wanted.has(obsModelVar(d)),
   )
 }
 

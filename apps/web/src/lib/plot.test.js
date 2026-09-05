@@ -1,4 +1,7 @@
 import { describe, it, expect } from 'vitest'
+import { readFileSync } from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import {
   obsModelVar,
   isPlottableOverlay,
@@ -910,7 +913,11 @@ describe('a recorded trace carried at weight zero', () => {
 
   it('gives its variable a plot cell', () => {
     const vars = derivePlotVariables({ data_items: [trace] })
-    expect(vars).toEqual([{ qname: 'aortic_root/u', label: 'u_{AR} recorded' }])
+    // `qnames` carries every spelling of the variable this plot covers (#347);
+    // one here, since only one names it.
+    expect(vars).toEqual([
+      { qname: 'aortic_root/u', label: 'u_{AR} recorded', qnames: ['aortic_root/u'] },
+    ])
   })
 
   it('is selected as an overlay for the variable it was measured on', () => {
@@ -1036,81 +1043,99 @@ describe('constant reference lines are confined to the window they describe (#34
 // What the figure should contain, counted rather than eyeballed: one plot per
 // trace, and on each of them one dashed ground-truth line and one solid model
 // line per data_item measured on that trace (#347).
-describe('a multi-sub-experiment study plots the right number of lines', () => {
-  const OBS = {
-    protocol_info: { pre_times: [0], sim_times: [[1, 1]] },
-    data_items: [
-      // u_AR: three features -- max on each sub-experiment, and a mean.
-      {
-        data_item_name: 'max u_AR sub0', trace_name_for_plotting: 'u_{AR}',
-        operands: ['ar/u'], data_type: 'constant', operation: 'max',
-        plot_type: 'horizontal', experiment_idx: 0, subexperiment_idx: 0, value: 4,
-      },
-      {
-        data_item_name: 'max u_AR sub1', trace_name_for_plotting: 'u_{AR}',
-        operands: ['ar/u'], data_type: 'constant', operation: 'max',
-        plot_type: 'horizontal', experiment_idx: 0, subexperiment_idx: 1, value: 13,
-      },
-      {
-        data_item_name: 'mean u_AR', trace_name_for_plotting: 'u_{AR}',
-        operands: ['ar/u'], data_type: 'constant', operation: 'mean',
-        plot_type: 'horizontal', experiment_idx: 0, subexperiment_idx: 0, value: 2,
-      },
-      // v_AR: one.
-      {
-        data_item_name: 'max v_AR', trace_name_for_plotting: 'v_{AR}',
-        operands: ['ar/v'], data_type: 'constant', operation: 'max',
-        plot_type: 'horizontal', experiment_idx: 0, subexperiment_idx: 0, value: 9,
-      },
-    ],
+// The obs_data from the issue itself, not a stand-in: two sub-experiments of
+// 10 s, seven data_items over three traces, and -- the part that made the figure
+// wrong -- the sub-experiment-1 max naming its variable as `aortic_root_module/u`
+// where the other u_{AR} items say `aortic_root/u`. The flat model connects those
+// two components, so they are one variable under two spellings.
+describe('the multi-sub-experiment study from #347', () => {
+  // The repo's own resources/, resolved the way tourSteps.test.js does -- the
+  // fixture is the file from the issue, kept where the other study fixtures live
+  // rather than copied into the test.
+  const OBS = JSON.parse(
+    readFileSync(
+      path.resolve(
+        path.dirname(fileURLToPath(import.meta.url)),
+        '../../../../resources/3compartment_obs_data_multi_subexp.json',
+      ),
+      'utf-8',
+    ),
+  )
+  const SUBEXP = OBS.protocol_info.sim_times[0] // [10, 10]
+
+  // A trace per plotted variable. u ramps 0 -> 4 over the first sub-experiment
+  // and 10 -> 13 over the second, so a max is unmistakably one or the other.
+  const TIME = [0, 5, 10, 15, 20]
+  const OUTPUTS = {
+    'aortic_root/u': [0, 2, 4, 11, 13],
+    'aortic_root/v': [0, 5, 9, 3, 1],
+    'heart/q_lv': [1, 4, 7, 2, 0],
   }
-  const TIME = [0, 0.5, 1, 1.5, 2]
-  const OUTPUTS = { 'ar/u': [0, 2, 4, 11, 13], 'ar/v': [0, 5, 9, 3, 1] }
+
+  const uniqueTraceLabels = new Set(
+    OBS.data_items.map((d) => d.trace_name_for_plotting),
+  )
+
+  const cellFor = (v) => {
+    const items = overlayItemsFor(OBS, 0, v.qnames ?? [v.qname])
+    const { datasets } = buildChartData(
+      { time: TIME, outputs: { [v.qname]: OUTPUTS[v.qname] } },
+      { dataItems: items, subexpTimes: SUBEXP },
+    )
+    return {
+      items: items.length,
+      gt: datasets.filter((d) => d.kind === 'obs-constant').length,
+      model: datasets.filter((d) => d.kind === 'calc-constant').length,
+    }
+  }
 
   it('draws one plot per unique trace label', () => {
+    // Three labels: v_{AR}, q_{lv}, u_{AR}. Keyed by qname this gave four --
+    // two of them both titled u_{AR}, with the features split between them.
+    expect(uniqueTraceLabels.size).toBe(3)
     const vars = derivePlotVariables(OBS)
-    const labels = new Set(OBS.data_items.map((d) => d.trace_name_for_plotting))
-
-    expect(vars).toHaveLength(labels.size)
-    expect(new Set(vars.map((v) => v.label))).toEqual(labels)
+    expect(vars).toHaveLength(uniqueTraceLabels.size)
+    expect(new Set(vars.map((v) => v.label))).toEqual(uniqueTraceLabels)
   })
 
-  it('draws one ground-truth and one model line per item on each plot', () => {
-    const vars = derivePlotVariables(OBS)
-    const perTrace = {}
-
-    for (const v of vars) {
-      const items = overlayItemsFor(OBS, 0, v.qname)
-      const { datasets } = buildChartData(
-        { time: TIME, outputs: { [v.qname]: OUTPUTS[v.qname] } },
-        { dataItems: items, subexpTimes: OBS.protocol_info.sim_times[0] },
-      )
-      perTrace[v.label] = {
-        items: items.length,
-        gt: datasets.filter((d) => d.kind === 'obs-constant').length,
-        model: datasets.filter((d) => d.kind === 'calc-constant').length,
-      }
-    }
-
-    // u_AR carries three features, v_AR one; each contributes exactly one
-    // measured line and one model line, and nothing leaks between the traces.
-    expect(perTrace['u_{AR}']).toEqual({ items: 3, gt: 3, model: 3 })
-    expect(perTrace['v_{AR}']).toEqual({ items: 1, gt: 1, model: 1 })
+  it('keeps both spellings of one variable on the same plot', () => {
+    const u = derivePlotVariables(OBS).find((v) => v.label === 'u_{AR}')
+    expect(u.qnames).toEqual(['aortic_root/u', 'aortic_root_module/u'])
   })
 
-  it('the two sub-experiment maxima land on their own halves, at their own values', () => {
-    const items = overlayItemsFor(OBS, 0, 'ar/u')
+  it('draws one ground-truth and one model line per data_item on each plot', () => {
+    const perLabel = Object.fromEntries(
+      derivePlotVariables(OBS).map((v) => [v.label, cellFor(v)]),
+    )
+
+    // u_{AR} carries four features (mean, max, min on sub 0; max on sub 1),
+    // v_{AR} two, q_{lv} one -- seven in all, each contributing exactly one
+    // measured line and one model line, with nothing leaking between traces.
+    expect(perLabel['u_{AR}']).toEqual({ items: 4, gt: 4, model: 4 })
+    expect(perLabel['v_{AR}']).toEqual({ items: 2, gt: 2, model: 2 })
+    expect(perLabel['q_{lv}']).toEqual({ items: 1, gt: 1, model: 1 })
+
+    const total = Object.values(perLabel).reduce((a, c) => a + c.items, 0)
+    expect(total).toBe(OBS.data_items.length)
+  })
+
+  it('puts each u_{AR} line on the sub-experiment it was measured on', () => {
+    const u = derivePlotVariables(OBS).find((v) => v.label === 'u_{AR}')
+    const items = overlayItemsFor(OBS, 0, u.qnames)
     const { datasets } = buildChartData(
-      { time: TIME, outputs: { 'ar/u': OUTPUTS['ar/u'] } },
-      { dataItems: items, subexpTimes: OBS.protocol_info.sim_times[0] },
+      { time: TIME, outputs: { 'aortic_root/u': OUTPUTS['aortic_root/u'] } },
+      { dataItems: items, subexpTimes: SUBEXP },
     )
     const model = datasets.filter((d) => d.kind === 'calc-constant')
 
-    // max sub0 over [0,1] -> 4; max sub1 over [1,2] -> 13; mean over sub0 -> 2.
+    // mean/max/min over [0, 10] -> 2 / 4 / 0; the post max over [10, 20] -> 13.
+    // Before the fix the last one spanned the whole axis and reported 13 for a
+    // window it never looked at, which is the reported symptom.
     expect(model.map((d) => [d.data[0].x, d.data[1].x, d.data[0].y])).toEqual([
-      [0, 1, 4],
-      [1, 2, 13],
-      [0, 1, 2],
+      [0, 10, 2],
+      [0, 10, 4],
+      [0, 10, 0],
+      [10, 20, 13],
     ])
   })
 })

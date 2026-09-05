@@ -2486,7 +2486,8 @@ const plotGroups = computed(() => {
           // drawn only across the one its operation reduced (#347).
           subexpTimes: (pi?.sim_times ?? [])[e] ?? [],
           dataItems: attachOutputSeries(
-            overlayItemsFor(obs.obsData.value, e, v.qname),
+            // The whole group's qnames: one trace can be named by several (#347).
+            overlayItemsFor(obs.obsData.value, e, v.qnames ?? [v.qname]),
             exp.output_series,
             allItems,
           ),
@@ -2523,7 +2524,7 @@ const plotGroups = computed(() => {
       simResult: { time: sim.result.value.time, outputs: { [v.qname]: out[v.qname] ?? [] } },
       savedSeries: savedRuns.seriesFor(v.qname),
       dataItems: attachOutputSeries(
-        overlayItemsFor(obs.obsData.value, 0, v.qname),
+        overlayItemsFor(obs.obsData.value, 0, v.qnames ?? [v.qname]),
         sim.result.value.output_series,
         allItems,
       ),
