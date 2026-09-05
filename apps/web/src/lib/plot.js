@@ -410,6 +410,100 @@ export function attachOutputSeries(items, seriesByIndex, allItems) {
   })
 }
 
+/**
+ * The x-range a constant data_item's reference line describes (#347).
+ *
+ * Two narrowings, in this order:
+ *
+ *  1. **The sub-experiment it was measured on.** An experiment's trace is its
+ *     sub-experiments laid end to end, and `subexperiment_idx` says which one an
+ *     item belongs to. A line drawn across the whole experiment claims the value
+ *     describes segments the operation never looked at -- and with one item per
+ *     sub-experiment they land on top of each other, which is how a max measured
+ *     on the second one reads as though it were the first's.
+ *  2. **The `[start_frac, end_frac]` slice within it.** An `*_in_range`
+ *     operation reduces only part of its window, so the line spans only that
+ *     part. Fractions are of the sub-experiment span, matching how the operation
+ *     funcs resolve them (and CA's own `constant_line_times`).
+ *
+ * Degenerate input keeps the full axis rather than guessing: no protocol, an
+ * index outside it, non-numeric durations, unusable fractions. Drawing too wide
+ * is the old behaviour; drawing somewhere wrong would be worse.
+ *
+ * @param {object} item        the data_item
+ * @param {object} bounds      `{ xMin, xMax, subexpTimes }` -- durations for this
+ *                             cell's experiment, in order.
+ * @returns {{lo: number, hi: number}}
+ */
+export function constantLineRange(item, { xMin, xMax, subexpTimes }) {
+  let lo = xMin
+  let hi = xMax
+
+  const durations = Array.isArray(subexpTimes) ? subexpTimes.map(Number) : []
+  const idx = Number(item?.subexperiment_idx ?? 0)
+  if (
+    durations.length > 1 &&
+    Number.isInteger(idx) &&
+    idx >= 0 &&
+    idx < durations.length &&
+    durations.every((d) => Number.isFinite(d) && d > 0)
+  ) {
+    const start = durations.slice(0, idx).reduce((a, b) => a + b, 0)
+    lo = xMin + start
+    hi = lo + durations[idx]
+  }
+
+  const kwargs = item?.operation_kwargs
+  if (kwargs && typeof kwargs === 'object') {
+    const startFrac = Number(kwargs.start_frac ?? 0)
+    const endFrac = Number(kwargs.end_frac ?? 1)
+    if (
+      Number.isFinite(startFrac) &&
+      Number.isFinite(endFrac) &&
+      endFrac > startFrac &&
+      // Anything outside [0, 1] is not a fraction of this window; leave it alone
+      // rather than project the line off the end of the trace.
+      startFrac >= 0 &&
+      endFrac <= 1
+    ) {
+      const span = hi - lo
+      lo += startFrac * span
+      hi -= (1 - endFrac) * span
+    }
+  }
+
+  return { lo, hi }
+}
+
+/**
+ * The samples whose time falls in `[lo, hi]`, so a feature is computed over the
+ * window the operation actually uses rather than the whole experiment (#347) --
+ * which is what made a max measured on one sub-experiment report the other's.
+ *
+ * Time and values are sliced *together*, and that is not incidental:
+ * `computeFeature` reports `at` as `time[i]` for the index it found in `values`,
+ * so slicing one without the other would label a peak with another sample's
+ * time.
+ *
+ * Returns both series unchanged when the window covers everything or the slice
+ * would be empty: a feature computed from nothing is worse than one computed
+ * from too much.
+ */
+export function sliceByTime(time, values, lo, hi) {
+  if (!Array.isArray(time) || !Array.isArray(values) || time.length !== values.length) {
+    return { time, values }
+  }
+  const t = []
+  const v = []
+  for (let i = 0; i < time.length; i += 1) {
+    if (time[i] >= lo && time[i] <= hi) {
+      t.push(time[i])
+      v.push(values[i])
+    }
+  }
+  return v.length ? { time: t, values: v } : { time, values }
+}
+
 function refLine({ name, op, role, dashed, dotted, kind, color: c, data }) {
   return {
     label: `${name} (${role}${op ? ' ' + op : ''})`,
@@ -463,6 +557,11 @@ export function buildChartData(simResult, options = {}) {
   // obs_data may hold others in between.
   const emulatorFeatures = phasePlane ? null : (options.emulatorFeatures ?? null)
   const varLabel = options.varLabel ?? ''
+  // Sub-experiment durations for the experiment this cell shows, in order, so a
+  // constant's reference line can be confined to the one it was measured on
+  // (#347). Absent (a data-only study, or an older caller) leaves the lines
+  // spanning the full axis, which is what they did before.
+  const subexpTimes = options.subexpTimes ?? []
   // Step series (e.g. controlled params_to_change inputs) must not be smoothed,
   // otherwise the bezier overshoots the risers. A phase-plane trace loops back
   // on itself, where the same smoothing overshoots the turns — so also 0.
@@ -593,8 +692,21 @@ export function buildChartData(simResult, options = {}) {
       continue
     }
 
-    const series = outputs[obsModelVar(item)] ?? Object.values(outputs)[0] ?? []
-    const feature = computeFeature(op, time, series)
+    const fullSeries = outputs[obsModelVar(item)] ?? Object.values(outputs)[0] ?? []
+    // The window this item's operation actually reduces (#347): its
+    // sub-experiment, narrowed by any start_frac/end_frac. Both the value and
+    // the line drawn for it come from this, so they cannot disagree.
+    const { lo: lineLo, hi: lineHi } = constantLineRange(item, {
+      xMin,
+      xMax,
+      subexpTimes,
+    })
+    const windowed =
+      item.plot_type === 'vertical'
+        ? { time, values: fullSeries }
+        : sliceByTime(time, fullSeries, lineLo, lineHi)
+    const series = windowed.values
+    const feature = computeFeature(op, windowed.time, series)
 
     if (item.plot_type === 'vertical') {
       const vline = (x) => [
@@ -610,10 +722,11 @@ export function buildChartData(simResult, options = {}) {
         )
       }
     } else {
-      // horizontal family (incl. horizontal_from_min)
+      // horizontal family (incl. horizontal_from_min). Spans the window the
+      // operation reduced, not the whole axis (#347).
       const hline = (y) => [
-        { x: xMin, y },
-        { x: xMax, y },
+        { x: lineLo, y },
+        { x: lineHi, y },
       ]
       let expY = item.value
       let calcY = feature ? feature.value : null

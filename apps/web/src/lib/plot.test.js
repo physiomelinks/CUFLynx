@@ -16,6 +16,8 @@ import {
   withOverlayVars,
   timeUnit,
   emulatorFeatureFor,
+  constantLineRange,
+  sliceByTime,
 } from './plot'
 
 // Mirrors the SN_simple obs_data shape (3 experiments, predictions + overlays).
@@ -940,5 +942,209 @@ describe('a recorded trace carried at weight zero', () => {
   it('a zero weight does not hide it -- weight is about the cost, not the plot', () => {
     expect(isPlottableOverlay({ ...trace, weight: 0 })).toBe(true)
     expect(isPlottableOverlay({ ...trace, weight: 5 })).toBe(true)
+  })
+})
+
+// A reference line has to describe the window its operation actually reduced
+// (#347). Drawn across the whole experiment, a value measured on the second
+// sub-experiment sits over the first as well -- which is how a max measured on
+// one reads as though it were the other's.
+describe('constant reference lines are confined to the window they describe (#347)', () => {
+  // Two sub-experiments, 1 s each, laid end to end. u_AR ramps 0 -> 4 over the
+  // first and 10 -> 14 over the second, so a max is unmistakably one or other.
+  const TIME = [0, 0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2]
+  const U_AR = [0, 1, 2, 3, 4, 10, 11, 12, 13]
+  const SIM = { time: TIME, outputs: { 'ar/u': U_AR } }
+  const SUBEXP = [1, 1]
+
+  const item = (over) => ({
+    data_item_name: over.data_item_name ?? 'x',
+    trace_name_for_plotting: 'u_{AR}',
+    operands: ['ar/u'],
+    data_type: 'constant',
+    plot_type: 'horizontal',
+    experiment_idx: 0,
+    subexperiment_idx: 0,
+    value: 1,
+    ...over,
+  })
+
+  const kinds = (datasets, kind) => datasets.filter((d) => d.kind === kind)
+  const spanOf = (d) => [d.data[0].x, d.data[1].x]
+
+  it('spans only the sub-experiment the item belongs to', () => {
+    const first = item({ data_item_name: 'max sub0', operation: 'max', subexperiment_idx: 0 })
+    const second = item({ data_item_name: 'max sub1', operation: 'max', subexperiment_idx: 1 })
+    const { datasets } = buildChartData(SIM, {
+      dataItems: [first, second],
+      subexpTimes: SUBEXP,
+    })
+
+    const obs = kinds(datasets, 'obs-constant')
+    expect(spanOf(obs[0])).toEqual([0, 1])
+    expect(spanOf(obs[1])).toEqual([1, 2])
+  })
+
+  it('computes the feature from that sub-experiment, not the whole trace', () => {
+    // The extraction half of the bug: over the whole trace both maxima are 13.
+    const { datasets } = buildChartData(SIM, {
+      dataItems: [
+        item({ data_item_name: 'max sub0', operation: 'max', subexperiment_idx: 0 }),
+        item({ data_item_name: 'max sub1', operation: 'max', subexperiment_idx: 1 }),
+      ],
+      subexpTimes: SUBEXP,
+    })
+
+    const calc = kinds(datasets, 'calc-constant').map((d) => d.data[0].y)
+    expect(calc).toEqual([4, 13])
+  })
+
+  it('narrows further to start_frac/end_frac within the sub-experiment', () => {
+    const { datasets } = buildChartData(SIM, {
+      dataItems: [
+        item({
+          operation: 'max_in_range',
+          subexperiment_idx: 1,
+          operation_kwargs: { start_frac: 0.5, end_frac: 1 },
+        }),
+      ],
+      subexpTimes: SUBEXP,
+    })
+
+    // Second sub-experiment is [1, 2]; the back half of it is [1.5, 2].
+    expect(spanOf(kinds(datasets, 'obs-constant')[0])).toEqual([1.5, 2])
+  })
+
+  it('keeps the full axis when there is no protocol to narrow by', () => {
+    const { datasets } = buildChartData(SIM, {
+      dataItems: [item({ operation: 'max' })],
+    })
+    expect(spanOf(kinds(datasets, 'obs-constant')[0])).toEqual([0, 2])
+  })
+
+  it('leaves a vertical line alone -- it marks a time, not a window', () => {
+    const { datasets } = buildChartData(SIM, {
+      dataItems: [item({ operation: 'first_peak_time', plot_type: 'vertical', value: 0.5 })],
+      subexpTimes: SUBEXP,
+    })
+    const v = kinds(datasets, 'obs-vertical')[0]
+    expect(v.data[0].x).toBe(0.5)
+    expect(v.data[1].x).toBe(0.5)
+  })
+})
+
+// What the figure should contain, counted rather than eyeballed: one plot per
+// trace, and on each of them one dashed ground-truth line and one solid model
+// line per data_item measured on that trace (#347).
+describe('a multi-sub-experiment study plots the right number of lines', () => {
+  const OBS = {
+    protocol_info: { pre_times: [0], sim_times: [[1, 1]] },
+    data_items: [
+      // u_AR: three features -- max on each sub-experiment, and a mean.
+      {
+        data_item_name: 'max u_AR sub0', trace_name_for_plotting: 'u_{AR}',
+        operands: ['ar/u'], data_type: 'constant', operation: 'max',
+        plot_type: 'horizontal', experiment_idx: 0, subexperiment_idx: 0, value: 4,
+      },
+      {
+        data_item_name: 'max u_AR sub1', trace_name_for_plotting: 'u_{AR}',
+        operands: ['ar/u'], data_type: 'constant', operation: 'max',
+        plot_type: 'horizontal', experiment_idx: 0, subexperiment_idx: 1, value: 13,
+      },
+      {
+        data_item_name: 'mean u_AR', trace_name_for_plotting: 'u_{AR}',
+        operands: ['ar/u'], data_type: 'constant', operation: 'mean',
+        plot_type: 'horizontal', experiment_idx: 0, subexperiment_idx: 0, value: 2,
+      },
+      // v_AR: one.
+      {
+        data_item_name: 'max v_AR', trace_name_for_plotting: 'v_{AR}',
+        operands: ['ar/v'], data_type: 'constant', operation: 'max',
+        plot_type: 'horizontal', experiment_idx: 0, subexperiment_idx: 0, value: 9,
+      },
+    ],
+  }
+  const TIME = [0, 0.5, 1, 1.5, 2]
+  const OUTPUTS = { 'ar/u': [0, 2, 4, 11, 13], 'ar/v': [0, 5, 9, 3, 1] }
+
+  it('draws one plot per unique trace label', () => {
+    const vars = derivePlotVariables(OBS)
+    const labels = new Set(OBS.data_items.map((d) => d.trace_name_for_plotting))
+
+    expect(vars).toHaveLength(labels.size)
+    expect(new Set(vars.map((v) => v.label))).toEqual(labels)
+  })
+
+  it('draws one ground-truth and one model line per item on each plot', () => {
+    const vars = derivePlotVariables(OBS)
+    const perTrace = {}
+
+    for (const v of vars) {
+      const items = overlayItemsFor(OBS, 0, v.qname)
+      const { datasets } = buildChartData(
+        { time: TIME, outputs: { [v.qname]: OUTPUTS[v.qname] } },
+        { dataItems: items, subexpTimes: OBS.protocol_info.sim_times[0] },
+      )
+      perTrace[v.label] = {
+        items: items.length,
+        gt: datasets.filter((d) => d.kind === 'obs-constant').length,
+        model: datasets.filter((d) => d.kind === 'calc-constant').length,
+      }
+    }
+
+    // u_AR carries three features, v_AR one; each contributes exactly one
+    // measured line and one model line, and nothing leaks between the traces.
+    expect(perTrace['u_{AR}']).toEqual({ items: 3, gt: 3, model: 3 })
+    expect(perTrace['v_{AR}']).toEqual({ items: 1, gt: 1, model: 1 })
+  })
+
+  it('the two sub-experiment maxima land on their own halves, at their own values', () => {
+    const items = overlayItemsFor(OBS, 0, 'ar/u')
+    const { datasets } = buildChartData(
+      { time: TIME, outputs: { 'ar/u': OUTPUTS['ar/u'] } },
+      { dataItems: items, subexpTimes: OBS.protocol_info.sim_times[0] },
+    )
+    const model = datasets.filter((d) => d.kind === 'calc-constant')
+
+    // max sub0 over [0,1] -> 4; max sub1 over [1,2] -> 13; mean over sub0 -> 2.
+    expect(model.map((d) => [d.data[0].x, d.data[1].x, d.data[0].y])).toEqual([
+      [0, 1, 4],
+      [1, 2, 13],
+      [0, 1, 2],
+    ])
+  })
+})
+
+describe('constantLineRange', () => {
+  it('falls back to the full axis on a degenerate protocol', () => {
+    const bounds = { xMin: 0, xMax: 2, subexpTimes: [1, 0] }
+    expect(constantLineRange({ subexperiment_idx: 1 }, bounds)).toEqual({ lo: 0, hi: 2 })
+  })
+
+  it('ignores an out-of-range subexperiment_idx rather than reading past the end', () => {
+    const bounds = { xMin: 0, xMax: 2, subexpTimes: [1, 1] }
+    expect(constantLineRange({ subexperiment_idx: 7 }, bounds)).toEqual({ lo: 0, hi: 2 })
+  })
+
+  it('ignores fractions that are not a fraction of the window', () => {
+    const bounds = { xMin: 0, xMax: 2, subexpTimes: [] }
+    const wild = { operation_kwargs: { start_frac: -1, end_frac: 3 } }
+    expect(constantLineRange(wild, bounds)).toEqual({ lo: 0, hi: 2 })
+  })
+})
+
+describe('sliceByTime', () => {
+  it('slices time and values together, so an index still names its own sample', () => {
+    const out = sliceByTime([0, 1, 2, 3], [10, 11, 12, 13], 1, 2)
+    expect(out).toEqual({ time: [1, 2], values: [11, 12] })
+  })
+
+  it('returns everything rather than nothing when the window catches no sample', () => {
+    const out = sliceByTime([0, 1], [5, 6], 90, 99)
+    expect(out).toEqual({ time: [0, 1], values: [5, 6] })
+  })
+
+  it('passes mismatched inputs through untouched', () => {
+    expect(sliceByTime([0, 1], [5], 0, 1)).toEqual({ time: [0, 1], values: [5] })
   })
 })

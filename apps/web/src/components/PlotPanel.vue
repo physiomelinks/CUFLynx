@@ -37,6 +37,10 @@ const props = defineProps({
   // Saved runs shown for comparison (#126): [{prefix, color, time, values}],
   // each already narrowed to this cell's variable and experiment.
   savedSeries: { type: Array, default: () => [] },
+  // Sub-experiment durations for this cell's experiment, in order. Lets a
+  // constant's reference line be drawn only across the sub-experiment its
+  // operation reduced (#347); empty means "one window", as before.
+  subexpTimes: { type: Array, default: () => [] },
   title: { type: String, default: '' },
   varLabel: { type: String, default: '' },
   // CellML units for the plotted variable and for the x axis (#125), shown
@@ -85,6 +89,7 @@ const chartData = computed(() =>
     varLabel: props.varLabel,
     stepped: props.stepped,
     savedSeries: props.savedSeries,
+    subexpTimes: props.subexpTimes,
   }),
 )
 

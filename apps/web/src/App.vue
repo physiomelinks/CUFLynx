@@ -474,6 +474,22 @@ async function applyCaDir(dir) {
   }
 }
 
+/**
+ * Go back to the libCUFLynx that ships in the app.
+ *
+ * The empty string is the backend's reset signal, not a no-op: `POST /api/config`
+ * leaves the CA dir alone when the field is absent and clears it only when it is
+ * explicitly '' — so this must send it rather than omit it. The setting is
+ * persisted and re-applied at every launch, which is what made it a one-way door
+ * without this.
+ *
+ * Takes effect fully on the next launch: Python caches the CA modules after the
+ * first simulation, so an already-running engine keeps the modules it imported.
+ */
+async function resetCaDir() {
+  await applyCaDir('')
+}
+
 // Set when the user changes the backend solver selection, so closing Settings
 // regenerates + re-runs the model for the new backend (see the settingsOpen watch).
 const solverConfigDirty = ref(false)
@@ -2466,6 +2482,9 @@ const plotGroups = computed(() => {
           controlled: false,
           simResult: { time: exp.time, outputs: { [v.qname]: exp.outputs?.[v.qname] ?? [] } },
           savedSeries: savedRuns.seriesFor(v.qname, e),
+          // This experiment's sub-experiment durations, so a constant's line is
+          // drawn only across the one its operation reduced (#347).
+          subexpTimes: (pi?.sim_times ?? [])[e] ?? [],
           dataItems: attachOutputSeries(
             overlayItemsFor(obs.obsData.value, e, v.qname),
             exp.output_series,
@@ -3063,6 +3082,7 @@ watch(() => obs.obsData.value, scheduleRun)
                 :data-items="cell.dataItems"
                 :emulator-features="emulatorFeatureMap"
                 :saved-series="cell.savedSeries ?? []"
+                :subexp-times="cell.subexpTimes ?? []"
                 :removable="!!cell.removeId"
                 :switchable="!!cell.xLabel"
                 :addable="!!cell.addable && plottableVariables.length > 0"
@@ -3239,6 +3259,23 @@ watch(() => obs.obsData.value, scheduleRun)
               title="Browse for the circulatory_autogen directory"
               data-testid="ca-browse"
               @click="caBrowserOpen = true"
+            />
+            <!--
+              Without this the setting was a one-way door: the picker could only
+              point somewhere, the saved value is re-applied at every launch, and
+              there was no way back to the engine in the bundle short of editing
+              config.json by hand. Only shown when one is set, so it is not an
+              inert button on a default install.
+            -->
+            <Button
+              v-if="caDir"
+              icon="pi pi-replay"
+              size="small"
+              text
+              title="Reset to shipped libCUFLynx"
+              aria-label="Reset to shipped libCUFLynx"
+              data-testid="ca-reset"
+              @click="resetCaDir"
             />
             <span
               v-if="!caExists"
