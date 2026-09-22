@@ -415,22 +415,28 @@ jobs:
           # Every release tag newer than the pinned commit. `--paginate` because the list
           # grows, and the pin can legitimately be several tags back.
           behind=0
-          while read -r tag sha; do
+          while read -r tag; do
             [ -z "$tag" ] && continue
-            if [ "$sha" = "$pin" ]; then break; fi
             # Is the pin an ancestor of this tag? If so the tag is newer than the pin.
-            if gh api "repos/physiomelinks/circulatory_autogen/compare/$pin...$tag" \
-                 --jq '.status' 2>/dev/null | grep -qx "ahead"; then
-              behind=$((behind + 1))
-            fi
+            # No 2>/dev/null: a compare that fails must stop the job under `set -e`, not
+            # silently count as "not newer" and report a pin fresher than it is.
+            status="$(gh api "repos/physiomelinks/circulatory_autogen/compare/$pin...$tag" --jq '.status')"
+            # Releases arrive newest-first, so the first tag the pin is *not* behind is the
+            # pin's own release ("identical") or an older one -- nothing further back can be
+            # newer. This replaces a `[ "$sha" = "$pin" ]` break that could never fire: a
+            # release's `target_commitish` is the branch it was cut from ("master" for every
+            # libcuflynx release), never a commit, so the loop always walked all 20 tags.
+            [ "$status" = "ahead" ] || break
+            behind=$((behind + 1))
           done < <(gh api repos/physiomelinks/circulatory_autogen/releases --paginate \
-                     --jq '.[] | "\(.tag_name) \(.target_commitish)"' | head -20)
+                     --jq '.[].tag_name' | head -20)
 
           echo "libcuflynx releases newer than the pin: $behind (tolerated: $ALLOWED_BEHIND)"
           if [ "$behind" -gt "$ALLOWED_BEHIND" ]; then
             echo "::error::the CA pin in ci.yml is $behind libcuflynx releases behind. The"
-            echo "::error::integration tier is testing an engine no user runs. Bump both"
-            echo "::error::`ref:` lines to the current release's merge commit."
+            echo "::error::unit tier is testing an engine no user runs. Bump the 'ref:' line"
+            echo "::error::in ci.yml to the current release's merge commit, and its trailing"
+            echo "::error::'# libcuflynx vX.Y.Z' marker with it."
             exit 1
           fi
 

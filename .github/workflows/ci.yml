@@ -84,10 +84,19 @@ jobs:
         with:
           repository: physiomelinks/circulatory_autogen
           # A commit on master, bumped deliberately -- upstream drift must not break
-          # CUFLynx CI. This one is the merge of circulatory_autogen#495, the first CA
-          # carrying libcuflynx.parsers.MyokitParsers and .EasyMLParsers, which this
-          # app delegates every .mmt and .model conversion to with no local fallback.
-          ref: 577cd4efea063f1b0b9dce79399eaad6386eac58
+          # CUFLynx CI. It must never go back before the merge of circulatory_autogen#495
+          # (the first CA carrying libcuflynx.parsers.MyokitParsers and .EasyMLParsers,
+          # which this app delegates every .mmt and .model conversion to with no local
+          # fallback); v0.7.3 is well past it.
+          #
+          # The `libcuflynx v<X.Y.Z>` marker is not decoration: it is the only
+          # offline record of *which release* this SHA is, and
+          # `test_the_pin_is_not_older_than_the_libcuflynx_floor` reads it to check the pin
+          # against the `libcuflynx>=` floor in apps/api/pyproject.toml. Bump both together
+          # -- when the floor moved to 0.7.3 and this did not, the unit tier spent a month
+          # testing a pairing pip itself would refuse to resolve, and only the weekly
+          # `ca-pin-freshness` job said so.
+          ref: 2684bd9e01a494618e4a6ba7f814d9f28758af5d  # libcuflynx v0.7.3
           path: circulatory_autogen
       - uses: actions/setup-python@v5
         with:
