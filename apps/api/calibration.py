@@ -185,8 +185,10 @@ def write_run_config(config: dict, filename: str) -> str:
     outputs put a file there that is no part of the study and that the user has
     no use for.
 
-    Shared by all three managers so there is one answer to where it goes.
-    :func:`clear_run_config` removes it once the process has exited.
+    Shared by all four managers so there is one answer to where it goes.
+    :func:`clear_run_config` removes it as soon as the process has exited -- before the
+    job publishes a terminal state, so "finished" never means "finished, and the temp
+    dir may or may not still be there".
     """
     directory = tempfile.mkdtemp(prefix="cuflynx-run-")
     path = os.path.join(directory, filename)
@@ -633,8 +635,16 @@ class CalibrationManager:
                     job.lines.append(line.rstrip("\n"))
         finally:
             code = job.proc.wait() if job.proc else -1
-            self._finalize(job, code)
+            # Remove the config *before* finalising. `wait()` has returned, so every MPI
+            # rank has exited and nothing can still read it -- and `_finalize` publishes a
+            # terminal state, which is the moment a client stops polling and starts
+            # asserting. Finalising first left a window in which a job reported "done"
+            # while its temp dir was still on disk; a status poll that landed inside it
+            # made `test_the_run_config_never_lands_in_the_outputs_dir` fail on a loaded
+            # runner. It also means an exception in `_finalize` no longer leaks the temp
+            # dir, since the cleanup has already happened.
             clear_run_config(job.config_path)
+            self._finalize(job, code)
 
     def _finalize(self, job: CalibrationJob, code: int) -> None:
         with job.lock:
