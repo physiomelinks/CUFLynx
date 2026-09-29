@@ -28,9 +28,11 @@
 </div>
 
 # CUFLynx
-A GUI for [Circulatory Autogen](https://github.com/physiomelinks/circulatory_autogen):
-run sensitivity analysis, calibration and uncertainty quantification, and
+A GUI to make it fast, flexible, reproducible, easy and educational to train an emulator, 
+run sensitivity analysis, perform calibration and uncertainty quantification, and
 manually explore how parameters affect your (CellML) model outputs.
+
+The backend (libcuflynx) is located at [Circulatory Autogen](https://github.com/physiomelinks/circulatory_autogen):
 
 ## Download the desktop app
 
@@ -42,15 +44,16 @@ manually explore how parameters affect your (CellML) model outputs.
 | **macOS** — Intel (macOS 11+) | [**CUFLynx-macos-x86_64**](https://github.com/physiomelinks/CUFLynx/releases/latest/download/CUFLynx-macos-x86_64) |
 | **Windows** (x86-64) | [**CUFLynx-windows-x86_64.exe**](https://github.com/physiomelinks/CUFLynx/releases/latest/download/CUFLynx-windows-x86_64.exe) |
 
-Not sure which Mac? **Apple menu → About This Mac**: "Apple M…" is Apple silicon,
+Not sure which Mac? **Apple menu -> About This Mac**: "Apple M…" is Apple silicon,
 "Intel…" is Intel. Every M-series chip runs the same `arm64` build.
 
 Take the plain Linux build unless you want the **Emulator** tab or **pyMC** sampling:
-those need torch, which is why they are a separate 645 MB download rather than part of
-every one. The two are otherwise identical, and there is no full build for macOS or
-Windows — see [Using your own Python](#using-your-own-python).
+those need torch, which is why they are a separate 645 MB download. 
+The two are otherwise identical, and there is no full build for macOS or
+Windows yet. To run with full emulator functionality on mac or windows 
+see [Using your own Python](#using-your-own-python).
 
-The app is self-contained — it bundles Python and everything `circulatory_autogen`
+The app is self-contained, it bundles Python and everything `circulatory_autogen/libcuflynx`
 needs, so simulation **and** analysis run without any Python setup.
 
 ### Run it
@@ -66,7 +69,7 @@ xattr -d com.apple.quarantine CUFLynx-macos-arm64
 ```
 
 The app is not notarised yet, so macOS blocks it until the quarantine flag is
-cleared — that's what the `xattr` line does (or right-click → **Open** → **Open**).
+cleared — that's what the `xattr` line does (or right-click -> **Open** -> **Open**).
 
 </details>
 
@@ -85,9 +88,9 @@ chmod +x CUFLynx-linux-x86_64          # or CUFLynx-linux-x86_64-full
 <summary><b>Windows</b></summary>
 
 Double-click `CUFLynx-windows-x86_64.exe`. If SmartScreen warns, choose
-**More info** → **Run anyway**.
+**More info** -> **Run anyway**.
 
-Antivirus may flag it as a threat. This is a **false positive** — a known quirk of
+Antivirus may flag it as a threat. This is a **false positive**, a known quirk of
 PyInstaller packaging, not malware. Restore it and allow it, or download again.
 (Code signing would stop this for good; it isn't in place yet.)
 
@@ -97,20 +100,21 @@ PyInstaller packaging, not malware. Restore it and allow it, or download again.
 **libCUFLynx** (the circulatory_autogen engine), so simulation, calibration,
 sensitivity and UQ all run out of the box.
 
-→ **[Using CUFLynx](tutorials/docs/misc.md)** — solver backends, Myokit `.mmt`
+
+For the tutorial click 'Tutorial at the top right of the CUFLynx page.
+For more info, see **[Using CUFLynx](tutorials/docs/misc.md)** — solver backends, Myokit `.mmt`
 models, and replotting a run outside the app.
 
 ## Using your own Python
 
 The app runs everything in its own bundled Python by default, and that is the
 recommended way to use it. You only need your own interpreter to use a package
-the bundle does not carry — `aadc`, a patched libCUFLynx, a specific numpy — or
+the bundle does not carry, a patched libCUFLynx, a specific numpy, or
 to run on a machine where you already maintain the environment.
 
-Pick it under **Settings → Python interpreter**. That one choice governs both
+Pick it under **Settings -> Python interpreter**. That one choice governs both
 tiers: live simulation (the sliders) and the analysis runs (calibration,
-sensitivity, UQ). So whatever you pick has to be able to import the engine —
-the bundled copy is inside the executable and is not importable from outside it.
+sensitivity, UQ). So whatever you pick has to be able to import the engine.
 
 Install into that interpreter:
 
@@ -148,7 +152,7 @@ identical to `CUFLynx-linux-x86_64`; there is no full build for macOS or Windows
 (`cuflynx-api`, the server), which is not what the runners need and does not pull
 libCUFLynx in. Use it only if you are developing CUFLynx itself, in which case see
 below. To develop the engine rather than the app, `pip install -e .` in a
-`circulatory_autogen` checkout and point **Settings → CA dir** at it.
+`circulatory_autogen` checkout and point **Settings -> CA dir** at it.
 
 ### On an HPC node, or anywhere `/tmp` is unwritable
 
