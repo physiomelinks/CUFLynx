@@ -261,6 +261,9 @@ def run(config: dict) -> dict:
 def _run(config: dict) -> dict:
     _ensure_ca_on_path()
     from ca_imports import ca_from  # noqa: E402 (shipped into runners/ too)
+    from obs_data import with_ca_obs_path  # noqa: E402 (shipped into runners/ too)
+
+    config = with_ca_obs_path(config)
 
     SensitivityAnalysis = ca_from(
         "sensitivity_analysis.sensitivityAnalysis", "SensitivityAnalysis")
