@@ -730,3 +730,61 @@ describe('AnalysisPanel — posterior predictive', () => {
     expect(wrapper.find('[data-testid="posterior-predictive"]').exists()).toBe(false)
   })
 })
+
+describe('AnalysisPanel Validation section (CA #535)', () => {
+  const VALIDATION = {
+    items: [
+      {
+        data_item_name: 'y_validation', operand: 'main/y', unit: 'mV', data_type: 'series',
+        n_points: 3, rmse: 0.25, nrmse: 0.125, mean_abs_z: 0.5, within_2std: 2 / 3,
+        t: [0, 0.5, 1], data: [0, 1, 2], std: [0.5, 0.5, 0.5], model: [0.1, 1.2, 2.4],
+      },
+      {
+        data_item_name: 'v_end', operand: 'main/v', unit: 'm3', data_type: 'constant',
+        n_points: 1, rmse: 2, nrmse: 0.5, mean_abs_z: null, within_2std: null,
+        t: [2], data: [4], std: null, model: [2],
+      },
+    ],
+  }
+
+  it('is not drawn at all when there is no validation', () => {
+    for (const validation of [null, { items: [] }]) {
+      const w = mount(AnalysisPanel, { props: { validation } })
+      expect(w.find('[data-testid="validation-section"]').exists()).toBe(false)
+      expect(w.text()).not.toContain('Validation')
+    }
+  })
+
+  it('tabulates each item with its scores', () => {
+    const w = mount(AnalysisPanel, { props: { validation: VALIDATION } })
+    expect(w.find('[data-testid="validation-section"]').exists()).toBe(true)
+    const rows = w.findAll('[data-testid="validation-row"]')
+    expect(rows).toHaveLength(2)
+    const cells = rows[0].findAll('td').map((c) => c.text())
+    expect(cells).toEqual(['y_validation', 'main/y', 'mV', '3', '0.250', '0.1250', '0.500', '67%'])
+    // No std: the z scores are unknown, which is not the same as zero.
+    const noStd = rows[1].findAll('td').map((c) => c.text())
+    expect(noStd.slice(6)).toEqual(['—', '—'])
+  })
+
+  it('plots the model against the held-out data, with ±std bars', () => {
+    const w = mount(AnalysisPanel, { props: { validation: VALIDATION } })
+    const charts = w.findAll('[data-testid="validation-chart"]')
+    expect(charts).toHaveLength(2)
+    expect(charts[0].text()).toContain('y_validation')
+    expect(charts[0].findAll('.parity-point')).toHaveLength(3)
+    expect(charts[0].findAll('[data-testid="chart-error-bar"]')).toHaveLength(3)
+    expect(charts[0].find('polyline[data-testid="chart-line"]').exists()).toBe(true)
+    // A constant is one point: the model is a marker, and without a std, no bar.
+    expect(charts[1].find('rect[data-testid="chart-line"]').exists()).toBe(true)
+    expect(charts[1].findAll('[data-testid="chart-error-bar"]')).toHaveLength(0)
+  })
+
+  it('comes after the Calibration section', () => {
+    const w = mount(AnalysisPanel, { props: { validation: VALIDATION } })
+    const headings = w.findAll('h2').map((h) => h.text())
+    const calib = headings.indexOf('Calibration')
+    expect(calib).toBeGreaterThanOrEqual(0)
+    expect(headings[calib + 1]).toBe('Validation')
+  })
+})

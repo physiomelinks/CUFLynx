@@ -93,6 +93,9 @@ def _calibration(output_dir, file_prefix, missing):
                              lambda: ca_run_history.modifiers(output_dir), missing),
         "error_vectors": _safely(
             "error vectors", lambda: ca_run_history.error_vectors(output_dir), missing),
+        # None, not an empty result, when the run had no held-out data (CA #535).
+        "validation": _safely(
+            "validation", lambda: ca_run_history.validation_results(output_dir), missing),
         "calibrated_model": _safely(
             "calibrated model", lambda: _calibrated_model(output_dir, file_prefix), missing),
     }
