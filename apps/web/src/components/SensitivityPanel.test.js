@@ -280,3 +280,79 @@ describe('tour anchors', () => {
     expect(wrapper.find('[data-testid="sa-settings"]').exists()).toBe(true)
   })
 })
+
+describe('SensitivityPanel "Include prediction items"', () => {
+  // A real checkbox, so disabled / checked / change are observable.
+  const CheckboxStub = {
+    props: ['modelValue', 'disabled'],
+    emits: ['update:modelValue'],
+    template:
+      '<input type="checkbox" :disabled="disabled" :checked="modelValue" v-bind="$attrs" @change="$emit(\'update:modelValue\', !modelValue)" />',
+  }
+  const boxStubs = { ...stubs, Checkbox: CheckboxStub }
+  const SUPPORTED = {
+    method: 'sobol',
+    include_prediction_items: false,
+    prediction_features_supported: true,
+    options: [
+      { name: 'num_samples', type: 'int', default: 256 },
+      // Should CA's schema list it, the generic loop must not draw a second box.
+      { name: 'include_prediction_items', type: 'bool', default: false },
+    ],
+  }
+  const mountSA = (props = {}) =>
+    mount(SensitivityPanel, {
+      props: { defaults: SUPPORTED, canRun: true, predictionFeatureCount: 2, ...props },
+      global: { stubs: boxStubs },
+    })
+  const box = (w) => w.find('[data-testid="sa-include-prediction-items"]')
+  const lastChange = (w) => w.emitted('change').at(-1)[0]
+
+  it('is offered, once, with the hint about which items become features', () => {
+    const w = mountSA()
+    expect(w.findAll('[data-testid="sa-include-prediction-items"]')).toHaveLength(1)
+    expect(w.find('#sa-opt-include_prediction_items').exists()).toBe(false)
+    expect(box(w).attributes('disabled')).toBeUndefined()
+    expect(w.find('[data-testid="sa-include-prediction-items-hint"]').text()).toContain(
+      'Prediction items with an operation become features; the others are skipped.',
+    )
+  })
+
+  it('carries the choice in the settings the run and the pipeline export use', async () => {
+    const w = mountSA()
+    expect(lastChange(w).include_prediction_items).toBe(false)
+    await box(w).trigger('change')
+    expect(lastChange(w).include_prediction_items).toBe(true)
+    await w.find('[data-testid="run-sensitivity"]').trigger('click')
+    expect(w.emitted('run')[0][0].include_prediction_items).toBe(true)
+  })
+
+  it('starts from the server default', () => {
+    const w = mountSA({ defaults: { ...SUPPORTED, include_prediction_items: true } })
+    expect(lastChange(w).include_prediction_items).toBe(true)
+  })
+
+  it('is disabled, with the reason, when no prediction_item has an operation', () => {
+    const w = mountSA({ predictionFeatureCount: 0 })
+    expect(box(w).attributes('disabled')).toBeDefined()
+    expect(w.find('[data-testid="sa-include-prediction-items-field"]').attributes('title')).toContain(
+      'no prediction_items with an operation',
+    )
+  })
+
+  it('is disabled, with the reason, when libcuflynx cannot do it', () => {
+    const w = mountSA({ defaults: { ...SUPPORTED, prediction_features_supported: false } })
+    expect(box(w).attributes('disabled')).toBeDefined()
+    expect(w.find('[data-testid="sa-include-prediction-items-field"]').attributes('title')).toContain(
+      'libcuflynx',
+    )
+  })
+
+  it('is never left ticked once it stops applying', async () => {
+    const w = mountSA()
+    await box(w).trigger('change')
+    expect(lastChange(w).include_prediction_items).toBe(true)
+    await w.setProps({ predictionFeatureCount: 0 })
+    expect(lastChange(w).include_prediction_items).toBe(false)
+  })
+})

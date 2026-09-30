@@ -25,6 +25,9 @@ const props = defineProps({
   // would then silently run on one core, so we mark the Cores field invalid and
   // block the run until it's set back to 1.
   mpiexecAvailable: { type: Boolean, default: true },
+  // How many of the obs_data's prediction_items carry an operation -- the ones
+  // "Include prediction items" can turn into features. 0 disables the box.
+  predictionFeatureCount: { type: Number, default: 0 },
 })
 const emit = defineEmits(['run', 'cancel', 'change'])
 
@@ -44,6 +47,10 @@ const settings = reactive({
   // The calibration uses whatever is configured in the Calibration panel
   // (folded in by App.vue), so there are no GA controls duplicated here.
   run_calibration_first: false,
+  // libcuflynx's sa_options.include_prediction_items: also treat the obs_data's
+  // prediction_items that have an operation as features. Sent only when on and
+  // the installed libcuflynx supports it (the runner checks again).
+  include_prediction_items: false,
   dt: 0.01,
   DEBUG: false,
 })
@@ -54,8 +61,35 @@ const optionValues = reactive({})
 
 // CA's sensitivity_analysis option descriptors, minus `method` (CUFLynx's own
 // top-level Sobol/local selector already covers that axis). Never hardcoded.
+// `include_prediction_items` is dropped too, should CA's schema list it: it has
+// its own checkbox below, which knows when it cannot apply.
 const saOptions = computed(() =>
-  (props.defaults.options ?? []).filter((o) => o.name !== 'method'),
+  (props.defaults.options ?? []).filter(
+    (o) => o.name !== 'method' && o.name !== 'include_prediction_items',
+  ),
+)
+
+// "Include prediction items": available only when libcuflynx supports it (the API's
+// feature detect) and the obs_data has a prediction_item with an operation. Which
+// items become features is libcuflynx's call; this only decides whether to ask.
+const predictionFeaturesSupported = computed(
+  () => props.defaults.prediction_features_supported === true,
+)
+const predictionFeaturesReason = computed(() => {
+  if (!predictionFeaturesSupported.value)
+    return 'The installed libcuflynx cannot include prediction items as features; update it.'
+  if (!props.predictionFeatureCount)
+    return 'The obs_data has no prediction_items with an operation to include.'
+  return ''
+})
+const predictionFeaturesDisabled = computed(() => !!predictionFeaturesReason.value)
+// A box that cannot apply is never left ticked, so the payload never asks for it.
+watch(
+  predictionFeaturesDisabled,
+  (off) => {
+    if (off) settings.include_prediction_items = false
+  },
+  { immediate: true },
 )
 
 // Seed each option's default when the schema arrives, keeping any value the user
@@ -241,6 +275,24 @@ function onRun() {
             />
           </label>
         </template>
+        <label
+          class="field checkbox"
+          :class="{ 'opt-off': predictionFeaturesDisabled }"
+          :title="predictionFeaturesReason"
+          data-testid="sa-include-prediction-items-field"
+        >
+          <Checkbox
+            v-model="settings.include_prediction_items"
+            :binary="true"
+            :disabled="predictionFeaturesDisabled"
+            input-id="sa-include-prediction-items"
+            data-testid="sa-include-prediction-items"
+          />
+          <span>Include prediction items</span>
+        </label>
+        <small class="hint" data-testid="sa-include-prediction-items-hint">
+          Prediction items with an operation become features; the others are skipped.
+        </small>
         <label class="field">
           <span title="mpiexec -n N: parallel sample evaluation">Cores</span>
           <InputNumber
@@ -382,6 +434,9 @@ function onRun() {
 }
 .field.checkbox {
   justify-content: flex-start;
+}
+.field.opt-off {
+  opacity: 0.55;
 }
 .field-input {
   display: flex;

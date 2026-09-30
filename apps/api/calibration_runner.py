@@ -425,19 +425,19 @@ def _read_json(path: str):
 
 
 def _validate_held_out(param_id, prediction_items: list, emulated: bool) -> str | None:
-    """Score the best fit's predictions against the held-out data (CA #535).
+    """Have libcuflynx validate the best fit against the held-out data (CA #535).
 
-    CA's ``save_prediction_data`` simulates every experiment at the best fit and
-    saves the prediction items' traces; a CA that knows held-out data also writes
-    ``validation_results.json`` itself. For one that does not, the same file is
-    produced here from those saved traces (``held_out_validation``). Either way
-    the file sits in CA's run directory in CA's format, which is what the manager
-    reads. Returns its path, or None when nothing was validated.
+    libcuflynx does all of it: ``save_prediction_data`` simulates every experiment
+    at the best fit, scores the prediction items that carry data
+    (``param_id.validation``) and writes ``validation_results.json`` into its run
+    directory, which is what the manager reads. CUFLynx computes nothing; a
+    libcuflynx without ``param_id.validation`` gives no validation, and the run log
+    says why. Returns the file's path, or None when nothing was validated.
 
     Best-effort: a validation that cannot be made must never fail the calibration.
     """
     import ca_run_history  # noqa: PLC0415 (CA output formats, one place)
-    import held_out_validation  # noqa: PLC0415
+    from obs_data import ca_accepts_held_out  # noqa: PLC0415 (runners/ too)
 
     if not any(isinstance(it, dict) and it.get("value") is not None
                for it in prediction_items):
@@ -447,29 +447,22 @@ def _validate_held_out(param_id, prediction_items: list, emulated: bool) -> str 
         print("held-out data not validated: the calibration ran on the emulator, "
               "which predicts no traces", flush=True)
         return None
+    if not ca_accepts_held_out():
+        print("held-out data not validated: that needs a newer libcuflynx "
+              "(one with param_id.validation)", flush=True)
+        return None
     run_dir = getattr(param_id, "output_dir", None)
     if not run_dir:
         return None
     try:
         param_id.save_prediction_data()
-        written = os.path.join(run_dir, ca_run_history.VALIDATION_RESULTS_FILE)
-        if os.path.isfile(written) and os.path.getmtime(written) >= _STARTED - 1.0:
-            return written  # CA validated it itself
-        info = held_out_validation.prediction_info(prediction_items)
-        series = ca_run_history.prediction_series(run_dir, info["experiment_idxs"])
-        if series is None:
-            print("held-out data not validated: circulatory_autogen saved no "
-                  "prediction traces", flush=True)
-            return None
-        results = held_out_validation.validation_results(info, *series)
-        path = ca_run_history.write_validation_results(results, run_dir)
-        if path:
-            print(f"validation of {len(results['items'])} held-out prediction item(s) "
-                  f"saved in {path}", flush=True)
-        return path
     except Exception as exc:  # noqa: BLE001 - never fail the run over its validation
         print(f"warning: held-out data not validated: {exc}", flush=True)
         return None
+    written = os.path.join(run_dir, ca_run_history.VALIDATION_RESULTS_FILE)
+    if os.path.isfile(written) and os.path.getmtime(written) >= _STARTED - 1.0:
+        return written
+    return None
 
 
 def _find_output_file(param_id, output_dir: str, name: str) -> str | None:

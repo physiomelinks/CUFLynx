@@ -67,6 +67,7 @@ import {
   timeUnit,
 } from './lib/plot'
 import { fmtSigFigs } from './lib/format'
+import { predictionFeatureItems, hasHeldOutData } from './lib/obsDataJson'
 import SearchableSelect from './components/SearchableSelect.vue'
 import SaveParamsDialog from './components/SaveParamsDialog.vue'
 import { requestNotificationPermission } from './lib/notify'
@@ -308,6 +309,10 @@ const mpiexecAvailable = ref(true)
 // real server always sends the field, so this is only false in tests and before
 // the first /api/config.
 const mpiexecKnown = ref(false)
+// Whether the installed libcuflynx validates a calibration against held-out data
+// (libcuflynx.param_id.validation, CA #535). CUFLynx does no scoring of its own, so
+// without it there is no Validation section, only a one-line note.
+const heldOutValidationSupported = ref(true)
 
 // circulatory_autogen source directory (top-bar "CA dir"), shared server-side via
 // /api/config. Optional since #18 -- the app bundles libCUFLynx -- and set only to
@@ -410,6 +415,8 @@ function applyConfigPayload(c) {
   packaged.value = c.packaged ?? false
   mpiexecAvailable.value = c.mpiexec_available ?? true
   mpiexecKnown.value = c.mpiexec_available !== undefined
+  // An API predating the key says nothing, and then no note is invented.
+  heldOutValidationSupported.value = c.held_out_validation_supported !== false
 }
 
 // Persist the interpreter choice server-side (it's what spawns the runners).
@@ -1734,6 +1741,17 @@ const calibSettings = ref({})
 const saSettings = ref({})
 const uqSettings = ref({})
 
+// The prediction_items "Include prediction items" (Sensitivity / Emulator) can use:
+// those with an operation. Only gates the checkbox; libcuflynx picks the features.
+const predictionFeatureCount = computed(
+  () => predictionFeatureItems(obs.predictionItems.value).length,
+)
+const validationNote = computed(() =>
+  !heldOutValidationSupported.value && hasHeldOutData(obs.predictionItems.value)
+    ? 'Validation against the held-out data in prediction_items needs a newer libcuflynx (one with param_id.validation).'
+    : '',
+)
+
 // ----- Pipeline export ----------------------------------------------------
 const exportPromptOpen = ref(false)
 const exportNotice = ref('')
@@ -2834,6 +2852,7 @@ watch(() => obs.obsData.value, scheduleRun)
             :metadata="emu.metadata.value"
             :features="emu.features.value"
             :reusable="emu.reusable.value"
+            :prediction-feature-count="predictionFeatureCount"
             @run="onTrainEmulator"
             @change="(s) => (emuSettings = s)"
             @cancel="emu.cancel()"
@@ -2846,6 +2865,7 @@ watch(() => obs.obsData.value, scheduleRun)
             :mpiexec-available="mpiexecAvailable"
             :ad-available="adAvailable"
             :gradient-sources="localGradientSources"
+            :prediction-feature-count="predictionFeatureCount"
             :lines="sa.lines.value"
             :state="sa.state.value"
             :error="sa.error.value"
@@ -3145,6 +3165,7 @@ watch(() => obs.obsData.value, scheduleRun)
             :std-error="calib.stdError.value"
             :error-labels="calib.errorLabels.value"
             :validation="calib.validation.value"
+            :validation-note="validationNote"
             :current-cost="currentCost"
             :baseline-cost="activeBaseline"
             :uq-params="uq.params.value"

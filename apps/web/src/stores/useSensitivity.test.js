@@ -77,6 +77,16 @@ describe('the saved run label names the gradient method that actually ran', () =
     )
     expect(sa.results.value[0].label).toBe('#1 Sobol · saltelli · n64')
   })
+
+  it('says when a Sobol run included the prediction features', async () => {
+    // Its outputs are not the same set as a run without them, so the comparison
+    // selector must tell the two apart.
+    const sa = await runWith(
+      { method: 'sobol', sample_type: 'saltelli', num_samples: 64, include_prediction_items: true },
+      { gradient_method: undefined },
+    )
+    expect(sa.results.value[0].label).toBe('#1 Sobol · saltelli · n64 · +predictions')
+  })
 })
 
 // Loading a run off disk (#255). The panel reads its heatmap out of the selected

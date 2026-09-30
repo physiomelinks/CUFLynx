@@ -58,6 +58,8 @@ _SA_RESERVED = {
     "sim_time", "pre_time", "cost_type", "generated_model_format",
     "config_outputs_dir", "param_id_method", "num_calls_to_function",
     "max_patience", "cost_convergence",
+    # Forwarded by _sa_options only when this libcuflynx supports it.
+    "include_prediction_items",
 }
 
 
@@ -95,6 +97,11 @@ def _sa_options(settings: dict, output_dir: str, seed=None) -> dict:
             sa_options[k] = v
     if seed is not None:
         sa_options["seed"] = int(seed)
+    # include_prediction_items: only when asked for and this libcuflynx takes it
+    # (an older one rejects the key). Which items become features is libcuflynx's.
+    from obs_data import prediction_features_option  # noqa: PLC0415 (runners/ too)
+
+    sa_options.update(prediction_features_option(settings))
     return sa_options
 
 

@@ -334,10 +334,6 @@ def ca_calibrated_model(output_dir: str, file_prefix: str | None) -> str | None:
 #: entry per prediction_item carrying data, written into the run directory.
 VALIDATION_RESULTS_FILE = "validation_results.json"
 
-#: What CA's ``save_prediction_data`` writes: entry *k* is prediction item *k*'s
-#: experiment, rows ``[time, that experiment's items in item order]``.
-PREDICTION_DATA_FILE = "prediction_variable_data_exp_{}.npy"
-
 
 def validation_results(output_dir: str) -> dict | None:
     """The validation of the best fit against held-out data, or None.
@@ -361,44 +357,6 @@ def validation_results(output_dir: str) -> dict | None:
     except OSError:
         return None
     return {"items": list(found["items"])}
-
-
-def prediction_series(run_dir: str, experiment_idxs: list) -> tuple[dict, list] | None:
-    """``(time_per_exp, prediction_per_item)`` from CA's saved prediction traces.
-
-    The inputs ``validation_results`` takes, recovered with CA's own mapping of
-    ``prediction_variable_data_exp_<k>.npy`` onto items. None when a file is
-    missing: a validation of some items only would read as a complete one.
-    """
-    time_per_exp: dict = {}
-    per_item: list = []
-    for k, exp_idx in enumerate(experiment_idxs):
-        rows = _npy(run_dir, PREDICTION_DATA_FILE.format(k))
-        if rows is None:
-            return None
-        time_per_exp[exp_idx] = rows[0]
-        same_exp = [j for j, e in enumerate(experiment_idxs) if e == exp_idx]
-        per_item.append(rows[1 + same_exp.index(k)])
-    return time_per_exp, per_item
-
-
-def write_validation_results(results: dict, run_dir: str) -> str | None:
-    """Write CA's ``validation_results.json``, for a CA too old to write it.
-
-    CA's own writer when it has one. Nothing is written without items, so no file
-    claims a validation that did not happen.
-    """
-    try:
-        from ca_imports import ca_from  # noqa: PLC0415
-
-        return ca_from("param_id.validation", "write_validation_results")(results, run_dir)
-    except ImportError:
-        pass
-    if not results.get("items"):
-        return None
-    path = os.path.join(run_dir, VALIDATION_RESULTS_FILE)
-    Path(path).write_text(json.dumps(results, indent=1), encoding="utf-8")
-    return path
 
 
 # ---------------------------------------------------------------------------

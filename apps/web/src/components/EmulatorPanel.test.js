@@ -566,3 +566,47 @@ describe('sampling stages', () => {
     expect(wrapper.find('[data-testid="emu-stages-first"]').exists()).toBe(true)
   })
 })
+
+describe('EmulatorPanel "Include prediction items"', () => {
+  const box = (w) => w.find('[data-testid="emu-include-prediction-items"]')
+  const lastChange = (w) => w.emitted('change').at(-1)[0]
+  const SUPPORTED = { ...DEFAULTS, prediction_features_supported: true }
+
+  it('is offered with its hint, and only once', () => {
+    const w = mountPanel({
+      defaults: {
+        ...SUPPORTED,
+        options: [...DEFAULTS.options, { name: 'include_prediction_items', type: 'bool', default: false }],
+      },
+      predictionFeatureCount: 1,
+    })
+    expect(w.findAll('[data-testid="emu-include-prediction-items"]')).toHaveLength(1)
+    expect(w.find('[data-testid="emu-opt-include_prediction_items"]').exists()).toBe(false)
+    expect(w.find('[data-testid="emu-include-prediction-items-hint"]').text()).toContain(
+      'Prediction items with an operation become features',
+    )
+  })
+
+  it('goes into the training settings when ticked', async () => {
+    const w = mountPanel({ defaults: SUPPORTED, predictionFeatureCount: 1 })
+    expect(lastChange(w).include_prediction_items).toBe(false)
+    await box(w).trigger('change')
+    expect(lastChange(w).include_prediction_items).toBe(true)
+    await w.find('[data-testid="train-emulator"]').trigger('click')
+    expect(w.emitted('run')[0][0].include_prediction_items).toBe(true)
+  })
+
+  it('is disabled without prediction features or without libcuflynx support', () => {
+    for (const props of [
+      { defaults: SUPPORTED, predictionFeatureCount: 0 },
+      { defaults: DEFAULTS, predictionFeatureCount: 3 },
+    ]) {
+      const w = mountPanel(props)
+      expect(box(w).attributes('disabled')).toBeDefined()
+      expect(
+        w.find('[data-testid="emu-include-prediction-items-field"]').attributes('title'),
+      ).toBeTruthy()
+      expect(lastChange(w).include_prediction_items).toBe(false)
+    }
+  })
+})

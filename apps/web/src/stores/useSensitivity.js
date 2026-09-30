@@ -62,7 +62,10 @@ export function useSensitivity(options = {}) {
       return `#${id} ${parts.join(' · ')}`
     }
     if (s.method === 'sobol') {
-      return `#${id} Sobol · ${s.sample_type ?? 'saltelli'} · n${s.num_samples ?? '?'}`
+      const label = `#${id} Sobol · ${s.sample_type ?? 'saltelli'} · n${s.num_samples ?? '?'}`
+      // Its outputs include the prediction features, so it is not the same study
+      // as a run without them -- say so in the comparison selector.
+      return s.include_prediction_items ? `${label} · +predictions` : label
     }
     return `#${id} ${s.method ?? 'run'}`
   }

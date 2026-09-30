@@ -25,6 +25,10 @@ const props = defineProps({
   // n_points, rmse, nrmse, mean_abs_z, within_2std, t, data, std, model}]}.
   // null when the obs_data held none, and then the section is not drawn at all.
   validation: { type: Object, default: null },
+  // One line shown instead of the section when the study has held-out data but
+  // the installed libcuflynx cannot validate against it (no param_id.validation).
+  // CUFLynx scores nothing itself, so there is then no validation to show.
+  validationNote: { type: String, default: '' },
   // Issue #159: the cost and per-observable errors of whatever the sliders
   // currently say, and a baseline to compare them against (the calibration best
   // fit, or a pinned parameter set). Both {cost, items:[{label, percent_error,
@@ -1049,6 +1053,11 @@ const predictiveBandWidth = computed(() => `${(2 / (2 * PREDICTIVE_LIMIT)) * 100
     <!-- Validation ----------------------------------------------------------
          Only when the obs_data carries held-out data (CA #535): an empty
          section here would read as "validated, nothing to say". -->
+    <p
+      v-if="!hasValidation && validationNote"
+      class="emu-error-note"
+      data-testid="validation-needs-newer"
+    >{{ validationNote }}</p>
     <section v-if="hasValidation" class="analysis-section" data-testid="validation-section">
       <h2>Validation</h2>
       <table class="emu-error-table" data-testid="validation-table">

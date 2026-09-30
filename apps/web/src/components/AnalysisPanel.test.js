@@ -788,3 +788,17 @@ describe('AnalysisPanel Validation section (CA #535)', () => {
     expect(headings[calib + 1]).toBe('Validation')
   })
 })
+
+describe('AnalysisPanel validation with an older libcuflynx', () => {
+  it('shows the one-line note, and no section, when there is no validation', () => {
+    const note = 'Validation against the held-out data in prediction_items needs a newer libcuflynx.'
+    const w = mount(AnalysisPanel, { props: { validation: null, validationNote: note } })
+    expect(w.find('[data-testid="validation-section"]').exists()).toBe(false)
+    expect(w.find('[data-testid="validation-needs-newer"]').text()).toBe(note)
+  })
+
+  it('shows nothing without a note', () => {
+    const w = mount(AnalysisPanel, { props: { validation: null } })
+    expect(w.find('[data-testid="validation-needs-newer"]').exists()).toBe(false)
+  })
+})

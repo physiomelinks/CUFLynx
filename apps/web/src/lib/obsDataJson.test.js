@@ -9,6 +9,9 @@ import {
   experimentIdxMax,
   predToRow,
   predRowToItem,
+  newPredRow,
+  predictionFeatureItems,
+  hasHeldOutData,
 } from './obsDataJson'
 
 const OPS = ['', 'max', 'min', 'mean']
@@ -262,5 +265,50 @@ describe('prediction_items with held-out data (CA #535)', () => {
     expect(out).toMatchObject({
       unit: 'V', data_type: 'series', value: [1, 2, 3], std: 0.5, obs_dt: 0.1,
     })
+  })
+})
+
+describe('prediction_items with an operation (prediction features)', () => {
+  it('round-trips operation and operation_kwargs through an edit', () => {
+    const pred = {
+      data_item_name: 'v_max', operands: ['main/v'], unit: 'm3', experiment_idx: 0,
+      operation: 'max', operation_kwargs: { k: 2 },
+    }
+    const row = predToRow(pred)
+    expect(row.operation).toBe('max')
+    row.unit = 'L'
+    expect(predRowToItem(row)).toMatchObject({ unit: 'L', operation: 'max', operation_kwargs: { k: 2 } })
+  })
+
+  it('drops the kwargs when the operation is changed or cleared', () => {
+    const row = predToRow({ data_item_name: 'v', operands: ['main/v'], operation: 'max', operation_kwargs: { k: 2 } })
+    row.operation = 'min'
+    expect(predRowToItem(row).operation_kwargs).toBeUndefined()
+    row.operation = ''
+    const out = predRowToItem(row)
+    expect(out.operation).toBeUndefined()
+    expect(out.operation_kwargs).toBeUndefined()
+  })
+
+  it('writes no operation for a new row', () => {
+    const row = newPredRow(0)
+    row.data_item_name = 'z'
+    expect(predRowToItem(row).operation).toBeUndefined()
+  })
+
+  it('counts only the items with an operation as possible features', () => {
+    const items = [
+      { data_item_name: 'a', operation: 'max' },
+      { data_item_name: 'b' },
+      { data_item_name: 'c', operation: '' },
+      { data_item_name: 'd', operation: 'None' },
+    ]
+    expect(predictionFeatureItems(items).map((i) => i.data_item_name)).toEqual(['a'])
+    expect(predictionFeatureItems(null)).toEqual([])
+  })
+
+  it('knows when there is held-out data', () => {
+    expect(hasHeldOutData([{ value: 0 }])).toBe(true)
+    expect(hasHeldOutData([{ operation: 'max' }])).toBe(false)
   })
 })

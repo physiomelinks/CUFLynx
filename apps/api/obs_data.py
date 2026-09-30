@@ -168,6 +168,22 @@ HELD_OUT_KEYS = ("value", "data_type", "std", "obs_dt")
 #: The CA module that arrived with those keys; its presence is the capability test.
 _HELD_OUT_MODULE = "param_id.validation"
 
+#: A prediction_item's optional scalar of its trace, in a data_item's vocabulary.
+#: An item with an ``operation`` is what ``include_prediction_items`` makes a
+#: sensitivity / emulator feature. A libcuflynx without that feature rejects
+#: both keys as unknown, so they are removed before such a one reads the document.
+PREDICTION_OPERATION_KEYS = ("operation", "operation_kwargs")
+
+#: The option, in ``sa_options`` and in ``emulator_settings``, that asks libcuflynx
+#: to treat the prediction_items with an operation as features too.
+INCLUDE_PREDICTION_ITEMS = "include_prediction_items"
+
+#: libcuflynx's feature detect for :data:`INCLUDE_PREDICTION_ITEMS` and for an
+#: ``operation`` on a prediction_item: ``(module, constant)``, supported when the
+#: constant is truthy. **The one place its name is spelled** -- the API, the
+#: runners and the obs_data hand-over all ask :func:`ca_supports_prediction_features`.
+PREDICTION_FEATURES_FLAG = ("sensitivity_analysis", "SUPPORTS_PREDICTION_FEATURES")
+
 
 def prediction_items_of(obj) -> list:
     """The ``prediction_items`` of an obs_data document; ``[]`` for a bare array."""
@@ -187,7 +203,9 @@ def ca_accepts_held_out() -> bool:
     """Whether the circulatory_autogen this process imports reads held-out keys.
 
     Judged by the module CA added alongside them rather than by a version number:
-    the CA directory is chosen at runtime and a checkout carries no release.
+    the CA directory is chosen at runtime and a checkout carries no release. The
+    same module is what validates a calibration against them, so this is also
+    whether there will be a validation at all -- CUFLynx scores nothing itself.
     """
     try:
         from ca_imports import ca_import, ensure_ca_path  # noqa: PLC0415
@@ -199,34 +217,83 @@ def ca_accepts_held_out() -> bool:
     return True
 
 
-def without_held_out(obj):
-    """A copy of ``obj`` with the held-out keys taken off its prediction_items.
+def ca_supports_prediction_features() -> bool:
+    """Whether this process's libcuflynx takes ``include_prediction_items`` and an
+    ``operation`` on a prediction_item (see :data:`PREDICTION_FEATURES_FLAG`)."""
+    module, name = PREDICTION_FEATURES_FLAG
+    try:
+        from ca_imports import ca_import, ensure_ca_path  # noqa: PLC0415
+
+        ensure_ca_path()
+        return bool(getattr(ca_import(module), name, False))
+    except Exception:  # noqa: BLE001 - no CA, or one that cannot say: not supported
+        return False
+
+
+def prediction_features_option(settings: dict) -> dict:
+    """``{include_prediction_items: True}`` for CA's options block, or ``{}``.
+
+    The key is sent only when the user asked for it *and* this libcuflynx supports
+    it: an older one rejects an unknown option, and ``False`` is its default anyway.
+    Asked for but unsupported is said in the run log rather than failing the run.
+    Which items become features -- and the warning for those that cannot -- is
+    libcuflynx's; nothing about it is decided here.
+    """
+    if not (settings or {}).get(INCLUDE_PREDICTION_ITEMS):
+        return {}
+    if ca_supports_prediction_features():
+        return {INCLUDE_PREDICTION_ITEMS: True}
+    print(
+        "warning: include_prediction_items ignored: this libcuflynx cannot include "
+        "prediction items as features; update it",
+        flush=True,
+    )
+    return {}
+
+
+def without_keys(obj, keys):
+    """A copy of ``obj`` with ``keys`` taken off its prediction_items.
 
     The item itself stays -- its operand is still a prediction CA records -- only
-    the data a pre-#535 parser would refuse goes. ``obj`` is not modified.
+    what an older parser would refuse goes. ``obj`` is not modified.
     """
     if not isinstance(obj, dict) or not prediction_items_of(obj):
         return obj
     out = dict(obj)
     out["prediction_items"] = [
-        {k: v for k, v in it.items() if k not in HELD_OUT_KEYS} if isinstance(it, dict) else it
+        {k: v for k, v in it.items() if k not in keys} if isinstance(it, dict) else it
         for it in obj["prediction_items"]
     ]
     return out
 
 
+def without_held_out(obj):
+    """A copy of ``obj`` without the held-out keys on its prediction_items."""
+    return without_keys(obj, HELD_OUT_KEYS)
+
+
+def _unreadable_keys(obj) -> tuple:
+    """The prediction_item keys in ``obj`` this process's CA would reject."""
+    present = {k for it in prediction_items_of(obj) if isinstance(it, dict) for k in it}
+    drop: tuple = ()
+    if present & set(HELD_OUT_KEYS) and not ca_accepts_held_out():
+        drop += HELD_OUT_KEYS
+    if present & set(PREDICTION_OPERATION_KEYS) and not ca_supports_prediction_features():
+        drop += PREDICTION_OPERATION_KEYS
+    return drop
+
+
 def for_ca(obj):
     """The document as the circulatory_autogen in this process can read it.
 
-    ``obj`` itself when CA understands held-out data or there is none to remove;
-    otherwise :func:`without_held_out`. Every in-process hand-over to CA's parser
-    goes through here, so an obs_data carrying validation data still loads, costs
-    and calibrates against an older CA.
+    ``obj`` itself when CA understands every prediction_item key in it; otherwise
+    a copy without the held-out keys (CA #535) and/or ``operation`` /
+    ``operation_kwargs`` (prediction features) that it would refuse. Every
+    in-process hand-over to CA's parser goes through here, so such an obs_data
+    still loads, costs and calibrates against an older CA.
     """
-    if not any(isinstance(it, dict) and any(k in it for k in HELD_OUT_KEYS)
-               for it in prediction_items_of(obj)):
-        return obj
-    return obj if ca_accepts_held_out() else without_held_out(obj)
+    drop = _unreadable_keys(obj)
+    return without_keys(obj, drop) if drop else obj
 
 
 #: Kept alive until the process exits: CA reads the obs_data path at construction
@@ -260,8 +327,9 @@ def ca_obs_path(obs_path: str) -> str:
     out = Path(_ca_copies.name) / Path(obs_path).name
     out.write_text(json.dumps(readable, indent=4), encoding="utf-8")
     print(
-        "circulatory_autogen here predates held-out data in prediction_items; "
-        "it is given the obs_data without it, and CUFLynx scores the validation.",
+        "libcuflynx here predates some prediction_items keys; it is given the "
+        "obs_data without them (held-out data then goes unvalidated, and prediction "
+        "operations are not used as features).",
         flush=True,
     )
     return str(out)
@@ -277,27 +345,6 @@ def with_ca_obs_path(config: dict) -> dict:
     if not config.get("obs_path"):
         return config
     return {**config, "obs_path": ca_obs_path(config["obs_path"])}
-
-
-def _validate_held_out(prediction_items: list) -> None:
-    """CA #535's rules for a prediction_item that carries data, checked here too.
-
-    So an older CA -- which never sees these keys -- does not let a series with no
-    ``obs_dt`` through to a validation that cannot place its samples.
-    """
-    for i, item in enumerate(prediction_items):
-        if not isinstance(item, dict) or item.get("value") is None:
-            continue
-        kind = item.get("data_type")
-        if kind not in ("constant", "series"):
-            raise ObsDataError(
-                f"prediction_items[{i}] has a value, so it needs data_type "
-                f"'constant' or 'series', got {kind!r}"
-            )
-        if kind == "series" and item.get("obs_dt") is None:
-            raise ObsDataError(
-                f"prediction_items[{i}] is a series with a value, so it needs obs_dt"
-            )
 
 
 def parse_obs_data(obj) -> ObsData:
@@ -343,7 +390,6 @@ def parse_obs_data(obj) -> ObsData:
 
     if protocol_info is not None:
         _validate_traces(protocol_info)
-    _validate_held_out(prediction_items if isinstance(prediction_items, list) else [])
 
     # Last, so the structural messages above (which name the offending index)
     # win when both apply.

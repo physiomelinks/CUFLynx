@@ -171,6 +171,10 @@ export function predToRow(pred) {
     trace_name_for_plotting:
       pred.trace_name_for_plotting ?? pred.name_for_plotting ?? pred.data_item_name ?? pred.variable ?? '',
     experiment_idx: pred.experiment_idx ?? 0,
+    // Optional: a scalar of the trace (same vocabulary as a data_item's). Only what
+    // makes the item usable as an SA / emulator feature ("Include prediction items");
+    // its operation_kwargs ride along in _orig.
+    operation: pred.operation ?? '',
   }
 }
 
@@ -182,6 +186,7 @@ export function newPredRow(experimentIdx = 0) {
     unit: 'dimensionless',
     trace_name_for_plotting: '',
     experiment_idx: experimentIdx,
+    operation: '',
   }
 }
 
@@ -193,9 +198,34 @@ export function predRowToItem(row) {
   out.unit = row.unit
   out.trace_name_for_plotting = row.trace_name_for_plotting || row.data_item_name
   out.experiment_idx = num(row.experiment_idx, 0)
+  if (row.operation) out.operation = row.operation
+  else delete out.operation
+  // operation_kwargs belong to the operation they were written for: kept verbatim
+  // while it is unchanged, dropped when it is cleared or replaced.
+  if (!row.operation || row.operation !== (row._orig?.operation ?? '')) delete out.operation_kwargs
   delete out.variable
   delete out.name_for_plotting
   return out
+}
+
+/**
+ * The prediction_items that "Include prediction items" can turn into SA / emulator
+ * features: those with an `operation` (a scalar of the trace). libcuflynx skips the
+ * others with a warning. Only used to say whether the box can do anything here --
+ * which items become features, and how, is libcuflynx's decision, not this file's.
+ */
+export function predictionFeatureItems(predictionItems = []) {
+  if (!Array.isArray(predictionItems)) return []
+  return predictionItems.filter((it) => {
+    const op = it && typeof it === 'object' ? it.operation : null
+    return typeof op === 'string' && op.trim() !== '' && op !== 'None'
+  })
+}
+
+/** Whether any prediction_item carries held-out data (a `value`, CA #535). */
+export function hasHeldOutData(predictionItems = []) {
+  return Array.isArray(predictionItems) &&
+    predictionItems.some((it) => it && typeof it === 'object' && it.value != null)
 }
 
 /**

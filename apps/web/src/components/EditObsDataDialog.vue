@@ -792,6 +792,20 @@ async function onSave() {
             </select>
             <input type="text" placeholder="unit" :value="row.unit" @input="row.unit = $event.target.value" />
             <input type="text" placeholder="trace label" :value="row.trace_name_for_plotting" @input="row.trace_name_for_plotting = $event.target.value" />
+            <!-- Optional scalar of the trace: what lets "Include prediction items"
+                 (Sensitivity / Emulator) use this item as a feature. -->
+            <select
+              :value="row.operation ?? ''"
+              title="Optional operation (a scalar of the trace). Prediction items with one can be included as features in sensitivity analysis and emulation."
+              data-testid="eo-pred-operation"
+              @change="row.operation = $event.target.value"
+            >
+              <option value="">no operation</option>
+              <option v-for="op in operations.filter((o) => o)" :key="op" :value="op">{{ op }}</option>
+              <!-- An operation the menu does not list (a user func not yet
+                   introspected) is still the item's: shown, never dropped. -->
+              <option v-if="row.operation && !operations.includes(row.operation)" :value="row.operation">{{ row.operation }}</option>
+            </select>
             <select :value="row.experiment_idx" @change="row.experiment_idx = Number($event.target.value)">
               <option v-for="e in expOptions" :key="e" :value="e">{{ e }}</option>
             </select>
@@ -974,7 +988,7 @@ async function onSave() {
 }
 .eo-pred {
   display: grid;
-  grid-template-columns: 1.4fr 0.9fr 1.1fr 0.6fr 2rem;
+  grid-template-columns: 1.4fr 0.9fr 1.1fr 0.9fr 0.6fr 2rem;
   align-items: center;
   gap: 0.4rem;
 }
