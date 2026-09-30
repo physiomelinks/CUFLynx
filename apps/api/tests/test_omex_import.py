@@ -897,3 +897,14 @@ def test_params_for_id_is_found_by_its_name_only():
     assert parts["params"][0] == "inst_params_for_id.csv"
     parts = omex_import.unpack(_zip(_members(**{"params.csv": "a,b\n", "fit_params.csv": "a,b\n"})))
     assert parts["params"] is None
+
+
+def test_an_obs_data_with_only_validation_data_is_found_by_its_prediction_items():
+    held_out = json.dumps({"prediction_items": [
+        {"data_item_name": "x_validation", "operands": ["mod/x"], "unit": "dimensionless",
+         "data_type": "series", "value": [1.0, 2.0], "std": [0.1, 0.1], "obs_dt": 1.0}]})
+    parts = omex_import.unpack(_zip(_members(**{
+        "held_out.json": held_out,
+        "notes.json": json.dumps({"comment": "not observations"}),
+    })))
+    assert parts["obs"][0] == "held_out.json"

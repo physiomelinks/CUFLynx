@@ -53,6 +53,9 @@ _NON_OBS_FORMAT_MARKERS = (
     "sedml",
 )
 
+#: The top-level keys that make a JSON object an obs_data (the last way one is found).
+OBS_DATA_KEYS = ("data_items", "protocol_info", "prediction_items")
+
 OMEX_SUFFIXES = (".omex",)
 
 #: Ceiling on an archive's *uncompressed* size. Zip compresses XML by an order of
@@ -233,11 +236,11 @@ def why_not_obs_data(blob: bytes | None) -> str:
     if isinstance(doc, list):
         return ""
     if isinstance(doc, dict):
-        if "data_items" in doc or "protocol_info" in doc:
+        if any(k in doc for k in OBS_DATA_KEYS):
             return ""
         keys = ", ".join(repr(k) for k in list(doc)[:6]) or "no keys at all"
         return (
-            "it is a JSON object with neither 'data_items' nor 'protocol_info' "
+            "it is a JSON object with none of 'data_items', 'protocol_info' or 'prediction_items' "
             f"(it has {keys})"
         )
     return f"it is a JSON {type(doc).__name__}, not an obs_data object or array"
@@ -297,7 +300,8 @@ def _classify(
     #   1. the name: `obs_data.json` or `<anything>_obs_data.json` -- except a
     #      `_validation_obs_data.json`, which is held-out data, not what to fit;
     #   2. a JSON object naming itself with "obs_data_name";
-    #   3. a JSON object with "data_items" or "protocol_info".
+    #   3. a JSON object with "data_items", "protocol_info" or "prediction_items" (an
+    #      obs_data holding only held-out validation data has no data_items).
     # A bare list is only ever taken by name: a module config is a bare list of
     # entries too, and sniffing lists took a module library's config as its
     # observations.
@@ -308,7 +312,7 @@ def _classify(
     obs = (
         obs_named
         or [n for n in candidates if _json_object_has(members.get(n), ("obs_data_name",))]
-        or [n for n in candidates if _json_object_has(members.get(n), ("data_items", "protocol_info"))]
+        or [n for n in candidates if _json_object_has(members.get(n), OBS_DATA_KEYS)]
     )
 
     # Only when nothing was found. With an obs_data in hand the leftover JSON is
