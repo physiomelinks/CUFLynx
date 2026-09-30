@@ -171,17 +171,15 @@ def _declared_non_obs(name: str, formats: dict[str, str]) -> bool:
     return any(marker in fmt for marker in _NON_OBS_FORMAT_MARKERS)
 
 
-def _looks_like_obs_data(blob: bytes | None) -> bool:
-    """Whether a JSON member is plausibly an obs_data document.
-
-    circulatory_autogen accepts two shapes (``obs_data.parse_obs_data``): a bare
-    array of data_items, or an object with ``protocol_info`` / ``data_items``.
-    Nothing else in an archive looks like either, which is what lets a PhLynx
-    ``simulation.json`` -- declared as plain ``application/json``, exactly like a
-    real obs_data -- stay out of the observations slot instead of importing as a
-    parse-error banner.
-    """
-    return not why_not_obs_data(blob)
+def _json_object_has(blob: bytes | None, keys: tuple[str, ...]) -> bool:
+    """Whether ``blob`` is a JSON object with any of ``keys`` at its top level."""
+    if not blob:
+        return False
+    try:
+        doc = json.loads(blob.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return False
+    return isinstance(doc, dict) and any(k in doc for k in keys)
 
 
 def obs_verdict(blob: bytes | None) -> tuple[str, bool]:
@@ -263,12 +261,18 @@ def _classify(
     def named(candidates, word):
         return [n for n in candidates if re.search(word, Path(n).name, re.I)]
 
-    params_csv = named(csvs, r"param")
+    # A params_for_id is named as one: `params_for_id.csv` / `.json`, or ending in
+    # `_params_for_id`. Nothing looser. "param" anywhere in the name also caught a
+    # module library's `default_parameters.csv` (the model's own values, not the
+    # ones to identify), and the old last resort -- any CSV at all -- meant an
+    # archive with no params_for_id still came back with one.
+    params_named = r"(^|_)params_for_id\.(csv|json)$"
+    params_csv = named(csvs, params_named)
     # A params_for_id is stored as **JSON** by CUFLynx (`_save_params_file`), so
     # an archive CUFLynx writes has to be readable by CUFLynx: without this the
     # params member would fall through to the obs_data pool and the study would
     # come back missing its parameters.
-    params_json = named(jsons, r"param")
+    params_json = named(jsons, params_named)
     # PhLynx's editor state, by what the manifest calls it rather than by what it
     # is named. PhLynx flattened its workspace format (phlynx#542) and now writes
     # `flow-snapshot.json` + `changes.json` where it used to write
@@ -289,11 +293,23 @@ def _classify(
         for n in jsons
         if n not in spoken_for and not _declared_non_obs(n, formats)
     ]
-    # An obviously named one wins, as it always has. Only the leftovers are
-    # sniffed, so an archive with no manifest and a plainly named obs_data keeps
-    # working exactly as before.
-    obs_named = named(candidates, r"obs")
-    obs = obs_named or [n for n in candidates if _looks_like_obs_data(members.get(n))]
+    # Three layers, first match wins, and with none there is no obs_data:
+    #   1. the name: `obs_data.json` or `<anything>_obs_data.json` -- except a
+    #      `_validation_obs_data.json`, which is held-out data, not what to fit;
+    #   2. a JSON object naming itself with "obs_data_name";
+    #   3. a JSON object with "data_items" or "protocol_info".
+    # A bare list is only ever taken by name: a module config is a bare list of
+    # entries too, and sniffing lists took a module library's config as its
+    # observations.
+    obs_named = [
+        n for n in named(candidates, r"(^|_)obs_data\.json$")
+        if not re.search(r"_validation_obs_data\.json$", Path(n).name, re.I)
+    ]
+    obs = (
+        obs_named
+        or [n for n in candidates if _json_object_has(members.get(n), ("obs_data_name",))]
+        or [n for n in candidates if _json_object_has(members.get(n), ("data_items", "protocol_info"))]
+    )
 
     # Only when nothing was found. With an obs_data in hand the leftover JSON is
     # simply not observations -- a PhLynx `simulation.json` is the normal case --
@@ -338,7 +354,7 @@ def _classify(
         # that other tools use, so it is the least trustworthy claim to be a
         # model in the archive.
         "cellml": cellml or myokit or easyml,
-        "params": params_csv or params_json or csvs,
+        "params": params_csv or params_json,
         "obs": obs,
         "module_config": module_config,
     }

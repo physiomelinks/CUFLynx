@@ -178,7 +178,7 @@ def test_an_unnamed_obs_data_is_recognised_by_its_contents():
             {
                 "m.cellml": "<model/>",
                 "simulation.json": json.dumps({"plots": []}),
-                "measurements.json": json.dumps([{"variable": "a/b"}]),
+                "measurements.json": json.dumps({"data_items": [{"variable": "a/b"}]}),
             }
         )
     )
@@ -828,3 +828,72 @@ def test_an_mmt_archive_whose_protocol_filled_the_slot_is_not_told_it_has_none(
     body = resp.json()
     assert body["obs_data"] and body["obs_data"].get("derived_from_mmt")
     assert not any("carries no obs_data" in w for w in body["warnings"]), body["warnings"]
+
+
+# ---------------------------------------------------------------------------
+# obs_data: by name, then "obs_data_name", then data_items / protocol_info;
+# params_for_id: by name only. Nothing found means nothing loaded.
+# ---------------------------------------------------------------------------
+OBS_OBJECT = json.dumps({"protocol_info": {}, "data_items": []})
+
+
+def _members(**files) -> dict:
+    return {"model.cellml": "<model/>", **files}
+
+
+def test_a_library_instance_with_no_data_loads_no_obs_data_and_no_params():
+    """A module library's instance archive with only parameters: its module config
+    (a bare list), verification config and model parameters are none of them the
+    study's observations or its parameters to identify."""
+    parts = omex_import.unpack(_zip(_members(**{
+        "heart_vp_modules_config.json": json.dumps([{"module_type": "heart", "module_subtype": "vp"}]),
+        "heart_vp_verification_config.json": json.dumps({"sim_time": 1.0, "validation": {}}),
+        "default_parameters.csv": "variable_name,units,value\nT,second,1\n",
+        "heart_vp_default_model_parameters.csv": "variable_name,units,value\nT,second,1\n",
+    })))
+    assert parts["obs"] is None
+    assert parts["params"] is None
+
+
+def test_obs_data_is_found_by_its_name():
+    for name in ("obs_data.json", "inst_obs_data.json"):
+        parts = omex_import.unpack(_zip(_members(**{name: "[]", "other.json": OBS_OBJECT})))
+        assert parts["obs"][0] == name
+
+
+def test_a_validation_obs_data_is_not_the_obs_data():
+    parts = omex_import.unpack(_zip(_members(**{
+        "inst_validation_obs_data.json": OBS_OBJECT,
+        "inst_parameters.csv": "a,b\n",
+    })))
+    # not by name; its contents still make it a candidate of last resort
+    assert parts["obs"][0] == "inst_validation_obs_data.json"
+    parts = omex_import.unpack(_zip(_members(**{
+        "inst_validation_obs_data.json": OBS_OBJECT,
+        "inst_obs_data.json": OBS_OBJECT,
+    })))
+    assert parts["obs"][0] == "inst_obs_data.json"
+
+
+def test_obs_data_name_comes_before_data_items():
+    parts = omex_import.unpack(_zip(_members(**{
+        "a.json": OBS_OBJECT,
+        "b.json": json.dumps({"obs_data_name": "b", "data_items": []}),
+    })))
+    assert parts["obs"][0] == "b.json"
+
+
+def test_a_bare_list_is_only_obs_data_by_name():
+    parts = omex_import.unpack(_zip(_members(**{"items.json": json.dumps([{"data_item_name": "a"}])})))
+    assert parts["obs"] is None
+
+
+def test_params_for_id_is_found_by_its_name_only():
+    parts = omex_import.unpack(_zip(_members(**{
+        "inst_parameters.csv": "a,b\n",
+        "params.csv": "a,b\n",
+        "inst_params_for_id.csv": "vessel_name,param_name\nv,p\n",
+    })))
+    assert parts["params"][0] == "inst_params_for_id.csv"
+    parts = omex_import.unpack(_zip(_members(**{"params.csv": "a,b\n", "fit_params.csv": "a,b\n"})))
+    assert parts["params"] is None
