@@ -46,6 +46,8 @@ _EMULATOR_RESERVED = {
     "dt", "DEBUG", "num_cores", "solver", "solver_info", "python_path",
     "sim_time", "pre_time", "cost_type", "generated_model_format",
     "config_outputs_dir", "use_emulator",
+    # Forwarded by _emulator_settings only when this libcuflynx supports it.
+    "include_prediction_items",
 }
 
 
@@ -76,6 +78,11 @@ def _emulator_settings(settings: dict, emu_dir: str, seed=None) -> dict:
             out[key] = value
     if seed is not None:
         out["random_seed"] = int(seed)
+    # include_prediction_items: only when asked for and this libcuflynx takes it
+    # (an older one rejects the key). Which items become features is libcuflynx's.
+    from obs_data import prediction_features_option  # noqa: PLC0415 (runners/ too)
+
+    out.update(prediction_features_option(settings))
     return out
 
 

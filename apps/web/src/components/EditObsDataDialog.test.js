@@ -885,3 +885,39 @@ describe('operations that take named data_item references (#349)', () => {
     expect('operation_kwargs' in uploadObsData.mock.calls[0][1].data_items[0]).toBe(false)
   })
 })
+
+describe('prediction_items: operation (prediction features)', () => {
+  const PRED = {
+    data_item_name: 'v_max', operands: ['m/x'], unit: 'm3', experiment_idx: 0,
+    operation: 'max', operation_kwargs: { k: 2 },
+    // held-out data rides along too (CA #535)
+    data_type: 'constant', value: 3, std: 0.5,
+  }
+
+  it('offers an operation per prediction item and saves it with its kwargs', async () => {
+    uploadObsData.mockResolvedValue({ ok: true })
+    const wrapper = mountDialog({ currentPredictionItems: [PRED] })
+    await flushPromises()
+    const select = wrapper.find('[data-testid="eo-pred-operation"]')
+    expect(select.element.value).toBe('max')
+    await wrapper.find('[data-testid="eo-save"]').trigger('click')
+    await flushPromises()
+    const obsArg = uploadObsData.mock.calls[0][1]
+    expect(obsArg.prediction_items[0]).toMatchObject({
+      operation: 'max', operation_kwargs: { k: 2 }, value: 3, std: 0.5,
+    })
+  })
+
+  it('clearing the operation drops it and its kwargs', async () => {
+    uploadObsData.mockResolvedValue({ ok: true })
+    const wrapper = mountDialog({ currentPredictionItems: [PRED] })
+    await flushPromises()
+    await wrapper.find('[data-testid="eo-pred-operation"]').setValue('')
+    await wrapper.find('[data-testid="eo-save"]').trigger('click')
+    await flushPromises()
+    const item = uploadObsData.mock.calls[0][1].prediction_items[0]
+    expect(item.operation).toBeUndefined()
+    expect(item.operation_kwargs).toBeUndefined()
+    expect(item.value).toBe(3)
+  })
+})

@@ -196,14 +196,44 @@ format, and no plumbing:
   CA's burn-in rule needs a live param-id object, so reading its raw
   `mcmc_chain.npy` would report a different posterior from the one the run did).
 - **Held-out data** (CA #535): a `prediction_item` carrying `value` (+ `data_type`,
-  `std`, `obs_dt`) is validation data, never scored. After a calibration the runner
-  calls CA's `save_prediction_data`; a CA that has `param_id.validation` writes
-  `validation_results.json` itself, and for an older one `held_out_validation.py`
-  (a copy of CA's scoring, pinned against it in `test_validation_results.py`)
-  writes the same file from CA's saved traces. An older CA rejects those keys, so
-  every hand-over goes through `obs_data.for_ca` (in-process) or
-  `obs_data.with_ca_obs_path` (runners), which strip them only when CA cannot read
-  them. The status/load-outputs `validation` is None — never empty — without it.
+  `std`, `obs_dt`) is validation data, never scored. **libcuflynx does all of the
+  validation**: after a calibration the runner calls its `save_prediction_data`,
+  which scores the items (`param_id.validation`) and writes
+  `validation_results.json`; the managers only read that file. CUFLynx keeps no
+  copy of the scoring or of its rules -- a libcuflynx without `param_id.validation`
+  gives no validation, and the Analysis tab shows a one-line note instead (from
+  `/api/config` `held_out_validation_supported`). The status/load-outputs
+  `validation` is None -- never empty -- without it.
+- **Prediction items as features** ("Include prediction items" in the Sensitivity
+  (Sobol and local) and Emulator forms): passed through as
+  `sa_options.include_prediction_items` / `emulator_settings.include_prediction_items`;
+  libcuflynx then also uses the prediction_items that have an `operation` (labelled
+  by `data_item_name`) and skips the rest with a warning. CUFLynx does no feature
+  logic. Which outputs are prediction features is read from libcuflynx, never from
+  labels: Sobol's `sobol_output_features.json` (`ca_run_history.sobol_prediction_outputs`,
+  filtered to the CSV's own columns so an earlier run's file tags nothing), the
+  emulator bundle's `prediction_feature_labels` (last in `feature_labels`), and for
+  local SA the rows libcuflynx's `SensitivityAnalysis._prediction_feature_sensitivities`
+  returns -- the call its own `run_local_sensitivity` makes, evaluated here at
+  CUFLynx's nominal point (libcuflynx's local SA only linearises about the model
+  defaults) and normalised like the data_item rows; the runner's meta line carries
+  their names, since CUFLynx writes that CSV. The UI tags all of these "prediction".
+  The option is sent (runners, exported yaml) only when on **and** supported; the
+  feature detect is `obs_data.PREDICTION_FEATURES_FLAG` (`(module, constant)`),
+  **the one place its name is spelled**, read by
+  `obs_data.ca_supports_prediction_features()` and surfaced as
+  `prediction_features_supported` on `/api/sensitivity/defaults` and
+  `/api/emulator/defaults`. SA on an emulator forwards it too; libcuflynx refuses a
+  bundle trained without the features, and the SA status's `error` is the runner's
+  own reason (its `__SENSITIVITY_FAILED__` line), so that message reaches the panel.
+  Validation items with an `operation` are scalar features (`t` = end of run,
+  `model` = the feature): the table names them "x (max)" and all scalar items share
+  one parity chart (model vs data ± std, y = x).
+- **An older libcuflynx rejects newer prediction_item keys** -- the held-out keys
+  and `operation` / `operation_kwargs` -- so every hand-over goes through
+  `obs_data.for_ca` (in-process) or `obs_data.with_ca_obs_path` (runners), which
+  strip each group only when this libcuflynx cannot read it. The obs_data editor
+  keeps them (an operation picker per prediction row; the rest ride on `_orig`).
 - Reading via `find_run_dir` can reach an **earlier** run's `<case_type>` subdir,
   which the old direct read could not. `has_results(output_dir, newer_than=…)`
   takes the job's start time so a run whose own results are missing fails

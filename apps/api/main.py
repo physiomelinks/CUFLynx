@@ -74,7 +74,13 @@ from local_sensitivity import local_gradient_sources
 import ca_imports
 import export_pipeline
 from model_codegen import resolve_model_path, reset_cache as reset_codegen
-from obs_data import ObsData, ObsDataError, parse_obs_data
+from obs_data import (
+    ObsData,
+    ObsDataError,
+    ca_accepts_held_out,
+    ca_supports_prediction_features,
+    parse_obs_data,
+)
 from obs_options import get_obs_data_options, reset_cache as reset_obs_options
 import obs_cost
 import cost_gradient
@@ -697,6 +703,10 @@ def _config_payload(output_dir: str = "") -> dict:
         # Windows without MS-MPI). Tracks the selected interpreter: resolved the
         # same way the run does (see calibration.resolve_mpiexec).
         "mpiexec_available": resolve_mpiexec(calibration.python) is not None,
+        # Whether libcuflynx validates a calibration against the held-out data in
+        # prediction_items (its param_id.validation, CA #535). CUFLynx scores
+        # nothing itself, so without it the Analysis tab has only a note to show.
+        "held_out_validation_supported": ca_accepts_held_out(),
         # The params_for_id `prior` vocabulary, from CA's schema, so the params
         # editor can offer a picker instead of dropping the column (which
         # silently reverted every non-uniform prior to uniform).
@@ -1006,6 +1016,9 @@ def export_pipeline_route(req: ExportPipelineRequest) -> dict:
             sensitivity=req.sensitivity,
             uq=req.uq,
             enabled=req.enabled,
+            # The yaml is for the libcuflynx the user has: an older one rejects
+            # the include_prediction_items key.
+            prediction_features=ca_supports_prediction_features(),
         )
     except export_pipeline.ExportPipelineError as exc:
         # A malformed setting is the client's to fix, so report it as such: an
@@ -3322,6 +3335,10 @@ SENSITIVITY_DEFAULTS = {
     # settings come from the Calibration panel (folded in by the frontend), so
     # they are not duplicated here.
     "run_calibration_first": False,
+    # sa_options.include_prediction_items: also treat the obs_data's
+    # prediction_items that have an operation as features (libcuflynx decides
+    # which; `prediction_features_supported` says whether it can at all).
+    "include_prediction_items": False,
     "dt": 0.01,
     "solver": "CVODE_myokit",
     "DEBUG": False,
@@ -3352,6 +3369,9 @@ def sensitivity_defaults() -> dict:
         **SENSITIVITY_DEFAULTS,
         "gradient_methods": gradient_methods,
         "options": sa.get("options", []),
+        # libcuflynx's feature detect for include_prediction_items (obs_data.
+        # PREDICTION_FEATURES_FLAG); the checkbox is disabled without it.
+        "prediction_features_supported": ca_supports_prediction_features(),
     }
 
 
@@ -3557,6 +3577,8 @@ def emulator_defaults() -> dict:
         "available": probe["available"],
         "interpreter": probe["interpreter"],
         "unavailable_reason": probe["unavailable_reason"],
+        # emulator_settings.include_prediction_items, as for sensitivity.
+        "prediction_features_supported": ca_supports_prediction_features(),
     }
 
 

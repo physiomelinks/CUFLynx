@@ -19,7 +19,7 @@ from __future__ import annotations
 from datetime import date
 
 from ca_imports import CaImportError, ca_from
-from obs_data import data_items_of
+from obs_data import INCLUDE_PREDICTION_ITEMS, data_items_of
 
 
 def dated_suffix() -> str:
@@ -75,6 +75,7 @@ def build_user_inputs(
     sensitivity: dict | None,
     uq: dict | None,
     enabled: dict | None,
+    prediction_features: bool = False,
 ) -> dict:
     """Map the current CUFLynx settings to a circulatory_autogen user_inputs dict.
 
@@ -82,6 +83,10 @@ def build_user_inputs(
     script in the export folder under ``resources/``). The ``do_*`` keys are
     CUFLynx-level enablement flags — CA ignores unknown keys, and the exported
     pipeline script reads them to gate each stage.
+
+    ``prediction_features`` is whether the libcuflynx in use supports
+    ``sa_options.include_prediction_items``; the key is written only then, and
+    only when the sensitivity settings ask for it.
     """
     calibration = calibration or {}
     sensitivity = sensitivity or {}
@@ -152,6 +157,8 @@ def build_user_inputs(
         "do_uq": bool(enabled.get("do_uq", enabled.get("do_mcmc", False))),
         "do_ia": bool(enabled.get("do_ia", False)),
     }
+    if prediction_features and sensitivity.get(INCLUDE_PREDICTION_ITEMS):
+        ui["sa_options"][INCLUDE_PREDICTION_ITEMS] = True
     return ui
 
 
