@@ -770,14 +770,16 @@ describe('AnalysisPanel Validation section (CA #535)', () => {
   it('plots the model against the held-out data, with ±std bars', () => {
     const w = mount(AnalysisPanel, { props: { validation: VALIDATION } })
     const charts = w.findAll('[data-testid="validation-chart"]')
-    expect(charts).toHaveLength(2)
+    // one chart per series; the constant goes to the shared scalar chart
+    expect(charts).toHaveLength(1)
     expect(charts[0].text()).toContain('y_validation')
     expect(charts[0].findAll('.parity-point')).toHaveLength(3)
     expect(charts[0].findAll('[data-testid="chart-error-bar"]')).toHaveLength(3)
     expect(charts[0].find('polyline[data-testid="chart-line"]').exists()).toBe(true)
-    // A constant is one point: the model is a marker, and without a std, no bar.
-    expect(charts[1].find('rect[data-testid="chart-line"]').exists()).toBe(true)
-    expect(charts[1].findAll('[data-testid="chart-error-bar"]')).toHaveLength(0)
+    const scalars = w.find('[data-testid="validation-features-chart"]')
+    expect(scalars.findAll('.parity-point')).toHaveLength(1)
+    // without a std, no bar
+    expect(scalars.findAll('[data-testid="chart-error-bar"]')).toHaveLength(0)
   })
 
   it('comes after the Calibration section', () => {
@@ -800,5 +802,70 @@ describe('AnalysisPanel validation with an older libcuflynx', () => {
   it('shows nothing without a note', () => {
     const w = mount(AnalysisPanel, { props: { validation: null } })
     expect(w.find('[data-testid="validation-needs-newer"]').exists()).toBe(false)
+  })
+})
+
+describe('AnalysisPanel validation of prediction features (libcuflynx #536)', () => {
+  // validation_results.json as libcuflynx wrote it after calibrating the Hudson Bay
+  // lynx-hare instance (Lotka_Volterra nn): two held-out series and six scalar
+  // features (max / min / mean of each population), rounded to 4 d.p.
+  const REAL = {"items": [{"data_item_name": "x_validation", "operand": "mod/x", "operation": null, "unit": "dimensionless", "data_type": "series", "n_points": 21, "rmse": 23.7013, "nrmse": 0.3396, "mean_abs_z": 2.2186, "within_2std": 0.5238, "t": [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0, 17.0, 18.0, 19.0, 20.0], "data": [30.0, 47.2, 70.2, 77.4, 36.3, 20.6, 18.1, 21.4, 22.0, 25.4, 27.1, 40.3, 57.0, 76.6, 52.3, 19.5, 11.2, 7.6, 14.6, 16.2, 24.7], "std": [7.5, 11.8, 17.55, 19.35, 9.075, 5.15, 4.525, 5.35, 5.5, 6.35, 6.775, 10.075, 14.25, 19.15, 13.075, 4.875, 2.8, 1.9, 3.65, 4.05, 6.175], "model": [15.3373, 19.2885, 26.2347, 33.8101, 33.9176, 23.592, 16.113, 14.711, 17.3205, 23.1665, 31.0813, 35.4359, 28.1267, 18.2526, 14.7015, 15.8692, 20.4758, 27.8756, 34.7902, 32.33, 21.5254]}, {"data_item_name": "y_validation", "operand": "mod/y", "operation": null, "unit": "dimensionless", "data_type": "series", "n_points": 21, "rmse": 17.6917, "nrmse": 0.3193, "mean_abs_z": 2.115, "within_2std": 0.4762, "t": [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0, 17.0, 18.0, 19.0, 20.0], "data": [4.0, 6.1, 9.8, 35.2, 59.4, 41.7, 19.0, 13.0, 8.3, 9.1, 7.4, 8.0, 12.3, 19.5, 45.7, 51.1, 29.7, 15.8, 9.7, 10.1, 8.6], "std": [1.0, 1.525, 2.45, 8.8, 14.85, 10.425, 4.75, 3.25, 2.075, 2.275, 1.85, 2.0, 3.075, 4.875, 11.425, 12.775, 7.425, 3.95, 2.425, 2.525, 2.15], "model": [10.1517, 7.4794, 7.1435, 9.7833, 16.731, 21.7544, 17.8035, 11.9207, 8.2569, 6.991, 8.2637, 13.5209, 20.8314, 20.0911, 14.0838, 9.4131, 7.2236, 7.3873, 10.8429, 18.3384, 21.5508]}, {"data_item_name": "x_max_validation", "operand": "mod/x", "operation": "max", "unit": "dimensionless", "data_type": "constant", "n_points": 1, "rmse": 41.9368, "nrmse": 0.5418, "mean_abs_z": 2.1673, "within_2std": 0.0, "t": [20.0], "data": [77.4], "std": [19.35], "model": [35.4632]}, {"data_item_name": "x_min_validation", "operand": "mod/x", "operation": "min", "unit": "dimensionless", "data_type": "constant", "n_points": 1, "rmse": 7.0235, "nrmse": 0.9241, "mean_abs_z": 3.6966, "within_2std": 0.0, "t": [20.0], "data": [7.6], "std": [1.9], "model": [14.6235]}, {"data_item_name": "x_mean_validation", "operand": "mod/x", "operation": "mean", "unit": "dimensionless", "data_type": "constant", "n_points": 1, "rmse": 9.7847, "nrmse": 0.2871, "mean_abs_z": 4.4864, "within_2std": 0.0, "t": [20.0], "data": [34.081], "std": [2.181], "model": [24.2962]}, {"data_item_name": "y_max_validation", "operand": "mod/y", "operation": "max", "unit": "dimensionless", "data_type": "constant", "n_points": 1, "rmse": 37.6454, "nrmse": 0.6338, "mean_abs_z": 2.535, "within_2std": 0.0, "t": [20.0], "data": [59.4], "std": [14.85], "model": [21.7546]}, {"data_item_name": "y_min_validation", "operand": "mod/y", "operation": "min", "unit": "dimensionless", "data_type": "constant", "n_points": 1, "rmse": 2.9909, "nrmse": 0.7477, "mean_abs_z": 2.9909, "within_2std": 0.0, "t": [20.0], "data": [4.0], "std": [1.0], "model": [6.9909]}, {"data_item_name": "y_mean_validation", "operand": "mod/y", "operation": "mean", "unit": "dimensionless", "data_type": "constant", "n_points": 1, "rmse": 7.4722, "nrmse": 0.3705, "mean_abs_z": 5.288, "within_2std": 0.0, "t": [20.0], "data": [20.1667], "std": [1.4131], "model": [12.6944]}]}
+
+  it('names a feature by its operation', () => {
+    const w = mount(AnalysisPanel, { props: { validation: REAL } })
+    const names = w.findAll('[data-testid="validation-row"]').map((r) => r.findAll('td')[0].text())
+    expect(names).toEqual([
+      'x_validation', 'y_validation',
+      'x_max_validation (max)', 'x_min_validation (min)', 'x_mean_validation (mean)',
+      'y_max_validation (max)', 'y_min_validation (min)', 'y_mean_validation (mean)',
+    ])
+  })
+
+  it('draws the series one chart each and the six features in one parity chart', () => {
+    const w = mount(AnalysisPanel, { props: { validation: REAL } })
+    const series = w.findAll('[data-testid="validation-chart"]')
+    expect(series.map((c) => c.find('h3').text())).toEqual(['x_validation', 'y_validation'])
+    const scalars = w.find('[data-testid="validation-features-chart"]')
+    expect(scalars.findAll('.parity-point')).toHaveLength(6)
+    expect(scalars.findAll('[data-testid="chart-error-bar"]')).toHaveLength(6)
+    // each point says which feature it is, the model's value and the data's
+    const titles = scalars.findAll('.parity-point title').map((t) => t.text())
+    expect(titles[0]).toMatch(/^x_max_validation \(max\): data 77\.4 ± 19\.35, model /)
+  })
+
+  it('draws no scalar chart when every item is a series', () => {
+    const onlySeries = { items: REAL.items.filter((i) => !i.operation) }
+    const w = mount(AnalysisPanel, { props: { validation: onlySeries } })
+    expect(w.find('[data-testid="validation-features-chart"]').exists()).toBe(false)
+  })
+})
+
+describe('AnalysisPanel prediction features in SA and emulator results', () => {
+  it('tags the Sobol / local outputs libcuflynx names as prediction features', () => {
+    const w = mount(AnalysisPanel, {
+      props: {
+        indices: { S1: { 'x (Exp0, Sub0)': { a: 0.1 }, 'v_max (Exp0, Sub0)': { a: 0.2 } } },
+        paramNames: ['a'],
+        outputNames: ['x (Exp0, Sub0)', 'v_max (Exp0, Sub0)'],
+        predictionOutputs: ['v_max (Exp0, Sub0)'],
+      },
+    })
+    const heads = w.findAll('.col-head')
+    expect(heads[0].find('[data-testid="sa-prediction-tag"]').exists()).toBe(false)
+    expect(heads[1].find('[data-testid="sa-prediction-tag"]').text()).toBe('prediction')
+  })
+
+  it('tags the emulator features libcuflynx lists as prediction features', () => {
+    const w = mount(AnalysisPanel, {
+      props: {
+        emulatorMetadata: {
+          feature_labels: ['x_peak', 'v_max'], prediction_feature_labels: ['v_max'],
+          feature_r2: [0.99, 0.95],
+        },
+      },
+    })
+    const rows = w.findAll('[data-testid="emulator-error-table"] tbody tr')
+    expect(rows[0].find('[data-testid="emulator-prediction-tag"]').exists()).toBe(false)
+    expect(rows[1].find('[data-testid="emulator-prediction-tag"]').exists()).toBe(true)
   })
 })

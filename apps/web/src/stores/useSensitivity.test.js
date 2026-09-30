@@ -87,6 +87,15 @@ describe('the saved run label names the gradient method that actually ran', () =
     )
     expect(sa.results.value[0].label).toBe('#1 Sobol · saltelli · n64 · +predictions')
   })
+
+  it('says so for a local run too, and keeps which outputs were prediction features', async () => {
+    const sa = await runWith(
+      { method: 'local', gradient_method: 'FD', nominal: 'current', include_prediction_items: true },
+      { gradient_method: 'FD', prediction_outputs: ['v_max'] },
+    )
+    expect(sa.results.value[0].label).toBe('#1 Local · FD · current · +predictions')
+    expect(sa.predictionOutputs.value).toEqual(['v_max'])
+  })
 })
 
 // Loading a run off disk (#255). The panel reads its heatmap out of the selected

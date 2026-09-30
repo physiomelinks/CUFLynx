@@ -3159,6 +3159,7 @@ watch(() => obs.obsData.value, scheduleRun)
             :param-labels="paramLabels"
             :nominal="sa.nominal.value"
             :nominal-source="sa.nominalSource.value"
+            :prediction-outputs="sa.predictionOutputs.value"
             :saved-results="sa.results.value"
             :selected-result-id="sa.selectedId.value"
             :percent-error="calib.percentError.value"

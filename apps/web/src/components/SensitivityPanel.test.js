@@ -356,3 +356,30 @@ describe('SensitivityPanel "Include prediction items"', () => {
     expect(lastChange(w).include_prediction_items).toBe(false)
   })
 })
+
+describe('SensitivityPanel "Include prediction items" for local SA', () => {
+  const CheckboxStub = {
+    props: ['modelValue', 'disabled'],
+    emits: ['update:modelValue'],
+    template:
+      '<input type="checkbox" :disabled="disabled" :checked="modelValue" v-bind="$attrs" @change="$emit(\'update:modelValue\', !modelValue)" />',
+  }
+  it('is offered for the local method too, and sent with it', async () => {
+    const w = mount(SensitivityPanel, {
+      props: {
+        defaults: { method: 'local', prediction_features_supported: true },
+        canRun: true,
+        predictionFeatureCount: 1,
+      },
+      global: { stubs: { ...stubs, Checkbox: CheckboxStub } },
+    })
+    const box = w.find('[data-testid="sa-include-prediction-items"]')
+    expect(box.attributes('disabled')).toBeUndefined()
+    expect(w.find('[data-testid="sa-include-prediction-items-hint"]').text()).toContain(
+      'finite differences',
+    )
+    await box.trigger('change')
+    await w.find('[data-testid="run-sensitivity"]').trigger('click')
+    expect(w.emitted('run')[0][0]).toMatchObject({ method: 'local', include_prediction_items: true })
+  })
+})

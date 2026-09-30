@@ -451,7 +451,10 @@ function onRun() {
           </thead>
           <tbody>
             <tr v-for="f in features" :key="f.label">
-              <td class="emu-feature">{{ f.label }}</td>
+              <td class="emu-feature">
+                {{ f.label }}
+                <span v-if="f.prediction" class="pred-tag" data-testid="emu-prediction-tag" title="A prediction item's feature (include_prediction_items)">prediction</span>
+              </td>
               <td :class="{ bad: f.r2 != null && f.r2 < minR2 }">{{ fmt(f.r2) }}</td>
               <td>{{ fmt(f.rmse, 3) }}</td>
             </tr>
@@ -741,6 +744,15 @@ function onRun() {
 }
 /* A setting circulatory_autogen will ignore on this run, or one it cannot accept
    yet: greyed so the form says what the run will actually do. */
+.pred-tag {
+  margin-left: 0.3rem;
+  padding: 0 0.3rem;
+  border-radius: 3px;
+  font-size: 0.62rem;
+  background: var(--p-orange-500, #e08a2c);
+  color: #111;
+  vertical-align: middle;
+}
 .field.opt-off {
   opacity: 0.5;
 }

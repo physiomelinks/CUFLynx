@@ -610,3 +610,18 @@ describe('EmulatorPanel "Include prediction items"', () => {
     }
   })
 })
+
+describe('EmulatorPanel prediction features in a trained bundle', () => {
+  it('tags the features libcuflynx lists as prediction features', () => {
+    const w = mountPanel({
+      metadata: { ...METADATA, feature_labels: ['x', 'v_max'], prediction_feature_labels: ['v_max'] },
+      features: [
+        { label: 'x', r2: 0.99, rmse: 0.1, prediction: false },
+        { label: 'v_max', r2: 0.95, rmse: 0.2, prediction: true },
+      ],
+    })
+    const tags = w.findAll('[data-testid="emu-prediction-tag"]')
+    expect(tags).toHaveLength(1)
+    expect(tags[0].element.closest('td').textContent).toContain('v_max')
+  })
+})

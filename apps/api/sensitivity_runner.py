@@ -102,6 +102,10 @@ def _sa_options(settings: dict, output_dir: str, seed=None) -> dict:
     from obs_data import prediction_features_option  # noqa: PLC0415 (runners/ too)
 
     sa_options.update(prediction_features_option(settings))
+    # The step libcuflynx's FD prediction-feature rows take on a local run: the same
+    # relative step as the data_item rows (CUFLynx's rel_step, not CA's 1e-3 default).
+    if sa_options["method"] == "local" and settings.get("rel_step") is not None:
+        sa_options["fd_rel_step"] = float(settings["rel_step"])
     return sa_options
 
 
@@ -370,6 +374,9 @@ def _run(config: dict) -> dict:
                 "gradient_method": payload["gradient_method"],
                 "nominal": payload["nominal"],
                 "nominal_source": payload["nominal_source"],
+                # Which rows are prediction features: CUFLynx writes this CSV in CA's
+                # format, which has no column for it (the Sobol run's JSON does).
+                "prediction_outputs": payload.get("prediction_outputs") or [],
             }),
             flush=True,
         )

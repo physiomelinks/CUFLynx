@@ -462,7 +462,28 @@ def sobol_indices(output_dir: str) -> dict | None:
             indices[kind][output][param] = table[param].get(column)
     if not indices:
         return None
-    return {"indices": indices, "param_names": params, "output_names": output_names}
+    return {"indices": indices, "param_names": params, "output_names": output_names,
+            # Only this CSV's columns: a run without prediction items writes no JSON,
+            # so one left by an earlier run in the directory must not tag anything.
+            "prediction_outputs": [o for o in sobol_prediction_outputs(output_dir)
+                                   if o in output_names]}
+
+
+#: libcuflynx's ``sobol_SA.SOBOL_OUTPUT_FEATURES_FILE``: what each Sobol output column
+#: is (``kind``: data_item / prediction_item / cost), written with include_prediction_items.
+SOBOL_OUTPUT_FEATURES_FILE = "sobol_output_features.json"
+
+
+def sobol_prediction_outputs(output_dir: str) -> list[str]:
+    """The Sobol outputs that are prediction features, from libcuflynx's own record.
+
+    Read, never inferred from the labels: a data_item's label is free text. ``[]``
+    when the run did not include prediction items (libcuflynx then writes no file).
+    """
+    found = _json(output_dir, SOBOL_OUTPUT_FEATURES_FILE)
+    outputs = found.get("outputs") if isinstance(found, dict) else None
+    return [str(o["output"]) for o in outputs or []
+            if isinstance(o, dict) and o.get("kind") == "prediction_item" and o.get("output")]
 
 
 # ---------------------------------------------------------------------------
@@ -663,6 +684,9 @@ def emulator_metadata(emu_dir: str) -> dict | None:
     return {
         "dir": emu_dir,
         "feature_labels": meta.get("feature_labels") or [],
+        # The prediction features (emulator_settings.include_prediction_items), which
+        # come last in feature_labels; absent on a bundle trained without them.
+        "prediction_feature_labels": meta.get("prediction_feature_labels") or [],
         "feature_r2": meta.get("feature_r2") or [],
         "feature_rmse": meta.get("feature_rmse") or [],
         "worst_r2": worst,

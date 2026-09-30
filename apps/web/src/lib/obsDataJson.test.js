@@ -12,6 +12,7 @@ import {
   newPredRow,
   predictionFeatureItems,
   hasHeldOutData,
+  emulatorPredictionFlags,
 } from './obsDataJson'
 
 const OPS = ['', 'max', 'min', 'mean']
@@ -310,5 +311,16 @@ describe('prediction_items with an operation (prediction features)', () => {
   it('knows when there is held-out data', () => {
     expect(hasHeldOutData([{ value: 0 }])).toBe(true)
     expect(hasHeldOutData([{ operation: 'max' }])).toBe(false)
+  })
+})
+
+describe('emulatorPredictionFlags', () => {
+  it('marks the trailing prediction_feature_labels, by position', () => {
+    expect(
+      emulatorPredictionFlags({ feature_labels: ['a', 'b', 'c'], prediction_feature_labels: ['c'] }),
+    ).toEqual([false, false, true])
+    // a bundle trained without them, or an older one without the key
+    expect(emulatorPredictionFlags({ feature_labels: ['a'] })).toEqual([false])
+    expect(emulatorPredictionFlags(null)).toEqual([])
   })
 })

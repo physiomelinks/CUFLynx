@@ -275,24 +275,6 @@ function onRun() {
             />
           </label>
         </template>
-        <label
-          class="field checkbox"
-          :class="{ 'opt-off': predictionFeaturesDisabled }"
-          :title="predictionFeaturesReason"
-          data-testid="sa-include-prediction-items-field"
-        >
-          <Checkbox
-            v-model="settings.include_prediction_items"
-            :binary="true"
-            :disabled="predictionFeaturesDisabled"
-            input-id="sa-include-prediction-items"
-            data-testid="sa-include-prediction-items"
-          />
-          <span>Include prediction items</span>
-        </label>
-        <small class="hint" data-testid="sa-include-prediction-items-hint">
-          Prediction items with an operation become features; the others are skipped.
-        </small>
         <label class="field">
           <span title="mpiexec -n N: parallel sample evaluation">Cores</span>
           <InputNumber
@@ -359,6 +341,27 @@ function onRun() {
         </label>
       </template>
 
+      <!-- Both methods: libcuflynx reports the prediction features for Sobol and
+           local alike (sa_options.include_prediction_items). -->
+      <label
+        class="field checkbox"
+        :class="{ 'opt-off': predictionFeaturesDisabled }"
+        :title="predictionFeaturesReason"
+        data-testid="sa-include-prediction-items-field"
+      >
+        <Checkbox
+          v-model="settings.include_prediction_items"
+          :binary="true"
+          :disabled="predictionFeaturesDisabled"
+          input-id="sa-include-prediction-items"
+          data-testid="sa-include-prediction-items"
+        />
+        <span>Include prediction items</span>
+      </label>
+      <small class="hint" data-testid="sa-include-prediction-items-hint">
+        Prediction items with an operation become features; the others are skipped.
+        <template v-if="isLocal">Their rows are finite differences.</template>
+      </small>
       <label class="field checkbox">
         <Checkbox v-model="settings.DEBUG" :binary="true" input-id="sa-debug" />
         <span>DEBUG (more output info)</span>

@@ -186,3 +186,114 @@ def test_the_config_says_whether_libcuflynx_validates(client, monkeypatch, prese
     set_ca_module(monkeypatch, "param_id.validation",
                   types.ModuleType("validation") if present else None)
     assert client.get("/api/config").json()["held_out_validation_supported"] is present
+
+
+# ---------------------------------------------------------------------------
+# Local SA: libcuflynx's prediction rows, at CUFLynx's nominal point
+# ---------------------------------------------------------------------------
+class _FakeSA:
+    """libcuflynx's SensitivityAnalysis, as far as _prediction_rows uses it."""
+
+    def __init__(self):
+        self.calls = []
+
+    def _prediction_feature_sensitivities(self, engine, nominal, data_sens):
+        self.calls.append((engine, list(nominal), list(data_sens)))
+        # d(v_max)/d(a) = 2, at a feature value of 4
+        return {"v_max": {"a": 2.0, "b": None}}, {"v_max": 4.0}, ["v_max"]
+
+
+class _FakePid:
+    param_id_info = {"param_names": [["m/a"], ["m/b"]]}
+
+
+def test_local_rows_come_from_libcuflynx_at_this_nominal(supported, monkeypatch):
+    import numpy as np
+
+    import local_sensitivity as ls
+
+    monkeypatch.setattr(ls.ca_obs, "param_row_labels", lambda info: ["a", "b"])
+    sa, local, names = _FakeSA(), {"x^{0,0} [max]": {}}, ["x^{0,0} [max]"]
+    rows = ls._prediction_rows(sa, _FakePid(), {KEY: True}, ["m/a", "m/b"],
+                               np.array([3.0, 1.0]), np.zeros(2), np.ones(2) * 10, local, names)
+    assert rows == ["v_max"] and names == ["x^{0,0} [max]", "v_max"]
+    assert sa.calls[0][1] == [3.0, 1.0], "linearised about CUFLynx's nominal"
+    assert local["v_max"]["m/a"] == pytest.approx(2.0 * 3.0 / 4.0)  # d ln Y / d ln P, signed
+    assert local["v_max"]["m/b"] is None
+
+
+def test_no_local_rows_without_the_option(supported):
+    import numpy as np
+
+    import local_sensitivity as ls
+
+    sa = _FakeSA()
+    assert ls._prediction_rows(sa, _FakePid(), {}, ["m/a"], np.ones(1), np.zeros(1),
+                               np.ones(1), {}, []) == []
+    assert sa.calls == []
+
+
+def test_the_local_fd_step_is_cuflynxs(supported):
+    sa = sensitivity_runner._sa_options({"method": "local", "rel_step": 0.02, KEY: True}, "/o")
+    assert sa["fd_rel_step"] == 0.02 and sa[KEY] is True
+    assert "fd_rel_step" not in sensitivity_runner._sa_options(
+        {"method": "sobol", "rel_step": 0.02}, "/o")
+
+
+# ---------------------------------------------------------------------------
+# Reading what libcuflynx wrote
+# ---------------------------------------------------------------------------
+def _sobol_csv(out, outputs):
+    """CA's Sobol CSV (pandas-quoted: its labels contain commas)."""
+    import csv
+
+    with open(out / "all_outputs_n8_Sobol_indices.csv", "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["", "Parameter"] + [f"{k}_{o}" for o in outputs for k in ("S1", "ST")])
+        w.writerow(["0", "m/a"] + [0.1, 0.2] * len(outputs))
+
+
+def test_sobol_prediction_columns_come_from_libcuflynxs_json(tmp_path):
+    import ca_run_history as crh
+
+    outputs = ["x (Exp0, Sub0)", "v_max (Exp0, Sub0)"]
+    _sobol_csv(tmp_path, outputs)
+    (tmp_path / crh.SOBOL_OUTPUT_FEATURES_FILE).write_text(json.dumps({"outputs": [
+        {"output": outputs[0], "kind": "data_item"},
+        {"output": outputs[1], "kind": "prediction_item", "data_item_name": "v_max"},
+    ]}))
+    found = crh.sobol_indices(str(tmp_path))
+    assert found["output_names"] == outputs
+    assert found["prediction_outputs"] == ["v_max (Exp0, Sub0)"]
+
+
+def test_a_json_left_by_an_earlier_run_tags_nothing(tmp_path):
+    import ca_run_history as crh
+
+    _sobol_csv(tmp_path, ["x (Exp0, Sub0)"])
+    (tmp_path / crh.SOBOL_OUTPUT_FEATURES_FILE).write_text(json.dumps({"outputs": [
+        {"output": "v_max (Exp0, Sub0)", "kind": "prediction_item"}]}))
+    assert crh.sobol_indices(str(tmp_path))["prediction_outputs"] == []
+
+
+def test_the_emulator_metadata_carries_the_prediction_labels(tmp_path):
+    import ca_run_history as crh
+
+    (tmp_path / crh.EMULATOR_METADATA_FILE).write_text(json.dumps({
+        "feature_labels": ["x", "v_max"], "prediction_feature_labels": ["v_max"]}))
+    assert crh.emulator_metadata(str(tmp_path))["prediction_feature_labels"] == ["v_max"]
+
+
+def test_a_failed_sa_reports_libcuflynxs_reason():
+    """e.g. an emulator trained without the prediction features this run includes."""
+    import sensitivity as sa_mod
+    from sensitivity_runner import FAIL_MARKER
+
+    reason = ("this emulator was trained without prediction features, so it cannot predict "
+              "['v_max']. Retrain it with emulator_settings.include_prediction_items: true.")
+    mgr = sa_mod.SensitivityManager()
+    job = sa_mod.SensitivityJob("j", "/nonexistent")
+    job.lines = ["starting", f"{FAIL_MARKER} {reason}", "Traceback ..."]
+    mgr._job = job
+    mgr._finalize(job, 1)
+    assert job.state == "error" and job.error == reason

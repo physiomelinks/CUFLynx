@@ -45,6 +45,8 @@ export function useSensitivity(options = {}) {
   // a short description of where it came from (current / best fit / bounds).
   const nominal = computed(() => selected.value?.nominal ?? null)
   const nominalSource = computed(() => selected.value?.nominalSource ?? null)
+  // The outputs that are prediction features (include_prediction_items), for a tag.
+  const predictionOutputs = computed(() => selected.value?.predictionOutputs ?? [])
 
   // Human-readable label summarising what produced a run, so saved runs are
   // distinguishable in the comparison selector.
@@ -59,6 +61,7 @@ export function useSensitivity(options = {}) {
     if (s.method === 'local') {
       const parts = ['Local', (resolved || s.gradient_method || 'FD'), (s.nominal ?? 'current')]
       if (s.run_calibration_first) parts.push('calib-first')
+      if (s.include_prediction_items) parts.push('+predictions')
       return `#${id} ${parts.join(' · ')}`
     }
     if (s.method === 'sobol') {
@@ -114,6 +117,7 @@ export function useSensitivity(options = {}) {
         outputNames: s.output_names ?? [],
         nominal: s.nominal ?? null,
         nominalSource: s.nominal_source ?? null,
+        predictionOutputs: s.prediction_outputs ?? [],
       },
     ]
     selectedId.value = id
@@ -150,6 +154,7 @@ export function useSensitivity(options = {}) {
         outputNames: payload.output_names ?? [],
         nominal: payload.nominal ?? null,
         nominalSource: payload.nominal_source ?? null,
+        predictionOutputs: payload.prediction_outputs ?? [],
       },
     ]
     selectedId.value = id
@@ -215,6 +220,7 @@ export function useSensitivity(options = {}) {
     outputNames,
     nominal,
     nominalSource,
+    predictionOutputs,
     error,
     running,
     results,

@@ -358,6 +358,45 @@ def _ca_local_sensitivity(
     return local, output_names
 
 
+def _prediction_rows(sa, pid, settings, param_names, nominal, mins, maxs, local, output_names):
+    """Add the prediction features' rows (``include_prediction_items``); return their names.
+
+    Computed by libcuflynx, never here: its local SA's
+    ``SensitivityAnalysis._prediction_feature_sensitivities`` -- the same call its own
+    ``run_local_sensitivity`` makes, including the check that an emulator in use was
+    trained with these features -- evaluated at CUFLynx's nominal point, which is the one
+    thing libcuflynx's local SA does not let a caller choose (it linearises about the model
+    defaults). The rows are named by data_item_name (``" [prediction]"`` on a clash) and
+    normalised like the data_item rows. Nothing is added when the option is off or this
+    libcuflynx does not support it.
+    """
+    from obs_data import prediction_features_option  # noqa: PLC0415 (runners/ too)
+
+    if not prediction_features_option(settings):
+        return []
+    rows_for = getattr(sa, "_prediction_feature_sensitivities", None)
+    if rows_for is None:
+        print("warning: this libcuflynx's local sensitivity has no prediction features; "
+              "they are left out", flush=True)
+        return []
+    psens, pnominal, rows = rows_for(pid, nominal, dict.fromkeys(output_names))
+    labels = ca_obs.param_row_labels(pid.param_id_info) or list(param_names)
+    for row in rows:
+        denom = float(pnominal.get(row, float("nan")))
+        deriv_map = psens.get(row, {})
+        values: dict[str, float | None] = {}
+        for j, pname in enumerate(param_names):
+            entry_label = labels[j] if j < len(labels) else pname
+            deriv = deriv_map.get(entry_label)
+            if deriv is None:
+                deriv = deriv_map.get(pname)
+            values[pname] = (None if deriv is None else relative_coeff(
+                float(deriv), nominal[j], denom, maxs[j] - mins[j]))
+        local[row] = values
+        output_names.append(row)
+    return list(rows)
+
+
 #: Which model formats each gradient method supports **in this module**.
 #:
 #: Not a statement about the backends' capabilities: circulatory_autogen offers
@@ -492,6 +531,10 @@ def compute_local_sensitivity(
         pid, param_names, nominal, mins, maxs,
         gradient_method=gradient_method, rel_step=h,
     )
+    # "Include prediction items": libcuflynx's own local SA supplies the extra rows
+    # (always FD), at *this* nominal point -- see _prediction_rows.
+    prediction_outputs = _prediction_rows(
+        sa, pid, settings, param_names, nominal, mins, maxs, local, output_names)
 
     source = {
         "AD": "AD jacobian",
@@ -507,6 +550,8 @@ def compute_local_sensitivity(
         "indices": {"local": local},
         "param_names": param_names,
         "output_names": output_names,
+        # The rows that are prediction features (include_prediction_items), by name.
+        "prediction_outputs": prediction_outputs,
         "method": "local",
         "gradient_method": gradient_method,
         "nominal": nominal.tolist(),

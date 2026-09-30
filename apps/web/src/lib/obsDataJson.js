@@ -272,3 +272,16 @@ export function versionedJsonName(loadedFilename, modelName, date = new Date()) 
     : `${modelName ?? 'model'}_obs_data`
   return `${stem}_${yymmdd(date)}.json`
 }
+
+/**
+ * Which of an emulator's features are prediction features: libcuflynx lists them in
+ * `prediction_feature_labels` and puts them last in `feature_labels`, so it is the
+ * trailing positions -- by position, as libcuflynx itself reads them, since a
+ * data_item's label is free text. `[bool]`, one per feature label.
+ */
+export function emulatorPredictionFlags(meta) {
+  const labels = meta?.feature_labels ?? []
+  const n = (meta?.prediction_feature_labels ?? []).length
+  const first = labels.length - n
+  return labels.map((_, i) => n > 0 && i >= first)
+}
