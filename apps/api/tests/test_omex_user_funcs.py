@@ -247,7 +247,7 @@ def test_the_inbox_names_the_python_a_delivery_would_install():
 # ---------------------------------------------------------------------------
 # Usable: CA sees it, and a calibration scored through it runs
 # ---------------------------------------------------------------------------
-def test_the_installed_operation_is_offered_by_ca(client, cfg_dir, tmp_path, requires_ca):
+def test_the_installed_operation_is_offered_by_ca(client, cfg_dir, tmp_path, requires_ca_operations):
     import obs_options
 
     out = tmp_path / "out"
