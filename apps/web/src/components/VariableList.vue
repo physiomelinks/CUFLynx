@@ -9,7 +9,7 @@ const props = defineProps({
   },
   activeKeys: { type: Array, default: () => [] },
 })
-const emit = defineEmits(['add-slider', 'toggle-output'])
+const emit = defineEmits(['add-slider', 'toggle-output', 'edit-symbols'])
 
 const tabs = [
   { key: 'params', label: 'Params' },
@@ -20,11 +20,26 @@ const activeTab = ref('params')
 
 const rows = computed(() => props.variables[activeTab.value] ?? [])
 const activeSet = computed(() => new Set(props.activeKeys))
+const hasVariables = computed(() =>
+  tabs.some((t) => (props.variables[t.key] ?? []).length > 0),
+)
 </script>
 
 <template>
   <section class="variable-list">
-    <h2>Variables</h2>
+    <div class="header">
+      <h2>Variables</h2>
+      <Button
+        icon="pi pi-pencil"
+        label="LaTeX symbols"
+        text
+        size="small"
+        :disabled="!hasVariables"
+        title="Edit how each variable is written in the generated methods"
+        data-testid="edit-variable-mapping"
+        @click="emit('edit-symbols')"
+      />
+    </div>
     <div class="tabs">
       <button
         v-for="t in tabs"
@@ -58,6 +73,11 @@ const activeSet = computed(() => new Set(props.activeKeys))
 .variable-list {
   padding: 0.75rem;
   overflow-y: auto;
+}
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
 }
 .tabs {
   display: flex;

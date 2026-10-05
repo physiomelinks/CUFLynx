@@ -116,6 +116,7 @@ from user_funcs import (
 )
 from sensitivity import sensitivity
 import workflow_manager
+import symbol_mapping
 from workflow_manager import workflow
 from emulator import emulator
 from uq import uq
@@ -3455,6 +3456,7 @@ def workflow_view(req: WorkflowViewRequest) -> dict:
         for name, blob in members.items():
             zf.writestr(name, blob)
     result = import_omex_bytes(buf.getvalue(), None, source="calibration workflow")
+    workflow.view_models[result["model_id"]] = req.view
     result["workflow_view"] = {
         key: view.get(key) for key in (
             "view", "kind", "target", "step_id", "submodule_path", "fixed", "calibrated",
@@ -3489,6 +3491,55 @@ def workflow_cancel(job_id: str) -> dict:
     if not workflow.cancel(job_id):
         raise HTTPException(status_code=404, detail="workflow job not found")
     return {"cancelled": True}
+
+
+# ---------------------------------------------------------------------------
+# Variable mapping: the LaTeX symbol of every variable (CA's libcuflynx.reporting)
+# ---------------------------------------------------------------------------
+class VariableMappingSave(BaseModel):
+    # [{variable_name, latex}]; other columns are CA's and come from the model.
+    rows: list[dict] = Field(default_factory=list)
+    output_dir: str = ""
+
+
+def _mapping_path(model_id: str, output_dir: str) -> str:
+    """Where this study's variable mapping lives (see symbol_mapping)."""
+    record = _get_model(model_id)
+    if workflow.loaded and workflow.view_models.get(model_id) == workflow_manager.TARGET_VIEW:
+        try:
+            return symbol_mapping.workflow_target_path(workflow.path,
+                                                       workflow.module_library_dirs)
+        except (symbol_mapping.MappingError, symbol_mapping.MappingUnavailable):
+            # A library no longer set, or a CA without the methods writer: keep it with
+            # the study instead (a CA that cannot map at all says so on the next call).
+            pass
+    return symbol_mapping.default_path(_record_prefix(record),
+                                       _user_func_base_dir(output_dir) or "", str(UPLOAD_DIR))
+
+
+def _mapping_http(fn, *args):
+    try:
+        return fn(*args)
+    except symbol_mapping.MappingUnavailable as exc:
+        raise HTTPException(status_code=501, detail=str(exc)) from exc
+    except symbol_mapping.MappingError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.get("/api/models/{model_id}/variable_mapping")
+def get_variable_mapping(model_id: str, output_dir: str = "") -> dict:
+    """Every variable of the model with its LaTeX symbol: the saved one, else CA's default."""
+    record = _get_model(model_id)
+    return _mapping_http(symbol_mapping.describe, str(record.path),
+                         _mapping_path(model_id, output_dir))
+
+
+@app.put("/api/models/{model_id}/variable_mapping")
+def put_variable_mapping(model_id: str, req: VariableMappingSave) -> dict:
+    """Save edited symbols (CA writes the file)."""
+    record = _get_model(model_id)
+    return _mapping_http(symbol_mapping.save, str(record.path),
+                         _mapping_path(model_id, req.output_dir), req.rows)
 
 
 # ---------------------------------------------------------------------------
