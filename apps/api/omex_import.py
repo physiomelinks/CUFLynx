@@ -35,6 +35,8 @@ from xml.etree import ElementTree as ET
 
 # PhLynx's editor state, carried along so the archive round-trips through it.
 MODULE_CONFIG_NAME = "module_config.json"
+#: CA's calibration workflow file (``calibration_workflow.json``, or ``<x>_calibration_workflow.json``).
+CALIBRATION_WORKFLOW_RE = re.compile(r"(^|[_-])calibration_workflow\.json$", re.I)
 
 #: The COMBINE format specifiers PhLynx uses for its own state files (#287).
 #: The *format* is the contract, not the file name -- upstream is explicit that
@@ -333,7 +335,12 @@ def _classify(
         if Path(n).name == MODULE_CONFIG_NAME or _declared_phlynx_state(n, formats)
     ]
 
-    spoken_for = set(module_config) | set(params_json)
+    # A calibration workflow (CA's calibration_workflow.json, which the module
+    # library's instance archives carry) is matched by name only: it is an object
+    # with "steps", and must never be sniffed into the obs_data pool.
+    calibration_workflow = [n for n in jsons if CALIBRATION_WORKFLOW_RE.search(Path(n).name)]
+
+    spoken_for = set(module_config) | set(params_json) | set(calibration_workflow)
     # Held-out data (`<name>_validation_obs_data.json`) is never what to fit, by
     # any of the three rules below: taking it whenever nothing else turned up
     # would calibrate on the very data kept back to check the calibration.
@@ -426,6 +433,7 @@ def _classify(
         "params": params_csv or params_json,
         "obs": obs,
         "module_config": module_config,
+        "calibration_workflow": calibration_workflow,
     }
 
 
@@ -487,6 +495,7 @@ def unpack(data: bytes) -> dict:
         obs_name, obs_bytes = read_first(roles["obs"])
         params_name, params_bytes = read_first(roles["params"])
         cfg_name, cfg_bytes = read_first(roles["module_config"])
+        wf_name, wf_bytes = read_first(roles["calibration_workflow"])
         # All of them: PhLynx used to keep its state in one file and now keeps it
         # in two, so "the first one found" silently drops half of it.
         phlynx_state = [
@@ -499,6 +508,8 @@ def unpack(data: bytes) -> dict:
         "obs": (obs_name, obs_bytes) if obs_bytes is not None else None,
         "params": (params_name, params_bytes) if params_bytes is not None else None,
         "module_config": (cfg_name, cfg_bytes) if cfg_bytes is not None else None,
+        #: A calibration workflow carried by the archive, as ``(name, bytes)``.
+        "calibration_workflow": (wf_name, wf_bytes) if wf_bytes is not None else None,
         #: Every PhLynx state member as ``(name, bytes)``. ``module_config`` above
         #: is the first of these, kept because callers predate there being more
         #: than one.
@@ -526,6 +537,7 @@ def unpack(data: bytes) -> dict:
             "module_config": list(roles["module_config"]),
             "user_funcs": list(roles["user_funcs"]),
             "user_inputs": list(roles["user_inputs"]),
+            "calibration_workflow": list(roles["calibration_workflow"]),
         },
     }
     return out
