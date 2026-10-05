@@ -77,6 +77,17 @@ MODEL_SUFFIXES = (".cellml", ".mmt", ".model")
 USER_FUNC_KINDS = ("operation", "cost", "modifier")
 
 
+def is_user_inputs_name(name: str) -> bool:
+    """Whether a member is a libcuflynx ``user_inputs`` yaml, by its name.
+
+    ``*user_inputs*.yaml`` / ``.yml`` -- what CA's pipeline and CUFLynx's own
+    export (``user_inputs_<date>.yaml``) call it, and how ``load_outputs`` finds
+    one in a run directory.
+    """
+    path = Path(str(name or ""))
+    return path.suffix.lower() in (".yaml", ".yml") and "user_inputs" in path.stem.lower()
+
+
 def user_func_kind(name: str) -> str | None:
     """The func kind a ``.py`` member holds, judged by its name, or None.
 
@@ -357,8 +368,14 @@ def _classify(
     # that func is installed, so the archive's copy is what installs it.
     user_funcs = [n for n in names if user_func_kind(n)]
 
+    # A libcuflynx user_inputs yaml: the solver, its solver_info and dt the study
+    # was run with. Only those are read from it (see main._solver_settings_from_
+    # user_inputs); everything else in it describes CA's own file layout.
+    user_inputs = [n for n in names if is_user_inputs_name(n)]
+
     return {
         "user_funcs": user_funcs,
+        "user_inputs": user_inputs,
         "obs_skipped": obs_skipped,
         # A .mmt or an EasyML .model only counts when there is no CellML: an
         # archive holding both has presumably already been converted, and the
@@ -453,6 +470,10 @@ def unpack(data: bytes) -> dict:
         "user_funcs": [
             (user_func_kind(n), Path(n).name, members[n]) for n in roles["user_funcs"]
         ],
+        #: ``(name, bytes)`` of the first user_inputs yaml, or None.
+        "user_inputs": next(
+            ((Path(n).name, members[n]) for n in roles["user_inputs"]), None
+        ),
         # Everything, under its archive-relative name, for re-emission (#290).
         "members": members,
         "manifest": manifest,
@@ -466,6 +487,7 @@ def unpack(data: bytes) -> dict:
             "params": list(roles["params"]),
             "module_config": list(roles["module_config"]),
             "user_funcs": list(roles["user_funcs"]),
+            "user_inputs": list(roles["user_inputs"]),
         },
     }
     return out

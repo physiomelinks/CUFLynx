@@ -1490,6 +1490,38 @@ async def upload_omex(
     return import_omex_bytes(await file.read(), output_dir)
 
 
+@app.post("/api/user_inputs/upload")
+async def upload_user_inputs(
+    file: UploadFile = File(...),
+    output_dir: str = Query(default=""),
+) -> dict:
+    """Adopt the solver settings of a libcuflynx ``user_inputs.yaml``.
+
+    The Settings dialog's "Load from user_inputs.yaml": its ``solver``,
+    ``solver_info`` and ``dt`` become the app's, exactly as if they had been set in
+    the dialog -- persisted, and used by the live plot and every run. Keys the
+    solver cannot honour are dropped with a warning; a file that is not YAML is a
+    422, since here the user picked it for nothing else. Returns the config
+    payload (so the dialog re-renders from it) plus ``solver_settings`` and
+    ``warnings``.
+    """
+    blob = await file.read()
+    name = os.path.basename(file.filename or "user_inputs.yaml")
+    si, notes = _solver_settings_from_user_inputs(blob, name)
+    if si is None:
+        raise HTTPException(
+            status_code=422,
+            detail=notes[0] if notes else f"{name} carries no solver settings "
+            "(no solver_info, solver or dt)",
+        )
+    more, adopted = _adopt_solver_settings(si, name)
+    return {
+        **_config_payload(_user_func_base_dir(output_dir) or ""),
+        "solver_settings": adopted,
+        "warnings": notes + more,
+    }
+
+
 def _no_obs_data_warning(parts: dict, source: str = "archive") -> list[str]:
     """Why an archive's observations tab is empty, in one sentence.
 
@@ -1642,7 +1674,19 @@ def import_omex_bytes(data: bytes, output_dir: str | None = None,
         # The archive's own operation / cost / modifier funcs, each with what
         # became of it (installed, unchanged, conflict, invalid).
         "user_funcs": [],
+        # The solver settings adopted from the archive's user_inputs yaml
+        # ({solver, solver_info, dt, source, ignored}), or None when it has none.
+        "solver_settings": None,
     }
+
+    # A study is solved the way its author solved it: the user_inputs yaml's
+    # solver, solver_info (MaximumStep, ...) and dt become the app's, for the live
+    # plot and every run launched from here, exactly as a Settings change would.
+    if parts.get("user_inputs"):
+        ui_name, ui_blob = parts["user_inputs"]
+        notes, adopted = _adopt_user_inputs(ui_blob, ui_name)
+        result["solver_settings"] = adopted
+        load_warnings.extend(notes)
 
     # Before the obs_data: an obs_data naming an operation the archive defines is
     # only calibratable once that operation is in the user funcs store, and making
@@ -2865,21 +2909,40 @@ class OpenStudyRequest(BaseModel):
     file_prefix: str | None = None
 
 
-def _adopt_study_solver_info(solver_info) -> list[str]:
+def _adopt_study_solver_info(solver_info, source: str = "this study") -> list[str]:
     """Apply a study's recorded solver settings to the engine. Returns what to report.
 
+    Thin wrapper over :func:`_adopt_solver_settings` for callers that only want the
+    notes (a run directory's manifest).
+    """
+    return _adopt_solver_settings(solver_info, source)[0]
+
+
+def _adopt_solver_settings(solver_info, source: str = "this study") -> tuple[list[str], dict | None]:
+    """Apply recorded solver settings to the engine: ``(notes, adopted)``.
+
     Same shape, and the same handling, as the ``solver_info`` in a saved config: ``dt`` is
-    folded in beside the solver's own keys and popped out here. Unsupported keys are
-    dropped rather than rejected, because a manifest written by a newer pipeline must not
-    stop an older app from opening the study at all.
+    folded in beside the solver's own keys and popped out here. A key the (resulting)
+    solver cannot honour -- ``MaximumNumberOfSteps`` under ``CVODE_myokit`` -- is
+    **dropped with a note**, never rejected: a study written by a newer pipeline, or for
+    another backend, must not stop an older app from opening it at all. A solver this
+    model format does not offer (OpenCOR's, which CUFLynx never surfaces) is likewise
+    kept out and said so.
+
+    Persisted exactly as a Settings change is -- the env the runners inherit, the saved
+    settings, and ``engine.reset()`` so no cached helper keeps the old step -- because
+    an adopted setting the next launch forgot, or the live plot ignored, would be a
+    setting the user was told about and did not get.
 
     Reported rather than applied quietly. Adopting dt = 1e-4 where the app was at 0.01
     makes every subsequent simulation a hundred times slower, and a user watching that
-    happen deserves the reason.
+    happen deserves the reason. ``adopted`` is ``{"solver", "solver_info", "dt",
+    "source", "ignored"}`` -- what the engine now runs with -- or None when there was
+    nothing to adopt.
     """
     if not isinstance(solver_info, dict) or not solver_info:
-        return []
-    notes, si = [], dict(solver_info)
+        return [], None
+    notes, si, changed = [], dict(solver_info), False
     if "dt" in si:
         try:
             new_dt = float(si.pop("dt"))
@@ -2887,21 +2950,107 @@ def _adopt_study_solver_info(solver_info) -> list[str]:
             new_dt = None
         if new_dt and new_dt > 0 and new_dt != engine.dt:
             notes.append(
-                f"Solver dt set to {new_dt:g} s (was {engine.dt:g} s), as this study was "
-                f"run. At the coarser step the output grid misses the fast parts of a "
+                f"Solver dt set to {new_dt:g} s (was {engine.dt:g} s), as {source} "
+                f"specifies. At the coarser step the output grid misses the fast parts of a "
                 f"trace; simulations will be slower."
             )
             engine.dt = new_dt
+            changed = True
     solver = si.pop("solver", None)
-    if isinstance(solver, str) and solver and solver != engine.solver:
-        notes.append(f"Solver set to {solver}, as this study was run.")
-        engine.solver = solver
     si.pop("method", None)          # CA's own spelling of the solver; not a solver_info key here
-    if si:
-        engine.solver_info = {**getattr(engine, "solver_info", {}), **si}
-        notes.append("Solver options taken from the study: "
-                     + ", ".join(f"{k}={v}" for k, v in sorted(si.items())) + ".")
-    return notes
+    si.pop("model_type", None)      # the model's format is the model's, not the study's to set
+    if isinstance(solver, str) and solver and solver != engine.solver:
+        try:
+            valid = get_solver_options()["solvers_by_format"].get(engine.model_type)
+        except Exception:  # noqa: BLE001 - no schema: nothing to check against
+            valid = None
+        if valid is not None and solver not in valid:
+            notes.append(
+                f"Solver {solver} from {source} is not available for {engine.model_type} "
+                f"models here; kept {engine.solver}."
+            )
+        else:
+            notes.append(f"Solver set to {solver}, as {source} specifies.")
+            engine.solver = solver
+            changed = True
+    # Against the solver now in force: what was valid for the old one may not be.
+    current = filter_solver_info(engine.solver, dict(getattr(engine, "solver_info", {}) or {}))
+    kept = filter_solver_info(engine.solver, si)
+    ignored = sorted(k for k in si if k not in kept)
+    if ignored:
+        notes.append(
+            f"Ignored {', '.join(ignored)} from {source}: {engine.solver} does not use "
+            f"{'it' if len(ignored) == 1 else 'them'}."
+        )
+    merged = {**current, **kept}
+    if merged != getattr(engine, "solver_info", None):
+        engine.solver_info = merged
+        changed = True
+    if kept:
+        notes.append(f"Solver options taken from {source}: "
+                     + ", ".join(f"{k}={v}" for k, v in sorted(kept.items())) + ".")
+    if changed:
+        _persist_solver_settings()
+    return notes, {
+        "solver": engine.solver,
+        "solver_info": dict(engine.solver_info),
+        "dt": engine.dt,
+        "source": source,
+        "ignored": ignored,
+    }
+
+
+def _persist_solver_settings() -> None:
+    """Make the engine's solver settings stick, as ``POST /api/config`` does.
+
+    The env is what every analysis runner inherits, the settings store is what the
+    next launch restores, and the reset drops cached helpers -- whose cache key does
+    not include solver_info -- so the live plot picks the new step up too.
+    """
+    os.environ["CUFLYNX_MODEL_TYPE"] = engine.model_type
+    os.environ["CUFLYNX_SOLVER"] = engine.solver
+    os.environ["CUFLYNX_SOLVER_INFO"] = json.dumps(engine.solver_info)
+    engine.reset()
+    try:
+        payload = _config_payload()
+        settings_store.save(
+            {k: payload[k] for k in settings_store.PERSISTED_KEYS if k in payload})
+    except Exception:  # noqa: BLE001 - the settings apply this session regardless
+        pass
+
+
+def _solver_settings_from_user_inputs(blob: bytes, name: str) -> tuple[dict | None, list[str]]:
+    """The solver settings in a libcuflynx ``user_inputs.yaml``: ``(solver_info, notes)``.
+
+    In the shape :func:`_adopt_solver_settings` takes -- ``solver_info`` with ``solver``
+    and ``dt`` folded in. CA's own keys: ``solver_info.{solver, MaximumStep, ...}``, a
+    legacy top-level ``solver`` (CA merges it in), and a top-level ``dt``. Nothing else
+    in the file is read: the rest describes CA's file layout, not how to solve.
+    """
+    try:
+        doc = yaml.safe_load(blob.decode("utf-8")) if blob else None
+    except (UnicodeDecodeError, yaml.YAMLError) as exc:
+        return None, [f"{name} could not be read as YAML, so its solver settings were not used: {exc}"]
+    if not isinstance(doc, dict):
+        return None, [f"{name} is not a user_inputs mapping, so its solver settings were not used."]
+    si = doc.get("solver_info")
+    si = dict(si) if isinstance(si, dict) else {}
+    if not si.get("solver") and isinstance(doc.get("solver"), str):
+        si["solver"] = doc["solver"]
+    if doc.get("dt") is not None:
+        si["dt"] = doc["dt"]
+    if not si:
+        return None, []
+    return si, []
+
+
+def _adopt_user_inputs(blob: bytes, name: str) -> tuple[list[str], dict | None]:
+    """Read a user_inputs yaml and adopt its solver settings: ``(notes, adopted)``."""
+    si, notes = _solver_settings_from_user_inputs(blob, name)
+    if si is None:
+        return notes, None
+    more, adopted = _adopt_solver_settings(si, name)
+    return notes + more, adopted
 
 
 def _finest_scored_obs_dt(obs_data_path) -> float | None:
@@ -3028,15 +3177,27 @@ def open_study_from_outputs(req: OpenStudyRequest) -> dict:
     # From the manifest rather than from ``study``, which is a narrower projection built for
     # the panels and carries only the study's file paths.
     manifest = found.get("manifest") or {}
-    adopted = _adopt_study_solver_info(
+    adopted, settings = _adopt_solver_settings(
         manifest.get("solver_info") or study.get("solver_info"))
+    # Else the run's user_inputs yaml, which a pipeline bundle carries and the
+    # manifest of a run started from this app does not: same settings, same handling.
+    if settings is None and study.get("user_inputs"):
+        try:
+            blob = Path(study["user_inputs"]).read_bytes()
+        except OSError as exc:
+            adopted = [f"{os.path.basename(study['user_inputs'])} could not be read, so its "
+                       f"solver settings were not used: {exc.strerror or exc}"]
+        else:
+            adopted, settings = _adopt_user_inputs(blob, os.path.basename(study["user_inputs"]))
+    if settings is not None:
+        result["solver_settings"] = settings
     for note in adopted:
         result["warnings"].append(note)
 
     # A study written before the manifest recorded solver settings has none, so fall back
     # to what its obs_data requires: CA will not compare a solver output against series
     # sampled finer than it. Only if the manifest did not already say.
-    if not adopted:
+    if settings is None:
         required = _finest_scored_obs_dt(study.get("obs_data"))
         if required is not None and required < engine.dt:
             result["warnings"].append(
@@ -3173,11 +3334,26 @@ CALIBRATION_DEFAULTS = {
 }
 
 
+def _with_engine_dt(settings: dict) -> dict:
+    """A run's settings with the engine's dt filled in where the request gave none.
+
+    The runners read ``settings["dt"]`` and fell back to a literal 0.01, so a study
+    whose dt was adopted from its user_inputs (or set in Settings) was simulated live
+    at one step and calibrated at another. An explicit dt in the request still wins:
+    that is a caller asking for a specific step.
+    """
+    settings = dict(settings or {})
+    if settings.get("dt") in (None, ""):
+        settings["dt"] = engine.dt
+    return settings
+
+
 @app.get("/api/calibration/defaults")
 def calibration_defaults() -> dict:
     # `methods` is introspected from CA's PARAM_ID_METHODS schema (never hardcoded);
-    # falls back to the built-in list on an older CA without that schema.
-    return {**CALIBRATION_DEFAULTS, "methods": get_param_id_methods()}
+    # falls back to the built-in list on an older CA without that schema. `dt` is
+    # the engine's, which is what a run that names none is given.
+    return {**CALIBRATION_DEFAULTS, "dt": engine.dt, "methods": get_param_id_methods()}
 
 
 @app.get("/api/calibration/pythons")
@@ -3260,7 +3436,7 @@ def calibration_run(req: CalibrationRequest) -> dict:
         "file_prefix": _record_prefix(record),
         "num_cores": int(req.settings.get("num_cores", 1) or 1),
         "python": python_path,
-        "settings": req.settings,
+        "settings": _with_engine_dt(req.settings),
         # The original uploaded CellML, so the runner can save a calibrated copy
         # with best-fit values baked in (issue #114), independent of model_type.
         "cellml_path": str(record.path),
@@ -3377,6 +3553,7 @@ def sensitivity_defaults() -> dict:
     ]
     return {
         **SENSITIVITY_DEFAULTS,
+        "dt": engine.dt,
         "gradient_methods": gradient_methods,
         "options": sa.get("options", []),
     }
@@ -3463,7 +3640,7 @@ def sensitivity_run(req: SensitivityRequest) -> dict:
         "file_prefix": _record_prefix(record),
         "num_cores": num_cores,
         "python": python_path,
-        "settings": req.settings,
+        "settings": _with_engine_dt(req.settings),
         "best_params": best_params,
         "current_params": req.current_params,
         # Global random seed (Settings popup); None => non-deterministic run.
@@ -3658,7 +3835,7 @@ def emulator_train(req: EmulatorTrainRequest) -> dict:
         "file_prefix": _record_prefix(record),
         "num_cores": int(req.settings.get("num_cores", 1) or 1),
         "python": python_path,
-        "settings": req.settings,
+        "settings": _with_engine_dt(req.settings),
         "seed": _analysis_seed,
     }
     try:
@@ -3845,6 +4022,7 @@ def uq_defaults() -> dict:
     uq_options = ao.get("uq", {}).get("options", [])
     return {
         **UQ_DEFAULTS,
+        "dt": engine.dt,
         "uq_options": uq_options,
         # The pre-rename field name, still emitted so a browser holding a cached
         # older bundle keeps rendering its settings form.
@@ -3923,7 +4101,7 @@ def uq_run(req: UQRequest) -> dict:
         "file_prefix": _record_prefix(record),
         "num_cores": int(req.settings.get("num_cores", 1) or 1),
         "python": python_path,
-        "settings": req.settings,
+        "settings": _with_engine_dt(req.settings),
         "best_params": best_params,
         # Global random seed (Settings popup); None => non-deterministic run.
         "seed": _analysis_seed,
