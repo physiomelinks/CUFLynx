@@ -52,6 +52,7 @@ vi.mock('./lib/api', () => ({
     differentiable_operations: {},
   }),
   setConfig: vi.fn().mockResolvedValue({}),
+  uploadUserInputs: vi.fn(),
   saveParams: vi.fn().mockResolvedValue({ path: '/out/run_a.npy', outputs_path: null }),
   loadParams: vi.fn().mockResolvedValue({ values: {} }),
   listSavedRuns: vi.fn().mockResolvedValue({ runs: [] }),
@@ -68,6 +69,7 @@ vi.mock('./lib/api', () => ({
 import {
   getConfig,
   setConfig,
+  uploadUserInputs,
   getEmulatorDefaults,
   getCalibrationPythons,
   saveParams,
@@ -3034,5 +3036,62 @@ describe('a baseline set on a parameter that is not calibrated (#350)', () => {
     expect(values['aortic_root/C']).toBe(1e-8)
     expect(Object.keys(values)).toEqual(['aortic_root/C'])
     wrapper.unmount()
+  })
+})
+
+// A user_inputs.yaml's solver settings are adopted server-side -- from inside an
+// .omex, a reopened run directory, or the Settings picker -- so the Settings
+// dialog has to re-read them rather than keep showing (and later POSTing back)
+// the ones it loaded at startup.
+describe('solver settings adopted from a user_inputs.yaml', () => {
+  const ADOPTED = {
+    ca_dir: '',
+    ca_exists: true,
+    generated_model_format: 'cellml',
+    solver: 'CVODE_myokit',
+    solver_info: { MaximumStep: 0.0001, dt: 0.01 },
+  }
+
+  it('re-reads the config after a study is imported', async () => {
+    const wrapper = shallowMount(App)
+    await flushPromises()
+    getConfig.mockClear()
+    getConfig.mockResolvedValueOnce(ADOPTED)
+
+    await wrapper.vm.onModelLoaded({ model_id: 'm1', name: 'm', solver_settings: {} })
+    await flushPromises()
+
+    expect(getConfig).toHaveBeenCalledTimes(1)
+    expect(wrapper.vm.solverInfo.MaximumStep).toBe(0.0001)
+  })
+
+  it('loads a picked user_inputs.yaml and shows what it adopted', async () => {
+    const wrapper = shallowMount(App)
+    await flushPromises()
+    uploadUserInputs.mockResolvedValueOnce({
+      ...ADOPTED,
+      solver_settings: { solver: 'CVODE_myokit', solver_info: { MaximumStep: 0.0001 }, dt: 0.01 },
+      warnings: ['Ignored MaximumNumberOfSteps from u.yaml: CVODE_myokit does not use it.'],
+    })
+    const file = new File(['solver_info: {}'], 'u.yaml')
+    const target = { files: [file], value: 'C:/fakepath/u.yaml' }
+
+    await wrapper.vm.onUserInputsPicked({ target })
+    await flushPromises()
+
+    expect(uploadUserInputs).toHaveBeenCalledWith(file, expect.any(String))
+    expect(target.value).toBe('') // the same file can be picked again
+    expect(wrapper.vm.solverInfo.MaximumStep).toBe(0.0001)
+    expect(wrapper.vm.userInputsMessage).toContain('CVODE_myokit')
+    expect(wrapper.vm.userInputsWarnings.join(' ')).toContain('MaximumNumberOfSteps')
+  })
+
+  it('reports a file the server would not read', async () => {
+    const wrapper = shallowMount(App)
+    await flushPromises()
+    uploadUserInputs.mockRejectedValueOnce({ response: { data: { detail: 'u.yaml could not be read as YAML' } } })
+    await wrapper.vm.onUserInputsPicked({ target: { files: [new File(['x'], 'u.yaml')], value: '' } })
+    await flushPromises()
+    expect(wrapper.vm.userInputsWarnings).toEqual(['u.yaml could not be read as YAML'])
   })
 })

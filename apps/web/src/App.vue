@@ -48,6 +48,7 @@ import {
   getUQDefaults,
   getConfig,
   setConfig,
+  uploadUserInputs,
   exportPipeline,
   exportPlotting,
   saveParams,
@@ -508,6 +509,45 @@ async function applyBackendSolver() {
     solverConfigDirty.value = true
   } catch {
     /* leave previous value on error */
+  }
+}
+
+// Re-read the server's config. An imported study can carry its own solver
+// settings (a user_inputs yaml), which the server adopts; without this the
+// Settings dialog kept showing -- and on its next change, POSTed back -- the old
+// ones.
+async function refreshConfig() {
+  try {
+    applyConfigPayload(await getConfig())
+  } catch {
+    /* keep what is shown; the next Settings open still works */
+  }
+}
+
+// "Load from user_inputs.yaml" in Settings: the server adopts the file's solver,
+// solver_info and dt exactly as if they were set here, and answers with the
+// config to show plus what it adopted / could not.
+const userInputsInput = ref(null)
+const userInputsMessage = ref('')
+const userInputsWarnings = ref([])
+async function onUserInputsPicked(event) {
+  const file = event?.target?.files?.[0]
+  if (event?.target) event.target.value = ''
+  if (!file) return
+  userInputsMessage.value = ''
+  userInputsWarnings.value = []
+  try {
+    const data = await uploadUserInputs(file, outputsDir.value)
+    applyConfigPayload(data)
+    const adopted = data.solver_settings
+    userInputsMessage.value = adopted
+      ? `Loaded ${file.name}: ${adopted.solver}, dt = ${adopted.dt}`
+      : `Loaded ${file.name}`
+    userInputsWarnings.value = data.warnings ?? []
+    // Same as a solver change in this dialog: closing it re-runs the model.
+    solverConfigDirty.value = true
+  } catch (e) {
+    userInputsWarnings.value = [errorMessage(e)]
   }
 }
 
@@ -2065,6 +2105,9 @@ watch(
 )
 
 async function onModelLoaded(data) {
+  // Not awaited: the solver settings an import adopted only need to reach the
+  // Settings dialog, and the model must not wait on them.
+  refreshConfig()
   model.setModel(data)
   obs.clearObsData()
   paramsForId.clear()
@@ -3436,6 +3479,40 @@ watch(() => obs.obsData.value, scheduleRun)
           ⚠ {{ jsonFieldErrors[f.key] }}
         </p>
         </template>
+        <div class="settings-row">
+          <span
+            class="settings-label"
+            title="Take the solver, solver_info (e.g. MaximumStep) and dt from a libcuflynx user_inputs.yaml"
+          >From user_inputs</span>
+          <span class="settings-input">
+            <Button
+              label="Load user_inputs.yaml…"
+              size="small"
+              severity="secondary"
+              data-testid="user-inputs-load"
+              @click="userInputsInput?.click()"
+            />
+            <input
+              ref="userInputsInput"
+              type="file"
+              accept=".yaml,.yml"
+              hidden
+              data-testid="user-inputs-file"
+              @change="onUserInputsPicked"
+            />
+          </span>
+        </div>
+        <p v-if="userInputsMessage" class="settings-hint" data-testid="user-inputs-message">
+          {{ userInputsMessage }}
+        </p>
+        <p
+          v-for="(w, i) in userInputsWarnings"
+          :key="i"
+          class="settings-warn"
+          data-testid="user-inputs-warning"
+        >
+          ⚠ {{ w }}
+        </p>
         <p v-if="generatedModelFormat === 'casadi_python'" class="settings-hint">
           casadi_python enables automatic differentiation:
           <span data-testid="ad-status">{{
