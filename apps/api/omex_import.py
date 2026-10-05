@@ -203,6 +203,8 @@ def obs_verdict(blob: bytes | None) -> tuple[str, bool]:
     reason = why_not_obs_data(blob)
     if not reason:
         return "", False
+    if reason.startswith("it is a module config"):
+        return reason, True
     unreadable = (
         blob is None
         or not blob.strip()
@@ -234,7 +236,13 @@ def why_not_obs_data(blob: bytes | None) -> str:
     except ValueError as exc:
         return f"it is not valid JSON ({exc})"
     if isinstance(doc, list):
-        return ""
+        if doc and all(isinstance(e, dict) and ("module_type" in e or "vessel_type" in e) for e in doc):
+            return "it is a module config (a list of module entries), not observations"
+        # a bare list is only ever taken by its name (see _classify)
+        return (
+            "it is a JSON list, which is only taken as the obs_data under an obs_data name "
+            "(obs_data.json or <name>_obs_data.json)"
+        )
     if isinstance(doc, dict):
         if any(k in doc for k in OBS_DATA_KEYS):
             return ""
@@ -269,7 +277,7 @@ def _classify(
     # module library's `default_parameters.csv` (the model's own values, not the
     # ones to identify), and the old last resort -- any CSV at all -- meant an
     # archive with no params_for_id still came back with one.
-    params_named = r"(^|_)params_for_id\.(csv|json)$"
+    params_named = r"(^|[_-])params_for_id\.(csv|json)$"
     params_csv = named(csvs, params_named)
     # A params_for_id is stored as **JSON** by CUFLynx (`_save_params_file`), so
     # an archive CUFLynx writes has to be readable by CUFLynx: without this the
@@ -291,24 +299,24 @@ def _classify(
     ]
 
     spoken_for = set(module_config) | set(params_json)
+    # Held-out data (`<name>_validation_obs_data.json`) is never what to fit, by
+    # any of the three rules below: taking it whenever nothing else turned up
+    # would calibrate on the very data kept back to check the calibration.
+    held_out = [n for n in jsons if re.search(r"(^|[_-])validation[_-]obs_data\.json$", Path(n).name, re.I)]
     candidates = [
         n
         for n in jsons
-        if n not in spoken_for and not _declared_non_obs(n, formats)
+        if n not in spoken_for and n not in held_out and not _declared_non_obs(n, formats)
     ]
     # Three layers, first match wins, and with none there is no obs_data:
-    #   1. the name: `obs_data.json` or `<anything>_obs_data.json` -- except a
-    #      `_validation_obs_data.json`, which is held-out data, not what to fit;
+    #   1. the name: `obs_data.json` or `<anything>_obs_data.json` (or `-obs_data.json`);
     #   2. a JSON object naming itself with "obs_data_name";
     #   3. a JSON object with "data_items", "protocol_info" or "prediction_items" (an
     #      obs_data holding only held-out validation data has no data_items).
     # A bare list is only ever taken by name: a module config is a bare list of
     # entries too, and sniffing lists took a module library's config as its
     # observations.
-    obs_named = [
-        n for n in named(candidates, r"(^|_)obs_data\.json$")
-        if not re.search(r"_validation_obs_data\.json$", Path(n).name, re.I)
-    ]
+    obs_named = named(candidates, r"(^|[_-])obs_data\.json$")
     obs = (
         obs_named
         or [n for n in candidates if _json_object_has(members.get(n), ("obs_data_name",))]
@@ -326,6 +334,15 @@ def _classify(
             if name in spoken_for:
                 continue  # loaded as the params_for_id or PhLynx's own state
             declared = (formats or {}).get(Path(name).name.lower())
+            if name in held_out:
+                # reported: "your observations were not loaded" with nothing but
+                # held-out data in the archive is worth one sentence
+                obs_skipped.append({
+                    "name": name,
+                    "reason": "it is held-out validation data, never the obs_data to fit",
+                    "identified": False,
+                })
+                continue
             if _declared_non_obs(name, formats):
                 reason = f"the manifest declares it as {declared!r}"
                 readable = True
@@ -345,7 +362,8 @@ def _classify(
             obs_skipped.append({
                 "name": name,
                 "reason": reason,
-                "identified": readable and declared is not None,
+                # a module config is positively not observations, whatever the manifest says
+                "identified": readable and (declared is not None or reason.startswith("it is a module config")),
             })
 
     return {

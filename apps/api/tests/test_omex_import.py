@@ -861,18 +861,55 @@ def test_obs_data_is_found_by_its_name():
         assert parts["obs"][0] == name
 
 
-def test_a_validation_obs_data_is_not_the_obs_data():
+def test_a_validation_obs_data_is_never_the_obs_data():
+    """Held-out data is what checks a calibration, so it is never what the calibration
+    fits: not by its name, and not by its contents when nothing else turned up."""
     parts = omex_import.unpack(_zip(_members(**{
         "inst_validation_obs_data.json": OBS_OBJECT,
         "inst_parameters.csv": "a,b\n",
     })))
-    # not by name; its contents still make it a candidate of last resort
-    assert parts["obs"][0] == "inst_validation_obs_data.json"
+    assert parts["obs"] is None
+    skipped = {s["name"]: s for s in parts["obs_skipped"]}
+    assert "held-out" in skipped["inst_validation_obs_data.json"]["reason"]
+    assert not skipped["inst_validation_obs_data.json"]["identified"]   # worth telling the user
     parts = omex_import.unpack(_zip(_members(**{
         "inst_validation_obs_data.json": OBS_OBJECT,
         "inst_obs_data.json": OBS_OBJECT,
     })))
     assert parts["obs"][0] == "inst_obs_data.json"
+
+
+def test_names_may_join_with_a_hyphen():
+    parts = omex_import.unpack(_zip(_members(**{
+        "LV-obs_data.json": OBS_OBJECT,
+        "LV-params_for_id.csv": "vessel_name,param_name\nv,p\n",
+    })))
+    assert parts["obs"][0] == "LV-obs_data.json"
+    assert parts["params"][0] == "LV-params_for_id.csv"
+
+
+def test_the_library_instance_warning_names_only_what_could_be_observations():
+    """The module config is positively not observations and is not mentioned; the
+    verification config could have been, so it is named with what it has instead, and
+    the sentence states the rule actually used."""
+    import main
+    parts = omex_import.unpack(_zip(_members(**{
+        "heart_vp_modules_config.json": json.dumps([{"module_type": "heart", "module_subtype": "vp"}]),
+        "heart_vp_verification_config.json": json.dumps({"sim_time": 1.0, "validation": {}}),
+    })))
+    (warning,) = main._no_obs_data_warning(parts, "archive")
+    assert "heart_vp_modules_config.json" not in warning
+    assert "heart_vp_verification_config.json (it is a JSON object with none of" in warning
+    assert "'sim_time'" in warning
+    assert "()" not in warning
+    assert "'obs' in its name" not in warning
+    assert "obs_data.json or <name>_obs_data.json" in warning
+
+
+def test_an_unnamed_list_says_why_it_was_passed_over():
+    assert "only taken as the obs_data under an obs_data name" in omex_import.why_not_obs_data(b'[{"a": 1}]')
+    assert omex_import.obs_verdict(b'[{"module_type": "heart"}]') == (
+        "it is a module config (a list of module entries), not observations", True)
 
 
 def test_obs_data_name_comes_before_data_items():
