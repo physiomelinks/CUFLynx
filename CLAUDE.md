@@ -322,6 +322,18 @@ names the stored header does not provide are named in a warning. The response's
 `user_funcs` lists each with its status, and the inbox summary lists funcs members
 so the confirmation dialog can say a delivery carries code before it is accepted.
 
+**A study's user_inputs.yaml sets the solver** (`main._adopt_solver_settings`). A
+`*user_inputs*.yaml` in an `.omex`, in a reopened run directory (when its
+`cuflynx_study.json` records no `solver_info`), or picked in Settings
+(`POST /api/user_inputs/upload`) has its `solver`, `solver_info` and `dt` adopted
+exactly as a Settings change: env, saved settings, `engine.reset()`. Keys the solver
+cannot honour (`MaximumNumberOfSteps` under `CVODE_myokit`) and solvers the format does
+not offer (OpenCOR) are **dropped with a warning, never a 422** on import. Responses carry
+`solver_settings: {solver, solver_info, dt, source, ignored}` (null when there was none),
+and the frontend re-reads `/api/config` on every model load so Settings is never stale.
+Runs get `engine.dt` server-side (`_with_engine_dt`) unless the request names a `dt` —
+the analysis panels therefore send none; a literal there overrode the adopted step.
+
 ## Desktop packaging (pywebview + PyInstaller)
 
 **Current shipping model:** one double-clickable executable per OS, built by
