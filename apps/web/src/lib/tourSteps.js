@@ -379,7 +379,7 @@ export const TOUR_STEPS = Object.freeze([
     id: 'sensitivity-run',
     target: '[data-testid="sa-settings"]',
     side: 'right',
-    text: 'Pick the method and the sample count, then Run. The result lands in Analysis as a per-output, per-parameter table, and parameters that move nothing are candidates for unticking in params_for_id.\n\nTip: including validation/prediction outputs gives more practical sensitivities than including only the outputs you calibrate against.',
+    text: 'Pick the method and the sample count, then Run. The result lands in Analysis as a per-output, per-parameter table, and parameters that move nothing are candidates for unticking in params_for_id.\n\nTip: tick Include prediction items to add prediction outputs that have an operation; they give more practical sensitivities than calibrated outputs alone.',
   },
   {
     id: 'calibration-tab',

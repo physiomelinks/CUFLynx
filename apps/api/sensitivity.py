@@ -48,6 +48,10 @@ class SensitivityJob:
         # surfaced so the Analysis panel can show what values it was taken about.
         self.nominal: list | None = None
         self.nominal_source: str | None = None
+        # The outputs that are prediction features (include_prediction_items), so the
+        # heatmap can tag them: libcuflynx's sobol_output_features.json for Sobol, the
+        # runner's meta line for local.
+        self.prediction_outputs: list[str] = []
         # The gradient source the run *resolved* to. The request may say "auto"
         # (CA's own default spelling), which names no arm -- so a label built from
         # the request reads "Local - auto", telling the user nothing about what
@@ -60,6 +64,14 @@ class SensitivityJob:
         # The temp file the runner was handed as argv[1], removed when it exits.
         self.config_path: str | None = None
         self.lock = threading.Lock()
+
+
+def _failure_reason(lines: list[str], fail_marker: str) -> str | None:
+    """The text of the runner's last ``<FAIL_MARKER> reason`` line, or None."""
+    for line in reversed(lines):
+        if line.startswith(fail_marker):
+            return line[len(fail_marker):].strip() or None
+    return None
 
 
 class SensitivityManager:
@@ -178,6 +190,8 @@ class SensitivityManager:
                     job.output_names = data["output_names"]
                     job.nominal = meta.get("nominal")
                     job.nominal_source = meta.get("nominal_source")
+                    job.prediction_outputs = list(
+                        data.get("prediction_outputs") or meta.get("prediction_outputs") or [])
                     job.gradient_method = meta.get("gradient_method")
                     job.state = "done"
                     if code != 0:
@@ -187,7 +201,11 @@ class SensitivityManager:
                     job.error = f"failed to read results: {exc}"
             else:
                 job.state = "error"
-                job.error = job.error or f"runner exited with code {code}"
+                # The runner's own reason when it gave one -- e.g. libcuflynx refusing an
+                # emulator trained without the prediction features this run includes
+                # ("Retrain it with emulator_settings.include_prediction_items: true").
+                job.error = job.error or _failure_reason(job.lines, FAIL_MARKER) or (
+                    f"runner exited with code {code}")
 
     def status(self, job_id: str, offset: int = 0) -> dict | None:
         job = self._job
@@ -205,6 +223,7 @@ class SensitivityManager:
                 "output_names": job.output_names,
                 "nominal": job.nominal,
                 "nominal_source": job.nominal_source,
+                "prediction_outputs": job.prediction_outputs,
                 "gradient_method": job.gradient_method,
                 "error": job.error,
                 "warning": job.warning,
