@@ -41,7 +41,7 @@ import threading
 import time
 import uuid
 
-from ca_imports import CaImportError, ca_from
+from ca_imports import CaImportError, ca_from, ensure_ca_path
 from calibration import (
     _warn_no_mpiexec,
     calibration,
@@ -72,7 +72,15 @@ class WorkflowError(ValueError):
 
 
 def ca_workflow(name: str):
-    """``libcuflynx.calibration_workflow.<name>`` from the configured CA."""
+    """``libcuflynx.calibration_workflow.<name>`` from the configured CA.
+
+    The configured CA dir is put on ``sys.path`` first, as every other CA-backed
+    module does: ``ca_from`` imports from whatever is already importable. Without
+    it, a venv with an editable libcuflynx (pointing at some other checkout) answers
+    instead, and the user's Settings -> CA dir is silently ignored -- and when that
+    other checkout predates #541, the error blames the CA dir the user *did* pick.
+    """
+    ensure_ca_path()
     try:
         return ca_from("calibration_workflow", name)
     except CaImportError as exc:

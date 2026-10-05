@@ -374,3 +374,16 @@ def test_a_real_workflow_runs_and_its_tabs_show_the_fixed_values(
     merged = {c["model_name"]: c["value"] for c in target["workflow_view"]["calibrated"]}
     assert merged["p_mod_A"] == pytest.approx(2.0, rel=1e-4)
     assert merged["q_mod_C"] == pytest.approx(3.0, rel=1e-4)
+
+
+def test_the_configured_ca_dir_is_put_on_the_path_before_ca_is_asked(monkeypatch):
+    """Found running CUFLynx against a CA worktree from a venv with an editable
+    libcuflynx: ca_from imports whatever is importable, so without this the editable
+    install answered, the configured CA dir was never consulted, and a CA that has
+    workflows was reported as one that does not."""
+    order = []
+    monkeypatch.setattr(workflow_mod, "ensure_ca_path", lambda: order.append("path"))
+    monkeypatch.setattr(workflow_mod, "ca_from",
+                        lambda module, name: order.append(("import", module, name)) or object())
+    workflow_mod.ca_workflow("load_workflow")
+    assert order == ["path", ("import", "calibration_workflow", "load_workflow")]
