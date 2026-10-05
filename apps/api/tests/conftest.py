@@ -30,6 +30,7 @@ import sensitivity as sensitivity_mod  # noqa: E402
 import solver_options as solver_options_mod  # noqa: E402
 import uq as uq_mod  # noqa: E402
 import workflow_manager as workflow_mod  # noqa: E402
+from obs_extract import job as obs_extract_job_mod  # noqa: E402
 
 # Repo-root resources (apps/api/tests -> parents[3] == repo root).
 RESOURCES_DIR = Path(__file__).resolve().parents[3] / "resources"
@@ -327,6 +328,11 @@ def reset_app_state():
     workflow_mod.workflow.reset()
     workflow_mod.workflow.runner_path = workflow_mod.RUNNER_PATH
     main._module_library_dirs = []
+    # obs_extract's manager is the same kind of module-level singleton, and it
+    # holds a worker *thread* rather than a subprocess -- so a test that left one
+    # running would block the next test's start() on "an extraction is already
+    # running".
+    obs_extract_job_mod.obs_extract_jobs.reset()
     yield
     main._models.clear()
     engine_mod.engine.reset()
@@ -342,6 +348,7 @@ def reset_app_state():
     workflow_mod.workflow.reset()
     workflow_mod.workflow.runner_path = workflow_mod.RUNNER_PATH
     main._module_library_dirs = []
+    obs_extract_job_mod.obs_extract_jobs.reset()
     _set_analysis_pythons(_pythons_before)
     main._analysis_seed = None
     # Restore CIRCULATORY_AUTOGEN_SRC so a /api/config test doesn't leak.
