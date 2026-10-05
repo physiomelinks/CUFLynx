@@ -516,6 +516,9 @@ class CalibrationJob:
         self.percent_error: list | None = None
         self.std_error: list | None = None
         self.error_labels: list = []
+        # The best fit scored against the obs_data's held-out data (CA #535):
+        # CA's validation_results.json, or None when there was nothing to validate.
+        self.validation: dict | None = None
         self.error: str | None = None
         # Set when the run finished but its process failed on the way out (an
         # MPI finalize abort, say): the results stand, and the user is told.
@@ -677,6 +680,7 @@ class CalibrationManager:
                     job.percent_error = errors["percent_error"]
                     job.std_error = errors["std_error"]
                     job.error_labels = errors["error_labels"]
+                    job.validation = ca_run_history.validation_results(job.output_dir)
                     job.calibrated_model_path = ca_run_history.calibrated_model_path(
                         job.output_dir, job.file_prefix
                     )
@@ -708,6 +712,7 @@ class CalibrationManager:
                 "percent_error": job.percent_error,
                 "std_error": job.std_error,
                 "error_labels": job.error_labels,
+                "validation": job.validation,
                 "error": job.error,
                 "warning": job.warning,
             }

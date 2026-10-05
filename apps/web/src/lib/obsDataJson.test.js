@@ -7,6 +7,8 @@ import {
   buildObsData,
   versionedJsonName,
   experimentIdxMax,
+  predToRow,
+  predRowToItem,
 } from './obsDataJson'
 
 const OPS = ['', 'max', 'min', 'mean']
@@ -243,5 +245,22 @@ describe('operands on save (#160)', () => {
   it('keeps a fully-filled operand list untouched', () => {
     const row = { ...newRow(0), operands: ['a/x', 'b/y'] }
     expect(rowToItem(row).operands).toEqual(['a/x', 'b/y'])
+  })
+})
+
+describe('prediction_items with held-out data (CA #535)', () => {
+  it('round-trips value, data_type, std and obs_dt through an edit', () => {
+    // The editor has no fields for them, so it must carry them from the original
+    // item: dropping them would silently delete the study's validation data.
+    const pred = {
+      data_item_name: 'y_val', operands: ['main/y'], unit: 'mV', experiment_idx: 0,
+      data_type: 'series', value: [1, 2, 3], std: 0.5, obs_dt: 0.1,
+    }
+    const row = predToRow(pred)
+    row.unit = 'V'
+    const out = predRowToItem(row)
+    expect(out).toMatchObject({
+      unit: 'V', data_type: 'series', value: [1, 2, 3], std: 0.5, obs_dt: 0.1,
+    })
   })
 })

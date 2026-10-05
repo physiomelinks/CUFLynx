@@ -163,8 +163,11 @@ def _ca_engine(obs_data: dict, output_dir: str | None, dt: float):
         return None
 
     try:
+        from obs_data import for_ca  # noqa: PLC0415 - held-out keys an older CA refuses
+
         parser = ObsAndParamDataParser()
-        parsed = parser.parse_obs_data_json(obs_data_dict=obs_data, pre_time=0.0, sim_time=1.0)
+        parsed = parser.parse_obs_data_json(
+            obs_data_dict=for_ca(obs_data), pre_time=0.0, sim_time=1.0)
         # get_ground_truth_values writes its .npy copies unconditionally; a temp
         # dir keeps a cost evaluation from depositing files in the user's outputs.
         with tempfile.TemporaryDirectory() as scratch:
