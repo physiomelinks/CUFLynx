@@ -789,6 +789,122 @@ def delete_user_func(kind: str, name: str, base_dir: str | None = None) -> dict:
     return read_user_funcs(kind, base_dir)
 
 
+def _bound_at_module_level(tree: ast.Module) -> set[str]:
+    """Names a module binds outside its ``def``\\ s: imports and assignments,
+    including those inside a top-level ``try`` (the headers' two-layout import)."""
+    names: set[str] = set()
+
+    def visit(body):
+        for node in body:
+            if isinstance(node, (ast.Import, ast.ImportFrom)):
+                for alias in node.names:
+                    names.add((alias.asname or alias.name).split(".")[0])
+            elif isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                for target in targets:
+                    names.update(
+                        n.id for n in ast.walk(target) if isinstance(n, ast.Name)
+                    )
+            elif isinstance(node, ast.ClassDef):
+                names.add(node.name)
+            elif isinstance(node, ast.Try):
+                visit(node.body)
+                for handler in node.handlers:
+                    visit(handler.body)
+                visit(node.orelse)
+                visit(node.finalbody)
+            elif isinstance(node, ast.If):
+                visit(node.body)
+                visit(node.orelse)
+
+    visit(tree.body)
+    return names
+
+
+def _same_source(a: str, b: str) -> bool:
+    """Equal up to trailing whitespace -- what a read-back through the file changes."""
+    def norm(text):
+        return "\n".join(line.rstrip() for line in text.strip("\n").splitlines())
+
+    return norm(a) == norm(b)
+
+
+def install_funcs_from_file(
+    kind: str, text: str, base_dir: str | None = None, origin: str = ""
+) -> tuple[list[dict], list[str]]:
+    """Install every top-level func in a whole ``kind`` funcs file, one at a time.
+
+    For a funcs file that arrived inside a study (an OMEX, #149) rather than being
+    typed into the dialog. Each ``def`` goes through :func:`save_user_func` -- the
+    same validation and the same canonical file (header + list marker) the
+    ``POST /api/{kind}_funcs`` route writes -- so a func installed from an archive
+    is indistinguishable from one the user saved.
+
+    Never raises for the file's contents: the study still loads without its funcs,
+    so each problem is a warning, not a failed import. Returns ``(funcs,
+    warnings)``; each func is ``{"kind", "name", "status", "origin"}`` where
+    ``status`` is ``installed`` / ``unchanged`` (already there, identical) /
+    ``conflict`` (a *different* func of that name is already there -- kept, never
+    clobbered) / ``invalid`` (rejected by the same checks the dialog applies).
+    """
+    k = _func_kind(kind)
+    origin = origin or k.filename
+    warnings: list[str] = []
+    try:
+        tree = ast.parse(text)
+    except SyntaxError as exc:
+        return [], [
+            f"{origin} was not installed as {kind} funcs: invalid Python "
+            f"({exc.msg}, line {exc.lineno})."
+        ]
+
+    # Only the defs travel: the stored file's header is CUFLynx's, so anything
+    # else the archive's file set up at module level is not carried across. Said
+    # once, naming what is missing, because a func that uses it will otherwise
+    # fail only at run time, inside CA.
+    provided = _bound_at_module_level(ast.parse(k.header)) | {k.list_marker}
+    dropped = sorted(_bound_at_module_level(tree) - provided)
+    if dropped:
+        warnings.append(
+            f"{origin}: only its functions are installed into your custom {kind} "
+            f"funcs, so its module-level {', '.join(dropped)} "
+            f"{'is' if len(dropped) == 1 else 'are'} not available to them "
+            f"(the stored file provides {', '.join(sorted(provided - {k.list_marker}))})."
+        )
+
+    _order, existing = _parse_existing(kind, base_dir)
+    funcs: list[dict] = []
+    for node in tree.body:
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        source = _node_source(text, node)
+        entry = {"kind": kind, "name": node.name, "origin": origin}
+        funcs.append(entry)
+        if node.name in existing:
+            if source is not None and _same_source(existing[node.name], source):
+                entry["status"] = "unchanged"
+                continue
+            entry["status"] = "conflict"
+            warnings.append(
+                f"{kind} '{node.name}' from {origin} was not installed: a different "
+                f"'{node.name}' is already in your custom {kind} funcs "
+                f"({_user_file(kind, base_dir)}). Kept yours; rename one, or replace "
+                f"it in Custom funcs."
+            )
+            continue
+        try:
+            save_user_func(kind, "", source or "", base_dir)
+        except UserFuncError as exc:
+            entry["status"] = "invalid"
+            warnings.append(f"{kind} '{node.name}' from {origin} was not installed: {exc}.")
+            continue
+        entry["status"] = "installed"
+        existing[node.name] = source
+    if not funcs:
+        warnings.append(f"{origin} defines no top-level functions, so no {kind} funcs were installed.")
+    return funcs, warnings
+
+
 def _refresh_options() -> None:
     """Drop the introspection caches so a just-saved func shows in the dropdowns.
 

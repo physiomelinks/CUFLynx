@@ -510,8 +510,20 @@ function applyImportedStudy(data, label) {
     .filter((p) => p?.error)
     .map((p) => `${p.filename || 'a part of the archive'} was not loaded: ${p.error}`)
   notice.value =
-    `Loaded ${label}` + (data.module_config_path ? ' (PhLynx layout kept)' : '')
+    `Loaded ${label}` +
+    (data.module_config_path ? ' (PhLynx layout kept)' : '') +
+    installedFuncsNote(data.user_funcs)
   warnings.value = [...failed, ...(data.warnings || [])]
+}
+
+// The archive's own operation/cost/modifier funcs that are now in Custom funcs.
+// Said in the notice because an obs_data naming one only calibrates because of
+// it; the ones that were *not* installed are already in the warnings.
+function installedFuncsNote(funcs) {
+  const installed = (funcs || []).filter((f) => f.status === 'installed')
+  if (!installed.length) return ''
+  const names = installed.map((f) => `${f.name} (${f.kind})`).join(', ')
+  return `; added to Custom funcs: ${names}`
 }
 
 async function handleOmex(files) {
@@ -936,6 +948,11 @@ async function onParamsDrop(event) {
       <ul class="inbox-members" data-testid="inbox-members">
         <li v-for="m in pendingStudy?.members || []" :key="m">{{ m }}</li>
       </ul>
+      <p v-if="pendingStudy?.user_funcs?.length" data-testid="inbox-user-funcs">
+        It carries Python ({{ pendingStudy.user_funcs.join(', ') }}) that loading will add
+        to your Custom funcs, where it runs during calibration. Load it only if you trust
+        the sender.
+      </p>
       <template #footer>
         <Button
           label="Discard"
