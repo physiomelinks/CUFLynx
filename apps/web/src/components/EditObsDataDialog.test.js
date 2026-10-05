@@ -9,6 +9,15 @@ vi.mock('../lib/api', () => ({
   getUserFuncs: vi.fn(),
   saveUserFunc: vi.fn(),
   deleteUserFunc: vi.fn(),
+  // Used by the embedded AddFromDatasetDialog ("Add from dataset").
+  scanDatasets: vi.fn(),
+  startObsExtract: vi.fn(),
+  getObsExtractStatus: vi.fn(),
+  cancelObsExtract: vi.fn(),
+  saveObsExtractConfig: vi.fn(),
+  loadObsExtractConfig: vi.fn(),
+  listDir: vi.fn(async () => ({ path: '/', parent: null, entries: [] })),
+  makeDir: vi.fn(),
 }))
 
 import EditObsDataDialog from './EditObsDataDialog.vue'
@@ -886,38 +895,86 @@ describe('operations that take named data_item references (#349)', () => {
   })
 })
 
-describe('prediction_items: operation (prediction features)', () => {
-  const PRED = {
-    data_item_name: 'v_max', operands: ['m/x'], unit: 'm3', experiment_idx: 0,
-    operation: 'max', operation_kwargs: { k: 2 },
-    // held-out data rides along too (CA #535)
-    data_type: 'constant', value: 3, std: 0.5,
-  }
-
-  it('offers an operation per prediction item and saves it with its kwargs', async () => {
-    uploadObsData.mockResolvedValue({ ok: true })
-    const wrapper = mountDialog({ currentPredictionItems: [PRED] })
+// --- "Add from dataset" (the extraction dialog) -----------------------------
+describe('EditObsDataDialog add-from-dataset', () => {
+  it('the button sits beside "Add data item"', async () => {
+    const wrapper = mountDialog()
     await flushPromises()
-    const select = wrapper.find('[data-testid="eo-pred-operation"]')
-    expect(select.element.value).toBe('max')
-    await wrapper.find('[data-testid="eo-save"]').trigger('click')
-    await flushPromises()
-    const obsArg = uploadObsData.mock.calls[0][1]
-    expect(obsArg.prediction_items[0]).toMatchObject({
-      operation: 'max', operation_kwargs: { k: 2 }, value: 3, std: 0.5,
-    })
+    const ids = wrapper
+      .findAll('[data-testid]')
+      .map((el) => el.attributes('data-testid'))
+    expect(ids).toContain('obs-add-from-dataset')
+    expect(ids.indexOf('obs-add-from-dataset')).toBe(ids.indexOf('obs-add-row') + 1)
   })
 
-  it('clearing the operation drops it and its kwargs', async () => {
-    uploadObsData.mockResolvedValue({ ok: true })
-    const wrapper = mountDialog({ currentPredictionItems: [PRED] })
+  it('an extraction into an empty editor is adopted without asking', async () => {
+    // There is nothing to lose, so a confirmation would be a question with one
+    // sensible answer.
+    const wrapper = mountDialog({ currentDataItems: [], currentPredictionItems: [],
+                                  protocolInfo: null })
     await flushPromises()
-    await wrapper.find('[data-testid="eo-pred-operation"]').setValue('')
-    await wrapper.find('[data-testid="eo-save"]').trigger('click')
+    wrapper.vm.onExtracted({
+      obsData: {
+        protocol_info: { pre_times: [0], sim_times: [[1]], params_to_change: {} },
+        data_items: [{ data_item_name: 'x', data_type: 'constant', operation: 'max',
+                       operands: ['a/b'], unit: 'mV', value: 1, std: 1 }],
+        prediction_items: [],
+      },
+      texPath: '/out/r.tex',
+    })
     await flushPromises()
-    const item = uploadObsData.mock.calls[0][1].prediction_items[0]
-    expect(item.operation).toBeUndefined()
-    expect(item.operation_kwargs).toBeUndefined()
-    expect(item.value).toBe(3)
+    expect(wrapper.vm.editableRows.length).toBe(1)
+    expect(wrapper.find('[data-testid="obs-extract-offer"]').exists()).toBe(false)
+  })
+
+  it('an extraction over existing work is offered, not applied', async () => {
+    // The items' experiment_idx only mean anything against the protocol_info
+    // they came with, so appending them to a different one is the outcome that
+    // would look like it worked.
+    const wrapper = mountDialog()
+    await flushPromises()
+    const before = wrapper.vm.editableRows.length
+    expect(before).toBeGreaterThan(0)
+
+    wrapper.vm.onExtracted({
+      obsData: {
+        protocol_info: { pre_times: [0], sim_times: [[1]], params_to_change: {} },
+        data_items: [{ data_item_name: 'x', data_type: 'constant', operation: 'max',
+                       operands: ['a/b'], unit: 'mV', value: 1, std: 1 }],
+        prediction_items: [],
+      },
+      texPath: '/out/r.tex',
+    })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="obs-extract-offer"]').exists()).toBe(true)
+    expect(wrapper.vm.editableRows.length).toBe(before)
+
+    await wrapper.find('[data-testid="obs-extract-adopt"]').trigger('click')
+    expect(wrapper.vm.editableRows.length).toBe(1)
+  })
+
+  it('keeping mine discards the extraction and leaves the rows alone', async () => {
+    const wrapper = mountDialog()
+    await flushPromises()
+    const before = wrapper.vm.editableRows.length
+    wrapper.vm.onExtracted({
+      obsData: { protocol_info: null, data_items: [], prediction_items: [] },
+      texPath: '/out/r.tex',
+    })
+    await flushPromises()
+    await wrapper.find('[data-testid="obs-extract-discard"]').trigger('click')
+    expect(wrapper.find('[data-testid="obs-extract-offer"]').exists()).toBe(false)
+    expect(wrapper.vm.editableRows.length).toBe(before)
+  })
+
+  it('the offer names where the report went', async () => {
+    const wrapper = mountDialog()
+    await flushPromises()
+    wrapper.vm.onExtracted({
+      obsData: { protocol_info: null, data_items: [], prediction_items: [] },
+      texPath: '/out/r.tex', pdfPath: '/out/r.pdf',
+    })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="obs-extract-offer"]').text()).toContain('/out/r.pdf')
   })
 })
