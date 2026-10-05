@@ -157,6 +157,30 @@ the user's own environment. Keep the three in step.
   data_items **by CA's feature label**, including the `[exp e, sub s]` form CA
   uses when a label repeats, never by position.
 
+**Calibration workflows** (`apps/api/workflow_manager.py` + `workflow_runner.py`,
+`WorkflowPanel.vue` / `WorkflowBar.vue` / `stores/useWorkflow.js`). A
+`calibration_workflow.json` orders calibrations of module-library instances (a
+supermodule's submodules, then the supermodule) and **all of it is CA's**
+(`libcuflynx.calibration_workflow`, CA #541): the format and its checks, resolving
+instances against the **module libraries** set in Settings (`module_library_dirs`,
+persisted), the submodule-to-supermodule naming, the run, and the run directory --
+which holds the workflow it ran, so reopening that directory reopens the workflow.
+CUFLynx keeps which workflow is open, runs `workflow_runner.py` like the other
+runners (one job; refused while a calibration runs, and vice versa), and loads each
+tab through CA's `workflow_model` -> `import_omex_bytes`, so a step tab is an
+ordinary study. Two traps found building it:
+
+- **No app module may share a flat name with a CA module.** `ca_from` resolves
+  `libcuflynx.<name>` *and* `<name>`, and an app module already in `sys.modules`
+  wins -- the manager was first called `calibration_workflow.py` and was handed back
+  as CA's. A new CA top-level package also has to join `CA_PACKAGES` (and its two
+  mirrors, pinned by `test_ca_import_parity.py`) or its namespaced spelling is never tried.
+- **Give a runner an explicit `cwd`.** Myokit `chdir`s the whole server into a
+  temporary build directory while it compiles a live simulation, then deletes it; a
+  runner spawned in that window starts in a directory that no longer exists and dies
+  at its first compile with `[Errno 2] No such file or directory`. The workflow
+  runner runs in its run directory. (The other managers still inherit the server's.)
+
 **Only circulatory_autogen writes to the user's outputs directory** (#210). A run
 leaves CA's own files there and nothing else — no CUFLynx-authored results
 format, and no plumbing:
