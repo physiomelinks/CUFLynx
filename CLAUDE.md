@@ -310,6 +310,18 @@ through both the backend and the editor — dropping it silently breaks the entr
 on the next run. *Not yet built:* a form for entering those input qnames, so a
 modifier that takes any is still only configurable in a hand-written file.
 
+**An archive's funcs are installed on import.** A `.py` member named
+`*operation_funcs*` / `*cost_funcs*` / `*modifier_funcs*` (`omex_import.user_func_kind`
+— by name, never by manifest format, since an external_python model is
+`text/x-python` too) is split into its top-level `def`s and each goes through
+`save_user_func` into the store under the upload's `output_dir`, exactly as if typed
+into Custom funcs. Never clobbers: an identical func is `unchanged`, a *different*
+one of the same name is a `conflict` (kept, warned); a def the dialog would reject is
+`invalid` (warned); the study loads regardless. Only defs travel, so module-level
+names the stored header does not provide are named in a warning. The response's
+`user_funcs` lists each with its status, and the inbox summary lists funcs members
+so the confirmation dialog can say a delivery carries code before it is accepted.
+
 ## Desktop packaging (pywebview + PyInstaller)
 
 **Current shipping model:** one double-clickable executable per OS, built by
