@@ -87,6 +87,8 @@ export async function setConfig(opts = {}) {
     if (opts.seed !== undefined) body.seed = opts.seed
     // Where "Edit" sends a study: a URL sets it, '' restores production PhLynx.
     if (opts.phlynxUrl != null) body.phlynx_url = opts.phlynxUrl
+    // Module libraries a calibration workflow's instances are found in; [] clears.
+    if (opts.moduleLibraryDirs != null) body.module_library_dirs = opts.moduleLibraryDirs
   }
   const { data } = await axios.post(url('/api/config'), body)
   return data
@@ -630,5 +632,68 @@ export async function exportPipeline(payload) {
 
 export async function exportPlotting(payload) {
   const { data } = await axios.post(url('/api/export/plotting'), payload)
+  return data
+}
+
+// --- Calibration workflows (circulatory_autogen's libcuflynx.calibration_workflow) ---
+
+/** The open workflow: its file, which parameter of each step lands where, each step's state. */
+export async function getWorkflow() {
+  const { data } = await axios.get(url('/api/workflow'))
+  return data
+}
+
+/** Open a calibration_workflow.json by path, or reopen a workflow run directory. */
+export async function loadWorkflow({ path = '', runDir = '', outputsDir = '' } = {}) {
+  const { data } = await axios.post(url('/api/workflow/load'), {
+    path,
+    run_dir: runDir,
+    config_outputs_dir: outputsDir,
+  })
+  return data
+}
+
+/** Open an uploaded calibration_workflow.json (a browser cannot name its path). */
+export async function uploadWorkflow(file, outputsDir = '') {
+  const form = new FormData()
+  form.append('file', file)
+  const { data } = await axios.post(url('/api/workflow/upload'), form, {
+    params: outputsDir ? { config_outputs_dir: outputsDir } : {},
+  })
+  return data
+}
+
+export async function closeWorkflow() {
+  const { data } = await axios.post(url('/api/workflow/close'))
+  return data
+}
+
+/**
+ * One tab of the workflow -- a step id, or 'target' -- as a study: the same response a
+ * dropped .omex gives, plus `workflow_view` (fixed values, own results, what it waits for).
+ */
+export async function openWorkflowView(view) {
+  const { data } = await axios.post(url('/api/workflow/view'), { view })
+  return data
+}
+
+export async function runWorkflow({ fromStep = '', only = '', numCores = 1 } = {}) {
+  const { data } = await axios.post(url('/api/workflow/run'), {
+    from_step: fromStep,
+    only,
+    num_cores: numCores,
+  })
+  return data
+}
+
+export async function getWorkflowStatus(jobId, offset = 0) {
+  const { data } = await axios.get(
+    url(`/api/workflow/${encodeURIComponent(jobId)}/status?offset=${offset}`),
+  )
+  return data
+}
+
+export async function cancelWorkflow(jobId) {
+  const { data } = await axios.post(url(`/api/workflow/${encodeURIComponent(jobId)}/cancel`))
   return data
 }
