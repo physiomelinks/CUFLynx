@@ -181,6 +181,15 @@ ordinary study. Two traps found building it:
   at its first compile with `[Errno 2] No such file or directory`. The workflow
   runner runs in its run directory. (The other managers still inherit the server's.)
 
+**LaTeX symbols** (`apps/api/symbol_mapping.py`, `EditVariableMappingDialog.vue`, opened
+from the Variables panel). A study's `<prefix>_variable_mapping.csv` -- the symbol of every
+variable, which CA's `cuflynx-methods-latex` typesets the methods with -- is entirely CA's
+(`libcuflynx.reporting.variable_mapping`, CA #547): rows, default rule, keeping edits.
+CUFLynx only picks where the file lives: beside the target instance for a workflow's
+supermodule tab (CA's `workflow_mapping_path`, where the methods writer looks), else
+`<outputs>/<prefix>_variable_mapping.csv`, else the uploads directory. `reporting` is a CA
+package in `CA_PACKAGES` (and its two mirrors).
+
 **Only circulatory_autogen writes to the user's outputs directory** (#210). A run
 leaves CA's own files there and nothing else — no CUFLynx-authored results
 format, and no plumbing:

@@ -133,6 +133,9 @@ class WorkflowManager:
         self.path: str | None = None
         self.output_dir: str | None = None
         self.module_library_dirs: list[str] = []
+        # model_id -> the tab it was loaded for, so the supermodule's variable mapping can
+        # be kept where CA's methods writer looks for it (the target instance).
+        self.view_models: dict[str, str] = {}
         self._job: WorkflowJob | None = None
         self._lock = threading.Lock()
 
@@ -142,6 +145,7 @@ class WorkflowManager:
             self._job = None
             self.path = self.output_dir = None
             self.module_library_dirs = []
+            self.view_models = {}
         if job and job.proc and job.proc.poll() is None:
             job.proc.terminate()
 

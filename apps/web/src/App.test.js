@@ -20,6 +20,9 @@ vi.mock('./lib/api', () => ({
   runWorkflow: vi.fn().mockResolvedValue({ job_id: 'w1' }),
   getWorkflowStatus: vi.fn().mockResolvedValue({ state: 'done', lines: [], next_offset: 0 }),
   cancelWorkflow: vi.fn().mockResolvedValue({ cancelled: true }),
+  // The Variables panel's "LaTeX symbols" dialog.
+  getVariableMapping: vi.fn().mockResolvedValue({ path: '', exists: false, rows: [] }),
+  saveVariableMapping: vi.fn().mockResolvedValue({ path: '', exists: true, rows: [] }),
   getVariables: vi.fn().mockResolvedValue({}),
   simulate: vi.fn().mockResolvedValue({ time: [], outputs: {} }),
   runProtocol: vi.fn().mockResolvedValue({ experiments: [] }),

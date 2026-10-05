@@ -697,3 +697,23 @@ export async function cancelWorkflow(jobId) {
   const { data } = await axios.post(url(`/api/workflow/${encodeURIComponent(jobId)}/cancel`))
   return data
 }
+
+// --- Variable mapping: the LaTeX symbol of every variable (libcuflynx.reporting) ---
+
+/** Every variable of the model with its symbol, the file it is kept in, and its problems. */
+export async function getVariableMapping(modelId, outputsDir = '') {
+  const { data } = await axios.get(
+    url(`/api/models/${encodeURIComponent(modelId)}/variable_mapping`),
+    { params: outputsDir ? { output_dir: outputsDir } : {} },
+  )
+  return data
+}
+
+/** Save edited symbols ([{variable_name, latex}]); the server writes the file through CA. */
+export async function saveVariableMapping(modelId, rows, outputsDir = '') {
+  const { data } = await axios.put(
+    url(`/api/models/${encodeURIComponent(modelId)}/variable_mapping`),
+    { rows, output_dir: outputsDir },
+  )
+  return data
+}
