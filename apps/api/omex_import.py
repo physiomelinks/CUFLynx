@@ -71,6 +71,30 @@ MAX_UNCOMPRESSED_BYTES = 512 * 1024 * 1024
 # archive built around either is not a second kind of study.
 MODEL_SUFFIXES = (".cellml", ".mmt", ".model")
 
+#: The user-func kinds an archive can carry, one ``.py`` per kind, recognised by
+#: name: ``*operation_funcs*.py``, ``*cost_funcs*.py``, ``*modifier_funcs*.py`` --
+#: the names CUFLynx itself stores them under (``operation_funcs_user.py`` ...)
+#: and the names CA's ``*_funcs_external_path`` files conventionally carry.
+#: Mirrors ``user_funcs.FUNC_KINDS`` (checked by a test) rather than importing it,
+#: because this module stays free of the engine.
+USER_FUNC_KINDS = ("operation", "cost", "modifier")
+
+
+def user_func_kind(name: str) -> str | None:
+    """The func kind a ``.py`` member holds, judged by its name, or None.
+
+    By name and not by manifest: a manifest says ``text/x-python`` for any Python
+    file, including an external_python *model*, which is not a funcs file and
+    must never be split into defs.
+    """
+    path = Path(str(name or ""))
+    if path.suffix.lower() != ".py":
+        return None
+    for kind in USER_FUNC_KINDS:
+        if f"{kind}_funcs" in path.stem.lower():
+            return kind
+    return None
+
 
 class OmexImportError(ValueError):
     """A COMBINE archive that could not be read (surface as HTTP 422)."""
@@ -366,7 +390,13 @@ def _classify(
                 "identified": readable and (declared is not None or reason.startswith("it is a module config")),
             })
 
+    # The user's own operation / cost / modifier funcs (#58, CA #303/#383): an
+    # obs_data naming an operation the archive defines is not calibratable until
+    # that func is installed, so the archive's copy is what installs it.
+    user_funcs = [n for n in names if user_func_kind(n)]
+
     return {
+        "user_funcs": user_funcs,
         "obs_skipped": obs_skipped,
         # A .mmt or an EasyML .model only counts when there is no CellML: an
         # archive holding both has presumably already been converted, and the
@@ -456,6 +486,11 @@ def unpack(data: bytes) -> dict:
         #: is the first of these, kept because callers predate there being more
         #: than one.
         "phlynx_state": phlynx_state,
+        #: ``(kind, name, bytes)`` per user-funcs file, for the importer to install
+        #: into the user funcs store (see :func:`user_func_kind`).
+        "user_funcs": [
+            (user_func_kind(n), Path(n).name, members[n]) for n in roles["user_funcs"]
+        ],
         # Everything, under its archive-relative name, for re-emission (#290).
         "members": members,
         "manifest": manifest,
@@ -468,6 +503,7 @@ def unpack(data: bytes) -> dict:
             "obs": list(roles["obs"]),
             "params": list(roles["params"]),
             "module_config": list(roles["module_config"]),
+            "user_funcs": list(roles["user_funcs"]),
         },
     }
     return out

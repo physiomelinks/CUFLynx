@@ -27,6 +27,8 @@ import threading
 import zipfile
 from dataclasses import dataclass, field
 
+from omex_import import user_func_kind
+
 #: What ``/api/health`` calls itself. PhLynx keys off this to be sure the thing
 #: answering on 8787 is CUFLynx and not some other local service.
 APP_NAME = "CUFLynx"
@@ -60,6 +62,10 @@ class PendingStudy:
             "filename": self.filename,
             "bytes": len(self.data),
             "members": list(self.members),
+            # Python that accepting will install into the user's custom funcs, and
+            # that CA then runs: the one part of a study that is code. Named
+            # separately so the dialog can say so before the user agrees to it.
+            "user_funcs": [m for m in self.members if user_func_kind(m)],
         }
 
 

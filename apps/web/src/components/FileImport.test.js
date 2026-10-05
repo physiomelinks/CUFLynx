@@ -999,6 +999,28 @@ describe('FileImport omex (#149)', () => {
     await dropOn('obs-drop', json)
     expect(uploadOmex).not.toHaveBeenCalled()
   })
+
+  // The archive's own operation funcs are installed into Custom funcs on import;
+  // the notice names the ones that were, and the rest arrive as warnings.
+  it('names the funcs the archive added to Custom funcs', async () => {
+    uploadOmex.mockResolvedValue({
+      ...RESPONSE,
+      user_funcs: [
+        { kind: 'operation', name: 'ratio', origin: 'operation_funcs_user.py', status: 'installed' },
+        { kind: 'operation', name: 'spread', origin: 'operation_funcs_user.py', status: 'conflict' },
+      ],
+      warnings: ["operation 'spread' from operation_funcs_user.py was not installed"],
+    })
+    const wrapper = await dropOn('cellml-drop')
+    expect(wrapper.vm.notice).toContain('added to Custom funcs: ratio (operation)')
+    expect(wrapper.vm.notice).not.toContain('spread')
+    expect(wrapper.vm.warnings.join(' ')).toContain("'spread'")
+  })
+
+  it('says nothing about funcs when the archive carries none', async () => {
+    const wrapper = await dropOn('cellml-drop')
+    expect(wrapper.vm.notice).not.toContain('Custom funcs')
+  })
 })
 
 // External python models: the user drops a .py holding the solver class itself.
@@ -1135,6 +1157,27 @@ describe('FileImport — the PhLynx inbox', () => {
     const members = wrapper.find('[data-testid="inbox-members"]').text()
     expect(members).toContain('model.cellml')
     expect(members).toContain('heart_obs_data.json')
+  })
+
+  // Accepting a study that carries funcs installs Python that CA later runs, so
+  // the dialog says so before the user agrees rather than after.
+  it('warns when the delivery carries Python funcs', async () => {
+    peekInbox.mockResolvedValue({
+      ...PENDING,
+      members: [...PENDING.members, 'operation_funcs_user.py'],
+      user_funcs: ['operation_funcs_user.py'],
+    })
+    const wrapper = await mounted()
+    const note = wrapper.find('[data-testid="inbox-user-funcs"]')
+    expect(note.exists()).toBe(true)
+    expect(note.text()).toContain('operation_funcs_user.py')
+    expect(note.text()).toContain('trust')
+  })
+
+  it('has no funcs warning for a study without them', async () => {
+    peekInbox.mockResolvedValue({ ...PENDING, user_funcs: [] })
+    const wrapper = await mounted()
+    expect(wrapper.find('[data-testid="inbox-user-funcs"]').exists()).toBe(false)
   })
 
   it('loads nothing until the user accepts', async () => {
