@@ -46,7 +46,7 @@ from .discovery import group_key
 from .errors import ObsExtractError
 from .features import accepts_range, evaluate, plan_call
 from .modifiers import apply_modifiers, check_references, load_modifiers
-from .preprocess import command_trace
+from .preprocess import command_trace, median_window_samples, running_median
 from .readers import CURRENT, VOLTAGE, open_recording
 from .windows import detect_stim_window, resolve_range
 
@@ -262,6 +262,7 @@ def _extract_dataset(doc, config, dataset, group, features, recording, binding,
 
     held_out = config_mod.study_role_for(config, dataset) == config_mod.VALIDATION
     used_any = False
+    median_noted = False
     for sweep_index in _sweep_indices(dataset, config, recording):
         if cancelled():
             return used_any
@@ -279,6 +280,20 @@ def _extract_dataset(doc, config, dataset, group, features, recording, binding,
         for note in notes:
             if "not applied" in note:
                 outcome.warnings.append(f"{case}: {note}")
+
+        median_s = group.get("command_median_s")
+        if median_s and stimulus == "voltage" and len(t) > 1:
+            # After the modifiers (the transient is in the corrected command
+            # too) and before window detection and smoothing, so neither sees it.
+            rate = 1.0 / float(np.median(np.diff(t)))
+            n = median_window_samples(float(median_s), rate)
+            signals = dict(signals)
+            signals[command_name] = running_median(signals[command_name], n)
+            if not median_noted:
+                median_noted = True
+                outcome.notes.append(
+                    f"{case}: voltage command median-filtered over {n} samples "
+                    f"({float(median_s) * 1e3:g} ms at {rate:.0f} Hz)")
 
         window = detect_stim_window(
             t, signals[command_name], stimulus,
