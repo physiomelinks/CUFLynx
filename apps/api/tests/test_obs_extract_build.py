@@ -231,8 +231,8 @@ def test_provenance_reaches_the_items(tmp_path):
 
 
 def test_extraction_emits_no_prediction_items(tmp_path):
-    """A prediction is an extra entry in obs_data, not something extraction
-    invents -- the CLI hardcodes one per experiment."""
+    """A calibration extraction invents no prediction -- the CLI hardcodes one
+    per experiment. Only a validation recording becomes a prediction_item."""
     doc, _ = _build(_config(_corpus(tmp_path)))
     assert doc["prediction_items"] == []
 
@@ -392,3 +392,206 @@ def test_an_unreachable_ca_registry_is_named_as_the_cause(tmp_path):
     with pytest.raises(ObsExtractError, match="operation registry is unavailable"):
         build_obs_data(_config(_corpus(tmp_path)), operation_funcs=None,
                        variables=VARIABLES)
+
+
+# ---------------------------------------------------------------------------
+# A modifier reading another channel: the series-resistance correction.
+
+RS_MV_PER_PA = 0.01112  # 11.12 MOhm
+
+
+def _rs_corpus(root, n_sweeps=2, n=400):
+    """Voltage clamp whose "Vm" channel is the command plus I*Rs, as on the
+    Wistar .wcp recordings: steps of 20 mV carrying 1000 pA per step."""
+    (root / "4AP").mkdir(exist_ok=True)
+    sweeps = []
+    for s in range(n_sweeps):
+        im = step(n, 0.0, 1000.0 * (s + 1), lo=100, hi=300)
+        command = step(n, -70.0, -70.0 + 20.0 * (s + 1), lo=100, hi=300)
+        sweeps.append([command + RS_MV_PER_PA * im, im])
+    write_csv(root / "4AP" / "200926_001.1.Currentsteps.1.csv", sweeps, dt=1e-4)
+    return root
+
+
+def _vc_config(root):
+    return _config(root, stimulus="voltage", features=[{
+        "operation": "max_in_range", "unit": "picoA", "unit_confirmed": True,
+        "operation_kwargs": {}, "name_suffix": "imax"}])
+
+
+def _command_peaks(doc):
+    return [max(tr["values"]) for tr in doc["protocol_info"]["protocol_traces"].values()]
+
+
+def test_the_series_resistance_correction_reaches_the_clamp_command(tmp_path):
+    """Uncorrected, the fed command overshoots by Rs*I (11.1 and 22.2 mV here);
+    with ``X - 0.01112 * current`` it is the command that was applied."""
+    root = _rs_corpus(tmp_path)
+    plain, _ = _build(_vc_config(root))
+    assert _command_peaks(plain) == pytest.approx([-50.0 + 11.12, -30.0 + 22.24], abs=0.5)
+
+    cfg = _vc_config(root)
+    cfg["data_modifiers"] = [{"name": "series_resistance", "target": "voltage",
+                              "modifier": f"X - {RS_MV_PER_PA} * current"}]
+    corrected, _ = _build(cfg)
+    assert _command_peaks(corrected) == pytest.approx([-50.0, -30.0], abs=0.5)
+
+
+def test_a_modifier_reading_a_missing_channel_skips_the_dataset_by_name(tmp_path):
+    cfg = _vc_config(_rs_corpus(tmp_path))
+    cfg["data_modifiers"] = [{"name": "series_resistance", "target": "voltage",
+                              "modifier": "X - 0.01112 * I_ref"}]
+    lines = []
+    with pytest.raises(ObsExtractError, match="no data items"):
+        _build(cfg, log=lines.append)
+    assert any("[skip]" in line and "series_resistance" in line and "'I_ref'" in line
+               for line in lines)
+
+
+# ---------------------------------------------------------------------------
+# study_role: validation recordings are held out, as prediction_items.
+
+def test_a_validation_group_is_held_out_as_prediction_items(tmp_path):
+    doc, outcome = _build(_config(_corpus(tmp_path), study_role="validation"))
+    assert doc["data_items"] == []
+    assert len(doc["prediction_items"]) == 3
+    assert outcome.n_prediction_items == 3 and outcome.n_data_items == 0
+    assert len(doc["protocol_info"]["sim_times"]) == 3, "still simulated, to be compared"
+    for k, item in enumerate(doc["prediction_items"]):
+        assert item["data_type"] == "constant"
+        assert item["value"] == pytest.approx(-70.0 + 8.0 * (k + 1), abs=0.1)
+        assert item["std"] == 4.0
+        assert item["operation"] == "max_in_range"
+        assert item["experiment_idx"] == k and item["subexperiment_idx"] == 1
+        assert not {"weight", "cost_type", "plot_type", "source"} & set(item), \
+            "never scored, and outside the prediction_item schema"
+    assert any("nothing to calibrate against" in w for w in outcome.warnings)
+
+
+def test_a_dataset_role_overrides_its_groups(tmp_path):
+    root = _corpus(tmp_path)
+    write_csv(root / "4AP" / "200926_002.1.Currentsteps.1.csv",
+              [[step(400, -70.0, -50.0, lo=100, hi=300),
+                step(400, 0.0, 20.0, lo=100, hi=300)]], dt=1e-4)
+    cfg = _config(root)
+    assert len(cfg["datasets"]) == 2
+    held = cfg["datasets"][1]
+    held["study_role"] = "validation"
+    doc, _ = _build(cfg)
+
+    held_case = held["case_name"]
+    assert all(held_case not in i["trace_name_for_plotting"] for i in doc["data_items"])
+    assert doc["prediction_items"]
+    assert all(held_case in i["trace_name_for_plotting"] for i in doc["prediction_items"])
+    names = [i["data_item_name"] for i in doc["data_items"] + doc["prediction_items"]]
+    assert len(names) == len(set(names)), "unique across both lists, as CA requires"
+
+
+def test_a_validation_series_is_inline_with_obs_dt(tmp_path):
+    """A prediction_item has no value_path, so the held-out trace is inline,
+    decimated to the clamp output rate (10 kHz -> 1 kHz here)."""
+    cfg = _config(_corpus(tmp_path, n_sweeps=1), study_role="validation", features=[
+        {"operation": "series", "unit": "milliV", "unit_confirmed": True,
+         "std": {"mode": "absolute", "value": 2.0}}])
+    doc, _ = _build(cfg)
+    (item,) = doc["prediction_items"]
+    assert item["data_type"] == "series"
+    assert item["obs_dt"] == pytest.approx(1e-3)
+    assert item["std"] == 2.0
+    assert isinstance(item["value"], list) and len(item["value"]) >= 10
+    assert "value_path" not in item and "weight" not in item
+
+
+def test_calibration_is_unchanged_by_the_role(tmp_path):
+    doc, _ = _build(_config(_corpus(tmp_path), study_role="calibration"))
+    assert len(doc["data_items"]) == 3 and doc["prediction_items"] == []
+    assert all("weight" in i for i in doc["data_items"])
+
+
+# ---------------------------------------------------------------------------
+# command_median_s: the amplifier's own transient at a voltage-clamp step edge.
+#
+# On the Wistar Kv-90 files Vm0 jumps to +244 mV for 4-5 samples (~0.5 ms at
+# 9.8 kHz) at each edge while Im0 is only 4.6 nA, so I*Rs does not describe it
+# and the fed command ranged -172..+150 mV. A 1 ms median removes it.
+
+from obs_extract.preprocess import median_window_samples, running_median  # noqa: E402
+
+
+def _spiky_step(n=400, lo=100, hi=300, base=-70.0, level=20.0, spike=244.0, width=5):
+    clean = step(n, base, level, lo=lo, hi=hi)
+    spiky = clean.copy()
+    spiky[lo:lo + width] = spike
+    spiky[hi:hi + width] = -spike
+    return clean, spiky
+
+
+def test_a_running_median_turns_an_edge_spike_back_into_a_clean_step():
+    clean, spiky = _spiky_step()
+    assert np.array_equal(running_median(spiky, 11), clean)
+
+
+def test_a_running_median_of_one_sample_is_the_identity():
+    _, spiky = _spiky_step()
+    assert np.array_equal(running_median(spiky, 1), spiky)
+
+
+def test_edges_are_padded_by_repetition():
+    x = np.array([5.0, 0.0, 0.0, 0.0, 9.0])
+    assert running_median(x, 3).tolist() == [5.0, 0.0, 0.0, 0.0, 9.0]
+    assert running_median(x, 3).shape == x.shape
+
+
+@pytest.mark.parametrize("rate_hz,expected", [(9800.0, 11), (21500.0, 23), (10000.0, 11)])
+def test_the_median_width_is_an_odd_sample_count(rate_hz, expected):
+    n = median_window_samples(1e-3, rate_hz)
+    assert n == expected and n % 2 == 1
+
+
+def test_an_even_window_is_refused():
+    with pytest.raises(ObsExtractError, match="odd"):
+        running_median(np.zeros(5), 4)
+
+
+def _spiky_vc_config(root, **group):
+    (root / "4AP").mkdir(exist_ok=True)
+    sweeps = []
+    for s in range(2):
+        _, vm = _spiky_step(level=-70.0 + 20.0 * (s + 1))
+        sweeps.append([vm, step(400, 0.0, 100.0 * (s + 1), lo=100, hi=300)])
+    write_csv(root / "4AP" / "200926_001.1.Currentsteps.1.csv", sweeps, dt=1e-4)
+    return _config(root, stimulus="voltage", features=[{
+        "operation": "max_in_range", "unit": "picoA", "unit_confirmed": True,
+        "operation_kwargs": {}, "name_suffix": "imax"}], **group)
+
+
+def _command_range(doc):
+    values = [v for tr in doc["protocol_info"]["protocol_traces"].values()
+              for v in tr["values"]]
+    return min(values), max(values)
+
+
+def test_the_command_median_removes_the_edge_transient_from_the_fed_command(tmp_path):
+    off, _ = _build(_spiky_vc_config(tmp_path))
+    lo, hi = _command_range(off)
+    assert hi > 60.0 or lo < -120.0, "the transient reaches the command when off"
+
+    on, outcome = _build(_spiky_vc_config(tmp_path, command_median_s=1e-3))
+    lo, hi = _command_range(on)
+    # The traces span the stimulus windows: steps to -50 and -30 mV.
+    assert lo == pytest.approx(-50.0, abs=1.0)
+    assert hi == pytest.approx(-30.0, abs=1.0)
+    assert any("median-filtered over 11 samples" in n for n in outcome.notes)
+
+
+def test_the_command_median_off_leaves_the_trace_unchanged(tmp_path):
+    absent, _ = _build(_spiky_vc_config(tmp_path))
+    null, _ = _build(_spiky_vc_config(tmp_path, command_median_s=None))
+    assert absent["protocol_info"]["protocol_traces"] == null["protocol_info"]["protocol_traces"]
+
+
+def test_the_command_median_is_only_for_a_voltage_command(tmp_path):
+    """A current-clamp group ignores it: its command is a current step."""
+    a, _ = _build(_config(_corpus(tmp_path)))
+    b, _ = _build(_config(_corpus(tmp_path), command_median_s=1e-3))
+    assert a["protocol_info"]["protocol_traces"] == b["protocol_info"]["protocol_traces"]
