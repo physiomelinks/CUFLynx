@@ -25,7 +25,7 @@ import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from .config import timeline_for
+from .config import VALIDATION, study_role_for, timeline_for
 from .discovery import split_group_key
 
 #: Enough for a long document; a runaway pdflatex must not hang a job.
@@ -174,7 +174,9 @@ def _header(config: dict, outcome) -> str:
         f"Datasets used & {getattr(outcome, 'datasets_used', 0)} \\\\\n",
         f"Sweeps used & {getattr(outcome, 'sweeps_used', 0)} \\\\\n",
         f"Experiments & {getattr(outcome, 'n_experiments', 0)} \\\\\n",
-        f"Data items & {getattr(outcome, 'n_data_items', 0)} \\\\\n",
+        f"Data items (calibration, scored) & {getattr(outcome, 'n_data_items', 0)} \\\\\n",
+        f"Prediction items (validation, held out) & "
+        f"{getattr(outcome, 'n_prediction_items', 0)} \\\\\n",
         f"Clamp output rate & {escape(prep.get('clamp_output_hz'))} Hz \\\\\n",
         f"Stimulus threshold & {escape(stim.get('current_threshold'))} (current), "
         f"{escape(stim.get('voltage_threshold'))} (voltage) \\\\\n",
@@ -215,7 +217,9 @@ def _modifier_section(config: dict) -> str:
                 "used as they were recorded.\n\n")
     out = ["\\section*{Data modifiers}\n",
            "Applied in this order, to the recorded channels, before any "
-           "measurement.\n\n\\begin{tabular}{lll}\n\\toprule\n",
+           "measurement. \\texttt{X} is the target channel; any other name in "
+           "an expression is another channel, read as it stood after the "
+           "modifiers above it.\n\n\\begin{tabular}{lll}\n\\toprule\n",
            "Name & Target & Expression \\\\\n\\midrule\n"]
     for mod in modifiers:
         out.append(f"{escape(mod.get('name'))} & {escape(mod.get('target'))} & "
@@ -229,6 +233,15 @@ def _dataset_section(config: dict, role: str, thumbnails: dict) -> str:
     rows = [d for d in (config.get("datasets") or [])
             if d.get("used") and _role_of(config, d) == role]
     heading = f"\\section*{{{role.capitalize()} datasets ({len(rows)})}}\n"
+    if role == VALIDATION:
+        heading += ("Held out. Every feature of these recordings was written to "
+                    "\\texttt{prediction\\_items} with its measured value, so "
+                    "it is never scored in the calibration and is compared with "
+                    "the calibrated model afterwards.\n\n")
+    else:
+        heading += ("Every feature of these recordings was written to "
+                    "\\texttt{data\\_items} and is scored in the "
+                    "calibration.\n\n")
     if not rows:
         return heading + "None.\n\n"
     out = [heading,
@@ -336,8 +349,7 @@ def _outcome_section(outcome) -> str:
 
 # ---------------------------------------------------------------------------
 def _role_of(config: dict, dataset: dict) -> str:
-    role = dataset.get("study_role") or (_group_of(config, dataset) or {}).get("study_role")
-    return "validation" if str(role).lower().startswith("v") else "calibration"
+    return study_role_for(config, dataset)
 
 
 def _group_of(config: dict, dataset: dict) -> dict | None:

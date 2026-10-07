@@ -231,8 +231,8 @@ def test_provenance_reaches_the_items(tmp_path):
 
 
 def test_extraction_emits_no_prediction_items(tmp_path):
-    """A prediction is an extra entry in obs_data, not something extraction
-    invents -- the CLI hardcodes one per experiment."""
+    """A calibration extraction invents no prediction -- the CLI hardcodes one
+    per experiment. Only a validation recording becomes a prediction_item."""
     doc, _ = _build(_config(_corpus(tmp_path)))
     assert doc["prediction_items"] == []
 
@@ -392,3 +392,117 @@ def test_an_unreachable_ca_registry_is_named_as_the_cause(tmp_path):
     with pytest.raises(ObsExtractError, match="operation registry is unavailable"):
         build_obs_data(_config(_corpus(tmp_path)), operation_funcs=None,
                        variables=VARIABLES)
+
+
+# ---------------------------------------------------------------------------
+# A modifier reading another channel: the series-resistance correction.
+
+RS_MV_PER_PA = 0.01112  # 11.12 MOhm
+
+
+def _rs_corpus(root, n_sweeps=2, n=400):
+    """Voltage clamp whose "Vm" channel is the command plus I*Rs, as on the
+    Wistar .wcp recordings: steps of 20 mV carrying 1000 pA per step."""
+    (root / "4AP").mkdir(exist_ok=True)
+    sweeps = []
+    for s in range(n_sweeps):
+        im = step(n, 0.0, 1000.0 * (s + 1), lo=100, hi=300)
+        command = step(n, -70.0, -70.0 + 20.0 * (s + 1), lo=100, hi=300)
+        sweeps.append([command + RS_MV_PER_PA * im, im])
+    write_csv(root / "4AP" / "200926_001.1.Currentsteps.1.csv", sweeps, dt=1e-4)
+    return root
+
+
+def _vc_config(root):
+    return _config(root, stimulus="voltage", features=[{
+        "operation": "max_in_range", "unit": "picoA", "unit_confirmed": True,
+        "operation_kwargs": {}, "name_suffix": "imax"}])
+
+
+def _command_peaks(doc):
+    return [max(tr["values"]) for tr in doc["protocol_info"]["protocol_traces"].values()]
+
+
+def test_the_series_resistance_correction_reaches_the_clamp_command(tmp_path):
+    """Uncorrected, the fed command overshoots by Rs*I (11.1 and 22.2 mV here);
+    with ``X - 0.01112 * current`` it is the command that was applied."""
+    root = _rs_corpus(tmp_path)
+    plain, _ = _build(_vc_config(root))
+    assert _command_peaks(plain) == pytest.approx([-50.0 + 11.12, -30.0 + 22.24], abs=0.5)
+
+    cfg = _vc_config(root)
+    cfg["data_modifiers"] = [{"name": "series_resistance", "target": "voltage",
+                              "modifier": f"X - {RS_MV_PER_PA} * current"}]
+    corrected, _ = _build(cfg)
+    assert _command_peaks(corrected) == pytest.approx([-50.0, -30.0], abs=0.5)
+
+
+def test_a_modifier_reading_a_missing_channel_skips_the_dataset_by_name(tmp_path):
+    cfg = _vc_config(_rs_corpus(tmp_path))
+    cfg["data_modifiers"] = [{"name": "series_resistance", "target": "voltage",
+                              "modifier": "X - 0.01112 * I_ref"}]
+    lines = []
+    with pytest.raises(ObsExtractError, match="no data items"):
+        _build(cfg, log=lines.append)
+    assert any("[skip]" in line and "series_resistance" in line and "'I_ref'" in line
+               for line in lines)
+
+
+# ---------------------------------------------------------------------------
+# study_role: validation recordings are held out, as prediction_items.
+
+def test_a_validation_group_is_held_out_as_prediction_items(tmp_path):
+    doc, outcome = _build(_config(_corpus(tmp_path), study_role="validation"))
+    assert doc["data_items"] == []
+    assert len(doc["prediction_items"]) == 3
+    assert outcome.n_prediction_items == 3 and outcome.n_data_items == 0
+    assert len(doc["protocol_info"]["sim_times"]) == 3, "still simulated, to be compared"
+    for k, item in enumerate(doc["prediction_items"]):
+        assert item["data_type"] == "constant"
+        assert item["value"] == pytest.approx(-70.0 + 8.0 * (k + 1), abs=0.1)
+        assert item["std"] == 4.0
+        assert item["operation"] == "max_in_range"
+        assert item["experiment_idx"] == k and item["subexperiment_idx"] == 1
+        assert not {"weight", "cost_type", "plot_type", "source"} & set(item), \
+            "never scored, and outside the prediction_item schema"
+    assert any("nothing to calibrate against" in w for w in outcome.warnings)
+
+
+def test_a_dataset_role_overrides_its_groups(tmp_path):
+    root = _corpus(tmp_path)
+    write_csv(root / "4AP" / "200926_002.1.Currentsteps.1.csv",
+              [[step(400, -70.0, -50.0, lo=100, hi=300),
+                step(400, 0.0, 20.0, lo=100, hi=300)]], dt=1e-4)
+    cfg = _config(root)
+    assert len(cfg["datasets"]) == 2
+    held = cfg["datasets"][1]
+    held["study_role"] = "validation"
+    doc, _ = _build(cfg)
+
+    held_case = held["case_name"]
+    assert all(held_case not in i["trace_name_for_plotting"] for i in doc["data_items"])
+    assert doc["prediction_items"]
+    assert all(held_case in i["trace_name_for_plotting"] for i in doc["prediction_items"])
+    names = [i["data_item_name"] for i in doc["data_items"] + doc["prediction_items"]]
+    assert len(names) == len(set(names)), "unique across both lists, as CA requires"
+
+
+def test_a_validation_series_is_inline_with_obs_dt(tmp_path):
+    """A prediction_item has no value_path, so the held-out trace is inline,
+    decimated to the clamp output rate (10 kHz -> 1 kHz here)."""
+    cfg = _config(_corpus(tmp_path, n_sweeps=1), study_role="validation", features=[
+        {"operation": "series", "unit": "milliV", "unit_confirmed": True,
+         "std": {"mode": "absolute", "value": 2.0}}])
+    doc, _ = _build(cfg)
+    (item,) = doc["prediction_items"]
+    assert item["data_type"] == "series"
+    assert item["obs_dt"] == pytest.approx(1e-3)
+    assert item["std"] == 2.0
+    assert isinstance(item["value"], list) and len(item["value"]) >= 10
+    assert "value_path" not in item and "weight" not in item
+
+
+def test_calibration_is_unchanged_by_the_role(tmp_path):
+    doc, _ = _build(_config(_corpus(tmp_path), study_role="calibration"))
+    assert len(doc["data_items"]) == 3 and doc["prediction_items"] == []
+    assert all("weight" in i for i in doc["data_items"])

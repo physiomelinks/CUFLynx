@@ -116,6 +116,14 @@ def test_datasets_are_split_by_study_role(tmp_path):
     assert "Validation datasets (1)" in text
 
 
+def test_the_report_says_validation_is_held_out(tmp_path):
+    outcome = _outcome()
+    outcome.n_prediction_items = 4
+    text = open(write_report(_config(), outcome, str(tmp_path)).tex_path).read()
+    assert "Prediction items (validation, held out) & 4" in text
+    assert "prediction\\_items} with its measured value" in text
+
+
 def test_the_outcome_section_says_what_was_skipped_and_why(tmp_path):
     """The section the CLI's report has no equivalent of. "Why are there only 40
     items?" has no other answer."""
