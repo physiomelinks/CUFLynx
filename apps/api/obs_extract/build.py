@@ -14,6 +14,16 @@ Per sweep the work is:
 4. evaluate each configured feature over its range and emit a ``data_item``;
 5. optionally emit the sweep itself as a weight-0 ground-truth series.
 
+**Calibration and validation go to different lists.** A recording whose
+``study_role`` (the dataset's own, else its group's) is ``validation`` is
+held-out data: each of its features becomes a ``prediction_item`` carrying the
+measured ``value``, ``data_type`` and ``std`` -- and, for a series, ``obs_dt`` --
+rather than a ``data_item``. CA never scores a prediction_item in the
+calibration; it compares the calibrated model with it afterwards (CA #535, with
+``operation``/``operation_kwargs``/``subexperiment_idx`` from #536; CUFLynx
+#365/#366 read it). Its experiment is still a protocol_info row, because the
+model has to be run on it to be compared. Calibration recordings are unchanged.
+
 Everything model-specific -- which parameter is the command, which variable is
 observed -- arrives through :class:`~obs_extract.binding.ModelBinding`, so the
 same code serves any CUFLynx model.
@@ -35,7 +45,7 @@ from .binding import ModelBinding, validate as validate_binding
 from .discovery import group_key
 from .errors import ObsExtractError
 from .features import accepts_range, evaluate, plan_call
-from .modifiers import apply_modifiers, load_modifiers
+from .modifiers import apply_modifiers, check_references, load_modifiers
 from .preprocess import command_trace
 from .readers import CURRENT, VOLTAGE, open_recording
 from .windows import detect_stim_window, resolve_range
@@ -50,6 +60,8 @@ class Outcome:
 
     n_experiments: int = 0
     n_data_items: int = 0
+    #: Held-out (validation) items, in ``prediction_items``.
+    n_prediction_items: int = 0
     datasets_used: int = 0
     sweeps_used: int = 0
     skipped: list[dict] = field(default_factory=list)
@@ -151,7 +163,7 @@ def build_obs_data(
             outcome.datasets_used += 1
 
     was_cancelled = cancelled()
-    if not doc["data_items"]:
+    if not doc["data_items"] and not doc["prediction_items"]:
         # A cancelled run and an unextractable one are different problems, and
         # reporting the first as the second sends the user looking for a fault
         # in a config that was fine.
@@ -162,6 +174,14 @@ def build_obs_data(
         raise ObsExtractError(
             "extraction produced no data items. Every included dataset was "
             "skipped or every feature returned nothing -- see the log for which.")
+    if not doc["data_items"]:
+        # Legitimate -- a held-out set extracted on its own -- but a calibration
+        # run on this document alone would have nothing to fit.
+        outcome.warnings.append(
+            f"every item is validation ({len(doc['prediction_items'])} "
+            f"prediction_item(s)) and none is calibration: this obs_data has "
+            f"nothing to calibrate against on its own.")
+        log("[warning] " + outcome.warnings[-1])
     if was_cancelled:
         # Partial, but real. Keeping what was extracted matches how a cancelled
         # UQ run keeps the chain it had already sampled -- and the alternative,
@@ -177,6 +197,7 @@ def build_obs_data(
     _validate_with_ca(doc, outcome, log)
     outcome.n_experiments = len(doc["protocol_info"]["sim_times"])
     outcome.n_data_items = len(doc["data_items"])
+    outcome.n_prediction_items = len(doc["prediction_items"])
     return doc, outcome
 
 
@@ -230,6 +251,16 @@ def _extract_dataset(doc, config, dataset, group, features, recording, binding,
         outcome.skip(case, f"no {command_role} channel to build the clamp command from")
         return False
 
+    try:
+        # Once per recording rather than per sweep: a modifier reading a channel
+        # this file does not have is a fact about the file.
+        check_references(modifiers, roles)
+    except ObsExtractError as exc:
+        outcome.skip(case, str(exc))
+        log(f"[skip] {case}: {exc}")
+        return False
+
+    held_out = config_mod.study_role_for(config, dataset) == config_mod.VALIDATION
     used_any = False
     for sweep_index in _sweep_indices(dataset, config, recording):
         if cancelled():
@@ -240,7 +271,11 @@ def _extract_dataset(doc, config, dataset, group, features, recording, binding,
             outcome.skip(case, f"sweep {sweep_index}: {exc}", sweep=sweep_index)
             continue
 
-        signals, notes = apply_modifiers(signals, roles, modifiers)
+        try:
+            signals, notes = apply_modifiers(signals, roles, modifiers)
+        except ObsExtractError as exc:
+            outcome.skip(case, f"sweep {sweep_index}: {exc}", sweep=sweep_index)
+            continue
         for note in notes:
             if "not applied" in note:
                 outcome.warnings.append(f"{case}: {note}")
@@ -263,7 +298,9 @@ def _extract_dataset(doc, config, dataset, group, features, recording, binding,
         emitted = _emit_features(
             doc, features, operation_funcs, binding, stimulus, t, signals,
             measured_name, window, experiment, timeline, case, sweep_index,
-            provenance, names_used, outcome, log, recording, group, series_dir)
+            provenance, names_used, outcome, log, recording, group, series_dir,
+            held_out=held_out,
+            series_hz=float(prep.get("clamp_output_hz") or 1000.0))
         if emitted:
             used_any = True
             outcome.sweeps_used += 1
@@ -358,7 +395,12 @@ def _trace_name(stimulus: str, experiment: int, case: str, sweep: int) -> str:
 def _emit_features(doc, features, operation_funcs, binding, stimulus, t, signals,
                    measured_name, window, experiment, timeline, case, sweep_index,
                    provenance, names_used, outcome, log, recording, group,
-                   series_dir=None) -> bool:
+                   series_dir=None, *, held_out=False, series_hz=1000.0) -> bool:
+    """Evaluate the features on one sweep; True if anything was emitted.
+
+    ``held_out`` sends every item to ``prediction_items`` instead of
+    ``data_items`` (see the module docstring).
+    """
     measured_variable = binding.measured_variable(stimulus)
     x = signals[measured_name]
     stim_sub = int(timeline.get("stim_subexperiment_index") or 0)
@@ -369,6 +411,12 @@ def _emit_features(doc, features, operation_funcs, binding, stimulus, t, signals
     for feature in features:
         operation = feature.get("operation")
         if operation == SERIES_FEATURE:
+            if held_out:
+                doc["prediction_items"].append(_held_out_series_item(
+                    feature, measured_variable, t, x, window, experiment,
+                    stim_sub, case, sweep_index, names_used, series_hz))
+                emitted = True
+                continue
             item = _series_item(feature, measured_variable, t, x, window,
                                 experiment, stim_sub, case, sweep_index,
                                 provenance, names_used, recording, series_dir)
@@ -416,9 +464,72 @@ def _emit_features(doc, features, operation_funcs, binding, stimulus, t, signals
 
         item = _data_item(feature, plan, value, experiment, stim_sub, case,
                           sweep_index, provenance, names_used, recording, group)
-        doc["data_items"].append(item)
+        if held_out:
+            doc["prediction_items"].append(_as_prediction_item(item))
+        else:
+            doc["data_items"].append(item)
         emitted = True
     return emitted
+
+
+#: Every key a ``prediction_item`` may carry (CA #535/#536). A held-out item is
+#: built as a data_item and cut down to these: ``weight``, ``cost_type`` and
+#: ``cost_kwargs`` have no meaning for an item that is never scored, and
+#: ``plot_type``/``source``/``species``/``location`` are not in its schema.
+PREDICTION_ITEM_KEYS = (
+    "data_item_name", "operands", "unit", "trace_name_for_plotting",
+    "item_name_for_plotting", "experiment_idx", "subexperiment_idx",
+    "data_type", "value", "std", "obs_dt", "operation", "operation_kwargs",
+)
+
+#: The keys :data:`PREDICTION_ITEM_KEYS` adds to a bare prediction_item -- the
+#: held-out data (#535) and the reduction to a scalar (#536). See
+#: :func:`_validate_with_ca` for why they are taken off for the schema check.
+_HELD_OUT_KEYS = ("data_type", "value", "std", "obs_dt", "operation",
+                  "operation_kwargs", "subexperiment_idx")
+
+
+def _as_prediction_item(item: dict) -> dict:
+    """A constant data_item as held-out data: same name, operation and value."""
+    out = {k: item[k] for k in PREDICTION_ITEM_KEYS if k in item}
+    if not out.get("operation_kwargs"):
+        out.pop("operation_kwargs", None)
+    return out
+
+
+def _held_out_series_item(feature, measured_variable, t, x, window, experiment,
+                          subexperiment, case, sweep_index, names_used,
+                          series_hz) -> dict:
+    """The recorded sweep as a held-out series prediction_item.
+
+    Inline, unlike a calibration series: a prediction_item has ``value`` and no
+    ``value_path``. To keep that file openable the sweep is decimated by an
+    integer stride to at most ``preprocess.clamp_output_hz`` -- the rate the
+    clamp command is already resampled to -- and ``obs_dt`` is the decimated
+    step, which is where CA compares the model.
+    """
+    t_win = np.asarray(window.slice(t), dtype=float)
+    x_win = np.asarray(window.slice(x), dtype=float)
+    dt = float(np.median(np.diff(t_win))) if t_win.size > 1 else 0.0
+    stride = max(1, int(np.floor((1.0 / series_hz) / dt + 1e-9))) if dt > 0 else 1
+    values = x_win[::stride]
+    name = _unique_name({"name_suffix": feature.get("name_suffix") or "gt"},
+                        type("P", (), {"operation": "series"})(), case,
+                        sweep_index, names_used)
+    scale = float(np.max(np.abs(x_win))) if x_win.size else 1.0
+    return {
+        "data_item_name": name,
+        "trace_name_for_plotting": f"{case} sw{sweep_index}",
+        "item_name_for_plotting": name,
+        "data_type": "series",
+        "operands": [measured_variable],
+        "unit": feature.get("unit") or "dimensionless",
+        "value": [float(v) for v in values],
+        "std": float(_std_for(feature, scale)),
+        "obs_dt": dt * stride,
+        "experiment_idx": int(experiment),
+        "subexperiment_idx": int(subexperiment),
+    }
 
 
 def _series_item(feature, measured_variable, t, x, window, experiment,
@@ -607,18 +718,51 @@ def _is_command_row(by_exp: dict) -> bool:
     return False
 
 
+def _schema_checkable(doc: dict) -> dict:
+    """``doc`` with the held-out keys taken off its prediction_items.
+
+    The CA in reach may predate #535/#536 and refuse them as unknown keys, which
+    would fail an extraction over a schema the *runner* deals with: CUFLynx
+    strips them again (``obs_data.for_ca``) before an older CA reads the file.
+    What the schema check is for -- the protocol and the data_items -- is
+    unaffected; the held-out keys get :func:`_check_held_out` instead.
+    """
+    if not doc.get("prediction_items"):
+        return doc
+    out = dict(doc)
+    out["prediction_items"] = [
+        {k: v for k, v in it.items() if k not in _HELD_OUT_KEYS}
+        for it in doc["prediction_items"]
+    ]
+    return out
+
+
+def _check_held_out(doc: dict) -> None:
+    """CA #535's rules for a prediction_item with data, checked here."""
+    n_exp = len(doc["protocol_info"]["sim_times"])
+    for i, item in enumerate(doc.get("prediction_items") or []):
+        where = f"prediction_items[{i}] ({item.get('data_item_name')})"
+        if item.get("data_type") not in ("constant", "series"):
+            raise ObsExtractError(f"{where} has data_type {item.get('data_type')!r}")
+        if item["data_type"] == "series" and not item.get("obs_dt"):
+            raise ObsExtractError(f"{where} is a series with no obs_dt")
+        if not 0 <= int(item.get("experiment_idx", 0)) < n_exp:
+            raise ObsExtractError(f"{where} names an experiment that does not exist")
+
+
 def _validate_with_ca(doc: dict, outcome: Outcome, log) -> None:
     """Let CUFLynx's own validator (and so CA's parser) have the last word.
 
     Better here than at the editor's Save: the config that produced it is still
     on screen, and the message can be traced to a feature.
     """
+    _check_held_out(doc)
     try:
         import obs_data  # noqa: PLC0415
     except ImportError:  # pragma: no cover - obs_data is a sibling module
         return
     try:
-        parsed = obs_data.parse_obs_data(doc)
+        parsed = obs_data.parse_obs_data(_schema_checkable(doc))
     except Exception as exc:  # noqa: BLE001 - ObsDataError and anything CA raises
         raise ObsExtractError(
             f"the extracted obs_data was rejected: {exc}") from exc

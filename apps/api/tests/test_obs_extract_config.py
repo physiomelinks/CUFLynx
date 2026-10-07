@@ -283,3 +283,32 @@ def test_an_explicit_timeline_still_survives_a_switch():
     got = C.timeline_for(group)
     assert got["pre_time_s"] == 0.25, "what the user set is kept"
     assert got["stim_subexperiment_index"] == 0, "the rest follows the direction"
+
+
+@pytest.mark.parametrize("where", ["group", "dataset"])
+def test_an_unknown_study_role_is_refused(tmp_path, where):
+    """A typo must not quietly mean calibration: a held-out set would be fitted."""
+    cfg = _configured(tmp_path)
+    target = cfg["subprotocols"]["4AP|Kv-90"] if where == "group" else cfg["datasets"][0]
+    target["study_role"] = "valdiation"
+    with pytest.raises(ObsExtractError, match="valdiation"):
+        C.validate(cfg)
+
+
+def test_study_role_dataset_beats_group_and_defaults_to_calibration(tmp_path):
+    cfg = _configured(tmp_path)
+    d = cfg["datasets"][0]
+    assert C.study_role_for(cfg, d) == C.CALIBRATION
+    cfg["subprotocols"]["4AP|Kv-90"]["study_role"] = "validation"
+    assert C.study_role_for(cfg, d) == C.VALIDATION
+    d["study_role"] = "calibration"
+    assert C.study_role_for(cfg, d) == C.CALIBRATION
+
+
+def test_a_channel_reference_passes_validation(tmp_path):
+    """Whether the channel exists depends on the recording, so the config only
+    checks the grammar."""
+    cfg = _configured(tmp_path)
+    cfg["data_modifiers"].append({"name": "series_resistance", "target": "voltage",
+                                  "modifier": "X - 0.01112 * current"})
+    C.validate(cfg)
