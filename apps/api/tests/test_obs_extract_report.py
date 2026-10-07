@@ -116,6 +116,13 @@ def test_datasets_are_split_by_study_role(tmp_path):
     assert "Validation datasets (1)" in text
 
 
+def test_the_report_lists_a_command_median(tmp_path):
+    cfg = _config()
+    cfg["subprotocols"]["4AP|Kv-90"]["command_median_s"] = 1e-3
+    text = open(write_report(cfg, _outcome(), str(tmp_path)).tex_path).read()
+    assert "Command median filter & 1.0 ms" in text
+
+
 def test_the_report_says_validation_is_held_out(tmp_path):
     outcome = _outcome()
     outcome.n_prediction_items = 4

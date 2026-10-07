@@ -506,3 +506,92 @@ def test_calibration_is_unchanged_by_the_role(tmp_path):
     doc, _ = _build(_config(_corpus(tmp_path), study_role="calibration"))
     assert len(doc["data_items"]) == 3 and doc["prediction_items"] == []
     assert all("weight" in i for i in doc["data_items"])
+
+
+# ---------------------------------------------------------------------------
+# command_median_s: the amplifier's own transient at a voltage-clamp step edge.
+#
+# On the Wistar Kv-90 files Vm0 jumps to +244 mV for 4-5 samples (~0.5 ms at
+# 9.8 kHz) at each edge while Im0 is only 4.6 nA, so I*Rs does not describe it
+# and the fed command ranged -172..+150 mV. A 1 ms median removes it.
+
+from obs_extract.preprocess import median_window_samples, running_median  # noqa: E402
+
+
+def _spiky_step(n=400, lo=100, hi=300, base=-70.0, level=20.0, spike=244.0, width=5):
+    clean = step(n, base, level, lo=lo, hi=hi)
+    spiky = clean.copy()
+    spiky[lo:lo + width] = spike
+    spiky[hi:hi + width] = -spike
+    return clean, spiky
+
+
+def test_a_running_median_turns_an_edge_spike_back_into_a_clean_step():
+    clean, spiky = _spiky_step()
+    assert np.array_equal(running_median(spiky, 11), clean)
+
+
+def test_a_running_median_of_one_sample_is_the_identity():
+    _, spiky = _spiky_step()
+    assert np.array_equal(running_median(spiky, 1), spiky)
+
+
+def test_edges_are_padded_by_repetition():
+    x = np.array([5.0, 0.0, 0.0, 0.0, 9.0])
+    assert running_median(x, 3).tolist() == [5.0, 0.0, 0.0, 0.0, 9.0]
+    assert running_median(x, 3).shape == x.shape
+
+
+@pytest.mark.parametrize("rate_hz,expected", [(9800.0, 11), (21500.0, 23), (10000.0, 11)])
+def test_the_median_width_is_an_odd_sample_count(rate_hz, expected):
+    n = median_window_samples(1e-3, rate_hz)
+    assert n == expected and n % 2 == 1
+
+
+def test_an_even_window_is_refused():
+    with pytest.raises(ObsExtractError, match="odd"):
+        running_median(np.zeros(5), 4)
+
+
+def _spiky_vc_config(root, **group):
+    (root / "4AP").mkdir(exist_ok=True)
+    sweeps = []
+    for s in range(2):
+        _, vm = _spiky_step(level=-70.0 + 20.0 * (s + 1))
+        sweeps.append([vm, step(400, 0.0, 100.0 * (s + 1), lo=100, hi=300)])
+    write_csv(root / "4AP" / "200926_001.1.Currentsteps.1.csv", sweeps, dt=1e-4)
+    return _config(root, stimulus="voltage", features=[{
+        "operation": "max_in_range", "unit": "picoA", "unit_confirmed": True,
+        "operation_kwargs": {}, "name_suffix": "imax"}], **group)
+
+
+def _command_range(doc):
+    values = [v for tr in doc["protocol_info"]["protocol_traces"].values()
+              for v in tr["values"]]
+    return min(values), max(values)
+
+
+def test_the_command_median_removes_the_edge_transient_from_the_fed_command(tmp_path):
+    off, _ = _build(_spiky_vc_config(tmp_path))
+    lo, hi = _command_range(off)
+    assert hi > 60.0 or lo < -120.0, "the transient reaches the command when off"
+
+    on, outcome = _build(_spiky_vc_config(tmp_path, command_median_s=1e-3))
+    lo, hi = _command_range(on)
+    # The traces span the stimulus windows: steps to -50 and -30 mV.
+    assert lo == pytest.approx(-50.0, abs=1.0)
+    assert hi == pytest.approx(-30.0, abs=1.0)
+    assert any("median-filtered over 11 samples" in n for n in outcome.notes)
+
+
+def test_the_command_median_off_leaves_the_trace_unchanged(tmp_path):
+    absent, _ = _build(_spiky_vc_config(tmp_path))
+    null, _ = _build(_spiky_vc_config(tmp_path, command_median_s=None))
+    assert absent["protocol_info"]["protocol_traces"] == null["protocol_info"]["protocol_traces"]
+
+
+def test_the_command_median_is_only_for_a_voltage_command(tmp_path):
+    """A current-clamp group ignores it: its command is a current step."""
+    a, _ = _build(_config(_corpus(tmp_path)))
+    b, _ = _build(_config(_corpus(tmp_path), command_median_s=1e-3))
+    assert a["protocol_info"]["protocol_traces"] == b["protocol_info"]["protocol_traces"]

@@ -285,6 +285,9 @@ def _group_section(config: dict) -> str:
         out.append(f"Pre-time & {escape(timeline.get('pre_time_s'))} s \\\\\n")
         out.append(f"Settle & {escape(timeline.get('settle_time_s') or 'none')} \\\\\n")
         out.append(f"Stimulus sub-experiment & {escape(timeline.get('stim_subexperiment_index'))} \\\\\n")
+        if group.get("command_median_s"):
+            out.append(f"Command median filter & {escape(float(group['command_median_s']) * 1e3)} ms"
+                       f" (voltage command, before smoothing) \\\\\n")
         if group.get("modulated_parameter"):
             out.append(f"Modulated parameter & \\texttt{{{escape(group['modulated_parameter'])}}} "
                        f"({escape(group.get('param_pre_value'))} $\\rightarrow$ "

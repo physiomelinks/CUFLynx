@@ -312,3 +312,19 @@ def test_a_channel_reference_passes_validation(tmp_path):
     cfg["data_modifiers"].append({"name": "series_resistance", "target": "voltage",
                                   "modifier": "X - 0.01112 * current"})
     C.validate(cfg)
+
+
+@pytest.mark.parametrize("width", [0, -1e-3, "wide"])
+def test_a_bad_command_median_is_refused(tmp_path, width):
+    cfg = _configured(tmp_path)
+    cfg["subprotocols"]["4AP|Kv-90"]["command_median_s"] = width
+    with pytest.raises(ObsExtractError, match="command_median_s"):
+        C.validate(cfg)
+
+
+def test_a_command_median_round_trips(tmp_path):
+    cfg = _configured(tmp_path)
+    assert C.default_subprotocol("voltage")["command_median_s"] is None
+    cfg["subprotocols"]["4AP|Kv-90"]["command_median_s"] = 1e-3
+    path = C.save(cfg, str(tmp_path / "c.json"))
+    assert C.load(path)["subprotocols"]["4AP|Kv-90"]["command_median_s"] == 1e-3

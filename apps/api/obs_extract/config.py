@@ -72,6 +72,7 @@ _SUBPROTOCOL = {"used": None, "study_role": None, "input": None,
                 "param_pre_value": None, "param_stim_value": None,
                 "include_pre_stim_zerofrequency": None,
                 "emit_ground_truth_series": None, "plot_time_window": None,
+                "command_median_s": None,
                 "timeline": _TIMELINE, "features": _FEATURE}
 _READER = {"format": None, "sample_rate_hz": None, "transpose": None,
            "delimiter": None, "has_header": None, "sweep_column": None,
@@ -175,6 +176,12 @@ def default_subprotocol(stimulus: str = "current") -> dict:
         "include_pre_stim_zerofrequency": False,
         "emit_ground_truth_series": True,
         "plot_time_window": {"time_start": None, "time_end": None},
+        # Width, in seconds, of a centred running median applied to a
+        # voltage-clamp command after the data modifiers and before smoothing.
+        # None is off. For an amplifier's step-edge transient (~0.5 ms on the
+        # Wistar Kv-90 files, where 1e-3 removes it); never for an AP-clamp
+        # waveform, whose spike a 1 ms median would flatten -- hence per group.
+        "command_median_s": None,
         # None means "derive from `input`". Storing the concrete timeline here
         # would freeze the clamp direction the group was created with: switching
         # a group from current to voltage in the GUI would keep the settling
@@ -278,6 +285,20 @@ def validate(config: dict) -> list[str]:
             raise ObsExtractError(
                 f"subprotocols[{key!r}].input is {kind!r}; expected 'current' or "
                 f"'voltage'")
+        width = group.get("command_median_s")
+        if width is not None:
+            try:
+                ok = float(width) > 0
+            except (TypeError, ValueError):
+                ok = False
+            if not ok:
+                raise ObsExtractError(
+                    f"subprotocols[{key!r}].command_median_s is {width!r}; expected "
+                    f"a width in seconds greater than 0, or null for off.")
+            if kind != "voltage":
+                warnings.append(
+                    f"subprotocols[{key!r}].command_median_s is set but the group "
+                    f"is current clamp; it applies only to a voltage command.")
         for i, feature in enumerate(group.get("features") or []):
             where = f"subprotocols[{key!r}].features[{i}]"
             if not isinstance(feature, dict):
