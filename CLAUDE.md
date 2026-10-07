@@ -463,6 +463,16 @@ an empty pipe.
   regress this to an error. `scripts/install.py` shares the detection — keep it in
   one place.
 
+- **The browser fallback must still end the process.** A Linux build has no
+  GTK/Qt bindings, so pywebview cannot open a window and the shell opens the
+  system browser instead. It used to `threading.Event().wait()` there forever:
+  closing the tab ended nothing, a file-manager launch has no terminal to Ctrl+C,
+  and the server plus its `/tmp/_MEI*` dir lived until logout. Tabs now report
+  through `/api/presence/{beat,leave}` (`lib/presence.js` → `apps/api/presence.py`)
+  and `wait_until_abandoned` stops the server once the last one has gone. Keep
+  `stale_after` above Chrome's one-run-a-minute throttle for hidden tabs, or a
+  backgrounded tab reads as closed.
+
 **`POST /api/config` semantics — `ca_dir` omitted means "leave unchanged".** It is
 `str | None = None`; only an explicit `""` resets to the default. This is load-
 bearing: the Settings popup saves solver choices with a payload that carries no

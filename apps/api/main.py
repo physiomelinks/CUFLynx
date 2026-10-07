@@ -64,6 +64,7 @@ import easyml_import
 import omex_import
 import omex_export
 from inbox import APP_NAME, RECEIVE_PORTS, inbox  # noqa: F401 - RECEIVE_PORTS is the contract
+from presence import presence
 from aadc_check import aadc_status
 import editor_launch
 from version import __version__
@@ -461,6 +462,23 @@ def health() -> dict:
     and would post a study at it.
     """
     return {"status": "ok", "app": APP_NAME, "version": __version__}
+
+
+# The client id travels in the query rather than a body: `navigator.sendBeacon`,
+# which is what a closing page can still send, posts a body-less request most
+# simply, and a JSON body is not CORS-safelisted for it.
+@app.post("/api/presence/beat")
+def presence_beat(client: str = Query(..., min_length=1, max_length=64)) -> dict:
+    """A tab is still open. See :mod:`presence` for why the shell cares."""
+    presence.beat(client)
+    return {"ok": True}
+
+
+@app.post("/api/presence/leave")
+def presence_leave(client: str = Query(..., min_length=1, max_length=64)) -> dict:
+    """A tab is going away (``pagehide``) -- possibly only to reload."""
+    presence.leave(client)
+    return {"ok": True}
 
 
 # ---------------------------------------------------------------------------
