@@ -79,6 +79,7 @@ import {
   solverFieldsForMethod,
   defaultSolverInfo,
   nonDifferentiableInUse,
+  withheldSolverNotes,
 } from './lib/solverConfig'
 
 const model = useModel()
@@ -359,6 +360,10 @@ const aadcNotice = computed(() => {
   }
   return 'aadc_python is available (AADC found in both interpreters).'
 })
+
+// Solvers left off the menu because a build tool is missing (BE_batched_c needs
+// CMake and a C compiler), each with why and how to install what is missing.
+const withheldSolvers = computed(() => withheldSolverNotes(cppCompiler.value))
 
 // "Python (scipy solve_ivp) or CasADi" — the compiler-free backends, named by the
 // server so the UI can't drift from CA's solver schema.
@@ -3377,6 +3382,14 @@ watch(() => obs.obsData.value, scheduleRun)
         <p v-if="aadcNotice" class="settings-hint" data-testid="aadc-hint">
           {{ aadcNotice }}
         </p>
+        <p
+          v-for="note in withheldSolvers"
+          :key="note"
+          class="settings-hint withheld-solver-hint"
+          data-testid="withheld-solver-hint"
+        >
+          {{ note }}
+        </p>
         <label class="settings-row">
           <span class="settings-label" title="Solver wrapper, gated by the model format">Solver</span>
           <Select
@@ -3822,6 +3835,10 @@ watch(() => obs.obsData.value, scheduleRun)
   font-size: 0.78rem;
   opacity: 0.65;
   margin: 0;
+}
+/* Its install instructions are one command per line. */
+.withheld-solver-hint {
+  white-space: pre-line;
 }
 .settings-sep {
   border: none;
