@@ -485,6 +485,17 @@ interpreter, so without this the user reconfigures on every launch.
 - Parameter names for Myokit must use **`component/param`** form from `params_for_id` (`PrimitiveParsers.get_param_id_info`).
 - Slider debouncing: interactive exploration needs low-latency sim; protocol runs may take seconds on first compile (cache helper like ICUHealthy `acquire_helper`).
 
+### PR review guides
+
+When asked for a review page for a PR, publish an HTML artifact with:
+
+- **What it does**, in the PR's main parts, from the current diff rather than the PR description; say where the description is out of date.
+- **Multiple-choice questions**: four options, one correct; picking one marks it right or wrong at once and shows the reason with a `file:line` reference, with a running score and a reset.
+- **No give-aways**: options of similar length (the correct one is not the longest or shortest more than chance would make it), correct answers spread evenly over A-D, and wrong options that are plausible misreadings of the code.
+- **Before you merge**: merge-order holds, conflicts with other open PRs, stale descriptions, and what a local test run needs.
+
+Check every answer against the code at the PR's head before publishing.
+
 ## Security caveats (localhost-only assumptions)
 
 The backend assumes a single-user, localhost deployment and exposes the host filesystem to any client that can reach the API:
