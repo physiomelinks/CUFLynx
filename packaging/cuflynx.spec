@@ -86,6 +86,8 @@ for runner in (
     # The fields the runners read out of CA's parsed dicts. A leaf like ca_imports --
     # stdlib and ca_imports only -- so it ships with them for the same reason.
     "ca_obs.py",
+    # The solver's own step defaults, put under the runners' CVODE defaults (a leaf too).
+    "solver_info_defaults.py",
     "local_sensitivity.py",
     # Every runner writes its results in circulatory_autogen's own formats and the
     # managers read them back from there (#210); this module is the one place that
@@ -327,7 +329,7 @@ _FULL = os.environ.get("CUFLYNX_BUNDLE_FULL") == "1"
 _FULL_PKGS = ("autoemulate", "pymc", "arviz", "pytensor")
 
 _REQUIRED = ("libcuflynx", "myokit", "libcellml", "casadi", "webview", "setuptools",
-             "numpy", "scipy", "pandas", "yaml", "rdflib", "pint",
+             "numpy", "scipy", "pandas", "yaml", "rdflib", "pint", "jinja2",
              *_ANALYSIS_PKGS,
              *(_FULL_PKGS if _FULL else ()))
 # sympy and ruamel.yaml were dropped from this list when circulatory_autogen stopped
@@ -388,6 +390,15 @@ for pkg in ("myokit", "libcellml", "casadi", "webview", "setuptools", "numpy"):
 # hidden imports, no import of a backend at build time.
 datas += collect_data_files("libcuflynx")
 hiddenimports += collect_submodules("libcuflynx")
+# Source files libcuflynx reads at run time, collected as files beside their frozen
+# modules (where a frozen module's __file__ points). BE_batched_c keys its build cache on
+# a digest of its own generator's source (generators.cpp.batched.source_digest), so
+# without these it fails with FileNotFoundError on the first model it builds. Missing
+# paths are skipped: a libcuflynx without BE_batched_c has neither file.
+_SOURCES_READ_AT_RUN_TIME = ("generators/cpp/batched.py", "generators/kernel_ir.py")
+datas += collect_data_files(
+    "libcuflynx", include_py_files=True, includes=list(_SOURCES_READ_AT_RUN_TIME)
+)
 # The .dist-info too, which collect_all would have brought and collect_data_files does
 # not: without it importlib.metadata.version("libcuflynx") raises inside the bundle, and
 # "which engine is this app carrying" is a question worth being able to answer.
