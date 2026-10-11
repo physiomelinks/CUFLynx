@@ -327,7 +327,9 @@ def test_ca_offers_batched_c_through_solver_options(requires_batched_c):
     assert "BE_batched_c" in opts["solvers_by_format"]["cellml"]
     assert opts["methods_by_solver"]["BE_batched_c"] == ["backward_euler", "trbdf2"]
     keys = {f["key"] for f in opts["solver_info_schema"]["BE_batched_c"]}
-    assert {f["name"] for f in fields} | {"method", "dt"} == keys
+    # the form shows CA's numeric and choice fields; text ones (build_dir: CUFLynx sets it at run time) are not
+    # for the user
+    assert {f["name"] for f in fields if f["type"] not in ("str", "dict")} | {"method", "dt"} == keys
     # Both methods are L-stable, so the stiff filter keeps them.
     assert so.supported_methods("BE_batched_c", ["backward_euler", "trbdf2"], stiff=True) == [
         "backward_euler", "trbdf2",
