@@ -159,10 +159,10 @@ the user's own environment. Keep the three in step.
 
 **Calibration workflows** (`apps/api/workflow_manager.py` + `workflow_runner.py`,
 `WorkflowPanel.vue` / `WorkflowBar.vue` / `stores/useWorkflow.js`). A
-`calibration_workflow.json` orders calibrations of module-library instances (a
+`calibration_workflow.json` orders calibrations of module-library parameterisations (a
 supermodule's submodules, then the supermodule) and **all of it is CA's**
 (`libcuflynx.calibration_workflow`, CA #541): the format and its checks, resolving
-instances against the **module libraries** set in Settings (`module_library_dirs`,
+parameterisations against the **module libraries** set in Settings (`module_library_dirs`,
 persisted), the submodule-to-supermodule naming, the run, and the run directory --
 which holds the workflow it ran, so reopening that directory reopens the workflow.
 CUFLynx keeps which workflow is open, runs `workflow_runner.py` like the other

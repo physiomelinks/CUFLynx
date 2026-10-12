@@ -27,7 +27,7 @@ export function workflowTabs(described) {
   const fileSteps = described.workflow?.steps ?? []
   const steps = planSteps ?? fileSteps
   const target = described.plan?.target ?? described.workflow?.target ?? null
-  const label = (t) => (t ? `${t.module_type} · ${t.instance}` : '')
+  const label = (t) => (t ? `${t.module_type} · ${t.parameterisation}` : '')
   const tabs = steps.map((s) => ({
     id: s.id,
     kind: 'step',
@@ -46,7 +46,7 @@ export function workflowTabs(described) {
     id: TARGET_VIEW,
     kind: 'target',
     label: target ? target.module_type : 'target',
-    detail: target ? `supermodule · ${target.instance}` : 'supermodule',
+    detail: target ? `supermodule · ${target.parameterisation}` : 'supermodule',
     submodulePath: '',
     calibrates: [],
     fixedFrom: [],

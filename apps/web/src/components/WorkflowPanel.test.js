@@ -20,9 +20,9 @@ const stubs = {
 
 const tabs = [
   { id: 'fit_a', kind: 'step', label: 'fit_a', detail: 'lin_a · fit_a', submodulePath: 'A',
-    calibrates: [{ target_instance_name: 'p_A' }], fixedFrom: [], priorsFrom: [] },
+    calibrates: [{ target_parameterisation_name: 'p_A' }], fixedFrom: [], priorsFrom: [] },
   { id: 'rest', kind: 'step', label: 'rest', detail: 'chain · rest', submodulePath: '',
-    calibrates: [{ target_instance_name: 'q_C' }], fixedFrom: [{ from_step: 'fit_a' }],
+    calibrates: [{ target_parameterisation_name: 'q_C' }], fixedFrom: [{ from_step: 'fit_a' }],
     priorsFrom: [] },
   { id: 'target', kind: 'target', label: 'chain', detail: '' },
 ]
@@ -89,7 +89,7 @@ describe('WorkflowPanel', () => {
     const panel = mountPanel({
       described, tabs, selected: 'rest',
       view: {
-        view: 'rest', kind: 'step', target: { module_type: 'chain', version: 'v1', instance: 'rest' },
+        view: 'rest', kind: 'step', target: { module_type: 'chain', version: 'v1', parameterisation: 'rest' },
         fixed: [{ model_name: 'p_mod_A', value: 2, from_step: 'fit_a' }],
         calibrated: [{ model_name: 'q_mod_C', value: 3 }],
         waiting_for: [], stale: ['fit_a'],

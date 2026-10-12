@@ -25,10 +25,10 @@ from conftest import LV_MODEL_PATH, LV_OBS_DATA_PATH, LV_PARAMS_CSV_PATH, set_ca
 
 WORKFLOW = {
     "workflow_name": "demo",
-    "target": {"module_type": "twin", "version": "v1", "instance": "split"},
+    "target": {"module_type": "twin", "version": "v1", "parameterisation": "split"},
     "steps": [
-        {"id": "fit_a", "target": {"module_type": "lin_a", "version": "v1", "instance": "fit_a"}},
-        {"id": "rest", "target": {"module_type": "twin", "version": "v1", "instance": "split"},
+        {"id": "fit_a", "target": {"module_type": "lin_a", "version": "v1", "parameterisation": "fit_a"}},
+        {"id": "rest", "target": {"module_type": "twin", "version": "v1", "parameterisation": "split"},
          "depends_on": ["fit_a"], "fixed_from": ["fit_a"]},
     ],
 }
@@ -77,7 +77,7 @@ def _fake_ca(monkeypatch, calls=None, plan_error=None, refuse=None):
 
 @pytest.fixture
 def workflow_file(tmp_path):
-    path = tmp_path / "instances" / "split" / "calibration_workflow.json"
+    path = tmp_path / "parameterisations" / "split" / "calibration_workflow.json"
     path.parent.mkdir(parents=True)
     path.write_text(json.dumps(WORKFLOW))
     return path

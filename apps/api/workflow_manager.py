@@ -1,9 +1,9 @@
 """Calibration workflows: CA's ``libcuflynx.calibration_workflow`` in the GUI.
 
 A workflow (``calibration_workflow.json``) is an ordered set of calibrations of
-module-library instances -- typically a supermodule's submodules, then the
-supermodule -- merged into one supermodule instance. **All of it is CA's**: the
-file format and its checks, where each step's instance lives, how a submodule's
+module-library parameterisations -- typically a supermodule's submodules, then the
+supermodule -- merged into one supermodule parameterisation. **All of it is CA's**: the
+file format and its checks, where each step's parameterisation lives, how a submodule's
 parameter is named in the supermodule, running the steps, and the run directory.
 This module only holds which workflow the session has open, and runs
 ``workflow_runner.py`` as a subprocess the way the calibration manager runs
