@@ -23,18 +23,18 @@ import { TARGET_VIEW, stepState, useWorkflow, workflowTabs } from './useWorkflow
 
 const PLAN = {
   workflow_name: 'chain_rest',
-  target: { module_type: 'chain', version: 'v1', instance: 'rest' },
+  target: { module_type: 'chain', version: 'v1', parameterisation: 'rest' },
   steps: [
     {
-      id: 'fit_a', target: { module_type: 'lin_a', version: 'v1', instance: 'fit_a' },
+      id: 'fit_a', target: { module_type: 'lin_a', version: 'v1', parameterisation: 'fit_a' },
       submodule_path: 'A',
-      calibrates: [{ model_name: 'p_mod', target_instance_name: 'p_A' }],
+      calibrates: [{ model_name: 'p_mod', target_parameterisation_name: 'p_A' }],
       fixed_from: [], priors_from: [],
     },
     {
-      id: 'rest', target: { module_type: 'chain', version: 'v1', instance: 'rest' },
+      id: 'rest', target: { module_type: 'chain', version: 'v1', parameterisation: 'rest' },
       submodule_path: '',
-      calibrates: [{ model_name: 'q_mod_C', target_instance_name: 'q_C' }],
+      calibrates: [{ model_name: 'q_mod_C', target_parameterisation_name: 'q_C' }],
       fixed_from: [{ from_step: 'fit_a', model_name: 'p_mod', in_step: 'p_mod_A' }],
       priors_from: [],
     },
@@ -67,10 +67,10 @@ describe('workflowTabs', () => {
       plan_error: 'no module library',
       workflow: {
         workflow_name: 'w',
-        target: { module_type: 'soma', version: 's', instance: 'rest_balance' },
-        steps: [{ id: 'a', target: { module_type: 'i_M', instance: 'x' }, fixed_from: [],
+        target: { module_type: 'soma', version: 's', parameterisation: 'rest_balance' },
+        steps: [{ id: 'a', target: { module_type: 'i_M', parameterisation: 'x' }, fixed_from: [],
                   priors_from: ['b'] },
-                { id: 'b', target: { module_type: 'soma', instance: 'rest_balance' },
+                { id: 'b', target: { module_type: 'soma', parameterisation: 'rest_balance' },
                   fixed_from: ['a'] }],
       },
     })

@@ -99,7 +99,7 @@ const progressText = computed(() => {
         A <strong>calibration workflow</strong> (<code>calibration_workflow.json</code>)
         calibrates a supermodule's submodules one by one, each against its own
         obs_data and params_for_id, then the supermodule with their values fixed --
-        and repeats all of it with one click. Its instances come from a module
+        and repeats all of it with one click. Its parameterisations come from a module
         library.
       </p>
       <Message v-if="!moduleLibraryDirs.length" severity="info" :closable="false">
@@ -107,7 +107,7 @@ const progressText = computed(() => {
         <a href="#" data-testid="workflow-open-settings" @click.prevent="emit('open-settings')">
           Add one in Settings
         </a>
-        so the workflow's instances can be found.
+        so the workflow's parameterisations can be found.
       </Message>
       <Message
         v-if="offered"
@@ -131,7 +131,7 @@ const progressText = computed(() => {
           v-model="path"
           size="small"
           class="wf-grow"
-          placeholder="/path/to/instances/<name>/calibration_workflow.json"
+          placeholder="/path/to/parameterisations/<name>/calibration_workflow.json"
           data-testid="workflow-path"
           @keyup.enter="openPath()"
         />
@@ -223,7 +223,7 @@ const progressText = computed(() => {
             {{ step.detail }}<span v-if="step.submodulePath"> → submodule {{ step.submodulePath }}</span>
           </div>
           <div v-if="step.calibrates.length" class="wf-step-detail">
-            calibrates {{ step.calibrates.map((c) => c.target_instance_name ?? c.model_name).join(', ') }}
+            calibrates {{ step.calibrates.map((c) => c.target_parameterisation_name ?? c.model_name).join(', ') }}
           </div>
           <div v-if="step.fixedFrom.length" class="wf-step-detail">
             fixed from {{ [...new Set(step.fixedFrom.map((f) => f.from_step))].join(', ') }}
@@ -303,7 +303,7 @@ const progressText = computed(() => {
         <h4>
           {{ view.kind === 'target' ? 'Supermodule' : `Step ${view.view}` }}
           <span class="wf-hint">
-            {{ view.target.module_type }} / {{ view.target.version }} / {{ view.target.instance }}
+            {{ view.target.module_type }} / {{ view.target.version }} / {{ view.target.parameterisation }}
           </span>
         </h4>
         <Message
@@ -313,7 +313,7 @@ const progressText = computed(() => {
           data-testid="workflow-waiting"
         >
           Not yet calibrated: {{ view.waiting_for.join(', ') }}. Their values are the
-          instance defaults until they run.
+          parameterisation's defaults until they run.
         </Message>
         <Message v-if="view.stale?.length" severity="warn" :closable="false">
           Inputs changed since {{ view.stale.join(', ') }} ran; rerun from there.

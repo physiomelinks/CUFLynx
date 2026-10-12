@@ -498,7 +498,7 @@ class ConfigRequest(BaseModel):
     # sampling, MCMC) reproducible. Default is no seed (non-deterministic).
     #   omitted (None) -> leave unchanged   |   "" -> clear (no seed)   |   int -> use it
     seed: int | str | None = None
-    # Module libraries a calibration workflow's instances are looked up in
+    # Module libraries a calibration workflow's parameterisations are looked up in
     # (circulatory-autogen-modules and the like).
     #   omitted (None) -> leave unchanged   |   [] -> none
     module_library_dirs: list[str] | None = None
@@ -517,7 +517,7 @@ _analysis_seed: int | None = None
 #: setting so the packaged app remembers it too.
 _phlynx_url: str = ""
 
-# Module libraries a calibration workflow resolves its instances in (Settings).
+# Module libraries a calibration workflow resolves its parameterisations in (Settings).
 _module_library_dirs: list[str] = []
 
 
@@ -665,7 +665,7 @@ def _config_payload(output_dir: str = "") -> dict:
         "seed": _analysis_seed,
         # Where "Edit" sends a study; blank = the production PhLynx.
         "phlynx_url": _phlynx_url,
-        # Where calibration workflows find their module instances.
+        # Where calibration workflows find their module parameterisations.
         "module_library_dirs": list(_module_library_dirs),
         # Current backend solver selection (engine is the source of truth). dt is
         # carried in solver_info for the UI but stored separately on the engine.
@@ -3408,7 +3408,7 @@ async def workflow_upload(file: UploadFile = File(...), config_outputs_dir: str 
     """Open an uploaded calibration_workflow.json (one a browser cannot name a path for).
 
     Kept under the uploads directory. Its relative module_library_dirs mean nothing
-    there, so its instances are looked up in the libraries set in Settings, and it
+    there, so its parameterisations are looked up in the libraries set in Settings, and it
     must name its ``target`` (one in the library is inferred from its location).
     """
     blob = await file.read()
@@ -3435,9 +3435,9 @@ def workflow_close() -> dict:
 def workflow_view(req: WorkflowViewRequest) -> dict:
     """Load one tab of the workflow -- a step, or the target -- as the current study.
 
-    CA builds the model (``workflow_model``): a step's own instance with the values
+    CA builds the model (``workflow_model``): a step's own parameterisation with the values
     its earlier steps have calibrated so far fixed in it, or the target with every
-    calibrated value. It is then packed with that instance's obs_data and
+    calibrated value. It is then packed with that parameterisation's obs_data and
     params_for_id and loaded through :func:`import_omex_bytes`, so a tab behaves
     exactly like a dropped study.
     """

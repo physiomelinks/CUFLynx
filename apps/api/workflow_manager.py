@@ -1,9 +1,9 @@
 """Calibration workflows: CA's ``libcuflynx.calibration_workflow`` in the GUI.
 
 A workflow (``calibration_workflow.json``) is an ordered set of calibrations of
-module-library instances -- typically a supermodule's submodules, then the
-supermodule -- merged into one supermodule instance. **All of it is CA's**: the
-file format and its checks, where each step's instance lives, how a submodule's
+module-library parameterisations -- typically a supermodule's submodules, then the
+supermodule -- merged into one supermodule parameterisation. **All of it is CA's**: the
+file format and its checks, where each step's parameterisation lives, how a submodule's
 parameter is named in the supermodule, running the steps, and the run directory.
 This module only holds which workflow the session has open, and runs
 ``workflow_runner.py`` as a subprocess the way the calibration manager runs
@@ -41,7 +41,7 @@ import threading
 import time
 import uuid
 
-from ca_imports import CaImportError, ca_from
+from ca_imports import CaImportError, ca_from, ensure_ca_path
 from calibration import (
     _warn_no_mpiexec,
     calibration,
@@ -72,7 +72,15 @@ class WorkflowError(ValueError):
 
 
 def ca_workflow(name: str):
-    """``libcuflynx.calibration_workflow.<name>`` from the configured CA."""
+    """``libcuflynx.calibration_workflow.<name>`` from the configured CA.
+
+    The configured CA dir is put on ``sys.path`` first, as every other CA-backed
+    module does: ``ca_from`` imports from whatever is already importable. Without
+    it, a venv with an editable libcuflynx (pointing at some other checkout) answers
+    instead, and the user's Settings -> CA dir is silently ignored -- and when that
+    other checkout predates #541, the error blames the CA dir the user *did* pick.
+    """
+    ensure_ca_path()
     try:
         return ca_from("calibration_workflow", name)
     except CaImportError as exc:
