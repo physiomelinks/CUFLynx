@@ -26,14 +26,14 @@ const PLAN = {
   target: { module_type: 'chain', version: 'v1', parameterisation: 'rest' },
   steps: [
     {
-      id: 'fit_a', target: { module_type: 'lin_a', version: 'v1', parameterisation: 'fit_a' },
-      submodule_path: 'A',
+      id: 'fit_a', model: { module_type: 'lin_a', version: 'v1', parameterisation: 'fit_a' },
+      place: 'A',
       calibrates: [{ model_name: 'p_mod', target_parameterisation_name: 'p_A' }],
       fixed_from: [], priors_from: [],
     },
     {
-      id: 'rest', target: { module_type: 'chain', version: 'v1', parameterisation: 'rest' },
-      submodule_path: '',
+      id: 'rest', model: { module_type: 'chain', version: 'v1', parameterisation: 'rest' },
+      place: '',
       calibrates: [{ model_name: 'q_mod_C', target_parameterisation_name: 'q_C' }],
       fixed_from: [{ from_step: 'fit_a', model_name: 'p_mod', in_step: 'p_mod_A' }],
       priors_from: [],
@@ -56,9 +56,22 @@ describe('workflowTabs', () => {
   it('gives one tab per step, in CA order, then the supermodule', () => {
     const tabs = workflowTabs(DESCRIBED)
     expect(tabs.map((t) => t.id)).toEqual(['fit_a', 'rest', TARGET_VIEW])
-    expect(tabs[0]).toMatchObject({ kind: 'step', submodulePath: 'A', detail: 'lin_a · fit_a' })
+    expect(tabs[0]).toMatchObject({ kind: 'step', place: 'A', detail: 'lin_a · fit_a' })
     expect(tabs[2]).toMatchObject({ kind: 'target', label: 'chain' })
     expect(tabs[1].fixedFrom[0].from_step).toBe('fit_a')
+  })
+
+  it('names a module-array target by its prefix and file', () => {
+    const tabs = workflowTabs({
+      loaded: true,
+      workflow: {
+        workflow_name: 'w', target: 'resources/circulation_module_array.json',
+        steps: [{ id: 'a', model: { module_array: 'r/aorta_module_array.csv' } }],
+      },
+    })
+    expect(tabs[0].detail).toBe('aorta')
+    expect(tabs[1]).toMatchObject({ label: 'circulation',
+                                    detail: 'module array · circulation_module_array.json' })
   })
 
   it('still shows the steps of a workflow CA could not resolve', () => {
@@ -68,9 +81,9 @@ describe('workflowTabs', () => {
       workflow: {
         workflow_name: 'w',
         target: { module_type: 'soma', version: 's', parameterisation: 'rest_balance' },
-        steps: [{ id: 'a', target: { module_type: 'i_M', parameterisation: 'x' }, fixed_from: [],
+        steps: [{ id: 'a', model: 'arrays/aorta_module_array.csv', fixed_from: [],
                   priors_from: ['b'] },
-                { id: 'b', target: { module_type: 'soma', parameterisation: 'rest_balance' },
+                { id: 'b', model: { module_type: 'soma', parameterisation: 'rest_balance' },
                   fixed_from: ['a'] }],
       },
     })
@@ -78,6 +91,9 @@ describe('workflowTabs', () => {
     expect(tabs[1].fixedFrom).toEqual([{ from_step: 'a' }])
     expect(tabs[0].priorsFrom).toEqual([{ step: 'b', kind: 'mvnormal' }])
     expect(tabs[2].label).toBe('soma')
+    // a module array is shown by its prefix, a library module by type and parameterisation
+    expect(tabs[0].detail).toBe('aorta')
+    expect(tabs[1].detail).toBe('soma · rest_balance')
   })
 
   it('has no tabs with no workflow open', () => {

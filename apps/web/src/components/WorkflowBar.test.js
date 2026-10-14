@@ -3,8 +3,8 @@ import { mount } from '@vue/test-utils'
 import WorkflowBar from './WorkflowBar.vue'
 
 const tabs = [
-  { id: 'fit_a', kind: 'step', label: 'fit_a', detail: 'lin_a · fit_a', submodulePath: 'A' },
-  { id: 'rest', kind: 'step', label: 'rest', detail: 'chain · rest', submodulePath: '' },
+  { id: 'fit_a', kind: 'step', label: 'fit_a', detail: 'lin_a · fit_a', place: 'A' },
+  { id: 'rest', kind: 'step', label: 'rest', detail: 'chain · rest', place: '' },
   { id: 'target', kind: 'target', label: 'chain', detail: 'supermodule · rest' },
 ]
 

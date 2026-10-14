@@ -1,14 +1,15 @@
 <script setup>
 /**
- * The Workflow tab: open a calibration workflow (a calibration_workflow.json, or a
- * run directory, which holds the one it ran), run all of it or part of it, and
- * read what the selected tab was given by earlier steps.
+ * The Workflow tab: open a calibration workflow (its JSON file, or a run
+ * directory, which holds the one it ran), run all of it or part of it, and read
+ * what the selected tab was given by earlier steps.
  *
  * All of a workflow is circulatory_autogen's: what a step calibrates, how its
- * values are named in the supermodule, the run itself and the run directory. This
+ * values are named in the target, the run itself and the run directory. This
  * panel only shows what the server reports from CA.
  */
 import { computed, ref } from 'vue'
+import { modelLabel } from '../stores/useWorkflow'
 import Button from 'primevue/button'
 import InputNumber from 'primevue/inputnumber'
 import InputText from 'primevue/inputtext'
@@ -96,18 +97,17 @@ const progressText = computed(() => {
   <div class="workflow-panel" data-testid="workflow-panel">
     <template v-if="!loaded">
       <p class="wf-intro">
-        A <strong>calibration workflow</strong> (<code>calibration_workflow.json</code>)
-        calibrates a supermodule's submodules one by one, each against its own
-        obs_data and params_for_id, then the supermodule with their values fixed --
-        and repeats all of it with one click. Its parameterisations come from a module
-        library.
+        A <strong>calibration workflow</strong> runs calibrations in order -- each a model,
+        an obs_data and a params_for_id, later ones taking earlier ones' values -- and
+        merges the results into one target model, repeating all of it with one click. A
+        model is a module array or a module of a module library.
       </p>
       <Message v-if="!moduleLibraryDirs.length" severity="info" :closable="false">
         No module library is set.
         <a href="#" data-testid="workflow-open-settings" @click.prevent="emit('open-settings')">
           Add one in Settings
         </a>
-        so the workflow's parameterisations can be found.
+        if the workflow uses library modules its file does not find itself.
       </Message>
       <Message
         v-if="offered"
@@ -131,7 +131,7 @@ const progressText = computed(() => {
           v-model="path"
           size="small"
           class="wf-grow"
-          placeholder="/path/to/parameterisations/<name>/calibration_workflow.json"
+          placeholder="/path/to/workflow.json"
           data-testid="workflow-path"
           @keyup.enter="openPath()"
         />
@@ -220,7 +220,7 @@ const progressText = computed(() => {
             {{ STATE_WORDS[states[step.id] ?? 'not_run'] }}
           </span>
           <div class="wf-step-detail">
-            {{ step.detail }}<span v-if="step.submodulePath"> → submodule {{ step.submodulePath }}</span>
+            {{ step.detail }}<span v-if="step.place"> → {{ step.place }} in the target</span>
           </div>
           <div v-if="step.calibrates.length" class="wf-step-detail">
             calibrates {{ step.calibrates.map((c) => c.target_parameterisation_name ?? c.model_name).join(', ') }}
@@ -301,10 +301,8 @@ const progressText = computed(() => {
 
       <div v-if="view" class="wf-view" data-testid="workflow-view">
         <h4>
-          {{ view.kind === 'target' ? 'Supermodule' : `Step ${view.view}` }}
-          <span class="wf-hint">
-            {{ view.target.module_type }} / {{ view.target.version }} / {{ view.target.parameterisation }}
-          </span>
+          {{ view.kind === 'target' ? 'Target' : `Step ${view.view}` }}
+          <span class="wf-hint">{{ modelLabel(view.model, true) }}</span>
         </h4>
         <Message
           v-if="view.waiting_for?.length"
@@ -313,7 +311,7 @@ const progressText = computed(() => {
           data-testid="workflow-waiting"
         >
           Not yet calibrated: {{ view.waiting_for.join(', ') }}. Their values are the
-          parameterisation's defaults until they run.
+          model's own until they run.
         </Message>
         <Message v-if="view.stale?.length" severity="warn" :closable="false">
           Inputs changed since {{ view.stale.join(', ') }} ran; rerun from there.

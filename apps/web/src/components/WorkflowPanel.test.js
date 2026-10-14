@@ -19,9 +19,9 @@ const stubs = {
 }
 
 const tabs = [
-  { id: 'fit_a', kind: 'step', label: 'fit_a', detail: 'lin_a · fit_a', submodulePath: 'A',
+  { id: 'fit_a', kind: 'step', label: 'fit_a', detail: 'lin_a · fit_a', place: 'A',
     calibrates: [{ target_parameterisation_name: 'p_A' }], fixedFrom: [], priorsFrom: [] },
-  { id: 'rest', kind: 'step', label: 'rest', detail: 'chain · rest', submodulePath: '',
+  { id: 'rest', kind: 'step', label: 'rest', detail: 'chain · rest', place: '',
     calibrates: [{ target_parameterisation_name: 'q_C' }], fixedFrom: [{ from_step: 'fit_a' }],
     priorsFrom: [] },
   { id: 'target', kind: 'target', label: 'chain', detail: '' },
@@ -58,7 +58,7 @@ describe('WorkflowPanel', () => {
     expect(rest.text()).toContain('calibrates q_C')
     expect(rest.text()).toContain('fixed from fit_a')
     expect(rest.text()).toContain('stale')
-    expect(panel.find('[data-testid="workflow-step-fit_a"]').text()).toContain('submodule A')
+    expect(panel.find('[data-testid="workflow-step-fit_a"]').text()).toContain('→ A in the target')
   })
 
   it('runs all, from the selected step, or only it', async () => {
@@ -89,7 +89,7 @@ describe('WorkflowPanel', () => {
     const panel = mountPanel({
       described, tabs, selected: 'rest',
       view: {
-        view: 'rest', kind: 'step', target: { module_type: 'chain', version: 'v1', parameterisation: 'rest' },
+        view: 'rest', kind: 'step', model: { module_type: 'chain', version: 'v1', parameterisation: 'rest' },
         fixed: [{ model_name: 'p_mod_A', value: 2, from_step: 'fit_a' }],
         calibrated: [{ model_name: 'q_mod_C', value: 3 }],
         waiting_for: [], stale: ['fit_a'],

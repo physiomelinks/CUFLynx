@@ -394,7 +394,7 @@ const seed = ref(null)
 // server-side via /api/config, so it survives a restart.
 const phlynxUrl = ref('')
 
-// Module libraries a calibration workflow's parameterisations are found in (Settings).
+// Module libraries a calibration workflow's library modules are found in (Settings).
 // Persisted server-side via /api/config.
 const moduleLibraryDirs = ref([])
 const libraryBrowserOpen = ref(false)
@@ -3446,7 +3446,7 @@ watch(() => obs.obsData.value, scheduleRun)
         <div class="settings-row" data-testid="module-libraries">
           <span
             class="settings-label"
-            title="Module libraries (e.g. circulatory-autogen-modules/modules) a calibration workflow's parameterisations are looked up in"
+            title="Module libraries (e.g. circulatory-autogen-modules/modules) a calibration workflow's library modules are looked up in"
           >
             Module libraries
           </span>
@@ -3474,8 +3474,8 @@ watch(() => obs.obsData.value, scheduleRun)
           </span>
         </div>
         <p class="settings-hint">
-          Where a calibration workflow (the Workflow tab) finds the module parameterisations
-          its steps calibrate.
+          Where a calibration workflow (the Workflow tab) finds the library modules its steps
+          and target name, in addition to the libraries its own file lists.
         </p>
 
         <hr class="settings-sep" />

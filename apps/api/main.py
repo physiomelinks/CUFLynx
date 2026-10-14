@@ -498,7 +498,7 @@ class ConfigRequest(BaseModel):
     # sampling, MCMC) reproducible. Default is no seed (non-deterministic).
     #   omitted (None) -> leave unchanged   |   "" -> clear (no seed)   |   int -> use it
     seed: int | str | None = None
-    # Module libraries a calibration workflow's parameterisations are looked up in
+    # Module libraries a calibration workflow's library modules are looked up in
     # (circulatory-autogen-modules and the like).
     #   omitted (None) -> leave unchanged   |   [] -> none
     module_library_dirs: list[str] | None = None
@@ -665,7 +665,7 @@ def _config_payload(output_dir: str = "") -> dict:
         "seed": _analysis_seed,
         # Where "Edit" sends a study; blank = the production PhLynx.
         "phlynx_url": _phlynx_url,
-        # Where calibration workflows find their module parameterisations.
+        # Where calibration workflows find their library modules.
         "module_library_dirs": list(_module_library_dirs),
         # Current backend solver selection (engine is the source of truth). dt is
         # carried in solver_info for the UI but stored separately on the engine.
@@ -3407,9 +3407,10 @@ def workflow_load(req: WorkflowLoadRequest) -> dict:
 async def workflow_upload(file: UploadFile = File(...), config_outputs_dir: str = "") -> dict:
     """Open an uploaded calibration_workflow.json (one a browser cannot name a path for).
 
-    Kept under the uploads directory. Its relative module_library_dirs mean nothing
-    there, so its parameterisations are looked up in the libraries set in Settings, and it
-    must name its ``target`` (one in the library is inferred from its location).
+    Kept under the uploads directory, where paths relative to the original file mean
+    nothing: an uploaded workflow must name its steps' files (and any module library) by
+    absolute path. Open a workflow by its path to keep relative paths working; library
+    modules are also looked up in the libraries set in Settings.
     """
     blob = await file.read()
     try:
@@ -3459,7 +3460,7 @@ def workflow_view(req: WorkflowViewRequest) -> dict:
     workflow.view_models[result["model_id"]] = req.view
     result["workflow_view"] = {
         key: view.get(key) for key in (
-            "view", "kind", "target", "step_id", "submodule_path", "fixed", "calibrated",
+            "view", "kind", "model", "step_id", "place", "fixed", "calibrated",
             "waiting_for", "stale", "param_id_output_dir", "obs_data_path",
             "params_for_id_path")
     }

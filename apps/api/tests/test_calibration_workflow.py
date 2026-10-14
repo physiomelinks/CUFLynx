@@ -27,9 +27,11 @@ WORKFLOW = {
     "workflow_name": "demo",
     "target": {"module_type": "twin", "version": "v1", "parameterisation": "split"},
     "steps": [
-        {"id": "fit_a", "target": {"module_type": "lin_a", "version": "v1", "parameterisation": "fit_a"}},
-        {"id": "rest", "target": {"module_type": "twin", "version": "v1", "parameterisation": "split"},
-         "depends_on": ["fit_a"], "fixed_from": ["fit_a"]},
+        {"id": "fit_a", "model": {"module_type": "lin_a", "version": "v1", "parameterisation": "fit_a"},
+         "obs_data": "fit_a_obs_data.json", "params_for_id": "fit_a_params_for_id.csv"},
+        {"id": "rest", "model": "chain_module_array.csv",
+         "obs_data": "rest_obs_data.json", "params_for_id": "rest_params_for_id.csv",
+         "fixed_from": ["fit_a"]},
     ],
 }
 
@@ -62,8 +64,8 @@ def _fake_ca(monkeypatch, calls=None, plan_error=None, refuse=None):
 
     def workflow_model(path, view, output_dir, work_dir, module_library_dirs=None):
         calls.append(("model", view, output_dir))
-        return {"view": view, "kind": "step", "target": WORKFLOW["steps"][0]["target"],
-                "step_id": view, "submodule_path": "A",
+        return {"view": view, "kind": "step", "model": WORKFLOW["steps"][0]["model"],
+                "step_id": view, "place": "A",
                 "model_path": str(LV_MODEL_PATH), "obs_data_path": str(LV_OBS_DATA_PATH),
                 "params_for_id_path": str(LV_PARAMS_CSV_PATH),
                 "fixed": [{"model_name": "p_mod_A", "value": 2.0, "from_step": "fit_a"}],
@@ -77,7 +79,7 @@ def _fake_ca(monkeypatch, calls=None, plan_error=None, refuse=None):
 
 @pytest.fixture
 def workflow_file(tmp_path):
-    path = tmp_path / "parameterisations" / "split" / "calibration_workflow.json"
+    path = tmp_path / "study" / "workflow.json"
     path.parent.mkdir(parents=True)
     path.write_text(json.dumps(WORKFLOW))
     return path
@@ -136,10 +138,10 @@ def test_a_workflow_ca_cannot_resolve_still_shows_what_it_says(
 
 
 def test_ca_refusals_reach_the_user_verbatim(client, monkeypatch, workflow_file):
-    _fake_ca(monkeypatch, refuse='step "rest" depends_on unknown step "nope".')
+    _fake_ca(monkeypatch, refuse='step "rest" takes values from unknown step "nope".')
     r = client.post("/api/workflow/load", json={"path": str(workflow_file)})
     assert r.status_code == 422
-    assert r.json()["detail"] == 'step "rest" depends_on unknown step "nope".'
+    assert r.json()["detail"] == 'step "rest" takes values from unknown step "nope".'
 
 
 def test_an_older_ca_without_workflows_is_named(client, monkeypatch, workflow_file):
@@ -370,10 +372,54 @@ def test_a_real_workflow_runs_and_its_tabs_show_the_fixed_values(
     assert [(f["model_name"], f["from_step"]) for f in fixed] == [("p_mod_A", "fit_a")]
     assert fixed[0]["value"] == pytest.approx(2.0, rel=1e-4)
     assert tab["obs_data"] and not tab["obs_data"].get("error")
+    assert tab["workflow_view"]["model"]["module_type"] == "chain"
     target = client.post("/api/workflow/view", json={"view": "target"}).json()
     merged = {c["model_name"]: c["value"] for c in target["workflow_view"]["calibrated"]}
     assert merged["p_mod_A"] == pytest.approx(2.0, rel=1e-4)
     assert merged["q_mod_C"] == pytest.approx(3.0, rel=1e-4)
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+def test_a_workflow_of_module_arrays_runs_from_its_own_files(
+        client, requires_simulation, tmp_path):
+    """A workflow outside the module library's layout: each step names a module array,
+    an obs_data and a params_for_id, relative to the workflow file."""
+    try:
+        from ca_imports import ca_from
+
+        build = ca_from("external_testing.workflow_library", "build_workflow_library")
+        ca_from("calibration_workflow", "run_calibration_workflow")
+    except ImportError:
+        if os.environ.get("CUFLYNX_REQUIRE_CA_RUN"):
+            raise
+        pytest.skip("this circulatory_autogen has no calibration workflows (CA #541)")
+    paths = build(str(tmp_path / "library"))
+    if "chain_array" not in paths:
+        if os.environ.get("CUFLYNX_REQUIRE_CA_RUN"):
+            raise AssertionError("this circulatory_autogen predates module-array workflows")
+        pytest.skip("this circulatory_autogen predates module-array workflows (CA #555)")
+    assert client.post("/api/config", json={"python_path": sys.executable}).status_code == 200
+    body = client.post("/api/workflow/load",
+                       json={"path": paths["chain_array"],
+                             "config_outputs_dir": str(tmp_path / "outputs")}).json()
+    steps = {s["id"]: s for s in body["plan"]["steps"]}
+    assert steps["a-alone"]["model"]["module_array"].endswith("a_only_module_array.json")
+    assert steps["chain"]["fixed_from"] == [
+        {"from_step": "a-alone", "model_name": "p_A", "in_step": "p_A"}]
+
+    job = client.post("/api/workflow/run", json={}).json()["job_id"]
+    status = _wait(client, job, timeout=300)
+    assert status["state"] == "done", "\n".join(status["lines"][-40:])
+
+    tab = client.post("/api/workflow/view", json={"view": "chain"}).json()
+    fixed = tab["workflow_view"]["fixed"]
+    assert [(f["model_name"], f["from_step"]) for f in fixed] == [("p_A", "a-alone")]
+    assert tab["workflow_view"]["obs_data_path"].endswith("chain_obs.json")
+    target = client.post("/api/workflow/view", json={"view": "target"}).json()
+    merged = {c["model_name"]: c["value"] for c in target["workflow_view"]["calibrated"]}
+    assert merged["p_A"] == pytest.approx(2.0, rel=1e-4)
+    assert merged["q_C"] == pytest.approx(3.0, rel=1e-4)
 
 
 def test_the_configured_ca_dir_is_put_on_the_path_before_ca_is_asked(monkeypatch):

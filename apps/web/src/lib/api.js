@@ -87,7 +87,7 @@ export async function setConfig(opts = {}) {
     if (opts.seed !== undefined) body.seed = opts.seed
     // Where "Edit" sends a study: a URL sets it, '' restores production PhLynx.
     if (opts.phlynxUrl != null) body.phlynx_url = opts.phlynxUrl
-    // Module libraries a calibration workflow's parameterisations are found in; [] clears.
+    // Module libraries a calibration workflow's library modules are found in; [] clears.
     if (opts.moduleLibraryDirs != null) body.module_library_dirs = opts.moduleLibraryDirs
   }
   const { data } = await axios.post(url('/api/config'), body)
