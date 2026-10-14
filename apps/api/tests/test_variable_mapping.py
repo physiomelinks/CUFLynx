@@ -45,7 +45,7 @@ def _fake_ca(monkeypatch, calls, refuse=None):
     set_ca_module(monkeypatch, "reporting.variable_mapping", mod)
     methods = types.ModuleType("methods")
     methods.workflow_mapping_path = (
-        lambda path, dirs: "/library/twin/v1/parameterisations/split/split_variable_mapping.csv")
+        lambda path, dirs: "/study/resources/circulation_variable_mapping.csv")
     set_ca_module(monkeypatch, "reporting.methods", methods)
     return files
 
@@ -84,16 +84,16 @@ def test_edits_are_saved_through_ca_over_the_model_s_rows(client, monkeypatch, t
     assert {row["variable_name"]: row["latex"] for row in body["rows"]}["parameters/b"] == r"\beta"
 
 
-def test_the_supermodule_tab_keeps_its_mapping_beside_the_target_parameterisation(
+def test_the_target_tab_keeps_its_mapping_beside_the_target_s_parameters(
         client, monkeypatch):
     calls = []
     _fake_ca(monkeypatch, calls)
     model_id = upload_model(client, LV_MODEL_PATH)["model_id"]
     workflow = workflow_manager.workflow
-    workflow.path = "/library/twin/v1/parameterisations/split/calibration_workflow.json"
+    workflow.path = "/study/workflow.json"
     workflow.view_models[model_id] = workflow_manager.TARGET_VIEW
     body = client.get(f"/api/models/{model_id}/variable_mapping").json()
-    assert body["path"] == "/library/twin/v1/parameterisations/split/split_variable_mapping.csv"
+    assert body["path"] == "/study/resources/circulation_variable_mapping.csv"
     # a step tab is an ordinary study
     workflow.view_models[model_id] = "fit_a"
     assert client.get(f"/api/models/{model_id}/variable_mapping").json()["path"] != body["path"]

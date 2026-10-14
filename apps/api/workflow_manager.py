@@ -132,8 +132,8 @@ class WorkflowManager:
         self.path: str | None = None
         self.output_dir: str | None = None
         self.module_library_dirs: list[str] = []
-        # model_id -> the tab it was loaded for, so the supermodule's variable mapping can
-        # be kept where CA's methods writer looks for it (the target parameterisation).
+        # model_id -> the tab it was loaded for, so the target's variable mapping can be
+        # kept where CA's methods writer looks for it (beside the target's parameters file).
         self.view_models: dict[str, str] = {}
         self._job: WorkflowJob | None = None
         self._lock = threading.Lock()

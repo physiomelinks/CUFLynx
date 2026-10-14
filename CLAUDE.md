@@ -185,8 +185,8 @@ ordinary study. Two traps found building it:
 from the Variables panel). A study's `<prefix>_variable_mapping.csv` -- the symbol of every
 variable, which CA's `cuflynx-methods-latex` typesets the methods with -- is entirely CA's
 (`libcuflynx.reporting.variable_mapping`, CA #547): rows, default rule, keeping edits.
-CUFLynx only picks where the file lives: beside the target parameterisation for a workflow's
-supermodule tab (CA's `workflow_mapping_path`, where the methods writer looks), else
+CUFLynx only picks where the file lives: beside the target's parameters file for a
+workflow's target tab (CA's `workflow_mapping_path`, where the methods writer looks), else
 `<outputs>/<prefix>_variable_mapping.csv`, else the uploads directory. `reporting` is a CA
 package in `CA_PACKAGES` (and its two mirrors).
 

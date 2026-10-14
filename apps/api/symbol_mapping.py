@@ -8,8 +8,8 @@ reaches CA through ``ca_from``.
 
 Where it lives:
 
-* the supermodule tab of a calibration workflow: CA's ``workflow_mapping_path`` (the target
-  parameterisation's directory), which is where ``cuflynx-methods-latex --workflow`` looks for it;
+* the target tab of a calibration workflow: CA's ``workflow_mapping_path`` (beside the target's
+  parameters file), which is where ``cuflynx-methods-latex --workflow`` looks for it;
 * any other study: ``<outputs>/<prefix>_variable_mapping.csv``, or the uploads directory
   when no outputs directory is set.
 """
