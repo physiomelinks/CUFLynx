@@ -158,12 +158,12 @@ the user's own environment. Keep the three in step.
   uses when a label repeats, never by position.
 
 **Calibration workflows** (`apps/api/workflow_manager.py` + `workflow_runner.py`,
-`WorkflowPanel.vue` / `WorkflowBar.vue` / `stores/useWorkflow.js`). A
-`calibration_workflow.json` orders calibrations of module-library parameterisations (a
-supermodule's submodules, then the supermodule) and **all of it is CA's**
-(`libcuflynx.calibration_workflow`, CA #541): the format and its checks, resolving
-parameterisations against the **module libraries** set in Settings (`module_library_dirs`,
-persisted), the submodule-to-supermodule naming, the run, and the run directory --
+`WorkflowPanel.vue` / `WorkflowBar.vue` / `stores/useWorkflow.js`). A workflow
+file orders calibrations -- each step a model (a module array or a library module), an
+obs_data and a params_for_id -- merged into a target model, and **all of it is CA's**
+(`libcuflynx.calibration_workflow`, CA #555): the format and its checks, finding library
+modules (also in the **module libraries** set in Settings, `module_library_dirs`,
+persisted), how a step's names map into the target, the run, and the run directory --
 which holds the workflow it ran, so reopening that directory reopens the workflow.
 CUFLynx keeps which workflow is open, runs `workflow_runner.py` like the other
 runners (one job; refused while a calibration runs, and vice versa), and loads each

@@ -517,7 +517,7 @@ _analysis_seed: int | None = None
 #: setting so the packaged app remembers it too.
 _phlynx_url: str = ""
 
-# Module libraries a calibration workflow resolves its parameterisations in (Settings).
+# Module libraries a calibration workflow finds its library modules in (Settings).
 _module_library_dirs: list[str] = []
 
 
@@ -3436,11 +3436,11 @@ def workflow_close() -> dict:
 def workflow_view(req: WorkflowViewRequest) -> dict:
     """Load one tab of the workflow -- a step, or the target -- as the current study.
 
-    CA builds the model (``workflow_model``): a step's own parameterisation with the values
-    its earlier steps have calibrated so far fixed in it, or the target with every
-    calibrated value. It is then packed with that parameterisation's obs_data and
-    params_for_id and loaded through :func:`import_omex_bytes`, so a tab behaves
-    exactly like a dropped study.
+    CA builds the model (``workflow_model``): a step's own model with the values its
+    earlier steps have calibrated so far fixed in it, or the target with every
+    calibrated value. It is then packed with that step's obs_data and params_for_id
+    and loaded through :func:`import_omex_bytes`, so a tab behaves exactly like a
+    dropped study.
     """
     work_dir = UPLOAD_DIR / "workflow_views" / uuid.uuid4().hex
     view = _workflow_http(workflow.view, req.view, str(work_dir))
