@@ -31,8 +31,8 @@ const STATE_TITLES = {
 function title(tab) {
   const state = props.states[tab.id]
   const where = tab.kind === 'target'
-    ? 'the supermodule, with every calibrated value'
-    : `${tab.detail}${tab.submodulePath ? ` (submodule ${tab.submodulePath})` : ''}`
+    ? 'the target, with every calibrated value'
+    : `${tab.detail}${tab.place ? ` (at ${tab.place} in the target)` : ''}`
   return state ? `${where} -- ${STATE_TITLES[state] ?? state}` : where
 }
 </script>
@@ -58,8 +58,8 @@ function title(tab) {
         :data-state="states[tab.id] ?? 'not_run'"
       />
       {{ tab.label }}
-      <span v-if="tab.kind === 'step' && tab.submodulePath" class="wf-sub">
-        → {{ tab.submodulePath }}
+      <span v-if="tab.kind === 'step' && tab.place" class="wf-sub">
+        → {{ tab.place }}
       </span>
     </button>
   </div>

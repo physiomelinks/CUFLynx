@@ -11,8 +11,30 @@ import {
   uploadWorkflow,
 } from '../lib/api'
 
-/** The tab id of the supermodule a workflow calibrates (CA's TARGET_VIEW). */
+/** The tab id of the model a workflow's results are merged into (CA's TARGET_VIEW). */
 export const TARGET_VIEW = 'target'
+
+const ARRAY_SUFFIX = /_(module|vessel)_array\.(csv|json)$/
+
+/** A model's file name: a module array is a path, or {module_array, parameters}. */
+function arrayFile(model) {
+  const path = typeof model === 'string' ? model : model?.module_array
+  return path ? path.split(/[\\/]/).pop() : null
+}
+
+/**
+ * A workflow model in a few words: a library module as "type · parameterisation", a
+ * module array as its prefix (with `full`, as type / version / parameterisation, or the
+ * array's file name).
+ */
+export function modelLabel(model, full = false) {
+  if (!model) return ''
+  const file = arrayFile(model)
+  if (file) return full ? file : file.replace(ARRAY_SUFFIX, '')
+  return full
+    ? `${model.module_type} / ${model.version} / ${model.parameterisation}`
+    : `${model.module_type} · ${model.parameterisation}`
+}
 
 /**
  * One tab per step, in the order CA runs them, then the target.
@@ -27,13 +49,13 @@ export function workflowTabs(described) {
   const fileSteps = described.workflow?.steps ?? []
   const steps = planSteps ?? fileSteps
   const target = described.plan?.target ?? described.workflow?.target ?? null
-  const label = (t) => (t ? `${t.module_type} · ${t.parameterisation}` : '')
   const tabs = steps.map((s) => ({
     id: s.id,
     kind: 'step',
     label: s.id,
-    detail: label(s.target),
-    submodulePath: s.submodule_path ?? s.submodule ?? null,
+    detail: modelLabel(s.model),
+    // where the step's model sits in the target: a submodule or vessel ('' or none: as is)
+    place: s.place ?? s.submodule ?? s.vessel ?? null,
     calibrates: s.calibrates ?? [],
     // CA's plan names every value a step is given ({from_step, model_name, in_step});
     // the file alone only names the steps.
@@ -45,9 +67,11 @@ export function workflowTabs(described) {
   tabs.push({
     id: TARGET_VIEW,
     kind: 'target',
-    label: target ? target.module_type : 'target',
-    detail: target ? `supermodule · ${target.parameterisation}` : 'supermodule',
-    submodulePath: '',
+    label: target ? (arrayFile(target) ? modelLabel(target) : target.module_type) : 'target',
+    detail: target
+      ? (arrayFile(target) ? `module array · ${arrayFile(target)}` : `supermodule · ${target.parameterisation}`)
+      : 'target',
+    place: '',
     calibrates: [],
     fixedFrom: [],
     priorsFrom: [],

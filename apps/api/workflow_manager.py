@@ -1,10 +1,9 @@
 """Calibration workflows: CA's ``libcuflynx.calibration_workflow`` in the GUI.
 
-A workflow (``calibration_workflow.json``) is an ordered set of calibrations of
-module-library parameterisations -- typically a supermodule's submodules, then the
-supermodule -- merged into one supermodule parameterisation. **All of it is CA's**: the
-file format and its checks, where each step's parameterisation lives, how a submodule's
-parameter is named in the supermodule, running the steps, and the run directory.
+A workflow (a JSON file) is an ordered set of calibrations merged into one target model.
+Each step names its model (a CA module array, or a module of a module library), its
+obs_data and its params_for_id. **All of it is CA's**: the file format and its checks, how
+a step's parameters are named in the target, running the steps, and the run directory.
 This module only holds which workflow the session has open, and runs
 ``workflow_runner.py`` as a subprocess the way the calibration manager runs
 its runner.
@@ -172,8 +171,8 @@ class WorkflowManager:
         if not os.path.isfile(snapshot):
             raise WorkflowError(
                 f"{run_dir} is not a calibration workflow run: it has no {WORKFLOW_FILE_NAME}")
-        # The snapshot's relative module_library_dirs were relative to the
-        # original file, not to the run; the original is named in the result.
+        # The snapshot's relative paths (module_library_dirs, each step's files) were
+        # relative to the original file, not to the run; the original is named in the result.
         result_path = os.path.join(run_dir, "workflow_result.json")
         original = None
         if os.path.isfile(result_path):
