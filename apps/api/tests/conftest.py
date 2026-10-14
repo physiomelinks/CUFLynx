@@ -29,6 +29,7 @@ import model_codegen as model_codegen_mod  # noqa: E402
 import sensitivity as sensitivity_mod  # noqa: E402
 import solver_options as solver_options_mod  # noqa: E402
 import uq as uq_mod  # noqa: E402
+import workflow_manager as workflow_mod  # noqa: E402
 
 # Repo-root resources (apps/api/tests -> parents[3] == repo root).
 RESOURCES_DIR = Path(__file__).resolve().parents[3] / "resources"
@@ -323,6 +324,9 @@ def reset_app_state():
     sensitivity_mod.sensitivity.runner_path = sensitivity_mod.RUNNER_PATH
     uq_mod.uq.reset()
     uq_mod.uq.runner_path = uq_mod.RUNNER_PATH
+    workflow_mod.workflow.reset()
+    workflow_mod.workflow.runner_path = workflow_mod.RUNNER_PATH
+    main._module_library_dirs = []
     yield
     main._models.clear()
     engine_mod.engine.reset()
@@ -335,6 +339,9 @@ def reset_app_state():
     sensitivity_mod.sensitivity.runner_path = sensitivity_mod.RUNNER_PATH
     uq_mod.uq.reset()
     uq_mod.uq.runner_path = uq_mod.RUNNER_PATH
+    workflow_mod.workflow.reset()
+    workflow_mod.workflow.runner_path = workflow_mod.RUNNER_PATH
+    main._module_library_dirs = []
     _set_analysis_pythons(_pythons_before)
     main._analysis_seed = None
     # Restore CIRCULATORY_AUTOGEN_SRC so a /api/config test doesn't leak.
