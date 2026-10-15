@@ -24,6 +24,17 @@ describe('WorkflowBar', () => {
     expect(bar.find('[data-testid="workflow-tab-target"] .wf-dot').exists()).toBe(false)
   })
 
+  it('has no model to show for a reduction', () => {
+    const bar = mount(WorkflowBar, { props: { tabs: [
+      ...tabs.slice(0, 2),
+      { id: 'reduce', kind: 'step', stepKind: 'reduction', viewable: false, label: 'reduce',
+        detail: 'keeps the top 1 by Sobol ST' },
+    ] } })
+    const tab = bar.find('[data-testid="workflow-tab-reduce"]')
+    expect(tab.attributes('disabled')).toBeDefined()
+    expect(tab.attributes('title')).toContain('no model to show')
+  })
+
   it('switches tabs, and not while a tab is loading', async () => {
     const bar = mount(WorkflowBar, { props: { tabs, selected: null } })
     await bar.find('[data-testid="workflow-tab-target"]').trigger('click')

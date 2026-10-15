@@ -1,6 +1,16 @@
-import { describe, it, expect } from 'vitest'
-import { mount } from '@vue/test-utils'
+import { describe, it, expect, vi } from 'vitest'
+import { flushPromises, mount } from '@vue/test-utils'
+
+vi.mock('../lib/api', () => ({
+  exportWorkflow: vi.fn(async () => ({
+    filename: 'chain_analysed.omex', download_url: '/api/phlynx/archive/t/chain_analysed.omex',
+    member_count: 31,
+  })),
+  errorMessage: (e) => String(e?.message || e),
+}))
+
 import WorkflowPanel from './WorkflowPanel.vue'
+import { exportWorkflow } from '../lib/api'
 
 const stubs = {
   Message: { template: '<div class="msg" v-bind="$attrs"><slot /></div>' },
@@ -35,6 +45,36 @@ const described = {
 const mountPanel = (props) => mount(WorkflowPanel, { props, global: { stubs } })
 
 describe('WorkflowPanel', () => {
+  it('shows each step\'s kind and sources, and opens no tab for a reduction', async () => {
+    const analysed = [
+      { id: 'screen', kind: 'step', stepKind: 'sensitivity', viewable: true, label: 'screen',
+        detail: 'chain · screened', calibrates: [], fixedFrom: [], priorsFrom: [], sources: [] },
+      { id: 'reduce', kind: 'step', stepKind: 'reduction', viewable: false, label: 'reduce',
+        detail: 'keeps the top 1 by Sobol ST', calibrates: [], fixedFrom: [], priorsFrom: [],
+        sources: [{ key: 'sensitivity_from', step: 'screen' }] },
+      { id: 'target', kind: 'target', label: 'chain', detail: '' },
+    ]
+    const panel = mountPanel({ described, tabs: analysed })
+    expect(panel.find('[data-testid="workflow-kind-screen"]').text()).toBe('sensitivity analysis')
+    const reduce = panel.find('[data-testid="workflow-step-reduce"]')
+    expect(reduce.text()).toContain('ranks the parameters of screen')
+    await reduce.trigger('click')
+    expect(panel.emitted('select')).toBeUndefined()
+    await panel.find('[data-testid="workflow-step-screen"]').trigger('click')
+    expect(panel.emitted('select')).toEqual([['screen']])
+  })
+
+  it('exports the workflow as an archive, offered as a plain link', async () => {
+    const panel = mountPanel({ described, tabs, outputsDir: '/out' })
+    await panel.find('[data-testid="workflow-export"]').trigger('click')
+    await flushPromises()
+    expect(exportWorkflow).toHaveBeenCalledWith('/out')
+    const link = panel.find('[data-testid="workflow-exported"] a')
+    expect(link.attributes('href')).toBe('/api/phlynx/archive/t/chain_analysed.omex')
+    expect(link.attributes('download')).toBe('chain_analysed.omex')
+    expect(panel.find('[data-testid="workflow-exported"]').text()).toContain('31 files')
+  })
+
   it('opens a workflow by path, and says when no library is set', async () => {
     const panel = mountPanel({ described: { loaded: false }, moduleLibraryDirs: [] })
     expect(panel.find('[data-testid="workflow-open-settings"]').exists()).toBe(true)

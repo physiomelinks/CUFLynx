@@ -1590,6 +1590,24 @@ def _apply_archive_study(study: dict | None, out_dir: str | None) -> list[str]:
     return notes
 
 
+def _unpack_workflow(files: dict[str, bytes], directory: Path) -> Path:
+    """Write a packed workflow's files under ``directory``; the workflow file's path.
+
+    A path that would land outside ``directory`` (absolute, or climbing with ``..``) is
+    refused: the archive came from somewhere else.
+    """
+    root = directory.resolve()
+    for relative, blob in files.items():
+        target = (root / relative).resolve()
+        if root not in target.parents:
+            raise HTTPException(status_code=422,
+                                detail=f"the archive's workflow names a file outside it: "
+                                       f"{relative}")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(blob)
+    return root / omex_import.PACKED_WORKFLOW_NAME
+
+
 def import_omex_bytes(data: bytes, output_dir: str | None = None,
                       source: str = "archive") -> dict:
     """Load an archive's bytes, whatever delivered them.
@@ -1744,8 +1762,17 @@ def import_omex_bytes(data: bytes, output_dir: str | None = None,
 
     # A calibration workflow in the archive is kept (the upload dir) and offered,
     # not opened: opening one replaces the study with the workflow's own tabs,
-    # which is the user's choice to make.
-    if parts.get("calibration_workflow"):
+    # which is the user's choice to make. A packed one (``workflow/``) is unpacked
+    # whole, so its relative paths -- every step's files, its modules -- resolve.
+    if parts.get("workflow_pack"):
+        wf_dir = UPLOAD_DIR / "workflows" / model_id
+        result["calibration_workflow"] = {
+            "filename": omex_import.PACKED_WORKFLOW_NAME,
+            "path": str(_unpack_workflow(parts["workflow_pack"], wf_dir)),
+            "packed": True,
+            "files": len(parts["workflow_pack"]),
+        }
+    elif parts.get("calibration_workflow"):
         wf_name, wf_blob = parts["calibration_workflow"]
         wf_dir = UPLOAD_DIR / "workflows" / model_id
         wf_dir.mkdir(parents=True, exist_ok=True)
@@ -1907,18 +1934,11 @@ def phlynx_send(req: PhlynxSendRequest):
     # What the study needs that no other member carries: its solver settings and the
     # user funcs its obs_data and params_for_id name. Without them a study sent to PhLynx
     # and back reopens at the app's default solver with its operations unregistered.
-    funcs_dir = _user_func_base_dir(req.output_dir)
-    funcs = {}
-    for kind in FUNC_KINDS:
-        found = user_func_path(kind, funcs_dir)
-        if found:
-            funcs[kind] = (user_func_convention_path(kind).name, Path(found).read_bytes())
-    study = {
-        "study_name": stem,
-        "file_prefix": stem,
-        "solver_info": {**(getattr(engine, "solver_info", None) or {}),
-                        "solver": engine.solver, "dt": engine.dt},
-    }
+    funcs, study = _study_for_archive(stem, req.output_dir)
+    # A workflow tab's study carries its workflow, so the archive reruns all of it.
+    workflow_files = None
+    if workflow.loaded and _workflow_view_models.get(req.model_id) == workflow.path:
+        workflow_files = _packed_workflow()
     try:
         blob, report = omex_export.build_archive(
             cellml_text=record.path.read_text(encoding="utf-8"),
@@ -1932,6 +1952,7 @@ def phlynx_send(req: PhlynxSendRequest):
             else "params_for_id.json",
             study=study,
             funcs=funcs,
+            workflow_files=workflow_files,
         )
     except omex_export.OmexExportError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -1942,10 +1963,7 @@ def phlynx_send(req: PhlynxSendRequest):
 
     # Park the bytes so the frontend can offer them as a plain link. Every send
     # gets one, not only an over-long one -- see PHLYNX_URL_LIMIT.
-    token = secrets.token_urlsafe(16)
-    _PHLYNX_ARCHIVES[token] = (filename, blob)
-    while len(_PHLYNX_ARCHIVES) > _PHLYNX_ARCHIVE_KEEP:
-        _PHLYNX_ARCHIVES.popitem(last=False)
+    download_url = _offer_archive(filename, blob)
 
     encoded = base64.b64encode(blob).decode("ascii")
     return {
@@ -1954,7 +1972,7 @@ def phlynx_send(req: PhlynxSendRequest):
         "too_large": len(encoded) > PHLYNX_URL_LIMIT,
         "limit": PHLYNX_URL_LIMIT,
         "filename": filename,
-        "download_url": f"/api/phlynx/archive/{token}/{filename}",
+        "download_url": download_url,
         "members": report["members"],
         "member_count": len(report["members"]),
         "updated": report["updated"],
@@ -1965,6 +1983,75 @@ def phlynx_send(req: PhlynxSendRequest):
         # back out of (#287) -- so the value travels and is ignored.
         "outside_parameters": report["outside_parameters"],
     }
+
+
+def _study_for_archive(stem: str, output_dir: str) -> tuple[dict, dict]:
+    """``(funcs, study)`` for :func:`omex_export.build_archive`: the user funcs and the
+    solver settings, the two things a study needs that no other member carries."""
+    funcs_dir = _user_func_base_dir(output_dir)
+    funcs = {}
+    for kind in FUNC_KINDS:
+        found = user_func_path(kind, funcs_dir)
+        if found:
+            funcs[kind] = (user_func_convention_path(kind).name, Path(found).read_bytes())
+    study = {
+        "study_name": stem,
+        "file_prefix": stem,
+        "solver_info": {**(getattr(engine, "solver_info", None) or {}),
+                        "solver": engine.solver, "dt": engine.dt},
+    }
+    return funcs, study
+
+
+def _packed_workflow() -> dict[str, bytes]:
+    """The open workflow, packed by CA (``{path in the pack: bytes}``)."""
+    pack_dir = UPLOAD_DIR / "workflow_packs" / uuid.uuid4().hex
+    try:
+        return _workflow_http(workflow.pack, str(pack_dir))
+    finally:
+        shutil.rmtree(pack_dir, ignore_errors=True)
+
+
+def _offer_archive(filename: str, blob: bytes) -> str:
+    """Keep ``blob`` for a plain download link (see :func:`phlynx_archive`); the link."""
+    token = secrets.token_urlsafe(16)
+    _PHLYNX_ARCHIVES[token] = (filename, blob)
+    while len(_PHLYNX_ARCHIVES) > _PHLYNX_ARCHIVE_KEEP:
+        _PHLYNX_ARCHIVES.popitem(last=False)
+    return f"/api/phlynx/archive/{token}/{filename}"
+
+
+class WorkflowExportRequest(BaseModel):
+    #: Where the study's user funcs are (the outputs directory), as for a send.
+    output_dir: str = ""
+
+
+@app.post("/api/workflow/export")
+def workflow_export(req: WorkflowExportRequest) -> dict:
+    """The open workflow as a COMBINE archive that reruns it: the target model (as the
+    workflow names it, no calibrated values), the workflow packed by CA under
+    ``workflow/`` and a study manifest pointing at it. No results."""
+    if not workflow.loaded:
+        raise HTTPException(status_code=422, detail="no workflow is open")
+    work_dir = UPLOAD_DIR / "workflow_exports" / uuid.uuid4().hex
+    try:
+        target = _workflow_http(workflow.target_model, str(work_dir))
+        cellml = Path(target.get("flat_model_path") or target["model_path"]).read_text(
+            encoding="utf-8")
+        name = _workflow_http(workflow.describe).get("workflow", {}).get("workflow_name") \
+            or "workflow"
+        funcs, study = _study_for_archive(name, req.output_dir)
+        blob, report = omex_export.build_archive(
+            cellml_text=cellml, values={}, model_name=f"{name}.cellml", study=study,
+            funcs=funcs, workflow_files=_packed_workflow())
+    except omex_export.OmexExportError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
+    filename = f"{name}.omex"
+    return {"filename": filename, "bytes": len(blob),
+            "download_url": _offer_archive(filename, blob),
+            "members": report["members"], "member_count": len(report["members"])}
 
 
 @app.get("/api/phlynx/archive/{token}/{filename}")
@@ -3471,6 +3558,11 @@ class WorkflowRunRequest(BaseModel):
     num_cores: int = 1
 
 
+#: model_id -> the workflow file of the workflow tab it was loaded from: a study sent on from
+#: a tab carries its workflow, packed.
+_workflow_view_models: dict[str, str] = {}
+
+
 def _workflow_http(fn, *args, **kwargs):
     """Call into the workflow manager, mapping its failures to HTTP errors."""
     try:
@@ -3568,6 +3660,7 @@ def workflow_view(req: WorkflowViewRequest) -> dict:
         for name, blob in members.items():
             zf.writestr(name, blob)
     result = import_omex_bytes(buf.getvalue(), None, source="calibration workflow")
+    _workflow_view_models[result["model_id"]] = workflow.path
     result["workflow_view"] = {
         key: view.get(key) for key in (
             "view", "kind", "model", "step_id", "place", "fixed", "calibrated",

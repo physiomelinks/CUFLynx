@@ -24,6 +24,12 @@ having to care.
 With no source archive at all -- a study assembled from three dropped files -- a
 minimal one is synthesised rather than the send being refused: manifest, model,
 obs_data, params_for_id, and no editor state, because CUFLynx has none to invent.
+
+A calibration workflow travels as the directory libcuflynx's ``pack_workflow`` writes --
+the workflow file, every step's obs_data and params_for_id, its module arrays, the module
+versions it uses and its settings files, none of its results -- under ``workflow/``
+(:data:`omex_import.WORKFLOW_DIR`), with the study manifest's ``workflow`` naming the
+packed workflow file. Unpacked anywhere, that directory runs the whole workflow again.
 """
 
 from __future__ import annotations
@@ -190,12 +196,16 @@ def _embed_study(members, entries, parts, study, funcs, model_member, obs_member
             members.pop(name, None)
             entries[:] = [e for e in entries if _relative(e["location"]) != name]
 
+    # a workflow block from a manifest names files on one machine; the packed workflow, when
+    # the archive has one, is what replaces it
     dropped = {"runs", "sensitivity", "emulator", "study_dir", "base_model", "user_inputs",
-               "manifest_path", "missing"}
+               "manifest_path", "missing", "workflow"}
     record = {"schema": study_manifest.SCHEMA}
     record.update({k: v for k, v in study.items() if v is not None and k not in dropped})
+    packed = omex_import.WORKFLOW_DIR + omex_import.PACKED_WORKFLOW_NAME
     record.update({"model": model_member, "obs_data": obs_member,
-                   "params_for_id": params_member, "user_funcs": func_members})
+                   "params_for_id": params_member, "user_funcs": func_members,
+                   "workflow": packed if packed in members else None})
     record = {k: v for k, v in record.items() if v not in (None, {}, [])}
 
     prefix = study.get("study_name") or study.get("file_prefix") or "study"
@@ -205,6 +215,22 @@ def _embed_study(members, entries, parts, study, funcs, model_member, obs_member
     for entry in entries:
         if _relative(entry["location"]) == name:
             entry["format"] = study_manifest.OMEX_FORMAT
+
+
+def _embed_workflow(members, entries, workflow_files: dict[str, bytes]) -> None:
+    """Replace the archive's packed workflow (``workflow/``) with ``workflow_files``.
+
+    Members go in by their full path: the basename matching of :func:`_replace_member` is for
+    the top-level roles, and a packed step's ``obs_data.json`` is not the study's.
+    """
+    prefix = omex_import.WORKFLOW_DIR
+    for name in [n for n in members if n.startswith(prefix)]:
+        del members[name]
+    entries[:] = [e for e in entries if not _relative(e["location"]).startswith(prefix)]
+    for relative, blob in sorted(workflow_files.items()):
+        name = prefix + relative.replace("\\", "/")
+        members[name] = blob
+        entries.append(_entry_for(name))
 
 
 def build_archive(
@@ -219,6 +245,7 @@ def build_archive(
     model_name: str = DEFAULT_MODEL_NAME,
     study: dict | None = None,
     funcs: dict[str, tuple[str, bytes]] | None = None,
+    workflow_files: dict[str, bytes] | None = None,
 ) -> tuple[bytes, dict]:
     """Return ``(omex_bytes, report)``.
 
@@ -233,6 +260,9 @@ def build_archive(
     with its paths pointing at the archive's own members, plus the func files under
     ``user_funcs/``. Both are CUFLynx's own, so unlike PhLynx's members they are replaced
     on the way out, never carried through stale.
+
+    ``workflow_files`` (``{path in the pack: bytes}``, from ``pack_workflow``) replaces the
+    source archive's packed workflow; without it one the source archive carries is kept.
     """
     new_cellml, report = substitute_values(cellml_text, values or {})
 
@@ -300,6 +330,9 @@ def build_archive(
     # obs_data: added when the archive has none, never replaced when it has one.
     if obs_bytes is not None and not (parts and parts["roles"]["obs"]):
         _replace_member(members, entries, None, obs_name, obs_bytes)
+
+    if workflow_files is not None:
+        _embed_workflow(members, entries, workflow_files)
 
     if study is not None:
         _embed_study(members, entries, parts, study, funcs or {}, model_out,

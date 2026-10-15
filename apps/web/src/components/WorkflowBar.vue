@@ -30,9 +30,11 @@ const STATE_TITLES = {
 
 function title(tab) {
   const state = props.states[tab.id]
+  if (tab.viewable === false) return `${tab.detail}: a reduction has no model to show`
+  const kind = tab.stepKind && tab.stepKind !== 'calibration' ? `${tab.stepKind}: ` : ''
   const where = tab.kind === 'target'
     ? 'the target, with every calibrated value'
-    : `${tab.detail}${tab.place ? ` (at ${tab.place} in the target)` : ''}`
+    : `${kind}${tab.detail}${tab.place ? ` (at ${tab.place} in the target)` : ''}`
   return state ? `${where} -- ${STATE_TITLES[state] ?? state}` : where
 }
 </script>
@@ -48,7 +50,7 @@ function title(tab) {
       class="wf-tab"
       :class="{ active: tab.id === selected, target: tab.kind === 'target' }"
       :data-testid="`workflow-tab-${tab.id}`"
-      :disabled="busy"
+      :disabled="busy || tab.viewable === false"
       :title="title(tab)"
       @click="emit('select', tab.id)"
     >

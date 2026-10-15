@@ -705,6 +705,16 @@ export async function getWorkflowStatus(jobId, offset = 0) {
   return data
 }
 
+/**
+ * The open workflow as a COMBINE archive that reruns it: the target model, the workflow
+ * packed by CA (every step's files and the modules it uses, no results) and a study
+ * manifest naming it. Returns `{filename, download_url, member_count}`, for a link.
+ */
+export async function exportWorkflow(outputDir = '') {
+  const { data } = await axios.post(url('/api/workflow/export'), { output_dir: outputDir })
+  return data
+}
+
 export async function cancelWorkflow(jobId) {
   const { data } = await axios.post(url(`/api/workflow/${encodeURIComponent(jobId)}/cancel`))
   return data

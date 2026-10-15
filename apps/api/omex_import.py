@@ -35,6 +35,10 @@ from xml.etree import ElementTree as ET
 
 # PhLynx's editor state, carried along so the archive round-trips through it.
 MODULE_CONFIG_NAME = "module_config.json"
+#: Where an archive keeps a packed calibration workflow (libcuflynx's pack_workflow): its
+#: own directory tree, run as it is, so none of it is a role of the archive's study.
+WORKFLOW_DIR = "workflow/"
+PACKED_WORKFLOW_NAME = "calibration_workflow.json"
 #: CA's calibration workflow file (``calibration_workflow.json``, or ``<x>_calibration_workflow.json``).
 CALIBRATION_WORKFLOW_RE = re.compile(r"(^|[_-])calibration_workflow\.json$", re.I)
 
@@ -262,6 +266,10 @@ def _classify(
     """Sort archive members into the roles CUFLynx imports."""
     formats = formats or {}
     members = members or {}
+    # A packed calibration workflow is a tree of its own (its steps' obs_data, its
+    # modules' CellML): none of it is the study's model, obs_data or params_for_id.
+    workflow_pack = [n for n in names if n.startswith(WORKFLOW_DIR)]
+    names = [n for n in names if not n.startswith(WORKFLOW_DIR)]
 
     cellml = [n for n in names if n.lower().endswith(".cellml")]
     myokit = [n for n in names if n.lower().endswith(".mmt")]
@@ -364,6 +372,7 @@ def _classify(
         "module_config": module_config,
         "study": study,
         "calibration_workflow": calibration_workflow,
+        "workflow_pack": workflow_pack,
     }
 
 
@@ -433,8 +442,12 @@ def unpack(data: bytes) -> dict:
         ]
 
     study = _study_member(roles["study"], members)
+    pack = {n[len(WORKFLOW_DIR):]: members[n] for n in roles["workflow_pack"]}
 
     out = {
+        #: A packed calibration workflow (``workflow/``), as ``{path in the pack: bytes}``
+        #: with ``calibration_workflow.json`` among them; None when there is none.
+        "workflow_pack": pack if PACKED_WORKFLOW_NAME in pack else None,
         #: The embedded study manifest, as ``{"name", "manifest", "funcs"}``: what the
         #: archive says about solver settings and which members are the user's funcs
         #: (``funcs`` is ``{kind: (member name, bytes)}``). None when there is none.
@@ -465,6 +478,7 @@ def unpack(data: bytes) -> dict:
             "study": list(roles["study"]),
             "user_funcs": {kind: name for kind, (name, _) in (study or {}).get("funcs", {}).items()},
             "calibration_workflow": list(roles["calibration_workflow"]),
+            "workflow_pack": list(roles["workflow_pack"]),
         },
     }
     return out

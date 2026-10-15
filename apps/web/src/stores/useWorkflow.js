@@ -36,6 +36,22 @@ export function modelLabel(model, full = false) {
     : `${model.module_type} · ${model.parameterisation}`
 }
 
+/** What a step that is not a calibration does, in a few words (CA's step kinds). */
+export const KIND_WORDS = {
+  sensitivity: 'sensitivity analysis',
+  reduction: 'reduction',
+  emulation: 'emulator',
+  identifiability: 'identifiability',
+}
+
+/** The keys by which a step takes something from another, as the step list reads them. */
+export const SOURCE_WORDS = {
+  emulator_from: 'on the emulator of',
+  result_from: 'at the fit of',
+  sensitivity_from: 'ranks the parameters of',
+  params_for_id_from: 'fits what was kept by',
+}
+
 /**
  * One tab per step, in the order CA runs them, then the target.
  *
@@ -52,8 +68,16 @@ export function workflowTabs(described) {
   const tabs = steps.map((s) => ({
     id: s.id,
     kind: 'step',
+    // CA's step kind; only a reduction has no model, so no tab to show
+    stepKind: s.kind ?? 'calibration',
+    viewable: (s.kind ?? 'calibration') !== 'reduction',
     label: s.id,
-    detail: modelLabel(s.model),
+    detail: s.kind === 'reduction'
+      ? `keeps the top ${s.reduction?.top_n ?? '?'} by Sobol ${s.reduction?.index_type ?? 'ST'}`
+      : modelLabel(s.model),
+    sources: Object.keys(SOURCE_WORDS)
+      .filter((key) => s[key])
+      .map((key) => ({ key, step: s[key] })),
     // where the step's model sits in the target: a submodule or vessel ('' or none: as is)
     place: s.place ?? s.submodule ?? s.vessel ?? null,
     calibrates: s.calibrates ?? [],
@@ -67,6 +91,9 @@ export function workflowTabs(described) {
   tabs.push({
     id: TARGET_VIEW,
     kind: 'target',
+    stepKind: null,
+    viewable: true,
+    sources: [],
     label: target ? (arrayFile(target) ? modelLabel(target) : target.module_type) : 'target',
     detail: target
       ? (arrayFile(target) ? `module array · ${arrayFile(target)}` : `supermodule · ${target.parameterisation}`)

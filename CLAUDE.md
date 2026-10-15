@@ -168,7 +168,14 @@ which holds the workflow it ran, so reopening that directory reopens the workflo
 CUFLynx keeps which workflow is open, runs `workflow_runner.py` like the other
 runners (one job; refused while a calibration runs, and vice versa), and loads each
 tab through CA's `workflow_model` -> `import_omex_bytes`, so a step tab is an
-ordinary study. Two traps found building it:
+ordinary study. A step's `kind` (calibration, sensitivity, reduction, emulation,
+identifiability; CA #585) is shown in the step list with what it takes from where; a
+reduction has no model, so no tab. **Export .omex** (`/api/workflow/export`) puts the
+target model and the workflow as CA's `pack_workflow` packs it under `workflow/` in an
+archive (no results), and a study sent from a workflow tab carries the pack too; an
+imported archive's `workflow/` is unpacked whole into the uploads dir and offered, so
+its relative paths resolve and it reruns from the archive alone. Two traps found
+building it:
 
 - **No app module may share a flat name with a CA module.** `ca_from` resolves
   `libcuflynx.<name>` *and* `<name>`, and an app module already in `sys.modules`
@@ -269,8 +276,9 @@ The third CUFLynx-owned part is the **study**: `build_archive(study=, funcs=)` w
 the same study manifest CA writes beside results — `<prefix>_cuflynx_study.json`,
 format `application/x.vnd.cuflynx-study+json` (`study_manifest.OMEX_FORMAT`) — with
 its paths pointing at archive members, `solver_info`, and the user funcs under
-`user_funcs/`; runs/sensitivity/emulator/study_dir are dropped (they are one machine's
-directories). Being ours, it and the funcs are *replaced* on each send. On import,
+`user_funcs/`; runs/sensitivity/emulator/study_dir and a manifest's `workflow` block
+are dropped (they are one machine's directories), and `workflow` names the packed
+workflow (`workflow/calibration_workflow.json`) when the archive has one. Being ours, it and the funcs are *replaced* on each send. On import,
 `_apply_archive_study` adopts `solver_info` and writes the funcs to
 `<outputs>/user_funcs/`, keeping a differing existing file as
 `*.before_import_<stamp>.py`. One vocabulary for both: `study_manifest.KEYS`; the OMEX

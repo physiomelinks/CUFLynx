@@ -53,6 +53,30 @@ beforeEach(() => {
 })
 
 describe('workflowTabs', () => {
+  it('marks each step\'s kind and what it takes, and gives a reduction no model tab', () => {
+    const tabs = workflowTabs({
+      loaded: true,
+      plan: {
+        target: { module_type: 'chain', version: 'v1', parameterisation: 'screened' },
+        steps: [
+          { id: 'screen', kind: 'sensitivity',
+            model: { module_type: 'chain', version: 'v1', parameterisation: 'screened' } },
+          { id: 'reduce', kind: 'reduction', model: null, sensitivity_from: 'screen',
+            reduction: { top_n: 1, index_type: 'ST' } },
+          { id: 'fit', kind: 'calibration', params_for_id_from: 'reduce',
+            model: { module_type: 'chain', version: 'v1', parameterisation: 'screened' } },
+        ],
+      },
+    })
+    const byId = Object.fromEntries(tabs.map((t) => [t.id, t]))
+    expect(byId.screen.stepKind).toBe('sensitivity')
+    expect(byId.reduce).toMatchObject({ viewable: false, detail: 'keeps the top 1 by Sobol ST',
+      sources: [{ key: 'sensitivity_from', step: 'screen' }] })
+    expect(byId.fit).toMatchObject({ viewable: true,
+      sources: [{ key: 'params_for_id_from', step: 'reduce' }] })
+    expect(byId.target.viewable).toBe(true)
+  })
+
   it('gives one tab per step, in CA order, then the supermodule', () => {
     const tabs = workflowTabs(DESCRIBED)
     expect(tabs.map((t) => t.id)).toEqual(['fit_a', 'rest', TARGET_VIEW])

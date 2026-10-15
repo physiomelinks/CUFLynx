@@ -20,7 +20,8 @@ What CA provides, reached through ``ca_from`` (never an import statement):
 * ``workflow_status`` -- where each step stands in a run directory;
 * ``workflow_model`` -- the model one tab shows, from the results so far;
 * ``run_calibration_workflow`` -- the run (in the runner);
-* ``load_workflow_run`` -- a run directory read back.
+* ``load_workflow_run`` -- a run directory read back;
+* ``pack_workflow`` -- every file a run needs, in one directory (the OMEX export).
 
 A CA without them (older than the workflow feature) raises
 :class:`WorkflowUnavailable`, which the routes turn into a 501 that says so.
@@ -233,6 +234,27 @@ class WorkflowManager:
             raise WorkflowError("the workflow has no run directory; set an outputs directory")
         return _ca_call("workflow_model", self.path, view, output_dir=self.output_dir,
                         work_dir=work_dir, module_library_dirs=self.module_library_dirs)
+
+    def pack(self, dest_dir: str) -> dict[str, bytes]:
+        """The open workflow as CA packs it: ``{path in the pack: bytes}``, inputs only."""
+        if not self.loaded:
+            raise WorkflowError("no workflow is open")
+        packed = _ca_call("pack_workflow", self.path, dest_dir,
+                          module_library_dirs=self.module_library_dirs)
+        files = {}
+        for relative in packed["files"]:
+            with open(os.path.join(dest_dir, relative), "rb") as fh:
+                files[relative.replace(os.sep, "/")] = fh.read()
+        return files
+
+    def target_model(self, work_dir: str) -> dict:
+        """The target as the workflow names it, with no calibrated value (no results)."""
+        if not self.loaded:
+            raise WorkflowError("no workflow is open")
+        return _ca_call("workflow_model", self.path, TARGET_VIEW,
+                        output_dir=os.path.join(work_dir, "no_run"),
+                        work_dir=os.path.join(work_dir, "model"),
+                        module_library_dirs=self.module_library_dirs)
 
     # -- running -------------------------------------------------------------
 

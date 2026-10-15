@@ -9,7 +9,8 @@
  * panel only shows what the server reports from CA.
  */
 import { computed, ref } from 'vue'
-import { modelLabel } from '../stores/useWorkflow'
+import { KIND_WORDS, SOURCE_WORDS, modelLabel } from '../stores/useWorkflow'
+import { errorMessage, exportWorkflow } from '../lib/api'
 import Button from 'primevue/button'
 import InputNumber from 'primevue/inputnumber'
 import InputText from 'primevue/inputtext'
@@ -41,6 +42,22 @@ const browseFile = ref(false)
 const browseRun = ref(false)
 const showLog = ref(false)
 const fileInput = ref(null)
+// The last export: {filename, download_url, member_count}, or {error}.
+const exported = ref(null)
+const exporting = ref(false)
+
+/** Pack the workflow into an archive, for a plain download link (never a scripted one). */
+async function exportArchive() {
+  exporting.value = true
+  exported.value = null
+  try {
+    exported.value = await exportWorkflow(props.outputsDir)
+  } catch (e) {
+    exported.value = { error: errorMessage(e) }
+  } finally {
+    exporting.value = false
+  }
+}
 
 const loaded = computed(() => !!props.described?.loaded)
 const running = computed(() => props.jobState === 'running')
@@ -211,11 +228,16 @@ const progressText = computed(() => {
         <li
           v-for="step in steps"
           :key="step.id"
-          :class="{ active: step.id === selected }"
+          :class="{ active: step.id === selected, 'no-view': step.viewable === false }"
           :data-testid="`workflow-step-${step.id}`"
-          @click="emit('select', step.id)"
+          @click="step.viewable !== false && emit('select', step.id)"
         >
           <span class="wf-step-id">{{ step.id }}</span>
+          <span
+            v-if="step.stepKind && step.stepKind !== 'calibration'"
+            class="wf-kind"
+            :data-testid="`workflow-kind-${step.id}`"
+          >{{ KIND_WORDS[step.stepKind] ?? step.stepKind }}</span>
           <span class="wf-state" :data-state="states[step.id] ?? 'not_run'">
             {{ STATE_WORDS[states[step.id] ?? 'not_run'] }}
           </span>
@@ -230,6 +252,9 @@ const progressText = computed(() => {
           </div>
           <div v-if="step.priorsFrom.length" class="wf-step-detail">
             priors from {{ step.priorsFrom.map((p) => `${p.step} (${p.kind})`).join(', ') }}
+          </div>
+          <div v-for="s in step.sources ?? []" :key="s.key" class="wf-step-detail">
+            {{ SOURCE_WORDS[s.key] }} {{ s.step }}
           </div>
         </li>
       </ol>
@@ -274,6 +299,17 @@ const progressText = computed(() => {
           @click="run({ only: selectedStep.id })"
         />
         <Button
+          label="Export .omex"
+          icon="pi pi-download"
+          size="small"
+          text
+          :loading="exporting"
+          :disabled="running || !!described?.plan_error"
+          title="The workflow and every file it needs to run again (no results), as one archive"
+          data-testid="workflow-export"
+          @click="exportArchive()"
+        />
+        <Button
           v-if="running"
           label="Cancel"
           size="small"
@@ -283,6 +319,12 @@ const progressText = computed(() => {
           @click="emit('cancel')"
         />
       </div>
+      <p v-if="exported" class="wf-hint" data-testid="workflow-exported">
+        <template v-if="exported.error">{{ exported.error }}</template>
+        <a v-else :href="exported.download_url" :download="exported.filename">
+          Download {{ exported.filename }}</a>
+        <template v-if="!exported.error"> ({{ exported.member_count }} files)</template>
+      </p>
       <p v-if="running" class="wf-progress" data-testid="workflow-progress">
         {{ progressText }}
       </p>
@@ -417,6 +459,16 @@ const progressText = computed(() => {
 .wf-step-id {
   font-weight: 600;
   margin-right: 0.4rem;
+}
+.wf-kind {
+  margin-left: 0.4rem;
+  padding: 0 0.3rem;
+  border-radius: 3px;
+  font-size: 0.7rem;
+  background: var(--p-content-hover-background, rgba(127, 127, 127, 0.2));
+}
+.wf-steps li.no-view {
+  cursor: default;
 }
 .wf-step-detail {
   font-size: 0.75rem;
