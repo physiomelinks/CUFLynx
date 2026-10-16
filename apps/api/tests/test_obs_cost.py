@@ -413,7 +413,7 @@ def test_it_matches_cas_own_cost_path(client, requires_simulation):
 
     ObsAndParamDataParser, scriptFunctionParser = ca_from(
         "parsers.PrimitiveParsers", "ObsAndParamDataParser", "scriptFunctionParser")
-    ParamID = ca_first_of("param_id.paramID", "ParamID", "OpencorParamID")
+    ParamID = ca_first_of("param_id.paramID", "ParamID")
 
     engine_mod.engine.reset()
     engine_mod.engine.model_type, engine_mod.engine.solver = "cellml", "CVODE_myokit"
@@ -429,7 +429,7 @@ def test_it_matches_cas_own_cost_path(client, requires_simulation):
         scored_by[(s["experiment_idx"], s["subexperiment_idx"])] = s.get("outputs", {})
 
     parser = ObsAndParamDataParser()
-    parsed = parser.parse_obs_data_json(obs_data_dict=obs, pre_time=0.0, sim_time=1.0)
+    parsed = parser.parse_obs_data_json(obs_data_dict=obs)
     with tempfile.TemporaryDirectory() as d:
         obs_info = parser.process_obs_info(gt_df=parsed["gt_df"], output_dir=d,
                                            dt=engine_mod.engine.dt)
