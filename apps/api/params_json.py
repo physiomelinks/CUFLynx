@@ -337,15 +337,11 @@ def entries_to_json(entries, defaults: dict | None = None) -> dict:
     params = []
     for entry in entries:
         item: dict = {"name": entry.name or entry.qnames[0]}
-        # A modifier writes `modifies` + `operation` and never `targets` -- CA
+        # A modifier writes `modifies` + `modifier` and never `targets` -- CA
         # refuses an entry carrying both. Keys outside CA's closed entry-key set
         # must never be invented here, or the file stops being CA-readable.
         if entry.modifies:
             item["modifies"] = list(entry.modifies)
-            # CA renamed this key: a modifier acts on parameters, an operation
-            # acts on outputs (CA #385). ``operation`` still reads, with a
-            # deprecation warning, so files written before this keep working --
-            # but nothing new should be written under the old name.
             item["modifier"] = entry.operation or "scale"
             # The model constants the modifier function declared as inputs, as
             # this entry names them. Written back verbatim: dropping a key the
