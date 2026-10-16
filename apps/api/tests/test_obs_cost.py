@@ -607,14 +607,14 @@ def _six_labels():
 
 
 def _six_item_obs():
-    return [
+    return {"protocol_info": {"pre_times": [0.0], "sim_times": [[1.0]]}, "data_items": [
         {"data_item_name": f"probe {i} {op}",
          "trace_name_for_plotting": f"{op}(T_{{p{i}}})",
          "data_type": "constant", "operation": op, "operands": [f"heat/T_p{i}"],
          "unit": "dimensionless", "weight": 1.0, "value": 0.4, "std": 0.05,
          "cost_type": "gaussian_MLE"}
         for i in (1, 2, 3) for op in ("mean", "min")
-    ]
+    ]}
 
 
 @pytest.mark.integration
