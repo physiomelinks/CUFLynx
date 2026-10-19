@@ -21,7 +21,8 @@ import workflow_manager as workflow_mod
 import main
 import omex_import
 import settings_store
-from conftest import LV_MODEL_PATH, LV_OBS_DATA_PATH, LV_PARAMS_CSV_PATH, set_ca_module
+from conftest import (LV_MODEL_PATH, LV_OBS_DATA_PATH, LV_PARAMS_CSV_PATH, ca_model_name,
+                      set_ca_module)
 
 WORKFLOW = {
     "workflow_name": "demo",
@@ -368,15 +369,16 @@ def test_a_real_workflow_runs_and_its_tabs_show_the_fixed_values(
     r = client.post("/api/workflow/view", json={"view": "rest"})
     assert r.status_code == 200, r.text
     tab = r.json()
+    p_a, q_c = ca_model_name("mod/A/p"), ca_model_name("mod/C/q")
     fixed = tab["workflow_view"]["fixed"]
-    assert [(f["model_name"], f["from_step"]) for f in fixed] == [("p_mod_A", "fit_a")]
+    assert [(f["model_name"], f["from_step"]) for f in fixed] == [(p_a, "fit_a")]
     assert fixed[0]["value"] == pytest.approx(2.0, rel=1e-4)
     assert tab["obs_data"] and not tab["obs_data"].get("error")
     assert tab["workflow_view"]["model"]["module_type"] == "chain"
     target = client.post("/api/workflow/view", json={"view": "target"}).json()
     merged = {c["model_name"]: c["value"] for c in target["workflow_view"]["calibrated"]}
-    assert merged["p_mod_A"] == pytest.approx(2.0, rel=1e-4)
-    assert merged["q_mod_C"] == pytest.approx(3.0, rel=1e-4)
+    assert merged[p_a] == pytest.approx(2.0, rel=1e-4)
+    assert merged[q_c] == pytest.approx(3.0, rel=1e-4)
 
 
 @pytest.mark.integration
