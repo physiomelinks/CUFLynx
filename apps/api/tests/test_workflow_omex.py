@@ -19,7 +19,7 @@ import pytest
 import main
 import omex_export
 import omex_import
-from conftest import LV_MODEL_PATH, LV_OBS_DATA_PATH
+from conftest import LV_MODEL_PATH, LV_OBS_DATA_PATH, ca_model_name
 
 PACK = {
     "calibration_workflow.json": json.dumps({
@@ -175,5 +175,5 @@ def test_an_exported_workflow_reruns_from_the_archive_alone(
     assert status["state"] == "done", "\n".join(status["lines"][-40:])
     target = client.post("/api/workflow/view", json={"view": "target"}).json()
     merged = {c["model_name"]: c["value"] for c in target["workflow_view"]["calibrated"]}
-    assert merged["p_mod_A"] == pytest.approx(2.0, rel=1e-4)
-    assert merged["q_mod_C"] == pytest.approx(3.0, rel=1e-4)
+    assert merged[ca_model_name("mod/A/p")] == pytest.approx(2.0, rel=1e-4)
+    assert merged[ca_model_name("mod/C/q")] == pytest.approx(3.0, rel=1e-4)
