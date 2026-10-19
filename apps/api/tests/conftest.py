@@ -89,6 +89,24 @@ def set_ca_module(monkeypatch, name: str, value) -> None:
         monkeypatch.setitem(sys.modules, spelling, value)
 
 
+def ca_model_name(path_name: str) -> str:
+    """The model's name CA gives the parameter ``path_name`` (``<vessel>/<variable>``).
+
+    ``mod/A/p`` is ``p_mod_A`` where CA joins a submodule's levels with ``_`` and
+    ``p_mod__A`` where it joins them with ``__`` (CA #582), so a test that expects a
+    hoisted name asks CA rather than spelling one. A CA without
+    ``utilities.parameter_names`` joins with ``_``.
+    """
+    from ca_imports import ca_from, ensure_ca_path
+
+    try:
+        ensure_ca_path()
+        return ca_from("utilities.parameter_names", "model_name")(path_name)
+    except ImportError:
+        *path, variable = path_name.split("/")
+        return f"{variable}_{'_'.join(path)}"
+
+
 def running_against_installed_ca_only() -> bool:
     """True when CA comes from an installed package with no checkout configured.
 
