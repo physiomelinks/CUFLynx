@@ -65,7 +65,8 @@ def _fake_ca(monkeypatch, calls=None, plan_error=None, refuse=None, model_error=
         calls.append(("plan", path, list(module_library_dirs or [])))
         if plan_error:
             raise FakeWorkflowError(plan_error)
-        return {"workflow_name": "demo", "steps": [{"id": "fit_a"}, {"id": "rest"}]}
+        return {"workflow_name": "demo", "steps": [{"id": "fit_a"}, {"id": "rest"}],
+                "target": json.loads(Path(path).read_text())["target"]}
 
     def workflow_status(path, output_dir, module_library_dirs=None):
         calls.append(("status", path, output_dir))
@@ -630,6 +631,84 @@ def test_a_workflow_of_module_arrays_runs_from_its_own_files(
     merged = {c["model_name"]: c["value"] for c in target["workflow_view"]["calibrated"]}
     assert merged["p_A"] == pytest.approx(2.0, rel=1e-4)
     assert merged["q_C"] == pytest.approx(3.0, rel=1e-4)
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+def test_a_phlynx_selection_asks_for_its_boundary_runs_and_goes_back_calibrated(
+        client, requires_simulation, tmp_path):
+    """CA #594's fixture: in the chain, C (z = x + k q^2) reads x from A through a boundary.
+    C selected alone leaves x unset; given x = Y_A by a protocol, q = sqrt(Z_C - Y_A) = 3."""
+    import base64
+    import csv
+
+    try:
+        from ca_imports import ca_from, ensure_ca_path
+
+        ensure_ca_path()  # the configured CA dir first, as the workflow manager does
+        build = ca_from("external_testing.workflow_library", "build_workflow_library")
+        ca_from("calibration_workflow", "write_calibrated_parameters_to")
+        constants = {name: ca_from("external_testing.workflow_library", name)
+                     for name in ("OPTIMISER_SETTINGS", "Y_A", "Z_C")}
+    except ImportError:
+        if os.environ.get("CUFLYNX_REQUIRE_CA_RUN"):
+            raise
+        pytest.skip("this circulatory_autogen has no selection steps (CA #594)")
+    paths = build(str(tmp_path / "library"))
+    arrays = Path(paths["arrays"])
+    (arrays / "data").mkdir(exist_ok=True)
+    obs = {"protocol_info": {"pre_times": [0.0], "sim_times": [[1.0]], "params_to_change": {}},
+           "data_items": [{"data_item_name": "z_c", "data_type": "constant",
+                           "unit": "dimensionless", "operands": ["C/z"], "operation": "mean",
+                           "weight": 1.0, "value": constants["Z_C"], "std": 0.17}],
+           "prediction_items": []}
+    (arrays / "data" / "c_obs.json").write_text(json.dumps(obs))
+    (arrays / "data" / "c_params.csv").write_text(
+        "vessel_name,param_name,min,max,name_for_plotting\nC,q,0.1,10.0,q_C\n")
+    workflow_path = arrays / "selection_workflow.json"
+    workflow_path.write_text(json.dumps({
+        "schema_version": 1, "workflow_name": "selection",
+        "module_library_dirs": [paths["modules"]], "settings": constants["OPTIMISER_SETTINGS"],
+        "target": "chain_module_array.json",
+        "steps": [{"id": "c-alone", "model": {"select": ["C"]},
+                   "obs_data": "data/c_obs.json", "params_for_id": "data/c_params.csv"}]}))
+    assert client.post("/api/config", json={"python_path": sys.executable}).status_code == 200
+    body = client.post("/api/workflow/load", json={
+        "path": str(workflow_path), "config_outputs_dir": str(tmp_path / "outputs")}).json()
+    assert body["plan"]["steps"][0]["selection"]["runs_as"] == "library_module"
+
+    # the boundary C reads from A is open: CA names it, as the target's parameters do
+    r = client.post("/api/workflow/view", json={"view": "c-alone"})
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"]["unset_parameters"] == {"step_id": "c-alone", "names": ["C/x"]}
+
+    # the protocol editor's save: the step's own obs_data, with x set
+    own = client.get("/api/workflow/step_input",
+                     params={"step_id": "c-alone", "role": "obs_data"}).json()
+    document = json.loads(own["content"])
+    document["protocol_info"]["params_to_change"]["C/x"] = [[constants["Y_A"]]]
+    r = client.post("/api/workflow/step_input",
+                    json={"step_id": "c-alone", "role": "obs_data", "content": json.dumps(document)})
+    assert r.status_code == 200, r.text
+    assert client.post("/api/workflow/view", json={"view": "c-alone"}).status_code == 200
+
+    job = client.post("/api/workflow/run", json={}).json()["job_id"]
+    status = _wait(client, job, timeout=300)
+    assert status["state"] == "done", "\n".join(status["lines"][-40:])
+
+    target = client.post("/api/workflow/view", json={"view": "target"}).json()
+    sent = client.post("/api/phlynx/send",
+                       json={"model_id": target["model_id"], "source": "as_imported"}).json()
+    assert sent["workflow_values"] == {"sent": ["chain_module_array.json",
+                                                "chain_parameters.csv"]}
+    with zipfile.ZipFile(io.BytesIO(base64.b64decode(sent["base64"]))) as zf:
+        assert zf.read("chain_module_array.json") == (arrays / "chain_module_array.json").read_bytes()
+        rows = {r["variable_name"]: float(r["value"])
+                for r in csv.DictReader(io.StringIO(zf.read("chain_parameters.csv").decode()))}
+    assert rows["C/q"] == pytest.approx(3.0, rel=1e-4)
+    assert rows["A/p"] == 1.0     # outside the selection: the target's own value
+    # nothing written beside the target
+    assert not list(arrays.glob("*_calibrated_parameters.csv"))
 
 
 def test_the_configured_ca_dir_is_put_on_the_path_before_ca_is_asked(monkeypatch):

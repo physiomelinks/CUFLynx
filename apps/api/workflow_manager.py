@@ -362,7 +362,8 @@ class WorkflowManager:
         (CA's ``write_calibrated_parameters_to``), by their file names: what a completed
         workflow sends back to PhLynx. WorkflowError when the target is not a module array,
         or a step has no current result."""
-        target = self._read_raw().get("target") or {}
+        # CA's reading of the target: a bare module-array path names its parameters file too
+        target = _ca_call("plan_workflow", self.path, self.module_library_dirs).get("target") or {}
         if not (isinstance(target.get("module_array"), str) and isinstance(target.get("parameters"), str)):
             raise WorkflowError("the target is not a module array, so there is none to send back")
         if not self.output_dir:
