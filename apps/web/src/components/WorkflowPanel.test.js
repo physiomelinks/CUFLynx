@@ -142,3 +142,48 @@ describe('WorkflowPanel', () => {
     expect(panel.text()).toContain('Inputs changed since fit_a ran')
   })
 })
+
+describe('WorkflowPanel: selection steps', () => {
+  const selectionTabs = [
+    { id: 'left', kind: 'step', label: 'left', detail: 'selection · C', place: '',
+      selection: 'runs as lin · base at C', missing: ['params_for_id'],
+      calibrates: [], fixedFrom: [], priorsFrom: [] },
+    { id: 'right', kind: 'step', label: 'right', detail: 'selection · D, E', place: '',
+      selection: 'runs as the module array of D, E', missing: ['obs_data'],
+      calibrates: [], fixedFrom: [], priorsFrom: [] },
+    { id: 'target', kind: 'target', label: 'whole', detail: '' },
+  ]
+
+  it('says what each selection runs as', () => {
+    const wrapper = mountPanel({ described, tabs: selectionTabs })
+    expect(wrapper.find('[data-testid="workflow-selection-left"]').text()).toBe('runs as lin · base at C')
+    expect(wrapper.find('[data-testid="workflow-selection-right"]').text()).toContain('D, E')
+  })
+
+  it("asks for a step's unset parameters in its protocol", async () => {
+    const wrapper = mountPanel({ described, tabs: selectionTabs,
+                                 unset: { step_id: 'left', names: ['C/x', 'C/y'] } })
+    expect(wrapper.find('[data-testid="workflow-unset"]').text()).toContain('C/x, C/y')
+    await wrapper.find('[data-testid="workflow-unset-edit"]').trigger('click')
+    expect(wrapper.emitted('edit-input')[0][0]).toEqual(
+      { stepId: 'left', role: 'obs_data', preselect: ['C/x', 'C/y'] })
+  })
+
+  it('offers a step without an input to create or open one, without opening its tab', async () => {
+    const wrapper = mountPanel({ described, tabs: selectionTabs })
+    expect(wrapper.find('[data-testid="workflow-missing-left-params_for_id"]').exists()).toBe(true)
+    // params_for_id comes from a file; obs_data can also be made in the protocol editor
+    expect(wrapper.find('[data-testid="workflow-create-left-params_for_id"]').exists()).toBe(false)
+    await wrapper.find('[data-testid="workflow-create-right-obs_data"]').trigger('click')
+    expect(wrapper.emitted('edit-input')[0][0]).toEqual({ stepId: 'right', role: 'obs_data', preselect: [] })
+    expect(wrapper.emitted('select')).toBeUndefined()
+
+    await wrapper.find('[data-testid="workflow-pick-left-params_for_id"]').trigger('click')
+    const input = wrapper.find('[data-testid="workflow-input-file"]')
+    const file = new File(['vessel_name,param_name\n'], 'p.csv', { type: 'text/csv' })
+    Object.defineProperty(input.element, 'files', { value: [file], configurable: true })
+    await input.trigger('change')
+    expect(wrapper.emitted('pick-input')[0][0]).toEqual({ stepId: 'left', role: 'params_for_id', file })
+    expect(wrapper.emitted('select')).toBeUndefined()
+  })
+})

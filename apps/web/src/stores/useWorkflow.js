@@ -8,6 +8,8 @@ import {
   loadWorkflow,
   openWorkflowView,
   runWorkflow,
+  saveWorkflowStepInput,
+  unsetParameters,
   uploadWorkflow,
 } from '../lib/api'
 
@@ -25,10 +27,13 @@ function arrayFile(model) {
 /**
  * A workflow model in a few words: a library module as "type · parameterisation", a
  * module array as its prefix (with `full`, as type / version / parameterisation, or the
- * array's file name).
+ * array's file name), a selection of the target's instances by their names.
  */
 export function modelLabel(model, full = false) {
   if (!model) return ''
+  if (Array.isArray(model.select)) {
+    return `${full ? 'selection of the target: ' : 'selection · '}${model.select.join(', ')}`
+  }
   const file = arrayFile(model)
   if (file) return full ? file : file.replace(ARRAY_SUFFIX, '')
   return full
@@ -53,6 +58,30 @@ export const SOURCE_WORDS = {
 }
 
 /**
+ * What a selection step runs as, from CA's plan (`selection`): the library module of its
+ * one instance, placed there, or the module array its instances form. '' for any other step.
+ */
+export function selectionWords(selection) {
+  if (!selection) return ''
+  if (selection.runs_as === 'library_module') {
+    return `runs as ${modelLabel(selection.module)} at ${selection.vessel}`
+  }
+  return `runs as the module array of ${(selection.records ?? []).join(', ')}`
+}
+
+/**
+ * The inputs a calibration step's file names none of: 'obs_data', 'params_for_id' (unless
+ * it fits what a reduction kept). The Workflow tab offers to give it each.
+ */
+export function missingInputs(fileStep) {
+  if (!fileStep || (fileStep.kind ?? 'calibration') !== 'calibration' || !fileStep.model) return []
+  const missing = []
+  if (!fileStep.obs_data) missing.push('obs_data')
+  if (!fileStep.params_for_id && !fileStep.params_for_id_from) missing.push('params_for_id')
+  return missing
+}
+
+/**
  * One tab per step, in the order CA runs them, then the target.
  *
  * Built from CA's plan (which resolved each step against the module library) when
@@ -65,6 +94,7 @@ export function workflowTabs(described) {
   const fileSteps = described.workflow?.steps ?? []
   const steps = planSteps ?? fileSteps
   const target = described.plan?.target ?? described.workflow?.target ?? null
+  const fileById = Object.fromEntries(fileSteps.map((f) => [f.id, f]))
   const tabs = steps.map((s) => ({
     id: s.id,
     kind: 'step',
@@ -74,7 +104,10 @@ export function workflowTabs(described) {
     label: s.id,
     detail: s.kind === 'reduction'
       ? `keeps the top ${s.reduction?.top_n ?? '?'} by Sobol ${s.reduction?.index_type ?? 'ST'}`
-      : modelLabel(s.model),
+      : modelLabel(s.model ?? fileById[s.id]?.model),
+    // a selection of the target's instances: what CA runs it as
+    selection: selectionWords(s.selection),
+    missing: missingInputs(fileById[s.id]),
     sources: Object.keys(SOURCE_WORDS)
       .filter((key) => s[key])
       .map((key) => ({ key, step: s[key] })),
@@ -93,6 +126,8 @@ export function workflowTabs(described) {
     kind: 'target',
     stepKind: null,
     viewable: true,
+    selection: '',
+    missing: [],
     sources: [],
     label: target ? (arrayFile(target) ? modelLabel(target) : target.module_type) : 'target',
     detail: target
@@ -130,6 +165,9 @@ export function useWorkflow(options = {}) {
   const view = ref(null) // the open tab's workflow_view from the server
   // A calibration_workflow.json an imported archive carried ({filename, path}).
   const offered = ref(null)
+  // A step whose model has parameters nothing gives a value ({step_id, names}), from
+  // opening its tab or from a run: a protocol in its obs_data sets them.
+  const unset = ref(null)
 
   const jobState = ref('idle') // idle | running | done | error | cancelled
   const jobStates = ref({})
@@ -175,6 +213,7 @@ export function useWorkflow(options = {}) {
       selected.value = null
       view.value = null
       offered.value = null
+      unset.value = null
       resetJob()
     }
     return d
@@ -186,17 +225,39 @@ export function useWorkflow(options = {}) {
       described.value = { loaded: false }
       selected.value = null
       view.value = null
+      unset.value = null
       resetJob()
     }
   }
 
   /** Load one tab as the current study; returns the import-shaped response. */
   async function select(tabId) {
-    const result = await guarded(() => openWorkflowView(tabId))
-    if (result) {
+    busy.value = true
+    error.value = ''
+    try {
+      const result = await openWorkflowView(tabId)
       selected.value = tabId
       view.value = result.workflow_view ?? null
+      if (unset.value?.step_id === tabId) unset.value = null
+      return result
+    } catch (e) {
+      error.value = errorMessage(e)
+      unset.value = unsetParameters(e) ?? unset.value
+      return null
+    } finally {
+      busy.value = false
     }
+  }
+
+  /**
+   * Write a step's obs_data (a document) or params_for_id (CSV text); a step naming none is
+   * given a file. CA re-plans, and the step's unset parameters are asked again on its next
+   * open or run. Returns the server's {path, workflow}, or null (error says why).
+   */
+  async function saveStepInput(stepId, role, content) {
+    const result = await saveWorkflowStepInput(stepId, role, content)
+    described.value = result.workflow
+    if (unset.value?.step_id === stepId) unset.value = null
     return result
   }
 
@@ -235,6 +296,7 @@ export function useWorkflow(options = {}) {
       }
       jobStates.value = s.step_states ?? {}
       currentStep.value = s.current_step ?? null
+      if (s.unset_parameters) unset.value = s.unset_parameters
       if (s.state === 'running') {
         timer = setTimeout(poll, intervalMs)
         return
@@ -272,6 +334,7 @@ export function useWorkflow(options = {}) {
     selected,
     view,
     offered,
+    unset,
     jobState,
     jobStates,
     currentStep,
@@ -282,6 +345,7 @@ export function useWorkflow(options = {}) {
     open,
     close,
     select,
+    saveStepInput,
     run,
     cancel,
     stateOf,

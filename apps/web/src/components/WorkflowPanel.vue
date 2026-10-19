@@ -30,11 +30,24 @@ const props = defineProps({
   error: { type: String, default: '' },
   busy: { type: Boolean, default: false },
   offered: { type: Object, default: null },
+  // A step's parameters nothing gives a value ({step_id, names}), for its protocol to set.
+  unset: { type: Object, default: null },
   outputsDir: { type: String, default: '' },
   moduleLibraryDirs: { type: Array, default: () => [] },
   mpiexecAvailable: { type: Boolean, default: true },
 })
-const emit = defineEmits(['open', 'close', 'select', 'run', 'cancel', 'open-settings'])
+const emit = defineEmits([
+  'open',
+  'close',
+  'select',
+  'run',
+  'cancel',
+  'open-settings',
+  // {stepId, role: 'obs_data', preselect}: edit a step's obs_data in the protocol editor
+  'edit-input',
+  // {stepId, role, file}: give a step a file of its own
+  'pick-input',
+])
 
 const path = ref('')
 const numCores = ref(1)
@@ -90,6 +103,22 @@ function onFile(event) {
   const file = event.target.files?.[0]
   if (file) emit('open', { file })
   event.target.value = ''
+}
+
+// The step and input a file picker is choosing for.
+const pickFor = ref(null)
+const inputFile = ref(null)
+
+function pickInput(stepId, role) {
+  pickFor.value = { stepId, role }
+  inputFile.value?.click()
+}
+
+function onInputFile(event) {
+  const file = event.target.files?.[0]
+  if (file && pickFor.value) emit('pick-input', { ...pickFor.value, file })
+  event.target.value = ''
+  pickFor.value = null
 }
 
 function run(which = {}) {
@@ -224,6 +253,24 @@ const progressText = computed(() => {
         {{ described.plan_error }}
       </Message>
 
+      <Message
+        v-if="unset"
+        severity="warn"
+        :closable="false"
+        data-testid="workflow-unset"
+      >
+        Step <strong>{{ unset.step_id }}</strong> needs a value for
+        {{ unset.names.join(', ') }}: a boundary its selection cuts, set by a protocol in its
+        obs_data.
+        <Button
+          label="Set them in the protocol"
+          size="small"
+          text
+          data-testid="workflow-unset-edit"
+          @click="emit('edit-input', { stepId: unset.step_id, role: 'obs_data', preselect: unset.names })"
+        />
+      </Message>
+
       <ol class="wf-steps">
         <li
           v-for="step in steps"
@@ -243,6 +290,30 @@ const progressText = computed(() => {
           </span>
           <div class="wf-step-detail">
             {{ step.detail }}<span v-if="step.place"> → {{ step.place }} in the target</span>
+          </div>
+          <div v-if="step.selection" class="wf-step-detail" :data-testid="`workflow-selection-${step.id}`">
+            {{ step.selection }}
+          </div>
+          <div
+            v-for="role in step.missing ?? []"
+            :key="role"
+            class="wf-step-detail wf-missing"
+            :data-testid="`workflow-missing-${step.id}-${role}`"
+            @click.stop
+          >
+            has no {{ role }}:
+            <a
+              v-if="role === 'obs_data'"
+              href="#"
+              :data-testid="`workflow-create-${step.id}-${role}`"
+              @click.prevent="emit('edit-input', { stepId: step.id, role, preselect: [] })"
+            >create one</a>
+            <template v-if="role === 'obs_data'"> or </template>
+            <a
+              href="#"
+              :data-testid="`workflow-pick-${step.id}-${role}`"
+              @click.prevent="pickInput(step.id, role)"
+            >open a file</a>
           </div>
           <div v-if="step.calibrates.length" class="wf-step-detail">
             calibrates {{ step.calibrates.map((c) => c.target_parameterisation_name ?? c.model_name).join(', ') }}
@@ -389,6 +460,14 @@ const progressText = computed(() => {
       {{ error }}
     </Message>
 
+    <input
+      ref="inputFile"
+      type="file"
+      :accept="pickFor?.role === 'params_for_id' ? '.csv,text/csv' : '.json,application/json'"
+      hidden
+      data-testid="workflow-input-file"
+      @change="onInputFile"
+    />
     <FileBrowserDialog
       v-model:visible="browseFile"
       mode="file"
@@ -415,6 +494,9 @@ const progressText = computed(() => {
   min-width: 0;
   /* workflow and run paths are long: break them rather than widen the pane */
   overflow-wrap: anywhere;
+}
+.wf-missing {
+  color: var(--p-orange-500, #f97316);
 }
 .wf-intro,
 .wf-hint {

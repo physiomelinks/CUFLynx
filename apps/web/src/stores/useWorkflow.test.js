@@ -9,7 +9,10 @@ vi.mock('../lib/api', () => ({
   runWorkflow: vi.fn(),
   getWorkflowStatus: vi.fn(),
   cancelWorkflow: vi.fn(),
-  errorMessage: (e) => e?.response?.data?.detail || String(e?.message || e),
+  saveWorkflowStepInput: vi.fn(),
+  unsetParameters: (e) => e?.response?.data?.detail?.unset_parameters ?? null,
+  errorMessage: (e) =>
+    e?.response?.data?.detail?.message || e?.response?.data?.detail || String(e?.message || e),
 }))
 
 import {
@@ -18,8 +21,17 @@ import {
   loadWorkflow,
   openWorkflowView,
   runWorkflow,
+  saveWorkflowStepInput,
 } from '../lib/api'
-import { TARGET_VIEW, stepState, useWorkflow, workflowTabs } from './useWorkflow'
+import {
+  TARGET_VIEW,
+  missingInputs,
+  modelLabel,
+  selectionWords,
+  stepState,
+  useWorkflow,
+  workflowTabs,
+} from './useWorkflow'
 
 const PLAN = {
   workflow_name: 'chain_rest',
@@ -194,5 +206,87 @@ describe('useWorkflow', () => {
     await wf.run()
     expect(wf.jobState.value).toBe('error')
     expect(wf.jobError.value).toBe('a calibration is running')
+  })
+})
+
+describe('selection steps (PhLynx #492)', () => {
+  const SELECTION = {
+    loaded: true,
+    workflow: {
+      workflow_name: 'from_phlynx',
+      target: { module_array: 'whole_module_array.json', parameters: 'whole_parameters.csv' },
+      steps: [
+        { id: 'left', model: { select: ['C'] }, obs_data: 'left_obs_data.json' },
+        { id: 'right', model: { select: ['D', 'E'] }, params_for_id: 'right_params_for_id.csv' },
+        { id: 'kept', model: { select: ['D'] }, obs_data: 'o.json', params_for_id_from: 'rank' },
+        { id: 'rank', kind: 'reduction', sensitivity_from: 'left' },
+      ],
+    },
+    plan: {
+      steps: [
+        { id: 'left', model: { select: ['C'] }, calibrates: [], fixed_from: [], priors_from: [],
+          selection: { runs_as: 'library_module', vessel: 'C',
+                       module: { module_type: 'lin', version: 'v1', parameterisation: 'base' } } },
+        { id: 'right', model: { select: ['D', 'E'] }, calibrates: [], fixed_from: [],
+          priors_from: [], selection: { runs_as: 'module_array', records: ['D', 'E'] } },
+      ],
+    },
+  }
+
+  it('names a selection by its instances, and what CA runs it as', () => {
+    expect(modelLabel({ select: ['D', 'E'] })).toBe('selection · D, E')
+    expect(modelLabel({ select: ['C'] }, true)).toBe('selection of the target: C')
+    const [left, right] = workflowTabs(SELECTION)
+    expect(left.detail).toBe('selection · C')
+    expect(left.selection).toBe('runs as lin · base at C')
+    expect(right.selection).toBe('runs as the module array of D, E')
+  })
+
+  it("lists the inputs a calibration step's file names none of", () => {
+    const [left, right] = workflowTabs(SELECTION)
+    expect(left.missing).toEqual(['params_for_id'])
+    expect(right.missing).toEqual(['obs_data'])
+    const steps = SELECTION.workflow.steps
+    expect(missingInputs(steps[2])).toEqual([]) // fits what a reduction kept
+    expect(missingInputs(steps[3])).toEqual([]) // a reduction takes neither
+    expect(selectionWords(null)).toBe('')
+  })
+
+  it("keeps a step's unset parameters from opening its tab, and drops them once it opens", async () => {
+    openWorkflowView.mockRejectedValueOnce({
+      response: { data: { detail: { message: 'step "left": 1 parameter(s) have no value: C/x.',
+                                    unset_parameters: { step_id: 'left', names: ['C/x'] } } } },
+    })
+    const wf = useWorkflow()
+    expect(await wf.select('left')).toBeNull()
+    expect(wf.error.value).toBe('step "left": 1 parameter(s) have no value: C/x.')
+    expect(wf.unset.value).toEqual({ step_id: 'left', names: ['C/x'] })
+    openWorkflowView.mockResolvedValueOnce({ model_id: 'm', workflow_view: { view: 'left' } })
+    await wf.select('left')
+    expect(wf.unset.value).toBeNull()
+  })
+
+  it('keeps the unset parameters a run stopped on', async () => {
+    runWorkflow.mockResolvedValueOnce({ job_id: 'j2' })
+    getWorkflowStatus.mockResolvedValueOnce({
+      state: 'error', lines: [], next_offset: 0, step_states: { left: 'failed' },
+      error: 'step left: no value', unset_parameters: { step_id: 'left', names: ['C/x'] },
+    })
+    getWorkflow.mockResolvedValueOnce(SELECTION)
+    const wf = useWorkflow()
+    await wf.run()
+    expect(wf.jobState.value).toBe('error')
+    expect(wf.unset.value).toEqual({ step_id: 'left', names: ['C/x'] })
+  })
+
+  it("writes a step's input and takes the workflow CA re-planned", async () => {
+    saveWorkflowStepInput.mockResolvedValueOnce({ path: '/w/right_obs_data.json', workflow: SELECTION })
+    const wf = useWorkflow()
+    wf.unset.value = { step_id: 'right', names: ['D/x'] }
+    const result = await wf.saveStepInput('right', 'obs_data', { protocol_info: {} })
+    expect(saveWorkflowStepInput).toHaveBeenCalledWith('right', 'obs_data', { protocol_info: {} })
+    expect(result.path).toBe('/w/right_obs_data.json')
+    expect(wf.described.value).toEqual(SELECTION)
+    expect(wf.unset.value).toBeNull()
   })
 })

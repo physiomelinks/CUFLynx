@@ -13,6 +13,7 @@ import SensitivityPanel from './components/SensitivityPanel.vue'
 import UQPanel from './components/UQPanel.vue'
 import WorkflowBar from './components/WorkflowBar.vue'
 import WorkflowPanel from './components/WorkflowPanel.vue'
+import EditObsDataDialog from './components/EditObsDataDialog.vue'
 import AnalysisPanel from './components/AnalysisPanel.vue'
 import CostSensitivityBar from './components/CostSensitivityBar.vue'
 import InputNumber from 'primevue/inputnumber'
@@ -58,6 +59,7 @@ import {
   errorMessage,
   loadOutputsDirectory,
   openStudyFromOutputs,
+  getWorkflowStepInput,
 } from './lib/api'
 import {
   overlayItemsFor,
@@ -553,6 +555,56 @@ async function onOpenWorkflow(source) {
 function onRunWorkflow(which) {
   wf.run(which)
 }
+
+// The protocol editor on a workflow step's own obs_data ({stepId, document, preselect}).
+const stepEditor = ref(null)
+
+/**
+ * Edit a step's obs_data (as the workflow names it, with the target's names) in the
+ * protocol editor, with `preselect` parameters given lanes to fill in.
+ */
+async function onEditStepInput({ stepId, preselect = [] }) {
+  try {
+    const { content } = await getWorkflowStepInput(stepId, 'obs_data')
+    stepEditor.value = { stepId, document: content ? JSON.parse(content) : null, preselect }
+    leftTab.value = 'workflow'
+  } catch (e) {
+    sim.setError(errorMessage(e))
+  }
+}
+
+/** Saving writes the step's obs_data and CA re-plans ... */
+async function saveStepObsData(document) {
+  const { stepId } = stepEditor.value
+  return { ...(await wf.saveStepInput(stepId, 'obs_data', document)), stepId }
+}
+
+/**
+ * ... then, once the editor has closed, the step's tab opens on it: a parameter still
+ * unset opens the editor again rather than being closed with this one.
+ */
+function onStepObsSaved({ stepId }) {
+  setTimeout(() => onSelectWorkflowTab(stepId))
+}
+
+/** A file the user picked becomes a step's own obs_data or params_for_id. */
+async function onPickStepInput({ stepId, role, file }) {
+  try {
+    const text = await file.text()
+    await wf.saveStepInput(stepId, role, role === 'obs_data' ? JSON.parse(text) : text)
+  } catch (e) {
+    sim.setError(e instanceof SyntaxError ? `${file.name} is not JSON: ${e.message}` : errorMessage(e))
+  }
+}
+
+// A step that stopped on parameters nothing gives a value -- on opening its tab or in a
+// run -- opens its protocol with them selected.
+watch(
+  () => wf.unset.value,
+  (unset) => {
+    if (unset) onEditStepInput({ stepId: unset.step_id, preselect: unset.names })
+  },
+)
 
 async function applyCaDir(dir) {
   try {
@@ -2166,8 +2218,12 @@ watch(
 async function onModelLoaded(data) {
   model.setModel(data)
   // An archive that carries a calibration_workflow.json: offer it in the Workflow
-  // tab rather than opening it, which would replace this study with its tabs.
+  // tab rather than opening it, which would replace this study with its tabs --
+  // unless it calibrates selections of PhLynx instances, which is what it was sent for.
   if (data?.calibration_workflow) wf.offered.value = data.calibration_workflow
+  const openWorkflowNow = data?.calibration_workflow?.select_steps?.length
+    ? data.calibration_workflow
+    : null
   obs.clearObsData()
   paramsForId.clear()
   loadedParamsRaw.value = []
@@ -2189,6 +2245,11 @@ async function onModelLoaded(data) {
     model.setVariables(vars)
   } catch (e) {
     sim.setError(String(e))
+  }
+  // Once this study has loaded, so its late answers cannot land on the workflow's tab.
+  if (openWorkflowNow) {
+    leftTab.value = 'workflow'
+    await onOpenWorkflow({ path: openWorkflowNow.path })
   }
 }
 
@@ -3013,6 +3074,7 @@ watch(() => obs.obsData.value, scheduleRun)
             :error="wf.error.value"
             :busy="wf.busy.value"
             :offered="wf.offered.value"
+            :unset="wf.unset.value"
             :outputs-dir="outputsDir"
             :module-library-dirs="moduleLibraryDirs"
             :mpiexec-available="mpiexecAvailable"
@@ -3022,6 +3084,22 @@ watch(() => obs.obsData.value, scheduleRun)
             @run="onRunWorkflow"
             @cancel="wf.cancel()"
             @open-settings="settingsOpen = true"
+            @edit-input="onEditStepInput"
+            @pick-input="onPickStepInput"
+          />
+          <EditObsDataDialog
+            v-if="stepEditor"
+            :visible="!!stepEditor"
+            :document="stepEditor.document"
+            :preselect="stepEditor.preselect"
+            :save="saveStepObsData"
+            :model-variables="model.variables.value"
+            :header="`obs_data of step ${stepEditor.stepId}`"
+            hint="This step's own obs_data, naming the target's instances. Saving writes it and
+              opens the step again; it and every step after it rerun."
+            data-testid="workflow-step-obs"
+            @saved="onStepObsSaved"
+            @update:visible="(v) => { if (!v) stepEditor = null }"
           />
         </div>
         </div>
