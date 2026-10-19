@@ -386,25 +386,11 @@ def test_a_scale_modifier_becomes_one_theta_entry():
     assert entry.warning is None
 
 
-def test_a_file_written_before_the_rename_still_loads():
-    """CA renamed the key to `modifier` (CA #385) and deprecated `operation`.
-    Every params_for_id CUFLynx has already written uses the old name, so
-    reading it must keep working -- silently, since the user did nothing wrong."""
+def test_the_operation_key_on_an_entry_is_refused():
+    """A modifier entry names its function with ``modifier``; ``operation`` is refused."""
     doc = {"params": [{"name": "C_scale", "modifies": ["a/C", "b/C"],
                        "operation": "scale", "min": 0.5, "max": 2.0}]}
-    entry = parse_params_for_id(doc, MODEL_VALUES)[0]
-
-    assert entry.operation == "scale"
-    assert entry.qnames == ["a/C", "b/C"]
-
-
-def test_setting_both_names_is_refused(requires_ca_resolver):
-    """CA refuses an entry carrying the key and its deprecated alias rather than
-    silently picking one -- two spellings of the same thing in one entry is a
-    file the author did not mean to write."""
-    doc = {"params": [{"name": "s", "modifies": ["a/C"], "modifier": "scale",
-                       "operation": "scale", "min": 0.5, "max": 2.0}]}
-    with pytest.raises(ParamsForIdError, match="deprecated alias"):
+    with pytest.raises(ParamsForIdError, match="operation"):
         parse_params_for_id(doc, MODEL_VALUES)
 
 
@@ -513,7 +499,7 @@ def test_ca_rejects_a_modified_param_that_is_also_free(requires_ca_resolver):
 
 
 def test_ca_rejects_an_unknown_entry_key(requires_ca_resolver):
-    with pytest.raises(ParamsForIdError, match="unknown key"):
+    with pytest.raises(ParamsForIdError, match="'wingspan' was unexpected"):
         parse_params_for_id(
             {"params": [{"targets": ["a/C"], "min": 1.0, "max": 2.0, "wingspan": 3}]}
         )

@@ -1842,7 +1842,7 @@ const exportEnabled = computed(() => ({
   do_simulation: true,
   do_calibration: canCalibrate.value,
   do_sensitivity: canCalibrate.value,
-  do_mcmc: canCalibrate.value && uqSettings.value.method === 'mcmc',
+  do_uq: canCalibrate.value && uqSettings.value.method === 'mcmc',
   do_ia: canCalibrate.value && uqSettings.value.method === 'laplace',
 }))
 

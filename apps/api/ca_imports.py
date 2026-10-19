@@ -32,18 +32,11 @@ alongside the other modules both tiers share — ``local_sensitivity``,
 leaf: nothing here imports an app module except lazily, inside a ``try``, so the
 analysis runners can use the one resolver rather than each carrying a copy.
 
-Two files cannot import it and carry **deliberate duplicates** of this rule
-instead:
-
-- ``sim_worker_runner.py``, which CLAUDE.md requires to stay free of *every* app
-  import (it is the live tier's standalone child), in its ``_ca_import`` /
-  ``_ca_from`` helpers;
-- the exported ``run_pipeline.py`` (``PIPELINE_SCRIPT`` in
-  ``export_pipeline.py``), which runs in the user's own environment with only
-  circulatory_autogen beside it.
-
-Change one, change all three — ``tests/test_ca_import_parity.py`` pins them to
-the tables here.
+``sim_worker_runner.py`` cannot import it and carries a **deliberate duplicate**
+of this rule in its ``_ca_import`` / ``_ca_from`` helpers: CLAUDE.md requires it
+to stay free of *every* app import (it is the live tier's standalone child).
+Change one, change both — ``tests/test_ca_import_parity.py`` pins it to the
+tables here.
 """
 
 from __future__ import annotations
@@ -92,35 +85,6 @@ class CaImportError(ImportError):
     Subclasses :class:`ImportError` so the many ``except ImportError`` fallbacks
     around the app (older CA -> built-in default) keep working unchanged.
     """
-
-
-#: CA's spelling -> CUFLynx's, for ``generated_model_format`` values CA renamed.
-#: ``cellml_only`` became ``cellml`` upstream; a checkout from before that still
-#: says the old word in its schema, in its run configs and in everything it hands
-#: back. CUFLynx carries **one** spelling internally (the current one) and
-#: translates only at the two boundaries: :func:`solver_options.canonical_model_type`
-#: on the way in, :func:`solver_options.ca_model_type` on the way out.
-#:
-#: It lives here rather than in ``solver_options`` because the runner tier needs
-#: it and ``solver_options`` does not ship into ``runners/``: a run config carries
-#: CA's spelling (``main`` writes ``ca_model_type(...)`` into it), and
-#: ``local_sensitivity`` compares that value against its own ``cellml`` /
-#: ``casadi_python`` tables. Against a pre-rename CA the un-canonicalised
-#: ``cellml_only`` matched nothing, so an FSA/AUTO local-sensitivity run the menu
-#: had offered was then refused with ``NotImplementedError`` -- the #122 failure,
-#: reintroduced through the config rather than through the menu.
-MODEL_TYPE_ALIASES = {"cellml_only": "cellml"}
-
-
-def canonical_model_type(model_type: str | None) -> str | None:
-    """CUFLynx's spelling of a CA ``generated_model_format``. Unknown names pass through.
-
-    Apply it to anything that came from CA or from a run config CA will also
-    read. Never to a value on its way *out* -- that is :func:`solver_options.ca_model_type`.
-    """
-    if not model_type:
-        return model_type
-    return MODEL_TYPE_ALIASES.get(model_type, model_type)
 
 
 # None = not yet probed. Reset via :func:`reset_cache` when the CA dir changes,
@@ -426,17 +390,9 @@ def ca_import(name: str):
 def ca_first_of(module: str, *names: str):
     """The first of ``names`` the module actually has.
 
-    For a thing CA has renamed. ``ParamID`` and ``MCMC`` were called
-    ``OpencorParamID`` and ``OpencorMCMC`` until circulatory_autogen renamed them --
-    they were never about OpenCOR, they are the parameter-identification and MCMC
-    engines and run against myokit/CVODE, casadi and emulators alike.
-
-    CUFLynx has to work against a CA from either side of that rename, so it asks for
-    the new name and accepts the old one. Written as "first of these spellings" rather
-    than as a try/except around two ``ca_from`` calls because the fallback is data, not
-    control flow, and because a genuinely absent class should still raise the one
-    diagnostic :func:`ca_from` produces -- naming the file that answered, which is what
-    tells a hollow checkout apart from an old one.
+    For a thing CA offers under more than one name. A genuinely absent name raises
+    the one diagnostic :func:`ca_from` produces -- naming the file that answered,
+    which is what tells a hollow checkout apart from an old one.
     """
     mod = ca_import(module)
     for name in names:

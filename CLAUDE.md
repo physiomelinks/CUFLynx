@@ -72,9 +72,9 @@ spellings, since neither is a literal any more. Tests inject fakes with
 `ca_imports.py` **ships into `runners/`** alongside the other modules both tiers
 share, so the analysis runners use the one resolver. `sim_worker_runner.py` is
 the exception CLAUDE.md already carves out — it must stay free of every app
-import — and carries a deliberate duplicate (`_ca_import` / `_ca_from`); so does
-the exported `run_pipeline.py` (a string in `export_pipeline.py`), which runs in
-the user's own environment. Keep the three in step.
+import — and carries a deliberate duplicate (`_ca_import` / `_ca_from`); keep the
+two in step. The exported `run_pipeline.py` is CA's own
+(`scripts.generate_pipeline_script`), imported as `libcuflynx.*` only.
 
 ## Key files
 
@@ -112,7 +112,7 @@ the user's own environment. Keep the three in step.
 
 - `apps/api/sensitivity.py` / `sensitivity_runner.py` — global **Sobol** sensitivity; `local_sensitivity.py` — local sensitivity (`d ln Y/d ln P` about a nominal point: current values / reused calibration best fit / bounds centre; optional "run calibration first"). UI: `SensitivityPanel.vue`; results render in `AnalysisPanel.vue` (S1/ST/local heatmaps).
 
-  **Every gradient source is computed by CA**, through the one backend-agnostic accessor `OpencorParamID.get_observable_sensitivities(param_vals, gradient_method, fd_rel_step)` — FD (`fd_backend`), AD (`casadi_backend`) and FSA (`fsa_backend`) alike, so the runner builds the param-id engine for all three. CUFLynx reimplemented the FD loop and the CasADi jacobian until #210's follow-up; that is why it had to mirror CA's flatten/fold contract for grouped and modifier rows, and why CA #390 tightening that contract broke the AD path. **Do not reimplement a gradient here.** What `local_sensitivity.py` legitimately owns is only what CA does not answer: the nominal point, the *signed* relative coefficient (CA's is unsigned and 0.0 on a degenerate denominator), the `var^{e,s} [op]` labels shared with the Sobol heatmap, and the `CVODES`/`AUTO` alias resolution. Two traps: read the nominal features **before** the sensitivities (CA's CasADi arm leaves the helper in AD mode, so a later numeric evaluation returns an `SX`), and pass `rel_step` explicitly as `fd_rel_step` (CUFLynx defaults to 1e-2, CA to 1e-3 — up to 48% apart).
+  **Every gradient source is computed by CA**, through the one backend-agnostic accessor `ParamID.get_observable_sensitivities(param_vals, gradient_method, fd_rel_step)` — FD (`fd_backend`), AD (`casadi_backend`) and FSA (`fsa_backend`) alike, so the runner builds the param-id engine for all three. CUFLynx reimplemented the FD loop and the CasADi jacobian until #210's follow-up; that is why it had to mirror CA's flatten/fold contract for grouped and modifier rows, and why CA #390 tightening that contract broke the AD path. **Do not reimplement a gradient here.** What `local_sensitivity.py` legitimately owns is only what CA does not answer: the nominal point, the *signed* relative coefficient (CA's is unsigned and 0.0 on a degenerate denominator), the `var^{e,s} [op]` labels shared with the Sobol heatmap, and the `CVODES`/`AUTO` alias resolution. Two traps: read the nominal features **before** the sensitivities (CA's CasADi arm leaves the helper in AD mode, so a later numeric evaluation returns an `SX`), and pass `rel_step` explicitly as `fd_rel_step` (CUFLynx defaults to 1e-2, CA to 1e-3 — up to 48% apart).
 - `apps/api/calibration.py` / `calibration_runner.py` — GA parameter identification; `CalibrationPanel.vue` (also emits live settings reused by local-sensitivity "run calibration first").
 - `apps/api/uq.py` / `uq_runner.py` — uncertainty quantification; `UQPanel.vue`.
 - `apps/api/emulator.py` / `emulator_runner.py` — trains a **surrogate** of the
@@ -256,7 +256,7 @@ answer in the time a drag allows, and it differences the very cost the panel sho
 FD, `rel_step` defaulting to CA's `1e-3` **not** local SA's `1e-2` — the two differ
 by up to 48% on a rough functional, and these numbers sit next to CA's. CA's
 analytic `get_gradient` is better and unused: it needs a solver-backed
-`OpencorParamID` (compile per call, casadi/aadc/FSA only), which is the subprocess
+`ParamID` (compile per call, casadi/aadc/FSA only), which is the subprocess
 tier this is avoiding. Opt-in and off by default: 2M+1 simulations per settle.
 
 **Exchange with PhLynx** (`apps/api/omex_import.py` + `omex_export.py`, #287/#290).
@@ -289,8 +289,8 @@ Three traps:
 - **Classify JSON members by manifest format and content, never by "leftover
   `.json`".** A PhLynx archive ships `simulation.json` declared as plain
   `application/json` — the same format a real obs_data carries — so the manifest
-  alone cannot separate them; `_looks_like_obs_data` sniffs for the two shapes
-  `obs_data.parse_obs_data` accepts. Upstream is explicit that `flow.json` may be
+  alone cannot separate them; `_looks_like_obs_data` sniffs for an obs_data (a bare
+  list too, so `parse_obs_data` can refuse it naming `cuflynx-upgrade`). Upstream is explicit that `flow.json` may be
   **renamed**, so its format specifier (`application/x.vnd.phlynx-flow+json`) is the
   contract and its name is not. The embedded study manifest is classified the same way
   (`_declared_study`) and taken out of every other pool first, or a prefix containing
