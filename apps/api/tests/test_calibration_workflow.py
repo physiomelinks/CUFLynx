@@ -6,6 +6,7 @@ injects a fake CA module and a fake runner; the integration tier runs CA's own f
 library (libcuflynx.external_testing.workflow_library) for real.
 """
 
+import base64
 import io
 import json
 import os
@@ -633,15 +634,8 @@ def test_a_workflow_of_module_arrays_runs_from_its_own_files(
     assert merged["q_C"] == pytest.approx(3.0, rel=1e-4)
 
 
-@pytest.mark.integration
-@pytest.mark.slow
-def test_a_phlynx_selection_asks_for_its_boundary_runs_and_goes_back_calibrated(
-        client, requires_simulation, tmp_path):
-    """CA #594's fixture: in the chain, C (z = x + k q^2) reads x from A through a boundary.
-    C selected alone leaves x unset; given x = Y_A by a protocol, q = sqrt(Z_C - Y_A) = 3."""
-    import base64
-    import csv
-
+def _selection_ca():
+    """CA #594's fixture builder and constants, or a skip on a CA without selection steps."""
     try:
         from ca_imports import ca_from, ensure_ca_path
 
@@ -649,33 +643,133 @@ def test_a_phlynx_selection_asks_for_its_boundary_runs_and_goes_back_calibrated(
         build = ca_from("external_testing.workflow_library", "build_workflow_library")
         ca_from("calibration_workflow", "write_calibrated_parameters_to")
         constants = {name: ca_from("external_testing.workflow_library", name)
-                     for name in ("OPTIMISER_SETTINGS", "Y_A", "Z_C")}
+                     for name in ("OPTIMISER_SETTINGS", "Y_A", "Y_B", "Z_C", "STD_A", "STD_B")}
     except ImportError:
         if os.environ.get("CUFLYNX_REQUIRE_CA_RUN"):
             raise
         pytest.skip("this circulatory_autogen has no selection steps (CA #594)")
+    return build, constants
+
+
+def _selection_study(client, tmp_path, *, target, step_id, select, items, params,
+                     params_to_change=None, setup=None):
+    """CA's fixture library with one selection step ``step_id`` on ``target`` (a module array
+    in its ``arrays`` directory), loaded in the GUI. ``items`` are ``(name, operand, value,
+    std)`` data items, ``params`` ``(vessel, param, min, max)`` rows; ``setup(arrays)`` writes
+    any target the library lacks. Returns ``(arrays directory, load response)``."""
+    build, constants = _selection_ca()
     paths = build(str(tmp_path / "library"))
     arrays = Path(paths["arrays"])
     (arrays / "data").mkdir(exist_ok=True)
-    obs = {"protocol_info": {"pre_times": [0.0], "sim_times": [[1.0]], "params_to_change": {}},
-           "data_items": [{"data_item_name": "z_c", "data_type": "constant",
-                           "unit": "dimensionless", "operands": ["C/z"], "operation": "mean",
-                           "weight": 1.0, "value": constants["Z_C"], "std": 0.17}],
+    if setup:
+        setup(arrays)
+    obs = {"protocol_info": {"pre_times": [0.0], "sim_times": [[1.0]],
+                             "params_to_change": params_to_change or {}},
+           "data_items": [{"data_item_name": name, "data_type": "constant",
+                           "unit": "dimensionless", "operands": [operand], "operation": "mean",
+                           "weight": 1.0, "value": value, "std": std}
+                          for name, operand, value, std in items],
            "prediction_items": []}
-    (arrays / "data" / "c_obs.json").write_text(json.dumps(obs))
-    (arrays / "data" / "c_params.csv").write_text(
-        "vessel_name,param_name,min,max,name_for_plotting\nC,q,0.1,10.0,q_C\n")
+    (arrays / "data" / "step_obs.json").write_text(json.dumps(obs))
+    (arrays / "data" / "step_params.csv").write_text(
+        "vessel_name,param_name,min,max,name_for_plotting\n"
+        + "".join(f"{v},{p},{lo},{hi},{p}_{v}\n" for v, p, lo, hi in params))
     workflow_path = arrays / "selection_workflow.json"
     workflow_path.write_text(json.dumps({
         "schema_version": 1, "workflow_name": "selection",
         "module_library_dirs": [paths["modules"]], "settings": constants["OPTIMISER_SETTINGS"],
-        "target": "chain_module_array.json",
-        "steps": [{"id": "c-alone", "model": {"select": ["C"]},
-                   "obs_data": "data/c_obs.json", "params_for_id": "data/c_params.csv"}]}))
+        "target": target,
+        "steps": [{"id": step_id, "model": {"select": select},
+                   "obs_data": "data/step_obs.json", "params_for_id": "data/step_params.csv"}]}))
     assert client.post("/api/config", json={"python_path": sys.executable}).status_code == 200
-    body = client.post("/api/workflow/load", json={
-        "path": str(workflow_path), "config_outputs_dir": str(tmp_path / "outputs")}).json()
+    r = client.post("/api/workflow/load", json={
+        "path": str(workflow_path), "config_outputs_dir": str(tmp_path / "outputs")})
+    assert r.status_code == 200, r.text
+    return arrays, r.json()
+
+
+def _calibrate(client):
+    job = client.post("/api/workflow/run", json={}).json()["job_id"]
+    status = _wait(client, job, timeout=300)
+    assert status["state"] == "done", "\n".join(status["lines"][-40:])
+
+
+def _send_back(client):
+    """What a send of the target tab to PhLynx carries back: ``(file names, {name: bytes})``."""
+    target = client.post("/api/workflow/view", json={"view": "target"})
+    assert target.status_code == 200, target.text
+    sent = client.post("/api/phlynx/send", json={"model_id": target.json()["model_id"],
+                                                 "source": "as_imported"})
+    assert sent.status_code == 200, sent.text
+    names = sent.json()["workflow_values"]["sent"]
+    with zipfile.ZipFile(io.BytesIO(base64.b64decode(sent.json()["base64"]))) as zf:
+        return names, {name: zf.read(name) for name in names}
+
+
+def _parameter_rows(text):
+    import csv
+
+    return {r["variable_name"]: r for r in csv.DictReader(io.StringIO(text))}
+
+
+def _values(text):
+    return {name: float(r["value"]) for name, r in _parameter_rows(text).items()}
+
+
+def _changed_values(arrays, files):
+    """``{variable_name: (before, after)}`` for each parameter the send-back changes against
+    the target's own files beside it; every other file it carries is asserted identical."""
+    changed = {}
+    for name, blob in files.items():
+        before = (arrays / name).read_bytes()
+        if not name.endswith(".csv"):
+            assert blob == before, f"{name} is sent back changed"
+            continue
+        old, new = _values(before.decode()), _values(blob.decode())
+        assert set(new) >= set(old), f"{name} drops {sorted(set(old) - set(new))}"
+        changed.update({k: (old.get(k), v) for k, v in new.items() if old.get(k) != v})
+    return changed
+
+
+SEND_BACK_FIXTURE = Path(__file__).parent / "fixtures" / "phlynx_send_back_parameters.csv"
+
+
+def _fixture_form(text):
+    """The send-back CSV as the committed fixture keeps it: the calibration date written as
+    ``YYYY-MM-DD`` and a fitted value to 6 significant figures, so a rerun reproduces it."""
+    import csv
+    import re
+
+    rows = list(csv.DictReader(io.StringIO(text)))
+    out = io.StringIO()
+    writer = csv.DictWriter(out, fieldnames=list(rows[0]), lineterminator="\n")
+    writer.writeheader()
+    for row in rows:
+        short = "%.6g" % float(row["value"])
+        row["value"] = row["value"] if float(short) == float(row["value"]) else short
+        row["data_reference"] = re.sub(r"\(\d{4}-\d{2}-\d{2}\)", "(YYYY-MM-DD)",
+                                       row["data_reference"])
+        writer.writerow(row)
+    return out.getvalue()
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+def test_a_phlynx_selection_asks_for_its_boundary_runs_and_goes_back_calibrated(
+        client, requires_simulation, tmp_path):
+    """CA #594's fixture: in the chain, C (z = x + k q^2) reads x from A through a boundary.
+    C selected alone leaves x unset; given x = Y_A by a protocol, q = sqrt(Z_C - Y_A) = 3.
+
+    The CSV sent back is PhLynx's contract fixture (``fixtures/phlynx_send_back_parameters.csv``,
+    read by PhLynx's own tests): this test fails when it changes, and
+    ``CUFLYNX_REGENERATE_FIXTURES=1`` rewrites it."""
+    _, constants = _selection_ca()
+    arrays, body = _selection_study(
+        client, tmp_path, target="chain_module_array.json", step_id="c-alone", select=["C"],
+        items=[("z_c", "C/z", constants["Z_C"], 0.17)], params=[("C", "q", 0.1, 10.0)])
     assert body["plan"]["steps"][0]["selection"]["runs_as"] == "library_module"
+    start = _values((arrays / "chain_parameters.csv").read_text())
+    assert start["C/q"] != pytest.approx(3.0, rel=1e-2)   # so the send-back shows a change
 
     # the boundary C reads from A is open: CA names it, as the target's parameters do
     r = client.post("/api/workflow/view", json={"view": "c-alone"})
@@ -692,23 +786,96 @@ def test_a_phlynx_selection_asks_for_its_boundary_runs_and_goes_back_calibrated(
     assert r.status_code == 200, r.text
     assert client.post("/api/workflow/view", json={"view": "c-alone"}).status_code == 200
 
-    job = client.post("/api/workflow/run", json={}).json()["job_id"]
-    status = _wait(client, job, timeout=300)
-    assert status["state"] == "done", "\n".join(status["lines"][-40:])
-
-    target = client.post("/api/workflow/view", json={"view": "target"}).json()
-    sent = client.post("/api/phlynx/send",
-                       json={"model_id": target["model_id"], "source": "as_imported"}).json()
-    assert sent["workflow_values"] == {"sent": ["chain_module_array.json",
-                                                "chain_parameters.csv"]}
-    with zipfile.ZipFile(io.BytesIO(base64.b64decode(sent["base64"]))) as zf:
-        assert zf.read("chain_module_array.json") == (arrays / "chain_module_array.json").read_bytes()
-        rows = {r["variable_name"]: float(r["value"])
-                for r in csv.DictReader(io.StringIO(zf.read("chain_parameters.csv").decode()))}
-    assert rows["C/q"] == pytest.approx(3.0, rel=1e-4)
-    assert rows["A/p"] == 1.0     # outside the selection: the target's own value
+    _calibrate(client)
+    names, files = _send_back(client)
+    assert names == ["chain_module_array.json", "chain_parameters.csv"]
+    changed = _changed_values(arrays, files)
+    assert list(changed) == ["C/q"]
+    assert changed["C/q"] == (start["C/q"], pytest.approx(3.0, rel=1e-4))
     # nothing written beside the target
     assert not list(arrays.glob("*_calibrated_parameters.csv"))
+
+    sent = _fixture_form(files["chain_parameters.csv"].decode())
+    if os.environ.get("CUFLYNX_REGENERATE_FIXTURES"):
+        SEND_BACK_FIXTURE.parent.mkdir(exist_ok=True)
+        SEND_BACK_FIXTURE.write_text(sent)
+    assert SEND_BACK_FIXTURE.read_text() == sent, (
+        "the CSV sent back to PhLynx changed; PhLynx's tests read the committed copy. "
+        "Rerun with CUFLYNX_REGENERATE_FIXTURES=1 and update PhLynx with it.")
+
+
+def _abc_target(arrays):
+    """CA's test_several_instances_run_as_the_array_they_form target: A feeds C, B alone."""
+    def record(name, module_type, inp=(), out=()):
+        return {"name": name, "module_type": module_type, "module_subtype": "v1",
+                "parameterisation": "default", "inp_instances": list(inp),
+                "out_instances": list(out)}
+
+    (arrays / "abc_module_array.json").write_text(json.dumps(
+        [record("A", "lin_a", out=["C"]), record("C", "lin_c", inp=["A"]),
+         record("B", "lin_b")], indent=1))
+    (arrays / "abc_parameters.csv").write_text(
+        "variable_name,units,value,data_reference\nA/p,dimensionless,1.5,x\n"
+        "B/p,dimensionless,2.5,x\nC/q,dimensionless,1.0,x\n")
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+def test_several_selected_instances_go_back_calibrated_and_nothing_else(
+        client, requires_simulation, tmp_path):
+    """A and B selected from A -> C, B: calibrated as the array they form, y = 2 p^2 for A
+    and y = 3 p^2 for B, so p_A = sqrt(Y_A / 2) and p_B = sqrt(Y_B / 3)."""
+    _, constants = _selection_ca()
+    arrays, body = _selection_study(
+        client, tmp_path, target="abc_module_array.json", step_id="ab", select=["A", "B"],
+        items=[("y_a", "A/y", constants["Y_A"], constants["STD_A"]),
+               ("y_b", "B/y", constants["Y_B"], constants["STD_B"])],
+        params=[("A", "p", 0.1, 5.0), ("B", "p", 0.1, 5.0)], setup=_abc_target)
+    assert body["plan"]["steps"][0]["selection"] == {"runs_as": "module_array",
+                                                     "records": ["A", "B"]}
+    start = _values((arrays / "abc_parameters.csv").read_text())
+
+    _calibrate(client)
+    names, files = _send_back(client)
+    assert names == ["abc_module_array.json", "abc_parameters.csv"]
+    changed = _changed_values(arrays, files)     # the module array is byte-identical
+    assert sorted(changed) == ["A/p", "B/p"]     # C/q keeps the target's value
+    expected = {"A/p": (constants["Y_A"] / 2) ** 0.5, "B/p": (constants["Y_B"] / 3) ** 0.5}
+    for name, value in expected.items():
+        assert changed[name] == (start[name], pytest.approx(value, rel=1e-4))
+        assert start[name] != pytest.approx(value, rel=1e-2)
+    assert _values(files["abc_parameters.csv"].decode())["C/q"] == start["C/q"]
+
+
+def _sys_target(arrays):
+    """CA's test_a_nested_instance_takes_its_super_instances_values target: one chain, sys."""
+    (arrays / "sys_module_array.json").write_text(json.dumps([
+        {"name": "sys", "module_type": "chain", "module_subtype": "v1",
+         "parameterisation": "default", "inp_instances": [], "out_instances": []}], indent=1))
+    (arrays / "sys_parameters.csv").write_text(
+        "variable_name,units,value,data_reference\nsys/C/q,dimensionless,2.0,host\n")
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+def test_a_selected_nested_instance_goes_back_into_its_super_instance(
+        client, requires_simulation, tmp_path):
+    """sys/C selected from a chain instance sys: q = sqrt(Z_C - Y_A) lands on sys/C/q."""
+    _, constants = _selection_ca()
+    arrays, body = _selection_study(
+        client, tmp_path, target="sys_module_array.json", step_id="sys-c", select=["sys/C"],
+        items=[("z_c", "sys__C/z", constants["Z_C"], 0.17)],
+        params=[("sys__C", "q", 0.1, 10.0)],
+        params_to_change={"sys__C/x": [[constants["Y_A"]]]}, setup=_sys_target)
+    start = _values((arrays / "sys_parameters.csv").read_text())
+
+    _calibrate(client)
+    names, files = _send_back(client)
+    assert names == ["sys_module_array.json", "sys_parameters.csv"]
+    changed = _changed_values(arrays, files)
+    assert list(changed) == ["sys/C/q"]
+    expected = (constants["Z_C"] - constants["Y_A"]) ** 0.5
+    assert changed["sys/C/q"] == (start["sys/C/q"], pytest.approx(expected, rel=1e-4))
 
 
 def test_the_configured_ca_dir_is_put_on_the_path_before_ca_is_asked(monkeypatch):
