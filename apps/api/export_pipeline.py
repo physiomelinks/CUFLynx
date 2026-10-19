@@ -276,7 +276,7 @@ CA_PACKAGES = frozenset({
     "calibration_workflow", "checks", "coupler", "emulators", "external_testing",
     "generators",
     "identifiabilty_analysis", "models", "param_id", "parsers",
-    "protocol_runners", "scripts", "sensitivity_analysis", "solver1d",
+    "protocol_runners", "reporting", "scripts", "sensitivity_analysis", "solver1d",
     "solver_wrappers", "utilities",
 })
 
