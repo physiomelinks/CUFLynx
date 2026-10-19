@@ -245,6 +245,24 @@ def why_not_obs_data(blob: bytes | None) -> str:
     return f"it is a JSON {type(doc).__name__}, not an obs_data object or array"
 
 
+def looks_like_calibration(blob: bytes | None) -> bool:
+    """Whether a JSON member is a module-library calibration result.
+
+    The module library (circulatory-autogen-modules) writes one per calibrated
+    instance as ``<instance>_calibration.json``: an object whose
+    ``calibrated_parameters`` maps parameter names to values, beside ``cost``,
+    ``method`` and ``date``. Matched by content as well as by name, so a renamed
+    one is still kept out of the obs_data and params_for_id slots.
+    """
+    if not blob:
+        return False
+    try:
+        doc = json.loads(blob.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return False
+    return isinstance(doc, dict) and isinstance(doc.get("calibrated_parameters"), dict)
+
+
 def _classify(
     names: list[str],
     formats: dict[str, str] | None = None,
@@ -262,6 +280,18 @@ def _classify(
 
     def named(candidates, word):
         return [n for n in candidates if re.search(word, Path(n).name, re.I)]
+
+    # The module library's calibration result: ``<instance>_calibration.json``
+    # and ``<instance>_calibrated_parameters.csv``. Both are claimed before the
+    # params_for_id and obs_data pools are filled -- the CSV's name contains
+    # "param", and the JSON is otherwise a leftover JSON the obs_data sniff reads.
+    calibration_json = [
+        n for n in jsons
+        if re.search(r"calibrat", Path(n).name, re.I) or looks_like_calibration(members.get(n))
+    ]
+    calibration_csv = named(csvs, r"calibrat")
+    csvs = [n for n in csvs if n not in calibration_csv]
+    jsons = [n for n in jsons if n not in calibration_json]
 
     params_csv = named(csvs, r"param")
     # A params_for_id is stored as **JSON** by CUFLynx (`_save_params_file`), so
@@ -341,6 +371,8 @@ def _classify(
         "params": params_csv or params_json or csvs,
         "obs": obs,
         "module_config": module_config,
+        # JSON first: it carries the cost, the CSV only the values.
+        "calibration": calibration_json + calibration_csv,
     }
 
 
@@ -418,6 +450,9 @@ def unpack(data: bytes) -> dict:
         #: is the first of these, kept because callers predate there being more
         #: than one.
         "phlynx_state": phlynx_state,
+        #: The module library's calibration members as ``(name, bytes)``, JSON
+        #: before CSV. See :mod:`library_calibration`.
+        "calibration": [(Path(n).name, members[n]) for n in roles["calibration"]],
         # Everything, under its archive-relative name, for re-emission (#290).
         "members": members,
         "manifest": manifest,
@@ -430,6 +465,7 @@ def unpack(data: bytes) -> dict:
             "obs": list(roles["obs"]),
             "params": list(roles["params"]),
             "module_config": list(roles["module_config"]),
+            "calibration": list(roles["calibration"]),
         },
     }
     return out
