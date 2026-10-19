@@ -29,6 +29,7 @@ import re
 import secrets
 import shutil
 import tempfile
+import threading
 import time
 import uuid
 import zipfile
@@ -63,7 +64,9 @@ import myokit_import
 import easyml_import
 import omex_import
 import omex_export
-from inbox import APP_NAME, RECEIVE_PORTS, inbox  # noqa: F401 - RECEIVE_PORTS is the contract
+import library_calibration
+import open_link
+from inbox import APP_NAME, MAX_DELIVERY_BYTES, RECEIVE_PORTS, inbox  # noqa: F401 - RECEIVE_PORTS is the contract
 from aadc_check import aadc_status
 import editor_launch
 from version import __version__
@@ -1598,6 +1601,18 @@ def import_omex_bytes(data: bytes, output_dir: str | None = None,
         except CellMLFlattenError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
+    # A module-library archive carries its calibration result; its values are
+    # written into the model here, so every reader of the model -- the sliders,
+    # the params_for_id's initial values, a send to PhLynx -- starts from them.
+    calibration = None
+    if parts.get("calibration"):
+        try:
+            raw, calibration = library_calibration.apply(
+                raw, parts["calibration"], parts["params"][1] if parts["params"] else None
+            )
+        except (CellMLParseError, UnicodeDecodeError):
+            calibration = None  # the parse below reports the model's own problem
+
     try:
         meta = parse_cellml(raw)
     except CellMLParseError as exc:
@@ -1638,7 +1653,16 @@ def import_omex_bytes(data: bytes, output_dir: str | None = None,
         # single-file upload returns so the UI needs no second code path.
         "converted_from": converted_from,
         "protocol_obs_data": protocol,
+        # The module library's calibration result, when the archive carried one:
+        # {source, filename, cost, method, date, applied, unresolved}. Its
+        # values are already the model's.
+        "calibration": calibration,
     }
+    if calibration and calibration["unresolved"]:
+        load_warnings.append(
+            f"{calibration['filename']}: no model parameter matched "
+            f"{', '.join(calibration['unresolved'])}, so those keep the model's own values."
+        )
 
     # obs_data and params_for_id are optional: an archive with only a model is a
     # perfectly good archive, and refusing it would be worse than loading what is
@@ -1898,9 +1922,8 @@ def phlynx_archive(token: str, filename: str) -> Response:
 
 
 #: A delivered archive is a payload from a web page, so it is capped well below
-#: anything a real study reaches. The point is that an accidental or hostile
-#: multi-gigabyte post cannot sit in this process's memory.
-MAX_INBOX_BYTES = 64 * 1024 * 1024
+#: anything a real study reaches (:data:`inbox.MAX_DELIVERY_BYTES`).
+MAX_INBOX_BYTES = MAX_DELIVERY_BYTES
 
 
 @app.post("/api/inbox")
@@ -1940,9 +1963,37 @@ def peek_inbox() -> dict:
 
     Polled by the UI, which has no push channel: the frontend deliberately assumes
     no local backend, and giving it one for this would be a bigger change than the
-    feature.
+    feature. ``error`` is a ``cuflynx://`` link that could not be opened
+    (``{origin, message}``), returned once.
     """
-    return {"pending": inbox.peek()}
+    return {"pending": inbox.peek(), "error": inbox.take_error()}
+
+
+@app.post("/api/open-link")
+async def open_link_route(request: Request) -> dict:
+    """Open a ``cuflynx://open?url=...`` link handed over by a second launch.
+
+    Only the desktop shell enables this, by setting the token it also writes to
+    the instance file (:mod:`open_link`); a request without that token is
+    refused, so a web page cannot use the app to fetch URLs. The archive is
+    fetched on a background thread and staged in the inbox; a failure is shown in
+    the UI. A link that does not parse is refused here too (422), after the same
+    error is recorded for the UI.
+    """
+    if not open_link.token_matches(request.headers.get(open_link.TOKEN_HEADER)):
+        raise HTTPException(status_code=403, detail="not a handoff from this CUFLynx")
+    try:
+        body = await request.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="the body must be JSON") from exc
+    link = body.get("link") if isinstance(body, dict) else None
+    try:
+        url = open_link.parse_link(link)
+    except open_link.OpenLinkError as exc:
+        open_link.stage(link)  # records the same error for the UI
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    threading.Thread(target=open_link.stage, args=(link,), daemon=True).start()
+    return {"accepted": True, "url": url}
 
 
 @app.post("/api/inbox/accept")
