@@ -35,6 +35,12 @@ from xml.etree import ElementTree as ET
 
 # PhLynx's editor state, carried along so the archive round-trips through it.
 MODULE_CONFIG_NAME = "module_config.json"
+#: Where an archive keeps a packed calibration workflow (libcuflynx's pack_workflow): its
+#: own directory tree, run as it is, so none of it is a role of the archive's study.
+WORKFLOW_DIR = "workflow/"
+PACKED_WORKFLOW_NAME = "calibration_workflow.json"
+#: CA's calibration workflow file (``calibration_workflow.json``, or ``<x>_calibration_workflow.json``).
+CALIBRATION_WORKFLOW_RE = re.compile(r"(^|[_-])calibration_workflow\.json$", re.I)
 
 #: The COMBINE format specifiers PhLynx uses for its own state files (#287).
 #: The *format* is the contract, not the file name -- upstream is explicit that
@@ -49,6 +55,7 @@ PHLYNX_CHANGES_FORMAT = "application/x.vnd.phlynx-changes+json"
 _NON_OBS_FORMAT_MARKERS = (
     "x.vnd.phlynx-flow+json",
     "x.vnd.phlynx-changes+json",
+    "x.vnd.cuflynx-study+json",
     "sed-ml",
     "sedml",
 )
@@ -166,6 +173,12 @@ def _declared_phlynx_state(name: str, formats: dict[str, str]) -> bool:
     return any(marker in fmt for marker in (PHLYNX_FLOW_FORMAT, PHLYNX_CHANGES_FORMAT))
 
 
+def _declared_study(name: str, formats: dict[str, str]) -> bool:
+    """Whether the manifest declares this member as a CUFLynx study manifest."""
+    fmt = str(formats.get(Path(name).name.lower(), "")).lower()
+    return "x.vnd.cuflynx-study+json" in fmt
+
+
 def _declared_non_obs(name: str, formats: dict[str, str]) -> bool:
     fmt = str(formats.get(Path(name).name.lower(), "")).lower()
     return any(marker in fmt for marker in _NON_OBS_FORMAT_MARKERS)
@@ -253,6 +266,10 @@ def _classify(
     """Sort archive members into the roles CUFLynx imports."""
     formats = formats or {}
     members = members or {}
+    # A packed calibration workflow is a tree of its own (its steps' obs_data, its
+    # modules' CellML): none of it is the study's model, obs_data or params_for_id.
+    workflow_pack = [n for n in names if n.startswith(WORKFLOW_DIR)]
+    names = [n for n in names if not n.startswith(WORKFLOW_DIR)]
 
     cellml = [n for n in names if n.lower().endswith(".cellml")]
     myokit = [n for n in names if n.lower().endswith(".mmt")]
@@ -262,6 +279,13 @@ def _classify(
 
     def named(candidates, word):
         return [n for n in candidates if re.search(word, Path(n).name, re.I)]
+
+    # The study manifest CUFLynx embeds (study_manifest.OMEX_FORMAT), by its declared
+    # format and never by its name -- `<prefix>_cuflynx_study.json` would otherwise be
+    # taken for a params_for_id whenever the prefix says "param". Out of every other
+    # pool from here on.
+    study = [n for n in jsons if _declared_study(n, formats)]
+    jsons = [n for n in jsons if n not in study]
 
     params_csv = named(csvs, r"param")
     # A params_for_id is stored as **JSON** by CUFLynx (`_save_params_file`), so
@@ -283,7 +307,12 @@ def _classify(
         if Path(n).name == MODULE_CONFIG_NAME or _declared_phlynx_state(n, formats)
     ]
 
-    spoken_for = set(module_config) | set(params_json)
+    # A calibration workflow (CA's calibration_workflow.json, which the module
+    # library's instance archives carry) is matched by name only: it is an object
+    # with "steps", and must never be sniffed into the obs_data pool.
+    calibration_workflow = [n for n in jsons if CALIBRATION_WORKFLOW_RE.search(Path(n).name)]
+
+    spoken_for = set(module_config) | set(params_json) | set(calibration_workflow)
     candidates = [
         n
         for n in jsons
@@ -341,6 +370,9 @@ def _classify(
         "params": params_csv or params_json or csvs,
         "obs": obs,
         "module_config": module_config,
+        "study": study,
+        "calibration_workflow": calibration_workflow,
+        "workflow_pack": workflow_pack,
     }
 
 
@@ -402,18 +434,31 @@ def unpack(data: bytes) -> dict:
         obs_name, obs_bytes = read_first(roles["obs"])
         params_name, params_bytes = read_first(roles["params"])
         cfg_name, cfg_bytes = read_first(roles["module_config"])
+        wf_name, wf_bytes = read_first(roles["calibration_workflow"])
         # All of them: PhLynx used to keep its state in one file and now keeps it
         # in two, so "the first one found" silently drops half of it.
         phlynx_state = [
             (Path(n).name, members[n]) for n in roles["module_config"] if n in members
         ]
 
+    study = _study_member(roles["study"], members)
+    pack = {n[len(WORKFLOW_DIR):]: members[n] for n in roles["workflow_pack"]}
+
     out = {
+        #: A packed calibration workflow (``workflow/``), as ``{path in the pack: bytes}``
+        #: with ``calibration_workflow.json`` among them; None when there is none.
+        "workflow_pack": pack if PACKED_WORKFLOW_NAME in pack else None,
+        #: The embedded study manifest, as ``{"name", "manifest", "funcs"}``: what the
+        #: archive says about solver settings and which members are the user's funcs
+        #: (``funcs`` is ``{kind: (member name, bytes)}``). None when there is none.
+        "study": study,
         "cellml": cellml,
         "master": Path(ordered[0]).name if ordered else None,
         "obs": (obs_name, obs_bytes) if obs_bytes is not None else None,
         "params": (params_name, params_bytes) if params_bytes is not None else None,
         "module_config": (cfg_name, cfg_bytes) if cfg_bytes is not None else None,
+        #: A calibration workflow carried by the archive, as ``(name, bytes)``.
+        "calibration_workflow": (wf_name, wf_bytes) if wf_bytes is not None else None,
         #: Every PhLynx state member as ``(name, bytes)``. ``module_config`` above
         #: is the first of these, kept because callers predate there being more
         #: than one.
@@ -430,9 +475,36 @@ def unpack(data: bytes) -> dict:
             "obs": list(roles["obs"]),
             "params": list(roles["params"]),
             "module_config": list(roles["module_config"]),
+            "study": list(roles["study"]),
+            "user_funcs": {kind: name for kind, (name, _) in (study or {}).get("funcs", {}).items()},
+            "calibration_workflow": list(roles["calibration_workflow"]),
+            "workflow_pack": list(roles["workflow_pack"]),
         },
     }
     return out
+
+
+def _study_member(names: list[str], members: dict[str, bytes]) -> dict | None:
+    """The first embedded study manifest that reads, with the func members it names.
+
+    One that does not read is passed over rather than failing the import: the rest of
+    the archive is a perfectly good study without it.
+    """
+    import study_manifest  # noqa: PLC0415 - small, but keep this module's imports lean
+
+    for name in names:
+        try:
+            manifest = json.loads(members[name].decode("utf-8"))
+            study_manifest.check(manifest, name)
+        except (ValueError, UnicodeDecodeError, study_manifest.ManifestError):
+            continue
+        funcs = {}
+        for kind, member in (manifest.get("user_funcs") or {}).items():
+            member = str(member).lstrip("./")
+            if kind in study_manifest.USER_FUNC_KINDS and member in members:
+                funcs[kind] = (member, members[member])
+        return {"name": name, "manifest": manifest, "funcs": funcs}
+    return None
 
 
 def save_module_config(data: bytes, out_dir: str | None, name: str | None = None) -> str | None:
