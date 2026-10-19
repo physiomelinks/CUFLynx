@@ -23,6 +23,8 @@ export function errorMessage(e) {
   const data = res?.data
   const detail = typeof data === 'string' ? data : data?.detail
   if (typeof detail === 'string' && detail.trim()) return detail
+  // A refusal that carries more than its message (a workflow step's unset parameters).
+  if (typeof detail?.message === 'string' && detail.message.trim()) return detail.message
   // 422s from FastAPI validation arrive as a list of {loc, msg} objects.
   if (Array.isArray(detail) && detail.length) {
     return detail.map((d) => d?.msg || JSON.stringify(d)).join('; ')
@@ -318,6 +320,20 @@ export async function uploadObsData(modelId, obsData, save = null) {
     { params: save?.filename ? { filename: save.filename, output_dir: save.outputsDir || '' } : {} },
   )
   return data
+}
+
+/** The study's obs_data as its file holds it, every key (null when it has none). */
+export async function getObsDataDocument(modelId) {
+  const { data } = await axios.get(url('/api/obs_data/document'), { params: { model_id: modelId } })
+  return data.document
+}
+
+/**
+ * A workflow step's unset parameters, from a refusal ({step_id, names}), or null: the
+ * parameters nothing gives a value, which a protocol in the step's obs_data sets.
+ */
+export function unsetParameters(e) {
+  return e?.response?.data?.detail?.unset_parameters ?? null
 }
 
 // Operation (obs_funcs) + cost_type (cost_func) option lists, sourced from
@@ -686,6 +702,27 @@ export async function closeWorkflow() {
  */
 export async function openWorkflowView(view) {
   const { data } = await axios.post(url('/api/workflow/view'), { view })
+  return data
+}
+
+/** A workflow step's obs_data or params_for_id as the workflow names it: {path, content}. */
+export async function getWorkflowStepInput(stepId, role) {
+  const { data } = await axios.get(url('/api/workflow/step_input'), {
+    params: { step_id: stepId, role },
+  })
+  return data
+}
+
+/**
+ * Write a workflow step's obs_data (an object) or params_for_id (CSV text); a step naming
+ * none is given a file. Returns {path, workflow}: the workflow described again.
+ */
+export async function saveWorkflowStepInput(stepId, role, content) {
+  const { data } = await axios.post(url('/api/workflow/step_input'), {
+    step_id: stepId,
+    role,
+    content: typeof content === 'string' ? content : JSON.stringify(content, null, 2),
+  })
   return data
 }
 

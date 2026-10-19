@@ -32,12 +32,7 @@ const props = defineProps({
   modelVariables: { type: Object, default: () => ({}) },
   modelName: { type: String, default: null },
   loadedFilename: { type: String, default: null },
-  // For the obs_data Edit dialog: the loaded obs_data items + protocol_info and
-  // the loaded obs filename for versioning.
-  currentDataItems: { type: Array, default: () => [] },
-  currentPredictionItems: { type: Array, default: () => [] },
-  obsProtocolInfo: { type: Object, default: null },
-  experimentCount: { type: Number, default: 0 },
+  // For the obs_data Edit dialog: the loaded obs filename, for versioning.
   loadedObsFilename: { type: String, default: null },
   // Where "Edit" sends the study. Blank = the production PhLynx; set from the
   // developer setting so the exchange can be checked against a PhLynx branch.
@@ -1032,10 +1027,6 @@ async function onParamsDrop(event) {
     <EditObsDataDialog
       v-model:visible="editObsOpen"
       :model-id="modelId"
-      :current-data-items="currentDataItems"
-      :current-prediction-items="currentPredictionItems"
-      :protocol-info="obsProtocolInfo"
-      :experiment-count="experimentCount"
       :model-variables="modelVariables"
       :model-name="modelName"
       :loaded-filename="loadedObsFilename"

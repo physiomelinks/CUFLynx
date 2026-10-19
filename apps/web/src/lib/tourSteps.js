@@ -207,13 +207,13 @@ export const TOUR_STEPS = Object.freeze([
   },
   {
     id: 'protocol-detail',
-    target: '[data-testid="pre-time"]',
+    target: '[data-testid="eo-protocol"]',
     side: 'right',
     text: 'Each subexperiment has a pre-time (run to settle, not recorded) and a duration. Add a controlled parameter and you can step, pulse or ramp it inside that window — the shape is drawn as you type it. These are the numbers every run uses, so the simulation reproduces your bench protocol rather than some fixed length picked elsewhere.',
   },
   {
     id: 'data-items',
-    target: '[data-testid="eo-data-items"]',
+    target: '[data-testid="od-data-items"]',
     side: 'right',
     title: 'data_items contain the desired output features (observables)',
     text: 'One row is one number (or one series) the model output features are compared against. The calibration cost is built from summing the cost from each of these rows.',
@@ -221,13 +221,13 @@ export const TOUR_STEPS = Object.freeze([
   },
   {
     id: 'data-item-row',
-    target: '[data-testid="eo-value"]',
+    target: '[data-testid="od-data-row"]',
     side: 'right',
     text: 'On each row: the variable it produces, the measured value, and its std — the uncertainty, which is what weights the row in the cost. Then which experiment and subexperiment it came from.',
   },
   {
     id: 'data-item-detail',
-    target: '[data-testid="eo-operation"]',
+    target: '[data-testid="od-data-row"]',
     side: 'right',
     text: 'The operation turns the simulated trace into that number — max, mean, a series comparison. Open a row with the chevron for its operands, its weight and its cost_type (how the mismatch is scored).',
   },
