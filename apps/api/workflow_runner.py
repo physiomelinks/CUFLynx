@@ -49,6 +49,16 @@ def event_line(event: dict) -> str:
     return EVENT_MARKER + text
 
 
+def unset_parameters(exc: BaseException) -> dict | None:
+    """``{"step_id", "names"}`` of CA's ``UnsetParametersError``: a step whose model has
+    parameters nothing gives a value, named as the target's parameters file names them
+    (``C/x``). None for any other error."""
+    names, step_id = getattr(exc, "names", None), getattr(exc, "step_id", None)
+    if type(exc).__name__ != "UnsetParametersError" or not step_id or not isinstance(names, list):
+        return None
+    return {"step_id": step_id, "names": [str(n) for n in names]}
+
+
 def _rank() -> int:
     try:
         from mpi4py import MPI
@@ -79,6 +89,11 @@ def main(argv: list[str]) -> int:
     try:
         run(config)
     except Exception as exc:  # surface to the captured stdout for the UI
+        unset = unset_parameters(exc)
+        if unset and _rank() == 0:
+            # the step and its parameters, so the GUI can open the step's protocol on them
+            print(event_line({"event": "unset_parameters", "step": unset["step_id"],
+                              "names": unset["names"]}), flush=True)
         print(f"{FAIL_MARKER} {exc}", flush=True)
         traceback.print_exc()
         _abort_mpi()

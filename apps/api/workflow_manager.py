@@ -55,6 +55,8 @@ from runtime_paths import runner_command, runner_launch_env, runner_path
 RUNNER_PATH = str(runner_path("workflow_runner.py"))
 WORKFLOW_FILE_NAME = "calibration_workflow.json"
 TARGET_VIEW = "target"
+#: A step's own input files, and the suffix a new one is named with (``<step><suffix>``).
+STEP_INPUTS = {"obs_data": "_obs_data.json", "params_for_id": "_params_for_id.csv"}
 
 NEEDS_CA = (
     "Calibration workflows need a circulatory_autogen (libcuflynx) with "
@@ -69,6 +71,20 @@ class WorkflowUnavailable(RuntimeError):
 
 class WorkflowError(ValueError):
     """A workflow CA refused, with CA's own message."""
+
+
+class UnsetParameters(WorkflowError):
+    """A step whose model has parameters nothing gives a value (CA's
+    ``UnsetParametersError``): ``step_id``, and ``names`` as the target's parameters
+    file names them (``C/x``). A cut boundary condition is the usual one; a protocol in
+    the step's obs_data (``params_to_change``) sets it."""
+
+    def __init__(self, message: str, step_id: str, names: list[str]):
+        super().__init__(message)
+        self.step_id, self.names = step_id, list(names)
+
+    def as_dict(self) -> dict:
+        return {"step_id": self.step_id, "names": self.names}
 
 
 def ca_workflow(name: str):
@@ -95,10 +111,15 @@ def _ca_call(name: str, *args, **kwargs):
     depend on" -- which is exactly what the user needs to read, so it is passed
     through verbatim rather than wrapped in a CUFLynx sentence.
     """
+    from workflow_runner import unset_parameters  # noqa: PLC0415
+
     fn = ca_workflow(name)
     try:
         return fn(*args, **kwargs)
     except (ValueError, FileNotFoundError, KeyError) as exc:
+        unset = unset_parameters(exc)
+        if unset:
+            raise UnsetParameters(str(exc), **unset) from exc
         raise WorkflowError(str(exc)) from exc
 
 
@@ -118,6 +139,8 @@ class WorkflowJob:
         self.error: str | None = None
         self.warning: str | None = None
         self.current_step: str | None = None
+        # {"step_id", "names"}: the step that stopped on parameters nothing gives a value
+        self.unset_parameters: dict | None = None
         self.step_states: dict[str, str] = {}
         self.proc: subprocess.Popen | None = None
         self.config_path: str | None = None
@@ -223,7 +246,8 @@ class WorkflowManager:
             with job.lock:
                 out["job"] = {"job_id": job.id, "state": job.state,
                               "current_step": job.current_step,
-                              "step_states": dict(job.step_states), "error": job.error}
+                              "step_states": dict(job.step_states), "error": job.error,
+                              "unset_parameters": job.unset_parameters}
         return out
 
     def view(self, view: str, work_dir: str) -> dict:
@@ -255,6 +279,81 @@ class WorkflowManager:
                         output_dir=os.path.join(work_dir, "no_run"),
                         work_dir=os.path.join(work_dir, "model"),
                         module_library_dirs=self.module_library_dirs)
+
+    # -- a step's inputs -----------------------------------------------------
+
+    def _step(self, raw: dict, step_id: str, role: str) -> dict:
+        if role not in STEP_INPUTS:
+            raise WorkflowError(f"a step's input is obs_data or params_for_id, not {role!r}")
+        step = next((s for s in raw.get("steps") or [] if s.get("id") == step_id), None)
+        if step is None:
+            raise WorkflowError(f'the workflow has no step "{step_id}"')
+        if step.get("kind") == "reduction":
+            raise WorkflowError(f'step "{step_id}" is a reduction, which takes no {role}')
+        if role == "params_for_id" and step.get("params_for_id_from"):
+            raise WorkflowError(f'step "{step_id}" fits what step "{step["params_for_id_from"]}" '
+                                f'kept, so it takes no params_for_id of its own')
+        return step
+
+    def _read_raw(self) -> dict:
+        if not self.loaded:
+            raise WorkflowError("no workflow is open")
+        with open(self.path) as fh:
+            return json.load(fh)
+
+    def _resolve(self, path: str) -> str:
+        return path if os.path.isabs(path) else os.path.join(os.path.dirname(self.path), path)
+
+    def step_input(self, step_id: str, role: str) -> dict:
+        """A step's obs_data or params_for_id as the workflow names it: ``{path, content}``,
+        both None when it names none. A selection step's file names the target's instances."""
+        step = self._step(self._read_raw(), step_id, role)
+        named = step.get(role)
+        if not isinstance(named, str) or not named:
+            return {"path": None, "content": None}
+        path = self._resolve(named)
+        try:
+            with open(path, encoding="utf-8") as fh:
+                return {"path": path, "content": fh.read()}
+        except OSError as exc:
+            raise WorkflowError(f'step "{step_id}": cannot read its {role} {path}: {exc}') from exc
+
+    def write_step_input(self, step_id: str, role: str, content: str) -> str:
+        """Write a step's obs_data or params_for_id, and return its path.
+
+        The file the step names is overwritten; CA then marks the step and every step after
+        it stale. A step naming none gets ``<step>_obs_data.json`` (or
+        ``<step>_params_for_id.csv``) beside the workflow file, which the workflow file then
+        names.
+        """
+        if self.busy:
+            raise RuntimeError("a workflow is running; its inputs change after it")
+        if role == "obs_data":
+            try:
+                json.loads(content)
+            except ValueError as exc:
+                raise WorkflowError(f"the obs_data is not JSON: {exc}") from exc
+        raw = self._read_raw()
+        step = self._step(raw, step_id, role)
+        named = step.get(role)
+        if isinstance(named, str) and named:
+            path = self._resolve(named)
+        else:
+            directory = os.path.dirname(self.path)
+            name, n = f"{step_id}{STEP_INPUTS[role]}", 2
+            while os.path.exists(os.path.join(directory, name)):
+                stem, ext = os.path.splitext(f"{step_id}{STEP_INPUTS[role]}")
+                name, n = f"{stem}_{n}{ext}", n + 1
+            path = os.path.join(directory, name)
+            step[role] = name
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8", newline="") as fh:
+            fh.write(content)
+        if step.get(role) != named:
+            with open(self.path, "w") as fh:
+                json.dump(raw, fh, indent=2)
+                fh.write("\n")
+        return path
 
     # -- running -------------------------------------------------------------
 
@@ -345,6 +444,8 @@ class WorkflowManager:
             job.error = f"step {step}: {event.get('error', 'failed')}"
         elif kind == "step_skipped":
             job.step_states[step] = "reused"
+        elif kind == "unset_parameters":
+            job.unset_parameters = {"step_id": step, "names": list(event.get("names") or [])}
 
     def _finalize(self, job: WorkflowJob, code: int) -> None:
         from workflow_runner import DONE_MARKER, FAIL_MARKER  # noqa: PLC0415
@@ -375,6 +476,7 @@ class WorkflowManager:
                 "next_offset": offset + len(lines), "current_step": job.current_step,
                 "step_states": dict(job.step_states), "events": list(job.events),
                 "error": job.error, "warning": job.warning,
+                "unset_parameters": job.unset_parameters,
             }
 
     def cancel(self, job_id: str) -> bool:

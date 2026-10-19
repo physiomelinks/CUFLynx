@@ -36,7 +36,16 @@ WORKFLOW = {
 }
 
 
-def _fake_ca(monkeypatch, calls=None, plan_error=None, refuse=None):
+class UnsetParametersError(ValueError):
+    """Shaped as CA's (libcuflynx.calibration_workflow.UnsetParametersError)."""
+
+    def __init__(self, step_id, names):
+        self.step_id, self.names = step_id, list(names)
+        super().__init__(f'step "{step_id}": {len(names)} parameter(s) have no value: '
+                         f'{", ".join(names)}.')
+
+
+def _fake_ca(monkeypatch, calls=None, plan_error=None, refuse=None, model_error=None):
     """A stand-in for libcuflynx.calibration_workflow, recording what it was asked."""
     calls = calls if calls is not None else []
     mod = types.ModuleType("calibration_workflow")
@@ -64,6 +73,8 @@ def _fake_ca(monkeypatch, calls=None, plan_error=None, refuse=None):
 
     def workflow_model(path, view, output_dir, work_dir, module_library_dirs=None):
         calls.append(("model", view, output_dir))
+        if model_error:
+            raise model_error
         return {"view": view, "kind": "step", "model": WORKFLOW["steps"][0]["model"],
                 "step_id": view, "place": "A",
                 "model_path": str(LV_MODEL_PATH), "obs_data_path": str(LV_OBS_DATA_PATH),
@@ -198,9 +209,120 @@ def test_a_tab_loads_as_a_study(client, monkeypatch, workflow_file, tmp_path):
     assert ("model", "fit_a", str(tmp_path / "workflows" / "demo")) in calls
 
 
+def test_a_tab_with_unset_parameters_names_the_step_and_them(
+        client, monkeypatch, workflow_file, tmp_path):
+    _fake_ca(monkeypatch, model_error=UnsetParametersError("sel", ["C/x", "C/y"]))
+    client.post("/api/workflow/load",
+                json={"path": str(workflow_file), "config_outputs_dir": str(tmp_path)})
+    r = client.post("/api/workflow/view", json={"view": "sel"})
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    # CA's message verbatim, and what the protocol editor opens on
+    assert detail["message"].startswith('step "sel": 2 parameter(s) have no value')
+    assert detail["unset_parameters"] == {"step_id": "sel", "names": ["C/x", "C/y"]}
+
+
+def test_any_other_refusal_stays_a_plain_message(client, monkeypatch, workflow_file, tmp_path):
+    _fake_ca(monkeypatch, model_error=ValueError("no such step"))
+    client.post("/api/workflow/load",
+                json={"path": str(workflow_file), "config_outputs_dir": str(tmp_path)})
+    r = client.post("/api/workflow/view", json={"view": "sel"})
+    assert r.status_code == 422 and r.json()["detail"] == "no such step"
+
+
+# ---------------------------------------------------------------------------
+# a step's inputs
+# ---------------------------------------------------------------------------
+STEP_WORKFLOW = {
+    "workflow_name": "sel",
+    "target": {"module_array": "whole_module_array.json", "parameters": "whole_parameters.csv"},
+    "steps": [
+        {"id": "left", "model": {"select": ["C"]}, "obs_data": "inputs/left_obs_data.json",
+         "params_for_id": "left_params_for_id.csv"},
+        {"id": "right", "model": {"select": ["D", "E"]}},
+        {"id": "rank", "kind": "reduction", "sensitivity_from": "left"},
+        {"id": "kept", "model": {"select": ["D"]}, "params_for_id_from": "rank"},
+    ],
+}
+
+
+@pytest.fixture
+def step_workflow(client, monkeypatch, tmp_path):
+    _fake_ca(monkeypatch)
+    directory = tmp_path / "wf"
+    (directory / "inputs").mkdir(parents=True)
+    path = directory / "calibration_workflow.json"
+    path.write_text(json.dumps({**STEP_WORKFLOW, "workflow_name": "demo"}))
+    (directory / "inputs" / "left_obs_data.json").write_text('{"protocol_info": {}}')
+    r = client.post("/api/workflow/load",
+                    json={"path": str(path), "config_outputs_dir": str(tmp_path / "out")})
+    assert r.status_code == 200, r.text
+    return path
+
+
+def test_a_step_s_own_obs_data_is_read_and_overwritten(client, step_workflow):
+    r = client.get("/api/workflow/step_input", params={"step_id": "left", "role": "obs_data"})
+    assert r.status_code == 200, r.text
+    own = step_workflow.parent / "inputs" / "left_obs_data.json"
+    assert r.json() == {"path": str(own), "content": '{"protocol_info": {}}'}
+    edited = json.dumps({"protocol_info": {"params_to_change": {"C/x": [[1.0]]}}})
+    r = client.post("/api/workflow/step_input",
+                    json={"step_id": "left", "role": "obs_data", "content": edited})
+    assert r.status_code == 200, r.text
+    assert r.json()["path"] == str(own) and own.read_text() == edited
+    # re-planned: the workflow is described again
+    assert r.json()["workflow"]["loaded"] is True
+    # the workflow file is untouched: it already named the file
+    assert json.loads(step_workflow.read_text())["steps"][0]["obs_data"] == "inputs/left_obs_data.json"
+
+
+def test_a_step_without_an_input_is_given_one_beside_the_workflow(client, step_workflow):
+    r = client.get("/api/workflow/step_input", params={"step_id": "right", "role": "obs_data"})
+    assert r.json() == {"path": None, "content": None}
+    (step_workflow.parent / "right_params_for_id.csv").write_text("someone else's\n")
+    r = client.post("/api/workflow/step_input",
+                    json={"step_id": "right", "role": "params_for_id", "content": "a,b\n"})
+    assert r.status_code == 200, r.text
+    # a file already there is never taken over
+    assert Path(r.json()["path"]).name == "right_params_for_id_2.csv"
+    assert (step_workflow.parent / "right_params_for_id.csv").read_text() == "someone else's\n"
+    steps = json.loads(step_workflow.read_text())["steps"]
+    assert steps[1]["params_for_id"] == "right_params_for_id_2.csv"
+    assert steps[0] == STEP_WORKFLOW["steps"][0]
+
+
+@pytest.mark.parametrize("step_id, role, content, words", [
+    ("rank", "obs_data", "{}", "is a reduction"),
+    ("kept", "params_for_id", "a\n", 'fits what step "rank" kept'),
+    ("nope", "obs_data", "{}", 'no step "nope"'),
+    ("left", "parameters", "{}", "obs_data or params_for_id"),
+    ("left", "obs_data", "{not json", "not JSON"),
+])
+def test_inputs_a_step_cannot_take_are_refused(client, step_workflow, step_id, role, content,
+                                               words):
+    before = step_workflow.read_text()
+    r = client.post("/api/workflow/step_input",
+                    json={"step_id": step_id, "role": role, "content": content})
+    assert r.status_code == 422 and words in r.json()["detail"], r.text
+    assert step_workflow.read_text() == before
+
+
 # ---------------------------------------------------------------------------
 # archives
 # ---------------------------------------------------------------------------
+def test_an_archive_with_selection_steps_names_them(client):
+    data = _archive({
+        "model.cellml": LV_MODEL_PATH.read_bytes(),
+        "calibration_workflow.json": json.dumps(STEP_WORKFLOW),
+    })
+    r = client.post("/api/omex/upload", files={"file": ("s.omex", data, "application/zip")})
+    assert r.status_code == 200, r.text
+    assert r.json()["calibration_workflow"]["select_steps"] == ["left", "right", "kept"]
+    data = _archive({"model.cellml": LV_MODEL_PATH.read_bytes(),
+                     "calibration_workflow.json": json.dumps(WORKFLOW)})
+    r = client.post("/api/omex/upload", files={"file": ("s.omex", data, "application/zip")})
+    assert r.json()["calibration_workflow"]["select_steps"] == []
+
 def _archive(members):
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
@@ -315,6 +437,45 @@ def test_a_failed_step_is_reported(client, opened, tmp_path):
     assert status["state"] == "error"
     assert status["step_states"]["rest"] == "failed"
     assert "the data said no" in status["error"]
+
+
+UNSET_RUNNER = r"""
+import json
+E = "__WORKFLOW_EVENT__"
+print(E + json.dumps({"event": "step_started", "step": "fit_a"}), flush=True)
+print(E + json.dumps({"event": "step_failed", "step": "fit_a", "error": "no value"}), flush=True)
+print(E + json.dumps({"event": "unset_parameters", "step": "fit_a", "names": ["C/x"]}), flush=True)
+print("__WORKFLOW_FAILED__ step fit_a: no value", flush=True)
+raise SystemExit(1)
+"""
+
+
+def test_a_run_stopped_by_unset_parameters_names_them(client, opened, tmp_path):
+    _install_runner(tmp_path, UNSET_RUNNER)
+    status = _wait(client, client.post("/api/workflow/run", json={}).json()["job_id"])
+    assert status["state"] == "error" and status["step_states"]["fit_a"] == "failed"
+    assert status["unset_parameters"] == {"step_id": "fit_a", "names": ["C/x"]}
+    assert client.get("/api/workflow").json()["job"]["unset_parameters"] == {
+        "step_id": "fit_a", "names": ["C/x"]}
+
+
+def test_the_runner_reports_ca_s_unset_parameters(monkeypatch, tmp_path, capsys):
+    import workflow_runner
+
+    def refuse(config):
+        raise UnsetParametersError("left", ["C/x"])
+
+    monkeypatch.setattr(workflow_runner, "run", refuse)
+    config = tmp_path / "config.json"
+    config.write_text("{}")
+    assert workflow_runner.main(["runner", str(config)]) == 1
+    lines = capsys.readouterr().out.splitlines()
+    event = next(json.loads(ln[len(workflow_runner.EVENT_MARKER):]) for ln in lines
+                 if ln.startswith(workflow_runner.EVENT_MARKER))
+    assert event == {"event": "unset_parameters", "step": "left", "names": ["C/x"]}
+    assert any(ln.startswith(workflow_runner.FAIL_MARKER) for ln in lines)
+    # any other error is only the failure line
+    assert workflow_runner.unset_parameters(ValueError("x")) is None
 
 
 def test_one_run_at_a_time_and_it_can_be_cancelled(client, opened, tmp_path):

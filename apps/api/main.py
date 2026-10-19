@@ -1569,6 +1569,20 @@ def _apply_archive_study(study: dict | None, out_dir: str | None) -> list[str]:
     return notes
 
 
+def _select_steps(workflow_path: str) -> list[str]:
+    """The ids of a workflow's steps that calibrate a selection of the target's instances
+    (``"model": {"select": [...]}``). An archive with any comes from a PhLynx selection,
+    and the GUI opens its workflow straight away."""
+    try:
+        raw = json.loads(Path(workflow_path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    steps = raw.get("steps") if isinstance(raw, dict) else None
+    return [s["id"] for s in steps or []
+            if isinstance(s, dict) and isinstance(s.get("model"), dict)
+            and "select" in s["model"] and isinstance(s.get("id"), str)]
+
+
 def _unpack_workflow(files: dict[str, bytes], directory: Path) -> Path:
     """Write a packed workflow's files under ``directory``; the workflow file's path.
 
@@ -1751,13 +1765,16 @@ def import_omex_bytes(data: bytes, output_dir: str | None = None,
             "packed": True,
             "files": len(parts["workflow_pack"]),
         }
+        result["calibration_workflow"]["select_steps"] = _select_steps(
+            result["calibration_workflow"]["path"])
     elif parts.get("calibration_workflow"):
         wf_name, wf_blob = parts["calibration_workflow"]
         wf_dir = UPLOAD_DIR / "workflows" / model_id
         wf_dir.mkdir(parents=True, exist_ok=True)
         wf_path = wf_dir / workflow_manager.WORKFLOW_FILE_NAME
         wf_path.write_bytes(wf_blob)
-        result["calibration_workflow"] = {"filename": wf_name, "path": str(wf_path)}
+        result["calibration_workflow"] = {"filename": wf_name, "path": str(wf_path),
+                                          "select_steps": _select_steps(str(wf_path))}
 
     for cfg_name, blob in parts.get("phlynx_state") or []:
         # Beside the model in `generated_models/<prefix>/`, not among the run
@@ -2786,6 +2803,19 @@ async def upload_obs_data(
     }
 
 
+@app.get("/api/obs_data/document")
+def obs_data_document(model_id: str) -> dict:
+    """The study's obs_data as its file holds it (``document``, null when it has none):
+    every key, for the obs_data editor to edit and write back whole."""
+    record = _get_model(model_id)
+    if record.obs_path is None or not record.obs_path.is_file():
+        return {"document": None}
+    try:
+        return {"document": json.loads(record.obs_path.read_text(encoding="utf-8"))}
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=f"cannot read the study's obs_data: {exc}") from exc
+
+
 @app.get("/api/obs_data/options")
 def obs_data_options(refresh: bool = False, output_dir: str = "") -> dict:
     """Operation (obs_funcs) and cost_type (cost_func) names from circulatory_autogen.
@@ -3545,6 +3575,10 @@ def _workflow_http(fn, *args, **kwargs):
         return fn(*args, **kwargs)
     except workflow_manager.WorkflowUnavailable as exc:
         raise HTTPException(status_code=501, detail=str(exc)) from exc
+    except workflow_manager.UnsetParameters as exc:
+        # CA's message, and the step and parameters, for the protocol editor to open on
+        raise HTTPException(status_code=422, detail={
+            "message": str(exc), "unset_parameters": exc.as_dict()}) from exc
     except workflow_manager.WorkflowError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except RuntimeError as exc:
@@ -3645,6 +3679,31 @@ def workflow_view(req: WorkflowViewRequest) -> dict:
     }
     shutil.rmtree(work_dir, ignore_errors=True)
     return result
+
+
+class WorkflowStepInputRequest(BaseModel):
+    step_id: str
+    role: str  # obs_data | params_for_id
+    content: str
+
+
+@app.get("/api/workflow/step_input")
+def workflow_step_input(step_id: str, role: str) -> dict:
+    """A step's obs_data or params_for_id as the workflow names it: ``{path, content}``
+    (both null when it names none). A selection step's names the target's instances,
+    where the tab's copy (``workflow_view.obs_data_path``) may name ``mod``."""
+    return _workflow_http(workflow.step_input, step_id, role)
+
+
+@app.post("/api/workflow/step_input")
+def workflow_write_step_input(req: WorkflowStepInputRequest) -> dict:
+    """Write a step's obs_data or params_for_id, then describe the workflow again.
+
+    The step's own file is overwritten, so CA marks it and every step after it stale; a
+    step that names none gets a new file beside the workflow file, which then names it.
+    """
+    path = _workflow_http(workflow.write_step_input, req.step_id, req.role, req.content)
+    return {"path": path, "workflow": _workflow_http(workflow.describe)}
 
 
 @app.post("/api/workflow/run")
