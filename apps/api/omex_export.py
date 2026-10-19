@@ -246,6 +246,7 @@ def build_archive(
     study: dict | None = None,
     funcs: dict[str, tuple[str, bytes]] | None = None,
     workflow_files: dict[str, bytes] | None = None,
+    returned_files: dict[str, bytes] | None = None,
 ) -> tuple[bytes, dict]:
     """Return ``(omex_bytes, report)``.
 
@@ -263,6 +264,10 @@ def build_archive(
 
     ``workflow_files`` (``{path in the pack: bytes}``, from ``pack_workflow``) replaces the
     source archive's packed workflow; without it one the source archive carries is kept.
+
+    ``returned_files`` (``{name: bytes}``) are top-level members a completed workflow sends
+    back: its target's module array and parameters file with the merged values, which PhLynx
+    re-imports. Each replaces a top-level member of the same name.
     """
     new_cellml, report = substitute_values(cellml_text, values or {})
 
@@ -333,6 +338,12 @@ def build_archive(
 
     if workflow_files is not None:
         _embed_workflow(members, entries, workflow_files)
+
+    for name, blob in sorted((returned_files or {}).items()):
+        # by its full location: a packed step's file of the same basename is not this one
+        members[name] = blob
+        entries[:] = [e for e in entries if _relative(e["location"]) != name]
+        entries.append(_entry_for(name))
 
     if study is not None:
         _embed_study(members, entries, parts, study, funcs or {}, model_out,

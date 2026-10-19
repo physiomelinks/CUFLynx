@@ -21,7 +21,9 @@ What CA provides, reached through ``ca_from`` (never an import statement):
 * ``workflow_model`` -- the model one tab shows, from the results so far;
 * ``run_calibration_workflow`` -- the run (in the runner);
 * ``load_workflow_run`` -- a run directory read back;
-* ``pack_workflow`` -- every file a run needs, in one directory (the OMEX export).
+* ``pack_workflow`` -- every file a run needs, in one directory (the OMEX export);
+* ``write_calibrated_parameters_to`` -- the target's parameters with a run's merged
+  values (sent back to PhLynx).
 
 A CA without them (older than the workflow feature) raises
 :class:`WorkflowUnavailable`, which the routes turn into a 501 that says so.
@@ -354,6 +356,26 @@ class WorkflowManager:
                 json.dump(raw, fh, indent=2)
                 fh.write("\n")
         return path
+
+    def calibrated_target(self, dest_dir: str) -> dict[str, bytes]:
+        """The target's module array and its parameters file with the run's merged values
+        (CA's ``write_calibrated_parameters_to``), by their file names: what a completed
+        workflow sends back to PhLynx. WorkflowError when the target is not a module array,
+        or a step has no current result."""
+        target = self._read_raw().get("target") or {}
+        if not (isinstance(target.get("module_array"), str) and isinstance(target.get("parameters"), str)):
+            raise WorkflowError("the target is not a module array, so there is none to send back")
+        if not self.output_dir:
+            raise WorkflowError("the workflow has no run directory")
+        array = self._resolve(target["module_array"])
+        params = os.path.join(dest_dir, os.path.basename(target["parameters"]))
+        _ca_call("write_calibrated_parameters_to", self.path, self.output_dir, params,
+                 module_library_dirs=self.module_library_dirs)
+        files = {}
+        for path in (array, params):
+            with open(path, "rb") as fh:
+                files[os.path.basename(path)] = fh.read()
+        return files
 
     # -- running -------------------------------------------------------------
 

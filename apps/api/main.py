@@ -1932,9 +1932,13 @@ def phlynx_send(req: PhlynxSendRequest):
     # and back reopens at the app's default solver with its operations unregistered.
     funcs, study = _study_for_archive(stem, req.output_dir)
     # A workflow tab's study carries its workflow, so the archive reruns all of it.
-    workflow_files = None
+    workflow_files = returned = None
+    workflow_values = None
     if workflow.loaded and _workflow_view_models.get(req.model_id) == workflow.path:
         workflow_files = _packed_workflow()
+        # A completed workflow also sends back its target with the merged values, for
+        # PhLynx to re-import; otherwise the response says why not.
+        returned, workflow_values = _calibrated_target()
     try:
         blob, report = omex_export.build_archive(
             cellml_text=record.path.read_text(encoding="utf-8"),
@@ -1949,6 +1953,7 @@ def phlynx_send(req: PhlynxSendRequest):
             study=study,
             funcs=funcs,
             workflow_files=workflow_files,
+            returned_files=returned,
         )
     except omex_export.OmexExportError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -1978,7 +1983,25 @@ def phlynx_send(req: PhlynxSendRequest):
         # Written, but into a component PhLynx does not read parameter changes
         # back out of (#287) -- so the value travels and is ignored.
         "outside_parameters": report["outside_parameters"],
+        # A workflow tab's study: {sent: [file names]} for the target sent back with its
+        # merged values, or {sent: [], reason} when the run is not complete.
+        "workflow_values": workflow_values,
     }
+
+
+def _calibrated_target() -> tuple[dict[str, bytes] | None, dict]:
+    """The open workflow's target with its run's merged values (``{name: bytes}``), or None,
+    and what the send says of it."""
+    dest = UPLOAD_DIR / "workflow_values" / uuid.uuid4().hex
+    try:
+        files = workflow.calibrated_target(str(dest))
+    except workflow_manager.WorkflowError as exc:
+        return None, {"sent": [], "reason": str(exc)}
+    except workflow_manager.WorkflowUnavailable as exc:
+        return None, {"sent": [], "reason": str(exc)}
+    finally:
+        shutil.rmtree(dest, ignore_errors=True)
+    return files, {"sent": sorted(files)}
 
 
 def _study_for_archive(stem: str, output_dir: str) -> tuple[dict, dict]:

@@ -45,7 +45,8 @@ class UnsetParametersError(ValueError):
                          f'{", ".join(names)}.')
 
 
-def _fake_ca(monkeypatch, calls=None, plan_error=None, refuse=None, model_error=None):
+def _fake_ca(monkeypatch, calls=None, plan_error=None, refuse=None, model_error=None,
+             incomplete=None):
     """A stand-in for libcuflynx.calibration_workflow, recording what it was asked."""
     calls = calls if calls is not None else []
     mod = types.ModuleType("calibration_workflow")
@@ -82,7 +83,21 @@ def _fake_ca(monkeypatch, calls=None, plan_error=None, refuse=None, model_error=
                 "fixed": [{"model_name": "p_mod_A", "value": 2.0, "from_step": "fit_a"}],
                 "calibrated": [], "waiting_for": [], "stale": [], "param_id_output_dir": None}
 
-    for fn in (load_workflow, plan_workflow, workflow_status, workflow_model):
+    def pack_workflow(path, dest_dir, module_library_dirs=None):
+        os.makedirs(dest_dir, exist_ok=True)
+        Path(dest_dir, "calibration_workflow.json").write_text(Path(path).read_text())
+        return {"files": ["calibration_workflow.json"]}
+
+    def write_calibrated_parameters_to(path, output_dir, dest, module_library_dirs=None):
+        calls.append(("calibrated", output_dir, dest))
+        if incomplete:
+            raise FakeWorkflowError(incomplete)
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        Path(dest).write_text("variable_name,value\nC/x,2.5\n")
+        return dest
+
+    for fn in (load_workflow, plan_workflow, workflow_status, workflow_model, pack_workflow,
+               write_calibrated_parameters_to):
         setattr(mod, fn.__name__, fn)
     set_ca_module(monkeypatch, "calibration_workflow", mod)
     return calls
@@ -305,6 +320,40 @@ def test_inputs_a_step_cannot_take_are_refused(client, step_workflow, step_id, r
                     json={"step_id": step_id, "role": role, "content": content})
     assert r.status_code == 422 and words in r.json()["detail"], r.text
     assert step_workflow.read_text() == before
+
+
+def _send_from_a_step_tab(client, step_workflow):
+    view = client.post("/api/workflow/view", json={"view": "left"})
+    assert view.status_code == 200, view.text
+    r = client.post("/api/phlynx/send",
+                    json={"model_id": view.json()["model_id"], "source": "as_imported"})
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def test_a_completed_workflow_sends_its_target_back_with_the_merged_values(
+        client, step_workflow):
+    (step_workflow.parent / "whole_module_array.json").write_text('[{"name": "C"}]')
+    body = _send_from_a_step_tab(client, step_workflow)
+    assert body["workflow_values"] == {"sent": ["whole_module_array.json",
+                                                "whole_parameters.csv"]}
+    members = _members(body)
+    assert members["whole_module_array.json"] == b'[{"name": "C"}]'
+    assert members["whole_parameters.csv"] == b"variable_name,value\nC/x,2.5\n"
+
+
+def test_an_incomplete_workflow_says_why_it_sent_no_values(client, monkeypatch, step_workflow):
+    _fake_ca(monkeypatch, incomplete="steps ['right'] have no current result")
+    body = _send_from_a_step_tab(client, step_workflow)
+    assert body["workflow_values"] == {"sent": [],
+                                       "reason": "steps ['right'] have no current result"}
+    assert "whole_parameters.csv" not in _members(body)
+
+
+def _members(send_body):
+    import base64
+    with zipfile.ZipFile(io.BytesIO(base64.b64decode(send_body["base64"]))) as zf:
+        return {n: zf.read(n) for n in zf.namelist()}
 
 
 # ---------------------------------------------------------------------------

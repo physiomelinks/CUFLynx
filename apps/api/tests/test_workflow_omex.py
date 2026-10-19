@@ -113,6 +113,34 @@ def test_a_packed_workflow_cannot_write_outside_its_directory(client):
     assert r.status_code == 422 and "outside it" in r.text
 
 
+def test_a_completed_workflow_s_values_go_back_beside_phlynx_s_own_members():
+    snapshot = b'{"nodes": [], "phlynx": "untouched"}'
+    source = _members(_export(workflow_files=dict(
+        PACK, **{"whole_parameters.csv": b"variable_name,value\nC/x,1\n"})))
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        for name, data in source.items():
+            if name != "manifest.xml":
+                zf.writestr(name, data)
+        zf.writestr("flow-snapshot.json", snapshot)
+        zf.writestr("whole_parameters.csv", b"variable_name,value\nC/x,1\n")
+        zf.writestr("manifest.xml", source["manifest.xml"].decode().replace(
+            "</omexManifest>",
+            '<content location="./flow-snapshot.json" format="application/json"/>'
+            '<content location="./whole_parameters.csv" format="text/csv"/></omexManifest>'))
+    returned = {"whole_module_array.json": b'[{"name": "C"}]',
+                "whole_parameters.csv": b"variable_name,value\nC/x,2.5\n"}
+    members = _members(_export(source_archive=buf.getvalue(), returned_files=returned))
+    assert members["whole_module_array.json"] == returned["whole_module_array.json"]
+    assert members["whole_parameters.csv"] == returned["whole_parameters.csv"]
+    # PhLynx's own member, byte for byte, and the packed workflow's file of the same name
+    assert members["flow-snapshot.json"] == snapshot
+    assert members["workflow/whole_parameters.csv"] == b"variable_name,value\nC/x,1\n"
+    manifest = members["manifest.xml"].decode()
+    assert manifest.count('location="./whole_parameters.csv"') == 1
+    assert './whole_module_array.json' in manifest
+
+
 # ---------------------------------------------------------------------------
 # integration: CA's own fixture workflow, exported, moved away, imported, run
 # ---------------------------------------------------------------------------
