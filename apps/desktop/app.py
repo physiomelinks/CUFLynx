@@ -156,6 +156,38 @@ def warn_if_no_compiler() -> None:
     )
 
 
+def wait_until_abandoned(server, presence, poll: float = 2.0) -> None:
+    """Block until every browser tab has gone, then stop the server.
+
+    The browser modes have no window whose closing ends the process, and the
+    packaged app is usually launched from a file manager with no terminal to
+    Ctrl+C -- so without this the server, and PyInstaller's unpacked
+    ``/tmp/_MEI*`` directory with it, outlived the app until logout. Tabs report
+    in through ``/api/presence``; see :mod:`presence` for the timings.
+    """
+    import time
+
+    try:
+        while not presence.abandoned():
+            time.sleep(poll)
+    except KeyboardInterrupt:
+        pass
+    server.should_exit = True
+
+
+def serve_in_browser(url: str, server) -> int:
+    """Open ``url`` in the system browser and serve until the user has left."""
+    from presence import presence  # noqa: PLC0415 - after sys.path is set up
+
+    webbrowser.open(url)
+    print(
+        f"Serving {APP_NAME} on {url}  (stops when the last tab closes, or Ctrl+C)",
+        flush=True,
+    )
+    wait_until_abandoned(server, presence)
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=f"{APP_NAME} desktop app")
     parser.add_argument("--port", type=int, default=0, help="0 = pick a free port")
@@ -189,13 +221,7 @@ def main() -> int:
         return 1
 
     if args.browser:
-        webbrowser.open(url)
-        print(f"Serving {APP_NAME} on {url}  (Ctrl+C to stop)", flush=True)
-        try:
-            threading.Event().wait()
-        except KeyboardInterrupt:
-            pass
-        return 0
+        return serve_in_browser(url, server)
 
     try:
         import webview
@@ -205,9 +231,7 @@ def main() -> int:
             "  Install it with: pip install pywebview",
             file=sys.stderr,
         )
-        webbrowser.open(url)
-        threading.Event().wait()
-        return 0
+        return serve_in_browser(url, server)
 
     # Downloads are OFF by default in pywebview, and that default silently breaks
     # every download the app offers -- "Download calibrated model" (#114) among
@@ -237,9 +261,7 @@ def main() -> int:
             f"warning: could not open a native window ({exc}); opening a browser instead.",
             file=sys.stderr,
         )
-        webbrowser.open(url)
-        threading.Event().wait()
-        return 0
+        return serve_in_browser(url, server)
 
     # The window closed — stop uvicorn so the process actually exits.
     server.should_exit = True
