@@ -1,9 +1,9 @@
 """The browser-fallback shell exits once its last tab has gone.
 
-Regression for the packaged Linux app outliving its window: with no GTK/Qt
-bindings it opens the system browser instead, and used to wait on an Event that
-nothing ever set -- so closing the tab left the server, and its /tmp/_MEI*
-directory, running until logout.
+The packaged Linux app has no GTK/Qt bindings, so it opens the system browser
+instead of a window. Closing the tab ends no process, so the shell must stop the
+server itself once no tab is left, or the server and its /tmp/_MEI* directory
+run until logout.
 """
 
 from __future__ import annotations
@@ -125,10 +125,10 @@ def test_shell_stops_the_server_once_abandoned(shell):
         daemon=True,
     )
     t.start()
-    assert done.wait(5), "the shell never returned -- the old Event().wait() hang"
+    assert done.wait(5), "the shell never returned after the tab was abandoned"
     assert server.should_exit
 
 
 def test_no_browser_mode_waits_forever():
-    """The hang was an Event nobody sets; it must not come back in any branch."""
+    """No branch of the shell waits on an Event that nothing sets."""
     assert "Event().wait()" not in DESKTOP_APP.read_text()

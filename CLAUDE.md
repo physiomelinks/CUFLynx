@@ -465,11 +465,12 @@ an empty pipe.
 
 - **The browser fallback must still end the process.** A Linux build has no
   GTK/Qt bindings, so pywebview cannot open a window and the shell opens the
-  system browser instead. It used to `threading.Event().wait()` there forever:
-  closing the tab ended nothing, a file-manager launch has no terminal to Ctrl+C,
-  and the server plus its `/tmp/_MEI*` dir lived until logout. Tabs now report
-  through `/api/presence/{beat,leave}` (`lib/presence.js` → `apps/api/presence.py`)
-  and `wait_until_abandoned` stops the server once the last one has gone. Keep
+  system browser instead. Closing a tab ends no process and a file-manager launch
+  has no terminal to Ctrl+C, so the shell must stop itself, or the server and its
+  `/tmp/_MEI*` dir live until logout. Tabs report through
+  `/api/presence/{beat,leave}` (`lib/presence.js` → `apps/api/presence.py`) and
+  `wait_until_abandoned` stops the server once the last one has gone. Never wait
+  on an Event nothing sets (`test_no_browser_mode_waits_forever` checks). Keep
   `stale_after` above Chrome's one-run-a-minute throttle for hidden tabs, or a
   backgrounded tab reads as closed.
 
