@@ -312,6 +312,9 @@ def csv_to_json(data: bytes | str) -> dict:
         doc = convert(text)
     except Exception as exc:  # noqa: BLE001 - CA raises bare ValueError / pandas errors
         raise ParamsJsonError(f"could not read params_for_id CSV: {exc}") from exc
+    if not doc.get("params"):
+        # as the fallback says it: CA's schema wants at least one entry
+        raise ParamsJsonError("params_for_id CSV has a header but no rows.")
     return load_doc(doc)
 
 
