@@ -244,7 +244,7 @@ function onRun() {
       />
     </div>
     <p v-if="!canRun" class="hint">
-      Load a model, an obs_data.json and a params_for_id.csv to run UQ.
+      Load a model, an obs_data.json and a params_for_id.json to run UQ.
     </p>
     <p v-else-if="!settings.run_calibration_first" class="hint">
       Reuses the latest completed calibration's best fit — run a calibration first, or
