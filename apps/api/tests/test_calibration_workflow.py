@@ -30,9 +30,9 @@ WORKFLOW = {
     "target": {"module_type": "twin", "version": "v1", "parameterisation": "split"},
     "steps": [
         {"id": "fit_a", "model": {"module_type": "lin_a", "version": "v1", "parameterisation": "fit_a"},
-         "obs_data": "fit_a_obs_data.json", "params_for_id": "fit_a_params_for_id.csv"},
+         "obs_data": "fit_a_obs_data.json", "params_for_id": "fit_a_params_for_id.json"},
         {"id": "rest", "model": "chain_module_array.csv",
-         "obs_data": "rest_obs_data.json", "params_for_id": "rest_params_for_id.csv",
+         "obs_data": "rest_obs_data.json", "params_for_id": "rest_params_for_id.json",
          "fixed_from": ["fit_a"]},
     ],
 }
@@ -96,7 +96,11 @@ def _fake_ca(monkeypatch, calls=None, plan_error=None, refuse=None, model_error=
         if incomplete:
             raise FakeWorkflowError(incomplete)
         os.makedirs(os.path.dirname(dest), exist_ok=True)
-        Path(dest).write_text("variable_name,value\nC/x,2.5\n")
+        # nested JSON, as CA writes it (utilities/parameters_file.py)
+        Path(dest).write_text(json.dumps({"schema_version": 1, "global": {
+            "R": {"value": 8.314, "units": "J_per_mol_K", "data_reference": "given"}},
+            "C": {"x": {"value": 2.5, "units": "m", "data_reference": "calibrated"}},
+            "heart": {"lv": {"E": {"value": "3e8", "units": "Pa", "data_reference": "d"}}}}))
         return dest
 
     for fn in (load_workflow, plan_workflow, workflow_status, workflow_model, pack_workflow,
@@ -253,10 +257,10 @@ def test_any_other_refusal_stays_a_plain_message(client, monkeypatch, workflow_f
 # ---------------------------------------------------------------------------
 STEP_WORKFLOW = {
     "workflow_name": "sel",
-    "target": {"module_array": "whole_module_array.json", "parameters": "whole_parameters.csv"},
+    "target": {"module_array": "whole_module_array.json", "parameters": "whole_parameters.json"},
     "steps": [
         {"id": "left", "model": {"select": ["C"]}, "obs_data": "inputs/left_obs_data.json",
-         "params_for_id": "left_params_for_id.csv"},
+         "params_for_id": "left_params_for_id.json"},
         {"id": "right", "model": {"select": ["D", "E"]}},
         {"id": "rank", "kind": "reduction", "sensitivity_from": "left"},
         {"id": "kept", "model": {"select": ["D"]}, "params_for_id_from": "rank"},
@@ -297,21 +301,57 @@ def test_a_step_s_own_obs_data_is_read_and_overwritten(client, step_workflow):
 def test_a_step_without_an_input_is_given_one_beside_the_workflow(client, step_workflow):
     r = client.get("/api/workflow/step_input", params={"step_id": "right", "role": "obs_data"})
     assert r.json() == {"path": None, "content": None}
-    (step_workflow.parent / "right_params_for_id.csv").write_text("someone else's\n")
+    (step_workflow.parent / "right_params_for_id.json").write_text("someone else's\n")
     r = client.post("/api/workflow/step_input",
-                    json={"step_id": "right", "role": "params_for_id", "content": "a,b\n"})
+                    json={"step_id": "right", "role": "params_for_id", "content": PARAMS_DOC})
     assert r.status_code == 200, r.text
     # a file already there is never taken over
-    assert Path(r.json()["path"]).name == "right_params_for_id_2.csv"
-    assert (step_workflow.parent / "right_params_for_id.csv").read_text() == "someone else's\n"
+    assert Path(r.json()["path"]).name == "right_params_for_id_2.json"
+    assert (step_workflow.parent / "right_params_for_id.json").read_text() == "someone else's\n"
+    assert Path(r.json()["path"]).read_text() == PARAMS_DOC
     steps = json.loads(step_workflow.read_text())["steps"]
-    assert steps[1]["params_for_id"] == "right_params_for_id_2.csv"
+    assert steps[1]["params_for_id"] == "right_params_for_id_2.json"
     assert steps[0] == STEP_WORKFLOW["steps"][0]
+
+
+PARAMS_DOC = json.dumps({"version": 1, "params": [{"targets": ["D/x"], "min": 1, "max": 2}]})
+PARAMS_CSV = "vessel_name,param_name,min,max\nheart__lv D,x,1,2.5e-3\n"
+
+
+def test_a_params_for_id_csv_is_written_as_the_json_ca_reads(client, step_workflow):
+    """CA refuses a params_for_id CSV, so a picked CSV is written as
+    ``cuflynx-upgrade params-for-id`` converts it."""
+    r = client.post("/api/workflow/step_input",
+                    json={"step_id": "right", "role": "params_for_id", "content": PARAMS_CSV})
+    assert r.status_code == 200, r.text
+    path = Path(r.json()["path"])
+    assert path.name == "right_params_for_id.json"
+    assert json.loads(path.read_text()) == {"version": 1, "params": [
+        {"targets": ["heart/lv/x", "D/x"], "min": 1, "max": 2.5e-3}]}
+    assert json.loads(step_workflow.read_text())["steps"][1]["params_for_id"] == (
+        "right_params_for_id.json")
+
+
+def test_a_step_naming_a_params_for_id_csv_is_pointed_at_its_json(client, step_workflow):
+    raw = json.loads(step_workflow.read_text())
+    raw["steps"][0]["params_for_id"] = "inputs/left_params_for_id.csv"
+    step_workflow.write_text(json.dumps(raw))
+    old = step_workflow.parent / "inputs" / "left_params_for_id.csv"
+    old.write_text(PARAMS_CSV)
+    r = client.post("/api/workflow/step_input",
+                    json={"step_id": "left", "role": "params_for_id", "content": PARAMS_CSV})
+    assert r.status_code == 200, r.text
+    assert Path(r.json()["path"]) == step_workflow.parent / "inputs" / "left_params_for_id.json"
+    assert json.loads(step_workflow.read_text())["steps"][0]["params_for_id"] == (
+        "inputs/left_params_for_id.json")
+    assert old.read_text() == PARAMS_CSV   # the user's CSV is left as it was
 
 
 @pytest.mark.parametrize("step_id, role, content, words", [
     ("rank", "obs_data", "{}", "is a reduction"),
     ("kept", "params_for_id", "a\n", 'fits what step "rank" kept'),
+    ("right", "params_for_id", "a,b\n", "neither JSON nor a params_for_id CSV"),
+    ("right", "params_for_id", "{not json", "neither JSON nor a params_for_id CSV"),
     ("nope", "obs_data", "{}", 'no step "nope"'),
     ("left", "parameters", "{}", "obs_data or params_for_id"),
     ("left", "obs_data", "{not json", "not JSON"),
@@ -342,7 +382,13 @@ def test_a_completed_workflow_sends_its_target_back_with_the_merged_values(
                                                 "whole_parameters.csv"]}
     members = _members(body)
     assert members["whole_module_array.json"] == b'[{"name": "C"}]'
-    assert members["whole_parameters.csv"] == b"variable_name,value\nC/x,2.5\n"
+    # CA's nested JSON as the CSV PhLynx reads: <instance>/<variable>, a global by its name
+    assert members["whole_parameters.csv"].decode() == (
+        "variable_name,units,value,data_reference\n"
+        "R,J_per_mol_K,8.314,given\n"
+        "C/x,m,2.5,calibrated\n"
+        "heart/lv/E,Pa,3e8,d\n")
+    assert "whole_parameters.json" not in members
 
 
 def test_an_incomplete_workflow_says_why_it_sent_no_values(client, monkeypatch, step_workflow):
@@ -657,7 +703,7 @@ def _selection_study(client, tmp_path, *, target, step_id, select, items, params
                      params_to_change=None, setup=None):
     """CA's fixture library with one selection step ``step_id`` on ``target`` (a module array
     in its ``arrays`` directory), loaded in the GUI. ``items`` are ``(name, operand, value,
-    std)`` data items, ``params`` ``(vessel, param, min, max)`` rows; ``setup(arrays)`` writes
+    std)`` data items, ``params`` ``(vessel, param, min, max)`` entries; ``setup(arrays)`` writes
     any target the library lacks. Returns ``(arrays directory, load response)``."""
     build, constants = _selection_ca()
     paths = build(str(tmp_path / "library"))
@@ -673,16 +719,16 @@ def _selection_study(client, tmp_path, *, target, step_id, select, items, params
                           for name, operand, value, std in items],
            "prediction_items": []}
     (arrays / "data" / "step_obs.json").write_text(json.dumps(obs))
-    (arrays / "data" / "step_params.csv").write_text(
-        "vessel_name,param_name,min,max,name_for_plotting\n"
-        + "".join(f"{v},{p},{lo},{hi},{p}_{v}\n" for v, p, lo, hi in params))
+    (arrays / "data" / "step_params.json").write_text(json.dumps({"version": 1, "params": [
+        {"targets": ["/".join(v.split("__") + [p])], "min": lo, "max": hi,
+         "name_for_plotting": f"{p}_{v}"} for v, p, lo, hi in params]}))
     workflow_path = arrays / "selection_workflow.json"
     workflow_path.write_text(json.dumps({
         "schema_version": 1, "workflow_name": "selection",
         "module_library_dirs": [paths["modules"]], "settings": constants["OPTIMISER_SETTINGS"],
         "target": target,
         "steps": [{"id": step_id, "model": {"select": select},
-                   "obs_data": "data/step_obs.json", "params_for_id": "data/step_params.csv"}]}))
+                   "obs_data": "data/step_obs.json", "params_for_id": "data/step_params.json"}]}))
     assert client.post("/api/config", json={"python_path": sys.executable}).status_code == 200
     r = client.post("/api/workflow/load", json={
         "path": str(workflow_path), "config_outputs_dir": str(tmp_path / "outputs")})
@@ -714,22 +760,43 @@ def _parameter_rows(text):
     return {r["variable_name"]: r for r in csv.DictReader(io.StringIO(text))}
 
 
+def _target_rows(arrays, prefix):
+    """The target's own ``<prefix>_parameters.json`` as rows named as the send-back's CSV
+    names them (CA's ``parameter_rows``)."""
+    from ca_imports import ca_from
+
+    read, rows = ca_from("utilities.parameters_file", "read_parameters_file", "parameter_rows")
+    return {r["variable_name"]: r for r in rows(read(str(arrays / f"{prefix}_parameters.json")))}
+
+
+def _start(arrays, prefix):
+    return {name: float(r["value"]) for name, r in _target_rows(arrays, prefix).items()}
+
+
 def _values(text):
     return {name: float(r["value"]) for name, r in _parameter_rows(text).items()}
 
 
 def _changed_values(arrays, files):
     """``{variable_name: (before, after)}`` for each parameter the send-back changes against
-    the target's own files beside it; every other file it carries is asserted identical."""
+    the target's own files beside it. The module array must be byte-identical; in the
+    parameters CSV (the target's nested JSON, converted) a changed parameter changes only
+    its value and data_reference, and every other row is identical."""
     changed = {}
     for name, blob in files.items():
-        before = (arrays / name).read_bytes()
-        if not name.endswith(".csv"):
-            assert blob == before, f"{name} is sent back changed"
+        if not name.endswith("_parameters.csv"):
+            assert blob == (arrays / name).read_bytes(), f"{name} is sent back changed"
             continue
-        old, new = _values(before.decode()), _values(blob.decode())
-        assert set(new) >= set(old), f"{name} drops {sorted(set(old) - set(new))}"
-        changed.update({k: (old.get(k), v) for k, v in new.items() if old.get(k) != v})
+        old = _target_rows(arrays, name[:-len("_parameters.csv")])
+        new = _parameter_rows(blob.decode())
+        assert list(new) == list(old), f"{name} names other parameters than the target's"
+        for key, row in new.items():
+            if row == old[key]:
+                continue
+            assert {k: v for k, v in row.items() if k not in ("value", "data_reference")} == {
+                k: v for k, v in old[key].items() if k not in ("value", "data_reference")}
+            assert row["data_reference"].startswith("calibrated by workflow ")
+            changed[key] = (float(old[key]["value"]), float(row["value"]))
     return changed
 
 
@@ -762,15 +829,16 @@ def test_a_phlynx_selection_asks_for_its_boundary_runs_and_goes_back_calibrated(
     """CA #594's fixture: in the chain, C (z = x + k q^2) reads x from A through a boundary.
     C selected alone leaves x unset; given x = Y_A by a protocol, q = sqrt(Z_C - Y_A) = 3.
 
-    The CSV sent back is PhLynx's contract fixture (``fixtures/phlynx_send_back_parameters.csv``,
-    read by PhLynx's own tests): this test fails when it changes, and
-    ``CUFLYNX_REGENERATE_FIXTURES=1`` rewrites it."""
+    The target's parameters are nested JSON (``chain_parameters.json``); what goes back is the
+    CSV PhLynx reads, converted from CA's JSON send-back. That CSV is PhLynx's contract fixture
+    (``fixtures/phlynx_send_back_parameters.csv``, read by PhLynx's own tests): this test fails
+    when it changes, and ``CUFLYNX_REGENERATE_FIXTURES=1`` rewrites it."""
     _, constants = _selection_ca()
     arrays, body = _selection_study(
         client, tmp_path, target="chain_module_array.json", step_id="c-alone", select=["C"],
         items=[("z_c", "C/z", constants["Z_C"], 0.17)], params=[("C", "q", 0.1, 10.0)])
     assert body["plan"]["steps"][0]["selection"]["runs_as"] == "library_module"
-    start = _values((arrays / "chain_parameters.csv").read_text())
+    start = _start(arrays, "chain")
     assert start["C/q"] != pytest.approx(3.0, rel=1e-2)   # so the send-back shows a change
 
     # the boundary C reads from A is open: CA names it, as the target's parameters do
@@ -794,8 +862,9 @@ def test_a_phlynx_selection_asks_for_its_boundary_runs_and_goes_back_calibrated(
     changed = _changed_values(arrays, files)
     assert list(changed) == ["C/q"]
     assert changed["C/q"] == (start["C/q"], pytest.approx(3.0, rel=1e-4))
-    # nothing written beside the target
-    assert not list(arrays.glob("*_calibrated_parameters.csv"))
+    # nothing written beside the target, and its own file unchanged
+    assert not list(arrays.glob("*_calibrated_parameters.*"))
+    assert _start(arrays, "chain") == start
 
     sent = _fixture_form(files["chain_parameters.csv"].decode())
     if os.environ.get("CUFLYNX_REGENERATE_FIXTURES"):
@@ -816,9 +885,10 @@ def _abc_target(arrays):
     (arrays / "abc_module_array.json").write_text(json.dumps(
         [record("A", "lin_a", out=["C"]), record("C", "lin_c", inp=["A"]),
          record("B", "lin_b")], indent=1))
-    (arrays / "abc_parameters.csv").write_text(
-        "variable_name,units,value,data_reference\nA/p,dimensionless,1.5,x\n"
-        "B/p,dimensionless,2.5,x\nC/q,dimensionless,1.0,x\n")
+    leaf = {"units": "dimensionless", "data_reference": "x"}
+    (arrays / "abc_parameters.json").write_text(json.dumps({
+        "schema_version": 1, "A": {"p": {"value": 1.5, **leaf}},
+        "B": {"p": {"value": 2.5, **leaf}}, "C": {"q": {"value": 1.0, **leaf}}}))
 
 
 @pytest.mark.integration
@@ -835,7 +905,7 @@ def test_several_selected_instances_go_back_calibrated_and_nothing_else(
         params=[("A", "p", 0.1, 5.0), ("B", "p", 0.1, 5.0)], setup=_abc_target)
     assert body["plan"]["steps"][0]["selection"] == {"runs_as": "module_array",
                                                      "records": ["A", "B"]}
-    start = _values((arrays / "abc_parameters.csv").read_text())
+    start = _start(arrays, "abc")
 
     _calibrate(client)
     names, files = _send_back(client)
@@ -854,8 +924,8 @@ def _sys_target(arrays):
     (arrays / "sys_module_array.json").write_text(json.dumps([
         {"name": "sys", "module_type": "chain", "module_subtype": "v1",
          "parameterisation": "default", "inp_instances": [], "out_instances": []}], indent=1))
-    (arrays / "sys_parameters.csv").write_text(
-        "variable_name,units,value,data_reference\nsys/C/q,dimensionless,2.0,host\n")
+    (arrays / "sys_parameters.json").write_text(json.dumps({"schema_version": 1, "sys": {
+        "C": {"q": {"value": 2.0, "units": "dimensionless", "data_reference": "host"}}}}))
 
 
 @pytest.mark.integration
@@ -869,7 +939,7 @@ def test_a_selected_nested_instance_goes_back_into_its_super_instance(
         items=[("z_c", "sys__C/z", constants["Z_C"], 0.17)],
         params=[("sys__C", "q", 0.1, 10.0)],
         params_to_change={"sys__C/x": [[constants["Y_A"]]]}, setup=_sys_target)
-    start = _values((arrays / "sys_parameters.csv").read_text())
+    start = _start(arrays, "sys")
 
     _calibrate(client)
     names, files = _send_back(client)

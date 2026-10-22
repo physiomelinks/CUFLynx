@@ -714,7 +714,8 @@ export async function getWorkflowStepInput(stepId, role) {
 }
 
 /**
- * Write a workflow step's obs_data (an object) or params_for_id (CSV text); a step naming
+ * Write a workflow step's obs_data (an object) or params_for_id (JSON, or CSV text the
+ * server converts to JSON); a step naming
  * none is given a file. Returns {path, workflow}: the workflow described again.
  */
 export async function saveWorkflowStepInput(stepId, role, content) {

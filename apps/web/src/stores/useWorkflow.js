@@ -250,8 +250,8 @@ export function useWorkflow(options = {}) {
   }
 
   /**
-   * Write a step's obs_data (a document) or params_for_id (CSV text); a step naming none is
-   * given a file. CA re-plans, and the step's unset parameters are asked again on its next
+   * Write a step's obs_data (a document) or params_for_id (JSON, or CSV text the server
+   * converts to JSON); a step naming none is given a file. CA re-plans, and the step's unset parameters are asked again on its next
    * open or run. Returns the server's {path, workflow}, or null (error says why).
    */
   async function saveStepInput(stepId, role, content) {

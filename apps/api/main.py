@@ -3673,7 +3673,8 @@ def workflow_view(req: WorkflowViewRequest) -> dict:
     if view.get("obs_data_path"):
         members[f"{prefix}_obs_data.json"] = Path(view["obs_data_path"]).read_bytes()
     if view.get("params_for_id_path"):
-        members[f"{prefix}_params_for_id.csv"] = Path(view["params_for_id_path"]).read_bytes()
+        params = Path(view["params_for_id_path"])
+        members[f"{prefix}_params_for_id{params.suffix.lower()}"] = params.read_bytes()
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
         for name, blob in members.items():

@@ -23,7 +23,8 @@ What CA provides, reached through ``ca_from`` (never an import statement):
 * ``load_workflow_run`` -- a run directory read back;
 * ``pack_workflow`` -- every file a run needs, in one directory (the OMEX export);
 * ``write_calibrated_parameters_to`` -- the target's parameters with a run's merged
-  values (sent back to PhLynx).
+  values (nested JSON), sent back to PhLynx as the parameters CSV PhLynx reads
+  (``utilities.parameters_file.parameter_rows``).
 
 A CA without them (older than the workflow feature) raises
 :class:`WorkflowUnavailable`, which the routes turn into a 501 that says so.
@@ -58,13 +59,58 @@ RUNNER_PATH = str(runner_path("workflow_runner.py"))
 WORKFLOW_FILE_NAME = "calibration_workflow.json"
 TARGET_VIEW = "target"
 #: A step's own input files, and the suffix a new one is named with (``<step><suffix>``).
-STEP_INPUTS = {"obs_data": "_obs_data.json", "params_for_id": "_params_for_id.csv"}
+STEP_INPUTS = {"obs_data": "_obs_data.json", "params_for_id": "_params_for_id.json"}
+#: The columns of the parameters CSV PhLynx reads, in the order PhLynx writes them; any other
+#: key of a parameter (a library's ``sourced``) follows.
+PHLYNX_PARAMETER_COLUMNS = ("variable_name", "units", "value", "data_reference")
 
 NEEDS_CA = (
     "Calibration workflows need a circulatory_autogen (libcuflynx) with "
     "libcuflynx.calibration_workflow (physiomelinks/circulatory_autogen#541). "
     "Point Settings -> CA dir at one, or upgrade libcuflynx."
 )
+
+
+def _params_for_id_json(content: str) -> str:
+    """A step's params_for_id as the JSON text to write: JSON as given (checked to be
+    JSON), a CSV converted as ``cuflynx-upgrade params-for-id`` converts it."""
+    import params_json  # noqa: PLC0415
+
+    try:
+        if params_json.looks_like_json(content):
+            json.loads(content)
+            return content
+        return params_json.csv_to_file_text(content)
+    except (ValueError, params_json.ParamsJsonError) as exc:
+        raise WorkflowError(f"the params_for_id is neither JSON nor a params_for_id CSV: "
+                            f"{exc}") from exc
+
+
+def phlynx_parameters_csv(path: str) -> tuple[str, str]:
+    """The model parameters file ``path`` (``<prefix>_parameters.json``, nested) as the
+    parameters CSV PhLynx reads: ``(<prefix>_parameters.csv, text)``. One row per
+    parameter, named ``<instance>/<variable>`` (``heart/lv/E_A``; a global by its name),
+    as CA's ``parameter_rows`` names it."""
+    import csv  # noqa: PLC0415
+    import io  # noqa: PLC0415
+
+    read, rows_of = _ca_from_parameters_file("read_parameters_file", "parameter_rows")
+    rows = rows_of(read(path))
+    extra = [k for row in rows for k in row if k not in PHLYNX_PARAMETER_COLUMNS]
+    out = io.StringIO()
+    writer = csv.DictWriter(out, fieldnames=list(PHLYNX_PARAMETER_COLUMNS)
+                            + list(dict.fromkeys(extra)), lineterminator="\n")
+    writer.writeheader()
+    writer.writerows(rows)
+    return os.path.splitext(os.path.basename(path))[0] + ".csv", out.getvalue()
+
+
+def _ca_from_parameters_file(*names):
+    try:
+        ensure_ca_path()
+        return ca_from("utilities.parameters_file", *names)
+    except (CaImportError, ImportError) as exc:
+        raise WorkflowUnavailable(f"{NEEDS_CA} ({exc})") from exc
 
 
 class WorkflowUnavailable(RuntimeError):
@@ -325,8 +371,9 @@ class WorkflowManager:
 
         The file the step names is overwritten; CA then marks the step and every step after
         it stale. A step naming none gets ``<step>_obs_data.json`` (or
-        ``<step>_params_for_id.csv``) beside the workflow file, which the workflow file then
-        names.
+        ``<step>_params_for_id.json``) beside the workflow file, which the workflow file then
+        names. A params_for_id CSV is converted to the JSON CA reads (``cuflynx-upgrade
+        params-for-id``'s form), and a step that names a CSV is pointed at a new ``.json``.
         """
         if self.busy:
             raise RuntimeError("a workflow is running; its inputs change after it")
@@ -337,16 +384,22 @@ class WorkflowManager:
                 raise WorkflowError(f"the obs_data is not JSON: {exc}") from exc
         raw = self._read_raw()
         step = self._step(raw, step_id, role)
+        if role == "params_for_id":
+            content = _params_for_id_json(content)
         named = step.get(role)
-        if isinstance(named, str) and named:
+        if isinstance(named, str) and named and (
+                role != "params_for_id" or named.lower().endswith(".json")):
             path = self._resolve(named)
         else:
-            directory = os.path.dirname(self.path)
-            name, n = f"{step_id}{STEP_INPUTS[role]}", 2
-            while os.path.exists(os.path.join(directory, name)):
-                stem, ext = os.path.splitext(f"{step_id}{STEP_INPUTS[role]}")
+            # a new file: beside the workflow, or a CSV's .json beside the CSV; one already
+            # there is never taken over
+            first = (os.path.splitext(named)[0] + ".json" if isinstance(named, str) and named
+                     else f"{step_id}{STEP_INPUTS[role]}")
+            name, n = first, 2
+            while os.path.exists(self._resolve(name)):
+                stem, ext = os.path.splitext(first)
                 name, n = f"{stem}_{n}{ext}", n + 1
-            path = os.path.join(directory, name)
+            path = self._resolve(name)
             step[role] = name
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w", encoding="utf-8", newline="") as fh:
@@ -372,10 +425,10 @@ class WorkflowManager:
         params = os.path.join(dest_dir, os.path.basename(target["parameters"]))
         _ca_call("write_calibrated_parameters_to", self.path, self.output_dir, params,
                  module_library_dirs=self.module_library_dirs)
-        files = {}
-        for path in (array, params):
-            with open(path, "rb") as fh:
-                files[os.path.basename(path)] = fh.read()
+        with open(array, "rb") as fh:
+            files = {os.path.basename(array): fh.read()}
+        name, csv_text = phlynx_parameters_csv(params)
+        files[name] = csv_text.encode("utf-8")
         return files
 
     # -- running -------------------------------------------------------------

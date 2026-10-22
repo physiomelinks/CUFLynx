@@ -28,9 +28,10 @@ PACK = {
         "steps": [{"id": "fit", "model": {"module_type": "chain", "version": "v1",
                                           "parameterisation": "rest"},
                    "obs_data": "inputs/fit/rest_obs_data.json",
-                   "params_for_id": "inputs/fit/rest_params_for_id.csv"}]}).encode(),
+                   "params_for_id": "inputs/fit/rest_params_for_id.json"}]}).encode(),
     "inputs/fit/rest_obs_data.json": LV_OBS_DATA_PATH.read_bytes(),
-    "inputs/fit/rest_params_for_id.csv": b"vessel_name,param_name,min,max\nmod,q,0.1,10\n",
+    "inputs/fit/rest_params_for_id.json":
+        b'{"version": 1, "params": [{"targets": ["mod/q"], "min": 0.1, "max": 10}]}\n',
     "modules/chain/versions/v1/chain_v1_modules.cellml": b"<model/>",
 }
 
@@ -113,10 +114,15 @@ def test_a_packed_workflow_cannot_write_outside_its_directory(client):
     assert r.status_code == 422 and "outside it" in r.text
 
 
+WHOLE_PARAMETERS = b'{"schema_version": 1, "C": {"x": {"value": 1, "units": "", "data_reference": ""}}}\n'
+
+
 def test_a_completed_workflow_s_values_go_back_beside_phlynx_s_own_members():
+    """The target's values go back as the parameters CSV PhLynx reads, replacing the one
+    PhLynx sent; the packed workflow keeps its own nested JSON."""
     snapshot = b'{"nodes": [], "phlynx": "untouched"}'
     source = _members(_export(workflow_files=dict(
-        PACK, **{"whole_parameters.csv": b"variable_name,value\nC/x,1\n"})))
+        PACK, **{"whole_parameters.json": WHOLE_PARAMETERS})))
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
         for name, data in source.items():
@@ -129,13 +135,13 @@ def test_a_completed_workflow_s_values_go_back_beside_phlynx_s_own_members():
             '<content location="./flow-snapshot.json" format="application/json"/>'
             '<content location="./whole_parameters.csv" format="text/csv"/></omexManifest>'))
     returned = {"whole_module_array.json": b'[{"name": "C"}]',
-                "whole_parameters.csv": b"variable_name,value\nC/x,2.5\n"}
+                "whole_parameters.csv": b"variable_name,units,value,data_reference\nC/x,,2.5,c\n"}
     members = _members(_export(source_archive=buf.getvalue(), returned_files=returned))
     assert members["whole_module_array.json"] == returned["whole_module_array.json"]
     assert members["whole_parameters.csv"] == returned["whole_parameters.csv"]
     # PhLynx's own member, byte for byte, and the packed workflow's file of the same name
     assert members["flow-snapshot.json"] == snapshot
-    assert members["workflow/whole_parameters.csv"] == b"variable_name,value\nC/x,1\n"
+    assert members["workflow/whole_parameters.json"] == WHOLE_PARAMETERS
     manifest = members["manifest.xml"].decode()
     assert manifest.count('location="./whole_parameters.csv"') == 1
     assert './whole_module_array.json' in manifest

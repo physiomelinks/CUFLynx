@@ -463,7 +463,7 @@ const progressText = computed(() => {
     <input
       ref="inputFile"
       type="file"
-      :accept="pickFor?.role === 'params_for_id' ? '.csv,text/csv' : '.json,application/json'"
+      :accept="pickFor?.role === 'params_for_id' ? '.json,application/json,.csv,text/csv' : '.json,application/json'"
       hidden
       data-testid="workflow-input-file"
       @change="onInputFile"

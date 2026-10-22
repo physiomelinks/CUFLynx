@@ -180,6 +180,9 @@ describe('WorkflowPanel: selection steps', () => {
 
     await wrapper.find('[data-testid="workflow-pick-left-params_for_id"]').trigger('click')
     const input = wrapper.find('[data-testid="workflow-input-file"]')
+    // JSON is the form CA reads; a CSV is still offered, and converted by the server
+    expect(input.attributes('accept').split(',')).toEqual(
+      expect.arrayContaining(['.json', '.csv']))
     const file = new File(['vessel_name,param_name\n'], 'p.csv', { type: 'text/csv' })
     Object.defineProperty(input.element, 'files', { value: [file], configurable: true })
     await input.trigger('change')
