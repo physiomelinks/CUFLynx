@@ -202,6 +202,40 @@ def test_a_params_for_id_json_is_params_not_obs_data():
     assert parts["obs"][0] == "study_obs_data.json"
 
 
+PARAMETERS_JSON = json.dumps({"schema_version": 1, "a": {"C": {"value": 1}}})
+
+
+@pytest.mark.parametrize("parameters_name", ["m_parameters.csv", "m_parameters.json"])
+def test_a_models_parameters_are_never_its_params_for_id(parameters_name):
+    """A module-array model's values (``<prefix>_parameters.json``, or the CSV
+    PhLynx writes) beside its params_for_id: each is picked by its name, never by
+    which came first or by "param" in the name."""
+    parts = omex_import.unpack(_zip({
+        "m.cellml": "<model/>",
+        parameters_name: PARAMETERS_JSON,
+        "m_params_for_id.json": json.dumps({"params": []}),
+    }))
+    assert parts["params"][0] == "m_params_for_id.json"
+    assert parts["roles"]["parameters"] == [parameters_name]
+
+
+def test_without_a_params_for_id_a_parameters_file_is_not_taken_for_one():
+    parts = omex_import.unpack(_zip({
+        "m.cellml": "<model/>", "m_parameters.json": PARAMETERS_JSON, "other.csv": "a,b\n"}))
+    assert parts["params"] is None
+    assert parts["obs_skipped"] == []
+
+
+def test_a_params_for_id_json_wins_over_its_csv():
+    """The JSON is the form CA reads; a CSV beside it is the older copy."""
+    parts = omex_import.unpack(_zip({
+        "m.cellml": "<model/>",
+        "m_params_for_id.csv": "vessel_name,param_name\n",
+        "m_params_for_id.json": json.dumps({"params": []}),
+    }))
+    assert parts["params"][0] == "m_params_for_id.json"
+
+
 def test_the_manifest_is_returned_parsed():
     parts = omex_import.unpack(_phlynx_archive())
     entries = parts["manifest"]["entries"]

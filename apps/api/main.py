@@ -10,7 +10,7 @@ POST /api/models/{model_id}/edit       open that source in the user's own editor
 POST /api/simulate                     single run (circulatory_autogen helper)
 POST /api/protocol/run                 multi-experiment protocol run
 POST /api/obs_data/upload              load obs_data.json (protocol + overlays)
-POST /api/params_for_id/upload         load params_for_id.csv -> slider specs
+POST /api/params_for_id/upload         load a params_for_id (JSON; a CSV is converted) -> slider specs
 
 Simulation is delegated to circulatory_autogen via :mod:`engine`; parsing of
 CellML metadata, obs_data and params_for_id is dependency-light so these routes
@@ -3322,37 +3322,23 @@ def load_params(req: LoadParamsRequest) -> dict:
 
 
 def _save_params_file(record: "_ModelRecord", data: bytes | str) -> Path:
-    """Persist an uploaded params_for_id, canonicalised to JSON.
+    """Persist an uploaded params_for_id as ``<study>_params_for_id.json``.
 
-    **A CSV is converted on the way in** (by CA, which owns the conversion), so
-    the stored study, the export bundle and every runner see the one canonical
-    form. JSON is the only form that can express a modifier, its inputs or a
-    prior's parameters, so keeping a CSV as the stored form means those are
-    unrepresentable in whatever the user's outputs directory ends up holding.
+    **A CSV is converted on the way in** (:func:`params_json.csv_to_file_text`, CA's
+    converter when CA is importable), so the stored study, the export bundle and
+    every runner see the one form CA reads: it refuses a params_for_id CSV. The
+    caller has parsed ``data`` already, so the conversion does not fail here.
 
-    The conversion needs CA. When it is unavailable the CSV is stored as-is
-    rather than refusing the upload: a study must not become unloadable because
-    the CA directory has not been set yet (the packaged app starts in exactly
-    that state), and CA's own CSV path still reads it.
-
-    CA branches CSV-vs-JSON on the filename suffix (``get_param_id_info``), so
-    the suffix must follow the content. The stale other-suffix twin is removed
-    so a format switch cannot leave two files disagreeing about which is current.
+    A stale ``_params_for_id.csv`` beside it is removed, so two files cannot
+    disagree about which is current.
     """
     raw = data if isinstance(data, bytes) else data.encode()
     if not params_json.looks_like_json(raw):
-        try:
-            doc = params_json.csv_to_json(raw)
-        except params_json.ParamsJsonError:
-            pass  # no CA: keep the CSV, which CA's own CSV path still reads
-        else:
-            raw = json.dumps(doc, indent=2).encode()
-    suffix = ".json" if params_json.looks_like_json(raw) else ".csv"
+        raw = params_json.csv_to_file_text(raw).encode()
     # Named after the study, like the obs_data beside it -- see `_study_file`.
-    path = _study_file(record, f"_params_for_id{suffix}")
+    path = _study_file(record, "_params_for_id.json")
     path.write_bytes(raw)
-    other_suffix = ".csv" if suffix == ".json" else ".json"
-    _study_file(record, f"_params_for_id{other_suffix}").unlink(missing_ok=True)
+    _study_file(record, "_params_for_id.csv").unlink(missing_ok=True)
     return path
 
 
@@ -3449,7 +3435,7 @@ def calibration_run(req: CalibrationRequest) -> dict:
         raise HTTPException(
             status_code=422,
             detail="calibration requires both an obs_data.json and a "
-            "params_for_id.csv to be uploaded for this model",
+            "params_for_id to be uploaded for this model",
         )
     python_path = req.settings.get("python_path") or None
     if python_path and not (
@@ -3829,7 +3815,7 @@ def sensitivity_run(req: SensitivityRequest) -> dict:
         raise HTTPException(
             status_code=422,
             detail="sensitivity analysis requires both an obs_data.json and a "
-            "params_for_id.csv to be uploaded for this model",
+            "params_for_id to be uploaded for this model",
         )
     python_path = req.settings.get("python_path") or None
     if python_path and not (
@@ -4057,7 +4043,7 @@ def emulator_train(req: EmulatorTrainRequest) -> dict:
         raise HTTPException(
             status_code=422,
             detail="training an emulator requires both an obs_data.json and a "
-            "params_for_id.csv to be uploaded for this model",
+            "params_for_id to be uploaded for this model",
         )
     python_path = req.settings.get("python_path") or None
     if python_path and not (
@@ -4289,7 +4275,7 @@ def uq_run(req: UQRequest) -> dict:
     if record.obs_path is None or record.params_path is None:
         raise HTTPException(
             status_code=422,
-            detail="UQ requires both an obs_data.json and a params_for_id.csv to be "
+            detail="UQ requires both an obs_data.json and a params_for_id to be "
             "uploaded for this model",
         )
     python_path = req.settings.get("python_path") or None

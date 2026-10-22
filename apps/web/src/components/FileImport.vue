@@ -678,8 +678,9 @@ async function onParamsDrop(event) {
   if (!file) return
   if (await handleOmex([file])) return
   if (await handleStudyManifest([file])) return
-  if (!extOk(file.name, ['.csv'])) {
-    error.value = `Expected a .csv file, got "${file.name}"`
+  // JSON is the params_for_id form; a CSV is converted to it on upload.
+  if (!extOk(file.name, ['.json', '.csv'])) {
+    error.value = `Expected a params_for_id .json (or a .csv to convert), got "${file.name}"`
     return
   }
   const unreadable = unreadableDrop(file)
@@ -785,10 +786,10 @@ async function onParamsDrop(event) {
           <small>drop another to replace</small>
         </template>
         <template v-else>
-          <i class="pi pi-sliders-h" /> Drop <strong>params_for_id.csv</strong>
+          <i class="pi pi-sliders-h" /> Drop <strong>params_for_id.json</strong>
           <small>or click to browse</small>
         </template>
-        <input type="file" accept=".csv,.omex" @change="onParamsDrop" />
+        <input type="file" accept=".json,.csv,.omex" @change="onParamsDrop" />
       </label>
       <Button
         label="Edit"
@@ -796,7 +797,7 @@ async function onParamsDrop(event) {
         size="small"
         class="params-edit-btn"
         data-testid="params-edit"
-        title="Edit included parameters and ranges, save a new dated CSV"
+        title="Edit included parameters and ranges, save a new dated JSON"
         :disabled="!modelId"
         @click="editParamsOpen = true"
       />

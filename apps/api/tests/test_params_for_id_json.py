@@ -548,46 +548,56 @@ def test_an_uploaded_csv_is_stored_as_json(client, requires_params_csv):
     assert doc["params"], "converted document has no parameters"
 
 
-def test_a_csv_is_kept_as_csv_when_ca_cannot_convert_it(monkeypatch):
-    """Without CA the CSV is stored as-is rather than the upload being refused.
-
-    The packaged app starts with no CA directory set, and a study must not
-    become unloadable because of that -- CA's own CSV path still reads it. Driven
-    at ``_save_params_file`` rather than through the route, because faking "no
-    CA" also disables the *parsing* the route does first, which would fail the
-    request for an unrelated reason and prove nothing about storage.
-
-    Also pins the stale-twin rule: a format switch must not leave two params
-    files disagreeing about which is current. The runners read whichever path
-    the record holds, but a human inspecting the upload dir would find both.
-    """
+def _twin_record():
     import pathlib
 
     import main
-    import params_json
     from conftest import LV_MODEL_PATH
 
-    def _no_ca(_data):
-        raise params_json.ParamsJsonError("circulatory_autogen is not available")
+    # The study's files are named after the study, in the per-model directory
+    # `_study_file` puts them in.
+    return main._ModelRecord("twin-test", pathlib.Path("unused.cellml"),
+                             main.parse_cellml(LV_MODEL_PATH.read_bytes()),
+                             "twin_study")
 
-    monkeypatch.setattr(params_json, "csv_to_json", _no_ca)
 
-    # The study's files are named after the study now, so this needs a record to
-    # ask -- the collision the model_id used to prevent is handled by the
-    # per-model directory `_study_file` puts them in.
-    record = main._ModelRecord("twin-test", pathlib.Path("unused.cellml"),
-                               main.parse_cellml(LV_MODEL_PATH.read_bytes()),
-                               "twin_study")
-    json_path = main._save_params_file(record, b'{"params": []}')
-    assert json_path.suffix == ".json"
-    assert json_path.name.startswith("twin_study"), json_path.name
+TWIN_CSV = b"vessel_name,param_name,param_type,min,max\nheart__lv,C,constant,1,2.5e-3\n"
 
-    csv_path = main._save_params_file(
-        record, b"vessel_name,param_name,param_type,min,max\nheart,C,constant,1,2\n"
-    )
-    assert csv_path.suffix == ".csv"
-    assert not json_path.exists(), "stale .json twin left beside the .csv"
-    csv_path.unlink(missing_ok=True)
+
+def test_a_csv_is_stored_as_json_even_without_ca(monkeypatch):
+    """CA reads no params_for_id CSV, so one is never stored: without CA the local
+    mapping converts it. A stale ``.csv`` twin is removed, so two params files
+    cannot disagree about which is current. Driven at ``_save_params_file``
+    because the route parses first, which is not what this is about."""
+    import main
+    import params_json
+
+    for name in ("_ca_csv_converter", "_ca_doc_resolver", "_ca_dump"):
+        monkeypatch.setattr(params_json, name, lambda: None)
+    record = _twin_record()
+    stale = main._study_file(record, "_params_for_id.csv")
+    stale.write_bytes(TWIN_CSV)
+
+    path = main._save_params_file(record, TWIN_CSV)
+    assert path.name == "twin_study_params_for_id.json"
+    assert not stale.exists(), "stale .csv twin left beside the .json"
+    doc = json.loads(path.read_text())
+    assert doc["params"][0]["targets"] == ["heart/lv/C"]
+    path.unlink(missing_ok=True)
+
+
+def test_a_csv_is_stored_as_cuflynx_upgrade_writes_it(requires_params_csv):
+    """With CA, the stored file is CA's conversion as ``cuflynx-upgrade
+    params-for-id`` writes it: targets as paths, numbers as JSON numbers, no
+    ``name`` and no empty ``defaults``."""
+    import main
+
+    record = _twin_record()
+    path = main._save_params_file(record, TWIN_CSV)
+    doc = json.loads(path.read_text())
+    assert doc == {"version": 1, "params": [
+        {"targets": ["heart/lv/C"], "min": 1, "max": 2.5e-3, "param_type": "constant"}]}
+    path.unlink(missing_ok=True)
 
 
 def test_ca_available_in_ci():

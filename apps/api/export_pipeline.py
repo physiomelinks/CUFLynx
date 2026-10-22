@@ -7,7 +7,7 @@ Produces, into a self-contained folder under the user's outputs dir:
     simulation / sensitivity / calibration / UQ, each gated by a ``do_*`` flag;
   - ``plot_outputs.py`` — regenerates the equivalent output / progress / analysis
     plots from the saved output data;
-  - copies of the model ``.cellml``, ``obs_data.json`` and ``params_for_id.csv``
+  - copies of the model ``.cellml``, ``obs_data.json`` and ``params_for_id.json``
     (referenced by relative paths), so the bundle reproduces the run on its own.
 
 The scripts are static (everything specific lives in the yaml / bundled files),

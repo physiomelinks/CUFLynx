@@ -9,7 +9,7 @@ Two things this deliberately does not do:
 
 * It does not require the manifest. Real archives in the wild have missing or
   wrong manifests, and the contents are identifiable anyway -- a `.cellml` is a
-  CellML, `*params*.csv` is a params_for_id. The manifest is used to pick the
+  CellML, `*_params_for_id.json` is a params_for_id. The manifest is used to pick the
   *master* model when it says which one is master, and to rule out members whose
   declared format says they are not observations -- neither of which file names
   can tell you.
@@ -287,12 +287,15 @@ def _classify(
     study = [n for n in jsons if _declared_study(n, formats)]
     jsons = [n for n in jsons if n not in study]
 
-    params_csv = named(csvs, r"param")
-    # A params_for_id is stored as **JSON** by CUFLynx (`_save_params_file`), so
-    # an archive CUFLynx writes has to be readable by CUFLynx: without this the
-    # params member would fall through to the obs_data pool and the study would
-    # come back missing its parameters.
-    params_json = named(jsons, r"param")
+    # Each role by its name, never by which member came first. A params_for_id is
+    # `params_for_id.json` / `.csv`, or ends in `_params_for_id` (or `-params_for_id`);
+    # the JSON wins, being the form CUFLynx stores and CA reads (a CSV is converted
+    # on load). A model's parameter values, `<prefix>_parameters.json` (or the CSV
+    # PhLynx writes), are not a params_for_id, and not observations either.
+    params_named = r"(^|[_-])params_for_id\.(csv|json)$"
+    params_csv = named(csvs, params_named)
+    params_json = named(jsons, params_named)
+    parameters = named(csvs + jsons, r"(^|[_-])parameters\.(csv|json)$")
     # PhLynx's editor state, by what the manifest calls it rather than by what it
     # is named. PhLynx flattened its workspace format (phlynx#542) and now writes
     # `flow-snapshot.json` + `changes.json` where it used to write
@@ -312,7 +315,8 @@ def _classify(
     # with "steps", and must never be sniffed into the obs_data pool.
     calibration_workflow = [n for n in jsons if CALIBRATION_WORKFLOW_RE.search(Path(n).name)]
 
-    spoken_for = set(module_config) | set(params_json) | set(calibration_workflow)
+    spoken_for = (set(module_config) | set(params_json) | set(parameters)
+                  | set(calibration_workflow))
     candidates = [
         n
         for n in jsons
@@ -333,7 +337,7 @@ def _classify(
     if not obs:
         for name in jsons:
             if name in spoken_for:
-                continue  # loaded as the params_for_id or PhLynx's own state
+                continue  # a params_for_id, a model's parameters or PhLynx's own state
             declared = (formats or {}).get(Path(name).name.lower())
             if _declared_non_obs(name, formats):
                 reason = f"the manifest declares it as {declared!r}"
@@ -367,12 +371,13 @@ def _classify(
         # that other tools use, so it is the least trustworthy claim to be a
         # model in the archive.
         "cellml": cellml or myokit or easyml,
-        "params": params_csv or params_json or csvs,
+        "params": params_json or params_csv,
         "obs": obs,
         "module_config": module_config,
         "study": study,
         "calibration_workflow": calibration_workflow,
         "workflow_pack": workflow_pack,
+        "parameters": parameters,
     }
 
 
@@ -474,6 +479,7 @@ def unpack(data: bytes) -> dict:
             "cellml": ordered,
             "obs": list(roles["obs"]),
             "params": list(roles["params"]),
+            "parameters": list(roles["parameters"]),
             "module_config": list(roles["module_config"]),
             "study": list(roles["study"]),
             "user_funcs": {kind: name for kind, (name, _) in (study or {}).get("funcs", {}).items()},
