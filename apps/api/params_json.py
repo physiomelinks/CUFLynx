@@ -1,33 +1,34 @@
 """The canonical JSON form of a circulatory_autogen ``params_for_id``.
 
-CSV is the format every existing study is written in; JSON is the format the
-feature set has outgrown. A CSV row can only say "one parameter name, in these
-vessels", because its qualified names are built as ``vessel_name[i] + '/' +
-param_name`` -- so a group is forced to share a single ``param_name`` and there
-is nowhere to put a parameter that *modifies* other parameters.
+JSON is the only form circulatory_autogen reads (``libcuflynx.utilities.
+params_for_id_file``). A CSV row can only say "one parameter name, in these
+vessels" -- a group is forced to share a single ``param_name`` and there is
+nowhere to put a parameter that *modifies* other parameters.
 
-So CSV keeps working and is **converted to this JSON on read**: one code path
-after the front door, rather than two parsers drifting apart. Everything
-downstream sees only the JSON form.
+An uploaded CSV is **converted to this JSON on the way in** and stored as JSON:
+one code path after the front door, and a file CA reads. Everything downstream
+sees only the JSON form.
 
     {
       "version": 1,
-      "defaults": {"prior": "uniform"},
       "params": [
-        {"name": "C_ao", "targets": ["aortic_root/C"], "min": 1e-9, "max": 5e-8}
+        {"targets": ["aortic_root/C"], "min": 1e-9, "max": 5e-8},
+        {"targets": ["heart/lv/E_A", "heart/rv/E_A"], "min": 1e8, "max": 1e9}
       ]
     }
 
 ``params`` rather than ``parameters`` because that is already CA's key --
 ``get_param_id_info_from_entries`` unwraps ``{"params": [...]}``.
 
-``targets`` is a list of full ``component/param`` qualified names, and is the
-whole reason for the format: a list of qnames has no reason to share a
-``param_name``, so arbitrary parameters can be grouped. One target is the
-ordinary single-parameter case; several mean one value set on all of them.
+``targets`` names parameters as CA's users write them: ``<vessel>/<variable>``,
+a nested vessel by its path (``heart/lv/E_A`` for the model's ``heart__lv``).
+A list of names has no reason to share a ``param_name``, so arbitrary
+parameters can be grouped. One target is the ordinary single-parameter case;
+several mean one value set on all of them.
 
 **The CSV -> JSON conversion is CA's whenever CA is importable**
-(``ObsAndParamDataParser.params_for_id_csv_to_json``), so a column CA adds flows
+(``ObsAndParamDataParser.params_for_id_csv_to_json``, which is what
+``cuflynx-upgrade params-for-id`` writes), so a column CA adds flows
 through without an edit here and the two repositories cannot disagree about the
 mapping.
 
@@ -264,8 +265,8 @@ def _csv_to_json_without_ca(text: str) -> dict:
                 f"param_name={param_name!r})."
             )
 
-        entry = {"targets": [f"{v}/{param_name}" for v in vessels]}
-        entry["name"] = entry["targets"][0]
+        # A nested vessel's ``__`` levels as its path: ``heart__lv`` -> ``heart/lv/E_A``.
+        entry = {"targets": ["/".join(v.split("__") + [param_name]) for v in vessels]}
         for key in _CSV_PASSTHROUGH_COLUMNS:
             value = cell(row, key)
             if key in columns and value not in (None, ""):
@@ -286,7 +287,7 @@ def _csv_to_json_without_ca(text: str) -> dict:
 
     if not params:
         raise ParamsJsonError("params_for_id CSV has a header but no rows.")
-    return {"version": SCHEMA_VERSION, "defaults": {}, "params": params}
+    return {"version": SCHEMA_VERSION, "params": params}
 
 
 def csv_to_json(data: bytes | str) -> dict:
@@ -311,7 +312,36 @@ def csv_to_json(data: bytes | str) -> dict:
         doc = convert(text)
     except Exception as exc:  # noqa: BLE001 - CA raises bare ValueError / pandas errors
         raise ParamsJsonError(f"could not read params_for_id CSV: {exc}") from exc
+    if not doc.get("params"):
+        # as the fallback says it: CA's schema wants at least one entry
+        raise ParamsJsonError("params_for_id CSV has a header but no rows.")
     return load_doc(doc)
+
+
+def csv_to_file_text(data: bytes | str) -> str:
+    """A params_for_id CSV as the JSON text to store: what ``cuflynx-upgrade
+    params-for-id`` writes (CA's converter and ``dump_params_for_id``: one line per
+    entry, numbers as numbers). Without CA, the fallback's document as JSON.
+    Checked by :func:`csv_to_json` first, so a CSV it refuses raises
+    :class:`ParamsJsonError` here too."""
+    doc = csv_to_json(data)
+    convert, dump = _ca_csv_converter(), _ca_dump()
+    if convert is None or dump is None:
+        return json.dumps({k: v for k, v in doc.items() if k != "defaults" or v},
+                          indent=2) + "\n"
+    text = data.decode("utf-8-sig", errors="replace") if isinstance(data, bytes) else data
+    return dump(convert(text))
+
+
+def _ca_dump():
+    """CA's ``dump_params_for_id``, or None when CA cannot provide it."""
+    try:
+        from ca_imports import ca_from, ensure_ca_path  # noqa: PLC0415
+
+        ensure_ca_path()
+        return ca_from("utilities.params_for_id_file", "dump_params_for_id")
+    except (ImportError, AttributeError):
+        return None
 
 
 def _ca_csv_converter():
@@ -337,15 +367,11 @@ def entries_to_json(entries, defaults: dict | None = None) -> dict:
     params = []
     for entry in entries:
         item: dict = {"name": entry.name or entry.qnames[0]}
-        # A modifier writes `modifies` + `operation` and never `targets` -- CA
+        # A modifier writes `modifies` + `modifier` and never `targets` -- CA
         # refuses an entry carrying both. Keys outside CA's closed entry-key set
         # must never be invented here, or the file stops being CA-readable.
         if entry.modifies:
             item["modifies"] = list(entry.modifies)
-            # CA renamed this key: a modifier acts on parameters, an operation
-            # acts on outputs (CA #385). ``operation`` still reads, with a
-            # deprecation warning, so files written before this keep working --
-            # but nothing new should be written under the old name.
             item["modifier"] = entry.operation or "scale"
             # The model constants the modifier function declared as inputs, as
             # this entry names them. Written back verbatim: dropping a key the
