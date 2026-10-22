@@ -42,6 +42,17 @@ SN_OBS_DATA_PATH = RESOURCES_DIR / "SN_simple_obs_data.json"
 SN_PARAMS_CSV_PATH = RESOURCES_DIR / "SN_simple_params_for_id.csv"
 
 
+def params_for_id_json(csv_path, directory) -> Path:
+    """A params_for_id CSV from ``resources/`` as the JSON the app stores and CA reads
+    (``cuflynx-upgrade params-for-id``'s form), written into ``directory``: a runner is
+    handed what an upload leaves, and CA refuses the CSV."""
+    import params_json
+
+    out = Path(directory) / (Path(csv_path).stem + ".json")
+    out.write_text(params_json.csv_to_file_text(Path(csv_path).read_bytes()), encoding="utf-8")
+    return out
+
+
 def all_mmt_fixtures():
     """Every .mmt under resources/: the two at the top plus the third-party set.
 

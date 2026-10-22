@@ -600,6 +600,13 @@ def test_a_csv_is_stored_as_cuflynx_upgrade_writes_it(requires_params_csv):
     path.unlink(missing_ok=True)
 
 
+def test_a_csv_with_no_rows_is_refused(requires_params_csv):
+    """Not an empty study: CA refuses a params_for_id without entries, as the
+    fallback does."""
+    with pytest.raises(params_json.ParamsJsonError, match="no rows"):
+        params_json.csv_to_json("vessel_name,param_name,min,max\n")
+
+
 def test_ca_available_in_ci():
     """Canary: in CI the CA checkout must be importable, or the whole CSV test
     tier silently skips and reads as green. Fails (not skips) only in CI."""
