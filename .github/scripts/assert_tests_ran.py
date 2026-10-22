@@ -17,9 +17,14 @@ demand zero skips: some skips in this tier are legitimate on a given runner (no 
 in the light matrix leg, say). It asserts a *floor* on how many tests actually ran, so
 the job fails when the tier collapses rather than when one optional backend is absent.
 
+A floor cannot see a handful of tests skipping, so ``--require NAME`` names a test
+(its junit ``name``, e.g. ``test_x`` or ``test_x[param]``) that must have run: the job
+fails when it is missing or skipped.
+
 Usage::
 
     python .github/scripts/assert_tests_ran.py --min-ran 25 junit-integration.xml
+    python .github/scripts/assert_tests_ran.py --require test_x junit-integration.xml
 
 The floor is deliberately a number someone has to update when the tier shrinks -- if a
 legitimate change drops the count, seeing this fail is the prompt to ask whether the
@@ -43,10 +48,14 @@ def main(argv=None) -> int:
     parser.add_argument(
         "--min-ran", type=int, default=1,
         help="fail unless at least this many tests actually executed (default: 1)")
+    parser.add_argument(
+        "--require", action="append", default=[], metavar="NAME",
+        help="a test that must have run: fail if it is missing or skipped (repeatable)")
     args = parser.parse_args(argv)
 
     total = skipped = failed = 0
     seen_any = False
+    ran_names = set()
 
     # Globs are expanded here rather than by the shell so a pattern matching nothing is
     # reported as "no results" instead of being passed through literally and read as a
@@ -63,6 +72,8 @@ def main(argv=None) -> int:
                 skipped += s
                 failed += f
                 print(f"{path}: {t} collected, {s} skipped, {t - s} ran, {f} failed")
+                ran_names.update(case.get("name") for case in suite.iter("testcase")
+                                 if case.find("skipped") is None)
 
     if not seen_any:
         print(
@@ -80,6 +91,13 @@ def main(argv=None) -> int:
             f"step that half-succeeded, leaving every dependency-guarded test to skip "
             f"while pytest still exits 0. Check the install log before lowering this "
             f"floor.", file=sys.stderr)
+        return 1
+
+    missing = [name for name in args.require if name not in ran_names]
+    if missing:
+        print(
+            "\nerror: these tests must run here but were skipped or not collected:\n  "
+            + "\n  ".join(missing), file=sys.stderr)
         return 1
 
     return 0

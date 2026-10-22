@@ -90,7 +90,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
 
       # v0.1.7 was tagged, built and published while the app still reported 0.1.0.
       # Nothing failed, so nobody noticed until a user asked which build they had.

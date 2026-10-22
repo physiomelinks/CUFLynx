@@ -219,7 +219,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
 
       # NOT `brew install sundials`: Homebrew's build is MPI-enabled and aborts at
       # run time with "MPI_Comm_dup() called before MPI_INIT" even for a serial
