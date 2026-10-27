@@ -2031,14 +2031,14 @@ def peek_inbox() -> dict:
 
 @app.post("/api/open-link")
 async def open_link_route(request: Request) -> dict:
-    """Open a ``cuflynx://open?url=...`` link handed over by a second launch.
+    """Open a ``cuflynx://open?url=...`` or ``?study=...`` link handed over by a second launch.
 
     Only the desktop shell enables this, by setting the token it also writes to
     the instance file (:mod:`open_link`); a request without that token is
     refused, so a web page cannot use the app to fetch URLs. The archive is
-    fetched on a background thread and staged in the inbox; a failure is shown in
-    the UI. A link that does not parse is refused here too (422), after the same
-    error is recorded for the UI.
+    fetched, or the study manifest read, on a background thread and staged in the
+    inbox; a failure is shown in the UI. A link that does not parse is refused here
+    too (422), after the same error is recorded for the UI.
     """
     if not open_link.token_matches(request.headers.get(open_link.TOKEN_HEADER)):
         raise HTTPException(status_code=403, detail="not a handoff from this CUFLynx")
@@ -2048,26 +2048,35 @@ async def open_link_route(request: Request) -> dict:
         raise HTTPException(status_code=422, detail="the body must be JSON") from exc
     link = body.get("link") if isinstance(body, dict) else None
     try:
-        url = open_link.parse_link(link)
+        target = open_link.parse(link)
     except open_link.OpenLinkError as exc:
         open_link.stage(link)  # records the same error for the UI
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     threading.Thread(target=open_link.stage, args=(link,), daemon=True).start()
-    return {"accepted": True, "url": url}
+    return {"accepted": True, "kind": target.kind, "url": target.url}
 
 
 @app.post("/api/inbox/accept")
 def accept_inbox(output_dir: str | None = Query(default=None)) -> dict:
-    """Load the staged study, returning exactly what ``/api/omex/upload`` returns.
+    """Load the staged study.
 
-    Same body, so the frontend feeds it into the same `model-loaded` /
-    `obs-data-loaded` / `params-loaded` flow a dropped archive takes -- there is
-    one importer (:func:`import_omex_bytes`) and one set of emits, not a second
-    pair that can drift from the first.
+    An archive returns exactly what ``/api/omex/upload`` returns, so the frontend
+    feeds it into the same `model-loaded` / `obs-data-loaded` / `params-loaded` flow
+    a dropped archive takes -- there is one importer (:func:`import_omex_bytes`) and
+    one set of emits, not a second pair that can drift from the first.
+
+    A study manifest (``cuflynx://open?study=``) returns ``kind: "study"`` and what
+    ``/api/outputs/manifest`` returns for that manifest and its path -- the outputs
+    directory to open -- so the frontend opens it as it opens a dropped manifest.
     """
     pending = inbox.take()
     if pending is None:
         raise HTTPException(status_code=404, detail="nothing is waiting in the inbox")
+    if pending.kind == "study":
+        opened = open_study_manifest(
+            StudyManifestRequest(content=pending.data.decode("utf-8-sig"), path=pending.path))
+        return {"kind": "study", **opened, "path": pending.path,
+                "delivered_from": pending.origin}
     result = import_omex_bytes(pending.data, output_dir)
     return {**result, "delivered_from": pending.origin}
 
@@ -2965,30 +2974,9 @@ def open_study_manifest(req: StudyManifestRequest) -> dict:
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=f"not JSON: {exc}") from exc
     try:
-        study_manifest.check(raw, "the dropped study manifest")
+        return study_manifest.study_location(raw, req.path, "the dropped study manifest")
     except study_manifest.ManifestError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-
-    if req.path and os.path.isfile(req.path):
-        directory = os.path.dirname(os.path.abspath(req.path))
-    else:
-        directory = raw.get("study_dir")
-        if not directory:
-            raise HTTPException(
-                status_code=422,
-                detail="This study manifest does not record its study_dir (it predates "
-                       "it), so where the study is cannot be told from the file alone. "
-                       "Set the outputs directory to the folder holding it instead.")
-        if not os.path.isdir(directory):
-            raise HTTPException(
-                status_code=422,
-                detail=f"The study this manifest describes is not on this machine: "
-                       f"{directory} does not exist.")
-    return {
-        "dir": directory,
-        "study_name": raw.get("study_name"),
-        "file_prefix": raw.get("file_prefix"),
-    }
 
 
 class OpenStudyRequest(BaseModel):

@@ -105,6 +105,14 @@ will live (registration records that path):
 3. With the app **running**, click it again: the same dialog appears in the open
    window and no second window starts.
 4. A link to a 404 shows `the server answered 404` in the import panel.
+5. A study link: run a study that writes a `*_cuflynx_study.json` (any
+   sensitivity analysis or emulator run from circulatory_autogen does), then click
+   `<a href="cuflynx://open?study=file%3A%2F%2F%2F<percent-encoded path to the manifest>">open</a>`
+   (Windows: `file:///C:/...`). The same dialog names the manifest's path and lists
+   its declared parts; **Load study** sets the outputs directory to its folder and
+   the outputs load (Sobol indices, emulator). A link to the directory works too.
+6. `cuflynx://open?study=https%3A%2F%2Fexample.org%2Fs.json` shows `a study link
+   must name a study on this computer` in the import panel.
 
 On macOS, if nothing happens, `lsregister -dump | grep -i cuflynx` shows whether
 the applet is registered, and running `open 'cuflynx://open?url=...'` from a

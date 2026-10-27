@@ -1,4 +1,4 @@
-"""Where a study delivered by PhLynx waits for the user to accept it (#287).
+"""Where a study delivered by PhLynx, or opened by a link, waits for the user to accept it.
 
 PhLynx builds a COMBINE archive and needs to hand it to a *running* CUFLynx. It
 does that by posting to ``/api/inbox`` on localhost, having found us by probing
@@ -23,6 +23,7 @@ desktop shell reads the constants without wanting the app.
 from __future__ import annotations
 
 import io
+import os
 import threading
 import zipfile
 from dataclasses import dataclass, field
@@ -45,14 +46,23 @@ RECEIVE_PORTS = tuple(range(PREFERRED_PORT, PREFERRED_PORT + 5))
 MAX_DELIVERY_BYTES = 64 * 1024 * 1024
 
 
+#: What a delivery is. An ``archive`` is a COMBINE archive's bytes, loaded by the OMEX
+#: importer. A ``study`` is a study manifest already on this machine
+#: (``cuflynx://open?study=``): ``data`` is the manifest as read, ``path`` is where it
+#: is, and loading it opens the directory holding it.
+KINDS = ("archive", "study")
+
+
 @dataclass
 class PendingStudy:
-    """One delivered archive, awaiting the user's decision."""
+    """One delivery, awaiting the user's decision."""
 
     data: bytes
     origin: str
     filename: str
     members: list[str] = field(default_factory=list)
+    kind: str = "archive"
+    path: str | None = None
 
     def summary(self) -> dict:
         """What the confirmation dialog shows -- never the archive itself.
@@ -60,12 +70,16 @@ class PendingStudy:
         The user is being asked to trust a payload from a page; naming its origin,
         its size and what is inside it is the whole basis on which they can.
         """
-        return {
+        out = {
+            "kind": self.kind,
             "origin": self.origin,
             "filename": self.filename,
             "bytes": len(self.data),
             "members": list(self.members),
         }
+        if self.path:
+            out["path"] = self.path
+        return out
 
 
 class Inbox:
@@ -83,10 +97,18 @@ class Inbox:
         self._error: dict | None = None
 
     def deliver(self, data: bytes, origin: str, filename: str) -> dict:
-        members = _member_names(data)
+        """Stage a COMBINE archive."""
+        return self._stage(PendingStudy(data, origin, filename, _member_names(data)))
+
+    def deliver_study(self, path: str, data: bytes, origin: str, members: list[str]) -> dict:
+        """Stage the study manifest at ``path``; ``members`` are the parts it declares."""
+        return self._stage(PendingStudy(
+            data, origin, os.path.basename(path), list(members), kind="study", path=path))
+
+    def _stage(self, pending: PendingStudy) -> dict:
         with self._lock:
-            self._pending = PendingStudy(data, origin, filename, members)
-            return self._pending.summary()
+            self._pending = pending
+            return pending.summary()
 
     def peek(self) -> dict | None:
         with self._lock:

@@ -1,22 +1,31 @@
-"""``cuflynx://open?url=<archive URL>`` -- open a COMBINE archive from a web page.
+"""``cuflynx://open`` links -- open a COMBINE archive or a study directory from a page.
 
-A page links to an archive with ``cuflynx://open?url=<percent-encoded URL>``.
-The operating system starts CUFLynx with that link (see
-``apps/desktop/url_scheme.py`` for the per-platform registration), and CUFLynx
-fetches the archive and **stages** it in the inbox, exactly as a study posted by
-PhLynx is staged: the UI asks before loading it, naming where it came from, and
-accepting it runs the same importer a dropped ``.omex`` does.
+Two links, one action:
 
-Staged rather than imported because any page can launch a ``cuflynx://`` link;
+* ``cuflynx://open?url=<percent-encoded archive URL>`` -- an ``https:``, ``http:``
+  or ``file:`` URL of a ``.omex``. CUFLynx fetches the archive; accepting it runs the
+  same importer a dropped ``.omex`` does.
+* ``cuflynx://open?study=<percent-encoded file: URL>`` -- a study on this machine:
+  its ``*_cuflynx_study.json`` (or bare ``cuflynx_study.json``), or the directory
+  holding it. Accepting it opens that directory as the outputs directory, as dropping
+  the manifest does (``POST /api/outputs/manifest``), so the study's sensitivity
+  analyses, emulator and runs load -- the parts an archive cannot carry.
+
+A link carries exactly one of ``url`` and ``study``. The operating system starts
+CUFLynx with it (see ``apps/desktop/url_scheme.py`` for the per-platform
+registration), and CUFLynx **stages** what it names in the inbox, as a study posted
+by PhLynx is staged: the UI asks before loading it, naming where it came from (and,
+for a study, the manifest's path).
+
+Staged rather than loaded because any page can launch a ``cuflynx://`` link;
 the inbox's confirmation is the security control for every delivery.
 
 This module owns:
 
-* :func:`parse_link` -- the link grammar. Only the ``open`` action, and only an
-  ``https:``, ``http:`` or ``file:`` archive URL;
-* :func:`fetch` -- the download, capped at :data:`inbox.MAX_DELIVERY_BYTES`;
-* :func:`stage` -- parse, fetch, check it is an archive, stage it; a failure is
-  recorded with :meth:`inbox.Inbox.report_error` so the UI shows it;
+* :func:`parse` -- the link grammar: the ``open`` action and one ``url`` or ``study``;
+* :func:`fetch` -- the archive download, capped at :data:`inbox.MAX_DELIVERY_BYTES`;
+* :func:`stage` -- parse, read, check, stage; a failure is recorded with
+  :meth:`inbox.Inbox.report_error` so the UI shows it;
 * the single-instance handoff: a running app writes :func:`instance_file`
   (its port and a random token), and a second launch with a link posts the link
   to that app's ``/api/open-link`` (:func:`hand_off`) and exits.
@@ -31,14 +40,18 @@ import re
 import urllib.error
 import urllib.parse
 import urllib.request
+from dataclasses import dataclass
 from pathlib import Path
 
 import omex_import
+import study_manifest
 from inbox import MAX_DELIVERY_BYTES, inbox as default_inbox
 
 SCHEME = "cuflynx"
 ACTIONS = ("open",)
 URL_SCHEMES = ("https", "http", "file")
+#: The query keys a link names its target with: an archive, or a study on this machine.
+TARGETS = ("url", "study")
 
 #: Longer links than this are refused before they are parsed. A link carries a
 #: URL, not an archive, so real ones are a few hundred characters.
@@ -59,11 +72,26 @@ class OpenLinkError(ValueError):
     """A link that cannot be opened, in words the UI can show."""
 
 
-def parse_link(link: str) -> str:
-    """The archive URL a ``cuflynx://open?url=...`` link names.
+@dataclass(frozen=True)
+class Link:
+    """What a link opens: ``kind`` is ``"archive"`` (``url=``) or ``"study"`` (``study=``)."""
 
-    Raises :class:`OpenLinkError` for any other action, a missing or repeated
-    ``url``, or an archive URL that is not ``https:``, ``http:`` or ``file:``.
+    kind: str
+    url: str
+
+
+def parse_link(link: str) -> str:
+    """The URL a ``cuflynx://open`` link names, archive or study. See :func:`parse`."""
+    return parse(link).url
+
+
+def parse(link: str) -> Link:
+    """What a ``cuflynx://open?url=...`` or ``cuflynx://open?study=...`` link opens.
+
+    Raises :class:`OpenLinkError` for any other action, for a link with neither or both
+    of ``url`` and ``study`` or either repeated, for an archive URL that is not
+    ``https:``, ``http:`` or ``file:``, and for a study URL that is not a ``file:`` URL
+    on this computer.
     """
     link = str(link or "").strip()
     if not link:
@@ -84,10 +112,16 @@ def parse_link(link: str) -> str:
             f"unknown {SCHEME}:// action {action!r}; CUFLynx understands "
             + ", ".join(repr(a) for a in ACTIONS)
         )
-    urls = urllib.parse.parse_qs(parts.query, keep_blank_values=True).get("url", [])
-    if len(urls) != 1 or not urls[0].strip():
-        raise OpenLinkError(f"a {SCHEME}://open link needs exactly one url=<archive URL>")
-    return validate_archive_url(urls[0].strip())
+    query = urllib.parse.parse_qs(parts.query, keep_blank_values=True)
+    given = [(key, value) for key in TARGETS for value in query.get(key, [])]
+    if len(given) != 1 or not given[0][1].strip():
+        raise OpenLinkError(
+            f"a {SCHEME}://open link needs exactly one of url=<archive URL> "
+            "or study=<file: URL of a study manifest or directory>")
+    key, value = given[0]
+    if key == "study":
+        return Link("study", validate_study_url(value.strip()))
+    return Link("archive", validate_archive_url(value.strip()))
 
 
 def validate_archive_url(url: str) -> str:
@@ -104,6 +138,22 @@ def validate_archive_url(url: str) -> str:
             raise OpenLinkError(f"a file: URL must be on this computer, not {parts.netloc!r}")
         if not parts.path:
             raise OpenLinkError("the file: URL names no file")
+    return url
+
+
+def validate_study_url(url: str) -> str:
+    """A study link's URL: a ``file:`` URL on this computer, since a study is a directory."""
+    parts = urllib.parse.urlsplit(url)
+    scheme = parts.scheme.lower()
+    if scheme != "file":
+        raise OpenLinkError(
+            "a study link must name a study on this computer with a file: URL, not "
+            f"{scheme + ':' if scheme else url[:200]!r}. A study directory cannot be "
+            "downloaded; link to its .omex archive with url= instead.")
+    if parts.netloc not in ("", "localhost"):
+        raise OpenLinkError(f"a file: URL must be on this computer, not {parts.netloc!r}")
+    if not parts.path:
+        raise OpenLinkError("the file: URL names no study")
     return url
 
 
@@ -167,8 +217,58 @@ def fetch(url: str, max_bytes: int = MAX_DELIVERY_BYTES, timeout: float = DOWNLO
         raise OpenLinkError(f"could not download it: {exc}") from exc
 
 
+def read_study(url: str, max_bytes: int = MAX_DELIVERY_BYTES) -> tuple[str, bytes, dict]:
+    """The manifest a study URL names: ``(path, bytes as read, parsed manifest)``.
+
+    A directory names the manifest in it (:func:`study_manifest.find`: the newest when
+    there are several). Raises :class:`OpenLinkError` when there is no such file or
+    directory, it holds no manifest, the file is not one, or the manifest cannot be
+    believed or opened (:func:`study_manifest.study_location`).
+    """
+    target = file_path_of(url)
+    if target.is_dir():
+        found = study_manifest.find(str(target))
+        if not found:
+            raise OpenLinkError(
+                f"{target} holds no {study_manifest.MANIFEST_NAME} or "
+                f"*{study_manifest.MANIFEST_SUFFIX}")
+        target = Path(found)
+    elif not target.exists():
+        raise OpenLinkError(f"{target} does not exist")
+    elif not study_manifest.is_manifest_name(target.name):
+        raise OpenLinkError(
+            f"{target.name} is not a study manifest: a study link names a "
+            f"*{study_manifest.MANIFEST_SUFFIX} or {study_manifest.MANIFEST_NAME}, or the "
+            "directory holding one")
+    try:
+        if target.stat().st_size > max_bytes:
+            raise OpenLinkError(f"{target} is larger than {max_bytes} bytes")
+        data = target.read_bytes()
+    except OSError as exc:
+        raise OpenLinkError(f"could not read {target}: {exc.strerror or exc}") from exc
+    try:
+        raw = json.loads(data.decode("utf-8-sig"))
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise OpenLinkError(f"{target} is not a study manifest: it is not JSON ({exc})") from exc
+    try:
+        study_manifest.study_location(raw, str(target), str(target))
+    except study_manifest.ManifestError as exc:
+        raise OpenLinkError(str(exc)) from exc
+    return str(target), data, raw
+
+
+def declared_parts(raw: dict) -> list[str]:
+    """What a manifest says its study holds, one line each, for the dialog."""
+    parts = [f"{key}: {raw[key]}" for key in study_manifest.PATH_KEYS if raw.get(key)]
+    for section in ("sensitivity", "runs"):
+        entries = [e for e in raw.get(section) or [] if isinstance(e, dict)]
+        if entries:
+            parts.append(f"{section}: {len(entries)} recorded")
+    return parts
+
+
 def stage(link: str, box=None, fetcher=fetch) -> dict:
-    """Fetch the linked archive and stage it in the inbox.
+    """Stage what a link names in the inbox: the fetched archive, or the study manifest.
 
     Returns the inbox summary, or ``{"error": message}`` after recording the
     failure for the UI. Never raises: it runs on a background thread.
@@ -176,7 +276,11 @@ def stage(link: str, box=None, fetcher=fetch) -> dict:
     box = box or default_inbox
     origin = "A cuflynx:// link"
     try:
-        url = parse_link(link)
+        target = parse(link)
+        if target.kind == "study":
+            path, data, raw = read_study(target.url)
+            return box.deliver_study(path, data, origin, declared_parts(raw))
+        url = target.url
         origin = origin_of(url)
         data = fetcher(url)
         if not data:
@@ -193,10 +297,10 @@ def stage(link: str, box=None, fetcher=fetch) -> dict:
 
 
 def _shown(link: str) -> str:
-    """The archive URL when the link parses far enough, else the link; shortened."""
+    """The archive or study URL when the link parses far enough, else the link; shortened."""
     try:
-        query = urllib.parse.urlsplit(str(link)).query
-        text = urllib.parse.parse_qs(query).get("url", [str(link)])[0]
+        query = urllib.parse.parse_qs(urllib.parse.urlsplit(str(link)).query)
+        text = next((query[key][0] for key in TARGETS if query.get(key)), str(link))
     except ValueError:
         text = str(link)
     return text if len(text) <= 200 else text[:197] + "..."
