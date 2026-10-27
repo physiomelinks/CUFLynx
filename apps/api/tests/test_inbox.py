@@ -69,7 +69,8 @@ def test_peek_returns_metadata_only(client):
     pending = client.get("/api/inbox").json()["pending"]
     # Names only -- `user_funcs` is the subset of `members` that is Python a load
     # would install, never its contents.
-    assert set(pending) == {"origin", "filename", "bytes", "members", "user_funcs"}
+    assert set(pending) == {"kind", "origin", "filename", "bytes", "members", "user_funcs"}
+    assert pending["kind"] == "archive"
     assert pending["bytes"] == EXAMPLE.stat().st_size
     assert pending["user_funcs"] == []
 

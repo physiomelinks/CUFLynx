@@ -8,6 +8,7 @@ it. A second launch with a link hands it to the running app instead.
 from __future__ import annotations
 
 import io
+import re
 import socket
 import threading
 import time
@@ -65,9 +66,9 @@ def test_launcher_spellings_are_accepted(link):
     ("https://example.org/x.omex", "not a cuflynx://"),
     ("cuflynx://delete?url=https%3A%2F%2Fexample.org%2Fx.omex", "unknown cuflynx:// action 'delete'"),
     ("cuflynx://open/more?url=https%3A%2F%2Fexample.org%2Fx.omex", "unknown cuflynx:// action"),
-    ("cuflynx://open", "exactly one url="),
-    ("cuflynx://open?url=", "exactly one url="),
-    ("cuflynx://open?url=https%3A%2F%2Fa.org%2Fx&url=https%3A%2F%2Fb.org%2Fy", "exactly one url="),
+    ("cuflynx://open", "exactly one of url="),
+    ("cuflynx://open?url=", "exactly one of url="),
+    ("cuflynx://open?url=https%3A%2F%2Fa.org%2Fx&url=https%3A%2F%2Fb.org%2Fy", "exactly one of url="),
     ("cuflynx://open?url=ftp%3A%2F%2Fexample.org%2Fx.omex", "https:, http: or file:"),
     ("cuflynx://open?url=javascript%3Aalert(1)", "https:, http: or file:"),
     ("cuflynx://open?url=%2Fhome%2Fme%2Fx.omex", "https:, http: or file:"),
@@ -330,3 +331,151 @@ def test_a_token_mismatch_means_start_a_new_app(running_app, tmp_path):
     open_link.set_token("the-real-one")
     open_link.write_instance(running_app, "an-old-one", path)
     assert open_link.hand_off(_link(EXAMPLE.as_uri()), path) is False
+
+
+# ---------------------------------------------------------------------------
+# cuflynx://open?study=... -- a study directory on this machine
+# ---------------------------------------------------------------------------
+def _study_link(url: str) -> str:
+    return "cuflynx://open?study=" + urllib.parse.quote(url, safe="")
+
+
+def _write_study(directory, name="SN_cuflynx_study.json", **fields):
+    import json  # noqa: PLC0415
+
+    directory.mkdir(parents=True, exist_ok=True)
+    manifest = {"schema": 1, "study_name": "SN_ox1", "file_prefix": "SN",
+                "model": "SN.cellml", "emulator": "emulators/bundle",
+                "sensitivity": [{"kind": "sobol", "dir": "sa"}], **fields}
+    path = directory / name
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    return path
+
+
+@pytest.mark.parametrize("url", [
+    "file:///home/me/sa/cuflynx_study.json",
+    "file://localhost/home/me/sa/SN_cuflynx_study.json",
+    "file:///home/me/sa",
+])
+def test_study_links_name_a_local_study(url):
+    target = open_link.parse(_study_link(url))
+    assert (target.kind, target.url) == ("study", url)
+
+
+def test_archive_links_still_parse_as_archives():
+    assert open_link.parse(_link("https://a.org/x.omex")) == open_link.Link("archive", "https://a.org/x.omex")
+
+
+@pytest.mark.parametrize("link, words", [
+    (_study_link("https://a.org/cuflynx_study.json"), "on this computer with a file: URL"),
+    (_study_link("http://a.org/sa"), "on this computer with a file: URL"),
+    (_study_link("file://elsewhere/sa/cuflynx_study.json"), "must be on this computer"),
+    (_study_link("file:///a") + "&url=" + urllib.parse.quote("https://a.org/x.omex", safe=""),
+     "exactly one of url="),
+    (_study_link("file:///a") + "&study=" + urllib.parse.quote("file:///b", safe=""),
+     "exactly one of url="),
+    ("cuflynx://open?study=", "exactly one of url="),
+    ("cuflynx://open", "exactly one of url="),
+])
+def test_bad_study_links_are_refused_with_a_reason(link, words):
+    with pytest.raises(open_link.OpenLinkError, match=re.escape(words)):
+        open_link.parse(link)
+
+
+@pytest.mark.parametrize("by", ["file", "directory"])
+def test_a_study_link_stages_the_manifest_naming_its_path(tmp_path, by):
+    path = _write_study(tmp_path / "sa_ox1")
+    url = (path if by == "file" else path.parent).as_uri()
+    summary = open_link.stage(_study_link(url))
+    assert summary["kind"] == "study"
+    assert summary["path"] == str(path)
+    assert summary["filename"] == path.name
+    assert summary["origin"] == "A cuflynx:// link"
+    assert "emulator: emulators/bundle" in summary["members"]
+    assert "sensitivity: 1 recorded" in summary["members"]
+    assert inbox_mod.inbox.peek() == summary
+    assert inbox_mod.inbox.take_error() is None
+
+
+def test_a_directory_with_a_bare_manifest_opens_it(tmp_path):
+    path = _write_study(tmp_path / "s", name="cuflynx_study.json")
+    assert open_link.stage(_study_link(path.parent.as_uri()))["path"] == str(path)
+
+
+def _failing_study(tmp_path, case):
+    if case == "missing":
+        return (tmp_path / "nope" / "cuflynx_study.json").as_uri(), "does not exist"
+    if case == "no manifest in dir":
+        (tmp_path / "empty").mkdir()
+        return (tmp_path / "empty").as_uri(), "holds no cuflynx_study.json"
+    if case == "wrong name":
+        other = tmp_path / "obs_data.json"
+        other.write_text("{}")
+        return other.as_uri(), "is not a study manifest"
+    if case == "not json":
+        bad = tmp_path / "cuflynx_study.json"
+        bad.write_text("{nope")
+        return bad.as_uri(), "it is not JSON"
+    if case == "newer schema":
+        return _write_study(tmp_path / "new", schema=99).as_uri(), "declares schema 99"
+    if case == "no schema":
+        return _write_study(tmp_path / "old", schema=None).as_uri(), "does not declare an integer 'schema'"
+    raise AssertionError(case)
+
+
+@pytest.mark.parametrize("case", [
+    "missing", "no manifest in dir", "wrong name", "not json", "newer schema", "no schema",
+])
+def test_a_study_link_that_cannot_open_is_reported_and_stages_nothing(tmp_path, case):
+    url, words = _failing_study(tmp_path, case)
+    result = open_link.stage(_study_link(url))
+    assert words in result["error"]
+    assert inbox_mod.inbox.peek() is None
+    error = inbox_mod.inbox.take_error()
+    assert error["message"].startswith(f"Could not open the study from {url}")
+    assert words in error["message"]
+
+
+def test_accepting_a_study_link_answers_what_the_manifest_route_answers(client, tmp_path):
+    """One way to open a manifest: the accept path goes through ``/api/outputs/manifest``."""
+    path = _write_study(tmp_path / "sa_ox1")
+    dropped = client.post("/api/outputs/manifest",
+                          json={"content": path.read_text(), "path": str(path)}).json()
+
+    open_link.stage(_study_link(path.as_uri()))
+    accepted = client.post("/api/inbox/accept")
+    assert accepted.status_code == 200, accepted.text
+    body = accepted.json()
+    assert body == {"kind": "study", **dropped, "path": str(path),
+                    "delivered_from": "A cuflynx:// link"}
+    assert body["dir"] == str(path.parent)
+    assert client.get("/api/inbox").json()["pending"] is None
+
+
+def test_a_study_moved_away_after_staging_is_refused_at_accept(client, tmp_path):
+    """Accept re-runs the manifest route, so a study gone since staging says so."""
+    path = _write_study(tmp_path / "sa")
+    open_link.stage(_study_link(path.as_uri()))
+    path.unlink()
+    resp = client.post("/api/inbox/accept")
+    assert resp.status_code == 422
+    assert "study_dir" in resp.json()["detail"]
+
+
+def test_open_link_route_stages_a_study(client, tmp_path):
+    path = _write_study(tmp_path / "sa")
+    open_link.set_token("t0ken")
+    resp = client.post("/api/open-link", json={"link": _study_link(path.parent.as_uri())},
+                       headers={open_link.TOKEN_HEADER: "t0ken"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"accepted": True, "kind": "study", "url": path.parent.as_uri()}
+    assert _wait_for_pending()["path"] == str(path)
+
+
+def test_open_link_route_refuses_a_web_study_link(client):
+    open_link.set_token("t0ken")
+    resp = client.post("/api/open-link",
+                       json={"link": _study_link("https://a.org/cuflynx_study.json")},
+                       headers={open_link.TOKEN_HEADER: "t0ken"})
+    assert resp.status_code == 422
+    assert "on this computer" in client.get("/api/inbox").json()["error"]["message"]

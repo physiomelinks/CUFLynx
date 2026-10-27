@@ -216,6 +216,43 @@ def resolve(raw: dict, base: str, location: str | None = None) -> dict:
     return resolved
 
 
+def is_manifest_name(name: str) -> bool:
+    """Whether ``name`` is spelled like a manifest: ``cuflynx_study.json`` or ``*_cuflynx_study.json``."""
+    base = os.path.basename(str(name or ""))
+    return base == MANIFEST_NAME or base.endswith(MANIFEST_SUFFIX)
+
+
+def study_location(raw, location: str | None = None,
+                   where: str = "the study manifest") -> dict:
+    """Which outputs directory a manifest opens: ``{"dir", "study_name", "file_prefix"}``.
+
+    ``location`` is where the manifest is on disk, when that is known (a desktop drop, a
+    picked file, a ``cuflynx://open?study=`` link); the study is then the directory
+    holding it. A manifest with no location (a browser drop carries only its contents)
+    opens the ``study_dir`` it records. Raises :class:`ManifestError` when the manifest
+    cannot be believed or names no directory on this machine.
+    """
+    check(raw, where)
+    if location and os.path.isfile(location):
+        directory = os.path.dirname(os.path.abspath(location))
+    else:
+        directory = raw.get("study_dir")
+        if not directory:
+            raise ManifestError(
+                "This study manifest does not record its study_dir (it predates it), so "
+                "where the study is cannot be told from the file alone. Set the outputs "
+                "directory to the folder holding it instead.")
+        if not os.path.isdir(directory):
+            raise ManifestError(
+                f"The study this manifest describes is not on this machine: "
+                f"{directory} does not exist.")
+    return {
+        "dir": directory,
+        "study_name": raw.get("study_name"),
+        "file_prefix": raw.get("file_prefix"),
+    }
+
+
 def user_funcs(output_dir: str | None) -> dict:
     """``{kind: path}`` for the user funcs a study in ``output_dir`` declares.
 
