@@ -199,6 +199,22 @@ format, and no plumbing:
   which the old direct read could not. `has_results(output_dir, newer_than=…)`
   takes the job's start time so a run whose own results are missing fails
   instead of reporting someone else's numbers.
+- **The study manifest is CA's** (`apps/api/study_manifest.py`). libcuflynx
+  (`utilities/cuflynx_study.py`) records every calibration, UQ, sensitivity and emulator
+  run from one config in `<param_id_output_dir>/<study_name>_cuflynx_study.json`: model,
+  base_model, obs_data, params_for_id, `user_funcs` ({kind: path}), `solver_info` (+dt),
+  `runs` (newest first, `analyses` per dir), `sensitivity` (dirs outside the outputs dir)
+  and `emulator`, plus an absolute `study_dir`. CUFLynx only reads it; bare
+  `cuflynx_study.json` (what sympathetic_neuron's pipeline wrote) is still read. A copy
+  away from its study resolves against `study_dir` (`base_dir`). Dropping one on the app
+  (`POST /api/outputs/manifest`, `handleStudyManifest` in `FileImport.vue`) only sets the
+  outputs directory and reloads it — one path for a dropped manifest and a picked folder.
+  `pre_time`/`sim_time` in it are informational: timing comes from the obs_data protocol.
+- **Declared funcs are the user's file, not ours.** `user_funcs._user_file` returns the
+  manifest's `user_funcs[kind]` when declared, so runs, option lists and the editor all
+  act on it; saving/deleting then goes through `_splice` (replace only that `def`'s
+  lines), never `_render`, which would replace the user's docstring, imports and module
+  constants with this app's header.
 
 One analysis is deliberately **not** in that tier: `apps/api/cost_sensitivity.py`
 (`POST /api/cost_sensitivity`, `CostSensitivityBar.vue`, #188) — `d ln(cost)/d ln(p)`
@@ -225,6 +241,17 @@ not. PhLynx's `flow.json` / `changes.json` / `module_config.json` / SED-ML /
 what leaves, and none is invented when absent (#287 has not settled which editor-state
 file is authoritative, and this is what keeps CUFLynx from having to care).
 
+The third CUFLynx-owned part is the **study**: `build_archive(study=, funcs=)` writes
+the same study manifest CA writes beside results — `<prefix>_cuflynx_study.json`,
+format `application/x.vnd.cuflynx-study+json` (`study_manifest.OMEX_FORMAT`) — with
+its paths pointing at archive members, `solver_info`, and the user funcs under
+`user_funcs/`; runs/sensitivity/emulator/study_dir are dropped (they are one machine's
+directories). Being ours, it and the funcs are *replaced* on each send. On import,
+`_apply_archive_study` adopts `solver_info` and writes the funcs to
+`<outputs>/user_funcs/`, keeping a differing existing file as
+`*.before_import_<stamp>.py`. One vocabulary for both: `study_manifest.KEYS`; the OMEX
+role names (`cellml`/`obs`/`params`) stay internal to `omex_import`.
+
 Three traps:
 
 - **Classify JSON members by manifest format and content, never by "leftover
@@ -233,7 +260,9 @@ Three traps:
   alone cannot separate them; `_looks_like_obs_data` sniffs for the two shapes
   `obs_data.parse_obs_data` accepts. Upstream is explicit that `flow.json` may be
   **renamed**, so its format specifier (`application/x.vnd.phlynx-flow+json`) is the
-  contract and its name is not. A params_for_id must be matched against `.json` too:
+  contract and its name is not. The embedded study manifest is classified the same way
+  (`_declared_study`) and taken out of every other pool first, or a prefix containing
+  "param" would make it the params_for_id. A params_for_id must be matched against `.json` too:
   CUFLynx stores the canonical JSON form, so without that an archive CUFLynx writes
   is not one CUFLynx can read.
 - **The send URL is `${PHLYNX_URL}/?open=omex#<bare base64>`** (`phlynxOpenUrl` in

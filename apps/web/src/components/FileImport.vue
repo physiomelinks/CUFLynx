@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import Message from 'primevue/message'
 import InputText from 'primevue/inputtext'
 import Button from 'primevue/button'
@@ -19,6 +19,7 @@ import {
   peekInbox,
   acceptInbox,
   rejectInbox,
+  openStudyManifest,
 } from '../lib/api'
 import { phlynxOpenUrl } from '../lib/examples'
 
@@ -553,14 +554,58 @@ async function handleOmex(files) {
   return true
 }
 
+/**
+ * A study manifest -- `<study>_cuflynx_study.json`, which circulatory_autogen
+ * writes beside a study's results and records every analysis in -- is a study
+ * too, so like an archive it is accepted on every dropzone and on the page.
+ *
+ * It is not uploaded: it says where the study already is. So it sets the
+ * outputs directory and reloads it, the same path the reload button takes, and
+ * a dropped manifest cannot open a study differently from a picked folder.
+ *
+ * Returns true when the drop was a manifest and has been handled.
+ */
+async function handleStudyManifest(files) {
+  const file = files.find((f) => isStudyManifestName(f.name))
+  if (!file) return false
+  error.value = ''
+  warnings.value = []
+  const unreadable = unreadableDrop(file)
+  if (unreadable) {
+    error.value = unreadable
+    return true
+  }
+  try {
+    // `path` exists only where the desktop shell exposes one.
+    const opened = await openStudyManifest(await file.text(), file.path)
+    emit('update:outputsDir', opened.dir)
+    await nextTick()
+    emit('load-outputs')
+    notice.value = `Opening ${opened.study_name || file.name} from ${opened.dir}`
+  } catch (e) {
+    error.value = e?.response?.data?.detail || String(e)
+  }
+  return true
+}
+
 // Exposed so a drop anywhere on the page reaches this same handler rather than a
 // second copy of it: a study delivered by dropping on the page has to behave
 // exactly like one dropped on a box, and the way to guarantee that is for there
 // to be one function.
-defineExpose({ handleOmex, isOmexName })
+defineExpose({ handleOmex, isOmexName, handleStudyManifest, isStudyManifestName })
 
 function isOmexName(name) {
   return /\.omex$/i.test(String(name || ''))
+}
+
+function isStudyManifestName(name) {
+  return /cuflynx_study\.json$/i.test(String(name || ''))
+}
+
+async function onManifestPick(event) {
+  const files = filesFrom(event)
+  resetPicker(event)
+  if (files.length) await handleStudyManifest(files)
 }
 
 async function onCellmlDrop(event) {
@@ -582,6 +627,7 @@ async function onCellmlDrop(event) {
   // CellML server-side (#27) -- both are single files, so neither ever joins a
   // sister-file bundle.
   if (await handleOmex(files)) return
+  if (await handleStudyManifest(files)) return
   // `.py` is an *external python* model: a file holding the solver class itself
   // rather than a model description CUFLynx generates a solver from. It travels
   // the same upload route, and the server answers with model_format:
@@ -626,6 +672,7 @@ async function onObsDrop(event) {
   resetPicker(event)
   if (!file) return
   if (await handleOmex([file])) return
+  if (await handleStudyManifest([file])) return
   if (!extOk(file.name, ['.json'])) {
     error.value = `Expected a .json file, got "${file.name}"`
     return
@@ -660,6 +707,7 @@ async function onParamsDrop(event) {
   resetPicker(event)
   if (!file) return
   if (await handleOmex([file])) return
+  if (await handleStudyManifest([file])) return
   if (!extOk(file.name, ['.csv'])) {
     error.value = `Expected a .csv file, got "${file.name}"`
     return
@@ -837,6 +885,14 @@ async function onParamsDrop(event) {
           data-testid="outputs-load"
           @click="emit('load-outputs')"
         />
+        <label
+          class="p-button p-button-text p-button-sm p-button-icon-only manifest-pick"
+          title="Open a study from its <study>_cuflynx_study.json, which circulatory_autogen writes beside the study's results"
+          data-testid="outputs-manifest"
+        >
+          <i class="pi pi-file-import" />
+          <input type="file" accept=".json" hidden @change="onManifestPick" />
+        </label>
       </span>
     </label>
     <div class="export-buttons">

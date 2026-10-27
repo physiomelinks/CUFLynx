@@ -86,6 +86,7 @@ from obs_series import compute_output_series
 import params_json
 import ca_run_history
 import load_outputs
+import study_manifest
 from params_for_id import ParamsForIdError, parse_params_for_id
 import saved_runs
 from param_io import ParamIOError, load_param_values, save_param_values
@@ -109,7 +110,9 @@ from solver_options import (
 from user_funcs import (
     FUNC_KINDS,
     UserFuncError,
+    convention_path as user_func_convention_path,
     delete_user_func,
+    refresh_options as refresh_user_func_options,
     external_path as user_func_path,
     external_paths as user_func_paths,
     model_source_path as study_model_source_path,
@@ -1527,6 +1530,44 @@ def _no_obs_data_warning(parts: dict, source: str = "archive") -> list[str]:
     return [f"This {source} carries no {missing}, so the observations tab is empty."]
 
 
+def _apply_archive_study(study: dict | None, out_dir: str | None) -> list[str]:
+    """Adopt an archive's embedded study manifest: its solver settings and its funcs.
+
+    The funcs go where this app keeps a study's funcs (``<outputs>/user_funcs/``).
+    One already there with different contents is kept beside it as
+    ``<name>.before_import_<stamp>.py`` rather than overwritten unseen -- it may hold
+    funcs another study in the same outputs directory uses. Returns what to report.
+    """
+    if not study:
+        return []
+    notes = list(_adopt_study_solver_info((study.get("manifest") or {}).get("solver_info")))
+    funcs = study.get("funcs") or {}
+    if funcs and not out_dir:
+        notes.append(
+            "The archive carries user funcs ("
+            + ", ".join(sorted(funcs))
+            + "), but no outputs directory is set to keep them in. Set one and import "
+              "the archive again, or the obs_data operations they define will be unknown.")
+        return notes
+    wrote = False
+    stamp = time.strftime("%y%m%d_%H%M%S")
+    for kind, (member, blob) in sorted(funcs.items()):
+        target = user_func_convention_path(kind, out_dir)
+        if target.is_file() and target.read_bytes() == blob:
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if target.is_file():
+            kept = target.with_name(f"{target.stem}.before_import_{stamp}{target.suffix}")
+            target.rename(kept)
+            notes.append(f"Your {kind} funcs were replaced by the archive's; the previous "
+                         f"file is kept as {kept.name}.")
+        target.write_bytes(blob)
+        wrote = True
+    if wrote:
+        refresh_user_func_options()
+    return notes
+
+
 def import_omex_bytes(data: bytes, output_dir: str | None = None,
                       source: str = "archive") -> dict:
     """Load an archive's bytes, whatever delivered them.
@@ -1724,6 +1765,8 @@ def import_omex_bytes(data: bytes, output_dir: str | None = None,
                 "archive still round-trips."
             )
 
+    load_warnings.extend(_apply_archive_study(parts.get("study"), out_dir))
+
     # An obs_data in the archive is the author's own and always wins; only when
     # there is none does the .mmt's protocol become the study's protocol.
     if result["obs_data"] is None and protocol and protocol.get("obs_data"):
@@ -1847,6 +1890,21 @@ def phlynx_send(req: PhlynxSendRequest):
 
     stem = _record_prefix(record, "study")
     archive = record.archive_path.read_bytes() if record.archive_path else None
+    # What the study needs that no other member carries: its solver settings and the
+    # user funcs its obs_data and params_for_id name. Without them a study sent to PhLynx
+    # and back reopens at the app's default solver with its operations unregistered.
+    funcs_dir = _user_func_base_dir(req.output_dir)
+    funcs = {}
+    for kind in FUNC_KINDS:
+        found = user_func_path(kind, funcs_dir)
+        if found:
+            funcs[kind] = (user_func_convention_path(kind).name, Path(found).read_bytes())
+    study = {
+        "study_name": stem,
+        "file_prefix": stem,
+        "solver_info": {**(getattr(engine, "solver_info", None) or {}),
+                        "solver": engine.solver, "dt": engine.dt},
+    }
     try:
         blob, report = omex_export.build_archive(
             cellml_text=record.path.read_text(encoding="utf-8"),
@@ -1858,6 +1916,8 @@ def phlynx_send(req: PhlynxSendRequest):
             params_name=f"{stem}_params_for_id{record.params_path.suffix}"
             if record.params_path
             else "params_for_id.json",
+            study=study,
+            funcs=funcs,
         )
     except omex_export.OmexExportError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -2877,6 +2937,58 @@ def load_outputs_directory(
     than raising, and ``found`` says which panels have something to show.
     """
     return load_outputs.load_outputs(dir, file_prefix, obs_path, run_dir)
+
+
+class StudyManifestRequest(BaseModel):
+    #: The dropped ``*_cuflynx_study.json``: its parsed JSON, or its text.
+    content: dict | str
+    #: Where it is on disk, when the shell knows (a desktop drop or a picked file). A
+    #: browser drop carries only the contents, and the manifest's own ``study_dir`` is
+    #: what says where the study is then.
+    path: str | None = None
+
+
+@app.post("/api/outputs/manifest")
+def open_study_manifest(req: StudyManifestRequest) -> dict:
+    """Which outputs directory a dropped study manifest opens.
+
+    circulatory_autogen writes ``<study>_cuflynx_study.json`` into a study's
+    ``param_id_output_dir`` and records every analysis in it, so the file is the handle
+    a user has on a study run from a script. The frontend sets the outputs directory to
+    the answer and reloads it, which is the path a picked directory already takes -- so
+    a dropped manifest and a picked folder cannot open a study differently.
+    """
+    raw = req.content
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=f"not JSON: {exc}") from exc
+    try:
+        study_manifest.check(raw, "the dropped study manifest")
+    except study_manifest.ManifestError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    if req.path and os.path.isfile(req.path):
+        directory = os.path.dirname(os.path.abspath(req.path))
+    else:
+        directory = raw.get("study_dir")
+        if not directory:
+            raise HTTPException(
+                status_code=422,
+                detail="This study manifest does not record its study_dir (it predates "
+                       "it), so where the study is cannot be told from the file alone. "
+                       "Set the outputs directory to the folder holding it instead.")
+        if not os.path.isdir(directory):
+            raise HTTPException(
+                status_code=422,
+                detail=f"The study this manifest describes is not on this machine: "
+                       f"{directory} does not exist.")
+    return {
+        "dir": directory,
+        "study_name": raw.get("study_name"),
+        "file_prefix": raw.get("file_prefix"),
+    }
 
 
 class OpenStudyRequest(BaseModel):
