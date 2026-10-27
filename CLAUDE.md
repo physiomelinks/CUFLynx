@@ -309,6 +309,18 @@ Three traps:
   Deliberately **not** in `MODEL_SOURCE_SUFFIXES`: that tuple drives "Edit source",
   which would try to open a zip in the user's text editor.
 
+**A module-library archive opens at its calibrated values**
+(`apps/api/library_calibration.py`). circulatory-autogen-modules ships
+`<instance>_calibration.json` (`calibrated_parameters`, `cost`, `method`, `date`)
+and `<instance>_calibrated_parameters.csv`. `omex_import` claims both as the
+`calibration` role -- by `calibrat` in the name, and a JSON by a
+`calibrated_parameters` object -- *before* the params_for_id and obs_data pools
+are filled (the CSV's name contains "param"). `import_omex_bytes` writes the values
+into the model with `calibrated_cellml` before parsing it, resolving the library's
+bare names through the params_for_id rows, so the sliders, the entries'
+`initial_value` and a later send all start from them; the response's `calibration`
+says so and the UI's notice names the cost. Unmatched names are a warning.
+
 Value substitution goes through `calibrated_model.calibrated_cellml` — the same
 writer the calibrated-model save uses, so a send and a saved best fit produce the
 same file for the same values. Its report now names the owning `component/var` per
@@ -348,11 +360,30 @@ middleware answers its preflight with `Access-Control-Allow-Private-Network` —
 moving (Local Network Access will likely add a browser permission prompt), so the
 flow's UX is not entirely ours.
 
-**Not** a `cuflynx://` URL scheme: a scheme handler delivers the URI through the OS
-process-launch path, where truncation bites in the low thousands of characters, and
-`3compartment.omex` is already ~14 KB base64. Registering CUFLynx as the `.omex`
-file handler is the planned next step — it needs a macOS `.app` bundle, which the
-single-file spec does not produce.
+**`cuflynx://open?url=<archive URL>` links** (`apps/api/open_link.py`,
+`apps/desktop/url_scheme.py`). A page links to an archive by **URL**, never by
+content: a scheme handler delivers the link through the OS process-launch path,
+where truncation bites in the low thousands of characters. What is load-bearing:
+
+- **A link stages, like a PhLynx delivery.** Any page can launch a `cuflynx://`
+  link, so the app fetches the archive (https/http/file only, capped at
+  `inbox.MAX_DELIVERY_BYTES`) and puts it in the inbox; the same dialog asks, and
+  accept runs `import_omex_bytes`. A link that fails is recorded with
+  `inbox.report_error` and returned once by `GET /api/inbox` as `error`, which the
+  UI shows (`peekInbox` throws with `deliveryFailed`).
+- **Single instance by an instance file, not a port.** The shell writes
+  `<config dir>/instance.json` (port + random token, 0600) once its server
+  answers; a second launch with a link posts it to `/api/open-link` with the token
+  in `X-CUFLynx-Token` and exits. The route is off unless the shell set a token,
+  and a page cannot read the token, so the app cannot be used to fetch URLs for a
+  page. A stale file (nothing answering, or a different token) means start anew.
+- **Every platform runs `<exe> --open-url <link>`.** The release is a bare
+  executable per OS with no installer, so the app registers itself per user on a
+  frozen launch (`register_if_needed`, redone when the executable moves): a
+  `.desktop` + `xdg-mime` on Linux, `HKCU\Software\Classes\cuflynx` on Windows,
+  and on macOS an AppleScript applet in `~/Applications` whose Info.plist declares
+  `CFBundleURLTypes` -- LaunchServices only routes schemes to bundles, and sends the
+  URL as an Apple event (`on open location`), which the applet turns into argv.
 
 **GUI config editing** (edit CA config files in the browser → download dated copy → apply immediately):
 

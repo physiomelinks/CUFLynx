@@ -409,9 +409,12 @@ async function pollInbox() {
   if (document.hidden || pendingStudy.value || inboxBusy.value) return
   try {
     pendingStudy.value = await peekInbox()
-  } catch {
-    // The server is not up yet, or this build is served without it. A delivery
-    // the user never asked for must not produce an error banner.
+  } catch (e) {
+    // A cuflynx:// link the user clicked that could not be opened is shown.
+    // Anything else means the server is not up yet, or this build is served
+    // without it, and a delivery the user never asked for must not produce an
+    // error banner.
+    if (e?.deliveryFailed) error.value = e.message
   }
 }
 
@@ -512,7 +515,8 @@ function applyImportedStudy(data, label) {
   notice.value =
     `Loaded ${label}` +
     (data.module_config_path ? ' (PhLynx layout kept)' : '') +
-    installedFuncsNote(data.user_funcs)
+    installedFuncsNote(data.user_funcs) +
+    calibrationNote(data.calibration)
   warnings.value = [...failed, ...(data.warnings || [])]
 }
 
@@ -524,6 +528,26 @@ function installedFuncsNote(funcs) {
   if (!installed.length) return ''
   const names = installed.map((f) => `${f.name} (${f.kind})`).join(', ')
   return `; added to Custom funcs: ${names}`
+}
+
+/**
+ * What the notice says when the archive carried the module library's
+ * calibration result, whose values the server has already written into the model.
+ */
+function calibrationNote(cal) {
+  if (!cal?.applied?.length) return ''
+  const details = [
+    typeof cal.cost === 'number' ? `cost ${cal.cost.toPrecision(4)}` : '',
+    cal.method || '',
+    cal.date || '',
+  ].filter(Boolean)
+  return (
+    `. Starting values for ${cal.applied.length} parameter` +
+    (cal.applied.length === 1 ? '' : 's') +
+    ` are the ${cal.source || 'module library'}'s calibrated values` +
+    (details.length ? ` (${details.join(', ')})` : '') +
+    ` from ${cal.filename}`
+  )
 }
 
 async function handleOmex(files) {
