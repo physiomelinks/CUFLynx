@@ -96,7 +96,7 @@ jobs:
           # -- when the floor moved to 0.7.3 and this did not, the unit tier spent a month
           # testing a pairing pip itself would refuse to resolve, and only the weekly
           # `ca-pin-freshness` job said so.
-          ref: 2684bd9e01a494618e4a6ba7f814d9f28758af5d  # libcuflynx v0.7.3
+          ref: a3531f580c635180ac01c0b62a509fcab2a8c7da  # libcuflynx v0.7.3
           path: circulatory_autogen
       - uses: actions/setup-python@v5
         with:
