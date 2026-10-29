@@ -96,6 +96,7 @@ _CA_PACKAGES = frozenset({
     "param_id",
     "parsers",
     "protocol_runners",
+    "reporting",
     "scripts",
     "sensitivity_analysis",
     "solver1d",

@@ -14,6 +14,7 @@ import UQPanel from './components/UQPanel.vue'
 import WorkflowBar from './components/WorkflowBar.vue'
 import WorkflowPanel from './components/WorkflowPanel.vue'
 import EditObsDataDialog from './components/EditObsDataDialog.vue'
+import EditVariableMappingDialog from './components/EditVariableMappingDialog.vue'
 import AnalysisPanel from './components/AnalysisPanel.vue'
 import CostSensitivityBar from './components/CostSensitivityBar.vue'
 import InputNumber from 'primevue/inputnumber'
@@ -399,6 +400,8 @@ const phlynxUrl = ref('')
 // Persisted server-side via /api/config.
 const moduleLibraryDirs = ref([])
 const libraryBrowserOpen = ref(false)
+// The LaTeX symbols of the model's variables (Variables panel -> "LaTeX symbols").
+const variableMappingOpen = ref(false)
 
 // Last value the server told us about. Hydrating pythonPath from /api/config
 // triggers the watch below, and without this it would POST the value straight
@@ -3444,6 +3447,7 @@ watch(() => obs.obsData.value, scheduleRun)
           :variables="model.variables.value"
           :active-keys="Object.keys(sliders.sliders)"
           @add-slider="onAddSlider"
+          @edit-symbols="variableMappingOpen = true"
         />
         </div>
       </aside>
@@ -3813,6 +3817,11 @@ watch(() => obs.obsData.value, scheduleRun)
       mode="dir"
       title="Select the circulatory_autogen directory"
       @select="applyCaDir"
+    />
+    <EditVariableMappingDialog
+      v-model:visible="variableMappingOpen"
+      :model-id="model.modelId.value"
+      :outputs-dir="outputsDir"
     />
     <FileBrowserDialog
       v-model:visible="libraryBrowserOpen"

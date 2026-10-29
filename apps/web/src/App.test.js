@@ -23,6 +23,9 @@ vi.mock('./lib/api', () => ({
   getWorkflowStepInput: vi.fn().mockResolvedValue({ path: null, content: null }),
   saveWorkflowStepInput: vi.fn().mockResolvedValue({ path: '/w/x.json', workflow: { loaded: true } }),
   unsetParameters: (e) => e?.response?.data?.detail?.unset_parameters ?? null,
+  // The Variables panel's "LaTeX symbols" dialog.
+  getVariableMapping: vi.fn().mockResolvedValue({ path: '', exists: false, rows: [] }),
+  saveVariableMapping: vi.fn().mockResolvedValue({ path: '', exists: true, rows: [] }),
   getVariables: vi.fn().mockResolvedValue({}),
   simulate: vi.fn().mockResolvedValue({ time: [], outputs: {} }),
   runProtocol: vi.fn().mockResolvedValue({ experiments: [] }),
