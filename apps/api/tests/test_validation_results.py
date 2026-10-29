@@ -107,7 +107,7 @@ def test_the_ca_verdict_on_an_older_ca_ignores_held_out_keys(old_ca, monkeypatch
     seen = []
 
     class Parser:
-        def parse_obs_data_json(self, obs_data_dict, pre_time, sim_time):
+        def parse_obs_data_json(self, obs_data_dict, **_timing):
             seen.append(obs_data_dict)
 
     monkeypatch.setattr(obs_data, "_ca_parser", lambda: Parser())
