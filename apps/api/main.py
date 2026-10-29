@@ -122,6 +122,7 @@ from user_funcs import (
     refresh_options as refresh_user_func_options,
     external_path as user_func_path,
     external_paths as user_func_paths,
+    install_funcs_from_file,
     model_source_path as study_model_source_path,
     read_user_funcs,
     save_model_module,
@@ -1771,12 +1772,49 @@ def import_omex_bytes(data: bytes, output_dir: str | None = None,
         # {source, filename, cost, method, date, applied, unresolved}. Its
         # values are already the model's.
         "calibration": calibration,
+        # The archive's own operation / cost / modifier funcs, each with what
+        # became of it (installed, unchanged, conflict, invalid, or manifest when
+        # the archive's study manifest installs the funcs instead).
+        "user_funcs": [],
     }
     if calibration and calibration["unresolved"]:
         load_warnings.append(
             f"{calibration['filename']}: no model parameter matched "
             f"{', '.join(calibration['unresolved'])}, so those keep the model's own values."
         )
+
+    # An archive carrying a study manifest is installed only through it
+    # (_apply_archive_study: the declared files, whole). Its funcs-named members
+    # are listed as covered by the manifest, not installed a def at a time as
+    # well: that would install each func twice.
+    if parts.get("study"):
+        result["user_funcs"] = [
+            {"kind": kind, "name": None, "origin": fname, "status": "manifest"}
+            for kind, fname, _blob in parts.get("user_funcs") or []
+        ]
+
+    # Before the obs_data: an obs_data naming an operation the archive defines is
+    # only calibratable once that operation is in the user funcs store, and making
+    # the user paste it into Custom funcs by hand is what this removes. Installed
+    # into the store the upload's outputs directory names -- the one every run and
+    # the obs_data editor read -- one def at a time through the same code
+    # `POST /api/{kind}_funcs` uses, so the file stays the canonical one.
+    for kind, fname, blob in [] if parts.get("study") else parts.get("user_funcs") or []:
+        try:
+            text = blob.decode("utf-8")
+        except UnicodeDecodeError:
+            load_warnings.append(f"{fname} was not installed as {kind} funcs: it is not UTF-8 text.")
+            continue
+        try:
+            funcs, notes = install_funcs_from_file(kind, text, out_dir, origin=fname)
+        except OSError as exc:
+            load_warnings.append(
+                f"{fname} was not installed as {kind} funcs: "
+                f"{_fs_error_detail(exc, 'write the user funcs to', Path(out_dir or settings_store.config_dir()))}"
+            )
+            continue
+        result["user_funcs"].extend(funcs)
+        load_warnings.extend(notes)
 
     # obs_data and params_for_id are optional: an archive with only a model is a
     # perfectly good archive, and refusing it would be worse than loading what is
