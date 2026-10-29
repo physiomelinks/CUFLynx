@@ -15,6 +15,7 @@ CA's function itself when a checkout that has it is found.
 from __future__ import annotations
 
 import importlib.util
+import inspect
 import json
 import os
 import time
@@ -129,6 +130,11 @@ def test_the_local_copy_agrees_with_cas_function():
     ca = _ca_validation_module()
     if ca is None:
         pytest.skip("no circulatory_autogen checkout with param_id/validation.py here")
+    if "operation" in inspect.signature(ca._item_result).parameters:
+        # CA #536 scores prediction features (operations) and measures time from each
+        # segment's start. The copy keeps #535's rules: it only runs against a CA with
+        # no validation.py, and one that has it is always asked instead.
+        pytest.skip("this circulatory_autogen's validation is newer than the #535 copy")
     rng = np.random.default_rng(3)
     items = [
         dict(SERIES, value=list(rng.normal(size=9)), std=list(rng.uniform(0.1, 1, 9))),
@@ -202,7 +208,7 @@ def test_the_ca_verdict_on_an_older_ca_ignores_held_out_keys(old_ca, monkeypatch
     seen = []
 
     class Parser:
-        def parse_obs_data_json(self, obs_data_dict, pre_time, sim_time):
+        def parse_obs_data_json(self, obs_data_dict, **_timing):
             seen.append(obs_data_dict)
 
     monkeypatch.setattr(obs_data, "_ca_parser", lambda: Parser())
