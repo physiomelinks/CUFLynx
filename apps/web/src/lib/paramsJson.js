@@ -20,7 +20,7 @@ function cleanText(value) {
  * One saved row as a params_for_id JSON entry.
  *
  * A free row writes `targets` (every member qname, order preserved -- CA's
- * baselines pair by index); a modifier row writes `modifies` + `operation` and
+ * baselines pair by index); a modifier row writes `modifies` + `modifier` and
  * never `targets` (CA refuses an entry carrying both). An unbounded row omits
  * its bounds: they were derived from the prior and writing them back would
  * freeze a range that should follow it.
@@ -30,10 +30,6 @@ function rowToEntry(row) {
   const entry = { name: row.name || row.qname }
   if (row.kind === 'modifier') {
     entry.modifies = qnames
-    // `modifier`, not `operation`: CA renamed the key because a modifier acts
-    // on parameters while an operation acts on outputs (CA #385). The old name
-    // still loads, with a deprecation warning, so files written before this
-    // keep working — but nothing new is written under it.
     entry.modifier = row.operation || 'scale'
     // The model constants the modifier function declares as inputs, as this
     // entry names them (`{name: qname}` or `{name: [qnames]}`; CA #383). Written
