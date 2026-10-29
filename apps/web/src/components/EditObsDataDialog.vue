@@ -24,6 +24,7 @@ import { ObsDataEditor } from '@physiomelinks/protocol-kit/editor'
 import '@physiomelinks/protocol-kit/editor.css'
 import { versionedJsonName, withParameters } from '../lib/obsDataJson'
 import { errorMessage, getObsDataDocument, getObsDataOptions, uploadObsData } from '../lib/api'
+import AddFromDatasetDialog from './AddFromDatasetDialog.vue'
 import EditOperationFuncsDialog from './EditOperationFuncsDialog.vue'
 
 const props = defineProps({
@@ -55,6 +56,11 @@ const saving = ref(false)
 const error = ref('')
 // "Custom funcs" authoring dialog (issue #58).
 const opFuncsOpen = ref(false)
+// "Add from dataset": discover recordings in a folder and extract observables
+// from them. A child dialog, the way EditOperationFuncsDialog is.
+const fromDatasetOpen = ref(false)
+// The last extraction, held until the user says what to do with it.
+const extracted = ref(null)
 
 // Fetch the CA-sourced vocabulary (refresh=true re-introspects CA after a custom
 // func is added, so it is offered).
@@ -144,6 +150,29 @@ const canSave = computed(
   () => !saving.value && !loading.value && !!doc.value && problems.value.length === 0,
 )
 
+/** Whether adopting an extraction would discard work already in the editor. */
+const hasExistingWork = computed(() => {
+  const parts = doc.value ? readObsDataParts(doc.value) : null
+  return (parts?.dataItems?.length ?? 0) > 0 || (parts?.predictionItems?.length ?? 0) > 0
+})
+
+function onExtracted(payload) {
+  extracted.value = payload
+  fromDatasetOpen.value = false
+  // Nothing to lose: adopt straight away rather than asking a question with one
+  // sensible answer.
+  if (!hasExistingWork.value) adoptExtracted()
+}
+
+function adoptExtracted() {
+  const extraction = extracted.value?.obsData
+  if (!extraction) return
+  // An extraction is a whole obs_data: its experiment_idx only mean anything against
+  // its own protocol_info, so it replaces the document rather than being appended.
+  doc.value = extraction
+  extracted.value = null
+}
+
 async function onOpFuncsSaved() {
   await loadOptions(true)
 }
@@ -213,9 +242,40 @@ async function onSave() {
             title="Write your own operation or cost function in Python"
             @click="opFuncsOpen = true"
           />
+          <Button
+            label="Add from dataset"
+            icon="pi pi-folder-open"
+            size="small"
+            text
+            data-testid="obs-add-from-dataset"
+            title="Discover recordings in a folder and extract observables from them"
+            @click="fromDatasetOpen = true"
+          />
         </template>
       </ObsDataEditor>
     </div>
+
+    <!--
+      Extraction produces a whole obs_data -- a protocol_info plus items whose
+      experiment_idx only mean anything against it -- so it is offered rather
+      than appended when there is work to lose.
+    -->
+    <Message v-if="extracted" severity="info" :closable="false" data-testid="obs-extract-offer">
+      Extracted {{ extracted.obsData?.data_items?.length ?? 0 }} data item(s).
+      <template v-if="extracted.texPath">
+        Report: {{ extracted.pdfPath || extracted.texPath }}.
+      </template>
+      <div class="eo-extract-actions">
+        <Button
+          :label="hasExistingWork ? 'Replace what is loaded' : 'Use these'"
+          size="small"
+          data-testid="obs-extract-adopt"
+          @click="adoptExtracted"
+        />
+        <Button label="Keep mine" size="small" text data-testid="obs-extract-discard"
+                @click="extracted = null" />
+      </div>
+    </Message>
 
     <template #footer>
       <span class="eo-count">{{ dataItemCount }} data item(s)</span>
@@ -234,6 +294,13 @@ async function onSave() {
     </template>
 
     <EditOperationFuncsDialog v-model:visible="opFuncsOpen" @saved="onOpFuncsSaved" />
+    <AddFromDatasetDialog
+      v-model:visible="fromDatasetOpen"
+      :model-id="modelId"
+      :model-variables="modelVariables"
+      :outputs-dir="outputsDir"
+      @extracted="onExtracted"
+    />
   </Dialog>
 </template>
 
@@ -247,6 +314,11 @@ async function onSave() {
   margin-right: auto;
   font-size: 0.8rem;
   opacity: 0.75;
+}
+.eo-extract-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.4rem;
 }
 .eo-blocked {
   font-size: 0.8rem;

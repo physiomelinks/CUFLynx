@@ -11,6 +11,15 @@ vi.mock('../lib/api', () => ({
   getUserFuncs: vi.fn(),
   saveUserFunc: vi.fn(),
   deleteUserFunc: vi.fn(),
+  // Used by the embedded AddFromDatasetDialog ("Add from dataset").
+  scanDatasets: vi.fn(),
+  startObsExtract: vi.fn(),
+  getObsExtractStatus: vi.fn(),
+  cancelObsExtract: vi.fn(),
+  saveObsExtractConfig: vi.fn(),
+  loadObsExtractConfig: vi.fn(),
+  listDir: vi.fn(async () => ({ path: '/', parent: null, entries: [] })),
+  makeDir: vi.fn(),
 }))
 
 import EditObsDataDialog from './EditObsDataDialog.vue'
@@ -39,6 +48,7 @@ const stubs = {
   Message: { template: '<div class="msg"><slot /></div>' },
   ObsDataEditor: EditorStub,
   EditOperationFuncsDialog: true,
+  AddFromDatasetDialog: true,
 }
 
 const STUDY_OBS = {
@@ -202,5 +212,72 @@ describe('EditObsDataDialog', () => {
     await flushPromises()
     expect(wrapper.find('[data-testid="od-data-items"]').exists()).toBe(true)
     expect(wrapper.findAll('[data-testid="od-data-row"]')).toHaveLength(1)
+  })
+})
+
+// --- "Add from dataset" (the extraction dialog) -----------------------------
+const EXTRACTION = {
+  protocol_info: { pre_times: [0], sim_times: [[1]], params_to_change: {} },
+  data_items: [{ data_item_name: 'x', data_type: 'constant', operation: 'max',
+                 operands: ['a/b'], unit: 'mV', value: 1, std: 1 }],
+  prediction_items: [],
+}
+
+describe('EditObsDataDialog add-from-dataset', () => {
+  it('the button sits beside "Custom funcs" in the data items actions', async () => {
+    const wrapper = mountDialog()
+    await flushPromises()
+    const ids = editor(wrapper)
+      .findAll('[data-testid]')
+      .map((el) => el.attributes('data-testid'))
+    expect(ids).toEqual(['eo-add-op-func', 'obs-add-from-dataset'])
+  })
+
+  it('an extraction into an empty document is adopted without asking', async () => {
+    // There is nothing to lose, so a confirmation would be a question with one
+    // sensible answer.
+    getObsDataDocument.mockResolvedValue({ protocol_info: null, data_items: [], prediction_items: [] })
+    const wrapper = mountDialog()
+    await flushPromises()
+    wrapper.vm.onExtracted({ obsData: structuredClone(EXTRACTION), texPath: '/out/r.tex' })
+    await flushPromises()
+    expect(editor(wrapper).props('document')).toEqual(EXTRACTION)
+    expect(wrapper.find('[data-testid="obs-extract-offer"]').exists()).toBe(false)
+  })
+
+  it('an extraction over existing work is offered, not applied', async () => {
+    // The items' experiment_idx only mean anything against the protocol_info
+    // they came with, so appending them to a different one is the outcome that
+    // would look like it worked.
+    const wrapper = mountDialog()
+    await flushPromises()
+    wrapper.vm.onExtracted({ obsData: structuredClone(EXTRACTION), texPath: '/out/r.tex' })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="obs-extract-offer"]').exists()).toBe(true)
+    expect(editor(wrapper).props('document').data_items[0].data_item_name).toBe('x_max')
+
+    await wrapper.find('[data-testid="obs-extract-adopt"]').trigger('click')
+    await flushPromises()
+    expect(editor(wrapper).props('document')).toEqual(EXTRACTION)
+  })
+
+  it('keeping mine discards the extraction and leaves the document alone', async () => {
+    const wrapper = mountDialog()
+    await flushPromises()
+    wrapper.vm.onExtracted({ obsData: structuredClone(EXTRACTION), texPath: '/out/r.tex' })
+    await flushPromises()
+    await wrapper.find('[data-testid="obs-extract-discard"]').trigger('click')
+    expect(wrapper.find('[data-testid="obs-extract-offer"]').exists()).toBe(false)
+    expect(editor(wrapper).props('document').data_items[0].data_item_name).toBe('x_max')
+  })
+
+  it('the offer names where the report went', async () => {
+    const wrapper = mountDialog()
+    await flushPromises()
+    wrapper.vm.onExtracted({
+      obsData: structuredClone(EXTRACTION), texPath: '/out/r.tex', pdfPath: '/out/r.pdf',
+    })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="obs-extract-offer"]').text()).toContain('/out/r.pdf')
   })
 })
