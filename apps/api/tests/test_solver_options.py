@@ -575,23 +575,16 @@ def test_analysis_options_from_ca_schema(monkeypatch):
     assert so.analysis_mode_options("uq")[0]["default"] == 5000
 
 
-def test_a_pre_rename_ca_mcmc_mode_is_normalised_to_uq(monkeypatch):
-    """CA renamed the mode from 'mcmc' to 'uq' once MCMC became one method of uncertainty
-    quantification rather than the whole of it. CUFLynx keys off 'uq' internally, so a CA that
-    still reports 'mcmc' is mapped in one place rather than every panel and runner having to
-    know which CA it is talking to."""
+def test_cas_mode_keys_are_used_as_they_are(monkeypatch):
+    """CA's UQ mode is 'uq'; a schema reporting 'mcmc' is not renamed."""
     monkeypatch.setattr(so, "_introspect_analysis_options",
                         lambda: {"mcmc": {
-                            "label": "MCMC posterior sampling", "enable_flag": "do_mcmc",
-                            "options_key": "mcmc_options",
-                            "options": [{"name": "num_steps", "type": "int", "default": 42}]}})
+                            "label": "MCMC", "enable_flag": "do_mcmc",
+                            "options_key": "mcmc_options", "options": []}})
     so.reset_cache()
 
     ao = so.get_analysis_options(refresh=True)
-    assert "uq" in ao and "mcmc" not in ao, "the legacy key should be presented as 'uq'"
-    # Its own options_key/enable_flag are preserved: they are what that CA actually reads.
-    assert ao["uq"]["options_key"] == "mcmc_options"
-    assert so.analysis_mode_options("uq")[0]["default"] == 42
+    assert "uq" not in ao and "mcmc" in ao
 
 
 def test_analysis_options_fall_back_for_older_ca(monkeypatch):
@@ -619,25 +612,24 @@ def test_sensitivity_defaults_route_exposes_ca_options(client, monkeypatch):
     assert body["options"] == [{"name": "num_samples", "type": "int", "default": 512}]
 
 
-def test_uq_defaults_route_exposes_ca_mcmc_options(client, monkeypatch):
+def test_uq_defaults_route_exposes_ca_uq_options(client, monkeypatch):
     monkeypatch.setattr(so, "_introspect_analysis_options",
-                        lambda: {"mcmc": {
-                            "label": "MCMC", "enable_flag": "do_mcmc",
-                            "options_key": "mcmc_options",
+                        lambda: {"uq": {
+                            "label": "UQ", "enable_flag": "do_uq",
+                            "options_key": "UQ_options",
                             "options": [{"name": "num_steps", "type": "int", "default": 3000}]}})
     so.reset_cache()
     body = client.get("/api/uq/defaults").json()
-    assert body["mcmc_options"] == [{"name": "num_steps", "type": "int", "default": 3000}]
+    assert body["uq_options"] == [{"name": "num_steps", "type": "int", "default": 3000}]
+    assert "mcmc_options" not in body
 
 
 # ---------------------------------------------------------------------------
 # Methods CA advertises that cannot forward-solve (issue #175)
 #
-# CA's methods_by_solver mixes forward integrators with calibration gradient
-# strategies. 'bdf_tape' and 'bdf_kernel' are the latter: they live in
-# param_id/aadc_backend.py and have no branch in the AADC helper's run(), so
-# choosing one and moving a slider always raised "Unknown AADC solver_info
-# method 'bdf_tape'".
+# CA's methods_by_solver can list calibration gradient strategies alongside
+# forward integrators; forward_methods_by_solver names the ones a plain solve
+# can run. 'grad_only' stands for a method in the first list and not the second.
 # ---------------------------------------------------------------------------
 AADC_SCHEMA = {
     "model_types": ["cellml", "aadc_python"],
@@ -647,14 +639,17 @@ AADC_SCHEMA = {
     },
     "methods_by_solver": {
         "aadc_semi_implicit": [
-            "bdf_tape", "bdf_kernel", "semi_implicit", "implicit_newton", "rk4",
+            "grad_only", "semi_implicit", "implicit_newton", "rk4",
         ],
     },
-    "ad_suitable_methods": {"aadc_semi_implicit": ["bdf_tape", "rk4"]},
+    "forward_methods_by_solver": {
+        "aadc_semi_implicit": ["semi_implicit", "implicit_newton", "rk4"],
+    },
+    "ad_suitable_methods": {"aadc_semi_implicit": ["grad_only", "rk4"]},
     "default_solver_by_model_type": {"aadc_python": "aadc_semi_implicit"},
-    # The default CA ships is itself one CUFLynx cannot forward-solve here, so
-    # this also covers the substitution.
-    "default_method_by_solver": {"aadc_semi_implicit": "bdf_tape"},
+    # The default is itself one that cannot forward-solve, so this also covers
+    # the substitution.
+    "default_method_by_solver": {"aadc_semi_implicit": "grad_only"},
     # Present so the CA-introspected form builder runs, which is the one that
     # renders the method dropdown from methods_by_solver.
     "solver_info_fields_by_solver": {
@@ -666,29 +661,32 @@ AADC_SCHEMA = {
 }
 
 
-def test_a_gradient_strategy_is_not_offered_as_an_integrator():
+@pytest.fixture
+def aadc_schema(monkeypatch):
+    monkeypatch.setattr(so, "_introspect_solver_schema", lambda: AADC_SCHEMA)
+
+
+def test_a_gradient_strategy_is_not_offered_as_an_integrator(aadc_schema):
     opts = so._build_options(AADC_SCHEMA, {"max": True})
     methods = opts["methods_by_solver"]["aadc_semi_implicit"]
-    assert "bdf_tape" not in methods and "bdf_kernel" not in methods
-    # Only those two: the rest of CA's list is untouched.
     assert methods == ["semi_implicit", "implicit_newton", "rk4"]
 
 
-def test_the_withdrawn_methods_leave_the_ad_lists_too():
+def test_the_withdrawn_methods_leave_the_ad_lists_too(aadc_schema):
     """One list saying a method exists and another saying it is AD-suitable is
     how a dead setting survives a filter."""
     opts = so._build_options(AADC_SCHEMA, {"max": True})
     assert opts["ad_suitable_methods"]["aadc_semi_implicit"] == ["rk4"]
 
 
-def test_a_withdrawn_default_is_replaced_by_one_that_runs():
-    """CA defaults aadc_semi_implicit to a method CUFLynx has just removed;
-    leaving it would make the *default* configuration the broken one."""
+def test_a_withdrawn_default_is_replaced_by_one_that_runs(aadc_schema):
+    """Leaving a default that cannot forward-solve would make the *default*
+    configuration the broken one."""
     opts = so._build_options(AADC_SCHEMA, {"max": True})
     assert opts["default_method_by_solver"]["aadc_semi_implicit"] == "semi_implicit"
 
 
-def test_the_dropdown_and_the_method_list_agree():
+def test_the_dropdown_and_the_method_list_agree(aadc_schema):
     opts = so._build_options(AADC_SCHEMA, {"max": True})
     assert (
         _method_options(opts, "aadc_semi_implicit")
@@ -696,11 +694,19 @@ def test_the_dropdown_and_the_method_list_agree():
     )
 
 
-def test_only_the_named_solver_is_filtered():
+def test_only_the_named_solver_is_filtered(aadc_schema):
     """The exclusion is per solver: it must not reach into another solver that
     happens to have a method of the same name."""
-    assert so.supported_methods("casadi_integrator", ["bdf_tape", "bdf"]) == ["bdf_tape", "bdf"]
-    assert so.supported_methods("aadc_semi_implicit", ["bdf_tape", "rk4"]) == ["rk4"]
+    assert so.supported_methods("casadi_integrator", ["grad_only", "bdf"]) == ["grad_only", "bdf"]
+    assert so.supported_methods("aadc_semi_implicit", ["grad_only", "rk4"]) == ["rk4"]
+
+
+def test_the_retired_bdf_methods_are_not_filtered_locally(monkeypatch):
+    """bdf_tape/bdf_kernel are refused by CA itself (semi_implicit_signed +
+    gradient_strategy); CUFLynx keeps no list of its own."""
+    monkeypatch.setattr(so, "_introspect_solver_schema", lambda: {"methods_by_solver": {}})
+    assert not hasattr(so, "UNSUPPORTED_METHODS")
+    assert so.supported_methods("aadc_semi_implicit", ["bdf_tape", "rk4"]) == ["bdf_tape", "rk4"]
 
 
 @BOTH_SCHEMAS
@@ -728,29 +734,23 @@ def test_forward_filter_prefers_cas_schema_over_the_local_fallback(monkeypatch):
     """
     monkeypatch.setattr(so, "_introspect_solver_schema", lambda: {
         "methods_by_solver": {"aadc_semi_implicit": [
-            "semi_implicit", "rk4", "semi_implicit_signed", "bdf_tape"]},
+            "semi_implicit", "rk4", "semi_implicit_signed"]},
         "forward_methods_by_solver": {"aadc_semi_implicit": ["semi_implicit", "rk4"]},
     })
     got = so.supported_methods(
-        "aadc_semi_implicit", ["semi_implicit", "rk4", "semi_implicit_signed", "bdf_tape"])
+        "aadc_semi_implicit", ["semi_implicit", "rk4", "semi_implicit_signed"])
     assert got == ["semi_implicit", "rk4"]
 
 
-def test_forward_filter_falls_back_when_ca_is_too_old_or_absent(monkeypatch):
-    """A CA without the key, or none at all, must still lose the two known-bad methods."""
-    older = ["adaptive_rk45", "semi_implicit", "bdf_tape", "bdf_kernel", "rk4"]
-
-    monkeypatch.setattr(so, "_introspect_solver_schema",
-                        lambda: {"methods_by_solver": {}})
-    assert so.supported_methods("aadc_semi_implicit", older) == [
-        "adaptive_rk45", "semi_implicit", "rk4"]
+def test_forward_filter_removes_nothing_when_ca_cannot_say(monkeypatch):
+    """A CA that cannot be read must not lose the menu."""
+    methods = ["adaptive_rk45", "semi_implicit", "rk4"]
 
     def boom():
         raise ImportError("no CA on the path")
 
     monkeypatch.setattr(so, "_introspect_solver_schema", boom)
-    assert so.supported_methods("aadc_semi_implicit", older) == [
-        "adaptive_rk45", "semi_implicit", "rk4"]
+    assert so.supported_methods("aadc_semi_implicit", methods) == methods
 
 
 def test_stiff_filter_drops_the_method_that_is_wrong_without_failing(monkeypatch):
@@ -788,14 +788,14 @@ def test_stiff_filter_is_a_noop_when_ca_cannot_say(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# modifier `operation` vocabulary
+# modifier vocabulary
 # ---------------------------------------------------------------------------
 def test_param_modifier_operations_are_introspected_from_ca(monkeypatch):
     """CA owns what a modifier may do. An operation CA grows ('calculate' is the
     expected next one) must appear here without a change in CUFLynx."""
     fake_mod = types.SimpleNamespace(
-        DEFAULT_PARAM_MODIFIER_OPERATION="scale",
-        param_modifier_operations=lambda: {
+        DEFAULT_PARAM_MODIFIER="scale",
+        param_modifiers=lambda external_path=None: {
             "scale": {"description": "one calibrated multiplier", "applies_to": "value",
                       "dimensionless": True, "default_min": 0.5, "default_max": 2.0,
                       "identity": 1.0},
@@ -840,8 +840,8 @@ def test_a_user_authored_modifier_is_offered_alongside_cas_own(monkeypatch, tmp_
         return ops
 
     fake_mod = types.SimpleNamespace(
-        DEFAULT_PARAM_MODIFIER_OPERATION="scale",
-        param_modifier_operations=_registry,
+        DEFAULT_PARAM_MODIFIER="scale",
+        param_modifiers=_registry,
     )
     set_ca_module(monkeypatch, "parsers.PrimitiveParsers", fake_mod)
     monkeypatch.setattr(so, "_ensure_ca_path", lambda: None)
@@ -878,7 +878,7 @@ def test_param_modifier_operations_fall_back_for_older_ca(monkeypatch):
     """A CA predating modifiers still gets the one operation it will grow into,
     so the editor renders (and the parser refuses unknown ops by name)."""
     def _boom():
-        raise ImportError("cannot import name 'param_modifier_operations'")
+        raise ImportError("cannot import name 'param_modifiers'")
 
     monkeypatch.setattr(so, "_introspect_param_modifier_operations", _boom)
     so.reset_cache()
@@ -1071,125 +1071,20 @@ def test_the_config_route_reports_a_value_for_every_field_it_offers(client):
 
 
 # ---------------------------------------------------------------------------
-# The model_type rename (cellml_only -> cellml)
+# model_type names are CA's, passed through as they are
 # ---------------------------------------------------------------------------
-# The CA directory is chosen at runtime and can be any checkout, so CUFLynx meets
-# both spellings. It keeps one canonical name internally and translates back at
-# the moment a config is written for CA -- these pin both directions, because
-# each failure is invisible from the other side: an untranslated *inbound* name
-# puts a retired option in the Settings dropdown, and an untranslated *outbound*
-# one makes every calibration die in CA's parser before it starts.
-
-def _legacy_ca_schema():
-    """CA_SCHEMA as an older circulatory_autogen reports it."""
-    schema = {k: v for k, v in CA_SCHEMA.items()}
-    schema["model_types"] = ["cellml_only" if m == "cellml" else m for m in schema["model_types"]]
-    for key in ("solvers_by_model_type", "default_solver_by_model_type"):
-        schema[key] = {
-            ("cellml_only" if m == "cellml" else m): v for m, v in CA_SCHEMA[key].items()
-        }
-    return schema
-
-
-def test_a_current_ca_needs_no_translation_in_either_direction(monkeypatch):
-    monkeypatch.setattr(so, "_introspect_solver_schema", lambda: dict(CA_SCHEMA))
+def test_model_formats_are_cas_names_untranslated(monkeypatch):
+    schema = dict(CA_SCHEMA)
+    schema["model_types"] = [*CA_SCHEMA["model_types"], "cellml_only"]
+    monkeypatch.setattr(so, "_introspect_solver_schema", lambda: schema)
     monkeypatch.setattr(so, "_introspect_differentiable", lambda: {"max": True})
     so.reset_cache()
     opts = so.get_solver_options(refresh=True)
 
     assert "cellml" in opts["model_formats"]
-    assert so.ca_model_type("cellml") == "cellml"
-
-
-def test_an_older_ca_is_presented_under_the_current_name(monkeypatch):
-    """Inbound: the retired spelling must never reach the Settings dropdown, or
-    the GUI keeps writing it into new configs and the rename never finishes."""
-    monkeypatch.setattr(so, "_introspect_solver_schema", lambda: _legacy_ca_schema())
-    monkeypatch.setattr(so, "_introspect_differentiable", lambda: {"max": True})
-    so.reset_cache()
-    opts = so.get_solver_options(refresh=True)
-
-    assert "cellml" in opts["model_formats"]
-    assert "cellml_only" not in opts["model_formats"]
-    # And the format still carries its solvers and its default -- a rename that
-    # loses the keyed-off entries leaves the dropdown with an empty format.
     assert opts["solvers_by_format"]["cellml"] == ["CVODE_myokit"]
-    assert opts["default_solver_by_format"]["cellml"] == "CVODE_myokit"
-
-
-def test_an_older_ca_gets_a_run_config_in_its_own_spelling(monkeypatch):
-    """Outbound: that CA's parse_user_inputs_file exits on a model_type it does
-    not know, so a run config saying `cellml` would kill every calibration."""
-    monkeypatch.setattr(so, "_introspect_solver_schema", lambda: _legacy_ca_schema())
-    monkeypatch.setattr(so, "_introspect_differentiable", lambda: {"max": True})
-    so.reset_cache()
-    so.get_solver_options(refresh=True)
-
-    assert so.ca_model_type("cellml") == "cellml_only"
-    # Only the renamed one is translated; everything else is passed straight on.
-    assert so.ca_model_type("casadi_python") == "casadi_python"
-    assert so.ca_model_type("external_python") == "external_python"
-    assert so.ca_model_type("") == ""
-    assert so.ca_model_type(None) is None
-
-
-def test_the_old_spelling_is_accepted_wherever_a_stored_setting_can_carry_it():
-    """Settings persist across upgrades, so a config written before the rename
-    still names the old format. It is canonicalised rather than rejected."""
-    assert so.canonical_model_type("cellml_only") == "cellml"
-    assert so.canonical_model_type("cellml") == "cellml"
-    assert so.canonical_model_type("casadi_python") == "casadi_python"
-    assert so.canonical_model_type("nonsense") == "nonsense"
-    assert so.canonical_model_type("") == ""
-    assert so.canonical_model_type(None) is None
-
-
-def test_the_ca_spelling_is_worked_out_before_the_first_run_config(monkeypatch):
-    """Outbound translation must not depend on something having asked for the
-    solver options first.
-
-    ``_ca_model_type_spelling`` started as ``{}``, which is indistinguishable from
-    "asked, and this CA uses the current names" -- so ``ca_model_type`` was the
-    identity function until some caller happened to run ``get_solver_options()``.
-    A run config written before that went out saying ``cellml`` to a CA that only
-    accepts ``cellml_only``, and every calibration, SA and UQ run against it died
-    at startup. It now introspects on first use.
-    """
-    monkeypatch.setattr(so, "_introspect_solver_schema", lambda: _legacy_ca_schema())
-    monkeypatch.setattr(so, "_introspect_differentiable", lambda: {"max": True})
-    so.reset_cache()  # nothing has been introspected yet, as at process start
-
-    assert so.ca_model_type("cellml") == "cellml_only"
-
-
-def test_the_ca_spelling_is_forgotten_when_the_ca_directory_changes(monkeypatch):
-    """It is a fact about the connected CA, so it is a cache like the other five
-    -- and it was the one ``reset_cache`` did not clear, so a new CA dir (and, in
-    the test process, the next test) inherited the previous one's answer."""
-    monkeypatch.setattr(so, "_introspect_solver_schema", lambda: _legacy_ca_schema())
-    monkeypatch.setattr(so, "_introspect_differentiable", lambda: {"max": True})
-    so.reset_cache()
-    so.get_solver_options(refresh=True)
-    assert so.ca_model_type("cellml") == "cellml_only"
-
-    # The user points Settings -> "CA dir" at a current checkout.
-    monkeypatch.setattr(so, "_introspect_solver_schema", lambda: dict(CA_SCHEMA))
-    so.reset_cache()
-
-    assert so.ca_model_type("cellml") == "cellml"
-
-
-def test_an_unreadable_ca_leaves_the_spelling_alone(monkeypatch):
-    """No CA at all: there is nothing to translate against, so the canonical name
-    is the only honest answer -- and it must not raise on the way to it."""
-    def _boom():
-        raise RuntimeError("no CA")
-
-    monkeypatch.setattr(so, "_introspect_solver_schema", _boom)
-    monkeypatch.setattr(so, "_introspect_differentiable", _boom)
-    so.reset_cache()
-
-    assert so.ca_model_type("cellml") == "cellml"
+    assert "cellml_only" not in opts["solvers_by_format"]
+    assert not hasattr(so, "ca_model_type")
 
 
 class TestEmulationUnavailableReasonNamesTheRightCause:

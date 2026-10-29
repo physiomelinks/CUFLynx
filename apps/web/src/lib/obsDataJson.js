@@ -51,13 +51,11 @@ export function splitItems(dataItems = [], operations = FALLBACK_OPERATIONS) {
 export function itemToRow(item) {
   return {
     _orig: item, // keep the full original so extra keys round-trip
-    // CA #466 split the two overloaded keys. `data_item_name` is the item's identity and must
-    // be unique across data_items + prediction_items; `trace_name_for_plotting` labels the
-    // trace and may repeat (the mean and the max of one variable share it). The legacy
-    // `variable` / `name_for_plotting` are still read so an older file opens.
-    data_item_name: item.data_item_name ?? item.variable ?? '',
-    trace_name_for_plotting:
-      item.trace_name_for_plotting ?? item.name_for_plotting ?? item.data_item_name ?? item.variable ?? '',
+    // `data_item_name` is the item's identity and must be unique across data_items +
+    // prediction_items; `trace_name_for_plotting` labels the trace and may repeat (the
+    // mean and the max of one variable share it).
+    data_item_name: item.data_item_name ?? '',
+    trace_name_for_plotting: item.trace_name_for_plotting ?? item.data_item_name ?? '',
     operation: item.operation ?? '',
     // Per-data_item values for the operation's keyword args (e.g. threshold,
     // window). Cloned so edits don't mutate the source; round-tripped on save.
@@ -118,10 +116,6 @@ export function rowToItem(row) {
   out.data_type = SCALAR_DATA_TYPE
   out.data_item_name = row.data_item_name
   out.trace_name_for_plotting = row.trace_name_for_plotting || row.data_item_name
-  // never write both spellings back out -- CA rejects an item that sets a legacy key
-  // alongside its replacement
-  delete out.variable
-  delete out.name_for_plotting
   // Empties dropped: clearing an operand in the editor is how one is removed,
   // so a blank must not survive into the file as a nameless operand.
   out.operands = (row.operands ?? []).filter((o) => o)
@@ -161,16 +155,16 @@ export function rowToItem(row) {
 export function predToRow(pred) {
   return {
     _orig: pred,
-    // a prediction_item now names its model variable in `operands`, like a data_item;
-    // `variable` used to be both the qname and the item's name
-    data_item_name: pred.data_item_name ?? pred.variable ?? '',
-    operands: Array.isArray(pred.operands)
-      ? [...pred.operands]
-      : (pred.variable ? [pred.variable] : []),
+    // a prediction_item names its model variable in `operands`, like a data_item
+    data_item_name: pred.data_item_name ?? '',
+    operands: Array.isArray(pred.operands) ? [...pred.operands] : [],
     unit: pred.unit ?? 'dimensionless',
-    trace_name_for_plotting:
-      pred.trace_name_for_plotting ?? pred.name_for_plotting ?? pred.data_item_name ?? pred.variable ?? '',
+    trace_name_for_plotting: pred.trace_name_for_plotting ?? pred.data_item_name ?? '',
     experiment_idx: pred.experiment_idx ?? 0,
+    // Optional: a scalar of the trace (same vocabulary as a data_item's). Only what
+    // makes the item usable as an SA / emulator feature ("Include prediction items");
+    // its operation_kwargs ride along in _orig.
+    operation: pred.operation ?? '',
   }
 }
 
@@ -182,6 +176,7 @@ export function newPredRow(experimentIdx = 0) {
     unit: 'dimensionless',
     trace_name_for_plotting: '',
     experiment_idx: experimentIdx,
+    operation: '',
   }
 }
 
@@ -193,31 +188,46 @@ export function predRowToItem(row) {
   out.unit = row.unit
   out.trace_name_for_plotting = row.trace_name_for_plotting || row.data_item_name
   out.experiment_idx = num(row.experiment_idx, 0)
-  delete out.variable
-  delete out.name_for_plotting
+  if (row.operation) out.operation = row.operation
+  else delete out.operation
+  // operation_kwargs belong to the operation they were written for: kept verbatim
+  // while it is unchanged, dropped when it is cleared or replaced.
+  if (!row.operation || row.operation !== (row._orig?.operation ?? '')) delete out.operation_kwargs
   return out
 }
 
 /**
- * Build the obs_data payload. With a protocol_info present, emit the object form
- * `{protocol_info, prediction_items, data_items}` (protocol_info passed through
- * verbatim). Without one (data-only), emit a bare array of data_items — the
- * backend requires protocol_info for the object form, and data-only files have
- * no prediction_items.
+ * The prediction_items that "Include prediction items" can turn into SA / emulator
+ * features: those with an `operation` (a scalar of the trace). libcuflynx skips the
+ * others with a warning. Only used to say whether the box can do anything here --
+ * which items become features, and how, is libcuflynx's decision, not this file's.
+ */
+export function predictionFeatureItems(predictionItems = []) {
+  if (!Array.isArray(predictionItems)) return []
+  return predictionItems.filter((it) => {
+    const op = it && typeof it === 'object' ? it.operation : null
+    return typeof op === 'string' && op.trim() !== '' && op !== 'None'
+  })
+}
+
+/** Whether any prediction_item carries held-out data (a `value`, CA #535). */
+export function hasHeldOutData(predictionItems = []) {
+  return Array.isArray(predictionItems) &&
+    predictionItems.some((it) => it && typeof it === 'object' && it.value != null)
+}
+
+/**
+ * Build the obs_data payload `{protocol_info, prediction_items, data_items}`
+ * (protocol_info passed through verbatim). An obs_data always has a protocol_info:
+ * libcuflynx refuses one without.
  */
 export function buildObsData({ protocolInfo, editableRows, preservedItems, predictionRows }) {
-  const data_items = [
-    ...(editableRows ?? []).map(rowToItem),
-    ...(preservedItems ?? []),
-  ]
-  if (protocolInfo != null) {
-    return {
-      protocol_info: protocolInfo,
-      prediction_items: (predictionRows ?? []).map(predRowToItem),
-      data_items,
-    }
+  if (protocolInfo == null) throw new Error('an obs_data needs a protocol_info')
+  return {
+    protocol_info: protocolInfo,
+    prediction_items: (predictionRows ?? []).map(predRowToItem),
+    data_items: [...(editableRows ?? []).map(rowToItem), ...(preservedItems ?? [])],
   }
-  return data_items
 }
 
 export function experimentIdxMax(experimentCount) {
@@ -241,4 +251,17 @@ export function versionedJsonName(loadedFilename, modelName, date = new Date()) 
     ? loadedFilename.replace(/\.json$/i, '')
     : `${modelName ?? 'model'}_obs_data`
   return `${stem}_${yymmdd(date)}.json`
+}
+
+/**
+ * Which of an emulator's features are prediction features: libcuflynx lists them in
+ * `prediction_feature_labels` and puts them last in `feature_labels`, so it is the
+ * trailing positions -- by position, as libcuflynx itself reads them, since a
+ * data_item's label is free text. `[bool]`, one per feature label.
+ */
+export function emulatorPredictionFlags(meta) {
+  const labels = meta?.feature_labels ?? []
+  const n = (meta?.prediction_feature_labels ?? []).length
+  const first = labels.length - n
+  return labels.map((_, i) => n > 0 && i >= first)
 }

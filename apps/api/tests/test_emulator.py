@@ -874,15 +874,8 @@ def test_an_emulator_that_will_not_load_is_a_silence_not_a_failure(client, monke
 
 
 # ---------------------------------------------------------------------------
-# A protocol-less obs_data is still an obs_data
+# The document handed to CA carries the obs_data's protocol_info
 # ---------------------------------------------------------------------------
-# An obs_data may say what to measure without saying how to drive the model --
-# CA then builds the timeline from sim_time/pre_time. The heat_fenics example
-# ships exactly that. _obs_data_document used to return None for it, so a
-# protocol-less study was reported as having no obs_data at all: the solver's
-# cost quietly fell back to the local walk, and the emulator's cost -- which
-# has no fallback, deliberately -- never appeared, saying "there is no obs_data
-# loaded to score the emulator against" while one was plainly loaded.
 _BARE_ITEM = {
     "data_item_name": "probe 1 mean", "trace_name_for_plotting": "mean(T_{p1})",
     "data_type": "constant", "operation": "mean", "operands": ["heat/T_p1"],
@@ -901,16 +894,6 @@ class _ObsStub:
 class _RecordStub:
     def __init__(self, protocol_info):
         self.obs_data = _ObsStub(protocol_info)
-
-
-def test_a_protocol_less_obs_data_still_produces_a_document():
-    import main
-
-    doc = main._obs_data_document(_RecordStub(None))
-    assert doc is not None, 'a protocol-less obs_data is not "no obs_data"'
-    assert doc["data_items"] == [dict(_BARE_ITEM)]
-    # Omitted, not None: CA's parser accepts the absence and refuses an explicit None.
-    assert "protocol_info" not in doc
 
 
 def test_a_protocol_is_carried_through_when_there_is_one():

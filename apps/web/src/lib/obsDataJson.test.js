@@ -9,41 +9,45 @@ import {
   experimentIdxMax,
   predToRow,
   predRowToItem,
+  newPredRow,
+  predictionFeatureItems,
+  hasHeldOutData,
+  emulatorPredictionFlags,
 } from './obsDataJson'
 
 const OPS = ['', 'max', 'min', 'mean']
 
 describe('splitItems', () => {
-  it('reads a pre-#466 item and writes back only the current keys', () => {
-    // CA #466 split `variable` into data_item_name + operands and `name_for_plotting` into
-    // trace/item labels. An older saved study must still open, and must not be written back
-    // with both spellings -- CA rejects an item that sets a legacy key beside its replacement.
+  it('reads the current keys only', () => {
+    // `variable` / `name_for_plotting` are not obs_data keys; CA refuses a file that has them.
     const row = itemToRow({
       variable: 'a', name_for_plotting: 'A_{max}', data_type: 'constant',
       operation: 'max', operands: ['m/x'], value: 1, std: 0.1,
     })
-    expect(row.data_item_name).toBe('a')
-    expect(row.trace_name_for_plotting).toBe('A_{max}')
-    const out = rowToItem(row)
+    expect(row.data_item_name).toBe('')
+    expect(row.trace_name_for_plotting).toBe('')
+    const current = itemToRow({
+      data_item_name: 'a', trace_name_for_plotting: 'A_{max}', data_type: 'constant',
+      operation: 'max', operands: ['m/x'], value: 1, std: 0.1,
+    })
+    const out = rowToItem(current)
     expect(out.data_item_name).toBe('a')
     expect(out.trace_name_for_plotting).toBe('A_{max}')
-    expect('variable' in out).toBe(false)
-    expect('name_for_plotting' in out).toBe(false)
   })
 
   it('editable = constant with a known operation; everything else preserved', () => {
     const items = [
-      { variable: 'a', data_type: 'constant', operation: 'max', value: 1, std: 0.1 },
-      { variable: 's', data_type: 'series', obs_dt: 0.1, value: [1, 2], std: 0.1 },
-      { variable: 'c', data_type: 'constant', operation: 'calc_spike', value: 0, std: 0.1 },
+      { data_item_name: 'a', data_type: 'constant', operation: 'max', value: 1, std: 0.1 },
+      { data_item_name: 's', data_type: 'series', obs_dt: 0.1, value: [1, 2], std: 0.1 },
+      { data_item_name: 'c', data_type: 'constant', operation: 'calc_spike', value: 0, std: 0.1 },
     ]
     const { editable, preserved } = splitItems(items, OPS)
     expect(editable.map((r) => r.data_item_name)).toEqual(['a'])
-    expect(preserved.map((i) => i.variable)).toEqual(['s', 'c'])
+    expect(preserved.map((i) => i.data_item_name)).toEqual(['s', 'c'])
   })
 
   it('treats a missing data_type/operation as an editable constant', () => {
-    const { editable } = splitItems([{ variable: 'x', value: 1, std: 1 }], OPS)
+    const { editable } = splitItems([{ data_item_name: 'x', value: 1, std: 1 }], OPS)
     expect(editable).toHaveLength(1)
   })
 })
@@ -51,7 +55,7 @@ describe('splitItems', () => {
 describe('itemToRow / rowToItem round-trip', () => {
   it('preserves extra keys and round-trips cost_type', () => {
     const item = {
-      variable: 'a',
+      data_item_name: 'a',
       data_type: 'constant',
       operation: 'max',
       operands: ['m/x'],
@@ -77,7 +81,7 @@ describe('itemToRow / rowToItem round-trip', () => {
 
   it('round-trips operation_kwargs and reflects edited values', () => {
     const row = itemToRow({
-      variable: 'a', data_type: 'constant', operation: 'peak_above', operands: ['m/x'],
+      data_item_name: 'a', data_type: 'constant', operation: 'peak_above', operands: ['m/x'],
       value: 1, std: 0.1, operation_kwargs: { threshold: 0.5, window: 10 },
     })
     expect(row.operation_kwargs).toEqual({ threshold: 0.5, window: 10 })
@@ -87,7 +91,7 @@ describe('itemToRow / rowToItem round-trip', () => {
 
   it('drops operation_kwargs when empty or when the operation is cleared', () => {
     const row = itemToRow({
-      variable: 'a', data_type: 'constant', operation: 'peak_above', operands: ['m/x'],
+      data_item_name: 'a', data_type: 'constant', operation: 'peak_above', operands: ['m/x'],
       value: 1, std: 0.1, operation_kwargs: { threshold: 0.5 },
     })
     row.operation_kwargs = {}
@@ -104,7 +108,7 @@ describe('itemToRow / rowToItem round-trip', () => {
   // cost_kwargs (CA #370): the cost func's own keyword args, per data_item.
   it('round-trips cost_kwargs and reflects edited values', () => {
     const row = itemToRow({
-      variable: 'a', data_type: 'constant', operation: 'max', operands: ['m/x'],
+      data_item_name: 'a', data_type: 'constant', operation: 'max', operands: ['m/x'],
       value: 1, std: 0.1, cost_type: 'tolerant', cost_kwargs: { tolerance: 0.5, mode: 'abs' },
     })
     expect(row.cost_kwargs).toEqual({ tolerance: 0.5, mode: 'abs' })
@@ -117,7 +121,7 @@ describe('itemToRow / rowToItem round-trip', () => {
     // func to pass kwargs to" -- deleting them here would be silent data loss on
     // a hand-written obs_data that was merely opened in the editor.
     const row = itemToRow({
-      variable: 'a', data_type: 'constant', operation: 'max', operands: ['m/x'],
+      data_item_name: 'a', data_type: 'constant', operation: 'max', operands: ['m/x'],
       value: 1, std: 0.1, cost_kwargs: { tolerance: 0.5 },
     })
     const back = rowToItem(row)
@@ -145,7 +149,7 @@ describe('itemToRow / rowToItem round-trip', () => {
 
   it('round-trips a text source and drops it when cleared', () => {
     const row = itemToRow({
-      variable: 'a', data_type: 'constant', operation: 'max', operands: ['m/x'],
+      data_item_name: 'a', data_type: 'constant', operation: 'max', operands: ['m/x'],
       value: 1, std: 0.1, source: 'Smith et al. 2020, fig 3',
     })
     expect(row.source).toBe('Smith et al. 2020, fig 3')
@@ -156,7 +160,7 @@ describe('itemToRow / rowToItem round-trip', () => {
 
   it('round-trips a comment and drops it when cleared', () => {
     const row = itemToRow({
-      variable: 'a', data_type: 'constant', operation: 'max', operands: ['m/x'],
+      data_item_name: 'a', data_type: 'constant', operation: 'max', operands: ['m/x'],
       value: 1, std: 0.1, comment: 'noisy near t=0',
     })
     expect(row.comment).toBe('noisy near t=0')
@@ -167,7 +171,7 @@ describe('itemToRow / rowToItem round-trip', () => {
 
   it('never clobbers a legacy dict source (file paths)', () => {
     const item = {
-      variable: 'a', data_type: 'constant', operation: 'max', operands: ['m/x'],
+      data_item_name: 'a', data_type: 'constant', operation: 'max', operands: ['m/x'],
       value: 1, std: 0.1, source: { value_path: 'x.npy' },
     }
     const row = itemToRow(item)
@@ -193,9 +197,9 @@ describe('newRow defaults', () => {
 
 describe('buildObsData', () => {
   const editableRows = [
-    itemToRow({ variable: 'a', data_type: 'constant', operation: 'max', operands: ['m/x'], value: 1, std: 0.1 }),
+    itemToRow({ data_item_name: 'a', data_type: 'constant', operation: 'max', operands: ['m/x'], value: 1, std: 0.1 }),
   ]
-  const preservedItems = [{ variable: 's', data_type: 'series', obs_dt: 0.1 }]
+  const preservedItems = [{ data_item_name: 's', data_type: 'series', obs_dt: 0.1 }]
 
   it('object form with protocol_info (verbatim) + preserved items appended', () => {
     const protocolInfo = { pre_times: [0], sim_times: [[5]] }
@@ -203,14 +207,14 @@ describe('buildObsData', () => {
     expect(Array.isArray(out)).toBe(false)
     expect(out.protocol_info).toBe(protocolInfo)
     expect(out.data_items).toHaveLength(2)
-    expect(out.data_items[1]).toEqual({ variable: 's', data_type: 'series', obs_dt: 0.1 })
+    expect(out.data_items[1]).toEqual({ data_item_name: 's', data_type: 'series', obs_dt: 0.1 })
     expect(out.prediction_items).toEqual([])
   })
 
-  it('bare array (data-only) when protocol_info is null', () => {
-    const out = buildObsData({ protocolInfo: null, editableRows, preservedItems: [], predictionRows: [] })
-    expect(Array.isArray(out)).toBe(true)
-    expect(out).toHaveLength(1)
+  it('refuses to build an obs_data without a protocol_info', () => {
+    expect(() =>
+      buildObsData({ protocolInfo: null, editableRows, preservedItems: [], predictionRows: [] }),
+    ).toThrow(/protocol_info/)
   })
 })
 
@@ -262,5 +266,61 @@ describe('prediction_items with held-out data (CA #535)', () => {
     expect(out).toMatchObject({
       unit: 'V', data_type: 'series', value: [1, 2, 3], std: 0.5, obs_dt: 0.1,
     })
+  })
+})
+
+describe('prediction_items with an operation (prediction features)', () => {
+  it('round-trips operation and operation_kwargs through an edit', () => {
+    const pred = {
+      data_item_name: 'v_max', operands: ['main/v'], unit: 'm3', experiment_idx: 0,
+      operation: 'max', operation_kwargs: { k: 2 },
+    }
+    const row = predToRow(pred)
+    expect(row.operation).toBe('max')
+    row.unit = 'L'
+    expect(predRowToItem(row)).toMatchObject({ unit: 'L', operation: 'max', operation_kwargs: { k: 2 } })
+  })
+
+  it('drops the kwargs when the operation is changed or cleared', () => {
+    const row = predToRow({ data_item_name: 'v', operands: ['main/v'], operation: 'max', operation_kwargs: { k: 2 } })
+    row.operation = 'min'
+    expect(predRowToItem(row).operation_kwargs).toBeUndefined()
+    row.operation = ''
+    const out = predRowToItem(row)
+    expect(out.operation).toBeUndefined()
+    expect(out.operation_kwargs).toBeUndefined()
+  })
+
+  it('writes no operation for a new row', () => {
+    const row = newPredRow(0)
+    row.data_item_name = 'z'
+    expect(predRowToItem(row).operation).toBeUndefined()
+  })
+
+  it('counts only the items with an operation as possible features', () => {
+    const items = [
+      { data_item_name: 'a', operation: 'max' },
+      { data_item_name: 'b' },
+      { data_item_name: 'c', operation: '' },
+      { data_item_name: 'd', operation: 'None' },
+    ]
+    expect(predictionFeatureItems(items).map((i) => i.data_item_name)).toEqual(['a'])
+    expect(predictionFeatureItems(null)).toEqual([])
+  })
+
+  it('knows when there is held-out data', () => {
+    expect(hasHeldOutData([{ value: 0 }])).toBe(true)
+    expect(hasHeldOutData([{ operation: 'max' }])).toBe(false)
+  })
+})
+
+describe('emulatorPredictionFlags', () => {
+  it('marks the trailing prediction_feature_labels, by position', () => {
+    expect(
+      emulatorPredictionFlags({ feature_labels: ['a', 'b', 'c'], prediction_feature_labels: ['c'] }),
+    ).toEqual([false, false, true])
+    // a bundle trained without them, or an older one without the key
+    expect(emulatorPredictionFlags({ feature_labels: ['a'] })).toEqual([false])
+    expect(emulatorPredictionFlags(null)).toEqual([])
   })
 })

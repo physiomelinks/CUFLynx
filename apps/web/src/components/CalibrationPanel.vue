@@ -363,7 +363,7 @@ function onRun() {
       </a>
     </p>
     <p v-if="!canRun" class="hint">
-      Load a model, an obs_data.json and a params_for_id.csv to calibrate.
+      Load a model, an obs_data.json and a params_for_id.json to calibrate.
     </p>
     <p v-if="error" class="cal-error">{{ error }}</p>
 

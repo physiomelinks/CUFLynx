@@ -53,8 +53,8 @@ const baseProps = {
   visible: true,
   modelId: 'abc',
   currentDataItems: [
-    { variable: 'x_max', data_type: 'constant', operation: 'max', operands: ['m/x'], unit: 'dimensionless', value: 30, std: 3, experiment_idx: 0, plot_type: 'horizontal' },
-    { variable: 's', data_type: 'series', obs_dt: 0.1, value: [1, 2], std: 0.1, experiment_idx: 0 },
+    { data_item_name: 'x_max', data_type: 'constant', operation: 'max', operands: ['m/x'], unit: 'dimensionless', value: 30, std: 3, experiment_idx: 0, plot_type: 'horizontal' },
+    { data_item_name: 's', data_type: 'series', obs_dt: 0.1, value: [1, 2], std: 0.1, experiment_idx: 0 },
   ],
   currentPredictionItems: [],
   protocolInfo: { pre_times: [0], sim_times: [[5]] },
@@ -218,7 +218,7 @@ describe('EditObsDataDialog', () => {
     operations: ['', 'max', 'peak_above'],
   }
   const kwargItem = {
-    variable: 'p', data_type: 'constant', operation: 'peak_above', operands: ['m/x'],
+    data_item_name: 'p', data_type: 'constant', operation: 'peak_above', operands: ['m/x'],
     unit: 'dimensionless', value: 1, std: 0.1, experiment_idx: 0, plot_type: 'horizontal',
   }
 
@@ -290,7 +290,7 @@ describe('EditObsDataDialog', () => {
     cost_types: ['MSE', 'gaussian_MLE', 'tolerant'],
   }
   const costItem = {
-    variable: 'p', data_type: 'constant', operation: 'max', operands: ['m/x'],
+    data_item_name: 'p', data_type: 'constant', operation: 'max', operands: ['m/x'],
     unit: 'dimensionless', value: 1, std: 0.1, experiment_idx: 0,
     plot_type: 'horizontal', cost_type: 'tolerant',
   }
@@ -405,7 +405,7 @@ describe('EditObsDataDialog', () => {
     // edited constant + preserved series item.
     expect(obsArg.protocol_info).toMatchObject({ pre_times: [0], sim_times: [[5]] })
     expect(obsArg.data_items).toHaveLength(2)
-    expect(obsArg.data_items[1]).toMatchObject({ variable: 's', data_type: 'series' })
+    expect(obsArg.data_items[1]).toMatchObject({ data_item_name: 's', data_type: 'series' })
 
     const saved = wrapper.emitted('saved')[0][0]
     expect(saved.filename).toMatch(/^obs_\d{6}\.json$/)
@@ -420,7 +420,7 @@ describe('EditObsDataDialog', () => {
       experimentCount: 2,
       currentDataItems: [
         {
-          variable: 'x_max', data_type: 'constant', operation: 'max', operands: ['m/x'],
+          data_item_name: 'x_max', data_type: 'constant', operation: 'max', operands: ['m/x'],
           value: 1, std: 1, experiment_idx: 1, subexperiment_idx: 1,
         },
       ],
@@ -453,7 +453,7 @@ describe('EditObsDataDialog', () => {
       experimentCount: 2,
       currentDataItems: [
         {
-          variable: 'x_max', data_type: 'constant', operation: 'max', operands: ['m/x'],
+          data_item_name: 'x_max', data_type: 'constant', operation: 'max', operands: ['m/x'],
           value: 1, std: 1, experiment_idx: 1, subexperiment_idx: 1,
         },
       ],
@@ -480,7 +480,7 @@ describe('EditObsDataDialog', () => {
       experimentCount: 2,
       currentDataItems: [
         {
-          variable: 'x_max', data_type: 'constant', operation: 'max', operands: ['m/x'],
+          data_item_name: 'x_max', data_type: 'constant', operation: 'max', operands: ['m/x'],
           value: 1, std: 1, experiment_idx: 1, subexperiment_idx: 1,
         },
       ],
@@ -497,7 +497,7 @@ describe('EditObsDataDialog', () => {
     expect(wrapper.find('[data-testid="eo-row"]').classes()).toContain('selected')
   })
 
-  it('data-only: "Add protocol_info" → save emits object form', async () => {
+  it('a new obs_data starts with a protocol_info, so save emits the object form', async () => {
     uploadObsData.mockResolvedValue({})
     const clickSpy = vi
       .spyOn(HTMLAnchorElement.prototype, 'click')
@@ -509,8 +509,7 @@ describe('EditObsDataDialog', () => {
       currentPredictionItems: [],
     })
     await flushPromises()
-    await wrapper.find('[data-testid="add-protocol"]').trigger('click')
-    await flushPromises()
+    expect(wrapper.find('[data-testid="add-protocol"]').exists()).toBe(false)
     await wrapper.find('[data-testid="eo-save"]').trigger('click')
     await flushPromises()
 
@@ -761,11 +760,11 @@ describe('operations that take named data_item references (#349)', () => {
     },
   }
   const peakUnforced = {
-    variable: 'peak unforced', data_type: 'constant', operation: 'max', operands: ['m/x'],
+    data_item_name: 'peak unforced', data_type: 'constant', operation: 'max', operands: ['m/x'],
     unit: 'dimensionless', value: 23.6, std: 0.5, experiment_idx: 0, plot_type: 'horizontal',
   }
   const difference = {
-    variable: 'forcing response', data_type: 'constant',
+    data_item_name: 'forcing response', data_type: 'constant',
     operation: 'calculate_two_observable_difference', operands: [],
     operation_kwargs: { subtract_from: 'peak forced', subtract_this: 'peak unforced' },
     unit: 'dimensionless', value: -2.04, std: 0.5, experiment_idx: 0, plot_type: 'horizontal',
@@ -827,7 +826,7 @@ describe('operations that take named data_item references (#349)', () => {
   })
 
   it('shows the stored reference as the selected option', async () => {
-    const peakForced = { ...peakUnforced, variable: 'peak forced' }
+    const peakForced = { ...peakUnforced, data_item_name: 'peak forced' }
     const wrapper = await mountDiff([peakUnforced, peakForced, difference])
     await wrapper.findAll('button[aria-label="details"]')[2].trigger('click')
     expect(wrapper.find('[data-testid="eo-kwarg-select-subtract_from"]').element.value)
@@ -883,5 +882,41 @@ describe('operations that take named data_item references (#349)', () => {
     await wrapper.find('[data-testid="eo-save"]').trigger('click')
     await flushPromises()
     expect('operation_kwargs' in uploadObsData.mock.calls[0][1].data_items[0]).toBe(false)
+  })
+})
+
+describe('prediction_items: operation (prediction features)', () => {
+  const PRED = {
+    data_item_name: 'v_max', operands: ['m/x'], unit: 'm3', experiment_idx: 0,
+    operation: 'max', operation_kwargs: { k: 2 },
+    // held-out data rides along too (CA #535)
+    data_type: 'constant', value: 3, std: 0.5,
+  }
+
+  it('offers an operation per prediction item and saves it with its kwargs', async () => {
+    uploadObsData.mockResolvedValue({ ok: true })
+    const wrapper = mountDialog({ currentPredictionItems: [PRED] })
+    await flushPromises()
+    const select = wrapper.find('[data-testid="eo-pred-operation"]')
+    expect(select.element.value).toBe('max')
+    await wrapper.find('[data-testid="eo-save"]').trigger('click')
+    await flushPromises()
+    const obsArg = uploadObsData.mock.calls[0][1]
+    expect(obsArg.prediction_items[0]).toMatchObject({
+      operation: 'max', operation_kwargs: { k: 2 }, value: 3, std: 0.5,
+    })
+  })
+
+  it('clearing the operation drops it and its kwargs', async () => {
+    uploadObsData.mockResolvedValue({ ok: true })
+    const wrapper = mountDialog({ currentPredictionItems: [PRED] })
+    await flushPromises()
+    await wrapper.find('[data-testid="eo-pred-operation"]').setValue('')
+    await wrapper.find('[data-testid="eo-save"]').trigger('click')
+    await flushPromises()
+    const item = uploadObsData.mock.calls[0][1].prediction_items[0]
+    expect(item.operation).toBeUndefined()
+    expect(item.operation_kwargs).toBeUndefined()
+    expect(item.value).toBe(3)
   })
 })

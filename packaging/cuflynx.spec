@@ -96,13 +96,9 @@ for runner in (
     "calibrated_model.py",
     "cellml_meta.py",
     "params_for_id.py",
-    # An obs_data.json is an object *or* a bare array of data_items; uq_runner
-    # rewrites one (MLE cost_type) and reads its items through the single helper
-    # that knows both shapes, rather than assuming the object form.
+    # uq_runner rewrites an obs_data (MLE cost_type) and reads its items through
+    # obs_data's helper.
     "obs_data.py",
-    # calibration_runner scores the best fit against held-out data (CA #535) with
-    # CA's own function, or this copy of it when the CA in use predates it.
-    "held_out_validation.py",
     # "use the emulator" -> CA engine kwargs, shared by all three analysis
     # runners so a study cannot be calibrated on a surrogate and analysed on the
     # solver without saying so (CA #333).
@@ -641,6 +637,13 @@ _BASE_EXCLUDES = (
     # switch this one asset over to Cython's build_ext, making the most fragile runtime path
     # in the app behave differently in the bundle nobody builds locally.
     "Cython",
+    # Matlogica's AADC and aadc-ode are proprietary, binary-only and licensed to each
+    # user, so they are never bundled: a user installs them into the Python set in
+    # Settings -> Python (see apps/api/aadc_check.py). libcuflynx imports them lazily
+    # behind ImportError guards, but collect_submodules("libcuflynx") still makes
+    # PyInstaller trace those imports, so a build machine with them installed would ship them.
+    "aadc",
+    "aadc_ode",
 )
 
 # ...except that one of them is dead weight only in the ordinary bundles. autoemulate's

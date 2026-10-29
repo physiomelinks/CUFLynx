@@ -30,6 +30,7 @@ import sys
 import traceback
 from pathlib import Path
 
+import ca_obs
 from ca_imports import ensure_ca_path
 
 # Markers the API watches for in stdout.
@@ -46,6 +47,8 @@ _EMULATOR_RESERVED = {
     "dt", "DEBUG", "num_cores", "solver", "solver_info", "python_path",
     "sim_time", "pre_time", "cost_type", "generated_model_format",
     "config_outputs_dir", "use_emulator",
+    # Forwarded by _emulator_settings only when this libcuflynx supports it.
+    "include_prediction_items",
 }
 
 
@@ -76,6 +79,11 @@ def _emulator_settings(settings: dict, emu_dir: str, seed=None) -> dict:
             out[key] = value
     if seed is not None:
         out["random_seed"] = int(seed)
+    # include_prediction_items: only when asked for and this libcuflynx takes it
+    # (an older one rejects the key). Which items become features is libcuflynx's.
+    from obs_data import prediction_features_option  # noqa: PLC0415 (runners/ too)
+
+    out.update(prediction_features_option(settings))
     return out
 
 
@@ -87,7 +95,8 @@ def _solver_info_from_config(config: dict, settings: dict) -> dict:
     """
     si = dict(config.get("solver_info") or {})
     si.setdefault("solver", config.get("solver") or settings.get("solver", "CVODE_myokit"))
-    si.setdefault("MaximumStep", settings.get("MaximumStep", 0.0001))
+    if "MaximumStep" in ca_obs.solver_info_keys(si["solver"]):
+        si.setdefault("MaximumStep", settings.get("MaximumStep", 0.0001))
     return si
 
 
