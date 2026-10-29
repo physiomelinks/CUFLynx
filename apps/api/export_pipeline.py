@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from ca_imports import ca_from
+from ca_imports import ca_from, ensure_ca_path
 from obs_data import data_items_of
 
 
@@ -1103,6 +1103,7 @@ def render_pipeline_script() -> str:
     version that ships with it is the one that matches it. Raises
     :class:`ca_imports.CaImportError` when the engine cannot be imported.
     """
+    ensure_ca_path()  # the configured CA dir first, as every other CA call here does
     return ca_from("scripts.generate_pipeline_script", "render_pipeline_script")()
 
 

@@ -103,12 +103,14 @@ jobs:
           python-version: ${{ matrix.python-version }}
       # Install only the light deps needed by the unit tier; the heavy
       # simulation stack (myokit/libcellml) is exercised by the integration
-      # marker, which is skipped here. pyyaml is for CA's parser module.
+      # marker, which is skipped here. pyyaml and jsonschema are for CA's parser
+      # module: without jsonschema it skips the schema checks the obs_data and
+      # params_for_id tests expect.
       # matplotlib is for the extra-figure pipeline: without it the
       # sim-worker child degrades to "no extra figures" by design, which
       # would silently gut test_solver_plots_worker's drift guards.
       - name: Install unit-test deps
-        run: pip install fastapi "uvicorn[standard]" numpy pandas pyyaml python-multipart httpx matplotlib pytest pytest-cov
+        run: pip install fastapi "uvicorn[standard]" numpy pandas pyyaml jsonschema python-multipart httpx matplotlib pytest pytest-cov
       - name: Run unit tests
         run: pytest -m "not integration" -q
 
