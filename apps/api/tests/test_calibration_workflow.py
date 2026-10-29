@@ -282,6 +282,17 @@ def step_workflow(client, monkeypatch, tmp_path):
     return path
 
 
+def test_a_steps_input_path_uses_this_os_separators(monkeypatch, tmp_path):
+    """A workflow file names its inputs with ``/``; the path handed back is normalised
+    (Windows' normpath stands in here, turning ``/`` into ``\\``)."""
+    import workflow_manager
+
+    manager = workflow_manager.WorkflowManager()
+    manager.path = str(tmp_path / "wf" / "calibration_workflow.json")
+    monkeypatch.setattr(os.path, "normpath", lambda p: p.replace("/", "\\"))
+    assert "/" not in manager._resolve("inputs/left_obs_data.json")
+
+
 def test_a_step_s_own_obs_data_is_read_and_overwritten(client, step_workflow):
     r = client.get("/api/workflow/step_input", params={"step_id": "left", "role": "obs_data"})
     assert r.status_code == 200, r.text

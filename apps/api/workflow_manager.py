@@ -350,7 +350,11 @@ class WorkflowManager:
             return json.load(fh)
 
     def _resolve(self, path: str) -> str:
-        return path if os.path.isabs(path) else os.path.join(os.path.dirname(self.path), path)
+        """A path the workflow file names, relative to it; normalised, as a workflow file
+        writes ``/`` on every OS."""
+        if not os.path.isabs(path):
+            path = os.path.join(os.path.dirname(self.path), path)
+        return os.path.normpath(path)
 
     def step_input(self, step_id: str, role: str) -> dict:
         """A step's obs_data or params_for_id as the workflow names it: ``{path, content}``,
