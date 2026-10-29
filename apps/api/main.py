@@ -10,7 +10,7 @@ POST /api/models/{model_id}/edit       open that source in the user's own editor
 POST /api/simulate                     single run (circulatory_autogen helper)
 POST /api/protocol/run                 multi-experiment protocol run
 POST /api/obs_data/upload              load obs_data.json (protocol + overlays)
-POST /api/params_for_id/upload         load params_for_id.csv -> slider specs
+POST /api/params_for_id/upload         load a params_for_id (JSON; a CSV is converted) -> slider specs
 
 Simulation is delegated to circulatory_autogen via :mod:`engine`; parsing of
 CellML metadata, obs_data and params_for_id is dependency-light so these routes
@@ -90,8 +90,6 @@ from runtime_paths import default_python, frontend_dist, is_frozen, resources_di
 import settings_store
 from solver_options import (
     ad_available,
-    ca_model_type,
-    canonical_model_type,
     check_solver_info,
     filter_solver_info,
     get_analysis_options,
@@ -571,11 +569,7 @@ def _restore_persisted_settings() -> None:
     if ca_dir and os.path.isdir(ca_dir):
         os.environ["CIRCULATORY_AUTOGEN_SRC"] = _ca_src_from_dir(ca_dir)
 
-    # Canonicalised on the way in: settings persist across upgrades, so a config
-    # written before CA renamed the format still names the old one. Left alone it
-    # would fail the /api/config validation below and the user would have to
-    # re-pick a setting they never changed.
-    fmt = canonical_model_type((saved.get("generated_model_format") or "").strip())
+    fmt = (saved.get("generated_model_format") or "").strip()
     if fmt:
         engine.model_type = fmt
     solver = (saved.get("solver") or "").strip()
@@ -701,7 +695,7 @@ def _config_payload(output_dir: str = "") -> dict:
         # editor can offer a picker instead of dropping the column (which
         # silently reverted every non-uniform prior to uniform).
         "param_prior_types": get_param_prior_types(),
-        # The modifier `operation` vocabulary (CA's PARAM_MODIFIER_OPERATIONS),
+        # The modifier vocabulary (CA's PARAM_MODIFIERS / param_modifiers),
         # so the editor's "create modifier parameter" menu tracks what CA can
         # actually run rather than hardcoding it.
         "param_modifier_operations": get_param_modifier_operations(
@@ -769,10 +763,7 @@ def set_config(req: ConfigRequest) -> dict:
     reset_solver_options()  # capabilities come from the (possibly new) CA
     solvers_by_format = get_solver_options()["solvers_by_format"]
 
-    # An .omex or a saved study can carry the retired spelling too; accept it and
-    # store the current one, so it is normalised once here rather than everywhere
-    # engine.model_type is read.
-    fmt = canonical_model_type((req.generated_model_format or "").strip())
+    fmt = (req.generated_model_format or "").strip()
     if fmt:
         if fmt not in solvers_by_format:
             raise HTTPException(status_code=422, detail=f"unknown generated_model_format: {fmt}")
@@ -989,10 +980,7 @@ def export_pipeline_route(req: ExportPipelineRequest) -> dict:
     try:
         user_inputs = export_pipeline.build_user_inputs(
             file_prefix=file_prefix,
-            # The exported bundle is a user_inputs.yaml for the CA the user has,
-            # so it is written in that CA's spelling for the same reason a run
-            # config is (see ca_model_type). A current CA accepts either.
-            model_type=ca_model_type(engine.model_type),
+            model_type=engine.model_type,
             solver=engine.solver,
             solver_info=dict(engine.solver_info),
             dt=engine.dt,
@@ -1181,20 +1169,11 @@ def _obs_data_document(record, protocol_info=None) -> dict | None:
     obs = getattr(record, "obs_data", None)
     if obs is None:
         return None
-    proto = protocol_info if protocol_info is not None else obs.protocol_info
-    document = {
+    return {
+        "protocol_info": protocol_info if protocol_info is not None else obs.protocol_info,
         "data_items": obs.data_items,
         "prediction_items": obs.prediction_items,
     }
-    # An obs_data with no protocol_info is valid and common -- it says what to measure
-    # without saying how to drive the model, and CA builds the timeline from
-    # sim_time/pre_time instead. Returning None for it meant a protocol-less study was
-    # reported as having no obs_data at all, and the emulator's cost (which has no
-    # fallback, by design) simply never appeared. The key is omitted rather than set to
-    # None because CA's parser refuses an explicit None where it accepts an absence.
-    if proto is not None:
-        document["protocol_info"] = proto
-    return document
 
 
 def _with_obs_operands(outputs: list[str], record) -> list[str]:
@@ -2617,7 +2596,7 @@ async def upload_obs_data(
         "data_items": parsed.data_items,
         "prediction_items": parsed.prediction_items,
         # protocol_info lets the frontend plot the controlled (params_to_change)
-        # inputs per experiment; null for data-only obs_data.
+        # inputs per experiment.
         "protocol_info": parsed.protocol_info,
     }
 
@@ -3047,37 +3026,23 @@ def load_params(req: LoadParamsRequest) -> dict:
 
 
 def _save_params_file(record: "_ModelRecord", data: bytes | str) -> Path:
-    """Persist an uploaded params_for_id, canonicalised to JSON.
+    """Persist an uploaded params_for_id as ``<study>_params_for_id.json``.
 
-    **A CSV is converted on the way in** (by CA, which owns the conversion), so
-    the stored study, the export bundle and every runner see the one canonical
-    form. JSON is the only form that can express a modifier, its inputs or a
-    prior's parameters, so keeping a CSV as the stored form means those are
-    unrepresentable in whatever the user's outputs directory ends up holding.
+    **A CSV is converted on the way in** (:func:`params_json.csv_to_file_text`, CA's
+    converter when CA is importable), so the stored study, the export bundle and
+    every runner see the one form CA reads: it refuses a params_for_id CSV. The
+    caller has parsed ``data`` already, so the conversion does not fail here.
 
-    The conversion needs CA. When it is unavailable the CSV is stored as-is
-    rather than refusing the upload: a study must not become unloadable because
-    the CA directory has not been set yet (the packaged app starts in exactly
-    that state), and CA's own CSV path still reads it.
-
-    CA branches CSV-vs-JSON on the filename suffix (``get_param_id_info``), so
-    the suffix must follow the content. The stale other-suffix twin is removed
-    so a format switch cannot leave two files disagreeing about which is current.
+    A stale ``_params_for_id.csv`` beside it is removed, so two files cannot
+    disagree about which is current.
     """
     raw = data if isinstance(data, bytes) else data.encode()
     if not params_json.looks_like_json(raw):
-        try:
-            doc = params_json.csv_to_json(raw)
-        except params_json.ParamsJsonError:
-            pass  # no CA: keep the CSV, which CA's own CSV path still reads
-        else:
-            raw = json.dumps(doc, indent=2).encode()
-    suffix = ".json" if params_json.looks_like_json(raw) else ".csv"
+        raw = params_json.csv_to_file_text(raw).encode()
     # Named after the study, like the obs_data beside it -- see `_study_file`.
-    path = _study_file(record, f"_params_for_id{suffix}")
+    path = _study_file(record, "_params_for_id.json")
     path.write_bytes(raw)
-    other_suffix = ".csv" if suffix == ".json" else ".json"
-    _study_file(record, f"_params_for_id{other_suffix}").unlink(missing_ok=True)
+    _study_file(record, "_params_for_id.csv").unlink(missing_ok=True)
     return path
 
 
@@ -3174,7 +3139,7 @@ def calibration_run(req: CalibrationRequest) -> dict:
         raise HTTPException(
             status_code=422,
             detail="calibration requires both an obs_data.json and a "
-            "params_for_id.csv to be uploaded for this model",
+            "params_for_id to be uploaded for this model",
         )
     python_path = req.settings.get("python_path") or None
     if python_path and not (
@@ -3217,10 +3182,7 @@ def calibration_run(req: CalibrationRequest) -> dict:
             str(record.path), engine.model_type, model_id=req.model_id,
             output_dir=configured or None,
         ),
-        # Translated at the boundary: an older CA parses only its own spelling
-        # of the model_type and exits on anything else (solver_options.
-        # MODEL_TYPE_ALIASES). Inside CUFLynx it stays canonical.
-        "model_type": ca_model_type(engine.model_type),
+        "model_type": engine.model_type,
         "solver": engine.solver,
         "solver_info": dict(engine.solver_info),
         "obs_path": str(record.obs_path),
@@ -3362,7 +3324,7 @@ def sensitivity_run(req: SensitivityRequest) -> dict:
         raise HTTPException(
             status_code=422,
             detail="sensitivity analysis requires both an obs_data.json and a "
-            "params_for_id.csv to be uploaded for this model",
+            "params_for_id to be uploaded for this model",
         )
     python_path = req.settings.get("python_path") or None
     if python_path and not (
@@ -3420,10 +3382,7 @@ def sensitivity_run(req: SensitivityRequest) -> dict:
             str(record.path), engine.model_type, model_id=req.model_id,
             output_dir=configured or None,
         ),
-        # Translated at the boundary: an older CA parses only its own spelling
-        # of the model_type and exits on anything else (solver_options.
-        # MODEL_TYPE_ALIASES). Inside CUFLynx it stays canonical.
-        "model_type": ca_model_type(engine.model_type),
+        "model_type": engine.model_type,
         "solver": engine.solver,
         "solver_info": dict(engine.solver_info),
         "obs_path": str(record.obs_path),
@@ -3593,7 +3552,7 @@ def emulator_train(req: EmulatorTrainRequest) -> dict:
         raise HTTPException(
             status_code=422,
             detail="training an emulator requires both an obs_data.json and a "
-            "params_for_id.csv to be uploaded for this model",
+            "params_for_id to be uploaded for this model",
         )
     python_path = req.settings.get("python_path") or None
     if python_path and not (
@@ -3617,10 +3576,7 @@ def emulator_train(req: EmulatorTrainRequest) -> dict:
             str(record.path), engine.model_type, model_id=req.model_id,
             output_dir=configured or None,
         ),
-        # Translated at the boundary: an older CA parses only its own spelling
-        # of the model_type and exits on anything else (solver_options.
-        # MODEL_TYPE_ALIASES). Inside CUFLynx it stays canonical.
-        "model_type": ca_model_type(engine.model_type),
+        "model_type": engine.model_type,
         "solver": engine.solver,
         "solver_info": dict(engine.solver_info),
         "obs_path": str(record.obs_path),
@@ -3813,15 +3769,11 @@ UQ_DEFAULTS = {
 def uq_defaults() -> dict:
     # `uq_options` / `ia_options` are CA's descriptors (introspected from
     # ANALYSIS_OPTIONS, never hardcoded) so the UQ settings forms track CA.
-    # get_analysis_options normalises CA's pre-rename 'mcmc' mode key to 'uq'.
     ao = get_analysis_options()
     uq_options = ao.get("uq", {}).get("options", [])
     return {
         **UQ_DEFAULTS,
         "uq_options": uq_options,
-        # The pre-rename field name, still emitted so a browser holding a cached
-        # older bundle keeps rendering its settings form.
-        "mcmc_options": uq_options,
         "ia_options": ao.get("identifiability_analysis", {}).get("options", []),
     }
 
@@ -3832,7 +3784,7 @@ def uq_run(req: UQRequest) -> dict:
     if record.obs_path is None or record.params_path is None:
         raise HTTPException(
             status_code=422,
-            detail="UQ requires both an obs_data.json and a params_for_id.csv to be "
+            detail="UQ requires both an obs_data.json and a params_for_id to be "
             "uploaded for this model",
         )
     python_path = req.settings.get("python_path") or None
@@ -3880,10 +3832,7 @@ def uq_run(req: UQRequest) -> dict:
             str(record.path), engine.model_type, model_id=req.model_id,
             output_dir=configured or None,
         ),
-        # Translated at the boundary: an older CA parses only its own spelling
-        # of the model_type and exits on anything else (solver_options.
-        # MODEL_TYPE_ALIASES). Inside CUFLynx it stays canonical.
-        "model_type": ca_model_type(engine.model_type),
+        "model_type": engine.model_type,
         "solver": engine.solver,
         "solver_info": dict(engine.solver_info),
         "obs_path": str(record.obs_path),

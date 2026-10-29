@@ -21,6 +21,7 @@ from conftest import (
     LV_OBS_DATA_PATH,
     LV_PARAMS_CSV_PATH,
     RESOURCES_DIR,
+    params_for_id_json,
     set_ca_module,
     upload_model,
 )
@@ -912,7 +913,7 @@ def test_sp_minimize_starts_from_current_param_values(tmp_path, requires_simulat
         "solver": "CVODE_myokit",
         "solver_info": {"solver": "CVODE_myokit", "method": "CVODE"},
         "obs_path": str(C3_OBS_DATA_PATH),
-        "params_path": str(C3_PARAMS_CSV_PATH),
+        "params_path": str(params_for_id_json(C3_PARAMS_CSV_PATH, tmp_path)),
         "output_dir": str(tmp_path / "out"),
         "file_prefix": "3compartment",
         "current_params": current,
