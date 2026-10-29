@@ -63,6 +63,18 @@ describe('CalibrationPanel', () => {
     expect(ev[0][0]).not.toHaveProperty('python_path')
   })
 
+  // The engine's dt (Settings, or a study's user_inputs.yaml) is filled in
+  // server-side for a run that names none; a dt sent from here -- seeded from
+  // the defaults fetched at startup -- would override it with a stale value.
+  it('sends no dt, so the run uses the engine dt', async () => {
+    const wrapper = mount(CalibrationPanel, {
+      props: { canRun: true, defaults: { dt: 0.01, methods: [] } },
+      global: { stubs },
+    })
+    await wrapper.find('[data-testid="run-calibration"]').trigger('click')
+    expect(wrapper.emitted('run')[0][0]).not.toHaveProperty('dt')
+  })
+
   it('disables run when not runnable', () => {
     const wrapper = mount(CalibrationPanel, {
       props: { canRun: false },

@@ -472,6 +472,19 @@ so the confirmation dialog can say a delivery carries code before it is accepted
 (`main._apply_archive_study`); its funcs-named members are then listed with status
 `manifest` and not installed a def at a time, so nothing is installed twice.
 
+**A study's user_inputs.yaml sets the solver** (`main._adopt_solver_settings`). A
+`*user_inputs*.yaml` in an `.omex` without a study manifest (with one, the manifest's
+`solver_info` is adopted instead and the yaml is not read), in a reopened run directory (when its
+`cuflynx_study.json` records no `solver_info`), or picked in Settings
+(`POST /api/user_inputs/upload`) has its `solver`, `solver_info` and `dt` adopted
+exactly as a Settings change: env, saved settings, `engine.reset()`. Keys the solver
+cannot honour (`MaximumNumberOfSteps` under `CVODE_myokit`) and solvers the format does
+not offer (OpenCOR) are **dropped with a warning, never a 422** on import. Responses carry
+`solver_settings: {solver, solver_info, dt, source, ignored}` (null when there was none),
+and the frontend re-reads `/api/config` on every model load so Settings is never stale.
+Runs get `engine.dt` server-side (`_with_engine_dt`) unless the request names a `dt` —
+the analysis panels therefore send none; a literal there overrode the adopted step.
+
 ## Desktop packaging (pywebview + PyInstaller)
 
 **Current shipping model:** one double-clickable executable per OS, built by

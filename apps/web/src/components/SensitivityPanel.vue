@@ -51,7 +51,8 @@ const settings = reactive({
   // prediction_items that have an operation as features. Sent only when on and
   // the installed libcuflynx supports it (the runner checks again).
   include_prediction_items: false,
-  dt: 0.01,
+  // No dt: a run that names none is given the engine's (Settings, or a study's
+  // user_inputs), server-side. A literal here overrode both with 0.01.
   DEBUG: false,
 })
 
