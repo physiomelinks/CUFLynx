@@ -779,9 +779,11 @@ def _values(text):
 
 def _changed_values(arrays, files):
     """``{variable_name: (before, after)}`` for each parameter the send-back changes against
-    the target's own files beside it. The module array must be byte-identical; in the
-    parameters CSV (the target's nested JSON, converted) a changed parameter changes only
-    its value and data_reference, and every other row is identical."""
+    the target's own files beside it. The module array must be byte-identical. The
+    parameters CSV is every value the target's model uses (CA writes the generated
+    ``<prefix>_parameters.json`` with the merged values), so it names every parameter of
+    the target's own file and may add the module defaults the model takes; those are never
+    marked calibrated. A changed parameter changes only its value and data_reference."""
     changed = {}
     for name, blob in files.items():
         if not name.endswith("_parameters.csv"):
@@ -789,8 +791,13 @@ def _changed_values(arrays, files):
             continue
         old = _target_rows(arrays, name[:-len("_parameters.csv")])
         new = _parameter_rows(blob.decode())
-        assert list(new) == list(old), f"{name} names other parameters than the target's"
+        missing = [key for key in old if key not in new]
+        assert not missing, f"{name} leaves out the target's {missing}"
         for key, row in new.items():
+            if key not in old:
+                assert not row["data_reference"].startswith("calibrated by workflow "), (
+                    f"{name} marks {key} calibrated, which the target does not set")
+                continue
             if row == old[key]:
                 continue
             assert {k: v for k, v in row.items() if k not in ("value", "data_reference")} == {
