@@ -125,7 +125,7 @@ def test_sensitivity_status_404_for_unknown_job(client):
 # Integration tier (real Myokit — short local FD sensitivity on 3compartment)
 # ---------------------------------------------------------------------------
 @pytest.mark.integration
-def test_sensitivity_3compartment_local_fd(client, requires_simulation):
+def test_sensitivity_3compartment_local_fd(client, requires_simulation, tmp_path):
     model_id = _setup_model_obs_params(client)
     settings = {
         "method": "local",
@@ -136,7 +136,7 @@ def test_sensitivity_3compartment_local_fd(client, requires_simulation):
         "num_cores": 1,
     }
     resp = client.post(
-        "/api/sensitivity/run", json={"model_id": model_id, "settings": settings}
+        "/api/sensitivity/run", json={"model_id": model_id, "settings": {**settings, "working_dir": str(tmp_path)}}
     )
     assert resp.status_code == 200, resp.text
 
@@ -158,7 +158,7 @@ def test_sensitivity_3compartment_local_fd(client, requires_simulation):
 @pytest.mark.parametrize("gradient_method", ["FSA", "AUTO"])
 def test_sensitivity_3compartment_local_fsa_via_api(
     client, requires_simulation, gradient_method
-):
+, tmp_path):
     model_id = _setup_model_obs_params(client)
     settings = {
         "method": "local",
@@ -168,7 +168,7 @@ def test_sensitivity_3compartment_local_fsa_via_api(
         "num_cores": 1,
     }
     resp = client.post(
-        "/api/sensitivity/run", json={"model_id": model_id, "settings": settings}
+        "/api/sensitivity/run", json={"model_id": model_id, "settings": {**settings, "working_dir": str(tmp_path)}}
     )
     assert resp.status_code == 200, resp.text
 
@@ -181,7 +181,7 @@ def test_sensitivity_3compartment_local_fsa_via_api(
 
 
 @pytest.mark.integration
-def test_sensitivity_3compartment_local_ad_via_api(client, requires_casadi):
+def test_sensitivity_3compartment_local_ad_via_api(client, requires_casadi, tmp_path):
     """AD through the same full path, with the backend switched the way a user
     does it: POST /api/config (casadi_python + casadi_integrator +
     semi_implicit_euler — CVODES dies with CV_TOO_MUCH_WORK on this model), then
@@ -204,7 +204,7 @@ def test_sensitivity_3compartment_local_ad_via_api(client, requires_casadi):
         "num_cores": 1,
     }
     resp = client.post(
-        "/api/sensitivity/run", json={"model_id": model_id, "settings": settings}
+        "/api/sensitivity/run", json={"model_id": model_id, "settings": {**settings, "working_dir": str(tmp_path)}}
     )
     assert resp.status_code == 200, resp.text
 

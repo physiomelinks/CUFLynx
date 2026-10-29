@@ -729,7 +729,7 @@ def test_calibration_config_outputs_dir_must_be_absolute(client, tmp_path):
 # Integration tier (real Myokit — short GA on 3compartment)
 # ---------------------------------------------------------------------------
 @pytest.mark.integration
-def test_calibration_3compartment_genetic_algorithm(client, requires_simulation):
+def test_calibration_3compartment_genetic_algorithm(client, requires_simulation, tmp_path):
     model_id = _setup_model_obs_params(
         client, C3_MODEL_PATH, C3_OBS_DATA_PATH, C3_PARAMS_CSV_PATH
     )
@@ -741,7 +741,7 @@ def test_calibration_3compartment_genetic_algorithm(client, requires_simulation)
         "dt": 0.01,
     }
     resp = client.post(
-        "/api/calibration/run", json={"model_id": model_id, "settings": settings}
+        "/api/calibration/run", json={"model_id": model_id, "settings": {**settings, "working_dir": str(tmp_path)}}
     )
     assert resp.status_code == 200, resp.text
     job_id = resp.json()["job_id"]
@@ -763,7 +763,7 @@ def test_calibration_3compartment_genetic_algorithm(client, requires_simulation)
 @pytest.mark.integration
 def test_calibration_saves_calibrated_model_that_reloads_with_best_fit(
     client, requires_simulation
-):
+, tmp_path):
     """#114 end-to-end: after a real calibration, the saved calibrated CellML has the
     best-fit values baked in, and re-uploading it (a "new window") reloads slider
     initial values equal to the best fit — the exact scenario that was broken."""
@@ -780,7 +780,7 @@ def test_calibration_saves_calibrated_model_that_reloads_with_best_fit(
         "dt": 0.01,
     }
     resp = client.post(
-        "/api/calibration/run", json={"model_id": model_id, "settings": settings}
+        "/api/calibration/run", json={"model_id": model_id, "settings": {**settings, "working_dir": str(tmp_path)}}
     )
     assert resp.status_code == 200, resp.text
     status, lines = _wait(client, resp.json()["job_id"], timeout=600)
@@ -1167,7 +1167,7 @@ def test_version_banners_are_read_as_the_mpi_they_name(banner, family):
 
 
 @pytest.mark.integration
-def test_the_output_plots_cost_matches_the_calibrations_own(client, requires_simulation):
+def test_the_output_plots_cost_matches_the_calibrations_own(client, requires_simulation, tmp_path):
     """Issue #181, end to end on the model it was reported against.
 
     After a calibration, "Reset to best fit" puts CA's own best parameters on
@@ -1198,7 +1198,7 @@ def test_the_output_plots_cost_matches_the_calibrations_own(client, requires_sim
         "seed": 0,
     }
     resp = client.post(
-        "/api/calibration/run", json={"model_id": model_id, "settings": settings}
+        "/api/calibration/run", json={"model_id": model_id, "settings": {**settings, "working_dir": str(tmp_path)}}
     )
     assert resp.status_code == 200, resp.text
     status, lines = _wait(client, resp.json()["job_id"], timeout=600)
