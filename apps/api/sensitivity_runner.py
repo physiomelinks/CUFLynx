@@ -101,13 +101,18 @@ def _sa_options(settings: dict, output_dir: str, seed=None) -> dict:
         sa_options["seed"] = int(seed)
     # include_prediction_items: only when asked for and this libcuflynx takes it
     # (an older one rejects the key). Which items become features is libcuflynx's.
-    from obs_data import prediction_features_option  # noqa: PLC0415 (runners/ too)
+    from obs_data import INCLUDE_PREDICTION_ITEMS, prediction_features_option  # noqa: PLC0415
 
     sa_options.update(prediction_features_option(settings))
     # The step libcuflynx's FD prediction-feature rows take on a local run: the same
     # relative step as the data_item rows (CUFLynx's rel_step, not CA's 1e-3 default).
     if sa_options["method"] == "local" and settings.get("rel_step") is not None:
         sa_options["fd_rel_step"] = float(settings["rel_step"])
+    # Those rows are finite differences whatever the data_item rows use: libcuflynx
+    # takes its analytic arm unless sa_options says FD, and that arm needs the obs_data
+    # stashed by init_from_dict, which this path-built SensitivityAnalysis never has.
+    if sa_options["method"] == "local" and sa_options.get(INCLUDE_PREDICTION_ITEMS):
+        sa_options["gradient_method"] = "FD"
     return sa_options
 
 

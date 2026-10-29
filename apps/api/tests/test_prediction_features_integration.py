@@ -18,7 +18,7 @@ import ca_run_history as crh
 import model_codegen
 import obs_data
 import sensitivity_runner
-from conftest import LV_MODEL_PATH, LV_OBS_DATA_PATH, LV_PARAMS_CSV_PATH
+from conftest import LV_MODEL_PATH, LV_OBS_DATA_PATH, LV_PARAMS_CSV_PATH, params_for_id_json
 
 pytestmark = pytest.mark.integration
 
@@ -56,7 +56,7 @@ def _config(tmp_path, out, settings):
         "solver": "CVODE_myokit",
         "solver_info": {"solver": "CVODE_myokit", "method": "CVODE"},
         "obs_path": _obs_path(tmp_path),
-        "params_path": str(LV_PARAMS_CSV_PATH),
+        "params_path": str(params_for_id_json(LV_PARAMS_CSV_PATH, tmp_path)),
         "output_dir": str(tmp_path / out),
         "file_prefix": "lv",
         "settings": {"dt": 0.01, "sim_time": 5.0, "pre_time": 0.0, **settings},
