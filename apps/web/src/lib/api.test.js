@@ -115,7 +115,7 @@ describe('api client', () => {
     const out = await costAtParams('mid', { 'a/alpha': 1.5 }, {
       analysisParams: { 'a/alpha': 0.5 },
       outputs: ['a/x'],
-      outputsDir: '/out',
+      workingDir: '/out',
     })
     const [url, body] = axios.post.mock.calls[0]
     expect(url).toContain('/api/cost_at_params')
@@ -124,7 +124,7 @@ describe('api client', () => {
       params: { 'a/alpha': 1.5 },
       analysis_params: { 'a/alpha': 0.5 },
       outputs: ['a/x'],
-      config_outputs_dir: '/out',
+      working_dir: '/out',
     })
     expect(out.emulator_cost).toEqual({ cost: 1 })
   })
@@ -167,23 +167,23 @@ describe('api client', () => {
     expect(body.current_params).toEqual(cur)
   })
 
-  it('asks the backend to open the model source, naming the outputs directory', async () => {
+  it('asks the backend to open the model source, naming the working dir', async () => {
     // A browser cannot start a local editor, so the copy-and-open is a server
-    // action and the outputs directory is where the editable copy has to land.
+    // action and the working dir is where the editable copy has to land.
     axios.post.mockResolvedValue({
-      data: { path: '/study/user_funcs/user_model.py', opened: true, runs: true },
+      data: { path: '/study/inputs/funcs/user_model.py', opened: true, runs: true },
     })
     const res = await editModelSource('abc 123', '/study')
     const [url, body] = axios.post.mock.calls[0]
     expect(url).toContain('/api/models/abc%20123/edit')
-    expect(body).toEqual({ config_outputs_dir: '/study' })
-    expect(res.path).toBe('/study/user_funcs/user_model.py')
+    expect(body).toEqual({ working_dir: '/study' })
+    expect(res.path).toBe('/study/inputs/funcs/user_model.py')
   })
 
-  it('the source URL carries the outputs dir so the tab shows the edited copy', () => {
+  it('the source URL carries the working dir so the tab shows the edited copy', () => {
     expect(modelSourceUrl('abc')).toMatch(/\/api\/models\/abc\/source$/)
     expect(modelSourceUrl('abc', '/study dir')).toContain(
-      'source?config_outputs_dir=%2Fstudy%20dir',
+      'source?working_dir=%2Fstudy%20dir',
     )
   })
 })

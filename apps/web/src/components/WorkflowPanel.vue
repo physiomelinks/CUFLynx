@@ -32,7 +32,7 @@ const props = defineProps({
   offered: { type: Object, default: null },
   // A step's parameters nothing gives a value ({step_id, names}), for its protocol to set.
   unset: { type: Object, default: null },
-  outputsDir: { type: String, default: '' },
+  workingDir: { type: String, default: '' },
   moduleLibraryDirs: { type: Array, default: () => [] },
   mpiexecAvailable: { type: Boolean, default: true },
 })
@@ -64,7 +64,7 @@ async function exportArchive() {
   exporting.value = true
   exported.value = null
   try {
-    exported.value = await exportWorkflow(props.outputsDir)
+    exported.value = await exportWorkflow(props.workingDir)
   } catch (e) {
     exported.value = { error: errorMessage(e) }
   } finally {
@@ -222,7 +222,7 @@ const progressText = computed(() => {
         />
       </div>
       <p class="wf-hint">
-        Runs go to <code>{{ outputsDir ? `${outputsDir}/workflows/<name>` : 'a temporary folder (set an outputs directory to keep them)' }}</code>.
+        Runs go to <code>{{ workingDir ? `${workingDir}/workflows/<name>` : 'the working dir, once one is set' }}</code>.
       </p>
     </template>
 
@@ -478,7 +478,7 @@ const progressText = computed(() => {
       v-model:visible="browseRun"
       mode="dir"
       title="Select a workflow run directory"
-      :start-dir="outputsDir"
+      :start-dir="workingDir"
       @select="(d) => emit('open', { runDir: d })"
     />
   </div>

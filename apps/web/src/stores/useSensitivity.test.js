@@ -102,7 +102,7 @@ describe('the saved run label names the gradient method that actually ran', () =
 // *saved* result -- `indices` is a computed over it -- so a loader that assigned
 // to `indices` wrote to a read-only ref and left the panel empty while every
 // other panel filled.
-describe('a run loaded from an outputs directory', () => {
+describe('a run loaded from a working dir', () => {
   const LOADED = {
     indices: { S1: { 'y [max]': { 'a/x': 0.4 } } },
     param_names: ['a/x'],

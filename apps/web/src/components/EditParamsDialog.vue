@@ -31,7 +31,7 @@ const props = defineProps({
   // are disabled rather than letting the run fail later.
   generatedModelFormat: { type: String, default: '' },
   // Where Save writes the dated copy (#215); '' falls back to the config dir.
-  outputsDir: { type: String, default: '' },
+  workingDir: { type: String, default: '' },
 })
 const emit = defineEmits(['update:visible', 'saved'])
 
@@ -58,7 +58,7 @@ const modifierOps = ref([])
 
 async function loadPriorTypes() {
   try {
-    const cfg = await getConfig(props.outputsDir)
+    const cfg = await getConfig(props.workingDir)
     const p = cfg?.param_prior_types ?? {}
     priorTypes.value = Array.isArray(p.types) ? p.types : []
     priorDefault.value = p.default ?? ''
@@ -365,11 +365,11 @@ async function onSave() {
   try {
     const file = new File([text], filename, { type: 'application/json' })
     // The server writes the dated copy where the study lives (#215): the
-    // outputs directory, or its own config dir when none is set. No browser
+    // working dir, or its own config dir when none is set. No browser
     // download — a file the user cannot find is not saved.
     const data = await uploadParamsForId(file, props.modelId, {
       filename,
-      outputsDir: props.outputsDir,
+      workingDir: props.workingDir,
     })
     // The baselines travel beside the file rather than in it: CA rejects a
     // params_for_id entry carrying a key it does not know, and a parameter that

@@ -25,7 +25,7 @@ import { phlynxOpenUrl } from '../lib/examples'
 
 const props = defineProps({
   modelId: { type: String, default: null },
-  outputsDir: { type: String, default: '' },
+  workingDir: { type: String, default: '' },
   // For the params Edit dialog: the loaded CSV's params (with param_type), the
   // model's candidate params + initial values, and names for the new filename.
   currentParams: { type: Array, default: () => [] },
@@ -57,11 +57,11 @@ const emit = defineEmits([
   'model-loaded',
   'obs-data-loaded',
   'params-loaded',
-  'update:outputsDir',
-  // Read what is already in the outputs directory, rather than only what this
+  'update:workingDir',
+  // Read what is already in the working dir, rather than only what this
   // session ran (#255). A press, not a watcher: reading a directory is real work
   // and the results found may not match what is loaded.
-  'load-outputs',
+  'load-working-dir',
   'export-pipeline',
   'export-plotting',
 ])
@@ -74,7 +74,7 @@ const notice = ref('')
 // end of the blue "Loaded X" line, where a study whose observations had been
 // rejected looked exactly like one that had loaded perfectly.
 const warnings = ref([])
-const outputsBrowserOpen = ref(false)
+const workingDirBrowserOpen = ref(false)
 const editParamsOpen = ref(false)
 const editObsOpen = ref(false)
 const startOpen = ref(false)
@@ -123,7 +123,7 @@ const startEditLabel = computed(() => {
 const startEditTitle = computed(() => {
   if (!props.modelId) return 'Create a model: start from an example or build one in PhLynx'
   if (sourceExt.value) {
-    return `Open the model source (${sourceExt.value}) in your editor, saved in the outputs directory`
+    return `Open the model source (${sourceExt.value}) in your editor, saved in the working dir`
   }
   return 'Send the current study to PhLynx to edit it there'
 })
@@ -147,13 +147,13 @@ async function onStartEdit() {
     error.value = ''
     notice.value = ''
     try {
-      // The backend copies the source into the outputs directory and opens it
+      // The backend copies the source into the working dir and opens it
       // there. A browser cannot start a local editor, so this is a server
       // action on the same localhost assumption the file pickers already make.
-      const res = await editModelSource(props.modelId, props.outputsDir)
+      const res = await editModelSource(props.modelId, props.workingDir)
       notice.value = editedSourceMessage(res)
     } catch (e) {
-      // Only a real refusal (no outputs directory set) is an error banner. A
+      // Only a real refusal (no working dir set) is an error banner. A
       // launch that could not happen comes back 200 with `opened: false`, and
       // is reported above as the path it wrote — which is still what was wanted.
       error.value = e?.response?.data?.detail || String(e)
@@ -181,10 +181,10 @@ const sendOpen = ref(false)
 const sendSource = ref('current')
 const sending = ref(false)
 
-// A best fit is read from the outputs directory, so without one there is
+// A best fit is read from the working dir, so without one there is
 // nowhere to read it from. It can come from a *previous* session's run, which
 // is why this is not gated on a calibration having finished in this one.
-const bestFitAvailable = computed(() => !!props.outputsDir.trim())
+const bestFitAvailable = computed(() => !!props.workingDir.trim())
 
 function sendSourceDisabled(value) {
   return value === 'best_fit' && !bestFitAvailable.value
@@ -196,7 +196,7 @@ function sendOptions() {
   return {
     source: sendSource.value,
     values: sendSource.value === 'current' ? props.paramValues : {},
-    outputDir: props.outputsDir.trim(),
+    workingDir: props.workingDir.trim(),
   }
 }
 
@@ -418,7 +418,7 @@ async function onAcceptStudy() {
   inboxBusy.value = true
   error.value = ''
   try {
-    const data = await acceptInbox(props.outputsDir)
+    const data = await acceptInbox(props.workingDir)
     const label = pendingStudy.value?.filename || 'the delivered study'
     // A `cuflynx://open?study=` link answers with the directory to open, as a
     // dropped manifest does; an archive answers with the imported study.
@@ -556,7 +556,7 @@ async function handleOmex(files) {
   error.value = ''
   warnings.value = []
   try {
-    const data = await uploadOmex(omex, props.outputsDir)
+    const data = await uploadOmex(omex, props.workingDir)
     applyImportedStudy(data, omex.name)
   } catch (e) {
     error.value = e?.response?.data?.detail || String(e)
@@ -570,7 +570,7 @@ async function handleOmex(files) {
  * too, so like an archive it is accepted on every dropzone and on the page.
  *
  * It is not uploaded: it says where the study already is. So it sets the
- * outputs directory and reloads it, the same path the reload button takes, and
+ * working dir and reloads it, the same path the reload button takes, and
  * a dropped manifest cannot open a study differently from a picked folder.
  *
  * Returns true when the drop was a manifest and has been handled.
@@ -596,14 +596,14 @@ async function handleStudyManifest(files) {
 }
 
 /**
- * Open the outputs directory a study manifest names (`{dir, study_name}`, from
- * `/api/outputs/manifest` or an accepted `cuflynx://open?study=` link): set it
+ * Open the working dir a study manifest names (`{dir, study_name}`, from
+ * `/api/working-dir/manifest` or an accepted `cuflynx://open?study=` link): set it
  * and reload it, the path the reload button takes.
  */
 async function openStudyDirectory(opened, label) {
-  emit('update:outputsDir', opened.dir)
+  emit('update:workingDir', opened.dir)
   await nextTick()
-  emit('load-outputs')
+  emit('load-working-dir')
   notice.value = `Opening ${opened.study_name || label} from ${opened.dir}`
 }
 
@@ -665,7 +665,7 @@ async function onCellmlDrop(event) {
   // a dropped .mmt is on its own, so it is simply the file itself.
   const main = files.find((f) => f.name.toLowerCase().endsWith('.cellml')) ?? files[0]
   try {
-    const data = await uploadCellML(files, props.outputsDir)
+    const data = await uploadCellML(files, props.workingDir)
     // What the import had to decide for itself. An EasyML model always has some:
     // the format leaves the membrane equation out, so something was put in its
     // place, and that is the user's to check rather than the log's to keep.
@@ -878,37 +878,37 @@ async function onParamsDrop(event) {
     </Message>
 
     <h2 class="exports-heading">Exports</h2>
-    <label class="outputs-dir">
-      <span>Outputs directory</span>
-      <span class="outputs-input">
+    <label class="working-dir">
+      <span>Working dir</span>
+      <span class="working-dir-input">
         <InputText
-          :model-value="outputsDir"
-          data-testid="config-outputs-dir"
-          placeholder="default: system temp dir"
+          :model-value="workingDir"
+          data-testid="config-working-dir"
+          placeholder="required to run: a folder for the whole study"
           size="small"
-          @update:model-value="emit('update:outputsDir', $event)"
+          @update:model-value="emit('update:workingDir', $event)"
         />
         <Button
           icon="pi pi-folder-open"
           size="small"
           text
-          title="Browse for an outputs directory"
-          data-testid="outputs-browse"
-          @click="outputsBrowserOpen = true"
+          title="Browse for a working dir"
+          data-testid="working-dir-browse"
+          @click="workingDirBrowserOpen = true"
         />
         <Button
           icon="pi pi-refresh"
           size="small"
           text
-          :disabled="!outputsDir"
+          :disabled="!workingDir"
           title="Reopen the study in this directory: the model, obs_data and params_for_id the run was made from, its calibration, progress, sensitivity, UQ and emulator"
-          data-testid="outputs-load"
-          @click="emit('load-outputs')"
+          data-testid="working-dir-load"
+          @click="emit('load-working-dir')"
         />
         <label
           class="p-button p-button-text p-button-sm p-button-icon-only manifest-pick"
           title="Open a study from its <study>_cuflynx_study.json, which circulatory_autogen writes beside the study's results"
-          data-testid="outputs-manifest"
+          data-testid="working-dir-manifest"
         >
           <i class="pi pi-file-import" />
           <input type="file" accept=".json" hidden @change="onManifestPick" />
@@ -968,7 +968,7 @@ async function onParamsDrop(event) {
           </label>
         </div>
         <p v-if="!bestFitAvailable" class="send-hint">
-          Set an outputs directory to send a calibration best fit.
+          Set a working dir to send a calibration best fit.
         </p>
       </template>
 
@@ -1032,7 +1032,7 @@ async function onParamsDrop(event) {
         <strong data-testid="inbox-origin">{{ pendingStudy?.origin }}</strong>
         asks to open the study described by
         <code data-testid="inbox-path">{{ pendingStudy?.path }}</code>.
-        Loading it sets the outputs directory to that folder and replaces the study
+        Loading it sets the working dir to that folder and replaces the study
         you have open.
       </p>
       <p v-else class="inbox-intro">
@@ -1068,10 +1068,10 @@ async function onParamsDrop(event) {
     </Dialog>
 
     <FileBrowserDialog
-      v-model:visible="outputsBrowserOpen"
+      v-model:visible="workingDirBrowserOpen"
       mode="dir"
-      title="Select an outputs directory"
-      @select="emit('update:outputsDir', $event)"
+      title="Select a working dir"
+      @select="emit('update:workingDir', $event)"
     />
 
     <EditParamsDialog
@@ -1082,7 +1082,7 @@ async function onParamsDrop(event) {
       :model-name="modelName"
       :loaded-filename="loadedFilename"
       :generated-model-format="generatedModelFormat"
-      :outputs-dir="outputsDir"
+      :working-dir="workingDir"
       @saved="onEditSaved"
     />
 
@@ -1092,7 +1092,7 @@ async function onParamsDrop(event) {
       :model-variables="modelVariables"
       :model-name="modelName"
       :loaded-filename="loadedObsFilename"
-      :outputs-dir="outputsDir"
+      :working-dir="workingDir"
       @saved="onObsEditSaved"
     />
   </section>
@@ -1234,18 +1234,18 @@ async function onParamsDrop(event) {
   gap: 0.35rem;
   margin: 0.5rem 0;
 }
-.outputs-dir {
+.working-dir {
   display: flex;
   flex-direction: column;
   gap: 0.25rem;
   font-size: 0.85rem;
 }
-.outputs-input {
+.working-dir-input {
   display: flex;
   align-items: center;
   gap: 0.25rem;
 }
-.outputs-dir :deep(input) {
+.working-dir :deep(input) {
   width: 100%;
 }
 .hint {

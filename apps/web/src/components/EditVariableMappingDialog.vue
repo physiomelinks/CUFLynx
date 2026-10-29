@@ -19,7 +19,7 @@ import { renderSymbol } from '../lib/math'
 const props = defineProps({
   visible: { type: Boolean, default: false },
   modelId: { type: String, default: null },
-  outputsDir: { type: String, default: '' },
+  workingDir: { type: String, default: '' },
   // Open filtered to this variable (the row the user clicked), if any.
   focus: { type: String, default: '' },
 })
@@ -42,7 +42,7 @@ async function load() {
   loading.value = true
   error.value = ''
   try {
-    const data = await getVariableMapping(props.modelId, props.outputsDir)
+    const data = await getVariableMapping(props.modelId, props.workingDir)
     path.value = data.path
     exists.value = data.exists
     rows.value = data.rows.map((r) => ({ ...r }))
@@ -98,7 +98,7 @@ async function save() {
     const data = await saveVariableMapping(
       props.modelId,
       rows.value.map((r) => ({ variable_name: r.variable_name, latex: r.latex })),
-      props.outputsDir,
+      props.workingDir,
     )
     path.value = data.path
     exists.value = true

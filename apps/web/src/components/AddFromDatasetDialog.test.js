@@ -87,7 +87,7 @@ beforeEach(() => {
 async function mounted(props = {}) {
   const wrapper = mount(AddFromDatasetDialog, {
     props: {
-      visible: true, modelId: 'm1', outputsDir: '/out',
+      visible: true, modelId: 'm1', workingDir: '/out',
       modelVariables: {
         all_names: ['soma_SN/I_in', 'soma_SN/V_sensed'],
         params: ['soma_SN/I_in'],
@@ -226,14 +226,14 @@ describe('AddFromDatasetDialog', () => {
     expect(summary).toContain('2 held-out prediction')
   })
 
-  it('saves the config to the outputs directory', async () => {
+  it('saves the config to the working dir', async () => {
     saveObsExtractConfig.mockResolvedValue({ path: '/out/obs_extraction_config.json' })
     const wrapper = await scanned()
     await wrapper.find('[data-testid="obsx-save-config"]').trigger('click')
     await flushPromises()
     expect(saveObsExtractConfig).toHaveBeenCalledWith(
       expect.objectContaining({ source: expect.objectContaining({ root: '/data/Wistar' }) }),
-      { outputsDir: '/out' },
+      { workingDir: '/out' },
     )
     expect(wrapper.find('[data-testid="obsx-saved"]').text()).toContain('/out/')
   })

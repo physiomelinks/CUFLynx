@@ -12,7 +12,7 @@ import {
  *
  * Shaped like useSensitivity — start, poll, streamed log — with one difference
  * that matters: a trained emulator **outlives the job**. It is a file in the
- * outputs directory, so the panel loads whatever is already there on open
+ * working dir, so the panel loads whatever is already there on open
  * (`refresh`) rather than showing nothing until the user trains one in this
  * session. That is also what makes an emulator trained by circulatory_autogen's
  * own script usable from the GUI.
@@ -80,10 +80,10 @@ export function useEmulator(options = {}) {
    */
   const canUse = computed(() => trained.value)
 
-  async function refresh(modelId, configOutputsDir = '') {
+  async function refresh(modelId, configWorkingDir = '') {
     if (!modelId) return
     try {
-      const info = await getEmulatorInfo(modelId, configOutputsDir)
+      const info = await getEmulatorInfo(modelId, configWorkingDir)
       emulatorDir.value = info.emulator_dir ?? ''
       metadata.value = info.metadata ?? null
       errorPoints.value = info.error_points ?? null
@@ -112,14 +112,14 @@ export function useEmulator(options = {}) {
     try {
       const { job_id } = await startEmulatorTraining(modelId, settings)
       jobId = job_id
-      await poll(modelId, settings?.config_outputs_dir ?? '')
+      await poll(modelId, settings?.working_dir ?? '')
     } catch (e) {
       state.value = 'error'
       error.value = e?.response?.data?.detail || String(e)
     }
   }
 
-  async function poll(modelId, configOutputsDir) {
+  async function poll(modelId, configWorkingDir) {
     if (!jobId) return
     try {
       const s = await getEmulatorStatus(jobId, offset)
@@ -129,7 +129,7 @@ export function useEmulator(options = {}) {
       }
       state.value = s.state
       if (s.state === 'running') {
-        timer = setTimeout(() => poll(modelId, configOutputsDir), intervalMs)
+        timer = setTimeout(() => poll(modelId, configWorkingDir), intervalMs)
       } else {
         if (s.state === 'done' && s.metadata) {
           metadata.value = s.metadata
@@ -137,12 +137,12 @@ export function useEmulator(options = {}) {
           // The points are not on the job status (they are a file, and a large
           // one); re-read them so the Analysis view has the new run's, not the
           // previous emulator's.
-          await refresh(modelId, configOutputsDir)
+          await refresh(modelId, configWorkingDir)
         } else {
           // A failed training leaves whatever was there before: an older
           // emulator is still a real emulator, and silently forgetting it
           // would be worse than leaving it with its own (older) scores shown.
-          await refresh(modelId, configOutputsDir)
+          await refresh(modelId, configWorkingDir)
         }
         error.value = s.error || ''
       }
