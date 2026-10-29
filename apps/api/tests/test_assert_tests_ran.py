@@ -42,10 +42,10 @@ def test_a_required_test_must_have_run(tmp_path, required, code):
 
 def test_every_test_ci_requires_exists():
     """A renamed test would leave CI requiring one that is never collected."""
-    workflow = (REPO_ROOT / ".github" / "workflows" / "integration.yml").read_text()
+    workflow = (REPO_ROOT / ".github" / "workflows" / "integration.yml").read_text(encoding="utf-8")
     required = re.findall(r"--require (\w+)", workflow)
     assert required
     defined = set()
     for path in TESTS.glob("test_*.py"):
-        defined.update(re.findall(r"^def (test_\w+)\(", path.read_text(), re.M))
+        defined.update(re.findall(r"^def (test_\w+)\(", path.read_text(encoding="utf-8"), re.M))
     assert sorted(set(required) - defined) == []
