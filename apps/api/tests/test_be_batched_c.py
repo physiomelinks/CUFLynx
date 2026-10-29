@@ -55,12 +55,19 @@ MYOKIT_FIELDS = [
 ]
 
 
+FIELDS = {"BE_batched_c": BE_FIELDS, "CVODE_myokit": MYOKIT_FIELDS}
+
+
 @pytest.fixture
 def fake_fields(monkeypatch):
     set_ca_module(
         monkeypatch,
         "parsers.PrimitiveParsers",
-        types.SimpleNamespace(SOLVER_INFO_FIELDS={"BE_batched_c": BE_FIELDS, "CVODE_myokit": MYOKIT_FIELDS}),
+        types.SimpleNamespace(
+            SOLVER_INFO_FIELDS=FIELDS,
+            # CA's accessor beside the table: the runners ask it which keys a solver takes.
+            solver_info_fields=lambda solver: FIELDS.get(solver, []),
+        ),
     )
 
 
