@@ -637,6 +637,13 @@ _BASE_EXCLUDES = (
     # switch this one asset over to Cython's build_ext, making the most fragile runtime path
     # in the app behave differently in the bundle nobody builds locally.
     "Cython",
+    # Matlogica's AADC and aadc-ode are proprietary, binary-only and licensed to each
+    # user, so they are never bundled: a user installs them into the Python set in
+    # Settings -> Python (see apps/api/aadc_check.py). libcuflynx imports them lazily
+    # behind ImportError guards, but collect_submodules("libcuflynx") still makes
+    # PyInstaller trace those imports, so a build machine with them installed would ship them.
+    "aadc",
+    "aadc_ode",
 )
 
 # ...except that one of them is dead weight only in the ordinary bundles. autoemulate's
