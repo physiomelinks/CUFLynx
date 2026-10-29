@@ -74,6 +74,7 @@ SIMULATION_PATH_DEPS = [
     "ruamel.yaml",
     "rdflib",
     "pint",
+    "jinja2",
 ]
 
 # CA's analysis-path packages, declared in the [analysis] extra (pip names). The

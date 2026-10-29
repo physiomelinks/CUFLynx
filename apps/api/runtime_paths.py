@@ -285,6 +285,17 @@ def extraction_cache_dir(base: Path, key: str) -> Path:
     return base / _APP_CACHE_NAME / "onefile-cache" / key
 
 
+def solver_build_cache_dir(solver: str) -> Optional[Path]:
+    """Where a solver that builds each model with a C toolchain keeps its builds.
+
+    Under the per-user cache rather than the system temp folder (the solver's own
+    default), so a build survives a reboot and a model is compiled once, not once per
+    boot. None when no cache root can be determined: the solver then uses its default.
+    """
+    base = user_cache_base(sys.platform, os.environ, os.path.expanduser("~"))
+    return base / _APP_CACHE_NAME / "solver-builds" / solver if base is not None else None
+
+
 def _ensure_extraction_cache_dir() -> Optional[Path]:
     """Create (if needed) and return the per-build extraction cache dir, or None.
 
