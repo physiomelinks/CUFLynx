@@ -18,6 +18,7 @@ import {
   costAtParams,
   editModelSource,
   modelSourceUrl,
+  peekInbox,
 } from './api'
 
 beforeEach(() => {
@@ -230,5 +231,22 @@ describe('errorMessage', () => {
   // No response at all: the server is down / the request never left.
   it('falls back to the error text when there was no response', () => {
     expect(errorMessage(new Error('Network Error'))).toBe('Network Error')
+  })
+})
+
+describe('peekInbox', () => {
+  it('returns what is pending', async () => {
+    axios.get.mockResolvedValue({ data: { pending: { origin: 'x' }, error: null } })
+    expect(await peekInbox()).toEqual({ origin: 'x' })
+  })
+
+  it('throws a deliveryFailed error for a cuflynx:// link that could not be opened', async () => {
+    axios.get.mockResolvedValue({
+      data: { pending: null, error: { origin: 'https://a.org', message: 'Could not open it' } },
+    })
+    await expect(peekInbox()).rejects.toMatchObject({
+      deliveryFailed: true,
+      message: 'Could not open it',
+    })
   })
 })
