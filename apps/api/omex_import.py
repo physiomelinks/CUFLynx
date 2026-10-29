@@ -285,11 +285,14 @@ def _classify(
     # and ``<instance>_calibrated_parameters.csv``. Both are claimed before the
     # params_for_id and obs_data pools are filled -- the CSV's name contains
     # "param", and the JSON is otherwise a leftover JSON the obs_data sniff reads.
+    # Only those names (or a JSON with ``calibrated_parameters``): other files that
+    # mention calibration, such as a ``calibration_workflow.json``, keep their roles.
     calibration_json = [
         n for n in jsons
-        if re.search(r"calibrat", Path(n).name, re.I) or looks_like_calibration(members.get(n))
+        if re.search(r"(^|[_-])calibration\.json$", Path(n).name, re.I)
+        or looks_like_calibration(members.get(n))
     ]
-    calibration_csv = named(csvs, r"calibrat")
+    calibration_csv = named(csvs, r"(^|[_-])calibrated_parameters\.csv$")
     csvs = [n for n in csvs if n not in calibration_csv]
     jsons = [n for n in jsons if n not in calibration_json]
 
