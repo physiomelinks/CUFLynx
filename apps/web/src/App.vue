@@ -224,6 +224,7 @@ function applyLoadedOutputs(found) {
     const errors = found.calibration.error_vectors ?? {}
     calib.percentError.value = errors.percent ?? null
     calib.stdError.value = errors.std ?? null
+    calib.validation.value = found.calibration.validation ?? null
   }
 
   // Sensitivity is *saved* rather than assigned: the panel reads a selected run
@@ -3143,6 +3144,7 @@ watch(() => obs.obsData.value, scheduleRun)
             :percent-error="calib.percentError.value"
             :std-error="calib.stdError.value"
             :error-labels="calib.errorLabels.value"
+            :validation="calib.validation.value"
             :current-cost="currentCost"
             :baseline-cost="activeBaseline"
             :uq-params="uq.params.value"

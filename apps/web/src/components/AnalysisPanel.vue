@@ -20,6 +20,11 @@ const props = defineProps({
   percentError: { type: Array, default: null },
   stdError: { type: Array, default: null },
   errorLabels: { type: Array, default: () => [] },
+  // The best fit against the obs_data's held-out data (CA #535): CA's
+  // validation_results.json, {items: [{data_item_name, operand, unit, data_type,
+  // n_points, rmse, nrmse, mean_abs_z, within_2std, t, data, std, model}]}.
+  // null when the obs_data held none, and then the section is not drawn at all.
+  validation: { type: Object, default: null },
   // Issue #159: the cost and per-observable errors of whatever the sliders
   // currently say, and a baseline to compare them against (the calibration best
   // fit, or a pinned parameter set). Both {cost, items:[{label, percent_error,
@@ -58,6 +63,54 @@ const props = defineProps({
 })
 
 const emit = defineEmits(['select-result', 'remove-result', 'clear-results'])
+
+// ---- Validation ------------------------------------------------------------
+// Read from CA's validation_results.json; nothing is recomputed here. The scores
+// are CA's, and the chart plots the very points they were taken at.
+const validationItems = computed(() =>
+  Array.isArray(props.validation?.items) ? props.validation.items : [],
+)
+const hasValidation = computed(() => validationItems.value.length > 0)
+
+/** A fraction as a percentage, or a dash when there was no std to judge by. */
+function fmtFraction(value) {
+  if (value == null || Number.isNaN(Number(value))) return '—'
+  return `${Math.round(Number(value) * 100)}%`
+}
+
+/**
+ * One chart per item: the held-out data with its ±std bars, and the model at the
+ * same times. The y range covers the bars as well as the points, so a bar is
+ * never clipped into looking tighter than it is.
+ */
+const validationPlots = computed(() =>
+  validationItems.value.map((item) => {
+    const t = (item.t ?? []).map(Number)
+    const data = (item.data ?? []).map(Number)
+    const model = (item.model ?? []).map(Number)
+    const std = Array.isArray(item.std) ? item.std.map(Number) : null
+    const err = (i) => (std ? (std.length === 1 ? std[0] : std[i]) : null)
+    const ys = [...model]
+    data.forEach((d, i) => {
+      const e = Number.isFinite(err(i)) ? err(i) : 0
+      ys.push(d - e, d + e)
+    })
+    const finite = ys.filter(Number.isFinite)
+    return {
+      name: item.data_item_name,
+      unit: item.unit,
+      xDomain: t.length ? [Math.min(...t), Math.max(...t)] : [0, 1],
+      yDomain: finite.length ? [Math.min(...finite), Math.max(...finite)] : [0, 1],
+      points: data.map((d, i) => ({
+        x: t[i],
+        y: d,
+        err: err(i),
+        title: `t = ${t[i]}: data ${d}${std ? ` ± ${err(i)}` : ''}, model ${model[i]}`,
+      })),
+      line: model.map((m, i) => ({ x: t[i], y: m })),
+    }
+  }),
+)
 
 // ---- Emulator error --------------------------------------------------------
 // Everything here is read from CA's emulator_metadata.json / emulator_validation.npz;
@@ -993,6 +1046,68 @@ const predictiveBandWidth = computed(() => `${(2 / (2 * PREDICTIVE_LIMIT)) * 100
       </template>
     </section>
 
+    <!-- Validation ----------------------------------------------------------
+         Only when the obs_data carries held-out data (CA #535): an empty
+         section here would read as "validated, nothing to say". -->
+    <section v-if="hasValidation" class="analysis-section" data-testid="validation-section">
+      <h2>Validation</h2>
+      <table class="emu-error-table" data-testid="validation-table">
+        <thead>
+          <tr>
+            <th>Item</th><th>Operand</th><th>Unit</th><th>Points</th>
+            <th>RMSE</th><th>nRMSE</th><th>Mean |z|</th><th>Within 2σ</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr
+            v-for="item in validationItems"
+            :key="item.data_item_name"
+            data-testid="validation-row"
+          >
+            <td class="emu-error-label">{{ item.data_item_name }}</td>
+            <td>{{ item.operand }}</td>
+            <td>{{ item.unit }}</td>
+            <td>{{ item.n_points }}</td>
+            <td>{{ fmtStat(item.rmse, 3) }}</td>
+            <td>{{ fmtStat(item.nrmse) }}</td>
+            <td>{{ fmtStat(item.mean_abs_z, 3) }}</td>
+            <td>{{ fmtFraction(item.within_2std) }}</td>
+          </tr>
+        </tbody>
+      </table>
+      <p class="emu-error-note">
+        The calibrated model's prediction of data it was never fitted to. A series
+        is compared at its own sample times, a constant at the end of its
+        experiment. Mean |z| and within 2σ need a std; nRMSE is relative to the
+        data's range, so items in different units can be compared.
+      </p>
+
+      <section
+        v-for="plot in validationPlots"
+        :key="plot.name"
+        class="error-chart"
+        data-testid="validation-chart"
+      >
+        <h3>{{ plot.name }}</h3>
+        <div class="chart-legend">
+          <span class="legend-item">
+            <span class="legend-swatch validation-model" /> model
+          </span>
+          <span class="legend-item">
+            <span class="legend-swatch validation-data" /> held-out data ± std
+          </span>
+        </div>
+        <ScatterChart
+          :points="plot.points"
+          :line="plot.line"
+          :x-domain="plot.xDomain"
+          :y-domain="plot.yDomain"
+          x-label="time"
+          :y-label="plot.unit"
+        />
+      </section>
+    </section>
+
     <!-- Emulator ------------------------------------------------------------>
     <section class="analysis-section">
       <h2>
@@ -1243,6 +1358,12 @@ const predictiveBandWidth = computed(() => `${(2 / (2 * PREDICTIVE_LIMIT)) * 100
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.legend-swatch.validation-model {
+  background: var(--p-orange-500, #e08a2c);
+}
+.legend-swatch.validation-data {
+  background: var(--p-primary-color, #5b9bd5);
 }
 .emu-error-note {
   font-size: 0.7rem;

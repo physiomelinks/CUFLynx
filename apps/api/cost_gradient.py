@@ -199,9 +199,11 @@ def _build(key, *, model_path, model_type, solver_info, dt, obs_data, sim_time,
            pre_time, names, values, bounds, output_dir, modifiers=None):
     ParamID, ObsAndParamDataParser = _ca_imports()
 
+    from obs_data import for_ca  # noqa: PLC0415 - held-out keys an older CA refuses
+
     parser = ObsAndParamDataParser()
     parsed = parser.parse_obs_data_json(
-        obs_data_dict=obs_data, pre_time=float(pre_time), sim_time=float(sim_time))
+        obs_data_dict=for_ca(obs_data), pre_time=float(pre_time), sim_time=float(sim_time))
     # process_obs_info writes .npy copies of the ground truth unconditionally; a
     # scratch dir keeps a slider drag from depositing files in the user's outputs.
     with tempfile.TemporaryDirectory() as scratch:

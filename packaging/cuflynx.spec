@@ -100,6 +100,9 @@ for runner in (
     # rewrites one (MLE cost_type) and reads its items through the single helper
     # that knows both shapes, rather than assuming the object form.
     "obs_data.py",
+    # calibration_runner scores the best fit against held-out data (CA #535) with
+    # CA's own function, or this copy of it when the CA in use predates it.
+    "held_out_validation.py",
     # "use the emulator" -> CA engine kwargs, shared by all three analysis
     # runners so a study cannot be calibrated on a surrogate and analysed on the
     # solver without saying so (CA #333).

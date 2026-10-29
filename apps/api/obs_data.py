@@ -159,6 +159,147 @@ def protocol_info_of(obj) -> dict | None:
     return None
 
 
+#: The keys that make a prediction_item carry held-out data (CA #535): measured
+#: values the calibrated model is checked against afterwards, never scored in the
+#: calibration itself. A CA predating #535 rejects every one of them as an
+#: unknown key, so they are removed before such a CA reads the document.
+HELD_OUT_KEYS = ("value", "data_type", "std", "obs_dt")
+
+#: The CA module that arrived with those keys; its presence is the capability test.
+_HELD_OUT_MODULE = "param_id.validation"
+
+
+def prediction_items_of(obj) -> list:
+    """The ``prediction_items`` of an obs_data document; ``[]`` for a bare array."""
+    if isinstance(obj, dict):
+        items = obj.get("prediction_items") or []
+        return items if isinstance(items, list) else []
+    return []
+
+
+def has_held_out_data(obj) -> bool:
+    """Whether any prediction_item carries a ``value`` to validate against."""
+    return any(isinstance(it, dict) and it.get("value") is not None
+               for it in prediction_items_of(obj))
+
+
+def ca_accepts_held_out() -> bool:
+    """Whether the circulatory_autogen this process imports reads held-out keys.
+
+    Judged by the module CA added alongside them rather than by a version number:
+    the CA directory is chosen at runtime and a checkout carries no release.
+    """
+    try:
+        from ca_imports import ca_import, ensure_ca_path  # noqa: PLC0415
+
+        ensure_ca_path()
+        ca_import(_HELD_OUT_MODULE)
+    except Exception:  # noqa: BLE001 - no CA or an older one: neither reads them
+        return False
+    return True
+
+
+def without_held_out(obj):
+    """A copy of ``obj`` with the held-out keys taken off its prediction_items.
+
+    The item itself stays -- its operand is still a prediction CA records -- only
+    the data a pre-#535 parser would refuse goes. ``obj`` is not modified.
+    """
+    if not isinstance(obj, dict) or not prediction_items_of(obj):
+        return obj
+    out = dict(obj)
+    out["prediction_items"] = [
+        {k: v for k, v in it.items() if k not in HELD_OUT_KEYS} if isinstance(it, dict) else it
+        for it in obj["prediction_items"]
+    ]
+    return out
+
+
+def for_ca(obj):
+    """The document as the circulatory_autogen in this process can read it.
+
+    ``obj`` itself when CA understands held-out data or there is none to remove;
+    otherwise :func:`without_held_out`. Every in-process hand-over to CA's parser
+    goes through here, so an obs_data carrying validation data still loads, costs
+    and calibrates against an older CA.
+    """
+    if not any(isinstance(it, dict) and any(k in it for k in HELD_OUT_KEYS)
+               for it in prediction_items_of(obj)):
+        return obj
+    return obj if ca_accepts_held_out() else without_held_out(obj)
+
+
+#: Kept alive until the process exits: CA reads the obs_data path at construction
+#: and again when it copies the study into its run directory.
+_ca_copies = None
+
+
+def ca_obs_path(obs_path: str) -> str:
+    """``obs_path``, or a copy the runner's CA can read (see :func:`for_ca`).
+
+    For the analysis runners, which hand CA a *path* and run in whichever
+    interpreter the user chose -- so the check has to be made there, not in the
+    server. The copy keeps the file's name, because CA and CUFLynx both derive
+    names from it (the run directory, the emulator directory), and lives in a
+    temp dir rather than the user's outputs directory.
+    """
+    global _ca_copies
+    import json  # noqa: PLC0415
+    import tempfile  # noqa: PLC0415
+    from pathlib import Path  # noqa: PLC0415
+
+    try:
+        obj = json.loads(Path(obs_path).read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 - let CA report an unreadable file itself
+        return obs_path
+    readable = for_ca(obj)
+    if readable is obj:
+        return obs_path
+    if _ca_copies is None:
+        _ca_copies = tempfile.TemporaryDirectory(prefix="cuflynx_obs_")
+    out = Path(_ca_copies.name) / Path(obs_path).name
+    out.write_text(json.dumps(readable, indent=4), encoding="utf-8")
+    print(
+        "circulatory_autogen here predates held-out data in prediction_items; "
+        "it is given the obs_data without it, and CUFLynx scores the validation.",
+        flush=True,
+    )
+    return str(out)
+
+
+def with_ca_obs_path(config: dict) -> dict:
+    """A runner config whose ``obs_path`` this process's CA can read.
+
+    Each analysis runner calls it once, right after putting CA on ``sys.path``,
+    so everything downstream -- CA's engine and CUFLynx's own rewrites of the
+    file alike -- reads the same document.
+    """
+    if not config.get("obs_path"):
+        return config
+    return {**config, "obs_path": ca_obs_path(config["obs_path"])}
+
+
+def _validate_held_out(prediction_items: list) -> None:
+    """CA #535's rules for a prediction_item that carries data, checked here too.
+
+    So an older CA -- which never sees these keys -- does not let a series with no
+    ``obs_dt`` through to a validation that cannot place its samples.
+    """
+    for i, item in enumerate(prediction_items):
+        if not isinstance(item, dict) or item.get("value") is None:
+            continue
+        kind = item.get("data_type")
+        if kind not in ("constant", "series"):
+            raise ObsDataError(
+                f"prediction_items[{i}] has a value, so it needs data_type "
+                f"'constant' or 'series', got {kind!r}"
+            )
+        if kind == "series" and item.get("obs_dt") is None:
+            raise ObsDataError(
+                f"prediction_items[{i}] is a series with a value, so it needs obs_dt"
+            )
+
+
 def parse_obs_data(obj) -> ObsData:
     """Validate and structure a parsed obs_data JSON value (object or array).
 
@@ -202,6 +343,7 @@ def parse_obs_data(obj) -> ObsData:
 
     if protocol_info is not None:
         _validate_traces(protocol_info)
+    _validate_held_out(prediction_items if isinstance(prediction_items, list) else [])
 
     # Last, so the structural messages above (which name the offending index)
     # win when both apply.
@@ -304,7 +446,7 @@ def ca_verdict(obj) -> CaVerdict:
         # pre_times/sim_times (the data-only form, which CUFLynx runs with manual
         # time); they exist to satisfy the parser, not to describe the run.
         parser.parse_obs_data_json(
-            obs_data_dict=copy.deepcopy(obj), pre_time=0.0, sim_time=1.0
+            obs_data_dict=copy.deepcopy(for_ca(obj)), pre_time=0.0, sim_time=1.0
         )
     except ValueError as exc:
         return CaVerdict(error=str(exc))

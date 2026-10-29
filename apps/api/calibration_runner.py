@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 import traceback
 from pathlib import Path
 
@@ -36,6 +37,10 @@ from ca_imports import ensure_ca_path
 # Force a headless matplotlib backend before circulatory_autogen imports pyplot
 # (the post-calibration error plots run server-side with no display).
 os.environ.setdefault("MPLBACKEND", "Agg")
+
+#: When this process started: a validation_results.json older than that belongs
+#: to an earlier run in the same outputs directory.
+_STARTED = time.time()
 
 # Markers the API watches for in stdout.
 DONE_MARKER = "__CALIBRATION_DONE__"
@@ -133,7 +138,14 @@ def run(config: dict) -> dict:
     from ca_imports import ca_from  # noqa: E402 (shipped into runners/ too)
     from local_sensitivity import resolve_gradient_method  # noqa: E402
 
+    from obs_data import prediction_items_of, with_ca_obs_path  # noqa: E402 (runners/ too)
+
     CVS0DParamID = ca_from("param_id.paramID", "CVS0DParamID")
+
+    # The prediction_items as the user wrote them, held-out data included: the CA
+    # below may only be shown the document without it (obs_data.for_ca).
+    prediction_items = prediction_items_of(_read_json(config["obs_path"]))
+    config = with_ca_obs_path(config)
 
     settings = config.get("settings", {})
     output_dir = config["output_dir"]
@@ -213,6 +225,11 @@ def run(config: dict) -> dict:
     # Post-calibration fit-error vectors (percent + std error per observable),
     # which drive the Analysis-tab bar charts. Best-effort; never fails the run.
     errors = _generate_error_vectors(param_id, output_dir)
+
+    # The best fit against the obs_data's held-out data, if it carries any.
+    # Rank 0 only, like everything CA writes after a run.
+    if getattr(param_id, "rank", 0) == 0:
+        _validate_held_out(param_id, prediction_items, bool(emulator_kwargs))
 
     # Under mpiexec every rank runs this script; only rank 0 holds the
     # authoritative best fit and writes the results (mirrors param_id_run_script).
@@ -398,6 +415,61 @@ def _generate_error_vectors(param_id, output_dir: str) -> dict:
     except Exception as exc:  # noqa: BLE001
         print(f"warning: could not load error vectors: {exc}", flush=True)
     return out
+
+
+def _read_json(path: str):
+    try:
+        return json.loads(Path(path).read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 - CA reports an unreadable obs_data itself
+        return None
+
+
+def _validate_held_out(param_id, prediction_items: list, emulated: bool) -> str | None:
+    """Score the best fit's predictions against the held-out data (CA #535).
+
+    CA's ``save_prediction_data`` simulates every experiment at the best fit and
+    saves the prediction items' traces; a CA that knows held-out data also writes
+    ``validation_results.json`` itself. For one that does not, the same file is
+    produced here from those saved traces (``held_out_validation``). Either way
+    the file sits in CA's run directory in CA's format, which is what the manager
+    reads. Returns its path, or None when nothing was validated.
+
+    Best-effort: a validation that cannot be made must never fail the calibration.
+    """
+    import ca_run_history  # noqa: PLC0415 (CA output formats, one place)
+    import held_out_validation  # noqa: PLC0415
+
+    if not any(isinstance(it, dict) and it.get("value") is not None
+               for it in prediction_items):
+        return None
+    if emulated:
+        # An emulator predicts the scalar data_item features only, never traces.
+        print("held-out data not validated: the calibration ran on the emulator, "
+              "which predicts no traces", flush=True)
+        return None
+    run_dir = getattr(param_id, "output_dir", None)
+    if not run_dir:
+        return None
+    try:
+        param_id.save_prediction_data()
+        written = os.path.join(run_dir, ca_run_history.VALIDATION_RESULTS_FILE)
+        if os.path.isfile(written) and os.path.getmtime(written) >= _STARTED - 1.0:
+            return written  # CA validated it itself
+        info = held_out_validation.prediction_info(prediction_items)
+        series = ca_run_history.prediction_series(run_dir, info["experiment_idxs"])
+        if series is None:
+            print("held-out data not validated: circulatory_autogen saved no "
+                  "prediction traces", flush=True)
+            return None
+        results = held_out_validation.validation_results(info, *series)
+        path = ca_run_history.write_validation_results(results, run_dir)
+        if path:
+            print(f"validation of {len(results['items'])} held-out prediction item(s) "
+                  f"saved in {path}", flush=True)
+        return path
+    except Exception as exc:  # noqa: BLE001 - never fail the run over its validation
+        print(f"warning: held-out data not validated: {exc}", flush=True)
+        return None
 
 
 def _find_output_file(param_id, output_dir: str, name: str) -> str | None:

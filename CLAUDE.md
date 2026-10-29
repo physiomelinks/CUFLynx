@@ -195,6 +195,15 @@ format, and no plumbing:
   covers both), UQ posteriors as `uq_posterior_samples.npy` (binned on read —
   CA's burn-in rule needs a live param-id object, so reading its raw
   `mcmc_chain.npy` would report a different posterior from the one the run did).
+- **Held-out data** (CA #535): a `prediction_item` carrying `value` (+ `data_type`,
+  `std`, `obs_dt`) is validation data, never scored. After a calibration the runner
+  calls CA's `save_prediction_data`; a CA that has `param_id.validation` writes
+  `validation_results.json` itself, and for an older one `held_out_validation.py`
+  (a copy of CA's scoring, pinned against it in `test_validation_results.py`)
+  writes the same file from CA's saved traces. An older CA rejects those keys, so
+  every hand-over goes through `obs_data.for_ca` (in-process) or
+  `obs_data.with_ca_obs_path` (runners), which strip them only when CA cannot read
+  them. The status/load-outputs `validation` is None — never empty — without it.
 - Reading via `find_run_dir` can reach an **earlier** run's `<case_type>` subdir,
   which the old direct read could not. `has_results(output_dir, newer_than=…)`
   takes the job's start time so a run whose own results are missing fails
