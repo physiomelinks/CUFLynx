@@ -885,11 +885,17 @@ async function onWindowDrop(event) {
     await importer.handleOmex(files)
     return
   }
+  if (files.some((f) => importer.isStudyManifestName?.(f.name))) {
+    dropHint.value = ''
+    await importer.handleStudyManifest(files)
+    return
+  }
   // Deliberately not guessed at. A .cellml could be the model or a sister file,
   // and a .json could be either of the two studies files -- the box is what says
   // which, so the honest answer is to name the box rather than pick one.
   dropHint.value =
-    `Only a .omex study can be dropped anywhere on the page. Drop ` +
+    `Only a .omex study or a *_cuflynx_study.json can be dropped anywhere on the ` +
+    `page. Drop ` +
     `${files.length > 1 ? 'these files' : `"${files[0].name}"`} on the model, ` +
     `obs_data or params box to say which it is.`
 }

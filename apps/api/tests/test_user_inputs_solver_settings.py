@@ -184,6 +184,27 @@ def test_an_archive_without_one_changes_nothing(client):
     assert engine.dt == 0.01 and engine.solver_info == {"MaximumStep": 0.001}
 
 
+def test_an_archives_study_manifest_wins_over_its_user_inputs(client):
+    """With a study manifest the solver settings are the manifest's solver_info;
+    the archive's user_inputs yaml is not adopted on top of them."""
+    import omex_export
+
+    source = _archive(**{"lv_user_inputs.yaml": USER_INPUTS})
+    blob, _ = omex_export.build_archive(
+        cellml_text=LV_MODEL_PATH.read_text(), source_archive=source,
+        study={"file_prefix": "lv",
+               "solver_info": {"solver": "CVODE_myokit", "MaximumStep": 0.0002, "dt": 0.002}})
+    assert "lv_user_inputs.yaml" in omex_import.unpack(blob)["members"]
+
+    body = _upload(client, blob)
+
+    assert body["solver_settings"]["source"] == "the archive's study manifest"
+    assert body["solver_settings"]["solver_info"] == {"MaximumStep": 0.0002}
+    assert engine.dt == pytest.approx(0.002)
+    assert engine.solver_info["MaximumStep"] == pytest.approx(2e-4)
+    assert not any("lv_user_inputs.yaml" in w for w in body["warnings"])
+
+
 def test_a_broken_yaml_in_an_archive_is_a_warning(client):
     body = _upload(client, _archive(**{"user_inputs.yaml": "solver_info: [unclosed"}))
     assert body["model_id"] and body["solver_settings"] is None
