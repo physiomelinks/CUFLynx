@@ -112,7 +112,7 @@ A study on your own machine -- with its sensitivity analyses, emulator and runs,
 which an archive does not carry -- opens with
 `cuflynx://open?study=<percent-encoded file: URL>`, naming its
 `*_cuflynx_study.json` (or `cuflynx_study.json`) or the directory holding it. It
-opens that directory as the outputs directory, as dropping the manifest does. Only
+opens that directory as the working dir, as dropping the manifest does. Only
 `file:` URLs on this computer are accepted. From a terminal:
 `xdg-open 'cuflynx://open?study=file%3A%2F%2F%2Fhome%2Fme%2Fstudy%2Fcuflynx_study.json'`.
 
@@ -134,7 +134,8 @@ it came from. Run
 
 For the tutorial click 'Tutorial at the top right of the CUFLynx page.
 For more info, see **[Using CUFLynx](tutorials/docs/misc.md)** — solver backends, Myokit `.mmt`
-models, and replotting a run outside the app.
+models, and replotting a run outside the app — and **[The working dir](tutorials/docs/working_dir.md)**:
+the one folder that holds a study's inputs and outputs, and how to zip it and send it.
 
 ## Using your own Python
 

@@ -125,11 +125,11 @@ two in step. The exported `run_pipeline.py` is CA's own
   solver throughout, so an emulator run stays comparable with what it approximates.
 
   **The bundle outlives the session**, so nothing about it is remembered in
-  memory: `ca_run_history.emulator_dir()` derives the location from the outputs
-  directory by CA's own rule (`<outputs>/emulators/<prefix>_<obs_prefix>`) on
+  memory: `ca_run_history.emulator_dir()` derives the location from the working
+  dir by CA's own rule (`<working dir>/emulators/<prefix>_<obs_prefix>`) on
   *both* sides, and `emulator_metadata()` reads CA's `emulator_metadata.json`.
   One consequence worth keeping: an emulator trained by CA's own script into the
-  same outputs directory is usable from the GUI, and nothing has to be re-pointed.
+  same working dir is usable from the GUI, and nothing has to be re-pointed.
 
   `emulator_config.engine_kwargs()` is the one place "use the emulator" becomes
   CA engine kwargs; **all three** analysis runners call it (sensitivity twice
@@ -195,10 +195,40 @@ variable, which CA's `cuflynx-methods-latex` typesets the methods with -- is ent
 (`libcuflynx.reporting.variable_mapping`, CA #547): rows, default rule, keeping edits.
 CUFLynx only picks where the file lives: beside the target's parameters file for a
 workflow's target tab (CA's `workflow_mapping_path`, where the methods writer looks), else
-`<outputs>/<prefix>_variable_mapping.csv`, else the uploads directory. `reporting` is a CA
+`<working dir>/inputs/<prefix>_variable_mapping.csv` (top level in an older folder), else the uploads directory. `reporting` is a CA
 package in `CA_PACKAGES` (and its two mirrors).
 
-**Only circulatory_autogen writes to the user's outputs directory** (#210). A run
+**The working dir** (`apps/api/working_dir.py`, user docs `tutorials/docs/working_dir.md`)
+is the one folder a study lives in, inputs and outputs, so it can be zipped and opened
+elsewhere. The old name, "Outputs directory", survives only in the aliases below. Rules:
+
+- **Inputs are copied into `<W>/inputs/<kind>/`** (`model/`, `obs_data/`,
+  `params_for_id/`, `user_inputs/`, `funcs/`, `workflows/<wf>/`, `generated_models/`,
+  plus the variable mapping, obs-extraction config and `uq_obs_data.json` at
+  `inputs/`'s top). `main._bind_working_dir(record, W)` does it for a model record: every
+  upload naming a working dir and every run calls it, and the record then points at the
+  copies (`working_model`, `obs_path`, `params_path`; `_study_file` writes there once
+  `record.working_dir` is set). The uploads dir (`UPLOAD_DIR`, pruned after 7 days) stays
+  the session's scratch copy, never what a study depends on.
+- **A run needs a working dir.** `_require_working_dir` 422s with
+  `working_dir.REQUIRED_MESSAGE`; there is no temp `calib_*`/`sa_*`/`uq_*`/`emu_*`
+  fallback any more, and the frontend refuses before sending (`lib/workingDir.js`).
+- **Outputs:** case dirs at the top (CA), sensitivity in `<W>/sensitivity/`
+  (`sa_output_dir` in the runner config; the param-id side stays at the top so the
+  manifest does), saved parameter sets in `<W>/saved_params/`.
+- **Older folders stay readable where their files are**: `working_dir.readable()` falls
+  back to `user_funcs/`, `generated_models/` and the top level, and readers
+  (`load_outputs`, `/api/runs`) look in both places. Writers use `readable()` too, so a
+  file found in the old place is edited there rather than forked.
+- **Wire names:** `working_dir` and `/api/working-dir/*`. `wire_aliases.WorkingDirAliases`
+  (ASGI middleware) copies `working_dir` onto `output_dir` / `outputs_dir` /
+  `config_outputs_dir` in queries and JSON bodies at any depth, and rewrites
+  `/api/outputs/*` to `/api/working-dir/*`, so the routes still declare the old field
+  names. The old names are accepted for one release; when they go, rename the fields and
+  drop the middleware. CA's own `param_id_output_dir` keeps its name. The browser
+  setting is `cuflynx-working-dir`, migrated once from `cuflynx-outputs-dir`.
+
+**Only circulatory_autogen writes results to the user's working dir** (#210). A run
 leaves CA's own files there and nothing else — no CUFLynx-authored results
 format, and no plumbing:
 
@@ -283,12 +313,15 @@ format, and no plumbing:
   (`utilities/cuflynx_study.py`) records every calibration, UQ, sensitivity and emulator
   run from one config in `<param_id_output_dir>/<study_name>_cuflynx_study.json`: model,
   base_model, obs_data, params_for_id, `user_funcs` ({kind: path}), `solver_info` (+dt),
-  `runs` (newest first, `analyses` per dir), `sensitivity` (dirs outside the outputs dir)
-  and `emulator`, plus an absolute `study_dir`. CUFLynx only reads it; bare
-  `cuflynx_study.json` (what sympathetic_neuron's pipeline wrote) is still read. A copy
-  away from its study resolves against `study_dir` (`base_dir`). Dropping one on the app
-  (`POST /api/outputs/manifest`, `handleStudyManifest` in `FileImport.vue`) only sets the
-  outputs directory and reloads it — one path for a dropped manifest and a picked folder.
+  `runs` (newest first, `analyses` per dir), `sensitivity` and `emulator`, every path
+  relative to the manifest's folder (libcuflynx copies inputs into `inputs/`). CUFLynx only
+  reads it; bare `cuflynx_study.json` (what sympathetic_neuron's pipeline wrote) is still
+  read. Relative paths resolve against the manifest's own folder; an older manifest's
+  absolute paths are rebased from its recorded `study_dir` onto that folder, or found in
+  `inputs/<kind>/` by name (`study_manifest._resolve`). A copy away from its study
+  resolves against `study_dir` when it records one (`base_dir`). Dropping one on the app
+  (`POST /api/working-dir/manifest`, `handleStudyManifest` in `FileImport.vue`) only sets
+  the working dir and reloads it — one path for a dropped manifest and a picked folder.
   `pre_time`/`sim_time` in it are informational: timing comes from the obs_data protocol.
 - **Declared funcs are the user's file, not ours.** `user_funcs._user_file` returns the
   manifest's `user_funcs[kind]` when declared, so runs, option lists and the editor all
@@ -329,7 +362,7 @@ its paths pointing at archive members, `solver_info`, and the user funcs under
 are dropped (they are one machine's directories), and `workflow` names the packed
 workflow (`workflow/calibration_workflow.json`) when the archive has one. Being ours, it and the funcs are *replaced* on each send. On import,
 `_apply_archive_study` adopts `solver_info` and writes the funcs to
-`<outputs>/user_funcs/`, keeping a differing existing file as
+`<working dir>/inputs/funcs/`, keeping a differing existing file as
 `*.before_import_<stamp>.py`. One vocabulary for both: `study_manifest.KEYS`; the OMEX
 role names (`cellml`/`obs`/`params`) stay internal to `omex_import`.
 
@@ -417,8 +450,8 @@ where truncation bites in the low thousands of characters. What is load-bearing:
   `inbox.MAX_DELIVERY_BYTES`) and puts it in the inbox; the same dialog asks, and
   accept runs `import_omex_bytes`. A `study=` link (a `file:` URL of a study
   manifest or its directory; http(s) refused) stages the manifest as inbox kind
-  `study`; accept returns `kind: "study"` and what `POST /api/outputs/manifest`
-  returns, and the UI opens that outputs directory as a dropped manifest does.
+  `study`; accept returns `kind: "study"` and what `POST /api/working-dir/manifest`
+  returns, and the UI opens that working dir as a dropped manifest does.
   Exactly one of `url` / `study`. A link that fails is recorded with
   `inbox.report_error` and returned once by `GET /api/inbox` as `error`, which the
   UI shows (`peekInbox` throws with `deliveryFailed`).
@@ -443,7 +476,8 @@ where truncation bites in the low thousands of characters. What is load-bearing:
 - **params_for_id.json** — `EditParamsDialog.vue` + `apps/web/src/lib/paramsCsv.js`; edits ranges/selection, writes a dated JSON, can apply best-fit to sliders. **An uploaded CSV is converted to JSON on the way in** (by CA, which owns the conversion; `params_json.csv_to_file_text`) and stored as `<study>_params_for_id.json`: CA reads no other form. Without CA, `params_json._csv_to_json_without_ca` does the same mapping (the packaged app starts with no CA directory set); `test_params_csv_fallback_matches_ca` pins it to CA's.
 
 **User-authored funcs** (`apps/api/user_funcs.py`) come in **three** kinds, one
-file and one CA config key each, all under `<outputs>/user_funcs/`:
+file and one CA config key each, all under `<working dir>/inputs/funcs/` (an older
+folder's `user_funcs/` is used where it already holds them):
 `operation_funcs_user.py` / `cost_funcs_user.py` (CA#303, named by an obs_data
 data_item) and `modifier_funcs_user.py` (CA#383, named by a params_for_id entry).
 Everything is driven off the `_KINDS` map — the run config, the export copy into
@@ -697,8 +731,8 @@ Check every answer against the code at the PR's head before publishing.
 
 The backend assumes a single-user, localhost deployment and exposes the host filesystem to any client that can reach the API:
 
-- **`GET /api/fs/list`** (`apps/api/main.py`) — the in-app file/folder browser (Python interpreter + outputs dir pickers) lists arbitrary server directories, defaulting to `$HOME`. No path confinement.
-- **`config_outputs_dir`** (calibration) — writes calibration outputs to any absolute path the client supplies.
+- **`GET /api/fs/list`** (`apps/api/main.py`) — the in-app file/folder browser (Python interpreter + working dir pickers) lists arbitrary server directories, defaulting to `$HOME`. No path confinement.
+- **`working_dir`** (every run, and uploads) — writes inputs and outputs to any absolute path the client supplies.
 
 These are acceptable for the current local use. **If the API is ever served beyond localhost, gate/confine both** under a configured root (and authenticate).
 
