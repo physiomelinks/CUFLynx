@@ -13,6 +13,7 @@ vi.mock('../lib/api', () => ({
   peekInbox: vi.fn(),
   acceptInbox: vi.fn(),
   rejectInbox: vi.fn(),
+  openStudyManifest: vi.fn(),
 }))
 
 import FileImport from './FileImport.vue'
@@ -28,6 +29,7 @@ import {
   peekInbox,
   acceptInbox,
   rejectInbox,
+  openStudyManifest,
 } from '../lib/api'
 
 // Real <button> stub so the Edit button's disabled state + click are observable;
@@ -100,9 +102,41 @@ beforeEach(() => {
   acceptInbox.mockReset()
   rejectInbox.mockReset()
   peekInbox.mockResolvedValue(null)
+  openStudyManifest.mockReset()
 })
 
 describe('FileImport', () => {
+  // A study run from circulatory_autogen is opened from the manifest it writes beside
+  // its results: the drop sets the outputs directory and reloads it, on any box.
+  it.each(['cellml-drop', 'obs-drop', 'params-drop'])(
+    'a dropped study manifest opens its study (%s)',
+    async (box) => {
+      openStudyManifest.mockResolvedValue({ dir: '/abs/study', study_name: 'RAAS6' })
+      const wrapper = mount(FileImport, { global: { stubs } })
+      const text = '{"schema": 1, "study_dir": "/abs/study"}'
+      await wrapper
+        .find(`[data-testid="${box}"]`)
+        .trigger('drop', { dataTransfer: { files: [jsonFile('RAAS6_cuflynx_study.json', text)] } })
+      await flushPromises()
+      expect(openStudyManifest).toHaveBeenCalledWith(text, undefined)
+      expect(wrapper.emitted('update:outputsDir')[0]).toEqual(['/abs/study'])
+      expect(wrapper.emitted('load-outputs')).toHaveLength(1)
+      expect(uploadCellML).not.toHaveBeenCalled()
+      expect(uploadObsData).not.toHaveBeenCalled()
+    },
+  )
+
+  it('a study manifest that cannot be opened says why', async () => {
+    openStudyManifest.mockRejectedValue({ response: { data: { detail: 'not on this machine' } } })
+    const wrapper = mount(FileImport, { global: { stubs } })
+    await wrapper
+      .find('[data-testid="obs-drop"]')
+      .trigger('drop', { dataTransfer: { files: [jsonFile('x_cuflynx_study.json', '{}')] } })
+    await flushPromises()
+    expect(wrapper.text()).toContain('not on this machine')
+    expect(wrapper.emitted('load-outputs')).toBeFalsy()
+  })
+
   it('test_cellml_drop_calls_upload', async () => {
     uploadCellML.mockResolvedValue({ model_id: 'abc', name: 'm' })
     const wrapper = mount(FileImport, { global: { stubs } })
@@ -1186,6 +1220,50 @@ describe('FileImport — the PhLynx inbox', () => {
     )
   })
 
+  // `cuflynx://open?study=` stages a study manifest already on this machine.
+  const STUDY = {
+    kind: 'study',
+    origin: 'A cuflynx:// link',
+    filename: 'cuflynx_study.json',
+    path: '/home/me/sa_ox1/cuflynx_study.json',
+    bytes: 1200,
+    members: ['model: /home/me/SN.cellml', 'emulator: /home/me/emulators/bundle', 'sensitivity: 1 recorded'],
+  }
+
+  it('a study link names the manifest path and what it declares', async () => {
+    peekInbox.mockResolvedValue(STUDY)
+    const wrapper = await mounted()
+    expect(wrapper.find('[data-testid="inbox-study"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="inbox-path"]').text()).toBe(STUDY.path)
+    expect(wrapper.find('[data-testid="inbox-members"]').text()).toContain('sensitivity: 1 recorded')
+    expect(acceptInbox).not.toHaveBeenCalled()
+  })
+
+  it('loading a study link opens its directory as a dropped manifest does', async () => {
+    peekInbox.mockResolvedValue(STUDY)
+    acceptInbox.mockResolvedValue({
+      kind: 'study',
+      dir: '/home/me/sa_ox1',
+      study_name: 'SN_full_ox1',
+      file_prefix: 'SN_full',
+      path: STUDY.path,
+      delivered_from: STUDY.origin,
+    })
+    const wrapper = await mounted()
+
+    await wrapper.find('[data-testid="inbox-accept"]').trigger('click')
+    await flushPromises()
+
+    expect(acceptInbox).toHaveBeenCalledOnce()
+    expect(wrapper.emitted('update:outputsDir')[0]).toEqual(['/home/me/sa_ox1'])
+    expect(wrapper.emitted('load-outputs')).toHaveLength(1)
+    expect(wrapper.emitted('model-loaded')).toBeFalsy()
+    expect(wrapper.find('[data-testid="import-notice"]').text()).toContain(
+      'Opening SN_full_ox1 from /home/me/sa_ox1',
+    )
+    expect(wrapper.find('[data-testid="inbox-dialog"]').exists()).toBe(false)
+  })
+
   it('a server that is not answering does not produce an error banner', async () => {
     // A delivery the user never asked for must not turn into a banner about a
     // feature they may not know exists.
@@ -1193,6 +1271,50 @@ describe('FileImport — the PhLynx inbox', () => {
     const wrapper = await mounted()
     expect(wrapper.find('[data-testid="import-error"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="inbox-dialog"]').exists()).toBe(false)
+  })
+
+  it('a cuflynx:// link that could not be opened is shown', async () => {
+    const failed = new Error(
+      'Could not open the study from https://example.org/x.omex: the server answered 404 Not Found',
+    )
+    failed.deliveryFailed = true
+    peekInbox.mockRejectedValue(failed)
+    const wrapper = await mounted()
+    expect(wrapper.find('[data-testid="import-error"]').text()).toContain('404 Not Found')
+    expect(wrapper.find('[data-testid="inbox-dialog"]').exists()).toBe(false)
+  })
+
+  it("says the starting values are the module library's calibrated values", async () => {
+    peekInbox.mockResolvedValue({ ...PENDING, origin: 'https://physiomelinks.github.io' })
+    acceptInbox.mockResolvedValue({
+      ...LOADED,
+      calibration: {
+        source: 'module library',
+        filename: 'hare_calibration.json',
+        cost: 0.27193979766414555,
+        method: 'CMA-ES',
+        date: '2026-10-01',
+        applied: ['alpha', 'beta'],
+        unresolved: [],
+      },
+    })
+    const wrapper = await mounted()
+    await wrapper.find('[data-testid="inbox-accept"]').trigger('click')
+    await flushPromises()
+    const notice = wrapper.find('[data-testid="import-notice"]').text()
+    expect(notice).toContain("module library's calibrated values")
+    expect(notice).toContain('cost 0.2719')
+    expect(notice).toContain('2 parameters')
+    expect(notice).toContain('hare_calibration.json')
+  })
+
+  it('says nothing about calibration when the archive carried none', async () => {
+    peekInbox.mockResolvedValue(PENDING)
+    acceptInbox.mockResolvedValue({ ...LOADED, calibration: null })
+    const wrapper = await mounted()
+    await wrapper.find('[data-testid="inbox-accept"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="import-notice"]').text()).not.toContain('calibrated')
   })
 })
 

@@ -49,6 +49,7 @@ PHLYNX_CHANGES_FORMAT = "application/x.vnd.phlynx-changes+json"
 _NON_OBS_FORMAT_MARKERS = (
     "x.vnd.phlynx-flow+json",
     "x.vnd.phlynx-changes+json",
+    "x.vnd.cuflynx-study+json",
     "sed-ml",
     "sedml",
 )
@@ -166,6 +167,12 @@ def _declared_phlynx_state(name: str, formats: dict[str, str]) -> bool:
     return any(marker in fmt for marker in (PHLYNX_FLOW_FORMAT, PHLYNX_CHANGES_FORMAT))
 
 
+def _declared_study(name: str, formats: dict[str, str]) -> bool:
+    """Whether the manifest declares this member as a CUFLynx study manifest."""
+    fmt = str(formats.get(Path(name).name.lower(), "")).lower()
+    return "x.vnd.cuflynx-study+json" in fmt
+
+
 def _declared_non_obs(name: str, formats: dict[str, str]) -> bool:
     fmt = str(formats.get(Path(name).name.lower(), "")).lower()
     return any(marker in fmt for marker in _NON_OBS_FORMAT_MARKERS)
@@ -245,6 +252,24 @@ def why_not_obs_data(blob: bytes | None) -> str:
     return f"it is a JSON {type(doc).__name__}, not an obs_data object or array"
 
 
+def looks_like_calibration(blob: bytes | None) -> bool:
+    """Whether a JSON member is a module-library calibration result.
+
+    The module library (circulatory-autogen-modules) writes one per calibrated
+    instance as ``<instance>_calibration.json``: an object whose
+    ``calibrated_parameters`` maps parameter names to values, beside ``cost``,
+    ``method`` and ``date``. Matched by content as well as by name, so a renamed
+    one is still kept out of the obs_data and params_for_id slots.
+    """
+    if not blob:
+        return False
+    try:
+        doc = json.loads(blob.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return False
+    return isinstance(doc, dict) and isinstance(doc.get("calibrated_parameters"), dict)
+
+
 def _classify(
     names: list[str],
     formats: dict[str, str] | None = None,
@@ -262,6 +287,28 @@ def _classify(
 
     def named(candidates, word):
         return [n for n in candidates if re.search(word, Path(n).name, re.I)]
+
+    # The module library's calibration result: ``<instance>_calibration.json``
+    # and ``<instance>_calibrated_parameters.csv``. Both are claimed before the
+    # params_for_id and obs_data pools are filled -- the CSV's name contains
+    # "param", and the JSON is otherwise a leftover JSON the obs_data sniff reads.
+    # Only those names (or a JSON with ``calibrated_parameters``): other files that
+    # mention calibration, such as a ``calibration_workflow.json``, keep their roles.
+    calibration_json = [
+        n for n in jsons
+        if re.search(r"(^|[_-])calibration\.json$", Path(n).name, re.I)
+        or looks_like_calibration(members.get(n))
+    ]
+    calibration_csv = named(csvs, r"(^|[_-])calibrated_parameters\.csv$")
+    csvs = [n for n in csvs if n not in calibration_csv]
+    jsons = [n for n in jsons if n not in calibration_json]
+
+    # The study manifest CUFLynx embeds (study_manifest.OMEX_FORMAT), by its declared
+    # format and never by its name -- `<prefix>_cuflynx_study.json` would otherwise be
+    # taken for a params_for_id whenever the prefix says "param". Out of every other
+    # pool from here on.
+    study = [n for n in jsons if _declared_study(n, formats)]
+    jsons = [n for n in jsons if n not in study]
 
     params_csv = named(csvs, r"param")
     # A params_for_id is stored as **JSON** by CUFLynx (`_save_params_file`), so
@@ -341,6 +388,9 @@ def _classify(
         "params": params_csv or params_json or csvs,
         "obs": obs,
         "module_config": module_config,
+        # JSON first: it carries the cost, the CSV only the values.
+        "calibration": calibration_json + calibration_csv,
+        "study": study,
     }
 
 
@@ -408,7 +458,13 @@ def unpack(data: bytes) -> dict:
             (Path(n).name, members[n]) for n in roles["module_config"] if n in members
         ]
 
+    study = _study_member(roles["study"], members)
+
     out = {
+        #: The embedded study manifest, as ``{"name", "manifest", "funcs"}``: what the
+        #: archive says about solver settings and which members are the user's funcs
+        #: (``funcs`` is ``{kind: (member name, bytes)}``). None when there is none.
+        "study": study,
         "cellml": cellml,
         "master": Path(ordered[0]).name if ordered else None,
         "obs": (obs_name, obs_bytes) if obs_bytes is not None else None,
@@ -418,6 +474,9 @@ def unpack(data: bytes) -> dict:
         #: is the first of these, kept because callers predate there being more
         #: than one.
         "phlynx_state": phlynx_state,
+        #: The module library's calibration members as ``(name, bytes)``, JSON
+        #: before CSV. See :mod:`library_calibration`.
+        "calibration": [(Path(n).name, members[n]) for n in roles["calibration"]],
         # Everything, under its archive-relative name, for re-emission (#290).
         "members": members,
         "manifest": manifest,
@@ -430,9 +489,35 @@ def unpack(data: bytes) -> dict:
             "obs": list(roles["obs"]),
             "params": list(roles["params"]),
             "module_config": list(roles["module_config"]),
+            "calibration": list(roles["calibration"]),
+            "study": list(roles["study"]),
+            "user_funcs": {kind: name for kind, (name, _) in (study or {}).get("funcs", {}).items()},
         },
     }
     return out
+
+
+def _study_member(names: list[str], members: dict[str, bytes]) -> dict | None:
+    """The first embedded study manifest that reads, with the func members it names.
+
+    One that does not read is passed over rather than failing the import: the rest of
+    the archive is a perfectly good study without it.
+    """
+    import study_manifest  # noqa: PLC0415 - small, but keep this module's imports lean
+
+    for name in names:
+        try:
+            manifest = json.loads(members[name].decode("utf-8"))
+            study_manifest.check(manifest, name)
+        except (ValueError, UnicodeDecodeError, study_manifest.ManifestError):
+            continue
+        funcs = {}
+        for kind, member in (manifest.get("user_funcs") or {}).items():
+            member = str(member).lstrip("./")
+            if kind in study_manifest.USER_FUNC_KINDS and member in members:
+                funcs[kind] = (member, members[member])
+        return {"name": name, "manifest": manifest, "funcs": funcs}
+    return None
 
 
 def save_module_config(data: bytes, out_dir: str | None, name: str | None = None) -> str | None:

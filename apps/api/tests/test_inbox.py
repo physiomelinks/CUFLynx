@@ -67,7 +67,8 @@ def test_a_delivery_is_staged_and_not_loaded(client):
 def test_peek_returns_metadata_only(client):
     _deliver(client, EXAMPLE.read_bytes())
     pending = client.get("/api/inbox").json()["pending"]
-    assert set(pending) == {"origin", "filename", "bytes", "members"}
+    assert set(pending) == {"kind", "origin", "filename", "bytes", "members"}
+    assert pending["kind"] == "archive"
     assert pending["bytes"] == EXAMPLE.stat().st_size
 
 

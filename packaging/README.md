@@ -89,6 +89,35 @@ regardless):
    LaunchServices, whose URL ceiling is separate from that limit and undocumented.
    **Record the size that works** — if it is below the limit, lower the limit.
 
+## Manual check: `cuflynx://` links, per OS
+
+CI cannot click a link. Against each built asset, launched once from where it
+will live (registration records that path):
+
+1. Launch it once and close it. The console says `Registered cuflynx:// links: ...`
+   (Linux: a `.desktop` under `~/.local/share/applications`; Windows: a key under
+   `HKEY_CURRENT_USER\Software\Classes\cuflynx`; macOS:
+   `~/Applications/CUFLynx Link Handler.app`).
+2. With the app **closed**, open in a browser a page holding
+   `<a href="cuflynx://open?url=https%3A%2F%2Fgithub.com%2Fphysiomelinks%2FCUFLynx%2Fraw%2Fmain%2Fresources%2F3compartment.omex">open</a>`
+   and click it. The app starts and the "A study was sent to CUFLynx" dialog names
+   `https://github.com`. **Load study** loads it.
+3. With the app **running**, click it again: the same dialog appears in the open
+   window and no second window starts.
+4. A link to a 404 shows `the server answered 404` in the import panel.
+5. A study link: run a study that writes a `*_cuflynx_study.json` (any
+   sensitivity analysis or emulator run from circulatory_autogen does), then click
+   `<a href="cuflynx://open?study=file%3A%2F%2F%2F<percent-encoded path to the manifest>">open</a>`
+   (Windows: `file:///C:/...`). The same dialog names the manifest's path and lists
+   its declared parts; **Load study** sets the outputs directory to its folder and
+   the outputs load (Sobol indices, emulator). A link to the directory works too.
+6. `cuflynx://open?study=https%3A%2F%2Fexample.org%2Fs.json` shows `a study link
+   must name a study on this computer` in the import panel.
+
+On macOS, if nothing happens, `lsregister -dump | grep -i cuflynx` shows whether
+the applet is registered, and running `open 'cuflynx://open?url=...'` from a
+terminal takes the browser out of the picture.
+
 ## Windows antivirus false positives
 
 The Windows executable is a PyInstaller **onefile** build, and Windows Defender

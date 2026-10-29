@@ -29,6 +29,7 @@ import re
 import secrets
 import shutil
 import tempfile
+import threading
 import time
 import uuid
 import zipfile
@@ -63,7 +64,9 @@ import myokit_import
 import easyml_import
 import omex_import
 import omex_export
-from inbox import APP_NAME, RECEIVE_PORTS, inbox  # noqa: F401 - RECEIVE_PORTS is the contract
+import library_calibration
+import open_link
+from inbox import APP_NAME, MAX_DELIVERY_BYTES, RECEIVE_PORTS, inbox  # noqa: F401 - RECEIVE_PORTS is the contract
 from aadc_check import aadc_status
 import editor_launch
 from version import __version__
@@ -83,6 +86,7 @@ from obs_series import compute_output_series
 import params_json
 import ca_run_history
 import load_outputs
+import study_manifest
 from params_for_id import ParamsForIdError, parse_params_for_id
 import saved_runs
 from param_io import ParamIOError, load_param_values, save_param_values
@@ -106,7 +110,9 @@ from solver_options import (
 from user_funcs import (
     FUNC_KINDS,
     UserFuncError,
+    convention_path as user_func_convention_path,
     delete_user_func,
+    refresh_options as refresh_user_func_options,
     external_path as user_func_path,
     external_paths as user_func_paths,
     model_source_path as study_model_source_path,
@@ -1524,6 +1530,44 @@ def _no_obs_data_warning(parts: dict, source: str = "archive") -> list[str]:
     return [f"This {source} carries no {missing}, so the observations tab is empty."]
 
 
+def _apply_archive_study(study: dict | None, out_dir: str | None) -> list[str]:
+    """Adopt an archive's embedded study manifest: its solver settings and its funcs.
+
+    The funcs go where this app keeps a study's funcs (``<outputs>/user_funcs/``).
+    One already there with different contents is kept beside it as
+    ``<name>.before_import_<stamp>.py`` rather than overwritten unseen -- it may hold
+    funcs another study in the same outputs directory uses. Returns what to report.
+    """
+    if not study:
+        return []
+    notes = list(_adopt_study_solver_info((study.get("manifest") or {}).get("solver_info")))
+    funcs = study.get("funcs") or {}
+    if funcs and not out_dir:
+        notes.append(
+            "The archive carries user funcs ("
+            + ", ".join(sorted(funcs))
+            + "), but no outputs directory is set to keep them in. Set one and import "
+              "the archive again, or the obs_data operations they define will be unknown.")
+        return notes
+    wrote = False
+    stamp = time.strftime("%y%m%d_%H%M%S")
+    for kind, (member, blob) in sorted(funcs.items()):
+        target = user_func_convention_path(kind, out_dir)
+        if target.is_file() and target.read_bytes() == blob:
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if target.is_file():
+            kept = target.with_name(f"{target.stem}.before_import_{stamp}{target.suffix}")
+            target.rename(kept)
+            notes.append(f"Your {kind} funcs were replaced by the archive's; the previous "
+                         f"file is kept as {kept.name}.")
+        target.write_bytes(blob)
+        wrote = True
+    if wrote:
+        refresh_user_func_options()
+    return notes
+
+
 def import_omex_bytes(data: bytes, output_dir: str | None = None,
                       source: str = "archive") -> dict:
     """Load an archive's bytes, whatever delivered them.
@@ -1598,6 +1642,18 @@ def import_omex_bytes(data: bytes, output_dir: str | None = None,
         except CellMLFlattenError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
+    # A module-library archive carries its calibration result; its values are
+    # written into the model here, so every reader of the model -- the sliders,
+    # the params_for_id's initial values, a send to PhLynx -- starts from them.
+    calibration = None
+    if parts.get("calibration"):
+        try:
+            raw, calibration = library_calibration.apply(
+                raw, parts["calibration"], parts["params"][1] if parts["params"] else None
+            )
+        except (CellMLParseError, UnicodeDecodeError):
+            calibration = None  # the parse below reports the model's own problem
+
     try:
         meta = parse_cellml(raw)
     except CellMLParseError as exc:
@@ -1638,7 +1694,16 @@ def import_omex_bytes(data: bytes, output_dir: str | None = None,
         # single-file upload returns so the UI needs no second code path.
         "converted_from": converted_from,
         "protocol_obs_data": protocol,
+        # The module library's calibration result, when the archive carried one:
+        # {source, filename, cost, method, date, applied, unresolved}. Its
+        # values are already the model's.
+        "calibration": calibration,
     }
+    if calibration and calibration["unresolved"]:
+        load_warnings.append(
+            f"{calibration['filename']}: no model parameter matched "
+            f"{', '.join(calibration['unresolved'])}, so those keep the model's own values."
+        )
 
     # obs_data and params_for_id are optional: an archive with only a model is a
     # perfectly good archive, and refusing it would be worse than loading what is
@@ -1699,6 +1764,8 @@ def import_omex_bytes(data: bytes, output_dir: str | None = None,
                 "JSON, or the directory could not be written. The study loaded, and the "
                 "archive still round-trips."
             )
+
+    load_warnings.extend(_apply_archive_study(parts.get("study"), out_dir))
 
     # An obs_data in the archive is the author's own and always wins; only when
     # there is none does the .mmt's protocol become the study's protocol.
@@ -1823,6 +1890,21 @@ def phlynx_send(req: PhlynxSendRequest):
 
     stem = _record_prefix(record, "study")
     archive = record.archive_path.read_bytes() if record.archive_path else None
+    # What the study needs that no other member carries: its solver settings and the
+    # user funcs its obs_data and params_for_id name. Without them a study sent to PhLynx
+    # and back reopens at the app's default solver with its operations unregistered.
+    funcs_dir = _user_func_base_dir(req.output_dir)
+    funcs = {}
+    for kind in FUNC_KINDS:
+        found = user_func_path(kind, funcs_dir)
+        if found:
+            funcs[kind] = (user_func_convention_path(kind).name, Path(found).read_bytes())
+    study = {
+        "study_name": stem,
+        "file_prefix": stem,
+        "solver_info": {**(getattr(engine, "solver_info", None) or {}),
+                        "solver": engine.solver, "dt": engine.dt},
+    }
     try:
         blob, report = omex_export.build_archive(
             cellml_text=record.path.read_text(encoding="utf-8"),
@@ -1834,6 +1916,8 @@ def phlynx_send(req: PhlynxSendRequest):
             params_name=f"{stem}_params_for_id{record.params_path.suffix}"
             if record.params_path
             else "params_for_id.json",
+            study=study,
+            funcs=funcs,
         )
     except omex_export.OmexExportError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -1898,9 +1982,8 @@ def phlynx_archive(token: str, filename: str) -> Response:
 
 
 #: A delivered archive is a payload from a web page, so it is capped well below
-#: anything a real study reaches. The point is that an accidental or hostile
-#: multi-gigabyte post cannot sit in this process's memory.
-MAX_INBOX_BYTES = 64 * 1024 * 1024
+#: anything a real study reaches (:data:`inbox.MAX_DELIVERY_BYTES`).
+MAX_INBOX_BYTES = MAX_DELIVERY_BYTES
 
 
 @app.post("/api/inbox")
@@ -1940,23 +2023,60 @@ def peek_inbox() -> dict:
 
     Polled by the UI, which has no push channel: the frontend deliberately assumes
     no local backend, and giving it one for this would be a bigger change than the
-    feature.
+    feature. ``error`` is a ``cuflynx://`` link that could not be opened
+    (``{origin, message}``), returned once.
     """
-    return {"pending": inbox.peek()}
+    return {"pending": inbox.peek(), "error": inbox.take_error()}
+
+
+@app.post("/api/open-link")
+async def open_link_route(request: Request) -> dict:
+    """Open a ``cuflynx://open?url=...`` or ``?study=...`` link handed over by a second launch.
+
+    Only the desktop shell enables this, by setting the token it also writes to
+    the instance file (:mod:`open_link`); a request without that token is
+    refused, so a web page cannot use the app to fetch URLs. The archive is
+    fetched, or the study manifest read, on a background thread and staged in the
+    inbox; a failure is shown in the UI. A link that does not parse is refused here
+    too (422), after the same error is recorded for the UI.
+    """
+    if not open_link.token_matches(request.headers.get(open_link.TOKEN_HEADER)):
+        raise HTTPException(status_code=403, detail="not a handoff from this CUFLynx")
+    try:
+        body = await request.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="the body must be JSON") from exc
+    link = body.get("link") if isinstance(body, dict) else None
+    try:
+        target = open_link.parse(link)
+    except open_link.OpenLinkError as exc:
+        open_link.stage(link)  # records the same error for the UI
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    threading.Thread(target=open_link.stage, args=(link,), daemon=True).start()
+    return {"accepted": True, "kind": target.kind, "url": target.url}
 
 
 @app.post("/api/inbox/accept")
 def accept_inbox(output_dir: str | None = Query(default=None)) -> dict:
-    """Load the staged study, returning exactly what ``/api/omex/upload`` returns.
+    """Load the staged study.
 
-    Same body, so the frontend feeds it into the same `model-loaded` /
-    `obs-data-loaded` / `params-loaded` flow a dropped archive takes -- there is
-    one importer (:func:`import_omex_bytes`) and one set of emits, not a second
-    pair that can drift from the first.
+    An archive returns exactly what ``/api/omex/upload`` returns, so the frontend
+    feeds it into the same `model-loaded` / `obs-data-loaded` / `params-loaded` flow
+    a dropped archive takes -- there is one importer (:func:`import_omex_bytes`) and
+    one set of emits, not a second pair that can drift from the first.
+
+    A study manifest (``cuflynx://open?study=``) returns ``kind: "study"`` and what
+    ``/api/outputs/manifest`` returns for that manifest and its path -- the outputs
+    directory to open -- so the frontend opens it as it opens a dropped manifest.
     """
     pending = inbox.take()
     if pending is None:
         raise HTTPException(status_code=404, detail="nothing is waiting in the inbox")
+    if pending.kind == "study":
+        opened = open_study_manifest(
+            StudyManifestRequest(content=pending.data.decode("utf-8-sig"), path=pending.path))
+        return {"kind": "study", **opened, "path": pending.path,
+                "delivered_from": pending.origin}
     result = import_omex_bytes(pending.data, output_dir)
     return {**result, "delivered_from": pending.origin}
 
@@ -2826,6 +2946,37 @@ def load_outputs_directory(
     than raising, and ``found`` says which panels have something to show.
     """
     return load_outputs.load_outputs(dir, file_prefix, obs_path, run_dir)
+
+
+class StudyManifestRequest(BaseModel):
+    #: The dropped ``*_cuflynx_study.json``: its parsed JSON, or its text.
+    content: dict | str
+    #: Where it is on disk, when the shell knows (a desktop drop or a picked file). A
+    #: browser drop carries only the contents, and the manifest's own ``study_dir`` is
+    #: what says where the study is then.
+    path: str | None = None
+
+
+@app.post("/api/outputs/manifest")
+def open_study_manifest(req: StudyManifestRequest) -> dict:
+    """Which outputs directory a dropped study manifest opens.
+
+    circulatory_autogen writes ``<study>_cuflynx_study.json`` into a study's
+    ``param_id_output_dir`` and records every analysis in it, so the file is the handle
+    a user has on a study run from a script. The frontend sets the outputs directory to
+    the answer and reloads it, which is the path a picked directory already takes -- so
+    a dropped manifest and a picked folder cannot open a study differently.
+    """
+    raw = req.content
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=f"not JSON: {exc}") from exc
+    try:
+        return study_manifest.study_location(raw, req.path, "the dropped study manifest")
+    except study_manifest.ManifestError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 class OpenStudyRequest(BaseModel):
