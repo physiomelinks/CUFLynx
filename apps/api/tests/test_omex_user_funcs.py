@@ -236,6 +236,38 @@ def test_cost_funcs_install_into_the_cost_store(client, cfg_dir, tmp_path):
     assert [f["name"] for f in uf.read_user_funcs("cost", str(out))["functions"]] == ["my_cost"]
 
 
+def test_an_archive_with_a_study_manifest_installs_its_funcs_once(client, cfg_dir, tmp_path):
+    """Manifest wins: its declared files are installed whole (#385), and the
+    funcs-named members are not also installed a def at a time."""
+    import omex_export
+
+    # A loose root funcs member beside the declared one, as a re-exported PhLynx
+    # archive carries: covered by the manifest too, not installed.
+    source = _archive({"operation_funcs_user.py": OTHER_RATIO})
+    blob, _ = omex_export.build_archive(
+        cellml_text=LV_MODEL_PATH.read_text(), source_archive=source,
+        study={"file_prefix": "lv"},
+        funcs={"operation": ("operation_funcs_user.py", RATIO_FUNCS.encode())})
+    out = tmp_path / "out"
+    body = _upload(client, blob, out)
+
+    assert sorted(f["origin"] for f in body["user_funcs"]) == [
+        "operation_funcs_user.py", "operation_funcs_user.py"]
+    assert {(f["kind"], f["status"]) for f in body["user_funcs"]} == {("operation", "manifest")}
+    store = out / "user_funcs"
+    assert (store / "operation_funcs_user.py").read_text() == RATIO_FUNCS
+    assert [p.name for p in store.iterdir()] == ["operation_funcs_user.py"]
+    assert not [w for w in body["warnings"] if "funcs" in w]
+
+
+def test_an_archive_without_a_study_manifest_installs_each_def(client, cfg_dir, tmp_path):
+    """No manifest: the funcs-named member is installed def by def, in the canonical file."""
+    out = tmp_path / "out"
+    body = _upload(client, _archive(), out)
+    assert [f["status"] for f in body["user_funcs"]] == ["installed"]
+    assert "CUFLYNX_OPERATIONS" in (out / "user_funcs" / "operation_funcs_user.py").read_text()
+
+
 def test_the_inbox_names_the_python_a_delivery_would_install():
     """Accepting a delivered study now installs code, so the dialog has to say so."""
     import inbox as inbox_mod
