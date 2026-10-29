@@ -81,6 +81,7 @@ dependencies = [
     "ruamel.yaml>=0.17.0",
     "rdflib>=5.0.0",
     "pint>=0.18",
+    "jinja2>=3.0",          # renders the C BE_batched_c builds each model from
     # circulatory_autogen's *cost-gradient* imports, which are in-process too. #188
     # put the analytic cost gradient in the live tier: cost_gradient.py imports CA's
     # param_id.paramID, and that reaches an unguarded `import numdifftools` in CA's

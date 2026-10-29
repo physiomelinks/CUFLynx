@@ -599,15 +599,26 @@ an empty pipe.
   listed file that is missing fails the *build*. Examples ship as **`.omex`**, not
   loose CellML, because an example is a study — model + obs_data + params_for_id —
   and the frontend loads it through the existing archive path.
-- **A C compiler cannot be bundled away — but it is only needed for one backend.**
-  Of CA's `src/solver_wrappers/*`, **only `myokit_helper.py` compiles anything**;
+- **A C compiler cannot be bundled away — but only the compiling cellml solvers need one.**
+  Of CA's solver wrappers, `myokit_helper.py` (CVODE_myokit) and `batched_c_helper.py`
+  (BE_batched_c, which also needs **CMake**) compile each model at run time;
   `python` (scipy `solve_ivp`) and `casadi_python` (`casadi_integrator`) are
   compiler-free and both are verified working in the frozen app. So a missing
   compiler is a **warning, not an error**: `compiler_check.py` detects it,
-  `GET /api/config` returns `cpp_compiler: {present, hint, affects, alternatives}`,
-  and `App.vue` shows a `warn` banner naming the backends that still work. Don't
-  regress this to an error. `scripts/install.py` shares the detection — keep it in
-  one place.
+  `GET /api/config` returns `cpp_compiler: {present, hint, affects, alternatives,
+  unavailable_solvers}`, and `App.vue` shows a `warn` banner naming the backends that
+  still work. Don't regress this to an error. BE_batched_c is instead **withheld from
+  the solver menu** when CMake or the compiler is missing (`unavailable_solvers`, read
+  by `solver_options`), and Settings says why. `scripts/install.py` shares the
+  detection — keep it in one place.
+- **BE_batched_c reads `MaximumStep` and `MaximumNumberOfSteps` differently from CVODE**
+  (no step cap by default; a step budget per block over the whole run), so CVODE's
+  defaults — CA's ProtocolRunner's 0.001/5000, its parser's 5000, the runners' 1e-4 —
+  must never reach it: `solver_info_defaults.py` puts the solver's own declared
+  defaults under the settings first, in the engine (`run_solver_info`, which also adds
+  its `build_dir` under the user cache) and in every runner. Its build-cache key is a
+  digest of two of libcuflynx's own source files, which is why the spec collects
+  those as data (`_SOURCES_READ_AT_RUN_TIME`).
 
 **`POST /api/config` semantics — `ca_dir` omitted means "leave unchanged".** It is
 `str | None = None`; only an explicit `""` resets to the default. This is load-

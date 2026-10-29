@@ -1668,6 +1668,40 @@ describe('App.vue AADC availability (#122)', () => {
   })
 })
 
+// BE_batched_c builds each model with CMake and a C compiler; without them the
+// server leaves it off the solver menu, and Settings says why.
+describe('App.vue withheld solvers', () => {
+  const CONFIG = {
+    ca_dir: '',
+    ca_exists: true,
+    generated_model_format: 'cellml',
+    solver: 'CVODE_myokit',
+    solver_info: {},
+    differentiable_operations: {},
+  }
+
+  it('shows why BE_batched_c is not on the menu', async () => {
+    const why = 'BE_batched_c is not listed: it builds each model with CMake and a C compiler, and CMake was not found.'
+    getConfig.mockResolvedValueOnce({
+      ...CONFIG,
+      cpp_compiler: { present: true, hint: '', affects: '', alternatives: [], unavailable_solvers: { BE_batched_c: why } },
+    })
+    const wrapper = shallowMount(App)
+    await flushPromises()
+    expect(wrapper.vm.withheldSolvers).toEqual([why])
+  })
+
+  it('says nothing when every solver is available', async () => {
+    getConfig.mockResolvedValueOnce({
+      ...CONFIG,
+      cpp_compiler: { present: true, hint: '', affects: '', alternatives: [], unavailable_solvers: {} },
+    })
+    const wrapper = shallowMount(App)
+    await flushPromises()
+    expect(wrapper.vm.withheldSolvers).toEqual([])
+  })
+})
+
 // The run window has ONE source: the obs_data's protocol_info. The t₁/pre
 // spinners were a second one, and a calibration then ran over one window while
 // the live cost ran over the other -- the same parameters, two different costs.

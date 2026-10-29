@@ -25,6 +25,7 @@ from pathlib import Path
 import ca_obs
 import emulator_config
 from ca_imports import ensure_ca_path
+from solver_info_defaults import with_declared_step_defaults
 from obs_data import data_items_of, with_ca_obs_path
 
 # Headless matplotlib for any plots circulatory_autogen produces server-side.
@@ -110,6 +111,9 @@ def _solver_info(config: dict, settings: dict) -> dict:
     Settings popup) with the solver name + CVODE step defaults filled in."""
     si = dict(config.get("solver_info") or {})
     si.setdefault("solver", config.get("solver") or settings.get("solver", "CVODE_myokit"))
+    # The solver's own step defaults first, so CVODE's 1e-4 cap only reaches solvers
+    # that list it (see solver_info_defaults and CA's solver_info_fields).
+    si = with_declared_step_defaults(si["solver"], si)
     if "MaximumStep" in ca_obs.solver_info_keys(si["solver"]):
         si.setdefault("MaximumStep", settings.get("MaximumStep", 0.0001))
     # No MaximumNumberOfSteps default: CA fills its own for the backends that use it.
