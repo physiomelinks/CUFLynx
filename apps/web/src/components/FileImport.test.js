@@ -1240,6 +1240,50 @@ describe('FileImport — the PhLynx inbox', () => {
     expect(wrapper.find('[data-testid="import-error"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="inbox-dialog"]').exists()).toBe(false)
   })
+
+  it('a cuflynx:// link that could not be opened is shown', async () => {
+    const failed = new Error(
+      'Could not open the study from https://example.org/x.omex: the server answered 404 Not Found',
+    )
+    failed.deliveryFailed = true
+    peekInbox.mockRejectedValue(failed)
+    const wrapper = await mounted()
+    expect(wrapper.find('[data-testid="import-error"]').text()).toContain('404 Not Found')
+    expect(wrapper.find('[data-testid="inbox-dialog"]').exists()).toBe(false)
+  })
+
+  it("says the starting values are the module library's calibrated values", async () => {
+    peekInbox.mockResolvedValue({ ...PENDING, origin: 'https://physiomelinks.github.io' })
+    acceptInbox.mockResolvedValue({
+      ...LOADED,
+      calibration: {
+        source: 'module library',
+        filename: 'hare_calibration.json',
+        cost: 0.27193979766414555,
+        method: 'CMA-ES',
+        date: '2026-10-01',
+        applied: ['alpha', 'beta'],
+        unresolved: [],
+      },
+    })
+    const wrapper = await mounted()
+    await wrapper.find('[data-testid="inbox-accept"]').trigger('click')
+    await flushPromises()
+    const notice = wrapper.find('[data-testid="import-notice"]').text()
+    expect(notice).toContain("module library's calibrated values")
+    expect(notice).toContain('cost 0.2719')
+    expect(notice).toContain('2 parameters')
+    expect(notice).toContain('hare_calibration.json')
+  })
+
+  it('says nothing about calibration when the archive carried none', async () => {
+    peekInbox.mockResolvedValue(PENDING)
+    acceptInbox.mockResolvedValue({ ...LOADED, calibration: null })
+    const wrapper = await mounted()
+    await wrapper.find('[data-testid="inbox-accept"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="import-notice"]').text()).not.toContain('calibrated')
+  })
 })
 
 // Nothing loads quietly. An import that came up short of a whole study says so

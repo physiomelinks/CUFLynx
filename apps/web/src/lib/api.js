@@ -275,8 +275,16 @@ export async function uploadOmex(file, outputDir = '') {
 // It is *staged*, not imported: CORS stops a page reading our responses, not
 // sending requests, so the confirmation in the UI is the security control and
 // these three calls are what drives it.
+//
+// `peekInbox` throws an error with `deliveryFailed: true` when a cuflynx:// link
+// could not be opened (the server reports that once, on the next poll).
 export async function peekInbox() {
   const { data } = await axios.get(url('/api/inbox'))
+  if (data.error) {
+    const err = new Error(data.error.message || 'A cuflynx:// link could not be opened')
+    err.deliveryFailed = true
+    throw err
+  }
   return data.pending
 }
 
