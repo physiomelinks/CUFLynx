@@ -30,6 +30,7 @@ import sys
 import traceback
 from pathlib import Path
 
+import ca_obs
 from ca_imports import ensure_ca_path
 
 # Markers the API watches for in stdout.
@@ -94,7 +95,8 @@ def _solver_info_from_config(config: dict, settings: dict) -> dict:
     """
     si = dict(config.get("solver_info") or {})
     si.setdefault("solver", config.get("solver") or settings.get("solver", "CVODE_myokit"))
-    si.setdefault("MaximumStep", settings.get("MaximumStep", 0.0001))
+    if "MaximumStep" in ca_obs.solver_info_keys(si["solver"]):
+        si.setdefault("MaximumStep", settings.get("MaximumStep", 0.0001))
     return si
 
 

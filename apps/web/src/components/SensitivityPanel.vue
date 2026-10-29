@@ -388,7 +388,7 @@ function onRun() {
       />
     </div>
     <p v-if="!canRun" class="hint">
-      Load a model, an obs_data.json and a params_for_id.csv to run a sensitivity
+      Load a model, an obs_data.json and a params_for_id.json to run a sensitivity
       analysis.
     </p>
     <p v-if="error" class="cal-error">{{ error }}</p>

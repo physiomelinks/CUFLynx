@@ -31,7 +31,7 @@ const props = defineProps({
   modelId: { type: String, default: null },
   currentDataItems: { type: Array, default: () => [] },
   currentPredictionItems: { type: Array, default: () => [] },
-  // Loaded obs_data protocol_info (null for data-only); passed through verbatim.
+  // Loaded obs_data protocol_info, passed through verbatim (null for a new obs_data).
   protocolInfo: { type: Object, default: null },
   experimentCount: { type: Number, default: 0 },
   // Model variables store slice (for operand / prediction variable choices).
@@ -128,7 +128,8 @@ watch(
     editableRows.value = editable
     preservedItems.value = preserved
     predRows.value = (props.currentPredictionItems ?? []).map(predToRow)
-    protocolModel.value = props.protocolInfo ? protocolToModel(props.protocolInfo) : null
+    // An obs_data always has a protocol_info; a new one starts from one experiment.
+    protocolModel.value = props.protocolInfo ? protocolToModel(props.protocolInfo) : emptyModel()
     activeExp.value = 0
     highlightSubexp.value = null
     highlightExp.value = null
@@ -333,14 +334,8 @@ const canSave = computed(
   () => !saving.value && !editableRows.value.some(rowInvalid) && modelErrors.value.length === 0,
 )
 
-function addProtocol() {
-  protocolModel.value = emptyModel()
-  activeExp.value = 0
-}
-
 // Selecting a data_item row points the embedded protocol editor at that item's
-// experiment and lightly highlights its target subexperiment. No-op when the
-// obs_data is data-only (no protocol model to point at).
+// experiment and lightly highlights its target subexperiment.
 function selectRow(row) {
   // Clicking anywhere on a data_item expands it (so its details are visible) and
   // marks it selected.
@@ -475,7 +470,6 @@ async function onSave() {
     <p class="eo-hint">
       Edit the observation targets. Saving writes a new
       <code>…_yymmdd.json</code> to the output directory (the original is kept) and applies it.
-      <template v-if="!hasProtocol"> (data-only obs_data — no protocol/predictions)</template>
     </p>
 
     <Message v-if="error" severity="error" data-testid="eo-error" :closable="false">
@@ -483,21 +477,7 @@ async function onSave() {
     </Message>
 
     <h3 class="eo-section">protocol_info</h3>
-    <template v-if="!protocolModel">
-      <Button
-        label="Add protocol_info"
-        icon="pi pi-plus"
-        size="small"
-        data-testid="add-protocol"
-        @click="addProtocol"
-      />
-      <p class="eo-hint">
-        This is a data-only obs_data with no protocol. Add one to define
-        experiments, controlled inputs (params_to_change), and prediction_items.
-      </p>
-    </template>
     <ProtocolInfoEditor
-      v-else
       v-model:active-exp="activeExp"
       data-testid="eo-protocol"
       :model="protocolModel"

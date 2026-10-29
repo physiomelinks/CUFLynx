@@ -84,7 +84,7 @@ export function obsModelVar(item) {
     )
     if (v) return v
   }
-  return item.data_item_name ?? item.variable
+  return item.data_item_name
 }
 
 /**
@@ -99,9 +99,9 @@ export function obsModelVar(item) {
 export function emulatorFeatureFor(features, item) {
   if (!features || !item) return null
   const itemName = item.data_item_name ?? ''
-  const name = item.trace_name_for_plotting ?? item.name_for_plotting ?? item.variable ?? ''
+  const name = item.trace_name_for_plotting ?? ''
   const op = item.operation
-  const operand = (item.operands ?? [])[0] ?? item.variable ?? ''
+  const operand = (item.operands ?? [])[0] ?? ''
   const candidates = [
     itemName,
     item.item_name_for_plotting,
@@ -212,12 +212,12 @@ export function derivePlotVariables(obsData) {
     placed.set(qname, group)
   }
   for (const p of obsData.prediction_items ?? []) {
-    const qname = (Array.isArray(p.operands) && p.operands[0]) || p.variable
-    add(qname, p.trace_name_for_plotting ?? p.name_for_plotting)
+    const qname = Array.isArray(p.operands) ? p.operands[0] : undefined
+    add(qname, p.trace_name_for_plotting)
   }
   for (const d of obsData.data_items ?? []) {
     if (!isPlottableOverlay(d)) continue
-    add(obsModelVar(d), d.trace_name_for_plotting ?? d.name_for_plotting)
+    add(obsModelVar(d), d.trace_name_for_plotting)
   }
   return [...byLabel.values()]
 }
