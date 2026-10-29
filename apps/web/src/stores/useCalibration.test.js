@@ -139,6 +139,30 @@ describe('useCalibration', () => {
     expect(c.calibratedModelUrl.value).toBe('/api/calibration/jcal/calibrated_model')
   })
 
+  it('keeps the validation against held-out data a finished run reports (CA #535)', async () => {
+    const validation = { items: [{ data_item_name: 'y_val', rmse: 0.5 }] }
+    startCalibration.mockResolvedValue({ job_id: 'jv' })
+    getCalibrationStatus.mockResolvedValue({
+      state: 'done', lines: [], next_offset: 0, best_params: {}, cost: 1,
+      validation, error: null,
+    })
+    const c = useCalibration()
+    await c.start('m1', { param_id_method: 'genetic_algorithm' })
+    expect(c.validation.value).toEqual(validation)
+    c.reset()
+    expect(c.validation.value).toBeNull()
+  })
+
+  it('has no validation when the run reports none', async () => {
+    startCalibration.mockResolvedValue({ job_id: 'jn' })
+    getCalibrationStatus.mockResolvedValue({
+      state: 'done', lines: [], next_offset: 0, best_params: {}, cost: 1, error: null,
+    })
+    const c = useCalibration()
+    await c.start('m1', { param_id_method: 'genetic_algorithm' })
+    expect(c.validation.value).toBeNull()
+  })
+
   it('has no download URL when the run saved no calibrated model', async () => {
     startCalibration.mockResolvedValue({ job_id: 'j0' })
     getCalibrationStatus.mockResolvedValue({

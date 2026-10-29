@@ -25,7 +25,7 @@ from pathlib import Path
 import ca_obs
 import emulator_config
 from ca_imports import ensure_ca_path
-from obs_data import data_items_of
+from obs_data import data_items_of, with_ca_obs_path
 
 # Headless matplotlib for any plots circulatory_autogen produces server-side.
 os.environ.setdefault("MPLBACKEND", "Agg")
@@ -207,6 +207,7 @@ def _distributions(flat, qnames):
 
 def run(config: dict) -> dict:
     _ensure_ca_on_path()
+    config = with_ca_obs_path(config)
     import numpy as np
 
     from ca_imports import ca_from, ca_import  # noqa: E402 (shipped into runners/ too)
