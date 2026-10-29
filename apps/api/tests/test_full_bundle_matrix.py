@@ -152,6 +152,22 @@ def test_cython_is_excluded_from_every_bundle():
 
 
 @pytest.mark.unit
+def test_aadc_is_excluded_from_every_bundle():
+    """AADC and aadc-ode are Matlogica's proprietary packages and are never redistributed.
+
+    libcuflynx imports them lazily, but PyInstaller's import graph follows imports inside
+    functions too, so a release built on a machine that has them installed would bundle them.
+    Users install them into their own analysis Python instead (apps/api/aadc_check.py).
+    """
+    for full in ("0", "1"):
+        missing = {"aadc", "aadc_ode"} - set(_excludes_for(full))
+        assert not missing, (
+            f"{sorted(missing)} not excluded (CUFLYNX_BUNDLE_FULL={full}): a build machine "
+            f"with AADC installed would ship Matlogica's proprietary binaries in the release."
+        )
+
+
+@pytest.mark.unit
 def test_ipython_is_kept_in_the_full_bundle_only():
     """Excluding IPython does not trim a notebook helper -- it breaks `import autoemulate`.
 
