@@ -21,7 +21,7 @@ name: Integration
 
 on:
   push:
-    branches: [main, devel_FA]
+    branches: [main]   # a PR branch's push runs once, as its pull_request run
   pull_request:
   # Weekly, unpinned. See the `dependency-upgrade` job -- the bug that prompted all of
   # this arrived from upstream rather than from a commit here, and a suite that only runs
