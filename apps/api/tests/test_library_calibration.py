@@ -88,6 +88,16 @@ def test_calibration_members_are_neither_params_nor_obs():
     assert parts["roles"]["calibration"] == ["lv_calibration.json", "lv_calibrated_parameters.csv"]
 
 
+def test_only_the_library_names_are_claimed_as_calibration():
+    """Other members that mention calibration, such as CA's calibration_workflow.json
+    or a notes CSV, are not the library's calibration result."""
+    parts = omex_import.unpack(_library_archive(**{
+        "calibration_workflow.json": json.dumps({"steps": []}),
+        "calibration_notes.csv": "a,b\n1,2\n",
+    }))
+    assert parts["roles"]["calibration"] == ["lv_calibration.json", "lv_calibrated_parameters.csv"]
+
+
 def test_a_renamed_calibration_json_is_recognised_by_content():
     parts = omex_import.unpack(_archive({
         "lv.cellml": MODEL,
