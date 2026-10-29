@@ -176,7 +176,7 @@ def test_a_dropped_manifest_with_a_path_uses_where_it_is(client, ca_study):
 
 
 @pytest.mark.parametrize("content, words", [
-    ({"schema": 1}, "study_dir"),
+    ({"schema": 1}, "relative to its own folder"),
     ({"schema": 1, "study_dir": "/no/such/study"}, "not on this machine"),
     ({"schema": 99, "study_dir": "/tmp"}, "Update CUFLynx"),
     ("{not json", "not JSON"),

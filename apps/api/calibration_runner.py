@@ -40,7 +40,7 @@ from solver_info_defaults import with_declared_step_defaults
 os.environ.setdefault("MPLBACKEND", "Agg")
 
 #: When this process started: a validation_results.json older than that belongs
-#: to an earlier run in the same outputs directory.
+#: to an earlier run in the same working dir.
 _STARTED = time.time()
 
 # Markers the API watches for in stdout.
@@ -277,7 +277,7 @@ def run(config: dict) -> dict:
             calibrated_path = None
         # No results.json. Everything below is already on disk, written by CA
         # itself, and the manager reads it from there (#210) -- serialising a
-        # second copy put a file in the user's outputs directory that is no part
+        # second copy put a file in the user's working dir that is no part
         # of the study and made CUFLynx the author of a format duplicating CA's.
         # The return value still carries it, because that is this function's
         # contract with its caller inside this process.

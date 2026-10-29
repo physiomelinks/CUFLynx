@@ -127,7 +127,8 @@ class SensitivityManager:
             os.makedirs(output_dir, exist_ok=True)
             config_path = write_run_config(config, "sa_config.json")
 
-            job = SensitivityJob(uuid.uuid4().hex, output_dir)
+            # Results are read where the runner writes them.
+            job = SensitivityJob(uuid.uuid4().hex, config.get("sa_output_dir") or output_dir)
             job.config_path = config_path
             env = runner_launch_env(config.get("python") or self.python)
             job.proc = subprocess.Popen(

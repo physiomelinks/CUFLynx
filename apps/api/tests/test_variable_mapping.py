@@ -59,7 +59,7 @@ def test_a_study_s_mapping_lives_in_the_outputs_directory(client, monkeypatch, t
                    params={"output_dir": str(tmp_path)})
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["path"] == str(tmp_path / f"{main._record_prefix(record)}_variable_mapping.csv")
+    assert body["path"] == str(tmp_path / "inputs" / f"{main._record_prefix(record)}_variable_mapping.csv")
     assert body["exists"] is False and [row["latex"] for row in body["rows"]] == ["a", "b"]
     assert calls[0] == ("rows", str(record.path), body["path"])
     # without an outputs directory it is kept with the upload

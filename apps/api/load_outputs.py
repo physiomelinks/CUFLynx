@@ -1,4 +1,4 @@
-"""Read everything a finished run left in an outputs directory (#255, #256).
+"""Read everything a finished run left in a working dir (#255, #256).
 
 The panels are populated by job polls today, so they only fill for a run started
 in this session. A run produced by ``cuflynx-param-id``, by a generated
@@ -24,6 +24,7 @@ import re
 
 import ca_run_history
 import study_manifest
+import working_dir
 import mcmc_progress
 
 #: What a caller can ask for, and the order the summary lists them in.
@@ -41,7 +42,7 @@ _RUN_MARKERS = ("best_param_vals.npy", "mcmc_chain.npy", "best_cost.npy")
 def list_run_dirs(output_dir: str) -> list:
     """Every finished run under ``output_dir``, newest first.
 
-    One outputs directory very often holds several: a study fitted to three
+    One working dir very often holds several: a study fitted to three
     datasets writes three sibling run directories, and ``find_run_dir`` returns
     exactly one of them. Loading that one silently is how a panel ends up
     describing a different dataset than the user thinks they are looking at, so
@@ -195,7 +196,7 @@ def _study(output_dir, run_dir, file_prefix, missing, manifest=None):
 
     The model is resolved by ``file_prefix`` rather than by picking whatever CellML is
     lying about: a directory may hold artefacts from several studies (this is ordinary --
-    outputs directories get reused), and attaching one study's model to another's results
+    working dirs get reused), and attaching one study's model to another's results
     produces numbers that look right.
 
     A manifest changes both of those from a search into a reading. ``model`` is taken
@@ -211,8 +212,15 @@ def _study(output_dir, run_dir, file_prefix, missing, manifest=None):
         output_dir)
     generated = None
     if prefix:
-        candidate = os.path.join(output_dir, "generated_models", prefix)
-        if os.path.isdir(candidate):
+        # The working dir's own copy of the model first, then a conversion kept under
+        # inputs/, then CA's generated_models/ (also the older CUFLynx layout).
+        own = os.path.join(output_dir, "inputs", "model", f"{prefix}.cellml")
+        if os.path.isfile(own):
+            generated = own
+        for candidate in (os.path.join(output_dir, "inputs", "generated_models", prefix),
+                          os.path.join(output_dir, "generated_models", prefix)):
+            if generated or not os.path.isdir(candidate):
+                continue
             models = sorted(glob.glob(os.path.join(candidate, "*.cellml")))
             generated = models[0] if len(models) == 1 else None
 
@@ -238,12 +246,16 @@ def _study(output_dir, run_dir, file_prefix, missing, manifest=None):
     obs = obs or declared.get("obs_data")
     params = params or declared.get("params_for_id")
 
-    # Looked for in the outputs directory, which is where a generated pipeline bundle puts
+    # Looked for in the working dir, which is where a generated pipeline bundle puts
     # it. Absent is ordinary -- a run started from this app has never written one -- so it
     # is reported rather than treated as a fault.
-    user_inputs = _newest(
-        glob.glob(os.path.join(output_dir, "user_inputs*.yaml"))
-        + glob.glob(os.path.join(output_dir, "user_inputs*.yml"))
+    user_inputs = declared.get("user_inputs") if declared.get("user_inputs") and \
+        os.path.isfile(declared["user_inputs"]) else None
+    user_inputs = user_inputs or _newest(
+        [path for folder in (os.path.join(output_dir, "inputs", "user_inputs"), output_dir)
+         for pattern in ("*.yaml", "*.yml")
+         for path in glob.glob(os.path.join(folder, pattern))
+         if os.path.basename(path).startswith("user_inputs") or folder != output_dir]
     )
 
     return {
@@ -291,16 +303,17 @@ def _progress(run_dir, output_dir, missing):
 
 
 def _sensitivity(output_dir, missing, declared=None):
-    """Local and Sobol results: the outputs directory's own, else the study's declared ones.
+    """Local and Sobol results: the working dir's own, else the study's declared ones.
 
-    CA writes sensitivity results to ``sa_options.output_dir``, which is not the param-id
-    outputs directory unless the user made it so; the study manifest records where each
-    analysis actually went, newest first.
+    The working dir's are in ``sensitivity/`` (at its top level in an older folder). CA
+    writes sensitivity results to ``sa_options.output_dir``; the study manifest records
+    where each analysis actually went, newest first.
     """
     def first(reader, method):
-        found = reader(output_dir)
-        if found:
-            return found
+        for directory in (os.path.join(output_dir, working_dir.SENSITIVITY), output_dir):
+            found = reader(directory) if os.path.isdir(directory) else None
+            if found:
+                return found
         for entry in declared or []:
             if entry.get("method") in (method, None):
                 found = reader(entry["dir"])
@@ -335,7 +348,7 @@ def _uq(output_dir, run_dir, missing):
         # The chosen run is the newest of *any* kind, and `uq_distributions` resolves the
         # newest run for itself -- so in a directory whose newest run is a calibration, both
         # land on a run holding no chain and the answer was "no UQ" for a folder with a
-        # finished UQ in it. Observed on a real outputs directory.
+        # finished UQ in it. Observed on a real working dir.
         found = ca_run_history.uq_distributions(source)
         if found:
             return found

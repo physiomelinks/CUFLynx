@@ -202,7 +202,7 @@ def test_saves_under_output_directory(tmp_cfg, tmp_path):
     """With an output dir the func file lives there, not in the config dir."""
     out = tmp_path / "run_outputs"
     uf.save_user_func("operation", "spread", VALID_OP, base_dir=str(out))
-    path = out / "user_funcs" / "operation_funcs_user.py"
+    path = out / "inputs" / "funcs" / "operation_funcs_user.py"
     assert path.is_file()
     assert uf.external_path("operation", str(out)) == str(path)
     assert uf.external_paths(str(out)) == {"operation_funcs_external_path": str(path)}
@@ -379,7 +379,7 @@ def test_route_saves_under_output_dir(client, tmp_cfg, tmp_path):
         json={"name": "spread", "source": VALID_OP, "output_dir": str(out)},
     )
     assert resp.status_code == 200, resp.text
-    assert (out / "user_funcs" / "operation_funcs_user.py").is_file()
+    assert (out / "inputs" / "funcs" / "operation_funcs_user.py").is_file()
     # Listing with the same output_dir returns it; the config-dir fallback is empty.
     resp = client.get("/api/operation_funcs", params={"output_dir": str(out)})
     assert [f["name"] for f in resp.json()["functions"]] == ["spread"]

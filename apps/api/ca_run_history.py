@@ -9,7 +9,7 @@ triple, and the history CSVs that drive the live plots.
 
 CUFLynx used to have the runner serialise a summary of all that into its own
 ``results.json`` and hand it back to the manager. That put a file in the user's
-outputs directory that is no part of the study, and made CUFLynx the author of a
+working dir that is no part of the study, and made CUFLynx the author of a
 format that duplicated CA's -- so the two could disagree, and the same history
 parsing existed twice (``calibration.py`` and ``export_pipeline.py``, with
 different tolerance rules). Reading CA's own files removes both problems: CA is
@@ -101,7 +101,7 @@ def has_results(output_dir: str, newer_than: float | None = None) -> bool:
 
     ``newer_than`` is the moment the run started. Reading through
     :func:`find_run_dir` can reach a ``<case_type>`` subdirectory left by an
-    *earlier* run in the same outputs directory -- something the old direct read
+    *earlier* run in the same working dir -- something the old direct read
     could not do -- so a run whose own results are missing would otherwise be
     reported with someone else's numbers. A second of slack absorbs coarse
     filesystem timestamps.
@@ -364,7 +364,7 @@ def validation_results(output_dir: str) -> dict | None:
 # ---------------------------------------------------------------------------
 #: CA writes local sensitivities as one CSV per scaling, indexed by observable
 #: with one column per calibrated variable (``sensitivityAnalysis.py``). CUFLynx's
-#: own local-SA arm writes the same two files, so the outputs directory holds one
+#: own local-SA arm writes the same two files, so the working dir holds one
 #: format whichever arm produced them -- and so the exported plotting script has
 #: one reader (#210).
 LOCAL_SA_FILES = {
@@ -506,7 +506,7 @@ UQ_SAMPLES_FILE = "uq_posterior_samples.npy"
 #: sampled at and the value the manager bins at cannot drift apart.
 NUM_BINS = 40
 
-#: Where CA's emulator trainer puts a bundle, relative to the outputs directory,
+#: Where CA's emulator trainer puts a bundle, relative to the working dir,
 #: and the file that describes it (CA #333). Mirrors CA's ``resolve_emulator_dir``:
 #: ``<param_id_output_dir>/emulators/<file_prefix>_<obs_prefix>``.
 EMULATOR_SUBDIR = "emulators"
@@ -900,7 +900,7 @@ def clear_run_history(output_dir: str) -> bool:
     old one, or show an old one's plots.
 
     **CA owns the file list; CUFLynx owns the scope.** CA's clearer locates *one*
-    run directory and clears that, which is not enough here: an outputs directory
+    run directory and clears that, which is not enough here: a working dir
     reused across methods accumulates a ``<case_type>_<prefix>`` subdir per run,
     and clearing only the newest leaves the reader free to fall back to an older
     one and serve its history as this run's. That is exactly the stale-plot bug

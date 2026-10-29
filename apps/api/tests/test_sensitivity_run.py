@@ -29,7 +29,7 @@ FAKE_RUNNER = """
 import csv, json, sys
 from pathlib import Path
 cfg = json.loads(Path(sys.argv[1]).read_text())
-out = Path(cfg["output_dir"])
+out = Path(cfg.get("sa_output_dir") or cfg["output_dir"])
 out.mkdir(parents=True, exist_ok=True)
 with open(out / "local_sensitivity_relative.csv", "w", newline="") as fh:
     w = csv.writer(fh)
@@ -101,7 +101,7 @@ def test_sensitivity_run_launches_and_completes(client, tmp_path):
         "/api/sensitivity/run",
         json={
             "model_id": model_id,
-            "settings": {"method": "local", "gradient_method": "FD", "nominal": "current"},
+            "settings": {"working_dir": str(tmp_path), "method": "local", "gradient_method": "FD", "nominal": "current"},
         },
     )
     assert resp.status_code == 200, resp.text

@@ -172,7 +172,7 @@ def _ca_call(name: str, *args, **kwargs):
 
 
 def default_output_dir(outputs_dir: str, workflow_name: str, fallback_root: str) -> str:
-    """``<outputs>/workflows/<name>``, or under ``fallback_root`` with no outputs dir."""
+    """``<working dir>/workflows/<name>``, or under ``fallback_root`` with no working dir."""
     root = outputs_dir.strip() if outputs_dir else ""
     return os.path.join(root or fallback_root, "workflows", workflow_name)
 
@@ -307,7 +307,7 @@ class WorkflowManager:
         if not self.loaded:
             raise WorkflowError("no workflow is open")
         if not self.output_dir:
-            raise WorkflowError("the workflow has no run directory; set an outputs directory")
+            raise WorkflowError("the workflow has no run directory; set a working dir")
         return _ca_call("workflow_model", self.path, view, output_dir=self.output_dir,
                         work_dir=work_dir, module_library_dirs=self.module_library_dirs)
 
@@ -459,7 +459,7 @@ class WorkflowManager:
             if not self.loaded:
                 raise WorkflowError("no workflow is open")
             if not self.output_dir:
-                raise WorkflowError("the workflow has no run directory; set an outputs directory")
+                raise WorkflowError("the workflow has no run directory; set a working dir")
             if self.busy:
                 raise RuntimeError("a workflow is already running")
             if calibration.busy:

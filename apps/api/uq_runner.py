@@ -130,7 +130,9 @@ def _mle_obs_path(config, cost_type: str) -> str:
     for item in data_items_of(obs):
         if isinstance(item, dict):
             item["cost_type"] = cost_type
-    out = os.path.join(config["output_dir"], "uq_obs_data.json")
+    # An input of the run, so it is kept with the working dir's inputs (working_dir.py).
+    out = os.path.join(config["output_dir"], "inputs", "uq_obs_data.json")
+    os.makedirs(os.path.dirname(out), exist_ok=True)
     Path(out).write_text(json.dumps(obs), encoding="utf-8")
     return out
 

@@ -516,7 +516,7 @@ def test_calibration_streams_and_completes(client, tmp_path):
     model_id = _setup_model_obs_params(
         client, LV_MODEL_PATH, LV_OBS_DATA_PATH, LV_PARAMS_CSV_PATH
     )
-    resp = client.post("/api/calibration/run", json={"model_id": model_id, "settings": {}})
+    resp = client.post("/api/calibration/run", json={"model_id": model_id, "settings": {"working_dir": str(tmp_path), "working_dir": str(tmp_path)}})
     assert resp.status_code == 200, resp.text
     job_id = resp.json()["job_id"]
 
@@ -552,7 +552,7 @@ def test_calibration_config_carries_global_seed(client, tmp_path):
         client, LV_MODEL_PATH, LV_OBS_DATA_PATH, LV_PARAMS_CSV_PATH
     )
     client.post("/api/config", json={"seed": 314})
-    resp = client.post("/api/calibration/run", json={"model_id": model_id, "settings": {}})
+    resp = client.post("/api/calibration/run", json={"model_id": model_id, "settings": {"working_dir": str(tmp_path), "working_dir": str(tmp_path)}})
     assert resp.status_code == 200, resp.text
     status, _ = _wait(client, resp.json()["job_id"])
     assert status["state"] == "done"
@@ -565,7 +565,7 @@ def test_calibration_config_omits_seed_by_default(client, tmp_path):
     model_id = _setup_model_obs_params(
         client, LV_MODEL_PATH, LV_OBS_DATA_PATH, LV_PARAMS_CSV_PATH
     )
-    resp = client.post("/api/calibration/run", json={"model_id": model_id, "settings": {}})
+    resp = client.post("/api/calibration/run", json={"model_id": model_id, "settings": {"working_dir": str(tmp_path), "working_dir": str(tmp_path)}})
     assert resp.status_code == 200, resp.text
     status, _ = _wait(client, resp.json()["job_id"])
     assert status["state"] == "done"
@@ -591,9 +591,9 @@ def test_calibration_busy_returns_409(client, tmp_path):
     model_id = _setup_model_obs_params(
         client, LV_MODEL_PATH, LV_OBS_DATA_PATH, LV_PARAMS_CSV_PATH
     )
-    r1 = client.post("/api/calibration/run", json={"model_id": model_id, "settings": {}})
+    r1 = client.post("/api/calibration/run", json={"model_id": model_id, "settings": {"working_dir": str(tmp_path), "working_dir": str(tmp_path)}})
     assert r1.status_code == 200
-    r2 = client.post("/api/calibration/run", json={"model_id": model_id, "settings": {}})
+    r2 = client.post("/api/calibration/run", json={"model_id": model_id, "settings": {"working_dir": str(tmp_path), "working_dir": str(tmp_path)}})
     assert r2.status_code == 409
     # cancel the running job
     job_id = r1.json()["job_id"]
@@ -609,7 +609,7 @@ def test_calibration_progress_endpoint(client, tmp_path):
     model_id = _setup_model_obs_params(
         client, LV_MODEL_PATH, LV_OBS_DATA_PATH, LV_PARAMS_CSV_PATH
     )
-    resp = client.post("/api/calibration/run", json={"model_id": model_id, "settings": {}})
+    resp = client.post("/api/calibration/run", json={"model_id": model_id, "settings": {"working_dir": str(tmp_path), "working_dir": str(tmp_path)}})
     job_id = resp.json()["job_id"]
     _wait(client, job_id)
 
@@ -865,7 +865,7 @@ def test_best_fit_start_without_a_prior_fit_returns_422(client):
     assert "best fit" in resp.json()["detail"].lower()
 
 
-def test_best_fit_start_supplies_last_completed_best_params(client, monkeypatch):
+def test_best_fit_start_supplies_last_completed_best_params(client, monkeypatch, tmp_path):
     """start_from='best_fit' feeds the runner config the last completed calibration's
     best fit (from calibration.last_completed_best_params), so a stopped run can be
     continued (#83)."""
@@ -886,7 +886,7 @@ def test_best_fit_start_supplies_last_completed_best_params(client, monkeypatch)
 
     resp = client.post(
         "/api/calibration/run",
-        json={"model_id": model_id, "settings": {"start_from": "best_fit"}},
+        json={"model_id": model_id, "settings": {"working_dir": str(tmp_path), "start_from": "best_fit"}},
     )
     assert resp.status_code == 200, resp.text
     assert captured["config"]["best_fit_params"] == best

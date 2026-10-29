@@ -131,6 +131,8 @@ from user_funcs import (
 from sensitivity import sensitivity
 import workflow_manager
 import symbol_mapping
+import working_dir
+from wire_aliases import WorkingDirAliases
 from workflow_manager import workflow
 from emulator import emulator
 from uq import uq
@@ -150,6 +152,9 @@ ALLOWED_ORIGINS = [
     "https://www.phlynx.com",
     "https://phlynx.com",
 ]
+
+# ``working_dir`` on the wire, ``/api/working-dir/*`` routes, and the names they replace.
+app.add_middleware(WorkingDirAliases)
 
 app.add_middleware(
     CORSMiddleware,
@@ -258,6 +263,11 @@ class _ModelRecord:
         # The .omex this study was loaded from, kept whole so it can be sent back
         # with every member CUFLynx does not understand intact (#287/#290).
         self.archive_path: Path | None = None
+        #: The working dir this study's inputs are kept in, once one is known
+        #: (:func:`_bind_working_dir`). Until then they are in the uploads dir.
+        self.working_dir: str | None = None
+        #: The model as kept in the working dir (``inputs/model/<prefix>.cellml``).
+        self.working_model: Path | None = None
 
 
 # In-memory registry of uploaded models (process-scoped session store).
@@ -395,6 +405,11 @@ def _study_dir(model_id: str) -> Path:
     return directory
 
 
+def _input_kind(suffix: str) -> str:
+    """The ``inputs/`` folder a study file with this suffix belongs in."""
+    return "params_for_id" if "params_for_id" in suffix else "obs_data"
+
+
 def _study_file(record: "_ModelRecord", suffix: str) -> Path:
     """Where a study's obs_data / params_for_id is kept for CA to read.
 
@@ -409,7 +424,68 @@ def _study_file(record: "_ModelRecord", suffix: str) -> Path:
     directories as the session had upload events, none of them reopening as the
     same study.
     """
-    return _study_dir(record.model_id) / f"{_record_prefix(record)}{suffix}"
+    name = f"{_record_prefix(record)}{suffix}"
+    if record.working_dir:
+        directory = working_dir.inputs_dir(record.working_dir, _input_kind(suffix))
+        directory.mkdir(parents=True, exist_ok=True)
+        return directory / name
+    return _study_dir(record.model_id) / name
+
+
+def _model_file(record: "_ModelRecord") -> str:
+    """The model file a run is given: the working dir's copy once there is one."""
+    return str(record.working_model or record.path)
+
+
+def _bind_working_dir(record: "_ModelRecord", directory: str | None) -> None:
+    """Keep this study's inputs in ``directory``, the working dir, from now on.
+
+    Copies what is loaded so far -- the model as run, its source and archive, the
+    obs_data and params_for_id -- into ``<W>/inputs/<kind>/`` and points the record
+    at the copies, so a run records them by a path inside the working dir and the
+    folder holds the whole study. Called by every upload that names a working dir and
+    by every run. Copies are rewritten only when their contents change.
+    """
+    if not directory:
+        return
+    record.working_dir = directory
+    prefix = _record_prefix(record)
+    try:
+        if record.path.suffix == ".cellml":
+            record.working_model = working_dir.adopt(
+                directory, "model", record.path, f"{prefix}.cellml")
+        elif record.path.suffix == ".py":
+            # An external_python model is the study's user_model.py (inputs/funcs/),
+            # which is what runs once it exists.
+            target = study_model_source_path(".py", directory)
+            if not target.is_file():
+                save_model_module(record.path.read_bytes(), directory)
+        source = _model_source_path(record.model_id)
+        if source is not None and source.suffix != ".py":
+            working_dir.adopt(directory, "model", source, f"{prefix}{source.suffix}")
+        if record.archive_path and Path(record.archive_path).is_file():
+            working_dir.adopt(directory, "model", record.archive_path, f"{prefix}.omex")
+        for attr in ("obs_path", "params_path"):
+            current = getattr(record, attr)
+            if current is not None and Path(current).is_file():
+                kind = "obs_data" if attr == "obs_path" else "params_for_id"
+                setattr(record, attr, working_dir.adopt(directory, kind, current))
+    except OSError as exc:
+        raise _fs_error(exc, "copy the study's inputs into", Path(directory),
+                        user_dir=True) from exc
+
+
+def _require_working_dir(settings: dict, record: "_ModelRecord") -> str:
+    """The run's working dir from its ``settings``, with the study's inputs bound to it.
+
+    A run needs one: its inputs are copied there and its outputs written there, so the
+    folder is the whole study. There is no temporary fallback.
+    """
+    directory = _working_dir_arg(settings.get("config_outputs_dir"))
+    if not directory:
+        raise HTTPException(status_code=422, detail=working_dir.REQUIRED_MESSAGE)
+    _bind_working_dir(record, directory)
+    return directory
 
 
 def _record_prefix(record: "_ModelRecord", fallback: str = "model") -> str:
@@ -659,7 +735,7 @@ _restore_persisted_settings()
 
 
 def _config_payload(output_dir: str = "") -> dict:
-    """The config the UI reads. ``output_dir`` is the user's outputs directory,
+    """The config the UI reads. ``output_dir`` is the user's working dir,
     needed only because a user's own modifier funcs live under it."""
     src = _circulatory_autogen_src()
     p = Path(src)
@@ -753,7 +829,7 @@ def _config_payload(output_dir: str = "") -> dict:
         # so the editor's "create modifier parameter" menu tracks what CA can
         # actually run rather than hardcoding it.
         "param_modifier_operations": get_param_modifier_operations(
-            output_dir=_user_func_base_dir(output_dir)
+            output_dir=_working_dir_arg(output_dir)
         ),
     }
 
@@ -931,7 +1007,7 @@ def _export_base_dir(configured: str) -> Path:
     configured = (configured or "").strip()
     if configured:
         if not os.path.isabs(configured):
-            raise HTTPException(status_code=422, detail="config_outputs_dir must be an absolute path")
+            raise HTTPException(status_code=422, detail="working_dir must be an absolute path")
         return Path(configured)
     return UPLOAD_DIR
 
@@ -939,12 +1015,12 @@ def _export_base_dir(configured: str) -> Path:
 # What each common errno means for someone staring at a failed export. Keyed on
 # errno rather than the message text, which is OS- and locale-dependent.
 _FS_HINTS = {
-    errno.EACCES: "The outputs directory is not writable — pick another, or change its permissions.",
-    errno.EPERM: "The outputs directory is not writable — pick another, or change its permissions.",
-    errno.EROFS: "That filesystem is read-only — pick an outputs directory you can write to.",
+    errno.EACCES: "The working dir is not writable — pick another, or change its permissions.",
+    errno.EPERM: "The working dir is not writable — pick another, or change its permissions.",
+    errno.EROFS: "That filesystem is read-only — pick a working dir you can write to.",
     errno.ENOSPC: "The disk is full.",
     errno.ENAMETOOLONG: (
-        "The path is too long — pick a shorter outputs directory (the export folder name "
+        "The path is too long — pick a shorter working dir (the export folder name "
         "adds a dated suffix)."
     ),
     errno.ENOENT: "A parent directory does not exist.",
@@ -1005,7 +1081,7 @@ def export_pipeline_route(req: ExportPipelineRequest) -> dict:
     external_model = Path(record.path).suffix.lower() == ".py"
     model_dir = export_dir / "generated_models" / file_prefix
 
-    # An unwritable outputs dir, a full disk or a too-long path must say which
+    # An unwritable working dir, a full disk or a too-long path must say which
     # path failed and why, not become a body-less 500 (issue #135).
     obs_file = None
     params_file = None
@@ -1135,7 +1211,7 @@ def fs_list(
     """List a server-side directory for the in-app file/folder browser.
 
     This is a localhost tool, so the backend filesystem is the user's own. Used
-    to pick an absolute Python interpreter path and the calibration outputs dir.
+    to pick an absolute Python interpreter path and the calibration working dir.
     Defaults to the user's home directory when no path is given.
     """
     base = Path(path).expanduser() if path else Path.home()
@@ -1177,7 +1253,7 @@ class MkdirRequest(BaseModel):
 @app.post("/api/fs/mkdir")
 def fs_mkdir(req: MkdirRequest) -> dict:
     """Create a new folder under ``parent`` for the file/folder browser (e.g. to
-    make a fresh outputs directory). Localhost tool — see ``fs_list``."""
+    make a fresh working dir). Localhost tool — see ``fs_list``."""
     name = (req.name or "").strip()
     if not name or name in (".", "..") or "/" in name or "\\" in name:
         raise HTTPException(status_code=422, detail="invalid folder name")
@@ -1385,8 +1461,13 @@ async def upload_model(
         # so "Edit source" opens the model rather than a doomed sibling of it.
         # Best-effort: an unwritable output dir must not fail the upload, which
         # has already succeeded everywhere that matters.
-        with contextlib.suppress(OSError):
-            save_model_module(only_bytes, _user_func_base_dir(output_dir or ""))
+        directory = _working_dir_arg(output_dir or "")
+        if directory:
+            # A new upload replaces the study's copy; a run only creates a missing one.
+            with contextlib.suppress(OSError):
+                save_model_module(only_bytes, directory)
+            with contextlib.suppress(HTTPException):
+                _bind_working_dir(_models[model_id], directory)
         return {
             "model_id": model_id,
             "name": meta.name,
@@ -1420,7 +1501,7 @@ async def upload_model(
     if single and (
         myokit_import.is_myokit_filename(only_name) or myokit_import.looks_like_myokit(only_bytes)
     ):
-        out_base = _user_func_base_dir(output_dir or "")
+        out_base = _conversion_dir(output_dir, only_name)
         mmt_bytes = only_bytes
         try:
             only_bytes, converted_path = myokit_import.cellml_from_myokit(
@@ -1436,12 +1517,12 @@ async def upload_model(
         # The [[protocol]] section the model import deliberately leaves behind.
         # Offered rather than applied: the client decides, because a model
         # dropped alongside an obs_data the user wrote must not be overridden.
-        protocol = _protocol_from_mmt(mmt_bytes, only_name, out_base)
+        protocol = _protocol_from_mmt(mmt_bytes, only_name, _obs_input_dir(output_dir))
     elif single and easyml_import.wants_easyml(only_name, only_bytes):
         # openCARP's EasyML rides the same rail, for the same reason: by the time
         # the model reaches the engine it is CellML, so no solver, model type or
         # packaging anywhere downstream has to know this format exists.
-        out_base = _user_func_base_dir(output_dir or "")
+        out_base = _conversion_dir(output_dir, only_name)
         easyml_bytes = only_bytes
         try:
             read = easyml_import.import_easyml(
@@ -1460,7 +1541,7 @@ async def upload_model(
         # started at its steady state are places where the imported model differs
         # from the file, and the user is the only one who can judge them.
         import_warnings = list(read["warnings"])
-        protocol = _protocol_from_easyml(read, only_name, out_base)
+        protocol = _protocol_from_easyml(read, only_name, _obs_input_dir(output_dir))
 
     if single and not has_imports(only_bytes):
         # Self-contained single file: save as-is (unchanged behaviour).
@@ -1495,6 +1576,14 @@ async def upload_model(
     source_name = converted_from or (main_name if not single else only_name)
     _models[model_id] = _ModelRecord(
         model_id, path, meta, _remember_prefix(model_id, source_name))
+    directory = _working_dir_arg(output_dir or "")
+    if directory and not single:
+        # A multi-file CellML as given, beside the flattened copy that runs.
+        for name, data in raw_by_name.items():
+            target = working_dir.inputs_dir(directory, "model") / "source" / Path(name).name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(data)
+    _bind_working_dir(_models[model_id], directory)
 
     return {
         "model_id": model_id,
@@ -1559,9 +1648,18 @@ async def upload_user_inputs(
             "(no solver_info, solver or dt)",
         )
     more, adopted = _adopt_solver_settings(si, name)
+    directory = _working_dir_arg(output_dir)
+    kept = None
+    if directory:
+        # The file itself, not only the settings taken from it: it is an input of the study.
+        try:
+            kept = str(working_dir.adopt_bytes(directory, "user_inputs", name, blob))
+        except OSError as exc:
+            more.append(_fs_error_detail(exc, "keep the user_inputs.yaml in", Path(directory)))
     return {
-        **_config_payload(_user_func_base_dir(output_dir) or ""),
+        **_config_payload(directory or ""),
         "solver_settings": adopted,
+        "user_inputs_path": kept,
         "warnings": notes + more,
     }
 
@@ -1605,10 +1703,10 @@ def _no_obs_data_warning(parts: dict, source: str = "archive") -> list[str]:
 def _apply_archive_study(study: dict | None, out_dir: str | None) -> tuple[list[str], dict | None]:
     """Adopt an archive's embedded study manifest: its solver settings and its funcs.
 
-    The funcs go where this app keeps a study's funcs (``<outputs>/user_funcs/``).
+    The funcs go where this app keeps a study's funcs (``<working dir>/inputs/funcs/``).
     One already there with different contents is kept beside it as
     ``<name>.before_import_<stamp>.py`` rather than overwritten unseen -- it may hold
-    funcs another study in the same outputs directory uses. Returns ``(notes, adopted)``:
+    funcs another study in the same working dir uses. Returns ``(notes, adopted)``:
     what to report, and the solver settings adopted from the manifest's ``solver_info``
     (as :func:`_adopt_solver_settings` returns them, None when there were none).
     """
@@ -1621,7 +1719,7 @@ def _apply_archive_study(study: dict | None, out_dir: str | None) -> tuple[list[
         notes.append(
             "The archive carries user funcs ("
             + ", ".join(sorted(funcs))
-            + "), but no outputs directory is set to keep them in. Set one and import "
+            + "), but no working dir is set to keep them in. Set one and import "
               "the archive again, or the obs_data operations they define will be unknown.")
         return notes, adopted
     wrote = False
@@ -1676,7 +1774,7 @@ def _unpack_workflow(files: dict[str, bytes], directory: Path) -> Path:
 
 
 def import_omex_bytes(data: bytes, output_dir: str | None = None,
-                      source: str = "archive") -> dict:
+                      source: str = "archive", bind: bool = True) -> dict:
     """Load an archive's bytes, whatever delivered them.
 
     Split out from the upload route so the PhLynx inbox loads a study through the
@@ -1689,7 +1787,7 @@ def import_omex_bytes(data: bytes, output_dir: str | None = None,
     except omex_import.OmexImportError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    out_dir = _user_func_base_dir(output_dir or "")
+    out_dir = _working_dir_arg(output_dir or "")
 
     # The model first: obs_data and params attach to it.
     raw_by_name = parts["cellml"]
@@ -1708,13 +1806,13 @@ def import_omex_bytes(data: bytes, output_dir: str | None = None,
         mmt_bytes = raw_by_name[only_name]
         try:
             cellml_bytes, _saved = myokit_import.cellml_from_myokit(
-                mmt_bytes, filename=only_name, out_dir=out_dir
+                mmt_bytes, filename=only_name, out_dir=_conversion_dir(out_dir, only_name)
             )
         except myokit_import.MyokitImportError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         converted_from = only_name
         source_suffix, source_bytes = ".mmt", mmt_bytes
-        protocol = _protocol_from_mmt(mmt_bytes, only_name, out_dir)
+        protocol = _protocol_from_mmt(mmt_bytes, only_name, _obs_input_dir(out_dir))
         raw_by_name = {Path(only_name).stem + ".cellml": cellml_bytes}
         parts = {**parts, "master": Path(only_name).stem + ".cellml"}
     elif len(raw_by_name) == 1 and easyml_import.wants_easyml(
@@ -1724,13 +1822,13 @@ def import_omex_bytes(data: bytes, output_dir: str | None = None,
         easyml_bytes = raw_by_name[only_name]
         try:
             read = easyml_import.import_easyml(
-                easyml_bytes, filename=only_name, out_dir=out_dir
+                easyml_bytes, filename=only_name, out_dir=_conversion_dir(out_dir, only_name)
             )
         except easyml_import.EasyMLImportError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         converted_from = only_name
         source_suffix, source_bytes = ".model", easyml_bytes
-        protocol = _protocol_from_easyml(read, only_name, out_dir)
+        protocol = _protocol_from_easyml(read, only_name, _obs_input_dir(out_dir))
         import_warnings = list(read["warnings"])
         raw_by_name = {Path(only_name).stem + ".cellml": read["cellml"]}
         parts = {**parts, "master": Path(only_name).stem + ".cellml"}
@@ -1778,6 +1876,7 @@ def import_omex_bytes(data: bytes, output_dir: str | None = None,
     # back untouched when the study is sent on (#287), and it cannot come back
     # from four extracted roles.
     _models[model_id].archive_path = _save_model_archive(model_id, data)
+    _models[model_id].working_dir = out_dir
 
     # Everything the import could not do, in the user's words rather than in
     # silence: a part that was never found, a check that could not run, editor
@@ -1845,7 +1944,7 @@ def import_omex_bytes(data: bytes, output_dir: str | None = None,
     # Before the obs_data: an obs_data naming an operation the archive defines is
     # only calibratable once that operation is in the user funcs store, and making
     # the user paste it into Custom funcs by hand is what this removes. Installed
-    # into the store the upload's outputs directory names -- the one every run and
+    # into the store the upload's working dir names -- the one every run and
     # the obs_data editor read -- one def at a time through the same code
     # `POST /api/{kind}_funcs` uses, so the file stays the canonical one.
     for kind, fname, blob in [] if parts.get("study") else parts.get("user_funcs") or []:
@@ -1904,7 +2003,7 @@ def import_omex_bytes(data: bytes, output_dir: str | None = None,
     # which is the user's choice to make. A packed one (``workflow/``) is unpacked
     # whole, so its relative paths -- every step's files, its modules -- resolve.
     if parts.get("workflow_pack"):
-        wf_dir = UPLOAD_DIR / "workflows" / model_id
+        wf_dir = _workflow_input_dir(out_dir, _record_prefix(_models[model_id]), model_id)
         result["calibration_workflow"] = {
             "filename": omex_import.PACKED_WORKFLOW_NAME,
             "path": str(_unpack_workflow(parts["workflow_pack"], wf_dir)),
@@ -1915,7 +2014,7 @@ def import_omex_bytes(data: bytes, output_dir: str | None = None,
             result["calibration_workflow"]["path"])
     elif parts.get("calibration_workflow"):
         wf_name, wf_blob = parts["calibration_workflow"]
-        wf_dir = UPLOAD_DIR / "workflows" / model_id
+        wf_dir = _workflow_input_dir(out_dir, _record_prefix(_models[model_id]), model_id)
         wf_dir.mkdir(parents=True, exist_ok=True)
         wf_path = wf_dir / workflow_manager.WORKFLOW_FILE_NAME
         wf_path.write_bytes(wf_blob)
@@ -1935,7 +2034,7 @@ def import_omex_bytes(data: bytes, output_dir: str | None = None,
         # asking "was the layout kept", not "where is each part".
         if result["module_config_path"] is None:
             result["module_config_path"] = saved
-        # Only when there was somewhere to put it. With no outputs directory this
+        # Only when there was somewhere to put it. With no working dir this
         # copy is simply not made, and nothing is lost: the archive is kept whole
         # (`_save_model_archive`) and `omex_export` re-emits every member it did
         # not understand byte-for-byte, so PhLynx's state still round-trips. A
@@ -1990,6 +2089,8 @@ def import_omex_bytes(data: bytes, output_dir: str | None = None,
     if result["obs_data"] is None:
         load_warnings.extend(_no_obs_data_warning(parts, source))
 
+    if bind:
+        _bind_working_dir(_models[model_id], out_dir)
     return result
 
 
@@ -2059,12 +2160,12 @@ def phlynx_send(req: PhlynxSendRequest):
     if req.source == "current":
         values = dict(req.values)
     elif req.source == "best_fit":
-        out_dir = _user_func_base_dir(req.output_dir)
+        out_dir = _working_dir_arg(req.output_dir)
         best = ca_run_history.best_param_values(out_dir or "")["params"] if out_dir else {}
         if not best:
             raise HTTPException(
                 status_code=422,
-                detail="no calibration best fit was found in the outputs directory",
+                detail="no calibration best fit was found in the working dir",
             )
         values = best
     elif req.source == "as_imported":
@@ -2156,7 +2257,7 @@ def _calibrated_target() -> tuple[dict[str, bytes] | None, dict]:
 def _study_for_archive(stem: str, output_dir: str) -> tuple[dict, dict]:
     """``(funcs, study)`` for :func:`omex_export.build_archive`: the user funcs and the
     solver settings, the two things a study needs that no other member carries."""
-    funcs_dir = _user_func_base_dir(output_dir)
+    funcs_dir = _working_dir_arg(output_dir)
     funcs = {}
     for kind in FUNC_KINDS:
         found = user_func_path(kind, funcs_dir)
@@ -2190,7 +2291,7 @@ def _offer_archive(filename: str, blob: bytes) -> str:
 
 
 class WorkflowExportRequest(BaseModel):
-    #: Where the study's user funcs are (the outputs directory), as for a send.
+    #: Where the study's user funcs are (the working dir), as for a send.
     output_dir: str = ""
 
 
@@ -2335,7 +2436,7 @@ def accept_inbox(output_dir: str | None = Query(default=None)) -> dict:
     one set of emits, not a second pair that can drift from the first.
 
     A study manifest (``cuflynx://open?study=``) returns ``kind: "study"`` and what
-    ``/api/outputs/manifest`` returns for that manifest and its path -- the outputs
+    ``/api/working-dir/manifest`` returns for that manifest and its path -- the outputs
     directory to open -- so the frontend opens it as it opens a dropped manifest.
     """
     pending = inbox.take()
@@ -2388,7 +2489,7 @@ def get_model_source(model_id: str, config_outputs_dir: str = "") -> FileRespons
     reading your own model is worth a route on its own.
 
     ``config_outputs_dir`` makes it show the same file the editor would: once a
-    study copy exists under the outputs directory, that copy is the model, and
+    study copy exists under the working dir, that copy is the model, and
     answering with the uploaded original would show a version the user has since
     edited away from.
 
@@ -2404,7 +2505,7 @@ def get_model_source(model_id: str, config_outputs_dir: str = "") -> FileRespons
             status_code=404,
             detail="this model has no source file to show — a CellML model is edited in PhLynx",
         )
-    base_dir = _user_func_base_dir(config_outputs_dir)
+    base_dir = _working_dir_arg(config_outputs_dir)
     if base_dir:
         study_copy = study_model_source_path(path.suffix, base_dir)
         if study_copy.is_file():
@@ -2419,7 +2520,7 @@ def get_model_source(model_id: str, config_outputs_dir: str = "") -> FileRespons
 
 
 class ModelEditRequest(BaseModel):
-    #: The study's outputs directory. Required in practice — see the route: the
+    #: The study's working dir. Required in practice — see the route: the
     #: editable copy has to live somewhere the study keeps, and there is no
     #: sensible temp-dir default for a file the user is about to invest work in.
     config_outputs_dir: str = ""
@@ -2427,12 +2528,12 @@ class ModelEditRequest(BaseModel):
 
 @app.post("/api/models/{model_id}/edit")
 def edit_model_source(model_id: str, req: ModelEditRequest) -> dict:
-    """Put the model's source under the outputs directory and open it for editing.
+    """Put the model's source under the working dir and open it for editing.
 
     Three things happen, in this order, and the order is the point:
 
     1. **The source is copied into the study**, at
-       ``<outputs>/user_funcs/user_model.<py|mmt>`` — beside the funcs, which is
+       ``<working dir>/inputs/funcs/user_model.py`` (``inputs/model/user_model.<mmt|model>``) — beside the funcs, which is
        already where an external_python model's ``.py`` is kept and what CA is
        handed as ``external_model_path``. Only when it is not there yet: once it
        exists it *is* the file, and re-pressing Edit must never overwrite the
@@ -2466,15 +2567,15 @@ def edit_model_source(model_id: str, req: ModelEditRequest) -> dict:
             detail="this model has no source file to edit — a CellML model is edited in PhLynx",
         )
 
-    base_dir = _user_func_base_dir(req.config_outputs_dir)
+    base_dir = _working_dir_arg(req.config_outputs_dir)
     if not base_dir:
         # Deliberately a refusal rather than a temp-dir fallback: an edited model
         # dropped in the same pruned scratch directory this change exists to get
         # out of would be lost, and silently.
         raise HTTPException(
             status_code=422,
-            detail="no outputs directory is set, so there is nowhere to keep an "
-            "editable copy of the model. Choose an outputs directory first, then "
+            detail="no working dir is set, so there is nowhere to keep an "
+            "editable copy of the model. Choose a working dir first, then "
             "press Edit source again.",
         )
 
@@ -2573,7 +2674,7 @@ def simulate(req: SimulateRequest) -> dict:
     outputs = req.outputs or record.meta.odes or record.meta.algebraic
     # Resolved up front rather than beside the cost below: it also decides which
     # copy of an external_python model is the one that runs.
-    output_dir = _user_func_base_dir(req.config_outputs_dir)
+    output_dir = _working_dir_arg(req.config_outputs_dir)
     try:
         # Resolve the path for the backend the *live* run will actually use: the
         # engine falls back when the configured format cannot run in-process
@@ -2632,7 +2733,7 @@ def protocol_run(req: ProtocolRunRequest) -> dict:
     # looks like a better fit than it is.
     outputs = _with_obs_operands(outputs, record)
     # See simulate(): also decides which copy of an external_python model runs.
-    output_dir = _user_func_base_dir(req.config_outputs_dir)
+    output_dir = _working_dir_arg(req.config_outputs_dir)
     try:
         live_type, live_solver, _fell_back = engine.live_backend()
         model_path = resolve_model_path(
@@ -2754,7 +2855,7 @@ def cost_sensitivity_route(req: CostSensitivityRequest) -> dict:
             detail="no obs_data is loaded, so there is no cost to be sensitive to",
         )
 
-    output_dir = _user_func_base_dir(req.config_outputs_dir)
+    output_dir = _working_dir_arg(req.config_outputs_dir)
     protocol_info = req.protocol_info
     if protocol_info is None:
         protocol_info = record.obs_data.protocol_info
@@ -2882,7 +2983,7 @@ def cost_at_params(req: CostAtParamsRequest) -> dict:
             detail="no obs_data is loaded, so there is nothing to score against",
         )
 
-    output_dir = _user_func_base_dir(req.config_outputs_dir)
+    output_dir = _working_dir_arg(req.config_outputs_dir)
     protocol_info = req.protocol_info
     if protocol_info is None:
         protocol_info = record.obs_data.protocol_info
@@ -2987,12 +3088,14 @@ async def upload_obs_data(
 
     if model_id and model_id in _models:
         _models[model_id].obs_data = parsed
+        if output_dir:
+            _models[model_id].working_dir = _working_dir_arg(output_dir)
         obs_path = _study_file(_models[model_id], "_obs_data.json")
         obs_path.write_text(json.dumps(obj), encoding="utf-8")
         _models[model_id].obs_path = obs_path
 
     saved_path = _save_edited_copy(
-        output_dir, filename, json.dumps(obj, indent=1).encode("utf-8")
+        output_dir, filename, json.dumps(obj, indent=1).encode("utf-8"), "obs_data"
     )
 
     return {
@@ -3032,7 +3135,7 @@ def obs_data_options(refresh: bool = False, output_dir: str = "") -> dict:
     CA can't be introspected. ``output_dir`` locates the user's custom funcs so
     they appear in the lists.
     """
-    return get_obs_data_options(refresh=refresh, output_dir=_user_func_base_dir(output_dir))
+    return get_obs_data_options(refresh=refresh, output_dir=_working_dir_arg(output_dir))
 
 
 # --- Add from dataset: build obs_data from raw recordings -------------------
@@ -3070,11 +3173,11 @@ class ObsExtractRunRequest(BaseModel):
 def _obs_extract_dir(output_dir: str) -> str:
     """Where this extraction's artefacts go.
 
-    The outputs directory the user already chose, falling back to the config dir
+    The working dir the user already chose, falling back to the config dir
     the way ``_save_edited_copy`` does -- so a Save never silently loses work
     because no directory was set.
     """
-    base = _user_func_base_dir(output_dir) or str(settings_store.config_dir())
+    base = _working_dir_arg(output_dir) or str(settings_store.config_dir())
     return base
 
 
@@ -3130,7 +3233,11 @@ def obs_extract_load_config(path: str) -> dict:
 def obs_extract_save_config(req: ObsExtractConfigRequest) -> dict:
     """Save the decisions, so the afternoon spent making them happens once."""
     name = os.path.basename(req.filename or "obs_extraction_config.json")
-    path = os.path.join(_obs_extract_dir(req.output_dir), name)
+    directory = _working_dir_arg(req.output_dir)
+    # An input of the study: kept with the others (the config dir when there is no
+    # working dir).
+    path = (str(working_dir.inputs_dir(directory) / name) if directory
+            else os.path.join(_obs_extract_dir(req.output_dir), name))
     try:
         obs_extract.config.save(req.config, path)
     except obs_extract.ObsExtractError as exc:
@@ -3151,7 +3258,7 @@ def obs_extract_run(req: ObsExtractRunRequest) -> dict:
     try:
         job_id = obs_extract_jobs.start(
             req.config,
-            operation_funcs=get_operation_funcs(_user_func_base_dir(req.output_dir)),
+            operation_funcs=get_operation_funcs(_working_dir_arg(req.output_dir)),
             variables=variables, output_dir=output_dir,
             cuflynx_version=__version__)
     except RuntimeError as exc:
@@ -3183,40 +3290,60 @@ class UserFuncRequest(BaseModel):
     # one behind as a stale copy.
     name: str = ""
     source: str
-    # The user's output directory (config_outputs_dir); funcs are stored there so
+    # The user's working dir (config_outputs_dir); funcs are stored there so
     # they travel with the run outputs. Empty falls back to the config dir.
     output_dir: str = ""
 
 
-def _user_func_base_dir(output_dir: str | None) -> str | None:
+def _working_dir_arg(output_dir: str | None) -> str | None:
     """Normalise a client-supplied output dir for user-func storage: '' -> None
     (config-dir fallback), and require an absolute path when given."""
     d = (output_dir or "").strip()
     if d and not os.path.isabs(d):
-        raise HTTPException(status_code=422, detail="output_dir must be an absolute path")
+        raise HTTPException(status_code=422, detail="working_dir must be an absolute path")
     return d or None
 
 
 def _model_dir(base_dir: str | None, file_prefix: str | None) -> str | None:
-    """``<base_dir>/generated_models/<prefix>/`` — where a model's own files live.
+    """``<working dir>/inputs/generated_models/<prefix>/`` — where a model's own files live.
 
-    The layout circulatory_autogen resolves ``model_path`` against and the one
-    the export bundle writes, so anything belonging to *the model* (rather than
-    to a run) has one place to go in both. ``None`` when there is no outputs
-    directory to put it under.
+    Conversions (Myokit, EasyML) and PhLynx's editor state for the model go here:
+    inputs of the study, beside the rest of its inputs. ``None`` when there is no
+    working dir to put them under.
     """
     if not base_dir:
         return None
-    return str(Path(base_dir) / "generated_models" / (file_prefix or "model"))
+    return str(working_dir.inputs_dir(base_dir, "generated_models") / (file_prefix or "model"))
 
 
-def _save_edited_copy(output_dir: str | None, filename: str | None, data: bytes) -> str | None:
+def _conversion_dir(output_dir: str | None, filename: str) -> str | None:
+    """Where a model converted at import (.mmt, EasyML) is kept: :func:`_model_dir`."""
+    return _model_dir(_working_dir_arg(output_dir or ""),
+                      _display_stem(Path(str(filename or "")).stem, "model"))
+
+
+def _obs_input_dir(output_dir: str | None) -> str | None:
+    """``<W>/inputs/obs_data/``: where an obs_data derived from a model's protocol is kept."""
+    directory = _working_dir_arg(output_dir or "")
+    return str(working_dir.inputs_dir(directory, "obs_data")) if directory else None
+
+
+def _workflow_input_dir(directory: str | None, name: str, fallback_id: str) -> Path:
+    """``<W>/inputs/workflows/<name>/`` for a workflow brought in with a study, else a
+    folder of the uploads dir."""
+    if directory:
+        return working_dir.inputs_dir(directory, "workflows") / (name or fallback_id)
+    return UPLOAD_DIR / "workflows" / fallback_id
+
+
+def _save_edited_copy(output_dir: str | None, filename: str | None, data: bytes,
+                      kind: str) -> str | None:
     """Write the dated copy of a config file the user just saved in an editor.
 
     The obs_data and params_for_id editors used to hand this file to the browser
     as a download; issue #215 makes Save write it where the study lives instead.
-    Into the configured outputs directory, or the app's own config dir when
-    there is none -- Save must never silently lose an edit because no directory
+    Into ``<working dir>/inputs/obs_data/`` or ``inputs/params_for_id/``, or the app's
+    own config dir when there is no working dir -- Save must never silently lose an edit because no directory
     was chosen, so there is a fallback rather than a refusal.
 
     Only the *basename* is taken from the client: the editors name the file
@@ -3225,8 +3352,11 @@ def _save_edited_copy(output_dir: str | None, filename: str | None, data: bytes)
     """
     if not filename:
         return None
-    base = _user_func_base_dir(output_dir) or str(settings_store.config_dir())
-    target = Path(base) / Path(filename).name
+    directory = _working_dir_arg(output_dir)
+    if directory:
+        target = working_dir.inputs_dir(directory, kind) / Path(filename).name
+    else:
+        target = settings_store.config_dir() / Path(filename).name
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(data)
@@ -3238,7 +3368,7 @@ def _save_edited_copy(output_dir: str | None, filename: str | None, data: bytes)
 
 
 # One trio of routes per user-func kind: list, save, delete. CUFLynx saves the
-# func to an external file under the user's output directory and points CA at it
+# func to an external file under the user's working dir and points CA at it
 # via that kind's config key (issue #104 rework; CA #303, CA #383), instead of
 # writing into CA's tracked tree.
 #
@@ -3249,19 +3379,19 @@ def _save_edited_copy(output_dir: str | None, filename: str | None, data: bytes)
 # a `{kind}` path parameter would have changed them.
 def _register_user_func_routes(kind: str, label: str) -> None:
     def list_funcs(output_dir: str = "") -> dict:
-        return read_user_funcs(kind, _user_func_base_dir(output_dir))
+        return read_user_funcs(kind, _working_dir_arg(output_dir))
 
     def save_func(req: UserFuncRequest) -> dict:
         try:
             return save_user_func(
-                kind, req.name, req.source, _user_func_base_dir(req.output_dir)
+                kind, req.name, req.source, _working_dir_arg(req.output_dir)
             )
         except UserFuncError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     def delete_func(name: str, output_dir: str = "") -> dict:
         try:
-            return delete_user_func(kind, name, _user_func_base_dir(output_dir))
+            return delete_user_func(kind, name, _working_dir_arg(output_dir))
         except UserFuncError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -3317,9 +3447,10 @@ class LoadParamsRequest(BaseModel):
 @app.post("/api/params/save")
 def save_params(req: SaveParamsRequest) -> dict:
     """Save the current slider values to a named file (issue #106). Format follows
-    the extension: ``.csv`` -> CSV, else numpy ``.npy`` (default). Saved under the
-    user's output directory, falling back to the uploads dir."""
-    out_dir = _user_func_base_dir(req.output_dir) or str(UPLOAD_DIR)
+    the extension: ``.csv`` -> CSV, else numpy ``.npy`` (default). Saved under
+    ``<working dir>/saved_params/``, falling back to the uploads dir."""
+    directory = _working_dir_arg(req.output_dir)
+    out_dir = str(working_dir.saved_params_dir(directory)) if directory else str(UPLOAD_DIR)
     try:
         path = save_param_values(req.values, req.order, out_dir, req.filename)
     except ParamIOError as exc:
@@ -3342,22 +3473,28 @@ def save_params(req: SaveParamsRequest) -> dict:
 
 @app.get("/api/runs")
 def list_saved_runs(dir: str | None = Query(default=None)) -> dict:
-    """Saved runs in an output directory, for the "show saved" list (#126).
+    """Saved runs in a working dir, for the "show saved" list (#126).
 
     Metadata only — the traces are fetched per run when one is shown.
     """
-    base = _user_func_base_dir(dir or "") or str(UPLOAD_DIR)
-    return {"dir": base, "runs": saved_runs.list_runs(base)}
+    directory = _working_dir_arg(dir or "")
+    if not directory:
+        return {"dir": str(UPLOAD_DIR), "runs": saved_runs.list_runs(str(UPLOAD_DIR))}
+    # saved_params/, and the top level where an older folder kept them.
+    base = str(working_dir.saved_params_dir(directory))
+    runs = saved_runs.list_runs(base) if os.path.isdir(base) else []
+    runs += saved_runs.list_runs(directory)
+    return {"dir": base, "runs": runs}
 
 
-@app.get("/api/outputs/load")
+@app.get("/api/working-dir/load")
 def load_outputs_directory(
     dir: str = Query(...),
     file_prefix: str | None = Query(default=None),
     obs_path: str | None = Query(default=None),
     run_dir: str | None = Query(default=None),
 ) -> dict:
-    """Everything a finished run left in an outputs directory (#255, #256).
+    """Everything a finished run left in a working dir (#255, #256).
 
     The panels are filled by job polls, so today they only fill for a run
     started in this session -- a run produced by cuflynx-param-id, by a
@@ -3386,13 +3523,13 @@ class StudyManifestRequest(BaseModel):
     path: str | None = None
 
 
-@app.post("/api/outputs/manifest")
+@app.post("/api/working-dir/manifest")
 def open_study_manifest(req: StudyManifestRequest) -> dict:
-    """Which outputs directory a dropped study manifest opens.
+    """Which working dir a dropped study manifest opens.
 
     circulatory_autogen writes ``<study>_cuflynx_study.json`` into a study's
     ``param_id_output_dir`` and records every analysis in it, so the file is the handle
-    a user has on a study run from a script. The frontend sets the outputs directory to
+    a user has on a study run from a script. The frontend sets the working dir to
     the answer and reloads it, which is the path a picked directory already takes -- so
     a dropped manifest and a picked folder cannot open a study differently.
     """
@@ -3409,10 +3546,10 @@ def open_study_manifest(req: StudyManifestRequest) -> dict:
 
 
 class OpenStudyRequest(BaseModel):
-    #: The outputs directory the user picked, the same one `/api/outputs/load` reads.
+    #: The working dir the user picked, the same one `/api/working-dir/load` reads.
     dir: str
     #: Which run's snapshots to open, when the directory holds several. Omitted
-    #: takes the one `/api/outputs/load` chose.
+    #: takes the one `/api/working-dir/load` chose.
     run_dir: str | None = None
     #: The loaded model's name, when there is one, for resolving `<prefix>_calibrated`.
     file_prefix: str | None = None
@@ -3610,11 +3747,11 @@ def _finest_scored_obs_dt(obs_data_path) -> float | None:
     return finest
 
 
-@app.post("/api/outputs/study")
+@app.post("/api/working-dir/study")
 def open_study_from_outputs(req: OpenStudyRequest) -> dict:
     """Load the model, obs_data and params_for_id a finished run was made from.
 
-    ``/api/outputs/load`` reports the study's files as *paths*, which fill no
+    ``/api/working-dir/load`` reports the study's files as *paths*, which fill no
     panel: a user who reopened a directory got its results and an empty
     Parameters tab, and had to find the same three files on disk and drop them
     in by hand -- after which the results they had just loaded were replaced by
@@ -3663,7 +3800,14 @@ def open_study_from_outputs(req: OpenStudyRequest) -> dict:
         for name, blob in members.items():
             zf.writestr(name, blob)
 
-    result = import_omex_bytes(buf.getvalue(), req.dir, source="run directory")
+    result = import_omex_bytes(buf.getvalue(), req.dir, source="run directory", bind=False)
+    # The model is already in the working dir: run it from there rather than from a copy.
+    record = _models[result["model_id"]]
+    if model_path and working_dir.is_inside(req.dir, model_path):
+        record.working_dir = req.dir
+        record.working_model = Path(model_path)
+    else:
+        _bind_working_dir(record, _working_dir_arg(req.dir))
     # Where each part came from, so the UI can say which run it reopened rather
     # than implying the user dropped these files.
     result["study_paths"] = {
@@ -3793,10 +3937,12 @@ async def upload_params_for_id(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     if model_id and model_id in _models:
+        if output_dir:
+            _models[model_id].working_dir = _working_dir_arg(output_dir)
         _models[model_id].params_path = _save_params_file(_models[model_id], data)
 
     raw = data if isinstance(data, bytes) else data.encode()
-    saved_path = _save_edited_copy(output_dir, filename, raw)
+    saved_path = _save_edited_copy(output_dir, filename, raw, "params_for_id")
 
     return {"params": [e.as_dict() for e in entries], "saved_path": saved_path}
 
@@ -3896,23 +4042,15 @@ def calibration_run(req: CalibrationRequest) -> dict:
                 "calibration (completed or stopped) is available for this model yet",
             )
 
-    configured = (req.settings.get("config_outputs_dir") or "").strip()
-    if configured:
-        if not os.path.isabs(configured):
-            raise HTTPException(
-                status_code=422,
-                detail="config_outputs_dir must be an absolute path",
-            )
-        output_dir = configured
-    else:
-        output_dir = str(UPLOAD_DIR / f"calib_{req.model_id}_{uuid.uuid4().hex[:8]}")
+    configured = _require_working_dir(req.settings, record)
+    output_dir = configured
     config = {
         "model_id": req.model_id,
-        # The *configured* outputs dir, not the temp fallback below it: that is
+        # The *configured* working dir, not the temp fallback below it: that is
         # where the study keeps its own copy of an external_python model, and the
         # runner must resolve the same file the live engine does.
         "model_path": resolve_model_path(
-            str(record.path), engine.model_type, model_id=req.model_id,
+            _model_file(record), engine.model_type, model_id=req.model_id,
             output_dir=configured or None,
         ),
         "model_type": engine.model_type,
@@ -3931,7 +4069,7 @@ def calibration_run(req: CalibrationRequest) -> dict:
         "settings": _with_engine_dt(req.settings),
         # The original uploaded CellML, so the runner can save a calibrated copy
         # with best-fit values baked in (issue #114), independent of model_type.
-        "cellml_path": str(record.path),
+        "cellml_path": _model_file(record),
         "current_params": req.current_params,
         "best_fit_params": best_fit_params,
         # Global random seed (Settings popup); None => non-deterministic run.
@@ -3994,7 +4132,7 @@ class WorkflowLoadRequest(BaseModel):
     # calibration_workflow.json CA ran). Exactly one.
     path: str = ""
     run_dir: str = ""
-    # The user's outputs directory; the run goes to <outputs>/workflows/<name>
+    # The user's working dir; the run goes to <working dir>/workflows/<name>
     # unless run_dir names one.
     config_outputs_dir: str = ""
 
@@ -4055,7 +4193,7 @@ def workflow_load(req: WorkflowLoadRequest) -> dict:
     """
     if bool(req.path.strip()) == bool(req.run_dir.strip()):
         raise HTTPException(status_code=422, detail="give a workflow path or a run_dir")
-    outputs_dir = _user_func_base_dir(req.config_outputs_dir) or ""
+    outputs_dir = _working_dir_arg(req.config_outputs_dir) or ""
     if req.run_dir.strip():
         _workflow_http(workflow.load_run, req.run_dir.strip(), list(_module_library_dirs))
         return _workflow_http(workflow.describe)
@@ -4066,9 +4204,10 @@ def workflow_load(req: WorkflowLoadRequest) -> dict:
 async def workflow_upload(file: UploadFile = File(...), config_outputs_dir: str = "") -> dict:
     """Open an uploaded calibration_workflow.json (one a browser cannot name a path for).
 
-    Kept under the uploads directory, where paths relative to the original file mean
-    nothing: an uploaded workflow must name its steps' files (and any module library) by
-    absolute path. Open a workflow by its path to keep relative paths working; library
+    Kept under ``<working dir>/inputs/workflows/<name>/`` (the uploads directory when no
+    working dir is set), where paths relative to the original file mean nothing: an
+    uploaded workflow must name its steps' files (and any module library) by absolute
+    path, or be packed with them (an OMEX). Open a workflow by its path to keep relative paths working; library
     modules are also looked up in the libraries set in Settings.
     """
     blob = await file.read()
@@ -4076,11 +4215,13 @@ async def workflow_upload(file: UploadFile = File(...), config_outputs_dir: str 
         json.loads(blob)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=f"not a JSON file: {exc}") from exc
-    directory = UPLOAD_DIR / "workflows" / uuid.uuid4().hex
+    work = _working_dir_arg(config_outputs_dir)
+    stem = _display_stem(Path(file.filename or "").stem, "workflow")
+    directory = _workflow_input_dir(work, stem, uuid.uuid4().hex)
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / workflow_manager.WORKFLOW_FILE_NAME
     path.write_bytes(blob)
-    return _open_workflow_file(str(path), _user_func_base_dir(config_outputs_dir) or "")
+    return _open_workflow_file(str(path), work or "")
 
 
 @app.post("/api/workflow/close")
@@ -4159,6 +4300,11 @@ def workflow_run(req: WorkflowRunRequest) -> dict:
     """Run the open workflow -- all of it, from a step, or one step -- with CA."""
     if req.from_step and req.only:
         raise HTTPException(status_code=422, detail="give from_step or only, not both")
+    # Opened with no working dir, the workflow would run into the uploads dir.
+    if workflow.loaded and workflow.output_dir and \
+            working_dir.is_inside(UPLOAD_DIR, workflow.output_dir):
+        raise HTTPException(status_code=422, detail=working_dir.REQUIRED_MESSAGE
+                            + " Then open the workflow again.")
     job_id = _workflow_http(workflow.start, from_step=req.from_step or None,
                             only=req.only or None, num_cores=req.num_cores,
                             python=calibration.python)
@@ -4201,7 +4347,7 @@ def _mapping_path(model_id: str, output_dir: str) -> str:
             # the study instead (a CA that cannot map at all says so on the next call).
             pass
     return symbol_mapping.default_path(_record_prefix(record),
-                                       _user_func_base_dir(output_dir) or "", str(UPLOAD_DIR))
+                                       _working_dir_arg(output_dir) or "", str(UPLOAD_DIR))
 
 
 def _mapping_http(fn, *args):
@@ -4346,27 +4492,19 @@ def sensitivity_run(req: SensitivityRequest) -> dict:
                 "a different nominal point",
             )
 
-    configured = (req.settings.get("config_outputs_dir") or "").strip()
-    if configured:
-        if not os.path.isabs(configured):
-            raise HTTPException(
-                status_code=422,
-                detail="config_outputs_dir must be an absolute path",
-            )
-        output_dir = configured
-    else:
-        output_dir = str(UPLOAD_DIR / f"sa_{req.model_id}_{uuid.uuid4().hex[:8]}")
+    configured = _require_working_dir(req.settings, record)
+    output_dir = configured
     # Local (finite-difference) SA is single-process; only Sobol parallelises
     # sample evaluation across MPI ranks.
     num_cores = int(req.settings.get("num_cores", 1) or 1)
     if req.settings.get("method") == "local":
         num_cores = 1
     config = {
-        # The *configured* outputs dir, not the temp fallback below it: that is
+        # The *configured* working dir, not the temp fallback below it: that is
         # where the study keeps its own copy of an external_python model, and the
         # runner must resolve the same file the live engine does.
         "model_path": resolve_model_path(
-            str(record.path), engine.model_type, model_id=req.model_id,
+            _model_file(record), engine.model_type, model_id=req.model_id,
             output_dir=configured or None,
         ),
         "model_type": engine.model_type,
@@ -4379,6 +4517,7 @@ def sensitivity_run(req: SensitivityRequest) -> dict:
         "operation_funcs_external_path": user_func_path("operation", configured or None),
         "cost_funcs_external_path": user_func_path("cost", configured or None),
         "output_dir": output_dir,
+        "sa_output_dir": str(working_dir.sensitivity_dir(output_dir)),
         "file_prefix": _record_prefix(record),
         "num_cores": num_cores,
         "python": python_path,
@@ -4414,10 +4553,10 @@ def _emulator_dir_for(model_id: str, settings: dict) -> str:
 
     Derived rather than remembered, so a training run and a later analysis agree
     without a second setting to keep in step, and so an emulator trained by CA's
-    own script into the same outputs directory is found here too.
+    own script into the same working dir is found here too.
     """
     record = _get_model(model_id)
-    configured = (settings.get("config_outputs_dir") or "").strip()
+    configured = _working_dir_arg(settings.get("config_outputs_dir")) or ""
     output_dir = configured or str(UPLOAD_DIR / f"emu_{model_id}")
     prefix = _record_prefix(record)
     obs = str(record.obs_path) if record.obs_path else None
@@ -4442,7 +4581,7 @@ def _emulator_run_config(model_id: str, settings: dict) -> dict:
     """Config keys that put an analysis run on the trained emulator, or ``{}``.
 
     Lifted out of the panel's settings here rather than sent as a path by the
-    frontend: the location is derived from the outputs directory by one rule
+    frontend: the location is derived from the working dir by one rule
     (:func:`ca_run_history.emulator_dir`), and deriving it in one place is what
     stops a run training into one directory and reading from another.
 
@@ -4552,17 +4691,13 @@ def emulator_train(req: EmulatorTrainRequest) -> dict:
             detail=f"python interpreter not found or not executable: {python_path}",
         )
 
-    configured = (req.settings.get("config_outputs_dir") or "").strip()
-    if configured and not os.path.isabs(configured):
-        raise HTTPException(
-            status_code=422, detail="config_outputs_dir must be an absolute path"
-        )
-    output_dir = configured or str(UPLOAD_DIR / f"emu_{req.model_id}")
+    configured = _require_working_dir(req.settings, record)
+    output_dir = configured
     config = {
-        # See the calibration config: the configured outputs dir decides which
+        # See the calibration config: the configured working dir decides which
         # copy of an external_python model every tier runs.
         "model_path": resolve_model_path(
-            str(record.path), engine.model_type, model_id=req.model_id,
+            _model_file(record), engine.model_type, model_id=req.model_id,
             output_dir=configured or None,
         ),
         "model_type": engine.model_type,
@@ -4634,7 +4769,7 @@ def emulator_predict(req: EmulatorPredictRequest) -> dict:
     except SimulationError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     result["cost"], result["cost_unavailable"] = _emulator_feature_cost(
-        record, result, _user_func_base_dir(req.settings.get("config_outputs_dir"))
+        record, result, _working_dir_arg(req.settings.get("config_outputs_dir"))
     )
     return result
 
@@ -4803,23 +4938,15 @@ def uq_run(req: UQRequest) -> dict:
                 "completion first, or enable 'run a fresh calibration first'",
             )
 
-    configured = (req.settings.get("config_outputs_dir") or "").strip()
-    if configured:
-        if not os.path.isabs(configured):
-            raise HTTPException(
-                status_code=422,
-                detail="config_outputs_dir must be an absolute path",
-            )
-        output_dir = configured
-    else:
-        output_dir = str(UPLOAD_DIR / f"uq_{req.model_id}_{uuid.uuid4().hex[:8]}")
+    configured = _require_working_dir(req.settings, record)
+    output_dir = configured
     config = {
         "model_id": req.model_id,
-        # The *configured* outputs dir, not the temp fallback below it: that is
+        # The *configured* working dir, not the temp fallback below it: that is
         # where the study keeps its own copy of an external_python model, and the
         # runner must resolve the same file the live engine does.
         "model_path": resolve_model_path(
-            str(record.path), engine.model_type, model_id=req.model_id,
+            _model_file(record), engine.model_type, model_id=req.model_id,
             output_dir=configured or None,
         ),
         "model_type": engine.model_type,
