@@ -11,6 +11,9 @@ import EmulatorPanel from './components/EmulatorPanel.vue'
 import ProgressPanel from './components/ProgressPanel.vue'
 import SensitivityPanel from './components/SensitivityPanel.vue'
 import UQPanel from './components/UQPanel.vue'
+import WorkflowBar from './components/WorkflowBar.vue'
+import WorkflowPanel from './components/WorkflowPanel.vue'
+import EditObsDataDialog from './components/EditObsDataDialog.vue'
 import AnalysisPanel from './components/AnalysisPanel.vue'
 import CostSensitivityBar from './components/CostSensitivityBar.vue'
 import InputNumber from 'primevue/inputnumber'
@@ -33,6 +36,7 @@ import { useCalibration, applyBestParams, expandBestFitParams } from './stores/u
 import { useEmulator } from './stores/useEmulator'
 import { useSensitivity } from './stores/useSensitivity'
 import { useUQ } from './stores/useUQ'
+import { useWorkflow } from './stores/useWorkflow'
 import {
   getVariables,
   // No `simulate`: a run is a protocol run now, because the run window is the
@@ -55,6 +59,7 @@ import {
   errorMessage,
   loadOutputsDirectory,
   openStudyFromOutputs,
+  getWorkflowStepInput,
 } from './lib/api'
 import {
   overlayItemsFor,
@@ -90,6 +95,8 @@ const calib = useCalibration()
 const sa = useSensitivity()
 const emu = useEmulator()
 const uq = useUQ()
+// The open calibration workflow (CA's libcuflynx.calibration_workflow).
+const wf = useWorkflow()
 
 // The run window is the obs_data's `protocol_info`, and nothing else can set it.
 // It used to be settable in two places -- these two values as top-bar spinners,
@@ -134,6 +141,18 @@ async function loadOutputsFromDirectory(runDir) {
     const found = await loadOutputsDirectory(
       dir, model.filePrefix.value || undefined, runDir)
     loadedOutputs.value = found
+    // A calibration workflow's run directory holds no one study: its steps each
+    // have their own. Reopen it as the workflow, whose tabs load each of them.
+    if (found.workflow_run) {
+      const opened = await wf.open({ runDir: dir })
+      if (opened) {
+        leftTab.value = 'workflow'
+        loadedOutputsSummary.value = `Reopened calibration workflow ${opened.workflow?.workflow_name ?? ''}`
+      } else {
+        sim.setError(wf.error.value)
+      }
+      return
+    }
     if (found.error) {
       sim.setError(found.error)
       return
@@ -376,6 +395,11 @@ const seed = ref(null)
 // server-side via /api/config, so it survives a restart.
 const phlynxUrl = ref('')
 
+// Module libraries a calibration workflow's library modules are found in (Settings).
+// Persisted server-side via /api/config.
+const moduleLibraryDirs = ref([])
+const libraryBrowserOpen = ref(false)
+
 // Last value the server told us about. Hydrating pythonPath from /api/config
 // triggers the watch below, and without this it would POST the value straight
 // back on every load.
@@ -406,6 +430,7 @@ function applyConfigPayload(c) {
   serverSeed = seed.value
   phlynxUrl.value = c.phlynx_url ?? ''
   serverPhlynxUrl = phlynxUrl.value
+  moduleLibraryDirs.value = [...(c.module_library_dirs ?? [])]
   packaged.value = c.packaged ?? false
   mpiexecAvailable.value = c.mpiexec_available ?? true
   mpiexecKnown.value = c.mpiexec_available !== undefined
@@ -462,6 +487,124 @@ watch(phlynxUrl, async (u) => {
     /* keep the in-session choice even if persisting fails */
   }
 })
+
+async function setModuleLibraryDirs(dirs) {
+  try {
+    applyConfigPayload(await setConfig({ moduleLibraryDirs: dirs }))
+    // The open workflow's steps are resolved against these, so re-read it.
+    if (wf.loaded.value) await wf.refresh()
+  } catch (e) {
+    sim.setError(errorMessage(e))
+  }
+}
+
+function addModuleLibrary(dir) {
+  if (dir && !moduleLibraryDirs.value.includes(dir)) {
+    setModuleLibraryDirs([...moduleLibraryDirs.value, dir])
+  }
+}
+
+function removeModuleLibrary(dir) {
+  setModuleLibraryDirs(moduleLibraryDirs.value.filter((d) => d !== dir))
+}
+
+// -- calibration workflows ------------------------------------------------------
+
+const workflowStates = computed(() =>
+  Object.fromEntries(wf.tabs.value.map((t) => [t.id, wf.stateOf(t.id)])),
+)
+
+/**
+ * Load one tab of the workflow -- a submodule step, or the supermodule -- as the
+ * current study, through the same handlers a dropped archive goes through; then
+ * that step's own calibration results, if it has run, as a reopened run's are.
+ */
+async function onSelectWorkflowTab(tabId) {
+  const opened = await wf.select(tabId)
+  if (!opened) {
+    if (wf.error.value) sim.setError(wf.error.value)
+    return
+  }
+  await onModelLoaded({ ...opened, filename: opened.model_filename })
+  if (opened.obs_data && !opened.obs_data.error) {
+    onObsDataLoaded({ ...opened.obs_data, model_id: opened.model_id })
+  }
+  if (opened.params_for_id && !opened.params_for_id.error) {
+    onParamsLoaded({
+      params: opened.params_for_id.params,
+      filename: opened.params_for_id.filename,
+    })
+  }
+  const runDir = opened.workflow_view?.param_id_output_dir
+  if (runDir) {
+    try {
+      const found = await loadOutputsDirectory(runDir, opened.workflow_view.view)
+      if (!found.error) applyLoadedOutputs(found)
+    } catch {
+      /* the step's results are a bonus; the model is what the tab is for */
+    }
+  }
+}
+
+async function onOpenWorkflow(source) {
+  const opened = await wf.open({ ...source, outputsDir: outputsDir.value.trim() })
+  // Straight to the supermodule: it is what the workflow is about.
+  if (opened?.loaded && !opened.plan_error) await onSelectWorkflowTab('target')
+}
+
+function onRunWorkflow(which) {
+  wf.run(which)
+}
+
+// The protocol editor on a workflow step's own obs_data ({stepId, document, preselect}).
+const stepEditor = ref(null)
+
+/**
+ * Edit a step's obs_data (as the workflow names it, with the target's names) in the
+ * protocol editor, with `preselect` parameters given lanes to fill in.
+ */
+async function onEditStepInput({ stepId, preselect = [] }) {
+  try {
+    const { content } = await getWorkflowStepInput(stepId, 'obs_data')
+    stepEditor.value = { stepId, document: content ? JSON.parse(content) : null, preselect }
+    leftTab.value = 'workflow'
+  } catch (e) {
+    sim.setError(errorMessage(e))
+  }
+}
+
+/** Saving writes the step's obs_data and CA re-plans ... */
+async function saveStepObsData(document) {
+  const { stepId } = stepEditor.value
+  return { ...(await wf.saveStepInput(stepId, 'obs_data', document)), stepId }
+}
+
+/**
+ * ... then, once the editor has closed, the step's tab opens on it: a parameter still
+ * unset opens the editor again rather than being closed with this one.
+ */
+function onStepObsSaved({ stepId }) {
+  setTimeout(() => onSelectWorkflowTab(stepId))
+}
+
+/** A file the user picked becomes a step's own obs_data or params_for_id. */
+async function onPickStepInput({ stepId, role, file }) {
+  try {
+    const text = await file.text()
+    await wf.saveStepInput(stepId, role, role === 'obs_data' ? JSON.parse(text) : text)
+  } catch (e) {
+    sim.setError(e instanceof SyntaxError ? `${file.name} is not JSON: ${e.message}` : errorMessage(e))
+  }
+}
+
+// A step that stopped on parameters nothing gives a value -- on opening its tab or in a
+// run -- opens its protocol with them selected.
+watch(
+  () => wf.unset.value,
+  (unset) => {
+    if (unset) onEditStepInput({ stepId: unset.step_id, preselect: unset.names })
+  },
+)
 
 async function applyCaDir(dir) {
   try {
@@ -845,11 +988,17 @@ async function onWindowDrop(event) {
     await importer.handleOmex(files)
     return
   }
+  if (files.some((f) => importer.isStudyManifestName?.(f.name))) {
+    dropHint.value = ''
+    await importer.handleStudyManifest(files)
+    return
+  }
   // Deliberately not guessed at. A .cellml could be the model or a sister file,
   // and a .json could be either of the two studies files -- the box is what says
   // which, so the honest answer is to name the box rather than pick one.
   dropHint.value =
-    `Only a .omex study can be dropped anywhere on the page. Drop ` +
+    `Only a .omex study or a *_cuflynx_study.json can be dropped anywhere on the ` +
+    `page. Drop ` +
     `${files.length > 1 ? 'these files' : `"${files[0].name}"`} on the model, ` +
     `obs_data or params box to say which it is.`
 }
@@ -1550,6 +1699,8 @@ onMounted(() => {
   settle(getUQDefaults(), (v) => (uqDefaults.value = v))
   settle(getCalibrationPythons(), (v) => (calibPythons.value = v.pythons ?? []))
   settle(getConfig(), applyConfigPayload)
+  // A workflow the server still has open (the page was reloaded).
+  wf.refresh()
   refreshEmulatorDefaults()
 })
 
@@ -2066,6 +2217,13 @@ watch(
 
 async function onModelLoaded(data) {
   model.setModel(data)
+  // An archive that carries a calibration_workflow.json: offer it in the Workflow
+  // tab rather than opening it, which would replace this study with its tabs --
+  // unless it calibrates selections of PhLynx instances, which is what it was sent for.
+  if (data?.calibration_workflow) wf.offered.value = data.calibration_workflow
+  const openWorkflowNow = data?.calibration_workflow?.select_steps?.length
+    ? data.calibration_workflow
+    : null
   obs.clearObsData()
   paramsForId.clear()
   loadedParamsRaw.value = []
@@ -2087,6 +2245,11 @@ async function onModelLoaded(data) {
     model.setVariables(vars)
   } catch (e) {
     sim.setError(String(e))
+  }
+  // Once this study has loaded, so its late answers cannot land on the workflow's tab.
+  if (openWorkflowNow) {
+    leftTab.value = 'workflow'
+    await onOpenWorkflow({ path: openWorkflowNow.path })
   }
 }
 
@@ -2803,6 +2966,20 @@ watch(() => obs.obsData.value, scheduleRun)
             UQ
             <span v-if="uq.running.value" class="tab-dot" title="UQ running" />
           </button>
+          <button
+            class="left-tab"
+            :class="{ active: leftTab === 'workflow' }"
+            data-testid="tab-workflow"
+            @click="leftTab = 'workflow'"
+          >
+            Workflow
+            <span v-if="wf.running.value" class="tab-dot" title="workflow running" />
+            <span
+              v-else-if="wf.offered.value && !wf.loaded.value"
+              class="tab-dot tab-dot-on"
+              title="the study you opened carries a calibration workflow"
+            />
+          </button>
         </div>
 
         <div v-show="leftTab === 'params'" class="left-pane left-pane-scroll">
@@ -2883,10 +3060,61 @@ watch(() => obs.obsData.value, scheduleRun)
             @cancel="uq.cancel()"
           />
         </div>
+        <div v-show="leftTab === 'workflow'" class="left-pane left-pane-scroll">
+          <WorkflowPanel
+            :described="wf.described.value"
+            :tabs="wf.tabs.value"
+            :selected="wf.selected.value"
+            :view="wf.view.value"
+            :states="workflowStates"
+            :job-state="wf.jobState.value"
+            :current-step="wf.currentStep.value"
+            :job-error="wf.jobError.value"
+            :lines="wf.lines.value"
+            :error="wf.error.value"
+            :busy="wf.busy.value"
+            :offered="wf.offered.value"
+            :unset="wf.unset.value"
+            :outputs-dir="outputsDir"
+            :module-library-dirs="moduleLibraryDirs"
+            :mpiexec-available="mpiexecAvailable"
+            @open="onOpenWorkflow"
+            @close="wf.close()"
+            @select="onSelectWorkflowTab"
+            @run="onRunWorkflow"
+            @cancel="wf.cancel()"
+            @open-settings="settingsOpen = true"
+            @edit-input="onEditStepInput"
+            @pick-input="onPickStepInput"
+          />
+          <EditObsDataDialog
+            v-if="stepEditor"
+            :visible="!!stepEditor"
+            :document="stepEditor.document"
+            :preselect="stepEditor.preselect"
+            :save="saveStepObsData"
+            :model-variables="model.variables.value"
+            :header="`obs_data of step ${stepEditor.stepId}`"
+            hint="This step's own obs_data, naming the target's instances. Saving writes it and
+              opens the step again; it and every step after it rerun."
+            data-testid="workflow-step-obs"
+            @saved="onStepObsSaved"
+            @update:visible="(v) => { if (!v) stepEditor = null }"
+          />
+        </div>
         </div>
       </aside>
 
       <section class="col col-center">
+        <WorkflowBar
+          v-if="wf.loaded.value"
+          :name="wf.name.value"
+          :tabs="wf.tabs.value"
+          :selected="wf.selected.value"
+          :states="workflowStates"
+          :busy="wf.busy.value"
+          @select="onSelectWorkflowTab"
+        />
         <div class="left-tabs">
           <button
             class="left-tab"
@@ -3197,10 +3425,6 @@ watch(() => obs.obsData.value, scheduleRun)
           :model-variables="model.variables.value"
           :model-name="model.name.value"
           :loaded-filename="loadedParamsFilename"
-          :current-data-items="obs.dataItems.value"
-          :current-prediction-items="obs.predictionItems.value"
-          :obs-protocol-info="obs.obsData.value?.protocol_info ?? null"
-          :experiment-count="obs.experimentCount.value"
           :loaded-obs-filename="loadedObsFilename"
           :can-export="model.hasModel.value"
           :generated-model-format="generatedModelFormat"
@@ -3293,6 +3517,41 @@ watch(() => obs.obsData.value, scheduleRun)
           develop <code>libCUFLynx</code> itself — point it at the
           <code>circulatory_autogen</code> checkout the copy you are working on lives
           in, and runs will use that on their next launch.
+        </p>
+
+        <div class="settings-row" data-testid="module-libraries">
+          <span
+            class="settings-label"
+            title="Module libraries (e.g. circulatory-autogen-modules/modules) a calibration workflow's library modules are looked up in"
+          >
+            Module libraries
+          </span>
+          <span class="settings-input settings-list">
+            <span v-if="!moduleLibraryDirs.length" class="settings-hint">none</span>
+            <span v-for="dir in moduleLibraryDirs" :key="dir" class="settings-list-item">
+              <code class="ca-path" :title="dir">{{ dir }}</code>
+              <Button
+                icon="pi pi-times"
+                size="small"
+                text
+                :aria-label="`Remove ${dir}`"
+                :data-testid="`module-library-remove`"
+                @click="removeModuleLibrary(dir)"
+              />
+            </span>
+            <Button
+              icon="pi pi-plus"
+              size="small"
+              text
+              title="Add a module library"
+              data-testid="module-library-add"
+              @click="libraryBrowserOpen = true"
+            />
+          </span>
+        </div>
+        <p class="settings-hint">
+          Where a calibration workflow (the Workflow tab) finds the library modules its steps
+          and target name, in addition to the libraries its own file lists.
         </p>
 
         <hr class="settings-sep" />
@@ -3554,6 +3813,12 @@ watch(() => obs.obsData.value, scheduleRun)
       mode="dir"
       title="Select the circulatory_autogen directory"
       @select="applyCaDir"
+    />
+    <FileBrowserDialog
+      v-model:visible="libraryBrowserOpen"
+      mode="dir"
+      title="Select a module library directory"
+      @select="addModuleLibrary"
     />
     <FileBrowserDialog
       v-model:visible="outputsSetupOpen"
@@ -3955,6 +4220,9 @@ watch(() => obs.obsData.value, scheduleRun)
 }
 .left-tabs {
   display: flex;
+  /* Six left tabs since the Workflow tab: in a narrow column they wrap onto a
+     second row rather than pushing the last one out of view. */
+  flex-wrap: wrap;
   border-bottom: 1px solid var(--p-content-border-color, #333);
 }
 .left-tab {
@@ -3999,6 +4267,15 @@ watch(() => obs.obsData.value, scheduleRun)
    is not about a running job would read as one. */
 .tab-dot-on {
   background: #3fb950;
+}
+.settings-list {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+.settings-list-item {
+  display: flex;
+  align-items: center;
 }
 .left-pane {
   flex: 1;

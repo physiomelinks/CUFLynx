@@ -161,12 +161,24 @@ jobs:
 
       # pytest exits 0 when every test skipped, so the step above can pass having run
       # none of the tier. That is the likely failure here, not a red X.
+      # A floor cannot see a few tests skipping, so tests that must run once the installed
+      # CA supports them are named. CA #594's selection steps: once libcuflynx has them,
+      # the PhLynx send-back tests in test_calibration_workflow.py must run, not skip.
+      # tests/test_assert_tests_ran.py checks each name here is a test that exists.
       - name: Fail if the tier did not actually run
         if: always()
         working-directory: .
         run: |
+          required=()
+          if python -c "from libcuflynx.calibration_workflow import write_calibrated_parameters_to" 2>/dev/null; then
+            required+=(
+              --require test_a_phlynx_selection_asks_for_its_boundary_runs_and_goes_back_calibrated
+              --require test_several_selected_instances_go_back_calibrated_and_nothing_else
+              --require test_a_selected_nested_instance_goes_back_into_its_super_instance
+            )
+          fi
           python .github/scripts/assert_tests_ran.py \
-            --min-ran ${{ matrix.min_ran }} apps/api/junit-integration.xml
+            --min-ran ${{ matrix.min_ran }} "${required[@]}" apps/api/junit-integration.xml
 
       - name: Upload results
         if: always()

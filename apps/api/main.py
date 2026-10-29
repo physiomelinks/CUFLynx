@@ -83,6 +83,7 @@ from obs_series import compute_output_series
 import params_json
 import ca_run_history
 import load_outputs
+import study_manifest
 from params_for_id import ParamsForIdError, parse_params_for_id
 import saved_runs
 from param_io import ParamIOError, load_param_values, save_param_values
@@ -104,7 +105,9 @@ from solver_options import (
 from user_funcs import (
     FUNC_KINDS,
     UserFuncError,
+    convention_path as user_func_convention_path,
     delete_user_func,
+    refresh_options as refresh_user_func_options,
     external_path as user_func_path,
     external_paths as user_func_paths,
     model_source_path as study_model_source_path,
@@ -113,6 +116,8 @@ from user_funcs import (
     save_user_func,
 )
 from sensitivity import sensitivity
+import workflow_manager
+from workflow_manager import workflow
 from emulator import emulator
 from uq import uq
 
@@ -493,6 +498,10 @@ class ConfigRequest(BaseModel):
     # sampling, MCMC) reproducible. Default is no seed (non-deterministic).
     #   omitted (None) -> leave unchanged   |   "" -> clear (no seed)   |   int -> use it
     seed: int | str | None = None
+    # Module libraries a calibration workflow's library modules are looked up in
+    # (circulatory-autogen-modules and the like).
+    #   omitted (None) -> leave unchanged   |   [] -> none
+    module_library_dirs: list[str] | None = None
 
 
 # Global random seed for analysis runs, or None for non-deterministic (the default).
@@ -507,6 +516,9 @@ _analysis_seed: int | None = None
 #: branch means pointing the button at a dev server. Persisted like any other
 #: setting so the packaged app remembers it too.
 _phlynx_url: str = ""
+
+# Module libraries a calibration workflow finds its library modules in (Settings).
+_module_library_dirs: list[str] = []
 
 
 def _parse_seed(value) -> int | None:
@@ -606,6 +618,11 @@ def _restore_persisted_settings() -> None:
         global _phlynx_url
         _phlynx_url = phlynx_url
 
+    libraries = saved.get("module_library_dirs")
+    if isinstance(libraries, list):
+        global _module_library_dirs
+        _module_library_dirs = [d for d in libraries if isinstance(d, str) and os.path.isdir(d)]
+
 
 _restore_persisted_settings()
 
@@ -644,6 +661,8 @@ def _config_payload(output_dir: str = "") -> dict:
         "seed": _analysis_seed,
         # Where "Edit" sends a study; blank = the production PhLynx.
         "phlynx_url": _phlynx_url,
+        # Where calibration workflows find their library modules.
+        "module_library_dirs": list(_module_library_dirs),
         # Current backend solver selection (engine is the source of truth). dt is
         # carried in solver_info for the UI but stored separately on the engine.
         "generated_model_format": engine.model_type,
@@ -824,6 +843,15 @@ def set_config(req: ConfigRequest) -> dict:
             )
         global _phlynx_url
         _phlynx_url = candidate
+
+    if req.module_library_dirs is not None:
+        dirs = [d.strip() for d in req.module_library_dirs if d and d.strip()]
+        missing = [d for d in dirs if not os.path.isdir(d)]
+        if missing:
+            raise HTTPException(status_code=422,
+                                detail=f"module library is not a directory: {missing[0]}")
+        global _module_library_dirs
+        _module_library_dirs = dirs
 
     os.environ["CUFLYNX_MODEL_TYPE"] = engine.model_type
     os.environ["CUFLYNX_SOLVER"] = engine.solver
@@ -1503,6 +1531,76 @@ def _no_obs_data_warning(parts: dict, source: str = "archive") -> list[str]:
     return [f"This {source} carries no {missing}, so the observations tab is empty."]
 
 
+def _apply_archive_study(study: dict | None, out_dir: str | None) -> list[str]:
+    """Adopt an archive's embedded study manifest: its solver settings and its funcs.
+
+    The funcs go where this app keeps a study's funcs (``<outputs>/user_funcs/``).
+    One already there with different contents is kept beside it as
+    ``<name>.before_import_<stamp>.py`` rather than overwritten unseen -- it may hold
+    funcs another study in the same outputs directory uses. Returns what to report.
+    """
+    if not study:
+        return []
+    notes = list(_adopt_study_solver_info((study.get("manifest") or {}).get("solver_info")))
+    funcs = study.get("funcs") or {}
+    if funcs and not out_dir:
+        notes.append(
+            "The archive carries user funcs ("
+            + ", ".join(sorted(funcs))
+            + "), but no outputs directory is set to keep them in. Set one and import "
+              "the archive again, or the obs_data operations they define will be unknown.")
+        return notes
+    wrote = False
+    stamp = time.strftime("%y%m%d_%H%M%S")
+    for kind, (member, blob) in sorted(funcs.items()):
+        target = user_func_convention_path(kind, out_dir)
+        if target.is_file() and target.read_bytes() == blob:
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if target.is_file():
+            kept = target.with_name(f"{target.stem}.before_import_{stamp}{target.suffix}")
+            target.rename(kept)
+            notes.append(f"Your {kind} funcs were replaced by the archive's; the previous "
+                         f"file is kept as {kept.name}.")
+        target.write_bytes(blob)
+        wrote = True
+    if wrote:
+        refresh_user_func_options()
+    return notes
+
+
+def _select_steps(workflow_path: str) -> list[str]:
+    """The ids of a workflow's steps that calibrate a selection of the target's instances
+    (``"model": {"select": [...]}``). An archive with any comes from a PhLynx selection,
+    and the GUI opens its workflow straight away."""
+    try:
+        raw = json.loads(Path(workflow_path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    steps = raw.get("steps") if isinstance(raw, dict) else None
+    return [s["id"] for s in steps or []
+            if isinstance(s, dict) and isinstance(s.get("model"), dict)
+            and "select" in s["model"] and isinstance(s.get("id"), str)]
+
+
+def _unpack_workflow(files: dict[str, bytes], directory: Path) -> Path:
+    """Write a packed workflow's files under ``directory``; the workflow file's path.
+
+    A path that would land outside ``directory`` (absolute, or climbing with ``..``) is
+    refused: the archive came from somewhere else.
+    """
+    root = directory.resolve()
+    for relative, blob in files.items():
+        target = (root / relative).resolve()
+        if root not in target.parents:
+            raise HTTPException(status_code=422,
+                                detail=f"the archive's workflow names a file outside it: "
+                                       f"{relative}")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(blob)
+    return root / omex_import.PACKED_WORKFLOW_NAME
+
+
 def import_omex_bytes(data: bytes, output_dir: str | None = None,
                       source: str = "archive") -> dict:
     """Load an archive's bytes, whatever delivered them.
@@ -1617,6 +1715,8 @@ def import_omex_bytes(data: bytes, output_dir: str | None = None,
         # single-file upload returns so the UI needs no second code path.
         "converted_from": converted_from,
         "protocol_obs_data": protocol,
+        # A calibration_workflow.json the archive carries ({filename, path}), to offer.
+        "calibration_workflow": None,
     }
 
     # obs_data and params_for_id are optional: an archive with only a model is a
@@ -1653,6 +1753,29 @@ def import_omex_bytes(data: bytes, output_dir: str | None = None,
         except ParamsForIdError as exc:
             result["params_for_id"] = {"filename": name, "error": str(exc)}
 
+    # A calibration workflow in the archive is kept (the upload dir) and offered,
+    # not opened: opening one replaces the study with the workflow's own tabs,
+    # which is the user's choice to make. A packed one (``workflow/``) is unpacked
+    # whole, so its relative paths -- every step's files, its modules -- resolve.
+    if parts.get("workflow_pack"):
+        wf_dir = UPLOAD_DIR / "workflows" / model_id
+        result["calibration_workflow"] = {
+            "filename": omex_import.PACKED_WORKFLOW_NAME,
+            "path": str(_unpack_workflow(parts["workflow_pack"], wf_dir)),
+            "packed": True,
+            "files": len(parts["workflow_pack"]),
+        }
+        result["calibration_workflow"]["select_steps"] = _select_steps(
+            result["calibration_workflow"]["path"])
+    elif parts.get("calibration_workflow"):
+        wf_name, wf_blob = parts["calibration_workflow"]
+        wf_dir = UPLOAD_DIR / "workflows" / model_id
+        wf_dir.mkdir(parents=True, exist_ok=True)
+        wf_path = wf_dir / workflow_manager.WORKFLOW_FILE_NAME
+        wf_path.write_bytes(wf_blob)
+        result["calibration_workflow"] = {"filename": wf_name, "path": str(wf_path),
+                                          "select_steps": _select_steps(str(wf_path))}
+
     for cfg_name, blob in parts.get("phlynx_state") or []:
         # Beside the model in `generated_models/<prefix>/`, not among the run
         # outputs: this is PhLynx's editor state for that model, not a result of
@@ -1678,6 +1801,8 @@ def import_omex_bytes(data: bytes, output_dir: str | None = None,
                 "JSON, or the directory could not be written. The study loaded, and the "
                 "archive still round-trips."
             )
+
+    load_warnings.extend(_apply_archive_study(parts.get("study"), out_dir))
 
     # An obs_data in the archive is the author's own and always wins; only when
     # there is none does the .mmt's protocol become the study's protocol.
@@ -1802,6 +1927,18 @@ def phlynx_send(req: PhlynxSendRequest):
 
     stem = _record_prefix(record, "study")
     archive = record.archive_path.read_bytes() if record.archive_path else None
+    # What the study needs that no other member carries: its solver settings and the
+    # user funcs its obs_data and params_for_id name. Without them a study sent to PhLynx
+    # and back reopens at the app's default solver with its operations unregistered.
+    funcs, study = _study_for_archive(stem, req.output_dir)
+    # A workflow tab's study carries its workflow, so the archive reruns all of it.
+    workflow_files = returned = None
+    workflow_values = None
+    if workflow.loaded and _workflow_view_models.get(req.model_id) == workflow.path:
+        workflow_files = _packed_workflow()
+        # A completed workflow also sends back its target with the merged values, for
+        # PhLynx to re-import; otherwise the response says why not.
+        returned, workflow_values = _calibrated_target()
     try:
         blob, report = omex_export.build_archive(
             cellml_text=record.path.read_text(encoding="utf-8"),
@@ -1813,6 +1950,10 @@ def phlynx_send(req: PhlynxSendRequest):
             params_name=f"{stem}_params_for_id{record.params_path.suffix}"
             if record.params_path
             else "params_for_id.json",
+            study=study,
+            funcs=funcs,
+            workflow_files=workflow_files,
+            returned_files=returned,
         )
     except omex_export.OmexExportError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -1823,10 +1964,7 @@ def phlynx_send(req: PhlynxSendRequest):
 
     # Park the bytes so the frontend can offer them as a plain link. Every send
     # gets one, not only an over-long one -- see PHLYNX_URL_LIMIT.
-    token = secrets.token_urlsafe(16)
-    _PHLYNX_ARCHIVES[token] = (filename, blob)
-    while len(_PHLYNX_ARCHIVES) > _PHLYNX_ARCHIVE_KEEP:
-        _PHLYNX_ARCHIVES.popitem(last=False)
+    download_url = _offer_archive(filename, blob)
 
     encoded = base64.b64encode(blob).decode("ascii")
     return {
@@ -1835,7 +1973,7 @@ def phlynx_send(req: PhlynxSendRequest):
         "too_large": len(encoded) > PHLYNX_URL_LIMIT,
         "limit": PHLYNX_URL_LIMIT,
         "filename": filename,
-        "download_url": f"/api/phlynx/archive/{token}/{filename}",
+        "download_url": download_url,
         "members": report["members"],
         "member_count": len(report["members"]),
         "updated": report["updated"],
@@ -1845,7 +1983,94 @@ def phlynx_send(req: PhlynxSendRequest):
         # Written, but into a component PhLynx does not read parameter changes
         # back out of (#287) -- so the value travels and is ignored.
         "outside_parameters": report["outside_parameters"],
+        # A workflow tab's study: {sent: [file names]} for the target sent back with its
+        # merged values, or {sent: [], reason} when the run is not complete.
+        "workflow_values": workflow_values,
     }
+
+
+def _calibrated_target() -> tuple[dict[str, bytes] | None, dict]:
+    """The open workflow's target with its run's merged values (``{name: bytes}``), or None,
+    and what the send says of it."""
+    dest = UPLOAD_DIR / "workflow_values" / uuid.uuid4().hex
+    try:
+        files = workflow.calibrated_target(str(dest))
+    except workflow_manager.WorkflowError as exc:
+        return None, {"sent": [], "reason": str(exc)}
+    except workflow_manager.WorkflowUnavailable as exc:
+        return None, {"sent": [], "reason": str(exc)}
+    finally:
+        shutil.rmtree(dest, ignore_errors=True)
+    return files, {"sent": sorted(files)}
+
+
+def _study_for_archive(stem: str, output_dir: str) -> tuple[dict, dict]:
+    """``(funcs, study)`` for :func:`omex_export.build_archive`: the user funcs and the
+    solver settings, the two things a study needs that no other member carries."""
+    funcs_dir = _user_func_base_dir(output_dir)
+    funcs = {}
+    for kind in FUNC_KINDS:
+        found = user_func_path(kind, funcs_dir)
+        if found:
+            funcs[kind] = (user_func_convention_path(kind).name, Path(found).read_bytes())
+    study = {
+        "study_name": stem,
+        "file_prefix": stem,
+        "solver_info": {**(getattr(engine, "solver_info", None) or {}),
+                        "solver": engine.solver, "dt": engine.dt},
+    }
+    return funcs, study
+
+
+def _packed_workflow() -> dict[str, bytes]:
+    """The open workflow, packed by CA (``{path in the pack: bytes}``)."""
+    pack_dir = UPLOAD_DIR / "workflow_packs" / uuid.uuid4().hex
+    try:
+        return _workflow_http(workflow.pack, str(pack_dir))
+    finally:
+        shutil.rmtree(pack_dir, ignore_errors=True)
+
+
+def _offer_archive(filename: str, blob: bytes) -> str:
+    """Keep ``blob`` for a plain download link (see :func:`phlynx_archive`); the link."""
+    token = secrets.token_urlsafe(16)
+    _PHLYNX_ARCHIVES[token] = (filename, blob)
+    while len(_PHLYNX_ARCHIVES) > _PHLYNX_ARCHIVE_KEEP:
+        _PHLYNX_ARCHIVES.popitem(last=False)
+    return f"/api/phlynx/archive/{token}/{filename}"
+
+
+class WorkflowExportRequest(BaseModel):
+    #: Where the study's user funcs are (the outputs directory), as for a send.
+    output_dir: str = ""
+
+
+@app.post("/api/workflow/export")
+def workflow_export(req: WorkflowExportRequest) -> dict:
+    """The open workflow as a COMBINE archive that reruns it: the target model (as the
+    workflow names it, no calibrated values), the workflow packed by CA under
+    ``workflow/`` and a study manifest pointing at it. No results."""
+    if not workflow.loaded:
+        raise HTTPException(status_code=422, detail="no workflow is open")
+    work_dir = UPLOAD_DIR / "workflow_exports" / uuid.uuid4().hex
+    try:
+        target = _workflow_http(workflow.target_model, str(work_dir))
+        cellml = Path(target.get("flat_model_path") or target["model_path"]).read_text(
+            encoding="utf-8")
+        name = _workflow_http(workflow.describe).get("workflow", {}).get("workflow_name") \
+            or "workflow"
+        funcs, study = _study_for_archive(name, req.output_dir)
+        blob, report = omex_export.build_archive(
+            cellml_text=cellml, values={}, model_name=f"{name}.cellml", study=study,
+            funcs=funcs, workflow_files=_packed_workflow())
+    except omex_export.OmexExportError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
+    filename = f"{name}.omex"
+    return {"filename": filename, "bytes": len(blob),
+            "download_url": _offer_archive(filename, blob),
+            "members": report["members"], "member_count": len(report["members"])}
 
 
 @app.get("/api/phlynx/archive/{token}/{filename}")
@@ -2601,6 +2826,19 @@ async def upload_obs_data(
     }
 
 
+@app.get("/api/obs_data/document")
+def obs_data_document(model_id: str) -> dict:
+    """The study's obs_data as its file holds it (``document``, null when it has none):
+    every key, for the obs_data editor to edit and write back whole."""
+    record = _get_model(model_id)
+    if record.obs_path is None or not record.obs_path.is_file():
+        return {"document": None}
+    try:
+        return {"document": json.loads(record.obs_path.read_text(encoding="utf-8"))}
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=f"cannot read the study's obs_data: {exc}") from exc
+
+
 @app.get("/api/obs_data/options")
 def obs_data_options(refresh: bool = False, output_dir: str = "") -> dict:
     """Operation (obs_funcs) and cost_type (cost_func) names from circulatory_autogen.
@@ -2804,7 +3042,65 @@ def load_outputs_directory(
     ordinary folder, so what could not be read is returned in ``missing`` rather
     than raising, and ``found`` says which panels have something to show.
     """
-    return load_outputs.load_outputs(dir, file_prefix, obs_path, run_dir)
+    found = load_outputs.load_outputs(dir, file_prefix, obs_path, run_dir)
+    # A calibration workflow run (CA wrote the workflow it ran beside its steps):
+    # say so, so the directory can be reopened as the workflow rather than as one
+    # study it does not directly contain.
+    found["workflow_run"] = os.path.isfile(
+        os.path.join(dir, workflow_manager.WORKFLOW_FILE_NAME))
+    return found
+
+
+class StudyManifestRequest(BaseModel):
+    #: The dropped ``*_cuflynx_study.json``: its parsed JSON, or its text.
+    content: dict | str
+    #: Where it is on disk, when the shell knows (a desktop drop or a picked file). A
+    #: browser drop carries only the contents, and the manifest's own ``study_dir`` is
+    #: what says where the study is then.
+    path: str | None = None
+
+
+@app.post("/api/outputs/manifest")
+def open_study_manifest(req: StudyManifestRequest) -> dict:
+    """Which outputs directory a dropped study manifest opens.
+
+    circulatory_autogen writes ``<study>_cuflynx_study.json`` into a study's
+    ``param_id_output_dir`` and records every analysis in it, so the file is the handle
+    a user has on a study run from a script. The frontend sets the outputs directory to
+    the answer and reloads it, which is the path a picked directory already takes -- so
+    a dropped manifest and a picked folder cannot open a study differently.
+    """
+    raw = req.content
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=f"not JSON: {exc}") from exc
+    try:
+        study_manifest.check(raw, "the dropped study manifest")
+    except study_manifest.ManifestError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    if req.path and os.path.isfile(req.path):
+        directory = os.path.dirname(os.path.abspath(req.path))
+    else:
+        directory = raw.get("study_dir")
+        if not directory:
+            raise HTTPException(
+                status_code=422,
+                detail="This study manifest does not record its study_dir (it predates "
+                       "it), so where the study is cannot be told from the file alone. "
+                       "Set the outputs directory to the folder holding it instead.")
+        if not os.path.isdir(directory):
+            raise HTTPException(
+                status_code=422,
+                detail=f"The study this manifest describes is not on this machine: "
+                       f"{directory} does not exist.")
+    return {
+        "dir": directory,
+        "study_name": raw.get("study_name"),
+        "file_prefix": raw.get("file_prefix"),
+    }
 
 
 class OpenStudyRequest(BaseModel):
@@ -3207,6 +3503,9 @@ def calibration_run(req: CalibrationRequest) -> dict:
         # Emulator tab's tick box is on (CA #333).
         **_emulator_run_config(req.model_id, req.settings),
     }
+    if workflow.busy:
+        raise HTTPException(status_code=409,
+                            detail="a calibration workflow is running; calibrate after it")
     try:
         job_id = calibration.start(config)
     except RuntimeError as exc:
@@ -3247,6 +3546,199 @@ def calibration_progress(job_id: str) -> dict:
 def calibration_cancel(job_id: str) -> dict:
     if not calibration.cancel(job_id):
         raise HTTPException(status_code=404, detail="calibration job not found")
+    return {"cancelled": True}
+
+
+# ---------------------------------------------------------------------------
+# Calibration workflows (CA's libcuflynx.calibration_workflow)
+# ---------------------------------------------------------------------------
+class WorkflowLoadRequest(BaseModel):
+    # A calibration_workflow.json, or a workflow run directory (which holds the
+    # calibration_workflow.json CA ran). Exactly one.
+    path: str = ""
+    run_dir: str = ""
+    # The user's outputs directory; the run goes to <outputs>/workflows/<name>
+    # unless run_dir names one.
+    config_outputs_dir: str = ""
+
+
+class WorkflowViewRequest(BaseModel):
+    # A step id, or "target" for the supermodule the workflow calibrates.
+    view: str
+
+
+class WorkflowRunRequest(BaseModel):
+    from_step: str = ""
+    only: str = ""
+    num_cores: int = 1
+
+
+#: model_id -> the workflow file of the workflow tab it was loaded from: a study sent on from
+#: a tab carries its workflow, packed.
+_workflow_view_models: dict[str, str] = {}
+
+
+def _workflow_http(fn, *args, **kwargs):
+    """Call into the workflow manager, mapping its failures to HTTP errors."""
+    try:
+        return fn(*args, **kwargs)
+    except workflow_manager.WorkflowUnavailable as exc:
+        raise HTTPException(status_code=501, detail=str(exc)) from exc
+    except workflow_manager.UnsetParameters as exc:
+        # CA's message, and the step and parameters, for the protocol editor to open on
+        raise HTTPException(status_code=422, detail={
+            "message": str(exc), "unset_parameters": exc.as_dict()}) from exc
+    except workflow_manager.WorkflowError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+def _open_workflow_file(path: str, outputs_dir: str) -> dict:
+    loaded = _workflow_http(workflow.load, path, "", list(_module_library_dirs))
+    output_dir = workflow_manager.default_output_dir(
+        outputs_dir, loaded["name"], str(UPLOAD_DIR))
+    workflow.output_dir = output_dir
+    return _workflow_http(workflow.describe)
+
+
+@app.get("/api/workflow")
+def workflow_describe() -> dict:
+    """The open workflow: its file, which parameter of each step lands where, and
+    where each step stands in the run directory."""
+    return _workflow_http(workflow.describe)
+
+
+@app.post("/api/workflow/load")
+def workflow_load(req: WorkflowLoadRequest) -> dict:
+    """Open a calibration_workflow.json, or reopen a workflow run directory.
+
+    A run directory is a workflow *run*: CA stored the workflow it ran there,
+    beside every step's results, so reopening it brings back both.
+    """
+    if bool(req.path.strip()) == bool(req.run_dir.strip()):
+        raise HTTPException(status_code=422, detail="give a workflow path or a run_dir")
+    outputs_dir = _user_func_base_dir(req.config_outputs_dir) or ""
+    if req.run_dir.strip():
+        _workflow_http(workflow.load_run, req.run_dir.strip(), list(_module_library_dirs))
+        return _workflow_http(workflow.describe)
+    return _open_workflow_file(req.path.strip(), outputs_dir)
+
+
+@app.post("/api/workflow/upload")
+async def workflow_upload(file: UploadFile = File(...), config_outputs_dir: str = "") -> dict:
+    """Open an uploaded calibration_workflow.json (one a browser cannot name a path for).
+
+    Kept under the uploads directory, where paths relative to the original file mean
+    nothing: an uploaded workflow must name its steps' files (and any module library) by
+    absolute path. Open a workflow by its path to keep relative paths working; library
+    modules are also looked up in the libraries set in Settings.
+    """
+    blob = await file.read()
+    try:
+        json.loads(blob)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=f"not a JSON file: {exc}") from exc
+    directory = UPLOAD_DIR / "workflows" / uuid.uuid4().hex
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / workflow_manager.WORKFLOW_FILE_NAME
+    path.write_bytes(blob)
+    return _open_workflow_file(str(path), _user_func_base_dir(config_outputs_dir) or "")
+
+
+@app.post("/api/workflow/close")
+def workflow_close() -> dict:
+    if workflow.busy:
+        raise HTTPException(status_code=409, detail="a workflow is running; cancel it first")
+    workflow.reset()
+    return {"loaded": False}
+
+
+@app.post("/api/workflow/view")
+def workflow_view(req: WorkflowViewRequest) -> dict:
+    """Load one tab of the workflow -- a step, or the target -- as the current study.
+
+    CA builds the model (``workflow_model``): a step's own model with the values its
+    earlier steps have calibrated so far fixed in it, or the target with every
+    calibrated value. It is then packed with that step's obs_data and params_for_id
+    and loaded through :func:`import_omex_bytes`, so a tab behaves exactly like a
+    dropped study.
+    """
+    work_dir = UPLOAD_DIR / "workflow_views" / uuid.uuid4().hex
+    view = _workflow_http(workflow.view, req.view, str(work_dir))
+    members: dict[str, bytes] = {}
+    prefix = req.view
+    # The flat model: the generated one imports its _modules / _units files.
+    members[f"{prefix}.cellml"] = Path(view.get("flat_model_path") or view["model_path"]).read_bytes()
+    if view.get("obs_data_path"):
+        members[f"{prefix}_obs_data.json"] = Path(view["obs_data_path"]).read_bytes()
+    if view.get("params_for_id_path"):
+        params = Path(view["params_for_id_path"])
+        members[f"{prefix}_params_for_id{params.suffix.lower()}"] = params.read_bytes()
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        for name, blob in members.items():
+            zf.writestr(name, blob)
+    result = import_omex_bytes(buf.getvalue(), None, source="calibration workflow")
+    _workflow_view_models[result["model_id"]] = workflow.path
+    result["workflow_view"] = {
+        key: view.get(key) for key in (
+            "view", "kind", "model", "step_id", "place", "fixed", "calibrated",
+            "waiting_for", "stale", "param_id_output_dir", "obs_data_path",
+            "params_for_id_path")
+    }
+    shutil.rmtree(work_dir, ignore_errors=True)
+    return result
+
+
+class WorkflowStepInputRequest(BaseModel):
+    step_id: str
+    role: str  # obs_data | params_for_id
+    content: str
+
+
+@app.get("/api/workflow/step_input")
+def workflow_step_input(step_id: str, role: str) -> dict:
+    """A step's obs_data or params_for_id as the workflow names it: ``{path, content}``
+    (both null when it names none). A selection step's names the target's instances,
+    where the tab's copy (``workflow_view.obs_data_path``) may name ``mod``."""
+    return _workflow_http(workflow.step_input, step_id, role)
+
+
+@app.post("/api/workflow/step_input")
+def workflow_write_step_input(req: WorkflowStepInputRequest) -> dict:
+    """Write a step's obs_data or params_for_id, then describe the workflow again.
+
+    The step's own file is overwritten, so CA marks it and every step after it stale; a
+    step that names none gets a new file beside the workflow file, which then names it.
+    """
+    path = _workflow_http(workflow.write_step_input, req.step_id, req.role, req.content)
+    return {"path": path, "workflow": _workflow_http(workflow.describe)}
+
+
+@app.post("/api/workflow/run")
+def workflow_run(req: WorkflowRunRequest) -> dict:
+    """Run the open workflow -- all of it, from a step, or one step -- with CA."""
+    if req.from_step and req.only:
+        raise HTTPException(status_code=422, detail="give from_step or only, not both")
+    job_id = _workflow_http(workflow.start, from_step=req.from_step or None,
+                            only=req.only or None, num_cores=req.num_cores,
+                            python=calibration.python)
+    return {"job_id": job_id}
+
+
+@app.get("/api/workflow/{job_id}/status")
+def workflow_status(job_id: str, offset: int = 0) -> dict:
+    status = workflow.status(job_id, offset)
+    if status is None:
+        raise HTTPException(status_code=404, detail="workflow job not found")
+    return status
+
+
+@app.post("/api/workflow/{job_id}/cancel")
+def workflow_cancel(job_id: str) -> dict:
+    if not workflow.cancel(job_id):
+        raise HTTPException(status_code=404, detail="workflow job not found")
     return {"cancelled": True}
 
 

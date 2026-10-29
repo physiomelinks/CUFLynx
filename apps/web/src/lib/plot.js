@@ -1,4 +1,14 @@
-import { expandShape } from './protocolInfo'
+import { expandShape, normaliseShape } from '@physiomelinks/protocol-kit'
+
+/** A protocol_shapes entry over a sub-experiment as a {t, values} trace; null if it is not one. */
+function shapeTrace(shape, duration, name) {
+  if (shape == null) return null
+  try {
+    return expandShape(normaliseShape(shape, name), duration, name)
+  } catch {
+    return null
+  }
+}
 
 export const PALETTE = [
   '#5b9bd5',
@@ -260,7 +270,7 @@ export function controlledSeries(protocolInfo, expIdx) {
         // A name resolves to a point table (protocol_traces) or to a declared
         // shape (protocol_shapes), which is expanded to the same thing here so
         // the plot draws either without caring which the file used.
-        const tr = traces[val] ?? expandShape(shapes[val], dur)
+        const tr = traces[val] ?? shapeTrace(shapes[val], dur, val)
         if (tr && Array.isArray(tr.t) && Array.isArray(tr.values)) {
           const m = Math.min(tr.t.length, tr.values.length)
           for (let i = 0; i < m; i++) {
