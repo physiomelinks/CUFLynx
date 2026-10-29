@@ -232,3 +232,27 @@ def test_a_cancel_with_no_chain_is_still_a_clean_cancel(tmp_path):
     job.state = "cancelled"
     uq_mod.uq._salvage_partial(job)          # must not raise
     assert job.params is None
+
+
+def test_the_uq_engine_is_built_with_ca_uq_options(monkeypatch, tmp_path):
+    """The runner passes ``UQ_options=`` to CVS0DParamID, with no signature probe."""
+    import types
+
+    import uq_runner
+    from conftest import set_ca_module
+
+    seen = {}
+
+    class FakeParamID:
+        def __init__(self, **kwargs):
+            seen.update(kwargs)
+
+    set_ca_module(monkeypatch, "param_id.paramID", types.SimpleNamespace(CVS0DParamID=FakeParamID))
+    config = {"model_path": "m.cellml", "params_path": str(tmp_path / "p.json"),
+              "output_dir": str(tmp_path)}
+    uq_runner._make_param_id(config, {}, "obs.json", mcmc=True,
+                             options_key="UQ_options", options={"num_steps": 5})
+
+    assert seen["UQ_options"] == {"num_steps": 5}
+    assert "mcmc_options" not in seen
+    assert not hasattr(uq_runner, "uq_options_kwarg")

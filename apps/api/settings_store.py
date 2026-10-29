@@ -32,6 +32,7 @@ PERSISTED_KEYS = (
     "python_path",
     "seed",
     "phlynx_url",
+    "module_library_dirs",
 )
 
 CONFIG_FILENAME = "config.json"

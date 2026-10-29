@@ -43,7 +43,6 @@ import re
 import numpy as np
 
 import ca_obs
-from ca_imports import canonical_model_type
 
 _TINY = 1e-12
 
@@ -196,17 +195,7 @@ def resolve_gradient_method(settings: dict, model_type: str) -> str:
     the runner must call it to decide whether the FSA engine is needed, rather
     than testing the raw string -- resolving 'AUTO' only after that decision is
     how 'AUTO' came to demand an engine nobody had built.
-
-    ``model_type`` is canonicalised on the way in for the same reason the method
-    name is: it arrives from a **run config**, which carries CA's spelling by
-    design (``main`` writes ``ca_model_type(engine.model_type)`` there so an older
-    CA can parse it). Left alone, ``cellml_only`` matched neither entry of
-    :data:`LOCAL_GRADIENT_SUPPORT`, so against a pre-rename CA 'AUTO' resolved to
-    FSA and FSA was then refused -- while the menu, built from the canonical
-    ``engine.model_type``, had offered it. Offering an option and then refusing
-    it is #122 exactly.
     """
-    model_type = canonical_model_type(model_type)
     method = str(settings.get("gradient_method", "FD") or "").upper()
     if method == "CVODES":
         method = "FSA"  # legacy alias -> the Myokit forward-sensitivity path
@@ -379,12 +368,7 @@ def local_gradient_sources(sources, model_type: str) -> list:
     Unsupported entries are marked rather than dropped, so the menu still shows
     that a gradient exists for this backend and says why it is unavailable
     *here* -- dropping it silently would read as "this backend has no AD".
-
-    ``model_type`` is canonicalised first: CA's own ``cellml_only`` reaches this
-    from a run config, and against it every entry would be marked unsupported
-    with a reason naming a format the user never chose.
     """
-    model_type = canonical_model_type(model_type)
     out = []
     for src in sources or []:
         value = str(src.get("value", "")).upper()
@@ -427,12 +411,7 @@ def compute_local_sensitivity(
     grouped and modifier rows, and why CA #390 tightening that contract broke the
     AD path. What is left here is the nominal point, the normalisation and the
     labels -- the three things CA does not answer.
-
-    ``model_type`` comes from the runner's config, so it is in **CA's** spelling
-    (see :func:`resolve_gradient_method`) and is canonicalised before any of the
-    comparisons below.
     """
-    model_type = canonical_model_type(model_type)
     gradient_method = resolve_gradient_method(settings, model_type)
     if gradient_method == "AD" and model_type not in LOCAL_GRADIENT_SUPPORT["AD"]:
         raise NotImplementedError(

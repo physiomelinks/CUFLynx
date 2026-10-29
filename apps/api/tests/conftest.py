@@ -29,6 +29,7 @@ import model_codegen as model_codegen_mod  # noqa: E402
 import sensitivity as sensitivity_mod  # noqa: E402
 import solver_options as solver_options_mod  # noqa: E402
 import uq as uq_mod  # noqa: E402
+import workflow_manager as workflow_mod  # noqa: E402
 
 # Repo-root resources (apps/api/tests -> parents[3] == repo root).
 RESOURCES_DIR = Path(__file__).resolve().parents[3] / "resources"
@@ -39,6 +40,17 @@ LV_PARAMS_CSV_PATH = RESOURCES_DIR / "Lotka_Volterra_params_for_id.csv"
 SN_MODEL_PATH = RESOURCES_DIR / "SN_simple_flat.cellml"
 SN_OBS_DATA_PATH = RESOURCES_DIR / "SN_simple_obs_data.json"
 SN_PARAMS_CSV_PATH = RESOURCES_DIR / "SN_simple_params_for_id.csv"
+
+
+def params_for_id_json(csv_path, directory) -> Path:
+    """A params_for_id CSV from ``resources/`` as the JSON the app stores and CA reads
+    (``cuflynx-upgrade params-for-id``'s form), written into ``directory``: a runner is
+    handed what an upload leaves, and CA refuses the CSV."""
+    import params_json
+
+    out = Path(directory) / (Path(csv_path).stem + ".json")
+    out.write_text(params_json.csv_to_file_text(Path(csv_path).read_bytes()), encoding="utf-8")
+    return out
 
 
 def all_mmt_fixtures():
@@ -86,6 +98,24 @@ def set_ca_module(monkeypatch, name: str, value) -> None:
     """
     for spelling in ca_module_spellings(name):
         monkeypatch.setitem(sys.modules, spelling, value)
+
+
+def ca_model_name(path_name: str) -> str:
+    """The model's name CA gives the parameter ``path_name`` (``<vessel>/<variable>``).
+
+    ``mod/A/p`` is ``p_mod_A`` where CA joins a submodule's levels with ``_`` and
+    ``p_mod__A`` where it joins them with ``__`` (CA #582), so a test that expects a
+    hoisted name asks CA rather than spelling one. A CA without
+    ``utilities.parameter_names`` joins with ``_``.
+    """
+    from ca_imports import ca_from, ensure_ca_path
+
+    try:
+        ensure_ca_path()
+        return ca_from("utilities.parameter_names", "model_name")(path_name)
+    except ImportError:
+        *path, variable = path_name.split("/")
+        return f"{variable}_{'_'.join(path)}"
 
 
 def running_against_installed_ca_only() -> bool:
@@ -323,6 +353,9 @@ def reset_app_state():
     sensitivity_mod.sensitivity.runner_path = sensitivity_mod.RUNNER_PATH
     uq_mod.uq.reset()
     uq_mod.uq.runner_path = uq_mod.RUNNER_PATH
+    workflow_mod.workflow.reset()
+    workflow_mod.workflow.runner_path = workflow_mod.RUNNER_PATH
+    main._module_library_dirs = []
     yield
     main._models.clear()
     engine_mod.engine.reset()
@@ -335,6 +368,9 @@ def reset_app_state():
     sensitivity_mod.sensitivity.runner_path = sensitivity_mod.RUNNER_PATH
     uq_mod.uq.reset()
     uq_mod.uq.runner_path = uq_mod.RUNNER_PATH
+    workflow_mod.workflow.reset()
+    workflow_mod.workflow.runner_path = workflow_mod.RUNNER_PATH
+    main._module_library_dirs = []
     _set_analysis_pythons(_pythons_before)
     main._analysis_seed = None
     # Restore CIRCULATORY_AUTOGEN_SRC so a /api/config test doesn't leak.
