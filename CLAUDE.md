@@ -368,7 +368,7 @@ middleware answers its preflight with `Access-Control-Allow-Private-Network` —
 moving (Local Network Access will likely add a browser permission prompt), so the
 flow's UX is not entirely ours.
 
-**`cuflynx://open?url=<archive URL>` links** (`apps/api/open_link.py`,
+**`cuflynx://open?url=<archive URL>` and `?study=<file: URL>` links** (`apps/api/open_link.py`,
 `apps/desktop/url_scheme.py`). A page links to an archive by **URL**, never by
 content: a scheme handler delivers the link through the OS process-launch path,
 where truncation bites in the low thousands of characters. What is load-bearing:
@@ -376,7 +376,11 @@ where truncation bites in the low thousands of characters. What is load-bearing:
 - **A link stages, like a PhLynx delivery.** Any page can launch a `cuflynx://`
   link, so the app fetches the archive (https/http/file only, capped at
   `inbox.MAX_DELIVERY_BYTES`) and puts it in the inbox; the same dialog asks, and
-  accept runs `import_omex_bytes`. A link that fails is recorded with
+  accept runs `import_omex_bytes`. A `study=` link (a `file:` URL of a study
+  manifest or its directory; http(s) refused) stages the manifest as inbox kind
+  `study`; accept returns `kind: "study"` and what `POST /api/outputs/manifest`
+  returns, and the UI opens that outputs directory as a dropped manifest does.
+  Exactly one of `url` / `study`. A link that fails is recorded with
   `inbox.report_error` and returned once by `GET /api/inbox` as `error`, which the
   UI shows (`peekInbox` throws with `deliveryFailed`).
 - **Single instance by an instance file, not a port.** The shell writes

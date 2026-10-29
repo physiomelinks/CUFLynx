@@ -419,7 +419,11 @@ async function onAcceptStudy() {
   error.value = ''
   try {
     const data = await acceptInbox(props.outputsDir)
-    applyImportedStudy(data, pendingStudy.value?.filename || 'the delivered study')
+    const label = pendingStudy.value?.filename || 'the delivered study'
+    // A `cuflynx://open?study=` link answers with the directory to open, as a
+    // dropped manifest does; an archive answers with the imported study.
+    if (data?.kind === 'study') await openStudyDirectory(data, label)
+    else applyImportedStudy(data, label)
     pendingStudy.value = null
   } catch (e) {
     error.value = e?.response?.data?.detail || String(e)
@@ -573,14 +577,23 @@ async function handleStudyManifest(files) {
   try {
     // `path` exists only where the desktop shell exposes one.
     const opened = await openStudyManifest(await file.text(), file.path)
-    emit('update:outputsDir', opened.dir)
-    await nextTick()
-    emit('load-outputs')
-    notice.value = `Opening ${opened.study_name || file.name} from ${opened.dir}`
+    await openStudyDirectory(opened, file.name)
   } catch (e) {
     error.value = e?.response?.data?.detail || String(e)
   }
   return true
+}
+
+/**
+ * Open the outputs directory a study manifest names (`{dir, study_name}`, from
+ * `/api/outputs/manifest` or an accepted `cuflynx://open?study=` link): set it
+ * and reload it, the path the reload button takes.
+ */
+async function openStudyDirectory(opened, label) {
+  emit('update:outputsDir', opened.dir)
+  await nextTick()
+  emit('load-outputs')
+  notice.value = `Opening ${opened.study_name || label} from ${opened.dir}`
 }
 
 // Exposed so a drop anywhere on the page reaches this same handler rather than a
@@ -1004,7 +1017,14 @@ async function onParamsDrop(event) {
       :style="{ width: '32rem' }"
       data-testid="inbox-dialog"
     >
-      <p class="inbox-intro">
+      <p v-if="pendingStudy?.kind === 'study'" class="inbox-intro" data-testid="inbox-study">
+        <strong data-testid="inbox-origin">{{ pendingStudy?.origin }}</strong>
+        asks to open the study described by
+        <code data-testid="inbox-path">{{ pendingStudy?.path }}</code>.
+        Loading it sets the outputs directory to that folder and replaces the study
+        you have open.
+      </p>
+      <p v-else class="inbox-intro">
         <strong data-testid="inbox-origin">{{ pendingStudy?.origin }}</strong>
         sent <strong>{{ pendingStudy?.filename }}</strong>
         ({{ Math.max(1, Math.round((pendingStudy?.bytes || 0) / 1024)) }} kB).

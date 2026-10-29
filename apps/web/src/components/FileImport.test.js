@@ -1232,6 +1232,50 @@ describe('FileImport — the PhLynx inbox', () => {
     )
   })
 
+  // `cuflynx://open?study=` stages a study manifest already on this machine.
+  const STUDY = {
+    kind: 'study',
+    origin: 'A cuflynx:// link',
+    filename: 'cuflynx_study.json',
+    path: '/home/me/sa_ox1/cuflynx_study.json',
+    bytes: 1200,
+    members: ['model: /home/me/SN.cellml', 'emulator: /home/me/emulators/bundle', 'sensitivity: 1 recorded'],
+  }
+
+  it('a study link names the manifest path and what it declares', async () => {
+    peekInbox.mockResolvedValue(STUDY)
+    const wrapper = await mounted()
+    expect(wrapper.find('[data-testid="inbox-study"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="inbox-path"]').text()).toBe(STUDY.path)
+    expect(wrapper.find('[data-testid="inbox-members"]').text()).toContain('sensitivity: 1 recorded')
+    expect(acceptInbox).not.toHaveBeenCalled()
+  })
+
+  it('loading a study link opens its directory as a dropped manifest does', async () => {
+    peekInbox.mockResolvedValue(STUDY)
+    acceptInbox.mockResolvedValue({
+      kind: 'study',
+      dir: '/home/me/sa_ox1',
+      study_name: 'SN_full_ox1',
+      file_prefix: 'SN_full',
+      path: STUDY.path,
+      delivered_from: STUDY.origin,
+    })
+    const wrapper = await mounted()
+
+    await wrapper.find('[data-testid="inbox-accept"]').trigger('click')
+    await flushPromises()
+
+    expect(acceptInbox).toHaveBeenCalledOnce()
+    expect(wrapper.emitted('update:outputsDir')[0]).toEqual(['/home/me/sa_ox1'])
+    expect(wrapper.emitted('load-outputs')).toHaveLength(1)
+    expect(wrapper.emitted('model-loaded')).toBeFalsy()
+    expect(wrapper.find('[data-testid="import-notice"]').text()).toContain(
+      'Opening SN_full_ox1 from /home/me/sa_ox1',
+    )
+    expect(wrapper.find('[data-testid="inbox-dialog"]').exists()).toBe(false)
+  })
+
   it('a server that is not answering does not produce an error banner', async () => {
     // A delivery the user never asked for must not turn into a banner about a
     // feature they may not know exists.

@@ -11,11 +11,13 @@ with nothing to unpick. See "Desktop packaging" in CLAUDE.md.
     python apps/desktop/app.py --browser    # serve only, open the system browser
     python apps/desktop/app.py --port 8000  # pin the port (default: a free one)
     python apps/desktop/app.py --open-url 'cuflynx://open?url=https%3A%2F%2F...omex'
+    python apps/desktop/app.py --open-url 'cuflynx://open?study=file%3A%2F%2F%2F...%2Fcuflynx_study.json'
     python apps/desktop/app.py --register-url-scheme   # register cuflynx:// links, then exit
 
-A ``cuflynx://open?url=...`` link goes to the CUFLynx already running when there
-is one (``open_link.hand_off``) and this process exits; otherwise this process
-starts and stages the linked archive in the inbox, where the UI asks before
+A ``cuflynx://open?url=...`` (archive) or ``cuflynx://open?study=...`` (study
+directory) link goes to the CUFLynx already running when there is one
+(``open_link.hand_off``) and this process exits; otherwise this process starts and
+stages the linked archive or study manifest in the inbox, where the UI asks before
 loading it. ``url_scheme.py`` registers the link handler per platform.
 
 Frozen into a single executable by ``scripts/package.py``.
@@ -224,7 +226,8 @@ def main() -> int:
     parser.add_argument(
         "--open-url",
         metavar="LINK",
-        help="open a cuflynx://open?url=<archive URL> link (in the running app, if any)",
+        help="open a cuflynx://open?url=<archive URL> or ?study=<file: URL> link "
+        "(in the running app, if any)",
     )
     parser.add_argument("link", nargs="?", help=argparse.SUPPRESS)
     parser.add_argument(
