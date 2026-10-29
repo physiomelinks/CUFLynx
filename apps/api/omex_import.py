@@ -60,6 +60,9 @@ _NON_OBS_FORMAT_MARKERS = (
     "sedml",
 )
 
+#: The top-level keys that make a JSON object an obs_data (the last way one is found).
+OBS_DATA_KEYS = ("data_items", "protocol_info", "prediction_items")
+
 OMEX_SUFFIXES = (".omex",)
 
 #: Ceiling on an archive's *uncompressed* size. Zip compresses XML by an order of
@@ -184,17 +187,15 @@ def _declared_non_obs(name: str, formats: dict[str, str]) -> bool:
     return any(marker in fmt for marker in _NON_OBS_FORMAT_MARKERS)
 
 
-def _looks_like_obs_data(blob: bytes | None) -> bool:
-    """Whether a JSON member is plausibly an obs_data document.
-
-    circulatory_autogen accepts two shapes (``obs_data.parse_obs_data``): a bare
-    array of data_items, or an object with ``protocol_info`` / ``data_items``.
-    Nothing else in an archive looks like either, which is what lets a PhLynx
-    ``simulation.json`` -- declared as plain ``application/json``, exactly like a
-    real obs_data -- stay out of the observations slot instead of importing as a
-    parse-error banner.
-    """
-    return not why_not_obs_data(blob)
+def _json_object_has(blob: bytes | None, keys: tuple[str, ...]) -> bool:
+    """Whether ``blob`` is a JSON object with any of ``keys`` at its top level."""
+    if not blob:
+        return False
+    try:
+        doc = json.loads(blob.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return False
+    return isinstance(doc, dict) and any(k in doc for k in keys)
 
 
 def obs_verdict(blob: bytes | None) -> tuple[str, bool]:
@@ -215,6 +216,8 @@ def obs_verdict(blob: bytes | None) -> tuple[str, bool]:
     reason = why_not_obs_data(blob)
     if not reason:
         return "", False
+    if reason.startswith("it is a module config"):
+        return reason, True
     unreadable = (
         blob is None
         or not blob.strip()
@@ -246,13 +249,19 @@ def why_not_obs_data(blob: bytes | None) -> str:
     except ValueError as exc:
         return f"it is not valid JSON ({exc})"
     if isinstance(doc, list):
-        return ""
+        if doc and all(isinstance(e, dict) and ("module_type" in e or "vessel_type" in e) for e in doc):
+            return "it is a module config (a list of module entries), not observations"
+        # a bare list is only ever taken by its name (see _classify)
+        return (
+            "it is a JSON list, which is only taken as the obs_data under an obs_data name "
+            "(obs_data.json or <name>_obs_data.json)"
+        )
     if isinstance(doc, dict):
-        if "data_items" in doc or "protocol_info" in doc:
+        if any(k in doc for k in OBS_DATA_KEYS):
             return ""
         keys = ", ".join(repr(k) for k in list(doc)[:6]) or "no keys at all"
         return (
-            "it is a JSON object with neither 'data_items' nor 'protocol_info' "
+            "it is a JSON object with none of 'data_items', 'protocol_info' or 'prediction_items' "
             f"(it has {keys})"
         )
     return f"it is a JSON {type(doc).__name__}, not an obs_data object or array"
@@ -317,16 +326,29 @@ def _classify(
 
     spoken_for = (set(module_config) | set(params_json) | set(parameters)
                   | set(calibration_workflow))
+    # Held-out data (`<name>_validation_obs_data.json`) is never what to fit, by
+    # any of the three rules below: taking it whenever nothing else turned up
+    # would calibrate on the very data kept back to check the calibration.
+    held_out = [n for n in jsons if re.search(r"(^|[_-])validation[_-]obs_data\.json$", Path(n).name, re.I)]
     candidates = [
         n
         for n in jsons
-        if n not in spoken_for and not _declared_non_obs(n, formats)
+        if n not in spoken_for and n not in held_out and not _declared_non_obs(n, formats)
     ]
-    # An obviously named one wins, as it always has. Only the leftovers are
-    # sniffed, so an archive with no manifest and a plainly named obs_data keeps
-    # working exactly as before.
-    obs_named = named(candidates, r"obs")
-    obs = obs_named or [n for n in candidates if _looks_like_obs_data(members.get(n))]
+    # Three layers, first match wins, and with none there is no obs_data:
+    #   1. the name: `obs_data.json` or `<anything>_obs_data.json` (or `-obs_data.json`);
+    #   2. a JSON object naming itself with "obs_data_name";
+    #   3. a JSON object with "data_items", "protocol_info" or "prediction_items" (an
+    #      obs_data holding only held-out validation data has no data_items).
+    # A bare list is only ever taken by name: a module config is a bare list of
+    # entries too, and sniffing lists took a module library's config as its
+    # observations.
+    obs_named = named(candidates, r"(^|[_-])obs_data\.json$")
+    obs = (
+        obs_named
+        or [n for n in candidates if _json_object_has(members.get(n), ("obs_data_name",))]
+        or [n for n in candidates if _json_object_has(members.get(n), OBS_DATA_KEYS)]
+    )
 
     # Only when nothing was found. With an obs_data in hand the leftover JSON is
     # simply not observations -- a PhLynx `simulation.json` is the normal case --
@@ -339,6 +361,15 @@ def _classify(
             if name in spoken_for:
                 continue  # a params_for_id, a model's parameters or PhLynx's own state
             declared = (formats or {}).get(Path(name).name.lower())
+            if name in held_out:
+                # reported: "your observations were not loaded" with nothing but
+                # held-out data in the archive is worth one sentence
+                obs_skipped.append({
+                    "name": name,
+                    "reason": "it is held-out validation data, never the obs_data to fit",
+                    "identified": False,
+                })
+                continue
             if _declared_non_obs(name, formats):
                 reason = f"the manifest declares it as {declared!r}"
                 readable = True
@@ -358,7 +389,8 @@ def _classify(
             obs_skipped.append({
                 "name": name,
                 "reason": reason,
-                "identified": readable and declared is not None,
+                # a module config is positively not observations, whatever the manifest says
+                "identified": readable and (declared is not None or reason.startswith("it is a module config")),
             })
 
     return {
