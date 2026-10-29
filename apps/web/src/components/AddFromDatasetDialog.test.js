@@ -200,8 +200,8 @@ describe('AddFromDatasetDialog', () => {
         warning: '',
         result: {
           obs_data: { protocol_info: {}, data_items: [{ data_item_name: 'a' }] },
-          n_data_items: 1, n_experiments: 1, config_path: '/out/c.json',
-          tex_path: '/out/r.tex', pdf_path: null, warnings: [],
+          n_data_items: 1, n_prediction_items: 2, n_experiments: 1,
+          config_path: '/out/c.json', tex_path: '/out/r.tex', pdf_path: null, warnings: [],
         },
       })
 
@@ -219,6 +219,11 @@ describe('AddFromDatasetDialog', () => {
     const payload = wrapper.emitted('extracted')[0][0]
     expect(payload.obsData.data_items).toHaveLength(1)
     expect(payload.texPath).toBe('/out/r.tex')
+    // Validation recordings are held out, and the summary says how many.
+    await flushPromises()
+    const summary = wrapper.find('[data-testid="obsx-result"]').text()
+    expect(summary).toContain('1 data item(s)')
+    expect(summary).toContain('2 held-out prediction')
   })
 
   it('saves the config to the outputs directory', async () => {

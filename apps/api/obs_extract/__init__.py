@@ -41,7 +41,13 @@ from .discovery import (
 )
 from .errors import ObsExtractError
 from .features import accepts_range, kwarg_defaults, plan_call
-from .modifiers import apply_modifiers, compile_expression, load_modifiers
+from .modifiers import (
+    apply_modifiers,
+    check_references,
+    compile_expression,
+    load_modifiers,
+    referenced_names,
+)
 from .preprocess import command_trace
 from .windows import StimWindow, detect_stim_window, resolve_range
 from .readers import (
@@ -69,6 +75,7 @@ __all__ = [
     "apply_modifiers",
     "available_formats",
     "build_obs_data",
+    "check_references",
     "case_name",
     "command_trace",
     "compile_expression",
@@ -82,6 +89,7 @@ __all__ = [
     "open_recording",
     "plan_call",
     "probe",
+    "referenced_names",
     "resolve_range",
     "resolve_roles",
     "suggest",

@@ -514,8 +514,12 @@ function onBrowsed(path) {
       <pre v-if="extract.lines.value.length" class="obsx-log" data-testid="obsx-log">{{ extract.lines.value.join('\n') }}</pre>
       <Message v-if="extract.result.value" severity="success" :closable="false"
                data-testid="obsx-result">
-        {{ extract.result.value.n_data_items }} data item(s) from
-        {{ extract.result.value.n_experiments }} experiment(s).
+        {{ extract.result.value.n_data_items }} data item(s)
+        <template v-if="extract.result.value.n_prediction_items">
+          and {{ extract.result.value.n_prediction_items }} held-out prediction
+          item(s) (validation, not scored)
+        </template>
+        from {{ extract.result.value.n_experiments }} experiment(s).
         Report: {{ extract.result.value.pdf_path || extract.result.value.tex_path }}
       </Message>
       <Message v-if="unconfirmedUnits.length" severity="warn" :closable="false"
