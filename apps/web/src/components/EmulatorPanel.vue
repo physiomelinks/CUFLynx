@@ -39,6 +39,11 @@ const props = defineProps({
   reusable: { type: Boolean, default: false },
   /** v-model for the "use the emulator" tick box. */
   modelValue: { type: Boolean, default: false },
+  /**
+   * How many of the obs_data's prediction_items carry an operation -- the ones
+   * "Include prediction items" can add as emulated features. 0 disables the box.
+   */
+  predictionFeatureCount: { type: Number, default: 0 },
 })
 const emit = defineEmits(['run', 'cancel', 'change', 'update:modelValue'])
 
@@ -47,6 +52,9 @@ const settings = reactive({
   num_cores: 1,
   dt: 0.01,
   DEBUG: false,
+  // libcuflynx's emulator_settings.include_prediction_items: also emulate the
+  // prediction_items that have an operation. Sent only when on and supported.
+  include_prediction_items: false,
 })
 
 // Per-option values for CA's emulator settings, keyed by option name.
@@ -55,8 +63,32 @@ const optionValues = reactive({})
 // CA's emulation option descriptors. `emulator_dir` is dropped: CUFLynx derives
 // it from the outputs directory on both sides (train and use), and a second way
 // to say where the bundle lives is a way for the two to disagree.
+// `include_prediction_items` has its own checkbox (below), should CA's schema list it.
 const emulatorOptions = computed(() =>
-  (props.defaults.options ?? []).filter((o) => o.name !== 'emulator_dir'),
+  (props.defaults.options ?? []).filter(
+    (o) => o.name !== 'emulator_dir' && o.name !== 'include_prediction_items',
+  ),
+)
+
+/**
+ * "Include prediction items": only when libcuflynx supports it (the API's feature
+ * detect) and the obs_data has a prediction_item with an operation. Which items
+ * become features is libcuflynx's decision; this only decides whether to ask.
+ */
+const predictionFeaturesReason = computed(() => {
+  if (props.defaults.prediction_features_supported !== true)
+    return 'The installed libcuflynx cannot include prediction items as features; update it.'
+  if (!props.predictionFeatureCount)
+    return 'The obs_data has no prediction_items with an operation to include.'
+  return ''
+})
+const predictionFeaturesDisabled = computed(() => !!predictionFeaturesReason.value)
+watch(
+  predictionFeaturesDisabled,
+  (off) => {
+    if (off) settings.include_prediction_items = false
+  },
+  { immediate: true },
 )
 
 const supported = computed(() => props.defaults.supported !== false)
@@ -419,7 +451,10 @@ function onRun() {
           </thead>
           <tbody>
             <tr v-for="f in features" :key="f.label">
-              <td class="emu-feature">{{ f.label }}</td>
+              <td class="emu-feature">
+                {{ f.label }}
+                <span v-if="f.prediction" class="pred-tag" data-testid="emu-prediction-tag" title="A prediction item's feature (include_prediction_items)">prediction</span>
+              </td>
               <td :class="{ bad: f.r2 != null && f.r2 < minR2 }">{{ fmt(f.r2) }}</td>
               <td>{{ fmt(f.rmse, 3) }}</td>
             </tr>
@@ -445,6 +480,24 @@ function onRun() {
       </div>
 
       <div class="cal-form" data-testid="emu-settings">
+        <label
+          class="field checkbox"
+          :class="{ 'opt-off': predictionFeaturesDisabled }"
+          :title="predictionFeaturesReason"
+          data-testid="emu-include-prediction-items-field"
+        >
+          <Checkbox
+            v-model="settings.include_prediction_items"
+            :binary="true"
+            :disabled="predictionFeaturesDisabled"
+            input-id="emu-include-prediction-items"
+            data-testid="emu-include-prediction-items"
+          />
+          <span>Include prediction items</span>
+        </label>
+        <small class="hint" data-testid="emu-include-prediction-items-hint">
+          Prediction items with an operation become features; the others are skipped.
+        </small>
         <!-- CA's emulation options, from ANALYSIS_OPTIONS['emulation']. -->
         <template v-for="opt in generalOptions" :key="opt.name">
           <label
@@ -691,6 +744,15 @@ function onRun() {
 }
 /* A setting circulatory_autogen will ignore on this run, or one it cannot accept
    yet: greyed so the form says what the run will actually do. */
+.pred-tag {
+  margin-left: 0.3rem;
+  padding: 0 0.3rem;
+  border-radius: 3px;
+  font-size: 0.62rem;
+  background: var(--p-orange-500, #e08a2c);
+  color: #111;
+  vertical-align: middle;
+}
 .field.opt-off {
   opacity: 0.5;
 }

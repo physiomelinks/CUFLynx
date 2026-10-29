@@ -34,3 +34,36 @@ export function withParameters(document, names = []) {
   for (const name of names) out = addParameter(out, name, null)
   return out
 }
+
+/**
+ * The prediction_items that "Include prediction items" can turn into SA / emulator
+ * features: those with an `operation` (a scalar of the trace). libcuflynx skips the
+ * others with a warning. Only used to say whether the box can do anything here --
+ * which items become features, and how, is libcuflynx's decision, not this file's.
+ */
+export function predictionFeatureItems(predictionItems = []) {
+  if (!Array.isArray(predictionItems)) return []
+  return predictionItems.filter((it) => {
+    const op = it && typeof it === 'object' ? it.operation : null
+    return typeof op === 'string' && op.trim() !== '' && op !== 'None'
+  })
+}
+
+/** Whether any prediction_item carries held-out data (a `value`, CA #535). */
+export function hasHeldOutData(predictionItems = []) {
+  return Array.isArray(predictionItems) &&
+    predictionItems.some((it) => it && typeof it === 'object' && it.value != null)
+}
+
+/**
+ * Which of an emulator's features are prediction features: libcuflynx lists them in
+ * `prediction_feature_labels` and puts them last in `feature_labels`, so it is the
+ * trailing positions -- by position, as libcuflynx itself reads them, since a
+ * data_item's label is free text. `[bool]`, one per feature label.
+ */
+export function emulatorPredictionFlags(meta) {
+  const labels = meta?.feature_labels ?? []
+  const n = (meta?.prediction_feature_labels ?? []).length
+  const first = labels.length - n
+  return labels.map((_, i) => n > 0 && i >= first)
+}

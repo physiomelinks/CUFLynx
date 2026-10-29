@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest'
-import { versionedJsonName, withParameters } from './obsDataJson'
+import {
+  versionedJsonName,
+  withParameters,
+  predictionFeatureItems,
+  hasHeldOutData,
+  emulatorPredictionFlags,
+} from './obsDataJson'
 
 describe('versionedJsonName', () => {
   const d = new Date(2026, 5, 15) // 260615
@@ -39,5 +45,34 @@ describe('withParameters', () => {
       sim_times: [[1]],
       params_to_change: { 'C/x': [[null]] },
     })
+  })
+})
+
+describe('prediction features', () => {
+  it('counts only the items with an operation as possible features', () => {
+    const items = [
+      { data_item_name: 'a', operation: 'max' },
+      { data_item_name: 'b' },
+      { data_item_name: 'c', operation: '' },
+      { data_item_name: 'd', operation: 'None' },
+    ]
+    expect(predictionFeatureItems(items).map((i) => i.data_item_name)).toEqual(['a'])
+    expect(predictionFeatureItems(null)).toEqual([])
+  })
+
+  it('knows when there is held-out data', () => {
+    expect(hasHeldOutData([{ value: 0 }])).toBe(true)
+    expect(hasHeldOutData([{ operation: 'max' }])).toBe(false)
+  })
+})
+
+describe('emulatorPredictionFlags', () => {
+  it('marks the trailing prediction_feature_labels, by position', () => {
+    expect(
+      emulatorPredictionFlags({ feature_labels: ['a', 'b', 'c'], prediction_feature_labels: ['c'] }),
+    ).toEqual([false, false, true])
+    // a bundle trained without them, or an older one without the key
+    expect(emulatorPredictionFlags({ feature_labels: ['a'] })).toEqual([false])
+    expect(emulatorPredictionFlags(null)).toEqual([])
   })
 })

@@ -1,3 +1,4 @@
+import { emulatorPredictionFlags } from '../lib/obsDataJson'
 import { computed, ref } from 'vue'
 import {
   cancelEmulatorTraining,
@@ -62,10 +63,13 @@ export function useEmulator(options = {}) {
   const features = computed(() => {
     const meta = metadata.value
     if (!meta) return []
+    const prediction = emulatorPredictionFlags(meta)
     return (meta.feature_labels ?? []).map((label, i) => ({
       label,
       r2: meta.feature_r2?.[i] ?? null,
       rmse: meta.feature_rmse?.[i] ?? null,
+      // a prediction feature (emulator_settings.include_prediction_items)
+      prediction: prediction[i],
     }))
   })
 
