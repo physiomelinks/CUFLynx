@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import json
 
-from conftest import LV_MODEL_PATH, LV_OBS_DATA_PATH, upload_model
+from conftest import LV_MODEL_PATH, LV_OBS_DATA_PATH, upload_model, stored_input
 
 PARAMS_DOC = {"params": [{"targets": ["Lotka_Volterra_module/alpha"], "min": 0.1, "max": 2.0}]}
 
@@ -34,7 +34,7 @@ def test_params_save_writes_the_dated_file_into_the_working_dirs_inputs(client, 
     resp = _upload_params(client, model_id, tmp_path)
 
     assert resp.status_code == 200, resp.text
-    written = tmp_path / "inputs" / "params_for_id" / "p_260811.json"
+    written = stored_input(tmp_path, "params_for_id", "p_260811.json")
     assert written.is_file()
     assert json.loads(written.read_text())["params"][0]["targets"] == [
         "Lotka_Volterra_module/alpha"
@@ -53,7 +53,7 @@ def test_obs_save_writes_the_dated_file_into_the_working_dirs_inputs(client, tmp
     )
 
     assert resp.status_code == 200, resp.text
-    written = tmp_path / "inputs" / "obs_data" / "obs_260811.json"
+    written = stored_input(tmp_path, "obs_data", "obs_260811.json")
     assert written.is_file()
     assert json.loads(written.read_text())["data_items"]
     assert resp.json()["saved_path"] == str(written)
@@ -97,8 +97,9 @@ def test_the_filename_cannot_walk_out_of_the_directory(client, tmp_path):
     resp = _upload_params(client, model_id, tmp_path, filename="../escaped.json")
 
     assert resp.status_code == 200, resp.text
+    assert not (tmp_path / "escaped.json").exists()
     assert not (tmp_path / "inputs" / "escaped.json").exists()
-    assert (tmp_path / "inputs" / "params_for_id" / "escaped.json").is_file()
+    assert stored_input(tmp_path, "params_for_id", "escaped.json").is_file()
 
 
 def test_a_plain_upload_writes_nothing_extra(client, tmp_path):

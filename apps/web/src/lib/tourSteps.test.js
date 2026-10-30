@@ -151,14 +151,14 @@ describe('tourSteps', () => {
   })
 
   it('sends the user-func step to the working dir', () => {
-    // The funcs are written to <working dir>/inputs/funcs/ (apps/api/user_funcs.py),
+    // The funcs are written to <working dir>/inputs/funcs/<date>/ (apps/api/user_funcs.py),
     // and the copy used to read as though they landed inside circulatory_autogen
     // -- which would be someone else's repo, and would not travel with the study.
     // Naming the path is what makes that unambiguous; saying where it does *not*
     // go was answering a question nobody had asked.
     const step = TOUR_STEPS.find((s) => s.id === 'op-funcs-save')
     expect(step.text).toContain('working dir')
-    expect(step.text).toContain('inputs/funcs/operation_funcs_user.py')
+    expect(step.text).toContain('inputs/funcs/<date>/operation_funcs_user.py')
     expect(step.text).not.toContain('circulatory_autogen')
   })
 

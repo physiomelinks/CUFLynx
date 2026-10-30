@@ -20,6 +20,7 @@ import omex_export
 import omex_import
 import study_manifest
 import user_funcs
+import working_dir
 from conftest import RESOURCES_DIR
 
 FLAT_MODEL = RESOURCES_DIR / "3compartment_flat.cellml"
@@ -141,15 +142,18 @@ def test_editing_a_declared_file_keeps_everything_else_in_it(ca_study, monkeypat
         base)
     user_funcs.save_user_func(
         "operation", None, "def double(x, series_output=False):\n    return 2 * x\n", base)
-    text = ca_study["funcs"].read_text()
+    # each edit is a version stored in the working dir; the declared file is left as it was
+    edited = user_funcs.external_path("operation", base)
+    assert working_dir.is_inside(base, edited) and ca_study["funcs"].read_text() == OPS
+    text = open(edited).read()
     # the docstring, the import and the module constant are the user's, and stay
     assert text.startswith('"""Hand-written funcs')
     assert "import numpy as np" in text and "SCALE = 2.0" in text
     assert "return SCALE * np.mean(a)" in text and "def double(" in text
 
     user_funcs.delete_user_func("operation", "double", base)
-    assert "def double(" not in ca_study["funcs"].read_text()
-    assert "SCALE = 2.0" in ca_study["funcs"].read_text()
+    text = open(user_funcs.external_path("operation", base)).read()
+    assert "def double(" not in text and "SCALE = 2.0" in text
 
 
 def test_without_a_manifest_funcs_stay_in_the_outputs_directory(tmp_path):
@@ -257,8 +261,9 @@ def test_importing_an_archive_keeps_its_funcs_and_existing_ones(client, tmp_path
     resp = client.post("/api/omex/upload", params={"output_dir": str(out)},
                        files={"file": ("s.omex", blob, "application/zip")})
     assert resp.status_code == 200, resp.text
-    assert mine.read_text() == OPS
-    kept = [p for p in (out / "user_funcs").iterdir() if "before_import" in p.name]
-    assert len(kept) == 1 and kept[0].read_text() == "def mine(x):\n    return x\n"
-    assert any("before_import" in w for w in resp.json()["warnings"])
+    # the archive's funcs are a new version; the older folder's file is left as it was
+    assert mine.read_text() == "def mine(x):\n    return x\n"
+    [stored] = (out / "inputs" / "funcs").glob("*/operation_funcs_user.py")
+    assert stored.read_text() == OPS
+    assert any(str(mine) in w for w in resp.json()["warnings"])
     assert any("dt" in w for w in resp.json()["warnings"])

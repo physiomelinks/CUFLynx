@@ -114,8 +114,9 @@ def test_the_models_own_directory_uses_the_same_prefix(client, tmp_path):
     # By path parts, not by a "generated_models/<prefix>/" substring: the separator is a
     # backslash on Windows, where that assertion could only ever fail.
     prefix = main._models[body["model_id"]].file_prefix
-    assert saved.parent.name == prefix
-    assert saved.parent.parent.name == "generated_models"
+    # inputs/generated_models/<prefix>/<stamp>/module_config.json
+    assert saved.parent.parent.name == prefix
+    assert saved.parent.parent.parent.name == "generated_models"
 
 
 @pytest.mark.unit

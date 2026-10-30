@@ -1,7 +1,8 @@
 """The working dir holds every input and output of a study.
 
-Uploads land under ``<W>/inputs/<kind>/``; a run needs a working dir and is given the
-copies there; a working dir zipped and moved elsewhere opens again from its manifest;
+Uploads land under ``<W>/inputs/<kind>/<yyyy-mm-dd_HHMMSS>/``, one dated folder per
+content, and an edit never rewrites an earlier version; a run needs a working dir and is
+given the copies there; a working dir zipped and moved elsewhere opens again from its manifest;
 ``working_dir`` and ``/api/working-dir/*`` are the wire names, with the old ones still
 accepted.
 """
@@ -10,8 +11,10 @@ from __future__ import annotations
 import csv
 import json
 import os
+import re
 import shutil
 import zipfile
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -58,6 +61,17 @@ def solver_state(tmp_path, monkeypatch):
     engine.solver_info = before[3]
 
 
+STAMP = re.compile(r"^\d{4}-\d{2}-\d{2}_\d{6}(_\d+)?$")
+
+
+def _stored(work, kind, name):
+    """The only stored version of ``name`` in ``<work>/inputs/<kind>/<stamp>/``."""
+    [path] = sorted((Path(work) / "inputs" / kind).glob(f"*/{name}"))
+    assert STAMP.match(path.parent.name), path
+    assert working_dir.latest(work, kind, name) == path
+    return path
+
+
 def _study(client, work=None):
     """Model, obs_data and params_for_id uploaded, the model naming ``work``."""
     with open(LV_MODEL_PATH, "rb") as fh:
@@ -82,9 +96,9 @@ def test_an_uploaded_model_obs_data_and_params_land_in_inputs(client, tmp_path):
     work = tmp_path / "W"
     model_id = _study(client, work)
 
-    model = work / "inputs" / "model" / "Lotka_Volterra_forced.cellml"
-    obs = work / "inputs" / "obs_data" / "Lotka_Volterra_forced_obs_data.json"
-    params = work / "inputs" / "params_for_id" / "Lotka_Volterra_forced_params_for_id.json"
+    model = _stored(work, "model", "Lotka_Volterra_forced.cellml")
+    obs = _stored(work, "obs_data", "Lotka_Volterra_forced_obs_data.json")
+    params = _stored(work, "params_for_id", "Lotka_Volterra_forced_params_for_id.json")
     assert model.read_bytes() == LV_MODEL_PATH.read_bytes()
     assert json.loads(obs.read_text())["data_items"]
     assert json.loads(params.read_text())["params"]
@@ -105,11 +119,10 @@ def test_an_omex_lands_in_inputs_with_its_parts(client, tmp_path):
                        files={"file": ("study.omex", buf.getvalue(), "application/zip")})
     assert resp.status_code == 200, resp.text
 
-    inputs = work / "inputs"
-    assert (inputs / "model" / "lv.cellml").is_file()
-    assert (inputs / "model" / "lv.omex").read_bytes() == buf.getvalue()
-    assert (inputs / "obs_data" / "lv_obs_data.json").is_file()
-    assert (inputs / "params_for_id" / "lv_params_for_id.json").is_file()
+    assert _stored(work, "model", "lv.cellml").is_file()
+    assert _stored(work, "model", "lv.omex").read_bytes() == buf.getvalue()
+    assert _stored(work, "obs_data", "lv_obs_data.json").is_file()
+    assert _stored(work, "params_for_id", "lv_params_for_id.json").is_file()
 
 
 def test_a_user_inputs_yaml_is_kept_not_only_its_solver_settings(client, tmp_path):
@@ -117,7 +130,7 @@ def test_a_user_inputs_yaml_is_kept_not_only_its_solver_settings(client, tmp_pat
     resp = client.post("/api/user_inputs/upload", params={"working_dir": str(work)},
                        files={"file": ("user_inputs.yaml", USER_INPUTS.encode(), "text/yaml")})
     assert resp.status_code == 200, resp.text
-    kept = work / "inputs" / "user_inputs" / "user_inputs.yaml"
+    kept = _stored(work, "user_inputs", "user_inputs.yaml")
     assert kept.read_text() == USER_INPUTS
     assert resp.json()["user_inputs_path"] == str(kept)
 
@@ -128,7 +141,71 @@ def test_user_funcs_are_saved_in_inputs_funcs(client, tmp_path, monkeypatch):
     resp = client.post("/api/operation_funcs",
                        json={"source": VALID_OP, "working_dir": str(work)})
     assert resp.status_code == 200, resp.text
-    assert "def spread" in (work / "inputs" / "funcs" / "operation_funcs_user.py").read_text()
+    assert "def spread" in _stored(work, "funcs", "operation_funcs_user.py").read_text()
+
+
+def _save_obs(client, model_id, work, obs):
+    """The obs_data editor's Save: the edited document, the working dir and a filename."""
+    resp = client.post("/api/obs_data/upload",
+                       params={"working_dir": str(work), "filename": "LV_obs_261031.json"},
+                       json={"model_id": model_id, "obs_data": obs})
+    assert resp.status_code == 200, resp.text
+    return resp.json()["saved_path"]
+
+
+def test_an_edit_of_the_obs_data_is_a_new_dated_version_and_leaves_the_earlier_one(
+        client, tmp_path):
+    work = tmp_path / "W"
+    model_id = _study(client, work)
+    first = main._models[model_id].obs_path
+    before = first.read_bytes()
+
+    obs = json.loads(LV_OBS_DATA_PATH.read_text())
+    obs["data_items"][0]["value"] = 123.0
+    saved = _save_obs(client, model_id, work, obs)
+
+    edited = main._models[model_id].obs_path
+    assert edited != first and edited.name == first.name
+    assert STAMP.match(edited.parent.name) and edited.parent.parent == first.parent.parent
+    assert json.loads(edited.read_text())["data_items"][0]["value"] == 123.0
+    assert first.read_bytes() == before, "the earlier version was rewritten"
+    assert working_dir.latest(work, "obs_data", first.name) == edited
+    # the dated copy Save reports is a version of its own too
+    assert STAMP.match(Path(saved).parent.name) and Path(saved).name == "LV_obs_261031.json"
+
+    # saving the same document again stores nothing new
+    folders = sorted(p.name for p in (work / "inputs" / "obs_data").iterdir())
+    assert _save_obs(client, model_id, work, obs) == saved
+    assert main._models[model_id].obs_path == edited
+    assert sorted(p.name for p in (work / "inputs" / "obs_data").iterdir()) == folders
+
+
+def test_a_ca_without_the_input_store_is_named_when_an_input_is_saved(client, tmp_path,
+                                                                     monkeypatch):
+    model_id = _study(client)
+    from ca_imports import CaImportError
+
+    def too_old(module, *names):
+        raise CaImportError(f"{module!r} has no {names[0]}")
+
+    monkeypatch.setattr(working_dir, "ca_from", too_old)
+    resp = client.post("/api/obs_data/upload", params={"working_dir": str(tmp_path / "W")},
+                       json={"model_id": model_id,
+                             "obs_data": json.loads(LV_OBS_DATA_PATH.read_text())})
+    assert resp.status_code == 422
+    assert "store_input" in resp.json()["detail"] and "#619" in resp.json()["detail"]
+
+
+def test_saving_an_earlier_content_again_makes_it_the_current_version(client, tmp_path):
+    work = tmp_path / "W"
+    model_id = _study(client, work)
+    first = main._models[model_id].obs_path
+    original = json.loads(first.read_text())
+    edited = json.loads(json.dumps(original))
+    edited["data_items"][0]["value"] = 7.0
+    _save_obs(client, model_id, work, edited)
+    _save_obs(client, model_id, work, original)
+    assert main._models[model_id].obs_path.read_text() == first.read_text()
 
 
 def test_saved_parameter_sets_go_to_saved_params(client, tmp_path):
@@ -178,14 +255,13 @@ def test_a_run_is_given_the_inputs_copied_into_the_working_dir(client, tmp_path,
                        json={"model_id": model_id, "settings": {"working_dir": str(work)}})
 
     assert resp.status_code == 200, resp.text
-    inputs = work / "inputs"
     assert captured["output_dir"] == str(work)
-    assert captured["model_path"] == str(inputs / "model" / "Lotka_Volterra_forced.cellml")
+    assert captured["model_path"] == str(_stored(work, "model", "Lotka_Volterra_forced.cellml"))
     assert captured["cellml_path"] == captured["model_path"]
     assert captured["obs_path"] == str(
-        inputs / "obs_data" / "Lotka_Volterra_forced_obs_data.json")
+        _stored(work, "obs_data", "Lotka_Volterra_forced_obs_data.json"))
     assert captured["params_path"] == str(
-        inputs / "params_for_id" / "Lotka_Volterra_forced_params_for_id.json")
+        _stored(work, "params_for_id", "Lotka_Volterra_forced_params_for_id.json"))
     for key in ("model_path", "obs_path", "params_path"):
         assert os.path.isfile(captured[key]), key
 
@@ -219,18 +295,38 @@ def test_sensitivity_results_are_read_from_either_layout(tmp_path):
         assert "sensitivity" in found["found"], folder
 
 
-def test_funcs_in_an_older_folders_user_funcs_are_read_and_edited_there(tmp_path, monkeypatch):
+def test_funcs_in_an_older_folders_user_funcs_are_read_there_and_saved_as_a_version(
+        tmp_path, monkeypatch):
     monkeypatch.setattr(uf, "_circulatory_autogen_src", lambda: str(tmp_path / "ca"))
     work = tmp_path / "W"
     uf.save_user_func("operation", "", VALID_OP, str(work))
-    shutil.move(str(work / "inputs" / "funcs"), str(work / "user_funcs"))
+    stored = _stored(work, "funcs", "operation_funcs_user.py")
+    (work / "user_funcs").mkdir()
+    shutil.move(str(stored), str(work / "user_funcs"))
     shutil.rmtree(work / "inputs")
 
     legacy = work / "user_funcs" / "operation_funcs_user.py"
     assert uf.external_path("operation", str(work)) == str(legacy)
     uf.save_user_func("operation", "", VALID_OP.replace("spread", "spread2"), str(work))
-    assert "spread2" in legacy.read_text()
-    assert not (work / "inputs" / "funcs").exists()
+    edited = _stored(work, "funcs", "operation_funcs_user.py")
+    assert "spread2" in edited.read_text() and "def spread(" in edited.read_text()
+    assert "spread2" not in legacy.read_text()
+    assert uf.external_path("operation", str(work)) == str(edited)
+
+
+def test_load_outputs_finds_the_dated_inputs_without_a_manifest(tmp_path, requires_ca):
+    """A folder libcuflynx stored inputs in (its store_input), with no manifest."""
+    from ca_imports import ca_from
+
+    store_input = ca_from("utilities.cuflynx_study", "store_input")
+    work = tmp_path / "W"
+    model = work / store_input(str(work), "model", str(LV_MODEL_PATH), "LV.cellml")
+    store_input(str(work), "user_inputs", USER_INPUTS.encode(), "user_inputs.yaml")
+    user_inputs = work / store_input(str(work), "user_inputs", (USER_INPUTS + "#\n").encode(),
+                                     "user_inputs.yaml")
+    found = load_outputs.load_outputs(str(work), file_prefix="LV")["study"]
+    assert found["model"] == str(model)
+    assert found["user_inputs"] == str(user_inputs)
 
 
 # --- wire names and routes -------------------------------------------------------------
@@ -286,8 +382,9 @@ def test_the_old_outputs_routes_answer_as_the_working_dir_routes(client, tmp_pat
 
 # --- a working dir zipped, moved and opened again --------------------------------------
 #
-# Hand-built to Schematic B (libcuflynx's writer was not yet on a branch to generate it):
-# only relative paths, every input under inputs/, one calibration run with its history.
+# Hand-built to Schematic B: only relative paths, every input in a dated folder under
+# inputs/ (stored by libcuflynx's store_input, so inputs/index.json lists them), one
+# calibration run with its history.
 
 PARAMS_JSON = {"version": 1, "defaults": {}, "params": [
     {"targets": ["Lotka_Volterra_module/alpha"], "name": "Lotka_Volterra_module/alpha",
@@ -295,14 +392,15 @@ PARAMS_JSON = {"version": 1, "defaults": {}, "params": [
 
 
 def _build_working_dir(work):
-    inputs = work / "inputs"
-    for kind in ("model", "obs_data", "params_for_id", "funcs", "user_inputs"):
-        (inputs / kind).mkdir(parents=True)
-    shutil.copy(LV_MODEL_PATH, inputs / "model" / "LV.cellml")
-    shutil.copy(LV_OBS_DATA_PATH, inputs / "obs_data" / "LV_obs_data.json")
-    (inputs / "params_for_id" / "LV_params_for_id.json").write_text(json.dumps(PARAMS_JSON))
-    (inputs / "user_inputs" / "user_inputs.yaml").write_text(USER_INPUTS)
+    def store(kind, source, name):
+        return str(working_dir.store(work, kind, source, name).relative_to(work))
+
+    model = store("model", LV_MODEL_PATH, "LV.cellml")
+    obs = store("obs_data", LV_OBS_DATA_PATH, "LV_obs_data.json")
+    params = store("params_for_id", json.dumps(PARAMS_JSON).encode(), "LV_params_for_id.json")
+    user_inputs = store("user_inputs", USER_INPUTS.encode(), "user_inputs.yaml")
     uf.save_user_func("operation", "", VALID_OP, str(work))
+    funcs = str(_stored(work, "funcs", "operation_funcs_user.py").relative_to(work))
 
     run = work / "genetic_algorithm_LV_LV_obs_data"
     run.mkdir()
@@ -321,11 +419,8 @@ def _build_working_dir(work):
     manifest = work / "LV_cuflynx_study.json"
     manifest.write_text(json.dumps({
         "schema": 1, "study_name": "LV", "file_prefix": "LV",
-        "user_inputs": "inputs/user_inputs/user_inputs.yaml",
-        "model": "inputs/model/LV.cellml", "base_model": "inputs/model/LV.cellml",
-        "obs_data": "inputs/obs_data/LV_obs_data.json",
-        "params_for_id": "inputs/params_for_id/LV_params_for_id.json",
-        "user_funcs": {"operation": "inputs/funcs/operation_funcs_user.py"},
+        "user_inputs": user_inputs, "model": model, "base_model": model,
+        "obs_data": obs, "params_for_id": params, "user_funcs": {"operation": funcs},
         "solver_info": {"solver": "CVODE_myokit", "method": "CVODE",
                         "MaximumStep": 0.0005, "dt": 0.005},
         "runs": [{"dir": run.name, "method": "genetic_algorithm",
@@ -363,7 +458,7 @@ def test_a_zipped_and_moved_working_dir_opens_whole(client, tmp_path, monkeypatc
     loaded = client.get("/api/working-dir/load", params={"dir": str(work)}).json()
     assert {"calibration", "progress"} <= set(loaded["found"]), loaded.get("missing")
     assert loaded["progress"]["cost_history"] == [[0.5], [0.125]]
-    assert loaded["study"]["model"] == str(work / "inputs" / "model" / "LV.cellml")
+    assert loaded["study"]["model"] == str(_stored(work, "model", "LV.cellml"))
     best = loaded["calibration"]["best"]
     assert best["cost"] == pytest.approx(0.125)
     assert best["params"]["Lotka_Volterra_module/alpha"] == pytest.approx(1.25)
@@ -379,12 +474,12 @@ def test_a_zipped_and_moved_working_dir_opens_whole(client, tmp_path, monkeypatc
     assert body["solver_settings"]["solver_info"]["MaximumStep"] == 0.0005
     assert engine.dt == 0.005
     # Run from the folder's own model, not a copy of it.
-    assert main._models[body["model_id"]].working_model == work / "inputs" / "model" / "LV.cellml"
+    assert main._models[body["model_id"]].working_model == _stored(work, "model", "LV.cellml")
 
     # The funcs.
     funcs = client.get("/api/operation_funcs", params={"working_dir": str(work)}).json()
     assert [f["name"] for f in funcs["functions"]] == ["spread"]
-    assert funcs["path"] == str(work / "inputs" / "funcs" / "operation_funcs_user.py")
+    assert funcs["path"] == str(_stored(work, "funcs", "operation_funcs_user.py"))
 
 
 def test_the_layout_names_every_input_kind():

@@ -88,6 +88,9 @@ for runner in (
     "ca_obs.py",
     # The solver's own step defaults, put under the runners' CVODE defaults (a leaf too).
     "solver_info_defaults.py",
+    # The working dir's input store (libcuflynx's, through ca_imports): uq_runner stores
+    # the MLE obs_data it writes there.
+    "working_dir.py",
     "local_sensitivity.py",
     # Every runner writes its results in circulatory_autogen's own formats and the
     # managers read them back from there (#210); this module is the one place that

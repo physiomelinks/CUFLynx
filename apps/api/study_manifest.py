@@ -35,6 +35,8 @@ from __future__ import annotations
 import json
 import os
 
+import working_dir
+
 MANIFEST_NAME = "cuflynx_study.json"
 
 #: What circulatory_autogen writes: ``<study_name>_cuflynx_study.json`` in the study's
@@ -287,8 +289,8 @@ def _resolve(base: str, value: str, recorded: str | None = None,
     Relative: against ``base``, the manifest's folder. Absolute (an older manifest):
     as written when it exists; else, when it lies under the ``study_dir`` the manifest
     recorded, the same place under ``base`` (the folder was moved); else, for an input
-    of ``kind``, ``<base>/inputs/<kind>/<name>`` when that exists (the input was copied
-    into the working dir). Otherwise as written, which the caller reports as missing.
+    of ``kind``, the version of ``<name>`` stored last in ``<base>/inputs/<kind>/``
+    (``working_dir.latest``: the input was copied into the working dir). Otherwise as written, which the caller reports as missing.
     """
     value = str(value)
     if not os.path.isabs(value):
@@ -307,9 +309,9 @@ def _resolve(base: str, value: str, recorded: str | None = None,
             if os.path.exists(moved):
                 return moved
     if kind:
-        copied = os.path.join(base, "inputs", kind, os.path.basename(full))
-        if os.path.exists(copied):
-            return copied
+        copied = working_dir.latest(base, kind, os.path.basename(full))
+        if copied is not None:
+            return str(copied)
     return full
 
 

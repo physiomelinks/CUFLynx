@@ -21,7 +21,7 @@ import pytest
 
 import omex_import
 import user_funcs as uf
-from conftest import LV_MODEL_PATH, LV_PARAMS_CSV_PATH
+from conftest import LV_MODEL_PATH, LV_PARAMS_CSV_PATH, stored_input
 
 RATIO_FUNCS = '''"""User operation funcs for the study (operation_funcs_external_path)."""
 import numpy as np
@@ -148,7 +148,7 @@ def test_the_archives_operation_is_installed_into_the_outputs_store(client, cfg_
     ]
     assert body["warnings"] == []
     # Where the route would have put it, in the route's canonical format.
-    path = out / "inputs" / "funcs" / "operation_funcs_user.py"
+    path = stored_input(out, "funcs", "operation_funcs_user.py")
     text = path.read_text()
     assert 'CUFLYNX_OPERATIONS = ["ratio"]' in text
     assert "@series_to_constant\ndef ratio(x, y, series_output=False):" in text
@@ -175,12 +175,12 @@ def test_importing_the_same_archive_twice_is_quiet(client, cfg_dir, tmp_path):
 def test_a_different_func_of_the_same_name_is_kept_not_clobbered(client, cfg_dir, tmp_path):
     out = tmp_path / "out"
     uf.save_user_func("operation", "", OTHER_RATIO, str(out))
-    before = (out / "inputs" / "funcs" / "operation_funcs_user.py").read_text()
+    before = stored_input(out, "funcs", "operation_funcs_user.py").read_text()
 
     body = _upload(client, _archive(), out)
 
     assert body["user_funcs"][0]["status"] == "conflict"
-    assert (out / "inputs" / "funcs" / "operation_funcs_user.py").read_text() == before
+    assert stored_input(out, "funcs", "operation_funcs_user.py").read_text() == before
     warning = " ".join(body["warnings"])
     assert "'ratio'" in warning and "already" in warning
     assert body["model_id"]  # the study still loaded
@@ -210,7 +210,7 @@ def test_an_unparseable_funcs_file_is_a_warning(client, cfg_dir, tmp_path):
     body = _upload(client, _archive({"operation_funcs_user.py": "def ratio(:\n"}), out)
     assert body["user_funcs"] == []
     assert any("invalid Python" in w for w in body["warnings"])
-    assert not (out / "inputs" / "funcs" / "operation_funcs_user.py").exists()
+    assert not (out / "inputs" / "funcs").exists()
     assert body["model_id"]
 
 
@@ -255,8 +255,8 @@ def test_an_archive_with_a_study_manifest_installs_its_funcs_once(client, cfg_di
         "operation_funcs_user.py", "operation_funcs_user.py"]
     assert {(f["kind"], f["status"]) for f in body["user_funcs"]} == {("operation", "manifest")}
     store = out / "inputs" / "funcs"
-    assert (store / "operation_funcs_user.py").read_text() == RATIO_FUNCS
-    assert [p.name for p in store.iterdir()] == ["operation_funcs_user.py"]
+    assert stored_input(out, "funcs", "operation_funcs_user.py").read_text() == RATIO_FUNCS
+    assert [p.name for p in store.glob("*/*")] == ["operation_funcs_user.py"]
     assert not [w for w in body["warnings"] if "funcs" in w]
 
 
@@ -265,7 +265,7 @@ def test_an_archive_without_a_study_manifest_installs_each_def(client, cfg_dir, 
     out = tmp_path / "out"
     body = _upload(client, _archive(), out)
     assert [f["status"] for f in body["user_funcs"]] == ["installed"]
-    assert "CUFLYNX_OPERATIONS" in (out / "inputs" / "funcs" / "operation_funcs_user.py").read_text()
+    assert "CUFLYNX_OPERATIONS" in stored_input(out, "funcs", "operation_funcs_user.py").read_text()
 
 
 def test_the_inbox_names_the_python_a_delivery_would_install():

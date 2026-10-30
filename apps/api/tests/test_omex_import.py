@@ -347,7 +347,8 @@ def test_module_config_lands_beside_the_model_not_among_the_outputs(client, tmp_
         )
     assert resp.status_code == 200, resp.text
     saved = Path(resp.json()["module_config_path"])
-    assert saved == tmp_path / "inputs" / "generated_models" / "3compartment_flat" / "module_config.json"
+    assert saved.name == "module_config.json"
+    assert saved.parent.parent == tmp_path / "inputs" / "generated_models" / "3compartment_flat"
     assert saved.is_file()
     assert not (tmp_path / "module_config.json").exists()
 

@@ -43,6 +43,16 @@ SN_OBS_DATA_PATH = RESOURCES_DIR / "SN_simple_obs_data.json"
 SN_PARAMS_CSV_PATH = RESOURCES_DIR / "SN_simple_params_for_id.csv"
 
 
+def stored_input(work, kind: str, name: str) -> Path:
+    """The version of ``name`` stored last in ``<work>/inputs/<kind>/<stamp>/``; fails when
+    there is none (``working_dir.latest``)."""
+    import working_dir
+
+    found = working_dir.latest(work, kind, name)
+    assert found is not None, f"no {kind} {name} stored in {work}"
+    return found
+
+
 def params_for_id_json(csv_path, directory) -> Path:
     """A params_for_id CSV from ``resources/`` as the JSON the app stores and CA reads
     (``cuflynx-upgrade params-for-id``'s form), written into ``directory``: a runner is

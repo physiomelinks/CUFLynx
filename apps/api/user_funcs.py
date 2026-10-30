@@ -23,17 +23,20 @@ opening circulatory_autogen. Three func kinds, distinguished by what they act on
 An operation acts on an *output*, a modifier acts on a *parameter* — CA's own
 vocabulary, worth keeping straight because the two were once the same word.
 
-**External-file design (no bridge into CA's tree).** Each kind is stored in a
-single file under the study's **working dir** (``working_dir``, the same dir the
-analysis runs write to), so the funcs travel with the study. When no working dir is
-set it falls back to the user config dir (``<config>/user_funcs/``)::
+**External-file design (no bridge into CA's tree).** Each kind is one file stored
+in the study's **working dir** (``working_dir``, the same dir the analysis runs
+write to), so the funcs travel with the study. Every save stores a new version
+(``working_dir.store``) and the file of a kind is the version stored last
+(``working_dir.latest``)::
 
-    <working_dir>/inputs/funcs/operation_funcs_user.py
-    <working_dir>/inputs/funcs/cost_funcs_user.py
-    <working_dir>/inputs/funcs/modifier_funcs_user.py
+    <working_dir>/inputs/funcs/<yyyy-mm-dd_HHMMSS>/operation_funcs_user.py
+    <working_dir>/inputs/funcs/<yyyy-mm-dd_HHMMSS>/cost_funcs_user.py
+    <working_dir>/inputs/funcs/<yyyy-mm-dd_HHMMSS>/modifier_funcs_user.py
 
-A working dir in the older layout keeps its funcs in ``<working_dir>/user_funcs/``,
-and they are read and edited there (``working_dir.readable``).
+When no working dir is set the file is ``<config>/user_funcs/<file>``, rewritten in
+place. A working dir in the older layout keeps its funcs in
+``<working_dir>/user_funcs/``: they are read there until the first save stores a
+version (``working_dir.readable``).
 
 CUFLynx passes the file path to circulatory_autogen through CA's config keys
 ``operation_funcs_external_path`` / ``cost_funcs_external_path`` (CA #303) and
@@ -490,40 +493,55 @@ def _func_kind(kind: str) -> _Kind:
 # Paths
 # ---------------------------------------------------------------------------
 def _user_dir(base_dir: str | None = None) -> Path:
-    """Dir new func files go in: ``<working_dir>/inputs/funcs/`` when a working dir
-    is given (so funcs live with the study), else the user config dir as a fallback."""
-    if base_dir:
-        return working_dir.inputs_dir(base_dir, "funcs")
+    """Where func files are kept with no working dir: the user config dir."""
     return config_dir() / "user_funcs"
 
 
 def _func_file(filename: str, base_dir: str | None) -> Path:
-    """``filename`` in the study's funcs dir, in either working-dir layout."""
+    """``filename`` of the study's funcs: the version stored last in the working dir (or
+    an older folder's ``user_funcs/<filename>``), else where a first save would put it
+    (``inputs/funcs/<filename>``, not yet existing). In the config dir with no working
+    dir."""
     if base_dir:
-        return working_dir.readable(base_dir, "funcs", filename)
+        found = working_dir.readable(base_dir, "funcs", filename)
+        return found if found is not None else working_dir.inputs_dir(base_dir, "funcs") / filename
     return _user_dir(base_dir) / filename
 
 
 def convention_path(kind: str, base_dir: str | None = None) -> Path:
-    """``<working_dir>/inputs/funcs/<kind file>``: where this app keeps a study's funcs
-    when no study manifest points elsewhere (``user_funcs/`` in an older folder that
-    has them there). Also the name a func file has inside an archive."""
+    """The study's ``<kind file>`` (see :func:`_func_file`): where this app keeps a
+    study's funcs when no study manifest points elsewhere. Also the name a func file
+    has inside an archive."""
     return _func_file(_kind(kind).filename, base_dir)
 
 
 def _user_file(kind: str, base_dir: str | None = None) -> Path:
     """The file holding ``kind``'s funcs for the study in ``base_dir``.
 
-    The file the study's manifest declares, when it declares one: a study run from
-    circulatory_autogen records the funcs it was run with (``user_funcs`` in
-    ``<study>_cuflynx_study.json``), so reading, running and *editing* all act on that
-    one file and a copy cannot drift from it. Otherwise the CUFLynx convention,
-    :func:`convention_path`.
+    The version of it stored last in the working dir. The file the study's manifest
+    declares names it: a study run from circulatory_autogen records the funcs it was
+    run with (``user_funcs`` in ``<study>_cuflynx_study.json``), so reading, running and
+    *editing* all act on that file and its later versions, and a copy cannot drift from
+    it. Otherwise the CUFLynx convention, :func:`convention_path`.
     """
     declared = study_manifest.user_funcs(base_dir).get(kind)
     if declared:
-        return Path(declared)
+        found = working_dir.latest(base_dir, "funcs", Path(declared).name) if base_dir else None
+        return found or Path(declared)
     return convention_path(kind, base_dir)
+
+
+def _write_user_file(path: Path, text: str, base_dir: str | None,
+                     kind: str = "funcs") -> Path:
+    """Save ``text`` as the file ``path`` names: a new version of it in the working dir
+    (``working_dir.store``, the earlier ones left as they are), else written to ``path``
+    (the config dir). The path saved."""
+    data = text.encode("utf-8") if isinstance(text, str) else bytes(text)
+    if base_dir:
+        return working_dir.store(base_dir, kind, data, path.name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+    return path
 
 
 def external_path(kind: str, base_dir: str | None = None) -> str | None:
@@ -578,10 +596,12 @@ def model_source_path(suffix: str = ".py", base_dir: str | None = None) -> Path:
     name = Path(_kind("model").filename).stem + suffix
     if suffix == ".py" or not base_dir:
         return _func_file(name, base_dir)
-    # A converted source (.mmt / .model) is not what runs: it sits with the model.
-    current = working_dir.input_path(base_dir, "model", name)
+    # A converted source (.mmt / .model) is not what runs: it is stored with the model.
+    found = working_dir.latest(base_dir, "model", name)
+    if found is not None:
+        return found
     legacy = Path(base_dir) / "user_funcs" / name
-    return legacy if legacy.is_file() and not current.is_file() else current
+    return legacy if legacy.is_file() else working_dir.inputs_dir(base_dir, "model") / name
 
 
 def save_model_source(source: bytes | str, suffix: str = ".py", base_dir: str | None = None) -> str:
@@ -598,9 +618,8 @@ def save_model_source(source: bytes | str, suffix: str = ".py", base_dir: str | 
     """
     data = source.encode("utf-8") if isinstance(source, str) else bytes(source)
     path = model_source_path(suffix, base_dir)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(data)
-    return str(path)
+    kind = "funcs" if path.suffix == ".py" else "model"
+    return str(_write_user_file(path, data, base_dir, kind))
 
 
 def save_model_module(source: bytes | str, base_dir: str | None = None) -> str:
@@ -751,9 +770,10 @@ def _is_declared(kind: str, base_dir: str | None) -> bool:
     return bool(study_manifest.user_funcs(base_dir).get(kind))
 
 
-def _splice(path: Path, replace: str | None, source: str | None) -> None:
-    """Replace the top-level ``def replace`` in ``path`` with ``source``, append ``source``
-    when ``replace`` is None, or remove ``replace`` when ``source`` is None.
+def _splice(path: Path, replace: str | None, source: str | None) -> str:
+    """``path``'s text with the top-level ``def replace`` replaced by ``source``,
+    ``source`` appended when ``replace`` is None, or ``replace`` removed when ``source``
+    is None.
 
     For a funcs file a study manifest declares. That file was written by hand, outside
     this app -- its docstring, its imports, a helper the funcs share -- and re-rendering
@@ -777,7 +797,7 @@ def _splice(path: Path, replace: str | None, source: str | None) -> None:
         if lines and not lines[-1].endswith("\n"):
             lines[-1] += "\n"
         lines += ["\n", "\n"] + block
-    path.write_text("".join(lines), encoding="utf-8")
+    return "".join(lines)
 
 
 def save_user_func(
@@ -812,7 +832,9 @@ def save_user_func(
     if _is_declared(kind, base_dir):
         # Not ours to re-render: see _splice.
         target = previous_name if previous_name in sources else name
-        _splice(_user_file(kind, base_dir), target if target in sources else None, source)
+        path = _user_file(kind, base_dir)
+        _write_user_file(path, _splice(path, target if target in sources else None, source),
+                         base_dir)
         _refresh_options()
         return read_user_funcs(kind, base_dir)
 
@@ -820,8 +842,7 @@ def save_user_func(
         order.append(name)
     sources[name] = source
 
-    _user_file(kind, base_dir).parent.mkdir(parents=True, exist_ok=True)
-    _user_file(kind, base_dir).write_text(_render(kind, order, sources), encoding="utf-8")
+    _write_user_file(_user_file(kind, base_dir), _render(kind, order, sources), base_dir)
     _refresh_options()
     return read_user_funcs(kind, base_dir)
 
@@ -835,12 +856,13 @@ def delete_user_func(kind: str, name: str, base_dir: str | None = None) -> dict:
     if name not in sources:
         raise UserFuncError(f"no user {kind} named '{name}'")
     if _is_declared(kind, base_dir):
-        _splice(_user_file(kind, base_dir), name, None)
+        path = _user_file(kind, base_dir)
+        _write_user_file(path, _splice(path, name, None), base_dir)
         _refresh_options()
         return read_user_funcs(kind, base_dir)
     order = [n for n in order if n != name]
     del sources[name]
-    _user_file(kind, base_dir).write_text(_render(kind, order, sources), encoding="utf-8")
+    _write_user_file(_user_file(kind, base_dir), _render(kind, order, sources), base_dir)
     _refresh_options()
     return read_user_funcs(kind, base_dir)
 

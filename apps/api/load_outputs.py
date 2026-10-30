@@ -212,15 +212,16 @@ def _study(output_dir, run_dir, file_prefix, missing, manifest=None):
         output_dir)
     generated = None
     if prefix:
-        # The working dir's own copy of the model first, then a conversion kept under
-        # inputs/, then CA's generated_models/ (also the older CUFLynx layout).
-        own = os.path.join(output_dir, "inputs", "model", f"{prefix}.cellml")
-        if os.path.isfile(own):
-            generated = own
-        for candidate in (os.path.join(output_dir, "inputs", "generated_models", prefix),
-                          os.path.join(output_dir, "generated_models", prefix)):
-            if generated or not os.path.isdir(candidate):
-                continue
+        # The working dir's own copy of the model first (the version stored last, from
+        # inputs/index.json), then a conversion stored there, then CA's
+        # generated_models/ (also the older CUFLynx layout).
+        for kind in ("model", f"generated_models/{prefix}"):
+            found = working_dir.latest(output_dir, kind, f"{prefix}.cellml")
+            if found is not None:
+                generated = str(found)
+                break
+        candidate = os.path.join(output_dir, "generated_models", prefix)
+        if not generated and os.path.isdir(candidate):
             models = sorted(glob.glob(os.path.join(candidate, "*.cellml")))
             generated = models[0] if len(models) == 1 else None
 
@@ -251,11 +252,15 @@ def _study(output_dir, run_dir, file_prefix, missing, manifest=None):
     # is reported rather than treated as a fault.
     user_inputs = declared.get("user_inputs") if declared.get("user_inputs") and \
         os.path.isfile(declared["user_inputs"]) else None
+    # The version stored last (inputs/index.json), CA's dated archives in
+    # inputs/user_inputs/, or one at the top of an older folder.
+    stored = working_dir.latest(output_dir, "user_inputs")
     user_inputs = user_inputs or _newest(
-        [path for folder in (os.path.join(output_dir, "inputs", "user_inputs"), output_dir)
-         for pattern in ("*.yaml", "*.yml")
-         for path in glob.glob(os.path.join(folder, pattern))
-         if os.path.basename(path).startswith("user_inputs") or folder != output_dir]
+        [str(stored)] * (stored is not None)
+        + [path for folder in (os.path.join(output_dir, "inputs", "user_inputs"), output_dir)
+           for pattern in ("*.yaml", "*.yml")
+           for path in glob.glob(os.path.join(folder, pattern))
+           if os.path.basename(path).startswith("user_inputs") or folder != output_dir]
     )
 
     return {

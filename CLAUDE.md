@@ -195,31 +195,44 @@ variable, which CA's `cuflynx-methods-latex` typesets the methods with -- is ent
 (`libcuflynx.reporting.variable_mapping`, CA #547): rows, default rule, keeping edits.
 CUFLynx only picks where the file lives: beside the target's parameters file for a
 workflow's target tab (CA's `workflow_mapping_path`, where the methods writer looks), else
-`<working dir>/inputs/<prefix>_variable_mapping.csv` (top level in an older folder), else the uploads directory. `reporting` is a CA
+the version stored last in `<working dir>/inputs/variable_mapping/<stamp>/` (a save stores a new
+one; top level in an older folder), else the uploads directory. `reporting` is a CA
 package in `CA_PACKAGES` (and its two mirrors).
 
 **The working dir** (`apps/api/working_dir.py`, user docs `tutorials/docs/working_dir.md`)
 is the one folder a study lives in, inputs and outputs, so it can be zipped and opened
 elsewhere. The old name, "Outputs directory", survives only in the aliases below. Rules:
 
-- **Inputs are copied into `<W>/inputs/<kind>/`** (`model/`, `obs_data/`,
-  `params_for_id/`, `user_inputs/`, `funcs/`, `workflows/<wf>/`, `generated_models/`,
-  plus the variable mapping, obs-extraction config and `uq_obs_data.json` at
-  `inputs/`'s top). `main._bind_working_dir(record, W)` does it for a model record: every
-  upload naming a working dir and every run calls it, and the record then points at the
-  copies (`working_model`, `obs_path`, `params_path`; `_study_file` writes there once
-  `record.working_dir` is set). The uploads dir (`UPLOAD_DIR`, pruned after 7 days) stays
-  the session's scratch copy, never what a study depends on.
+- **Every input version lives in `<W>/inputs/<kind>/<yyyy-mm-dd_HHMMSS>/<file>`**, the
+  layout libcuflynx writes (Finbar, 2026-10-31). **Write only through `working_dir.store`**
+  (libcuflynx's `cuflynx_study.store_input`, reached with `ca_from`; a CA without it raises
+  `WorkingDirUnavailable`, a 422 naming CA #619): a new content gets a new dated folder, the
+  same content reuses its folder (content hash), `inputs/index.json` lists every version, and
+  nothing is ever rewritten in place. So no file under a plain name can look current by
+  mistake. Kinds: `model`, `obs_data` (also `uq_obs_data.json`), `params_for_id`,
+  `user_inputs`, `funcs`, `variable_mapping`, `obs_extraction`, `workflows/<wf>`,
+  `generated_models/<prefix>`. Something written by a converter or CA first (a conversion,
+  PhLynx state, an unpacked workflow, the variable mapping) is written into a scratch folder
+  and that folder or file stored.
+- **Which version is current** is the record's (`working_model`, `obs_path`, `params_path`,
+  the paths a run is given and the manifest records), or for a file kept per working dir
+  (funcs, `user_model.py`, the variable mapping) `working_dir.latest` (libcuflynx's
+  `latest_input`: the version stored last; storing an earlier content again makes it the
+  latest). `main._bind_working_dir(record, W)` stores a model record's inputs: every upload
+  naming a working dir and every run calls it. `_write_study_file` writes the session copy
+  and stores it once `record.working_dir` is set. The uploads dir (`UPLOAD_DIR`, pruned after
+  7 days) stays the session's scratch copy, never what a study depends on. Readers never
+  glob `inputs/<kind>/`: `load_outputs` and `study_manifest._resolve` ask `latest`.
 - **A run needs a working dir.** `_require_working_dir` 422s with
   `working_dir.REQUIRED_MESSAGE`; there is no temp `calib_*`/`sa_*`/`uq_*`/`emu_*`
   fallback any more, and the frontend refuses before sending (`lib/workingDir.js`).
 - **Outputs:** case dirs at the top (CA), sensitivity in `<W>/sensitivity/`
   (`sa_output_dir` in the runner config; the param-id side stays at the top so the
   manifest does), saved parameter sets in `<W>/saved_params/`.
-- **Older folders stay readable where their files are**: `working_dir.readable()` falls
-  back to `user_funcs/`, `generated_models/` and the top level, and readers
-  (`load_outputs`, `/api/runs`) look in both places. Writers use `readable()` too, so a
-  file found in the old place is edited there rather than forked.
+- **Older folders stay readable where their files are**: `working_dir.readable()` is the
+  latest stored version, else `user_funcs/`, `generated_models/` or the top level, and
+  readers (`load_outputs`, `/api/runs`) look in both places. A save stores a version in
+  `inputs/` and leaves the old file as it was.
 - **Wire names:** `working_dir` and `/api/working-dir/*`. `wire_aliases.WorkingDirAliases`
   (ASGI middleware) copies `working_dir` onto `output_dir` / `outputs_dir` /
   `config_outputs_dir` in queries and JSON bodies at any depth, and rewrites

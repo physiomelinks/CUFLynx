@@ -130,11 +130,12 @@ def _mle_obs_path(config, cost_type: str) -> str:
     for item in data_items_of(obs):
         if isinstance(item, dict):
             item["cost_type"] = cost_type
-    # An input of the run, so it is kept with the working dir's inputs (working_dir.py).
-    out = os.path.join(config["output_dir"], "inputs", "uq_obs_data.json")
-    os.makedirs(os.path.dirname(out), exist_ok=True)
-    Path(out).write_text(json.dumps(obs), encoding="utf-8")
-    return out
+    # An input of the run, so it is stored with the working dir's inputs as a version of
+    # its own.
+    import working_dir  # noqa: E402 (shipped into runners/ too)
+
+    return str(working_dir.store(config["output_dir"], "obs_data",
+                                 json.dumps(obs).encode("utf-8"), "uq_obs_data.json"))
 
 
 def _make_param_id(config, settings, obs_path, *, mcmc, options_key, options):
