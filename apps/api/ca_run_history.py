@@ -575,6 +575,125 @@ def find_emulator_dir(output_dir: str, file_prefix: str | None,
     return max(bundles, key=rank)
 
 
+def emulator_bundles(root: str) -> list[str]:
+    """Every trained bundle at ``root``, whether it *is* one or *contains* them.
+
+    A study that trains several emulators on one design -- the same simulations
+    fitted by RBF, MLP and a forest -- leaves them side by side under
+    ``emulators/``, and there is then no single right answer to "the emulator for
+    this study". So a declaration may name the container instead of one bundle,
+    and this returns what is actually in it.
+
+    Both shapes are accepted because both are real: a manifest written before this
+    existed names a bundle directly, and a study sharing one jointly-trained
+    emulator still wants to name exactly that one.
+    """
+    if not root or not os.path.isdir(root):
+        return []
+    if emulator_reusable(root) or os.path.isfile(
+            os.path.join(root, EMULATOR_METADATA_FILE)):
+        return [root]
+    try:
+        entries = sorted(entry.path for entry in os.scandir(root) if entry.is_dir())
+    except OSError:
+        return []
+    return [path for path in entries
+            if os.path.isfile(os.path.join(path, EMULATOR_METADATA_FILE))]
+
+
+def emulator_summary(emu_dir: str) -> dict | None:
+    """One bundle, as a row a chooser can be built from.
+
+    Deliberately not the whole metadata: picking between emulators needs the family
+    and how well it did, and shipping every per-feature array for every candidate
+    would send megabytes to render a list.
+
+    ``worst_r2`` leads because it is the number that decides trust -- an emulator
+    misleads a calibration wherever it is weakest, not where it is average -- but
+    the median is carried too, since one pathological feature out of thirty-six is
+    a different situation from a bundle that is uniformly poor.
+    """
+    meta = _json(emu_dir, EMULATOR_METADATA_FILE)
+    if not isinstance(meta, dict):
+        return None
+    scores = []
+    for value in meta.get("feature_r2") or []:
+        try:
+            scores.append(float(value))
+        except (TypeError, ValueError):
+            continue
+    finite = [value for value in scores if value == value and abs(value) != float("inf")]
+    ordered = sorted(finite)
+    median = None
+    if ordered:
+        middle = len(ordered) // 2
+        median = (ordered[middle] if len(ordered) % 2
+                  else (ordered[middle - 1] + ordered[middle]) / 2.0)
+    design = meta.get("design") or {}
+    try:
+        modified = os.path.getmtime(os.path.join(emu_dir, EMULATOR_METADATA_FILE))
+    except OSError:
+        modified = None
+    return {
+        "dir": emu_dir,
+        "name": os.path.basename(emu_dir.rstrip(os.sep)),
+        "model_name": meta.get("model_name"),
+        "num_features": len(scores),
+        "worst_r2": ordered[0] if ordered else None,
+        "median_r2": median,
+        "best_r2": ordered[-1] if ordered else None,
+        "num_samples": design.get("num_used"),
+        "num_stages": design.get("num_stages"),
+        "reused_samples": bool(design.get("reused_samples")),
+        "reusable": emulator_reusable(emu_dir),
+        "modified": modified,
+    }
+
+
+def emulator_choices(output_dir: str, file_prefix: str | None,
+                     obs_path: str | None, declared: str | None = None) -> list[dict]:
+    """Every emulator this study could be read with, best-first.
+
+    ``declared`` is a manifest's word and is believed: whatever it names, bundle or
+    container, is the candidate set and nothing is inferred. Without one the same
+    search :func:`find_emulator_dir` does supplies the candidates, so the list can
+    never omit the bundle that function would have chosen.
+
+    Sorted by ``worst_r2`` descending so the safest emulator is first, with the name
+    breaking ties -- a stable order matters because this drives a list a person picks
+    from, and a list that reshuffles between reads is one they cannot learn.
+    """
+    roots: list[str] = []
+    if declared:
+        roots.append(declared)
+    else:
+        if file_prefix:
+            roots.append(emulator_dir(output_dir, file_prefix, obs_path))
+        roots.append(os.path.join(output_dir or "", EMULATOR_SUBDIR))
+
+    seen: set[str] = set()
+    summaries: list[dict] = []
+    for root in roots:
+        for bundle in emulator_bundles(root):
+            key = os.path.abspath(bundle)
+            if key in seen:
+                continue
+            seen.add(key)
+            summary = emulator_summary(bundle)
+            if summary:
+                summaries.append(summary)
+
+    def rank(row):
+        worst = row.get("worst_r2")
+        # None sorts last rather than as negative infinity by accident: a bundle whose
+        # R2 could not be read is not known to be bad, it is unknown, and putting it
+        # under the ones that are known-bad would be a claim this cannot support.
+        return (worst is not None, worst if worst is not None else 0.0,
+                row.get("name") or "")
+
+    return sorted(summaries, key=rank, reverse=True)
+
+
 def emulator_error_points(emu_dir: str) -> dict | None:
     """The emulator's held-out points, as the Analysis view plots them.
 
