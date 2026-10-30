@@ -21,9 +21,12 @@ serves several obs_data -- that is the whole point of training it jointly -- and
 convention that looks under ``<selected>/emulators/`` forces a copy per dataset. A
 manifest can point at the one bundle.
 
-Paths resolve relative to the manifest, so a study directory can be moved or copied
-whole; absolute paths are allowed and left alone, which is what a shared artefact
-outside the tree needs.
+Relative paths resolve against the folder holding the manifest, so a study directory can
+be moved, copied or zipped whole. A manifest written before libcuflynx copied inputs into
+the study records them by absolute path, with an absolute ``study_dir``; reading one, an
+absolute path under the recorded ``study_dir`` is rebased onto the manifest's folder, and
+one that no longer exists is looked for under ``inputs/<kind>/`` by its name.
+``study_dir`` is otherwise only a hint, for a manifest read away from its folder.
 """
 
 from __future__ import annotations
@@ -59,6 +62,10 @@ KEYS = PATH_KEYS + ("user_funcs", "solver_info", "pre_time", "sim_time", "runs",
 
 #: ``user_funcs`` kinds, as ``user_funcs.py`` names them.
 USER_FUNC_KINDS = ("operation", "cost", "modifier")
+
+#: The ``inputs/`` subfolder each path key's file is kept in.
+INPUT_KIND = {"model": "model", "base_model": "model", "obs_data": "obs_data",
+              "params_for_id": "params_for_id", "user_inputs": "user_inputs"}
 
 
 class ManifestError(Exception):
@@ -174,12 +181,16 @@ def resolve(raw: dict, base: str, location: str | None = None) -> dict:
     """``raw`` with every declared path made absolute against ``base``."""
     resolved = dict(raw)
     missing: list[str] = []
+    recorded = raw.get("study_dir")
+
+    def at(value, kind=None):
+        return _resolve(base, value, recorded, kind)
 
     for key in PATH_KEYS:
         value = raw.get(key)
         if not value:
             continue
-        full = _resolve(base, value)
+        full = at(value, INPUT_KIND.get(key))
         resolved[key] = full
         if not os.path.exists(full):
             missing.append(f"{key} ({value})")
@@ -188,7 +199,7 @@ def resolve(raw: dict, base: str, location: str | None = None) -> dict:
     for kind, value in (raw.get("user_funcs") or {}).items():
         if kind not in USER_FUNC_KINDS or not value:
             continue
-        full = _resolve(base, value)
+        full = at(value, "funcs")
         if os.path.isfile(full):
             funcs[kind] = full
         else:
@@ -201,9 +212,9 @@ def resolve(raw: dict, base: str, location: str | None = None) -> dict:
             if not isinstance(entry, dict) or not entry.get("dir"):
                 continue
             item = dict(entry)
-            item["dir"] = _resolve(base, entry["dir"])
+            item["dir"] = at(entry["dir"])
             if item.get("obs_data"):
-                item["obs_data"] = _resolve(base, item["obs_data"])
+                item["obs_data"] = at(item["obs_data"], "obs_data")
             if not os.path.isdir(item["dir"]):
                 missing.append(f"{label} ({entry['dir']})")
                 continue
@@ -268,11 +279,37 @@ def user_funcs(output_dir: str | None) -> dict:
     return dict((manifest or {}).get("user_funcs") or {})
 
 
-def _resolve(base: str, value: str) -> str:
+def _resolve(base: str, value: str, recorded: str | None = None,
+             kind: str | None = None) -> str:
+    """``value`` as a path on this machine.
+
+    Relative: against ``base``, the manifest's folder. Absolute (an older manifest):
+    as written when it exists; else, when it lies under the ``study_dir`` the manifest
+    recorded, the same place under ``base`` (the folder was moved); else, for an input
+    of ``kind``, ``<base>/inputs/<kind>/<name>`` when that exists (the input was copied
+    into the study). Otherwise as written, which the caller reports as missing.
+    """
     value = str(value)
-    if os.path.isabs(value):
-        return os.path.normpath(value)
-    return os.path.normpath(os.path.join(base, value))
+    if not os.path.isabs(value):
+        return os.path.normpath(os.path.join(base, value))
+    full = os.path.normpath(value)
+    if os.path.exists(full):
+        return full
+    if recorded and os.path.isabs(str(recorded)):
+        old = os.path.normpath(str(recorded))
+        try:
+            inside = os.path.commonpath([old, full]) == old
+        except ValueError:
+            inside = False
+        if inside:
+            moved = os.path.normpath(os.path.join(base, os.path.relpath(full, old)))
+            if os.path.exists(moved):
+                return moved
+    if kind:
+        copied = os.path.join(base, "inputs", kind, os.path.basename(full))
+        if os.path.exists(copied):
+            return copied
+    return full
 
 
 def write(output_dir: str, study: dict) -> str:
