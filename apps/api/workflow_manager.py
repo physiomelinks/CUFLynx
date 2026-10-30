@@ -39,10 +39,13 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
+import tempfile
 import threading
 import time
 import uuid
+from pathlib import Path
 
 from ca_imports import CaImportError, ca_from, ensure_ca_path
 from calibration import (
@@ -54,6 +57,7 @@ from calibration import (
     write_run_config,
 )
 from runtime_paths import runner_command, runner_launch_env, runner_path
+import working_dir
 
 RUNNER_PATH = str(runner_path("workflow_runner.py"))
 WORKFLOW_FILE_NAME = "calibration_workflow.json"
@@ -382,9 +386,39 @@ class WorkflowManager:
         ``<step>_params_for_id.json``) beside the workflow file, which the workflow file then
         names. A params_for_id CSV is converted to the JSON CA reads (``cuflynx-upgrade
         params-for-id``'s form), and a step that names a CSV is pointed at a new ``.json``.
+
+        A workflow opened from a version stored in a working dir
+        (``inputs/workflows/<wf>/<stamp>/``) is not written in place: its folder is copied,
+        the edit made in the copy, the copy stored as a new version (``working_dir.store``)
+        and the workflow opened from there.
         """
         if self.busy:
             raise RuntimeError("a workflow is running; its inputs change after it")
+        stored = working_dir.stored_version(self.path)
+        if stored is None:
+            return self._write_step_input(step_id, role, content)
+        root, kind, folder = stored
+        original = self.path
+        relative = os.path.relpath(os.path.realpath(original), folder)
+        scratch = tempfile.mkdtemp(prefix="cuflynx_workflow_")
+        try:
+            shutil.copytree(folder, scratch, dirs_exist_ok=True)
+            self.path = os.path.join(scratch, relative)
+            written = self._write_step_input(step_id, role, content)
+            self.path = str(working_dir.store(root, kind, scratch, relative))
+        except BaseException:
+            self.path = original
+            raise
+        finally:
+            shutil.rmtree(scratch, ignore_errors=True)
+        if not working_dir.is_inside(scratch, written):
+            return written                  # a step input outside the workflow's folder
+        new_folder = Path(self.path)
+        for _ in Path(relative).parts:
+            new_folder = new_folder.parent
+        return str(new_folder / os.path.relpath(written, scratch))
+
+    def _write_step_input(self, step_id: str, role: str, content: str) -> str:
         if role == "obs_data":
             try:
                 json.loads(content)

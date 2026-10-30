@@ -309,6 +309,34 @@ def test_a_step_s_own_obs_data_is_read_and_overwritten(client, step_workflow):
     assert json.loads(step_workflow.read_text())["steps"][0]["obs_data"] == "inputs/left_obs_data.json"
 
 
+def test_a_step_edit_of_a_workflow_stored_in_the_working_dir_is_a_new_version(
+        client, monkeypatch, tmp_path):
+    """An uploaded workflow is a version in inputs/workflows/<wf>/<stamp>/; editing a step's
+    obs_data stores the edited folder as a new version and leaves the first as it was."""
+    _fake_ca(monkeypatch)
+    work = tmp_path / "W"
+    r = client.post("/api/workflow/upload", params={"config_outputs_dir": str(work)},
+                    files={"file": ("demo.json", json.dumps({**STEP_WORKFLOW,
+                                                             "workflow_name": "demo"}),
+                                    "application/json")})
+    assert r.status_code == 200, r.text
+    first = Path(r.json()["path"])
+    assert first.parent.parent == work / "inputs" / "workflows" / "demo"
+    before = sorted(p.relative_to(first.parent) for p in first.parent.rglob("*"))
+
+    edited = json.dumps({"protocol_info": {"params_to_change": {"C/x": [[1.0]]}}})
+    r = client.post("/api/workflow/step_input",
+                    json={"step_id": "left", "role": "obs_data", "content": edited})
+    assert r.status_code == 200, r.text
+    written = Path(r.json()["path"])
+    assert written.read_text() == edited
+    second = Path(r.json()["workflow"]["path"])
+    assert second.parent != first.parent and second.parent.parent == first.parent.parent
+    assert written == second.parent / "inputs" / "left_obs_data.json"
+    assert sorted(p.relative_to(first.parent) for p in first.parent.rglob("*")) == before
+    assert not (first.parent / "inputs" / "left_obs_data.json").exists()
+
+
 def test_a_step_without_an_input_is_given_one_beside_the_workflow(client, step_workflow):
     r = client.get("/api/workflow/step_input", params={"step_id": "right", "role": "obs_data"})
     assert r.json() == {"path": None, "content": None}

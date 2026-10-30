@@ -444,23 +444,24 @@ def test_the_offered_obs_data_is_written_beside_the_converted_cellml(
     r = _upload_mmt(client, RESOURCES_DIR / "br-1977.mmt", str(tmp_path))
     offered = r.json()["protocol_obs_data"]
     written = Path(offered["path"])
-    assert written == tmp_path / "inputs" / "obs_data" / "br-1977_obs_data.json"
+    assert written.name == "br-1977_obs_data.json"
+    assert written.parent.parent == tmp_path / "inputs" / "obs_data"
     assert written.is_file()
     assert json.loads(written.read_text())["protocol_info"]["sim_times"]
 
 
 @pytest.mark.integration
 def test_an_existing_obs_data_on_disk_is_never_overwritten(client, requires_simulation, requires_myokit_parser, tmp_path):
-    """It may hold hand-written data_items that nothing here could reconstruct."""
-    existing = tmp_path / "inputs" / "obs_data" / "br-1977_obs_data.json"
-    existing.parent.mkdir(parents=True)
-    existing.write_text('{"mine": true}')
+    """It may hold hand-written data_items that nothing here could reconstruct: the
+    derived one is a version of its own."""
+    import working_dir
+
+    existing = working_dir.store(tmp_path, "obs_data", b'{"mine": true}', "br-1977_obs_data.json")
 
     r = _upload_mmt(client, RESOURCES_DIR / "br-1977.mmt", str(tmp_path))
     offered = r.json()["protocol_obs_data"]
     assert existing.read_text() == '{"mine": true}'
-    assert offered["path"] is None
-    assert any("left alone" in n for n in offered["notes"])
+    assert Path(offered["path"]).parent != existing.parent
     # Still offered in the response, so the user can adopt it if they want to.
     assert offered["obs_data"]["protocol_info"]["sim_times"]
 

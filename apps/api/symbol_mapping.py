@@ -10,13 +10,15 @@ Where it lives:
 
 * the target tab of a calibration workflow: CA's ``workflow_mapping_path`` (beside the target's
   parameters file), which is where ``cuflynx-methods-latex --workflow`` looks for it;
-* any other study: ``<working dir>/inputs/<prefix>_variable_mapping.csv`` (read at the top
-  level of an older folder), or the uploads directory when no working dir is set.
+* any other study: the version stored last in ``<working dir>/inputs/variable_mapping/<stamp>/``
+  (read at the top level of an older folder; a save stores a new version), or the uploads
+  directory when no working dir is set or nothing is stored yet.
 """
 
 from __future__ import annotations
 
 import os
+import tempfile
 
 import working_dir as working_dir_layout
 
@@ -45,13 +47,13 @@ def _ca(*names):
 
 
 def default_path(file_prefix: str, working_dir: str, fallback_dir: str) -> str:
-    """``<working dir>/inputs/<prefix>_variable_mapping.csv`` (where an older folder has
-    it, at its top level, when it is there), else ``fallback_dir``."""
+    """The ``<prefix>_variable_mapping.csv`` stored last in the working dir (at the top
+    level of an older folder), else the one in ``fallback_dir``."""
     name = f"{file_prefix}_variable_mapping.csv"
     directory = working_dir.strip() if working_dir else ""
-    if directory:
-        return str(working_dir_layout.readable(directory, "", name))
-    return os.path.join(fallback_dir, name)
+    found = working_dir_layout.readable(directory, "variable_mapping", name) if directory \
+        else None
+    return str(found) if found else os.path.join(fallback_dir, name)
 
 
 def workflow_target_path(workflow_path: str, module_library_dirs: list[str]) -> str:
@@ -77,11 +79,13 @@ def describe(model_path: str, path: str) -> dict:
             "problems": check(rows)}
 
 
-def save(model_path: str, path: str, edits: list[dict]) -> dict:
+def save(model_path: str, path: str, edits: list[dict], keep_in: str | None = None) -> dict:
     """Write ``edits`` ({variable_name, latex}) over the model's rows, then describe it.
 
     The rows come from the model, so a symbol for a variable the model does not have is
-    dropped rather than written, and kind / units / component stay CA's.
+    dropped rather than written, and kind / units / component stay CA's. With ``keep_in``
+    (a working dir) the file is stored there as a new version (``working_dir.store``)
+    rather than written over ``path``.
     """
     variable_mapping, write = _ca("variable_mapping", "write_variable_mapping")
     try:
@@ -94,7 +98,13 @@ def save(model_path: str, path: str, edits: list[dict]) -> dict:
         if row["variable_name"] in latex:
             row["latex"] = latex[row["variable_name"]]
     try:
-        write(rows, path)
+        if keep_in:
+            with tempfile.TemporaryDirectory() as scratch:
+                written = os.path.join(scratch, os.path.basename(path))
+                write(rows, written)
+                path = str(working_dir_layout.store(keep_in, "variable_mapping", written))
+        else:
+            write(rows, path)
     except (ValueError, OSError) as exc:
         raise MappingError(str(exc)) from exc
     return describe(model_path, path)

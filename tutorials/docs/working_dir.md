@@ -17,34 +17,31 @@ to have somewhere to keep what it was run from.
 ```
 <W>/
 ├─ <study>_cuflynx_study.json        the study manifest: every part of the study, paths relative to <W>
-├─ inputs/                           every input of the study, copied in when it is loaded or first used
-│   ├─ model/
-│   │   ├─ <prefix>.cellml           the model as it runs (a multi-file CellML is flattened into one)
-│   │   ├─ source/                   a multi-file CellML as you dropped it, with the files it imports
-│   │   ├─ <prefix>.mmt / .model     the Myokit or EasyML file a model was converted from
-│   │   ├─ <prefix>.omex             the COMBINE archive a study was loaded from, kept whole
-│   │   └─ user_model.mmt / .model   the copy "Edit source" opens for a converted model
-│   ├─ obs_data/
-│   │   ├─ <prefix>_obs_data.json    the obs_data the study runs with
-│   │   └─ <stem>_<yymmdd>.json      copies saved from the obs_data editor
-│   ├─ params_for_id/
-│   │   ├─ <prefix>_params_for_id.json   the params_for_id the study runs with (a CSV is converted)
-│   │   └─ <stem>_<yymmdd>.json      copies saved from the params_for_id editor
-│   ├─ user_inputs/
-│   │   ├─ user_inputs.yaml          a user_inputs.yaml loaded in Settings, as given
-│   │   └─ user_inputs_<yymmdd>.yaml the dated copy a libcuflynx script run archives
-│   ├─ funcs/
-│   │   ├─ operation_funcs_user.py   your observable operations
-│   │   ├─ cost_funcs_user.py        your cost functions
-│   │   ├─ modifier_funcs_user.py    your parameter modifiers
-│   │   └─ user_model.py             an external_python model (this copy is the one that runs)
-│   ├─ system/                       a generated model's module array and parameters file (libcuflynx)
-│   ├─ emulator/                     an emulator a script run used from outside <W> (libcuflynx)
-│   ├─ workflows/<wf>/               a calibration workflow and the inputs packed with it
-│   ├─ generated_models/<prefix>/    a Myokit / EasyML model converted to CellML, PhLynx's module_config
-│   ├─ <prefix>_variable_mapping.csv the LaTeX symbol of each variable
-│   ├─ obs_extraction_config.json    the choices made in "Add from dataset"
-│   └─ uq_obs_data.json              the obs_data a UQ run scored with (its MLE cost type set)
+├─ inputs/                           every input of the study, one dated folder per version
+│   ├─ index.json                    every stored version: its kind, file, folder, content hash,
+│   │                                when it was first used and last saved, and the runs that used it
+│   ├─ model/<stamp>/                one of:
+│   │     <prefix>.cellml            the model as it runs (a multi-file CellML is flattened into one)
+│   │     <main>.cellml + imports    a multi-file CellML as you dropped it
+│   │     <prefix>.mmt / .model      the Myokit or EasyML file a model was converted from
+│   │     <prefix>.omex              the COMBINE archive a study was loaded from, kept whole
+│   │     user_model.mmt / .model    the copy "Edit source" opens for a converted model
+│   ├─ obs_data/<stamp>/             <prefix>_obs_data.json (what the study runs with),
+│   │                                <stem>_<yymmdd>.json (saved from the obs_data editor),
+│   │                                <prefix>_obs_data.json from a .mmt protocol, uq_obs_data.json
+│   │                                (the obs_data a UQ run scored with, its MLE cost type set)
+│   ├─ params_for_id/<stamp>/        <prefix>_params_for_id.json (a CSV is converted), editor copies
+│   ├─ user_inputs/<stamp>/          user_inputs.yaml, a user_inputs.yaml loaded in Settings, as given
+│   ├─ user_inputs/user_inputs_<yymmdd>.yaml   the dated copy a libcuflynx script run archives
+│   ├─ funcs/<stamp>/                operation_funcs_user.py, cost_funcs_user.py,
+│   │                                modifier_funcs_user.py, user_model.py (an external_python model)
+│   ├─ variable_mapping/<stamp>/     <prefix>_variable_mapping.csv, the LaTeX symbol of each variable
+│   ├─ obs_extraction/<stamp>/       obs_extraction_config.json, the choices made in "Add from dataset"
+│   ├─ system/<stamp>/               a generated model's module array and parameters file (libcuflynx)
+│   ├─ emulator/<stamp>/             an emulator a script run used from outside <W> (libcuflynx)
+│   ├─ workflows/<wf>/<stamp>/       a calibration workflow and the inputs packed with it
+│   └─ generated_models/<prefix>/<stamp>/   a Myokit / EasyML model converted to CellML,
+│                                    or PhLynx's module_config
 ├─ <prefix>_calibrated.cellml        the model with the best fit written in
 ├─ <method>_<prefix>_<obs>/          one per calibration or UQ run (circulatory_autogen's case dir):
 │                                    best fit, progress history, error vectors, MCMC chain, plots,
@@ -55,6 +52,20 @@ to have somewhere to keep what it was run from.
 ├─ saved_params/                     parameter sets saved from the sliders (.npy / .csv + _outputs.json)
 └─ export_<yymmdd>/                  an exported, runnable script bundle
 ```
+
+`<stamp>` is the local date and time the version was first used,
+`yyyy-mm-dd_HHMMSS` (`_2`, `_3`... for a second version in the same second).
+
+**Saving never rewrites an input.** When you load, edit or save an input, the app
+stores it as a version: a content it has not stored before gets a new dated
+folder, and a content stored before reuses its folder. The earlier versions stay
+where they are, so every run's inputs can still be read. No input sits under a
+plain name outside a dated folder, so none can be taken for the current one by
+mistake. Which version is current is what the study uses (each run in the manifest
+names the versions it ran with), and for your funcs and the variable mapping, the
+version you saved last (`inputs/index.json` records when).
+
+A file opened with **Edit source** is edited where it is, in its dated folder.
 
 Nothing the study needs is outside `<W>`. The app still keeps a working copy of
 each upload in a temporary folder, which it clears after 7 days; the copies in
@@ -92,12 +103,12 @@ layout. Its `param_id_output_dir` is the working dir:
 - the study manifest is written there, and each input from outside it (the model
   with the CellML files it imports, obs_data, params_for_id, the user_inputs yaml,
   the user funcs, a generated model's module array and parameters file, an emulator)
-  is copied into `inputs/<kind>/` once per content. Two different files of the
-  same name go into `inputs/<kind>/<hash>/`;
+  is copied into `inputs/<kind>/<stamp>/` once per content, as the app stores
+  them;
 - the dated `user_inputs_<yymmdd>.yaml` goes into `inputs/user_inputs/`;
 - sensitivity analyses write to `sensitivity/` unless `sa_options: output_dir`
   names another folder;
-- a calibration workflow packs its workflow into `inputs/workflows/<name>/`.
+- a calibration workflow packs its workflow into `inputs/workflows/<name>/<stamp>/`.
 
 So the folder a script run leaves opens in CUFLynx like one the app made. To keep
 the old behaviour (inputs left where they are, recorded by absolute path) set
@@ -112,9 +123,10 @@ A folder written before the working dir still opens, and nothing in it is moved:
   path as `study_dir`, is read relative to where the folder is now. A path inside
   the old `study_dir` is found in the moved folder; an input that is no longer where
   it was recorded (an upload the app has since cleared) is found under
-  `inputs/<kind>/` by its name, if it has been copied there.
-- **Its funcs** in `user_funcs/` are read, run and edited where they are. A folder
-  with no funcs yet gets them in `inputs/funcs/`.
+  `inputs/<kind>/` by its name (the version saved last), if it has been stored there.
+- **Its funcs** in `user_funcs/` are read and run where they are. The first time
+  you save them, the saved file becomes a version in `inputs/funcs/<stamp>/`, and
+  the one in `user_funcs/` is left as it was.
 - **Its sensitivity results** at the top level, **its saved parameter sets** at the
   top level, a variable mapping at the top level and models in `generated_models/`
   are all read from where they are.

@@ -6,6 +6,7 @@ module; the integration test uses CA's own with a real model.
 """
 
 import csv
+import json
 import os
 import types
 
@@ -13,7 +14,7 @@ import pytest
 
 import main
 import workflow_manager
-from conftest import LV_MODEL_PATH, set_ca_module, upload_model
+from conftest import LV_MODEL_PATH, set_ca_module, stored_input, upload_model
 
 
 def _fake_ca(monkeypatch, calls, refuse=None):
@@ -24,7 +25,11 @@ def _fake_ca(monkeypatch, calls, refuse=None):
         calls.append(("rows", model_path, path))
         if refuse:
             raise ValueError(refuse)
-        kept = files.get(path, {})
+        kept = files.get(path)
+        if kept is None and os.path.isfile(path):
+            with open(path) as handle:
+                kept = json.load(handle)
+        kept = kept or {}
         return [{"variable_name": name, "latex": kept.get(name, default),
                  "default_latex": default, "kind": "parameter", "component": "parameters",
                  "units": "1"}
@@ -37,7 +42,8 @@ def _fake_ca(monkeypatch, calls, refuse=None):
         calls.append(("write", path, [(r["variable_name"], r["latex"]) for r in rows]))
         files[path] = {r["variable_name"]: r["latex"] for r in rows}
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        open(path, "w").write("written by the fake\n")
+        with open(path, "w") as handle:
+            json.dump(files[path], handle)
         return path
 
     for fn in (variable_mapping, check_variable_mapping, write_variable_mapping):
@@ -59,9 +65,18 @@ def test_a_study_s_mapping_lives_in_the_outputs_directory(client, monkeypatch, t
                    params={"output_dir": str(tmp_path)})
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["path"] == str(tmp_path / "inputs" / f"{main._record_prefix(record)}_variable_mapping.csv")
+    # nothing stored yet: where the upload's copy would be
+    name = f"{main._record_prefix(record)}_variable_mapping.csv"
+    assert body["path"] == str(main.UPLOAD_DIR / name)
     assert body["exists"] is False and [row["latex"] for row in body["rows"]] == ["a", "b"]
     assert calls[0] == ("rows", str(record.path), body["path"])
+    # a save stores a version in inputs/variable_mapping/<stamp>/, which is then the study's
+    saved = client.put(f"/api/models/{model_id}/variable_mapping",
+                       json={"output_dir": str(tmp_path), "rows": []}).json()["path"]
+    assert saved == str(stored_input(tmp_path, "variable_mapping", name))
+    body = client.get(f"/api/models/{model_id}/variable_mapping",
+                      params={"output_dir": str(tmp_path)}).json()
+    assert body["path"] == saved and body["exists"] is True
     # without an outputs directory it is kept with the upload
     body = client.get(f"/api/models/{model_id}/variable_mapping").json()
     assert body["path"].startswith(str(main.UPLOAD_DIR))

@@ -43,7 +43,7 @@ const saving = ref(false)
 const error = ref('')
 const notice = ref('')
 
-// The working dir (App.vue persists it); funcs are stored under its inputs/funcs/.
+// The working dir (App.vue persists it); funcs are stored under its inputs/funcs/<date>/.
 const workingDir = () => readStoredWorkingDir()
 
 const currentKind = computed(() => KINDS.find((k) => k.key === kind.value) || KINDS[0])

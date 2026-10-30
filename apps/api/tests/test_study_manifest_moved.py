@@ -11,6 +11,7 @@ import shutil
 import pytest
 
 import study_manifest
+import working_dir
 
 pytestmark = pytest.mark.unit
 
@@ -88,17 +89,18 @@ def test_an_old_manifests_absolute_paths_follow_a_moved_folder(tmp_path):
 
 
 def test_an_old_absolute_input_outside_the_folder_is_found_in_inputs(tmp_path):
-    """An input recorded where it was uploaded from, since copied into inputs/<kind>/."""
+    """An input recorded where it was uploaded from, since stored in inputs/<kind>/<stamp>/:
+    the version stored last."""
     work = tmp_path / "W"
-    _touch(work / "inputs" / "params_for_id" / "S_params_for_id.json")
+    working_dir.store(work, "params_for_id", b"{}", "S_params_for_id.json")
+    latest = working_dir.store(work, "params_for_id", b'{"params": []}', "S_params_for_id.json")
     _write(work / "S_cuflynx_study.json", {
         "study_dir": str(work),
         "params_for_id": str(tmp_path / "gone" / "S_params_for_id.json")})
 
     read = study_manifest.read(str(work))
 
-    assert read["params_for_id"] == str(
-        work / "inputs" / "params_for_id" / "S_params_for_id.json")
+    assert read["params_for_id"] == str(latest)
     assert read["missing"] == []
 
 
