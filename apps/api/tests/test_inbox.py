@@ -67,8 +67,11 @@ def test_a_delivery_is_staged_and_not_loaded(client):
 def test_peek_returns_metadata_only(client):
     _deliver(client, EXAMPLE.read_bytes())
     pending = client.get("/api/inbox").json()["pending"]
-    assert set(pending) == {"origin", "filename", "bytes", "members"}
+    # Names only -- `user_funcs` is the subset of `members` that is Python a load
+    # would install, never its contents.
+    assert set(pending) == {"origin", "filename", "bytes", "members", "user_funcs"}
     assert pending["bytes"] == EXAMPLE.stat().st_size
+    assert pending["user_funcs"] == []
 
 
 def test_an_empty_inbox_is_not_an_error(client):
