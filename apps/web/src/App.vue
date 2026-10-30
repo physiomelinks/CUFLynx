@@ -138,6 +138,9 @@ const loadingOutputs = ref(false)
 // What the last load actually found, so an empty panel is never left to be
 // interpreted: "there was nothing" and "it could not be read" look identical.
 const loadedOutputsSummary = ref('')
+// Outputs the opened study wrote outside its working dir, which did not travel with it
+// (the load's `warnings`): named in a banner so a missing panel is explained.
+const loadedOutputsWarnings = ref([])
 
 async function loadOutputsFromDirectory(runDir) {
   const dir = workingDir.value.trim()
@@ -147,6 +150,7 @@ async function loadOutputsFromDirectory(runDir) {
     const found = await loadWorkingDir(
       dir, model.filePrefix.value || undefined, runDir)
     loadedOutputs.value = found
+    loadedOutputsWarnings.value = found.warnings ?? []
     // A calibration workflow's run directory holds no one study: its steps each
     // have their own. Reopen it as the workflow, whose tabs load each of them.
     if (found.workflow_run) {
@@ -3256,6 +3260,16 @@ watch(() => obs.obsData.value, scheduleRun)
             <summary>To enable CVODE_myokit, install a C compiler</summary>
             <pre class="compiler-hint">{{ cppCompiler.hint }}</pre>
           </details>
+        </Message>
+
+        <Message
+          v-if="loadedOutputsWarnings.length"
+          severity="warn"
+          :closable="false"
+          class="warn-banner"
+          data-testid="outside-outputs-warning"
+        >
+          {{ loadedOutputsWarnings.join(' ') }}
         </Message>
 
         <Message

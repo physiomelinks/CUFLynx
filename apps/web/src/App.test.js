@@ -338,6 +338,26 @@ describe('App.vue', () => {
     })
   })
 
+  it('names the outputs an opened study left outside its working dir', async () => {
+    localStorage.setItem('cuflynx-working-dir', '/data/study')
+    const warning = 'This study wrote output outside its working dir, which was not carried '
+      + 'with the study: /elsewhere/sobol (sensitivity, sobol, missing here). Only what is '
+      + 'inside the working dir travels with it.'
+    loadWorkingDir.mockResolvedValueOnce({ found: [], missing: [], warnings: [warning] })
+    const wrapper = shallowMount(App, { global: { stubs: { Message: false } } })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="outside-outputs-warning"]').exists()).toBe(false)
+
+    wrapper.findComponent({ name: 'FileImport' }).vm.$emit('load-working-dir')
+    await flushPromises()
+    const banner = wrapper.findComponent('[data-testid="outside-outputs-warning"]')
+    expect(banner.exists()).toBe(true)
+    expect(banner.props('severity')).toBe('warn')
+    expect(banner.text()).toContain('/elsewhere/sobol')
+    expect(banner.text()).toContain('not carried with the study')
+    wrapper.unmount()
+  })
+
   describe('resizable RHS import column', () => {
     const dragTo = async (wrapper, clientX) => {
       await wrapper.find('[data-testid="rhs-handle"]').trigger('mousedown')
