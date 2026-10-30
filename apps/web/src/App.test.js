@@ -273,6 +273,25 @@ describe('App.vue', () => {
       wrapper.unmount()
     })
 
+    it('opens a zip dropped on the page body as a working dir', async () => {
+      const wrapper = shallowMount(App, { attachTo: document.body })
+      await flushPromises()
+      const importer = wrapper.findComponent({ name: 'FileImport' })
+      const handleOmex = vi.fn()
+      const handleWorkingDirZip = vi.fn().mockResolvedValue(true)
+      importer.vm.handleOmex = handleOmex
+      importer.vm.isOmexName = (n) => /\.omex$/i.test(n)
+      importer.vm.handleWorkingDirZip = handleWorkingDirZip
+      importer.vm.isZipName = (n) => /\.zip$/i.test(n)
+
+      window.dispatchEvent(fileDrop(['study.zip']))
+      await flushPromises()
+      expect(handleWorkingDirZip).toHaveBeenCalledTimes(1)
+      expect(handleOmex).not.toHaveBeenCalled()
+      expect(wrapper.find('[data-testid="page-drop-hint"]').exists()).toBe(false)
+      wrapper.unmount()
+    })
+
     it('says which box to use for anything that is not an archive', async () => {
       const wrapper = shallowMount(App, { attachTo: document.body })
       await flushPromises()

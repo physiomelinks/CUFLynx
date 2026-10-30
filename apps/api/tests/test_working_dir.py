@@ -485,3 +485,173 @@ def test_a_zipped_and_moved_working_dir_opens_whole(client, tmp_path, monkeypatc
 def test_the_layout_names_every_input_kind():
     assert set(working_dir.KINDS) >= {"model", "obs_data", "params_for_id", "user_inputs",
                                       "funcs", "workflows", "generated_models"}
+
+
+# --- a dropped zip of a working dir ------------------------------------------------------
+
+REPO_RESOURCES = Path(__file__).resolve().parents[3] / "resources"
+
+
+@pytest.fixture
+def staged_zips(tmp_path, monkeypatch):
+    staging = tmp_path / "staged"
+    monkeypatch.setattr(main, "WORKING_DIR_ZIPS", staging)
+    return staging
+
+
+def _zip_working_dir(work, archive, *, folder=True):
+    """``work`` zipped as a folder (``W/...``) or as its contents, then removed."""
+    root_dir, base_dir = (work.parent, work.name) if folder else (work, ".")
+    made = shutil.make_archive(str(archive.with_suffix("")), "zip", root_dir=root_dir,
+                               base_dir=base_dir)
+    shutil.rmtree(work)
+    return Path(made)
+
+
+def _drop_zip(client, archive, **params):
+    with open(archive, "rb") as fh:
+        return client.post("/api/working-dir/zip", params=params,
+                           files={"file": (archive.name, fh, "application/zip")})
+
+
+def _zip_of(members, archive):
+    with zipfile.ZipFile(archive, "w") as zf:
+        for name, data in members.items():
+            zf.writestr(name, data)
+    return archive
+
+
+MANIFEST_ONLY = json.dumps({"schema": 1, "study_name": "LV", "file_prefix": "LV"})
+
+
+@pytest.mark.parametrize("folder", [True, False], ids=["folder", "contents"])
+def test_a_dropped_working_dir_zip_is_extracted_and_opens_with_its_runs_and_settings(
+        client, tmp_path, monkeypatch, staged_zips, requires_ca, folder):
+    monkeypatch.setattr(uf, "_circulatory_autogen_src", lambda: str(tmp_path / "ca"))
+    _build_working_dir(tmp_path / "orig" / "W")
+    (tmp_path / "Downloads").mkdir()
+    archive = _zip_working_dir(tmp_path / "orig" / "W", tmp_path / "Downloads" / "study.zip",
+                               folder=folder)
+
+    inspected = _drop_zip(client, archive, zip_path=str(archive))
+    assert inspected.status_code == 200, inspected.text
+    body = inspected.json()
+    assert body["kind"] == "working_dir" and body["study_name"] == "LV"
+    # Beside the zip, named for the study: not in the pruned uploads dir.
+    assert body["default_dir"] == str(tmp_path / "Downloads" / "LV")
+
+    extracted = client.post("/api/working-dir/zip/extract", json={
+        "token": body["token"], "dest": body["default_dir"]})
+    assert extracted.status_code == 200, extracted.text
+    opened = extracted.json()
+    work = tmp_path / "Downloads" / "LV"
+    assert opened["dir"] == str(work)
+    assert opened["study_name"] == "LV" and opened["warnings"] == []
+    assert (work / "LV_cuflynx_study.json").is_file()
+    assert not list(staged_zips.iterdir()), "the staged zip is left behind"
+
+    # What the app does with the answer: set the working dir and reload it.
+    loaded = client.get("/api/working-dir/load", params={"dir": opened["dir"]}).json()
+    assert {"calibration", "progress"} <= set(loaded["found"]), loaded.get("missing")
+    assert loaded["calibration"]["best"]["cost"] == pytest.approx(0.125)
+    study = client.post("/api/working-dir/study", json={"dir": opened["dir"]})
+    assert study.status_code == 200, study.text
+    assert study.json()["solver_settings"]["solver_info"]["MaximumStep"] == 0.0005
+    assert engine.dt == 0.005
+    assert main._models[study.json()["model_id"]].working_model == _stored(
+        work, "model", "LV.cellml")
+
+
+def test_a_zip_with_no_path_is_proposed_in_the_documents_dir_under_a_free_name(
+        client, tmp_path, monkeypatch, staged_zips):
+    monkeypatch.setattr(main, "_documents_dir", lambda: tmp_path / "Documents")
+    (tmp_path / "Documents" / "LV").mkdir(parents=True)
+    (tmp_path / "Documents" / "LV" / "other.txt").write_text("someone else's")
+    archive = _zip_of({"W/LV_cuflynx_study.json": MANIFEST_ONLY}, tmp_path / "W.zip")
+    body = _drop_zip(client, archive).json()
+    assert body["default_dir"] == str(tmp_path / "Documents" / "LV_2")
+
+
+def test_an_omex_dropped_as_a_zip_is_still_an_omex(client, tmp_path, staged_zips):
+    archive = tmp_path / "3compartment.zip"
+    shutil.copy(REPO_RESOURCES / "3compartment.omex", archive)
+    resp = _drop_zip(client, archive)
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"kind": "omex"}
+    # An OMEX carries a study manifest at its root too: manifest.xml is what decides.
+    archive = _zip_of({"manifest.xml": "<omexManifest/>",
+                       "LV_cuflynx_study.json": MANIFEST_ONLY}, tmp_path / "x.zip")
+    assert _drop_zip(client, archive).json() == {"kind": "omex"}
+    assert not staged_zips.exists() or not list(staged_zips.iterdir())
+
+
+@pytest.mark.parametrize("bad", ["W/../../evil.txt", "/tmp/evil.txt", "C:/evil.txt",
+                                 "W\\..\\..\\evil.txt"])
+def test_a_zip_with_an_entry_outside_its_folder_is_refused(client, tmp_path, staged_zips,
+                                                          bad):
+    archive = _zip_of({"W/LV_cuflynx_study.json": MANIFEST_ONLY, bad: "x"},
+                      tmp_path / "W.zip")
+    resp = _drop_zip(client, archive, zip_path=str(archive))
+    assert resp.status_code == 422, resp.text
+    assert "not extracted" in resp.json()["detail"]
+    assert not staged_zips.exists() or not list(staged_zips.iterdir())
+    assert not (tmp_path / "LV").exists() and not (tmp_path.parent / "evil.txt").exists()
+
+
+def test_a_zip_with_a_symlink_is_refused(client, tmp_path, staged_zips):
+    archive = tmp_path / "W.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("W/LV_cuflynx_study.json", MANIFEST_ONLY)
+        link = zipfile.ZipInfo("W/inputs")
+        link.external_attr = (0o120777 << 16)
+        zf.writestr(link, "/etc")
+    assert _drop_zip(client, archive).status_code == 422
+
+
+def test_a_zip_holding_no_study_is_refused(client, tmp_path, staged_zips):
+    archive = _zip_of({"a/b/LV_cuflynx_study.json": MANIFEST_ONLY, "x.txt": "x"},
+                      tmp_path / "x.zip")
+    resp = _drop_zip(client, archive)
+    assert resp.status_code == 422 and "holds no study" in resp.json()["detail"]
+
+
+def test_extracting_into_a_folder_holding_files_needs_confirmation(client, tmp_path,
+                                                                    staged_zips):
+    archive = _zip_of({"W/LV_cuflynx_study.json": MANIFEST_ONLY}, tmp_path / "W.zip")
+    token = _drop_zip(client, archive).json()["token"]
+    dest = tmp_path / "taken"
+    dest.mkdir()
+    (dest / "keep.txt").write_text("kept")
+    resp = client.post("/api/working-dir/zip/extract", json={"token": token, "dest": str(dest)})
+    assert resp.status_code == 409 and "already holds files" in resp.json()["detail"]
+    assert not (dest / "LV_cuflynx_study.json").exists()
+    resp = client.post("/api/working-dir/zip/extract",
+                       json={"token": token, "dest": str(dest), "overwrite": True})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["dir"] == str(dest)
+    assert (dest / "LV_cuflynx_study.json").is_file() and (dest / "keep.txt").is_file()
+
+
+def test_a_zip_with_files_beside_its_study_folder_opens_that_folder(client, tmp_path,
+                                                                     staged_zips):
+    archive = _zip_of({"W/LV_cuflynx_study.json": MANIFEST_ONLY, "README.txt": "x"},
+                      tmp_path / "W.zip")
+    token = _drop_zip(client, archive).json()["token"]
+    resp = client.post("/api/working-dir/zip/extract",
+                       json={"token": token, "dest": str(tmp_path / "out")})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["dir"] == str(tmp_path / "out" / "W")
+    assert (tmp_path / "out" / "README.txt").is_file()
+
+
+def test_outputs_the_manifest_records_outside_the_working_dir_are_warned_about(
+        client, tmp_path, staged_zips):
+    manifest = json.dumps({"schema": 1, "study_name": "LV",
+                           "outside_outputs": ["/data/emulators/shared"]})
+    archive = _zip_of({"LV_cuflynx_study.json": manifest}, tmp_path / "W.zip")
+    token = _drop_zip(client, archive).json()["token"]
+    resp = client.post("/api/working-dir/zip/extract",
+                       json={"token": token, "dest": str(tmp_path / "out")})
+    assert resp.status_code == 200, resp.text
+    [warning] = resp.json()["warnings"]
+    assert "/data/emulators/shared" in warning

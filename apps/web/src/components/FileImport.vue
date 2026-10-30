@@ -20,6 +20,8 @@ import {
   acceptInbox,
   rejectInbox,
   openStudyManifest,
+  inspectWorkingDirZip,
+  extractWorkingDirZip,
 } from '../lib/api'
 import { phlynxOpenUrl } from '../lib/examples'
 
@@ -78,6 +80,14 @@ const workingDirBrowserOpen = ref(false)
 const editParamsOpen = ref(false)
 const editObsOpen = ref(false)
 const startOpen = ref(false)
+// A dropped zip of a working dir, waiting for the user to say where to extract it:
+// `{token, study_name, filename}` from `/api/working-dir/zip`.
+const pendingZip = ref(null)
+const zipDest = ref('')
+const zipBusy = ref(false)
+// Set when the chosen folder already holds files: extracting there needs a second press.
+const zipOverwrite = ref('')
+const zipDestBrowserOpen = ref(false)
 
 // Drag feedback (#137): a dropzone highlights while a file is over it, so the
 // user can see the drop will land somewhere rather than guessing.
@@ -553,6 +563,11 @@ function installedFuncsNote(funcs) {
 async function handleOmex(files) {
   const omex = files.find((f) => isOmexName(f.name))
   if (!omex) return false
+  await importOmexFile(omex)
+  return true
+}
+
+async function importOmexFile(omex) {
   error.value = ''
   warnings.value = []
   try {
@@ -561,7 +576,75 @@ async function handleOmex(files) {
   } catch (e) {
     error.value = e?.response?.data?.detail || String(e)
   }
+}
+
+/**
+ * A .zip is either a zipped working dir (a `*_cuflynx_study.json` at its top) or an
+ * OMEX under another name; the server reads it and says which. An OMEX loads like any
+ * archive. A working dir is extracted where the user says (proposed: a folder named
+ * for the study beside the zip, else in their documents dir), becomes the working
+ * dir, and is opened from its manifest the way a dropped manifest is.
+ *
+ * Returns true when the drop was a zip and has been handled.
+ */
+async function handleWorkingDirZip(files) {
+  const file = files.find((f) => isZipName(f.name))
+  if (!file) return false
+  error.value = ''
+  warnings.value = []
+  const unreadable = unreadableDrop(file)
+  if (unreadable) {
+    error.value = unreadable
+    return true
+  }
+  try {
+    // `path` exists only where the desktop shell exposes one.
+    const found = await inspectWorkingDirZip(file, file.path)
+    if (found.kind === 'omex') {
+      await importOmexFile(file)
+      return true
+    }
+    pendingZip.value = { ...found, filename: file.name }
+    zipDest.value = found.default_dir
+    zipOverwrite.value = ''
+  } catch (e) {
+    error.value = e?.response?.data?.detail || String(e)
+  }
   return true
+}
+
+async function onExtractZip() {
+  const pending = pendingZip.value
+  if (!pending || !zipDest.value.trim()) return
+  zipBusy.value = true
+  error.value = ''
+  try {
+    const opened = await extractWorkingDirZip(pending.token, zipDest.value.trim(),
+                                              !!zipOverwrite.value)
+    pendingZip.value = null
+    zipOverwrite.value = ''
+    await openStudyDirectory(opened, pending.filename)
+    notice.value = `Extracted ${pending.filename} to ${opened.dir}; opening ` +
+      `${opened.study_name || 'the study'} from there`
+    warnings.value = opened.warnings || []
+  } catch (e) {
+    const detail = e?.response?.data?.detail || String(e)
+    if (e?.response?.status === 409) zipOverwrite.value = detail
+    else error.value = detail
+  } finally {
+    zipBusy.value = false
+  }
+}
+
+function onCancelZip() {
+  pendingZip.value = null
+  zipOverwrite.value = ''
+}
+
+// Browsing picks the folder to put the study in; the study's own folder goes inside it.
+function onZipParentPicked(dir) {
+  zipDest.value = `${String(dir).replace(/[/\\]+$/, '')}/${pendingZip.value?.study_name || 'study'}`
+  zipOverwrite.value = ''
 }
 
 /**
@@ -611,10 +694,21 @@ async function openStudyDirectory(opened, label) {
 // second copy of it: a study delivered by dropping on the page has to behave
 // exactly like one dropped on a box, and the way to guarantee that is for there
 // to be one function.
-defineExpose({ handleOmex, isOmexName, handleStudyManifest, isStudyManifestName })
+defineExpose({
+  handleOmex,
+  isOmexName,
+  handleStudyManifest,
+  isStudyManifestName,
+  handleWorkingDirZip,
+  isZipName,
+})
 
 function isOmexName(name) {
   return /\.omex$/i.test(String(name || ''))
+}
+
+function isZipName(name) {
+  return /\.zip$/i.test(String(name || ''))
 }
 
 function isStudyManifestName(name) {
@@ -624,7 +718,9 @@ function isStudyManifestName(name) {
 async function onManifestPick(event) {
   const files = filesFrom(event)
   resetPicker(event)
-  if (files.length) await handleStudyManifest(files)
+  if (!files.length) return
+  if (await handleWorkingDirZip(files)) return
+  await handleStudyManifest(files)
 }
 
 async function onCellmlDrop(event) {
@@ -646,6 +742,7 @@ async function onCellmlDrop(event) {
   // CellML server-side (#27) -- both are single files, so neither ever joins a
   // sister-file bundle.
   if (await handleOmex(files)) return
+  if (await handleWorkingDirZip(files)) return
   if (await handleStudyManifest(files)) return
   // `.py` is an *external python* model: a file holding the solver class itself
   // rather than a model description CUFLynx generates a solver from. It travels
@@ -691,6 +788,7 @@ async function onObsDrop(event) {
   resetPicker(event)
   if (!file) return
   if (await handleOmex([file])) return
+  if (await handleWorkingDirZip([file])) return
   if (await handleStudyManifest([file])) return
   if (!extOk(file.name, ['.json'])) {
     error.value = `Expected a .json file, got "${file.name}"`
@@ -726,6 +824,7 @@ async function onParamsDrop(event) {
   resetPicker(event)
   if (!file) return
   if (await handleOmex([file])) return
+  if (await handleWorkingDirZip([file])) return
   if (await handleStudyManifest([file])) return
   // JSON is the params_for_id form; a CSV is converted to it on upload.
   if (!extOk(file.name, ['.json', '.csv'])) {
@@ -773,9 +872,9 @@ async function onParamsDrop(event) {
           <i class="pi pi-file" /> Drop <strong>CellML</strong> (.cellml),
           <strong>Myokit</strong> (.mmt), <strong>EasyML</strong> (.model) or
           <strong>External Python</strong> (.py)
-          <small>one file, a non-flattened model with its sisters, or a .omex archive</small>
+          <small>one file, a non-flattened model with its sisters, a .omex archive, or a .zip of a working dir</small>
         </template>
-        <input type="file" accept=".cellml,.xml,.mmt,.model,.py,.omex" multiple @change="onCellmlDrop" />
+        <input type="file" accept=".cellml,.xml,.mmt,.model,.py,.omex,.zip" multiple @change="onCellmlDrop" />
       </label>
       <Button
         :label="startEditLabel"
@@ -806,7 +905,7 @@ async function onParamsDrop(event) {
           <i class="pi pi-chart-line" /> Drop <strong>obs_data.json</strong>
           <small>or click to browse</small>
         </template>
-        <input type="file" accept=".json,.omex" @change="onObsDrop" />
+        <input type="file" accept=".json,.omex,.zip" @change="onObsDrop" />
       </label>
       <Button
         label="Edit"
@@ -838,7 +937,7 @@ async function onParamsDrop(event) {
           <i class="pi pi-sliders-h" /> Drop <strong>params_for_id.json</strong>
           <small>or click to browse</small>
         </template>
-        <input type="file" accept=".json,.csv,.omex" @change="onParamsDrop" />
+        <input type="file" accept=".json,.csv,.omex,.zip" @change="onParamsDrop" />
       </label>
       <Button
         label="Edit"
@@ -907,11 +1006,11 @@ async function onParamsDrop(event) {
         />
         <label
           class="p-button p-button-text p-button-sm p-button-icon-only manifest-pick"
-          title="Open a study from its <study>_cuflynx_study.json, which circulatory_autogen writes beside the study's results"
+          title="Open a study from its <study>_cuflynx_study.json, which circulatory_autogen writes beside the study's results, or from a .zip of its working dir"
           data-testid="working-dir-manifest"
         >
           <i class="pi pi-file-import" />
-          <input type="file" accept=".json" hidden @change="onManifestPick" />
+          <input type="file" accept=".json,.zip" hidden @change="onManifestPick" />
         </label>
       </span>
     </label>
@@ -1067,6 +1166,56 @@ async function onParamsDrop(event) {
       </template>
     </Dialog>
 
+    <Dialog
+      :visible="!!pendingZip"
+      modal
+      header="Open a zipped working dir"
+      :closable="false"
+      :style="{ width: '34rem' }"
+      data-testid="zip-dialog"
+    >
+      <p class="inbox-intro">
+        <strong>{{ pendingZip?.filename }}</strong> holds the working dir of
+        <strong data-testid="zip-study">{{ pendingZip?.study_name }}</strong>. It is
+        extracted into this folder, which becomes the working dir, and the study opens
+        from there.
+      </p>
+      <span class="zip-dest">
+        <InputText v-model="zipDest" class="zip-dest-input" data-testid="zip-dest"
+                   @update:model-value="zipOverwrite = ''" />
+        <Button
+          icon="pi pi-folder-open"
+          size="small"
+          text
+          title="Browse for the folder to put the study in"
+          data-testid="zip-dest-browse"
+          @click="zipDestBrowserOpen = true"
+        />
+      </span>
+      <Message v-if="zipOverwrite" severity="warn" :closable="false" data-testid="zip-overwrite">
+        {{ zipOverwrite }} Extract into it anyway?
+      </Message>
+      <template #footer>
+        <Button label="Cancel" severity="secondary" text :disabled="zipBusy"
+                data-testid="zip-cancel" @click="onCancelZip" />
+        <Button
+          :label="zipOverwrite ? 'Extract anyway' : 'Extract and open'"
+          :severity="zipOverwrite ? 'warn' : undefined"
+          :loading="zipBusy"
+          :disabled="!zipDest.trim()"
+          data-testid="zip-extract"
+          @click="onExtractZip"
+        />
+      </template>
+    </Dialog>
+
+    <FileBrowserDialog
+      v-model:visible="zipDestBrowserOpen"
+      mode="dir"
+      title="Select the folder to put the study in"
+      @select="onZipParentPicked"
+    />
+
     <FileBrowserDialog
       v-model:visible="workingDirBrowserOpen"
       mode="dir"
@@ -1099,6 +1248,15 @@ async function onParamsDrop(event) {
 </template>
 
 <style scoped>
+.zip-dest {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+.zip-dest-input {
+  flex: 1;
+  min-width: 0;
+}
 .send-intro {
   margin: 0 0 0.75rem;
   font-size: 0.85rem;

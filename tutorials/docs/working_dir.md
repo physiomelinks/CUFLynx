@@ -80,20 +80,28 @@ relative to the folder it is in. So the folder is the whole study:
 zip -r BVC_RAAS6.zip BVC_RAAS6/
 ```
 
-Whoever receives it unzips it anywhere and opens it in CUFLynx in either of two ways:
+Whoever receives it opens it in CUFLynx in any of three ways:
 
-- **drop the study manifest** (`<study>_cuflynx_study.json`) onto the import
+- **drop the .zip** onto the import panel or anywhere on the page, or pick it with the
+  file button beside the Working dir field. CUFLynx asks where to extract it (a folder
+  named after the study, beside the zip in the desktop app, else in your Documents
+  folder), refuses to write into a folder that already holds files unless you confirm,
+  then sets the working dir to the extracted folder and loads it. A zip is read as a
+  working dir when it has a `<study>_cuflynx_study.json` at its top or one folder down;
+  one with a `manifest.xml` at its top is an OMEX and loads as one. A zip with an entry
+  that would land outside the folder (`..`, an absolute path, a link) is refused;
+- or unzip it anywhere and **drop the study manifest** (`<study>_cuflynx_study.json`) onto the import
   panel, or pick it with the file button beside the Working dir field. The app sets
   the working dir to the folder holding it and loads it;
-- **set the Working dir** to the unzipped folder and press the reload button
+- or **set the Working dir** to the unzipped folder and press the reload button
   (the circular arrow) beside it.
 
-Either way the model, obs_data, params_for_id, user funcs and solver settings come
+Each way the model, obs_data, params_for_id, user funcs and solver settings come
 back, with the best fit, the progress history, the sensitivity results, the UQ
 posterior and the emulator that were in the folder.
 
 In the browser (rather than the desktop app) a dropped file does not say which
-folder it came from, so there set the Working dir to the folder instead.
+folder it came from, so there drop the .zip or set the Working dir to the folder instead.
 
 ## A libcuflynx script run writes the same folder
 

@@ -695,6 +695,29 @@ export async function openStudyManifest(text, path) {
   return data
 }
 
+// What a dropped .zip is: `{kind: 'omex'}`, or a zipped working dir staged on the
+// server, `{kind: 'working_dir', token, study_name, default_dir}`. `path` is where the
+// zip is, when the desktop shell exposes it: the proposed folder is then beside it.
+export async function inspectWorkingDirZip(file, path) {
+  const form = new FormData()
+  form.append('file', file)
+  const { data } = await axios.post(url('/api/working-dir/zip'), form, {
+    params: path ? { zip_path: path } : {},
+  })
+  return data
+}
+
+// Extract a staged working-dir zip into `dest`. Answers like openStudyManifest, plus
+// `warnings`. A 409 means `dest` already holds files: ask, then pass `overwrite`.
+export async function extractWorkingDirZip(token, dest, overwrite = false) {
+  const { data } = await axios.post(url('/api/working-dir/zip/extract'), {
+    token,
+    dest,
+    overwrite,
+  })
+  return data
+}
+
 export async function loadWorkingDir(dir, filePrefix, runDir) {
   const params = new URLSearchParams({ dir })
   if (filePrefix) params.set('file_prefix', filePrefix)
