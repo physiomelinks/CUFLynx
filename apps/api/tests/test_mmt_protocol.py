@@ -444,6 +444,7 @@ def test_the_offered_obs_data_is_written_beside_the_converted_cellml(
     r = _upload_mmt(client, RESOURCES_DIR / "br-1977.mmt", str(tmp_path))
     offered = r.json()["protocol_obs_data"]
     written = Path(offered["path"])
+    assert written == tmp_path / "inputs" / "obs_data" / "br-1977_obs_data.json"
     assert written.is_file()
     assert json.loads(written.read_text())["protocol_info"]["sim_times"]
 
@@ -451,7 +452,8 @@ def test_the_offered_obs_data_is_written_beside_the_converted_cellml(
 @pytest.mark.integration
 def test_an_existing_obs_data_on_disk_is_never_overwritten(client, requires_simulation, requires_myokit_parser, tmp_path):
     """It may hold hand-written data_items that nothing here could reconstruct."""
-    existing = tmp_path / "br-1977_obs_data.json"
+    existing = tmp_path / "inputs" / "obs_data" / "br-1977_obs_data.json"
+    existing.parent.mkdir(parents=True)
     existing.write_text('{"mine": true}')
 
     r = _upload_mmt(client, RESOURCES_DIR / "br-1977.mmt", str(tmp_path))
