@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, watch, onMounted } from 'vue'
+import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import ControlPanel from './components/ControlPanel.vue'
 import VariableList from './components/VariableList.vue'
 import PlotPanel from './components/PlotPanel.vue'
@@ -301,6 +301,12 @@ const packaged = ref(false)
 // analysis panels mark the Cores field invalid and block the run until it's set
 // back to 1. Tracks the selected interpreter.
 const mpiexecAvailable = ref(true)
+// Whether the server actually told us. The permissive default above is right for
+// *gating* (never block Cores > 1 on a question nobody answered), but wrong for
+// *reporting*: a badge claiming "MPI ✓" on no information would be a guess. A
+// real server always sends the field, so this is only false in tests and before
+// the first /api/config.
+const mpiexecKnown = ref(false)
 
 // circulatory_autogen source directory (top-bar "CA dir"), shared server-side via
 // /api/config. Optional since #18 -- the app bundles libCUFLynx -- and set only to
@@ -365,12 +371,19 @@ const compilerAlternatives = computed(() =>
 // UQ reproducible. Persisted server-side via /api/config, so it survives a restart.
 const seed = ref(null)
 
+// Where the "Edit" button sends a study (Settings popup, developer setting).
+// Blank = the production PhLynx that `lib/examples.js` names. Persisted
+// server-side via /api/config, so it survives a restart.
+const phlynxUrl = ref('')
+
 // Last value the server told us about. Hydrating pythonPath from /api/config
 // triggers the watch below, and without this it would POST the value straight
 // back on every load.
 let serverPythonPath = ''
 // Same guard for the seed: hydrating it must not immediately POST it back.
 let serverSeed = null
+// And for the PhLynx URL.
+let serverPhlynxUrl = ''
 
 function applyConfigPayload(c) {
   caDir.value = c.ca_dir
@@ -391,8 +404,11 @@ function applyConfigPayload(c) {
   serverPythonPath = pythonPath.value
   seed.value = c.seed ?? null
   serverSeed = seed.value
+  phlynxUrl.value = c.phlynx_url ?? ''
+  serverPhlynxUrl = phlynxUrl.value
   packaged.value = c.packaged ?? false
   mpiexecAvailable.value = c.mpiexec_available ?? true
+  mpiexecKnown.value = c.mpiexec_available !== undefined
 }
 
 // Persist the interpreter choice server-side (it's what spawns the runners).
@@ -435,6 +451,18 @@ watch(seed, async (s) => {
   }
 })
 
+// Persist the PhLynx URL. Clearing it is a real choice -- "back to the production
+// PhLynx" -- so an empty string POSTs too rather than being skipped.
+watch(phlynxUrl, async (u) => {
+  if (u === serverPhlynxUrl) return
+  try {
+    serverPhlynxUrl = u
+    applyConfigPayload(await setConfig({ phlynxUrl: u }))
+  } catch {
+    /* keep the in-session choice even if persisting fails */
+  }
+})
+
 async function applyCaDir(dir) {
   try {
     applyConfigPayload(await setConfig(dir))
@@ -444,6 +472,22 @@ async function applyCaDir(dir) {
   } catch {
     /* leave previous value on error */
   }
+}
+
+/**
+ * Go back to the libCUFLynx that ships in the app.
+ *
+ * The empty string is the backend's reset signal, not a no-op: `POST /api/config`
+ * leaves the CA dir alone when the field is absent and clears it only when it is
+ * explicitly '' — so this must send it rather than omit it. The setting is
+ * persisted and re-applied at every launch, which is what made it a one-way door
+ * without this.
+ *
+ * Takes effect fully on the next launch: Python caches the CA modules after the
+ * first simulation, so an already-running engine keeps the modules it imported.
+ */
+async function resetCaDir() {
+  await applyCaDir('')
 }
 
 // Set when the user changes the backend solver selection, so closing Settings
@@ -736,6 +780,94 @@ function startRhsDrag(e) {
   document.body.style.userSelect = 'none'
   document.body.style.cursor = 'col-resize'
 }
+// ---------------------------------------------------------------------------
+// A study can be dropped anywhere on the page
+//
+// An archive *is* the study -- model, observations and parameters at once -- so
+// there is no box it belongs to more than another, and requiring the user to
+// find the CellML one is a rule they have to learn for no reason. Every other
+// kind of file still goes to its own box, because for those the box is the only
+// thing that says what the file is *for*: the same .json can be an obs_data or a
+// params_for_id.
+//
+// Without a window-level handler the browser handles the drop itself and
+// navigates away from the app, which looks exactly like nothing happening.
+const fileImport = ref(null)
+const draggingFile = ref(false)
+const dropHint = ref('')
+let dragDepth = 0
+
+function dropHasFiles(event) {
+  const types = event?.dataTransfer?.types
+  return !!types && Array.from(types).includes('Files')
+}
+
+function onWindowDragEnter(event) {
+  if (!dropHasFiles(event)) return
+  dragDepth += 1
+  draggingFile.value = true
+}
+
+function onWindowDragLeave(event) {
+  if (!dropHasFiles(event)) return
+  // dragenter/dragleave fire for every element crossed, so a counter is what
+  // distinguishes "left the window" from "moved onto a child".
+  dragDepth = Math.max(0, dragDepth - 1)
+  if (dragDepth === 0) draggingFile.value = false
+}
+
+function onWindowDragOver(event) {
+  if (!dropHasFiles(event)) return
+  // Both required: without preventDefault the drop event never fires, and the
+  // browser opens the file in place of the app.
+  event.preventDefault()
+}
+
+async function onWindowDrop(event) {
+  if (!dropHasFiles(event)) return
+  dragDepth = 0
+  draggingFile.value = false
+  // A box already took it -- including a file the box rejected, which is its
+  // business to report and not ours to second-guess. Read from an explicit mark
+  // rather than `defaultPrevented`: anything on the way up may set that, and it
+  // cannot say *who* handled the drop.
+  if (event.cuflynxHandledByBox) return
+  event.preventDefault()
+
+  const files = Array.from(event.dataTransfer?.files || [])
+  const importer = fileImport.value
+  // The ref can be empty or half-built -- a drop landing during teardown, or
+  // before the child has mounted -- and a page-wide listener is exactly the
+  // place that shows up.
+  if (!files.length || typeof importer?.isOmexName !== 'function') return
+  if (files.some((f) => importer.isOmexName(f.name))) {
+    dropHint.value = ''
+    await importer.handleOmex(files)
+    return
+  }
+  // Deliberately not guessed at. A .cellml could be the model or a sister file,
+  // and a .json could be either of the two studies files -- the box is what says
+  // which, so the honest answer is to name the box rather than pick one.
+  dropHint.value =
+    `Only a .omex study can be dropped anywhere on the page. Drop ` +
+    `${files.length > 1 ? 'these files' : `"${files[0].name}"`} on the model, ` +
+    `obs_data or params box to say which it is.`
+}
+
+onMounted(() => {
+  window.addEventListener('dragenter', onWindowDragEnter)
+  window.addEventListener('dragleave', onWindowDragLeave)
+  window.addEventListener('dragover', onWindowDragOver)
+  window.addEventListener('drop', onWindowDrop)
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('dragenter', onWindowDragEnter)
+  window.removeEventListener('dragleave', onWindowDragLeave)
+  window.removeEventListener('dragover', onWindowDragOver)
+  window.removeEventListener('drop', onWindowDrop)
+})
+
 function restoreRhs() {
   rhsWidth.value = RHS_DEFAULT_WIDTH
 }
@@ -1480,7 +1612,34 @@ const pythonNotReady = computed(() => {
 // configuration that can mismatch mpi4py's runtime.
 const pythonMpi = computed(() => {
   const p = selectedPython.value
-  if (!p) return null
+  if (!p) {
+    // No *probed* entry for the selection. That is not the rare case it reads
+    // as: it is the packaged app's default, where no interpreter is configured
+    // and analyses run in the bundle itself, and it is also any path the user
+    // browsed to rather than picked from the list. Showing nothing there meant
+    // the badge vanished on a machine whose multi-core runs work perfectly --
+    // reported as "I don't have the MPI tick, but MPI is working fine".
+    //
+    // The server has already answered this: `mpiexec_available` resolves the
+    // launcher for the *selected* interpreter, by the same `resolve_mpiexec`
+    // the run itself calls. So defer to it rather than staying silent. It
+    // cannot distinguish the environment's own launcher from a PATH one, so
+    // this arm has two states where the probed arm has three.
+    if (!mpiexecKnown.value) return null
+    return mpiexecAvailable.value
+      ? {
+          mpi: true,
+          label: 'MPI ✓',
+          title:
+            'An MPI launcher resolves for the interpreter analyses run in: ' +
+            'Cores > 1 available.',
+        }
+      : {
+          mpi: false,
+          label: 'MPI ✗',
+          title: 'No MPI launcher resolves for this interpreter: Cores > 1 unavailable.',
+        }
+  }
   if (p.mpi) {
     return {
       mpi: true,
@@ -1991,6 +2150,24 @@ function onResetBest() {
   runSimulation()
 }
 
+// Whether the UQ on screen carries a posterior median, to gate the "Reset to UQ
+// median" button. Present for a run loaded from an outputs directory as much as
+// for one just finished here: both fill `uq.params` from the same summary.
+const hasUqMedian = computed(() => uq.medianParams.value != null)
+
+// Reset all parameter values to the posterior median of the UQ on screen.
+//
+// Reuses the best-fit write-back rather than a second one: a UQ parameter name is
+// a member qname just as a best-fit name is, so the same `paramSpecs` lookup puts
+// a grouped parameter on its anchor slider (#193) instead of adding a stray
+// slider per member.
+function onResetUqMedian() {
+  const median = uq.medianParams.value
+  if (!median) return
+  applyBestParams(sliders, paramsForId.paramSpecs.value, median)
+  runSimulation()
+}
+
 // --- Save / load slider values to a file (.npy default, .csv) — issue #106 ---
 const saveParamsOpen = ref(false)
 const savedParamsBrowserOpen = ref(false)
@@ -2158,6 +2335,31 @@ function onParamsLoaded(data) {
   // Keep the raw entries (with param_type) + filename for the Edit dialog.
   loadedParamsRaw.value = data.params
   loadedParamsFilename.value = data.filename
+  applyBaselines(data.baselines)
+}
+
+/**
+ * Apply the params editor's baseline column (#350), after importParams has
+ * rebuilt the sliders.
+ *
+ * A calibrated parameter's baseline is where its slider starts, so it goes
+ * through applyValues (which clamps it into the slider's range). One that is not
+ * calibrated has no slider, so it becomes a fixed value the solver is given --
+ * without which editing a non-calibrated parameter would change nothing at all,
+ * which is the gap this closes.
+ *
+ * Only called with what the editor sends; a params file loaded from disk carries
+ * no baselines and leaves both untouched.
+ */
+function applyBaselines(baselines) {
+  if (!baselines || typeof baselines !== 'object') return
+  sliders.clearFixedValues()
+  sliders.applyValues(baselines)
+  for (const [qname, value] of Object.entries(baselines)) {
+    // setFixedValue ignores a qname that has a slider, so the two halves cannot
+    // both claim the same parameter.
+    sliders.setFixedValue(qname, value)
+  }
 }
 
 function onObsDataLoaded(payload) {
@@ -2304,8 +2506,12 @@ const plotGroups = computed(() => {
           controlled: false,
           simResult: { time: exp.time, outputs: { [v.qname]: exp.outputs?.[v.qname] ?? [] } },
           savedSeries: savedRuns.seriesFor(v.qname, e),
+          // This experiment's sub-experiment durations, so a constant's line is
+          // drawn only across the one its operation reduced (#347).
+          subexpTimes: (pi?.sim_times ?? [])[e] ?? [],
           dataItems: attachOutputSeries(
-            overlayItemsFor(obs.obsData.value, e, v.qname),
+            // The whole group's qnames: one trace can be named by several (#347).
+            overlayItemsFor(obs.obsData.value, e, v.qnames ?? [v.qname]),
             exp.output_series,
             allItems,
           ),
@@ -2342,7 +2548,7 @@ const plotGroups = computed(() => {
       simResult: { time: sim.result.value.time, outputs: { [v.qname]: out[v.qname] ?? [] } },
       savedSeries: savedRuns.seriesFor(v.qname),
       dataItems: attachOutputSeries(
-        overlayItemsFor(obs.obsData.value, 0, v.qname),
+        overlayItemsFor(obs.obsData.value, 0, v.qnames ?? [v.qname]),
         sim.result.value.output_series,
         allItems,
       ),
@@ -2416,6 +2622,19 @@ watch(() => obs.obsData.value, scheduleRun)
 </script>
 
 <template>
+  <!-- Dropping a study anywhere is only a feature if the page says so while the
+       file is in the air; otherwise it reads as a thing that might work. -->
+  <div v-if="draggingFile" class="page-drop-veil" data-testid="page-drop-veil">
+    <div class="page-drop-card">
+      <i class="pi pi-inbox" />
+      <strong>Drop a .omex study anywhere</strong>
+      <small>Models, obs_data and params_for_id go to their own boxes</small>
+    </div>
+  </div>
+  <p v-if="dropHint" class="page-drop-hint" data-testid="page-drop-hint">
+    {{ dropHint }}
+    <button type="button" class="page-drop-dismiss" @click="dropHint = ''">Dismiss</button>
+  </p>
   <div class="layout">
     <header class="topbar">
       <h1>CUFLynx</h1>
@@ -2614,10 +2833,12 @@ watch(() => obs.obsData.value, scheduleRun)
           <ControlPanel
             :sliders="sliders.sliders"
             :has-best-fit="hasBestFit"
+            :has-uq-median="hasUqMedian"
             @update="onSliderUpdate"
             @remove="({ qname }) => sliders.removeSlider(qname)"
             @reset-init="onResetInit"
             @reset-best="onResetBest"
+            @reset-uq-median="onResetUqMedian"
             :saved-runs="savedRuns.items.value"
             @save-current="saveParamsOpen = true"
             @reset-saved="savedParamsBrowserOpen = true"
@@ -2890,6 +3111,7 @@ watch(() => obs.obsData.value, scheduleRun)
                 :data-items="cell.dataItems"
                 :emulator-features="emulatorFeatureMap"
                 :saved-series="cell.savedSeries ?? []"
+                :subexp-times="cell.subexpTimes ?? []"
                 :removable="!!cell.removeId"
                 :switchable="!!cell.xLabel"
                 :addable="!!cell.addable && plottableVariables.length > 0"
@@ -2994,9 +3216,11 @@ watch(() => obs.obsData.value, scheduleRun)
         </div>
         <div class="rhs-content">
         <FileImport
+          ref="fileImport"
           v-model:outputs-dir="outputsDir"
           @load-outputs="loadOutputsFromDirectory"
           :model-id="model.modelId.value"
+          :phlynx-url="phlynxUrl"
           :current-params="loadedParamsRaw"
           :model-variables="model.variables.value"
           :model-name="model.name.value"
@@ -3064,6 +3288,23 @@ watch(() => obs.obsData.value, scheduleRun)
               title="Browse for the circulatory_autogen directory"
               data-testid="ca-browse"
               @click="caBrowserOpen = true"
+            />
+            <!--
+              Without this the setting was a one-way door: the picker could only
+              point somewhere, the saved value is re-applied at every launch, and
+              there was no way back to the engine in the bundle short of editing
+              config.json by hand. Only shown when one is set, so it is not an
+              inert button on a default install.
+            -->
+            <Button
+              v-if="caDir"
+              icon="pi pi-replay"
+              size="small"
+              text
+              title="Reset to shipped libCUFLynx"
+              aria-label="Reset to shipped libCUFLynx"
+              data-testid="ca-reset"
+              @click="resetCaDir"
             />
             <span
               v-if="!caExists"
@@ -3271,6 +3512,34 @@ watch(() => obs.obsData.value, scheduleRun)
         <p class="settings-hint">
           Set a seed to make calibration / sensitivity / UQ runs repeatable. Leave
           blank (clear it) for non-deterministic runs.
+        </p>
+
+        <hr class="settings-sep" />
+
+        <!--
+          Developer setting. phlynx.com serves PhLynx's `main`, so the exchange
+          cannot be checked against a PhLynx branch without pointing "Edit"
+          somewhere else. Blank is production, which is what every ordinary user
+          wants -- hence the hint rather than a prominent control.
+        -->
+        <label class="settings-row">
+          <span
+            class="settings-label"
+            title="Where the Edit button sends a study. Leave blank for the production PhLynx at phlynx.com."
+          >
+            PhLynx URL (developer)
+          </span>
+          <InputText
+            v-model="phlynxUrl"
+            size="small"
+            placeholder="https://www.phlynx.com"
+            data-testid="phlynx-url-input"
+          />
+        </label>
+        <p class="settings-hint">
+          Where <strong>Edit</strong> sends a study. Leave blank for the production
+          PhLynx. Set it to a dev server (e.g. <code>http://localhost:5174</code>) to
+          check the exchange against a PhLynx branch before it is merged.
         </p>
 
         <hr class="settings-sep" />
@@ -4018,5 +4287,58 @@ watch(() => obs.obsData.value, scheduleRun)
 .cost-pin.on {
   background: var(--p-highlight-background, #eef3fb);
   border-color: var(--p-primary-color, #6f9fd8);
+}
+
+/* Sits above everything and takes no pointer events: the drop has to reach the
+   dropzone underneath when the user does aim at one. */
+.page-drop-veil {
+  position: fixed;
+  inset: 0;
+  z-index: 3000;
+  pointer-events: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--p-content-background, #fff) 55%, transparent);
+  border: 3px dashed var(--p-primary-color, #6366f1);
+}
+.page-drop-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 1.25rem 2rem;
+  border-radius: 12px;
+  background: var(--p-content-background, #fff);
+  box-shadow: 0 8px 30px rgb(0 0 0 / 18%);
+}
+.page-drop-card .pi {
+  font-size: 1.8rem;
+  color: var(--p-primary-color, #6366f1);
+}
+.page-drop-card small {
+  opacity: 0.7;
+}
+.page-drop-hint {
+  position: fixed;
+  bottom: 1rem;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 3001;
+  max-width: 46rem;
+  margin: 0;
+  padding: 0.6rem 0.9rem;
+  border-radius: 8px;
+  background: var(--p-content-background, #fff);
+  border: 1px solid var(--p-content-border-color, #d4d4d8);
+  box-shadow: 0 6px 20px rgb(0 0 0 / 15%);
+}
+.page-drop-dismiss {
+  margin-left: 0.6rem;
+  border: 0;
+  background: none;
+  color: var(--p-primary-color, #6366f1);
+  cursor: pointer;
+  text-decoration: underline;
 }
 </style>

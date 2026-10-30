@@ -83,6 +83,9 @@ for runner in (
     # CUFLynx has to import either layout (CA #437). One resolver, used by both
     # tiers -- so it ships here with the modules that use it.
     "ca_imports.py",
+    # The fields the runners read out of CA's parsed dicts. A leaf like ca_imports --
+    # stdlib and ca_imports only -- so it ships with them for the same reason.
+    "ca_obs.py",
     "local_sensitivity.py",
     # Every runner writes its results in circulatory_autogen's own formats and the
     # managers read them back from there (#210); this module is the one place that
@@ -123,6 +126,15 @@ datas += examples.example_datas()
 # by platform, so the headers must land where the *frozen* interpreter will look:
 #   - posix (Linux/macOS): <bundle>/include/python<X.Y>
 #   - nt (Windows):        <bundle>/Include   (capital I, no version dir)
+#
+# On macOS shipping them here is necessary but NOT sufficient, and for a while it
+# was not even used. distutils resolves the include directory from the *build*
+# interpreter's baked-in INCLUDEPY, an absolute path — /Library/Frameworks/... on
+# a framework build — so the frozen app looked on the build machine's disk and
+# never at the copy beside it. That path exists on a GitHub runner, which is why
+# every smoke test passed while users got 'Python.h' file not found from a
+# perfectly healthy Xcode. packaging/rthook_myokit.py puts this directory back on
+# the compiler's search path at run time; keep the two in step.
 # Shipping to the posix location on Windows is why CVODE_myokit there died with
 #   fatal error C1083: Cannot open include file: 'Python.h'
 # even though MSVC ran fine. (Build machine needs python3-dev / the Xcode CLT / the
@@ -626,6 +638,13 @@ _BASE_EXCLUDES = (
     # switch this one asset over to Cython's build_ext, making the most fragile runtime path
     # in the app behave differently in the bundle nobody builds locally.
     "Cython",
+    # Matlogica's AADC and aadc-ode are proprietary, binary-only and licensed to each
+    # user, so they are never bundled: a user installs them into the Python set in
+    # Settings -> Python (see apps/api/aadc_check.py). libcuflynx imports them lazily
+    # behind ImportError guards, but collect_submodules("libcuflynx") still makes
+    # PyInstaller trace those imports, so a build machine with them installed would ship them.
+    "aadc",
+    "aadc_ode",
 )
 
 # ...except that one of them is dead weight only in the ordinary bundles. autoemulate's

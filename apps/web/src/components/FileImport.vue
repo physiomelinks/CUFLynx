@@ -16,7 +16,6 @@ import {
   editModelSource,
   uploadOmex,
   sendToPhlynx,
-  phlynxDownloadRequest,
   peekInbox,
   acceptInbox,
   rejectInbox,
@@ -39,6 +38,9 @@ const props = defineProps({
   obsProtocolInfo: { type: Object, default: null },
   experimentCount: { type: Number, default: 0 },
   loadedObsFilename: { type: String, default: null },
+  // Where "Edit" sends the study. Blank = the production PhLynx; set from the
+  // developer setting so the exchange can be checked against a PhLynx branch.
+  phlynxUrl: { type: String, default: '' },
   // Enables the pipeline/plotting export buttons (a model must be loaded).
   canExport: { type: Boolean, default: false },
   // Gates the group/modifier buttons in the params editor: the CasADi backend
@@ -103,12 +105,14 @@ const paramsLoaded = computed(() => !!props.loadedFilename)
 // model's is the .mmt it was converted from — opening a CellML builder on either
 // would show the user a model they did not write and cannot edit there.
 //
-// `.mmt` is spotted through `converted_from` rather than through the model
-// format: the conversion is what makes the loaded model CellML, so by the time
-// it is loaded nothing else remembers the file was Myokit.
+// `.mmt` and EasyML's `.model` are spotted through `converted_from` rather than
+// through the model format: the conversion is what makes the loaded model
+// CellML, so by the time it is loaded nothing else remembers what the file was.
 const sourceExt = computed(() => {
   if (props.modelFormat === 'external_python') return '.py'
-  if (/\.mmt$/i.test(String(props.convertedFrom || ''))) return '.mmt'
+  const from = String(props.convertedFrom || '')
+  if (/\.mmt$/i.test(from)) return '.mmt'
+  if (/\.model$/i.test(from)) return '.model'
   return ''
 })
 
@@ -162,6 +166,9 @@ async function onStartEdit() {
   }
   // A CellML model goes to PhLynx as the whole study, so the user first says
   // which parameter values should travel with it (#290).
+  // Clear any previous result: its links point at the *previous* study's
+  // bytes, and offering those again would silently send the wrong thing.
+  sendResult.value = null
   sendOpen.value = true
 }
 
@@ -198,9 +205,14 @@ function sendOptions() {
 }
 
 // What the send did, beyond opening the tab: a parameter that could not be
-// written is a value PhLynx will not see, and one written outside
-// `parameters` / `parameters_global` is one PhLynx will not read back (#287).
+// written is a value PhLynx will not see, and one written outside a parameter
+// component is one PhLynx will not read back (#287).
 // Both are reported rather than left for the user to discover downstream.
+//
+// The components are not named here any more: there are two conventions now
+// (PhLynx renamed them to instance_parameters / global_parameters, #345) and a
+// message naming one pair reads as a bug on a model using the other. The offending
+// names carry their own component, which is the part the user has to act on.
 function sendNotice(res) {
   const parts = [`Sent ${res.member_count} files to PhLynx.`]
   if (res.unresolved?.length) {
@@ -208,8 +220,8 @@ function sendNotice(res) {
   }
   if (res.outside_parameters?.length) {
     parts.push(
-      `Written outside parameters/parameters_global, so PhLynx will not pick ` +
-        `them up: ${res.outside_parameters.join(', ')}.`,
+      `Written outside the model's parameter components, so PhLynx will not ` +
+        `pick them up: ${res.outside_parameters.join(', ')}.`,
     )
   }
   return parts.join(' ')
@@ -217,33 +229,58 @@ function sendNotice(res) {
 
 // Above the size guard the archive cannot ride in a URL — browsers truncate a
 // long one silently — so it is handed over as a file to drop into PhLynx.
-async function downloadArchive(filename) {
-  const { data } = await phlynxDownloadRequest(props.modelId, sendOptions())
-  const href = URL.createObjectURL(data)
-  const a = document.createElement('a')
-  a.href = href
-  a.download = filename
-  a.click()
-  URL.revokeObjectURL(href)
-}
+// What a completed send offers the user. Held rather than acted on: the links
+// below are real anchors the user clicks, never a scripted `window.open`.
+//
+// pywebview's macOS backend forwards a new-window request only when the
+// navigation type is `WKNavigationTypeLinkActivated` -- a genuine link click.
+// A scripted open is `WKNavigationTypeOther`, so it was dropped silently and the
+// packaged Mac app reported a successful send while doing nothing (#340). Linux
+// happened to work because the GTK backend keys off the `_blank` frame name
+// instead. Do not "simplify" this back into a `window.open`.
+const sendResult = ref(null)
 
 async function onSendConfirm() {
   error.value = ''
   notice.value = ''
+  sendResult.value = null
   sending.value = true
   try {
     const res = await sendToPhlynx(props.modelId, sendOptions())
-    if (res.too_large) {
-      await downloadArchive(res.filename)
-      notice.value =
-        `${sendNotice(res)} The archive is too large to travel in a link ` +
-        `(${Math.round(res.bytes / 1024)} kB), so it was downloaded as ` +
-        `${res.filename} — open PhLynx and import it.`
-    } else {
-      window.open(phlynxOpenUrl(res.base64), '_blank', 'noopener')
-      notice.value = sendNotice(res)
+    sendResult.value = {
+      // Built once, here. Computing it on click would be a scripted navigation
+      // again, or a mousedown that races the click.
+      openUrl: res.too_large ? '' : phlynxOpenUrl(res.base64, props.phlynxUrl),
+      downloadUrl: res.download_url,
+      filename: res.filename,
+      tooLarge: !!res.too_large,
     }
-    sendOpen.value = false
+    notice.value = res.too_large
+      ? `${sendNotice(res)} The archive is too large to travel in a link ` +
+        `(${Math.round(res.bytes / 1024)} kB) — download it below and import it ` +
+        `into PhLynx by hand.`
+      : sendNotice(res)
+
+    // Try to open it for them, and fall back to the panel when that does not
+    // work. `window.open` returns null exactly where it must not be relied on:
+    // pywebview's macOS backend answers a scripted open with nil (#340), and a
+    // browser popup blocker does the same. Where it returns a window -- Linux's
+    // GTK backend, and every browser that allows it -- the send is one click, as
+    // it was before.
+    //
+    // The reason this is an *optimisation over* the links rather than the
+    // mechanism is that a non-null return is not proof: it is what the embedder
+    // chose to hand back. So the panel below is what makes the send work, and
+    // this only spares a click where it demonstrably can. If a future embedder
+    // lies about it, the failure is a dialog that closed too eagerly -- not a
+    // send that silently did nothing, which is what #340 was.
+    if (!res.too_large && window.open(sendResult.value.openUrl, '_blank', 'noopener')) {
+      sendOpen.value = false
+      return
+    }
+    // Otherwise the dialog stays open: it is where the links live. Putting them
+    // in the notice banner would leave a stale href pointing at a previous
+    // study's bytes, and would keep ~1.5 MB of base64 in the DOM after the fact.
   } catch (e) {
     error.value = e?.response?.data?.detail || String(e)
   } finally {
@@ -491,12 +528,22 @@ async function handleOmex(files) {
   return true
 }
 
+// Exposed so a drop anywhere on the page reaches this same handler rather than a
+// second copy of it: a study delivered by dropping on the page has to behave
+// exactly like one dropped on a box, and the way to guarantee that is for there
+// to be one function.
+defineExpose({ handleOmex, isOmexName })
+
 function isOmexName(name) {
   return /\.omex$/i.test(String(name || ''))
 }
 
 async function onCellmlDrop(event) {
   event.preventDefault?.()
+  // Claimed, so the page-wide handler in App.vue leaves it alone. An explicit
+  // mark rather than `defaultPrevented`, which anything on the way up may set --
+  // and which, being shared, cannot say *who* handled the drop.
+  if (event) event.cuflynxHandledByBox = true
   error.value = ''
   warnings.value = []
   // Accept a whole bundle: a non-flattened model plus the sister files it
@@ -506,16 +553,17 @@ async function onCellmlDrop(event) {
   resetPicker(event)
   if (!files.length) return
   // An archive is taken whole and returns early; what follows is the loose-file
-  // path. .mmt is accepted there and converted to CellML server-side (#27) -- a
-  // Myokit model is a single file, so it never joins a sister-file bundle.
+  // path. .mmt and openCARP's EasyML .model are accepted there and converted to
+  // CellML server-side (#27) -- both are single files, so neither ever joins a
+  // sister-file bundle.
   if (await handleOmex(files)) return
   // `.py` is an *external python* model: a file holding the solver class itself
   // rather than a model description CUFLynx generates a solver from. It travels
   // the same upload route, and the server answers with model_format:
   // "external_python" so the app can lock the backend to it.
-  const bad = files.find((f) => !extOk(f.name, ['.cellml', '.xml', '.mmt', '.py']))
+  const bad = files.find((f) => !extOk(f.name, ['.cellml', '.xml', '.mmt', '.py', '.model']))
   if (bad) {
-    error.value = `Expected a .cellml, .mmt, .py or .omex file, got "${bad.name}"`
+    error.value = `Expected a .cellml, .mmt, .model, .py or .omex file, got "${bad.name}"`
     return
   }
   const unreadable = files.map(unreadableDrop).find(Boolean)
@@ -528,6 +576,10 @@ async function onCellmlDrop(event) {
   const main = files.find((f) => f.name.toLowerCase().endsWith('.cellml')) ?? files[0]
   try {
     const data = await uploadCellML(files, props.outputsDir)
+    // What the import had to decide for itself. An EasyML model always has some:
+    // the format leaves the membrane equation out, so something was put in its
+    // place, and that is the user's to check rather than the log's to keep.
+    warnings.value = [...(data.warnings || [])]
     // Picked up by the modelId watcher, which runs after the parent has cleared
     // its obs store and after any pending obs_data has been re-attached.
     derivedObs.value = data.protocol_obs_data || null
@@ -539,6 +591,10 @@ async function onCellmlDrop(event) {
 
 async function onObsDrop(event) {
   event.preventDefault?.()
+  // Claimed, so the page-wide handler in App.vue leaves it alone. An explicit
+  // mark rather than `defaultPrevented`, which anything on the way up may set --
+  // and which, being shared, cannot say *who* handled the drop.
+  if (event) event.cuflynxHandledByBox = true
   error.value = ''
   warnings.value = []
   const [file] = filesFrom(event)
@@ -569,6 +625,10 @@ async function onObsDrop(event) {
 
 async function onParamsDrop(event) {
   event.preventDefault?.()
+  // Claimed, so the page-wide handler in App.vue leaves it alone. An explicit
+  // mark rather than `defaultPrevented`, which anything on the way up may set --
+  // and which, being shared, cannot say *who* handled the drop.
+  if (event) event.cuflynxHandledByBox = true
   error.value = ''
   warnings.value = []
   const [file] = filesFrom(event)
@@ -618,10 +678,11 @@ async function onParamsDrop(event) {
         </template>
         <template v-else>
           <i class="pi pi-file" /> Drop <strong>CellML</strong> (.cellml),
-          <strong>Myokit</strong> (.mmt) or <strong>External Python</strong> (.py)
+          <strong>Myokit</strong> (.mmt), <strong>EasyML</strong> (.model) or
+          <strong>External Python</strong> (.py)
           <small>one file, a non-flattened model with its sisters, or a .omex archive</small>
         </template>
-        <input type="file" accept=".cellml,.xml,.mmt,.py,.omex" multiple @change="onCellmlDrop" />
+        <input type="file" accept=".cellml,.xml,.mmt,.model,.py,.omex" multiple @change="onCellmlDrop" />
       </label>
       <Button
         :label="startEditLabel"
@@ -786,35 +847,75 @@ async function onParamsDrop(event) {
       :style="{ width: '30rem' }"
       data-testid="phlynx-send-dialog"
     >
-      <p class="send-intro">
-        The whole study travels — model, obs_data, params_for_id, and every file
-        the archive came with. Which parameter values should be written into the
-        model?
-      </p>
-      <div v-for="opt in SEND_SOURCES" :key="opt.value" class="send-option">
-        <label>
-          <input
-            v-model="sendSource"
-            type="radio"
-            name="phlynx-send-source"
-            :value="opt.value"
-            :disabled="sendSourceDisabled(opt.value)"
-            :data-testid="`phlynx-source-${opt.value}`"
-          />
-          <span :class="{ disabled: sendSourceDisabled(opt.value) }">{{ opt.label }}</span>
-        </label>
-      </div>
-      <p v-if="!bestFitAvailable" class="send-hint">
-        Set an outputs directory to send a calibration best fit.
-      </p>
+      <template v-if="!sendResult">
+        <p class="send-intro">
+          The whole study travels — model, obs_data, params_for_id, and every file
+          the archive came with. Which parameter values should be written into the
+          model?
+        </p>
+        <div v-for="opt in SEND_SOURCES" :key="opt.value" class="send-option">
+          <label>
+            <input
+              v-model="sendSource"
+              type="radio"
+              name="phlynx-send-source"
+              :value="opt.value"
+              :disabled="sendSourceDisabled(opt.value)"
+              :data-testid="`phlynx-source-${opt.value}`"
+            />
+            <span :class="{ disabled: sendSourceDisabled(opt.value) }">{{ opt.label }}</span>
+          </label>
+        </div>
+        <p v-if="!bestFitAvailable" class="send-hint">
+          Set an outputs directory to send a calibration best fit.
+        </p>
+      </template>
+
+      <!-- The archive is ready. These are REAL anchors on purpose: the user's
+           click is what makes the navigation a `WKNavigationTypeLinkActivated`
+           one, which is the only kind pywebview's macOS backend forwards to the
+           system browser. A scripted `window.open` here is silently dropped in
+           the packaged Mac app (#340). -->
+      <!-- Only reached when the automatic open did not happen: either the archive
+           is too large for a link, or the embedder refused the scripted open. So
+           this says what to do, without explaining a corner case on every send. -->
+      <template v-else>
+        <p class="send-intro">
+          <template v-if="sendResult.tooLarge">
+            The archive is ready, but too large to travel in a link — download it
+            and import it into PhLynx.
+          </template>
+          <template v-else>The archive is ready.</template>
+        </p>
+      </template>
+
       <template #footer>
-        <Button label="Cancel" severity="secondary" text @click="sendOpen = false" />
-        <Button
-          label="Send"
-          :loading="sending"
-          data-testid="phlynx-send-confirm"
-          @click="onSendConfirm"
-        />
+        <template v-if="!sendResult">
+          <Button label="Cancel" severity="secondary" text @click="sendOpen = false" />
+          <Button
+            label="Send"
+            :loading="sending"
+            data-testid="phlynx-send-confirm"
+            @click="onSendConfirm"
+          />
+        </template>
+        <template v-else>
+          <a
+            v-if="!sendResult.tooLarge"
+            class="send-link"
+            :href="sendResult.openUrl"
+            target="_blank"
+            rel="noopener"
+            data-testid="phlynx-open-link"
+          >Open in PhLynx</a>
+          <a
+            class="send-link secondary"
+            :href="sendResult.downloadUrl"
+            :download="sendResult.filename"
+            data-testid="phlynx-download-link"
+          >Download the archive</a>
+          <Button label="Close" severity="secondary" text @click="sendOpen = false" />
+        </template>
       </template>
     </Dialog>
 
@@ -910,6 +1011,21 @@ async function onParamsDrop(event) {
   margin: 0.5rem 0 0;
   font-size: 0.8rem;
   color: var(--text-muted, #666);
+}
+/* Anchors, not buttons -- see the template. Styled to sit with PrimeVue's
+   footer buttons so the difference is invisible to the user. */
+.send-link {
+  display: inline-block;
+  padding: 0.5rem 1rem;
+  border-radius: 6px;
+  background: var(--p-primary-color, #10b981);
+  color: #fff;
+  font-size: 0.875rem;
+  text-decoration: none;
+}
+.send-link.secondary {
+  background: transparent;
+  color: var(--p-primary-color, #10b981);
 }
 .inbox-intro {
   margin: 0 0 0.5rem;

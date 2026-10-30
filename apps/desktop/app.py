@@ -209,6 +209,24 @@ def main() -> int:
         threading.Event().wait()
         return 0
 
+    # Downloads are OFF by default in pywebview, and that default silently breaks
+    # every download the app offers -- "Download calibrated model" (#114) among
+    # them -- in the packaged build on all three platforms. Each backend refuses
+    # in its own way, so none of them raises anything the frontend could report:
+    #   cocoa.py         decisionHandler(WKNavigationResponsePolicyCancel)
+    #   edgechromium.py  args.Cancel = True
+    #   gtk.py           never connects `download-started` at all
+    # Set before start(): GTK reads it in the BrowserView constructor, which runs
+    # under start(), while Cocoa and Edge read it per-navigation.
+    #
+    # This is shell configuration, not a JS bridge -- the frontend is untouched --
+    # so CLAUDE.md's "never reach for pywebview APIs from Vue" still holds.
+    webview.settings["ALLOW_DOWNLOADS"] = True
+
+    # OPEN_EXTERNAL_LINKS_IN_BROWSER stays at its True default deliberately. With
+    # it False, a target="_blank" click navigates *the CUFLynx window itself* to
+    # the target (cocoa.py's `webview.loadRequest_`, gtk.py's equivalent), so the
+    # user loses the app to open PhLynx. Sending a study relies on that default.
     webview.create_window(APP_NAME, url, width=1400, height=900)
     try:
         webview.start()

@@ -25,7 +25,14 @@ WORKFLOW_DIR = REPO_ROOT / ".github" / "workflows"
 #: libcuflynx requires >=3.10; autoemulate stops the engine at 3.12.
 SUPPORTED = [(3, 10), (3, 11), (3, 12)]
 
-MATRIX_JOBS = {"backend-unit", "backend-unit-windows"}
+MATRIX_JOBS = {"backend-unit"}
+
+#: Every OS the unit tier runs on. This used to be two hand-maintained jobs
+#: (`backend-unit` and `backend-unit-windows`) with macOS on neither, which is how
+#: the macOS halves of #340 and #330 reached users -- nothing above the Linux unit
+#: tier ran anywhere else. They are now one matrix, so the axes cannot drift apart,
+#: and this is the guard that they stay complete.
+SUPPORTED_OS = ["macos-latest", "ubuntu-latest", "windows-latest"]
 
 
 def _version(text):
@@ -38,9 +45,12 @@ def _jobs(workflow):
     return doc.get("jobs") or {}
 
 
-def test_both_backend_unit_jobs_run_the_full_matrix():
-    """Linux and Windows together, because the divergence that matters is usually
-    platform-specific -- a path, a signal, a compiler."""
+def test_the_backend_unit_job_runs_the_full_matrix():
+    """Every supported Python, on every OS.
+
+    All three platforms together, because the divergence that matters is usually
+    platform-specific -- a path, a signal, a compiler, or an embedder.
+    """
     jobs = _jobs("ci.yml")
     for name in sorted(MATRIX_JOBS):
         assert name in jobs, f"{name} is gone; this guard needs re-pointing"
@@ -49,6 +59,19 @@ def test_both_backend_unit_jobs_run_the_full_matrix():
         assert versions == SUPPORTED, (
             f"{name} tests {versions}, expected {SUPPORTED}"
         )
+        assert sorted(matrix.get("os", [])) == SUPPORTED_OS, (
+            f"{name} runs on {sorted(matrix.get('os', []))}, expected {SUPPORTED_OS}"
+        )
+
+
+def test_the_frontend_runs_on_every_os_too():
+    """The frontend suite carries source contracts that read files off disk
+    (externalLinks.test.js), so a path or line-ending assumption that only breaks
+    on one platform is exactly what its matrix is for."""
+    frontend = _jobs("ci.yml").get("frontend")
+    assert frontend, "the frontend job is gone; this guard needs re-pointing"
+    matrix = (frontend.get("strategy") or {}).get("matrix", {})
+    assert sorted(matrix.get("os", [])) == SUPPORTED_OS
 
 
 def test_the_matrix_jobs_actually_use_the_matrix():

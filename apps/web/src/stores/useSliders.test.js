@@ -143,4 +143,50 @@ describe('useSliders', () => {
       expect(s.order.value).toEqual(['a/E', 'a/R'])
     })
   })
+
+  // Values for parameters the study does not calibrate (#350). They have no
+  // slider, so without this the solver keeps the model's own value and editing
+  // the baseline column appears to do nothing.
+  describe('fixed values for parameters that are not calibrated', () => {
+    it('sends a fixed value to the solver even though it has no slider', () => {
+      const s = useSliders()
+      s.addSlider('a/E', { min: 0, max: 10, value: 4 })
+      s.setFixedValue('a/R', 7.5)
+      expect(s.paramDict.value).toEqual({ 'a/E': 4, 'a/R': 7.5 })
+    })
+
+    it('refuses to shadow a calibrated parameter', () => {
+      // The slider is the live handle: a fixed value winning would let the run
+      // and the handle on screen disagree about the same parameter.
+      const s = useSliders()
+      s.addSlider('a/E', { min: 0, max: 10, value: 4 })
+      s.setFixedValue('a/E', 9)
+      expect(s.paramDict.value['a/E']).toBe(4)
+      expect(s.fixedValues['a/E']).toBeUndefined()
+    })
+
+    it('drops a fixed value when it is cleared or is not a number', () => {
+      const s = useSliders()
+      s.setFixedValue('a/R', 7.5)
+      s.setFixedValue('a/R', null)
+      expect(s.paramDict.value['a/R']).toBeUndefined()
+      s.setFixedValue('a/R', 'not a number')
+      expect(s.paramDict.value['a/R']).toBeUndefined()
+    })
+
+    it('clears with the sliders, so a new study starts clean', () => {
+      const s = useSliders()
+      s.setFixedValue('a/R', 7.5)
+      s.clear()
+      expect(s.paramDict.value).toEqual({})
+    })
+
+    it('clearFixedValues leaves the sliders alone', () => {
+      const s = useSliders()
+      s.addSlider('a/E', { min: 0, max: 10, value: 4 })
+      s.setFixedValue('a/R', 7.5)
+      s.clearFixedValues()
+      expect(s.paramDict.value).toEqual({ 'a/E': 4 })
+    })
+  })
 })

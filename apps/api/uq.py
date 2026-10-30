@@ -143,8 +143,11 @@ class UQManager:
                     job.lines.append(line.rstrip("\n"))
         finally:
             code = job.proc.wait() if job.proc else -1
-            self._finalize(job, code)
+            # Before finalising, not after -- `_finalize` publishes the terminal state a
+            # client is polling for, and it must not arrive while the temp dir is still on
+            # disk. The full reasoning is beside the same two lines in calibration.py.
             clear_run_config(job.config_path)
+            self._finalize(job, code)
 
     @staticmethod
     def _read_coverage(output_dir: str) -> dict | None:

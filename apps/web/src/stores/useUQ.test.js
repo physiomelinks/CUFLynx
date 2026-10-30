@@ -144,3 +144,39 @@ describe('cancelling keeps what was sampled', () => {
     expect(uq.error.value).toBe('')
   })
 })
+
+describe('useUQ medianParams', () => {
+  it('is null until a posterior is on screen', () => {
+    const uq = useUQ()
+    expect(uq.medianParams.value).toBeNull()
+  })
+
+  it('is the q50 of every parameter, keyed by qname', () => {
+    const uq = useUQ()
+    uq.params.value = [
+      { qname: 'a/k', q05: 1, q50: 2, q95: 3 },
+      { qname: 'b/C', q05: 10, q50: 20, q95: 30 },
+    ]
+    expect(uq.medianParams.value).toEqual({ 'a/k': 2, 'b/C': 20 })
+  })
+
+  it('drops a parameter with no usable median rather than writing a zero', () => {
+    // A fabricated value would land on a slider and be simulated as if it were the
+    // posterior's; a short point is honest about what the chain answered for.
+    const uq = useUQ()
+    uq.params.value = [
+      { qname: 'a/k', q50: 2 },
+      { qname: 'b/C', q50: null },
+      { qname: 'c/g', q50: NaN },
+      { qname: 'd/x' },
+    ]
+    expect(uq.medianParams.value).toEqual({ 'a/k': 2 })
+  })
+
+  it('goes back to null when the run is reset', () => {
+    const uq = useUQ()
+    uq.params.value = [{ qname: 'a/k', q50: 2 }]
+    uq.reset()
+    expect(uq.medianParams.value).toBeNull()
+  })
+})

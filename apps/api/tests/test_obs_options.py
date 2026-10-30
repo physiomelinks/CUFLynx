@@ -127,6 +127,67 @@ def test_operation_kwargs_schema_parses_signature():
     assert by_name["label"] == {"name": "label", "default": "p", "type": "string"}
 
 
+def test_an_operation_with_no_operands_takes_data_item_names(monkeypatch):
+    """`calculate_two_observable_difference(subtract_from=None, subtract_this=None, ...)`
+    reduces no
+    model variable -- it differences two other data_items. A kwarg of such an
+    operation that defaults to None is therefore the *name of an item*, which CA
+    resolves to that item's computed value, so the editor offers a list of items
+    rather than a text box (#349)."""
+    import obs_options
+
+    def calculate_two_observable_difference(subtract_from=None, subtract_this=None,
+                                            series_output=False):
+        return subtract_from - subtract_this
+
+    schema = obs_options._introspect_operation_kwargs(
+        {"calculate_two_observable_difference": calculate_two_observable_difference})
+
+    assert schema["calculate_two_observable_difference"] == [
+        {"name": "subtract_from", "default": None, "type": "data_item"},
+        {"name": "subtract_this", "default": None, "type": "data_item"},
+    ]
+
+
+def test_an_operation_that_reduces_a_variable_keeps_its_ordinary_kwarg_types():
+    """The rule is about operations with no operands. One that reduces a trace has
+    tunables, not references, however they default."""
+    import obs_options
+
+    def mean_in_range(x, start_frac=0.0, end_frac=1.0, series_output=False):
+        return x
+
+    def windowed(x, label=None):  # a None default, but `x` is an operand
+        return x
+
+    schema = obs_options._introspect_operation_kwargs(
+        {"mean_in_range": mean_in_range, "windowed": windowed})
+
+    assert {k["type"] for k in schema["mean_in_range"]} == {"number"}
+    assert schema["windowed"][0]["type"] == "string"
+
+
+def test_the_real_ca_operation_is_typed_as_taking_data_item_names():
+    """Against the shipped func, so a change to its signature upstream shows up
+    here rather than as a form that silently offers the wrong widget."""
+    import pytest as _pytest
+
+    import obs_options
+
+    funcs = _pytest.importorskip("libcuflynx.funcs.operation_funcs_user")
+    fn = getattr(funcs, "calculate_two_observable_difference", None)
+    if fn is None:
+        _pytest.skip("this circulatory_autogen has no calculate_two_observable_difference")
+
+    schema = obs_options._introspect_operation_kwargs(
+        {"calculate_two_observable_difference": fn})
+    entries = schema.get("calculate_two_observable_difference", [])
+    if [k["name"] for k in entries] != ["subtract_from", "subtract_this"]:
+        _pytest.skip(
+            "this circulatory_autogen predates the declared subtract_from/subtract_this kwargs")
+    assert {k["type"] for k in entries} == {"data_item"}
+
+
 def test_operation_kwargs_schema_handles_uninspectable_and_varargs():
     """Callables without a usable signature are skipped (not fatal); *args/**kwargs
     are ignored, and a None default falls back to a free-text string input."""

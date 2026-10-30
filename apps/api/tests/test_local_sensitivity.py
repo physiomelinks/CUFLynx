@@ -92,7 +92,7 @@ def _feature_sm(kwargs_list, n=1, names=None):
         "experiment_idxs": [0] * n,
         "subexperiment_idxs": [0] * n,
         "operation_kwargs": kwargs_list,
-        "names_for_plotting": names or [f"f{i}" for i in range(n)],
+        "item_names_for_plotting": names or [f"f{i}" for i in range(n)],
     }
     # operands_outputs[j] is the operand tuple for observable j.
     outputs = {(0, 0): [(np.array([1.0, 3.0, 2.0]),)] * n}

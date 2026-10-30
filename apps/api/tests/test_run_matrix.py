@@ -206,32 +206,8 @@ def _wait(client, kind: str, job_id: str, timeout: float):
     )
 
 
-@pytest.fixture
-def recorded_commands(monkeypatch):
-    """Record the argv each manager builds, so a run can be checked for being parallel.
-
-    Without this the integration arms below assert only that the analysis *finished*,
-    which a silently-serial run does just as well. Not hypothetical: the first draft of
-    these tests posted their settings flat instead of under ``settings``, so the endpoint
-    ignored ``num_cores`` entirely -- the "parallel" arm ran on one core and passed.
-    Closing the loop on the argv is what makes the arm mean what it says.
-    """
-    seen = []
-
-    def spy(manager):
-        original = manager.build_command
-
-        def wrapper(config, config_path):
-            cmd = original(config, config_path)
-            seen.append(cmd)
-            return cmd
-
-        monkeypatch.setattr(manager, "build_command", wrapper, raising=False)
-
-    for _, manager in MANAGERS:
-        spy(manager)
-    return seen
-
+# `recorded_commands` lives in conftest.py: the emulator's own parallel test needs it
+# too, and a fixture defined in this module is not visible from another one.
 
 def _assert_parallelism(seen, num_cores):
     """The command actually built must match the parallelism that was asked for."""

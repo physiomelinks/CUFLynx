@@ -339,3 +339,51 @@ def test_runner_launch_env_survives_an_uncreatable_cache(frozen, monkeypatch):
     # Relocation cleanly skipped -> TMPDIR is whatever subprocess_env already had.
     assert env.get("TMPDIR") == base.get("TMPDIR")
     assert "onefile-cache" not in env.get("TMPDIR", "")
+
+
+# --- launching the bundle as its own analysis runner (multi-core) --------------------
+#
+# `mpiexec -n N <bundle> --_cuflynx-run-analysis ...` makes each rank a child of mpiexec
+# while it inherits this process's `_PYI_*` variables through it. PyInstaller 6.x's
+# bootloader validates those against the parent it was actually given, does not find the
+# bundle there, and kills the rank before Python starts:
+#
+#   [PYI-NNNN:ERROR] Security validation failure: parent process has different executable!
+#
+# Reported from the -full bundle training an emulator on 2 cores: exit code 255, no
+# traceback, because nothing Python-side ever ran.
+
+def test_the_bundles_own_ranks_do_not_inherit_its_pyinstaller_parent_state(monkeypatch):
+    import runtime_paths
+
+    monkeypatch.setattr(runtime_paths, "is_frozen", lambda: True)
+    monkeypatch.setattr(runtime_paths, "_relocate_bundle_extraction_env", lambda env: None)
+    for var in runtime_paths._PYI_STATE_VARS:
+        monkeypatch.setenv(var, "inherited-from-this-process")
+
+    env = runtime_paths.runner_launch_env(None)
+
+    for var in runtime_paths._PYI_STATE_VARS:
+        assert var not in env, f"{var} would reach the rank and fail its bootloader check"
+    assert env[runtime_paths._PYI_RESET_VAR] == "1"
+
+
+def test_an_external_interpreter_is_left_alone(monkeypatch):
+    """It is not a frozen application and has no bootloader to confuse; the reset would
+    be noise in its environment."""
+    import runtime_paths
+
+    monkeypatch.setattr(runtime_paths, "is_frozen", lambda: True)
+    monkeypatch.setenv("_PYI_PARENT_PROCESS_LEVEL", "1")
+
+    env = runtime_paths.runner_launch_env("/usr/bin/python3")
+
+    assert runtime_paths._PYI_RESET_VAR not in env
+
+
+def test_running_from_source_needs_no_reset(monkeypatch):
+    import runtime_paths
+
+    monkeypatch.setattr(runtime_paths, "is_frozen", lambda: False)
+    env = runtime_paths.runner_launch_env(None)
+    assert runtime_paths._PYI_RESET_VAR not in env

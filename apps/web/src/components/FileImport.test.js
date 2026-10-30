@@ -10,7 +10,6 @@ vi.mock('../lib/api', () => ({
   fetchExampleModel: vi.fn(),
   editModelSource: vi.fn(),
   sendToPhlynx: vi.fn(),
-  phlynxDownloadRequest: vi.fn(),
   peekInbox: vi.fn(),
   acceptInbox: vi.fn(),
   rejectInbox: vi.fn(),
@@ -26,7 +25,6 @@ import {
   editModelSource,
   uploadOmex,
   sendToPhlynx,
-  phlynxDownloadRequest,
   peekInbox,
   acceptInbox,
   rejectInbox,
@@ -98,7 +96,6 @@ beforeEach(() => {
   fetchExampleModel.mockReset()
   uploadOmex.mockReset()
   sendToPhlynx.mockReset()
-  phlynxDownloadRequest.mockReset()
   peekInbox.mockReset()
   acceptInbox.mockReset()
   rejectInbox.mockReset()
@@ -139,6 +136,57 @@ describe('FileImport', () => {
     expect(uploadCellML.mock.calls[0][0]).toHaveLength(3)
     // The display name comes from the main .cellml.
     expect(wrapper.emitted('model-loaded')[0][0].filename).toBe('3compartment.cellml')
+  })
+
+  it('accepts an EasyML .model and shows what the reader had to decide', async () => {
+    // An EasyML file leaves the membrane equation out -- openCARP's tissue
+    // solver owns V -- so something was invented on the way in. That is not a
+    // log line; it is the one thing the user has to check.
+    uploadCellML.mockResolvedValue({
+      model_id: 'abc',
+      name: 'Courtemanche',
+      converted_from: 'Courtemanche.model',
+      warnings: [
+        'the file declares V as external, so it carries no membrane equation; ' +
+          'dot(V) = -(Iion + i_stim) was added, with i_stim for a protocol to drive.',
+      ],
+    })
+    const wrapper = mount(FileImport, { global: { stubs } })
+    const file = new File(['V; .nodal();'], 'Courtemanche.model', { type: 'text/plain' })
+    await wrapper
+      .find('[data-testid="cellml-drop"]')
+      .trigger('drop', { dataTransfer: { files: [file] } })
+    await flushPromises()
+    expect(uploadCellML).toHaveBeenCalledOnce()
+    expect(wrapper.find('[data-testid="import-error"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="import-warning"]').text()).toContain(
+      'membrane equation',
+    )
+  })
+
+  it('Edit source opens the .model for a model converted from EasyML', async () => {
+    editModelSource.mockResolvedValue({
+      path: '/studies/heart/user_funcs/user_model.model',
+      opened: true,
+      editor: 'xdg-open',
+      reason: '',
+      runs: false,
+    })
+    const wrapper = mount(FileImport, {
+      props: {
+        modelId: 'abc',
+        convertedFrom: 'Courtemanche.model',
+        outputsDir: '/studies/heart',
+      },
+      global: { stubs },
+    })
+    const btn = wrapper.find('[data-testid="start-edit"]')
+    expect(btn.attributes('title')).toContain('.model')
+    await btn.trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="import-notice"]').text()).toContain(
+      '/studies/heart/user_funcs/user_model.model',
+    )
   })
 
   it('rejects a bundle if any file is not .cellml/.xml', async () => {
@@ -448,6 +496,7 @@ describe('FileImport', () => {
     updated: ['aortic_root/C'],
     unresolved: [],
     outside_parameters: [],
+    download_url: '/api/phlynx/archive/tok1/heart.omex',
   }
 
   async function openSend(props = {}) {
@@ -459,7 +508,11 @@ describe('FileImport', () => {
     return wrapper
   }
 
-  it('sends the current slider values and opens PhLynx at the archive', async () => {
+  it('sends the current slider values and offers a real link to PhLynx', async () => {
+    // The link must be an anchor the user clicks, never a scripted open:
+    // pywebview's macOS backend forwards only WKNavigationTypeLinkActivated, so
+    // a `window.open` here is dropped and the packaged Mac app sends nothing
+    // while reporting success (#340).
     const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null)
     sendToPhlynx.mockResolvedValue(SEND_OK)
     const wrapper = await openSend({
@@ -477,9 +530,47 @@ describe('FileImport', () => {
     })
     // PhLynx picks its loader from `?open=`, and its own decoder builds the
     // data URI, so the fragment is bare base64.
-    expect(openSpy.mock.calls[0][0]).toBe(`${PHLYNX_URL}/?open=omex#UEsDBBQ=`)
+    const link = wrapper.find('[data-testid="phlynx-open-link"]')
+    expect(link.attributes('href')).toBe(`${PHLYNX_URL}/?open=omex#UEsDBBQ=`)
+    expect(link.attributes('href')).toBe(phlynxOpenUrl('UEsDBBQ='))
+    expect(link.attributes('target')).toBe('_blank')
+    expect(link.attributes('rel')).toContain('noopener')
+    // The shortcut is attempted at the same URL...
     expect(openSpy.mock.calls[0][0]).toBe(phlynxOpenUrl('UEsDBBQ='))
+    // ...and because this spy returns null -- what pywebview's macOS backend and
+    // a popup blocker both do -- the dialog stays open on the links that work.
+    expect(wrapper.find('[data-testid="phlynx-send-dialog"]').exists()).toBe(true)
+    openSpy.mockRestore()
+  })
+
+  it('closes the dialog when the browser did open the tab', async () => {
+    // The everyday path on Linux and in a browser: window.open returns a window,
+    // so the send is one click and there is nothing left to show. The panel is
+    // the fallback, not the flow.
+    const openSpy = vi.spyOn(window, 'open').mockImplementation(() => ({}))
+    sendToPhlynx.mockResolvedValue(SEND_OK)
+    const wrapper = await openSend()
+
+    await wrapper.find('[data-testid="phlynx-send-confirm"]').trigger('click')
+    await flushPromises()
+
+    expect(openSpy).toHaveBeenCalledOnce()
     expect(wrapper.find('[data-testid="phlynx-send-dialog"]').exists()).toBe(false)
+    openSpy.mockRestore()
+  })
+
+  it('does not try to open a link for an archive too large to be one', async () => {
+    // No point attempting a URL already known to be over the limit, and doing so
+    // would open a tab at a truncated fragment.
+    const openSpy = vi.spyOn(window, 'open').mockImplementation(() => ({}))
+    sendToPhlynx.mockResolvedValue({ ...SEND_OK, too_large: true, bytes: 3_000_000 })
+    const wrapper = await openSend()
+
+    await wrapper.find('[data-testid="phlynx-send-confirm"]').trigger('click')
+    await flushPromises()
+
+    expect(openSpy).not.toHaveBeenCalled()
+    expect(wrapper.find('[data-testid="phlynx-download-link"]').exists()).toBe(true)
     openSpy.mockRestore()
   })
 
@@ -523,22 +614,36 @@ describe('FileImport', () => {
     openSpy.mockRestore()
   })
 
-  it('an archive too big for a URL is downloaded instead of opened', async () => {
-    const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null)
+  it('an archive too big for a URL is offered as a download link only', async () => {
     sendToPhlynx.mockResolvedValue({ ...SEND_OK, too_large: true, bytes: 3_000_000 })
-    phlynxDownloadRequest.mockResolvedValue({ data: new Blob(['zip']) })
-    // jsdom has no object-URL support.
-    URL.createObjectURL = vi.fn(() => 'blob:archive')
-    URL.revokeObjectURL = vi.fn()
     const wrapper = await openSend()
 
     await wrapper.find('[data-testid="phlynx-send-confirm"]').trigger('click')
     await flushPromises()
 
-    expect(phlynxDownloadRequest).toHaveBeenCalledOnce()
-    expect(openSpy).not.toHaveBeenCalled()
-    expect(wrapper.find('[data-testid="import-notice"]').text()).toContain('heart.omex')
-    openSpy.mockRestore()
+    // No PhLynx link: the fragment would be truncated somewhere unreported.
+    expect(wrapper.find('[data-testid="phlynx-open-link"]').exists()).toBe(false)
+    const dl = wrapper.find('[data-testid="phlynx-download-link"]')
+    expect(dl.attributes('href')).toBe('/api/phlynx/archive/tok1/heart.omex')
+    expect(dl.attributes('download')).toBe('heart.omex')
+    // The filename now rides on the link rather than in the prose; what the
+    // notice owes the user is why there is no PhLynx link to click.
+    expect(wrapper.find('[data-testid="import-notice"]').text()).toContain('too large')
+  })
+
+  it('the download is offered even when the link would have worked', async () => {
+    // The packaged macOS path hands the href to `webbrowser.open` -> osascript ->
+    // LaunchServices, whose URL ceiling is separate from PHLYNX_URL_LIMIT and
+    // unmeasured. The download is the way through when a long link is truncated.
+    sendToPhlynx.mockResolvedValue(SEND_OK)
+    const wrapper = await openSend()
+    await wrapper.find('[data-testid="phlynx-send-confirm"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="phlynx-open-link"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="phlynx-download-link"]').attributes('href')).toBe(
+      '/api/phlynx/archive/tok1/heart.omex',
+    )
   })
 
   it('a refused send is reported and the dialog stays open to retry', async () => {
@@ -809,6 +914,28 @@ describe('FileImport adopts the .mmt protocol as obs_data (#27)', () => {
 
 // Issue #149: a COMBINE archive is the study, not any one of its files, so it is
 // accepted on every import box rather than making the user unzip it.
+describe('FileImport exposes the archive path (#300)', () => {
+  // App.vue's page-wide drop calls straight into these. Asserted on a real mount
+  // because the App-level tests shallow-mount and would pass against a stub even
+  // if the component exposed nothing at all.
+  it('exposes handleOmex and isOmexName', () => {
+    const wrapper = mount(FileImport, { global: { stubs } })
+    expect(typeof wrapper.vm.handleOmex).toBe('function')
+    expect(wrapper.vm.isOmexName('study.omex')).toBe(true)
+    expect(wrapper.vm.isOmexName('model.cellml')).toBe(false)
+  })
+
+  it('the exposed handler imports, so the page drop and the box drop are one path', async () => {
+    uploadOmex.mockReset().mockResolvedValue({ model_id: 'abc', name: 'S' })
+    const wrapper = mount(FileImport, { global: { stubs } })
+    const file = new File(['PK'], 'study.omex', { type: 'application/zip' })
+    expect(await wrapper.vm.handleOmex([file])).toBe(true)
+    await flushPromises()
+    expect(uploadOmex).toHaveBeenCalledTimes(1)
+    expect(wrapper.emitted('model-loaded')).toBeTruthy()
+  })
+})
+
 describe('FileImport omex (#149)', () => {
   const omexFile = () => new File(['PK'], 'study.omex', { type: 'application/zip' })
   const RESPONSE = {

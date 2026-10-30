@@ -26,11 +26,13 @@ import io
 import json
 import os
 import re
+import secrets
 import shutil
 import tempfile
 import time
 import uuid
 import zipfile
+from collections import OrderedDict
 from pathlib import Path
 
 import yaml
@@ -58,6 +60,7 @@ from py_model_meta import PyModelParseError, looks_like_py_filename, parse_py_mo
 import solver_plots
 import mmt_protocol
 import myokit_import
+import easyml_import
 import omex_import
 import omex_export
 from inbox import APP_NAME, RECEIVE_PORTS, inbox  # noqa: F401 - RECEIVE_PORTS is the contract
@@ -283,11 +286,12 @@ _SAFE_MODEL_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 
 #: The suffixes of a model *source*: the file the user wrote, as opposed to the
 #: model CUFLynx runs. Ordered by how directly they are the model -- an
-#: external_python model **is** its ``.py``, while a ``.mmt`` sits beside the
-#: CellML it was converted into at import (#27). A plain CellML model has no
+#: external_python model **is** its ``.py``, while a ``.mmt`` or an EasyML
+#: ``.model`` sits beside the CellML it was converted into at import (#27).
+#: A plain CellML model has no
 #: entry here on purpose: it is edited in PhLynx, and the flattened document
 #: CUFLynx generated is not a file the user has ever seen.
-MODEL_SOURCE_SUFFIXES = (".py", ".mmt")
+MODEL_SOURCE_SUFFIXES = (".py", ".mmt", ".model")
 
 
 def _save_model_source(model_id: str, suffix: str, data: bytes) -> None:
@@ -484,6 +488,9 @@ class ConfigRequest(BaseModel):
     # The default is the bundled interpreter (packaged) or the serving one (source),
     # so "" lets the user switch back to "Bundled" after picking an external venv.
     python_path: str | None = None
+    # Where the "Edit" button sends a study.
+    #   omitted (None) -> leave unchanged   |   "" -> back to production PhLynx
+    phlynx_url: str | None = None
     # Global random seed for analysis runs (calibration / sensitivity / UQ). When
     # set, it makes CA's random processes (GA, multi-start sampling, Sobol/SALib
     # sampling, MCMC) reproducible. Default is no seed (non-deterministic).
@@ -495,6 +502,14 @@ class ConfigRequest(BaseModel):
 # Set via POST /api/config, persisted like ca_dir / python_path, and injected into
 # every calibration / sensitivity / UQ run config so CA's random processes repeat.
 _analysis_seed: int | None = None
+
+#: Where the "Edit" button sends a study. Blank means the production PhLynx that
+#: `lib/examples.js` defaults to. A developer setting: the two halves of this
+#: exchange live in separate repos, phlynx.com serves PhLynx's `main`, and a
+#: PhLynx change under review is not there -- so checking the exchange against a
+#: branch means pointing the button at a dev server. Persisted like any other
+#: setting so the packaged app remembers it too.
+_phlynx_url: str = ""
 
 
 def _parse_seed(value) -> int | None:
@@ -593,6 +608,11 @@ def _restore_persisted_settings() -> None:
         global _analysis_seed
         _analysis_seed = seed
 
+    phlynx_url = (saved.get("phlynx_url") or "").strip().rstrip("/")
+    if phlynx_url.startswith(("http://", "https://")):
+        global _phlynx_url
+        _phlynx_url = phlynx_url
+
 
 _restore_persisted_settings()
 
@@ -629,6 +649,8 @@ def _config_payload(output_dir: str = "") -> dict:
         "python_default": default_python() or "",
         # Global random seed for analysis runs (null = none / non-deterministic).
         "seed": _analysis_seed,
+        # Where "Edit" sends a study; blank = the production PhLynx.
+        "phlynx_url": _phlynx_url,
         # Current backend solver selection (engine is the source of truth). dt is
         # carried in solver_info for the UI but stored separately on the engine.
         "generated_model_format": engine.model_type,
@@ -796,6 +818,22 @@ def set_config(req: ConfigRequest) -> dict:
             ) from None
         global _analysis_seed
         _analysis_seed = seed
+
+    # Where "Edit" sends a study. Only http(s), and only a bare origin-ish URL.
+    # This value becomes the `href` of an anchor the app renders in its own page
+    # (#340 moved it there from `window.open`), and `href="javascript:..."`
+    # executes on click -- so accepting one here would turn a settings field into
+    # script execution. The reason is if anything stronger than it was; keep the
+    # check exactly as it stands.
+    if req.phlynx_url is not None:
+        candidate = req.phlynx_url.strip().rstrip("/")
+        if candidate and not candidate.startswith(("http://", "https://")):
+            raise HTTPException(
+                status_code=422,
+                detail=f"phlynx_url must start with http:// or https://, got {req.phlynx_url!r}",
+            )
+        global _phlynx_url
+        _phlynx_url = candidate
 
     os.environ["CUFLYNX_MODEL_TYPE"] = engine.model_type
     os.environ["CUFLYNX_SOLVER"] = engine.solver
@@ -1193,16 +1231,45 @@ def _protocol_from_mmt(data: bytes, filename: str, out_dir: str) -> dict:
     rather than nothing: "no protocol appeared" is a question, and the answer is
     usually a one-line fact about the file.
     """
-    stem = Path(filename).stem or "model"
-    obs_name = f"{stem}_obs_data.json"
     try:
         info, notes = mmt_protocol.protocol_info_from_mmt(data, filename=filename)
     except mmt_protocol.MmtProtocolError as exc:
-        return {"filename": obs_name, "obs_data": None, "notes": [], "reason": str(exc)}
+        return _offer_protocol(None, [], filename, out_dir, reason=str(exc))
+    return _offer_protocol(info, notes, filename, out_dir)
+
+
+def _protocol_from_easyml(read: dict, filename: str, out_dir: str) -> dict:
+    """The stimulus synthesised for an EasyML model, as an obs_data document.
+
+    An EasyML file carries no stimulus at all -- openCARP's own driver supplies
+    one from the command line -- so unlike a ``.mmt`` there is nothing here to
+    convert, only a default to propose. That is the more important reason to
+    offer it rather than apply it, and the reason the notes say what was chosen.
+    """
+    return _offer_protocol(
+        read.get("protocol_info"),
+        list(read.get("protocol_notes") or []),
+        filename,
+        out_dir,
+        reason=read.get("protocol_reason"),
+    )
+
+
+def _offer_protocol(info, notes, filename: str, out_dir: str, reason: str | None = None) -> dict:
+    """One protocol offer, however it was arrived at.
+
+    Shared because the two callers differ only in where the schedule came from,
+    and the part after that -- what the document looks like, where the copy goes,
+    and the refusal to overwrite -- is the part worth having in one place.
+    """
+    stem = Path(filename).stem or "model"
+    obs_name = f"{stem}_obs_data.json"
+    if info is None:
+        return {"filename": obs_name, "obs_data": None, "notes": [], "reason": reason}
 
     # data_items are the user's to write -- what the model should be measured
-    # against is not in the .mmt. An empty list is a valid obs_data document, and
-    # is enough to run the protocol.
+    # against is not in the model file. An empty list is a valid obs_data
+    # document, and is enough to run the protocol.
     obs_data = {"protocol_info": info, "data_items": []}
 
     # Keep a file beside the converted CellML, for the same reason: a conversion
@@ -1297,10 +1364,15 @@ async def upload_model(
     converted_from = None
     converted_path = None
     protocol: dict | None = None
+    # Anything the reader had to decide for itself. Empty for CellML; for an
+    # EasyML model it is never empty, because that format leaves the membrane
+    # equation out and something had to be put in its place.
+    import_warnings: list[str] = []
     # The bytes the user dropped, kept once the model_id exists: the conversion
-    # below replaces `only_bytes` with CellML, and the .mmt would otherwise be
-    # gone the moment this request returns.
-    mmt_source: bytes | None = None
+    # below replaces `only_bytes` with CellML, and the original would otherwise
+    # be gone the moment this request returns.
+    source_suffix: str | None = None
+    source_bytes: bytes | None = None
     if single and (
         myokit_import.is_myokit_filename(only_name) or myokit_import.looks_like_myokit(only_bytes)
     ):
@@ -1315,12 +1387,36 @@ async def upload_model(
         except myokit_import.MyokitImportError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         converted_from = only_name
-        mmt_source = mmt_bytes
+        source_suffix, source_bytes = ".mmt", mmt_bytes
         raw_by_name = {Path(only_name).stem + ".cellml": only_bytes}
         # The [[protocol]] section the model import deliberately leaves behind.
         # Offered rather than applied: the client decides, because a model
         # dropped alongside an obs_data the user wrote must not be overridden.
         protocol = _protocol_from_mmt(mmt_bytes, only_name, out_base)
+    elif single and easyml_import.wants_easyml(only_name, only_bytes):
+        # openCARP's EasyML rides the same rail, for the same reason: by the time
+        # the model reaches the engine it is CellML, so no solver, model type or
+        # packaging anywhere downstream has to know this format exists.
+        out_base = _user_func_base_dir(output_dir or "")
+        easyml_bytes = only_bytes
+        try:
+            read = easyml_import.import_easyml(
+                only_bytes,
+                filename=only_name,
+                out_dir=out_base,
+            )
+        except easyml_import.EasyMLImportError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        only_bytes = read["cellml"]
+        converted_path = read["cellml_path"]
+        converted_from = only_name
+        source_suffix, source_bytes = ".model", easyml_bytes
+        raw_by_name = {Path(only_name).stem + ".cellml": only_bytes}
+        # These are not diagnostics. A synthesised membrane equation and a gate
+        # started at its steady state are places where the imported model differs
+        # from the file, and the user is the only one who can judge them.
+        import_warnings = list(read["warnings"])
+        protocol = _protocol_from_easyml(read, only_name, out_base)
 
     if single and not has_imports(only_bytes):
         # Self-contained single file: save as-is (unchanged behaviour).
@@ -1347,8 +1443,8 @@ async def upload_model(
     model_id = uuid.uuid4().hex
     path = UPLOAD_DIR / f"{model_id}.cellml"
     path.write_bytes(raw)
-    if mmt_source is not None:
-        _save_model_source(model_id, ".mmt", mmt_source)
+    if source_bytes is not None and source_suffix is not None:
+        _save_model_source(model_id, source_suffix, source_bytes)
     # The file the user dropped names the study, whatever the CellML calls itself
     # inside. A .mmt converted at the door keeps its own stem for the same reason:
     # the study is the thing the user has a name for.
@@ -1366,10 +1462,14 @@ async def upload_model(
         # say the model it is showing is not the file that was dropped.
         "converted_from": converted_from,
         "converted_cellml_path": converted_path,
-        # The .mmt's [[protocol]] section as obs_data, for the client to adopt if
-        # it has no obs_data of its own. None for CellML, and for a .mmt whose
-        # protocol cannot be converted -- in which case `reason` says why.
+        # The .mmt's [[protocol]] section -- or an EasyML model's synthesised
+        # stimulus -- as obs_data, for the client to adopt if it has no obs_data
+        # of its own. None for CellML, and when the protocol cannot be produced
+        # -- in which case `reason` says why.
         "protocol_obs_data": protocol,
+        # What the import had to decide. Shown, not logged: see the comment
+        # where import_warnings is set.
+        "warnings": import_warnings,
     }
 
 
@@ -1399,13 +1499,28 @@ def _no_obs_data_warning(parts: dict, source: str = "archive") -> list[str]:
     thing on screen -- nothing -- and the second is a bug in the file that the
     user could fix in a minute if anyone told them about it.
     """
-    skipped = parts.get("obs_skipped") or []
-    if skipped:
-        looked_at = "; ".join(f"{s['name']} ({s['reason']})" for s in skipped)
+    # Only the members CUFLynx could not read. One it *could* read and ruled out
+    # is not observations, and neither is an archive that simply carries none --
+    # a PhLynx project export has a model, an editor state and a simulation
+    # settings file and was never going to have observations. Saying so every
+    # time is how a banner becomes something people click past, which costs the
+    # one case below that is worth reading.
+    unreadable = [s for s in (parts.get("obs_skipped") or []) if not s.get("identified")]
+    if unreadable:
+        looked_at = "; ".join(f"{s['name']} ({s['reason']})" for s in unreadable)
         return [
-            f"No obs_data was loaded. Passed over: {looked_at}. A member with 'obs' in "
+            f"No obs_data was loaded. Could not read: {looked_at}. A member with 'obs' in "
             "its name is always taken as the obs_data."
         ]
+    if source == "archive":
+        # Neither an obs_data nor a params_for_id is required to drop a study in,
+        # and most archives that carry a model carry neither -- a PhLynx project
+        # export never does. The empty tabs already say so, and a banner on the
+        # ordinary case is how people learn to click past the one below.
+        return []
+    # Reopening a run directory is a different claim: this is a study that was
+    # *run*, so observations are what it was scored against, and their absence is
+    # worth the one sentence.
     missing = "obs_data" if parts.get("params") else "obs_data or params_for_id"
     return [f"This {source} carries no {missing}, so the observations tab is empty."]
 
@@ -1435,7 +1550,9 @@ def import_omex_bytes(data: bytes, output_dir: str | None = None,
     # than like a lesser kind of study.
     converted_from = None
     protocol = None
-    mmt_source: bytes | None = None
+    import_warnings: list[str] = []
+    source_suffix: str | None = None
+    source_bytes: bytes | None = None
     if len(raw_by_name) == 1 and myokit_import.is_myokit_filename(parts["master"] or ""):
         only_name = parts["master"]
         mmt_bytes = raw_by_name[only_name]
@@ -1446,9 +1563,26 @@ def import_omex_bytes(data: bytes, output_dir: str | None = None,
         except myokit_import.MyokitImportError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         converted_from = only_name
-        mmt_source = mmt_bytes
+        source_suffix, source_bytes = ".mmt", mmt_bytes
         protocol = _protocol_from_mmt(mmt_bytes, only_name, out_dir)
         raw_by_name = {Path(only_name).stem + ".cellml": cellml_bytes}
+        parts = {**parts, "master": Path(only_name).stem + ".cellml"}
+    elif len(raw_by_name) == 1 and easyml_import.wants_easyml(
+        parts["master"] or "", next(iter(raw_by_name.values()))
+    ):
+        only_name = parts["master"]
+        easyml_bytes = raw_by_name[only_name]
+        try:
+            read = easyml_import.import_easyml(
+                easyml_bytes, filename=only_name, out_dir=out_dir
+            )
+        except easyml_import.EasyMLImportError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        converted_from = only_name
+        source_suffix, source_bytes = ".model", easyml_bytes
+        protocol = _protocol_from_easyml(read, only_name, out_dir)
+        import_warnings = list(read["warnings"])
+        raw_by_name = {Path(only_name).stem + ".cellml": read["cellml"]}
         parts = {**parts, "master": Path(only_name).stem + ".cellml"}
 
     if len(raw_by_name) == 1 and not has_imports(next(iter(raw_by_name.values()))):
@@ -1473,8 +1607,8 @@ def import_omex_bytes(data: bytes, output_dir: str | None = None,
     model_id = uuid.uuid4().hex
     path = UPLOAD_DIR / f"{model_id}.cellml"
     path.write_bytes(raw)
-    if mmt_source is not None:
-        _save_model_source(model_id, ".mmt", mmt_source)
+    if source_bytes is not None and source_suffix is not None:
+        _save_model_source(model_id, source_suffix, source_bytes)
     _models[model_id] = _ModelRecord(
         model_id, path, meta, _remember_prefix(model_id, converted_from or parts["master"]))
     # The archive itself, whole. Everything CUFLynx does not understand -- the
@@ -1487,7 +1621,7 @@ def import_omex_bytes(data: bytes, output_dir: str | None = None,
     # silence: a part that was never found, a check that could not run, editor
     # state that could not be kept. The study still loads -- but an empty tab
     # must never be the only thing that says so.
-    load_warnings: list[str] = []
+    load_warnings: list[str] = list(import_warnings)
 
     result = {
         "model_id": model_id,
@@ -1541,22 +1675,26 @@ def import_omex_bytes(data: bytes, output_dir: str | None = None,
         except ParamsForIdError as exc:
             result["params_for_id"] = {"filename": name, "error": str(exc)}
 
-    if parts["module_config"]:
-        cfg_name, blob = parts["module_config"]
+    for cfg_name, blob in parts.get("phlynx_state") or []:
         # Beside the model in `generated_models/<prefix>/`, not among the run
         # outputs: this is PhLynx's editor state for that model, not a result of
         # anything. Same layout the export bundle uses, so the archive round-trips
         # into a folder CA already understands.
-        result["module_config_path"] = omex_import.save_module_config(
-            blob, _model_dir(out_dir, _record_prefix(_models[model_id]))
+        saved = omex_import.save_module_config(
+            blob, _model_dir(out_dir, _record_prefix(_models[model_id])), cfg_name
         )
+        # The first one kept is the one reported: the field predates PhLynx
+        # splitting its workspace across two files, and a client that reads it is
+        # asking "was the layout kept", not "where is each part".
+        if result["module_config_path"] is None:
+            result["module_config_path"] = saved
         # Only when there was somewhere to put it. With no outputs directory this
         # copy is simply not made, and nothing is lost: the archive is kept whole
         # (`_save_model_archive`) and `omex_export` re-emits every member it did
         # not understand byte-for-byte, so PhLynx's state still round-trips. A
         # banner on every import until a directory is set would be noise -- and a
         # banner nobody reads is how the real failure below gets missed.
-        if out_dir and result["module_config_path"] is None:
+        if out_dir and saved is None:
             load_warnings.append(
                 f"PhLynx's {cfg_name} could not be kept beside the model: it is not valid "
                 "JSON, or the directory could not be written. The study loaded, and the "
@@ -1611,16 +1749,32 @@ class PhlynxSendRequest(BaseModel):
     source: str = "current"
     values: dict[str, float] = Field(default_factory=dict)  # for source="current"
     output_dir: str = ""  # for source="best_fit"
-    #: Return the archive as a file instead of base64, for the size fallback: a
-    #: browser silently drops an over-long URL, so past a point the send becomes
-    #: a download the user drops into PhLynx by hand.
-    download: bool = False
 
 
 #: Base64 longer than this is not worth putting in a URL fragment -- browsers
 #: differ on where they truncate and none of them says so. Above it the frontend
-#: offers the archive as a file instead.
+#: offers *only* the download.
+#:
+#: Note this limit is a browser one, and the packaged macOS app has a second,
+#: **separate and unmeasured** ceiling underneath it: a link click there is
+#: handed to `webbrowser.open`, which on darwin is MacOSXOSAScript -- an
+#: `open location "<url>"` written into osascript and passed to LaunchServices.
+#: Neither AppleScript's literal nor LaunchServices' URL length is documented.
+#: That is why the download link below is offered on *every* send rather than
+#: only past this limit: it is the escape hatch when a long URL is truncated
+#: somewhere none of us can see. (#340)
 PHLYNX_URL_LIMIT = 1_500_000
+
+#: Archives built for a send, keyed by a single-use-ish token so the frontend can
+#: offer them as an ordinary link. Bounded to the last two: this exists to serve
+#: the download the user is looking at, not to be a store.
+#:
+#: Held in memory rather than written under UPLOAD_DIR on purpose -- the client
+#: never names a path, so there is no traversal surface to validate, and the
+#: bytes are already in hand. The filename in the URL is cosmetic (it gives the
+#: saved file its name in the browser); what is served is the name recorded here.
+_PHLYNX_ARCHIVES: "OrderedDict[str, tuple[str, bytes]]" = OrderedDict()
+_PHLYNX_ARCHIVE_KEEP = 2
 
 
 @app.post("/api/phlynx/send")
@@ -1629,7 +1783,14 @@ def phlynx_send(req: PhlynxSendRequest):
 
     The archive is assembled here rather than in the browser so there is one
     writer, and so the frontend keeps assuming nothing about a local backend: it
-    receives base64 and does ``window.open``.
+    receives base64 and renders it into an anchor's ``href``, plus
+    ``download_url`` as a second anchor. It never *scripts* a navigation.
+
+    That distinction is the whole of #340 and must not be "simplified" back.
+    pywebview's macOS backend forwards a new-window request only when
+    ``navigationType() == WKNavigationTypeLinkActivated``; a scripted
+    ``window.open`` is ``WKNavigationTypeOther``, so it was dropped on the floor
+    and the packaged Mac app sent nothing while reporting success.
 
     Every member of the archive the study was loaded from is returned
     byte-for-byte except the model (flattened, with the chosen values
@@ -1681,12 +1842,13 @@ def phlynx_send(req: PhlynxSendRequest):
         raise HTTPException(status_code=500, detail=f"could not read the study: {exc}") from exc
 
     filename = f"{stem}.omex"
-    if req.download:
-        return Response(
-            content=blob,
-            media_type="application/zip",
-            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-        )
+
+    # Park the bytes so the frontend can offer them as a plain link. Every send
+    # gets one, not only an over-long one -- see PHLYNX_URL_LIMIT.
+    token = secrets.token_urlsafe(16)
+    _PHLYNX_ARCHIVES[token] = (filename, blob)
+    while len(_PHLYNX_ARCHIVES) > _PHLYNX_ARCHIVE_KEEP:
+        _PHLYNX_ARCHIVES.popitem(last=False)
 
     encoded = base64.b64encode(blob).decode("ascii")
     return {
@@ -1695,6 +1857,7 @@ def phlynx_send(req: PhlynxSendRequest):
         "too_large": len(encoded) > PHLYNX_URL_LIMIT,
         "limit": PHLYNX_URL_LIMIT,
         "filename": filename,
+        "download_url": f"/api/phlynx/archive/{token}/{filename}",
         "members": report["members"],
         "member_count": len(report["members"]),
         "updated": report["updated"],
@@ -1705,6 +1868,34 @@ def phlynx_send(req: PhlynxSendRequest):
         # back out of (#287) -- so the value travels and is ignored.
         "outside_parameters": report["outside_parameters"],
     }
+
+
+@app.get("/api/phlynx/archive/{token}/{filename}")
+def phlynx_archive(token: str, filename: str) -> Response:
+    """Serve an archive built by a previous send, as an ordinary download.
+
+    This exists so the frontend can hand the user a real ``<a download>`` link
+    rather than scripting the save. A blob URL cannot do that job in the packaged
+    app: pywebview's macOS backend cancels the navigation and re-fetches the URL
+    with ``NSURLSession``, which has never heard of ``blob:`` -- and the same
+    applies to the Windows and GTK download paths in their own ways. A plain
+    ``http://127.0.0.1:<port>/...`` URL works down all of them. (#340)
+
+    ``filename`` is decoration -- it gives the saved file its name in the browser
+    and is *not* used to find anything. What is served is the name recorded when
+    the archive was built, so a crafted path segment has nothing to reach.
+    """
+    entry = _PHLYNX_ARCHIVES.get(token)
+    if entry is None:
+        # Expired (only the last few are kept) or never existed. Same answer for
+        # both: there is nothing here.
+        raise HTTPException(status_code=404, detail="that archive is no longer available — send it again")
+    stored_name, blob = entry
+    return Response(
+        content=blob,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{stored_name}"'},
+    )
 
 
 #: A delivered archive is a payload from a web page, so it is capped well below
@@ -1796,9 +1987,10 @@ def get_variables(model_id: str) -> dict:
 def get_model_source(model_id: str, config_outputs_dir: str = "") -> FileResponse:
     """The file the user wrote, for a model that has one (#91 follow-up).
 
-    Two kinds of model do. An ``external_python`` model **is** its ``.py``, and a
-    Myokit model's ``.mmt`` is kept beside the CellML it was converted into at
-    import. A plain CellML model has none: it is edited in PhLynx, so this 404s
+    Two kinds of model do. An ``external_python`` model **is** its ``.py``; a
+    Myokit ``.mmt`` and an EasyML ``.model`` are kept beside the CellML they were
+    converted into at import. A plain CellML model has none: it is edited in
+    PhLynx, so this 404s
     rather than answering with the flattened document CUFLynx generated, which is
     not a file the user has ever seen.
 
@@ -1917,7 +2109,8 @@ def edit_model_source(model_id: str, req: ModelEditRequest) -> dict:
         "editor": launch["editor"],
         "reason": launch["reason"],
         # Whether this copy is the one CUFLynx runs. True for external_python;
-        # false for a .mmt, which is the source of a CellML that runs instead.
+        # false for a .mmt or an EasyML .model, each of which is the source of a
+        # CellML that runs instead.
         "runs": source.suffix == ".py",
     }
 
@@ -2653,6 +2846,93 @@ class OpenStudyRequest(BaseModel):
     file_prefix: str | None = None
 
 
+def _adopt_study_solver_info(solver_info) -> list[str]:
+    """Apply a study's recorded solver settings to the engine. Returns what to report.
+
+    Same shape, and the same handling, as the ``solver_info`` in a saved config: ``dt`` is
+    folded in beside the solver's own keys and popped out here. Unsupported keys are
+    dropped rather than rejected, because a manifest written by a newer pipeline must not
+    stop an older app from opening the study at all.
+
+    Reported rather than applied quietly. Adopting dt = 1e-4 where the app was at 0.01
+    makes every subsequent simulation a hundred times slower, and a user watching that
+    happen deserves the reason.
+    """
+    if not isinstance(solver_info, dict) or not solver_info:
+        return []
+    notes, si = [], dict(solver_info)
+    if "dt" in si:
+        try:
+            new_dt = float(si.pop("dt"))
+        except (TypeError, ValueError):
+            new_dt = None
+        if new_dt and new_dt > 0 and new_dt != engine.dt:
+            notes.append(
+                f"Solver dt set to {new_dt:g} s (was {engine.dt:g} s), as this study was "
+                f"run. At the coarser step the output grid misses the fast parts of a "
+                f"trace; simulations will be slower."
+            )
+            engine.dt = new_dt
+    solver = si.pop("solver", None)
+    if isinstance(solver, str) and solver and solver != engine.solver:
+        notes.append(f"Solver set to {solver}, as this study was run.")
+        engine.solver = solver
+    si.pop("method", None)          # CA's own spelling of the solver; not a solver_info key here
+    if si:
+        engine.solver_info = {**getattr(engine, "solver_info", {}), **si}
+        notes.append("Solver options taken from the study: "
+                     + ", ".join(f"{k}={v}" for k, v in sorted(si.items())) + ".")
+    return notes
+
+
+def _finest_scored_obs_dt(obs_data_path) -> float | None:
+    """The smallest ``obs_dt`` among series an obs_data will actually score, or None.
+
+    This is the constraint CA enforces before it will compare a run against the data: the
+    solver output has to be at least as finely sampled as the series it is resampled onto.
+    Read from the obs_data itself rather than from the study manifest, which does not
+    record a timestep, and rather than from a user_inputs.yaml, which a finished run
+    directory need not contain.
+
+    Only *scored* series count, matching CA: a zero-weighted item is dropped from the cost
+    and an empty one has nothing to compare, so neither can require anything of dt.
+    SN_full ships eight empty zero-weighted series at 1e-4, and honouring those would drop
+    the app's timestep a hundredfold to satisfy placeholders that are never read.
+
+    Unreadable is None, not an error: opening a study whose obs_data has moved should
+    still show the results that are there.
+    """
+    if not obs_data_path or not os.path.isfile(str(obs_data_path)):
+        return None
+    try:
+        with open(obs_data_path) as handle:
+            document = json.load(handle)
+    except (OSError, ValueError):
+        return None
+    items = document.get("data_items") if isinstance(document, dict) else document
+    if not isinstance(items, list):
+        return None
+    finest = None
+    for item in items:
+        if not isinstance(item, dict) or item.get("data_type") != "series":
+            continue
+        try:
+            if float(item.get("weight", 1.0)) == 0.0:
+                continue
+        except (TypeError, ValueError):
+            pass
+        value = item.get("value")
+        if not isinstance(value, list) or not value:
+            continue
+        try:
+            obs_dt = float(item["obs_dt"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if obs_dt > 0 and (finest is None or obs_dt < finest):
+            finest = obs_dt
+    return finest
+
+
 @app.post("/api/outputs/study")
 def open_study_from_outputs(req: OpenStudyRequest) -> dict:
     """Load the model, obs_data and params_for_id a finished run was made from.
@@ -2716,6 +2996,37 @@ def open_study_from_outputs(req: OpenStudyRequest) -> dict:
         "run_dir": found.get("run_dir"),
     }
     result["model_is_calibrated"] = bool(study.get("model_is_calibrated"))
+
+    # Solve the study the way the study was solved. Opening a directory used to adopt
+    # nothing, so a run configured for dt = 1e-4 with CVODE bounded by MaximumStep = 1e-4
+    # was reopened at the app's DEFAULT_DT of 0.01 and no maximum step.
+    #
+    # For a spiking model that is not cosmetic. dt is the *output* interval, so a 10 ms
+    # grid samples straight over every 1-4 ms action potential: the trace comes back
+    # showing only the voltage between spikes and appears to sit at about -20 mV. Nothing
+    # is wrong with the resting potential or the parameters, and there is nothing on
+    # screen to say so.
+    # From the manifest rather than from ``study``, which is a narrower projection built for
+    # the panels and carries only the study's file paths.
+    manifest = found.get("manifest") or {}
+    adopted = _adopt_study_solver_info(
+        manifest.get("solver_info") or study.get("solver_info"))
+    for note in adopted:
+        result["warnings"].append(note)
+
+    # A study written before the manifest recorded solver settings has none, so fall back
+    # to what its obs_data requires: CA will not compare a solver output against series
+    # sampled finer than it. Only if the manifest did not already say.
+    if not adopted:
+        required = _finest_scored_obs_dt(study.get("obs_data"))
+        if required is not None and required < engine.dt:
+            result["warnings"].append(
+                f"Solver dt lowered from {engine.dt:g} s to {required:g} s: this study's "
+                f"series data is sampled that finely, and a coarser solver output cannot "
+                f"be compared against it. Simulations will be slower."
+            )
+            engine.dt = required
+
     if unreadable:
         result["warnings"].append(
             "Some of the run's inputs could not be read: " + "; ".join(unreadable)

@@ -215,6 +215,104 @@ describe('App.vue', () => {
   // The RHS import column (model / obs_data / params uploads) is resized by a
   // draggable divider: drag it to resize, drag fully right to hide, drag the tab
   // (or double-click) to bring it back. Frees width for plots/analysis.
+  describe('a study dropped anywhere on the page', () => {
+    // An archive *is* the study, so no box owns it more than another. Every other
+    // kind of file still goes to its own box: the same .json can be an obs_data
+    // or a params_for_id, and the box is the only thing that says which.
+    const fileDrop = (names) => {
+      const event = new Event('drop', { bubbles: true, cancelable: true })
+      event.dataTransfer = {
+        types: ['Files'],
+        files: names.map((n) => new File(['PK'], n, { type: 'application/zip' })),
+      }
+      return event
+    }
+
+    const dragEvent = (type) => {
+      const event = new Event(type, { bubbles: true, cancelable: true })
+      event.dataTransfer = { types: ['Files'] }
+      return event
+    }
+
+    it('imports an archive dropped on the page body', async () => {
+      const wrapper = shallowMount(App, { attachTo: document.body })
+      await flushPromises()
+      const importer = wrapper.findComponent({ name: 'FileImport' })
+      const handleOmex = vi.fn().mockResolvedValue(true)
+      importer.vm.handleOmex = handleOmex
+      importer.vm.isOmexName = (n) => /\.omex$/i.test(n)
+
+      window.dispatchEvent(fileDrop(['study.omex']))
+      await flushPromises()
+      expect(handleOmex).toHaveBeenCalledTimes(1)
+      wrapper.unmount()
+    })
+
+    it('says which box to use for anything that is not an archive', async () => {
+      const wrapper = shallowMount(App, { attachTo: document.body })
+      await flushPromises()
+      const importer = wrapper.findComponent({ name: 'FileImport' })
+      const handleOmex = vi.fn()
+      importer.vm.handleOmex = handleOmex
+      importer.vm.isOmexName = (n) => /\.omex$/i.test(n)
+
+      window.dispatchEvent(fileDrop(['obs.json']))
+      await flushPromises()
+      expect(handleOmex).not.toHaveBeenCalled()
+      const hint = wrapper.find('[data-testid="page-drop-hint"]')
+      expect(hint.exists()).toBe(true)
+      expect(hint.text()).toContain('obs.json')
+      wrapper.unmount()
+    })
+
+    it('leaves a drop a box already handled alone', async () => {
+      // The zone handlers mark the event; without this check an archive dropped
+      // on the CellML box would be imported twice -- and a .cellml dropped on the
+      // CellML box would be answered with a hint telling the user to drop it on
+      // the CellML box.
+      const wrapper = shallowMount(App, { attachTo: document.body })
+      await flushPromises()
+      const importer = wrapper.findComponent({ name: 'FileImport' })
+      const handleOmex = vi.fn()
+      importer.vm.handleOmex = handleOmex
+      importer.vm.isOmexName = (n) => /\.omex$/i.test(n)
+
+      const event = fileDrop(['study.omex'])
+      event.cuflynxHandledByBox = true
+      window.dispatchEvent(event)
+      await flushPromises()
+      expect(handleOmex).not.toHaveBeenCalled()
+      wrapper.unmount()
+    })
+
+    it('shows the overlay only while files are over the page', async () => {
+      const wrapper = shallowMount(App, { attachTo: document.body })
+      await flushPromises()
+      expect(wrapper.find('[data-testid="page-drop-veil"]').exists()).toBe(false)
+
+      window.dispatchEvent(dragEvent('dragenter'))
+      await flushPromises()
+      expect(wrapper.find('[data-testid="page-drop-veil"]').exists()).toBe(true)
+
+      window.dispatchEvent(dragEvent('dragleave'))
+      await flushPromises()
+      expect(wrapper.find('[data-testid="page-drop-veil"]').exists()).toBe(false)
+      wrapper.unmount()
+    })
+
+    it('ignores a drag that is not carrying files', async () => {
+      // Dragging a slider handle or selected text must not veil the page.
+      const wrapper = shallowMount(App, { attachTo: document.body })
+      await flushPromises()
+      const event = new Event('dragenter', { bubbles: true })
+      event.dataTransfer = { types: ['text/plain'] }
+      window.dispatchEvent(event)
+      await flushPromises()
+      expect(wrapper.find('[data-testid="page-drop-veil"]').exists()).toBe(false)
+      wrapper.unmount()
+    })
+  })
+
   describe('resizable RHS import column', () => {
     const dragTo = async (wrapper, clientX) => {
       await wrapper.find('[data-testid="rhs-handle"]').trigger('mousedown')
@@ -343,6 +441,32 @@ describe('App.vue', () => {
       await flushPromises()
 
       expect(setConfig).toHaveBeenCalledWith(expect.objectContaining({ pythonPath: '' }))
+    })
+  })
+
+  // The CA dir is persisted machine-level and re-applied at every launch, so
+  // without a way to clear it the picker was a one-way door: once set, the only
+  // route back to the engine in the bundle was editing config.json by hand.
+  describe('resetting the CA dir to the shipped libCUFLynx', () => {
+    it('POSTs the empty string, which is the backend\'s reset signal', async () => {
+      getConfig.mockResolvedValueOnce({ ca_dir: '/home/me/circulatory_autogen' })
+      const wrapper = shallowMount(App)
+      await flushPromises()
+      setConfig.mockClear()
+
+      await wrapper.vm.resetCaDir()
+      await flushPromises()
+
+      // '' rather than omitting the field: POST /api/config leaves the CA dir
+      // alone when it is absent and clears it only when explicitly empty.
+      expect(setConfig).toHaveBeenCalledWith('')
+    })
+
+    it('offers the reset only when a directory is actually set', async () => {
+      getConfig.mockResolvedValueOnce({ ca_dir: '' })
+      const wrapper = shallowMount(App)
+      await flushPromises()
+      expect(wrapper.vm.caDir).toBe('')
     })
   })
 
@@ -909,10 +1033,33 @@ describe('App.vue interpreter MPI marker', () => {
     expect(chip.attributes('title')).toContain('Cores > 1 unavailable')
   })
 
-  it('says nothing about MPI for an interpreter that was never probed', async () => {
-    // A browsed path the server didn't discover: unknown, not "no MPI".
+  it('says nothing about MPI when the server reported no status at all', async () => {
+    // A browsed path the server didn't discover, on a config carrying no
+    // `mpiexec_available`: unknown, not "no MPI". Saying nothing is only right
+    // while there is genuinely nothing to say -- see the two tests below, where
+    // the server *has* answered.
     const wrapper = await mountWith([MPI_PY], '/elsewhere/python')
     expect(wrapper.find('[data-testid="python-mpi"]').exists()).toBe(false)
+  })
+
+  // The packaged app's default: no interpreter configured, so nothing matches
+  // the probed list, and analyses run in the bundle -- whose own MPICH the
+  // server resolves happily. The badge used to vanish entirely here, which was
+  // reported as "I don't have the MPI tick, but MPI is working fine". The
+  // server's answer is not a guess: `mpiexec_available` comes from the same
+  // `resolve_mpiexec` the run itself calls.
+  it('reports MPI from the server when no interpreter is configured', async () => {
+    const wrapper = await mountWith([], '', { mpiexec_available: true })
+    const chip = wrapper.find('[data-testid="python-mpi"]')
+    expect(chip.exists()).toBe(true)
+    expect(chip.text()).toContain('MPI ✓')
+  })
+
+  it('reports the absence the same way, rather than hiding it', async () => {
+    const wrapper = await mountWith([], '', { mpiexec_available: false })
+    const chip = wrapper.find('[data-testid="python-mpi"]')
+    expect(chip.text()).toContain('MPI ✗')
+    expect(chip.attributes('title')).toContain('Cores > 1 unavailable')
   })
 
   // A PATH launcher still runs (resolve_mpiexec falls back to it), so reporting
@@ -2815,5 +2962,77 @@ describe('App.vue reopening an outputs directory', () => {
   it('does not ask for a study when the directory holds only results', async () => {
     await load(FOUND({ study: { model: null, obs_data: null, params_for_id: null } }))
     expect(openStudyFromOutputs).not.toHaveBeenCalled()
+  })
+})
+
+// The params editor's baseline column (#350) is only useful if the value it sets
+// leaves the dialog. This is the join between the two halves that are unit-tested
+// either side of it: the dialog emits `baselines`, useSliders holds fixed values,
+// and App is what connects them to the values the model is actually given.
+describe('a baseline set on a parameter that is not calibrated (#350)', () => {
+  function paramValues(wrapper) {
+    // The same object App hands FileImport as `:param-values`, which is what a
+    // PhLynx send with source "current" posts and what the writer substitutes
+    // into the CellML.
+    return wrapper.findComponent({ name: 'FileImport' }).props('paramValues')
+  }
+
+  it('reaches the values the model is given, for calibrated and uncalibrated alike', async () => {
+    const wrapper = shallowMount(App, { attachTo: document.body })
+    await flushPromises()
+
+    wrapper.findComponent({ name: 'FileImport' }).vm.$emit('params-loaded', {
+      params: [{ qname: 'aortic_root/C', min: 1e-9, max: 5e-8, initial_value: 1e-8 }],
+      filename: 'p.json',
+      baselines: {
+        'aortic_root/C': 2e-8, // calibrated: becomes the slider's start point
+        'parameters/R_pvn': 4.2e6, // not calibrated: has no slider at all
+      },
+    })
+    await flushPromises()
+
+    const values = paramValues(wrapper)
+    // Without the fixed-value half, this key is simply absent and the solver --
+    // and the exported CellML -- keep the model's own value.
+    expect(values['parameters/R_pvn']).toBe(4.2e6)
+    expect(values['aortic_root/C']).toBe(2e-8)
+    wrapper.unmount()
+  })
+
+  it('lets a later slider move win over the baseline it started from', async () => {
+    // The calibrated half is a *starting point*, not a fixed value: a fixed value
+    // shadowing the slider would let the run and the handle disagree.
+    const wrapper = shallowMount(App, { attachTo: document.body })
+    await flushPromises()
+
+    wrapper.findComponent({ name: 'FileImport' }).vm.$emit('params-loaded', {
+      params: [{ qname: 'aortic_root/C', min: 1e-9, max: 5e-8, initial_value: 1e-8 }],
+      filename: 'p.json',
+      baselines: { 'aortic_root/C': 2e-8 },
+    })
+    await flushPromises()
+
+    wrapper.vm.sliders.setValue('aortic_root/C', 3e-8)
+    await nextTick()
+    expect(paramValues(wrapper)['aortic_root/C']).toBe(3e-8)
+    wrapper.unmount()
+  })
+
+  it('a params file with no baselines leaves the values alone', async () => {
+    // Loading a params_for_id from disk carries none, and must not clear
+    // anything or invent a fixed value.
+    const wrapper = shallowMount(App, { attachTo: document.body })
+    await flushPromises()
+
+    wrapper.findComponent({ name: 'FileImport' }).vm.$emit('params-loaded', {
+      params: [{ qname: 'aortic_root/C', min: 1e-9, max: 5e-8, initial_value: 1e-8 }],
+      filename: 'p.json',
+    })
+    await flushPromises()
+
+    const values = paramValues(wrapper)
+    expect(values['aortic_root/C']).toBe(1e-8)
+    expect(Object.keys(values)).toEqual(['aortic_root/C'])
+    wrapper.unmount()
   })
 })

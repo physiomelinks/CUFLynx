@@ -64,6 +64,67 @@ def ensure_build_deps() -> None:
     subprocess.run([sys.executable, "-m", "pip", "install", *missing], check=True)
 
 
+def check_mpi_is_freezable() -> None:
+    """Refuse to build against an MPI that cannot survive being frozen (#330).
+
+    A locally built macOS app aborted on its first simulation with
+
+        The MPI_Comm_dup() function was called before MPI_INIT was invoked
+        Local abort before MPI_INIT completed
+
+    while the *downloaded* build of the same version worked. That wording is
+    OpenMPI's, and the asymmetry is the whole diagnosis: CI installs
+    ``.[analysis]``, which brings the pip ``mpich`` wheel, and MPICH is a single
+    shared library. OpenMPI instead loads its MCA components as separate plugins
+    from ``<prefix>/lib/openmpi/*.so``, and PyInstaller does not collect them --
+    so inside the bundle ``MPI_Init`` cannot complete and the next MPI call
+    aborts exactly like that.
+
+    The failure is therefore invisible at build time and fatal at run time, on a
+    toolchain that works perfectly when running from source. That is precisely
+    the shape the spec already refuses to ship for casadi, Sundials and
+    ``Python.h``: fail here, where the fix is one ``pip install``, rather than in
+    a user's hands.
+
+    A warning rather than a hard error when MPI cannot be inspected at all: the
+    bundle is usable single-core without MPI, and this must not block a build
+    that never wanted it.
+    """
+    try:
+        from mpi4py import MPI  # noqa: PLC0415 - optional, and only needed here
+    except Exception as exc:  # noqa: BLE001 - no mpi4py is a legitimate build
+        print(
+            f"note: mpi4py is not importable ({exc.__class__.__name__}), so this build "
+            "will be single-core only.",
+            flush=True,
+        )
+        return
+
+    try:
+        library = MPI.Get_library_version().strip().replace("\x00", "")
+    except Exception as exc:  # noqa: BLE001
+        print(f"warning: could not identify the MPI library ({exc}).", flush=True)
+        return
+
+    first = library.splitlines()[0] if library else "(unknown)"
+    print(f"MPI: {first}", flush=True)
+
+    if "open mpi" in library.lower() or "open-mpi" in library.lower():
+        sys.exit(
+            "error: mpi4py in this environment is linked against Open MPI, which does "
+            "not survive PyInstaller.\n"
+            "  Open MPI loads its MCA components as plugins from <prefix>/lib/openmpi,\n"
+            "  which are not collected into the bundle, so the built app dies at the\n"
+            "  first simulation with 'MPI_Comm_dup() ... called before MPI_INIT' (#330)\n"
+            "  -- even though running from source works fine.\n"
+            "\n"
+            "  Use the self-contained MPICH wheel the released builds use:\n"
+            "      pip install mpich\n"
+            "      pip install --force-reinstall --no-cache-dir --no-binary=mpi4py mpi4py\n"
+            "  (the second line rebuilds mpi4py against it), then re-run this script."
+        )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Package CUFLynx as a desktop app.")
     parser.add_argument(
@@ -81,6 +142,7 @@ def main() -> int:
                 shutil.rmtree(d)
 
     ensure_build_deps()
+    check_mpi_is_freezable()
 
     if not args.no_build:
         cmd = node_cmd("build")

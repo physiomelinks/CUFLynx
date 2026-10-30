@@ -129,6 +129,40 @@ def test_a_phlynx_archive_has_no_obs_data_rather_than_a_broken_one():
     }
 
 
+def test_phlynx_state_is_recognised_after_it_is_renamed():
+    """The format specifier is the contract; the filename is not.
+
+    PhLynx flattened its workspace format (phlynx#542) and now writes
+    `flow-snapshot.json` where it wrote `flow.json`. Matching on the name stopped
+    recognising it, with two consequences: the layout was no longer kept beside
+    the model, and an unrecognised JSON falls through to the observations pool --
+    so both state files were then reported as candidates "passed over" for an
+    obs_data neither ever claimed to be.
+    """
+    renamed = PHLYNX_MANIFEST.replace("flow.json", "flow-snapshot.json")
+    members = {
+        "manifest.xml": renamed,
+        "model.cellml": "<model/>",
+        "document.sedml": "<sedML/>",
+        "simulation.json": json.dumps({"plots": []}),
+        "flow-snapshot.json": json.dumps({"nodes": []}),
+        "changes.json": json.dumps({"modified": True}),
+    }
+    parts = omex_import.unpack(_zip(members))
+    assert parts["roles"]["module_config"] == ["flow-snapshot.json", "changes.json"]
+    assert [n for n, _ in parts["phlynx_state"]] == ["flow-snapshot.json", "changes.json"]
+    # And therefore out of the obs pool entirely.
+    assert [s["name"] for s in parts["obs_skipped"]] == ["simulation.json"]
+
+
+def test_every_phlynx_state_member_is_carried_not_just_the_first():
+    """PhLynx used to keep its state in one file and now keeps it in two, so
+    "the first one found" silently drops half of it."""
+    parts = omex_import.unpack(_phlynx_archive())
+    assert len(parts["phlynx_state"]) == 2
+    assert parts["module_config"][0] == parts["phlynx_state"][0][0]
+
+
 def test_a_real_obs_data_beside_phlynx_state_is_still_found():
     """The exclusion is of declared non-observations, not of every JSON."""
     obs = json.dumps({"protocol_info": {"sim_times": [1.0]}, "data_items": []})
@@ -363,7 +397,7 @@ def test_an_archive_with_neither_says_what_it_wanted():
 
 @pytest.mark.integration
 def test_the_myokit_archive_loads_model_and_params_in_one_drop(
-    client, requires_simulation, tmp_path
+    client, requires_simulation, requires_myokit_parser, tmp_path
 ):
     with open(MMT_EXAMPLE, "rb") as fh:
         resp = client.post(
@@ -382,7 +416,9 @@ def test_the_myokit_archive_loads_model_and_params_in_one_drop(
 
 
 @pytest.mark.integration
-def test_the_archives_protocol_comes_from_the_mmt(client, requires_simulation):
+def test_the_archives_protocol_comes_from_the_mmt(
+    client, requires_simulation, requires_myokit_parser
+):
     """The archive carries no obs_data. Without this the study would load unpaced
     -- a model and a parameter to fit, and nothing driving it."""
     with open(MMT_EXAMPLE, "rb") as fh:
@@ -409,7 +445,9 @@ def test_the_archives_protocol_comes_from_the_mmt(client, requires_simulation):
 
 
 @pytest.mark.integration
-def test_the_archive_and_the_bare_mmt_give_the_same_protocol(client, requires_simulation):
+def test_the_archive_and_the_bare_mmt_give_the_same_protocol(
+    client, requires_simulation, requires_myokit_parser
+):
     """Two routes into the same conversion, so they must not drift apart. The
     archive path is easy to leave behind: it has its own upload route, and this
     is the assertion that notices."""
@@ -427,7 +465,9 @@ def test_the_archive_and_the_bare_mmt_give_the_same_protocol(client, requires_si
 
 
 @pytest.mark.integration
-def test_an_obs_data_in_the_archive_beats_the_mmts_own_protocol(client, requires_simulation):
+def test_an_obs_data_in_the_archive_beats_the_mmts_own_protocol(
+    client, requires_simulation, requires_myokit_parser
+):
     """The author's file is the author's intent; a derived protocol must not
     displace one they shipped."""
     mine = {
@@ -453,7 +493,9 @@ def test_an_obs_data_in_the_archive_beats_the_mmts_own_protocol(client, requires
 
 
 @pytest.mark.integration
-def test_the_whole_archive_simulates_as_dropped(client, requires_simulation):
+def test_the_whole_archive_simulates_as_dropped(
+    client, requires_simulation, requires_myokit_parser
+):
     """The point of the archive: drop it, and the study runs. Two stimuli in the
     .mmt's protocol, so two action potentials."""
     with open(MMT_EXAMPLE, "rb") as fh:
@@ -473,7 +515,9 @@ def test_the_whole_archive_simulates_as_dropped(client, requires_simulation):
 
 
 @pytest.mark.integration
-def test_the_calibration_parameter_from_the_archive_moves_the_model(client, requires_simulation):
+def test_the_calibration_parameter_from_the_archive_moves_the_model(
+    client, requires_simulation, requires_myokit_parser
+):
     """params_for_id and the protocol have to reach the same model: a parameter
     loaded against a model the protocol does not drive would look fine and fit
     nothing."""
@@ -553,31 +597,39 @@ def test_an_empty_json_member_says_it_is_empty(client):
     assert "empty" in " ".join(resp.json()["warnings"])
 
 
-def test_an_archive_carrying_no_observations_at_all_says_so(client):
-    """Valid, and it must still load (#149) -- but the reason the observations
-    tab is empty is "there were none", which is worth one sentence."""
+def test_an_archive_carrying_no_observations_at_all_loads_quietly(client):
+    """Neither an obs_data nor a params_for_id is required to drop a study in.
+
+    This used to spend a sentence saying the archive had none, which is true of
+    every model-only archive and of every PhLynx project export -- so it was a
+    banner that fired on the ordinary case. The tabs being empty already says
+    it. What still gets said is the case below: a member that *might* have been
+    the observations and could not be read."""
     resp = _upload(client, {"m.cellml": _model_bytes()})
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["obs_data"] is None
-    assert "carries no obs_data" in " ".join(body["warnings"])
+    assert body["params_for_id"] is None
+    assert body["warnings"] == []
 
 
-def test_a_member_the_manifest_rules_out_is_reported_as_ruled_out(client):
-    """Excluded by its declared format rather than by its contents, so the
-    reason has to name the manifest -- the file itself looks fine."""
-    resp = _upload(
-        client,
-        {
-            "manifest.xml": PHLYNX_MANIFEST,
-            "model.cellml": _model_bytes(),
-            "flow.json": json.dumps({"id": "phlynx-flow", "nodes": []}),
-        },
+def test_a_member_the_manifest_accounts_for_is_not_reported(client):
+    """The producer listed it and said what it is, so it is their business.
+
+    A PhLynx archive carries three such members -- the flow snapshot, the changes
+    log and the simulation settings -- and naming all three on every import,
+    under a heading about missing observations, is how a banner becomes
+    something people click past. A member nothing explains is still reported;
+    see `test_a_json_that_could_have_been_the_obs_data_is_named_with_the_reason`.
+    """
+    model = (RESOURCES_DIR / "Lotka_Volterra_forced.cellml").read_bytes()
+    resp = client.post(
+        "/api/omex/upload",
+        files={"file": ("phlynx.omex", _phlynx_archive(**{"model.cellml": model}),
+                        "application/zip")},
     )
     assert resp.status_code == 200, resp.text
-    warning = " ".join(resp.json()["warnings"])
-    assert "flow.json" in warning and "manifest declares it" in warning
-
+    assert resp.json()["warnings"] == []
 
 def test_a_rejected_obs_data_is_a_failure_not_a_quiet_omission(client, requires_ca):
     """The shape of the bug this section exists for: the member was found and
@@ -763,7 +815,7 @@ def test_the_migration_hint_is_offered_from_the_document_alone():
 
 
 def test_an_mmt_archive_whose_protocol_filled_the_slot_is_not_told_it_has_none(
-    client, requires_simulation
+    client, requires_simulation, requires_myokit_parser
 ):
     """The .mmt's own `[[protocol]]` becomes the study's obs_data when the
     archive carries none (#27). The slot is what matters, not where it was

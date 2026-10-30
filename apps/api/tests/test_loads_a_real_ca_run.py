@@ -17,6 +17,7 @@ Skips, rather than fails, when the engine has no builder or is missing the
 optional extras. A CUFLynx that cannot reach a full-featured CA has not broken;
 it simply cannot run this check.
 """
+import importlib.util
 import os
 
 import pytest
@@ -28,6 +29,17 @@ pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
 def _builder():
     """CA's run builder, or a reason to skip."""
+    # A skip here is honest locally -- a thin environment genuinely cannot run this. It is
+    # not honest in the tier that installs [emulation,uq] to run exactly this: the test that
+    # exists to catch CA/CUFLynx drift is then the one most likely to be silently absent, and
+    # a suite that skips its only cross-repo coverage looks identical to one that passes it.
+    if os.environ.get("CUFLYNX_REQUIRE_CA_RUN"):
+        for extra, module in (("emulation", "autoemulate"), ("uq", "emcee")):
+            if importlib.util.find_spec(module) is None:
+                pytest.fail(
+                    f"CUFLYNX_REQUIRE_CA_RUN is set but {module!r} is missing, so the "
+                    f"CA/CUFLynx drift check cannot run. Install libcuflynx[{extra}] in "
+                    f"this tier, or unset the variable if this tier is not meant to have it.")
     pytest.importorskip("autoemulate", reason="the emulator stage needs CA's [emulation]")
     pytest.importorskip("emcee", reason="the chain needs CA's [uq]")
     try:

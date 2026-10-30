@@ -9,6 +9,10 @@ const props = defineProps({
   sliders: { type: Object, default: () => ({}) },
   // Whether a calibration best-fit is available (gates "Reset to best fit").
   hasBestFit: { type: Boolean, default: false },
+  // Whether a UQ posterior median is available (gates "Reset to UQ median").
+  // A median is a summary of a posterior, not a fitted point, so it is offered
+  // beside the best fit rather than in place of it.
+  hasUqMedian: { type: Boolean, default: false },
   // Saved runs available to overlay (#126): [{prefix, shown, color, params}].
   savedRuns: { type: Array, default: () => [] },
 })
@@ -17,6 +21,7 @@ const emit = defineEmits([
   'remove',
   'reset-init',
   'reset-best',
+  'reset-uq-median',
   'save-current',
   'reset-saved',
   'toggle-saved',
@@ -214,6 +219,16 @@ function groupTitle(s) {
         title="Reset all parameter values to the latest calibration best-fit"
         :disabled="!hasBestFit || entries.length === 0"
         @click="emit('reset-best')"
+      />
+      <Button
+        label="Reset to UQ median"
+        icon="pi pi-chart-bar"
+        size="small"
+        outlined
+        data-testid="reset-uq-median"
+        title="Reset all parameter values to the posterior median from the latest UQ run"
+        :disabled="!hasUqMedian || entries.length === 0"
+        @click="emit('reset-uq-median')"
       />
       <Button
         label="Save current"

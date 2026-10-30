@@ -5,25 +5,51 @@ params_for_id naming (``component/variable``), the exported pipeline, and CA
 itself. Rather than teach each of those about ``.mmt``, a dropped Myokit model is
 converted once on the way in and the rest of the app never knows the difference.
 
-The converted file is written to the outputs directory (as the issue asks) so the
-user keeps an artefact they can inspect, re-import, or hand to circulatory_autogen
-directly -- a conversion that existed only inside a temp dir would be invisible
-and unreproducible.
+**The conversion itself lives in circulatory_autogen**, in
+``libcuflynx.parsers.MyokitParsers``. It is engine work, not GUI work: CA's own
+pipeline benefits from reading a ``.mmt``, and the ``protocol_info`` half of the
+same file has to speak CA's ``protocol_shapes`` vocabulary, which is impossible
+to keep honest from another repository. This module is what is left over once
+that moved out -- the parts that are genuinely CUFLynx's:
 
-Myokit is an optional dependency here in the same sense as elsewhere: it is
-bundled in the packaged app but may be absent from a bare source checkout, so it
-is imported lazily and a clear error is raised rather than an ImportError
-traceback.
+- the filename/content predicates the upload sniff needs *before* it knows
+  whether CA is reachable, so they stay local and depend on nothing;
+- :class:`MyokitImportError`, kept as a CUFLynx class with a stable identity.
+  The CA directory can be re-pointed at runtime, so a class imported from CA
+  would change identity mid-session and ``except MyokitImportError`` at the call
+  sites would quietly stop matching;
+- persisting the converted file next to the study, which is a CUFLynx artefact
+  convention rather than a conversion.
+
+There is no local re-implementation of the conversion. The same choice CA's
+params_for_id CSV converter made (see ``params_for_id``): one implementation, and
+a named error when the engine is too old to have it, rather than two copies that
+drift and disagree about what a model means.
 """
 
 from __future__ import annotations
 
-import tempfile
 from pathlib import Path
 
 # Myokit's own extension. `.txt` is deliberately not accepted: it would make any
 # stray text file look like a model.
 MYOKIT_SUFFIXES = (".mmt",)
+
+def no_parser_hint(what: str, module: str) -> str:
+    """What to say when the engine cannot supply a conversion.
+
+    One sentence, written once, because the ``.mmt`` and ``.model`` readers both
+    need it and a user who hits either wants the same two remedies.
+    """
+    return (
+        f"the circulatory_autogen this CUFLynx is using does not provide the "
+        f"{what} reader ({module}). Update circulatory_autogen, or export the "
+        f"model to CellML yourself and drop that instead."
+    )
+
+
+#: The Myokit reader's own phrasing of :func:`no_parser_hint`.
+NO_PARSER_HINT = no_parser_hint("Myokit", "libcuflynx.parsers.MyokitParsers")
 
 
 class MyokitImportError(ValueError):
@@ -40,6 +66,9 @@ def looks_like_myokit(data: bytes) -> bool:
     Content rather than extension, so a model dropped with the wrong name is
     still recognised -- and, more importantly, so an XML file named ``.mmt`` is
     not fed to the Myokit parser.
+
+    Local on purpose: the upload route asks this of every file it receives, and
+    it must answer the same way whether or not a CA directory is configured.
     """
     try:
         head = data[:4096].decode("utf-8", errors="ignore")
@@ -51,6 +80,24 @@ def looks_like_myokit(data: bytes) -> bool:
     return "[[model]]" in head
 
 
+def _ca_parser(module: str = "parsers.MyokitParsers"):
+    """A CA parser module, or None when CA cannot be reached or is too old.
+
+    Same shape as ``obs_data._ca_parser``: lazy, through the one resolver, and
+    None rather than an exception so callers can phrase their own message. The
+    module is a parameter because ``easyml_import`` needs exactly this and
+    a second copy of it would be a second place to fix.
+    """
+    try:
+        from ca_imports import ca_import, ensure_ca_path  # noqa: PLC0415
+
+        ensure_ca_path()
+        mod = ca_import(module)
+    except Exception:  # noqa: BLE001 - CA absent or too old; nothing to ask
+        return None
+    return mod
+
+
 def cellml_from_myokit(data: bytes, *, filename: str, out_dir: str | None = None) -> tuple[bytes, str | None]:
     """Convert a Myokit ``.mmt`` to CellML 2.0.
 
@@ -58,69 +105,13 @@ def cellml_from_myokit(data: bytes, *, filename: str, out_dir: str | None = None
     converted file was kept for the user; None when no output directory was
     given, in which case the conversion is still returned but not persisted.
     """
+    parser = _ca_parser()
+    if parser is None:
+        raise MyokitImportError(f"could not convert that .mmt: {NO_PARSER_HINT}")
     try:
-        import myokit  # noqa: PLC0415 - optional/heavy, imported on use
-        from myokit.formats.cellml import CellML2Exporter  # noqa: PLC0415
-    except ImportError as exc:
-        raise MyokitImportError(
-            "Myokit is not installed, so a .mmt model cannot be converted to CellML. "
-            "Install myokit, or export the model to CellML yourself and drop that."
-        ) from exc
-
-    stem = Path(filename).stem or "model"
-    with tempfile.TemporaryDirectory() as td:
-        mmt_path = Path(td) / f"{stem}.mmt"
-        mmt_path.write_bytes(data)
-        try:
-            # Only the [[model]] section is imported. A .mmt also carries a
-            # [[protocol]] (a pacing stimulus) and a [[script]], and neither
-            # belongs in a CUFLynx model: the protocol here comes from
-            # obs_data's protocol_info, so baking Myokit's own stimulus into the
-            # CellML would give the model two sources of pacing that disagree.
-            # load() rather than load_model() so a malformed protocol/script
-            # section still yields a clear error rather than a parse failure
-            # attributed to the model.
-            model, _protocol, _script = myokit.load(str(mmt_path))
-        except Exception as exc:  # noqa: BLE001 - myokit raises several types
-            raise MyokitImportError(f"could not read the Myokit model: {exc}") from exc
-        if model is None:
-            raise MyokitImportError(
-                "that .mmt file has no [[model]] section, so there is nothing to convert."
-            )
-        # Myokit's example set includes files whose [[model]] is a stub -- just a
-        # time variable -- because the file exists to demonstrate a protocol or a
-        # script (fink-2009-protocol.mmt is one). Those import "successfully" as a
-        # model with nothing to integrate, and the emptiness only shows up later
-        # as a simulation with no outputs. Say so at the door instead.
-        try:
-            n_states = model.count_states()
-        except Exception:  # noqa: BLE001 - odd model object; let the export decide
-            n_states = None
-        if n_states == 0:
-            raise MyokitImportError(
-                "that .mmt has no state variables, so there is nothing to simulate. "
-                "Myokit ships protocol- and script-demonstration files whose "
-                "[[model]] section is only a stub -- this looks like one of those "
-                "rather than a model."
-            )
-
-        out_path = Path(td) / f"{stem}.cellml"
-        try:
-            # No protocol argument: the exported CellML is the model alone.
-            CellML2Exporter().model(str(out_path), model)
-        except Exception as exc:  # noqa: BLE001 - export failures are varied
-            raise MyokitImportError(f"could not export the Myokit model to CellML: {exc}") from exc
-        cellml = out_path.read_bytes()
-
-    saved = None
-    if out_dir:
-        try:
-            target = Path(out_dir) / f"{stem}.cellml"
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(cellml)
-            saved = str(target)
-        except OSError:
-            # Keeping a copy is a convenience; failing to would be a poor reason
-            # to reject a model that converted successfully.
-            saved = None
-    return cellml, saved
+        return parser.cellml_from_myokit(data, filename=filename, out_dir=out_dir)
+    except ValueError as exc:
+        # CA's MyokitImportError is a ValueError, and so is anything Myokit
+        # raises about a malformed file. Both are the user's file rather than a
+        # fault, so both become the 422 the call sites already expect.
+        raise MyokitImportError(str(exc)) from exc

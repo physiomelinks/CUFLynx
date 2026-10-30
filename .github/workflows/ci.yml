@@ -40,17 +40,35 @@ jobs:
         run: |
           python -c "import importlib.metadata as m; print(m.version('cuflynx-api'))"
 
+      # A repo-level check, so it belongs in a job that runs once rather than in the
+      # per-Python matrix. `working-directory` explicitly, because this job defaults to
+      # apps/api and the script lives at the root -- which is exactly how the first attempt
+      # at this failed, and passed on Windows only because that job never got the step.
+      - name: The version is in sync across its three files
+        working-directory: ${{ github.workspace }}
+        run: python scripts/sync_version.py --check
+
+  # ONE job for every OS, not one per OS. This was two near-identical copies --
+  # ubuntu and windows -- which is exactly how a platform-specific check goes
+  # missing: the macOS half of #340 and #330 both reached users because nothing
+  # above the Linux unit tier ran anywhere else. A matrix cannot drift from
+  # itself.
+  #
+  # macOS and Windows runners are billed at 10x and 2x, but this repository is
+  # public, so Actions minutes are free; the real cost here is wall clock, and
+  # this tier is minutes.
   backend-unit:
-    name: Backend unit tests (no Myokit, ${{ matrix.python-version }})
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
+    name: Backend unit (${{ matrix.os }}, no Myokit, ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        # 3.12 is the top deliberately: autoemulate declares requires-python <3.13, and while
-        # this tier does not install it, moving past the engine's own ceiling would test an
-        # interpreter libcuflynx cannot fully support (circulatory_autogen#459). 3.10 stays as
-        # the floor because that is what libcuflynx requires (#278).
+        # 3.12 is the top deliberately: autoemulate declares requires-python <3.13, and
+        # while this tier does not install it, moving past the engine's own ceiling would
+        # test an interpreter libcuflynx cannot fully support (circulatory_autogen#459).
+        # 3.10 stays as the floor because that is what libcuflynx requires (#278).
+        os: [ubuntu-latest, macos-latest, windows-latest]
         python-version: ["3.10", "3.11", "3.12"]
     defaults:
       run:
@@ -66,9 +84,19 @@ jobs:
         with:
           repository: physiomelinks/circulatory_autogen
           # A commit on master, bumped deliberately -- upstream drift must not break
-          # CUFLynx CI. This one is the merge of circulatory_autogen#477, the first CA
-          # carrying the #466 obs_data vocabulary this app now speaks.
-          ref: 42136538e92e7afbc6749e39e5b8b5dfcddd67d6
+          # CUFLynx CI. It must never go back before the merge of circulatory_autogen#495
+          # (the first CA carrying libcuflynx.parsers.MyokitParsers and .EasyMLParsers,
+          # which this app delegates every .mmt and .model conversion to with no local
+          # fallback); v0.7.3 is well past it.
+          #
+          # The `libcuflynx v<X.Y.Z>` marker is not decoration: it is the only
+          # offline record of *which release* this SHA is, and
+          # `test_the_pin_is_not_older_than_the_libcuflynx_floor` reads it to check the pin
+          # against the `libcuflynx>=` floor in apps/api/pyproject.toml. Bump both together
+          # -- when the floor moved to 0.7.3 and this did not, the unit tier spent a month
+          # testing a pairing pip itself would refuse to resolve, and only the weekly
+          # `ca-pin-freshness` job said so.
+          ref: 2684bd9e01a494618e4a6ba7f814d9f28758af5d  # libcuflynx v0.7.3
           path: circulatory_autogen
       - uses: actions/setup-python@v5
         with:
@@ -84,48 +112,18 @@ jobs:
       - name: Run unit tests
         run: pytest -m "not integration" -q
 
-  backend-unit-windows:
-    name: Backend unit tests (Windows, no Myokit, ${{ matrix.python-version }})
-    runs-on: windows-latest
-    timeout-minutes: 15
+  frontend:
+    name: Frontend tests + build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     strategy:
       fail-fast: false
+      # All three, because the frontend suite now carries source-level contracts
+      # about how the app leaves the page (externalLinks.test.js), and those read
+      # files off disk -- a path or line-ending assumption that only breaks on
+      # Windows is exactly the kind of thing this catches.
       matrix:
-        # 3.12 is the top deliberately: autoemulate declares requires-python <3.13, and while
-        # this tier does not install it, moving past the engine's own ceiling would test an
-        # interpreter libcuflynx cannot fully support (circulatory_autogen#459). 3.10 stays as
-        # the floor because that is what libcuflynx requires (#278).
-        python-version: ["3.10", "3.11", "3.12"]
-    defaults:
-      run:
-        working-directory: apps/api
-    env:
-      CIRCULATORY_AUTOGEN_SRC: ${{ github.workspace }}/circulatory_autogen/src
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
-        with:
-          repository: physiomelinks/circulatory_autogen
-          # A commit on master, bumped deliberately -- upstream drift must not break
-          # CUFLynx CI. This one is the merge of circulatory_autogen#477, the first CA
-          # carrying the #466 obs_data vocabulary this app now speaks.
-          ref: 42136538e92e7afbc6749e39e5b8b5dfcddd67d6
-          path: circulatory_autogen
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
-      # Same light deps as the Ubuntu unit job (matplotlib included for the
-      # extra-figure drift guards); the heavy simulation stack
-      # (myokit/libcellml) is exercised by the integration marker, skipped here.
-      - name: Install unit-test deps
-        run: pip install fastapi "uvicorn[standard]" numpy pandas pyyaml python-multipart httpx matplotlib pytest pytest-cov
-      - name: Run unit tests
-        run: pytest -m "not integration" -q
-
-  frontend:
-    name: Frontend tests + build
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
+        os: [ubuntu-latest, macos-latest, windows-latest]
     defaults:
       run:
         working-directory: apps/web
@@ -140,3 +138,97 @@ jobs:
         run: yarn test
       - name: Build
         run: yarn build
+
+  # The one macOS job on the PR path, and deliberately small.
+  #
+  # A user opening the packaged macOS app hit
+  #   DistutilsExecError: command '/usr/bin/clang' failed with exit code 1
+  # because compiler detection asked shutil.which(), and on macOS /usr/bin/cc,
+  # /usr/bin/gcc and /usr/bin/clang are xcrun shims shipped by the OS that are
+  # ALWAYS present -- exiting 1 when no toolchain is installed behind them. The
+  # app promised CVODE_myokit and the run died inside distutils, with the reason
+  # going to a console a double-clicked app does not have.
+  #
+  # tests/test_compiler_check.py pins the logic hermetically and runs in the unit
+  # tiers on all three OSes. What it *cannot* check is whether real macOS behaves
+  # as those tests assume, since it builds its own fake shims. This job is that
+  # check, and only that: two states on one architecture, ~3 minutes.
+  #
+  # The full grid -- four toolchain states x both architectures, plus the packaged
+  # binary opened under each -- is .github/workflows/mac-extended.yml, which is
+  # far too slow for a PR and runs weekly and on demand instead.
+  macos-compiler-detection:
+    name: Compiler detection is true on macOS (${{ matrix.state }})
+    runs-on: macos-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        # xcode: detection must not have gone pessimistic on a healthy machine.
+        # no-toolchain: the reported bug, which the shipped code fails.
+        state: [xcode, no-toolchain]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          # The interpreter the release build freezes.
+          python-version: "3.10"
+      # setuptools is what Myokit compiles through, and is no longer in a default
+      # 3.12+ venv -- install it rather than inherit the image's.
+      - name: Install setuptools
+        run: python -m pip install --upgrade pip setuptools
+      - name: Probe the toolchain
+        run: |
+          set -uo pipefail
+          # Exported here, not in an `env:` block: a falsy expression there sets
+          # the variable to the empty string rather than leaving it unset, and an
+          # empty DEVELOPER_DIR is not the same as none -- it would perturb the
+          # baseline this is compared against.
+          if [ "${{ matrix.state }}" = "no-toolchain" ]; then
+            export DEVELOPER_DIR=/var/empty
+            EXPECT=absent
+          else
+            EXPECT=present
+          fi
+          python scripts/mac_toolchain_probe.py \
+            --label "${{ matrix.state }}" --expect "$EXPECT"
+
+  # Browser-engine tests. Ubuntu only and one engine pair: this tier exists for
+  # WebKit's user-activation rule, which is the same wherever WebKit runs.
+  #
+  # Worth being explicit about its scope, because it is easy to over-credit:
+  # it would NOT have caught #340. That bug is in the embedder -- pywebview's
+  # macOS backend forwards a new window only for WKNavigationTypeLinkActivated --
+  # and no browser engine has such a filter, WebKit included. #340 is guarded by
+  # apps/web/src/lib/externalLinks.test.js, a source contract in the vitest tier.
+  # What this catches is the neighbouring bug class: a scripted open reintroduced
+  # after an await, which Safari refuses and Chromium tolerates.
+  frontend-e2e:
+    name: Frontend e2e (WebKit + Chromium)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install
+        run: yarn install --frozen-lockfile
+      # Only the two engines the config declares; `--with-deps` pulls the system
+      # libraries WebKit needs on a bare runner.
+      - name: Install browsers
+        run: yarn playwright install --with-deps webkit chromium
+      - name: Build
+        run: yarn build
+      # The API is stubbed with page.route, so no Python and no backend here.
+      - name: End-to-end tests
+        run: yarn test:e2e
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: apps/web/playwright-report/
+          if-no-files-found: ignore

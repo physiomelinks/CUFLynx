@@ -158,10 +158,74 @@ describe('EditParamsDialog', () => {
     expect(wrapper.find('[data-testid="ep-save"]').attributes('disabled')).toBeDefined()
   })
 
+  // A parameter you are not calibrating still has a value, and there was nowhere
+  // in the app to change it (#350).
+  describe('the baseline column', () => {
+    it('is editable on a row that is not being calibrated', async () => {
+      const wrapper = mountDialog()
+      const rows = wrapper.findAll('[data-testid="ep-row"]')
+      // v/b comes from the model, not the loaded file, so its Use box is off.
+      const notCalibrated = rows[1].find('[data-testid="ep-baseline"]')
+      expect(notCalibrated.attributes('disabled')).toBeUndefined()
+      // ... while min/max stay off, as they only mean something for a search range.
+      expect(rows[1].find('[data-testid="ep-min"]').attributes('disabled')).toBeDefined()
+    })
+
+    it('starts from the value the parameter already has', async () => {
+      const wrapper = mountDialog()
+      const rows = wrapper.findAll('[data-testid="ep-row"]')
+      expect(rows[0].find('[data-testid="ep-baseline"]').element.value).toBe('1.5')
+      // From the model's initial_values for a row the file never mentioned.
+      expect(rows[1].find('[data-testid="ep-baseline"]').element.value).toBe('2')
+    })
+
+    it('hands the edited values to the app on save, calibrated or not', async () => {
+      uploadParamsForId.mockResolvedValue({ params: [{ qname: 'v/a' }] })
+      const wrapper = mountDialog()
+      const rows = wrapper.findAll('[data-testid="ep-row"]')
+      await rows[0].find('[data-testid="ep-baseline"]').setValue('1.75')
+      await rows[1].find('[data-testid="ep-baseline"]').setValue('9')
+      await wrapper.find('[data-testid="ep-save"]').trigger('click')
+      await flushPromises()
+      expect(wrapper.emitted('saved')[0][0].baselines).toEqual({ 'v/a': 1.75, 'v/b': 9 })
+    })
+
+    it('keeps them out of the saved params_for_id, which CA would reject', async () => {
+      // CA validates a params_for_id entry's keys against a fixed set and refuses
+      // an unknown one, so a baseline written into the file would make the study
+      // unloadable rather than configurable.
+      uploadParamsForId.mockResolvedValue({ params: [{ qname: 'v/a' }] })
+      const wrapper = mountDialog()
+      await wrapper.findAll('[data-testid="ep-row"]')[0]
+        .find('[data-testid="ep-baseline"]').setValue('1.75')
+      await wrapper.find('[data-testid="ep-save"]').trigger('click')
+      await flushPromises()
+      const text = await readFile(uploadParamsForId.mock.calls[0][0])
+      const doc = JSON.parse(text)
+      expect(doc.params[0].baseline).toBeUndefined()
+      expect(doc.params[0].initial_value).toBeUndefined()
+    })
+
+    it('sets every member of a grouped row', async () => {
+      uploadParamsForId.mockResolvedValue({ params: [] })
+      const wrapper = mountDialog({
+        currentParams: [
+          { qname: 'v/a', qnames: ['v/a', 'w/a'], min: 1, max: 2, initial_value: 1.5 },
+        ],
+        modelVariables: { params: ['v/a', 'w/a'], initial_values: {} },
+      })
+      await flushPromises()
+      await wrapper.find('[data-testid="ep-baseline"]').setValue('1.25')
+      await wrapper.find('[data-testid="ep-save"]').trigger('click')
+      await flushPromises()
+      expect(wrapper.emitted('saved')[0][0].baselines).toEqual({ 'v/a': 1.25, 'w/a': 1.25 })
+    })
+  })
+
   it('disables Save when an included row has min >= max', async () => {
     const wrapper = mountDialog()
     const row = wrapper.findAll('[data-testid="ep-row"]')[0]
-    const [minInput] = row.findAll('input.ep-num')
+    const minInput = row.find('[data-testid="ep-min"]')
     await minInput.setValue('5') // min 5 >= max 2 -> invalid
     expect(wrapper.find('[data-testid="ep-save"]').attributes('disabled')).toBeDefined()
   })
@@ -453,7 +517,12 @@ describe('EditParamsDialog — unbounded parameters', () => {
     await flushPromises()
     await wrapper.find('[data-testid="ep-prior-toggle"]').trigger('click')
 
-    const nums = () => wrapper.findAll('input.ep-num')
+    // By testid, not position: a column added to the left of min (#350) must not
+    // silently re-point these at a different input.
+    const nums = () => [
+      wrapper.find('[data-testid="ep-min"]'),
+      wrapper.find('[data-testid="ep-max"]'),
+    ]
     expect(nums()[0].attributes('disabled')).toBeUndefined()
 
     await wrapper.find('[data-testid="ep-unbounded"]').setValue(true)
@@ -496,7 +565,7 @@ describe('EditParamsDialog — unbounded parameters', () => {
     await flushPromises()
     await wrapper.find('[data-testid="ep-unbounded"]').setValue(true)
     await wrapper.find('[data-testid="ep-unbounded"]').setValue(false)
-    expect(wrapper.findAll('input.ep-num')[0].attributes('disabled')).toBeUndefined()
+    expect(wrapper.find('[data-testid="ep-min"]').attributes('disabled')).toBeUndefined()
   })
 
   it('says so in the collapsed summary', async () => {
@@ -665,7 +734,7 @@ describe('EditParamsDialog — placeholder follows the bounds', () => {
     expect(std().attributes('placeholder')).toBe('1')
 
     // (max - min) / 6 with max now 12.
-    await wrapper.findAll('input.ep-num')[1].setValue('12')
+    await wrapper.find('[data-testid="ep-max"]').setValue('12')
     expect(std().attributes('placeholder')).toBe('2')
   })
 })
@@ -704,7 +773,7 @@ describe('EditParamsDialog — placeholder when the number cannot be computed (#
     const mean = () => wrapper.find('[data-testid="ep-prior-param-prior_mean"]')
     expect(mean().attributes('placeholder')).toBe('1.5')
 
-    await wrapper.findAll('input.ep-num')[0].setValue('')
+    await wrapper.find('[data-testid="ep-min"]').setValue('')
     expect(mean().attributes('placeholder')).toBe('= (min + max) / 2')
   })
 

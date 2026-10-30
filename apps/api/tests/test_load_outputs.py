@@ -496,6 +496,39 @@ def test_the_study_inputs_are_reported_so_a_directory_can_be_reopened(tmp_path):
 
 
 @pytest.mark.unit
+def test_the_params_snapshot_is_found_when_ca_writes_it_as_csv(tmp_path):
+    """The extension the rest of this file gets wrong, and every real run gets right.
+
+    CA writes the obs_data snapshot as JSON and the params_for_id snapshot as **CSV** --
+    that is the format params_for_id is authored in. Every other fixture here writes both
+    as ``.json``, so the suite agreed with itself while the glob matched nothing a user
+    had on disk: 335 of the 339 stamped snapshots in a working checkout are ``.csv``, and
+    each one loaded as ``params_for_id: None``.
+    """
+    run = write_run(tmp_path, "genetic_algorithm_run", chain=False, best=True)
+    stamp = "260829_033003"
+    obs = os.path.join(run, f"abc_obs_data_{stamp}.json")
+    with open(obs, "w") as h:
+        json.dump({"stamp": stamp}, h)
+    params = os.path.join(run, f"abc_params_for_id_{stamp}.csv")
+    with open(params, "w", newline="") as h:
+        writer = csv.writer(h)
+        writer.writerow(["vessel_name", "param_name", "value"])
+        writer.writerow(["aortic_root", "C", "1e-8"])
+    for q in (obs, params):
+        os.utime(q, (1_000_000, 1_000_000))
+
+    study = load_outputs.load_outputs(str(tmp_path))["study"]
+
+    assert study["params_for_id"].endswith(f"abc_params_for_id_{stamp}.csv")
+    # Paired by the run's own stamp, not merely found: the two halves must agree.
+    # ``_stamp_of`` keeps the extension, so it cannot compare a JSON half to a CSV one.
+    def stamp_of(path):
+        return os.path.splitext(os.path.basename(path))[0].rsplit("_", 2)[-2:]
+    assert stamp_of(study["obs_data"]) == stamp_of(study["params_for_id"]) == stamp.split("_")
+
+
+@pytest.mark.unit
 def test_the_obs_data_and_params_come_from_the_same_run(tmp_path):
     """The pairing bug, from a real directory.
 

@@ -1,0 +1,54 @@
+{
+  "protocol_info": {
+    "pre_times": [
+      0.0
+    ],
+    "sim_times": [
+      [
+        8.0
+      ]
+    ],
+    "params_to_change": {
+    },
+    "experiment_labels": [
+      "TWorld_v2_Virual_cohort"
+    ]
+  },
+  "prediction_items": [],
+  "data_items": [
+    {
+      "data_item_name": "benchmark/x",
+      "trace_name_for_plotting": "x_{SS}",
+      "data_type": "constant",
+      "operation": "steady_state_avg",
+      "operands": [
+        "benchmark/x"
+      ],
+      "unit": "dimensionless",
+      "cost_type": "gaussian_MLE",
+      "weight": 1.0,
+      "value": 1.0,
+      "std": 0.1,
+      "experiment_idx": 0,
+      "subexperiment_idx": 0,
+      "plot_type": "horizontal"
+    },
+    {
+      "data_item_name": "benchmark/y",
+      "trace_name_for_plotting": "y_{SS}",
+      "data_type": "constant",
+      "operation": "steady_state_avg",
+      "operands": [
+        "benchmark/y"
+      ],
+      "unit": "dimensionless",
+      "cost_type": "gaussian_MLE",
+      "weight": 1.0,
+      "value": 0.333,
+      "std": 0.1,
+      "experiment_idx": 0,
+      "subexperiment_idx": 0,
+      "plot_type": "horizontal"
+    }
+  ]
+}

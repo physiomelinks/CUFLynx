@@ -152,6 +152,42 @@ def runner_command(python: str | None, runner_script: str, config_path: str) -> 
 # unpacked bundle. It stashes the caller's original value in ``<VAR>_ORIG``.
 _LOADER_VARS = ("LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH", "DYLD_FRAMEWORK_PATH")
 
+#: PyInstaller 6.x's internal parent/child protocol. A frozen process carries these so
+#: that a child *it* launches can reuse the parent's unpacked bundle -- and the child's
+#: bootloader validates them, refusing to start if the parent it was handed is not the
+#: same executable.
+_PYI_STATE_VARS = ("_PYI_PARENT_PROCESS_LEVEL", "_PYI_APPLICATION_HOME_DIR",
+                   "_PYI_ARCHIVE_FILE", "_PYI_LINUX_PROCESS_NAME")
+
+#: The bootloader's documented escape hatch: start as a fresh top-level application and
+#: ignore any inherited parent state.
+_PYI_RESET_VAR = "PYINSTALLER_RESET_ENVIRONMENT"
+
+
+def reset_pyinstaller_state(env: dict) -> dict:
+    """Make ``env`` safe for launching *the bundle itself* as a new top-level process.
+
+    A multi-core analysis in the packaged app runs as
+    ``mpiexec -n N <bundle> --_cuflynx-run-analysis ...``. The N ranks are children of
+    **mpiexec**, not of the app -- but they inherit the app's ``_PYI_*`` variables
+    through it, so each rank's bootloader believes it was launched by a parent frozen
+    process and then checks that the parent's executable matches its own. It does not:
+    the parent is mpiexec. Every rank dies before Python starts, with
+
+        [PYI-NNNN:ERROR] Security validation failure: parent process has different
+        executable!
+
+    and the run fails with exit code 255 and no traceback, because nothing Python-side
+    ever ran. Clearing the inherited state (and asking the bootloader for a reset) makes
+    each rank a fresh top-level application, which is what it actually is.
+
+    Mutates and returns ``env`` for the caller's convenience.
+    """
+    for var in _PYI_STATE_VARS:
+        env.pop(var, None)
+    env[_PYI_RESET_VAR] = "1"
+    return env
+
 
 def subprocess_env() -> dict:
     """Environment for spawning an *external* interpreter (the analysis runners).
@@ -328,4 +364,9 @@ def runner_launch_env(python: Optional[str]) -> dict:
     env = subprocess_env()
     if python is None and is_frozen():
         _relocate_bundle_extraction_env(env)
+        # The ranks are children of mpiexec, not of this process, so the parent
+        # state PyInstaller puts in the environment describes an executable they
+        # were not launched by -- and their bootloader refuses to start. See
+        # :func:`reset_pyinstaller_state`.
+        reset_pyinstaller_state(env)
     return env

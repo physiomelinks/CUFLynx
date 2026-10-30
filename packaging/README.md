@@ -68,6 +68,27 @@ findings above). A CI frozen build per OS should still confirm the end-to-end:
 - `mpiexec -n 2 <CUFLynx> --_cuflynx-run-analysis ...` extracts both ranks under
   that cache dir (off `$TMPDIR`), confirming Hydra forwards `TMPDIR` to the ranks.
 
+## Manual check: the webview, on a real Mac
+
+CI cannot cover this. The packaged app runs inside pywebview, whose macOS backend
+applies rules no browser-based runner models — that is how #340 and #114 both
+shipped green. Run this against the built macOS asset before a release, launching
+it as a **packaged app** (not `--browser`, which is a real browser and will pass
+regardless):
+
+1. Load `resources/3compartment.omex`, press **Edit**, choose values, **Send**.
+2. Click **Open in PhLynx** → a tab opens in the *system* browser with the study
+   loaded. (Nothing happening is #340 returning: something has gone back to
+   scripting the navigation.)
+3. Click **Download the archive** → a save panel appears and writes the `.omex`.
+   This also re-verifies the calibrated-model download (#114), which shares the
+   `ALLOW_DOWNLOADS` setting.
+4. **Near the limit:** send a study whose base64 approaches `PHLYNX_URL_LIMIT`
+   (1,500,000 chars) and confirm the opened tab really carries the whole
+   fragment. The packaged path hands the href to `webbrowser.open` → osascript →
+   LaunchServices, whose URL ceiling is separate from that limit and undocumented.
+   **Record the size that works** — if it is below the limit, lower the limit.
+
 ## Windows antivirus false positives
 
 The Windows executable is a PyInstaller **onefile** build, and Windows Defender
@@ -141,3 +162,24 @@ Not notarized (`codesign_identity=None`). A downloaded build is Gatekeeper-
 quarantined; users right-click → Open or `xattr -d com.apple.quarantine`. See the
 main README. Deployment target is pinned via `MACOSX_DEPLOYMENT_TARGET=11.0` in
 `release.yml`.
+
+## MPI: it must be MPICH, not OpenMPI
+
+The bundle brings its own MPI — the pip `mpich` wheel, via the `[analysis]`
+extra — and that is not interchangeable with a system OpenMPI. MPICH is a single
+shared library. **OpenMPI loads its MCA components as separate plugins** from
+`<prefix>/lib/openmpi/*.so`, and PyInstaller does not collect them, so inside the
+bundle `MPI_Init` never completes and the first simulation dies with
+
+```
+*** The MPI_Comm_dup() function was called before MPI_INIT was invoked.
+*** Local abort before MPI_INIT completed
+```
+
+The trap is that the same OpenMPI works perfectly when running from source, so a
+developer sees nothing wrong until the built app is run — which is exactly how
+#330 was reported: a local build failed while the downloaded one worked, on the
+same version. `scripts/package.py`'s `check_mpi_is_freezable()` now refuses that
+build, and `scripts/install.py` points at the wheel rather than at Homebrew.
+
+Verify inside a build with `MPI.Get_library_version()`; it must say MPICH.
