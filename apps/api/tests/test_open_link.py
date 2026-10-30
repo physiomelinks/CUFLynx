@@ -459,7 +459,7 @@ def test_a_study_moved_away_after_staging_is_refused_at_accept(client, tmp_path)
     path.unlink()
     resp = client.post("/api/inbox/accept")
     assert resp.status_code == 422
-    assert "study_dir" in resp.json()["detail"]
+    assert "working dir" in resp.json()["detail"]
 
 
 def test_open_link_route_stages_a_study(client, tmp_path):

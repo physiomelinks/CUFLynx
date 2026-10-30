@@ -77,7 +77,7 @@ vi.mock('./lib/api', () => ({
   loadSavedRun: vi.fn().mockResolvedValue({}),
   exportPipeline: vi.fn().mockResolvedValue({}),
   exportPlotting: vi.fn().mockResolvedValue({}),
-  loadOutputsDirectory: vi.fn().mockResolvedValue({ found: [], missing: [] }),
+  loadWorkingDir: vi.fn().mockResolvedValue({ found: [], missing: [] }),
   openStudyFromOutputs: vi.fn().mockResolvedValue({}),
   // The real one; a failure path that reports "undefined is not a function"
   // instead of the server's reason would pass a test and fail a user.
@@ -97,7 +97,7 @@ import {
   saveParams,
   listSavedRuns,
   loadSavedRun,
-  loadOutputsDirectory,
+  loadWorkingDir,
   openStudyFromOutputs,
   simulate,
   runProtocol,
@@ -111,6 +111,7 @@ import { setNotificationCtor } from './lib/notify'
 import App from './App.vue'
 import TourOverlay from './components/TourOverlay.vue'
 import { TOUR_STEPS } from './lib/tourSteps'
+import { NO_WORKING_DIR_MESSAGE } from './lib/workingDir'
 
 // Auto-run is the only way a run starts, and it is debounced by 300ms. A test
 // that seeds its own displayed run has to let the run its study triggers happen
@@ -127,18 +128,18 @@ describe('App.vue', () => {
     expect(wrapper.find('.layout').exists()).toBe(true)
   })
 
-  it('asks where outputs should go on open, and persists the choice', async () => {
-    localStorage.removeItem('cuflynx-outputs-dir')
+  it('asks for a working dir on open, and persists the choice', async () => {
+    localStorage.removeItem('cuflynx-working-dir')
     const wrapper = shallowMount(App)
     await flushPromises() // onMounted bootstrap finishes, then opens the prompt
     const setup = wrapper
       .findAllComponents({ name: 'FileBrowserDialog' })
-      .find((d) => d.props('title') === 'Where should outputs be saved?')
+      .find((d) => d.props('title') === "Choose a working dir: the folder that keeps this study's inputs and outputs")
     expect(setup).toBeTruthy()
     expect(setup.props('visible')).toBe(true)
     setup.vm.$emit('select', '/data/outputs')
     await flushPromises()
-    expect(localStorage.getItem('cuflynx-outputs-dir')).toBe('/data/outputs')
+    expect(localStorage.getItem('cuflynx-working-dir')).toBe('/data/outputs')
   })
 
   it('shows that prompt without waiting for any startup request', async () => {
@@ -146,7 +147,7 @@ describe('App.vue', () => {
     // interpreter discovery that walks the filesystem -- so the only thing the
     // user was actually waiting on arrived after everything they could not see.
     // Nothing fetched at startup feeds this dialog.
-    localStorage.removeItem('cuflynx-outputs-dir')
+    localStorage.removeItem('cuflynx-working-dir')
     let releasePythons
     getCalibrationPythons.mockReturnValueOnce(
       new Promise((resolve) => {
@@ -158,7 +159,7 @@ describe('App.vue', () => {
 
     const setup = wrapper
       .findAllComponents({ name: 'FileBrowserDialog' })
-      .find((d) => d.props('title') === 'Where should outputs be saved?')
+      .find((d) => d.props('title') === "Choose a working dir: the folder that keeps this study's inputs and outputs")
     // Open while the slowest startup request is still in flight.
     expect(setup.props('visible')).toBe(true)
 
@@ -2316,9 +2317,33 @@ describe('analysis runs carry the protocol window', () => {
     await flushPromises()
     wrapper.vm.model.modelId.value = 'abc'
     wrapper.vm.obs.setObsData(PROTOCOL)
+    wrapper.vm.workingDir = '/w'
     await flushPromises()
     return wrapper
   }
+
+  it('every run is refused up front without a working dir', async () => {
+    const api = await import('./lib/api')
+    api.startCalibration.mockClear()
+    api.startSensitivity.mockClear()
+    api.startUQ.mockClear()
+    startEmulatorTraining.mockClear()
+    const wrapper = await mountApp()
+    wrapper.vm.workingDir = ''
+    wrapper.vm.onRunCalibration({ param_id_method: 'genetic_algorithm' })
+    wrapper.vm.onRunSensitivity({ analysis_type: 'global' })
+    wrapper.vm.onRunUQ({ method: 'mcmc' })
+    wrapper.vm.onTrainEmulator({ model: 'GaussianProcess' })
+    await flushPromises()
+    expect(api.startCalibration).not.toHaveBeenCalled()
+    expect(api.startSensitivity).not.toHaveBeenCalled()
+    expect(api.startUQ).not.toHaveBeenCalled()
+    expect(startEmulatorTraining).not.toHaveBeenCalled()
+    for (const store of [wrapper.vm.calib, wrapper.vm.sa, wrapper.vm.uq, wrapper.vm.emu]) {
+      expect(store.state.value).toBe('error')
+      expect(store.error.value).toBe(NO_WORKING_DIR_MESSAGE)
+    }
+  })
 
   it('calibration payload includes sim_time/pre_time from the protocol', async () => {
     const { startCalibration } = await import('./lib/api')
@@ -2832,11 +2857,11 @@ describe('guided tour', () => {
   })
 })
 
-// Reopening an outputs directory (#255). Everything a finished run left is on
+// Reopening a working dir (#255). Everything a finished run left is on
 // disk; before this, clicking Load filled the result panels and left the study
 // itself -- the model, its obs_data, its params_for_id -- on the floor, and the
 // Progress tab and the sensitivity heatmap empty beside results that had loaded.
-describe('App.vue reopening an outputs directory', () => {
+describe('App.vue reopening a working dir', () => {
   const STUDY = {
     model: '/out/Model_calibrated.cellml',
     model_is_calibrated: true,
@@ -2909,16 +2934,16 @@ describe('App.vue reopening an outputs directory', () => {
   })
 
   beforeEach(() => {
-    loadOutputsDirectory.mockReset()
+    loadWorkingDir.mockReset()
     openStudyFromOutputs.mockReset()
   })
 
   const load = async (found = FOUND()) => {
-    loadOutputsDirectory.mockResolvedValue(found)
+    loadWorkingDir.mockResolvedValue(found)
     openStudyFromOutputs.mockResolvedValue(OPENED)
     const wrapper = shallowMount(App)
     await flushPromises()
-    wrapper.vm.outputsDir = '/out'
+    wrapper.vm.workingDir = '/out'
     await nextTick()
     await wrapper.vm.loadOutputsFromDirectory()
     await flushPromises()
@@ -2983,7 +3008,7 @@ describe('App.vue reopening an outputs directory', () => {
     const wrapper = await load()
     await wrapper.vm.loadOutputsFromDirectory()
     await flushPromises()
-    loadOutputsDirectory.mockResolvedValue(FOUND({ uq: { params: [], progress: null } }))
+    loadWorkingDir.mockResolvedValue(FOUND({ uq: { params: [], progress: null } }))
     await wrapper.vm.loadOutputsFromDirectory()
     await flushPromises()
     expect(wrapper.vm.uq.progress.value.steps).toBe(40)
@@ -2997,7 +3022,7 @@ describe('App.vue reopening an outputs directory', () => {
     await nextTick()
     await wrapper.vm.loadOutputsFromDirectory()
     await flushPromises()
-    expect(loadOutputsDirectory.mock.calls.at(-1)[1]).toBe('3compartment_flat')
+    expect(loadWorkingDir.mock.calls.at(-1)[1]).toBe('3compartment_flat')
     expect(openStudyFromOutputs.mock.calls.at(-1)[2]).toBe('3compartment_flat')
   })
 
@@ -3014,10 +3039,10 @@ describe('App.vue reopening an outputs directory', () => {
     openStudyFromOutputs.mockRejectedValue({
       response: { data: { detail: 'no model to open in /out' } },
     })
-    loadOutputsDirectory.mockResolvedValue(FOUND())
+    loadWorkingDir.mockResolvedValue(FOUND())
     const wrapper = shallowMount(App)
     await flushPromises()
-    wrapper.vm.outputsDir = '/out'
+    wrapper.vm.workingDir = '/out'
     await wrapper.vm.loadOutputsFromDirectory()
     await flushPromises()
     expect(wrapper.vm.calib.bestParams.value).toEqual({ 'a/alpha': 2 })

@@ -21,12 +21,13 @@ serves several obs_data -- that is the whole point of training it jointly -- and
 convention that looks under ``<selected>/emulators/`` forces a copy per dataset. A
 manifest can point at the one bundle.
 
-Relative paths resolve against the folder holding the manifest, so a study directory can
-be moved, copied or zipped whole. A manifest written before libcuflynx copied inputs into
-the study records them by absolute path, with an absolute ``study_dir``; reading one, an
-absolute path under the recorded ``study_dir`` is rebased onto the manifest's folder, and
-one that no longer exists is looked for under ``inputs/<kind>/`` by its name.
-``study_dir`` is otherwise only a hint, for a manifest read away from its folder.
+Relative paths resolve against the folder holding the manifest, so a working dir can be
+moved, copied or zipped whole. libcuflynx and CUFLynx copy every input into
+``<working dir>/inputs/`` and record only relative paths. A manifest written before that
+records inputs by absolute path and an absolute ``study_dir``; reading one, an absolute
+path under the recorded ``study_dir`` is rebased onto the manifest's folder, and one that
+no longer exists is looked for under ``inputs/<kind>/`` by its name. ``study_dir`` is
+otherwise only a hint, for a manifest read away from its folder.
 """
 
 from __future__ import annotations
@@ -63,7 +64,7 @@ KEYS = PATH_KEYS + ("user_funcs", "solver_info", "pre_time", "sim_time", "runs",
 #: ``user_funcs`` kinds, as ``user_funcs.py`` names them.
 USER_FUNC_KINDS = ("operation", "cost", "modifier")
 
-#: The ``inputs/`` subfolder each path key's file is kept in.
+#: The ``inputs/`` subfolder each path key's file is kept in (``working_dir.KINDS``).
 INPUT_KIND = {"model": "model", "base_model": "model", "obs_data": "obs_data",
               "params_for_id": "params_for_id", "user_inputs": "user_inputs"}
 
@@ -72,40 +73,40 @@ class ManifestError(Exception):
     """The manifest is there but cannot be trusted."""
 
 
-def path(output_dir: str) -> str:
+def path(working_dir: str) -> str:
     """Where :func:`write` puts a manifest: the unprefixed name."""
-    return os.path.join(output_dir or "", MANIFEST_NAME)
+    return os.path.join(working_dir or "", MANIFEST_NAME)
 
 
-def candidates(output_dir: str) -> list[str]:
-    """Every manifest directly in ``output_dir``, newest first."""
-    if not output_dir or not os.path.isdir(output_dir):
+def candidates(working_dir: str) -> list[str]:
+    """Every manifest directly in ``working_dir``, newest first."""
+    if not working_dir or not os.path.isdir(working_dir):
         return []
-    found = [entry.path for entry in os.scandir(output_dir)
+    found = [entry.path for entry in os.scandir(working_dir)
              if entry.is_file() and (entry.name == MANIFEST_NAME
                                      or entry.name.endswith(MANIFEST_SUFFIX))]
     return sorted(found, key=os.path.getmtime, reverse=True)
 
 
-def find(output_dir: str, prefix: str | None = None) -> str | None:
-    """The manifest to read for ``output_dir``, or ``None``.
+def find(working_dir: str, prefix: str | None = None) -> str | None:
+    """The manifest to read for ``working_dir``, or ``None``.
 
-    ``output_dir`` may also be a manifest file itself. With several in one directory the
+    ``working_dir`` may also be a manifest file itself. With several in one directory the
     one named for ``prefix`` (``<prefix>_cuflynx_study.json``) wins, then the newest; the
     caller can list the rest with :func:`candidates`.
     """
-    if output_dir and os.path.isfile(output_dir):
-        return output_dir
-    found = candidates(output_dir)
+    if working_dir and os.path.isfile(working_dir):
+        return working_dir
+    found = candidates(working_dir)
     if prefix:
-        named = os.path.join(output_dir, prefix + MANIFEST_SUFFIX)
+        named = os.path.join(working_dir, prefix + MANIFEST_SUFFIX)
         if named in found:
             return named
     return found[0] if found else None
 
 
-def exists(output_dir: str) -> bool:
-    return find(output_dir) is not None
+def exists(working_dir: str) -> bool:
+    return find(working_dir) is not None
 
 
 def load_raw(location: str) -> dict:
@@ -158,8 +159,8 @@ def base_dir(raw: dict, location: str) -> str:
     return here
 
 
-def read(output_dir: str, prefix: str | None = None) -> dict | None:
-    """The manifest for ``output_dir`` (a directory or the file), resolved, or ``None``.
+def read(working_dir: str, prefix: str | None = None) -> dict | None:
+    """The manifest for ``working_dir`` (a directory or the file), resolved, or ``None``.
 
     Returns the declared values with paths made absolute, plus ``missing``: the
     declarations whose target is not on disk. Those are reported rather than quietly
@@ -170,7 +171,7 @@ def read(output_dir: str, prefix: str | None = None) -> dict | None:
     same reason: silently falling back to conventions would hide a corrupt study behind
     a plausible-looking answer.
     """
-    location = find(output_dir, prefix)
+    location = find(working_dir, prefix)
     if not location:
         return None
     raw = load_raw(location)
@@ -235,7 +236,7 @@ def is_manifest_name(name: str) -> bool:
 
 def study_location(raw, location: str | None = None,
                    where: str = "the study manifest") -> dict:
-    """Which outputs directory a manifest opens: ``{"dir", "study_name", "file_prefix"}``.
+    """Which working dir a manifest opens: ``{"dir", "study_name", "file_prefix"}``.
 
     ``location`` is where the manifest is on disk, when that is known (a desktop drop, a
     picked file, a ``cuflynx://open?study=`` link); the study is then the directory
@@ -250,9 +251,9 @@ def study_location(raw, location: str | None = None,
         directory = raw.get("study_dir")
         if not directory:
             raise ManifestError(
-                "This study manifest does not record its study_dir (it predates it), so "
-                "where the study is cannot be told from the file alone. Set the outputs "
-                "directory to the folder holding it instead.")
+                "This study manifest records only paths relative to its own folder, and a "
+                "file dropped from the browser does not say where that folder is. Set the "
+                "working dir to the folder holding it instead, or drop the folder.")
         if not os.path.isdir(directory):
             raise ManifestError(
                 f"The study this manifest describes is not on this machine: "
@@ -264,16 +265,16 @@ def study_location(raw, location: str | None = None,
     }
 
 
-def user_funcs(output_dir: str | None) -> dict:
-    """``{kind: path}`` for the user funcs a study in ``output_dir`` declares.
+def user_funcs(working_dir: str | None) -> dict:
+    """``{kind: path}`` for the user funcs a study in ``working_dir`` declares.
 
-    Empty when there is no manifest or it cannot be read: the funcs then live where they
-    always have, under ``<output_dir>/user_funcs/``.
+    Empty when there is no manifest or it cannot be read: the funcs then live where
+    CUFLynx keeps them, ``<working_dir>/inputs/funcs/`` (``user_funcs/`` in an older folder).
     """
-    if not output_dir:
+    if not working_dir:
         return {}
     try:
-        manifest = read(output_dir)
+        manifest = read(working_dir)
     except ManifestError:
         return {}
     return dict((manifest or {}).get("user_funcs") or {})
@@ -287,7 +288,7 @@ def _resolve(base: str, value: str, recorded: str | None = None,
     as written when it exists; else, when it lies under the ``study_dir`` the manifest
     recorded, the same place under ``base`` (the folder was moved); else, for an input
     of ``kind``, ``<base>/inputs/<kind>/<name>`` when that exists (the input was copied
-    into the study). Otherwise as written, which the caller reports as missing.
+    into the working dir). Otherwise as written, which the caller reports as missing.
     """
     value = str(value)
     if not os.path.isabs(value):
@@ -312,7 +313,7 @@ def _resolve(base: str, value: str, recorded: str | None = None,
     return full
 
 
-def write(output_dir: str, study: dict) -> str:
+def write(working_dir: str, study: dict) -> str:
     """Write a manifest, storing paths relative to it where that is possible.
 
     Relative where it can be, so a study directory survives being moved or copied;
@@ -320,8 +321,8 @@ def write(output_dir: str, study: dict) -> str:
     Written whole rather than merged: a manifest describes one run of one study, and
     half of a previous one left in it would describe nothing.
     """
-    os.makedirs(output_dir, exist_ok=True)
-    base = os.path.abspath(output_dir)
+    os.makedirs(working_dir, exist_ok=True)
+    base = os.path.abspath(working_dir)
     record: dict = {"schema": SCHEMA}
 
     for key, value in study.items():
@@ -335,7 +336,7 @@ def write(output_dir: str, study: dict) -> str:
         else:
             record[key] = value
 
-    location = path(output_dir)
+    location = path(working_dir)
     with open(location, "w", encoding="utf-8") as handle:
         json.dump(record, handle, indent=2)
         handle.write("\n")

@@ -641,7 +641,7 @@ def model_stamp(model_path) -> tuple:
 
     The path is part of the stamp, not only its mtime: an external_python study
     moves from the uploaded temp copy to the study's own copy the moment an
-    outputs directory exists, and that is a different file under an unchanged
+    working dir exists, and that is a different file under an unchanged
     cache key. A file that cannot be stat'd stamps as size ``-1`` rather than
     raising: an unreadable model is the run's problem to report, not the cache's.
     """

@@ -7,8 +7,8 @@ Two links, one action:
   same importer a dropped ``.omex`` does.
 * ``cuflynx://open?study=<percent-encoded file: URL>`` -- a study on this machine:
   its ``*_cuflynx_study.json`` (or bare ``cuflynx_study.json``), or the directory
-  holding it. Accepting it opens that directory as the outputs directory, as dropping
-  the manifest does (``POST /api/outputs/manifest``), so the study's sensitivity
+  holding it. Accepting it opens that directory as the working dir, as dropping
+  the manifest does (``POST /api/working-dir/manifest``), so the study's sensitivity
   analyses, emulator and runs load -- the parts an archive cannot carry.
 
 A link carries exactly one of ``url`` and ``study``. The operating system starts

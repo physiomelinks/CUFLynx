@@ -1,6 +1,6 @@
 """Export the current CUFLynx pipeline as a reproducible, standalone bundle.
 
-Produces, into a self-contained folder under the user's outputs dir:
+Produces, into a self-contained folder under the user's working dir:
   - ``user_inputs_<yymmdd>.yaml`` — the run config (circulatory_autogen schema +
     CUFLynx ``do_*`` enablement flags), capturing the current settings;
   - ``run_pipeline.py`` — drives circulatory_autogen (CA) from that yaml, running
@@ -192,7 +192,7 @@ def _default_out():
 
     Two layouts reach this script. run_pipeline.py writes into `output/` beside
     it, so that is preferred. But CUFLynx also drops these scripts straight into
-    the outputs directory the user chose, where the run data is in
+    the working dir the user chose, where the run data is in
     circulatory_autogen's own `<method>_<model>_<hash>_obs_data/` folders and
     there is no `output/` at all.
     """

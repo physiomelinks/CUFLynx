@@ -78,7 +78,7 @@ function mountDialog(props = {}) {
       modelVariables: MODEL_VARIABLES,
       modelName: 'M',
       loadedFilename: 'obs.json',
-      outputsDir: '/out',
+      workingDir: '/out',
       ...props,
     },
     global: { stubs },
@@ -130,7 +130,7 @@ describe('EditObsDataDialog', () => {
     // every key, those protocol-kit edits and those it only keeps
     expect(document).toEqual(edited)
     expect(save.filename).toMatch(/^obs_\d{6}\.json$/)
-    expect(save.outputsDir).toBe('/out')
+    expect(save.workingDir).toBe('/out')
     expect(wrapper.emitted('saved')[0][0]).toMatchObject({ n_data_items: 1 })
     expect(wrapper.emitted('update:visible').at(-1)).toEqual([false])
   })

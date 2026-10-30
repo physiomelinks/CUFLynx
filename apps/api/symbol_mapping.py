@@ -10,13 +10,15 @@ Where it lives:
 
 * the target tab of a calibration workflow: CA's ``workflow_mapping_path`` (beside the target's
   parameters file), which is where ``cuflynx-methods-latex --workflow`` looks for it;
-* any other study: ``<outputs>/<prefix>_variable_mapping.csv``, or the uploads directory
-  when no outputs directory is set.
+* any other study: ``<working dir>/inputs/<prefix>_variable_mapping.csv`` (read at the top
+  level of an older folder), or the uploads directory when no working dir is set.
 """
 
 from __future__ import annotations
 
 import os
+
+import working_dir as working_dir_layout
 
 from ca_imports import CaImportError, ca_from
 
@@ -42,9 +44,14 @@ def _ca(*names):
         raise MappingUnavailable(NEEDS_CA) from exc
 
 
-def default_path(file_prefix: str, outputs_dir: str, fallback_dir: str) -> str:
-    directory = outputs_dir.strip() if outputs_dir else ""
-    return os.path.join(directory or fallback_dir, f"{file_prefix}_variable_mapping.csv")
+def default_path(file_prefix: str, working_dir: str, fallback_dir: str) -> str:
+    """``<working dir>/inputs/<prefix>_variable_mapping.csv`` (where an older folder has
+    it, at its top level, when it is there), else ``fallback_dir``."""
+    name = f"{file_prefix}_variable_mapping.csv"
+    directory = working_dir.strip() if working_dir else ""
+    if directory:
+        return str(working_dir_layout.readable(directory, "", name))
+    return os.path.join(fallback_dir, name)
 
 
 def workflow_target_path(workflow_path: str, module_library_dirs: list[str]) -> str:

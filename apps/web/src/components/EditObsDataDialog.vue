@@ -24,6 +24,7 @@ import { ObsDataEditor } from '@physiomelinks/protocol-kit/editor'
 import '@physiomelinks/protocol-kit/editor.css'
 import { versionedJsonName, withParameters } from '../lib/obsDataJson'
 import { errorMessage, getObsDataDocument, getObsDataOptions, uploadObsData } from '../lib/api'
+import { readStoredWorkingDir } from '../lib/workingDir'
 import AddFromDatasetDialog from './AddFromDatasetDialog.vue'
 import EditOperationFuncsDialog from './EditOperationFuncsDialog.vue'
 
@@ -35,7 +36,7 @@ const props = defineProps({
   modelName: { type: String, default: null },
   loadedFilename: { type: String, default: null },
   // Where Save writes the dated copy (#215); '' falls back to the config dir.
-  outputsDir: { type: String, default: '' },
+  workingDir: { type: String, default: '' },
   // The time between recorded samples, to check each prediction item's range takes some.
   dt: { type: Number, default: null },
   // A document to edit instead of the study's obs_data (undefined: the study's).
@@ -67,7 +68,7 @@ const extracted = ref(null)
 async function loadOptions(refresh = false) {
   try {
     // The output dir locates the user's custom funcs.
-    const options = await getObsDataOptions(refresh, localStorage.getItem('cuflynx-outputs-dir') || '')
+    const options = await getObsDataOptions(refresh, readStoredWorkingDir())
     vocabulary.value = readObsDataOptions(options)
   } catch {
     /* keep the built-in vocabulary: the editor still works offline */
@@ -188,7 +189,7 @@ async function onSave() {
       // Written server-side into the output directory (#215), not downloaded.
       const summary = await uploadObsData(props.modelId, doc.value, {
         filename,
-        outputsDir: props.outputsDir,
+        workingDir: props.workingDir,
       })
       emit('saved', { ...summary, filename })
     }
@@ -298,7 +299,7 @@ async function onSave() {
       v-model:visible="fromDatasetOpen"
       :model-id="modelId"
       :model-variables="modelVariables"
-      :outputs-dir="outputsDir"
+      :working-dir="workingDir"
       @extracted="onExtracted"
     />
   </Dialog>

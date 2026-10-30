@@ -24,13 +24,16 @@ An operation acts on an *output*, a modifier acts on a *parameter* — CA's own
 vocabulary, worth keeping straight because the two were once the same word.
 
 **External-file design (no bridge into CA's tree).** Each kind is stored in a
-single file under the user's chosen **output directory** (``config_outputs_dir``,
-the same dir the analysis runs write to), so the funcs travel with the outputs.
-When no output directory is set it falls back to the user config dir::
+single file under the study's **working dir** (``working_dir``, the same dir the
+analysis runs write to), so the funcs travel with the study. When no working dir is
+set it falls back to the user config dir (``<config>/user_funcs/``)::
 
-    <output_dir>/user_funcs/operation_funcs_user.py
-    <output_dir>/user_funcs/cost_funcs_user.py
-    <output_dir>/user_funcs/modifier_funcs_user.py
+    <working_dir>/inputs/funcs/operation_funcs_user.py
+    <working_dir>/inputs/funcs/cost_funcs_user.py
+    <working_dir>/inputs/funcs/modifier_funcs_user.py
+
+A working dir in the older layout keeps its funcs in ``<working_dir>/user_funcs/``,
+and they are read and edited there (``working_dir.readable``).
 
 CUFLynx passes the file path to circulatory_autogen through CA's config keys
 ``operation_funcs_external_path`` / ``cost_funcs_external_path`` (CA #303) and
@@ -63,6 +66,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import study_manifest
+import working_dir
 from engine import _circulatory_autogen_src
 from settings_store import config_dir
 
@@ -486,31 +490,40 @@ def _func_kind(kind: str) -> _Kind:
 # Paths
 # ---------------------------------------------------------------------------
 def _user_dir(base_dir: str | None = None) -> Path:
-    """Dir holding the external func files: the run's output directory when given
-    (so funcs live with the outputs), else the user config dir as a fallback."""
-    root = Path(base_dir) if base_dir else config_dir()
-    return root / "user_funcs"
+    """Dir new func files go in: ``<working_dir>/inputs/funcs/`` when a working dir
+    is given (so funcs live with the study), else the user config dir as a fallback."""
+    if base_dir:
+        return working_dir.inputs_dir(base_dir, "funcs")
+    return config_dir() / "user_funcs"
+
+
+def _func_file(filename: str, base_dir: str | None) -> Path:
+    """``filename`` in the study's funcs dir, in either working-dir layout."""
+    if base_dir:
+        return working_dir.readable(base_dir, "funcs", filename)
+    return _user_dir(base_dir) / filename
 
 
 def convention_path(kind: str, base_dir: str | None = None) -> Path:
-    """``<base_dir>/user_funcs/<kind file>``: where this app keeps a study's funcs when
-    no study manifest points elsewhere. Also the name a func file has inside an archive."""
-    return _user_dir(base_dir) / _kind(kind).filename
+    """``<working_dir>/inputs/funcs/<kind file>``: where this app keeps a study's funcs
+    when no study manifest points elsewhere (``user_funcs/`` in an older folder that
+    has them there). Also the name a func file has inside an archive."""
+    return _func_file(_kind(kind).filename, base_dir)
 
 
 def _user_file(kind: str, base_dir: str | None = None) -> Path:
     """The file holding ``kind``'s funcs for the study in ``base_dir``.
 
     The file the study's manifest declares, when it declares one: a study run from
-    circulatory_autogen points at the funcs it was run with rather than copying them
-    (``user_funcs`` in ``<study>_cuflynx_study.json``), so reading, running and *editing*
-    all act on that one file and a copy cannot drift from it. Otherwise the CUFLynx
-    convention, ``<base_dir>/user_funcs/<kind>_funcs_user.py``.
+    circulatory_autogen records the funcs it was run with (``user_funcs`` in
+    ``<study>_cuflynx_study.json``), so reading, running and *editing* all act on that
+    one file and a copy cannot drift from it. Otherwise the CUFLynx convention,
+    :func:`convention_path`.
     """
     declared = study_manifest.user_funcs(base_dir).get(kind)
     if declared:
         return Path(declared)
-    return _user_dir(base_dir) / _kind(kind).filename
+    return convention_path(kind, base_dir)
 
 
 def external_path(kind: str, base_dir: str | None = None) -> str | None:
@@ -518,7 +531,7 @@ def external_path(kind: str, base_dir: str | None = None) -> str | None:
 
     Single source of the path CUFLynx passes to CA — into the analysis run configs
     (forwarded to ``CVS0DParamID`` / ``SensitivityAnalysis``) and to CA's discovery
-    builders in ``obs_options`` (CA #303). ``base_dir`` is the output directory the
+    builders in ``obs_options`` (CA #303). ``base_dir`` is the working dir the
     funcs were saved under.
     """
     path = _user_file(kind, base_dir)
@@ -562,15 +575,21 @@ def model_source_path(suffix: str = ".py", base_dir: str | None = None) -> Path:
     written out again, so "where does the model source go" has a single answer.
     """
     suffix = suffix if suffix.startswith(".") else f".{suffix}"
-    return _user_dir(base_dir) / (Path(_kind("model").filename).stem + suffix)
+    name = Path(_kind("model").filename).stem + suffix
+    if suffix == ".py" or not base_dir:
+        return _func_file(name, base_dir)
+    # A converted source (.mmt / .model) is not what runs: it sits with the model.
+    current = working_dir.input_path(base_dir, "model", name)
+    legacy = Path(base_dir) / "user_funcs" / name
+    return legacy if legacy.is_file() and not current.is_file() else current
 
 
 def save_model_source(source: bytes | str, suffix: str = ".py", base_dir: str | None = None) -> str:
-    """Store the model source the user wrote under the study's outputs directory.
+    """Store the model source the user wrote under the study's working dir.
 
     For an ``external_python`` model this copy is **the model that runs**:
     ``model_codegen.resolve_model_path`` prefers it over the uploaded temp file
-    whenever an outputs directory is configured. That is deliberate — the
+    whenever a working dir is configured. That is deliberate — the
     uploads directory is TTL-pruned scratch space, and an "Edit source" pointing
     at a file nothing executes would be worse than no button at all.
 
@@ -698,7 +717,7 @@ def read_user_funcs(kind: str, base_dir: str | None = None) -> dict:
     Shape: ``{"kind", "functions": [{"name","source"}], "templates", "template",
     "available", "path"}``. ``available`` is False when CA isn't configured (the
     imported decorators can't resolve, so the funcs can't load). ``base_dir`` is
-    the output directory the funcs are stored under.
+    the working dir the funcs are stored under.
     """
     k = _func_kind(kind)
     available = bool(_circulatory_autogen_src())
@@ -801,7 +820,7 @@ def save_user_func(
         order.append(name)
     sources[name] = source
 
-    _user_dir(base_dir).mkdir(parents=True, exist_ok=True)
+    _user_file(kind, base_dir).parent.mkdir(parents=True, exist_ok=True)
     _user_file(kind, base_dir).write_text(_render(kind, order, sources), encoding="utf-8")
     _refresh_options()
     return read_user_funcs(kind, base_dir)

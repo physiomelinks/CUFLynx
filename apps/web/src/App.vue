@@ -27,6 +27,7 @@ import Dialog from 'primevue/dialog'
 import FileBrowserDialog from './components/FileBrowserDialog.vue'
 import TourOverlay from './components/TourOverlay.vue'
 import { TOUR_STEPS } from './lib/tourSteps'
+import { readStoredWorkingDir, storeWorkingDir, workingDirRefusal } from './lib/workingDir'
 
 import { useModel } from './stores/useModel'
 import { useSliders, shouldUseLog } from './stores/useSliders'
@@ -59,7 +60,7 @@ import {
   saveParams,
   loadParams,
   errorMessage,
-  loadOutputsDirectory,
+  loadWorkingDir,
   openStudyFromOutputs,
   getWorkflowStepInput,
 } from './lib/api'
@@ -125,12 +126,13 @@ const preTime = computed(() => obs.protocolPreTime.value ?? DEFAULT_PRE_TIME)
  */
 const canRun = computed(() => model.hasModel.value && obs.hasProtocol.value)
 
-// Where outputs are written. Chosen at startup (see the outputs-dir prompt) and
-// remembered across sessions; blank => backend uses a temp dir.
-const outputsDir = ref(localStorage.getItem('cuflynx-outputs-dir') || '')
-watch(outputsDir, (v) => localStorage.setItem('cuflynx-outputs-dir', v || ''))
+// The working dir: every input and output of the study is kept there. Chosen at
+// startup (see the working-dir prompt) and remembered across sessions; runs are
+// refused until one is set.
+const workingDir = ref(readStoredWorkingDir())
+watch(workingDir, (v) => storeWorkingDir(v))
 
-// What the outputs directory already holds, once someone asks for it (#255).
+// What the working dir already holds, once someone asks for it (#255).
 const loadedOutputs = ref(null)
 const loadingOutputs = ref(false)
 // What the last load actually found, so an empty panel is never left to be
@@ -138,11 +140,11 @@ const loadingOutputs = ref(false)
 const loadedOutputsSummary = ref('')
 
 async function loadOutputsFromDirectory(runDir) {
-  const dir = outputsDir.value.trim()
+  const dir = workingDir.value.trim()
   if (!dir || loadingOutputs.value) return
   loadingOutputs.value = true
   try {
-    const found = await loadOutputsDirectory(
+    const found = await loadWorkingDir(
       dir, model.filePrefix.value || undefined, runDir)
     loadedOutputs.value = found
     // A calibration workflow's run directory holds no one study: its steps each
@@ -192,7 +194,7 @@ async function loadOutputsFromDirectory(runDir) {
 /**
  * Install the model, obs_data and params_for_id the run was made from (#255).
  *
- * `/api/outputs/load` reports these as paths, which fill no panel: reopening a
+ * `/api/working-dir/load` reports these as paths, which fill no panel: reopening a
  * directory gave its results and an empty Parameters tab, and the only way to
  * get the study back was to find the same three files on disk and drop them in
  * -- which cleared the results that had just been loaded.
@@ -295,8 +297,8 @@ function applyLoadedOutputs(found) {
     emu.errorPoints.value = found.emulator.error_points ?? null
   }
 }
-// On open, ask the user where outputs should go (the first thing they see).
-const outputsSetupOpen = ref(false)
+// On open, ask the user for a working dir (the first thing they see).
+const workingDirSetupOpen = ref(false)
 
 // Raw params_for_id entries (incl. param_type, which the slider store drops) and
 // the loaded CSV filename — fed to the params Edit dialog so it can pre-fill rows
@@ -555,7 +557,7 @@ async function onSelectWorkflowTab(tabId) {
   const runDir = opened.workflow_view?.param_id_output_dir
   if (runDir) {
     try {
-      const found = await loadOutputsDirectory(runDir, opened.workflow_view.view)
+      const found = await loadWorkingDir(runDir, opened.workflow_view.view)
       if (!found.error) applyLoadedOutputs(found)
     } catch {
       /* the step's results are a bonus; the model is what the tab is for */
@@ -564,12 +566,23 @@ async function onSelectWorkflowTab(tabId) {
 }
 
 async function onOpenWorkflow(source) {
-  const opened = await wf.open({ ...source, outputsDir: outputsDir.value.trim() })
+  const opened = await wf.open({ ...source, workingDir: workingDir.value.trim() })
   // Straight to the supermodule: it is what the workflow is about.
   if (opened?.loaded && !opened.plan_error) await onSelectWorkflowTab('target')
 }
 
+// A run keeps every input and output in the working dir, so without one it is
+// refused here, in the panel that started it, before anything is sent.
+function refuseWithoutWorkingDir(store, stateKey = 'state', errorKey = 'error') {
+  const refusal = workingDirRefusal(workingDir.value)
+  if (!refusal) return false
+  store[stateKey].value = 'error'
+  store[errorKey].value = refusal
+  return true
+}
+
 function onRunWorkflow(which) {
+  if (refuseWithoutWorkingDir(wf, 'jobState', 'jobError')) return
   wf.run(which)
 }
 
@@ -696,7 +709,7 @@ async function onUserInputsPicked(event) {
   userInputsMessage.value = ''
   userInputsWarnings.value = []
   try {
-    const data = await uploadUserInputs(file, outputsDir.value)
+    const data = await uploadUserInputs(file, workingDir.value)
     applyConfigPayload(data)
     const adopted = data.solver_settings
     userInputsMessage.value = adopted
@@ -1459,7 +1472,7 @@ async function runCostSensitivity() {
       bounds: costSensBounds(),
       modifiers: sliders.modifierSpecs.value,
       outputs: liveOutputs(),
-      outputsDir: outputsDir.value.trim() || undefined,
+      workingDir: workingDir.value.trim() || undefined,
       signal: controller.signal,
     })
     if (token !== costSensToken) return
@@ -1736,13 +1749,13 @@ const calibPythons = ref([])
 const saDefaults = ref({})
 const uqDefaults = ref({})
 onMounted(() => {
-  // Ask where outputs should go, and mean "first": this line used to sit at the
+  // Ask for a working dir, and mean "first": this line used to sit at the
   // *end* of six sequential round trips below, one of which walks the filesystem
   // looking for Python interpreters. So the one thing the user is actually
   // waiting on arrived last, after everything they could not see. Nothing below
-  // feeds this dialog -- it opens at $HOME and only ever *writes* outputsDir --
+  // feeds this dialog -- it opens at $HOME and only ever *writes* workingDir --
   // so it does not have to wait for any of it.
-  outputsSetupOpen.value = true
+  workingDirSetupOpen.value = true
 
   // ...and the six are independent of each other too, so they go out together
   // rather than in a chain: the wait is now the slowest one, not the sum. Each
@@ -1910,6 +1923,7 @@ function runTimes() {
 }
 
 function onRunCalibration(settings) {
+  if (refuseWithoutWorkingDir(calib)) return
   // Remembered because the cost it reports is only interpretable with it: a
   // calibration on the emulator minimises the em cost, and the Output plots'
   // cost is the solver's (#333).
@@ -1920,7 +1934,7 @@ function onRunCalibration(settings) {
       ...settings,
       ...runTimes(),
       python_path: pythonPath.value,
-      config_outputs_dir: outputsDir.value.trim() || undefined,
+      working_dir: workingDir.value.trim() || undefined,
       // Evaluate the trained emulator instead of the solver (Emulator tab).
       use_emulator: emu.useEmulator.value,
     },
@@ -1975,7 +1989,7 @@ function exportPayload() {
     sensitivity: { ...saSettings.value },
     uq: { ...uqSettings.value },
     enabled: exportEnabled.value,
-    config_outputs_dir: outputsDir.value.trim() || undefined,
+    working_dir: workingDir.value.trim() || undefined,
   }
 }
 
@@ -1999,7 +2013,7 @@ async function onExportPlotting() {
   if (!model.hasModel.value) return
   try {
     const res = await exportPlotting({
-      config_outputs_dir: outputsDir.value.trim() || undefined,
+      working_dir: workingDir.value.trim() || undefined,
       // Names the panels after the loaded obs_data, so the script is something
       // you edit rather than something you read around (#144).
       model_id: model.modelId.value || undefined,
@@ -2014,6 +2028,7 @@ async function onExportPlotting() {
 // When 'run calibration first' is set, fold in the calibration panel's GA
 // settings rather than duplicating those controls in the sensitivity panel.
 function onRunSensitivity(settings) {
+  if (refuseWithoutWorkingDir(sa)) return
   const calibFirst = settings.run_calibration_first
     ? {
         param_id_method: calibSettings.value.param_id_method,
@@ -2029,7 +2044,7 @@ function onRunSensitivity(settings) {
       ...calibFirst,
       ...runTimes(),
       python_path: pythonPath.value,
-      config_outputs_dir: outputsDir.value.trim() || undefined,
+      working_dir: workingDir.value.trim() || undefined,
       // Evaluate the trained emulator instead of the solver (Emulator tab).
       use_emulator: emu.useEmulator.value,
     },
@@ -2050,16 +2065,18 @@ watch(
 
 // UQ reuses the same prerequisites as calibration (model + obs + params).
 function onRunUQ(settings) {
+  if (refuseWithoutWorkingDir(uq)) return
   uq.start(model.modelId.value, {
     ...settings,
     ...runTimes(),
     python_path: pythonPath.value,
-    config_outputs_dir: outputsDir.value.trim() || undefined,
+    working_dir: workingDir.value.trim() || undefined,
     use_emulator: emu.useEmulator.value,
   })
 }
 
 function onTrainEmulator(settings) {
+  if (refuseWithoutWorkingDir(emu)) return
   emu.train(model.modelId.value, {
     ...settings,
     // The SAME window every other analysis uses. CA's staleness fingerprint covers
@@ -2069,7 +2086,7 @@ function onTrainEmulator(settings) {
     // differ". One source for the window is what keeps every side equal.
     ...runTimes(),
     python_path: pythonPath.value,
-    config_outputs_dir: outputsDir.value.trim() || undefined,
+    working_dir: workingDir.value.trim() || undefined,
   })
 }
 
@@ -2098,7 +2115,7 @@ async function refreshEmulatorFeatures() {
     const res = await predictEmulator(
       model.modelId.value,
       { ...sliders.analysisDict.value },
-      { config_outputs_dir: outputsDir.value.trim() || undefined },
+      { working_dir: workingDir.value.trim() || undefined },
     )
     const map = {}
     ;(res.labels ?? []).forEach((label, i) => {
@@ -2229,7 +2246,7 @@ async function refreshBestFitScores() {
         outputs: liveOutputs(),
         simTime: simTime.value,
         preTime: preTime.value,
-        outputsDir: outputsDir.value.trim() || undefined,
+        workingDir: workingDir.value.trim() || undefined,
       },
     )
     bestFitScores.value = { model: res.cost ?? null, emulator: res.emulator_cost ?? null }
@@ -2256,9 +2273,9 @@ watch(
 // directory changes: an emulator outlives the session that trained it, and one
 // trained by circulatory_autogen's own script counts too.
 watch(
-  () => [model.modelId.value, outputsDir.value],
+  () => [model.modelId.value, workingDir.value],
   () => {
-    emu.refresh(model.modelId.value, outputsDir.value.trim() || '')
+    emu.refresh(model.modelId.value, workingDir.value.trim() || '')
   },
   { immediate: true },
 )
@@ -2360,7 +2377,7 @@ function onResetBest() {
 }
 
 // Whether the UQ on screen carries a posterior median, to gate the "Reset to UQ
-// median" button. Present for a run loaded from an outputs directory as much as
+// median" button. Present for a run loaded from a working dir as much as
 // for one just finished here: both fill `uq.params` from the same summary.
 const hasUqMedian = computed(() => uq.medianParams.value != null)
 
@@ -2388,7 +2405,7 @@ const lastSavedParamsPath = ref(localStorage.getItem('cuflynx-last-saved-params'
 const savedParamsStart = computed(
   () =>
     lastSavedParamsPath.value ||
-    (outputsDir.value.trim() ? `${outputsDir.value.trim()}/manual_params.npy` : ''),
+    (workingDir.value.trim() ? `${workingDir.value.trim()}/manual_params.npy` : ''),
 )
 
 // Saved runs available to overlay on the plots (issue #126).
@@ -2456,7 +2473,7 @@ async function onSaveParams({ filename }) {
       sliders.paramDict.value,
       sliders.order.value,
       filename,
-      outputsDir.value.trim(),
+      workingDir.value.trim(),
       await savedRunResult(),
     )
     if (path) {
@@ -2466,7 +2483,7 @@ async function onSaveParams({ filename }) {
     // The parameters saved; only the traces alongside them failed, so say so
     // rather than letting the run silently not be there to tick later.
     if (outputsError) sim.setError(`Parameters saved, but ${outputsError}`)
-    await savedRuns.refresh(outputsDir.value.trim())
+    await savedRuns.refresh(workingDir.value.trim())
   } catch (e) {
     sim.setError(errorMessage(e))
   }
@@ -2474,7 +2491,7 @@ async function onSaveParams({ filename }) {
 
 // The saved runs live in the output directory, so the list follows it — and is
 // read once at startup for whatever was saved in a previous session.
-watch(outputsDir, (v) => savedRuns.refresh((v || '').trim()), { immediate: true })
+watch(workingDir, (v) => savedRuns.refresh((v || '').trim()), { immediate: true })
 
 // The calibration best fit as a tickable overlay (#126). Its parameter values
 // exist the moment a calibration finishes, but its *traces* do not — nothing has
@@ -2619,7 +2636,7 @@ async function runWithParams(params, { allOutputs = false } = {}) {
   ]
   const data = await runProtocol(model.modelId.value, params, {
     outputs,
-    outputsDir: outputsDir.value.trim() || undefined,
+    workingDir: workingDir.value.trim() || undefined,
   })
   return { experiments: data.experiments }
 }
@@ -2642,7 +2659,7 @@ async function runSimulation() {
     const outputs = liveOutputs()
     const data = await runProtocol(model.modelId.value, sliders.paramDict.value, {
       outputs,
-      outputsDir: outputsDir.value.trim() || undefined,
+      workingDir: workingDir.value.trim() || undefined,
     })
     backendFallback.value = data.backend_fallback ?? null
     sim.setExperiments(
@@ -3147,7 +3164,7 @@ watch(() => obs.obsData.value, scheduleRun)
             :busy="wf.busy.value"
             :offered="wf.offered.value"
             :unset="wf.unset.value"
-            :outputs-dir="outputsDir"
+            :working-dir="workingDir"
             :module-library-dirs="moduleLibraryDirs"
             :mpiexec-available="mpiexecAvailable"
             @open="onOpenWorkflow"
@@ -3492,8 +3509,8 @@ watch(() => obs.obsData.value, scheduleRun)
         <div class="rhs-content">
         <FileImport
           ref="fileImport"
-          v-model:outputs-dir="outputsDir"
-          @load-outputs="loadOutputsFromDirectory"
+          v-model:working-dir="workingDir"
+          @load-working-dir="loadOutputsFromDirectory"
           :model-id="model.modelId.value"
           :phlynx-url="phlynxUrl"
           :current-params="loadedParamsRaw"
@@ -3935,7 +3952,7 @@ watch(() => obs.obsData.value, scheduleRun)
     <EditVariableMappingDialog
       v-model:visible="variableMappingOpen"
       :model-id="model.modelId.value"
-      :outputs-dir="outputsDir"
+      :working-dir="workingDir"
     />
     <FileBrowserDialog
       v-model:visible="libraryBrowserOpen"
@@ -3944,16 +3961,16 @@ watch(() => obs.obsData.value, scheduleRun)
       @select="addModuleLibrary"
     />
     <FileBrowserDialog
-      v-model:visible="outputsSetupOpen"
+      v-model:visible="workingDirSetupOpen"
       mode="dir"
-      title="Where should outputs be saved?"
-      @select="(d) => (outputsDir = d)"
+      title="Choose a working dir: the folder that keeps this study's inputs and outputs"
+      @select="(d) => (workingDir = d)"
     />
 
     <!-- Save / load slider values to a file (issue #106). -->
     <SaveParamsDialog
       v-model:visible="saveParamsOpen"
-      :output-dir="outputsDir"
+      :working-dir="workingDir"
       @save="onSaveParams"
     />
     <FileBrowserDialog
@@ -3961,7 +3978,7 @@ watch(() => obs.obsData.value, scheduleRun)
       mode="file"
       title="Load saved parameter values (.npy or .csv)"
       :start-path="savedParamsStart"
-      :start-dir="outputsDir"
+      :start-dir="workingDir"
       @select="onPickSavedParams"
     />
 

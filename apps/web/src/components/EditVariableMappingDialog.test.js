@@ -40,7 +40,7 @@ const stubs = {
 
 async function openDialog(props = {}) {
   const wrapper = mount(EditVariableMappingDialog, {
-    props: { visible: false, modelId: 'm1', outputsDir: '/out', ...props },
+    props: { visible: false, modelId: 'm1', workingDir: '/out', ...props },
     global: { stubs },
   })
   await wrapper.setProps({ visible: true })

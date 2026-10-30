@@ -17,7 +17,7 @@ Usage:  python -u sensitivity_runner.py <config.json>
 config.json (same shape as the calibration runner):
 {
   "model_path": "...cellml", "obs_path": "...json", "params_path": "...csv",
-  "output_dir": "...", "file_prefix": "model", "num_cores": 1, "python": null,
+  "output_dir": "...", "sa_output_dir": "<output_dir>/sensitivity", "file_prefix": "model", "num_cores": 1, "python": null,
   "settings": { "method": "sobol", "sample_type": "saltelli",
                 "num_samples": 256, "dt": 0.01, "solver": "CVODE_myokit",
                 "DEBUG": false }
@@ -291,6 +291,10 @@ def _run(config: dict) -> dict:
     method = settings.get("method", "sobol")
     output_dir = config["output_dir"]
     os.makedirs(output_dir, exist_ok=True)
+    # Sensitivity results go to their own folder of the working dir; the param-id
+    # side (and the study manifest) stays at its top level.
+    sa_dir = config.get("sa_output_dir") or output_dir
+    os.makedirs(sa_dir, exist_ok=True)
 
     model_type = config.get("model_type", "cellml")
     solver_info = _solver_info_from_config(config, settings)
@@ -302,7 +306,7 @@ def _run(config: dict) -> dict:
         import numpy as np  # noqa: E402
 
         np.random.seed(int(seed))
-    sa_options = _sa_options(settings, output_dir, seed)
+    sa_options = _sa_options(settings, sa_dir, seed)
 
     # A ValueError from here naming @differentiable is CA refusing a casadi_python
     # model whose obs operations are not all differentiable -- it builds its
@@ -365,10 +369,10 @@ def _run(config: dict) -> dict:
             current_params=config.get("current_params"),
         )
         # Results in circulatory_autogen's own local-sensitivity CSV format, so
-        # the outputs directory holds one format whichever arm produced them and
+        # the working dir holds one format whichever arm produced them and
         # the manager reads CA's file rather than a CUFLynx summary (#210).
         ca_run_history.write_local_sensitivity(
-            output_dir, "relative", payload["indices"]["local"], payload["output_names"]
+            sa_dir, "relative", payload["indices"]["local"], payload["output_names"]
         )
         # The linearisation point and how it was chosen are CUFLynx's own run
         # metadata, not a result: a few hundred bytes over the pipe the manager
@@ -388,7 +392,7 @@ def _run(config: dict) -> dict:
             }),
             flush=True,
         )
-        print(f"Local sensitivity analysis completed; results in {output_dir}", flush=True)
+        print(f"Local sensitivity analysis completed; results in {sa_dir}", flush=True)
         return {"rank": 0, **payload}
 
     print(
@@ -409,7 +413,7 @@ def _run(config: dict) -> dict:
         # Nothing written here: CA already wrote all_outputs_n<N>_Sobol_indices.csv
         # into this directory, and the manager reads that (#210).
         print(META_MARKER + json.dumps({"method": sa_options["method"]}), flush=True)
-        _collect_plots(output_dir)
+        _collect_plots(sa_dir)
     return result
 
 

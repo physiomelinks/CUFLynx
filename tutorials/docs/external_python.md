@@ -413,7 +413,7 @@ written yourself. What the dropdowns offer is exactly what CA can score.
 *The obs_data editor. The ground truth for each observable goes in the row's
 `value` and `std`; the operand picker below names which output it measures.*
 
-**Saving** writes a dated copy (`<name>_<yymmdd>.json`) into your outputs directory —
+**Saving** writes a dated copy (`<name>_<yymmdd>.json`) into your working dir (`inputs/obs_data/` or `inputs/params_for_id/`) —
 the original is kept — and loads it immediately. The measured values then appear on
 the plots as dashed reference lines, with the model's own feature drawn solid in the
 same colour, and the **cost** of the current slider values is shown above the plots.

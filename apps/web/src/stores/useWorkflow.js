@@ -204,9 +204,9 @@ export function useWorkflow(options = {}) {
     return d
   }
 
-  async function open({ path = '', runDir = '', file = null, outputsDir = '' }) {
+  async function open({ path = '', runDir = '', file = null, workingDir = '' }) {
     const d = await guarded(() =>
-      file ? uploadWorkflow(file, outputsDir) : loadWorkflow({ path, runDir, outputsDir }),
+      file ? uploadWorkflow(file, workingDir) : loadWorkflow({ path, runDir, workingDir }),
     )
     if (d) {
       described.value = d

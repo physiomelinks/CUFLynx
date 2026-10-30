@@ -65,7 +65,7 @@ describe('WorkflowPanel', () => {
   })
 
   it('exports the workflow as an archive, offered as a plain link', async () => {
-    const panel = mountPanel({ described, tabs, outputsDir: '/out' })
+    const panel = mountPanel({ described, tabs, workingDir: '/out' })
     await panel.find('[data-testid="workflow-export"]').trigger('click')
     await flushPromises()
     expect(exportWorkflow).toHaveBeenCalledWith('/out')

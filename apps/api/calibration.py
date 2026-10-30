@@ -177,7 +177,7 @@ def read_meta_line(lines: list, marker: str) -> dict:
 def write_run_config(config: dict, filename: str) -> str:
     """Write a runner's config payload and return the path to hand it as argv[1].
 
-    Into a private temp directory, **not** the user's outputs directory. Nothing
+    Into a private temp directory, **not** the user's working dir. Nothing
     ever reads this file back: it exists only because a config dict cannot be
     passed on a command line, and because every MPI rank has to read it at
     startup (``build_command`` prepends ``mpiexec -n N``), which rules out a pipe.
@@ -614,7 +614,7 @@ class CalibrationManager:
             # the path never has to be round-tripped back from the runner.
             job.file_prefix = config.get("file_prefix")
             # When this run started, so a previous run's results left in the same
-            # outputs directory cannot be reported as this one's.
+            # working dir cannot be reported as this one's.
             job.started_at = time.time()
             env = runner_launch_env(config.get("python") or self.python)
             job.proc = subprocess.Popen(

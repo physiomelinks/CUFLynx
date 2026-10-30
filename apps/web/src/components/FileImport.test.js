@@ -107,7 +107,7 @@ beforeEach(() => {
 
 describe('FileImport', () => {
   // A study run from circulatory_autogen is opened from the manifest it writes beside
-  // its results: the drop sets the outputs directory and reloads it, on any box.
+  // its results: the drop sets the working dir and reloads it, on any box.
   it.each(['cellml-drop', 'obs-drop', 'params-drop'])(
     'a dropped study manifest opens its study (%s)',
     async (box) => {
@@ -119,8 +119,8 @@ describe('FileImport', () => {
         .trigger('drop', { dataTransfer: { files: [jsonFile('RAAS6_cuflynx_study.json', text)] } })
       await flushPromises()
       expect(openStudyManifest).toHaveBeenCalledWith(text, undefined)
-      expect(wrapper.emitted('update:outputsDir')[0]).toEqual(['/abs/study'])
-      expect(wrapper.emitted('load-outputs')).toHaveLength(1)
+      expect(wrapper.emitted('update:workingDir')[0]).toEqual(['/abs/study'])
+      expect(wrapper.emitted('load-working-dir')).toHaveLength(1)
       expect(uploadCellML).not.toHaveBeenCalled()
       expect(uploadObsData).not.toHaveBeenCalled()
     },
@@ -134,7 +134,7 @@ describe('FileImport', () => {
       .trigger('drop', { dataTransfer: { files: [jsonFile('x_cuflynx_study.json', '{}')] } })
     await flushPromises()
     expect(wrapper.text()).toContain('not on this machine')
-    expect(wrapper.emitted('load-outputs')).toBeFalsy()
+    expect(wrapper.emitted('load-working-dir')).toBeFalsy()
   })
 
   it('test_cellml_drop_calls_upload', async () => {
@@ -210,7 +210,7 @@ describe('FileImport', () => {
       props: {
         modelId: 'abc',
         convertedFrom: 'Courtemanche.model',
-        outputsDir: '/studies/heart',
+        workingDir: '/studies/heart',
       },
       global: { stubs },
     })
@@ -433,7 +433,7 @@ describe('FileImport', () => {
       runs: true,
     })
     const wrapper = mount(FileImport, {
-      props: { modelId: 'abc', modelFormat: 'external_python', outputsDir: '/studies/heart' },
+      props: { modelId: 'abc', modelFormat: 'external_python', workingDir: '/studies/heart' },
       global: { stubs },
     })
     const btn = wrapper.find('[data-testid="start-edit"]')
@@ -467,7 +467,7 @@ describe('FileImport', () => {
       runs: false,
     })
     const wrapper = mount(FileImport, {
-      props: { modelId: 'abc', convertedFrom: 'br-1977.mmt', outputsDir: '/studies/heart' },
+      props: { modelId: 'abc', convertedFrom: 'br-1977.mmt', workingDir: '/studies/heart' },
       global: { stubs },
     })
     const btn = wrapper.find('[data-testid="start-edit"]')
@@ -491,7 +491,7 @@ describe('FileImport', () => {
       runs: true,
     })
     const wrapper = mount(FileImport, {
-      props: { modelId: 'abc', modelFormat: 'external_python', outputsDir: '/studies/heart' },
+      props: { modelId: 'abc', modelFormat: 'external_python', workingDir: '/studies/heart' },
       global: { stubs },
     })
     await wrapper.find('[data-testid="start-edit"]').trigger('click')
@@ -502,11 +502,11 @@ describe('FileImport', () => {
     expect(notice).toContain('/studies/heart/user_funcs/user_model.py')
   })
 
-  // The one real refusal: without an outputs directory there is nowhere the
+  // The one real refusal: without a working dir there is nowhere the
   // edit could safely live, and the backend says so.
-  it('no outputs directory is an error banner, not a silent temp file', async () => {
+  it('no working dir is an error banner, not a silent temp file', async () => {
     editModelSource.mockRejectedValue({
-      response: { data: { detail: 'no outputs directory is set, so there is nowhere...' } },
+      response: { data: { detail: 'no working dir is set, so there is nowhere...' } },
     })
     const wrapper = mount(FileImport, {
       props: { modelId: 'abc', modelFormat: 'external_python' },
@@ -515,7 +515,7 @@ describe('FileImport', () => {
     await wrapper.find('[data-testid="start-edit"]').trigger('click')
     await flushPromises()
     expect(wrapper.find('[data-testid="import-error"]').text()).toContain(
-      'no outputs directory is set',
+      'no working dir is set',
     )
   })
 
@@ -563,7 +563,7 @@ describe('FileImport', () => {
     sendToPhlynx.mockResolvedValue(SEND_OK)
     const wrapper = await openSend({
       paramValues: { 'aortic_root/C': 1.5 },
-      outputsDir: '/studies/heart',
+      workingDir: '/studies/heart',
     })
 
     await wrapper.find('[data-testid="phlynx-send-confirm"]').trigger('click')
@@ -572,7 +572,7 @@ describe('FileImport', () => {
     expect(sendToPhlynx).toHaveBeenCalledWith('abc', {
       source: 'current',
       values: { 'aortic_root/C': 1.5 },
-      outputDir: '/studies/heart',
+      workingDir: '/studies/heart',
     })
     // PhLynx picks its loader from `?open=`, and its own decoder builds the
     // data URI, so the fragment is bare base64.
@@ -632,13 +632,13 @@ describe('FileImport', () => {
     openSpy.mockRestore()
   })
 
-  it('the best-fit option needs an outputs directory to read it from', async () => {
-    const withDir = await openSend({ outputsDir: '/studies/heart' })
+  it('the best-fit option needs a working dir to read it from', async () => {
+    const withDir = await openSend({ workingDir: '/studies/heart' })
     expect(
       withDir.find('[data-testid="phlynx-source-best_fit"]').attributes('disabled'),
     ).toBeUndefined()
 
-    const without = await openSend({ outputsDir: '' })
+    const without = await openSend({ workingDir: '' })
     expect(
       without.find('[data-testid="phlynx-source-best_fit"]').attributes('disabled'),
     ).toBeDefined()
@@ -696,7 +696,7 @@ describe('FileImport', () => {
     sendToPhlynx.mockRejectedValue({
       response: { data: { detail: 'no calibration best fit was found' } },
     })
-    const wrapper = await openSend({ outputsDir: '/studies/heart' })
+    const wrapper = await openSend({ workingDir: '/studies/heart' })
     await wrapper.find('[data-testid="phlynx-source-best_fit"]').setValue()
     await wrapper.find('[data-testid="phlynx-send-confirm"]').trigger('click')
     await flushPromises()
@@ -1131,14 +1131,29 @@ describe('FileImport accepts an external python model (.py)', () => {
   })
 })
 
-// --- reading what is already in the outputs directory (#255) -----------------
+// --- reading what is already in the working dir (#255) -----------------
+
+describe('FileImport — working dir field', () => {
+  it('is labelled "Working dir" and edits the working-dir model', async () => {
+    const wrapper = mount(FileImport, {
+      props: { workingDir: '/studies/heart' }, global: { stubs },
+    })
+    const label = wrapper.find('label.working-dir')
+    expect(label.exists()).toBe(true)
+    expect(label.text()).toContain('Working dir')
+    expect(wrapper.text()).not.toMatch(/outputs director/i)
+    const field = wrapper.findComponent('[data-testid="config-working-dir"]')
+    field.vm.$emit('update:modelValue', '/studies/lung')
+    expect(wrapper.emitted('update:workingDir')[0]).toEqual(['/studies/lung'])
+  })
+})
 
 describe('FileImport — load outputs', () => {
   it('offers a button to read the directory, disabled until one is set', async () => {
     const wrapper = mount(FileImport, {
-      props: { outputsDir: '' }, global: { stubs },
+      props: { workingDir: '' }, global: { stubs },
     })
-    const button = wrapper.find('[data-testid="outputs-load"]')
+    const button = wrapper.find('[data-testid="working-dir-load"]')
 
     expect(button.exists()).toBe(true)
     expect(button.attributes('disabled')).toBeDefined()
@@ -1146,15 +1161,15 @@ describe('FileImport — load outputs', () => {
 
   it('asks to load once a directory is set', async () => {
     const wrapper = mount(FileImport, {
-      props: { outputsDir: '/tmp/outputs' }, global: { stubs },
+      props: { workingDir: '/tmp/outputs' }, global: { stubs },
     })
-    const button = wrapper.find('[data-testid="outputs-load"]')
+    const button = wrapper.find('[data-testid="working-dir-load"]')
     expect(button.attributes('disabled')).toBeUndefined()
 
     await button.trigger('click')
     // A press, not a watcher: reading a directory is real work, and results
     // found there may not match what is loaded.
-    expect(wrapper.emitted('load-outputs')).toBeTruthy()
+    expect(wrapper.emitted('load-working-dir')).toBeTruthy()
   })
 })
 
@@ -1310,8 +1325,8 @@ describe('FileImport — the PhLynx inbox', () => {
     await flushPromises()
 
     expect(acceptInbox).toHaveBeenCalledOnce()
-    expect(wrapper.emitted('update:outputsDir')[0]).toEqual(['/home/me/sa_ox1'])
-    expect(wrapper.emitted('load-outputs')).toHaveLength(1)
+    expect(wrapper.emitted('update:workingDir')[0]).toEqual(['/home/me/sa_ox1'])
+    expect(wrapper.emitted('load-working-dir')).toHaveLength(1)
     expect(wrapper.emitted('model-loaded')).toBeFalsy()
     expect(wrapper.find('[data-testid="import-notice"]').text()).toContain(
       'Opening SN_full_ox1 from /home/me/sa_ox1',

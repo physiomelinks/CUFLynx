@@ -26,7 +26,7 @@ const props = defineProps({
   // Model variables, for the binding dropdowns. Passed through from the editor,
   // which already receives them.
   modelVariables: { type: Object, default: () => ({}) },
-  outputsDir: { type: String, default: '' },
+  workingDir: { type: String, default: '' },
 })
 const emit = defineEmits(['update:visible', 'extracted'])
 
@@ -269,7 +269,7 @@ async function onSaveConfig() {
   localError.value = ''
   try {
     const { path } = await saveObsExtractConfig(config.value, {
-      outputsDir: props.outputsDir,
+      workingDir: props.workingDir,
     })
     savedPath.value = path
   } catch (e) {
@@ -290,7 +290,7 @@ async function onLoadConfig(path) {
 
 function onExtract() {
   extract.start(config.value, {
-    outputsDir: props.outputsDir,
+    workingDir: props.workingDir,
     modelId: props.modelId ?? '',
   })
 }

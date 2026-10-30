@@ -62,7 +62,7 @@ const settings = reactive({
 const optionValues = reactive({})
 
 // CA's emulation option descriptors. `emulator_dir` is dropped: CUFLynx derives
-// it from the outputs directory on both sides (train and use), and a second way
+// it from the working dir on both sides (train and use), and a second way
 // to say where the bundle lives is a way for the two to disagree.
 // `include_prediction_items` has its own checkbox (below), should CA's schema list it.
 const emulatorOptions = computed(() =>

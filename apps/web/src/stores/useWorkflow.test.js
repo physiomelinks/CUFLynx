@@ -152,9 +152,9 @@ describe('useWorkflow', () => {
   it('opens a workflow and reports CA\'s refusal verbatim', async () => {
     loadWorkflow.mockResolvedValueOnce(DESCRIBED)
     const wf = useWorkflow()
-    await wf.open({ path: '/w/calibration_workflow.json', outputsDir: '/o' })
+    await wf.open({ path: '/w/calibration_workflow.json', workingDir: '/o' })
     expect(loadWorkflow).toHaveBeenCalledWith(
-      { path: '/w/calibration_workflow.json', runDir: '', outputsDir: '/o' })
+      { path: '/w/calibration_workflow.json', runDir: '', workingDir: '/o' })
     expect(wf.loaded.value).toBe(true)
     expect(wf.name.value).toBe('chain_rest')
     expect(wf.tabs.value).toHaveLength(3)

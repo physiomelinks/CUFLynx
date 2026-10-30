@@ -266,7 +266,7 @@ def ca_obs_path(obs_path: str) -> str:
     interpreter the user chose -- so the check has to be made there, not in the
     server. The copy keeps the file's name, because CA and CUFLynx both derive
     names from it (the run directory, the emulator directory), and lives in a
-    temp dir rather than the user's outputs directory.
+    temp dir rather than the user's working dir.
     """
     global _ca_copies
     import json  # noqa: PLC0415
