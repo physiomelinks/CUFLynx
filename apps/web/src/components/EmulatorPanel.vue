@@ -45,7 +45,8 @@ const emit = defineEmits(['run', 'cancel', 'change', 'update:modelValue'])
 // CUFLynx-level settings; every CA emulator option comes from the schema below.
 const settings = reactive({
   num_cores: 1,
-  dt: 0.01,
+  // No dt: a run that names none is given the engine's (Settings, or a study's
+  // user_inputs), server-side. A literal here overrode both with 0.01.
   DEBUG: false,
 })
 

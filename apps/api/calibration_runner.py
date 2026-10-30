@@ -172,6 +172,13 @@ def run(config: dict) -> dict:
     if note:
         print(note, flush=True)
 
+    dt = float(settings.get("dt", 0.01))
+    # What the solve is configured with, said once: a study's adopted user_inputs
+    # (or Settings) decide these, and a run log that cannot show them leaves "was my
+    # MaximumStep used?" unanswerable.
+    print(f"Solver: {solver_info.get('solver')}, dt = {dt:g}, solver_info = "
+          f"{json.dumps(solver_info, sort_keys=True)}", flush=True)
+
     param_id = CVS0DParamID(
         model_path=config["model_path"],
         model_type=model_type,
@@ -181,7 +188,7 @@ def run(config: dict) -> dict:
         param_id_obs_path=config["obs_path"],
         sim_time=float(settings.get("sim_time", 2.0)),
         pre_time=float(settings.get("pre_time", 0.0)),
-        dt=float(settings.get("dt", 0.01)),
+        dt=dt,
         solver_info=solver_info,
         optimiser_options=optimiser_options,
         do_ad=do_ad,

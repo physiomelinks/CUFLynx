@@ -44,7 +44,8 @@ const settings = reactive({
   // The calibration uses whatever is configured in the Calibration panel
   // (folded in by App.vue), so there are no GA controls duplicated here.
   run_calibration_first: false,
-  dt: 0.01,
+  // No dt: a run that names none is given the engine's (Settings, or a study's
+  // user_inputs), server-side. A literal here overrode both with 0.01.
   DEBUG: false,
 })
 
