@@ -542,6 +542,8 @@ def load_outputs(output_dir: str, file_prefix: str | None = None,
         "run_dirs": runs,
         "manifest": manifest,
         "manifest_error": manifest_error,
+        # Outputs the study recorded outside its working dir: not carried with it.
+        "warnings": study_manifest.outside_warnings(manifest),
     }
 
     found = []

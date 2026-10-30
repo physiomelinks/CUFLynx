@@ -28,6 +28,12 @@ records inputs by absolute path and an absolute ``study_dir``; reading one, an a
 path under the recorded ``study_dir`` is rebased onto the manifest's folder, and one that
 no longer exists is looked for under ``inputs/<kind>/`` by its name. ``study_dir`` is
 otherwise only a hint, for a manifest read away from its folder.
+
+An output directory the study wrote outside its working dir (an absolute ``sa_options``
+``output_dir`` elsewhere) is recorded by absolute path with ``"outside": true``: it does not
+travel with the working dir. :func:`outside_warnings` names those, so whatever opens a study
+(a picked folder, a dropped manifest, an unzipped working dir, an archive) says which outputs
+were left behind rather than leaving a panel quietly empty.
 """
 
 from __future__ import annotations
@@ -226,6 +232,7 @@ def resolve(raw: dict, base: str, location: str | None = None) -> dict:
 
     resolved["study_dir"] = base
     resolved["manifest_path"] = location
+    resolved["outside_outputs"] = outside_outputs(raw)
     resolved["missing"] = missing
     return resolved
 
@@ -264,7 +271,51 @@ def study_location(raw, location: str | None = None,
         "dir": directory,
         "study_name": raw.get("study_name"),
         "file_prefix": raw.get("file_prefix"),
+        "warnings": outside_warnings(raw),
     }
+
+
+def _flagged_outside(raw: dict) -> list[dict]:
+    """:func:`outside_outputs` for a CA that predates ``cuflynx_study.outside_outputs``."""
+    return [{"section": section, "dir": entry["dir"], "method": entry.get("method")}
+            for section in ("runs", "sensitivity") for entry in raw.get(section) or []
+            if isinstance(entry, dict) and entry.get("outside") and entry.get("dir")]
+
+
+def outside_outputs(raw: dict | None) -> list[dict]:
+    """The output directories a manifest records outside its working dir, as
+    ``[{"section", "dir", "method"}]``: libcuflynx's ``cuflynx_study.outside_outputs``, or the
+    same reading of the ``"outside": true`` flags when the CA in use predates it."""
+    if not isinstance(raw, dict):
+        return []
+    try:
+        import ca_imports  # noqa: PLC0415 - CA is optional here
+        ca_imports.ensure_ca_path()
+        listed = ca_imports.ca_from("utilities.cuflynx_study", "outside_outputs")
+    except Exception:  # noqa: BLE001 - no CA at all, or one predating outside_outputs
+        listed = _flagged_outside
+    try:
+        return list(listed(raw))
+    except Exception:  # a CA that reads the manifest differently: the flags still say it
+        return _flagged_outside(raw)
+
+
+def outside_warnings(manifest: dict | None) -> list[str]:
+    """What to tell someone opening a study whose manifest records outputs outside its
+    working dir: one warning naming each, or none. ``manifest`` is a raw manifest or a
+    :func:`read` result (which carries ``outside_outputs``)."""
+    if not isinstance(manifest, dict):
+        return []
+    found = manifest.get("outside_outputs")
+    if found is None:
+        found = outside_outputs(manifest)
+    if not found:
+        return []
+    named = "; ".join(
+        f"{item['dir']} ({item['section']}{', ' + item['method'] if item.get('method') else ''}"
+        f"{'' if os.path.isdir(str(item['dir'])) else ', missing here'})" for item in found)
+    return [f"This study wrote output outside its working dir, which was not carried with "
+            f"the study: {named}. Only what is inside the working dir travels with it."]
 
 
 def user_funcs(working_dir: str | None) -> dict:

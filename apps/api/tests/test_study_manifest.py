@@ -158,3 +158,51 @@ def test_a_target_with_no_relative_path_at_all_is_stored_absolutely(tmp_path, mo
 
     record = json.loads((output / study_manifest.MANIFEST_NAME).read_text())
     assert os.path.isabs(record["emulator"])
+
+
+def _study_with_an_outside_output(tmp_path):
+    """A working dir as libcuflynx writes it: an inside run, relative, and a Sobol output
+    written elsewhere, absolute and flagged ``"outside": true`` (not on this machine)."""
+    working = tmp_path / "study"
+    (working / "genetic_algorithm_demo_obs").mkdir(parents=True)
+    elsewhere = str(tmp_path / "elsewhere" / "sobol")
+    raw = {"schema": 1, "study_name": "demo", "file_prefix": "demo",
+           "runs": [{"dir": "genetic_algorithm_demo_obs", "method": "genetic_algorithm"}],
+           "sensitivity": [{"dir": elsewhere, "method": "sobol", "outside": True}]}
+    location = working / "demo_cuflynx_study.json"
+    location.write_text(json.dumps(raw))
+    return working, location, raw, elsewhere
+
+
+def _assert_names(warnings, elsewhere):
+    assert len(warnings) == 1
+    assert elsewhere in warnings[0]
+    assert "not carried with the study" in warnings[0] and "missing here" in warnings[0]
+
+
+def test_opening_a_study_names_its_outputs_outside_the_working_dir(tmp_path):
+    """An output the study wrote outside its working dir did not travel with it: opening the
+    working dir, the dropped manifest or an archive carrying it says so by name."""
+    import main
+
+    working, location, raw, elsewhere = _study_with_an_outside_output(tmp_path)
+    _assert_names(load_outputs.load_outputs(str(working))["warnings"], elsewhere)
+    _assert_names(study_manifest.study_location(raw, str(location))["warnings"], elsewhere)
+    notes, _ = main._apply_archive_study({"manifest": raw, "funcs": {}}, None)
+    _assert_names([n for n in notes if "outside its working dir" in n], elsewhere)
+
+    del raw["sensitivity"][0]["outside"]   # a study with every output inside: nothing to say
+    location.write_text(json.dumps(raw))
+    assert load_outputs.load_outputs(str(working))["warnings"] == []
+
+
+def test_outside_outputs_reads_the_flags_without_libcuflynx(tmp_path, monkeypatch):
+    """A CA that predates ``cuflynx_study.outside_outputs`` (or none at all) still warns: the
+    manifest's ``"outside": true`` flags say the same."""
+    from conftest import set_ca_module
+
+    set_ca_module(monkeypatch, "utilities.cuflynx_study", None)
+    _, _, raw, elsewhere = _study_with_an_outside_output(tmp_path)
+    assert study_manifest.outside_outputs(raw) == [
+        {"section": "sensitivity", "dir": elsewhere, "method": "sobol"}]
+    _assert_names(study_manifest.outside_warnings(raw), elsewhere)

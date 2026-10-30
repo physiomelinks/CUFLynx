@@ -1729,6 +1729,7 @@ def _apply_archive_study(study: dict | None, out_dir: str | None) -> tuple[list[
         return [], None
     notes, adopted = _adopt_solver_settings(
         (study.get("manifest") or {}).get("solver_info"), "the archive's study manifest")
+    notes += study_manifest.outside_warnings(study.get("manifest"))
     funcs = study.get("funcs") or {}
     if funcs and not out_dir:
         notes.append(
