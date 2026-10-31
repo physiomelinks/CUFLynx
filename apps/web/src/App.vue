@@ -1061,6 +1061,11 @@ async function onWindowDrop(event) {
     await importer.handleOmex(files)
     return
   }
+  if (files.some((f) => importer.isZipName?.(f.name))) {
+    dropHint.value = ''
+    await importer.handleWorkingDirZip(files)
+    return
+  }
   if (files.some((f) => importer.isStudyManifestName?.(f.name))) {
     dropHint.value = ''
     await importer.handleStudyManifest(files)
@@ -1070,8 +1075,8 @@ async function onWindowDrop(event) {
   // and a .json could be either of the two studies files -- the box is what says
   // which, so the honest answer is to name the box rather than pick one.
   dropHint.value =
-    `Only a .omex study or a *_cuflynx_study.json can be dropped anywhere on the ` +
-    `page. Drop ` +
+    `Only a .omex study, a .zip of a working dir or a *_cuflynx_study.json can be ` +
+    `dropped anywhere on the page. Drop ` +
     `${files.length > 1 ? 'these files' : `"${files[0].name}"`} on the model, ` +
     `obs_data or params box to say which it is.`
 }
@@ -2857,7 +2862,7 @@ watch(() => obs.obsData.value, scheduleRun)
   <div v-if="draggingFile" class="page-drop-veil" data-testid="page-drop-veil">
     <div class="page-drop-card">
       <i class="pi pi-inbox" />
-      <strong>Drop a .omex study anywhere</strong>
+      <strong>Drop a .omex study or a .zip of a working dir anywhere</strong>
       <small>Models, obs_data and params_for_id go to their own boxes</small>
     </div>
   </div>

@@ -335,6 +335,15 @@ format, and no plumbing:
   resolves against `study_dir` when it records one (`base_dir`). Dropping one on the app
   (`POST /api/working-dir/manifest`, `handleStudyManifest` in `FileImport.vue`) only sets
   the working dir and reloads it — one path for a dropped manifest and a picked folder.
+  A dropped (or picked) **.zip** goes to `POST /api/working-dir/zip` first
+  (`study_manifest.zip_study`): a `manifest.xml` at its root makes it an OMEX (an OMEX
+  carries a study manifest too), else a `*_cuflynx_study.json` at its root or one folder
+  down makes it a working dir, staged in `UPLOAD_DIR/working_dir_zips/` until
+  `/api/working-dir/zip/extract` is told where (a 409 for a folder holding files unless
+  `overwrite`). Any member with `..`, an absolute path or a symlink refuses the whole zip.
+  The answer is `study_location`'s for the extracted manifest, so `handleWorkingDirZip`
+  then takes the dropped-manifest path (`openStudyDirectory`). `outside_outputs` in the
+  manifest becomes a warning.
   `pre_time`/`sim_time` in it are informational: timing comes from the obs_data protocol.
 - **Declared funcs are the user's file, not ours.** `user_funcs._user_file` returns the
   manifest's `user_funcs[kind]` when declared, so runs, option lists and the editor all

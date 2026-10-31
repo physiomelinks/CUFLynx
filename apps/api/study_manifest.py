@@ -40,6 +40,10 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import shutil
+import stat
+import zipfile
 
 import working_dir
 
@@ -417,3 +421,140 @@ def _relative_if_sensible(base: str, value: str) -> str:
     if relative.split(os.sep)[0] == os.pardir:
         return full
     return relative
+
+
+# --- a zipped working dir ------------------------------------------------------------
+
+#: What every member of an OMEX archive is listed in, at its root. A working dir has none,
+#: and an OMEX carries a study manifest at its root too, so this is what tells them apart.
+OMEX_MANIFEST = "manifest.xml"
+
+#: Folders a zip tool adds that are not part of the study.
+_ZIP_NOISE = ("__MACOSX/",)
+
+
+class UnsafeZipError(ManifestError):
+    """A member of the zip would be written outside the folder it is extracted into."""
+
+
+def _unsafe_member(info: zipfile.ZipInfo) -> str:
+    """Why ``info`` cannot be extracted safely, or ``""``."""
+    name = info.filename
+    if name.startswith(("/", "\\")) or re.match(r"^[A-Za-z]:", name):
+        return f"{name!r} is an absolute path"
+    if ".." in re.split(r"[/\\]", name):
+        return f"{name!r} climbs out of the folder (..)"
+    if stat.S_ISLNK(info.external_attr >> 16):
+        return f"{name!r} is a symbolic link"
+    return ""
+
+
+def _members(zf: zipfile.ZipFile) -> list[zipfile.ZipInfo]:
+    return [info for info in zf.infolist() if not info.filename.startswith(_ZIP_NOISE)]
+
+
+def zip_study(zf: zipfile.ZipFile) -> dict | None:
+    """What a zip holds: a working dir, an OMEX, or ``None`` for neither.
+
+    A working dir is a zip with a study manifest (``*_cuflynx_study.json``) at its root or
+    one folder down (a zip of the folder rather than of its contents), and no OMEX
+    ``manifest.xml`` at its root. Returns ``{"kind": "omex"}`` or ``{"kind": "working_dir",
+    "root", "manifest", "raw"}``: ``root`` is the folder prefix holding the manifest
+    (``""`` or ``"<folder>/"``), ``raw`` the manifest as read. Raises
+    :class:`UnsafeZipError` for a working dir with a member that would land outside the
+    folder it is extracted into, and :class:`ManifestError` for a manifest that cannot be
+    believed.
+    """
+    members = _members(zf)
+    names = {info.filename for info in members}
+    if OMEX_MANIFEST in names:
+        return {"kind": "omex"}
+    found = []
+    for info in members:
+        parts = info.filename.rstrip("/").split("/")
+        if not info.is_dir() and len(parts) <= 2 and is_manifest_name(parts[-1]):
+            found.append((len(parts), info.filename))
+    if not found:
+        return None
+    unsafe = [reason for reason in map(_unsafe_member, members) if reason]
+    if unsafe:
+        raise UnsafeZipError(
+            "This zip was not extracted: " + "; ".join(unsafe[:5])
+            + (f" (and {len(unsafe) - 5} more)" if len(unsafe) > 5 else ""))
+    _, member = min(found)
+    try:
+        raw = json.loads(zf.read(member).decode("utf-8"))
+    except (ValueError, UnicodeDecodeError) as error:
+        raise ManifestError(f"{member} in the zip could not be read: {error}") from error
+    check(raw, member)
+    root = member[: len(member) - len(os.path.basename(member))]
+    return {"kind": "working_dir", "root": root, "manifest": member, "raw": raw}
+
+
+def zip_study_name(found: dict, fallback: str) -> str:
+    """A folder name for the study a zip holds: its ``study_name``, else its manifest's."""
+    name = str(found["raw"].get("study_name") or "").strip()
+    if not name:
+        base = os.path.basename(found["manifest"])
+        name = base[: -len(MANIFEST_SUFFIX)] if base.endswith(MANIFEST_SUFFIX) else ""
+    name = re.sub(r"[\\/:*?\"<>|]+", "_", name or fallback).strip(" .")
+    return name or "study"
+
+
+def is_nonempty_dir(path: str | os.PathLike) -> bool:
+    return os.path.isdir(path) and any(os.scandir(path))
+
+
+def free_folder(parent: str | os.PathLike, name: str) -> str:
+    """``<parent>/<name>``, or ``<name>_2``, ``_3``... when that is a non-empty folder or a file."""
+    candidate = os.path.join(parent, name)
+    n = 2
+    while os.path.isfile(candidate) or is_nonempty_dir(candidate):
+        candidate = os.path.join(parent, f"{name}_{n}")
+        n += 1
+    return candidate
+
+
+def extract_study_zip(zf: zipfile.ZipFile, found: dict, dest: str | os.PathLike) -> str:
+    """Extract the working dir :func:`zip_study` found into ``dest``; return the working dir.
+
+    Members under the manifest's folder are written with that folder stripped, so the
+    working dir is ``dest`` itself. When the zip also holds members outside that folder,
+    nothing is stripped and the working dir is ``dest/<folder>``. Every member is checked
+    again here: none is written outside ``dest``.
+    """
+    dest = os.path.abspath(str(dest))
+    members = _members(zf)
+    root = found["root"]
+    strip = root if all(info.filename.startswith(root) for info in members) else ""
+    for info in members:
+        if _unsafe_member(info):
+            raise UnsafeZipError(f"This zip was not extracted: {_unsafe_member(info)}")
+        relative = info.filename[len(strip):]
+        if not relative:
+            continue
+        target = os.path.abspath(os.path.join(dest, relative))
+        if os.path.commonpath([dest, target]) != dest:
+            raise UnsafeZipError(f"This zip was not extracted: {info.filename!r} is outside it")
+        if info.is_dir():
+            os.makedirs(target, exist_ok=True)
+            continue
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        with zf.open(info) as source, open(target, "wb") as handle:
+            shutil.copyfileobj(source, handle)
+    return os.path.join(dest, root[len(strip):].rstrip("/")) if root[len(strip):] else dest
+
+
+def outside_outputs(raw: dict) -> list[str]:
+    """What the manifest says the study wrote outside its working dir, as warnings.
+
+    A zip of the working dir does not carry those files. Read from the manifest's
+    ``outside_outputs`` (a list of paths); empty when it records none.
+    """
+    paths = raw.get("outside_outputs") if isinstance(raw, dict) else None
+    if not isinstance(paths, list) or not paths:
+        return []
+    return [
+        "This study wrote outputs outside its working dir, so the zip does not carry them: "
+        + ", ".join(str(p) for p in paths)
+    ]

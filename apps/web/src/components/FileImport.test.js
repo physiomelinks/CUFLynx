@@ -14,6 +14,8 @@ vi.mock('../lib/api', () => ({
   acceptInbox: vi.fn(),
   rejectInbox: vi.fn(),
   openStudyManifest: vi.fn(),
+  inspectWorkingDirZip: vi.fn(),
+  extractWorkingDirZip: vi.fn(),
 }))
 
 import FileImport from './FileImport.vue'
@@ -30,6 +32,8 @@ import {
   acceptInbox,
   rejectInbox,
   openStudyManifest,
+  inspectWorkingDirZip,
+  extractWorkingDirZip,
 } from '../lib/api'
 
 // Real <button> stub so the Edit button's disabled state + click are observable;
@@ -103,6 +107,8 @@ beforeEach(() => {
   rejectInbox.mockReset()
   peekInbox.mockResolvedValue(null)
   openStudyManifest.mockReset()
+  inspectWorkingDirZip.mockReset()
+  extractWorkingDirZip.mockReset()
 })
 
 describe('FileImport', () => {
@@ -125,6 +131,96 @@ describe('FileImport', () => {
       expect(uploadObsData).not.toHaveBeenCalled()
     },
   )
+
+  // A zipped working dir is extracted where the user says, becomes the working dir and
+  // is reloaded, the path a dropped manifest takes; so its runs and settings load.
+  const zipFile = (name = 'W.zip') => new File(['PK'], name, { type: 'application/zip' })
+  const stagedZip = {
+    kind: 'working_dir',
+    token: 'a'.repeat(32),
+    study_name: 'LV',
+    default_dir: '/home/u/Downloads/LV',
+  }
+
+  it.each(['cellml-drop', 'obs-drop', 'params-drop'])(
+    'a dropped working-dir zip is extracted and opened (%s)',
+    async (box) => {
+      inspectWorkingDirZip.mockResolvedValue(stagedZip)
+      extractWorkingDirZip.mockResolvedValue({
+        dir: '/home/u/Downloads/LV', study_name: 'LV', file_prefix: 'LV', warnings: [],
+      })
+      const wrapper = mount(FileImport, { global: { stubs } })
+      const file = zipFile()
+      await wrapper.find(`[data-testid="${box}"]`).trigger('drop', { dataTransfer: { files: [file] } })
+      await flushPromises()
+      expect(inspectWorkingDirZip).toHaveBeenCalledWith(file, undefined)
+      // Asked first: nothing is extracted or opened until the user says where.
+      const dialog = wrapper.find('[data-testid="zip-dialog"]')
+      expect(dialog.exists()).toBe(true)
+      expect(dialog.find('[data-testid="zip-study"]').text()).toBe('LV')
+      expect(extractWorkingDirZip).not.toHaveBeenCalled()
+      expect(wrapper.emitted('update:workingDir')).toBeFalsy()
+
+      await wrapper.find('[data-testid="zip-extract"]').trigger('click')
+      await flushPromises()
+      expect(extractWorkingDirZip).toHaveBeenCalledWith(stagedZip.token, '/home/u/Downloads/LV', false)
+      expect(wrapper.emitted('update:workingDir')[0]).toEqual(['/home/u/Downloads/LV'])
+      expect(wrapper.emitted('load-working-dir')).toHaveLength(1)
+      expect(wrapper.text()).toContain('Extracted W.zip to /home/u/Downloads/LV')
+      expect(wrapper.find('[data-testid="zip-dialog"]').exists()).toBe(false)
+      expect(uploadOmex).not.toHaveBeenCalled()
+      expect(uploadCellML).not.toHaveBeenCalled()
+    },
+  )
+
+  it('an OMEX dropped as a .zip is loaded as an OMEX', async () => {
+    inspectWorkingDirZip.mockResolvedValue({ kind: 'omex' })
+    uploadOmex.mockResolvedValue({ model_id: 'm1', variable_count: 3, warnings: [] })
+    const wrapper = mount(FileImport, { global: { stubs } })
+    const file = zipFile('study.zip')
+    await wrapper.find('[data-testid="cellml-drop"]').trigger('drop', { dataTransfer: { files: [file] } })
+    await flushPromises()
+    expect(uploadOmex).toHaveBeenCalledWith(file, '')
+    expect(wrapper.emitted('model-loaded')).toHaveLength(1)
+    expect(wrapper.find('[data-testid="zip-dialog"]').exists()).toBe(false)
+    expect(extractWorkingDirZip).not.toHaveBeenCalled()
+  })
+
+  it('a zip the server refuses says why and opens nothing', async () => {
+    inspectWorkingDirZip.mockRejectedValue({
+      response: { status: 422, data: { detail: "This zip was not extracted: 'W/../x' climbs out" } },
+    })
+    const wrapper = mount(FileImport, { global: { stubs } })
+    await wrapper.find('[data-testid="obs-drop"]').trigger('drop', { dataTransfer: { files: [zipFile()] } })
+    await flushPromises()
+    expect(wrapper.text()).toContain('This zip was not extracted')
+    expect(wrapper.find('[data-testid="zip-dialog"]').exists()).toBe(false)
+    expect(wrapper.emitted('update:workingDir')).toBeFalsy()
+  })
+
+  it('a folder already holding files is extracted into only after a second press', async () => {
+    inspectWorkingDirZip.mockResolvedValue(stagedZip)
+    extractWorkingDirZip
+      .mockRejectedValueOnce({ response: { status: 409, data: { detail: '/home/u/Downloads/LV already holds files.' } } })
+      .mockResolvedValueOnce({
+        dir: '/home/u/Downloads/LV', study_name: 'LV',
+        warnings: ['This study wrote outputs outside its working dir: /data/emu'],
+      })
+    const wrapper = mount(FileImport, { global: { stubs } })
+    await wrapper.find('[data-testid="cellml-drop"]').trigger('drop', { dataTransfer: { files: [zipFile()] } })
+    await flushPromises()
+    await wrapper.find('[data-testid="zip-extract"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="zip-overwrite"]').text()).toContain('already holds files')
+    expect(wrapper.emitted('update:workingDir')).toBeFalsy()
+    expect(wrapper.find('[data-testid="zip-extract"]').text()).toBe('Extract anyway')
+
+    await wrapper.find('[data-testid="zip-extract"]').trigger('click')
+    await flushPromises()
+    expect(extractWorkingDirZip).toHaveBeenLastCalledWith(stagedZip.token, '/home/u/Downloads/LV', true)
+    expect(wrapper.emitted('update:workingDir')[0]).toEqual(['/home/u/Downloads/LV'])
+    expect(wrapper.text()).toContain('outside its working dir')
+  })
 
   it('a study manifest that cannot be opened says why', async () => {
     openStudyManifest.mockRejectedValue({ response: { data: { detail: 'not on this machine' } } })

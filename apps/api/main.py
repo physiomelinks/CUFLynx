@@ -3598,6 +3598,120 @@ def open_study_manifest(req: StudyManifestRequest) -> dict:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
+#: Where a dropped working-dir zip waits until the user says where to extract it.
+WORKING_DIR_ZIPS = UPLOAD_DIR / "working_dir_zips"
+
+
+def _staged_zip(token: str) -> Path:
+    if not re.fullmatch(r"[0-9a-f]{32}", token or ""):
+        raise HTTPException(status_code=422, detail="not a staged zip")
+    path = WORKING_DIR_ZIPS / f"{token}.zip"
+    if not path.is_file():
+        raise HTTPException(status_code=404,
+                            detail="The dropped zip is no longer staged: drop it again.")
+    return path
+
+
+def _documents_dir() -> Path:
+    documents = Path.home() / "Documents"
+    return documents if documents.is_dir() else Path.home()
+
+
+@app.post("/api/working-dir/zip")
+async def inspect_working_dir_zip(
+    file: UploadFile = File(...),
+    zip_path: str | None = Query(default=None),
+) -> dict:
+    """What a dropped .zip is: a zipped working dir, or an OMEX.
+
+    A working dir (a ``*_cuflynx_study.json`` at its root or one folder down) is staged
+    until :func:`extract_working_dir_zip` is told where to put it, and the answer proposes
+    a folder named after the study: beside the zip when ``zip_path`` (where the desktop
+    shell says the zip is) is given, else in the user's documents dir. An OMEX answers
+    ``{"kind": "omex"}`` and is loaded through ``/api/omex/upload`` like any archive.
+    A member that would land outside the folder (``..``, an absolute path, a link) is a
+    422 and nothing is staged.
+    """
+    blob = await file.read()
+    try:
+        with zipfile.ZipFile(io.BytesIO(blob)) as zf:
+            found = study_manifest.zip_study(zf)
+    except zipfile.BadZipFile as exc:
+        raise HTTPException(status_code=422, detail=f"not a zip: {exc}") from exc
+    except study_manifest.ManifestError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if found is None:
+        raise HTTPException(
+            status_code=422,
+            detail="This zip holds no study: a zipped working dir has a "
+                   "<study>_cuflynx_study.json at its top, and an OMEX a manifest.xml.")
+    if found["kind"] == "omex":
+        return {"kind": "omex"}
+    filename = os.path.basename(file.filename or "study.zip")
+    name = study_manifest.zip_study_name(found, os.path.splitext(filename)[0])
+    beside = Path(zip_path).expanduser().parent if zip_path else None
+    parent = beside if beside is not None and beside.is_dir() else _documents_dir()
+    token = uuid.uuid4().hex
+    WORKING_DIR_ZIPS.mkdir(parents=True, exist_ok=True)
+    (WORKING_DIR_ZIPS / f"{token}.zip").write_bytes(blob)
+    return {
+        "kind": "working_dir",
+        "token": token,
+        "study_name": name,
+        "default_dir": study_manifest.free_folder(str(parent), name),
+    }
+
+
+class ExtractWorkingDirZipRequest(BaseModel):
+    #: What ``/api/working-dir/zip`` answered for the dropped zip.
+    token: str
+    #: The folder to extract into: created when missing.
+    dest: str
+    #: Extract into a folder that already holds files. Without it that is a 409.
+    overwrite: bool = False
+
+
+@app.post("/api/working-dir/zip/extract")
+def extract_working_dir_zip(req: ExtractWorkingDirZipRequest) -> dict:
+    """Extract a staged working-dir zip into ``dest`` and say which working dir it opens.
+
+    Answers what ``/api/working-dir/manifest`` answers for the extracted manifest
+    (``{"dir", "study_name", "file_prefix"}``), so the app sets the working dir and reloads
+    it the way a dropped manifest does, plus ``warnings`` (outputs the manifest says are
+    outside the working dir, which the zip cannot carry). A ``dest`` that is a file, or a
+    folder holding files without ``overwrite``, is a 409.
+    """
+    staged = _staged_zip(req.token)
+    dest = Path((req.dest or "").strip()).expanduser()
+    if not str(dest).strip() or not dest.is_absolute():
+        raise HTTPException(status_code=422, detail="Extract into an absolute folder path.")
+    if dest.is_file():
+        raise HTTPException(status_code=409, detail=f"{dest} is a file, not a folder.")
+    if study_manifest.is_nonempty_dir(dest) and not req.overwrite:
+        raise HTTPException(
+            status_code=409,
+            detail=f"{dest} already holds files: extracting there can overwrite them.")
+    try:
+        with zipfile.ZipFile(staged) as zf:
+            found = study_manifest.zip_study(zf)
+            if not found or found["kind"] != "working_dir":
+                raise HTTPException(status_code=422, detail="The staged zip holds no working dir.")
+            dest.mkdir(parents=True, exist_ok=True)
+            directory = study_manifest.extract_study_zip(zf, found, dest)
+    except study_manifest.ManifestError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except OSError as exc:
+        raise _fs_error(exc, "extract the zip into", dest, user_dir=True) from exc
+    staged.unlink(missing_ok=True)
+    manifest = os.path.join(directory, os.path.basename(found["manifest"]))
+    try:
+        opened = study_manifest.study_location(found["raw"], manifest, found["manifest"])
+    except study_manifest.ManifestError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    opened["warnings"] = study_manifest.outside_outputs(found["raw"])
+    return opened
+
+
 class OpenStudyRequest(BaseModel):
     #: The working dir the user picked, the same one `/api/working-dir/load` reads.
     dir: str
