@@ -624,9 +624,9 @@ async function onExtractZip() {
     pendingZip.value = null
     zipOverwrite.value = ''
     await openStudyDirectory(opened, pending.filename)
+    // Outputs left outside the working dir are named by the reload's own banner.
     notice.value = `Extracted ${pending.filename} to ${opened.dir}; opening ` +
       `${opened.study_name || 'the study'} from there`
-    warnings.value = opened.warnings || []
   } catch (e) {
     const detail = e?.response?.data?.detail || String(e)
     if (e?.response?.status === 409) zipOverwrite.value = detail

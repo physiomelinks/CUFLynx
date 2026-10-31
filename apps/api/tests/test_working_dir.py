@@ -646,12 +646,12 @@ def test_a_zip_with_files_beside_its_study_folder_opens_that_folder(client, tmp_
 
 def test_outputs_the_manifest_records_outside_the_working_dir_are_warned_about(
         client, tmp_path, staged_zips):
-    manifest = json.dumps({"schema": 1, "study_name": "LV",
-                           "outside_outputs": ["/data/emulators/shared"]})
+    manifest = json.dumps({"schema": 1, "study_name": "LV", "sensitivity": [
+        {"dir": "/data/elsewhere/sobol", "method": "sobol", "outside": True}]})
     archive = _zip_of({"LV_cuflynx_study.json": manifest}, tmp_path / "W.zip")
     token = _drop_zip(client, archive).json()["token"]
     resp = client.post("/api/working-dir/zip/extract",
                        json={"token": token, "dest": str(tmp_path / "out")})
     assert resp.status_code == 200, resp.text
     [warning] = resp.json()["warnings"]
-    assert "/data/emulators/shared" in warning
+    assert "/data/elsewhere/sobol" in warning and "outside its working dir" in warning

@@ -3676,9 +3676,9 @@ def extract_working_dir_zip(req: ExtractWorkingDirZipRequest) -> dict:
     """Extract a staged working-dir zip into ``dest`` and say which working dir it opens.
 
     Answers what ``/api/working-dir/manifest`` answers for the extracted manifest
-    (``{"dir", "study_name", "file_prefix"}``), so the app sets the working dir and reloads
-    it the way a dropped manifest does, plus ``warnings`` (outputs the manifest says are
-    outside the working dir, which the zip cannot carry). A ``dest`` that is a file, or a
+    (``{"dir", "study_name", "file_prefix", "warnings"}``, the warnings naming outputs the
+    study wrote outside its working dir, which the zip cannot carry), so the app sets the
+    working dir and reloads it the way a dropped manifest does. A ``dest`` that is a file, or a
     folder holding files without ``overwrite``, is a 409.
     """
     staged = _staged_zip(req.token)
@@ -3708,7 +3708,6 @@ def extract_working_dir_zip(req: ExtractWorkingDirZipRequest) -> dict:
         opened = study_manifest.study_location(found["raw"], manifest, found["manifest"])
     except study_manifest.ManifestError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    opened["warnings"] = study_manifest.outside_outputs(found["raw"])
     return opened
 
 
