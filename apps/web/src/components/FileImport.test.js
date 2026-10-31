@@ -219,7 +219,7 @@ describe('FileImport', () => {
     await flushPromises()
     expect(extractWorkingDirZip).toHaveBeenLastCalledWith(stagedZip.token, '/home/u/Downloads/LV', true)
     expect(wrapper.emitted('update:workingDir')[0]).toEqual(['/home/u/Downloads/LV'])
-    expect(wrapper.text()).toContain('outside its working dir')
+    expect(wrapper.text()).toContain('Extracted W.zip to /home/u/Downloads/LV')
   })
 
   it('a study manifest that cannot be opened says why', async () => {

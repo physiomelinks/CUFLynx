@@ -342,8 +342,8 @@ format, and no plumbing:
   `/api/working-dir/zip/extract` is told where (a 409 for a folder holding files unless
   `overwrite`). Any member with `..`, an absolute path or a symlink refuses the whole zip.
   The answer is `study_location`'s for the extracted manifest, so `handleWorkingDirZip`
-  then takes the dropped-manifest path (`openStudyDirectory`). `outside_outputs` in the
-  manifest becomes a warning.
+  then takes the dropped-manifest path (`openStudyDirectory`); outputs the manifest flags
+  outside the working dir are named by the reload's `warnings` banner.
   `pre_time`/`sim_time` in it are informational: timing comes from the obs_data protocol.
 - **Declared funcs are the user's file, not ours.** `user_funcs._user_file` returns the
   manifest's `user_funcs[kind]` when declared, so runs, option lists and the editor all

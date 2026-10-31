@@ -544,17 +544,3 @@ def extract_study_zip(zf: zipfile.ZipFile, found: dict, dest: str | os.PathLike)
             shutil.copyfileobj(source, handle)
     return os.path.join(dest, root[len(strip):].rstrip("/")) if root[len(strip):] else dest
 
-
-def outside_outputs(raw: dict) -> list[str]:
-    """What the manifest says the study wrote outside its working dir, as warnings.
-
-    A zip of the working dir does not carry those files. Read from the manifest's
-    ``outside_outputs`` (a list of paths); empty when it records none.
-    """
-    paths = raw.get("outside_outputs") if isinstance(raw, dict) else None
-    if not isinstance(paths, list) or not paths:
-        return []
-    return [
-        "This study wrote outputs outside its working dir, so the zip does not carry them: "
-        + ", ".join(str(p) for p in paths)
-    ]
