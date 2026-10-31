@@ -4,6 +4,7 @@ import Aura from '@primevue/themes/aura'
 import 'primeicons/primeicons.css'
 
 import App from './App.vue'
+import { startPresence } from './lib/presence.js'
 import './style.css'
 
 const app = createApp(App)
@@ -19,3 +20,4 @@ app.use(PrimeVue, {
 })
 
 app.mount('#app')
+startPresence()

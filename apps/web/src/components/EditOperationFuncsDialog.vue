@@ -4,6 +4,7 @@ import Dialog from 'primevue/dialog'
 import Button from 'primevue/button'
 import Message from 'primevue/message'
 import { getUserFuncs, saveUserFunc, deleteUserFunc } from '../lib/api'
+import { readStoredWorkingDir } from '../lib/workingDir'
 
 // Author custom observable "operations" (obs_funcs) AND custom "cost functions"
 // without opening circulatory_autogen (issues #58 / #104). CUFLynx saves each
@@ -42,8 +43,8 @@ const saving = ref(false)
 const error = ref('')
 const notice = ref('')
 
-// The user's output directory (App.vue persists it here); funcs are stored there.
-const outputDir = () => localStorage.getItem('cuflynx-outputs-dir') || ''
+// The working dir (App.vue persists it); funcs are stored under its inputs/funcs/<date>/.
+const workingDir = () => readStoredWorkingDir()
 
 const currentKind = computed(() => KINDS.find((k) => k.key === kind.value) || KINDS[0])
 const templateKeys = computed(() => Object.keys(templates.value))
@@ -66,7 +67,7 @@ async function refresh() {
   loading.value = true
   error.value = ''
   try {
-    const data = await getUserFuncs(kind.value, outputDir())
+    const data = await getUserFuncs(kind.value, workingDir())
     functions.value = data.functions ?? []
     templates.value = data.templates ?? (data.template ? { basic: data.template } : {})
     available.value = data.available !== false
@@ -128,7 +129,7 @@ async function onSave() {
     // `editingName` is the entry being replaced, so renaming the `def` renames
     // the func instead of leaving the old one behind.
     const saved = derivedName.value
-    const data = await saveUserFunc(kind.value, editingName.value ?? '', source.value, outputDir())
+    const data = await saveUserFunc(kind.value, editingName.value ?? '', source.value, workingDir())
     functions.value = data.functions ?? []
     editingName.value = saved
     activeTemplate.value = null
@@ -146,7 +147,7 @@ async function onDelete(fn) {
   error.value = ''
   notice.value = ''
   try {
-    const data = await deleteUserFunc(kind.value, fn.name, outputDir())
+    const data = await deleteUserFunc(kind.value, fn.name, workingDir())
     functions.value = data.functions ?? []
     if (editingName.value === fn.name) startNew()
     emit('saved', { kind: kind.value, functions: functions.value })

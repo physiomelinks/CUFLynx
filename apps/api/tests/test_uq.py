@@ -92,8 +92,9 @@ def _wait(client, prefix, job_id, timeout=15):
     raise AssertionError("job did not finish; lines:\n" + "\n".join(lines))
 
 
-def _run_calibration_to_completion(client, model_id):
-    r = client.post("/api/calibration/run", json={"model_id": model_id, "settings": {}})
+def _run_calibration_to_completion(client, model_id, working_dir):
+    r = client.post("/api/calibration/run",
+                    json={"model_id": model_id, "settings": {"working_dir": working_dir}})
     assert r.status_code == 200, r.text
     status, _ = _wait(client, "calibration", r.json()["job_id"])
     assert status["state"] == "done"
@@ -155,7 +156,7 @@ def test_uq_run_calibration_first_completes(client, tmp_path):
     )
     resp = client.post(
         "/api/uq/run",
-        json={"model_id": model_id, "settings": {"run_calibration_first": True}},
+        json={"model_id": model_id, "settings": {"working_dir": str(tmp_path), "run_calibration_first": True}},
     )
     assert resp.status_code == 200, resp.text
     status, lines = _wait(client, "uq", resp.json()["job_id"])
@@ -177,11 +178,11 @@ def test_uq_reuse_after_calibration_completes(client, tmp_path):
     model_id = _setup_model_obs_params(
         client, LV_MODEL_PATH, LV_OBS_DATA_PATH, LV_PARAMS_CSV_PATH
     )
-    _run_calibration_to_completion(client, model_id)
+    _run_calibration_to_completion(client, model_id, str(tmp_path))
 
     resp = client.post(
         "/api/uq/run",
-        json={"model_id": model_id, "settings": {"method": "laplace"}},
+        json={"model_id": model_id, "settings": {"working_dir": str(tmp_path), "method": "laplace"}},
     )
     assert resp.status_code == 200, resp.text
     status, lines = _wait(client, "uq", resp.json()["job_id"])
@@ -232,3 +233,27 @@ def test_a_cancel_with_no_chain_is_still_a_clean_cancel(tmp_path):
     job.state = "cancelled"
     uq_mod.uq._salvage_partial(job)          # must not raise
     assert job.params is None
+
+
+def test_the_uq_engine_is_built_with_ca_uq_options(monkeypatch, tmp_path):
+    """The runner passes ``UQ_options=`` to CVS0DParamID, with no signature probe."""
+    import types
+
+    import uq_runner
+    from conftest import set_ca_module
+
+    seen = {}
+
+    class FakeParamID:
+        def __init__(self, **kwargs):
+            seen.update(kwargs)
+
+    set_ca_module(monkeypatch, "param_id.paramID", types.SimpleNamespace(CVS0DParamID=FakeParamID))
+    config = {"model_path": "m.cellml", "params_path": str(tmp_path / "p.json"),
+              "output_dir": str(tmp_path)}
+    uq_runner._make_param_id(config, {}, "obs.json", mcmc=True,
+                             options_key="UQ_options", options={"num_steps": 5})
+
+    assert seen["UQ_options"] == {"num_steps": 5}
+    assert "mcmc_options" not in seen
+    assert not hasattr(uq_runner, "uq_options_kwarg")

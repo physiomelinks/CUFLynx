@@ -62,13 +62,11 @@ dependencies = [
     # CellML simulation (circulatory_autogen Myokit path).
     # Required only for the integration tier; unit tests run without them.
     "myokit>=1.39.1",
-    # Upper bound is load-bearing — keep it in step with circulatory_autogen's own
-    # pin. libcellml 0.7 changed the generated Python code (no VARIABLE_COUNT), and
-    # CA's PythonGenerator still expects it, so the python / casadi_python backends
-    # die with KeyError: 'VARIABLE_COUNT'. Without the bound a fresh `pip install`
-    # silently resolves 0.7.0 — which is exactly how the v0.1.0 desktop build
-    # shipped broken while a dev machine holding 0.6.3 looked fine.
-    "libcellml>=0.6.3,<0.7.0",
+    # Keep in step with circulatory_autogen's own pin: libcuflynx's generators need
+    # libcellml 0.7.2 (0.7.1 drops an imported unit's exponent), and CA refuses
+    # anything older. The frozen bundle is built from a clean resolve of this file,
+    # so this floor is what ships.
+    "libcellml>=0.7.2",
     "scipy>=1.7.0",
     # circulatory_autogen's *simulation-path* imports. The live engine imports CA
     # in-process, so these have to be present in whatever environment runs the app —
@@ -83,6 +81,7 @@ dependencies = [
     "ruamel.yaml>=0.17.0",
     "rdflib>=5.0.0",
     "pint>=0.18",
+    "jinja2>=3.0",          # renders the C BE_batched_c builds each model from
     # circulatory_autogen's *cost-gradient* imports, which are in-process too. #188
     # put the analytic cost gradient in the live tier: cost_gradient.py imports CA's
     # param_id.paramID, and that reaches an unguarded `import numdifftools` in CA's
@@ -107,6 +106,22 @@ dev = [
     "httpx>=0.27.0",
     "pytest>=7.0.0",
     "pytest-cov>=3.0.0",
+]
+# Reading raw electrophysiology recordings (apps/api/obs_extract).
+#
+# Only neo, and only for WCP. myokit is a core dependency and reads both WCP and
+# ABF through `myokit.formats.SweepSource`, which is why pyabf is deliberately
+# NOT here -- it read 21/21 of the .abf corpus this was built against, so a
+# second ABF library would be pure duplication.
+#
+# neo earns its place on measurement: over 60 of 488 real .wcp files, myokit read
+# 41 and rejected 19 with "WCP file contains more than one sampling rate" (its
+# reader takes the `nbh` header field as a byte count where those files mean
+# 512-byte sectors, so it seeks past the record header). neo read all 60. The
+# readers fall back to myokit when neo is absent, so the app works without this
+# extra -- it just cannot open about a third of a real WCP corpus.
+dataimport = [
+    "neo>=0.12.0",
 ]
 # Desktop shell + single-file packaging (scripts/package.py). Not needed to run
 # the app from source, only to build/ship the double-clickable executable.
@@ -182,6 +197,9 @@ only-include = [
     "cellml_meta.py",
     "obs_data.py",
     "params_for_id.py",
+    # The one package rather than a module: obs_extract is a candidate to move
+    # to its own repository, so it is kept as a directory (see its __init__).
+    "obs_extract",
 ]
 
 [tool.pytest.ini_options]

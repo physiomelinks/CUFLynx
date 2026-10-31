@@ -1,15 +1,10 @@
 """Guards on dependency pins whose absence breaks the app only once *shipped*.
 
-The v0.1.0 desktop build shipped with the python / casadi_python backends broken:
-`apps/api/pyproject.toml` said `libcellml>=0.6.3` with no upper bound, so the CI
-build machine's fresh `pip install` resolved **0.7.0**. libcellml 0.7 changed its
-generated Python code (it no longer emits `VARIABLE_COUNT`), and
-circulatory_autogen's `PythonGenerator._extract_generated_metadata` still reads
-that symbol — so every model generation died with `KeyError: 'VARIABLE_COUNT'`.
-
-Nothing caught it: developer machines had 0.6.3 pinned by history, so running from
-source worked, and CI's unit tier doesn't import libcellml at all. Only the frozen
-binary — built from a clean resolve — was broken.
+The frozen desktop bundle is built from a clean resolve of `apps/api/pyproject.toml`,
+while developer machines keep whatever they installed before. A pin that disagrees
+with what circulatory_autogen needs therefore breaks only the shipped binary
+(v0.1.0 shipped with libcellml resolved past CA's bound and every Python-backend
+generation failing). CI's unit tier doesn't import libcellml at all.
 
 These tests are deliberately in the *unit* tier (no libcellml import required), so
 they run everywhere the build does.
@@ -33,23 +28,25 @@ def _requirement(name: str) -> str:
     return match.group(1)
 
 
-def test_libcellml_has_an_upper_bound_below_0_7():
-    """libcellml 0.7 removed VARIABLE_COUNT from its generated code, which CA's
-    PythonGenerator still requires. Without this bound, a clean install resolves
-    0.7.0 and the python / casadi_python backends break in the packaged app."""
-    req = _requirement("libcellml")
-    assert "<0.7" in req, (
-        f"libcellml must be pinned below 0.7 (got {req!r}). 0.7 drops VARIABLE_COUNT "
-        "from the generated Python code and circulatory_autogen's PythonGenerator "
-        "still reads it -> KeyError: 'VARIABLE_COUNT' on every model generation."
-    )
+def test_libcellml_floor_is_0_7_2():
+    """libcuflynx's generators need libcellml 0.7.2: 0.7.1 drops an imported unit's
+    exponent, so models with imported units fail with a units mismatch. The bundle is
+    built from a clean resolve of pyproject.toml, so the floor is what ships."""
+    assert _requirement("libcellml") == "libcellml>=0.7.2"
 
 
 def test_libcellml_pin_matches_circulatory_autogen():
-    """CA pins `libcellml>=0.6.3,<0.7.0` for this exact reason. Our bundle *is* the
-    environment CA runs in, so the two constraints have to agree — if CA relaxes its
-    bound after migrating, this is the other place to update."""
-    assert _requirement("libcellml") == "libcellml>=0.6.3,<0.7.0"
+    """Our bundle *is* the environment CA runs in, so the two constraints have to agree.
+    Read from the CA checkout the unit tier pins (``CIRCULATORY_AUTOGEN_SRC``)."""
+    import os
+
+    src = os.environ.get("CIRCULATORY_AUTOGEN_SRC")
+    ca_pyproject = Path(src).parent / "pyproject.toml" if src else None
+    if not ca_pyproject or not ca_pyproject.is_file():
+        pytest.skip("no circulatory_autogen checkout (CIRCULATORY_AUTOGEN_SRC)")
+    match = re.search(r'"(libcellml[^"]*)"', ca_pyproject.read_text())
+    assert match, f"no libcellml requirement in {ca_pyproject}"
+    assert _requirement("libcellml") == match.group(1)
 
 
 # Every package circulatory_autogen imports on the *simulation* path. The live
@@ -74,6 +71,7 @@ SIMULATION_PATH_DEPS = [
     "ruamel.yaml",
     "rdflib",
     "pint",
+    "jinja2",
 ]
 
 # CA's analysis-path packages, declared in the [analysis] extra (pip names). The
@@ -173,7 +171,7 @@ def test_runners_are_bundled_into_a_subdir_not_the_root():
 
 
 @pytest.mark.integration
-def test_installed_libcellml_still_emits_variable_count():
+def test_installed_libcellml_meets_the_floor():
     """The pin is only worth anything if the *installed* libcellml honours it.
 
     Catches an environment that satisfied the pin at resolve time but drifted since
@@ -181,11 +179,8 @@ def test_installed_libcellml_still_emits_variable_count():
     """
     libcellml = pytest.importorskip("libcellml")
     version = libcellml.versionString()
-    major, minor = (int(p) for p in version.split(".")[:2])
-    assert (major, minor) < (0, 7), (
-        f"installed libcellml is {version}; CA's PythonGenerator needs <0.7 "
-        "(0.7 no longer emits VARIABLE_COUNT)"
-    )
+    parts = tuple(int(p) for p in re.findall(r"\d+", version)[:3])
+    assert parts >= (0, 7, 2), f"installed libcellml is {version}; libcuflynx needs >=0.7.2"
 
 
 def _core_dependencies() -> list[str]:
@@ -305,3 +300,38 @@ def test_the_full_installs_upgrade_pip_first():
             f"{workflow}: a step passes --build-constraint without upgrading pip "
             f"first:\n{script.strip()[:400]}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Raw-recording readers (apps/api/obs_extract)
+# ---------------------------------------------------------------------------
+def test_neo_is_declared_for_wcp_reading():
+    """neo is what makes a whole WCP corpus readable, so it must stay declared.
+
+    myokit is the fallback and reads most files, which is exactly why this needs
+    a test: dropping neo would not fail any test that uses a synthesised WCP --
+    it would only stop about a third of a real corpus from opening, on the user's
+    machine, months later.
+    """
+    text = PYPROJECT.read_text()
+    assert re.search(r'^\s*"neo[^"]*"', text, re.MULTILINE), (
+        "neo must stay in the [dataimport] extra: over 60 real .wcp files myokit "
+        "read 41 and neo read 60."
+    )
+
+
+def test_pyabf_is_not_declared():
+    """ABF is myokit's job. A second reader for it would be duplication.
+
+    ``myokit.formats.axon.AbfFile`` read 21/21 of the .abf corpus, on the same
+    ``SweepSource`` interface the WCP reader uses, and myokit is already a core
+    dependency. The sympathetic_neuron CLI this replaces uses pyabf; porting that
+    choice across would add a dependency for nothing.
+    """
+    text = PYPROJECT.read_text()
+    assert not re.search(r'^\s*"pyabf[^"]*"', text, re.MULTILINE), (
+        "pyabf must not be a dependency: myokit already reads ABF via "
+        "myokit.formats.axon.AbfFile (21/21 on the reference corpus). If you are "
+        "adding it because an .abf would not open, fix the reader in "
+        "obs_extract/readers.py rather than adding a second ABF library."
+    )

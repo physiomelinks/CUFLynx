@@ -29,6 +29,13 @@ The button asks once: until the tour has been started or skipped it pulses
 gently. After that it is an ordinary button, and pressing it starts the tour
 again from the beginning.
 
+## The working dir
+
+Each study lives in one folder, the **Working dir**: its inputs (copied into
+`inputs/`) and every run's outputs. Set it before running anything; zip it to send
+the whole study. See **[The working dir](working_dir.md)** for what is in it and how
+an older "outputs directory" is read.
+
 ## Solver backends, and the one that needs a C compiler
 
 CUFLynx works out of the box with no compiler. Of the three solver backends
@@ -77,7 +84,7 @@ two sources of pacing that disagree.
 
 The `[[protocol]]` section is carried across separately. If you have no obs_data
 loaded, dropping the `.mmt` creates `<model>_obs_data.json` from it, saves it to
-the outputs directory and loads it — so the model is paced as Myokit paced it. An
+`inputs/obs_data/<date>/` in the [working dir](working_dir.md) and loads it — so the model is paced as Myokit paced it. An
 obs_data you dropped yourself is never replaced by a derived one. It arrives with
 no `data_items` (what the model should be measured against isn't in the `.mmt`),
 so add those via **Edit**.

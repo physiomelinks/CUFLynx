@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, devel_FA]
+    branches: [main]   # a PR branch's push runs once, as its pull_request run
   pull_request:
 
 jobs:
@@ -96,19 +96,21 @@ jobs:
           # -- when the floor moved to 0.7.3 and this did not, the unit tier spent a month
           # testing a pairing pip itself would refuse to resolve, and only the weekly
           # `ca-pin-freshness` job said so.
-          ref: 2684bd9e01a494618e4a6ba7f814d9f28758af5d  # libcuflynx v0.7.3
+          ref: a3531f580c635180ac01c0b62a509fcab2a8c7da  # libcuflynx v0.7.3
           path: circulatory_autogen
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
       # Install only the light deps needed by the unit tier; the heavy
       # simulation stack (myokit/libcellml) is exercised by the integration
-      # marker, which is skipped here. pyyaml is for CA's parser module.
+      # marker, which is skipped here. pyyaml and jsonschema are for CA's parser
+      # module: without jsonschema it skips the schema checks the obs_data and
+      # params_for_id tests expect.
       # matplotlib is for the extra-figure pipeline: without it the
       # sim-worker child degrades to "no extra figures" by design, which
       # would silently gut test_solver_plots_worker's drift guards.
       - name: Install unit-test deps
-        run: pip install fastapi "uvicorn[standard]" numpy pandas pyyaml python-multipart httpx matplotlib pytest pytest-cov
+        run: pip install fastapi "uvicorn[standard]" numpy pandas pyyaml jsonschema python-multipart httpx matplotlib pytest pytest-cov
       - name: Run unit tests
         run: pytest -m "not integration" -q
 
@@ -131,7 +133,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
       - name: Install
         run: yarn install --frozen-lockfile
       - name: Unit tests
@@ -214,7 +216,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
       - name: Install
         run: yarn install --frozen-lockfile
       # Only the two engines the config declares; `--with-deps` pulls the system

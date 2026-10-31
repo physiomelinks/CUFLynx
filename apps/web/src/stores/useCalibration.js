@@ -95,6 +95,9 @@ export function useCalibration(options = {}) {
   const percentError = ref(null) // [number] one per observable
   const stdError = ref(null) // [number] one per observable
   const errorLabels = ref([]) // display names, one per observable
+  // The best fit against the obs_data's held-out data (CA #535), or null when it
+  // held none: {items: [...]} as CA's validation_results.json has it.
+  const validation = ref(null)
 
   let jobId = null
   const jobIdRef = ref(null) // reactive mirror of jobId for computed URLs
@@ -123,6 +126,7 @@ export function useCalibration(options = {}) {
     percentError.value = null
     stdError.value = null
     errorLabels.value = []
+    validation.value = null
   }
 
   /**
@@ -194,6 +198,7 @@ export function useCalibration(options = {}) {
         percentError.value = s.percent_error
         stdError.value = s.std_error
         errorLabels.value = s.error_labels ?? []
+        validation.value = s.validation ?? null
         error.value = s.error || ''
         state.value = s.state
       }
@@ -242,6 +247,7 @@ export function useCalibration(options = {}) {
     percentError,
     stdError,
     errorLabels,
+    validation,
     running,
     applyProgress,
     start,

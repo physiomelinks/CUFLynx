@@ -4,6 +4,7 @@ import { renderMath, renderOutputLabel } from '../lib/math'
 import { fmtSci } from '../lib/format'
 import { niceTicks, fmtTick } from '../lib/plot'
 import ScatterChart from './ScatterChart.vue'
+import { emulatorPredictionFlags } from '../lib/obsDataJson'
 
 const props = defineProps({
   // Sensitivity: { S1: {outName: {param: val}}, ST: {...}, local: {...} }
@@ -16,10 +17,23 @@ const props = defineProps({
   // paramNames) and a short description of where it came from.
   nominal: { type: Array, default: null },
   nominalSource: { type: String, default: null },
+  // The outputs that are prediction features (include_prediction_items) -- named by
+  // libcuflynx (Sobol's sobol_output_features.json, local SA's rows), never guessed
+  // from the label. Tagged in the heatmap.
+  predictionOutputs: { type: Array, default: () => [] },
   // Calibration: one error per observable, aligned with errorLabels.
   percentError: { type: Array, default: null },
   stdError: { type: Array, default: null },
   errorLabels: { type: Array, default: () => [] },
+  // The best fit against the obs_data's held-out data (CA #535): CA's
+  // validation_results.json, {items: [{data_item_name, operand, unit, data_type,
+  // n_points, rmse, nrmse, mean_abs_z, within_2std, t, data, std, model}]}.
+  // null when the obs_data held none, and then the section is not drawn at all.
+  validation: { type: Object, default: null },
+  // One line shown instead of the section when the study has held-out data but
+  // the installed libcuflynx cannot validate against it (no param_id.validation).
+  // CUFLynx scores nothing itself, so there is then no validation to show.
+  validationNote: { type: String, default: '' },
   // Issue #159: the cost and per-observable errors of whatever the sliders
   // currently say, and a baseline to compare them against (the calibration best
   // fit, or a pinned parameter set). Both {cost, items:[{label, percent_error,
@@ -59,6 +73,104 @@ const props = defineProps({
 
 const emit = defineEmits(['select-result', 'remove-result', 'clear-results'])
 
+// ---- Validation ------------------------------------------------------------
+// Read from CA's validation_results.json; nothing is recomputed here. The scores
+// are CA's, and the chart plots the very points they were taken at.
+const validationItems = computed(() =>
+  Array.isArray(props.validation?.items) ? props.validation.items : [],
+)
+const hasValidation = computed(() => validationItems.value.length > 0)
+
+/** A fraction as a percentage, or a dash when there was no std to judge by. */
+function fmtFraction(value) {
+  if (value == null || Number.isNaN(Number(value))) return '—'
+  return `${Math.round(Number(value) * 100)}%`
+}
+
+/**
+ * One chart per item: the held-out data with its ±std bars, and the model at the
+ * same times. The y range covers the bars as well as the points, so a bar is
+ * never clipped into looking tighter than it is.
+ */
+/** "x (max)" for a scalar feature (an item with an operation), else its name. */
+function validationName(item) {
+  return item.operation ? `${item.data_item_name} (${item.operation})` : item.data_item_name
+}
+
+/**
+ * A scalar item: one number against one number -- a prediction feature (an item
+ * with an operation, which libcuflynx scores as operation(model operands) at the end
+ * of the run) or a plain constant. One chart per scalar would be a page of single
+ * dots, so they share one parity chart instead; series keep a chart each.
+ */
+function isScalarItem(item) {
+  return !!item.operation || item.data_type !== 'series'
+}
+
+/** One stdev per point, whether the item gave one for all or one each. */
+function stdAt(item, i) {
+  const std = Array.isArray(item.std) ? item.std.map(Number) : null
+  return std ? (std.length === 1 ? std[0] : std[i]) : null
+}
+
+/**
+ * The scalar items in one parity chart: x the model, y the held-out data ± std, and
+ * the y = x line. A point's bar crosses the line exactly when the model is within
+ * one std of the data, so agreement reads straight off it.
+ */
+const validationFeaturePlot = computed(() => {
+  const items = validationItems.value.filter(isScalarItem)
+  if (!items.length) return null
+  const points = items.map((item) => {
+    const data = Number(item.data?.[0])
+    const model = Number(item.model?.[0])
+    const err = stdAt(item, 0)
+    return {
+      x: model,
+      y: data,
+      err,
+      title: `${validationName(item)}: data ${data}${err != null ? ` ± ${err}` : ''}, model ${model}${item.unit ? ` ${item.unit}` : ''}`,
+    }
+  })
+  const vals = []
+  for (const p of points) {
+    const e = Number.isFinite(p.err) ? p.err : 0
+    vals.push(p.x, p.y - e, p.y + e)
+  }
+  const finite = vals.filter(Number.isFinite)
+  const domain = finite.length ? [Math.min(...finite), Math.max(...finite)] : [0, 1]
+  return { points, domain }
+})
+
+const validationPlots = computed(() =>
+  validationItems.value.filter((item) => !isScalarItem(item)).map((item) => {
+    const t = (item.t ?? []).map(Number)
+    const data = (item.data ?? []).map(Number)
+    const model = (item.model ?? []).map(Number)
+    const std = Array.isArray(item.std) ? item.std.map(Number) : null
+    const err = (i) => (std ? (std.length === 1 ? std[0] : std[i]) : null)
+    const ys = [...model]
+    data.forEach((d, i) => {
+      const e = Number.isFinite(err(i)) ? err(i) : 0
+      ys.push(d - e, d + e)
+    })
+    const finite = ys.filter(Number.isFinite)
+    return {
+      name: validationName(item),
+      unit: item.unit,
+      xDomain: t.length ? [Math.min(...t), Math.max(...t)] : [0, 1],
+      yDomain: finite.length ? [Math.min(...finite), Math.max(...finite)] : [0, 1],
+      points: data.map((d, i) => ({
+        x: t[i],
+        y: d,
+        err: err(i),
+        title: `t = ${t[i]}: data ${d}${std ? ` ± ${err(i)}` : ''}, model ${model[i]}`,
+      })),
+      line: model.map((m, i) => ({ x: t[i], y: m })),
+    }
+  }),
+)
+
 // ---- Emulator error --------------------------------------------------------
 // Everything here is read from CA's emulator_metadata.json / emulator_validation.npz;
 // nothing is recomputed. R2 alone cannot rank features -- one can score well and
@@ -68,8 +180,10 @@ const hasEmulator = computed(() => !!props.emulatorMetadata)
 const emulatorRows = computed(() => {
   const meta = props.emulatorMetadata
   if (!meta) return []
+  const prediction = emulatorPredictionFlags(meta)
   return (meta.feature_labels ?? []).map((label, i) => ({
     label,
+    prediction: prediction[i],
     r2: meta.feature_r2?.[i] ?? null,
     rmse: meta.feature_rmse?.[i] ?? null,
     mae: meta.feature_mae?.[i] ?? null,
@@ -192,6 +306,10 @@ const residualBasis = computed(
 )
 
 // ---- Sensitivity heatmap ---------------------------------------------------
+const predictionOutputSet = computed(() => new Set(props.predictionOutputs ?? []))
+function isPredictionOutput(out) {
+  return predictionOutputSet.value.has(out)
+}
 // Sobol runs carry S1/ST; a local (finite-difference) run carries a single
 // 'local' matrix of relative sensitivities. Offer whichever kinds are present.
 const TYPE_LABELS = {
@@ -679,9 +797,15 @@ const predictiveBandWidth = computed(() => `${(2 / (2 * PREDICTIVE_LIMIT)) * 100
                   v-for="out in outputNames"
                   :key="out"
                   class="col-head"
-                  :title="out"
-                  v-html="renderOutputLabel(out)"
-                />
+                  :title="isPredictionOutput(out) ? `${out} (prediction item)` : out"
+                >
+                  <span v-html="renderOutputLabel(out)" />
+                  <span
+                    v-if="isPredictionOutput(out)"
+                    class="pred-tag"
+                    data-testid="sa-prediction-tag"
+                  >prediction</span>
+                </th>
               </tr>
             </thead>
             <tbody>
@@ -993,6 +1117,97 @@ const predictiveBandWidth = computed(() => `${(2 / (2 * PREDICTIVE_LIMIT)) * 100
       </template>
     </section>
 
+    <!-- Validation ----------------------------------------------------------
+         Only when the obs_data carries held-out data (CA #535): an empty
+         section here would read as "validated, nothing to say". -->
+    <p
+      v-if="!hasValidation && validationNote"
+      class="emu-error-note"
+      data-testid="validation-needs-newer"
+    >{{ validationNote }}</p>
+    <section v-if="hasValidation" class="analysis-section" data-testid="validation-section">
+      <h2>Validation</h2>
+      <table class="emu-error-table" data-testid="validation-table">
+        <thead>
+          <tr>
+            <th>Item</th><th>Operand</th><th>Unit</th><th>Points</th>
+            <th>RMSE</th><th>nRMSE</th><th>Mean |z|</th><th>Within 2σ</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr
+            v-for="item in validationItems"
+            :key="item.data_item_name"
+            data-testid="validation-row"
+          >
+            <td class="emu-error-label">{{ validationName(item) }}</td>
+            <td>{{ item.operand }}</td>
+            <td>{{ item.unit }}</td>
+            <td>{{ item.n_points }}</td>
+            <td>{{ fmtStat(item.rmse, 3) }}</td>
+            <td>{{ fmtStat(item.nrmse) }}</td>
+            <td>{{ fmtStat(item.mean_abs_z, 3) }}</td>
+            <td>{{ fmtFraction(item.within_2std) }}</td>
+          </tr>
+        </tbody>
+      </table>
+      <p class="emu-error-note">
+        The calibrated model's prediction of data it was never fitted to. A series
+        is compared at its own sample times, a constant at the end of its
+        experiment, and an item with an operation as that operation of the
+        model's run (e.g. its max). Mean |z| and within 2σ need a std; nRMSE is relative to the
+        data's range, so items in different units can be compared.
+      </p>
+
+      <section
+        v-if="validationFeaturePlot"
+        class="error-chart"
+        data-testid="validation-features-chart"
+      >
+        <h3>Scalar items</h3>
+        <div class="chart-legend">
+          <span class="legend-item">
+            <span class="legend-swatch validation-data" /> held-out data ± std, at the model's value
+          </span>
+          <span class="legend-item">model = data</span>
+        </div>
+        <ScatterChart
+          :points="validationFeaturePlot.points"
+          :x-domain="validationFeaturePlot.domain"
+          :y-domain="validationFeaturePlot.domain"
+          guide="diagonal"
+          square
+          x-label="model"
+          y-label="held-out data"
+        />
+      </section>
+
+      <section
+        v-for="plot in validationPlots"
+        :key="plot.name"
+        class="error-chart"
+        data-testid="validation-chart"
+      >
+        <h3>{{ plot.name }}</h3>
+        <div class="chart-legend">
+          <span class="legend-item">
+            <span class="legend-swatch validation-model" /> model
+          </span>
+          <span class="legend-item">
+            <span class="legend-swatch validation-data" /> held-out data ± std
+          </span>
+        </div>
+        <ScatterChart
+          :points="plot.points"
+          :line="plot.line"
+          :x-domain="plot.xDomain"
+          :y-domain="plot.yDomain"
+          x-label="time"
+          :y-label="plot.unit"
+        />
+      </section>
+    </section>
+
     <!-- Emulator ------------------------------------------------------------>
     <section class="analysis-section">
       <h2>
@@ -1013,7 +1228,14 @@ const predictiveBandWidth = computed(() => `${(2 / (2 * PREDICTIVE_LIMIT)) * 100
           </thead>
           <tbody>
             <tr v-for="(row, i) in emulatorRows" :key="row.label">
-              <td class="emu-error-label" v-html="renderMath(row.label)" />
+              <td class="emu-error-label">
+                <span v-html="renderMath(row.label)" />
+                <span
+                  v-if="row.prediction"
+                  class="pred-tag"
+                  data-testid="emulator-prediction-tag"
+                >prediction</span>
+              </td>
               <td>{{ fmtStat(row.r2) }}</td>
               <td>{{ fmtStat(row.nrmse) }}</td>
               <td>{{ fmtStat(row.rmse, 3) }}</td>
@@ -1243,6 +1465,23 @@ const predictiveBandWidth = computed(() => `${(2 / (2 * PREDICTIVE_LIMIT)) * 100
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.pred-tag {
+  display: inline-block;
+  margin-left: 0.25rem;
+  padding: 0 0.3rem;
+  border-radius: 3px;
+  font-size: 0.6rem;
+  font-weight: normal;
+  background: var(--p-orange-500, #e08a2c);
+  color: #111;
+  vertical-align: middle;
+}
+.legend-swatch.validation-model {
+  background: var(--p-orange-500, #e08a2c);
+}
+.legend-swatch.validation-data {
+  background: var(--p-primary-color, #5b9bd5);
 }
 .emu-error-note {
   font-size: 0.7rem;

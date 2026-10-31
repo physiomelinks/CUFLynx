@@ -59,9 +59,7 @@ def _ca_imports():
 
     ensure_ca_path()
     return (
-        # Renamed in CA: OpencorParamID was never about OpenCOR. Both spellings are
-        # accepted so CUFLynx works either side of that change.
-        ca_first_of("param_id.paramID", "ParamID", "OpencorParamID"),
+        ca_first_of("param_id.paramID", "ParamID"),
         ca_from("parsers.PrimitiveParsers", "ObsAndParamDataParser"),
     )
 
@@ -195,13 +193,14 @@ def _check_baselines(pid, modifiers) -> None:
                 )
 
 
-def _build(key, *, model_path, model_type, solver_info, dt, obs_data, sim_time,
-           pre_time, names, values, bounds, output_dir, modifiers=None):
+def _build(key, *, model_path, model_type, solver_info, dt, obs_data, names, values,
+           bounds, output_dir, modifiers=None):
     ParamID, ObsAndParamDataParser = _ca_imports()
 
+    from obs_data import for_ca  # noqa: PLC0415 - held-out keys an older CA refuses
+
     parser = ObsAndParamDataParser()
-    parsed = parser.parse_obs_data_json(
-        obs_data_dict=obs_data, pre_time=float(pre_time), sim_time=float(sim_time))
+    parsed = parser.parse_obs_data_json(obs_data_dict=for_ca(obs_data))
     # process_obs_info writes .npy copies of the ground truth unconditionally; a
     # scratch dir keeps a slider drag from depositing files in the user's outputs.
     with tempfile.TemporaryDirectory() as scratch:
@@ -340,8 +339,7 @@ def evaluate(
         if pid is None:
             pid = _build(
                 key, model_path=model_path, model_type=model_type,
-                solver_info=solver_info, dt=dt, obs_data=obs_data,
-                sim_time=sim_time, pre_time=pre_time, names=names,
+                solver_info=solver_info, dt=dt, obs_data=obs_data, names=names,
                 values=params, bounds=bounds, output_dir=output_dir,
                 modifiers=modifiers)
         if modifiers:

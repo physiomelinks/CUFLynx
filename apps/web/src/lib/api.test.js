@@ -18,6 +18,7 @@ import {
   costAtParams,
   editModelSource,
   modelSourceUrl,
+  peekInbox,
 } from './api'
 
 beforeEach(() => {
@@ -114,7 +115,7 @@ describe('api client', () => {
     const out = await costAtParams('mid', { 'a/alpha': 1.5 }, {
       analysisParams: { 'a/alpha': 0.5 },
       outputs: ['a/x'],
-      outputsDir: '/out',
+      workingDir: '/out',
     })
     const [url, body] = axios.post.mock.calls[0]
     expect(url).toContain('/api/cost_at_params')
@@ -123,7 +124,7 @@ describe('api client', () => {
       params: { 'a/alpha': 1.5 },
       analysis_params: { 'a/alpha': 0.5 },
       outputs: ['a/x'],
-      config_outputs_dir: '/out',
+      working_dir: '/out',
     })
     expect(out.emulator_cost).toEqual({ cost: 1 })
   })
@@ -166,23 +167,23 @@ describe('api client', () => {
     expect(body.current_params).toEqual(cur)
   })
 
-  it('asks the backend to open the model source, naming the outputs directory', async () => {
+  it('asks the backend to open the model source, naming the working dir', async () => {
     // A browser cannot start a local editor, so the copy-and-open is a server
-    // action and the outputs directory is where the editable copy has to land.
+    // action and the working dir is where the editable copy has to land.
     axios.post.mockResolvedValue({
-      data: { path: '/study/user_funcs/user_model.py', opened: true, runs: true },
+      data: { path: '/study/inputs/funcs/user_model.py', opened: true, runs: true },
     })
     const res = await editModelSource('abc 123', '/study')
     const [url, body] = axios.post.mock.calls[0]
     expect(url).toContain('/api/models/abc%20123/edit')
-    expect(body).toEqual({ config_outputs_dir: '/study' })
-    expect(res.path).toBe('/study/user_funcs/user_model.py')
+    expect(body).toEqual({ working_dir: '/study' })
+    expect(res.path).toBe('/study/inputs/funcs/user_model.py')
   })
 
-  it('the source URL carries the outputs dir so the tab shows the edited copy', () => {
+  it('the source URL carries the working dir so the tab shows the edited copy', () => {
     expect(modelSourceUrl('abc')).toMatch(/\/api\/models\/abc\/source$/)
     expect(modelSourceUrl('abc', '/study dir')).toContain(
-      'source?config_outputs_dir=%2Fstudy%20dir',
+      'source?working_dir=%2Fstudy%20dir',
     )
   })
 })
@@ -230,5 +231,22 @@ describe('errorMessage', () => {
   // No response at all: the server is down / the request never left.
   it('falls back to the error text when there was no response', () => {
     expect(errorMessage(new Error('Network Error'))).toBe('Network Error')
+  })
+})
+
+describe('peekInbox', () => {
+  it('returns what is pending', async () => {
+    axios.get.mockResolvedValue({ data: { pending: { origin: 'x' }, error: null } })
+    expect(await peekInbox()).toEqual({ origin: 'x' })
+  })
+
+  it('throws a deliveryFailed error for a cuflynx:// link that could not be opened', async () => {
+    axios.get.mockResolvedValue({
+      data: { pending: null, error: { origin: 'https://a.org', message: 'Could not open it' } },
+    })
+    await expect(peekInbox()).rejects.toMatchObject({
+      deliveryFailed: true,
+      message: 'Could not open it',
+    })
   })
 })

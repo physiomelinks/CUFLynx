@@ -10,6 +10,15 @@ with nothing to unpick. See "Desktop packaging" in CLAUDE.md.
     python apps/desktop/app.py              # native window
     python apps/desktop/app.py --browser    # serve only, open the system browser
     python apps/desktop/app.py --port 8000  # pin the port (default: a free one)
+    python apps/desktop/app.py --open-url 'cuflynx://open?url=https%3A%2F%2F...omex'
+    python apps/desktop/app.py --open-url 'cuflynx://open?study=file%3A%2F%2F%2F...%2Fcuflynx_study.json'
+    python apps/desktop/app.py --register-url-scheme   # register cuflynx:// links, then exit
+
+A ``cuflynx://open?url=...`` (archive) or ``cuflynx://open?study=...`` (study
+directory) link goes to the CUFLynx already running when there is one
+(``open_link.hand_off``) and this process exits; otherwise this process starts and
+stages the linked archive or study manifest in the inbox, where the UI asks before
+loading it. ``url_scheme.py`` registers the link handler per platform.
 
 Frozen into a single executable by ``scripts/package.py``.
 """
@@ -17,8 +26,10 @@ Frozen into a single executable by ``scripts/package.py``.
 from __future__ import annotations
 
 import argparse
+import atexit
 import multiprocessing
 import os
+import secrets
 import socket
 import sys
 import threading
@@ -34,6 +45,7 @@ APP_NAME = "CUFLynx"
 # `pathex`); from source we add it here so `import main` resolves.
 if not getattr(sys, "frozen", False):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "api"))
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 
 def _run_analysis_runner(script: str, config_path: str) -> None:
@@ -156,6 +168,85 @@ def warn_if_no_compiler() -> None:
     )
 
 
+def link_from_args(args) -> str | None:
+    """The ``cuflynx://`` link this launch was given, if any.
+
+    ``--open-url`` is what the registered handlers pass; a bare positional link
+    is accepted too, for launchers that append the URL on their own.
+    """
+    return args.open_url or args.link or None
+
+
+def start_link_handling(port: int, link: str | None) -> str:
+    """Enable handoffs to this app and open ``link``, once the server answers.
+
+    Writes the instance file unless another live CUFLynx already owns it, and
+    removes it at exit. Returns the handoff token.
+    """
+    import open_link  # noqa: PLC0415 - after sys.path is set up
+
+    token = secrets.token_urlsafe(32)
+    open_link.set_token(token)
+    if not _other_instance_alive(open_link.read_instance(), port):
+        try:
+            open_link.write_instance(port, token)
+            atexit.register(open_link.remove_instance, token)
+        except OSError as exc:
+            print(f"note: cuflynx:// links will start a new window ({exc})", file=sys.stderr)
+    if link:
+        threading.Thread(target=open_link.stage, args=(link,), daemon=True).start()
+    return token
+
+
+def _other_instance_alive(doc: dict | None, own_port: int) -> bool:
+    if not doc or doc.get("port") == own_port:
+        return False
+    return wait_for_health(f"http://127.0.0.1:{doc['port']}", timeout=1.0)
+
+
+def _register_url_scheme_in_background() -> None:
+    def run():
+        import url_scheme  # noqa: PLC0415
+
+        line = url_scheme.register_if_needed()
+        if line:
+            print(line, file=sys.stderr, flush=True)
+
+    threading.Thread(target=run, daemon=True).start()
+
+
+def wait_until_abandoned(server, presence, poll: float = 2.0) -> None:
+    """Block until every browser tab has gone, then stop the server.
+
+    The browser modes have no window whose closing ends the process, and the
+    packaged app is usually launched from a file manager with no terminal to
+    Ctrl+C -- so without this the server, and PyInstaller's unpacked
+    ``/tmp/_MEI*`` directory with it, outlived the app until logout. Tabs report
+    in through ``/api/presence``; see :mod:`presence` for the timings.
+    """
+    import time
+
+    try:
+        while not presence.abandoned():
+            time.sleep(poll)
+    except KeyboardInterrupt:
+        pass
+    server.should_exit = True
+
+
+def serve_in_browser(url: str, server) -> int:
+    """Open ``url`` in the system browser and serve until the user has left."""
+    from presence import presence  # noqa: PLC0415 - after sys.path is set up
+
+    webbrowser.open(url)
+    print(
+        f"Serving {APP_NAME} on {url}  (stops when the last tab closes, or Ctrl+C)",
+        flush=True,
+    )
+    wait_until_abandoned(server, presence)
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=f"{APP_NAME} desktop app")
     parser.add_argument("--port", type=int, default=0, help="0 = pick a free port")
@@ -164,7 +255,40 @@ def main() -> int:
         action="store_true",
         help="serve only and open the system browser instead of a native window",
     )
+    parser.add_argument(
+        "--open-url",
+        metavar="LINK",
+        help="open a cuflynx://open?url=<archive URL> or ?study=<file: URL> link "
+        "(in the running app, if any)",
+    )
+    parser.add_argument("link", nargs="?", help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--register-url-scheme",
+        action="store_true",
+        help="register this executable as the handler for cuflynx:// links, then exit",
+    )
     args = parser.parse_args()
+
+    if args.register_url_scheme:
+        import url_scheme  # noqa: PLC0415
+
+        try:
+            print(f"Registered cuflynx:// links: {url_scheme.register()}")
+        except Exception as exc:  # noqa: BLE001
+            print(f"error: could not register cuflynx:// links: {exc}", file=sys.stderr)
+            return 1
+        return 0
+
+    link = link_from_args(args)
+    if link:
+        import open_link  # noqa: PLC0415
+
+        if open_link.hand_off(link):
+            print(f"Handed the link to the running {APP_NAME}.", flush=True)
+            return 0
+
+    if getattr(sys, "frozen", False):
+        _register_url_scheme_in_background()
 
     if args.port:
         port, reachable = args.port, args.port in _receive_ports()
@@ -187,15 +311,10 @@ def main() -> int:
     if not wait_for_health(url):
         print(f"error: {APP_NAME} server did not start on {url}", file=sys.stderr)
         return 1
+    start_link_handling(port, link)
 
     if args.browser:
-        webbrowser.open(url)
-        print(f"Serving {APP_NAME} on {url}  (Ctrl+C to stop)", flush=True)
-        try:
-            threading.Event().wait()
-        except KeyboardInterrupt:
-            pass
-        return 0
+        return serve_in_browser(url, server)
 
     try:
         import webview
@@ -205,9 +324,7 @@ def main() -> int:
             "  Install it with: pip install pywebview",
             file=sys.stderr,
         )
-        webbrowser.open(url)
-        threading.Event().wait()
-        return 0
+        return serve_in_browser(url, server)
 
     # Downloads are OFF by default in pywebview, and that default silently breaks
     # every download the app offers -- "Download calibrated model" (#114) among
@@ -237,9 +354,7 @@ def main() -> int:
             f"warning: could not open a native window ({exc}); opening a browser instead.",
             file=sys.stderr,
         )
-        webbrowser.open(url)
-        threading.Event().wait()
-        return 0
+        return serve_in_browser(url, server)
 
     # The window closed — stop uvicorn so the process actually exits.
     server.should_exit = True

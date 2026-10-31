@@ -1,4 +1,4 @@
-"""Read everything a finished run left in an outputs directory (#255, #256).
+"""Read everything a finished run left in a working dir (#255, #256).
 
 The panels are populated by job polls today, so they only fill for a run started
 in this session. A run produced by ``cuflynx-param-id``, by a generated
@@ -24,6 +24,7 @@ import re
 
 import ca_run_history
 import study_manifest
+import working_dir
 import mcmc_progress
 
 #: What a caller can ask for, and the order the summary lists them in.
@@ -41,7 +42,7 @@ _RUN_MARKERS = ("best_param_vals.npy", "mcmc_chain.npy", "best_cost.npy")
 def list_run_dirs(output_dir: str) -> list:
     """Every finished run under ``output_dir``, newest first.
 
-    One outputs directory very often holds several: a study fitted to three
+    One working dir very often holds several: a study fitted to three
     datasets writes three sibling run directories, and ``find_run_dir`` returns
     exactly one of them. Loading that one silently is how a panel ends up
     describing a different dataset than the user thinks they are looking at, so
@@ -93,6 +94,9 @@ def _calibration(output_dir, file_prefix, missing):
                              lambda: ca_run_history.modifiers(output_dir), missing),
         "error_vectors": _safely(
             "error vectors", lambda: ca_run_history.error_vectors(output_dir), missing),
+        # None, not an empty result, when the run had no held-out data (CA #535).
+        "validation": _safely(
+            "validation", lambda: ca_run_history.validation_results(output_dir), missing),
         "calibrated_model": _safely(
             "calibrated model", lambda: _calibrated_model(output_dir, file_prefix), missing),
     }
@@ -192,7 +196,7 @@ def _study(output_dir, run_dir, file_prefix, missing, manifest=None):
 
     The model is resolved by ``file_prefix`` rather than by picking whatever CellML is
     lying about: a directory may hold artefacts from several studies (this is ordinary --
-    outputs directories get reused), and attaching one study's model to another's results
+    working dirs get reused), and attaching one study's model to another's results
     produces numbers that look right.
 
     A manifest changes both of those from a search into a reading. ``model`` is taken
@@ -208,8 +212,16 @@ def _study(output_dir, run_dir, file_prefix, missing, manifest=None):
         output_dir)
     generated = None
     if prefix:
+        # The working dir's own copy of the model first (the version stored last, from
+        # inputs/index.json), then a conversion stored there, then CA's
+        # generated_models/ (also the older CUFLynx layout).
+        for kind in ("model", f"generated_models/{prefix}"):
+            found = working_dir.latest(output_dir, kind, f"{prefix}.cellml")
+            if found is not None:
+                generated = str(found)
+                break
         candidate = os.path.join(output_dir, "generated_models", prefix)
-        if os.path.isdir(candidate):
+        if not generated and os.path.isdir(candidate):
             models = sorted(glob.glob(os.path.join(candidate, "*.cellml")))
             generated = models[0] if len(models) == 1 else None
 
@@ -217,7 +229,14 @@ def _study(output_dir, run_dir, file_prefix, missing, manifest=None):
     # directory produced by cuflynx-param-id has one there and no `*_calibrated.cellml`
     # at all. `generated` above already found it when there is exactly one CellML in the
     # prefix's folder; this names it when the folder holds more than the model.
-    model = (declared.get("model")
+    # A manifest written during a run declares the model it started from: the calibrated one
+    # this app writes appears only after the run's last record. So a declared model that is
+    # still the base model gives way to a calibrated one sitting where this app puts it.
+    declared_model = declared.get("model")
+    if declared_model and declared_model == declared.get("base_model"):
+        declared_model = (ca_run_history.calibrated_model_path(output_dir, prefix)
+                          or declared_model)
+    model = (declared_model
              or generated
              or ca_run_history.ca_calibrated_model(output_dir, prefix)
              or _calibrated_model(output_dir, file_prefix))
@@ -228,12 +247,20 @@ def _study(output_dir, run_dir, file_prefix, missing, manifest=None):
     obs = obs or declared.get("obs_data")
     params = params or declared.get("params_for_id")
 
-    # Looked for in the outputs directory, which is where a generated pipeline bundle puts
+    # Looked for in the working dir, which is where a generated pipeline bundle puts
     # it. Absent is ordinary -- a run started from this app has never written one -- so it
     # is reported rather than treated as a fault.
-    user_inputs = _newest(
-        glob.glob(os.path.join(output_dir, "user_inputs*.yaml"))
-        + glob.glob(os.path.join(output_dir, "user_inputs*.yml"))
+    user_inputs = declared.get("user_inputs") if declared.get("user_inputs") and \
+        os.path.isfile(declared["user_inputs"]) else None
+    # The version stored last (inputs/index.json), CA's dated archives in
+    # inputs/user_inputs/, or one at the top of an older folder.
+    stored = working_dir.latest(output_dir, "user_inputs")
+    user_inputs = user_inputs or _newest(
+        [str(stored)] * (stored is not None)
+        + [path for folder in (os.path.join(output_dir, "inputs", "user_inputs"), output_dir)
+           for pattern in ("*.yaml", "*.yml")
+           for path in glob.glob(os.path.join(folder, pattern))
+           if os.path.basename(path).startswith("user_inputs") or folder != output_dir]
     )
 
     return {
@@ -280,12 +307,30 @@ def _progress(run_dir, output_dir, missing):
     )
 
 
-def _sensitivity(output_dir, missing):
+def _sensitivity(output_dir, missing, declared=None):
+    """Local and Sobol results: the working dir's own, else the study's declared ones.
+
+    The working dir's are in ``sensitivity/`` (at its top level in an older folder). CA
+    writes sensitivity results to ``sa_options.output_dir``; the study manifest records
+    where each analysis actually went, newest first.
+    """
+    def first(reader, method):
+        for directory in (os.path.join(output_dir, working_dir.SENSITIVITY), output_dir):
+            found = reader(directory) if os.path.isdir(directory) else None
+            if found:
+                return found
+        for entry in declared or []:
+            if entry.get("method") in (method, None):
+                found = reader(entry["dir"])
+                if found:
+                    return found
+        return None
+
     return {
         "local": _safely("local sensitivity",
-                         lambda: ca_run_history.local_sensitivity(output_dir), missing),
+                         lambda: first(ca_run_history.local_sensitivity, "local"), missing),
         "sobol": _safely("Sobol indices",
-                         lambda: ca_run_history.sobol_indices(output_dir), missing),
+                         lambda: first(ca_run_history.sobol_indices, "sobol"), missing),
     }
 
 
@@ -308,7 +353,7 @@ def _uq(output_dir, run_dir, missing):
         # The chosen run is the newest of *any* kind, and `uq_distributions` resolves the
         # newest run for itself -- so in a directory whose newest run is a calibration, both
         # land on a run holding no chain and the answer was "no UQ" for a folder with a
-        # finished UQ in it. Observed on a real outputs directory.
+        # finished UQ in it. Observed on a real working dir.
         found = ca_run_history.uq_distributions(source)
         if found:
             return found
@@ -451,7 +496,7 @@ def load_outputs(output_dir: str, file_prefix: str | None = None,
     manifest = None
     manifest_error = None
     try:
-        manifest = study_manifest.read(output_dir)
+        manifest = study_manifest.read(output_dir, file_prefix)
     except study_manifest.ManifestError as error:
         # Not swallowed into the conventions: a manifest that exists and cannot be read
         # means this directory is not what it claims, and answering from guesses would
@@ -486,7 +531,7 @@ def load_outputs(output_dir: str, file_prefix: str | None = None,
         "run_dir": run_dir,
         "calibration": _calibration(output_dir, file_prefix, missing),
         "progress": _progress(run_dir, output_dir, missing),
-        "sensitivity": _sensitivity(output_dir, missing),
+        "sensitivity": _sensitivity(output_dir, missing, (manifest or {}).get("sensitivity")),
         "uq": _uq(output_dir, run_dir, missing),
         "emulator": _emulator(output_dir, file_prefix, obs_path, missing,
                               declared=(manifest or {}).get("emulator")),
@@ -497,6 +542,8 @@ def load_outputs(output_dir: str, file_prefix: str | None = None,
         "run_dirs": runs,
         "manifest": manifest,
         "manifest_error": manifest_error,
+        # Outputs the study recorded outside its working dir: not carried with it.
+        "warnings": study_manifest.outside_warnings(manifest),
     }
 
     found = []

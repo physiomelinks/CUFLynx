@@ -181,7 +181,7 @@ export function useUQ(options = {}) {
    * `q50` is the median of the very draws the distribution plots are drawn from,
    * so this is the point those plots mark -- not a separately-fitted one. It is
    * filled the same way for a run finished here and for one read back out of an
-   * outputs directory, so the two behave alike.
+   * working dir, so the two behave alike.
    *
    * A parameter whose `q50` is missing or non-finite is dropped rather than
    * written as a zero: a partial median is still a usable point, a fabricated

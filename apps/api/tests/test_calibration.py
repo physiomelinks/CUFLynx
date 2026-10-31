@@ -21,6 +21,7 @@ from conftest import (
     LV_OBS_DATA_PATH,
     LV_PARAMS_CSV_PATH,
     RESOURCES_DIR,
+    params_for_id_json,
     set_ca_module,
     upload_model,
 )
@@ -515,7 +516,7 @@ def test_calibration_streams_and_completes(client, tmp_path):
     model_id = _setup_model_obs_params(
         client, LV_MODEL_PATH, LV_OBS_DATA_PATH, LV_PARAMS_CSV_PATH
     )
-    resp = client.post("/api/calibration/run", json={"model_id": model_id, "settings": {}})
+    resp = client.post("/api/calibration/run", json={"model_id": model_id, "settings": {"working_dir": str(tmp_path), "working_dir": str(tmp_path)}})
     assert resp.status_code == 200, resp.text
     job_id = resp.json()["job_id"]
 
@@ -551,7 +552,7 @@ def test_calibration_config_carries_global_seed(client, tmp_path):
         client, LV_MODEL_PATH, LV_OBS_DATA_PATH, LV_PARAMS_CSV_PATH
     )
     client.post("/api/config", json={"seed": 314})
-    resp = client.post("/api/calibration/run", json={"model_id": model_id, "settings": {}})
+    resp = client.post("/api/calibration/run", json={"model_id": model_id, "settings": {"working_dir": str(tmp_path), "working_dir": str(tmp_path)}})
     assert resp.status_code == 200, resp.text
     status, _ = _wait(client, resp.json()["job_id"])
     assert status["state"] == "done"
@@ -564,7 +565,7 @@ def test_calibration_config_omits_seed_by_default(client, tmp_path):
     model_id = _setup_model_obs_params(
         client, LV_MODEL_PATH, LV_OBS_DATA_PATH, LV_PARAMS_CSV_PATH
     )
-    resp = client.post("/api/calibration/run", json={"model_id": model_id, "settings": {}})
+    resp = client.post("/api/calibration/run", json={"model_id": model_id, "settings": {"working_dir": str(tmp_path), "working_dir": str(tmp_path)}})
     assert resp.status_code == 200, resp.text
     status, _ = _wait(client, resp.json()["job_id"])
     assert status["state"] == "done"
@@ -590,9 +591,9 @@ def test_calibration_busy_returns_409(client, tmp_path):
     model_id = _setup_model_obs_params(
         client, LV_MODEL_PATH, LV_OBS_DATA_PATH, LV_PARAMS_CSV_PATH
     )
-    r1 = client.post("/api/calibration/run", json={"model_id": model_id, "settings": {}})
+    r1 = client.post("/api/calibration/run", json={"model_id": model_id, "settings": {"working_dir": str(tmp_path), "working_dir": str(tmp_path)}})
     assert r1.status_code == 200
-    r2 = client.post("/api/calibration/run", json={"model_id": model_id, "settings": {}})
+    r2 = client.post("/api/calibration/run", json={"model_id": model_id, "settings": {"working_dir": str(tmp_path), "working_dir": str(tmp_path)}})
     assert r2.status_code == 409
     # cancel the running job
     job_id = r1.json()["job_id"]
@@ -608,7 +609,7 @@ def test_calibration_progress_endpoint(client, tmp_path):
     model_id = _setup_model_obs_params(
         client, LV_MODEL_PATH, LV_OBS_DATA_PATH, LV_PARAMS_CSV_PATH
     )
-    resp = client.post("/api/calibration/run", json={"model_id": model_id, "settings": {}})
+    resp = client.post("/api/calibration/run", json={"model_id": model_id, "settings": {"working_dir": str(tmp_path), "working_dir": str(tmp_path)}})
     job_id = resp.json()["job_id"]
     _wait(client, job_id)
 
@@ -728,7 +729,7 @@ def test_calibration_config_outputs_dir_must_be_absolute(client, tmp_path):
 # Integration tier (real Myokit — short GA on 3compartment)
 # ---------------------------------------------------------------------------
 @pytest.mark.integration
-def test_calibration_3compartment_genetic_algorithm(client, requires_simulation):
+def test_calibration_3compartment_genetic_algorithm(client, requires_simulation, tmp_path):
     model_id = _setup_model_obs_params(
         client, C3_MODEL_PATH, C3_OBS_DATA_PATH, C3_PARAMS_CSV_PATH
     )
@@ -740,7 +741,7 @@ def test_calibration_3compartment_genetic_algorithm(client, requires_simulation)
         "dt": 0.01,
     }
     resp = client.post(
-        "/api/calibration/run", json={"model_id": model_id, "settings": settings}
+        "/api/calibration/run", json={"model_id": model_id, "settings": {**settings, "working_dir": str(tmp_path)}}
     )
     assert resp.status_code == 200, resp.text
     job_id = resp.json()["job_id"]
@@ -762,7 +763,7 @@ def test_calibration_3compartment_genetic_algorithm(client, requires_simulation)
 @pytest.mark.integration
 def test_calibration_saves_calibrated_model_that_reloads_with_best_fit(
     client, requires_simulation
-):
+, tmp_path):
     """#114 end-to-end: after a real calibration, the saved calibrated CellML has the
     best-fit values baked in, and re-uploading it (a "new window") reloads slider
     initial values equal to the best fit — the exact scenario that was broken."""
@@ -779,7 +780,7 @@ def test_calibration_saves_calibrated_model_that_reloads_with_best_fit(
         "dt": 0.01,
     }
     resp = client.post(
-        "/api/calibration/run", json={"model_id": model_id, "settings": settings}
+        "/api/calibration/run", json={"model_id": model_id, "settings": {**settings, "working_dir": str(tmp_path)}}
     )
     assert resp.status_code == 200, resp.text
     status, lines = _wait(client, resp.json()["job_id"], timeout=600)
@@ -864,7 +865,7 @@ def test_best_fit_start_without_a_prior_fit_returns_422(client):
     assert "best fit" in resp.json()["detail"].lower()
 
 
-def test_best_fit_start_supplies_last_completed_best_params(client, monkeypatch):
+def test_best_fit_start_supplies_last_completed_best_params(client, monkeypatch, tmp_path):
     """start_from='best_fit' feeds the runner config the last completed calibration's
     best fit (from calibration.last_completed_best_params), so a stopped run can be
     continued (#83)."""
@@ -885,7 +886,7 @@ def test_best_fit_start_supplies_last_completed_best_params(client, monkeypatch)
 
     resp = client.post(
         "/api/calibration/run",
-        json={"model_id": model_id, "settings": {"start_from": "best_fit"}},
+        json={"model_id": model_id, "settings": {"working_dir": str(tmp_path), "start_from": "best_fit"}},
     )
     assert resp.status_code == 200, resp.text
     assert captured["config"]["best_fit_params"] == best
@@ -912,7 +913,7 @@ def test_sp_minimize_starts_from_current_param_values(tmp_path, requires_simulat
         "solver": "CVODE_myokit",
         "solver_info": {"solver": "CVODE_myokit", "method": "CVODE"},
         "obs_path": str(C3_OBS_DATA_PATH),
-        "params_path": str(C3_PARAMS_CSV_PATH),
+        "params_path": str(params_for_id_json(C3_PARAMS_CSV_PATH, tmp_path)),
         "output_dir": str(tmp_path / "out"),
         "file_prefix": "3compartment",
         "current_params": current,
@@ -1166,7 +1167,7 @@ def test_version_banners_are_read_as_the_mpi_they_name(banner, family):
 
 
 @pytest.mark.integration
-def test_the_output_plots_cost_matches_the_calibrations_own(client, requires_simulation):
+def test_the_output_plots_cost_matches_the_calibrations_own(client, requires_simulation, tmp_path):
     """Issue #181, end to end on the model it was reported against.
 
     After a calibration, "Reset to best fit" puts CA's own best parameters on
@@ -1197,7 +1198,7 @@ def test_the_output_plots_cost_matches_the_calibrations_own(client, requires_sim
         "seed": 0,
     }
     resp = client.post(
-        "/api/calibration/run", json={"model_id": model_id, "settings": settings}
+        "/api/calibration/run", json={"model_id": model_id, "settings": {**settings, "working_dir": str(tmp_path)}}
     )
     assert resp.status_code == 200, resp.text
     status, lines = _wait(client, resp.json()["job_id"], timeout=600)

@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 import user_funcs as uf
+from conftest import stored_input
 
 VALID_OP = (
     "def spread(x, series_output=False):\n"
@@ -57,7 +58,7 @@ def test_save_operation_writes_external_file_and_exposes_path(tmp_cfg):
     assert 'CUFLYNX_OPERATIONS = ["spread"]' in text
     assert "def spread(" in text
     # Imported (not defined) decorators so CA registers only the user func.
-    assert "from param_id.differentiable import differentiable" in text
+    assert "from libcuflynx.param_id.differentiable import differentiable" in text
     assert "def differentiable(" not in text
     # The path CUFLynx hands CA (config key operation_funcs_external_path; CA #303).
     assert uf.external_path("operation") == str(path)
@@ -72,7 +73,7 @@ def test_save_cost_writes_separate_file_and_path(tmp_cfg):
     assert path.is_file()
     text = path.read_text()
     assert 'CUFLYNX_COSTS = ["my_cost"]' in text
-    assert "from cost_funcs_user import is_MLE, cost_combiner" in text
+    assert "from libcuflynx.funcs.cost_funcs_user import is_MLE, cost_combiner" in text
     assert uf.external_path("cost") == str(path)
     assert uf.external_paths()["cost_funcs_external_path"] == str(path)
     # Operation and cost files are independent; no operation file was created.
@@ -202,7 +203,7 @@ def test_saves_under_output_directory(tmp_cfg, tmp_path):
     """With an output dir the func file lives there, not in the config dir."""
     out = tmp_path / "run_outputs"
     uf.save_user_func("operation", "spread", VALID_OP, base_dir=str(out))
-    path = out / "user_funcs" / "operation_funcs_user.py"
+    path = stored_input(out, "funcs", "operation_funcs_user.py")
     assert path.is_file()
     assert uf.external_path("operation", str(out)) == str(path)
     assert uf.external_paths(str(out)) == {"operation_funcs_external_path": str(path)}
@@ -217,7 +218,7 @@ def test_differentiable_operation_header_defines_mb(tmp_cfg):
     templates work when CA rebinds it."""
     uf.save_user_func("operation", "spread", VALID_OP)
     text = (tmp_cfg / "user_funcs" / "operation_funcs_user.py").read_text()
-    assert "from param_id.math_backend import make_math_backend" in text
+    assert "from libcuflynx.param_id.math_backend import make_math_backend" in text
     assert "mb = make_math_backend(" in text
 
 
@@ -379,7 +380,7 @@ def test_route_saves_under_output_dir(client, tmp_cfg, tmp_path):
         json={"name": "spread", "source": VALID_OP, "output_dir": str(out)},
     )
     assert resp.status_code == 200, resp.text
-    assert (out / "user_funcs" / "operation_funcs_user.py").is_file()
+    assert stored_input(out, "funcs", "operation_funcs_user.py").is_file()
     # Listing with the same output_dir returns it; the config-dir fallback is empty.
     resp = client.get("/api/operation_funcs", params={"output_dir": str(out)})
     assert [f["name"] for f in resp.json()["functions"]] == ["spread"]
@@ -519,8 +520,7 @@ def test_custom_operation_kwargs_change_the_computed_value(tmp_path, monkeypatch
 
     parser = ObsAndParamDataParser()
     parsed = parser.parse_obs_data_json(
-        param_id_obs_path=str(obs_path), pre_time=0.0, sim_time=5.0,
-        model_type="cellml",
+        param_id_obs_path=str(obs_path), model_type="cellml",
     )
     obs_info = parser.process_obs_info(parsed["gt_df"], str(tmp_path), 0.01)
     assert obs_info["operations"][0] == "scaled_max"
@@ -564,7 +564,7 @@ def test_the_modifier_header_imports_the_decorator_without_defining_it(tmp_cfg):
     CA's own."""
     uf.save_user_func("modifier", "my_remainder", VALID_MODIFIER)
     text = (tmp_cfg / "user_funcs" / "modifier_funcs_user.py").read_text()
-    assert "from param_id.modifier_funcs import modifier_func" in text
+    assert "from libcuflynx.param_id.modifier_funcs import modifier_func" in text
     assert "def modifier_func" not in text
 
 
@@ -587,48 +587,23 @@ def test_a_modifier_may_not_shadow_the_decorator(tmp_cfg):
         )
 
 
-def test_every_generated_header_names_both_ca_module_layouts(tmp_cfg):
-    """A generated funcs file must import from CA whichever layout the CA dir has.
+def test_every_generated_header_imports_libcuflynx_only(tmp_cfg):
+    """A generated funcs file imports CA's built-ins as ``libcuflynx.*``.
 
-    These headers are written into the study's own ``<outputs>/user_funcs/`` directory,
-    they are what "Edit source" opens, and they are the files CA actually runs. The CA
-    directory is chosen at runtime, so one CUFLynx build writes files that must load
-    against a flat checkout and against a ``libcuflynx.``-namespaced one alike.
-
-    ``cost_funcs_user`` is the subtle one: CA #433 moved the built-in funcs into the
-    package as ``libcuflynx.funcs.cost_funcs_user``, so the bare spelling only still
-    resolves because CA aliases it for files written *before* that move. Depending on
-    that shim from a newly generated file would make CUFLynx's output rely on a
-    compatibility path meant for legacy content -- and it is removable.
-
-    Each pair is checked as its own try/except: a CA can have the namespace without the
-    funcs move (the state during CA #428), and coupling the imports into one block would
-    send that case down the flat arm for modules that are not flat.
+    These headers are written into the study's own ``<outputs>/user_funcs/``
+    directory and are the files CA runs. CA refuses a bare
+    ``from cost_funcs_user import ...`` in an external funcs file, naming the
+    ``libcuflynx.funcs.*`` import to write instead.
     """
     import ast
 
-    for kind, header, namespaced, flat in (
-        ("operation", uf._OPERATION_HEADER,
-         "libcuflynx.param_id.differentiable", "param_id.differentiable"),
-        ("cost", uf._COST_HEADER,
-         "libcuflynx.funcs.cost_funcs_user", "cost_funcs_user"),
-        ("modifier", uf._MODIFIER_HEADER,
-         "libcuflynx.param_id.modifier_funcs", "param_id.modifier_funcs"),
+    for kind, header, namespaced in (
+        ("operation", uf._OPERATION_HEADER, "libcuflynx.param_id.differentiable"),
+        ("cost", uf._COST_HEADER, "libcuflynx.funcs.cost_funcs_user"),
+        ("modifier", uf._MODIFIER_HEADER, "libcuflynx.param_id.modifier_funcs"),
     ):
         assert namespaced in header, f"{kind} header does not name {namespaced}"
-        assert flat in header, f"{kind} header does not name {flat}"
-        # A header that does not parse cannot be edited into a working funcs file.
-        ast.parse(header)
-
-    # Every `from <ca module> import` in the cost header must sit inside a try/except
-    # ImportError, so neither layout is assumed.
-    tree = ast.parse(uf._COST_HEADER)
-    guarded = {
-        node.module
-        for handler in ast.walk(tree) if isinstance(handler, ast.Try)
-        for node in ast.walk(handler) if isinstance(node, ast.ImportFrom)
-    }
-    top_level = {
-        node.module for node in tree.body if isinstance(node, ast.ImportFrom)
-    }
-    assert not top_level - guarded, f"unguarded CA imports in cost header: {top_level - guarded}"
+        tree = ast.parse(header)
+        modules = {n.module for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)}
+        assert all(m.startswith("libcuflynx.") for m in modules), (kind, modules)
+        assert not any(isinstance(n, ast.Try) for n in ast.walk(tree)), kind

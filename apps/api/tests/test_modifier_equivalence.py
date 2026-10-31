@@ -57,6 +57,8 @@ from __future__ import annotations
 import json
 import time
 
+import tempfile
+
 import pytest
 
 from conftest import RESOURCES_DIR, upload_model
@@ -155,6 +157,7 @@ def _local_sa(client, model_id, current_params) -> dict:
     resp = client.post("/api/sensitivity/run", json={
         "model_id": model_id,
         "settings": {
+            "working_dir": tempfile.mkdtemp(prefix="cuflynx-wd-"),
             "method": "local",
             # Analytic, not differenced: these are exactness comparisons.
             "gradient_method": "FSA",

@@ -26,16 +26,22 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 import traceback
 from pathlib import Path
 
 import ca_obs
 import emulator_config
 from ca_imports import ensure_ca_path
+from solver_info_defaults import with_declared_step_defaults
 
 # Force a headless matplotlib backend before circulatory_autogen imports pyplot
 # (the post-calibration error plots run server-side with no display).
 os.environ.setdefault("MPLBACKEND", "Agg")
+
+#: When this process started: a validation_results.json older than that belongs
+#: to an earlier run in the same working dir.
+_STARTED = time.time()
 
 # Markers the API watches for in stdout.
 DONE_MARKER = "__CALIBRATION_DONE__"
@@ -84,11 +90,12 @@ def _solver_info_from_config(config: dict, settings: dict) -> dict:
     Settings popup) with the solver name + CVODE step defaults filled in."""
     si = dict(config.get("solver_info") or {})
     si.setdefault("solver", config.get("solver") or settings.get("solver", "CVODE_myokit"))
-    si.setdefault("MaximumStep", settings.get("MaximumStep", 0.0001))
-    # No MaximumNumberOfSteps default: myokit_helper never reads it (myokit's
-    # Simulation has no max-step-count knob), CA's migrate_legacy_solver_info_keys
-    # pops it for solve_ivp/casadi, and CA fills its own default for the backends
-    # that do use it. Injecting it here only seeded an inert setting.
+    # The solver's own step defaults first, so CVODE's 1e-4 cap only reaches solvers
+    # that list it (see solver_info_defaults and CA's solver_info_fields).
+    si = with_declared_step_defaults(si["solver"], si)
+    if "MaximumStep" in ca_obs.solver_info_keys(si["solver"]):
+        si.setdefault("MaximumStep", settings.get("MaximumStep", 0.0001))
+    # No MaximumNumberOfSteps default: CA fills its own for the backends that use it.
     return si
 
 
@@ -133,7 +140,14 @@ def run(config: dict) -> dict:
     from ca_imports import ca_from  # noqa: E402 (shipped into runners/ too)
     from local_sensitivity import resolve_gradient_method  # noqa: E402
 
+    from obs_data import prediction_items_of, with_ca_obs_path  # noqa: E402 (runners/ too)
+
     CVS0DParamID = ca_from("param_id.paramID", "CVS0DParamID")
+
+    # The prediction_items as the user wrote them, held-out data included: the CA
+    # below may only be shown the document without it (obs_data.for_ca).
+    prediction_items = prediction_items_of(_read_json(config["obs_path"]))
+    config = with_ca_obs_path(config)
 
     settings = config.get("settings", {})
     output_dir = config["output_dir"]
@@ -172,6 +186,13 @@ def run(config: dict) -> dict:
     if note:
         print(note, flush=True)
 
+    dt = float(settings.get("dt", 0.01))
+    # What the solve is configured with, said once: a study's adopted user_inputs
+    # (or Settings) decide these, and a run log that cannot show them leaves "was my
+    # MaximumStep used?" unanswerable.
+    print(f"Solver: {solver_info.get('solver')}, dt = {dt:g}, solver_info = "
+          f"{json.dumps(solver_info, sort_keys=True)}", flush=True)
+
     param_id = CVS0DParamID(
         model_path=config["model_path"],
         model_type=model_type,
@@ -181,7 +202,7 @@ def run(config: dict) -> dict:
         param_id_obs_path=config["obs_path"],
         sim_time=float(settings.get("sim_time", 2.0)),
         pre_time=float(settings.get("pre_time", 0.0)),
-        dt=float(settings.get("dt", 0.01)),
+        dt=dt,
         solver_info=solver_info,
         optimiser_options=optimiser_options,
         do_ad=do_ad,
@@ -213,6 +234,11 @@ def run(config: dict) -> dict:
     # Post-calibration fit-error vectors (percent + std error per observable),
     # which drive the Analysis-tab bar charts. Best-effort; never fails the run.
     errors = _generate_error_vectors(param_id, output_dir)
+
+    # The best fit against the obs_data's held-out data, if it carries any.
+    # Rank 0 only, like everything CA writes after a run.
+    if getattr(param_id, "rank", 0) == 0:
+        _validate_held_out(param_id, prediction_items, bool(emulator_kwargs))
 
     # Under mpiexec every rank runs this script; only rank 0 holds the
     # authoritative best fit and writes the results (mirrors param_id_run_script).
@@ -251,7 +277,7 @@ def run(config: dict) -> dict:
             calibrated_path = None
         # No results.json. Everything below is already on disk, written by CA
         # itself, and the manager reads it from there (#210) -- serialising a
-        # second copy put a file in the user's outputs directory that is no part
+        # second copy put a file in the user's working dir that is no part
         # of the study and made CUFLynx the author of a format duplicating CA's.
         # The return value still carries it, because that is this function's
         # contract with its caller inside this process.
@@ -398,6 +424,54 @@ def _generate_error_vectors(param_id, output_dir: str) -> dict:
     except Exception as exc:  # noqa: BLE001
         print(f"warning: could not load error vectors: {exc}", flush=True)
     return out
+
+
+def _read_json(path: str):
+    try:
+        return json.loads(Path(path).read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 - CA reports an unreadable obs_data itself
+        return None
+
+
+def _validate_held_out(param_id, prediction_items: list, emulated: bool) -> str | None:
+    """Have libcuflynx validate the best fit against the held-out data (CA #535).
+
+    libcuflynx does all of it: ``save_prediction_data`` simulates every experiment
+    at the best fit, scores the prediction items that carry data
+    (``param_id.validation``) and writes ``validation_results.json`` into its run
+    directory, which is what the manager reads. CUFLynx computes nothing; a
+    libcuflynx without ``param_id.validation`` gives no validation, and the run log
+    says why. Returns the file's path, or None when nothing was validated.
+
+    Best-effort: a validation that cannot be made must never fail the calibration.
+    """
+    import ca_run_history  # noqa: PLC0415 (CA output formats, one place)
+    from obs_data import ca_accepts_held_out  # noqa: PLC0415 (runners/ too)
+
+    if not any(isinstance(it, dict) and it.get("value") is not None
+               for it in prediction_items):
+        return None
+    if emulated:
+        # An emulator predicts the scalar data_item features only, never traces.
+        print("held-out data not validated: the calibration ran on the emulator, "
+              "which predicts no traces", flush=True)
+        return None
+    if not ca_accepts_held_out():
+        print("held-out data not validated: that needs a newer libcuflynx "
+              "(one with param_id.validation)", flush=True)
+        return None
+    run_dir = getattr(param_id, "output_dir", None)
+    if not run_dir:
+        return None
+    try:
+        param_id.save_prediction_data()
+    except Exception as exc:  # noqa: BLE001 - never fail the run over its validation
+        print(f"warning: held-out data not validated: {exc}", flush=True)
+        return None
+    written = os.path.join(run_dir, ca_run_history.VALIDATION_RESULTS_FILE)
+    if os.path.isfile(written) and os.path.getmtime(written) >= _STARTED - 1.0:
+        return written
+    return None
 
 
 def _find_output_file(param_id, output_dir: str, name: str) -> str | None:

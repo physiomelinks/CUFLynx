@@ -21,7 +21,7 @@ name: Integration
 
 on:
   push:
-    branches: [main, devel_FA]
+    branches: [main]   # a PR branch's push runs once, as its pull_request run
   pull_request:
   # Weekly, unpinned. See the `dependency-upgrade` job -- the bug that prompted all of
   # this arrived from upstream rather than from a commit here, and a suite that only runs
@@ -112,8 +112,11 @@ jobs:
       - name: Install the app and its dependencies
         run: |
           python -m pip install --upgrade pip
+          # libcuflynx from CA master in the same resolve: PyPI's 0.7.3 pins
+          # libcellml<0.7, which cannot install beside the app's libcellml>=0.7.2.
           pip install --build-constraint "${{ github.workspace }}/build-constraints.txt" \
-            -e ".[${{ matrix.extras }}]"
+            -e ".[${{ matrix.extras }}]" \
+            "libcuflynx[emulation,uq] @ git+https://github.com/physiomelinks/circulatory_autogen@master"
 
       # TEMPORARY, until circulatory_autogen publishes a release containing #466. The
       # declared dependency is
@@ -161,12 +164,24 @@ jobs:
 
       # pytest exits 0 when every test skipped, so the step above can pass having run
       # none of the tier. That is the likely failure here, not a red X.
+      # A floor cannot see a few tests skipping, so tests that must run once the installed
+      # CA supports them are named. CA #594's selection steps: once libcuflynx has them,
+      # the PhLynx send-back tests in test_calibration_workflow.py must run, not skip.
+      # tests/test_assert_tests_ran.py checks each name here is a test that exists.
       - name: Fail if the tier did not actually run
         if: always()
         working-directory: .
         run: |
+          required=()
+          if python -c "from libcuflynx.calibration_workflow import write_calibrated_parameters_to" 2>/dev/null; then
+            required+=(
+              --require test_a_phlynx_selection_asks_for_its_boundary_runs_and_goes_back_calibrated
+              --require test_several_selected_instances_go_back_calibrated_and_nothing_else
+              --require test_a_selected_nested_instance_goes_back_into_its_super_instance
+            )
+          fi
           python .github/scripts/assert_tests_ran.py \
-            --min-ran ${{ matrix.min_ran }} apps/api/junit-integration.xml
+            --min-ran ${{ matrix.min_ran }} "${required[@]}" apps/api/junit-integration.xml
 
       - name: Upload results
         if: always()
@@ -240,7 +255,8 @@ jobs:
         shell: bash
         run: |
           python -m pip install --upgrade pip
-          pip install --build-constraint "${{ github.workspace }}/build-constraints.txt" -e ".[dev]"
+          pip install --build-constraint "${{ github.workspace }}/build-constraints.txt" -e ".[dev]" \
+            "libcuflynx @ git+https://github.com/physiomelinks/circulatory_autogen@master"
 
       - name: Install libcuflynx from the CA integration branch
         shell: bash
@@ -315,7 +331,9 @@ jobs:
       - name: Install the app and its dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev,analysis]"
+          pip install --build-constraint "${{ github.workspace }}/build-constraints.txt" \
+            -e ".[dev,analysis]" \
+            "libcuflynx[emulation,uq] @ git+https://github.com/physiomelinks/circulatory_autogen@master"
 
       # TEMPORARY, until circulatory_autogen publishes a release containing #466. The
       # declared dependency is
@@ -474,7 +492,8 @@ jobs:
           python -m pip install --upgrade pip
           pip install --upgrade --upgrade-strategy eager \
             --build-constraint "${{ github.workspace }}/build-constraints.txt" \
-            -e ".[dev,analysis,full]"
+            -e ".[dev,analysis,full]" \
+            "libcuflynx[emulation,uq] @ git+https://github.com/physiomelinks/circulatory_autogen@master"
 
       # TEMPORARY, until circulatory_autogen publishes a release containing #466. The
       # declared dependency is

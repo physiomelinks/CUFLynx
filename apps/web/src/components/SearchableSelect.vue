@@ -7,9 +7,8 @@
  * with every user function. Scrolling to find `aortic_root/v` among 456 entries
  * is the problem; typing three characters is the fix.
  *
- * Modelled on the "add controlled parameter" picker in ProtocolInfoEditor,
- * which learned the same lesson: the matches are listed *as you type*, so
- * searching and seeing the results are one act rather than type-then-open.
+ * The matches are listed *as you type*, so searching and seeing the results
+ * are one act rather than type-then-open.
  *
  * Behaves like a select from the outside — v-model, options, an empty choice —
  * so callers do not have to think about focus or filtering.

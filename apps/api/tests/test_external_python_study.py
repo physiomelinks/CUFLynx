@@ -15,6 +15,7 @@ import engine as engine_mod
 import main
 import solver_options as so
 import user_funcs
+from conftest import stored_input
 from py_model_meta import parse_py_model
 
 FIXTURE = Path(__file__).resolve().parent / "data" / "heat1d_external_model.py"
@@ -222,7 +223,7 @@ def test_uploading_a_py_stores_it_beside_the_user_funcs(client, tmp_path):
         files={"file": ("heat1d.py", FIXTURE.read_bytes(), "text/x-python")},
     )
     assert resp.status_code == 200, resp.text
-    assert (tmp_path / "user_funcs" / "user_model.py").read_bytes() == FIXTURE.read_bytes()
+    assert stored_input(tmp_path, "funcs", "user_model.py").read_bytes() == FIXTURE.read_bytes()
 
 
 # ---------------------------------------------------------------------------
@@ -272,11 +273,16 @@ def test_the_run_config_names_the_py_and_the_format(client, tmp_path, monkeypatc
     monkeypatch.setattr(
         getattr(main, manager), "start", lambda config: captured.update(config) or "job-1"
     )
-    resp = client.post(route, json={"model_id": model_id, "settings": {}})
+    work = tmp_path / "work"
+    resp = client.post(route, json={"model_id": model_id,
+                                    "settings": {"working_dir": str(work)}})
     assert resp.status_code == 200, resp.text
     assert captured["model_type"] == "external_python"
     assert captured["solver"] == "external"
-    assert captured["model_path"] == str(main.UPLOAD_DIR / f"{model_id}.py")
+    # The run copies the .py into the working dir, and that copy is what runs.
+    study_copy = stored_input(work, "funcs", "user_model.py")
+    assert captured["model_path"] == str(study_copy)
+    assert study_copy.read_bytes() == FIXTURE.read_bytes()
 
 
 def test_the_export_bundle_carries_the_py_and_the_external_model_path(client, tmp_path):

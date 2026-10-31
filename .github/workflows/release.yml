@@ -90,7 +90,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
 
       # v0.1.7 was tagged, built and published while the app still reported 0.1.0.
       # Nothing failed, so nobody noticed until a user asked which build they had.
@@ -325,7 +325,7 @@ jobs:
       #
       # This deliberately runs a REAL SIMULATION, not just /api/health. v0.1.0
       # shipped with the python/casadi_python backends completely broken
-      # (KeyError: 'VARIABLE_COUNT' — the build resolved libcellml 0.7, which CA
+      # (KeyError: 'VARIABLE_COUNT' — the build resolved a libcellml CA
       # doesn't support) and a health-only check waved it straight through. The
       # bug lived in the *bundled dependency set*, so only exercising the real
       # code path in the frozen binary can catch it.
@@ -376,7 +376,7 @@ jobs:
 
           # Exercise ALL THREE backends. Each has broken in the packaged app for a
           # different reason that only a real simulation in the frozen binary caught:
-          #   python        - libcellml 0.7 (KeyError: VARIABLE_COUNT)
+          #   python        - libcellml past CA's bound (KeyError: VARIABLE_COUNT)
           #   casadi_python - casadi missing from the bundle
           #   cellml   - CVODE_myokit JIT-compiles a C extension; on Windows it
           #                   couldn't find Python.h (headers shipped to the posix
