@@ -32,7 +32,7 @@ MATRIX_JOBS = {"backend-unit"}
 #: the macOS halves of #340 and #330 reached users -- nothing above the Linux unit
 #: tier ran anywhere else. They are now one matrix, so the axes cannot drift apart,
 #: and this is the guard that they stay complete.
-SUPPORTED_OS = ["macos-latest", "ubuntu-latest", "windows-latest"]
+SUPPORTED_OS = ["macos-latest", "ubuntu-24.04", "windows-latest"]
 
 
 def _version(text):
@@ -112,3 +112,12 @@ def test_the_release_build_stays_on_one_interpreter():
                     f"release.yml:{name} takes its interpreter from {pin!r} rather than "
                     "pinning one literally"
                 )
+
+
+def test_no_workflow_uses_ubuntu_latest():
+    """The PyPI libcellml wheel needs libxml2.so.2, which ubuntu-latest (26.04) does not have."""
+    workflows = sorted(WORKFLOW_DIR.glob("*.yml"))
+    assert workflows
+    for path in workflows:
+        for number, line in enumerate(path.read_text().splitlines(), 1):
+            assert "ubuntu-latest" not in line.split("#")[0], f"{path.name}:{number}"

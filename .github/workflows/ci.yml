@@ -5,6 +5,8 @@ on:
     branches: [main]   # a PR branch's push runs once, as its pull_request run
   pull_request:
 
+# All workflows pin ubuntu-24.04: the PyPI libcellml wheel needs libxml2.so.2, which ubuntu-latest
+# (26.04) does not have.
 jobs:
   # `pip install -e .` is how a user installs from source (scripts/install.py runs
   # exactly this), and nothing in CI exercised it: every other job installs the
@@ -18,7 +20,7 @@ jobs:
   # question the other jobs already answer.
   packaging:
     name: Editable install (packaging metadata)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Every job here runs in seconds to ~2 minutes, so 15 is a backstop rather than a
     # budget: without one, a job that hangs holds a runner until GitHub's 360-minute
     # default. release.yml carries the same backstop, after `Install Sundials (Linux)`
@@ -68,7 +70,7 @@ jobs:
         # while this tier does not install it, moving past the engine's own ceiling would
         # test an interpreter libcuflynx cannot fully support (circulatory_autogen#459).
         # 3.10 stays as the floor because that is what libcuflynx requires (#278).
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-24.04, macos-latest, windows-latest]
         python-version: ["3.10", "3.11", "3.12"]
     defaults:
       run:
@@ -125,7 +127,7 @@ jobs:
       # files off disk -- a path or line-ending assumption that only breaks on
       # Windows is exactly the kind of thing this catches.
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-24.04, macos-latest, windows-latest]
     defaults:
       run:
         working-directory: apps/web
@@ -207,7 +209,7 @@ jobs:
   # after an await, which Safari refuses and Chromium tolerates.
   frontend-e2e:
     name: Frontend e2e (WebKit + Chromium)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     defaults:
       run:
