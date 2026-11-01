@@ -59,9 +59,6 @@ jobs:
   # run; if it drifts far below 240, find out why before lowering this.
   integration:
     name: Integration tier (installed libcuflynx, ${{ matrix.extras }})
-    # ubuntu-24.04, not ubuntu-latest: the libcellml 0.7.2 wheel libcuflynx requires links
-    # the system's libxml2.so.2, and ubuntu-26.04 ships only libxml2's newer soname, so
-    # `import libcellml` fails there before any test runs.
     runs-on: ubuntu-24.04
     # The tier is minutes, the installs are most of the wall clock, and `full` drags in
     # torch. Generous enough for a cold pip cache, tight enough that a hang is reported
@@ -295,7 +292,6 @@ jobs:
 
   run-matrix:
     name: Run matrix (serial and parallel)
-    # ubuntu-24.04 for libcellml's libxml2.so.2, as in the integration tier.
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     defaults:
@@ -395,7 +391,7 @@ jobs:
   # it would fail somebody's unrelated change.
   ca-pin-freshness:
     name: The pinned CA is not far behind
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     steps:
@@ -447,7 +443,6 @@ jobs:
   dependency-upgrade:
     name: Weekly dependency upgrade
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    # ubuntu-24.04 for libcellml's libxml2.so.2, as in the integration tier.
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
