@@ -465,7 +465,7 @@ def _series_item(feature, measured_variable, t, x, window, experiment,
         "experiment_idx": int(experiment),
         "subexperiment_idx": int(subexperiment),
         "plot_type": "series",
-        "source": _source(recording, case, sweep_index, provenance),
+        "data_reference": _data_reference(recording, case, sweep_index, provenance),
     }
 
 

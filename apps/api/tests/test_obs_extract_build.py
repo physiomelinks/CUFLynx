@@ -222,6 +222,18 @@ def test_every_item_records_where_it_came_from(tmp_path):
         assert "csv" in item["data_reference"]
 
 
+def test_a_series_item_records_where_it_came_from(tmp_path):
+    """The recorded sweep's own item carries its origin in ``data_reference`` too."""
+    cfg = _config(_corpus(tmp_path), features=[{"operation": "series", "unit": "milliV",
+                                                 "unit_confirmed": True}])
+    doc, _ = _build(cfg, output_dir=str(tmp_path / "out"))
+    series = [i for i in doc["data_items"] if i["data_type"] == "series"]
+    assert series
+    for item in series:
+        assert "source" not in item
+        assert "Currentsteps" in item["data_reference"]
+
+
 def test_provenance_reaches_the_items(tmp_path):
     cfg = _config(_corpus(tmp_path))
     cfg["provenance"] = {"source_text": "Harvey Davis full dataset",
