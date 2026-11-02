@@ -89,7 +89,9 @@ jobs:
           # CUFLynx CI. It must never go back before the merge of circulatory_autogen#495
           # (the first CA carrying libcuflynx.parsers.MyokitParsers and .EasyMLParsers,
           # which this app delegates every .mmt and .model conversion to with no local
-          # fallback); v0.7.3 is well past it.
+          # fallback). This is master after circulatory_autogen#619 (store_input,
+          # latest_input, export_working_dir), which the working-dir code calls; its
+          # version is still 0.7.3, which is what the marker records.
           #
           # The `libcuflynx v<X.Y.Z>` marker is not decoration: it is the only
           # offline record of *which release* this SHA is, and
@@ -98,7 +100,7 @@ jobs:
           # -- when the floor moved to 0.7.3 and this did not, the unit tier spent a month
           # testing a pairing pip itself would refuse to resolve, and only the weekly
           # `ca-pin-freshness` job said so.
-          ref: a3531f580c635180ac01c0b62a509fcab2a8c7da  # libcuflynx v0.7.3
+          ref: 0c546aa200e09e0f924addbaa54b0b36d5eaf670  # libcuflynx v0.7.3
           path: circulatory_autogen
       - uses: actions/setup-python@v5
         with:
