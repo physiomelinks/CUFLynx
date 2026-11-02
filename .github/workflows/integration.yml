@@ -59,7 +59,7 @@ jobs:
   # run; if it drifts far below 240, find out why before lowering this.
   integration:
     name: Integration tier (installed libcuflynx, ${{ matrix.extras }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # The tier is minutes, the installs are most of the wall clock, and `full` drags in
     # torch. Generous enough for a cold pip cache, tight enough that a hang is reported
     # rather than held to GitHub's 360-minute default -- the failure mode that turned
@@ -308,7 +308,7 @@ jobs:
 
   run-matrix:
     name: Run matrix (serial and parallel)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     defaults:
       run:
@@ -409,7 +409,7 @@ jobs:
   # it would fail somebody's unrelated change.
   ca-pin-freshness:
     name: The pinned CA is not far behind
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     steps:
@@ -461,7 +461,7 @@ jobs:
   dependency-upgrade:
     name: Weekly dependency upgrade
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
       contents: read
