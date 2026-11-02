@@ -463,6 +463,58 @@ export async function getSensitivityDefaults() {
   return data
 }
 
+// --- Add from dataset: build obs_data from raw recordings -------------------
+
+export async function getObsExtractFormats() {
+  const { data } = await axios.get(url('/api/obs_extract/formats'))
+  return data
+}
+
+// POST rather than GET: it carries an exclude list and per-dataset reader
+// settings, which do not belong in a query string, and a scan must not be
+// served from the browser cache after the directory has changed.
+export async function scanDatasets(payload) {
+  const { data } = await axios.post(url('/api/obs_extract/scan'), payload)
+  return data
+}
+
+export async function loadObsExtractConfig(path) {
+  const { data } = await axios.get(url('/api/obs_extract/config'), {
+    params: { path },
+  })
+  return data
+}
+
+export async function saveObsExtractConfig(config, { outputsDir = '', filename } = {}) {
+  const { data } = await axios.post(url('/api/obs_extract/config'), {
+    config,
+    output_dir: outputsDir,
+    ...(filename ? { filename } : {}),
+  })
+  return data
+}
+
+export async function startObsExtract(config, { outputsDir = '', modelId = '' } = {}) {
+  const { data } = await axios.post(url('/api/obs_extract/run'), {
+    config,
+    output_dir: outputsDir,
+    model_id: modelId,
+  })
+  return data
+}
+
+export async function getObsExtractStatus(jobId, offset = 0) {
+  const { data } = await axios.get(
+    url(`/api/obs_extract/${jobId}/status?offset=${offset}`),
+  )
+  return data
+}
+
+export async function cancelObsExtract(jobId) {
+  const { data } = await axios.post(url(`/api/obs_extract/${jobId}/cancel`))
+  return data
+}
+
 export async function startSensitivity(modelId, settings, currentParams = null) {
   const { data } = await axios.post(url('/api/sensitivity/run'), {
     model_id: modelId,
