@@ -465,7 +465,7 @@ def _series_item(feature, measured_variable, t, x, window, experiment,
         "experiment_idx": int(experiment),
         "subexperiment_idx": int(subexperiment),
         "plot_type": "series",
-        "source": _source(recording, case, sweep_index, provenance),
+        "data_reference": _data_reference(recording, case, sweep_index, provenance),
     }
 
 
@@ -487,9 +487,9 @@ def _data_item(feature, plan, value, experiment, subexperiment, case, sweep_inde
         "experiment_idx": int(experiment),
         "subexperiment_idx": int(subexperiment),
         "plot_type": feature.get("plot_type") or "horizontal",
-        # Where this number came from, to the sweep. The editor shows it and it
-        # round-trips on save, so a document keeps its provenance.
-        "source": _source(recording, case, sweep_index, provenance),
+        # Where this number came from, to the sweep: libcuflynx's data_reference,
+        # which it reports beside each item's error and in its figures.
+        "data_reference": _data_reference(recording, case, sweep_index, provenance),
     }
     std = _std_for(feature, value)
     if std is not None:
@@ -504,7 +504,7 @@ def _data_item(feature, plan, value, experiment, subexperiment, case, sweep_inde
     return item
 
 
-def _source(recording, case: str, sweep_index: int, provenance: dict) -> str:
+def _data_reference(recording, case: str, sweep_index: int, provenance: dict) -> str:
     text = provenance.get("source_text") or ""
     where = f"{case} sweep {sweep_index} ({recording.format})"
     return f"{text} [{where}]".strip() if text else where
