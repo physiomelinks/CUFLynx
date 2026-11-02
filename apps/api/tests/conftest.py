@@ -577,3 +577,78 @@ def recorded_commands(monkeypatch):
     for _, manager in MANAGERS:
         spy(manager)
     return seen
+
+
+# ---------------------------------------------------------------------------
+# CI shards: `pytest --ci-shard SUITE:GROUP[,GROUP...]` (tests/ci_shards.json)
+# ---------------------------------------------------------------------------
+# The same mechanism as circulatory_autogen's tests/conftest.py, so one reading
+# serves both repos. Checked by tests/test_ci_shards.py.
+CI_SHARDS_FILE = Path(__file__).resolve().parent / "ci_shards.json"
+
+
+def pytest_addoption(parser):
+    parser.addoption(
+        "--ci-shard", default=None, metavar="SUITE:GROUP[,GROUP...]",
+        help="keep only the tests of these groups of tests/ci_shards.json; SUITE:rest is "
+             "every collected test no group of SUITE names. Used by CI to split long jobs.")
+
+
+def load_ci_shards(path=CI_SHARDS_FILE) -> dict:
+    """The suites of ``tests/ci_shards.json``: {suite: {group: [entry, ...]}}."""
+    import json  # noqa: PLC0415
+
+    with open(path) as fh:
+        return {suite: groups for suite, groups in json.load(fh).items()
+                if not suite.startswith("_")}
+
+
+def ci_shard_entry_matches(entry: str, nodeid: str) -> bool:
+    """``tests/x.py`` matches every test in the file; ``tests/x.py::name`` matches the test
+    function ``name`` and each of its parametrizations, and nothing that only starts with it."""
+    if "::" not in entry:
+        return nodeid.split("::", 1)[0] == entry
+    return nodeid == entry or nodeid.startswith(entry + "[")
+
+
+def ci_shard_group_of(groups: dict, nodeid: str) -> str:
+    """The group of one suite that ``nodeid`` belongs to; ``rest`` when none names it."""
+    for name, entries in groups.items():
+        if any(ci_shard_entry_matches(e, nodeid) for e in entries):
+            return name
+    return "rest"
+
+
+def select_ci_shard(config, items, shards=None) -> None:
+    """Deselect every test outside ``--ci-shard SUITE:GROUP[,GROUP...]``.
+
+    Deselected rather than skipped, so a shard's junit counts only its own tests.
+    """
+    spec = config.getoption("--ci-shard")
+    if not spec:
+        return
+    suite, _, wanted = spec.partition(":")
+    if shards is None:
+        shards = load_ci_shards()
+    if suite not in shards or not wanted:
+        raise pytest.UsageError(
+            f"--ci-shard {spec!r}: expected SUITE:GROUP[,GROUP...] with SUITE one of "
+            f"{sorted(shards)}")
+    groups = shards[suite]
+    wanted = wanted.split(",")
+    unknown = [g for g in wanted if g != "rest" and g not in groups]
+    if unknown:
+        raise pytest.UsageError(
+            f"--ci-shard {spec!r}: no group {unknown} in suite {suite!r}; "
+            f"groups are {sorted(groups)} and 'rest'")
+
+    kept, deselected = [], []
+    for item in items:
+        (kept if ci_shard_group_of(groups, item.nodeid) in wanted else deselected).append(item)
+    if deselected:
+        items[:] = kept
+        config.hook.pytest_deselected(items=deselected)
+
+
+def pytest_collection_modifyitems(config, items):
+    select_ci_shard(config, items)

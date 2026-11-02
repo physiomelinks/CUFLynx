@@ -1,0 +1,33 @@
+{
+  "_comment": [
+    "CI shards: `pytest --ci-shard <suite>:<group>[,<group>...]` keeps only the tests of those groups.",
+    "An entry is a test file (all its tests) or file::function (all its parametrizations).",
+    "<suite>:rest is every test the command collected that no group of that suite names, so a new",
+    "test file runs in the rest shard without being listed here.",
+    "simulation: the integration-simulation job of .github/workflows/integration.yml. Balanced on",
+    "Windows per-file times (the slowest runner), ~4-5 minutes of pytest each, so a 1.5x slower",
+    "runner still finishes under 10. Checked by tests/test_ci_shards.py."
+  ],
+  "simulation": {
+    "calibration": [
+      "tests/test_calibration_workflow.py",
+      "tests/test_calibration.py",
+      "tests/test_sensitivity_run.py"
+    ],
+    "round-trip": [
+      "tests/test_phlynx_round_trip.py",
+      "tests/test_be_batched_c.py",
+      "tests/test_modifier_equivalence.py",
+      "tests/test_3compartment.py"
+    ],
+    "import": [
+      "tests/test_myokit_import.py",
+      "tests/test_ad_gating.py",
+      "tests/test_workflow_omex.py",
+      "tests/test_prediction_features_integration.py",
+      "tests/test_cost_sensitivity.py",
+      "tests/test_easyml_import.py",
+      "tests/test_omex_import.py"
+    ]
+  }
+}

@@ -207,14 +207,30 @@ jobs:
   # `requires_simulation` / optional-dependency fixtures and skip themselves when
   # emcee/SALib/mpi4py are absent. `assert_tests_ran` is what stops that from
   # quietly becoming a job that runs nothing.
+  #
+  # Sharded so each job's pytest stays under 10 minutes on Windows, the slowest
+  # runner (unsharded: 18.5 min there, 9 on macOS). tests/ci_shards.json, suite
+  # `simulation`, defines the groups; tests/test_ci_shards.py checks that `shard`
+  # below runs every group and `rest` exactly once. `min_ran` is each shard's
+  # floor, ~75% of what it ran on #396 (13, 20, 120, 165).
   integration-simulation:
-    name: Simulation tier (${{ matrix.os }})
+    name: Simulation tier (${{ matrix.os }}, ${{ matrix.shard }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         os: [macos-latest, windows-latest]
+        shard: [calibration, round-trip, import, rest]
+        include:
+          - shard: calibration
+            min_ran: 10
+          - shard: round-trip
+            min_ran: 15
+          - shard: import
+            min_ran: 90
+          - shard: rest
+            min_ran: 120
     defaults:
       run:
         working-directory: apps/api
@@ -287,7 +303,8 @@ jobs:
           # ARCHFLAGS and strips the pair.
           ARCHFLAGS: ${{ runner.os == 'macOS' && '-arch arm64' || '' }}
         run: |
-          pytest -m integration -v --tb=short --junitxml=junit-simulation.xml
+          pytest -m integration --ci-shard "simulation:${{ matrix.shard }}" -v --tb=short \
+            --junitxml=junit-simulation.xml
 
       # pytest exits 0 when everything skipped, so without this the job can pass
       # having run none of the tier -- which is the likely failure here, not a red X.
@@ -296,13 +313,14 @@ jobs:
         working-directory: .
         shell: bash
         run: |
-          python .github/scripts/assert_tests_ran.py --min-ran 40 apps/api/junit-simulation.xml
+          python .github/scripts/assert_tests_ran.py --min-ran ${{ matrix.min_ran }} \
+            apps/api/junit-simulation.xml
 
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: simulation-${{ matrix.os }}
+          name: simulation-${{ matrix.os }}-${{ matrix.shard }}
           path: apps/api/junit-simulation.xml
           if-no-files-found: ignore
 
