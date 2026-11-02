@@ -254,6 +254,10 @@ export async function costAtParams(modelId, params, options = {}) {
   if (options.outputs != null) body.outputs = options.outputs
   if (options.protocolInfo != null) body.protocol_info = options.protocolInfo
   if (options.workingDir) body.working_dir = options.workingDir
+  // Which emulator to score with, when the study holds several. Without it the
+  // backend falls back to its default, and the emulator cost shown beside the
+  // model's would belong to a bundle the user did not choose.
+  if (options.emulatorDir) body.emulator_dir = options.emulatorDir
   const { data } = await axios.post(url('/api/cost_at_params'), body, {
     signal: options.signal,
   })
@@ -579,15 +583,21 @@ export async function getEmulatorDefaults() {
 }
 
 /**
- * The trained emulator for this study, if any: `{ emulator_dir, metadata }`.
- * `metadata` is null when nothing has been trained yet, which is the normal
- * starting state rather than an error.
+ * The trained emulator for this study, if any: `{ emulator_dir, metadata,
+ * choices, chosen }`. `metadata` is null when nothing has been trained yet, which
+ * is the normal starting state rather than an error.
+ *
+ * `choices` is every bundle the study could be read with -- a study that fits one
+ * design with several emulator families has more than one, and which of them is
+ * meant is then a decision rather than something to derive. `emulatorDir` makes
+ * that decision; it is ignored unless it names one of the choices.
  */
-export async function getEmulatorInfo(modelId, configWorkingDir = '') {
+export async function getEmulatorInfo(modelId, configWorkingDir = '', emulatorDir = '') {
   const { data } = await axios.get(
     url(
       `/api/emulator/info?model_id=${encodeURIComponent(modelId)}` +
-        `&working_dir=${encodeURIComponent(configWorkingDir || '')}`,
+        `&working_dir=${encodeURIComponent(configWorkingDir || '')}` +
+        `&emulator_dir=${encodeURIComponent(emulatorDir || '')}`,
     ),
   )
   return data
