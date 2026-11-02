@@ -489,8 +489,9 @@ def _emit_features(doc, features, operation_funcs, binding, stimulus, t, signals
 
 #: Every key a ``prediction_item`` may carry (CA #535/#536). A held-out item is
 #: built as a data_item and cut down to these: ``weight``, ``cost_type`` and
-#: ``cost_kwargs`` have no meaning for an item that is never scored, and
-#: ``plot_type``/``source``/``species``/``location`` are not in its schema.
+#: ``cost_kwargs`` have no meaning for an item that is never scored,
+#: ``plot_type``/``species``/``location`` are not in its schema, and
+#: ``data_reference`` is in it only from CA #618 on.
 PREDICTION_ITEM_KEYS = (
     "data_item_name", "operands", "unit", "trace_name_for_plotting",
     "item_name_for_plotting", "experiment_idx", "subexperiment_idx",

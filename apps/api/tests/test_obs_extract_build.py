@@ -478,7 +478,7 @@ def test_a_validation_group_is_held_out_as_prediction_items(tmp_path):
         assert item["std"] == 4.0
         assert item["operation"] == "max_in_range"
         assert item["experiment_idx"] == k and item["subexperiment_idx"] == 1
-        assert not {"weight", "cost_type", "plot_type", "source"} & set(item), \
+        assert not {"weight", "cost_type", "plot_type", "source", "data_reference"} & set(item), \
             "never scored, and outside the prediction_item schema"
     assert any("nothing to calibrate against" in w for w in outcome.warnings)
 
