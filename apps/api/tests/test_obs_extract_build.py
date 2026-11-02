@@ -212,11 +212,26 @@ def test_no_legacy_vocabulary_is_emitted(tmp_path):
 
 
 def test_every_item_records_where_it_came_from(tmp_path):
+    """In ``data_reference``, the key libcuflynx reads; it reads ``source`` only with a
+    warning that the key has been replaced (CA #618)."""
     doc, _ = _build(_config(_corpus(tmp_path)))
     for item in doc["data_items"]:
-        assert "sweep" in item["source"]
-        assert "Currentsteps" in item["source"]
-        assert "csv" in item["source"]
+        assert "source" not in item
+        assert "sweep" in item["data_reference"]
+        assert "Currentsteps" in item["data_reference"]
+        assert "csv" in item["data_reference"]
+
+
+def test_a_series_item_records_where_it_came_from(tmp_path):
+    """The recorded sweep's own item carries its origin in ``data_reference`` too."""
+    cfg = _config(_corpus(tmp_path), features=[{"operation": "series", "unit": "milliV",
+                                                 "unit_confirmed": True}])
+    doc, _ = _build(cfg, output_dir=str(tmp_path / "out"))
+    series = [i for i in doc["data_items"] if i["data_type"] == "series"]
+    assert series
+    for item in series:
+        assert "source" not in item
+        assert "Currentsteps" in item["data_reference"]
 
 
 def test_provenance_reaches_the_items(tmp_path):
@@ -227,7 +242,7 @@ def test_provenance_reaches_the_items(tmp_path):
     item = doc["data_items"][0]
     assert item["species"] == "Rat"
     assert item["location"] == "Stellate Ganglion"
-    assert item["source"].startswith("Harvey Davis full dataset")
+    assert item["data_reference"].startswith("Harvey Davis full dataset")
 
 
 def test_extraction_emits_no_prediction_items(tmp_path):
