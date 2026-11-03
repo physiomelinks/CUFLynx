@@ -345,6 +345,51 @@ def reset_app_state():
 
 
 @pytest.fixture
+def requires_wcp_reader():
+    """Skip when nothing here can read a WCP file.
+
+    The backend unit tier installs a minimal dependency set on purpose -- no
+    myokit, no neo -- so the WCP reader has nothing to run on there. Skipping is
+    the same call the simulation and CA fixtures make: the tier proves what it
+    can, and the reader is covered by the tiers that install its dependencies.
+    """
+    try:
+        import neo  # noqa: F401,PLC0415
+
+        return
+    except ImportError:
+        pass
+    try:
+        import myokit.formats.wcp  # noqa: F401,PLC0415
+    except ImportError:
+        pytest.skip("no WCP reader here (neither neo nor myokit is installed)")
+
+
+@pytest.fixture
+def requires_scipy():
+    """Skip when scipy is absent.
+
+    scipy is a declared core dependency, but the backend unit tier installs a
+    thinner set than the declaration, and smoothing a clamp command trace
+    genuinely needs it. The tiers that install the real dependency set cover
+    these.
+    """
+    try:
+        import scipy  # noqa: F401,PLC0415
+    except ImportError:
+        pytest.skip("scipy is not installed")
+
+
+@pytest.fixture
+def requires_myokit():
+    """Skip when myokit is absent -- ABF reading and unit parsing need it."""
+    try:
+        import myokit  # noqa: F401,PLC0415
+    except ImportError:
+        pytest.skip("myokit is not installed")
+
+
+@pytest.fixture
 def client() -> TestClient:
     return TestClient(main.app)
 
