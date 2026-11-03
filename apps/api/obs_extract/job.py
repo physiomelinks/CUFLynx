@@ -109,6 +109,7 @@ class ObsExtractManager:
                 "pdf_path": report.pdf_path,
                 "n_experiments": outcome.n_experiments,
                 "n_data_items": outcome.n_data_items,
+                "n_prediction_items": outcome.n_prediction_items,
                 "datasets_used": outcome.datasets_used,
                 "sweeps_used": outcome.sweeps_used,
                 "skipped": outcome.skipped,
@@ -118,8 +119,9 @@ class ObsExtractManager:
             if outcome.warnings:
                 job.warning = "; ".join(outcome.warnings[:3])
             job.state = "cancelled" if job.cancel_event.is_set() else "done"
-            job.log(f"[info] {outcome.n_data_items} data item(s) from "
-                    f"{outcome.n_experiments} experiment(s)")
+            job.log(f"[info] {outcome.n_data_items} data item(s) and "
+                    f"{outcome.n_prediction_items} held-out prediction item(s) "
+                    f"from {outcome.n_experiments} experiment(s)")
         except ObsExtractError as exc:
             # The user's config or their files: a plain message, no traceback.
             job.error = str(exc)

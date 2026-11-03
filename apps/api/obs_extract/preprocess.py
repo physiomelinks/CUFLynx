@@ -237,6 +237,40 @@ def _peak_guard_passes(raw: np.ndarray, smoothed: np.ndarray, ratio: float) -> b
     return ok
 
 
+def median_window_samples(width_s: float, rate_hz: float) -> int:
+    """``width_s`` as an odd number of samples at ``rate_hz`` (at least 1).
+
+    Odd so the window is centred on its sample: 1 ms is 10 -> 11 samples at
+    9.8 kHz and 22 -> 23 at 21.5 kHz.
+    """
+    n = int(round(float(width_s) * float(rate_hz)))
+    n = max(n, 1)
+    return n if n % 2 else n + 1
+
+
+def running_median(values: np.ndarray, n: int) -> np.ndarray:
+    """A centred running median over ``n`` samples (``n`` odd), edges padded by
+    repeating the first and last sample so the output is as long as the input.
+
+    For an amplifier's own transient at a voltage-clamp step edge: a spike a
+    few samples wide is outvoted by the plateau on either side of it and
+    vanishes, while a step -- wider than the window -- keeps its edge exactly,
+    which a linear smoother would not. Anything narrower than about half the
+    window is removed too, which is why the width is set per subprotocol: an
+    action-potential command must not be given one.
+    """
+    x = np.asarray(values, dtype=float).ravel()
+    n = int(n)
+    if n <= 1 or x.size == 0:
+        return x.copy()
+    if n % 2 == 0:
+        raise ObsExtractError(f"a running median needs an odd window, got {n}")
+    half = n // 2
+    padded = np.pad(x, half, mode="edge")
+    windows = np.lib.stride_tricks.sliding_window_view(padded, n)
+    return np.median(windows, axis=1)
+
+
 def command_trace(
     t: np.ndarray,
     values: np.ndarray,
