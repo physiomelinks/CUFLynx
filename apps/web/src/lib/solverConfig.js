@@ -46,6 +46,15 @@ export function defaultSolverInfo(opts, solver) {
   return out
 }
 
+/**
+ * Why each solver this machine cannot run is missing from the menu, from
+ * /api/config's `cpp_compiler.unavailable_solvers` ({solver: why}); [] when the
+ * server says nothing (an older API, or every solver available).
+ */
+export function withheldSolverNotes(cppCompiler) {
+  return Object.values(cppCompiler?.unavailable_solvers ?? {}).filter(Boolean)
+}
+
 /** Distinct, meaningful operation names referenced by an obs_data's items. */
 export function obsDataOperations(obsData) {
   if (!obsData) return []

@@ -44,10 +44,12 @@ def _fake_compiler(tmp_path, name: str, exit_code: int):
 
 @pytest.fixture(autouse=True)
 def _uncached():
-    """has_cpp_compiler is lru_cached, so every test must start from cold."""
+    """has_cpp_compiler and has_cmake are lru_cached, so every test must start from cold."""
     compiler_check.has_cpp_compiler.cache_clear()
+    compiler_check.has_cmake.cache_clear()
     yield
     compiler_check.has_cpp_compiler.cache_clear()
+    compiler_check.has_cmake.cache_clear()
 
 
 @pytest.mark.skipif(
@@ -141,10 +143,13 @@ def test_status_offers_the_compiler_free_backends_when_there_is_none(monkeypatch
 
 def test_status_is_quiet_when_a_compiler_works(monkeypatch):
     monkeypatch.setattr(compiler_check, "has_cpp_compiler", lambda: True)
+    monkeypatch.setattr(compiler_check, "has_cmake", lambda: True)
 
     status = compiler_check.compiler_status()
 
-    assert status == {"present": True, "hint": "", "affects": "", "alternatives": []}
+    assert status == {
+        "present": True, "hint": "", "affects": "", "alternatives": [], "unavailable_solvers": {},
+    }
 
 
 @pytest.mark.skipif(
@@ -157,3 +162,64 @@ def test_macos_really_does_ship_the_shims_this_all_exists_for():
     import shutil
 
     assert shutil.which("clang") == "/usr/bin/clang"
+
+
+# ---------------------------------------------------------------------------
+# BE_batched_c: CMake + a C compiler, or it is not offered
+# ---------------------------------------------------------------------------
+@pytest.mark.skipif(
+    platform.system() == "Windows", reason="the shim is a posix shell script"
+)
+def test_a_cmake_that_does_not_run_is_not_cmake(tmp_path, monkeypatch):
+    """Found on PATH is not enough, as for the compiler."""
+    shim = _fake_compiler(tmp_path, "cmake", exit_code=1)
+    monkeypatch.setattr(
+        compiler_check.shutil, "which", lambda name: str(shim) if name == "cmake" else None
+    )
+    assert compiler_check.has_cmake() is False
+
+
+@pytest.mark.skipif(
+    platform.system() == "Windows", reason="the shim is a posix shell script"
+)
+def test_a_cmake_that_runs_is_cmake(tmp_path, monkeypatch):
+    shim = _fake_compiler(tmp_path, "cmake", exit_code=0)
+    monkeypatch.setattr(
+        compiler_check.shutil, "which", lambda name: str(shim) if name == "cmake" else None
+    )
+    assert compiler_check.has_cmake() is True
+
+
+@pytest.mark.parametrize(
+    "cmake, compiler, missing",
+    [(False, True, ["CMake"]), (True, False, ["a C compiler"]), (False, False, ["CMake", "a C compiler"])],
+)
+def test_batched_c_is_unavailable_without_cmake_or_a_compiler(monkeypatch, cmake, compiler, missing):
+    """BE_batched_c builds every model with CMake and a C compiler: either one
+    missing withholds it, and the note names what is missing and how to get it."""
+    monkeypatch.setattr(compiler_check, "has_cmake", lambda: cmake)
+    monkeypatch.setattr(compiler_check, "has_cpp_compiler", lambda: compiler)
+
+    why = compiler_check.unavailable_solvers()
+
+    assert set(why) == {"BE_batched_c"}
+    for tool in missing:
+        assert tool in why["BE_batched_c"]
+    if not cmake:
+        assert compiler_check.cmake_hint() in why["BE_batched_c"]
+    if not compiler:
+        assert compiler_check.compiler_hint() in why["BE_batched_c"]
+    assert compiler_check.compiler_status()["unavailable_solvers"] == why
+
+
+def test_batched_c_is_available_with_both(monkeypatch):
+    monkeypatch.setattr(compiler_check, "has_cmake", lambda: True)
+    monkeypatch.setattr(compiler_check, "has_cpp_compiler", lambda: True)
+    assert compiler_check.unavailable_solvers() == {}
+
+
+def test_missing_compiler_names_both_compiling_solvers(monkeypatch):
+    monkeypatch.setattr(compiler_check, "has_cpp_compiler", lambda: False)
+    monkeypatch.setattr(compiler_check, "has_cmake", lambda: True)
+    affects = compiler_check.compiler_status()["affects"]
+    assert "CVODE_myokit" in affects and "BE_batched_c" in affects

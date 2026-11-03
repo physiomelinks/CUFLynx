@@ -39,3 +39,14 @@ export function renderOutputLabel(s) {
   if (!m) return renderMath(s)
   return `${renderMath(m[1])} <span class="op-label">[${escapeHtml(m[2])}]</span>`
 }
+
+/** A variable's LaTeX symbol (always math, even a bare `V`), or '' when it is empty.
+ * An invalid symbol renders KaTeX's own red error text rather than throwing. */
+export function renderSymbol(s) {
+  if (!s || !String(s).trim()) return ''
+  try {
+    return katex.renderToString(String(s), { throwOnError: false, output: 'html' })
+  } catch {
+    return escapeHtml(s)
+  }
+}

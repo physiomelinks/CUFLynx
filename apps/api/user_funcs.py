@@ -23,14 +23,20 @@ opening circulatory_autogen. Three func kinds, distinguished by what they act on
 An operation acts on an *output*, a modifier acts on a *parameter* — CA's own
 vocabulary, worth keeping straight because the two were once the same word.
 
-**External-file design (no bridge into CA's tree).** Each kind is stored in a
-single file under the user's chosen **output directory** (``config_outputs_dir``,
-the same dir the analysis runs write to), so the funcs travel with the outputs.
-When no output directory is set it falls back to the user config dir::
+**External-file design (no bridge into CA's tree).** Each kind is one file stored
+in the study's **working dir** (``working_dir``, the same dir the analysis runs
+write to), so the funcs travel with the study. Every save stores a new version
+(``working_dir.store``) and the file of a kind is the version stored last
+(``working_dir.latest``)::
 
-    <output_dir>/user_funcs/operation_funcs_user.py
-    <output_dir>/user_funcs/cost_funcs_user.py
-    <output_dir>/user_funcs/modifier_funcs_user.py
+    <working_dir>/inputs/funcs/<yyyy-mm-dd_HHMMSS>/operation_funcs_user.py
+    <working_dir>/inputs/funcs/<yyyy-mm-dd_HHMMSS>/cost_funcs_user.py
+    <working_dir>/inputs/funcs/<yyyy-mm-dd_HHMMSS>/modifier_funcs_user.py
+
+When no working dir is set the file is ``<config>/user_funcs/<file>``, rewritten in
+place. A working dir in the older layout keeps its funcs in
+``<working_dir>/user_funcs/``: they are read there until the first save stores a
+version (``working_dir.readable``).
 
 CUFLynx passes the file path to circulatory_autogen through CA's config keys
 ``operation_funcs_external_path`` / ``cost_funcs_external_path`` (CA #303) and
@@ -62,6 +68,8 @@ import keyword
 from dataclasses import dataclass
 from pathlib import Path
 
+import study_manifest
+import working_dir
 from engine import _circulatory_autogen_src
 from settings_store import config_dir
 
@@ -96,16 +104,9 @@ Managed by CUFLynx's "Custom funcs" dialog; the header may be regenerated.
 import numpy as np  # noqa: F401 -- available to user operations
 
 # Imported (not defined) so CA registers only the user funcs below, never these.
-# Two import paths because circulatory_autogen moved its modules under a
-# ``libcuflynx.`` namespace (CA #437); the flat one is what older checkouts have.
-try:
-    from libcuflynx.param_id.differentiable import differentiable  # noqa: F401
-    from libcuflynx.param_id.operation_funcs import series_to_constant  # noqa: F401
-    from libcuflynx.param_id.math_backend import make_math_backend
-except ImportError:
-    from param_id.differentiable import differentiable  # noqa: F401
-    from param_id.operation_funcs import series_to_constant  # noqa: F401
-    from param_id.math_backend import make_math_backend
+from libcuflynx.param_id.differentiable import differentiable  # noqa: F401
+from libcuflynx.param_id.operation_funcs import series_to_constant  # noqa: F401
+from libcuflynx.param_id.math_backend import make_math_backend
 
 # Math backend for differentiable ops: use ``mb.<op>`` instead of numpy so CA can
 # rebind it to casadi and take symbolic gradients. CA sets this per backend.
@@ -136,23 +137,9 @@ Managed by CUFLynx's "Custom funcs" dialog; the header may be regenerated.
 import numpy as np  # noqa: F401 -- available to user cost funcs
 
 # Imported (not defined) so CA registers only the user funcs below, never these.
-# Two import paths because circulatory_autogen moved its modules under a
-# ``libcuflynx.`` namespace (CA #437); the flat one is what older checkouts have.
-# ``cost_funcs_user`` moved too (CA #433: the built-in funcs became library code
-# under ``libcuflynx.funcs``), so it needs the same pair. A CA that has moved it
-# still makes the bare name importable from a file loaded through
-# ``cost_funcs_external_path``, but that is a compatibility shim for files
-# written before the move -- newly generated ones should not rely on it.
-try:
-    from libcuflynx.param_id.differentiable import differentiable  # noqa: F401
-    from libcuflynx.param_id.math_backend import make_math_backend
-except ImportError:
-    from param_id.differentiable import differentiable  # noqa: F401
-    from param_id.math_backend import make_math_backend
-try:
-    from libcuflynx.funcs.cost_funcs_user import is_MLE, cost_combiner  # noqa: F401
-except ImportError:
-    from cost_funcs_user import is_MLE, cost_combiner  # noqa: F401
+from libcuflynx.param_id.differentiable import differentiable  # noqa: F401
+from libcuflynx.param_id.math_backend import make_math_backend
+from libcuflynx.funcs.cost_funcs_user import is_MLE, cost_combiner  # noqa: F401
 
 # Math backend for differentiable costs: use ``mb.<op>`` instead of numpy so CA
 # can rebind it to casadi and take symbolic gradients. CA sets this per backend.
@@ -360,12 +347,7 @@ Managed by CUFLynx's "Custom funcs" dialog; the header may be regenerated.
 import numpy as np  # noqa: F401 -- available to user modifiers
 
 # Imported (not defined) so CA registers only the decorated funcs below, never this.
-# Two import paths because circulatory_autogen moved its modules under a
-# ``libcuflynx.`` namespace (CA #437); the flat one is what older checkouts have.
-try:
-    from libcuflynx.param_id.modifier_funcs import modifier_func  # noqa: F401
-except ImportError:
-    from param_id.modifier_funcs import modifier_func  # noqa: F401
+from libcuflynx.param_id.modifier_funcs import modifier_func  # noqa: F401
 '''
 
 _MODIFIER_TEMPLATES = {
@@ -511,14 +493,55 @@ def _func_kind(kind: str) -> _Kind:
 # Paths
 # ---------------------------------------------------------------------------
 def _user_dir(base_dir: str | None = None) -> Path:
-    """Dir holding the external func files: the run's output directory when given
-    (so funcs live with the outputs), else the user config dir as a fallback."""
-    root = Path(base_dir) if base_dir else config_dir()
-    return root / "user_funcs"
+    """Where func files are kept with no working dir: the user config dir."""
+    return config_dir() / "user_funcs"
+
+
+def _func_file(filename: str, base_dir: str | None) -> Path:
+    """``filename`` of the study's funcs: the version stored last in the working dir (or
+    an older folder's ``user_funcs/<filename>``), else where a first save would put it
+    (``inputs/funcs/<filename>``, not yet existing). In the config dir with no working
+    dir."""
+    if base_dir:
+        found = working_dir.readable(base_dir, "funcs", filename)
+        return found if found is not None else working_dir.inputs_dir(base_dir, "funcs") / filename
+    return _user_dir(base_dir) / filename
+
+
+def convention_path(kind: str, base_dir: str | None = None) -> Path:
+    """The study's ``<kind file>`` (see :func:`_func_file`): where this app keeps a
+    study's funcs when no study manifest points elsewhere. Also the name a func file
+    has inside an archive."""
+    return _func_file(_kind(kind).filename, base_dir)
 
 
 def _user_file(kind: str, base_dir: str | None = None) -> Path:
-    return _user_dir(base_dir) / _kind(kind).filename
+    """The file holding ``kind``'s funcs for the study in ``base_dir``.
+
+    The version of it stored last in the working dir. The file the study's manifest
+    declares names it: a study run from circulatory_autogen records the funcs it was
+    run with (``user_funcs`` in ``<study>_cuflynx_study.json``), so reading, running and
+    *editing* all act on that file and its later versions, and a copy cannot drift from
+    it. Otherwise the CUFLynx convention, :func:`convention_path`.
+    """
+    declared = study_manifest.user_funcs(base_dir).get(kind)
+    if declared:
+        found = working_dir.latest(base_dir, "funcs", Path(declared).name) if base_dir else None
+        return found or Path(declared)
+    return convention_path(kind, base_dir)
+
+
+def _write_user_file(path: Path, text: str, base_dir: str | None,
+                     kind: str = "funcs") -> Path:
+    """Save ``text`` as the file ``path`` names: a new version of it in the working dir
+    (``working_dir.store``, the earlier ones left as they are), else written to ``path``
+    (the config dir). The path saved."""
+    data = text.encode("utf-8") if isinstance(text, str) else bytes(text)
+    if base_dir:
+        return working_dir.store(base_dir, kind, data, path.name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+    return path
 
 
 def external_path(kind: str, base_dir: str | None = None) -> str | None:
@@ -526,7 +549,7 @@ def external_path(kind: str, base_dir: str | None = None) -> str | None:
 
     Single source of the path CUFLynx passes to CA — into the analysis run configs
     (forwarded to ``CVS0DParamID`` / ``SensitivityAnalysis``) and to CA's discovery
-    builders in ``obs_options`` (CA #303). ``base_dir`` is the output directory the
+    builders in ``obs_options`` (CA #303). ``base_dir`` is the working dir the
     funcs were saved under.
     """
     path = _user_file(kind, base_dir)
@@ -550,10 +573,10 @@ def external_paths(base_dir: str | None = None, *, include_modules: bool = True)
     exporting a yaml pointing CA at a model the study does not use.
     """
     return {
-        k.config_key: str(_user_dir(base_dir) / k.filename)
+        k.config_key: str(_user_file(k.key, base_dir))
         for k in _KINDS.values()
         if (include_modules or not k.is_module)
-        and (_user_dir(base_dir) / k.filename).is_file()
+        and _user_file(k.key, base_dir).is_file()
     }
 
 
@@ -570,15 +593,23 @@ def model_source_path(suffix: str = ".py", base_dir: str | None = None) -> Path:
     written out again, so "where does the model source go" has a single answer.
     """
     suffix = suffix if suffix.startswith(".") else f".{suffix}"
-    return _user_dir(base_dir) / (Path(_kind("model").filename).stem + suffix)
+    name = Path(_kind("model").filename).stem + suffix
+    if suffix == ".py" or not base_dir:
+        return _func_file(name, base_dir)
+    # A converted source (.mmt / .model) is not what runs: it is stored with the model.
+    found = working_dir.latest(base_dir, "model", name)
+    if found is not None:
+        return found
+    legacy = Path(base_dir) / "user_funcs" / name
+    return legacy if legacy.is_file() else working_dir.inputs_dir(base_dir, "model") / name
 
 
 def save_model_source(source: bytes | str, suffix: str = ".py", base_dir: str | None = None) -> str:
-    """Store the model source the user wrote under the study's outputs directory.
+    """Store the model source the user wrote under the study's working dir.
 
     For an ``external_python`` model this copy is **the model that runs**:
     ``model_codegen.resolve_model_path`` prefers it over the uploaded temp file
-    whenever an outputs directory is configured. That is deliberate — the
+    whenever a working dir is configured. That is deliberate — the
     uploads directory is TTL-pruned scratch space, and an "Edit source" pointing
     at a file nothing executes would be worse than no button at all.
 
@@ -587,9 +618,8 @@ def save_model_source(source: bytes | str, suffix: str = ".py", base_dir: str | 
     """
     data = source.encode("utf-8") if isinstance(source, str) else bytes(source)
     path = model_source_path(suffix, base_dir)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(data)
-    return str(path)
+    kind = "funcs" if path.suffix == ".py" else "model"
+    return str(_write_user_file(path, data, base_dir, kind))
 
 
 def save_model_module(source: bytes | str, base_dir: str | None = None) -> str:
@@ -706,7 +736,7 @@ def read_user_funcs(kind: str, base_dir: str | None = None) -> dict:
     Shape: ``{"kind", "functions": [{"name","source"}], "templates", "template",
     "available", "path"}``. ``available`` is False when CA isn't configured (the
     imported decorators can't resolve, so the funcs can't load). ``base_dir`` is
-    the output directory the funcs are stored under.
+    the working dir the funcs are stored under.
     """
     k = _func_kind(kind)
     available = bool(_circulatory_autogen_src())
@@ -733,6 +763,41 @@ def _render(kind: str, order: list[str], sources: dict[str, str]) -> str:
         parts.append("")
         parts.append(sources[name].rstrip("\n"))
     return "\n".join(parts).rstrip("\n") + "\n"
+
+
+def _is_declared(kind: str, base_dir: str | None) -> bool:
+    """Whether ``kind``'s file is one a study manifest points at rather than one of ours."""
+    return bool(study_manifest.user_funcs(base_dir).get(kind))
+
+
+def _splice(path: Path, replace: str | None, source: str | None) -> str:
+    """``path``'s text with the top-level ``def replace`` replaced by ``source``,
+    ``source`` appended when ``replace`` is None, or ``replace`` removed when ``source``
+    is None.
+
+    For a funcs file a study manifest declares. That file was written by hand, outside
+    this app -- its docstring, its imports, a helper the funcs share -- and re-rendering
+    it from this app's header plus the parsed ``def`` s would silently delete all of that.
+    So only the lines of the one function change and everything else stays byte for byte.
+    A new func is appended as written: if it needs an import the file does not have, the
+    file is where that import goes.
+    """
+    text = path.read_text(encoding="utf-8")
+    lines = text.splitlines(keepends=True)
+    span = None
+    if replace:
+        for node in ast.parse(text).body:
+            if isinstance(node, ast.FunctionDef) and node.name == replace:
+                start = min([d.lineno for d in node.decorator_list] + [node.lineno]) - 1
+                span = (start, node.end_lineno)
+    block = [] if source is None else [source.rstrip("\n") + "\n"]
+    if span:
+        lines[span[0]:span[1]] = block
+    elif source is not None:
+        if lines and not lines[-1].endswith("\n"):
+            lines[-1] += "\n"
+        lines += ["\n", "\n"] + block
+    return "".join(lines)
 
 
 def save_user_func(
@@ -764,12 +829,20 @@ def save_user_func(
         order = [name if n == previous_name else n for n in order]
         del sources[previous_name]
 
+    if _is_declared(kind, base_dir):
+        # Not ours to re-render: see _splice.
+        target = previous_name if previous_name in sources else name
+        path = _user_file(kind, base_dir)
+        _write_user_file(path, _splice(path, target if target in sources else None, source),
+                         base_dir)
+        _refresh_options()
+        return read_user_funcs(kind, base_dir)
+
     if name not in order:
         order.append(name)
     sources[name] = source
 
-    _user_dir(base_dir).mkdir(parents=True, exist_ok=True)
-    _user_file(kind, base_dir).write_text(_render(kind, order, sources), encoding="utf-8")
+    _write_user_file(_user_file(kind, base_dir), _render(kind, order, sources), base_dir)
     _refresh_options()
     return read_user_funcs(kind, base_dir)
 
@@ -782,11 +855,137 @@ def delete_user_func(kind: str, name: str, base_dir: str | None = None) -> dict:
     order, sources = _parse_existing(kind, base_dir)
     if name not in sources:
         raise UserFuncError(f"no user {kind} named '{name}'")
+    if _is_declared(kind, base_dir):
+        path = _user_file(kind, base_dir)
+        _write_user_file(path, _splice(path, name, None), base_dir)
+        _refresh_options()
+        return read_user_funcs(kind, base_dir)
     order = [n for n in order if n != name]
     del sources[name]
-    _user_file(kind, base_dir).write_text(_render(kind, order, sources), encoding="utf-8")
+    _write_user_file(_user_file(kind, base_dir), _render(kind, order, sources), base_dir)
     _refresh_options()
     return read_user_funcs(kind, base_dir)
+
+
+def _bound_at_module_level(tree: ast.Module) -> set[str]:
+    """Names a module binds outside its ``def``\\ s: imports and assignments,
+    including those inside a top-level ``try`` (the headers' two-layout import)."""
+    names: set[str] = set()
+
+    def visit(body):
+        for node in body:
+            if isinstance(node, (ast.Import, ast.ImportFrom)):
+                for alias in node.names:
+                    names.add((alias.asname or alias.name).split(".")[0])
+            elif isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                for target in targets:
+                    names.update(
+                        n.id for n in ast.walk(target) if isinstance(n, ast.Name)
+                    )
+            elif isinstance(node, ast.ClassDef):
+                names.add(node.name)
+            elif isinstance(node, ast.Try):
+                visit(node.body)
+                for handler in node.handlers:
+                    visit(handler.body)
+                visit(node.orelse)
+                visit(node.finalbody)
+            elif isinstance(node, ast.If):
+                visit(node.body)
+                visit(node.orelse)
+
+    visit(tree.body)
+    return names
+
+
+def _same_source(a: str, b: str) -> bool:
+    """Equal up to trailing whitespace -- what a read-back through the file changes."""
+    def norm(text):
+        return "\n".join(line.rstrip() for line in text.strip("\n").splitlines())
+
+    return norm(a) == norm(b)
+
+
+def install_funcs_from_file(
+    kind: str, text: str, base_dir: str | None = None, origin: str = ""
+) -> tuple[list[dict], list[str]]:
+    """Install every top-level func in a whole ``kind`` funcs file, one at a time.
+
+    For a funcs file that arrived inside a study (an OMEX, #149) rather than being
+    typed into the dialog. Each ``def`` goes through :func:`save_user_func` -- the
+    same validation and the same canonical file (header + list marker) the
+    ``POST /api/{kind}_funcs`` route writes -- so a func installed from an archive
+    is indistinguishable from one the user saved.
+
+    Never raises for the file's contents: the study still loads without its funcs,
+    so each problem is a warning, not a failed import. Returns ``(funcs,
+    warnings)``; each func is ``{"kind", "name", "status", "origin"}`` where
+    ``status`` is ``installed`` / ``unchanged`` (already there, identical) /
+    ``conflict`` (a *different* func of that name is already there -- kept, never
+    clobbered) / ``invalid`` (rejected by the same checks the dialog applies).
+    """
+    k = _func_kind(kind)
+    origin = origin or k.filename
+    warnings: list[str] = []
+    try:
+        tree = ast.parse(text)
+    except SyntaxError as exc:
+        return [], [
+            f"{origin} was not installed as {kind} funcs: invalid Python "
+            f"({exc.msg}, line {exc.lineno})."
+        ]
+
+    # Only the defs travel: the stored file's header is CUFLynx's, so anything
+    # else the archive's file set up at module level is not carried across. Said
+    # once, naming what is missing, because a func that uses it will otherwise
+    # fail only at run time, inside CA.
+    provided = _bound_at_module_level(ast.parse(k.header)) | {k.list_marker}
+    dropped = sorted(_bound_at_module_level(tree) - provided)
+    if dropped:
+        warnings.append(
+            f"{origin}: only its functions are installed into your custom {kind} "
+            f"funcs, so its module-level {', '.join(dropped)} "
+            f"{'is' if len(dropped) == 1 else 'are'} not available to them "
+            f"(the stored file provides {', '.join(sorted(provided - {k.list_marker}))})."
+        )
+
+    _order, existing = _parse_existing(kind, base_dir)
+    funcs: list[dict] = []
+    for node in tree.body:
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        source = _node_source(text, node)
+        entry = {"kind": kind, "name": node.name, "origin": origin}
+        funcs.append(entry)
+        if node.name in existing:
+            if source is not None and _same_source(existing[node.name], source):
+                entry["status"] = "unchanged"
+                continue
+            entry["status"] = "conflict"
+            warnings.append(
+                f"{kind} '{node.name}' from {origin} was not installed: a different "
+                f"'{node.name}' is already in your custom {kind} funcs "
+                f"({_user_file(kind, base_dir)}). Kept yours; rename one, or replace "
+                f"it in Custom funcs."
+            )
+            continue
+        try:
+            save_user_func(kind, "", source or "", base_dir)
+        except UserFuncError as exc:
+            entry["status"] = "invalid"
+            warnings.append(f"{kind} '{node.name}' from {origin} was not installed: {exc}.")
+            continue
+        entry["status"] = "installed"
+        existing[node.name] = source
+    if not funcs:
+        warnings.append(f"{origin} defines no top-level functions, so no {kind} funcs were installed.")
+    return funcs, warnings
+
+
+def refresh_options() -> None:
+    """Re-read every func file into the option lists, after one was written elsewhere."""
+    _refresh_options()
 
 
 def _refresh_options() -> None:

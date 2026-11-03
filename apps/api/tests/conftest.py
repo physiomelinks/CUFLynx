@@ -29,6 +29,8 @@ import model_codegen as model_codegen_mod  # noqa: E402
 import sensitivity as sensitivity_mod  # noqa: E402
 import solver_options as solver_options_mod  # noqa: E402
 import uq as uq_mod  # noqa: E402
+import workflow_manager as workflow_mod  # noqa: E402
+from obs_extract import job as obs_extract_job_mod  # noqa: E402
 
 # Repo-root resources (apps/api/tests -> parents[3] == repo root).
 RESOURCES_DIR = Path(__file__).resolve().parents[3] / "resources"
@@ -39,6 +41,27 @@ LV_PARAMS_CSV_PATH = RESOURCES_DIR / "Lotka_Volterra_params_for_id.csv"
 SN_MODEL_PATH = RESOURCES_DIR / "SN_simple_flat.cellml"
 SN_OBS_DATA_PATH = RESOURCES_DIR / "SN_simple_obs_data.json"
 SN_PARAMS_CSV_PATH = RESOURCES_DIR / "SN_simple_params_for_id.csv"
+
+
+def stored_input(work, kind: str, name: str) -> Path:
+    """The version of ``name`` stored last in ``<work>/inputs/<kind>/<stamp>/``; fails when
+    there is none (``working_dir.latest``)."""
+    import working_dir
+
+    found = working_dir.latest(work, kind, name)
+    assert found is not None, f"no {kind} {name} stored in {work}"
+    return found
+
+
+def params_for_id_json(csv_path, directory) -> Path:
+    """A params_for_id CSV from ``resources/`` as the JSON the app stores and CA reads
+    (``cuflynx-upgrade params-for-id``'s form), written into ``directory``: a runner is
+    handed what an upload leaves, and CA refuses the CSV."""
+    import params_json
+
+    out = Path(directory) / (Path(csv_path).stem + ".json")
+    out.write_text(params_json.csv_to_file_text(Path(csv_path).read_bytes()), encoding="utf-8")
+    return out
 
 
 def all_mmt_fixtures():
@@ -86,6 +109,24 @@ def set_ca_module(monkeypatch, name: str, value) -> None:
     """
     for spelling in ca_module_spellings(name):
         monkeypatch.setitem(sys.modules, spelling, value)
+
+
+def ca_model_name(path_name: str) -> str:
+    """The model's name CA gives the parameter ``path_name`` (``<vessel>/<variable>``).
+
+    ``mod/A/p`` is ``p_mod_A`` where CA joins a submodule's levels with ``_`` and
+    ``p_mod__A`` where it joins them with ``__`` (CA #582), so a test that expects a
+    hoisted name asks CA rather than spelling one. A CA without
+    ``utilities.parameter_names`` joins with ``_``.
+    """
+    from ca_imports import ca_from, ensure_ca_path
+
+    try:
+        ensure_ca_path()
+        return ca_from("utilities.parameter_names", "model_name")(path_name)
+    except ImportError:
+        *path, variable = path_name.split("/")
+        return f"{variable}_{'_'.join(path)}"
 
 
 def running_against_installed_ca_only() -> bool:
@@ -159,6 +200,26 @@ def requires_ca():
 
     if obs_mod._ca_parser() is None:
         pytest.skip("circulatory_autogen not importable; schema validation degrades")
+
+
+@pytest.fixture
+def requires_ca_operations():
+    """For assertions about CA's *operation registry*, not just its parser.
+
+    Heavier than ``requires_ca``, and the difference matters: CA's parser imports
+    with numpy alone, but ``operation_funcs_user`` does ``from scipy.signal import
+    find_peaks`` at module level. On an install without scipy -- the backend unit
+    CI tier is one -- the parser loads, ``requires_ca`` passes, and the registry
+    that merges user funcs never does, so the options fall back to a built-in list
+    that can never contain an installed operation. That made a correct feature look
+    broken on every platform in that tier.
+    """
+    import obs_options
+
+    obs_options.reset_cache()
+    if obs_options.get_operation_funcs() is None:
+        pytest.skip("circulatory_autogen's operation registry is not importable "
+                    "here (scipy missing?); user operations cannot be merged")
 
 
 @pytest.fixture
@@ -323,6 +384,14 @@ def reset_app_state():
     sensitivity_mod.sensitivity.runner_path = sensitivity_mod.RUNNER_PATH
     uq_mod.uq.reset()
     uq_mod.uq.runner_path = uq_mod.RUNNER_PATH
+    workflow_mod.workflow.reset()
+    workflow_mod.workflow.runner_path = workflow_mod.RUNNER_PATH
+    main._module_library_dirs = []
+    # obs_extract's manager is the same kind of module-level singleton, and it
+    # holds a worker *thread* rather than a subprocess -- so a test that left one
+    # running would block the next test's start() on "an extraction is already
+    # running".
+    obs_extract_job_mod.obs_extract_jobs.reset()
     yield
     main._models.clear()
     engine_mod.engine.reset()
@@ -335,6 +404,10 @@ def reset_app_state():
     sensitivity_mod.sensitivity.runner_path = sensitivity_mod.RUNNER_PATH
     uq_mod.uq.reset()
     uq_mod.uq.runner_path = uq_mod.RUNNER_PATH
+    workflow_mod.workflow.reset()
+    workflow_mod.workflow.runner_path = workflow_mod.RUNNER_PATH
+    main._module_library_dirs = []
+    obs_extract_job_mod.obs_extract_jobs.reset()
     _set_analysis_pythons(_pythons_before)
     main._analysis_seed = None
     # Restore CIRCULATORY_AUTOGEN_SRC so a /api/config test doesn't leak.
@@ -342,6 +415,51 @@ def reset_app_state():
         os.environ.pop("CIRCULATORY_AUTOGEN_SRC", None)
     else:
         os.environ["CIRCULATORY_AUTOGEN_SRC"] = _ca_src_before
+
+
+@pytest.fixture
+def requires_wcp_reader():
+    """Skip when nothing here can read a WCP file.
+
+    The backend unit tier installs a minimal dependency set on purpose -- no
+    myokit, no neo -- so the WCP reader has nothing to run on there. Skipping is
+    the same call the simulation and CA fixtures make: the tier proves what it
+    can, and the reader is covered by the tiers that install its dependencies.
+    """
+    try:
+        import neo  # noqa: F401,PLC0415
+
+        return
+    except ImportError:
+        pass
+    try:
+        import myokit.formats.wcp  # noqa: F401,PLC0415
+    except ImportError:
+        pytest.skip("no WCP reader here (neither neo nor myokit is installed)")
+
+
+@pytest.fixture
+def requires_scipy():
+    """Skip when scipy is absent.
+
+    scipy is a declared core dependency, but the backend unit tier installs a
+    thinner set than the declaration, and smoothing a clamp command trace
+    genuinely needs it. The tiers that install the real dependency set cover
+    these.
+    """
+    try:
+        import scipy  # noqa: F401,PLC0415
+    except ImportError:
+        pytest.skip("scipy is not installed")
+
+
+@pytest.fixture
+def requires_myokit():
+    """Skip when myokit is absent -- ABF reading and unit parsing need it."""
+    try:
+        import myokit  # noqa: F401,PLC0415
+    except ImportError:
+        pytest.skip("myokit is not installed")
 
 
 @pytest.fixture
@@ -459,3 +577,78 @@ def recorded_commands(monkeypatch):
     for _, manager in MANAGERS:
         spy(manager)
     return seen
+
+
+# ---------------------------------------------------------------------------
+# CI shards: `pytest --ci-shard SUITE:GROUP[,GROUP...]` (tests/ci_shards.json)
+# ---------------------------------------------------------------------------
+# The same mechanism as circulatory_autogen's tests/conftest.py, so one reading
+# serves both repos. Checked by tests/test_ci_shards.py.
+CI_SHARDS_FILE = Path(__file__).resolve().parent / "ci_shards.json"
+
+
+def pytest_addoption(parser):
+    parser.addoption(
+        "--ci-shard", default=None, metavar="SUITE:GROUP[,GROUP...]",
+        help="keep only the tests of these groups of tests/ci_shards.json; SUITE:rest is "
+             "every collected test no group of SUITE names. Used by CI to split long jobs.")
+
+
+def load_ci_shards(path=CI_SHARDS_FILE) -> dict:
+    """The suites of ``tests/ci_shards.json``: {suite: {group: [entry, ...]}}."""
+    import json  # noqa: PLC0415
+
+    with open(path) as fh:
+        return {suite: groups for suite, groups in json.load(fh).items()
+                if not suite.startswith("_")}
+
+
+def ci_shard_entry_matches(entry: str, nodeid: str) -> bool:
+    """``tests/x.py`` matches every test in the file; ``tests/x.py::name`` matches the test
+    function ``name`` and each of its parametrizations, and nothing that only starts with it."""
+    if "::" not in entry:
+        return nodeid.split("::", 1)[0] == entry
+    return nodeid == entry or nodeid.startswith(entry + "[")
+
+
+def ci_shard_group_of(groups: dict, nodeid: str) -> str:
+    """The group of one suite that ``nodeid`` belongs to; ``rest`` when none names it."""
+    for name, entries in groups.items():
+        if any(ci_shard_entry_matches(e, nodeid) for e in entries):
+            return name
+    return "rest"
+
+
+def select_ci_shard(config, items, shards=None) -> None:
+    """Deselect every test outside ``--ci-shard SUITE:GROUP[,GROUP...]``.
+
+    Deselected rather than skipped, so a shard's junit counts only its own tests.
+    """
+    spec = config.getoption("--ci-shard")
+    if not spec:
+        return
+    suite, _, wanted = spec.partition(":")
+    if shards is None:
+        shards = load_ci_shards()
+    if suite not in shards or not wanted:
+        raise pytest.UsageError(
+            f"--ci-shard {spec!r}: expected SUITE:GROUP[,GROUP...] with SUITE one of "
+            f"{sorted(shards)}")
+    groups = shards[suite]
+    wanted = wanted.split(",")
+    unknown = [g for g in wanted if g != "rest" and g not in groups]
+    if unknown:
+        raise pytest.UsageError(
+            f"--ci-shard {spec!r}: no group {unknown} in suite {suite!r}; "
+            f"groups are {sorted(groups)} and 'rest'")
+
+    kept, deselected = [], []
+    for item in items:
+        (kept if ci_shard_group_of(groups, item.nodeid) in wanted else deselected).append(item)
+    if deselected:
+        items[:] = kept
+        config.hook.pytest_deselected(items=deselected)
+
+
+def pytest_collection_modifyitems(config, items):
+    select_ci_shard(config, items)

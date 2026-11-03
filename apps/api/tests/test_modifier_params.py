@@ -86,7 +86,7 @@ def _wait(client, job_id, timeout=600):
 
 
 @pytest.mark.integration
-def test_local_fd_sa_runs_with_a_scale_modifier_via_api(client, requires_simulation):
+def test_local_fd_sa_runs_with_a_scale_modifier_via_api(client, requires_simulation, tmp_path):
     """Real short FD local SA with θ in the nominal: current_params carries θ at
     the anchor (what the frontend's analysisDict sends), CA reads the stored
     .json params file, and the modifier appears as one parameter in the result.
@@ -105,7 +105,7 @@ def test_local_fd_sa_runs_with_a_scale_modifier_via_api(client, requires_simulat
         "/api/sensitivity/run",
         json={
             "model_id": model_id,
-            "settings": settings,
+            "settings": {**settings, "working_dir": str(tmp_path)},
             # What the frontend's analysisDict sends: θ at the modifier's anchor,
             # physical values at the free anchors.
             "current_params": {"global/E_lv_A": 1.2},

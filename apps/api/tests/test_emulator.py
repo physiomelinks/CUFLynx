@@ -874,15 +874,8 @@ def test_an_emulator_that_will_not_load_is_a_silence_not_a_failure(client, monke
 
 
 # ---------------------------------------------------------------------------
-# A protocol-less obs_data is still an obs_data
+# The document handed to CA carries the obs_data's protocol_info
 # ---------------------------------------------------------------------------
-# An obs_data may say what to measure without saying how to drive the model --
-# CA then builds the timeline from sim_time/pre_time. The heat_fenics example
-# ships exactly that. _obs_data_document used to return None for it, so a
-# protocol-less study was reported as having no obs_data at all: the solver's
-# cost quietly fell back to the local walk, and the emulator's cost -- which
-# has no fallback, deliberately -- never appeared, saying "there is no obs_data
-# loaded to score the emulator against" while one was plainly loaded.
 _BARE_ITEM = {
     "data_item_name": "probe 1 mean", "trace_name_for_plotting": "mean(T_{p1})",
     "data_type": "constant", "operation": "mean", "operands": ["heat/T_p1"],
@@ -901,16 +894,6 @@ class _ObsStub:
 class _RecordStub:
     def __init__(self, protocol_info):
         self.obs_data = _ObsStub(protocol_info)
-
-
-def test_a_protocol_less_obs_data_still_produces_a_document():
-    import main
-
-    doc = main._obs_data_document(_RecordStub(None))
-    assert doc is not None, 'a protocol-less obs_data is not "no obs_data"'
-    assert doc["data_items"] == [dict(_BARE_ITEM)]
-    # Omitted, not None: CA's parser accepts the absence and refuses an explicit None.
-    assert "protocol_info" not in doc
 
 
 def test_a_protocol_is_carried_through_when_there_is_one():
@@ -969,6 +952,157 @@ def test_the_chosen_interpreter_is_probed_even_with_no_ca_directory(monkeypatch,
     monkeypatch.setattr(so, "analysis_options_introspected", lambda: True)
     assert so.emulator_availability("/envs/emu/bin/python")["available"] is True
 
+
+# ---------------------------------------------------------------------------
+# Choosing between several emulators trained on one design
+# ---------------------------------------------------------------------------
+def _family(directory, model_name, r2, samples=True):
+    """A bundle that reports a family and a set of held-out scores."""
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "emulator_metadata.json").write_text(json.dumps({
+        "model_name": model_name,
+        "feature_r2": r2,
+        "feature_labels": [f"f{i}" for i in range(len(r2))],
+        "design": {"num_used": 12000, "num_stages": 3},
+    }))
+    if samples:
+        (directory / "training_data.npz").write_bytes(b"not really an npz")
+    return str(directory)
+
+
+def test_a_directory_of_bundles_enumerates_them(tmp_path):
+    """A study that fits one design with several families keeps them side by side."""
+    import ca_run_history
+
+    root = tmp_path / "emulators"
+    _family(root / "s_two_phase_RBF", "two_phase_RadialBasisFunctions", [0.9])
+    _family(root / "s_two_phase_MLP", "two_phase_MLP", [0.8])
+
+    found = [Path(p).name for p in ca_run_history.emulator_bundles(str(root))]
+    assert sorted(found) == ["s_two_phase_MLP", "s_two_phase_RBF"]
+
+
+def test_a_bundle_names_only_itself(tmp_path):
+    """The container shape must not swallow the one-bundle case it also has to serve."""
+    import ca_run_history
+
+    bundle = _family(tmp_path / "emu", "two_phase_MLP", [0.7])
+    assert ca_run_history.emulator_bundles(bundle) == [bundle]
+
+
+def test_bundles_of_a_missing_directory_is_empty_not_an_error(tmp_path):
+    import ca_run_history
+
+    assert ca_run_history.emulator_bundles(str(tmp_path / "nope")) == []
+
+
+def test_a_summary_carries_what_a_chooser_needs(tmp_path):
+    import ca_run_history
+
+    bundle = _family(tmp_path / "emu", "two_phase_MLP", [0.5, 0.9, 0.7])
+    row = ca_run_history.emulator_summary(bundle)
+    assert row["model_name"] == "two_phase_MLP"
+    assert row["worst_r2"] == 0.5
+    assert row["median_r2"] == 0.7
+    assert row["num_features"] == 3
+    assert row["num_samples"] == 12000
+    assert row["reusable"] is True
+
+
+def test_choices_are_ordered_by_the_worst_feature(tmp_path):
+    """Worst-first, because that is the number that bounds what a bundle can be
+    trusted for -- an emulator misleads a calibration where it is weakest."""
+    import ca_run_history
+
+    root = tmp_path / "emulators"
+    _family(root / "s_two_phase_RBF", "two_phase_RadialBasisFunctions", [0.30, 0.95])
+    _family(root / "s_two_phase_MLP", "two_phase_MLP", [0.28, 0.99])
+    _family(root / "s_two_phase_RandomForest", "two_phase_RandomForest", [0.21, 0.85])
+
+    rows = ca_run_history.emulator_choices(str(tmp_path), "s", None,
+                                           declared=str(root))
+    assert [r["model_name"] for r in rows] == [
+        "two_phase_RadialBasisFunctions", "two_phase_MLP", "two_phase_RandomForest",
+    ]
+
+
+def test_choices_without_a_declaration_still_find_the_conventional_bundle(tmp_path):
+    """The list can never omit the bundle the old search would have chosen."""
+    import ca_run_history
+
+    conventional = ca_run_history.emulator_dir(str(tmp_path), "model", None)
+    _family(Path(conventional), "two_phase_MLP", [0.6])
+
+    rows = ca_run_history.emulator_choices(str(tmp_path), "model", None)
+    assert [Path(r["dir"]).name for r in rows] == [Path(conventional).name]
+
+
+def test_a_bundle_whose_scores_cannot_be_read_sorts_last_not_worst(tmp_path):
+    """Unknown is not the same as known-bad, and must not be ranked as though it were."""
+    import ca_run_history
+
+    root = tmp_path / "emulators"
+    _family(root / "s_scored", "two_phase_MLP", [-5.0])
+    _family(root / "s_unscored", "two_phase_RandomForest", [])
+
+    rows = ca_run_history.emulator_choices(str(tmp_path), "s", None, declared=str(root))
+    assert rows[0]["model_name"] == "two_phase_MLP"
+    assert rows[-1]["worst_r2"] is None
+
+
+def test_a_directory_name_can_disagree_with_the_reported_family(tmp_path):
+    """A refit that died after its metadata was copied in looks exactly like this.
+
+    CUFLynx does not repair it -- it cannot know which is right -- but the summary
+    must carry both, because the name alone and the family alone each read as a
+    healthy bundle and only the pair shows the problem.
+    """
+    import ca_run_history
+
+    bundle = _family(tmp_path / "s_two_phase_MLP", "two_phase_RadialBasisFunctions", [0.4])
+    row = ca_run_history.emulator_summary(bundle)
+    assert row["name"] == "s_two_phase_MLP"
+    assert row["model_name"] == "two_phase_RadialBasisFunctions"
+
+
+def test_a_chosen_emulator_must_be_one_that_was_offered(tmp_path):
+    """The panel has no free-text path, and the chooser must not become one.
+
+    Deriving the location on both sides is what stops training writing to one
+    directory and a later run reading from another. A choice constrained to the
+    discovered set keeps that property; a choice taken at its word would hand the
+    caller an arbitrary path to read a bundle out of.
+    """
+    import main
+
+    offered = _family(tmp_path / "emulators" / "s_two_phase_MLP", "two_phase_MLP", [0.7])
+    choices = [{"dir": offered}]
+
+    assert main._chosen_emulator_dir({"emulator_dir": offered}, choices) == offered
+    assert main._chosen_emulator_dir({"emulator_dir": "/etc"}, choices) is None
+    assert main._chosen_emulator_dir({"emulator_dir": ""}, choices) is None
+    assert main._chosen_emulator_dir({}, choices) is None
+
+
+def test_a_manifest_may_declare_the_container_rather_than_one_bundle(tmp_path):
+    """Naming one of several would tell a reader the others are not this study's."""
+    import json as _json
+
+    import load_outputs
+
+    root = tmp_path / "study"
+    emulators = root / "emulators"
+    _family(emulators / "s_two_phase_RBF", "two_phase_RadialBasisFunctions", [0.30])
+    _family(emulators / "s_two_phase_MLP", "two_phase_MLP", [0.28])
+    (root / "cuflynx_study.json").write_text(_json.dumps({
+        "schema": 1, "file_prefix": "s", "emulator": "emulators",
+    }))
+
+    result = load_outputs.load_outputs(str(root))
+    names = sorted(Path(row["dir"]).name for row in result["emulator"]["choices"])
+    assert names == ["s_two_phase_MLP", "s_two_phase_RBF"]
+    # Best-first, so the default is the safest rather than the most recent.
+    assert Path(result["emulator"]["dir"]).name == "s_two_phase_RBF"
 
 # ---------------------------------------------------------------------------
 # End to end: train one, then use it

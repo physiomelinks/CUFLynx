@@ -114,7 +114,7 @@ def test_calibration_parallel_falls_back_without_mpiexec(monkeypatch, tmp_path):
 
     resp = client.post(
         "/api/calibration/run",
-        json={"model_id": model_id, "settings": {"num_cores": 4}},
+        json={"model_id": model_id, "settings": {"working_dir": str(tmp_path), "num_cores": 4}},
     )
     assert resp.status_code == 200, resp.text
     job_id = resp.json()["job_id"]
@@ -129,7 +129,7 @@ def test_sensitivity_parallel_falls_back_without_mpiexec(monkeypatch, tmp_path):
 
     resp = client.post(
         "/api/sensitivity/run",
-        json={"model_id": model_id, "settings": {"num_cores": 4}},
+        json={"model_id": model_id, "settings": {"working_dir": str(tmp_path), "num_cores": 4}},
     )
     assert resp.status_code == 200, resp.text
     assert "job_id" in resp.json()
@@ -146,7 +146,7 @@ def test_uq_parallel_falls_back_without_mpiexec(monkeypatch, tmp_path):
     # so the request reaches uq.start().
     resp = client.post(
         "/api/uq/run",
-        json={"model_id": model_id, "settings": {"num_cores": 4, "run_calibration_first": True}},
+        json={"model_id": model_id, "settings": {"working_dir": str(tmp_path), "num_cores": 4, "run_calibration_first": True}},
     )
     assert resp.status_code == 200, resp.text
     assert "job_id" in resp.json()
@@ -161,7 +161,7 @@ def test_single_core_calibration_launches_and_completes(monkeypatch, tmp_path):
     _install_runner(monkeypatch, calibration_mod.calibration, tmp_path)
     client = TestClient(main.app)
     model_id = _setup_model_obs_params(client)
-    resp = client.post("/api/calibration/run", json={"model_id": model_id, "settings": {}})
+    resp = client.post("/api/calibration/run", json={"model_id": model_id, "settings": {"working_dir": str(tmp_path), "working_dir": str(tmp_path)}})
     assert resp.status_code == 200, resp.text
     assert _wait_terminal(client, "calibration", resp.json()["job_id"]) == "done"
 

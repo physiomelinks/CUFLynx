@@ -78,17 +78,16 @@ def check_example_loads_whole(app) -> str:
 
 
 def check_old_obs_data_is_refused_with_the_fix(app, archive: bytes) -> str:
-    """A pre-#466 obs_data is rejected, and the message names the migrator.
+    """An obs_data in an older form is rejected, and the message names the converter.
 
-    The failure a user actually meets when they open a study written before the
-    vocabulary split. The engine's complaint is about the *consequence* -- a
-    duplicate name -- so the app adds the cause and the command that fixes it.
+    The failure a user actually meets when they open a study written for an
+    earlier libcuflynx: a bare list of data items, timed by its user_inputs.yaml.
     """
     body = app.upload("/api/omex/upload", "old.omex", archive)
     error = (body.get("obs_data") or {}).get("error") or ""
-    assert "Duplicate 'data_item_name'" in error, error[:300]
-    assert "cuflynx-migrate-obs-data" in error, error[:400]
-    return "refused, and names the migrator"
+    assert "protocol_info" in error, error[:300]
+    assert "cuflynx-upgrade obs-data" in error, error[:400]
+    return "refused, and names the converter"
 
 
 def check_directory_reopens(app, outputs_dir: str) -> str:

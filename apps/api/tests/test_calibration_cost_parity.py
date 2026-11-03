@@ -1,7 +1,6 @@
 """The cost calibration reports must be the cost the Output plots show (heat1d bug).
 
-A user ran a GA calibration on the heat1d external model (protocol-less obs_data),
-read the final cost, clicked "reset to best fit", and the cost above the Output
+A user ran a GA calibration on the heat1d external model, read the final cost, clicked "reset to best fit", and the cost above the Output
 plots was a different number for the *same* parameters. The cause was two silent,
 different timeline fallbacks: the calibration runner simulated over its own
 ``sim_time`` default (2.0 s) while the live cost ran over the top bar's t₁ —
@@ -34,9 +33,8 @@ SIM_TIME = 0.6  # != the runner's historical 2.0 fallback, by design
 PRE_TIME = 0.0
 DT = 0.01
 
-# Protocol-less on purpose: with a protocol_info, CA's timing wins on both sides
-# and the bug cannot occur. Bare data_items are exactly the heat1d example's shape.
-OBS_DATA = [
+# The protocol window matches the times the run payloads send.
+_ITEMS = [
     {
         "data_item_name": f"probe {i} mean temperature",
         "trace_name_for_plotting": f"mean(T_p{i})",
@@ -51,6 +49,10 @@ OBS_DATA = [
     }
     for i, value in ((1, 0.30), (2, 0.28), (3, 0.20))
 ]
+OBS_DATA = {
+    "protocol_info": {"pre_times": [PRE_TIME], "sim_times": [[SIM_TIME]]},
+    "data_items": _ITEMS,
+}
 
 PARAMS_CSV = (
     "vessel_name,param_name,param_type,min,max,name_for_plotting\n"

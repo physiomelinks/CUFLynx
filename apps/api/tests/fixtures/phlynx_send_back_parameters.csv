@@ -1,0 +1,4 @@
+variable_name,units,value,data_reference
+A/p,dimensionless,1.0,workflow test library
+C/q,dimensionless,3,"calibrated by workflow selection, step c-alone (YYYY-MM-DD)"
+C/k,dimensionless,1.0,doe2020gain; Table 1: the gain of C

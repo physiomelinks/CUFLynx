@@ -99,7 +99,7 @@ def protocol_info_from_mmt(
 
 
 def fill_protocol_info(
-    obs_data: dict[str, Any] | list | None, protocol_info: dict[str, Any]
+    obs_data: dict[str, Any] | None, protocol_info: dict[str, Any]
 ) -> dict[str, Any]:
     """Put ``protocol_info`` into an obs_data document, returning a new dict.
 
@@ -112,6 +112,12 @@ def fill_protocol_info(
     (CA #466 renamed several). A copy here would keep writing the old spelling with
     nothing to catch it, which is why the copy that lived here is gone.
     """
+    if isinstance(obs_data, list):
+        from obs_data import UPGRADE_HINT  # noqa: PLC0415
+
+        raise MmtProtocolError(
+            f"could not update that obs_data: it is a bare list of data items. {UPGRADE_HINT}"
+        )
     fill = _ca_fill_protocol_info()
     if fill is None:
         raise MmtProtocolError(

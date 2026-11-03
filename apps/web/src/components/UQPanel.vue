@@ -27,7 +27,8 @@ const settings = reactive({
   method: 'mcmc',
   run_calibration_first: false,
   num_cores: 1,
-  dt: 0.01,
+  // No dt: a run that names none is given the engine's (Settings, or a study's
+  // user_inputs), server-side. A literal here overrode both with 0.01.
   DEBUG: false,
 })
 
@@ -37,12 +38,8 @@ const optionValues = reactive({})
 
 const isMcmc = computed(() => settings.method === 'mcmc')
 
-// CA's mcmc option descriptors (num_steps, num_walkers, …), never hardcoded.
-// `uq_options` since CA renamed the mode; `mcmc_options` is the pre-rename field name,
-// kept so an API that has not been restarted yet still fills this form.
-const schemaOptions = computed(
-  () => props.defaults.uq_options ?? props.defaults.mcmc_options ?? [],
-)
+// CA's UQ option descriptors (num_steps, num_walkers, …), never hardcoded.
+const schemaOptions = computed(() => props.defaults.uq_options ?? [])
 
 // CA's uq schema also carries `method`, which this panel already asks for above --
 // and CUFLynx offers more than CA's own list does, since `laplace` runs through
@@ -248,7 +245,7 @@ function onRun() {
       />
     </div>
     <p v-if="!canRun" class="hint">
-      Load a model, an obs_data.json and a params_for_id.csv to run UQ.
+      Load a model, an obs_data.json and a params_for_id.json to run UQ.
     </p>
     <p v-else-if="!settings.run_calibration_first" class="hint">
       Reuses the latest completed calibration's best fit — run a calibration first, or

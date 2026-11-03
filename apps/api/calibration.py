@@ -177,7 +177,7 @@ def read_meta_line(lines: list, marker: str) -> dict:
 def write_run_config(config: dict, filename: str) -> str:
     """Write a runner's config payload and return the path to hand it as argv[1].
 
-    Into a private temp directory, **not** the user's outputs directory. Nothing
+    Into a private temp directory, **not** the user's working dir. Nothing
     ever reads this file back: it exists only because a config dict cannot be
     passed on a command line, and because every MPI rank has to read it at
     startup (``build_command`` prepends ``mpiexec -n N``), which rules out a pipe.
@@ -516,6 +516,9 @@ class CalibrationJob:
         self.percent_error: list | None = None
         self.std_error: list | None = None
         self.error_labels: list = []
+        # The best fit scored against the obs_data's held-out data (CA #535):
+        # CA's validation_results.json, or None when there was nothing to validate.
+        self.validation: dict | None = None
         self.error: str | None = None
         # Set when the run finished but its process failed on the way out (an
         # MPI finalize abort, say): the results stand, and the user is told.
@@ -611,7 +614,7 @@ class CalibrationManager:
             # the path never has to be round-tripped back from the runner.
             job.file_prefix = config.get("file_prefix")
             # When this run started, so a previous run's results left in the same
-            # outputs directory cannot be reported as this one's.
+            # working dir cannot be reported as this one's.
             job.started_at = time.time()
             env = runner_launch_env(config.get("python") or self.python)
             job.proc = subprocess.Popen(
@@ -677,6 +680,7 @@ class CalibrationManager:
                     job.percent_error = errors["percent_error"]
                     job.std_error = errors["std_error"]
                     job.error_labels = errors["error_labels"]
+                    job.validation = ca_run_history.validation_results(job.output_dir)
                     job.calibrated_model_path = ca_run_history.calibrated_model_path(
                         job.output_dir, job.file_prefix
                     )
@@ -708,6 +712,7 @@ class CalibrationManager:
                 "percent_error": job.percent_error,
                 "std_error": job.std_error,
                 "error_labels": job.error_labels,
+                "validation": job.validation,
                 "error": job.error,
                 "warning": job.warning,
             }

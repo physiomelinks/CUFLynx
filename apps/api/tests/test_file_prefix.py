@@ -16,6 +16,8 @@ from __future__ import annotations
 import json
 import pathlib
 
+import tempfile
+
 import pytest
 from conftest import (
     LV_MODEL_PATH,
@@ -32,7 +34,8 @@ def _prefix_of(client, model_id) -> str:
     return main._record_prefix(main._models[model_id])
 
 
-def _start_and_capture(client, monkeypatch, model_id, route, manager, settings=None):
+def _start_and_capture(client, monkeypatch, model_id, route, manager, settings=None,
+                       working_dir=None):
     """The run config the manager was handed, without running anything."""
     captured: dict = {}
 
@@ -41,7 +44,10 @@ def _start_and_capture(client, monkeypatch, model_id, route, manager, settings=N
         return "job-1"
 
     monkeypatch.setattr(manager, "start", _fake_start)
-    resp = client.post(route, json={"model_id": model_id, "settings": settings or {}})
+    settings = dict(settings or {})
+    if "config_outputs_dir" not in settings:
+        settings["working_dir"] = working_dir or tempfile.mkdtemp(prefix="cuflynx-wd-")
+    resp = client.post(route, json={"model_id": model_id, "settings": settings})
     assert resp.status_code == 200, resp.text
     return captured["config"]
 
@@ -108,8 +114,9 @@ def test_the_models_own_directory_uses_the_same_prefix(client, tmp_path):
     # By path parts, not by a "generated_models/<prefix>/" substring: the separator is a
     # backslash on Windows, where that assertion could only ever fail.
     prefix = main._models[body["model_id"]].file_prefix
-    assert saved.parent.name == prefix
-    assert saved.parent.parent.name == "generated_models"
+    # inputs/generated_models/<prefix>/<stamp>/module_config.json
+    assert saved.parent.parent.name == prefix
+    assert saved.parent.parent.parent.name == "generated_models"
 
 
 @pytest.mark.unit

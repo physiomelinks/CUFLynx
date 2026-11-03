@@ -65,6 +65,7 @@ def test_obs_editor_object_form_round_trips(client):
             },
             {
                 "data_item_name": "s", "data_type": "series", "obs_dt": 0.1,
+                "operands": ["m/x"], "unit": "dimensionless",
                 "value": [1, 2], "std": 0.1, "experiment_idx": 0,
             },
         ],
@@ -112,20 +113,6 @@ def test_protocol_info_missing_trace_key_returns_422(client):
     resp = client.post("/api/obs_data/upload", json=obs)
     assert resp.status_code == 422
     assert "trace" in resp.json()["detail"].lower()
-
-
-def test_obs_editor_data_only_array_form(client):
-    # Data-only files round-trip as a bare array (no protocol_info).
-    obs = [
-        {
-            "data_item_name": "x_max", "data_type": "constant", "operation": "max",
-            "operands": ["m/x"], "unit": "dimensionless", "value": 30, "std": 3,
-            "experiment_idx": 0,
-        },
-    ]
-    resp = client.post("/api/obs_data/upload", json=obs)
-    assert resp.status_code == 200, resp.text
-    assert resp.json()["has_protocol"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -411,19 +398,10 @@ def test_a_ca_crash_is_reported_as_unchecked_rather_than_as_clean(client, monkey
     assert any("without a schema check" in w for w in warnings), warnings
 
 
-def test_an_old_vocabulary_that_happens_not_to_collide_still_warns(client, monkeypatch):
-    """A pre-#466 file whose names are unique loads today and breaks whenever CA
-    drops the migration shim. It is the one case the duplicate-name error cannot
-    catch, which is why the advice hangs off the keys rather than off the error."""
-    import obs_data as obs_mod
-
-    monkeypatch.setattr(obs_mod, "_ca_parser", lambda: None)
-    obs = _obs()
-    item = obs["data_items"][0]
-    item["variable"] = item.pop("data_item_name")
-    resp = client.post("/api/obs_data/upload", json=obs)
-    assert resp.status_code == 200, resp.text
-    assert any("cuflynx-migrate-obs-data" in w for w in resp.json()["warnings"])
+def test_a_bare_list_upload_is_refused_naming_the_converter(client):
+    resp = client.post("/api/obs_data/upload", json=_obs()["data_items"])
+    assert resp.status_code == 422, resp.text
+    assert "cuflynx-upgrade obs-data" in resp.text
 
 
 def test_a_ca_crash_does_not_block_the_upload(monkeypatch):
@@ -437,3 +415,16 @@ def test_a_ca_crash_does_not_block_the_upload(monkeypatch):
 
     monkeypatch.setattr(obs_mod, "_ca_parser", lambda: _Boom())
     assert obs_mod.ca_schema_error(_obs()) is None
+
+
+def test_the_editor_reads_the_study_s_obs_data_whole(client):
+    """Every key comes back, those CUFLynx does not read (prediction_plots, a note) too, so
+    the editor writes back what it was given."""
+    model_id = upload_model(client, LV_MODEL_PATH)["model_id"]
+    assert client.get("/api/obs_data/document", params={"model_id": model_id}).json() == {
+        "document": None}
+    obs = {**json.loads(LV_OBS_DATA_PATH.read_text()), "prediction_plots": [], "note": "kept"}
+    assert client.post("/api/obs_data/upload",
+                       json={"model_id": model_id, "obs_data": obs}).status_code == 200
+    r = client.get("/api/obs_data/document", params={"model_id": model_id})
+    assert r.status_code == 200 and r.json()["document"] == obs

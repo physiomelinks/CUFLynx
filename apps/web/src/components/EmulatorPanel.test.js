@@ -25,7 +25,12 @@ const InputNumberStub = {
   emits: ['update:modelValue'],
   template: '<input type="number" :disabled="disabled" :value="modelValue" v-bind="$attrs" />',
 }
+const EmulatorBundleDialogStub = {
+  props: ['visible', 'choices', 'currentDir', 'chosen'],
+  template: '<div data-testid="emu-bundle-dialog" v-if="visible" />',
+}
 const stubs = {
+  EmulatorBundleDialog: EmulatorBundleDialogStub,
   Select: SelectStub,
   InputNumber: InputNumberStub,
   InputText: true,
@@ -564,5 +569,109 @@ describe('sampling stages', () => {
     wrapper.vm.optionValues.method_per_stage[0] = 'error_weighted'
     await wrapper.vm.$nextTick()
     expect(wrapper.find('[data-testid="emu-stages-first"]').exists()).toBe(true)
+  })
+})
+
+describe('EmulatorPanel "Include prediction items"', () => {
+  const box = (w) => w.find('[data-testid="emu-include-prediction-items"]')
+  const lastChange = (w) => w.emitted('change').at(-1)[0]
+  const SUPPORTED = { ...DEFAULTS, prediction_features_supported: true }
+
+  it('is offered with its hint, and only once', () => {
+    const w = mountPanel({
+      defaults: {
+        ...SUPPORTED,
+        options: [...DEFAULTS.options, { name: 'include_prediction_items', type: 'bool', default: false }],
+      },
+      predictionFeatureCount: 1,
+    })
+    expect(w.findAll('[data-testid="emu-include-prediction-items"]')).toHaveLength(1)
+    expect(w.find('[data-testid="emu-opt-include_prediction_items"]').exists()).toBe(false)
+    expect(w.find('[data-testid="emu-include-prediction-items-hint"]').text()).toContain(
+      'Prediction items with an operation become features',
+    )
+  })
+
+  it('goes into the training settings when ticked', async () => {
+    const w = mountPanel({ defaults: SUPPORTED, predictionFeatureCount: 1 })
+    expect(lastChange(w).include_prediction_items).toBe(false)
+    await box(w).trigger('change')
+    expect(lastChange(w).include_prediction_items).toBe(true)
+    await w.find('[data-testid="train-emulator"]').trigger('click')
+    expect(w.emitted('run')[0][0].include_prediction_items).toBe(true)
+  })
+
+  it('is disabled without prediction features or without libcuflynx support', () => {
+    for (const props of [
+      { defaults: SUPPORTED, predictionFeatureCount: 0 },
+      { defaults: DEFAULTS, predictionFeatureCount: 3 },
+    ]) {
+      const w = mountPanel(props)
+      expect(box(w).attributes('disabled')).toBeDefined()
+      expect(
+        w.find('[data-testid="emu-include-prediction-items-field"]').attributes('title'),
+      ).toBeTruthy()
+      expect(lastChange(w).include_prediction_items).toBe(false)
+    }
+  })
+})
+
+describe('EmulatorPanel prediction features in a trained bundle', () => {
+  it('tags the features libcuflynx lists as prediction features', () => {
+    const w = mountPanel({
+      metadata: { ...METADATA, feature_labels: ['x', 'v_max'], prediction_feature_labels: ['v_max'] },
+      features: [
+        { label: 'x', r2: 0.99, rmse: 0.1, prediction: false },
+        { label: 'v_max', r2: 0.95, rmse: 0.2, prediction: true },
+      ],
+    })
+    const tags = w.findAll('[data-testid="emu-prediction-tag"]')
+    expect(tags).toHaveLength(1)
+    expect(tags[0].element.closest('td').textContent).toContain('v_max')
+  })
+})
+
+describe('EmulatorPanel choosing between several emulators', () => {
+  const CHOICES = [
+    { dir: '/s/emulators/a_RBF', name: 'a_RBF', model_name: 'two_phase_RadialBasisFunctions',
+      worst_r2: 0.31, median_r2: 0.63, num_features: 36, num_samples: 12000, reusable: true },
+    { dir: '/s/emulators/a_MLP', name: 'a_MLP', model_name: 'two_phase_MLP',
+      worst_r2: 0.28, median_r2: 0.70, num_features: 36, num_samples: 12000, reusable: true },
+  ]
+
+  it('offers no choice when the study has only one emulator', () => {
+    // The overwhelmingly common case, and a chooser over a single option is noise.
+    const wrapper = mountPanel({ metadata: METADATA, choices: [CHOICES[0]] })
+    expect(wrapper.find('[data-testid="emu-choice"]').exists()).toBe(false)
+  })
+
+  it('offers a choice when the study holds several', () => {
+    const wrapper = mountPanel({ metadata: METADATA, choices: CHOICES })
+    expect(wrapper.find('[data-testid="emu-choice"]').exists()).toBe(true)
+  })
+
+  it('says when the emulator on screen was fallen back to rather than chosen', () => {
+    // Without this the panel shows the newest bundle exactly as it shows a
+    // deliberately picked one, and only one of them is a decision.
+    const wrapper = mountPanel({ metadata: METADATA, choices: CHOICES, chosen: false })
+    expect(wrapper.find('[data-testid="emu-choice"]').text()).toContain('not chosen')
+  })
+
+  it('does not say so once a choice has been made', () => {
+    const wrapper = mountPanel({ metadata: METADATA, choices: CHOICES, chosen: true })
+    expect(wrapper.find('[data-testid="emu-choice"]').text()).not.toContain('not chosen')
+  })
+
+  it('opens the chooser and passes the selection up', async () => {
+    const wrapper = mountPanel({ metadata: METADATA, choices: CHOICES, chosen: true })
+    await wrapper.find('[data-testid="emu-choose"]').trigger('click')
+    expect(wrapper.find('[data-testid="emu-bundle-dialog"]').exists()).toBe(true)
+    wrapper.findComponent(EmulatorBundleDialogStub).vm.$emit('select', CHOICES[1].dir)
+    expect(wrapper.emitted('select-bundle')[0]).toEqual([CHOICES[1].dir])
+  })
+
+  it('offers nothing to choose when no emulator is trained', () => {
+    const wrapper = mountPanel({ metadata: null, choices: CHOICES })
+    expect(wrapper.find('[data-testid="emu-choice"]').exists()).toBe(false)
   })
 })

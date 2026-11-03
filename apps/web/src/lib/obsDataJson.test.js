@@ -1,216 +1,11 @@
 import { describe, it, expect } from 'vitest'
 import {
-  splitItems,
-  itemToRow,
-  rowToItem,
-  newRow,
-  buildObsData,
   versionedJsonName,
-  experimentIdxMax,
+  withParameters,
+  predictionFeatureItems,
+  hasHeldOutData,
+  emulatorPredictionFlags,
 } from './obsDataJson'
-
-const OPS = ['', 'max', 'min', 'mean']
-
-describe('splitItems', () => {
-  it('reads a pre-#466 item and writes back only the current keys', () => {
-    // CA #466 split `variable` into data_item_name + operands and `name_for_plotting` into
-    // trace/item labels. An older saved study must still open, and must not be written back
-    // with both spellings -- CA rejects an item that sets a legacy key beside its replacement.
-    const row = itemToRow({
-      variable: 'a', name_for_plotting: 'A_{max}', data_type: 'constant',
-      operation: 'max', operands: ['m/x'], value: 1, std: 0.1,
-    })
-    expect(row.data_item_name).toBe('a')
-    expect(row.trace_name_for_plotting).toBe('A_{max}')
-    const out = rowToItem(row)
-    expect(out.data_item_name).toBe('a')
-    expect(out.trace_name_for_plotting).toBe('A_{max}')
-    expect('variable' in out).toBe(false)
-    expect('name_for_plotting' in out).toBe(false)
-  })
-
-  it('editable = constant with a known operation; everything else preserved', () => {
-    const items = [
-      { variable: 'a', data_type: 'constant', operation: 'max', value: 1, std: 0.1 },
-      { variable: 's', data_type: 'series', obs_dt: 0.1, value: [1, 2], std: 0.1 },
-      { variable: 'c', data_type: 'constant', operation: 'calc_spike', value: 0, std: 0.1 },
-    ]
-    const { editable, preserved } = splitItems(items, OPS)
-    expect(editable.map((r) => r.data_item_name)).toEqual(['a'])
-    expect(preserved.map((i) => i.variable)).toEqual(['s', 'c'])
-  })
-
-  it('treats a missing data_type/operation as an editable constant', () => {
-    const { editable } = splitItems([{ variable: 'x', value: 1, std: 1 }], OPS)
-    expect(editable).toHaveLength(1)
-  })
-})
-
-describe('itemToRow / rowToItem round-trip', () => {
-  it('preserves extra keys and round-trips cost_type', () => {
-    const item = {
-      variable: 'a',
-      data_type: 'constant',
-      operation: 'max',
-      operands: ['m/x'],
-      unit: 'u',
-      value: 1,
-      std: 0.1,
-      weight: 2,
-      experiment_idx: 1,
-      subexperiment_idx: 3,
-      cost_type: 'MSE',
-      operation_kwargs: { p: 1 },
-      plot_type: 'horizontal',
-    }
-    const back = rowToItem(itemToRow(item))
-    expect(back.data_type).toBe('constant')
-    expect(back.value).toBe(1)
-    expect(back.weight).toBe(2)
-    expect(back.subexperiment_idx).toBe(3) // extra key preserved
-    expect(back.operation_kwargs).toEqual({ p: 1 }) // extra key preserved
-    expect(back.cost_type).toBe('MSE')
-    expect(back.operation).toBe('max')
-  })
-
-  it('round-trips operation_kwargs and reflects edited values', () => {
-    const row = itemToRow({
-      variable: 'a', data_type: 'constant', operation: 'peak_above', operands: ['m/x'],
-      value: 1, std: 0.1, operation_kwargs: { threshold: 0.5, window: 10 },
-    })
-    expect(row.operation_kwargs).toEqual({ threshold: 0.5, window: 10 })
-    row.operation_kwargs.threshold = 0.9 // edit persists on save
-    expect(rowToItem(row).operation_kwargs).toEqual({ threshold: 0.9, window: 10 })
-  })
-
-  it('drops operation_kwargs when empty or when the operation is cleared', () => {
-    const row = itemToRow({
-      variable: 'a', data_type: 'constant', operation: 'peak_above', operands: ['m/x'],
-      value: 1, std: 0.1, operation_kwargs: { threshold: 0.5 },
-    })
-    row.operation_kwargs = {}
-    expect('operation_kwargs' in rowToItem(row)).toBe(false)
-    row.operation_kwargs = { threshold: 0.5 }
-    row.operation = '' // no operation -> kwargs have no meaning
-    expect('operation_kwargs' in rowToItem(row)).toBe(false)
-  })
-
-  it('newRow has an empty operation_kwargs map', () => {
-    expect(newRow().operation_kwargs).toEqual({})
-  })
-
-  // cost_kwargs (CA #370): the cost func's own keyword args, per data_item.
-  it('round-trips cost_kwargs and reflects edited values', () => {
-    const row = itemToRow({
-      variable: 'a', data_type: 'constant', operation: 'max', operands: ['m/x'],
-      value: 1, std: 0.1, cost_type: 'tolerant', cost_kwargs: { tolerance: 0.5, mode: 'abs' },
-    })
-    expect(row.cost_kwargs).toEqual({ tolerance: 0.5, mode: 'abs' })
-    row.cost_kwargs.tolerance = 0.9
-    expect(rowToItem(row).cost_kwargs).toEqual({ tolerance: 0.9, mode: 'abs' })
-  })
-
-  it('keeps cost_kwargs when no cost_type is selected', () => {
-    // CA still applies its default cost func, so "no cost_type" is not "no cost
-    // func to pass kwargs to" -- deleting them here would be silent data loss on
-    // a hand-written obs_data that was merely opened in the editor.
-    const row = itemToRow({
-      variable: 'a', data_type: 'constant', operation: 'max', operands: ['m/x'],
-      value: 1, std: 0.1, cost_kwargs: { tolerance: 0.5 },
-    })
-    const back = rowToItem(row)
-    expect('cost_type' in back).toBe(false)
-    expect(back.cost_kwargs).toEqual({ tolerance: 0.5 })
-  })
-
-  it('drops cost_kwargs when there are none', () => {
-    const row = newRow()
-    row.operands = ['m/x']
-    expect(row.cost_kwargs).toEqual({})
-    expect('cost_kwargs' in rowToItem(row)).toBe(false)
-  })
-
-  it('drops blank operation/cost_type instead of emitting empty strings', () => {
-    const row = newRow()
-    row.operation = ''
-    row.cost_type = ''
-    row.operands = ['m/x']
-    const item = rowToItem(row)
-    expect('operation' in item).toBe(false)
-    expect('cost_type' in item).toBe(false)
-    expect(item.plot_type).toBe('horizontal')
-  })
-
-  it('round-trips a text source and drops it when cleared', () => {
-    const row = itemToRow({
-      variable: 'a', data_type: 'constant', operation: 'max', operands: ['m/x'],
-      value: 1, std: 0.1, source: 'Smith et al. 2020, fig 3',
-    })
-    expect(row.source).toBe('Smith et al. 2020, fig 3')
-    expect(rowToItem(row).source).toBe('Smith et al. 2020, fig 3')
-    row.source = ''
-    expect('source' in rowToItem(row)).toBe(false)
-  })
-
-  it('round-trips a comment and drops it when cleared', () => {
-    const row = itemToRow({
-      variable: 'a', data_type: 'constant', operation: 'max', operands: ['m/x'],
-      value: 1, std: 0.1, comment: 'noisy near t=0',
-    })
-    expect(row.comment).toBe('noisy near t=0')
-    expect(rowToItem(row).comment).toBe('noisy near t=0')
-    row.comment = ''
-    expect('comment' in rowToItem(row)).toBe(false)
-  })
-
-  it('never clobbers a legacy dict source (file paths)', () => {
-    const item = {
-      variable: 'a', data_type: 'constant', operation: 'max', operands: ['m/x'],
-      value: 1, std: 0.1, source: { value_path: 'x.npy' },
-    }
-    const row = itemToRow(item)
-    expect(row.source).toBe('') // dict not surfaced as editable text
-    expect(rowToItem(row).source).toEqual({ value_path: 'x.npy' }) // preserved
-  })
-})
-
-describe('newRow defaults', () => {
-  it('is a constant with sensible defaults', () => {
-    expect(newRow()).toMatchObject({
-      data_type: 'constant',
-      operation: 'max',
-      value: 0,
-      std: 1,
-      weight: 1.0,
-      experiment_idx: 0,
-      unit: 'dimensionless',
-      plot_type: 'horizontal',
-    })
-  })
-})
-
-describe('buildObsData', () => {
-  const editableRows = [
-    itemToRow({ variable: 'a', data_type: 'constant', operation: 'max', operands: ['m/x'], value: 1, std: 0.1 }),
-  ]
-  const preservedItems = [{ variable: 's', data_type: 'series', obs_dt: 0.1 }]
-
-  it('object form with protocol_info (verbatim) + preserved items appended', () => {
-    const protocolInfo = { pre_times: [0], sim_times: [[5]] }
-    const out = buildObsData({ protocolInfo, editableRows, preservedItems, predictionRows: [] })
-    expect(Array.isArray(out)).toBe(false)
-    expect(out.protocol_info).toBe(protocolInfo)
-    expect(out.data_items).toHaveLength(2)
-    expect(out.data_items[1]).toEqual({ variable: 's', data_type: 'series', obs_dt: 0.1 })
-    expect(out.prediction_items).toEqual([])
-  })
-
-  it('bare array (data-only) when protocol_info is null', () => {
-    const out = buildObsData({ protocolInfo: null, editableRows, preservedItems: [], predictionRows: [] })
-    expect(Array.isArray(out)).toBe(true)
-    expect(out).toHaveLength(1)
-  })
-})
 
 describe('versionedJsonName', () => {
   const d = new Date(2026, 5, 15) // 260615
@@ -225,23 +20,59 @@ describe('versionedJsonName', () => {
   })
 })
 
-describe('experimentIdxMax', () => {
-  it('is experimentCount-1, floored at 0', () => {
-    expect(experimentIdxMax(3)).toBe(2)
-    expect(experimentIdxMax(0)).toBe(0)
+describe('withParameters', () => {
+  const document = {
+    protocol_info: { pre_times: [0, 0], sim_times: [[1, 2], [3]], params_to_change: { 'C/y': [[1, 2], [3]] } },
+    data_items: [{ data_item_name: 'p' }],
+    note: 'kept',
+  }
+
+  it('gives each unset parameter a lane with no value, and keeps the rest', () => {
+    const out = withParameters(document, ['C/x', 'C/y'])
+    expect(out.protocol_info.params_to_change).toEqual({
+      'C/y': [[1, 2], [3]],
+      'C/x': [[null, null], [null]],
+    })
+    expect(out.data_items).toEqual(document.data_items)
+    expect(out.note).toBe('kept')
+    // a copy: the document given is not changed
+    expect(document.protocol_info.params_to_change['C/x']).toBeUndefined()
+  })
+
+  it('starts a protocol of one experiment for a document without one', () => {
+    expect(withParameters(null, ['C/x']).protocol_info).toEqual({
+      pre_times: [0],
+      sim_times: [[1]],
+      params_to_change: { 'C/x': [[null]] },
+    })
   })
 })
 
-describe('operands on save (#160)', () => {
-  it('drops an operand that was cleared rather than writing a blank one', () => {
-    // Clearing the field is how an operand is removed in the editor, so a blank
-    // must not survive into the file as a nameless operand.
-    const row = { ...newRow(0), operands: ['a/x', '', 'b/y'] }
-    expect(rowToItem(row).operands).toEqual(['a/x', 'b/y'])
+describe('prediction features', () => {
+  it('counts only the items with an operation as possible features', () => {
+    const items = [
+      { data_item_name: 'a', operation: 'max' },
+      { data_item_name: 'b' },
+      { data_item_name: 'c', operation: '' },
+      { data_item_name: 'd', operation: 'None' },
+    ]
+    expect(predictionFeatureItems(items).map((i) => i.data_item_name)).toEqual(['a'])
+    expect(predictionFeatureItems(null)).toEqual([])
   })
 
-  it('keeps a fully-filled operand list untouched', () => {
-    const row = { ...newRow(0), operands: ['a/x', 'b/y'] }
-    expect(rowToItem(row).operands).toEqual(['a/x', 'b/y'])
+  it('knows when there is held-out data', () => {
+    expect(hasHeldOutData([{ value: 0 }])).toBe(true)
+    expect(hasHeldOutData([{ operation: 'max' }])).toBe(false)
+  })
+})
+
+describe('emulatorPredictionFlags', () => {
+  it('marks the trailing prediction_feature_labels, by position', () => {
+    expect(
+      emulatorPredictionFlags({ feature_labels: ['a', 'b', 'c'], prediction_feature_labels: ['c'] }),
+    ).toEqual([false, false, true])
+    // a bundle trained without them, or an older one without the key
+    expect(emulatorPredictionFlags({ feature_labels: ['a'] })).toEqual([false])
+    expect(emulatorPredictionFlags(null)).toEqual([])
   })
 })

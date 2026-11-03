@@ -10,7 +10,10 @@ const TESTID_SELECTOR = /^\[data-testid="[a-z0-9-]+"\]$/
 
 const SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
-/** Every `.vue` file under `src/`, read once. */
+/** protocol-kit's obs_data editor, which the "Edit obs_data" steps point into. */
+const PROTOCOL_KIT_EDITOR = path.resolve(SRC, '..', 'node_modules', '@physiomelinks', 'protocol-kit', 'dist', 'editor.js')
+
+/** Every `.vue` file under `src/`, and protocol-kit's editor, read once. */
 function vueSources() {
   const out = []
   const walk = (dir) => {
@@ -21,6 +24,7 @@ function vueSources() {
     }
   }
   walk(SRC)
+  out.push({ file: '@physiomelinks/protocol-kit/editor', text: fs.readFileSync(PROTOCOL_KIT_EDITOR, 'utf8') })
   return out
 }
 
@@ -146,15 +150,15 @@ describe('tourSteps', () => {
     expect(closed).toEqual(['[data-testid="edit-op-funcs"]'])
   })
 
-  it('sends the user-func step to the outputs directory', () => {
-    // The funcs are written to <outputs>/user_funcs/ (apps/api/user_funcs.py),
+  it('sends the user-func step to the working dir', () => {
+    // The funcs are written to <working dir>/inputs/funcs/<date>/ (apps/api/user_funcs.py),
     // and the copy used to read as though they landed inside circulatory_autogen
     // -- which would be someone else's repo, and would not travel with the study.
     // Naming the path is what makes that unambiguous; saying where it does *not*
     // go was answering a question nobody had asked.
     const step = TOUR_STEPS.find((s) => s.id === 'op-funcs-save')
-    expect(step.text).toContain('outputs directory')
-    expect(step.text).toContain('user_funcs/operation_funcs_user.py')
+    expect(step.text).toContain('working dir')
+    expect(step.text).toContain('inputs/funcs/<date>/operation_funcs_user.py')
     expect(step.text).not.toContain('circulatory_autogen')
   })
 
@@ -184,7 +188,7 @@ describe('tourSteps', () => {
   // The guard that matters. The tour points at testids from a separate file, so
   // renaming one (say `eo-value`) breaks a step in the app and *nothing else* --
   // no compile error, no other test. This is that error.
-  it('points every anchor at a testid that still exists in a .vue file', () => {
+  it('points every anchor at a testid that still exists in a .vue file or protocol-kit', () => {
     const sources = vueSources()
     expect(sources.length).toBeGreaterThan(0)
     const missing = []

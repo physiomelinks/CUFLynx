@@ -5,6 +5,7 @@ import Checkbox from 'primevue/checkbox'
 import InputNumber from 'primevue/inputnumber'
 import InputText from 'primevue/inputtext'
 import Select from 'primevue/select'
+import EmulatorBundleDialog from './EmulatorBundleDialog.vue'
 import { EXTERNAL_PYTHON_INSTALL_URL } from '../lib/examples'
 
 /**
@@ -37,26 +38,68 @@ const props = defineProps({
    * samples it saved — the two files `emulator_settings.reuse_samples` needs.
    */
   reusable: { type: Boolean, default: false },
+  /**
+   * Every bundle this study could be read with. More than one means a choice has
+   * to be made rather than derived -- see EmulatorBundleDialog.
+   */
+  choices: { type: Array, default: () => [] },
+  /** Directory of the bundle on screen. */
+  emulatorDir: { type: String, default: '' },
+  /** Whether that bundle is an explicit pick rather than the fallback. */
+  chosen: { type: Boolean, default: false },
   /** v-model for the "use the emulator" tick box. */
   modelValue: { type: Boolean, default: false },
+  /**
+   * How many of the obs_data's prediction_items carry an operation -- the ones
+   * "Include prediction items" can add as emulated features. 0 disables the box.
+   */
+  predictionFeatureCount: { type: Number, default: 0 },
 })
-const emit = defineEmits(['run', 'cancel', 'change', 'update:modelValue'])
+const emit = defineEmits(['run', 'cancel', 'change', 'update:modelValue', 'select-bundle'])
 
 // CUFLynx-level settings; every CA emulator option comes from the schema below.
 const settings = reactive({
   num_cores: 1,
-  dt: 0.01,
+  // No dt: a run that names none is given the engine's (Settings, or a study's
+  // user_inputs), server-side. A literal here overrode both with 0.01.
   DEBUG: false,
+  // libcuflynx's emulator_settings.include_prediction_items: also emulate the
+  // prediction_items that have an operation. Sent only when on and supported.
+  include_prediction_items: false,
 })
 
 // Per-option values for CA's emulator settings, keyed by option name.
 const optionValues = reactive({})
 
 // CA's emulation option descriptors. `emulator_dir` is dropped: CUFLynx derives
-// it from the outputs directory on both sides (train and use), and a second way
+// it from the working dir on both sides (train and use), and a second way
 // to say where the bundle lives is a way for the two to disagree.
+// `include_prediction_items` has its own checkbox (below), should CA's schema list it.
 const emulatorOptions = computed(() =>
-  (props.defaults.options ?? []).filter((o) => o.name !== 'emulator_dir'),
+  (props.defaults.options ?? []).filter(
+    (o) => o.name !== 'emulator_dir' && o.name !== 'include_prediction_items',
+  ),
+)
+
+/**
+ * "Include prediction items": only when libcuflynx supports it (the API's feature
+ * detect) and the obs_data has a prediction_item with an operation. Which items
+ * become features is libcuflynx's decision; this only decides whether to ask.
+ */
+const predictionFeaturesReason = computed(() => {
+  if (props.defaults.prediction_features_supported !== true)
+    return 'The installed libcuflynx cannot include prediction items as features; update it.'
+  if (!props.predictionFeatureCount)
+    return 'The obs_data has no prediction_items with an operation to include.'
+  return ''
+})
+const predictionFeaturesDisabled = computed(() => !!predictionFeaturesReason.value)
+watch(
+  predictionFeaturesDisabled,
+  (off) => {
+    if (off) settings.include_prediction_items = false
+  },
+  { immediate: true },
 )
 
 const supported = computed(() => props.defaults.supported !== false)
@@ -309,6 +352,10 @@ const coresInvalid = computed(
 )
 
 const worstR2 = computed(() => props.metadata?.worst_r2 ?? null)
+
+/** Whether there is anything to choose between. One bundle is not a decision. */
+const hasChoice = computed(() => (props.choices?.length ?? 0) > 1)
+const showBundleDialog = ref(false)
 /** The configured refusal threshold, so the panel judges by the same number CA will. */
 const minR2 = computed(() => Number(optionValues.min_r2 ?? 0.9))
 const belowThreshold = computed(
@@ -357,7 +404,7 @@ function onRun() {
          would be a control that cannot work, and the degraded form is what read
          as a bug in the first place. -->
     <p v-if="needsStudy" class="hint" data-testid="emu-needs-study">
-      Load a model, an obs_data.json and a params_for_id.csv to train an emulator.
+      Load a model, an obs_data.json and a params_for_id.json to train an emulator.
     </p>
 
     <div v-if="showUnavailable" class="emu-unavailable" data-testid="emu-unavailable">
@@ -411,6 +458,29 @@ function onRun() {
         </p>
       </div>
 
+      <!--
+        Which emulator, when the study holds more than one. Above the numbers
+        rather than below, because every number under it belongs to the bundle
+        named here and reading them without knowing which is to read them wrong.
+      -->
+      <div v-if="metadata && hasChoice" class="emu-choice" data-testid="emu-choice">
+        <span class="emu-choice-text">
+          <strong>{{ (metadata.model_name ?? 'emulator').replace(/^two_phase_/, '') }}</strong>
+          <span v-if="!chosen" class="emu-choice-warn">
+            — most recent of {{ choices.length }}, not chosen
+          </span>
+          <span v-else class="emu-choice-of">of {{ choices.length }} trained</span>
+        </span>
+        <Button
+          label="Choose…"
+          size="small"
+          severity="secondary"
+          outlined
+          data-testid="emu-choose"
+          @click="showBundleDialog = true"
+        />
+      </div>
+
       <!-- What was trained: the numbers that decide whether to trust it. -->
       <div v-if="metadata" class="emu-summary" data-testid="emu-summary">
         <table class="emu-table">
@@ -419,7 +489,10 @@ function onRun() {
           </thead>
           <tbody>
             <tr v-for="f in features" :key="f.label">
-              <td class="emu-feature">{{ f.label }}</td>
+              <td class="emu-feature">
+                {{ f.label }}
+                <span v-if="f.prediction" class="pred-tag" data-testid="emu-prediction-tag" title="A prediction item's feature (include_prediction_items)">prediction</span>
+              </td>
               <td :class="{ bad: f.r2 != null && f.r2 < minR2 }">{{ fmt(f.r2) }}</td>
               <td>{{ fmt(f.rmse, 3) }}</td>
             </tr>
@@ -445,6 +518,24 @@ function onRun() {
       </div>
 
       <div class="cal-form" data-testid="emu-settings">
+        <label
+          class="field checkbox"
+          :class="{ 'opt-off': predictionFeaturesDisabled }"
+          :title="predictionFeaturesReason"
+          data-testid="emu-include-prediction-items-field"
+        >
+          <Checkbox
+            v-model="settings.include_prediction_items"
+            :binary="true"
+            :disabled="predictionFeaturesDisabled"
+            input-id="emu-include-prediction-items"
+            data-testid="emu-include-prediction-items"
+          />
+          <span>Include prediction items</span>
+        </label>
+        <small class="hint" data-testid="emu-include-prediction-items-hint">
+          Prediction items with an operation become features; the others are skipped.
+        </small>
         <!-- CA's emulation options, from ANALYSIS_OPTIONS['emulation']. -->
         <template v-for="opt in generalOptions" :key="opt.name">
           <label
@@ -654,9 +745,38 @@ function onRun() {
       <pre ref="term" class="terminal" data-testid="emu-terminal">{{ lines.join('\n') }}</pre>
     </template>
   </section>
+
+    <EmulatorBundleDialog
+      v-model:visible="showBundleDialog"
+      :choices="choices"
+      :current-dir="emulatorDir"
+      :chosen="chosen"
+      @select="(dir) => emit('select-bundle', dir)"
+    />
 </template>
 
 <style scoped>
+.emu-choice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin: 0.5rem 0;
+  padding: 0.4rem 0.55rem;
+  border: 1px solid var(--p-content-border-color, #d4d4d8);
+  border-radius: 6px;
+}
+.emu-choice-text {
+  font-size: 0.85rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.emu-choice-warn {
+  color: var(--p-orange-400, #d97706);
+}
+.emu-choice-of {
+  opacity: 0.7;
+}
 .calibration-panel {
   display: flex;
   flex-direction: column;
@@ -691,6 +811,15 @@ function onRun() {
 }
 /* A setting circulatory_autogen will ignore on this run, or one it cannot accept
    yet: greyed so the form says what the run will actually do. */
+.pred-tag {
+  margin-left: 0.3rem;
+  padding: 0 0.3rem;
+  border-radius: 3px;
+  font-size: 0.62rem;
+  background: var(--p-orange-500, #e08a2c);
+  color: #111;
+  vertical-align: middle;
+}
 .field.opt-off {
   opacity: 0.5;
 }

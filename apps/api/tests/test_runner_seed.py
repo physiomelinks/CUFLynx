@@ -58,3 +58,25 @@ def test_uq_seed_forwarded_to_mcmc_and_optimiser_options():
 def test_uq_seed_omitted_when_none():
     assert "seed" not in uq_runner._uq_options({}, seed=None)
     assert "seed" not in uq_runner._optimiser_options({}, seed=None)
+
+
+# ---------------------------------------------------------------------------
+# solver_info: MaximumStep is filled only for a solver that takes it.
+# ---------------------------------------------------------------------------
+def test_runners_fill_maximum_step_only_where_ca_lists_it(monkeypatch):
+    import types
+
+    import emulator_runner
+    from conftest import set_ca_module
+
+    fields = {"CVODE_myokit": [{"name": "MaximumStep"}, {"name": "rtol"}],
+              "casadi_integrator": [{"name": "max_step_size"}]}
+    set_ca_module(monkeypatch, "parsers.PrimitiveParsers", types.SimpleNamespace(
+        solver_info_fields=lambda solver: fields.get(solver, [])))
+
+    for build in (calibration_runner._solver_info_from_config,
+                  sensitivity_runner._solver_info_from_config,
+                  emulator_runner._solver_info_from_config,
+                  uq_runner._solver_info):
+        assert "MaximumStep" in build({"solver": "CVODE_myokit"}, {})
+        assert "MaximumStep" not in build({"solver": "casadi_integrator"}, {})

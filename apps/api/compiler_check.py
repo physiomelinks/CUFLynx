@@ -1,15 +1,19 @@
-"""Detect the C/C++ compiler Myokit needs, and explain how to install it.
+"""Detect the C toolchain the compiling backends need, and explain how to install it.
 
-A missing compiler is a **limitation, not a fatal error**. Only the Myokit
-backend compiles: ``CVODE_myokit`` (generated_model_format ``cellml``) turns
-each model into a native extension *at run time*. The other backends are pure
-Python / precompiled and need no toolchain:
+A missing toolchain is a **limitation, not a fatal error**. Two cellml solvers
+compile each model *at run time*:
+
+    CVODE_myokit  -> a native extension, built by setuptools   (needs a C compiler)
+    BE_batched_c  -> a shared library, built by CMake           (needs CMake + a C compiler)
+
+The other backends are pure Python / precompiled and need no toolchain:
 
     python        -> solve_ivp          (scipy)
     casadi_python -> casadi_integrator  (casadi)
 
-(Confirmed against circulatory_autogen: of ``src/solver_wrappers/*``, only
-``myokit_helper.py`` compiles anything.)
+CVODE_myokit stays on the menu without a compiler (it is the default, and the
+banner explains it); BE_batched_c is withheld from the menu when either tool is
+missing (:func:`unavailable_solvers`), with a note in Settings saying why.
 
 So the app warns and points at those alternatives rather than pretending it's
 broken. Freezing with PyInstaller can't bundle a compiler away, which is why the
@@ -138,6 +142,35 @@ def has_cpp_compiler() -> bool:
     )
 
 
+@functools.lru_cache(maxsize=1)
+def has_cmake() -> bool:
+    """True if a working ``cmake`` is on PATH (BE_batched_c builds with it).
+
+    Run, not just found, for the same reason as the compiler. Cached like
+    :func:`has_cpp_compiler`.
+    """
+    path = shutil.which("cmake")
+    return bool(path) and _compiler_runs(path)
+
+
+_CMAKE_HINTS = {
+    "Windows": "Install CMake:\n  winget install --id Kitware.CMake\nor download from https://cmake.org/download/",
+    "Linux": (
+        "Install CMake, e.g.:\n"
+        "  sudo apt install cmake   # Debian/Ubuntu\n"
+        "  sudo dnf install cmake   # Fedora/RHEL"
+    ),
+    "Darwin": "Install CMake:\n  brew install cmake\nor download from https://cmake.org/download/",
+}
+
+
+def cmake_hint() -> str:
+    """Per-OS instructions for installing CMake."""
+    return _CMAKE_HINTS.get(platform.system(), "Install CMake from https://cmake.org/download/") + (
+        "\nThen restart CUFLynx so it is picked up."
+    )
+
+
 def compiler_hint() -> str:
     """Per-OS instructions for installing the missing compiler."""
     return _HINTS.get(
@@ -153,18 +186,38 @@ COMPILER_FREE_BACKENDS = (
 )
 
 
+def unavailable_solvers() -> dict[str, str]:
+    """``{solver: why}`` for the solvers this machine cannot build models for.
+
+    Only BE_batched_c: CVODE_myokit is never withheld (see the module docstring).
+    """
+    missing = [name for name, ok in (("CMake", has_cmake()), ("a C compiler", has_cpp_compiler())) if not ok]
+    if not missing:
+        return {}
+    hints = ([cmake_hint()] if not has_cmake() else []) + ([compiler_hint()] if not has_cpp_compiler() else [])
+    return {
+        "BE_batched_c": (
+            "BE_batched_c is not listed: it builds each model with CMake and a C compiler, "
+            f"and {' and '.join(missing)} {'were' if len(missing) > 1 else 'was'} not found.\n"
+            + "\n".join(hints)
+        )
+    }
+
+
 def compiler_status() -> dict:
     """Compiler availability, install hint, and what still works without it.
 
     Consumed by ``GET /api/config``; drives a *warning* (not an error) banner —
-    only the Myokit/CVODE backend is blocked, so ``affects`` says what's lost and
-    ``alternatives`` says what to use instead.
+    only the compiling cellml solvers are blocked, so ``affects`` says what's lost
+    and ``alternatives`` says what to use instead.
     """
     present = has_cpp_compiler()
     return {
         "present": present,
         "hint": "" if present else compiler_hint(),
-        # Only this backend JIT-compiles; everything else is unaffected.
-        "affects": "" if present else "CVODE_myokit (generated model format 'cellml')",
+        # Only these compile; everything else is unaffected.
+        "affects": "" if present else "CVODE_myokit and BE_batched_c (generated model format 'cellml')",
         "alternatives": [] if present else [dict(b) for b in COMPILER_FREE_BACKENDS],
+        # Solvers withheld from the menu for want of a tool, and why (a Settings note).
+        "unavailable_solvers": unavailable_solvers(),
     }

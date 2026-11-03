@@ -94,4 +94,27 @@ describe('ScatterChart', () => {
     expect(w.attributes('preserveAspectRatio')).toBe('xMidYMid meet')
     expect(w.classes()).toContain('square')
   })
+
+  it('draws a series line and ±err bars around points that carry one', () => {
+    const w = mountChart({
+      points: [{ x: 2, y: 5, err: 1 }, { x: 4, y: 6 }],
+      line: [{ x: 2, y: 4 }, { x: 4, y: 7 }],
+    })
+    expect(w.find('polyline[data-testid="chart-line"]').exists()).toBe(true)
+    // Only the point with an err gets a bar, and the bar spans y - err .. y + err.
+    const bars = w.findAll('[data-testid="chart-error-bar"]')
+    expect(bars).toHaveLength(1)
+    const stem = bars[0].find('line')
+    const cy = Number(w.findAll('.parity-point')[0].attributes('cy'))
+    const [y1, y2] = [Number(stem.attributes('y1')), Number(stem.attributes('y2'))]
+    expect(y1).toBeGreaterThan(cy)
+    expect(y2).toBeLessThan(cy)
+    expect(y1 - cy).toBeCloseTo(cy - y2, 6)
+  })
+
+  it('draws a one-point series as a marker, since a line needs two', () => {
+    const w = mountChart({ points: [{ x: 1, y: 1 }], line: [{ x: 1, y: 2 }] })
+    expect(w.find('polyline').exists()).toBe(false)
+    expect(w.find('rect[data-testid="chart-line"]').exists()).toBe(true)
+  })
 })

@@ -189,7 +189,9 @@ def test_missing_compiler_names_what_breaks_and_what_still_works(monkeypatch):
 
 def test_config_route_exposes_compiler_status_and_packaged_flag(client):
     body = client.get("/api/config").json()
-    assert {"present", "hint", "affects", "alternatives"} == set(body["cpp_compiler"])
+    assert {"present", "hint", "affects", "alternatives", "unavailable_solvers"} == set(
+        body["cpp_compiler"]
+    )
     assert body["packaged"] is False  # tests run from source, never frozen
 
 

@@ -1,4 +1,4 @@
-"""Where a study delivered by PhLynx waits for the user to accept it (#287).
+"""Where a study delivered by PhLynx, or opened by a link, waits for the user to accept it.
 
 PhLynx builds a COMBINE archive and needs to hand it to a *running* CUFLynx. It
 does that by posting to ``/api/inbox`` on localhost, having found us by probing
@@ -23,9 +23,12 @@ desktop shell reads the constants without wanting the app.
 from __future__ import annotations
 
 import io
+import os
 import threading
 import zipfile
 from dataclasses import dataclass, field
+
+from omex_import import user_func_kind
 
 #: What ``/api/health`` calls itself. PhLynx keys off this to be sure the thing
 #: answering on 8787 is CUFLynx and not some other local service.
@@ -39,15 +42,29 @@ PREFERRED_PORT = 8787
 #: discover.
 RECEIVE_PORTS = tuple(range(PREFERRED_PORT, PREFERRED_PORT + 5))
 
+#: The largest archive staged from any sender: a post from a page, or a download
+#: started by a ``cuflynx://`` link. Well above any real study, so an accidental
+#: or hostile multi-gigabyte payload cannot sit in this process's memory.
+MAX_DELIVERY_BYTES = 64 * 1024 * 1024
+
+
+#: What a delivery is. An ``archive`` is a COMBINE archive's bytes, loaded by the OMEX
+#: importer. A ``study`` is a study manifest already on this machine
+#: (``cuflynx://open?study=``): ``data`` is the manifest as read, ``path`` is where it
+#: is, and loading it opens the directory holding it.
+KINDS = ("archive", "study")
+
 
 @dataclass
 class PendingStudy:
-    """One delivered archive, awaiting the user's decision."""
+    """One delivery, awaiting the user's decision."""
 
     data: bytes
     origin: str
     filename: str
     members: list[str] = field(default_factory=list)
+    kind: str = "archive"
+    path: str | None = None
 
     def summary(self) -> dict:
         """What the confirmation dialog shows -- never the archive itself.
@@ -55,12 +72,20 @@ class PendingStudy:
         The user is being asked to trust a payload from a page; naming its origin,
         its size and what is inside it is the whole basis on which they can.
         """
-        return {
+        out = {
+            "kind": self.kind,
             "origin": self.origin,
             "filename": self.filename,
             "bytes": len(self.data),
             "members": list(self.members),
+            # Python that accepting will install into the user's custom funcs, and
+            # that CA then runs: the one part of a study that is code. Named
+            # separately so the dialog can say so before the user agrees to it.
+            "user_funcs": [m for m in self.members if user_func_kind(m)],
         }
+        if self.path:
+            out["path"] = self.path
+        return out
 
 
 class Inbox:
@@ -75,12 +100,21 @@ class Inbox:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._pending: PendingStudy | None = None
+        self._error: dict | None = None
 
     def deliver(self, data: bytes, origin: str, filename: str) -> dict:
-        members = _member_names(data)
+        """Stage a COMBINE archive."""
+        return self._stage(PendingStudy(data, origin, filename, _member_names(data)))
+
+    def deliver_study(self, path: str, data: bytes, origin: str, members: list[str]) -> dict:
+        """Stage the study manifest at ``path``; ``members`` are the parts it declares."""
+        return self._stage(PendingStudy(
+            data, origin, os.path.basename(path), list(members), kind="study", path=path))
+
+    def _stage(self, pending: PendingStudy) -> dict:
         with self._lock:
-            self._pending = PendingStudy(data, origin, filename, members)
-            return self._pending.summary()
+            self._pending = pending
+            return pending.summary()
 
     def peek(self) -> dict | None:
         with self._lock:
@@ -97,7 +131,24 @@ class Inbox:
         with self._lock:
             had = self._pending is not None
             self._pending = None
+            self._error = None
             return had
+
+    def report_error(self, origin: str, message: str) -> None:
+        """Record a delivery that failed before anything could be staged.
+
+        A ``cuflynx://`` link is fetched by the app, not posted by a page, so a
+        bad link or a failed download has no sender to answer: the UI shows this
+        instead, once (:meth:`take_error`).
+        """
+        with self._lock:
+            self._error = {"origin": origin, "message": message}
+
+    def take_error(self) -> dict | None:
+        """The last failed delivery, removed so it is shown once."""
+        with self._lock:
+            error, self._error = self._error, None
+            return error
 
 
 def _member_names(data: bytes) -> list[str]:

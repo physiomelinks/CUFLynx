@@ -54,8 +54,7 @@ describe('rowsToDoc', () => {
     expect(doc.params[0]).toEqual({
       name: 'C_scale',
       modifies: ['a/C', 'b/C'],
-      // CA renamed the key: a modifier acts on parameters, an operation acts
-      // on outputs (CA #385). The row keeps its own `operation` field.
+      // The entry key is `modifier`; the row keeps its own `operation` field.
       modifier: 'scale',
       min: 0.5,
       max: 2,

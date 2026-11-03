@@ -60,6 +60,12 @@ def test_enablement_flags_default_and_override():
     assert ui["do_uq"] is False and ui["do_ia"] is False
 
 
+def test_the_uq_stage_flag_is_do_uq_only():
+    assert _ui(enabled={"do_uq": True})["do_uq"] is True
+    ui = _ui(enabled={"do_mcmc": True})
+    assert ui["do_uq"] is False and "do_mcmc" not in ui
+
+
 def test_do_ad_false_for_fd():
     ui = _ui(calibration={"gradient_method": "FD"})
     assert ui["do_ad"] is False
@@ -70,21 +76,17 @@ def test_pipeline_script_is_valid_python_and_gates_each_stage():
     ast.parse(src)  # valid python
     # loads the dated yaml, and gates every stage on a do_* flag
     assert "user_inputs_*.yaml" in src
-    for flag in ("do_simulation", "do_sensitivity", "do_calibration"):
+    for flag in ("do_simulation", "do_sensitivity", "do_calibration", "do_uq"):
         assert f'cfg.get("{flag}")' in src
-    # UQ is gated through a helper because it accepts both the pre-rename do_mcmc and the
-    # current do_uq, so an export made by an older CUFLynx still runs.
-    assert "_do_uq(cfg)" in src
-    assert 'cfg.get("do_uq", cfg.get("do_mcmc", False))' in src
+    assert "do_mcmc" not in src and "mcmc_options" not in src
     # drives CA via the tutorial's init_from_dict idiom (not a custom builder)
     assert "init_from_dict" in src
     assert "build_inp_data_dict" in src
     assert "CVS0DParamID.init_from_dict" in src
     assert "SensitivityAnalysis.init_from_dict" in src
     assert "get_simulation_helper_from_inp_data_dict" in src
-    # UQ actually runs MCMC / Laplace (not a stub). run_UQ is CA's name since
-    # CA #392 (CUFLynx #217); run_mcmc stays as the fallback for an older CA.
-    assert "run_UQ(" in src and "run_mcmc()" in src
+    # UQ actually runs MCMC / Laplace (not a stub).
+    assert "run_UQ(" in src and "run_mcmc" not in src
     assert "IdentifiabilityAnalysis.init_from_dict" in src
     assert "ensure_mle_cost_type_for_bayesian_inner" in src
 
@@ -951,27 +953,15 @@ def test_pipeline_script_comes_from_the_engine_when_it_has_one(monkeypatch):
     assert ep.render_pipeline_script() == "# from the engine\n"
 
 
-def test_pipeline_script_falls_back_when_the_engine_predates_it(monkeypatch):
-    """Same contract as every other CA import here: work with the
-    circulatory_autogen the user actually has."""
+def test_pipeline_script_has_no_fallback_of_its_own(monkeypatch):
+    """An engine without the generator is an error, not a CUFLynx-written copy."""
+    from ca_imports import CaImportError
+
     def _missing(module, *names):
-        raise ep.CaImportError("no generate_pipeline_script in this CA")
+        raise CaImportError("no generate_pipeline_script in this CA")
 
     monkeypatch.setattr(ep, "ca_from", _missing)
 
-    assert ep.render_pipeline_script() == ep.PIPELINE_SCRIPT
-
-
-def test_the_fallback_is_still_a_working_pipeline(monkeypatch):
-    """The fallback is only reached on an old engine, so nothing else would catch
-    it rotting."""
-    def _missing(module, *names):
-        raise ep.CaImportError("no generate_pipeline_script in this CA")
-
-    monkeypatch.setattr(ep, "ca_from", _missing)
-    src = ep.render_pipeline_script()
-
-    ast.parse(src)
-    assert "user_inputs_*.yaml" in src
-    for flag in ("do_simulation", "do_sensitivity", "do_calibration"):
-        assert f'cfg.get("{flag}")' in src
+    with pytest.raises(CaImportError):
+        ep.render_pipeline_script()
+    assert not hasattr(ep, "PIPELINE_SCRIPT")

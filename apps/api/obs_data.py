@@ -1,11 +1,9 @@
 """Parsing and validation for circulatory_autogen ``obs_data.json`` files.
 
-Two shapes are accepted:
-
-* an **object** with a ``protocol_info`` block (+ ``data_items`` /
-  ``prediction_items``) — drives a multi-experiment protocol run; and
-* a bare **array** of ``data_items`` (the legacy data-only format, e.g.
-  ``3compartment_obs_data.json``) — overlays only, run with manual time.
+One shape is accepted: an **object** with a ``protocol_info`` block holding
+``pre_times`` and ``sim_times`` (+ ``data_items`` / ``prediction_items``). A bare
+array of data_items, or an object without ``protocol_info``, is refused with the
+``cuflynx-upgrade obs-data`` command that converts it.
 
 The structure above is parsed here directly -- enough to load a protocol and draw
 overlays without the simulation stack. Whether the document is one
@@ -52,7 +50,7 @@ class ObsData:
     data_items: list[dict]
     prediction_items: list[dict]
     #: Things worth saying about a document that was nonetheless loaded: the
-    #: checks that could not run, the deprecated vocabulary it is written in.
+    #: checks that could not run.
     #: Surfaced by every route that parses one, so nothing loads quietly.
     warnings: list[str] = field(default_factory=list)
 
@@ -83,63 +81,25 @@ class ObsData:
         }
 
 
-#: obs_data entry keys superseded by circulatory_autogen's newer vocabulary. A file
-#: still using them was written for a CA that has since changed under it, and CA's own
-#: complaint is about the *consequence* -- a duplicate ``data_item_name`` -- rather than
-#: the cause, so the cause is said here, along with the migrator that fixes it.
-LEGACY_ITEM_KEYS = ("variable", "name_for_plotting")
-
-#: Kept to two sentences: what is out of date, and the command that fixes it. The
-#: reader is trying to load a file, not read a changelog.
-_MIGRATION_HINT = (
-    "This obs_data uses the old {keys}, replaced by 'data_item_name' (which must now be "
-    "unique) and 'trace_name_for_plotting'. Convert it with `cuflynx-migrate-obs-data "
-    "<file>`."
+#: The command that converts an obs_data written for an earlier libcuflynx.
+UPGRADE_HINT = (
+    "Convert it once with: cuflynx-upgrade obs-data <file> --user-inputs "
+    "<the user_inputs.yaml it ran with>"
 )
 
 
-def legacy_vocabulary_hint(obj) -> str | None:
-    """How to bring a pre-#466 obs_data up to date, or None if it already is.
-
-    Both an error's second paragraph (when the collision CA reports *is* the
-    split) and a warning of its own (when the old keys happen not to collide, so
-    the file loads today and fails at some later CA release).
-    """
-    items = list(data_items_of(obj))
-    if isinstance(obj, dict):
-        predictions = obj.get("prediction_items")
-        if isinstance(predictions, list):
-            items = items + predictions
-    found = sorted(
-        {k for it in items if isinstance(it, dict) for k in LEGACY_ITEM_KEYS if k in it}
-    )
-    if not found:
-        return None
-    return _MIGRATION_HINT.format(keys=" and ".join(f"'{k}'" for k in found))
-
-
 def data_items_of(obj) -> list:
-    """The ``data_items`` of an obs_data document, in either accepted shape.
-
-    The one place the "object or bare array" rule is applied outside
-    :func:`parse_obs_data`, so a site that only wants to walk the items does not
-    have to re-decide which shape it was handed. Every such site used to assume
-    the object form and died with ``'list' object has no attribute 'get'`` on a
-    data-only file (the shipped 3compartment / heat_fenics obs_data are bare
-    arrays).
+    """The ``data_items`` of an obs_data document.
 
     Tolerant on purpose: this is for consumers of an already-accepted document
     (the runners, the exported scripts), not for validation. Anything that is
-    not one of the two shapes reads as "no items"; :func:`parse_obs_data` is
-    what refuses a malformed document, with a message naming the problem.
+    not an obs_data object reads as "no items"; :func:`parse_obs_data` is what
+    refuses a malformed document, with a message naming the problem.
 
-    The list returned for the object form is the document's own list, and its
-    entries are the document's own dicts in both shapes -- so a caller that
-    edits an item in place (e.g. stamping a ``cost_type``) edits the document,
-    and can then write the document back out in the shape it arrived in.
+    The list returned is the document's own list of the document's own dicts --
+    so a caller that edits an item in place (e.g. stamping a ``cost_type``)
+    edits the document, and can then write the document back out.
     """
-    if isinstance(obj, list):
-        return obj
     if isinstance(obj, dict):
         items = obj.get("data_items") or []
         return items if isinstance(items, list) else []
@@ -149,9 +109,7 @@ def data_items_of(obj) -> list:
 def protocol_info_of(obj) -> dict | None:
     """The ``protocol_info`` block of an obs_data document, or None.
 
-    None for the bare-array (data-only) form, which by definition carries no
-    protocol -- CUFLynx runs those with manual time. Same tolerance rule as
-    :func:`data_items_of`.
+    Same tolerance rule as :func:`data_items_of`.
     """
     if isinstance(obj, dict):
         info = obj.get("protocol_info")
@@ -159,34 +117,223 @@ def protocol_info_of(obj) -> dict | None:
     return None
 
 
+#: The keys that make a prediction_item carry held-out data (CA #535): measured
+#: values the calibrated model is checked against afterwards, never scored in the
+#: calibration itself. A CA predating #535 rejects every one of them as an
+#: unknown key, so they are removed before such a CA reads the document.
+HELD_OUT_KEYS = ("value", "data_type", "std", "obs_dt")
+
+#: The CA module that arrived with those keys; its presence is the capability test.
+_HELD_OUT_MODULE = "param_id.validation"
+
+#: A prediction_item's optional scalar of its trace, in a data_item's vocabulary.
+#: An item with an ``operation`` is what ``include_prediction_items`` makes a
+#: sensitivity / emulator feature. A libcuflynx without that feature rejects
+#: both keys as unknown, so they are removed before such a one reads the document.
+PREDICTION_OPERATION_KEYS = ("operation", "operation_kwargs")
+
+#: The option, in ``sa_options`` and in ``emulator_settings``, that asks libcuflynx
+#: to treat the prediction_items with an operation as features too.
+INCLUDE_PREDICTION_ITEMS = "include_prediction_items"
+
+#: libcuflynx's feature detect for :data:`INCLUDE_PREDICTION_ITEMS` and for an
+#: ``operation`` on a prediction_item: ``(module, constant)``, supported when the
+#: constant is truthy. **The one place its name is spelled** -- the API, the
+#: runners and the obs_data hand-over all ask :func:`ca_supports_prediction_features`.
+PREDICTION_FEATURES_FLAG = ("sensitivity_analysis", "SUPPORTS_PREDICTION_FEATURES")
+
+
+def prediction_items_of(obj) -> list:
+    """The ``prediction_items`` of an obs_data document; ``[]`` for a bare array."""
+    if isinstance(obj, dict):
+        items = obj.get("prediction_items") or []
+        return items if isinstance(items, list) else []
+    return []
+
+
+def has_held_out_data(obj) -> bool:
+    """Whether any prediction_item carries a ``value`` to validate against."""
+    return any(isinstance(it, dict) and it.get("value") is not None
+               for it in prediction_items_of(obj))
+
+
+def ca_accepts_held_out() -> bool:
+    """Whether the circulatory_autogen this process imports reads held-out keys.
+
+    Judged by the module CA added alongside them rather than by a version number:
+    the CA directory is chosen at runtime and a checkout carries no release. The
+    same module is what validates a calibration against them, so this is also
+    whether there will be a validation at all -- CUFLynx scores nothing itself.
+    """
+    try:
+        from ca_imports import ca_import, ensure_ca_path  # noqa: PLC0415
+
+        ensure_ca_path()
+        ca_import(_HELD_OUT_MODULE)
+    except Exception:  # noqa: BLE001 - no CA or an older one: neither reads them
+        return False
+    return True
+
+
+def ca_supports_prediction_features() -> bool:
+    """Whether this process's libcuflynx takes ``include_prediction_items`` and an
+    ``operation`` on a prediction_item (see :data:`PREDICTION_FEATURES_FLAG`)."""
+    module, name = PREDICTION_FEATURES_FLAG
+    try:
+        from ca_imports import ca_import, ensure_ca_path  # noqa: PLC0415
+
+        ensure_ca_path()
+        return bool(getattr(ca_import(module), name, False))
+    except Exception:  # noqa: BLE001 - no CA, or one that cannot say: not supported
+        return False
+
+
+def prediction_features_option(settings: dict) -> dict:
+    """``{include_prediction_items: True}`` for CA's options block, or ``{}``.
+
+    The key is sent only when the user asked for it *and* this libcuflynx supports
+    it: an older one rejects an unknown option, and ``False`` is its default anyway.
+    Asked for but unsupported is said in the run log rather than failing the run.
+    Which items become features -- and the warning for those that cannot -- is
+    libcuflynx's; nothing about it is decided here.
+    """
+    if not (settings or {}).get(INCLUDE_PREDICTION_ITEMS):
+        return {}
+    if ca_supports_prediction_features():
+        return {INCLUDE_PREDICTION_ITEMS: True}
+    print(
+        "warning: include_prediction_items ignored: this libcuflynx cannot include "
+        "prediction items as features; update it",
+        flush=True,
+    )
+    return {}
+
+
+def without_keys(obj, keys):
+    """A copy of ``obj`` with ``keys`` taken off its prediction_items.
+
+    The item itself stays -- its operand is still a prediction CA records -- only
+    what an older parser would refuse goes. ``obj`` is not modified.
+    """
+    if not isinstance(obj, dict) or not prediction_items_of(obj):
+        return obj
+    out = dict(obj)
+    out["prediction_items"] = [
+        {k: v for k, v in it.items() if k not in keys} if isinstance(it, dict) else it
+        for it in obj["prediction_items"]
+    ]
+    return out
+
+
+def without_held_out(obj):
+    """A copy of ``obj`` without the held-out keys on its prediction_items."""
+    return without_keys(obj, HELD_OUT_KEYS)
+
+
+def _unreadable_keys(obj) -> tuple:
+    """The prediction_item keys in ``obj`` this process's CA would reject."""
+    present = {k for it in prediction_items_of(obj) if isinstance(it, dict) for k in it}
+    drop: tuple = ()
+    if present & set(HELD_OUT_KEYS) and not ca_accepts_held_out():
+        drop += HELD_OUT_KEYS
+    if present & set(PREDICTION_OPERATION_KEYS) and not ca_supports_prediction_features():
+        drop += PREDICTION_OPERATION_KEYS
+    return drop
+
+
+def for_ca(obj):
+    """The document as the circulatory_autogen in this process can read it.
+
+    ``obj`` itself when CA understands every prediction_item key in it; otherwise
+    a copy without the held-out keys (CA #535) and/or ``operation`` /
+    ``operation_kwargs`` (prediction features) that it would refuse. Every
+    in-process hand-over to CA's parser goes through here, so such an obs_data
+    still loads, costs and calibrates against an older CA.
+    """
+    drop = _unreadable_keys(obj)
+    return without_keys(obj, drop) if drop else obj
+
+
+#: Kept alive until the process exits: CA reads the obs_data path at construction
+#: and again when it copies the study into its run directory.
+_ca_copies = None
+
+
+def ca_obs_path(obs_path: str) -> str:
+    """``obs_path``, or a copy the runner's CA can read (see :func:`for_ca`).
+
+    For the analysis runners, which hand CA a *path* and run in whichever
+    interpreter the user chose -- so the check has to be made there, not in the
+    server. The copy keeps the file's name, because CA and CUFLynx both derive
+    names from it (the run directory, the emulator directory), and lives in a
+    temp dir rather than the user's working dir.
+    """
+    global _ca_copies
+    import json  # noqa: PLC0415
+    import tempfile  # noqa: PLC0415
+    from pathlib import Path  # noqa: PLC0415
+
+    try:
+        obj = json.loads(Path(obs_path).read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 - let CA report an unreadable file itself
+        return obs_path
+    readable = for_ca(obj)
+    if readable is obj:
+        return obs_path
+    if _ca_copies is None:
+        _ca_copies = tempfile.TemporaryDirectory(prefix="cuflynx_obs_")
+    out = Path(_ca_copies.name) / Path(obs_path).name
+    out.write_text(json.dumps(readable, indent=4), encoding="utf-8")
+    print(
+        "libcuflynx here predates some prediction_items keys; it is given the "
+        "obs_data without them (held-out data then goes unvalidated, and prediction "
+        "operations are not used as features).",
+        flush=True,
+    )
+    return str(out)
+
+
+def with_ca_obs_path(config: dict) -> dict:
+    """A runner config whose ``obs_path`` this process's CA can read.
+
+    Each analysis runner calls it once, right after putting CA on ``sys.path``,
+    so everything downstream -- CA's engine and CUFLynx's own rewrites of the
+    file alike -- reads the same document.
+    """
+    if not config.get("obs_path"):
+        return config
+    return {**config, "obs_path": ca_obs_path(config["obs_path"])}
+
+
 def parse_obs_data(obj) -> ObsData:
-    """Validate and structure a parsed obs_data JSON value (object or array).
+    """Validate and structure a parsed obs_data JSON value.
 
     Raises :class:`ObsDataError` with a user-facing message for every documented
     invalid case.
     """
-    if isinstance(obj, list):
-        protocol_info = None
-        data_items = obj
-        prediction_items: list = []
-    elif isinstance(obj, dict):
-        protocol_info = obj.get("protocol_info")
-        if not isinstance(protocol_info, dict):
-            raise ObsDataError("protocol_info is required")
-        _validate_protocol_info(protocol_info)
-        data_items = obj.get("data_items", []) or []
-        prediction_items = obj.get("prediction_items", []) or []
-    else:
-        raise ObsDataError("obs_data must be a JSON object or array")
+    if isinstance(obj, list) or (isinstance(obj, dict) and "protocol_info" not in obj):
+        # The form libcuflynx no longer reads: say so in CA's words when it can be asked.
+        verdict = ca_verdict(obj)
+        if verdict.error:
+            raise ObsDataError(f"circulatory_autogen rejected this obs_data: {verdict.error}")
+        what = "is a bare list of data items" if isinstance(obj, list) else "has no protocol_info"
+        raise ObsDataError(
+            f"this obs_data {what}; an obs_data needs a protocol_info with pre_times "
+            f"and sim_times. {UPGRADE_HINT}"
+        )
+    if not isinstance(obj, dict):
+        raise ObsDataError("obs_data must be a JSON object")
+    protocol_info = obj.get("protocol_info")
+    if not isinstance(protocol_info, dict):
+        raise ObsDataError("protocol_info is required")
+    _validate_protocol_info(protocol_info)
+    data_items = obj.get("data_items", []) or []
+    prediction_items = obj.get("prediction_items", []) or []
 
     if not isinstance(data_items, list):
         raise ObsDataError("'data_items' must be a list")
 
-    if protocol_info is not None:
-        n_experiments = len(ca_obs.sim_times(protocol_info))
-    else:
-        idxs = [it.get("experiment_idx", 0) for it in data_items if isinstance(it, dict)]
-        n_experiments = (max(idxs) + 1) if idxs else 1
+    n_experiments = len(ca_obs.sim_times(protocol_info))
 
     for i, item in enumerate(data_items):
         if not isinstance(item, dict):
@@ -200,29 +347,17 @@ def parse_obs_data(obj) -> ObsData:
                 f"(0..{n_experiments - 1}) in data_items[{i}]"
             )
 
-    if protocol_info is not None:
-        _validate_traces(protocol_info)
+    _validate_traces(protocol_info)
 
     # Last, so the structural messages above (which name the offending index)
     # win when both apply.
     verdict = ca_verdict(obj)
-    hint = legacy_vocabulary_hint(obj)
     if verdict.error:
-        message = f"circulatory_autogen rejected this obs_data: {verdict.error}"
-        # The duplicate-name complaint on a pre-#466 file reads as a mistake the
-        # author made, when in fact the file was correct when it was written and
-        # the schema moved. Say which it is, and how to convert it.
-        if hint:
-            message = f"{message}\n\n{hint}"
-        raise ObsDataError(message)
+        raise ObsDataError(f"circulatory_autogen rejected this obs_data: {verdict.error}")
 
     warnings = []
     if verdict.skipped:
         warnings.append(verdict.skipped)
-    if hint:
-        # Accepted -- CA's migration shim still reads the old keys -- but on
-        # borrowed time, and silently only until the names happen to collide.
-        warnings.append(hint)
 
     return ObsData(
         protocol_info=protocol_info,
@@ -300,12 +435,7 @@ def ca_verdict(obj) -> CaVerdict:
         )
 
     try:
-        # pre_time/sim_time are only consulted when protocol_info omits
-        # pre_times/sim_times (the data-only form, which CUFLynx runs with manual
-        # time); they exist to satisfy the parser, not to describe the run.
-        parser.parse_obs_data_json(
-            obs_data_dict=copy.deepcopy(obj), pre_time=0.0, sim_time=1.0
-        )
+        parser.parse_obs_data_json(obs_data_dict=copy.deepcopy(for_ca(obj)))
     except ValueError as exc:
         return CaVerdict(error=str(exc))
     except Exception as exc:  # noqa: BLE001

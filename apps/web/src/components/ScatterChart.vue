@@ -12,7 +12,11 @@ import { computed } from 'vue'
 import { niceTicks, fmtTick } from '../lib/plot'
 
 const props = defineProps({
-  points: { type: Array, default: () => [] }, // [{ x, y, title }]
+  // [{ x, y, title, err }]; `err` (optional) draws a vertical bar y ± err.
+  points: { type: Array, default: () => [] },
+  // An optional series drawn through its points, [{ x, y }] -- a model prediction
+  // the points are judged against. A single point is drawn as a marker instead.
+  line: { type: Array, default: () => [] },
   xDomain: { type: Array, required: true }, // [lo, hi] in data units
   yDomain: { type: Array, required: true },
   xLabel: { type: String, default: '' },
@@ -60,7 +64,24 @@ const yTicks = computed(() =>
 )
 
 const scaled = computed(() =>
-  props.points.map((p) => ({ cx: sx(Number(p.x)), cy: sy(Number(p.y)), title: p.title })),
+  props.points.map((p) => {
+    const err = Number(p.err)
+    const bar = Number.isFinite(err) && err > 0
+      ? { y1: sy(Number(p.y) - err), y2: sy(Number(p.y) + err) }
+      : null
+    return { cx: sx(Number(p.x)), cy: sy(Number(p.y)), title: p.title, bar }
+  }),
+)
+
+const linePath = computed(() =>
+  props.line.length > 1
+    ? props.line.map((p) => `${sx(Number(p.x))},${sy(Number(p.y))}`).join(' ')
+    : null,
+)
+const lineMarker = computed(() =>
+  props.line.length === 1
+    ? { cx: sx(Number(props.line[0].x)), cy: sy(Number(props.line[0].y)) }
+    : null,
 )
 
 /** The guide, in data coordinates, clipped to whatever both axes cover. */
@@ -117,6 +138,30 @@ const guideLine = computed(() => {
       :x2="guideLine.x2"
       :y2="guideLine.y2"
     />
+
+    <polyline
+      v-if="linePath"
+      class="series-line"
+      data-testid="chart-line"
+      :points="linePath"
+    />
+    <rect
+      v-if="lineMarker"
+      class="series-marker"
+      data-testid="chart-line"
+      :x="lineMarker.cx - 4"
+      :y="lineMarker.cy - 4"
+      width="8"
+      height="8"
+    />
+
+    <template v-for="(p, i) in scaled" :key="'e' + i">
+      <g v-if="p.bar" class="error-bar" data-testid="chart-error-bar">
+        <line :x1="p.cx" :y1="p.bar.y1" :x2="p.cx" :y2="p.bar.y2" />
+        <line :x1="p.cx - 3" :y1="p.bar.y1" :x2="p.cx + 3" :y2="p.bar.y1" />
+        <line :x1="p.cx - 3" :y1="p.bar.y2" :x2="p.cx + 3" :y2="p.bar.y2" />
+      </g>
+    </template>
 
     <circle
       v-for="(p, i) in scaled"
@@ -186,6 +231,19 @@ const guideLine = computed(() => {
   stroke: var(--p-content-border-color, #bbb);
   stroke-width: 1;
   stroke-dasharray: 4 3;
+}
+.series-line {
+  fill: none;
+  stroke: var(--p-orange-500, #e08a2c);
+  stroke-width: 1.5;
+}
+.series-marker {
+  fill: var(--p-orange-500, #e08a2c);
+}
+.error-bar line {
+  stroke: var(--p-primary-color, #5b9bd5);
+  stroke-width: 1;
+  opacity: 0.75;
 }
 .parity-point {
   fill: var(--p-primary-color, #5b9bd5);

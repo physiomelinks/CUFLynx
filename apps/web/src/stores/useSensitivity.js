@@ -45,6 +45,8 @@ export function useSensitivity(options = {}) {
   // a short description of where it came from (current / best fit / bounds).
   const nominal = computed(() => selected.value?.nominal ?? null)
   const nominalSource = computed(() => selected.value?.nominalSource ?? null)
+  // The outputs that are prediction features (include_prediction_items), for a tag.
+  const predictionOutputs = computed(() => selected.value?.predictionOutputs ?? [])
 
   // Human-readable label summarising what produced a run, so saved runs are
   // distinguishable in the comparison selector.
@@ -59,10 +61,14 @@ export function useSensitivity(options = {}) {
     if (s.method === 'local') {
       const parts = ['Local', (resolved || s.gradient_method || 'FD'), (s.nominal ?? 'current')]
       if (s.run_calibration_first) parts.push('calib-first')
+      if (s.include_prediction_items) parts.push('+predictions')
       return `#${id} ${parts.join(' · ')}`
     }
     if (s.method === 'sobol') {
-      return `#${id} Sobol · ${s.sample_type ?? 'saltelli'} · n${s.num_samples ?? '?'}`
+      const label = `#${id} Sobol · ${s.sample_type ?? 'saltelli'} · n${s.num_samples ?? '?'}`
+      // Its outputs include the prediction features, so it is not the same study
+      // as a run without them -- say so in the comparison selector.
+      return s.include_prediction_items ? `${label} · +predictions` : label
     }
     return `#${id} ${s.method ?? 'run'}`
   }
@@ -111,6 +117,7 @@ export function useSensitivity(options = {}) {
         outputNames: s.output_names ?? [],
         nominal: s.nominal ?? null,
         nominalSource: s.nominal_source ?? null,
+        predictionOutputs: s.prediction_outputs ?? [],
       },
     ]
     selectedId.value = id
@@ -147,6 +154,7 @@ export function useSensitivity(options = {}) {
         outputNames: payload.output_names ?? [],
         nominal: payload.nominal ?? null,
         nominalSource: payload.nominal_source ?? null,
+        predictionOutputs: payload.prediction_outputs ?? [],
       },
     ]
     selectedId.value = id
@@ -212,6 +220,7 @@ export function useSensitivity(options = {}) {
     outputNames,
     nominal,
     nominalSource,
+    predictionOutputs,
     error,
     running,
     results,

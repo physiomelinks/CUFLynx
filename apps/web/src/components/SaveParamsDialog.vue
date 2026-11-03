@@ -10,7 +10,7 @@ import Select from 'primevue/select'
 const props = defineProps({
   visible: { type: Boolean, default: false },
   // Where the file will be written (shown so the user knows the destination).
-  outputDir: { type: String, default: '' },
+  workingDir: { type: String, default: '' },
 })
 const emit = defineEmits(['update:visible', 'save'])
 
@@ -68,7 +68,7 @@ function onSave() {
       </label>
       <p class="sp-preview" data-testid="save-params-preview">
         Saves <code>{{ filename }}</code>
-        <template v-if="outputDir"> in <code>{{ outputDir }}</code></template>
+        <template v-if="workingDir"> in <code>{{ workingDir }}</code></template>
       </p>
     </div>
     <template #footer>

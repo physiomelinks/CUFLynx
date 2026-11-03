@@ -86,6 +86,11 @@ for runner in (
     # The fields the runners read out of CA's parsed dicts. A leaf like ca_imports --
     # stdlib and ca_imports only -- so it ships with them for the same reason.
     "ca_obs.py",
+    # The solver's own step defaults, put under the runners' CVODE defaults (a leaf too).
+    "solver_info_defaults.py",
+    # The working dir's input store (libcuflynx's, through ca_imports): uq_runner stores
+    # the MLE obs_data it writes there.
+    "working_dir.py",
     "local_sensitivity.py",
     # Every runner writes its results in circulatory_autogen's own formats and the
     # managers read them back from there (#210); this module is the one place that
@@ -96,9 +101,8 @@ for runner in (
     "calibrated_model.py",
     "cellml_meta.py",
     "params_for_id.py",
-    # An obs_data.json is an object *or* a bare array of data_items; uq_runner
-    # rewrites one (MLE cost_type) and reads its items through the single helper
-    # that knows both shapes, rather than assuming the object form.
+    # uq_runner rewrites an obs_data (MLE cost_type) and reads its items through
+    # obs_data's helper.
     "obs_data.py",
     # "use the emulator" -> CA engine kwargs, shared by all three analysis
     # runners so a study cannot be calibrated on a surrogate and analysed on the
@@ -106,8 +110,17 @@ for runner in (
     "emulator_config.py",
     # Training the emulator itself.
     "emulator_runner.py",
+    # Calibration workflows: CA's run_calibration_workflow, step by step.
+    "workflow_runner.py",
 ):
     datas.append((str(API_DIR / runner), "runners"))
+
+# `obs_extract` is deliberately absent from that list. This subdir exists for
+# modules an *external interpreter* executes as real .py files on disk, and
+# nothing in obs_extract is one: reading recordings and building an obs_data
+# document happens in the API process, on a worker thread, with no MPI and no
+# CA simulation stack to escape. Analysis(pathex=[API_DIR]) already follows
+# main.py's imports into the package and freezes it, so there is nothing to add.
 
 # The bundled example studies the "Start" dialog offers. Their filenames come
 # from apps/api/examples.py -- the same manifest the route serves from -- because
@@ -327,7 +340,7 @@ _FULL = os.environ.get("CUFLYNX_BUNDLE_FULL") == "1"
 _FULL_PKGS = ("autoemulate", "pymc", "arviz", "pytensor")
 
 _REQUIRED = ("libcuflynx", "myokit", "libcellml", "casadi", "webview", "setuptools",
-             "numpy", "scipy", "pandas", "yaml", "rdflib", "pint",
+             "numpy", "scipy", "pandas", "yaml", "rdflib", "pint", "jinja2",
              *_ANALYSIS_PKGS,
              *(_FULL_PKGS if _FULL else ()))
 # sympy and ruamel.yaml were dropped from this list when circulatory_autogen stopped
@@ -388,6 +401,15 @@ for pkg in ("myokit", "libcellml", "casadi", "webview", "setuptools", "numpy"):
 # hidden imports, no import of a backend at build time.
 datas += collect_data_files("libcuflynx")
 hiddenimports += collect_submodules("libcuflynx")
+# Source files libcuflynx reads at run time, collected as files beside their frozen
+# modules (where a frozen module's __file__ points). BE_batched_c keys its build cache on
+# a digest of its own generator's source (generators.cpp.batched.source_digest), so
+# without these it fails with FileNotFoundError on the first model it builds. Missing
+# paths are skipped: a libcuflynx without BE_batched_c has neither file.
+_SOURCES_READ_AT_RUN_TIME = ("generators/cpp/batched.py", "generators/kernel_ir.py")
+datas += collect_data_files(
+    "libcuflynx", include_py_files=True, includes=list(_SOURCES_READ_AT_RUN_TIME)
+)
 # The .dist-info too, which collect_all would have brought and collect_data_files does
 # not: without it importlib.metadata.version("libcuflynx") raises inside the bundle, and
 # "which engine is this app carrying" is a question worth being able to answer.

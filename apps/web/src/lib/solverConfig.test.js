@@ -7,6 +7,7 @@ import {
   defaultSolverInfo,
   obsDataOperations,
   nonDifferentiableInUse,
+  withheldSolverNotes,
 } from './solverConfig'
 
 const opts = {
@@ -131,5 +132,18 @@ describe('obs_data operation differentiability (in use)', () => {
   it('is empty when every used operation is differentiable', () => {
     const o = { data_items: [{ operation: 'max' }], prediction_items: [{ operation: 'mean' }] }
     expect(nonDifferentiableInUse(o, diffMap)).toEqual([])
+  })
+})
+
+describe('withheldSolverNotes', () => {
+  it('lists why each withheld solver is missing', () => {
+    const why = 'BE_batched_c is not listed: it builds each model with CMake and a C compiler, and CMake was not found.'
+    expect(withheldSolverNotes({ present: true, unavailable_solvers: { BE_batched_c: why } })).toEqual([why])
+  })
+
+  it('is empty when every solver is available or the server says nothing', () => {
+    expect(withheldSolverNotes({ present: true, unavailable_solvers: {} })).toEqual([])
+    expect(withheldSolverNotes({ present: true })).toEqual([])
+    expect(withheldSolverNotes(undefined)).toEqual([])
   })
 })

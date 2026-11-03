@@ -25,6 +25,7 @@ import engine as engine_mod
 import main
 import model_codegen
 import user_funcs
+from conftest import stored_input
 
 FIXTURE = Path(__file__).resolve().parent / "data" / "heat1d_external_model.py"
 
@@ -69,7 +70,7 @@ def no_launch(monkeypatch):
 # ---------------------------------------------------------------------------
 def test_the_upload_writes_the_study_copy_and_that_is_what_runs(client, tmp_path):
     model_id = upload_py(client, output_dir=tmp_path)
-    study_copy = tmp_path / "user_funcs" / "user_model.py"
+    study_copy = stored_input(tmp_path, "funcs", "user_model.py")
     assert study_copy.read_bytes() == FIXTURE.read_bytes()
     resolved = model_codegen.resolve_model_path(
         str(main.UPLOAD_DIR / f"{model_id}.py"),
@@ -117,7 +118,7 @@ def test_the_live_run_resolves_the_study_copy(client, tmp_path, monkeypatch):
         json={"model_id": model_id, "params": {}, "config_outputs_dir": str(tmp_path)},
     )
     assert resp.status_code == 200, resp.text
-    assert seen["model_path"] == str(tmp_path / "user_funcs" / "user_model.py")
+    assert seen["model_path"] == str(stored_input(tmp_path, "funcs", "user_model.py"))
 
 
 @pytest.mark.parametrize(
@@ -155,7 +156,7 @@ def test_every_analysis_runner_resolves_the_same_study_copy(
         json={"model_id": model_id, "settings": {"config_outputs_dir": str(tmp_path)}},
     )
     assert resp.status_code == 200, resp.text
-    assert captured["model_path"] == str(tmp_path / "user_funcs" / "user_model.py")
+    assert captured["model_path"] == str(stored_input(tmp_path, "funcs", "user_model.py"))
 
 
 # ---------------------------------------------------------------------------
@@ -168,7 +169,7 @@ def test_edit_opens_the_study_copy_and_reports_where_it_is(client, tmp_path, no_
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    study_copy = tmp_path / "user_funcs" / "user_model.py"
+    study_copy = stored_input(tmp_path, "funcs", "user_model.py")
     assert body["path"] == str(study_copy)
     assert body["opened"] is True
     assert body["editor"] == "fake-editor"
@@ -181,18 +182,18 @@ def test_edit_creates_the_copy_when_the_outputs_dir_came_later(client, tmp_path,
     """Uploaded with no outputs directory, then one is chosen: Edit is where the
     study copy gets made, and from then on it is the model."""
     model_id = upload_py(client)
-    assert not (tmp_path / "user_funcs" / "user_model.py").exists()
+    assert not (tmp_path / "inputs").exists()
     resp = client.post(
         f"/api/models/{model_id}/edit", json={"config_outputs_dir": str(tmp_path)}
     )
     assert resp.status_code == 200, resp.text
-    assert (tmp_path / "user_funcs" / "user_model.py").read_bytes() == FIXTURE.read_bytes()
+    assert stored_input(tmp_path, "funcs", "user_model.py").read_bytes() == FIXTURE.read_bytes()
 
 
 def test_edit_never_overwrites_an_existing_edit(client, tmp_path, no_launch):
     """Pressing the button twice must not throw away what the first press led to."""
     model_id = upload_py(client, output_dir=tmp_path)
-    study_copy = tmp_path / "user_funcs" / "user_model.py"
+    study_copy = stored_input(tmp_path, "funcs", "user_model.py")
     study_copy.write_text("# the user's edit\n")
     client.post(f"/api/models/{model_id}/edit", json={"config_outputs_dir": str(tmp_path)})
     assert study_copy.read_text(encoding="utf-8").splitlines() == ["# the user's edit"]
@@ -203,7 +204,7 @@ def test_no_outputs_dir_is_refused_rather_than_written_to_a_temp_dir(client, no_
     resp = client.post(f"/api/models/{model_id}/edit", json={"config_outputs_dir": ""})
     assert resp.status_code == 422
     detail = resp.json()["detail"]
-    assert "outputs directory" in detail
+    assert "working dir" in detail
     # Nothing was opened: there was nowhere to open.
     assert no_launch == []
 
@@ -259,7 +260,7 @@ def test_a_launch_that_cannot_happen_still_answers_with_the_path(
     body = resp.json()
     assert body["opened"] is False
     assert body["reason"] == "no desktop session"
-    assert body["path"] == str(tmp_path / "user_funcs" / "user_model.py")
+    assert body["path"] == str(stored_input(tmp_path, "funcs", "user_model.py"))
 
 
 def test_a_myokit_source_is_editable_but_says_it_is_not_what_runs(
@@ -276,7 +277,7 @@ def test_a_myokit_source_is_editable_but_says_it_is_not_what_runs(
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["path"] == str(tmp_path / "user_funcs" / "user_model.mmt")
+    assert body["path"] == str(stored_input(tmp_path, "model", "user_model.mmt"))
     assert body["runs"] is False
 
 
@@ -303,7 +304,7 @@ def test_the_source_route_still_serves_the_file(client):
 def test_the_source_route_shows_the_study_copy_when_there_is_one(client, tmp_path):
     """Otherwise "view" and "edit" would disagree about what the model is."""
     model_id = upload_py(client, output_dir=tmp_path)
-    (tmp_path / "user_funcs" / "user_model.py").write_text("# edited\n")
+    stored_input(tmp_path, "funcs", "user_model.py").write_text("# edited\n")
     resp = client.get(
         f"/api/models/{model_id}/source", params={"config_outputs_dir": str(tmp_path)}
     )
@@ -341,12 +342,12 @@ def test_an_edited_model_file_drops_the_cached_helper(tmp_path):
 
 
 def test_moving_to_the_study_copy_also_invalidates(tmp_path):
-    """Same model_id, same backend, different file: setting an outputs directory
+    """Same model_id, same backend, different file: setting a working dir
     mid-session changes which copy runs, and the cache key alone cannot see it."""
     first = tmp_path / "uploaded.py"
     first.write_text("# v1\n")
-    second = tmp_path / "user_funcs" / "user_model.py"
-    second.parent.mkdir()
+    second = tmp_path / "inputs" / "funcs" / "user_model.py"
+    second.parent.mkdir(parents=True)
     second.write_text("# v1\n")
     built = []
     engine_mod.engine.helper_factory = lambda **kw: built.append(kw["model_path"]) or _StubHelper()
@@ -539,10 +540,10 @@ def test_the_study_copy_has_one_home_per_suffix(tmp_path):
     """One stem for the .py and the .mmt, derived from the model kind's own
     filename -- so "where does the model source go" has a single answer."""
     assert user_funcs.model_source_path(".py", str(tmp_path)) == (
-        tmp_path / "user_funcs" / "user_model.py"
+        tmp_path / "inputs" / "funcs" / "user_model.py"
     )
     assert user_funcs.model_source_path("mmt", str(tmp_path)) == (
-        tmp_path / "user_funcs" / "user_model.mmt"
+        tmp_path / "inputs" / "model" / "user_model.mmt"
     )
 
 
