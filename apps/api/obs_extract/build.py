@@ -429,7 +429,8 @@ def _emit_features(doc, features, operation_funcs, binding, stimulus, t, signals
             if held_out:
                 doc["prediction_items"].append(_held_out_series_item(
                     feature, measured_variable, t, x, window, experiment,
-                    stim_sub, case, sweep_index, names_used, series_hz))
+                    stim_sub, case, sweep_index, names_used, series_hz,
+                    _data_reference(recording, case, sweep_index, provenance)))
                 emitted = True
                 continue
             item = _series_item(feature, measured_variable, t, x, window,
@@ -489,13 +490,15 @@ def _emit_features(doc, features, operation_funcs, binding, stimulus, t, signals
 
 #: Every key a ``prediction_item`` may carry (CA #535/#536). A held-out item is
 #: built as a data_item and cut down to these: ``weight``, ``cost_type`` and
-#: ``cost_kwargs`` have no meaning for an item that is never scored,
-#: ``plot_type``/``species``/``location`` are not in its schema, and
-#: ``data_reference`` is in it only from CA #618 on.
+#: ``cost_kwargs`` have no meaning for an item that is never scored, and
+#: ``plot_type``/``species``/``location`` are not in its schema. ``data_reference``
+#: (CA #618) is kept: a held-out item names where its data came from, as a
+#: data_item does.
 PREDICTION_ITEM_KEYS = (
     "data_item_name", "operands", "unit", "trace_name_for_plotting",
     "item_name_for_plotting", "experiment_idx", "subexperiment_idx",
     "data_type", "value", "std", "obs_dt", "operation", "operation_kwargs",
+    "data_reference",
 )
 
 #: The keys :data:`PREDICTION_ITEM_KEYS` adds to a bare prediction_item -- the
@@ -515,7 +518,7 @@ def _as_prediction_item(item: dict) -> dict:
 
 def _held_out_series_item(feature, measured_variable, t, x, window, experiment,
                           subexperiment, case, sweep_index, names_used,
-                          series_hz) -> dict:
+                          series_hz, data_reference: str) -> dict:
     """The recorded sweep as a held-out series prediction_item.
 
     Inline, unlike a calibration series: a prediction_item has ``value`` and no
@@ -545,6 +548,7 @@ def _held_out_series_item(feature, measured_variable, t, x, window, experiment,
         "obs_dt": dt * stride,
         "experiment_idx": int(experiment),
         "subexperiment_idx": int(subexperiment),
+        "data_reference": data_reference,
     }
 
 

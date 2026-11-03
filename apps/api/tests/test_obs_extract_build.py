@@ -478,8 +478,9 @@ def test_a_validation_group_is_held_out_as_prediction_items(tmp_path):
         assert item["std"] == 4.0
         assert item["operation"] == "max_in_range"
         assert item["experiment_idx"] == k and item["subexperiment_idx"] == 1
-        assert not {"weight", "cost_type", "plot_type", "source", "data_reference"} & set(item), \
+        assert not {"weight", "cost_type", "plot_type", "source"} & set(item), \
             "never scored, and outside the prediction_item schema"
+        assert "Currentsteps" in item["data_reference"], "names its origin, as a data_item does"
     assert any("nothing to calibrate against" in w for w in outcome.warnings)
 
 
@@ -515,6 +516,7 @@ def test_a_validation_series_is_inline_with_obs_dt(tmp_path):
     assert item["std"] == 2.0
     assert isinstance(item["value"], list) and len(item["value"]) >= 10
     assert "value_path" not in item and "weight" not in item
+    assert "Currentsteps" in item["data_reference"]
 
 
 def test_calibration_is_unchanged_by_the_role(tmp_path):
