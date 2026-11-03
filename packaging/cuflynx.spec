@@ -106,6 +106,8 @@ for runner in (
     "emulator_config.py",
     # Training the emulator itself.
     "emulator_runner.py",
+    # Calibration workflows: CA's run_calibration_workflow, step by step.
+    "workflow_runner.py",
 ):
     datas.append((str(API_DIR / runner), "runners"))
 
