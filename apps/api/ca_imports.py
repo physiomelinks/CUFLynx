@@ -64,8 +64,10 @@ NAMESPACE = "libcuflynx"
 #: ``external_testing`` is CA's builder of a real run, which only tests import --
 #: it is listed for the same reason as the rest: without it the namespaced
 #: spelling is never tried and the import silently falls back to a flat name
-#: that no CA has ever had.
+#: that no CA has ever had. ``calibration_workflow`` (CA #541) is newer than the
+#: namespace, so it has no flat spelling at all.
 CA_PACKAGES = frozenset({
+    "calibration_workflow",
     "checks",
     "coupler",
     "emulators",

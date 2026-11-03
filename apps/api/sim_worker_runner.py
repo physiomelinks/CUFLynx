@@ -85,6 +85,7 @@ sys.stdout = sys.stderr
 _CA_NAMESPACE = "libcuflynx"
 
 _CA_PACKAGES = frozenset({
+    "calibration_workflow",
     "checks",
     "coupler",
     "emulators",

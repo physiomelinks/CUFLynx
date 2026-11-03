@@ -8,6 +8,18 @@ import { shallowMount, flushPromises } from '@vue/test-utils'
 // blanking the whole app (the black screen). A setup-time error propagates out
 // of mount(), so this test fails if such a bug is reintroduced.
 vi.mock('./lib/api', () => ({
+  // The calibration-workflow store asks the backend on mount whether a workflow
+  // is open. Without these the mock factory has no such export, and every App
+  // mount raises an unhandled rejection -- 181 of them, which fails the run even
+  // though each test's own assertions pass. "Nothing open" is the honest default.
+  getWorkflow: vi.fn().mockResolvedValue(null),
+  loadWorkflow: vi.fn().mockResolvedValue(null),
+  uploadWorkflow: vi.fn().mockResolvedValue(null),
+  closeWorkflow: vi.fn().mockResolvedValue(null),
+  openWorkflowView: vi.fn().mockResolvedValue(null),
+  runWorkflow: vi.fn().mockResolvedValue({ job_id: 'w1' }),
+  getWorkflowStatus: vi.fn().mockResolvedValue({ state: 'done', lines: [], next_offset: 0 }),
+  cancelWorkflow: vi.fn().mockResolvedValue({ cancelled: true }),
   getVariables: vi.fn().mockResolvedValue({}),
   simulate: vi.fn().mockResolvedValue({ time: [], outputs: {} }),
   runProtocol: vi.fn().mockResolvedValue({ experiments: [] }),
