@@ -1508,8 +1508,9 @@ def _no_obs_data_warning(parts: dict, source: str = "archive") -> list[str]:
     if unreadable:
         looked_at = "; ".join(f"{s['name']} ({s['reason']})" for s in unreadable)
         return [
-            f"No obs_data was loaded. Could not read: {looked_at}. A member with 'obs' in "
-            "its name is always taken as the obs_data."
+            f"No obs_data was loaded. Passed over: {looked_at}. An obs_data is taken by its "
+            "name (obs_data.json or <name>_obs_data.json), else by an 'obs_data_name', else by "
+            "having 'data_items', 'protocol_info' or 'prediction_items'."
         ]
     if source == "archive":
         # Neither an obs_data nor a params_for_id is required to drop a study in,
