@@ -58,7 +58,7 @@ jobs:
   # backend going missing on a runner. `assert_tests_ran.py` prints the real number every
   # run; if it drifts far below 240, find out why before lowering this.
   integration:
-    name: Integration tier (installed libcuflynx, ${{ matrix.extras }})
+    name: Integration tier (installed libcuflynx, ${{ matrix.extras }}, ${{ matrix.shard }})
     runs-on: ubuntu-24.04
     # The tier is minutes, the installs are most of the wall clock, and `full` drags in
     # torch. Generous enough for a cold pip cache, tight enough that a hang is reported
@@ -68,16 +68,24 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
+        extras:
           # What a user gets from `pip install cuflynx-api[analysis]`: simulation,
           # sensitivity, calibration, the emcee sampler, and a self-contained MPICH.
-          - extras: "dev,analysis"
-            min_ran: 240
+          - "dev,analysis"
           # Adds autoemulate + pymc + arviz -- the emulator and pyMC UQ paths, and the
           # only leg where arviz is present at all. That matters beyond the features: it
           # is the configuration the reported four-rank crash was running under.
-          - extras: "dev,analysis,full"
-            min_ran: 240
+          - "dev,analysis,full"
+        # The `integration` suite of apps/api/tests/ci_shards.json: ~4 minutes of pytest
+        # each on the `full` leg, so every shard stays under 10 on a slower runner.
+        shard: [analysis, models, rest]
+        include:
+          - shard: analysis
+            min_ran: 8
+          - shard: models
+            min_ran: 90
+          - shard: rest
+            min_ran: 145
     defaults:
       run:
         working-directory: apps/api
@@ -160,20 +168,23 @@ jobs:
           # Production wants the wide catch; CI wants to know. (CA #467.)
           CUFLYNX_STRICT_STARTUP: "1"
         run: |
-          pytest -m integration -v --tb=short --junitxml=junit-integration.xml
+          pytest -m integration --ci-shard "integration:${{ matrix.shard }}" -v --tb=short \
+            --junitxml=junit-integration.xml
 
       # pytest exits 0 when every test skipped, so the step above can pass having run
       # none of the tier. That is the likely failure here, not a red X.
       # A floor cannot see a few tests skipping, so tests that must run once the installed
       # CA supports them are named. CA #594's selection steps: once libcuflynx has them,
-      # the PhLynx send-back tests in test_calibration_workflow.py must run, not skip.
+      # the PhLynx send-back tests in test_calibration_workflow.py (the analysis shard) must
+      # run, not skip.
       # tests/test_assert_tests_ran.py checks each name here is a test that exists.
       - name: Fail if the tier did not actually run
         if: always()
         working-directory: .
         run: |
           required=()
-          if python -c "from libcuflynx.calibration_workflow import write_calibrated_parameters_to" 2>/dev/null; then
+          if [ "${{ matrix.shard }}" = analysis ] && \
+             python -c "from libcuflynx.calibration_workflow import write_calibrated_parameters_to" 2>/dev/null; then
             required+=(
               --require test_a_phlynx_selection_asks_for_its_boundary_runs_and_goes_back_calibrated
               --require test_several_selected_instances_go_back_calibrated_and_nothing_else
@@ -187,7 +198,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: integration-${{ matrix.extras }}
+          name: integration-${{ matrix.extras }}-${{ matrix.shard }}
           path: apps/api/junit-integration.xml
 
   # ---------------------------------------------------------------------------

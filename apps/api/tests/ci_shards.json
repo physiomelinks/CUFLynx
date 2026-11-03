@@ -6,7 +6,9 @@
     "test file runs in the rest shard without being listed here.",
     "simulation: the integration-simulation job of .github/workflows/integration.yml. Balanced on",
     "Windows per-file times (the slowest runner), ~4-5 minutes of pytest each, so a 1.5x slower",
-    "runner still finishes under 10. Checked by tests/test_ci_shards.py."
+    "runner still finishes under 10. Checked by tests/test_ci_shards.py.",
+    "integration: the integration job (installed libcuflynx). Balanced on the `full` leg's",
+    "per-file times, ~4 minutes of pytest each. Checked by tests/test_ci_shards.py."
   ],
   "simulation": {
     "calibration": [
@@ -28,6 +30,22 @@
       "tests/test_cost_sensitivity.py",
       "tests/test_easyml_import.py",
       "tests/test_omex_import.py"
+    ]
+  },
+  "integration": {
+    "analysis": [
+      "tests/test_emulator.py",
+      "tests/test_calibration.py",
+      "tests/test_calibration_workflow.py"
+    ],
+    "models": [
+      "tests/test_sensitivity_run.py",
+      "tests/test_run_matrix.py",
+      "tests/test_phlynx_round_trip.py",
+      "tests/test_myokit_import.py",
+      "tests/test_ad_gating.py",
+      "tests/test_exported_plotting.py",
+      "tests/test_modifier_equivalence.py"
     ]
   }
 }

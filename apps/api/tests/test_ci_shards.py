@@ -70,9 +70,10 @@ def test_no_entry_is_in_two_groups(suite):
             owner[entry] = group
 
 
-def test_the_simulation_tier_is_sharded():
-    assert [suite for _, suite, _ in _sharded_jobs()] == ["simulation"]
-    assert set(SHARDS) == {"simulation"}
+def test_the_integration_and_simulation_tiers_are_sharded():
+    assert sorted((job, suite) for job, suite, _ in _sharded_jobs()) == [
+        ("integration", "integration"), ("integration-simulation", "simulation")]
+    assert set(SHARDS) == {"integration", "simulation"}
 
 
 @pytest.mark.parametrize("job, suite, matrix", _sharded_jobs(), ids=str)
