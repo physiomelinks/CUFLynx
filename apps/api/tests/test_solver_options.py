@@ -5,6 +5,7 @@ schema (or the built-in fallback). The casadi_python AD path itself is covered b
 the integration tests.
 """
 
+import copy
 import sys
 import types
 
@@ -144,6 +145,23 @@ def test_cvode_opencor_not_offered_because_no_opencor_bundled(schema):
     # cellml falls back to the Myokit CVODE that CUFLynx can actually run.
     assert opts["default_solver_by_format"]["cellml"] == "CVODE_myokit"
     assert "CVODE_myokit" in opts["solvers_by_format"]["cellml"]
+
+
+@pytest.mark.parametrize("importable", [False, True])
+def test_cvode_libopencor_offered_only_when_libopencor_importable(monkeypatch, importable):
+    """CVODE_libopencor is listed iff libopencor can be imported by this interpreter;
+    CVODE_opencor (its alias) is never listed."""
+    schema = copy.deepcopy(so.FALLBACK_SOLVER_SCHEMA)
+    schema["solvers_by_model_type"]["cellml"] = ["CVODE_myokit", "CVODE_opencor", "CVODE_libopencor"]
+    schema["methods_by_solver"]["CVODE_libopencor"] = ["CVODE"]
+    monkeypatch.setattr(
+        so.importlib.util, "find_spec", lambda name, *a, **k: object() if importable else None
+    )
+    opts = so._build_options(schema, {"max": True})
+    cellml = opts["solvers_by_format"]["cellml"]
+    assert ("CVODE_libopencor" in cellml) is importable
+    assert ("CVODE_libopencor" in opts["methods_by_solver"]) is importable
+    assert "CVODE_opencor" not in cellml
 
 
 @BOTH_SCHEMAS

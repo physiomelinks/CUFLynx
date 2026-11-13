@@ -157,6 +157,24 @@ def _available_formats() -> tuple:
 # every payload (both the CA-introspected schema and the fallback below).
 UNSUPPORTED_SOLVERS = ("CVODE_opencor",)
 
+# CA's CVODE_libopencor backend (CVODE_opencor is its alias) needs libOpenCOR, which
+# needs Python 3.12+ and the ``libcuflynx[libopencor]`` extra. The engine runs in this
+# process's interpreter, so it is offered only when that interpreter can import it.
+LIBOPENCOR_SOLVER = "CVODE_libopencor"
+
+
+def _libopencor_importable() -> bool:
+    """Whether this interpreter can import libopencor (``find_spec``: no import cost)."""
+    try:
+        return importlib.util.find_spec("libopencor") is not None
+    except Exception:  # noqa: BLE001 - a broken install is "not usable"
+        return False
+
+
+def _unsupported_solvers() -> tuple:
+    """UNSUPPORTED_SOLVERS, plus CVODE_libopencor when libOpenCOR is not importable."""
+    return UNSUPPORTED_SOLVERS if _libopencor_importable() else UNSUPPORTED_SOLVERS + (LIBOPENCOR_SOLVER,)
+
 # solver_info keys an older CA advertises for a solver whose backend cannot
 # honour them.
 #
@@ -1212,6 +1230,7 @@ def _apply_aadc_tape_constraint(ad_suitable: dict, methods_by_solver: dict) -> t
 
 def _build_options(schema: dict, differentiable: dict[str, bool]) -> dict:
     supported = _available_formats()
+    unsupported = _unsupported_solvers()
     formats = [m for m in schema.get("model_types", []) if m in supported]
     solvers_by_model_type = schema.get("solvers_by_model_type", {})
     defaults = schema.get("default_solver_by_model_type", {})
@@ -1224,7 +1243,7 @@ def _build_options(schema: dict, differentiable: dict[str, bool]) -> dict:
     }
 
     def _supported(solvers):
-        return [s for s in solvers if s not in UNSUPPORTED_SOLVERS]
+        return [s for s in solvers if s not in unsupported]
 
     solvers_by_format = {m: _supported(solvers_by_model_type.get(m, [])) for m in formats}
     # If CA names an unsupported solver (e.g. CVODE_opencor) as a format's default,
@@ -1232,7 +1251,7 @@ def _build_options(schema: dict, differentiable: dict[str, bool]) -> dict:
     default_solver_by_format = {}
     for m in formats:
         d = defaults.get(m)
-        if not d or d in UNSUPPORTED_SOLVERS:
+        if not d or d in unsupported:
             d = solvers_by_format[m][0] if solvers_by_format[m] else ""
         default_solver_by_format[m] = d
     all_diff = bool(differentiable) and all(differentiable.values())
@@ -1275,7 +1294,7 @@ def _build_options(schema: dict, differentiable: dict[str, bool]) -> dict:
         "solvers_by_format": solvers_by_format,
         "default_solver_by_format": default_solver_by_format,
         "methods_by_solver": {
-            s: list(m) for s, m in methods_by_solver.items() if s not in UNSUPPORTED_SOLVERS
+            s: list(m) for s, m in methods_by_solver.items() if s not in unsupported
         },
         # Filter the CA-introspected schema (not a rebuilt one) so the OpenCOR
         # exclusion composes with SOLVER_INFO_FIELDS introspection rather than
@@ -1284,14 +1303,14 @@ def _build_options(schema: dict, differentiable: dict[str, bool]) -> dict:
         "solver_info_schema": {
             s: [f for f in fields if f.get("key") not in unsupported_solver_info_keys(s)]
             for s, fields in solver_info_schema.items()
-            if s not in UNSUPPORTED_SOLVERS
+            if s not in unsupported
         },
         "differentiable_operations": dict(differentiable),
         "all_differentiable": all_diff,
         # Per-integrator suitability for the backend's analytic gradient, so the UI
         # can offer AD/FSA only for a suitable integrator and warn otherwise (#298).
-        "ad_suitable_methods": {s: list(m) for s, m in ad_suitable.items() if s not in UNSUPPORTED_SOLVERS},
-        "fsa_suitable_methods": {s: list(m) for s, m in fsa_suitable.items() if s not in UNSUPPORTED_SOLVERS},
+        "ad_suitable_methods": {s: list(m) for s, m in ad_suitable.items() if s not in unsupported},
+        "fsa_suitable_methods": {s: list(m) for s, m in fsa_suitable.items() if s not in unsupported},
         "default_method_by_solver": dict(default_method),
     }
 
