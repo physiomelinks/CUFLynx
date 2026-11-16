@@ -64,8 +64,8 @@ def test_default_budget_without_a_schema_keeps_the_old_fallback(monkeypatch):
 def _export_calibration(**calibration):
     return export_pipeline.build_user_inputs(
         file_prefix="m", model_type="cellml_only", solver="CVODE_myokit", solver_info={},
-        dt=0.01, pre_time=0.0, sim_time=1.0, model_file="m.cellml", obs_file=None,
-        params_for_id_file=None, calibration=calibration, sensitivity=None, uq=None,
+        dt=0.01, pre_time=0.0, sim_time=1.0, model_path="m.cellml", obs_path=None,
+        params_for_id_path=None, calibration=calibration, sensitivity=None, uq=None,
         enabled=None,
     )["optimiser_options"]["num_calls_to_function"]
 

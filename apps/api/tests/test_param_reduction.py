@@ -261,7 +261,7 @@ def test_sobol_first_runs_the_sensitivity_runner_with_the_reduction_on(client, t
     monkeypatch.setattr(sensitivity_mod.param_reduction, "start",
                         lambda config: started.update(config) or "job")
     r = client.post("/api/param_reduction/run", json={"model_id": model_id, "settings": {
-        "source": "sobol_first", "num_samples": 8,
+        "source": "sobol_first", "num_samples": 8, "working_dir": str(tmp_path / "w"),
         "param_reduction_options": {"method": "pca"}}})
 
     assert r.status_code == 200, r.text
@@ -344,7 +344,8 @@ def test_a_profile_likelihood_run_reports_its_profiles(client, tmp_path, monkeyp
     monkeypatch.setattr(calibration.calibration, "last_completed_best_params",
                         lambda _id: {"Lotka_Volterra_module/alpha": 1.0})
     r = client.post("/api/uq/run", json={"model_id": model_id, "settings": {
-        "method": "laplace", "ia_options": {"method": "profile_likelihood"}}})
+        "method": "laplace", "ia_options": {"method": "profile_likelihood"},
+        "working_dir": str(tmp_path / "w")}})
     assert r.status_code == 200, r.text
     status, lines = _wait(client, "/api/uq", r.json()["job_id"])
 
@@ -382,7 +383,8 @@ def test_sobol_then_pca_reduction_on_lotka_volterra(client, requires_simulation,
     # SensitivityFilesError reaches the user.
     bare = tmp_path / "bare"
     bare.mkdir()
-    for path in out.glob("*_Sobol_indices.csv"):
+    # the Sobol run is in the working dir's sensitivity/ (or at its top, before #409)
+    for path in out.rglob("*_Sobol_indices.csv"):
         shutil.copy(path, bare / path.name)
     r = client.post("/api/param_reduction/run", json={"model_id": model_id, "settings": {
         "source": "existing",
