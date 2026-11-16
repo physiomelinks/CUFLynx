@@ -38,7 +38,7 @@ import { useCalibration, applyBestParams, expandBestFitParams } from './stores/u
 import { useEmulator } from './stores/useEmulator'
 import { useSensitivity } from './stores/useSensitivity'
 import { useUQ } from './stores/useUQ'
-import { useWorkflow } from './stores/useWorkflow'
+import { anyRunEnded, useWorkflow } from './stores/useWorkflow'
 import {
   getVariables,
   // No `simulate`: a run is a protocol run now, because the run window is the
@@ -930,6 +930,19 @@ useRunNotifications(
 
 // Left column tab: 'params' | 'sensitivity' | 'calibration' | 'uq'
 const leftTab = ref('params')
+
+// Every calibration, sensitivity and UQ run is a step of the working dir's study workflow,
+// which the server opens in the Workflow tab: re-read it when a run ends and when the tab
+// is opened, so the tab shows each run as a step and the provenance drawn after it.
+watch(
+  () => [calib.state.value, sa.state.value, uq.state.value],
+  (now, before) => {
+    if (anyRunEnded(now, before)) wf.refresh()
+  },
+)
+watch(leftTab, (tab) => {
+  if (tab === 'workflow') wf.refresh()
+})
 
 // Emulator (CA #333). `emuDefaults` is CA's emulation settings schema;
 // `emuSettings` mirrors the panel's live values so a run can carry them.

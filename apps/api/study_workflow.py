@@ -252,10 +252,11 @@ class Plan:
     def new_id(self, label: str) -> str:
         return next_id(self.builder, label, self.working_dir)
 
-    def add_set(self, label: str, entries: list[dict]) -> str | None:
+    def add_set(self, kind: str, entries: list[dict]) -> str | None:
+        """A set step of ``entries``, its id labelled by ``kind`` (:data:`LABELS`)."""
         if not entries:
             return None
-        return self.add("add_set", self.new_id(label), entries)
+        return self.add("add_set", self.new_id(LABELS[kind]), entries)
 
     @property
     def step(self) -> str:

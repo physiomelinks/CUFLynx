@@ -26,6 +26,7 @@ import {
 } from '../lib/api'
 import {
   KIND_WORDS,
+  anyRunEnded,
   TARGET_VIEW,
   missingInputs,
   modelLabel,
@@ -198,6 +199,20 @@ describe('workflowTabs', () => {
 
   it('has no tabs with no workflow open', () => {
     expect(workflowTabs({ loaded: false })).toEqual([])
+  })
+})
+
+describe('anyRunEnded (each run is a study-workflow step)', () => {
+  it('is true when a running job stops, whichever way', () => {
+    expect(anyRunEnded(['done', 'idle', 'idle'], ['running', 'idle', 'idle'])).toBe(true)
+    expect(anyRunEnded(['idle', 'idle', 'error'], ['idle', 'idle', 'running'])).toBe(true)
+    expect(anyRunEnded(['idle', 'cancelled', 'idle'], ['idle', 'running', 'idle'])).toBe(true)
+  })
+
+  it('is false while runs go on, when one starts, and on the first look', () => {
+    expect(anyRunEnded(['running', 'idle', 'idle'], ['running', 'idle', 'idle'])).toBe(false)
+    expect(anyRunEnded(['running', 'idle', 'idle'], ['done', 'idle', 'idle'])).toBe(false)
+    expect(anyRunEnded(['done', 'idle', 'idle'], undefined)).toBe(false)
   })
 })
 

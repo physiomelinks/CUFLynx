@@ -238,6 +238,15 @@ export function provenanceLinks(described) {
   return Object.keys(links).length ? links : null
 }
 
+/**
+ * Whether a run that was going has stopped, between two lists of job states (`running`,
+ * `done`, ...): each calibration, sensitivity and UQ run is a step of the study workflow,
+ * so the open workflow is re-read when one ends.
+ */
+export function anyRunEnded(now, before) {
+  return !!before && now.some((state, i) => before[i] === 'running' && state !== 'running')
+}
+
 /** Drives the open calibration workflow: load, tabs, run and poll. */
 export function useWorkflow(options = {}) {
   const intervalMs = options.intervalMs ?? 1000

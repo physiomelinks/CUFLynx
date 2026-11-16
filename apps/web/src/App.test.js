@@ -85,6 +85,7 @@ vi.mock('./lib/api', () => ({
 }))
 
 import {
+  getWorkflow,
   getWorkflowStepInput,
   loadWorkflow,
   openWorkflowView,
@@ -3197,6 +3198,15 @@ describe('App.vue: calibrating PhLynx selections (PhLynx #492)', () => {
     await flushPromises()
     expect(loadWorkflow).toHaveBeenCalledWith(expect.objectContaining({ path: SELECTION_WORKFLOW.path }))
     expect(wrapper.find('[data-testid="tab-workflow"]').classes()).toContain('active')
+  })
+
+  it('re-reads the study workflow when the Workflow tab is opened', async () => {
+    const wrapper = shallowMount(App)
+    await flushPromises()
+    const before = getWorkflow.mock.calls.length
+    await wrapper.find('[data-testid="tab-workflow"]').trigger('click')
+    await flushPromises()
+    expect(getWorkflow.mock.calls.length).toBe(before + 1)
   })
 
   it('only offers a workflow without selections', async () => {
