@@ -212,13 +212,16 @@ def default_solver_info(solver: str) -> dict:
     back into the /api/config payload); a duplicate in ``solver_info`` would be a
     second place for it to be wrong. A field CA gives no default for stays unset —
     unset means the backend's own default, and inventing one here is the original
-    mistake again.
+    mistake again. So does a field marked ``seed: False``
+    (:data:`_UNSEEDED_SOLVER_INFO_KEYS`), whose unset value means something its
+    default does not.
     """
     fields = (get_solver_options().get("solver_info_schema") or {}).get(solver) or []
     return {
         f["key"]: f["default"]
         for f in fields
         if f.get("key") and f["key"] != "dt" and f.get("default") is not None
+        and f.get("seed") is not False
     }
 
 
@@ -952,6 +955,14 @@ _SOLVER_INFO_LABELS = {
 # it, so the user is the only one who could fill it in.
 _JSON_DICT_FIELDS = frozenset({"user_config"})
 
+# Fields CA reads differently when unset than when set to their default, so they
+# are never seeded (the field carries ``seed: False``; the form shows the default
+# for an unset one, and the key is sent only once the user changes it).
+# casadi_integrator's ``jit`` defaults to true, but only an unset jit falls back to
+# no jit when there is no C compiler; ``jit: true`` is an error there. Seeding it
+# made every casadi_python run an explicit request the user never made.
+_UNSEEDED_SOLVER_INFO_KEYS = frozenset({"jit"})
+
 
 def _pretty_label(name: str) -> str:
     s = str(name).replace("_", " ").strip()
@@ -1045,6 +1056,8 @@ def _solver_info_schema_from_ca(
                 continue
             if field["key"] in gates:
                 field["methods"] = gates[field["key"]]
+            if field["key"] in _UNSEEDED_SOLVER_INFO_KEYS:
+                field["seed"] = False
             fields.append(field)
         out[solver] = fields
     return out
