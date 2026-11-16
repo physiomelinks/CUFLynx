@@ -60,13 +60,21 @@ LAPLACE_SAMPLES = 100000
 
 
 def _optimiser_options(settings: dict, seed=None) -> dict:
-    """optimiser_options for the ``run_calibration_first`` best-fit search. A global
-    random ``seed`` lands under ``optimiser_options['seed']`` (the multi-start start
-    sampler key); ``None`` omits it."""
+    """optimiser_options for the ``run_calibration_first`` best-fit search, which the
+    identifiability analysis's profile re-calibrations take too. An empty budget is one
+    GA population (``optimiser_budget``), the smallest CA's GA runs. A global random
+    ``seed`` lands under ``optimiser_options['seed']`` (the multi-start start sampler
+    key); ``None`` omits it."""
+    from optimiser_budget import default_num_calls  # noqa: E402 (shipped into runners/ too)
+
+    method = settings.get("param_id_method") or "genetic_algorithm"
+    num_calls = settings.get("num_calls_to_function")
+    if num_calls is None or (isinstance(num_calls, str) and not num_calls.strip()):
+        num_calls = default_num_calls(method, debug=bool(settings.get("DEBUG", False)))
     opts = {
-        "num_calls_to_function": int(settings.get("num_calls_to_function", 100)),
-        "cost_convergence": float(settings.get("cost_convergence", 0.001)),
-        "max_patience": int(settings.get("max_patience", 10)),
+        "num_calls_to_function": int(num_calls),
+        "cost_convergence": float(settings.get("cost_convergence") or 0.001),
+        "max_patience": int(settings.get("max_patience") or 10),
         "cost_type": settings.get("cost_type", "gaussian_MLE"),
     }
     if seed is not None:
