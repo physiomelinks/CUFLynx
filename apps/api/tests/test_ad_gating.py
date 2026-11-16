@@ -10,7 +10,8 @@ import math
 import model_codegen
 import pytest
 import sensitivity_runner
-from conftest import LV_MODEL_PATH, LV_OBS_DATA_PATH, LV_PARAMS_CSV_PATH, RESOURCES_DIR
+from conftest import (LV_MODEL_PATH, LV_OBS_DATA_PATH, LV_PARAMS_CSV_PATH, RESOURCES_DIR,
+                      params_for_id_json)
 
 C3_MODEL_PATH = RESOURCES_DIR / "3compartment_flat.cellml"
 C3_OBS_DATA_PATH = RESOURCES_DIR / "3compartment_obs_data.json"
@@ -30,7 +31,7 @@ def test_fd_local_sensitivity_on_casadi_python_reduces_with_numpy_ops(tmp_path, 
         "solver": "casadi_integrator",
         "solver_info": {"solver": "casadi_integrator", "method": "semi_implicit_euler"},
         "obs_path": str(C3_OBS_DATA_PATH),
-        "params_path": str(C3_PARAMS_CSV_PATH),
+        "params_path": str(params_for_id_json(C3_PARAMS_CSV_PATH, tmp_path)),
         "output_dir": str(tmp_path / "sa_out"),
         "file_prefix": "3compartment",
         "settings": {"method": "local", "gradient_method": "FD", "nominal": "current", "dt": 0.01},
@@ -114,7 +115,7 @@ def _local_sa_config(tmp_path, gradient_method):
         "solver": "casadi_integrator",
         "solver_info": {"solver": "casadi_integrator", "method": "cvodes"},
         "obs_path": str(LV_OBS_DATA_PATH),
-        "params_path": str(LV_PARAMS_CSV_PATH),
+        "params_path": str(params_for_id_json(LV_PARAMS_CSV_PATH, tmp_path)),
         "output_dir": str(tmp_path / "sa_out"),
         "file_prefix": "Lotka_Volterra_forced",
         "settings": {
@@ -152,7 +153,7 @@ def test_ad_local_sensitivity_runs_on_3compartment(tmp_path, requires_casadi):
         "solver": "casadi_integrator",
         "solver_info": {"solver": "casadi_integrator", "method": "semi_implicit_euler"},
         "obs_path": str(C3_OBS_DATA_PATH),
-        "params_path": str(C3_PARAMS_CSV_PATH),
+        "params_path": str(params_for_id_json(C3_PARAMS_CSV_PATH, tmp_path)),
         "output_dir": str(tmp_path / "sa_out"),
         "file_prefix": "3compartment",
         "settings": {"method": "local", "gradient_method": "AD", "nominal": "current", "dt": 0.01},
@@ -173,7 +174,7 @@ def _fsa_local_sa_config(tmp_path, gradient_method="FSA"):
         "solver": "CVODE_myokit",
         "solver_info": {"solver": "CVODE_myokit", "method": "CVODE"},
         "obs_path": str(C3_OBS_DATA_PATH),
-        "params_path": str(C3_PARAMS_CSV_PATH),
+        "params_path": str(params_for_id_json(C3_PARAMS_CSV_PATH, tmp_path)),
         "output_dir": str(tmp_path / "sa_out"),
         "file_prefix": "3compartment",
         "settings": {

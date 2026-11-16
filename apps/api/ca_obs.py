@@ -222,3 +222,18 @@ def param_row_labels(param_id_info) -> list:
         except Exception:  # noqa: BLE001 - a CA whose accessor takes something else
             pass
     return param_row_keys(param_id_info)
+
+
+def solver_info_keys(solver) -> frozenset:
+    """The ``solver_info`` keys CA's schema lists for ``solver``; empty when it cannot say.
+
+    CA refuses a key of another solver (``MaximumStep`` on solve_ivp or casadi_integrator),
+    so a runner only fills a default the chosen solver takes.
+    """
+    fn = _symbol("parsers.PrimitiveParsers", "solver_info_fields")
+    if fn is None:
+        return frozenset()
+    try:
+        return frozenset(f["name"] for f in fn(solver) or [] if f.get("name"))
+    except Exception:  # noqa: BLE001 - a CA whose accessor answers in another shape
+        return frozenset()
