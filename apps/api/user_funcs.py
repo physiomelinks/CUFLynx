@@ -70,6 +70,7 @@ from pathlib import Path
 
 import study_manifest
 import working_dir
+from ca_imports import ca_from, ensure_ca_path
 from engine import _circulatory_autogen_src
 from settings_store import config_dir
 
@@ -754,7 +755,23 @@ def read_user_funcs(kind: str, base_dir: str | None = None) -> dict:
 # ---------------------------------------------------------------------------
 # Write
 # ---------------------------------------------------------------------------
+def _write(kind: str, order: list[str], sources: dict[str, str], base_dir: str | None) -> None:
+    """Write the ``kind`` file with the funcs ``order`` names, in libcuflynx's layout
+    (``utilities.user_funcs_file``), which its WorkflowBuilder writes too, so either can read
+    and rewrite the other's file. A libcuflynx without that module gets :func:`_render`."""
+    try:
+        ensure_ca_path()
+        funcs_file_source = ca_from("utilities.user_funcs_file", "funcs_file_source")
+    except ImportError:
+        text = _render(kind, order, sources)
+    else:
+        text = funcs_file_source(kind, {name: sources[name] for name in order})
+    # A new version in the working dir (earlier ones kept), else the config dir.
+    _write_user_file(_user_file(kind, base_dir), text, base_dir)
+
+
 def _render(kind: str, order: list[str], sources: dict[str, str]) -> str:
+    """The file :func:`_write` writes when libcuflynx has no ``user_funcs_file``."""
     k = _func_kind(kind)
     names = ", ".join(f'"{n}"' for n in order)
     parts = [k.header, "", "", f"{k.list_marker} = [{names}]"]
@@ -842,7 +859,7 @@ def save_user_func(
         order.append(name)
     sources[name] = source
 
-    _write_user_file(_user_file(kind, base_dir), _render(kind, order, sources), base_dir)
+    _write(kind, order, sources, base_dir)
     _refresh_options()
     return read_user_funcs(kind, base_dir)
 
@@ -862,7 +879,7 @@ def delete_user_func(kind: str, name: str, base_dir: str | None = None) -> dict:
         return read_user_funcs(kind, base_dir)
     order = [n for n in order if n != name]
     del sources[name]
-    _write_user_file(_user_file(kind, base_dir), _render(kind, order, sources), base_dir)
+    _write(kind, order, sources, base_dir)
     _refresh_options()
     return read_user_funcs(kind, base_dir)
 

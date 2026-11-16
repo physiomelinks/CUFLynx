@@ -12,6 +12,7 @@ import shutil
 import sys
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 import user_funcs as uf
@@ -607,3 +608,61 @@ def test_every_generated_header_imports_libcuflynx_only(tmp_cfg):
         modules = {n.module for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)}
         assert all(m.startswith("libcuflynx.") for m in modules), (kind, modules)
         assert not any(isinstance(n, ast.Try) for n in ast.walk(tree)), kind
+
+
+# ---------------------------------------------------------------------------
+# One file layout with libcuflynx's WorkflowBuilder
+# ---------------------------------------------------------------------------
+def half_time(pressure, series_output=False):
+    if series_output:
+        return pressure
+    return pressure[len(pressure) // 2]
+
+
+half_time.series_to_constant = True
+
+
+def spread(x, series_output=False):
+    if series_output:
+        return x
+    return float(np.max(x) - np.min(x))
+
+
+def _workflow_builder():
+    """libcuflynx's calibration_workflow.builder, or skip on a libcuflynx without it or
+    without utilities.user_funcs_file (CA #652)."""
+    import importlib
+
+    from ca_imports import ca_from, ensure_ca_path
+
+    ensure_ca_path()
+    try:
+        ca_from("utilities.user_funcs_file", "write_funcs_file")
+        # Namespaced only: no flat spelling of calibration_workflow exists.
+        return importlib.import_module("libcuflynx.calibration_workflow.builder")
+    except ImportError as exc:
+        pytest.skip(f"this libcuflynx has no WorkflowBuilder functions file (CA #652): {exc}")
+
+
+def test_the_operation_file_is_the_one_a_workflow_builder_writes(tmp_cfg, tmp_path):
+    """The funcs editor and a notebook's WorkflowBuilder.add_operation write the same file
+    for the same functions, so a workflow's operations open in CUFLynx and either can
+    rewrite the other's file."""
+    builder_mod = _workflow_builder()
+    read_funcs_file = builder_mod.read_funcs_file
+    wf = builder_mod.WorkflowBuilder(
+        "wf", builder_mod.module_array(str(tmp_path / "m_module_array.csv")),
+        directory=tmp_path / "wf")
+    wf.add_operation(half_time, spread)
+    expected = wf.funcs_source("operation")
+
+    # The functions as the builder wrote them, saved one by one through the editor.
+    builder_file = tmp_path / "builder_operation_funcs.py"
+    builder_file.write_text(expected, encoding="utf-8")
+    sources, imports = read_funcs_file(str(builder_file), "operation")
+    assert list(sources) == ["half_time", "spread"] and not imports
+    for source in sources.values():
+        uf.save_user_func("operation", None, source)
+
+    written = (tmp_cfg / "user_funcs" / "operation_funcs_user.py").read_text(encoding="utf-8")
+    assert written == expected
