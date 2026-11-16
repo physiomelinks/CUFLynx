@@ -263,6 +263,16 @@ file, and emulator training (its bundle must stay under `emulators/` for the emu
 lookup). A libcuflynx without `cellml_model` / the `uq` kind / `start_from` keeps every
 run direct (said once). `CUFLYNX_STUDY_WORKFLOW=0` does the same, and the test suite
 sets it: route tests that want the workflow take the `study_workflow_on` fixture.
+What the panels read from a step, all through `ca_run_history`: a local-SA step's
+**signed** `local_sensitivity_signed.csv` (`step_local_sensitivity`; its rows carry the
+Sobol indices' labels, `<item> (Exp<e>, Sub<s>)`, so the two heatmaps share axes, while a
+direct local run labels them `var^{e,s} [op]`); a uq step's posterior predictive check
+(`<step>/posterior_predictive`, `step_predictive_dir`, band by
+`posterior_predictive_band`). A study run passes `write_calibrated` whenever it leaves
+the workflow complete (CA refuses it otherwise), so the CellML target gets its
+`<stem>_calibrated_parameters.json` and calibrated CellML. **Reopening** a working dir
+(`load_outputs._with_study_steps`) fills each panel from the latest done step of its kind
+(`study_steps` names them), unless a direct run's result files are newer than the step.
 
 **Only circulatory_autogen writes results to the user's working dir** (#210). A run
 leaves CA's own files there and nothing else — no CUFLynx-authored results

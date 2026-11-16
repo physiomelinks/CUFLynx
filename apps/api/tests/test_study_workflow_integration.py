@@ -99,6 +99,11 @@ def test_every_run_is_a_step_of_one_study_workflow(client, requires_simulation,
         "settings": {**common, "method": "local", "nominal": "current",
                      "gradient_method": "FD"}})
     assert local["indices"] and local["nominal"] == pytest.approx(list(sliders.values()))
+    # libcuflynx's signed d ln Y / d ln p, on the Sobol heatmap's axes
+    assert local["output_names"] == sobol["output_names"]
+    assert local["param_names"] == sobol["param_names"]
+    values = [v for row in local["indices"]["local"].values() for v in row.values()]
+    assert any(v is not None and v < 0 for v in values), local["indices"]
 
     # 4. Laplace at the calibration's best fit
     laplace, lines = _run(client, "uq", {
@@ -111,6 +116,25 @@ def test_every_run_is_a_step_of_one_study_workflow(client, requires_simulation,
         "settings": {**common, "method": "mcmc", "num_steps": 12, "num_walkers": 8}})
     assert mcmc["method"] == "mcmc" and mcmc["params"], "\n".join(lines[-40:])
     assert mcmc["progress"]["steps"] == 12, mcmc["progress"]
+    # the uq step's posterior predictive check: its coverage and band
+    assert (mcmc["coverage"] or {}).get("coverage", {}).get("levels"), "\n".join(lines[-40:])
+    band = client.get(f"/api/uq/{mcmc['job_id']}/posterior-predictive").json()
+    assert band["available"] and band["labels"], band
+
+    # the calibrated values beside the CellML target, written by CA
+    target = (work / "workflow" / json.loads(
+        (work / "workflow" / "calibration_workflow.json").read_text())["target"][
+        "cellml_model_path"]).resolve()
+    assert (target.parent / f"{target.stem}_calibrated_parameters.json").is_file()
+    assert (target.parent / f"{target.stem}_calibrated.cellml").is_file()
+
+    # reopening the working dir fills every panel from the latest step of its kind
+    found = client.get("/api/working-dir/load", params={"dir": str(work)}).json()
+    assert found["study_steps"] == {"calibration": "calibration-1", "sobol": "sobol-1",
+                                    "local": "local-sa-1", "uq": "mcmc-1"}, found["missing"]
+    assert found["calibration"]["best"]["params"] == pytest.approx(cal["best_params"])
+    assert found["sensitivity"]["local"]["output_names"] == sobol["output_names"]
+    assert found["uq"]["method"] == "mcmc" and found["uq"]["posterior_predictive"]["available"]
 
     steps = _steps(work)
     assert [s["id"] for s in steps] == ["sliders-1", "calibration-1", "sobol-1", "sliders-2",

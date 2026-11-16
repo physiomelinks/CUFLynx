@@ -4452,7 +4452,6 @@ def _study_uq(record, config: dict, configured: str) -> list:
         plan.add("add_uq", plan.new_id(study_workflow.LABELS.get(method, "uq")),
                  **_study_inputs(config, obs), uq_options=uq_options, result_from=at,
                  settings=_study_settings(config, settings, extra))
-        notes.append(_study_note("a workflow uq step runs no posterior predictive check."))
         _study_start(plan, config, (DONE_MARKER, FAIL_MARKER), notes)
     return config["log_preamble"]
 
