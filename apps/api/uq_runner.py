@@ -47,6 +47,8 @@ _UQ_RESERVED = {
     "solver_info", "python_path", "sim_time", "pre_time", "generated_model_format",
     "param_id_method", "num_calls_to_function", "max_patience", "gradient_method",
     "config_outputs_dir",
+    # CA's ia_options for the laplace method (ANALYSIS_OPTIONS['identifiability_analysis']).
+    "ia_options",
 }
 
 #: Histogram resolution. Imported lazily from ca_run_history where the manager
@@ -129,6 +131,19 @@ def _mle_obs_path(config, cost_type: str) -> str:
     out = os.path.join(config["output_dir"], "uq_obs_data.json")
     Path(out).write_text(json.dumps(obs), encoding="utf-8")
     return out
+
+
+#: CA's ia_options method whose result is a Gaussian posterior.
+LAPLACE = "Laplace"
+
+
+def _ia_options(settings: dict) -> dict:
+    """CA's ``ia_options`` from the UI settings: ``settings['ia_options']`` (built
+    from CA's descriptors) without blanks, defaulting the method to Laplace."""
+    opts = {k: v for k, v in (settings.get("ia_options") or {}).items()
+            if v is not None and v != ""}
+    opts.setdefault("method", LAPLACE)
+    return opts
 
 
 def _make_param_id(config, settings, obs_path, *, mcmc, options_key, options):
@@ -294,10 +309,17 @@ def run(config: dict) -> dict:
         )
         ia.set_best_param_vals(best)
         ensure_mle_cost_type_for_bayesian_inner(cvs.param_id, inp)
-        ia.run({"method": "Laplace"})
+        ia_opts = _ia_options(settings)
+        ia.run(ia_opts)
         rank = getattr(ia, "rank", 0)
         if rank != 0:
             return {"rank": rank}
+        if ia_opts["method"] != LAPLACE:
+            # Profile likelihood: CA wrote the profiles under output_dir, and they
+            # are the result; there is no posterior to sample.
+            print(META_MARKER + json.dumps(
+                {"method": method, "ia_method": ia_opts["method"]}), flush=True)
+            return {"rank": 0, "method": method}
         # CA renamed the misspelt `mean_Lapalace` -> `mean_Laplace`; read the
         # corrected name but fall back to the old one so we work against any CA.
         laplace_mean = getattr(ia, "mean_Laplace", None)
