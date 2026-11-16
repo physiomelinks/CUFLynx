@@ -991,7 +991,7 @@ def test_every_declared_default_is_seeded_into_solver_info(schema, monkeypatch):
     for solver, fields in form.items():
         seeded = so.default_solver_info(solver)
         for f in fields:
-            if f["key"] == "dt" or f.get("default") is None:
+            if f["key"] == "dt" or f.get("default") is None or f.get("seed") is False:
                 continue
             assert f["key"] in seeded, (
                 f"{solver}.{f['key']} is offered with a default nothing seeds"
@@ -1065,9 +1065,30 @@ def test_the_config_route_reports_a_value_for_every_field_it_offers(client):
     fields = body["solver_info_schema"][body["solver"]]
     missing = [
         f["key"] for f in fields
-        if f.get("default") is not None and body["solver_info"].get(f["key"]) is None
+        if f.get("default") is not None and f.get("seed") is not False
+        and body["solver_info"].get(f["key"]) is None
     ]
     assert missing == []
+
+
+def test_casadi_jit_is_offered_but_not_seeded(monkeypatch):
+    """CA falls back to no jit without a C compiler only when jit is unset; jit: true
+    is an error there. So the seed leaves it unset and the form marks it seed: False,
+    or casadi_python fails on every machine without a compiler (Windows without MSVC)."""
+    monkeypatch.setattr(so, "_introspect_solver_schema", lambda: _ca_schema_with_fields({
+        "casadi_integrator": [
+            {"name": "reltol", "type": "float", "default": 1e-8},
+            {"name": "jit", "type": "bool", "default": True},
+        ],
+    }))
+    monkeypatch.setattr(so, "_introspect_differentiable", lambda: {"max": True})
+    so.reset_cache()
+    form = so.get_solver_options(refresh=True)["solver_info_schema"]["casadi_integrator"]
+    jit = next(f for f in form if f["key"] == "jit")
+    assert jit["default"] is True and jit["seed"] is False
+    seeded = so.default_solver_info("casadi_integrator")
+    assert "jit" not in seeded
+    assert seeded["reltol"] == 1e-8
 
 
 # ---------------------------------------------------------------------------
