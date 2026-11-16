@@ -180,6 +180,11 @@ async function loadOutputsFromDirectory(runDir) {
       ? `Loaded ${found.found.join(', ')}`
       : 'Found no results in that directory'
     const which = found.run_dir ? ` from ${found.run_dir.split('/').pop()}` : ''
+    // Panels filled from the study workflow's latest step of their kind, by step id.
+    const steps = Object.entries(found.study_steps ?? {})
+    const fromSteps = steps.length
+      ? `. From study workflow steps: ${steps.map(([panel, id]) => `${panel} ${id}`).join(', ')}`
+      : ''
     const missed = found.missing?.length ? ` (could not read: ${found.missing.join('; ')})` : ''
     // The study is reported separately from the panels: "which model am I now
     // looking at" is the question a reopened directory raises first, and the
@@ -189,7 +194,7 @@ async function loadOutputsFromDirectory(runDir) {
       ? `. Opened ${study.name || 'the study'}${study.calibrated ? ' (calibrated model)' : ''}`
       : ''
     const studyFailed = study?.error ? `. Could not open the study: ${study.error}` : ''
-    loadedOutputsSummary.value = parts + which + missed + opened + studyFailed
+    loadedOutputsSummary.value = parts + which + fromSteps + missed + opened + studyFailed
     if (!found.found.length) sim.setError(loadedOutputsSummary.value)
   } catch (e) {
     sim.setError(`Could not read ${dir}: ${errorMessage(e)}`)
@@ -297,7 +302,9 @@ function applyLoadedOutputs(found) {
   // null is "not scored", which the panel says out loud -- so it is assigned
   // either way rather than only when present.
   uq.coverage.value = found.uq?.coverage ?? null
-  uq.posteriorPredictive.value = null
+  // The predictive band the run saved (a reopened direct run's, or a study workflow uq
+  // step's), or null when it saved none.
+  uq.posteriorPredictive.value = found.uq?.posterior_predictive ?? null
 
   if (found.emulator?.metadata) {
     emu.metadata.value = found.emulator.metadata

@@ -3058,6 +3058,30 @@ describe('App.vue reopening a working dir', () => {
     expect(wrapper.vm.uq.params.value).toHaveLength(1)
   })
 
+  it('fills every panel from the study workflow steps the server read', async () => {
+    const band = { available: true, labels: ['a/x'], lo: [-1], median: [0], hi: [1] }
+    const wrapper = await load(FOUND({
+      sensitivity: {
+        sobol: { indices: { S1: { 'x (Exp0, Sub0)': { 'a/alpha': 0.4 } } },
+          param_names: ['a/alpha'], output_names: ['x (Exp0, Sub0)'] },
+        local: { indices: { local: { 'x (Exp0, Sub0)': { 'a/alpha': -0.7 } } },
+          param_names: ['a/alpha'], output_names: ['x (Exp0, Sub0)'] },
+      },
+      uq: { params: [{ qname: 'a/alpha', mean: 1 }], method: 'laplace',
+        coverage: { coverage: { levels: {} } }, posterior_predictive: band, progress: null },
+      study_steps: { calibration: 'calibration-2', sobol: 'sobol-1', local: 'local-sa-1',
+        uq: 'laplace-1' },
+    }))
+    expect(wrapper.vm.calib.bestParams.value).toEqual({ 'a/alpha': 2 })
+    expect(wrapper.vm.sa.results.value.map((r) => r.method).sort()).toEqual(['local', 'sobol'])
+    expect(wrapper.vm.uq.method.value).toBe('laplace')
+    expect(wrapper.vm.uq.posteriorPredictive.value).toEqual(band)
+    expect(wrapper.vm.uq.coverage.value).toEqual({ coverage: { levels: {} } })
+    expect(wrapper.vm.loadedOutputsSummary).toContain(
+      'From study workflow steps: calibration calibration-2, sobol sobol-1, local local-sa-1, '
+      + 'uq laplace-1')
+  })
+
   it('a directory with no chain leaves the trace plots as they were', async () => {
     // Same rule the live poll follows: a payload with no steps is not a chain,
     // and must not replace one already on screen.

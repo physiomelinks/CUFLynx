@@ -194,7 +194,11 @@ class SensitivityManager:
             meta = read_meta_line(job.lines, META_MARKER) or self._study_meta(job)
             data = None
             if finished:
-                if meta.get("method") == "local":
+                if meta.get("method") == "local" and job.study_step:
+                    # libcuflynx's signed d ln Y / d ln p, labelled as its Sobol indices
+                    data = ca_run_history.step_local_sensitivity(
+                        ca_run_history.step_result(job.study_step["step_dir"]))
+                elif meta.get("method") == "local":
                     data = ca_run_history.local_sensitivity(job.output_dir)
                 else:
                     data = ca_run_history.sobol_indices(job.output_dir)

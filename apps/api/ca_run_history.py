@@ -465,7 +465,9 @@ def _read_matrix_csv(path: str) -> tuple[list[str], list[str], dict]:
         for col, cell in zip(header, row[1:]):
             text = (cell or "").strip()
             try:
-                values[col] = float(text)
+                value = float(text)
+                # NaN (as numpy writes it) reads as missing, like an empty cell
+                values[col] = None if value != value else value
             except ValueError:
                 # Empty or NaN: CA marks a failed evaluation as NaN deliberately,
                 # to keep it distinct from a real zero.
@@ -485,6 +487,42 @@ def local_sensitivity(output_dir: str) -> dict | None:
         "param_names": param_names,
         "output_names": output_names,
     }
+
+
+#: libcuflynx's ``sensitivityAnalysis.LOCAL_SIGNED_FILE``: the signed relative local
+#: sensitivity d ln Y / d ln p = (p / Y) dY/dp (NaN where |Y| <= 1e-30), its rows labelled
+#: as the Sobol indices' outputs (``sobolSA.output_labels``) and its columns by the
+#: parameters' entry labels, so it shares the Sobol heatmap's axes.
+LOCAL_SIGNED_FILE = "local_sensitivity_signed.csv"
+
+
+def local_sensitivity_signed(output_dir: str) -> dict | None:
+    """The signed local sensitivities libcuflynx wrote (:data:`LOCAL_SIGNED_FILE`), in
+    :func:`local_sensitivity`'s shape, or None when there are none. A NaN (undefined at
+    Y = 0) reads as None."""
+    path = os.path.join(output_dir or "", LOCAL_SIGNED_FILE)
+    if not output_dir or not os.path.isfile(path):
+        return None
+    output_names, param_names, table = _read_matrix_csv(path)
+    return {
+        "indices": {"local": table},
+        "param_names": param_names,
+        "output_names": output_names,
+    }
+
+
+def step_local_sensitivity(result: dict | None) -> dict | None:
+    """A workflow local-SA step's sensitivities, from its ``step_result.json``: the signed
+    file it names (``local_sensitivity_signed``), else, from a libcuflynx that predates it,
+    the unsigned ``local_sensitivity_relative.csv`` in its ``sensitivity_dir``."""
+    result = result or {}
+    signed = result.get("local_sensitivity_signed")
+    if signed:
+        found = local_sensitivity_signed(os.path.dirname(signed))
+        if found:
+            return found
+    directory = result.get("sensitivity_dir")
+    return local_sensitivity(directory) if directory and os.path.isdir(directory) else None
 
 
 def sobol_indices(output_dir: str) -> dict | None:
@@ -1012,6 +1050,19 @@ def stored_distribution(directory: str) -> list | None:
     return _sample_marginals(flat, names)
 
 
+def step_uq_marginals(result: dict | None) -> list | None:
+    """A workflow uq step's posterior, from its ``step_result.json``: a Laplace
+    approximation's normal marginals (``laplace``: mean, covariance, CA's std), or an MCMC's
+    stored distribution (``distribution_dir``: the chain after CA's burn-in). None when it
+    has neither."""
+    result = result or {}
+    laplace = result.get("laplace") or {}
+    if laplace.get("mean") is not None and laplace.get("covariance") is not None:
+        return laplace_marginals(laplace["mean"], laplace["covariance"],
+                                 result.get("parameters"), laplace.get("std"))
+    return stored_distribution(result.get("distribution_dir") or "")
+
+
 def stored_sample_count(directory: str) -> int | None:
     """How many draws a stored distribution (``<step>/distribution/samples.npy``) holds, or
     None when it has none."""
@@ -1019,6 +1070,76 @@ def stored_sample_count(directory: str) -> int | None:
     if samples is None or getattr(samples, "ndim", 0) == 0:
         return None
     return int(samples.shape[0])
+
+
+#: libcuflynx's posterior predictive check (``param_id.posterior_predictive``): the draws
+#: pushed through the model (``SAMPLES_FILE``), the coverage summary (``COVERAGE_FILE``) and
+#: the traces of a few draws (``SERIES_FILE``). A direct MCMC run saves them in its run dir,
+#: a direct Laplace run in its output dir, a workflow uq step in
+#: ``<step>/posterior_predictive`` (its ``step_result.json`` ``posterior_predictive_dir``).
+PREDICTIVE_FILE = "posterior_predictive.npz"
+PREDICTIVE_COVERAGE_FILE = "posterior_predictive_coverage.json"
+PREDICTIVE_SERIES_FILE = "posterior_predictive_series.npz"
+
+
+def predictive_coverage(directory: str | None) -> dict | None:
+    """The coverage summary of the posterior predictive check saved in ``directory``."""
+    found = _json(directory, PREDICTIVE_COVERAGE_FILE) if directory else None
+    return found if isinstance(found, dict) else None
+
+
+def step_predictive_dir(result: dict | None) -> str | None:
+    """Where a workflow uq step saved its posterior predictive check, or None (none run,
+    or it failed: see :func:`step_predictive_error`)."""
+    directory = (result or {}).get("posterior_predictive_dir")
+    return directory if directory and os.path.isdir(directory) else None
+
+
+def step_predictive_error(result: dict | None) -> str | None:
+    """Why a workflow uq step's posterior predictive check failed, or None."""
+    summary = (result or {}).get("posterior_predictive_summary")
+    return str(summary["error"]) if isinstance(summary, dict) and summary.get("error") else None
+
+
+def posterior_predictive_band(directory: str | None, coverage: dict | None = None) -> dict:
+    """The posterior predictive check saved in ``directory``, for plotting: per observable,
+    the 2.5 / 50 / 97.5 percentiles of the draws' predictions, in units of the measurement's
+    standard deviation from the measured value (so observables on different scales share
+    one axis). ``{"available": False, ...}`` when there is none, or it cannot be read."""
+    import numpy as np  # noqa: PLC0415
+
+    path = os.path.join(directory or "", PREDICTIVE_FILE)
+    if not directory or not os.path.isfile(path):
+        return {"available": False, "coverage": coverage}
+    try:
+        with np.load(path, allow_pickle=True) as data:
+            preds = np.asarray(data["predictions"], dtype=float)
+            truth = np.asarray(data["ground_truth"], dtype=float)
+            std = np.asarray(data["std"], dtype=float)
+            labels = [str(x) for x in data["labels"]]
+    except Exception as exc:  # noqa: BLE001
+        # numpy's failure modes for a damaged .npz are varied -- OSError, ValueError,
+        # KeyError and UnpicklingError have all been seen -- and a file that cannot be
+        # read is a missing figure, not a 500.
+        return {"available": False, "error": str(exc), "coverage": coverage}
+
+    keep = ~np.all(np.isnan(preds), axis=0)
+    idx = np.where(keep)[0]
+    if idx.size == 0:
+        return {"available": False, "coverage": coverage}
+    # A zero std would divide the whole observable away; leave those in real units.
+    scale = np.where(np.abs(std[idx]) > 0, np.abs(std[idx]), 1.0)
+    centred = lambda values: ((values - truth[idx]) / scale).tolist()  # noqa: E731
+    return {
+        "available": True,
+        "coverage": coverage,
+        "labels": [labels[i] for i in idx],
+        "lo": centred(np.nanpercentile(preds[:, idx], 2.5, axis=0)),
+        "median": centred(np.nanmedian(preds[:, idx], axis=0)),
+        "hi": centred(np.nanpercentile(preds[:, idx], 97.5, axis=0)),
+        "num_samples": int(preds.shape[0]),
+        "units": "measurement standard deviations from the measured value",
+    }
 
 
 #: The Laplace approximation CA's identifiability analysis writes (a workflow's

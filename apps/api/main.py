@@ -4416,10 +4416,6 @@ def _study_sensitivity(record, req, config: dict, configured: str) -> list:
                  sa_options=sa_options, result_from=at,
                  settings=_study_settings(config, settings, {}))
         config["study_meta"] = {"method": method, "gradient_method": gradient}
-        if local:
-            notes.append(_study_note(
-                "the relative sensitivities are libcuflynx's (|p| dY/dp / |Y|, unsigned), and "
-                "the outputs carry libcuflynx's labels."))
         _study_start(plan, config, (DONE_MARKER, FAIL_MARKER), notes)
     return config["log_preamble"]
 
