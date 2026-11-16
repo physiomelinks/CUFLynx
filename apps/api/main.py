@@ -3572,6 +3572,18 @@ def load_outputs_directory(
     # study it does not directly contain.
     found["workflow_run"] = os.path.isfile(
         os.path.join(dir, workflow_manager.WORKFLOW_FILE_NAME))
+    # The working dir's study workflow (every run made from the panels, as steps) opens in
+    # the Workflow tab, whose step tabs load each run's results.
+    study_path = study_workflow.workflow_path(dir)
+    if os.path.isfile(study_path):
+        found["study_workflow"] = {"path": study_path}
+        if not workflow.busy and (not workflow.loaded or workflow.path == study_path):
+            try:
+                _open_workflow_file(study_path, dir)
+                found["study_workflow"]["opened"] = True
+            except HTTPException as exc:
+                found.setdefault("warnings", []).append(
+                    f"the study workflow {study_path} was not opened: {exc.detail}")
     return found
 
 

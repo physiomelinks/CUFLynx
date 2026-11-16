@@ -167,6 +167,9 @@ async function loadOutputsFromDirectory(runDir) {
       sim.setError(found.error)
       return
     }
+    // The working dir's study workflow, which the server has opened: its steps are the
+    // runs made from the panels, in the Workflow tab.
+    if (found.study_workflow?.opened) wf.refresh()
     // The study first: installing a model clears the obs_data, the params and
     // every derived store, so results applied before it would be wiped by it.
     const study = await openLoadedStudy(dir, found)

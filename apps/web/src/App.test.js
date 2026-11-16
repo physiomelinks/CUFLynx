@@ -379,6 +379,21 @@ describe('App.vue', () => {
     wrapper.unmount()
   })
 
+  it('shows the study workflow the server opened with a working dir', async () => {
+    localStorage.setItem('cuflynx-working-dir', '/data/study')
+    loadWorkingDir.mockResolvedValueOnce({
+      found: [], missing: [], warnings: [],
+      study_workflow: { path: '/data/study/workflow/calibration_workflow.json', opened: true },
+    })
+    const wrapper = shallowMount(App)
+    await flushPromises()
+    const before = getWorkflow.mock.calls.length
+    wrapper.findComponent({ name: 'FileImport' }).vm.$emit('load-working-dir')
+    await flushPromises()
+    expect(getWorkflow.mock.calls.length).toBe(before + 1)
+    wrapper.unmount()
+  })
+
   describe('resizable RHS import column', () => {
     const dragTo = async (wrapper, clientX) => {
       await wrapper.find('[data-testid="rhs-handle"]').trigger('mousedown')

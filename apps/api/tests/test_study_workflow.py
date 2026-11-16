@@ -296,6 +296,24 @@ def test_another_model_in_the_working_dir_starts_a_new_workflow(client, fake_run
     assert fake_runs()[-1]["workflow_output_dir"] == str(work / "workflows" / "study-2")
 
 
+def test_the_workflow_opens_in_the_workflow_tab_and_again_with_the_working_dir(
+        client, fake_runs, tmp_path):
+    import workflow_manager
+
+    work = tmp_path / "w"
+    model_id = _setup(client)
+    assert _calibrate(client, model_id, work)["state"] == "done"
+    path = str(work / "workflow" / "calibration_workflow.json")
+    described = client.get("/api/workflow").json()
+    assert described["loaded"] and described["path"] == path
+    assert described["output_dir"] == str(work / "workflows" / "study")
+
+    workflow_manager.workflow.reset()       # a new session
+    found = client.get("/api/working-dir/load", params={"dir": str(work)}).json()
+    assert found["study_workflow"] == {"path": path, "opened": True}
+    assert client.get("/api/workflow").json()["path"] == path
+
+
 def test_a_second_step_waits_for_the_running_one(client, study_workflow_on, tmp_path):
     work = tmp_path / "w"
     model_id = _setup(client)
