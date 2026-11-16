@@ -507,3 +507,21 @@ def test_a_generated_python_model_keeps_the_direct_runner(client, study_workflow
     assert "direct runner" in status["lines"]
     assert any("python model type" in ln for ln in status["lines"])
     assert not (work / "workflow").exists()
+
+
+def test_a_run_writes_the_calibrated_values_when_it_leaves_the_workflow_complete(
+        client, fake_runs, tmp_path):
+    """The study's target is a CellML model, so a run writes ``<stem>_calibrated_parameters
+    .json`` and the calibrated CellML beside it -- unless an earlier step has no done
+    result, as CA refuses that write for an incomplete workflow."""
+    work = tmp_path / "w"
+    model_id = _setup(client)
+    _calibrate(client, model_id, work, start_from="current")
+    assert fake_runs()[-1]["write_calibrated"] is True
+
+    # an earlier step that failed (or was cancelled) has no done result
+    (work / "workflows" / "study" / "calibration-1" / "step_result.json").write_text(
+        json.dumps({"step": "calibration-1", "status": "failed"}))
+    _run(client, "sensitivity", {"model_id": model_id, "settings": {
+        "config_outputs_dir": str(work), "method": "sobol", "num_samples": 8}})
+    assert fake_runs()[-1]["write_calibrated"] is False

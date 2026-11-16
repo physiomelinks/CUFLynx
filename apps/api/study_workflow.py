@@ -37,6 +37,7 @@ import os
 import re
 import threading
 
+import ca_run_history
 from ca_imports import CaImportError, ca_from, ensure_ca_path
 
 WORKFLOW_DIR = "workflow"
@@ -293,14 +294,31 @@ class Plan:
         except (ValueError, OSError) as exc:
             raise StudyWorkflowError(f"the study workflow was not written: {exc}") from exc
 
+    def completes(self) -> bool:
+        """Whether every step outside this run has a done result, so a run whose own steps
+        succeed leaves the workflow complete."""
+        for step in self.builder.to_dict().get("steps") or []:
+            step_id = step.get("id")
+            if step_id in self.added:
+                continue
+            if (ca_run_history.step_result(self.step_dir(step_id)) or {}).get("status") != "done":
+                return False
+        return True
+
     def runner_config(self, markers: dict) -> dict:
         """The keys a manager's config gains so it runs the step through workflow_runner.
 
         One step runs ``only``; a run that added several (a set step, or a calibration, then
         the step that uses it) runs ``from_step`` its first, which are the last in the file.
+
+        ``write_calibrated``: the study's target is a CellML or external model, so a run
+        writes the merged values beside it (``<stem>_calibrated_parameters.json``, and for a
+        CellML the calibrated CellML) -- when it leaves the workflow complete, as CA refuses
+        the write for an incomplete run (an earlier step failed or was cancelled).
         """
         only = self.added[0] if len(self.added) == 1 else None
         return {
+            "write_calibrated": self.completes(),
             "study_step": {"workflow": self.builder.path, "run_dir": self.run_dir,
                            "step": self.step, "steps": list(self.added),
                            "step_dir": self.step_dir()},

@@ -31,6 +31,12 @@ export function externalFile(model) {
   return typeof path === 'string' && path ? path.split(/[\\/]/).pop() : null
 }
 
+/** The file name of a CellML workflow model (`cellml_model_path`), or null. */
+export function cellmlFile(model) {
+  const path = model?.cellml_model_path
+  return typeof path === 'string' && path ? path.split(/[\\/]/).pop() : null
+}
+
 /**
  * A workflow model in a few words: a library module as "type · parameterisation", a
  * module array as its prefix (with `full`, as type / version / parameterisation, or the

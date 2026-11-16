@@ -9,7 +9,7 @@
  * panel only shows what the server reports from CA.
  */
 import { computed, ref } from 'vue'
-import { KIND_WORDS, SOURCE_WORDS, externalFile, modelLabel } from '../stores/useWorkflow'
+import { KIND_WORDS, SOURCE_WORDS, cellmlFile, externalFile, modelLabel } from '../stores/useWorkflow'
 import { errorMessage, exportWorkflow } from '../lib/api'
 import Button from 'primevue/button'
 import InputNumber from 'primevue/inputnumber'
@@ -78,6 +78,8 @@ const loaded = computed(() => !!props.described?.loaded)
 const calibratedTitle = computed(() =>
   targetFile.value
     ? `A complete run writes the merged values as a parameters file beside ${targetFile.value}; run the model from it with external_parameters_file`
+    : targetCellml.value
+    ? `A complete run writes the merged values beside ${targetCellml.value}, as <name>_calibrated_parameters.json and the calibrated CellML`
     : "A complete run writes the merged values as <name>_calibrated_parameters.json beside the target's parameters file",
 )
 const running = computed(() => props.jobState === 'running')
@@ -94,12 +96,14 @@ const coresInvalid = computed(() => numCores.value > 1 && !props.mpiexecAvailabl
 // The target as CA reads it, and whether it is an external Python model.
 const target = computed(() => props.described?.plan?.target ?? workflow.value.target ?? null)
 const targetFile = computed(() => externalFile(target.value))
+const targetCellml = computed(() => cellmlFile(target.value))
 // Whether a complete run writes the merged values beside the target. On by default for an
-// external Python model, whose values file is how it is run calibrated; a library or
-// module-array target is left untouched unless asked.
+// external Python model, whose values file is how it is run calibrated, and for a CellML
+// model, which gets its calibrated CellML; a library or module-array target is left
+// untouched unless asked.
 const writeCalibratedChoice = ref(null)
 const writeCalibrated = computed({
-  get: () => writeCalibratedChoice.value ?? !!targetFile.value,
+  get: () => writeCalibratedChoice.value ?? !!(targetFile.value || targetCellml.value),
   set: (value) => {
     writeCalibratedChoice.value = value
   },
