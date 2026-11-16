@@ -11,7 +11,8 @@ Usage:  python -u workflow_runner.py <config.json>
 config.json:
 {
   "workflow": "...calibration_workflow.json", "output_dir": "...",
-  "module_library_dirs": ["..."], "from_step": null, "only": null
+  "module_library_dirs": ["..."], "from_step": null, "only": null,
+  "write_calibrated": false
 }
 """
 
@@ -71,6 +72,9 @@ def _rank() -> int:
 def run(config: dict) -> dict:
     ensure_ca_path()
     run_workflow = ca_from("calibration_workflow", "run_calibration_workflow")
+    # CA writes the merged values beside the target (<prefix>_calibrated_parameters.json)
+    # after a complete run; only when asked, as that is outside the run directory.
+    extra = {"write_calibrated": True} if config.get("write_calibrated") else {}
     return run_workflow(
         config["workflow"],
         output_dir=config["output_dir"],
@@ -78,6 +82,7 @@ def run(config: dict) -> dict:
         from_step=config.get("from_step") or None,
         only=config.get("only") or None,
         progress=lambda event: print(event_line(event), flush=True),
+        **extra,
     )
 
 

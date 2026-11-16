@@ -472,6 +472,54 @@ def _emulator(output_dir, file_prefix, obs_path, missing, declared=None, chosen=
     }
 
 
+def step_outputs(step_result: dict | None) -> dict | None:
+    """The results of a calibration workflow step that are not a calibration, from CA's
+    ``step_result.json`` (``workflow_model``'s ``result``), in :func:`load_outputs`' shape:
+    a sensitivity step's indices (``sensitivity_dir``), an emulation step's emulator
+    (``emulator_dir``) and an identifiability step's Laplace posterior (``laplace``, as
+    ``uq`` with method ``laplace``). None when the step has none of them; a calibration
+    step's results are read from its ``param_id_output_dir`` by :func:`load_outputs`.
+    """
+    result = step_result or {}
+    sensitivity_dir = result.get("sensitivity_dir")
+    emulator = result.get("emulator_dir")
+    laplace = result.get("laplace") or {}
+    if not (sensitivity_dir or emulator or laplace):
+        return None
+    missing: list[str] = []
+    out: dict = {"dir": sensitivity_dir or emulator or laplace.get("mean_path"),
+                 "run_dir": None, "found": [], "missing": missing}
+    if sensitivity_dir:
+        out["sensitivity"] = {
+            "local": _safely("local sensitivity",
+                             lambda: ca_run_history.local_sensitivity(sensitivity_dir), missing),
+            "sobol": _safely("Sobol indices",
+                             lambda: ca_run_history.sobol_indices(sensitivity_dir), missing),
+        }
+        if out["sensitivity"]["local"] or out["sensitivity"]["sobol"]:
+            out["found"].append("sensitivity")
+    if emulator:
+        metadata = _safely("emulator metadata",
+                           lambda: ca_run_history.emulator_metadata(emulator), missing)
+        out["emulator"] = {
+            "dir": emulator, "metadata": metadata, "choices": [],
+            "error_points": _safely("emulator error points",
+                                    lambda: ca_run_history.emulator_error_points(emulator),
+                                    missing),
+        }
+        if metadata:
+            out["found"].append("emulator")
+    if laplace:
+        params = _safely("Laplace posterior", lambda: ca_run_history.laplace_distributions(
+            laplace.get("mean_path") or "", laplace.get("covariance_path") or "",
+            result.get("parameters")), missing)
+        out["uq"] = {"params": params, "method": "laplace", "coverage": None,
+                     "progress": None, "run_dir": os.path.dirname(laplace.get("mean_path") or "")}
+        if params:
+            out["found"].append("Laplace posterior")
+    return out
+
+
 def load_outputs(output_dir: str, file_prefix: str | None = None,
                  obs_path: str | None = None, run_dir: str | None = None,
                  emulator_dir: str | None = None) -> dict:

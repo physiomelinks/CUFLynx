@@ -786,6 +786,9 @@ class SimulationEngine:
         self._runner_protocol_info: dict[str, object] = {}
         # cache key -> the model_stamp() the cached helper/runner was built from.
         self._model_stamps: dict[tuple, tuple] = {}
+        # model_id -> the values file (``external_parameters_file``) an external_python
+        # model runs with: a calibration workflow step's values (set_external_parameters).
+        self.external_parameters: dict[str, str] = {}
         self._lock = threading.Lock()
 
     @property
@@ -804,17 +807,35 @@ class SimulationEngine:
     def solver_info(self, value) -> None:
         self._solver_info = dict(value or {})
 
-    def run_solver_info(self, solver: str) -> dict:
+    def run_solver_info(self, solver: str, model_id: str | None = None) -> dict:
         """The solver_info a run of ``solver`` is built with: the settings, over the
         solver's own declared step defaults, plus where a solver that compiles each
-        model keeps its builds. Never stored, so the settings stay what the user chose."""
+        model keeps its builds, and ``model_id``'s values file when it has one. Never
+        stored, so the settings stay what the user chose."""
         _ensure_ca_on_path()
         si = with_declared_step_defaults(solver, self.solver_info)
         if solver in BUILD_CACHE_SOLVERS:
             cache = solver_build_cache_dir(solver)
             if cache is not None:
                 si.setdefault("build_dir", str(cache))
-        return si
+        return self.with_external_parameters(si, model_id)
+
+    def set_external_parameters(self, model_id: str, path: str | None) -> None:
+        """Run ``model_id`` (an external_python model) with the values in ``path`` (CA's
+        ``external_parameters_file``) in place of its class defaults; None to stop."""
+        if path:
+            self.external_parameters[model_id] = str(path)
+        else:
+            self.external_parameters.pop(model_id, None)
+
+    def with_external_parameters(self, solver_info: dict, model_id: str | None) -> dict:
+        """``solver_info`` with ``model_id``'s ``external_parameters_file``, when it has one
+        and the backend is external_python: what the live engine and every run of that
+        model are given."""
+        path = self.external_parameters.get(model_id or "")
+        if not path or self.model_type != EXTERNAL_MODEL_TYPE:
+            return dict(solver_info)
+        return {**solver_info, "external_parameters_file": path}
 
     def live_backend(self) -> tuple:
         """``(model_type, solver, fell_back_from)`` for a live simulation.
@@ -933,7 +954,7 @@ class SimulationEngine:
     # ------------------------------------------------------------------
     # Worker delegation (#167)
     # ------------------------------------------------------------------
-    def _worker_settings(self) -> dict:
+    def _worker_settings(self, model_id: str | None = None) -> dict:
         from sim_worker import worker_settings  # noqa: PLC0415 - optional path
 
         return worker_settings(
@@ -941,10 +962,10 @@ class SimulationEngine:
             dt=self.dt,
             model_type=self.model_type,
             solver=self.solver,
-            solver_info=self.run_solver_info(self.solver),
+            solver_info=self.run_solver_info(self.solver, model_id),
         )
 
-    def _acquire_worker(self):
+    def _acquire_worker(self, model_id: str | None = None):
         """The live worker for the current settings, starting it if needed.
 
         Returns None when live simulation should stay in-process: no interpreter
@@ -963,7 +984,7 @@ class SimulationEngine:
 
         from sim_worker import SimWorker, WorkerError  # noqa: PLC0415
 
-        settings = self._worker_settings()
+        settings = self._worker_settings(model_id)
         worker = self._worker
         if worker is not None and (not worker.alive or not worker.matches(python, settings)):
             worker.stop()
@@ -998,7 +1019,7 @@ class SimulationEngine:
         """
         from sim_worker import WorkerError  # noqa: PLC0415
 
-        worker = self._acquire_worker()
+        worker = self._acquire_worker(payload.get("model_id"))
         if worker is None:
             return {}
         try:
@@ -1204,7 +1225,7 @@ class SimulationEngine:
                         dt=self.dt,
                         sim_time=float(sim_time),
                         pre_time=float(pre_time),
-                        solver_info=self.run_solver_info(solver),
+                        solver_info=self.run_solver_info(solver, model_id),
                         model_type=model_type,
                         solver=solver,
                     )
@@ -1327,7 +1348,7 @@ class SimulationEngine:
                     runner = self.runner_factory(
                         model_path=str(model_path),
                         dt=self.dt,
-                        solver_info=self.run_solver_info(solver),
+                        solver_info=self.run_solver_info(solver, model_id),
                         model_type=model_type,
                         solver=solver,
                     )

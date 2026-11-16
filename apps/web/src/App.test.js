@@ -3257,7 +3257,7 @@ describe('App.vue: calibrating PhLynx selections (PhLynx #492)', () => {
     await vi.advanceTimersByTimeAsync(5)
     await flushPromises()
     expect(wrapper.findComponent({ name: 'EditObsDataDialog' }).exists()).toBe(false)
-    expect(openWorkflowView).toHaveBeenLastCalledWith('left')
+    expect(openWorkflowView.mock.lastCall[0]).toBe('left')
     vi.useRealTimers()
   })
 })

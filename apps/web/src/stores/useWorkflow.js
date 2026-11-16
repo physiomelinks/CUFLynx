@@ -11,6 +11,7 @@ import {
   saveWorkflowStepInput,
   unsetParameters,
   uploadWorkflow,
+  workflowProvenanceUrl,
 } from '../lib/api'
 
 /** The tab id of the model a workflow's results are merged into (CA's TARGET_VIEW). */
@@ -22,6 +23,12 @@ const ARRAY_SUFFIX = /_(module|vessel)_array\.(csv|json)$/
 function arrayFile(model) {
   const path = typeof model === 'string' ? model : model?.module_array
   return path ? path.split(/[\\/]/).pop() : null
+}
+
+/** An external Python model's file name ({external_model_path}), or null. */
+export function externalFile(model) {
+  const path = model?.external_model_path
+  return typeof path === 'string' && path ? path.split(/[\\/]/).pop() : null
 }
 
 /**
@@ -36,6 +43,8 @@ export function modelLabel(model, full = false) {
   }
   const file = arrayFile(model)
   if (file) return full ? file : file.replace(ARRAY_SUFFIX, '')
+  const py = externalFile(model)
+  if (py) return full ? `external Python model ${py}` : py
   return full
     ? `${model.module_type} / ${model.version} / ${model.parameterisation}`
     : `${model.module_type} · ${model.parameterisation}`
@@ -47,6 +56,39 @@ export const KIND_WORDS = {
   reduction: 'reduction',
   emulation: 'emulator',
   identifiability: 'identifiability',
+  set: 'set by hand',
+  sweep: 'parameter sweep',
+}
+
+/**
+ * Why a step has no model to show, or '' when it has one: a reduction or a set step has
+ * none, and a sweep run on the target (`on_target`) has none of its own.
+ */
+export function noViewReason(kind, fileStep) {
+  if (kind === 'reduction') return 'a reduction has no model to show'
+  if (kind === 'set') return 'a set step gives values to the target and has no model to show'
+  if (kind === 'sweep' && fileStep?.on_target) {
+    return 'a sweep on the target has no model of its own: open the target'
+  }
+  return ''
+}
+
+/**
+ * A reduction in a few words, from CA's options (the plan's `reduction`, else the file's
+ * `settings.param_reduction_options`): a Sobol reduction keeps a fixed number, a PCA one
+ * as many as its modes need, up to `n_params` when given.
+ */
+export function reductionWords(options) {
+  const method = options?.method ?? 'sobol'
+  const index = options?.index_type ?? 'ST'
+  if (method === 'sobol') return `keeps the top ${options?.n_params ?? '?'} by Sobol ${index}`
+  const most = options?.n_params != null ? `, at most ${options.n_params}` : ''
+  return `${method === 'pca' ? 'PCA' : method} reduction by ${index}${most}`
+}
+
+/** A set step's values in a few words: "u_D = 0.1". */
+export function setWords(entries) {
+  return (entries ?? []).map((e) => `${e.parameter} = ${e.value}`).join(', ')
 }
 
 /** The keys by which a step takes something from another, as the step list reads them. */
@@ -81,6 +123,20 @@ export function missingInputs(fileStep) {
   return missing
 }
 
+/** The target's tab label: a module array's prefix, an external model's file, a module type. */
+function targetLabel(target) {
+  if (!target) return 'target'
+  if (arrayFile(target) || externalFile(target)) return modelLabel(target)
+  return target.module_type
+}
+
+function targetDetail(target) {
+  if (!target) return 'target'
+  if (arrayFile(target)) return `module array · ${arrayFile(target)}`
+  if (externalFile(target)) return `external Python model · ${externalFile(target)}`
+  return `supermodule · ${target.parameterisation}`
+}
+
 /**
  * One tab per step, in the order CA runs them, then the target.
  *
@@ -95,16 +151,27 @@ export function workflowTabs(described) {
   const steps = planSteps ?? fileSteps
   const target = described.plan?.target ?? described.workflow?.target ?? null
   const fileById = Object.fromEntries(fileSteps.map((f) => [f.id, f]))
-  const tabs = steps.map((s) => ({
+  const tabs = steps.map((s) => {
+    const kind = s.kind ?? 'calibration'
+    const file = fileById[s.id]
+    const noView = noViewReason(kind, file)
+    let detail = modelLabel(s.model ?? file?.model)
+    if (kind === 'reduction') {
+      detail = reductionWords(s.reduction ?? file?.settings?.param_reduction_options)
+    } else if (kind === 'set') {
+      detail = setWords(s.set ?? file?.set)
+    } else if (noView) {
+      detail = 'on the target'
+    }
+    return {
     id: s.id,
     kind: 'step',
-    // CA's step kind; only a reduction has no model, so no tab to show
-    stepKind: s.kind ?? 'calibration',
-    viewable: (s.kind ?? 'calibration') !== 'reduction',
+    // CA's step kind; a reduction, a set step and a sweep on the target have no model
+    stepKind: kind,
+    viewable: !noView,
+    noViewReason: noView,
     label: s.id,
-    detail: s.kind === 'reduction'
-      ? `keeps the top ${s.reduction?.top_n ?? '?'} by Sobol ${s.reduction?.index_type ?? 'ST'}`
-      : modelLabel(s.model ?? fileById[s.id]?.model),
+    detail,
     // a selection of the target's instances: what CA runs it as
     selection: selectionWords(s.selection),
     missing: missingInputs(fileById[s.id]),
@@ -120,7 +187,8 @@ export function workflowTabs(described) {
     priorsFrom: (s.priors_from ?? []).map((p) =>
       typeof p === 'string' ? { step: p, kind: 'mvnormal' } : p,
     ),
-  }))
+    }
+  })
   tabs.push({
     id: TARGET_VIEW,
     kind: 'target',
@@ -129,10 +197,8 @@ export function workflowTabs(described) {
     selection: '',
     missing: [],
     sources: [],
-    label: target ? (arrayFile(target) ? modelLabel(target) : target.module_type) : 'target',
-    detail: target
-      ? (arrayFile(target) ? `module array · ${arrayFile(target)}` : `supermodule · ${target.parameterisation}`)
-      : 'target',
+    label: targetLabel(target),
+    detail: targetDetail(target),
     place: '',
     calibrates: [],
     fixedFrom: [],
@@ -153,6 +219,23 @@ export function stepState(described, jobStates, stepId) {
   if (!recorded) return 'not_run'
   if (recorded.status === 'done') return recorded.stale ? 'stale' : 'done'
   return 'not_run'
+}
+
+/** The provenance files CA writes into a workflow run, as the server serves them. */
+export const PROVENANCE_FILES = { svg: 'provenance.svg', graph: 'provenance_graph.json' }
+
+/**
+ * `{svg, graph}` URLs of the run's provenance that CA has written (null when neither). The
+ * server gives each file's modification time, which each URL carries so a rerun's diagram
+ * is fetched again rather than shown from the browser's cache.
+ */
+export function provenanceLinks(described) {
+  const have = described?.provenance ?? {}
+  const links = {}
+  for (const [key, name] of Object.entries(PROVENANCE_FILES)) {
+    if (have[key]) links[key] = workflowProvenanceUrl(name, have[key])
+  }
+  return Object.keys(links).length ? links : null
 }
 
 /** Drives the open calibration workflow: load, tabs, run and poll. */
@@ -184,6 +267,8 @@ export function useWorkflow(options = {}) {
   const name = computed(
     () => described.value?.workflow?.workflow_name ?? described.value?.plan?.workflow_name ?? '',
   )
+  // The run's provenance diagram and graph, by URL, once CA has written them.
+  const provenance = computed(() => provenanceLinks(described.value))
 
   async function guarded(fn) {
     busy.value = true
@@ -231,11 +316,11 @@ export function useWorkflow(options = {}) {
   }
 
   /** Load one tab as the current study; returns the import-shaped response. */
-  async function select(tabId) {
+  async function select(tabId, workingDir = '') {
     busy.value = true
     error.value = ''
     try {
-      const result = await openWorkflowView(tabId)
+      const result = await openWorkflowView(tabId, workingDir)
       selected.value = tabId
       view.value = result.workflow_view ?? null
       if (unset.value?.step_id === tabId) unset.value = null
@@ -273,11 +358,11 @@ export function useWorkflow(options = {}) {
     jobError.value = ''
   }
 
-  async function run({ fromStep = '', only = '', numCores = 1 } = {}) {
+  async function run({ fromStep = '', only = '', numCores = 1, writeCalibrated = false } = {}) {
     resetJob()
     jobState.value = 'running'
     try {
-      const { job_id } = await runWorkflow({ fromStep, only, numCores })
+      const { job_id } = await runWorkflow({ fromStep, only, numCores, writeCalibrated })
       jobId = job_id
       await poll()
     } catch (e) {
@@ -329,6 +414,7 @@ export function useWorkflow(options = {}) {
     loaded,
     tabs,
     name,
+    provenance,
     busy,
     error,
     selected,

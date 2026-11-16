@@ -30,7 +30,10 @@ const STATE_TITLES = {
 
 function title(tab) {
   const state = props.states[tab.id]
-  if (tab.viewable === false) return `${tab.detail}: a reduction has no model to show`
+  if (tab.viewable === false) {
+    const why = tab.noViewReason || 'this step has no model to show'
+    return tab.detail ? `${tab.detail}: ${why}` : why
+  }
   const kind = tab.stepKind && tab.stepKind !== 'calibration' ? `${tab.stepKind}: ` : ''
   const where = tab.kind === 'target'
     ? 'the target, with every calibrated value'

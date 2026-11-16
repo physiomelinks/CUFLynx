@@ -62,6 +62,8 @@ import working_dir
 RUNNER_PATH = str(runner_path("workflow_runner.py"))
 WORKFLOW_FILE_NAME = "calibration_workflow.json"
 TARGET_VIEW = "target"
+#: The provenance CA writes into a workflow run directory (``reporting.provenance``).
+PROVENANCE_FILES = {"svg": "provenance.svg", "graph": "provenance_graph.json"}
 #: A step's own input files, and the suffix a new one is named with (``<step><suffix>``).
 STEP_INPUTS = {"obs_data": "_obs_data.json", "params_for_id": "_params_for_id.json"}
 #: The columns of the parameters CSV PhLynx reads, in the order PhLynx writes them; any other
@@ -107,6 +109,19 @@ def phlynx_parameters_csv(path: str) -> tuple[str, str]:
     writer.writeheader()
     writer.writerows(rows)
     return os.path.splitext(os.path.basename(path))[0] + ".csv", out.getvalue()
+
+
+def external_parameter_values(path: str) -> dict[str, float]:
+    """``{component/variable: value}`` of an external Python model's values file (CA's
+    ``external_parameters_file``, nested JSON as ``utilities.parameters_file`` writes it),
+    as CA's external helper reads it. WorkflowError when it cannot be read."""
+    read, leaves, separator = _ca_from_parameters_file(
+        "read_parameters_file", "leaves", "SEPARATOR")
+    try:
+        return {separator.join(place): float(leaf["value"])
+                for place, leaf in leaves(read(path))}
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise WorkflowError(f"cannot read the step's values {path}: {exc}") from exc
 
 
 def _ca_from_parameters_file(*names):
@@ -297,6 +312,9 @@ class WorkflowManager:
                                          self.module_library_dirs)
             except WorkflowError as exc:
                 out["status_error"] = str(exc)
+            # what of the run's provenance CA has written: {svg, graph} -> its mtime (ns)
+            out["provenance"] = {key: os.stat(path).st_mtime_ns for key in PROVENANCE_FILES
+                                 if (path := self.provenance_path(key))}
         job = self._job
         if job is not None:
             with job.lock:
@@ -314,6 +332,15 @@ class WorkflowManager:
             raise WorkflowError("the workflow has no run directory; set a working dir")
         return _ca_call("workflow_model", self.path, view, output_dir=self.output_dir,
                         work_dir=work_dir, module_library_dirs=self.module_library_dirs)
+
+    def provenance_path(self, key: str) -> str | None:
+        """The run directory's provenance diagram (``svg``) or graph (``graph``), or None
+        when CA has not written it (no run yet, or no workflow open)."""
+        name = PROVENANCE_FILES.get(key)
+        if not name or not self.output_dir:
+            return None
+        path = os.path.join(self.output_dir, name)
+        return path if os.path.isfile(path) else None
 
     def pack(self, dest_dir: str) -> dict[str, bytes]:
         """The open workflow as CA packs it: ``{path in the pack: bytes}``, inputs only."""
@@ -459,6 +486,12 @@ class WorkflowManager:
         or a step has no current result."""
         # CA's reading of the target: a bare module-array path names its parameters file too
         target = _ca_call("plan_workflow", self.path, self.module_library_dirs).get("target") or {}
+        if isinstance(target.get("external_model_path"), str):
+            model = ca_workflow("ExternalModel")(target["external_model_path"])
+            raise WorkflowError(
+                "the target is an external Python model, which PhLynx does not build: a "
+                "complete run writes its merged values as "
+                f"{model.prefix}_calibrated_parameters.json beside it")
         if not (isinstance(target.get("module_array"), str) and isinstance(target.get("parameters"), str)):
             raise WorkflowError("the target is not a module array, so there is none to send back")
         if not self.output_dir:
@@ -488,7 +521,8 @@ class WorkflowManager:
         return base
 
     def start(self, from_step: str | None = None, only: str | None = None,
-              num_cores: int = 1, python: str | None = None) -> str:
+              num_cores: int = 1, python: str | None = None,
+              write_calibrated: bool = False) -> str:
         with self._lock:
             if not self.loaded:
                 raise WorkflowError("no workflow is open")
@@ -503,6 +537,7 @@ class WorkflowManager:
                 "module_library_dirs": self.module_library_dirs,
                 "from_step": from_step or None, "only": only or None,
                 "num_cores": num_cores, "python": python,
+                "write_calibrated": bool(write_calibrated),
             }
             os.makedirs(self.output_dir, exist_ok=True)
             config_path = write_run_config(config, "workflow_config.json")

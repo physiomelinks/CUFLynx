@@ -9,7 +9,7 @@
  * panel only shows what the server reports from CA.
  */
 import { computed, ref } from 'vue'
-import { KIND_WORDS, SOURCE_WORDS, modelLabel } from '../stores/useWorkflow'
+import { KIND_WORDS, SOURCE_WORDS, externalFile, modelLabel } from '../stores/useWorkflow'
 import { errorMessage, exportWorkflow } from '../lib/api'
 import Button from 'primevue/button'
 import InputNumber from 'primevue/inputnumber'
@@ -35,6 +35,8 @@ const props = defineProps({
   workingDir: { type: String, default: '' },
   moduleLibraryDirs: { type: Array, default: () => [] },
   mpiexecAvailable: { type: Boolean, default: true },
+  // The run's provenance ({svg, graph} URLs), once CA has written it.
+  provenance: { type: Object, default: null },
 })
 const emit = defineEmits([
   'open',
@@ -73,6 +75,11 @@ async function exportArchive() {
 }
 
 const loaded = computed(() => !!props.described?.loaded)
+const calibratedTitle = computed(() =>
+  targetFile.value
+    ? `A complete run writes the merged values as a parameters file beside ${targetFile.value}; run the model from it with external_parameters_file`
+    : "A complete run writes the merged values as <name>_calibrated_parameters.json beside the target's parameters file",
+)
 const running = computed(() => props.jobState === 'running')
 const workflow = computed(() => props.described?.workflow ?? {})
 const steps = computed(() => props.tabs.filter((t) => t.kind === 'step'))
@@ -83,6 +90,20 @@ const canRun = computed(
   () => loaded.value && !props.described?.plan_error && !running.value && !props.busy,
 )
 const coresInvalid = computed(() => numCores.value > 1 && !props.mpiexecAvailable)
+
+// The target as CA reads it, and whether it is an external Python model.
+const target = computed(() => props.described?.plan?.target ?? workflow.value.target ?? null)
+const targetFile = computed(() => externalFile(target.value))
+// Whether a complete run writes the merged values beside the target. On by default for an
+// external Python model, whose values file is how it is run calibrated; a library or
+// module-array target is left untouched unless asked.
+const writeCalibratedChoice = ref(null)
+const writeCalibrated = computed({
+  get: () => writeCalibratedChoice.value ?? !!targetFile.value,
+  set: (value) => {
+    writeCalibratedChoice.value = value
+  },
+})
 
 const STATE_WORDS = {
   done: 'calibrated',
@@ -122,7 +143,7 @@ function onInputFile(event) {
 }
 
 function run(which = {}) {
-  emit('run', { ...which, numCores: numCores.value || 1 })
+  emit('run', { ...which, numCores: numCores.value || 1, writeCalibrated: writeCalibrated.value })
 }
 
 function fmt(value) {
@@ -146,7 +167,8 @@ const progressText = computed(() => {
         A <strong>calibration workflow</strong> runs calibrations in order -- each a model,
         an obs_data and a params_for_id, later ones taking earlier ones' values -- and
         merges the results into one target model, repeating all of it with one click. A
-        model is a module array or a module of a module library.
+        model is a module array, a module of a module library or an external Python model
+        (a <code>.py</code>).
       </p>
       <Message v-if="!moduleLibraryDirs.length" severity="info" :closable="false">
         No module library is set.
@@ -342,6 +364,10 @@ const progressText = computed(() => {
           :title="coresInvalid ? 'No mpiexec for the selected interpreter: run on one core' : ''"
         />
       </div>
+      <label class="wf-check" :title="calibratedTitle">
+        <input v-model="writeCalibrated" type="checkbox" data-testid="workflow-write-calibrated" />
+        Write the calibrated values beside the target
+      </label>
       <div class="wf-row wf-buttons">
         <Button
           label="Run workflow"
@@ -411,6 +437,41 @@ const progressText = computed(() => {
         {{ showLog ? 'Hide' : 'Show' }} the run's output ({{ lines.length }} lines)
       </a>
       <pre v-if="showLog" class="wf-log">{{ lines.slice(-200).join('\n') }}</pre>
+
+      <div v-if="provenance" class="wf-provenance" data-testid="workflow-provenance">
+        <h5>How every value was set</h5>
+        <a
+          v-if="provenance.svg"
+          :href="provenance.svg"
+          target="_blank"
+          rel="noopener"
+          title="Open the diagram on its own"
+        >
+          <img
+            :src="provenance.svg"
+            alt="The run's provenance: each step and the values it set"
+            data-testid="workflow-provenance-svg"
+          />
+        </a>
+        <p class="wf-hint">
+          <a
+            v-if="provenance.svg"
+            :href="provenance.svg"
+            target="_blank"
+            rel="noopener"
+            data-testid="workflow-provenance-svg-link"
+          >provenance.svg</a>
+          <template v-if="provenance.svg && provenance.graph"> · </template>
+          <a
+            v-if="provenance.graph"
+            :href="provenance.graph"
+            target="_blank"
+            rel="noopener"
+            data-testid="workflow-provenance-graph"
+          >provenance_graph.json</a>
+          (in the run directory)
+        </p>
+      </div>
 
       <div v-if="view" class="wf-view" data-testid="workflow-view">
         <h4>
@@ -499,6 +560,19 @@ const progressText = computed(() => {
   color: var(--p-orange-500, #f97316);
 }
 .wf-intro,
+.wf-check {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.8rem;
+  margin: 0.25rem 0;
+}
+.wf-provenance img {
+  max-width: 100%;
+  background: #fff;
+  border: 1px solid var(--p-content-border-color, #555);
+  border-radius: 4px;
+}
 .wf-hint {
   margin: 0;
   opacity: 0.75;

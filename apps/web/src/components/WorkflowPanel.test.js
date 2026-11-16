@@ -107,8 +107,40 @@ describe('WorkflowPanel', () => {
     await panel.find('[data-testid="workflow-run-from"]').trigger('click')
     await panel.find('[data-testid="workflow-run-only"]').trigger('click')
     expect(panel.emitted('run').map(([w]) => w)).toEqual([
-      { numCores: 1 }, { fromStep: 'rest', numCores: 1 }, { only: 'rest', numCores: 1 },
+      { numCores: 1, writeCalibrated: false },
+      { fromStep: 'rest', numCores: 1, writeCalibrated: false },
+      { only: 'rest', numCores: 1, writeCalibrated: false },
     ])
+  })
+
+  it('writes the calibrated values beside an external target unless told not to', async () => {
+    const external = { ...described, plan: { target: { external_model_path: '/w/heat1d_model.py' } } }
+    const panel = mountPanel({ described: external, tabs })
+    const box = panel.find('[data-testid="workflow-write-calibrated"]')
+    expect(box.element.checked).toBe(true)
+    await panel.find('[data-testid="workflow-run"]').trigger('click')
+    await box.setValue(false)
+    await panel.find('[data-testid="workflow-run"]').trigger('click')
+    expect(panel.emitted('run').map(([w]) => w.writeCalibrated)).toEqual([true, false])
+  })
+
+  it("shows the run's provenance diagram and links it and its graph as plain links", () => {
+    const provenance = { svg: '/api/workflow/provenance/provenance.svg?v=1',
+                         graph: '/api/workflow/provenance/provenance_graph.json?v=1' }
+    expect(mountPanel({ described, tabs }).find('[data-testid="workflow-provenance"]').exists())
+      .toBe(false)
+    const panel = mountPanel({ described, tabs, provenance })
+    expect(panel.find('[data-testid="workflow-provenance-svg"]').attributes('src'))
+      .toBe(provenance.svg)
+    for (const id of ['workflow-provenance-svg-link', 'workflow-provenance-graph']) {
+      const link = panel.find(`[data-testid="${id}"]`)
+      // a real link the user clicks: never a scripted open or a blob: URL
+      expect(link.attributes('target')).toBe('_blank')
+      expect(link.attributes('rel')).toBe('noopener')
+      expect(link.attributes('href').startsWith('/api/workflow/provenance/')).toBe(true)
+    }
+    expect(panel.find('[data-testid="workflow-provenance-graph"]').attributes('href'))
+      .toBe(provenance.graph)
   })
 
   it('cannot run a workflow CA could not resolve, and shows why', () => {

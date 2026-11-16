@@ -970,6 +970,63 @@ def uq_distributions(output_dir: str) -> list | None:
     return out
 
 
+#: The Laplace approximation CA's identifiability analysis writes (a workflow's
+#: identifiability step: ``<step dir>/<prefix>_laplace_{mean,covariance}.npy``).
+LAPLACE_MEAN_SUFFIX = "_laplace_mean.npy"
+LAPLACE_COVARIANCE_SUFFIX = "_laplace_covariance.npy"
+#: The z-scores of the 5th and 95th percentiles of a normal distribution.
+_Z95 = 1.6448536269514722
+
+
+def laplace_distributions(mean_path: str, covariance_path: str,
+                          names: list | None = None) -> list | None:
+    """The Laplace posterior (a normal distribution about ``mean`` with ``covariance``) in
+    the shape :func:`uq_distributions` returns, or None when either file is missing or
+    unreadable.
+
+    Each parameter's marginal, ``{qname, mean, std, q05, q50, q95, bins, counts}``, with the
+    density binned over mean +- 4 std (counts per 100000 draws, from the normal density
+    rather than a sample, so the same files always give the same plot). ``names`` labels
+    the parameters in the files' order; missing names are numbered.
+    """
+    import math  # noqa: PLC0415
+
+    import numpy as np  # noqa: PLC0415
+
+    if not (os.path.isfile(mean_path) and os.path.isfile(covariance_path)):
+        return None
+    try:
+        mean = np.atleast_1d(np.load(mean_path, allow_pickle=False)).astype(float)
+        cov = np.atleast_2d(np.load(covariance_path, allow_pickle=False)).astype(float)
+    except Exception:  # noqa: BLE001 - a reader must never fail a finished run
+        return None
+    if cov.shape != (mean.size, mean.size):
+        return None
+    names = list(names or [])
+    out = []
+    for i, mu in enumerate(mean):
+        std = math.sqrt(max(float(cov[i, i]), 0.0))
+        qname = names[i] if i < len(names) else "parameter %d" % (i + 1)
+        if std > 0:
+            edges = np.linspace(mu - 4 * std, mu + 4 * std, NUM_BINS + 1)
+            cdf = np.array([0.5 * (1 + math.erf((e - mu) / (std * math.sqrt(2))))
+                            for e in edges])
+            counts = np.rint(np.diff(cdf) * 100000).astype(int)
+        else:
+            edges, counts = np.array([mu, mu]), np.array([100000])
+        out.append({
+            "qname": qname,
+            "mean": float(mu),
+            "std": std,
+            "q05": float(mu - _Z95 * std),
+            "q50": float(mu),
+            "q95": float(mu + _Z95 * std),
+            "bins": [float(x) for x in edges],
+            "counts": [int(x) for x in counts],
+        })
+    return out
+
+
 # ---------------------------------------------------------------------------
 # History (the live progress plots)
 # ---------------------------------------------------------------------------
