@@ -301,6 +301,10 @@ single-file spec does not produce.
 file and one CA config key each, all under `<outputs>/user_funcs/`:
 `operation_funcs_user.py` / `cost_funcs_user.py` (CA#303, named by an obs_data
 data_item) and `modifier_funcs_user.py` (CA#383, named by a params_for_id entry).
+Each file is written by libcuflynx's `utilities.user_funcs_file.write_funcs_file`
+(CA #652), the layout its `WorkflowBuilder.add_operation` writes too, so a notebook's
+workflow functions and the editor's are one file format; `_render` is only the
+fallback for a libcuflynx without it.
 Everything is driven off the `_KINDS` map — the run config, the export copy into
 `resources/`, and the yaml keys all fall out of it, and the exported script
 matches the external-path keys **by suffix** so a fourth kind needs no edit

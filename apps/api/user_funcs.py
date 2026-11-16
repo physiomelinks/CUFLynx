@@ -62,6 +62,7 @@ import keyword
 from dataclasses import dataclass
 from pathlib import Path
 
+from ca_imports import ca_from, ensure_ca_path
 from engine import _circulatory_autogen_src
 from settings_store import config_dir
 
@@ -698,7 +699,23 @@ def read_user_funcs(kind: str, base_dir: str | None = None) -> dict:
 # ---------------------------------------------------------------------------
 # Write
 # ---------------------------------------------------------------------------
+def _write(kind: str, order: list[str], sources: dict[str, str], base_dir: str | None) -> None:
+    """Write the ``kind`` file with the funcs ``order`` names, in libcuflynx's layout
+    (``utilities.user_funcs_file``), which its WorkflowBuilder writes too, so either can read
+    and rewrite the other's file. A libcuflynx without that module gets :func:`_render`."""
+    path = _user_file(kind, base_dir)
+    try:
+        ensure_ca_path()
+        write_funcs_file = ca_from("utilities.user_funcs_file", "write_funcs_file")
+    except ImportError:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(_render(kind, order, sources), encoding="utf-8")
+    else:
+        write_funcs_file(str(path), kind, {name: sources[name] for name in order})
+
+
 def _render(kind: str, order: list[str], sources: dict[str, str]) -> str:
+    """The file :func:`_write` writes when libcuflynx has no ``user_funcs_file``."""
     k = _func_kind(kind)
     names = ", ".join(f'"{n}"' for n in order)
     parts = [k.header, "", "", f"{k.list_marker} = [{names}]"]
@@ -742,8 +759,7 @@ def save_user_func(
         order.append(name)
     sources[name] = source
 
-    _user_dir(base_dir).mkdir(parents=True, exist_ok=True)
-    _user_file(kind, base_dir).write_text(_render(kind, order, sources), encoding="utf-8")
+    _write(kind, order, sources, base_dir)
     _refresh_options()
     return read_user_funcs(kind, base_dir)
 
@@ -758,7 +774,7 @@ def delete_user_func(kind: str, name: str, base_dir: str | None = None) -> dict:
         raise UserFuncError(f"no user {kind} named '{name}'")
     order = [n for n in order if n != name]
     del sources[name]
-    _user_file(kind, base_dir).write_text(_render(kind, order, sources), encoding="utf-8")
+    _write(kind, order, sources, base_dir)
     _refresh_options()
     return read_user_funcs(kind, base_dir)
 
