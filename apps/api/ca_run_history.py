@@ -946,6 +946,11 @@ def uq_distributions(output_dir: str) -> list | None:
         flat, qnames = _chain_samples(output_dir)
         if flat is None:
             return None
+    return _sample_marginals(flat, qnames)
+
+
+def _sample_marginals(flat, qnames) -> list:
+    import numpy as np  # noqa: PLC0415
 
     out = []
     for i, qname in enumerate(qnames):
@@ -970,6 +975,43 @@ def uq_distributions(output_dir: str) -> list | None:
     return out
 
 
+#: What a calibration workflow writes into each step's directory.
+STEP_RESULT_FILE = "step_result.json"
+#: CA's stored distribution (``calibration_workflow.distributions``): the samples and the
+#: manifest naming their parameters.
+DISTRIBUTION_MANIFEST = "distribution.json"
+DISTRIBUTION_SAMPLES = "samples.npy"
+
+
+def step_result(step_dir: str) -> dict | None:
+    """A workflow step's ``step_result.json``, or None when the step has not finished."""
+    found = _json(step_dir, STEP_RESULT_FILE) if step_dir else None
+    return found if isinstance(found, dict) else None
+
+
+def stored_distribution(directory: str) -> list | None:
+    """The marginals (:func:`uq_distributions`' shape) of a distribution a workflow step
+    stored (``<step>/distribution/``: an MCMC chain after CA's burn-in, or a Laplace
+    approximation's draws), or None. Each parameter is named by its first target,
+    ``vessel/param``."""
+    import numpy as np  # noqa: PLC0415
+
+    manifest = _json(directory, DISTRIBUTION_MANIFEST) if directory else None
+    samples = _npy(directory, DISTRIBUTION_SAMPLES) if directory else None
+    if not isinstance(manifest, dict) or samples is None:
+        return None
+    names = []
+    for parameter in manifest.get("parameters") or []:
+        targets = parameter.get("targets") or []
+        names.append("/".join(str(t) for t in targets[0]) if targets else
+                     "parameter %d" % (len(names) + 1))
+    flat = np.asarray(samples, dtype=float)
+    flat = flat.reshape(-1, 1) if flat.ndim == 1 else flat
+    if flat.ndim != 2 or flat.shape[0] == 0 or flat.shape[1] != len(names):
+        return None
+    return _sample_marginals(flat, names)
+
+
 #: The Laplace approximation CA's identifiability analysis writes (a workflow's
 #: identifiability step: ``<step dir>/<prefix>_laplace_{mean,covariance}.npy``).
 LAPLACE_MEAN_SUFFIX = "_laplace_mean.npy"
@@ -989,16 +1031,29 @@ def laplace_distributions(mean_path: str, covariance_path: str,
     rather than a sample, so the same files always give the same plot). ``names`` labels
     the parameters in the files' order; missing names are numbered.
     """
-    import math  # noqa: PLC0415
-
     import numpy as np  # noqa: PLC0415
 
     if not (os.path.isfile(mean_path) and os.path.isfile(covariance_path)):
         return None
     try:
-        mean = np.atleast_1d(np.load(mean_path, allow_pickle=False)).astype(float)
-        cov = np.atleast_2d(np.load(covariance_path, allow_pickle=False)).astype(float)
+        mean = np.load(mean_path, allow_pickle=False)
+        cov = np.load(covariance_path, allow_pickle=False)
     except Exception:  # noqa: BLE001 - a reader must never fail a finished run
+        return None
+    return laplace_marginals(mean, cov, names)
+
+
+def laplace_marginals(mean, covariance, names: list | None = None) -> list | None:
+    """:func:`laplace_distributions` of a mean and covariance given as arrays (a workflow uq
+    step's ``step_result.json`` ``laplace``), or None when their shapes disagree."""
+    import math  # noqa: PLC0415
+
+    import numpy as np  # noqa: PLC0415
+
+    try:
+        mean = np.atleast_1d(np.asarray(mean, dtype=float))
+        cov = np.atleast_2d(np.asarray(covariance, dtype=float))
+    except (TypeError, ValueError):
         return None
     if cov.shape != (mean.size, mean.size):
         return None

@@ -96,6 +96,7 @@ import params_json
 import ca_run_history
 import load_outputs
 import study_manifest
+import study_workflow
 from params_for_id import ParamsForIdError, parse_params_for_id
 import saved_runs
 from param_io import ParamIOError, load_param_values, save_param_values
@@ -4160,6 +4161,294 @@ def _with_engine_dt(settings: dict) -> dict:
     return settings
 
 
+# ---------------------------------------------------------------------------
+# The study workflow: each run is a step of <W>/workflow/calibration_workflow.json
+# ---------------------------------------------------------------------------
+#: Said once per session when the configured CA cannot record runs as workflow steps.
+_study_unavailable_said: str | None = None
+
+
+def _study_note(text: str) -> str:
+    return f"Study workflow: {text}"
+
+
+def _study_running_step() -> str | None:
+    """The study-workflow step a panel or the Workflow tab is running, or None."""
+    for manager in (calibration, sensitivity, uq):
+        job = manager._job
+        if job is not None and job.state == "running" and getattr(job, "study_step", None):
+            return job.study_step["step"]
+    if workflow.busy and workflow.path and os.path.basename(
+            os.path.dirname(workflow.path)) == study_workflow.WORKFLOW_DIR:
+        return workflow._job.current_step or "a step"
+    return None
+
+
+def _study_entries(record: "_ModelRecord") -> list:
+    try:
+        return parse_params_for_id(Path(record.params_path).read_bytes())
+    except (OSError, ParamsForIdError):
+        return []
+
+
+def _study_plan(record: "_ModelRecord", configured: str, config: dict, *,
+                held_out: bool = False, needs_point: bool = False):
+    """``(plan, notes)``: the study workflow to add this run's steps to, or ``(None,
+    notes)`` when the run keeps its direct runner, ``notes`` saying why for the run log."""
+    global _study_unavailable_said
+    if not study_workflow.enabled():
+        return None, []
+    reason = study_workflow.unavailable_reason()
+    if reason:
+        # once a session: every run would say the same
+        if _study_unavailable_said == reason:
+            return None, []
+        _study_unavailable_said = reason
+        return None, [_study_note(f"runs are not recorded as workflow steps, because "
+                                  f"{reason}; they run as before.")]
+    modifier_point = needs_point and any(e.modifies for e in _study_entries(record))
+    direct = study_workflow.direct_reason(config["model_type"], held_out=held_out,
+                                          modifier_point=modifier_point)
+    if direct is None and config.get("solver_info", {}).get("external_parameters_file"):
+        direct = ("the model runs with a workflow step's values file, which the study "
+                  "workflow's target does not take")
+    if direct:
+        return None, [_study_note(f"this run is not recorded in it: {direct}.")]
+    running = _study_running_step()
+    if running:
+        raise HTTPException(status_code=409, detail=(
+            f"step {running} of the study workflow is running; this run is the next step "
+            f"of the same workflow, so start it when that one has finished"))
+    try:
+        target = study_workflow.target_model(config["model_path"], config["model_type"])
+        builder = study_workflow.open_workflow(configured, target)
+    except (study_workflow.StudyWorkflowError, ValueError, OSError) as exc:
+        raise HTTPException(status_code=422, detail=f"the study workflow: {exc}") from exc
+    return study_workflow.Plan(builder, configured), []
+
+
+def _study_settings(config: dict, settings: dict, extra: dict) -> dict:
+    """A step's settings: the solve and user funcs this run is given, and ``extra``."""
+    from calibration_runner import _solver_info_from_config  # noqa: PLC0415
+
+    out = study_workflow.step_settings(
+        model_type=config["model_type"], solver=config["solver"],
+        solver_info=_solver_info_from_config(config, settings), dt=settings.get("dt"),
+        funcs=user_func_paths(config["output_dir"], include_modules=False),
+        debug=bool(settings.get("DEBUG")), extra=extra)
+    for key in ("pre_time", "sim_time"):
+        if settings.get(key) not in (None, ""):
+            out[key] = float(settings[key])
+    if out.get("DEBUG"):
+        # CA reads the debug_ options under DEBUG; the panel's options are the run's either way
+        for key in ("optimiser_options", "UQ_options"):
+            if key in out:
+                out[f"debug_{key}"] = dict(out[key])
+    if config.get("use_emulator"):
+        out["emulator_settings"] = dict(config.get("emulator_settings") or {})
+    return out
+
+
+def _study_inputs(config: dict, obs_path: str | None = None) -> dict:
+    """The model, obs_data and params_for_id every step of this run names, and the
+    emulator it runs on when the Emulator tab's tick box is on."""
+    out = {"model": study_workflow.target_model(config["model_path"], config["model_type"]),
+           "obs_data": obs_path or config["obs_path"], "params_for_id": config["params_path"]}
+    if config.get("use_emulator"):
+        out["emulator_dir"] = config["emulator_dir"]
+    return out
+
+
+def _study_point(plan, model_id: str, qnames: list) -> str | None:
+    """The step a run starts from or is analysed at when it asks for the previous best fit:
+    that calibration's step when it finished in this workflow, else a set step with the
+    best fit (or the best-so-far of a calibration stopped early), its reason saying which."""
+    finished = calibration.last_completed_step(model_id)
+    if finished and finished["workflow"] == plan.builder.path and finished["step"] in plan.builder.steps:
+        return finished["step"]
+    best = calibration.last_completed_best_params(model_id)
+    if not best:
+        return None
+    stopped = calibration.last_completed_step(model_id, finished_only=False)
+    if stopped and not finished:
+        reason = f"best so far of calibration step {stopped['step']}, which was stopped early"
+    else:
+        reason = "best fit of the previous calibration, run outside the study workflow"
+    return plan.add_set("best_fit", study_workflow.set_entries(best, qnames, reason))
+
+
+def _study_start(plan, config: dict, markers: tuple, notes: list) -> None:
+    """Write the workflow, point ``config`` at its step and open it in the Workflow tab."""
+    plan.write()
+    config.update(plan.runner_config({"done": markers[0], "fail": markers[1]}))
+    config["log_preamble"] = notes + [_study_note(
+        f"step {plan.step} of {plan.builder.path} (adds {', '.join(plan.added)}); its results "
+        f"go to {plan.step_dir()}.")]
+    if not workflow.busy and (not workflow.loaded or workflow.path == plan.builder.path):
+        try:
+            workflow.load(plan.builder.path, plan.run_dir, [])
+        except (workflow_manager.WorkflowError, workflow_manager.WorkflowUnavailable,
+                RuntimeError):
+            pass
+
+
+def _study_ga_options(settings: dict, defaults: dict) -> dict:
+    """``optimiser_options`` of the calibration a sensitivity or UQ run makes first."""
+    opts = {"num_calls_to_function": int(settings.get("num_calls_to_function", 100)),
+            "cost_convergence": float(settings.get("cost_convergence",
+                                                   defaults["cost_convergence"])),
+            "max_patience": int(settings.get("max_patience", 10))}
+    cost_type = settings.get("cost_type") or defaults.get("cost_type")
+    if cost_type:
+        opts["cost_type"] = cost_type
+    if _analysis_seed is not None:
+        opts["seed"] = int(_analysis_seed)
+    return opts
+
+
+def _study_calibration(record, req, config: dict, configured: str) -> list:
+    """Make this calibration a step of the study workflow; the run-log notes."""
+    from calibration_runner import DONE_MARKER, FAIL_MARKER, _optimiser_options  # noqa: PLC0415
+    from local_sensitivity import resolve_gradient_method  # noqa: PLC0415
+    from obs_data import has_held_out_data  # noqa: PLC0415
+
+    settings = config["settings"]
+    start_from = settings.get("start_from") or (
+        "current" if settings.get("start_from_current") else "model")
+    try:
+        held_out = has_held_out_data(json.loads(Path(config["obs_path"]).read_text()))
+    except (OSError, ValueError):
+        held_out = False
+    with study_workflow.lock():
+        plan, notes = _study_plan(record, configured, config, held_out=held_out,
+                                  needs_point=start_from in ("current", "best_fit"))
+        if plan is None:
+            return notes
+        qnames = [q for e in _study_entries(record) for q in e.qnames]
+        start = None
+        if start_from == "current" and req.current_params:
+            start = plan.add_set("sliders", study_workflow.set_entries(
+                req.current_params, qnames, study_workflow.SLIDER_REASON))
+        elif start_from == "best_fit":
+            start = _study_point(plan, record.model_id, qnames)
+        method = settings.get("param_id_method", "genetic_algorithm")
+        extra = {"param_id_method": method,
+                 "optimiser_options": _optimiser_options(study_workflow.options(settings),
+                                                         _analysis_seed),
+                 "do_ad": resolve_gradient_method(settings, config["model_type"]) in ("AD", "FSA")}
+        if start and method == "genetic_algorithm":
+            notes.append(_study_note(f"the genetic algorithm draws its first population at "
+                                     f"random, so it does not start at step {start}'s values "
+                                     f"(they are recorded as where it was asked to start)."))
+        plan.add("add_calibration", plan.new_id(study_workflow.LABELS["calibration"]),
+                 **_study_inputs(config), start_from=start,
+                 settings=_study_settings(config, settings, extra))
+        _study_start(plan, config, (DONE_MARKER, FAIL_MARKER), notes)
+    return config["log_preamble"]
+
+
+def _study_sensitivity(record, req, config: dict, configured: str) -> list:
+    """Make this sensitivity analysis a step of the study workflow; the run-log notes.
+
+    A local analysis is at a point: a calibration made first (``result_from`` it), the
+    previous calibration's best fit, the slider values or the params_for_id bounds' midpoint
+    (a set step with its reason), or the model's own values (no point step).
+    """
+    import numpy as np  # noqa: PLC0415
+
+    from local_sensitivity import _bounds_point, resolve_gradient_method  # noqa: PLC0415
+    from sensitivity_runner import DONE_MARKER, FAIL_MARKER, _sa_options  # noqa: PLC0415
+
+    settings = config["settings"]
+    method = settings.get("method", "sobol")
+    local = method == "local"
+    first = local and bool(settings.get("run_calibration_first"))
+    nominal = str(settings.get("nominal", "current"))
+    needs_point = local and not first and (
+        nominal in ("best_fit", "midpoint", "geometric")
+        or (nominal == "current" and bool(req.current_params)))
+    with study_workflow.lock():
+        plan, notes = _study_plan(record, configured, config, needs_point=needs_point)
+        if plan is None:
+            return notes
+        entries = _study_entries(record)
+        qnames = [q for e in entries for q in e.qnames]
+        at = None
+        if first:
+            ga = {"param_id_method": settings.get("param_id_method", "genetic_algorithm"),
+                  "optimiser_options": _study_ga_options(settings, {"cost_convergence": 0.0001})}
+            at = plan.add("add_calibration", plan.new_id(study_workflow.LABELS["calibration"]),
+                          **_study_inputs(config), settings=_study_settings(config, settings, ga))
+        elif local and nominal == "best_fit":
+            at = _study_point(plan, record.model_id, qnames)
+        elif local and nominal == "current" and req.current_params:
+            at = plan.add_set("sliders", study_workflow.set_entries(
+                req.current_params, qnames, study_workflow.SLIDER_REASON))
+        elif local and nominal in ("midpoint", "geometric"):
+            point = _bounds_point(np.array([e.min for e in entries], dtype=float),
+                                  np.array([e.max for e in entries], dtype=float), nominal)
+            values = {q: float(v) for e, v in zip(entries, point) for q in e.qnames}
+            at = plan.add_set("bounds", study_workflow.set_entries(
+                values, qnames, f"the {nominal} of the params_for_id bounds, the point of a "
+                                f"local sensitivity analysis"))
+        sa_options = _sa_options(study_workflow.options(settings), "", _analysis_seed)
+        sa_options.pop("output_dir", None)
+        gradient = None
+        if local:
+            gradient = sa_options.get("gradient_method") or resolve_gradient_method(
+                settings, config["model_type"])
+            sa_options["gradient_method"] = gradient
+            sa_options["fd_rel_step"] = float(settings.get("rel_step") or 0.01)
+        label = study_workflow.LABELS["local" if local else "sobol"]
+        plan.add("add_sensitivity", plan.new_id(label), **_study_inputs(config),
+                 sa_options=sa_options, result_from=at,
+                 settings=_study_settings(config, settings, {}))
+        config["study_meta"] = {"method": method, "gradient_method": gradient}
+        if local:
+            notes.append(_study_note(
+                "the relative sensitivities are libcuflynx's (|p| dY/dp / |Y|, unsigned), and "
+                "the outputs carry libcuflynx's labels."))
+        _study_start(plan, config, (DONE_MARKER, FAIL_MARKER), notes)
+    return config["log_preamble"]
+
+
+def _study_uq(record, config: dict, configured: str) -> list:
+    """Make this UQ run a step of the study workflow (a ``uq`` step at the previous
+    calibration's best fit, or at a calibration it makes first); the run-log notes."""
+    from uq_runner import DONE_MARKER, FAIL_MARKER, _mle_obs_path, _uq_options  # noqa: PLC0415
+
+    settings = config["settings"]
+    method = settings.get("method", "mcmc")
+    first = bool(settings.get("run_calibration_first"))
+    with study_workflow.lock():
+        plan, notes = _study_plan(record, configured, config, needs_point=not first)
+        if plan is None:
+            return notes
+        qnames = [q for e in _study_entries(record) for q in e.qnames]
+        # MCMC and Laplace take ln L = -cost: the obs_data with an MLE cost on every item,
+        # stored as an input of its own (as the direct runner stores it)
+        cost_type = settings.get("cost_type", "gaussian_MLE")
+        obs = _mle_obs_path(config, cost_type)
+        if first:
+            ga = {"param_id_method": settings.get("param_id_method", "genetic_algorithm"),
+                  "optimiser_options": _study_ga_options(
+                      settings, {"cost_convergence": 0.001, "cost_type": cost_type})}
+            at = plan.add("add_calibration", plan.new_id(study_workflow.LABELS["calibration"]),
+                          **_study_inputs(config, obs),
+                          settings=_study_settings(config, settings, ga))
+        else:
+            at = _study_point(plan, record.model_id, qnames)
+        uq_options = dict(_uq_options(study_workflow.options(settings), _analysis_seed),
+                          method=method)
+        extra = {"ia_options": {"method": "Laplace"}} if method == "laplace" else {}
+        plan.add("add_uq", plan.new_id(study_workflow.LABELS.get(method, "uq")),
+                 **_study_inputs(config, obs), uq_options=uq_options, result_from=at,
+                 settings=_study_settings(config, settings, extra))
+        notes.append(_study_note("a workflow uq step runs no posterior predictive check."))
+        _study_start(plan, config, (DONE_MARKER, FAIL_MARKER), notes)
+    return config["log_preamble"]
+
+
 @app.get("/api/calibration/defaults")
 def calibration_defaults() -> dict:
     # `methods` is introspected from CA's PARAM_ID_METHODS schema (never hardcoded);
@@ -4252,6 +4541,9 @@ def calibration_run(req: CalibrationRequest) -> dict:
     if workflow.busy:
         raise HTTPException(status_code=409,
                             detail="a calibration workflow is running; calibrate after it")
+    if calibration.busy:
+        raise HTTPException(status_code=409, detail="a calibration job is already running")
+    config.setdefault("log_preamble", _study_calibration(record, req, config, configured))
     try:
         job_id = calibration.start(config)
     except RuntimeError as exc:
@@ -4832,6 +5124,9 @@ def sensitivity_run(req: SensitivityRequest) -> dict:
         # tab's tick box is on (CA #333).
         **_emulator_run_config(req.model_id, req.settings),
     }
+    if sensitivity.busy:
+        raise HTTPException(status_code=409, detail="a sensitivity job is already running")
+    config.setdefault("log_preamble", _study_sensitivity(record, req, config, configured))
     try:
         job_id = sensitivity.start(config)
     except RuntimeError as exc:
@@ -5340,6 +5635,9 @@ def uq_run(req: UQRequest) -> dict:
         # Emulator tab's tick box is on (CA #333).
         **_emulator_run_config(req.model_id, req.settings),
     }
+    if uq.busy:
+        raise HTTPException(status_code=409, detail="a UQ job is already running")
+    config.setdefault("log_preamble", _study_uq(record, config, configured))
     try:
         job_id = uq.start(config)
     except RuntimeError as exc:

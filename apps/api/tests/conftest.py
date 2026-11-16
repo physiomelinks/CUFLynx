@@ -20,6 +20,9 @@ if str(API_DIR) not in sys.path:
 # (and overwrite) the developer's real ~/.config/cuflynx/config.json — e.g. their
 # saved ca_dir would leak in and change which CA the tests resolve.
 os.environ["CUFLYNX_CONFIG_DIR"] = tempfile.mkdtemp(prefix="cuflynx-test-config-")
+# The analysis routes' own tests run them on their direct runners; the study-workflow
+# tests (test_study_workflow*.py) turn it back on with the ``study_workflow_on`` fixture.
+os.environ["CUFLYNX_STUDY_WORKFLOW"] = "0"
 
 import calibration as calibration_mod  # noqa: E402
 import emulator as emulator_mod  # noqa: E402
@@ -186,6 +189,19 @@ def simulation_deps_available() -> bool:
 def requires_simulation(simulation_deps_available: bool):
     if not simulation_deps_available:
         pytest.skip("myokit / libcellml / circulatory_autogen not available")
+
+
+@pytest.fixture
+def study_workflow_on(monkeypatch):
+    """Analysis runs are study-workflow steps, as in the app; skips on a libcuflynx
+    without the workflow features they need (``study_workflow.unavailable_reason``)."""
+    import study_workflow
+
+    monkeypatch.setenv("CUFLYNX_STUDY_WORKFLOW", "1")
+    reason = study_workflow.unavailable_reason()
+    if reason:
+        pytest.skip(f"no study workflow here: {reason}")
+    return study_workflow
 
 
 @pytest.fixture
@@ -408,6 +424,10 @@ def reset_app_state():
     workflow_mod.workflow.runner_path = workflow_mod.RUNNER_PATH
     main._module_library_dirs = []
     obs_extract_job_mod.obs_extract_jobs.reset()
+    for manager in (calibration_mod.calibration, sensitivity_mod.sensitivity, uq_mod.uq):
+        manager.study_runner_path = calibration_mod.WORKFLOW_RUNNER_PATH
+    main._study_unavailable_said = None
+    os.environ["CUFLYNX_STUDY_WORKFLOW"] = "0"
     _set_analysis_pythons(_pythons_before)
     main._analysis_seed = None
     # Restore CIRCULATORY_AUTOGEN_SRC so a /api/config test doesn't leak.

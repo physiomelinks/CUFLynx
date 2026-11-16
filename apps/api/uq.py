@@ -18,6 +18,9 @@ from pathlib import Path
 
 # Interpreter discovery is shared with calibration — same machine, same probe.
 from calibration import (  # noqa: F401  (list_python_interpreters re-exported)
+    WORKFLOW_RUNNER_PATH,
+    study_popen_kwargs,
+    study_read_dir,
     _warn_no_mpiexec,
     clear_run_config,
     finished_before_exiting,
@@ -55,12 +58,15 @@ class UQJob:
         self.proc: subprocess.Popen | None = None
         # The temp file the runner was handed as argv[1], removed when it exits.
         self.config_path: str | None = None
+        # The study-workflow step this run is, or None for a direct run.
+        self.study_step: dict | None = None
         self.lock = threading.Lock()
 
 
 class UQManager:
     def __init__(self):
         self.runner_path = RUNNER_PATH
+        self.study_runner_path = WORKFLOW_RUNNER_PATH
         self.python = default_python()
         self._job: UQJob | None = None
         self._lock = threading.Lock()
@@ -91,7 +97,8 @@ class UQManager:
         ``mpiexec`` (which would crash the request with an HTTP 500).
         """
         python = config.get("python") or self.python
-        base = runner_command(python, self.runner_path, config_path)
+        script = self.study_runner_path if config.get("study_step") else self.runner_path
+        base = runner_command(python, script, config_path)
         num_cores = int(config.get("num_cores", 1) or 1)
         if num_cores > 1:
             mpiexec = resolve_mpiexec(python)
@@ -109,8 +116,12 @@ class UQManager:
             os.makedirs(output_dir, exist_ok=True)
             config_path = write_run_config(config, "uq_config.json")
 
-            job = UQJob(uuid.uuid4().hex, output_dir)
+            # A workflow uq step runs in <step>/uq/: its MCMC run dir is there.
+            job = UQJob(uuid.uuid4().hex, study_read_dir(config, "uq") or output_dir)
+            job.study_step = config.get("study_step")
             settings = config.get("settings") or config
+            if job.study_step:
+                job.method = settings.get("method", "mcmc")
             job.burn_in = settings.get("burn_in", 0.5)
             # The configured run length, which the burn-in fraction is taken against. Coerced
             # rather than trusted: it arrives from a form, so "100000" is as likely as 100000,
@@ -129,8 +140,10 @@ class UQManager:
                 text=True,
                 bufsize=1,
                 env=env,
+                **study_popen_kwargs(config),
             )
             self._job = job
+            job.lines.extend(config.get("log_preamble") or [])
 
         threading.Thread(target=self._reader, args=(job,), daemon=True).start()
         return job.id
@@ -182,12 +195,15 @@ class UQManager:
             # The posterior is re-derived from the samples the run persisted, not
             # from a summary it serialised for us (#210). Which method ran is the
             # only thing no file holds, so it comes over the pipe.
-            params = (
-                ca_run_history.uq_distributions(job.output_dir) if finished else None
-            )
+            # A workflow uq step's posterior is the one CA stored for it.
+            params = None
+            if finished:
+                params = (self._study_params(job) if job.study_step
+                          else ca_run_history.uq_distributions(job.output_dir))
             if params is not None:
                 try:
-                    job.method = read_meta_line(job.lines, META_MARKER).get("method")
+                    job.method = (read_meta_line(job.lines, META_MARKER).get("method")
+                                  or job.method)
                     job.params = params
                     job.state = "done"
                     job.coverage = self._read_coverage(job.output_dir)
@@ -199,6 +215,18 @@ class UQManager:
             else:
                 job.state = "error"
                 job.error = job.error or f"runner exited with code {code}"
+
+    @staticmethod
+    def _study_params(job: UQJob) -> list | None:
+        """A workflow uq step's posterior: a Laplace approximation's normal marginals from
+        ``step_result.json`` (as the direct run's draws approximate them), an MCMC's stored
+        distribution (the chain after CA's burn-in)."""
+        result = ca_run_history.step_result(job.study_step["step_dir"]) or {}
+        laplace = result.get("laplace") or {}
+        if laplace.get("mean") is not None and laplace.get("covariance") is not None:
+            return ca_run_history.laplace_marginals(laplace["mean"], laplace["covariance"],
+                                                    result.get("parameters"))
+        return ca_run_history.stored_distribution(result.get("distribution_dir") or "")
 
     def _salvage_partial(self, job: UQJob) -> None:
         """Build the posterior from the chain a cancelled run had already sampled.
@@ -258,6 +286,7 @@ class UQManager:
                 "error": job.error,
                 "warning": job.warning,
                 "coverage": job.coverage,
+                "study_step": job.study_step,
             }
 
     def progress(self, job_id: str) -> dict | None:
