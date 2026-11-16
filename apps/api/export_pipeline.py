@@ -17,6 +17,7 @@ from datetime import date
 
 from ca_imports import ca_from, ensure_ca_path
 from obs_data import INCLUDE_PREDICTION_ITEMS
+from optimiser_budget import default_num_calls
 
 
 def dated_suffix() -> str:
@@ -27,7 +28,7 @@ class ExportPipelineError(ValueError):
     """Bad export settings supplied by the client (maps to HTTP 422)."""
 
 
-def _num(value, default, cast, field: str):
+def _num(value, default, cast, field: str, unset=None):
     """Coerce a client-supplied setting, treating "not set" as absent.
 
     The analysis panels populate their fields from CA's *discovered* option
@@ -46,7 +47,7 @@ def _num(value, default, cast, field: str):
     than an opaque 500.
     """
     if value is None or (isinstance(value, str) and not value.strip()):
-        return cast(default)
+        return cast(unset() if unset is not None else default)
     try:
         return cast(value)
     except (TypeError, ValueError) as exc:
@@ -102,8 +103,12 @@ def build_user_inputs(
     enabled = enabled or {}
 
     optimiser_options = {
+        # Unset: CA's own default for the method -- one population for the GA, the
+        # smallest budget it runs. The yaml carries no DEBUG, so CA runs it off.
         "num_calls_to_function": _num(
-            calibration.get("num_calls_to_function"), 100, int, "num_calls_to_function"
+            calibration.get("num_calls_to_function"),
+            None, int, "num_calls_to_function",
+            unset=lambda: default_num_calls(calibration.get("param_id_method")),
         ),
         "cost_convergence": _num(
             calibration.get("cost_convergence"), 0.0001, float, "cost_convergence"

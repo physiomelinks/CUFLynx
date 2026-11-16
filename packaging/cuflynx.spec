@@ -91,6 +91,8 @@ for runner in (
     # The working dir's input store (libcuflynx's, through ca_imports): uq_runner stores
     # the MLE obs_data it writes there.
     "working_dir.py",
+    # The unset calibration budget (one GA population), shared with the export.
+    "optimiser_budget.py",
     "local_sensitivity.py",
     # Every runner writes its results in circulatory_autogen's own formats and the
     # managers read them back from there (#210); this module is the one place that
