@@ -304,8 +304,12 @@ def test_another_model_in_the_working_dir_starts_a_new_workflow(client, fake_run
     assert fake_runs()[-1]["workflow_output_dir"] == str(work / "workflows" / "study-2")
 
 
+@pytest.mark.integration
 def test_the_workflow_opens_in_the_workflow_tab_and_again_with_the_working_dir(
         client, fake_runs, tmp_path):
+    # describing the workflow plans it, and CA reads a CellML target's constants with
+    # libCellML: the integration tier has it, the unit tier does not
+    pytest.importorskip("libcellml")
     import workflow_manager
 
     work = tmp_path / "w"
@@ -538,7 +542,11 @@ def test_held_out_data_keeps_the_direct_calibration(client, study_workflow_on, t
     assert not (work / "workflow").exists()
 
 
+@pytest.mark.integration
 def test_a_generated_python_model_keeps_the_direct_runner(client, study_workflow_on, tmp_path):
+    # the direct runner generates the Python model with CA's generators, which import
+    # scipy: the integration tier has it, the unit tier does not
+    pytest.importorskip("scipy")
     import engine as engine_mod
 
     _direct(tmp_path)
