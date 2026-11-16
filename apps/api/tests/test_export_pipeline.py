@@ -17,6 +17,13 @@ from conftest import (
 )
 
 
+def _bundle_output(export_dir, name):
+    """Where a run of an exported bundle left ``name``: the bundle root, which is its
+    working dir with a libcuflynx carrying #650, else ``output/`` beside the script."""
+    at_root = os.path.join(export_dir, name)
+    return at_root if os.path.isfile(at_root) else os.path.join(export_dir, "output", name)
+
+
 def _ui(**over):
     base = dict(
         file_prefix="3compartment",
@@ -476,7 +483,7 @@ def test_export_pipeline_simulation_runs_and_honors_obs_protocol(client, require
 
     # circulatory_autogen's own npz shape, the same file a calibrated best fit
     # leaves, so the plotting script has one reader for both (#210).
-    sim_path = os.path.join(export_dir, "output", "all_outputs_exp_0.npz")
+    sim_path = _bundle_output(export_dir, "all_outputs_exp_0.npz")
     assert os.path.isfile(sim_path), "all_outputs_exp_0.npz not written"
     import numpy as np
 
@@ -887,7 +894,7 @@ def test_the_bundle_reproduces_the_gui_simulation(client, requires_simulation, t
         + proc.stdout + proc.stderr
     )
 
-    npz = os.path.join(export_dir, "output", "all_outputs_exp_0.npz")
+    npz = _bundle_output(export_dir, "all_outputs_exp_0.npz")
     assert os.path.isfile(npz), "all_outputs_exp_0.npz not written"
     data = np.load(npz, allow_pickle=False)
     bundle_time = np.asarray(data["time"], dtype=float)

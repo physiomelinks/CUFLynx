@@ -247,7 +247,7 @@ Three traps:
   Deliberately **not** in `MODEL_SOURCE_SUFFIXES`: that tuple drives "Edit source",
   which would try to open a zip in the user's text editor.
 
-Value substitution goes through `calibrated_model.calibrated_cellml` — the same
+Value substitution goes through `calibrated_cellml.calibrated_cellml` — the same
 writer the calibrated-model save uses, so a send and a saved best fit produce the
 same file for the same values. Its report now names the owning `component/var` per
 parameter, which is how the send warns about a value written outside
