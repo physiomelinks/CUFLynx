@@ -143,23 +143,17 @@ def _example_obs_data(name: str = "3compartment") -> dict | None:
 
 
 def _items(doc) -> list:
-    if isinstance(doc, list):
-        return doc
     return list(doc.get("data_items") or []) + list(doc.get("prediction_items") or [])
 
 
-def test_the_example_obs_data_uses_the_current_vocabulary():
-    """`variable` / `name_for_plotting` are what CA read before #466. An example
-    still written in them is rejected by the CA it ships beside -- which is
-    exactly how it fails: the model loads, the observations do not."""
+def test_the_example_obs_data_is_in_the_current_form():
+    """An example in an older form is rejected by the CA it ships beside -- the
+    model loads, the observations do not."""
     import obs_data as obs_mod
 
     doc = _example_obs_data()
     assert doc is not None, "the 3compartment example carries no obs_data"
-    assert obs_mod.legacy_vocabulary_hint(doc) is None, (
-        "the bundled example is written in the pre-#466 obs_data vocabulary; "
-        "convert it with `cuflynx-migrate-obs-data`"
-    )
+    obs_mod.parse_obs_data(doc)
 
 
 def test_the_example_obs_data_names_every_item_once():

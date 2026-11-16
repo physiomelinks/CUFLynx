@@ -52,7 +52,7 @@ const priorOpen = ref(new Set())
 // doesn't report any, which hides the column rather than offering a wrong menu.
 const priorTypes = ref([])
 const priorDefault = ref('')
-// The modifier operation vocabulary (CA's PARAM_MODIFIER_OPERATIONS via
+// The modifier vocabulary (CA's PARAM_MODIFIERS via
 // /api/config) — never hardcoded. Empty hides the create-modifier button.
 const modifierOps = ref([])
 
