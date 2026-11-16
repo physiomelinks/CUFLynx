@@ -79,7 +79,7 @@ two in step. The exported `run_pipeline.py` is CA's own
 
 ## Key files
 
-- `apps/web/src/App.vue` — main UI (tabs: Parameters · Emulator · Sensitivity · Calibration · UQ; center: Output plots · Progress · Analysis)
+- `apps/web/src/App.vue` — main UI (tabs: Parameters · Emulator · Identifiability · Sensitivity · Calibration · UQ; center: Output plots · Progress · Analysis)
 - `apps/web/src/components/TourOverlay.vue` + `lib/tourSteps.js` — the **Tutorial**
   button's guided tour. **Every anchor is a `data-testid`** and nothing else:
   renaming one breaks a tour step silently in the app, which is why
@@ -116,6 +116,7 @@ two in step. The exported `run_pipeline.py` is CA's own
   **Every gradient source is computed by CA**, through the one backend-agnostic accessor `ParamID.get_observable_sensitivities(param_vals, gradient_method, fd_rel_step)` — FD (`fd_backend`), AD (`casadi_backend`) and FSA (`fsa_backend`) alike, so the runner builds the param-id engine for all three. CUFLynx reimplemented the FD loop and the CasADi jacobian until #210's follow-up; that is why it had to mirror CA's flatten/fold contract for grouped and modifier rows, and why CA #390 tightening that contract broke the AD path. **Do not reimplement a gradient here.** What `local_sensitivity.py` legitimately owns is only what CA does not answer: the nominal point, the *signed* relative coefficient (CA's is unsigned and 0.0 on a degenerate denominator), the `var^{e,s} [op]` labels shared with the Sobol heatmap, and the `CVODES`/`AUTO` alias resolution. Two traps: read the nominal features **before** the sensitivities (CA's CasADi arm leaves the helper in AD mode, so a later numeric evaluation returns an `SX`), and pass `rel_step` explicitly as `fd_rel_step` (CUFLynx defaults to 1e-2, CA to 1e-3 — up to 48% apart).
 - `apps/api/calibration.py` / `calibration_runner.py` — GA parameter identification; `CalibrationPanel.vue` (also emits live settings reused by local-sensitivity "run calibration first").
 - `apps/api/uq.py` / `uq_runner.py` — uncertainty quantification; `UQPanel.vue`.
+- **Identifiability tab** (`IAPanel.vue`, before Sensitivity) — two halves, both built from CA's descriptors (`GET /api/identifiability/defaults`). **Parameter reduction** (`ANALYSIS_OPTIONS['param_reduction']`) runs through `sensitivity_runner.py` in its own manager slot (`sensitivity.param_reduction`): after a Sobol run (`do_param_reduction`) or alone over an existing one (`reduce_only`, nothing simulated). Each option carries the `methods` that read it, from CA's `REDUCTIONS` registry, because CA refuses another method's option set to anything but its default. The report is CA's `param_reduction.json`, read by `ca_run_history.param_reduction` and found under the Sobol run (`find_param_reduction`), never located by a second copy of CA's default; "Calibrate these" adopts its `reduced_params_for_id.json` through `_save_params_file`. **Identifiability analysis** is the UQ runner's `laplace` method with `ia_options`; a profile-likelihood run reports CA's profiles (`ca_run_history.profile_likelihood`) instead of a posterior.
 - `apps/api/emulator.py` / `emulator_runner.py` — trains a **surrogate** of the
   model's scalar observable features with CA's `EmulatorTrainer` (CA #333);
   `EmulatorPanel.vue`, tab between Parameters and Sensitivity. Two independent

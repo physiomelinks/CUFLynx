@@ -290,6 +290,7 @@ def _analysis_pythons() -> tuple:
     return (
         calibration_mod.calibration.python,
         sensitivity_mod.sensitivity.python,
+        sensitivity_mod.param_reduction.python,
         uq_mod.uq.python,
         emulator_mod.emulator.python,
         engine_mod.engine.worker_python,
@@ -300,6 +301,7 @@ def _set_analysis_pythons(pythons: tuple) -> None:
     (
         calibration_mod.calibration.python,
         sensitivity_mod.sensitivity.python,
+        sensitivity_mod.param_reduction.python,
         uq_mod.uq.python,
         emulator_mod.emulator.python,
         engine_mod.engine.worker_python,
@@ -332,6 +334,8 @@ def reset_app_state():
     # passed in 0.1s on its canned indices.
     sensitivity_mod.sensitivity.reset()
     sensitivity_mod.sensitivity.runner_path = sensitivity_mod.RUNNER_PATH
+    sensitivity_mod.param_reduction.reset()
+    sensitivity_mod.param_reduction.runner_path = sensitivity_mod.RUNNER_PATH
     uq_mod.uq.reset()
     uq_mod.uq.runner_path = uq_mod.RUNNER_PATH
     yield
@@ -344,6 +348,8 @@ def reset_app_state():
     calibration_mod.calibration.runner_path = calibration_mod.RUNNER_PATH
     sensitivity_mod.sensitivity.reset()
     sensitivity_mod.sensitivity.runner_path = sensitivity_mod.RUNNER_PATH
+    sensitivity_mod.param_reduction.reset()
+    sensitivity_mod.param_reduction.runner_path = sensitivity_mod.RUNNER_PATH
     uq_mod.uq.reset()
     uq_mod.uq.runner_path = uq_mod.RUNNER_PATH
     _set_analysis_pythons(_pythons_before)
