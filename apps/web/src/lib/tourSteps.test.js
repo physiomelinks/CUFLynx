@@ -46,10 +46,17 @@ function declaredIn(testid, sources) {
 }
 
 describe('tourSteps', () => {
-  it('ships exactly 41 steps', () => {
+  it('ships exactly 43 steps', () => {
     // A bare number, on purpose: an accidental deletion during an unrelated
     // edit is otherwise invisible -- the tour just gets shorter.
-    expect(TOUR_STEPS.length).toBe(41)
+    expect(TOUR_STEPS.length).toBe(43)
+  })
+
+  it('walks the left tabs in their order, Identifiability before Sensitivity', () => {
+    const at = (id) => TOUR_STEPS.findIndex((s) => s.id === id)
+    expect(at('ia-tab')).toBeGreaterThan(at('emulator-tab'))
+    expect(at('ia-run')).toBe(at('ia-tab') + 1)
+    expect(at('sensitivity-tab')).toBe(at('ia-run') + 1)
   })
 
   it('gives every step a unique, non-empty id', () => {
