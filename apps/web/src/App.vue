@@ -3841,12 +3841,13 @@ watch(() => obs.obsData.value, scheduleRun)
             :data-testid="`solver-info-${f.key}`"
             @update:model-value="applyBackendSolver"
           />
+          <!-- An unset field (seed: false) shows its default until the user changes it. -->
           <Checkbox
             v-else-if="f.type === 'bool'"
-            v-model="solverInfo[f.key]"
+            :model-value="solverInfo[f.key] ?? f.default"
             :binary="true"
             :data-testid="`solver-info-${f.key}`"
-            @update:model-value="applyBackendSolver"
+            @update:model-value="(v) => { solverInfo[f.key] = v; applyBackendSolver() }"
           />
           <!--
             A free-form object (external_python's `user_config`, which CA hands
