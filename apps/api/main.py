@@ -4338,11 +4338,26 @@ def _study_start(plan, config: dict, markers: tuple, notes: list) -> None:
 
 
 def _study_ga_options(settings: dict, defaults: dict) -> dict:
-    """``optimiser_options`` of the calibration a sensitivity or UQ run makes first."""
-    opts = {"num_calls_to_function": int(settings.get("num_calls_to_function", 100)),
-            "cost_convergence": float(settings.get("cost_convergence",
-                                                   defaults["cost_convergence"])),
-            "max_patience": int(settings.get("max_patience", 10))}
+    """``optimiser_options`` of the calibration a sensitivity or UQ run makes first.
+
+    A setting the panel left empty (absent or null) takes its default: the budget is
+    one GA population (``optimiser_budget``), the smallest CA's GA accepts.
+    """
+    from optimiser_budget import default_num_calls  # noqa: PLC0415
+
+    def given(key):
+        value = settings.get(key)
+        return None if value is None or (isinstance(value, str) and not value.strip()) else value
+
+    num_calls = given("num_calls_to_function")
+    if num_calls is None:
+        num_calls = default_num_calls("genetic_algorithm", debug=bool(settings.get("DEBUG")))
+    convergence = given("cost_convergence")
+    patience = given("max_patience")
+    opts = {"num_calls_to_function": int(num_calls),
+            "cost_convergence": float(defaults["cost_convergence"] if convergence is None
+                                      else convergence),
+            "max_patience": int(10 if patience is None else patience)}
     cost_type = settings.get("cost_type") or defaults.get("cost_type")
     if cost_type:
         opts["cost_type"] = cost_type

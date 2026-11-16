@@ -109,3 +109,17 @@ def test_calibrate_first_falls_back_to_one_population(monkeypatch, fake_schema):
         monkeypatch, {"param_id_method": "genetic_algorithm", "num_calls_to_function": None}) == (27, False)
     assert _calibrate_first_budget(
         monkeypatch, {"param_id_method": "genetic_algorithm", "num_calls_to_function": 300}) == (300, False)
+
+
+def test_a_study_steps_calibrate_first_falls_back_to_one_population(fake_schema):
+    """The study workflow's calibrate-first step (sensitivity and UQ) takes the same
+    fallback; the panel sends an empty budget as null, which must not be an error."""
+    import main
+
+    def budget(**settings):
+        return main._study_ga_options(settings, {"cost_convergence": 1e-4})["num_calls_to_function"]
+
+    assert budget() == 27
+    assert budget(num_calls_to_function=None, max_patience=None, cost_convergence=None) == 27
+    assert budget(num_calls_to_function=None, DEBUG=True) == 8
+    assert budget(num_calls_to_function=300) == 300
