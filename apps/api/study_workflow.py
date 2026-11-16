@@ -133,7 +133,7 @@ def target_model(model_path: str, model_type: str) -> dict | None:
 
 
 def direct_reason(model_type: str, *, held_out: bool = False,
-                  modifier_point: bool = False) -> str | None:
+                  modifier_point: bool = False, profile: bool = False) -> str | None:
     """Why this run keeps its direct runner, or None when it can be a workflow step.
 
     * a model type with no workflow model kind: CA's CellML model runs as ``cellml`` only,
@@ -141,7 +141,9 @@ def direct_reason(model_type: str, *, held_out: bool = False,
     * held-out data in the obs_data: the direct calibration validates the best fit against
       it (``validation_results.json``), which a workflow calibration step does not;
     * a point to start from or analyse at, when the params_for_id has a modifier entry: the
-      point is a modifier's theta, and a set step sets model values.
+      point is a modifier's theta, and a set step sets model values;
+    * a profile likelihood (the Identifiability tab): a uq step runs MCMC or a Laplace
+      approximation, and the UQ panel reads the profiles from the direct run's files.
     """
     if model_type not in (None, "", "cellml", "external_python"):
         return (f"the {model_type} model type has no calibration workflow model kind "
@@ -152,6 +154,9 @@ def direct_reason(model_type: str, *, held_out: bool = False,
     if modifier_point:
         return ("the params_for_id has a modifier, and a set step cannot give a modifier's "
                 "theta as the point to start from or analyse at")
+    if profile:
+        return ("a profile likelihood is not a uq step (those run MCMC or a Laplace "
+                "approximation)")
     return None
 
 

@@ -4206,7 +4206,7 @@ def _study_entries(record: "_ModelRecord") -> list:
 
 
 def _study_plan(record: "_ModelRecord", configured: str, config: dict, *,
-                held_out: bool = False, needs_point: bool = False):
+                held_out: bool = False, needs_point: bool = False, profile: bool = False):
     """``(plan, notes)``: the study workflow to add this run's steps to, or ``(None,
     notes)`` when the run keeps its direct runner, ``notes`` saying why for the run log."""
     global _study_unavailable_said
@@ -4222,7 +4222,7 @@ def _study_plan(record: "_ModelRecord", configured: str, config: dict, *,
                                   f"{reason}; they run as before.")]
     modifier_point = needs_point and any(e.modifies for e in _study_entries(record))
     direct = study_workflow.direct_reason(config["model_type"], held_out=held_out,
-                                          modifier_point=modifier_point)
+                                          modifier_point=modifier_point, profile=profile)
     if direct is None and config.get("solver_info", {}).get("external_parameters_file"):
         direct = ("the model runs with a workflow step's values file, which the study "
                   "workflow's target does not take")
@@ -4471,13 +4471,18 @@ def _study_sensitivity(record, req, config: dict, configured: str) -> list:
 def _study_uq(record, config: dict, configured: str) -> list:
     """Make this UQ run a step of the study workflow (a ``uq`` step at the previous
     calibration's best fit, or at a calibration it makes first); the run-log notes."""
-    from uq_runner import DONE_MARKER, FAIL_MARKER, _mle_obs_path, _uq_options  # noqa: PLC0415
+    from uq_runner import (  # noqa: PLC0415
+        DONE_MARKER, FAIL_MARKER, _ia_options, _mle_obs_path, _uq_options)
 
     settings = config["settings"]
     method = settings.get("method", "mcmc")
     first = bool(settings.get("run_calibration_first"))
+    # The Identifiability tab's ia_options (CA's, from its descriptors); a profile
+    # likelihood keeps the direct runner.
+    ia = _ia_options(settings) if method == "laplace" else {}
     with study_workflow.lock():
-        plan, notes = _study_plan(record, configured, config, needs_point=not first)
+        plan, notes = _study_plan(record, configured, config, needs_point=not first,
+                                  profile=ia.get("method") == "profile_likelihood")
         if plan is None:
             return notes
         qnames = [q for e in _study_entries(record) for q in e.qnames]
@@ -4496,7 +4501,7 @@ def _study_uq(record, config: dict, configured: str) -> list:
             at = _study_point(plan, record.model_id, qnames)
         uq_options = dict(_uq_options(study_workflow.options(settings), _analysis_seed),
                           method=method)
-        extra = {"ia_options": {"method": "Laplace"}} if method == "laplace" else {}
+        extra = {"ia_options": ia} if method == "laplace" else {}
         plan.add("add_uq", plan.new_id(study_workflow.LABELS.get(method, "uq")),
                  **_study_inputs(config, obs), uq_options=uq_options, result_from=at,
                  settings=_study_settings(config, settings, extra))

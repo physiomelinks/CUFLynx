@@ -568,3 +568,43 @@ def test_a_run_writes_the_calibrated_values_when_it_leaves_the_workflow_complete
     _run(client, "sensitivity", {"model_id": model_id, "settings": {
         "config_outputs_dir": str(work), "method": "sobol", "num_samples": 8}})
     assert fake_runs()[-1]["write_calibrated"] is False
+
+
+def test_the_identifiability_tabs_laplace_options_reach_the_uq_step(client, fake_runs, tmp_path):
+    """The Identifiability tab's Laplace runs as a uq step with the tab's ia_options, not a
+    bare {"method": "Laplace"}."""
+    work = tmp_path / "w"
+    model_id = _setup(client)
+    assert _calibrate(client, model_id, work)["state"] == "done"
+    _run(client, "uq", {"model_id": model_id, "settings": {
+        "config_outputs_dir": str(work), "method": "laplace",
+        "ia_options": {"method": "Laplace", "gradient_source": "FD",
+                       "sub_method": "numdifftools_finite_diff", "num_points": None}}})
+
+    assert _steps(work)["laplace-1"]["settings"]["ia_options"] == {
+        "method": "Laplace", "gradient_source": "FD", "sub_method": "numdifftools_finite_diff"}
+
+
+DIRECT_UQ_RUNNER = """
+print("direct uq runner", flush=True)
+print("__UQ_FAILED__ direct", flush=True)
+"""
+
+
+def test_a_profile_likelihood_keeps_the_direct_uq_runner(client, fake_runs, tmp_path):
+    """A profile likelihood is not a uq step: it runs on the direct runner, whose files the
+    UQ panel reads the profiles from, and the run log says why."""
+    work = tmp_path / "w"
+    model_id = _setup(client)
+    assert _calibrate(client, model_id, work)["state"] == "done"
+    script = tmp_path / "direct_uq.py"
+    script.write_text(DIRECT_UQ_RUNNER)
+    uq_mod.uq.runner_path = str(script)
+    status = _run(client, "uq", {"model_id": model_id, "settings": {
+        "config_outputs_dir": str(work), "method": "laplace",
+        "ia_options": {"method": "profile_likelihood", "num_points": 3}}})
+
+    assert "direct uq runner" in status["lines"]
+    assert any("profile likelihood" in ln for ln in status["lines"]
+               if ln.startswith("Study workflow:"))
+    assert "laplace-1" not in _steps(work)
