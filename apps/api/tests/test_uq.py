@@ -281,3 +281,12 @@ def test_the_posterior_predictive_check_is_left_to_find_the_mcmc_runs_dir(monkey
     assert uq_runner._posterior_predictive({}, engine) is not None
     assert seen["client"] is engine
     assert seen.get("output_dir") is None
+    assert seen.get("samples") is None
+
+    # A Laplace approximation has no chain: its check draws from its samples and is saved
+    # where the runner says (CA raised "no mcmc_chain.npy" for it before).
+    seen.clear()
+    draws = [[1.0, 2.0], [1.1, 2.1]]
+    assert uq_runner._posterior_predictive({}, engine, samples=draws,
+                                           output_dir="/w") is not None
+    assert seen["samples"] is draws and seen["output_dir"] == "/w"
