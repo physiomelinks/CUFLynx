@@ -455,14 +455,17 @@ and `<instance>_calibrated_parameters.csv`. `omex_import` claims both as the
 `calibration` role -- by `calibrat` in the name, and a JSON by a
 `calibrated_parameters` object -- *before* the params_for_id and obs_data pools
 are filled (the CSV's name contains "param"). `import_omex_bytes` writes the values
-into the model with `calibrated_cellml` before parsing it, resolving the library's
+into the model with `calibrated_cellml.substitute_values` before parsing it, resolving the library's
 bare names through the params_for_id rows, so the sliders, the entries'
 `initial_value` and a later send all start from them; the response's `calibration`
 says so and the UI's notice names the cost. Unmatched names are a warning.
 
-Value substitution goes through `calibrated_cellml.calibrated_cellml` — the same
-writer the calibrated-model save uses, so a send and a saved best fit produce the
-same file for the same values. Its report now names the owning `component/var` per
+Value substitution goes through `calibrated_cellml.substitute_values` — libcuflynx's
+`param_id.calibrated_model.substitute_parameter_values` (the writer a workflow step's
+calibrated model and the direct calibrated-model save use), so a send and a saved best
+fit produce the same file for the same values. The built-in `calibrated_cellml` is
+only the fallback for a CA that predates that writer (a capability probe, same report
+shape). The report names the owning `component/var` per
 parameter, which is how the send warns about a value written outside
 `parameters` / `parameters_global`: per #287 PhLynx will not read those back.
 
