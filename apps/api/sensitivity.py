@@ -15,6 +15,7 @@ import os
 import shutil
 import subprocess
 import threading
+import time
 import uuid
 from pathlib import Path
 
@@ -61,6 +62,12 @@ class SensitivityJob:
         # actually produced the numbers.
         self.gradient_method: str | None = None
         self.error: str | None = None
+        # Parameter reduction: the Sobol run directory its report is searched
+        # under (None when the job reduces nothing), and the report once read.
+        self.reduction_root: str | None = None
+        self.reduce_only = False
+        self.reduction: dict | None = None
+        self.started_at = time.time()
         # Set when the run finished but its process failed on the way out.
         self.warning: str | None = None
         self.proc: subprocess.Popen | None = None
@@ -142,6 +149,14 @@ class SensitivityManager:
             job.config_path = config_path
             job.study_step = config.get("study_step")
             job.meta = dict(config.get("study_meta") or {})
+            settings = config.get("settings") or {}
+            job.reduce_only = bool(config.get("reduce_only"))
+            if job.reduce_only or settings.get("do_param_reduction"):
+                # The Sobol run's directory: where the runner wrote its indices.
+                job.reduction_root = (
+                    (settings.get("param_reduction_options") or {}).get("sensitivity_dir")
+                    or job.output_dir
+                )
             env = runner_launch_env(config.get("python") or self.python)
             job.proc = subprocess.Popen(
                 self.build_command(config, config_path),
@@ -193,7 +208,20 @@ class SensitivityManager:
             # point a local run was linearised about -- arrives on the pipe.
             meta = read_meta_line(job.lines, META_MARKER) or self._study_meta(job)
             data = None
-            if finished:
+            if finished and job.reduction_root:
+                # CA's report, found under the Sobol run rather than its location
+                # derived again here; only one this job wrote counts.
+                job.reduction = ca_run_history.param_reduction(
+                    ca_run_history.find_param_reduction(
+                        job.reduction_root, newer_than=job.started_at - 1))
+                if job.reduction is None:
+                    finished = False
+                    job.error = "the parameter reduction wrote no param_reduction.json"
+            if finished and job.reduce_only:
+                # Nothing was simulated: the Sobol indices are the run's it reduced.
+                data = ca_run_history.sobol_indices(job.reduction_root) or {
+                    "indices": None, "param_names": [], "output_names": []}
+            elif finished:
                 if meta.get("method") == "local" and job.study_step:
                     # libcuflynx's signed d ln Y / d ln p, labelled as its Sobol indices
                     data = ca_run_history.step_local_sensitivity(
@@ -261,6 +289,7 @@ class SensitivityManager:
                 "nominal_source": job.nominal_source,
                 "prediction_outputs": job.prediction_outputs,
                 "gradient_method": job.gradient_method,
+                "reduction": job.reduction,
                 "error": job.error,
                 "warning": job.warning,
                 "study_step": job.study_step,
@@ -278,5 +307,22 @@ class SensitivityManager:
         return True
 
 
-# Module-level singleton shared by the FastAPI routes.
+def fail_message(lines: list, fail_marker: str) -> str | None:
+    """The message the runner printed after its FAIL marker, or None.
+
+    CA's own wording -- e.g. a SensitivityFilesError saying which Sobol files a
+    reduction is missing and to rerun the Sobol analysis -- is what the user needs,
+    rather than an exit code.
+    """
+    for line in reversed(lines):
+        if fail_marker in line:
+            message = line.split(fail_marker, 1)[1].strip()
+            return message or None
+    return None
+
+
+# Module-level singletons shared by the FastAPI routes. Parameter reduction runs
+# the same runner in its own slot, so it neither blocks nor is blocked by a run
+# started from the Sensitivity tab.
 sensitivity = SensitivityManager()
+param_reduction = SensitivityManager()

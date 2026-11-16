@@ -581,6 +581,57 @@ export async function cancelSensitivity(jobId) {
   return data
 }
 
+// --- Identifiability tab: parameter reduction + identifiability analysis ------
+
+/** CA's param_reduction and identifiability_analysis descriptors. */
+export async function getIdentifiabilityDefaults() {
+  const { data } = await axios.get(url('/api/identifiability/defaults'))
+  return data
+}
+
+/** Sobol runs a reduction can read: `{ runs: [{ dir, num_samples, has_samples, ... }] }`. */
+export async function listSobolRuns(configOutputsDir = '') {
+  const { data } = await axios.get(url('/api/param_reduction/sobol_runs'), {
+    params: configOutputsDir ? { config_outputs_dir: configOutputsDir } : {},
+  })
+  return data
+}
+
+export async function startParamReduction(modelId, settings, currentParams = null) {
+  const { data } = await axios.post(url('/api/param_reduction/run'), {
+    model_id: modelId,
+    settings,
+    ...(currentParams ? { current_params: currentParams } : {}),
+  })
+  return data
+}
+
+export async function getParamReductionStatus(jobId, offset = 0) {
+  const { data } = await axios.get(
+    url(`/api/param_reduction/${jobId}/status?offset=${offset}`),
+  )
+  return data
+}
+
+export async function cancelParamReduction(jobId) {
+  const { data } = await axios.post(url(`/api/param_reduction/${jobId}/cancel`))
+  return data
+}
+
+/** The pca reduction's mode heatmap, served by the API (never a blob: URL). */
+export function paramReductionHeatmapUrl(reportDir) {
+  return url(`/api/param_reduction/heatmap?report_dir=${encodeURIComponent(reportDir)}`)
+}
+
+/** Make the reduction's reduced_params_for_id.json the study's params_for_id. */
+export async function adoptReducedParams(modelId, reportDir) {
+  const { data } = await axios.post(url('/api/param_reduction/adopt'), {
+    model_id: modelId,
+    report_dir: reportDir,
+  })
+  return data
+}
+
 // --- Emulator (surrogate model, CA #333) -------------------------------------
 
 /** The emulator settings form, from circulatory_autogen's `emulation` schema. */

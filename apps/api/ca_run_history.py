@@ -578,6 +578,149 @@ def sobol_prediction_outputs(output_dir: str) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# Sobol runs and parameter reductions
+# ---------------------------------------------------------------------------
+#: CA's Sobol run files: the indices, and beside them the samples, the outputs and
+#: the local Jacobian a ``pca`` reduction reads, plus ``sobol_problem.json``.
+SOBOL_INDICES_GLOB = "all_outputs_n*_Sobol_indices.csv"
+SOBOL_PROBLEM_FILE = "sobol_problem.json"
+#: A reduction's report and its params_for_id, written by CA's ``ParamReduction``.
+PARAM_REDUCTION_FILE = "param_reduction.json"
+REDUCED_PARAMS_FOR_ID_FILE = "reduced_params_for_id.json"
+
+
+def _sobol_indices_files(directory: str) -> list[str]:
+    import glob  # noqa: PLC0415
+
+    return sorted(glob.glob(os.path.join(directory, SOBOL_INDICES_GLOB)))
+
+
+def sobol_runs(root: str, max_depth: int = 3) -> list[dict]:
+    """The Sobol runs under ``root``, newest first.
+
+    One entry per directory holding CA's ``all_outputs_n<N>_Sobol_indices.csv``:
+    ``{dir, num_samples, mtime, has_samples}``. ``has_samples`` says whether the run
+    also saved the samples, outputs and ``sobol_problem.json`` a ``pca`` reduction
+    reads; a run without them can only be reduced by ``sobol``.
+    """
+    import re  # noqa: PLC0415
+
+    runs: list[dict] = []
+    if not root or not os.path.isdir(root):
+        return runs
+    base_depth = root.rstrip(os.sep).count(os.sep)
+    for directory, subdirs, _files in os.walk(root):
+        if directory.count(os.sep) - base_depth >= max_depth:
+            subdirs[:] = []
+        for path in _sobol_indices_files(directory):
+            stem = path[: -len("_indices.csv")]
+            match = re.search(r"_n(\d+)_Sobol_indices\.csv$", path)
+            runs.append({
+                "dir": directory,
+                "indices": os.path.basename(path),
+                "num_samples": int(match.group(1)) if match else None,
+                "mtime": os.path.getmtime(path),
+                "has_samples": all(os.path.isfile(p) for p in (
+                    f"{stem}_samples.csv", f"{stem}_outputs.csv",
+                    os.path.join(directory, SOBOL_PROBLEM_FILE))),
+            })
+    runs.sort(key=lambda r: r["mtime"], reverse=True)
+    return runs
+
+
+def find_param_reduction(sensitivity_dir: str, newer_than: float | None = None,
+                         max_depth: int = 2) -> str | None:
+    """The directory of the newest ``param_reduction.json`` under ``sensitivity_dir``.
+
+    CA writes a reduction into ``param_reduction_options.output_dir`` (by default
+    ``<sensitivity_dir>/param_reduction``), so the report is found rather than its
+    location derived a second time here. ``newer_than`` (a job's start time) skips
+    an earlier run's report, so a run whose own report is missing fails.
+    """
+    if not sensitivity_dir or not os.path.isdir(sensitivity_dir):
+        return None
+    best, best_mtime = None, None
+    base_depth = sensitivity_dir.rstrip(os.sep).count(os.sep)
+    for directory, subdirs, files in os.walk(sensitivity_dir):
+        if directory.count(os.sep) - base_depth >= max_depth:
+            subdirs[:] = []
+        if PARAM_REDUCTION_FILE not in files:
+            continue
+        mtime = os.path.getmtime(os.path.join(directory, PARAM_REDUCTION_FILE))
+        if newer_than is not None and mtime < newer_than:
+            continue
+        if best_mtime is None or mtime > best_mtime:
+            best, best_mtime = directory, mtime
+    return best
+
+
+def param_reduction(report_dir: str) -> dict | None:
+    """CA's parameter-reduction report in ``report_dir``, or None.
+
+    The ``param_reduction.json`` as CA wrote it (``reduction``, ``selected`` and, for
+    ``pca``, ``modes``, ``unexplained_effects`` and the rest), plus three resolved
+    paths: ``report_dir``, ``reduced_params_for_id`` (the file a calibration
+    adopts) and ``heatmap`` (the ``pca`` mode heatmap, or None).
+    """
+    if not report_dir:
+        return None
+    path = os.path.join(report_dir, PARAM_REDUCTION_FILE)
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as fh:
+            report = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(report, dict) or not isinstance(report.get("selected"), list):
+        return None
+    reduced = report.get("reduced_params_for_id")
+    if not reduced or not os.path.isfile(reduced):
+        reduced = os.path.join(report_dir, REDUCED_PARAMS_FOR_ID_FILE)
+    heatmap = (report.get("files") or {}).get("heatmap")
+    heatmap = os.path.join(report_dir, heatmap) if heatmap else None
+    return {
+        **report,
+        "report_dir": report_dir,
+        "reduced_params_for_id": reduced if os.path.isfile(reduced) else None,
+        "heatmap": heatmap if heatmap and os.path.isfile(heatmap) else None,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Profile likelihood
+# ---------------------------------------------------------------------------
+#: CA's ``ProfileLikelihood`` writes ``profile_likelihood/summary.json`` and one JSON
+#: per profiled entry into the identifiability run's output directory.
+PROFILE_LIKELIHOOD_SUBDIR = "profile_likelihood"
+
+
+def profile_likelihood(output_dir: str) -> list | None:
+    """The profiles CA's profile-likelihood analysis wrote, or None.
+
+    One ``{param_name, best_val, ci_95, param_values, costs}`` per profiled entry,
+    in the order of CA's ``summary.json``.
+    """
+    results = os.path.join(output_dir or "", PROFILE_LIKELIHOOD_SUBDIR)
+    summary = _json(results, "summary.json")
+    if not isinstance(summary, dict):
+        return None
+    profiles = []
+    for name in sorted(os.listdir(results)):
+        if not name.endswith(".json") or name == "summary.json":
+            continue
+        profile = _json(results, name)
+        if not isinstance(profile, dict) or "param_name" not in profile:
+            continue
+        profiles.append({key: profile.get(key) for key in (
+            "param_name", "best_val", "best_cost", "ci_95", "param_values", "costs")})
+    order = [str(p) for p in summary.get("parameters") or []]
+    profiles.sort(key=lambda p: order.index(str(p["param_name"]))
+                  if str(p["param_name"]) in order else len(order))
+    return profiles
+
+
+# ---------------------------------------------------------------------------
 # UQ posteriors
 # ---------------------------------------------------------------------------
 #: The posterior samples a UQ run settled on, one row per sample, one column per

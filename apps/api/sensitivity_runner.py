@@ -62,6 +62,9 @@ _SA_RESERVED = {
     "max_patience", "cost_convergence",
     # Forwarded by _sa_options only when this libcuflynx supports it.
     "include_prediction_items",
+    # Parameter reduction (ANALYSIS_OPTIONS['param_reduction']) runs after the Sobol
+    # run; its settings are CA user_inputs keys, not sa_options.
+    "do_param_reduction", "param_reduction_options",
 }
 
 
@@ -283,6 +286,32 @@ def run(config: dict) -> dict:
         raise _with_gradient_hint(exc) from exc
 
 
+def _reduce(config: dict, settings: dict, sensitivity_dir: str) -> list:
+    """CA's parameter reduction over the Sobol run in ``sensitivity_dir``.
+
+    ``settings['param_reduction_options']`` is CA's ``param_reduction_options``; CA
+    writes ``reduced_params_for_id.json`` and its report into the options'
+    ``output_dir`` (by default ``<sensitivity_dir>/param_reduction``). The
+    params_for_id is the study's, which is the one the Sobol run analysed.
+    """
+    from ca_imports import ca_from  # noqa: E402 (shipped into runners/ too)
+
+    run_param_reduction = ca_from(
+        "sensitivity_analysis.parameter_reduction", "run_param_reduction")
+    options = {k: v for k, v in (settings.get("param_reduction_options") or {}).items()
+               if v is not None and v != ""}
+    options.setdefault("sensitivity_dir", sensitivity_dir)
+    print(f"Parameter reduction ({options.get('method', 'default method')}) over the "
+          f"Sobol run in {options['sensitivity_dir']}", flush=True)
+    selected = run_param_reduction({
+        "param_reduction_options": options,
+        "params_for_id_path": config["params_path"],
+        "sa_options": {"output_dir": sensitivity_dir},
+    })
+    print(f"Parameter reduction kept {[row['parameter'] for row in selected]}", flush=True)
+    return selected
+
+
 def _run(config: dict) -> dict:
     _ensure_ca_on_path()
     from ca_imports import ca_from  # noqa: E402 (shipped into runners/ too)
@@ -290,10 +319,18 @@ def _run(config: dict) -> dict:
 
     config = with_ca_obs_path(config)
 
+    settings = config.get("settings", {})
+    if config.get("reduce_only"):
+        # Over an existing Sobol run: no model is built and nothing is simulated.
+        sensitivity_dir = (settings.get("param_reduction_options") or {}).get(
+            "sensitivity_dir") or config["output_dir"]
+        _reduce(config, settings, sensitivity_dir)
+        print(META_MARKER + json.dumps({"method": "param_reduction"}), flush=True)
+        return {"rank": 0}
+
     SensitivityAnalysis = ca_from(
         "sensitivity_analysis.sensitivityAnalysis", "SensitivityAnalysis")
 
-    settings = config.get("settings", {})
     method = settings.get("method", "sobol")
     output_dir = config["output_dir"]
     os.makedirs(output_dir, exist_ok=True)
@@ -418,8 +455,10 @@ def _run(config: dict) -> dict:
         result.update(payload)
         # Nothing written here: CA already wrote all_outputs_n<N>_Sobol_indices.csv
         # into this directory, and the manager reads that (#210).
-        print(META_MARKER + json.dumps({"method": sa_options["method"]}), flush=True)
         _collect_plots(sa_dir)
+        if settings.get("do_param_reduction"):
+            _reduce(config, settings, sa_dir)
+        print(META_MARKER + json.dumps({"method": sa_options["method"]}), flush=True)
     return result
 
 

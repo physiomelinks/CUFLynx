@@ -130,6 +130,7 @@ from user_funcs import (
     save_model_source,
     save_user_func,
 )
+from sensitivity import param_reduction as param_reduction_jobs
 from sensitivity import sensitivity
 import workflow_manager
 import symbol_mapping
@@ -683,6 +684,7 @@ def _set_analysis_python(path: str) -> None:
     """
     calibration.python = path
     sensitivity.python = path
+    param_reduction_jobs.python = path
     emulator.python = path
     uq.python = path
     engine.worker_python = path
@@ -5084,6 +5086,20 @@ def sensitivity_defaults() -> dict:
 
 @app.post("/api/sensitivity/run")
 def sensitivity_run(req: SensitivityRequest) -> dict:
+    config = _sensitivity_config(req, study=True)
+    try:
+        job_id = sensitivity.start(config)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"job_id": job_id}
+
+
+def _sensitivity_config(req: SensitivityRequest, study: bool = False) -> dict:
+    """The sensitivity runner's config for ``req``; an HTTPException when it cannot run.
+
+    ``study``: make the run a step of the working dir's study workflow (the Sensitivity
+    tab's runs). A parameter reduction's Sobol-first run stays a direct run.
+    """
     record = _get_model(req.model_id)
     if record.obs_path is None or record.params_path is None:
         raise HTTPException(
@@ -5162,14 +5178,11 @@ def sensitivity_run(req: SensitivityRequest) -> dict:
         # tab's tick box is on (CA #333).
         **_emulator_run_config(req.model_id, req.settings),
     }
-    if sensitivity.busy:
-        raise HTTPException(status_code=409, detail="a sensitivity job is already running")
-    config.setdefault("log_preamble", _study_sensitivity(record, req, config, configured))
-    try:
-        job_id = sensitivity.start(config)
-    except RuntimeError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return {"job_id": job_id}
+    if study:
+        if sensitivity.busy:
+            raise HTTPException(status_code=409, detail="a sensitivity job is already running")
+        config.setdefault("log_preamble", _study_sensitivity(record, req, config, configured))
+    return config
 
 
 class EmulatorTrainRequest(BaseModel):
@@ -5562,6 +5575,172 @@ def sensitivity_cancel(job_id: str) -> dict:
     if not sensitivity.cancel(job_id):
         raise HTTPException(status_code=404, detail="sensitivity job not found")
     return {"cancelled": True}
+
+
+# ---------------------------------------------------------------------------
+# Identifiability tab: parameter reduction over a Sobol run, and CA's
+# identifiability analysis (run through the UQ runner's laplace method)
+# ---------------------------------------------------------------------------
+class ParamReductionRequest(BaseModel):
+    model_id: str
+    # ``param_reduction_options`` (CA's, built from its descriptors), ``source``
+    # ("existing": reduce the Sobol run in param_reduction_options.sensitivity_dir;
+    # "sobol_first": run Sobol with do_param_reduction), plus the Sobol and run
+    # settings the sensitivity runner reads.
+    settings: dict = Field(default_factory=dict)
+    current_params: dict | None = None
+
+
+class AdoptReductionRequest(BaseModel):
+    model_id: str
+    report_dir: str
+
+
+@app.get("/api/identifiability/defaults")
+def identifiability_defaults() -> dict:
+    """CA's descriptors for both halves of the tab, never hardcoded:
+    ``ANALYSIS_OPTIONS['param_reduction']`` (each option marked with the
+    ``methods`` that read it, when CA says) and ``['identifiability_analysis']``."""
+    ao = get_analysis_options()
+    reduction = ao.get("param_reduction") or {}
+    return {
+        "param_reduction": {
+            "label": reduction.get("label"),
+            "enable_flag": reduction.get("enable_flag"),
+            "options_key": reduction.get("options_key"),
+            "options": reduction.get("options", []),
+        },
+        "param_reduction_available": bool(reduction),
+        "ia_options": ao.get("identifiability_analysis", {}).get("options", []),
+    }
+
+
+@app.get("/api/param_reduction/sobol_runs")
+def param_reduction_sobol_runs(config_outputs_dir: str = "") -> dict:
+    """Sobol runs a reduction can read: under the outputs directory, and the last
+    finished Sobol run of this session wherever it went."""
+    roots = []
+    configured = config_outputs_dir.strip()
+    if configured and os.path.isabs(configured):
+        roots.append(configured)
+    for manager in (sensitivity, param_reduction_jobs):
+        job = manager._job
+        if job is not None and job.state == "done":
+            roots.append(job.output_dir)
+    runs, seen = [], set()
+    for root in roots:
+        for run in ca_run_history.sobol_runs(root):
+            if run["dir"] not in seen:
+                seen.add(run["dir"])
+                runs.append(run)
+    runs.sort(key=lambda r: r["mtime"], reverse=True)
+    return {"runs": runs}
+
+
+@app.post("/api/param_reduction/run")
+def param_reduction_run(req: ParamReductionRequest) -> dict:
+    settings = dict(req.settings)
+    options = dict(settings.get("param_reduction_options") or {})
+    source = settings.pop("source", "existing")
+    if source == "sobol_first":
+        # The Sensitivity tab's runner and config, with Sobol and the reduction on.
+        config = _sensitivity_config(SensitivityRequest(
+            model_id=req.model_id,
+            settings={**settings, "method": "sobol", "do_param_reduction": True,
+                      "param_reduction_options": options},
+            current_params=req.current_params,
+        ))
+    elif source == "existing":
+        record = _get_model(req.model_id)
+        if record.params_path is None:
+            raise HTTPException(
+                status_code=422,
+                detail="a parameter reduction keeps entries of the study's "
+                "params_for_id; upload one first",
+            )
+        sensitivity_dir = (options.get("sensitivity_dir") or "").strip()
+        if not sensitivity_dir or not os.path.isdir(sensitivity_dir):
+            raise HTTPException(
+                status_code=422,
+                detail="choose the Sobol run to reduce (no directory "
+                f"{sensitivity_dir!r})",
+            )
+        python_path = settings.get("python_path") or None
+        if python_path and not (
+            os.path.isfile(python_path) and os.access(python_path, os.X_OK)
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail=f"python interpreter not found or not executable: {python_path}",
+            )
+        config = {
+            "reduce_only": True,
+            "params_path": str(record.params_path),
+            "output_dir": sensitivity_dir,
+            "num_cores": 1,
+            "python": python_path,
+            "settings": {"param_reduction_options": options},
+        }
+    else:
+        raise HTTPException(status_code=422, detail=f"unknown source {source!r}")
+    try:
+        job_id = param_reduction_jobs.start(config)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"job_id": job_id}
+
+
+@app.get("/api/param_reduction/{job_id}/status")
+def param_reduction_status(job_id: str, offset: int = 0) -> dict:
+    status = param_reduction_jobs.status(job_id, offset)
+    if status is None:
+        raise HTTPException(status_code=404, detail="parameter reduction job not found")
+    return status
+
+
+@app.post("/api/param_reduction/{job_id}/cancel")
+def param_reduction_cancel(job_id: str) -> dict:
+    if not param_reduction_jobs.cancel(job_id):
+        raise HTTPException(status_code=404, detail="parameter reduction job not found")
+    return {"cancelled": True}
+
+
+def _reduction_report(report_dir: str) -> dict:
+    report = ca_run_history.param_reduction(report_dir)
+    if report is None:
+        raise HTTPException(status_code=404,
+                            detail=f"no parameter reduction report in {report_dir}")
+    return report
+
+
+@app.get("/api/param_reduction/heatmap")
+def param_reduction_heatmap(report_dir: str) -> FileResponse:
+    """The ``pca`` reduction's mode heatmap, served so the page links to the API
+    rather than a ``blob:`` URL (which the packaged app's webview cannot read)."""
+    report = _reduction_report(report_dir)
+    if not report.get("heatmap"):
+        raise HTTPException(status_code=404, detail="this reduction drew no heatmap")
+    return FileResponse(report["heatmap"], media_type="image/png")
+
+
+@app.post("/api/param_reduction/adopt")
+def param_reduction_adopt(req: AdoptReductionRequest) -> dict:
+    """Make the reduction's ``reduced_params_for_id.json`` the study's params_for_id,
+    through the same parse and store as an upload; returns the upload's shape."""
+    record = _get_model(req.model_id)
+    report = _reduction_report(req.report_dir)
+    path = report.get("reduced_params_for_id")
+    if not path:
+        raise HTTPException(status_code=404,
+                            detail="this reduction wrote no reduced_params_for_id.json")
+    data = Path(path).read_bytes()
+    try:
+        entries = parse_params_for_id(data, record.meta.initial_values)
+    except ParamsForIdError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    record.params_path = _save_params_file(record, data)
+    return {"params": [e.as_dict() for e in entries], "filename": os.path.basename(path),
+            "path": path}
 
 
 # ---------------------------------------------------------------------------

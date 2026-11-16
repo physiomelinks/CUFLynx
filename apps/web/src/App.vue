@@ -15,6 +15,7 @@ import WorkflowBar from './components/WorkflowBar.vue'
 import WorkflowPanel from './components/WorkflowPanel.vue'
 import EditObsDataDialog from './components/EditObsDataDialog.vue'
 import EditVariableMappingDialog from './components/EditVariableMappingDialog.vue'
+import IAPanel from './components/IAPanel.vue'
 import AnalysisPanel from './components/AnalysisPanel.vue'
 import CostSensitivityBar from './components/CostSensitivityBar.vue'
 import InputNumber from 'primevue/inputnumber'
@@ -39,6 +40,7 @@ import { useEmulator } from './stores/useEmulator'
 import { useSensitivity } from './stores/useSensitivity'
 import { useUQ } from './stores/useUQ'
 import { anyRunEnded, useWorkflow } from './stores/useWorkflow'
+import { useParamReduction, useIdentifiabilityAnalysis } from './stores/useIdentifiability'
 import {
   getVariables,
   // No `simulate`: a run is a protocol run now, because the run window is the
@@ -52,6 +54,9 @@ import {
   predictEmulator,
   getSensitivityDefaults,
   getUQDefaults,
+  getIdentifiabilityDefaults,
+  listSobolRuns,
+  adoptReducedParams,
   getConfig,
   setConfig,
   uploadUserInputs,
@@ -102,6 +107,9 @@ const emu = useEmulator()
 const uq = useUQ()
 // The open calibration workflow (CA's libcuflynx.calibration_workflow).
 const wf = useWorkflow()
+// Identifiability tab: parameter reduction, and CA's identifiability analysis.
+const reduction = useParamReduction()
+const iaJob = useIdentifiabilityAnalysis()
 
 // The run window is the obs_data's `protocol_info`, and nothing else can set it.
 // It used to be settable in two places -- these two values as top-bar spinners,
@@ -938,7 +946,7 @@ useRunNotifications(
   notifyOnFinish,
 )
 
-// Left column tab: 'params' | 'sensitivity' | 'calibration' | 'uq'
+// Left column tab: 'params' | 'emulator' | 'ia' | 'sensitivity' | 'calibration' | 'uq'
 const leftTab = ref('params')
 
 // Every calibration, sensitivity and UQ run is a step of the working dir's study workflow,
@@ -1786,6 +1794,8 @@ const calibDefaults = ref({})
 const calibPythons = ref([])
 const saDefaults = ref({})
 const uqDefaults = ref({})
+const iaDefaults = ref({})
+const sobolRuns = ref([])
 onMounted(() => {
   // Ask for a working dir, and mean "first": this line used to sit at the
   // *end* of six sequential round trips below, one of which walks the filesystem
@@ -1804,6 +1814,8 @@ onMounted(() => {
   settle(getCalibrationDefaults(), (v) => (calibDefaults.value = v))
   settle(getSensitivityDefaults(), (v) => (saDefaults.value = v))
   settle(getUQDefaults(), (v) => (uqDefaults.value = v))
+  settle(getIdentifiabilityDefaults(), (v) => (iaDefaults.value = v))
+  refreshSobolRuns()
   settle(getCalibrationPythons(), (v) => (calibPythons.value = v.pythons ?? []))
   settle(getConfig(), applyConfigPayload)
   // A workflow the server still has open (the page was reloaded).
@@ -2113,6 +2125,66 @@ watch(
     if (state === 'done') centerTab.value = 'analysis'
   },
 )
+
+// ----- Identifiability tab -----------------------------------------------
+// The Sobol runs a reduction can read: under the outputs directory, and the
+// session's last finished Sobol run.
+async function refreshSobolRuns() {
+  try {
+    const { runs } = await listSobolRuns(outputsDir.value.trim())
+    sobolRuns.value = runs ?? []
+  } catch {
+    sobolRuns.value = []
+  }
+}
+watch(outputsDir, refreshSobolRuns)
+watch(
+  () => [sa.state.value, reduction.state.value],
+  ([saState, rdState]) => {
+    if (saState === 'done' || rdState === 'done') refreshSobolRuns()
+  },
+)
+
+// "Run a Sobol analysis first" takes the Sensitivity tab's Sobol settings
+// (num_samples, sample_type, cores); the backend sets the method to sobol.
+function onRunReduction(settings) {
+  const sobolFirst = settings.source === 'sobol_first' ? { ...saSettings.value } : {}
+  reduction.start(
+    model.modelId.value,
+    {
+      ...sobolFirst,
+      ...settings,
+      ...runTimes(),
+      python_path: pythonPath.value,
+      config_outputs_dir: outputsDir.value.trim() || undefined,
+      use_emulator: emu.useEmulator.value,
+    },
+    { ...sliders.analysisDict.value },
+  )
+}
+
+// "Calibrate these": the reduced params_for_id becomes the study's, through the
+// same path as an uploaded one, and the Calibration tab opens on it.
+async function onAdoptReduction(reportDir) {
+  try {
+    const data = await adoptReducedParams(model.modelId.value, reportDir)
+    onParamsLoaded(data)
+    leftTab.value = 'calibration'
+  } catch (e) {
+    reduction.error.value = errorMessage(e)
+  }
+}
+
+// CA's identifiability analysis runs through the UQ runner's laplace method.
+function onRunIA(settings) {
+  iaJob.start(model.modelId.value, {
+    ...settings,
+    ...runTimes(),
+    python_path: pythonPath.value,
+    config_outputs_dir: outputsDir.value.trim() || undefined,
+    use_emulator: emu.useEmulator.value,
+  })
+}
 
 // UQ reuses the same prerequisites as calibration (model + obs + params).
 function onRunUQ(settings) {
@@ -3087,6 +3159,19 @@ watch(() => obs.obsData.value, scheduleRun)
           </button>
           <button
             class="left-tab"
+            :class="{ active: leftTab === 'ia' }"
+            data-testid="tab-ia"
+            @click="leftTab = 'ia'"
+          >
+            Identifiability
+            <span
+              v-if="reduction.running.value || iaJob.running.value"
+              class="tab-dot"
+              title="identifiability running"
+            />
+          </button>
+          <button
+            class="left-tab"
             :class="{ active: leftTab === 'sensitivity' }"
             data-testid="tab-sensitivity"
             @click="leftTab = 'sensitivity'"
@@ -3172,6 +3257,28 @@ watch(() => obs.obsData.value, scheduleRun)
             @change="(s) => (emuSettings = s)"
             @select-bundle="onSelectEmulatorBundle"
             @cancel="emu.cancel()"
+          />
+        </div>
+        <div v-show="leftTab === 'ia'" class="left-pane left-pane-scroll">
+          <IAPanel
+            :defaults="iaDefaults"
+            :sobol-runs="sobolRuns"
+            :can-run="canCalibrate"
+            :reduction-state="reduction.state.value"
+            :reduction-lines="reduction.lines.value"
+            :reduction-error="reduction.error.value"
+            :reduction="reduction.reduction.value"
+            :ia-state="iaJob.state.value"
+            :ia-lines="iaJob.lines.value"
+            :ia-error="iaJob.error.value"
+            :ia-params="iaJob.params.value"
+            :ia-profiles="iaJob.profiles.value"
+            @run-reduction="onRunReduction"
+            @cancel-reduction="reduction.cancel()"
+            @adopt="onAdoptReduction"
+            @refresh-runs="refreshSobolRuns"
+            @run-ia="onRunIA"
+            @cancel-ia="iaJob.cancel()"
           />
         </div>
         <div v-show="leftTab === 'sensitivity'" class="left-pane left-pane-scroll">
