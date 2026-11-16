@@ -251,9 +251,11 @@ def test_uq_at_the_best_fit_is_a_uq_step_from_the_calibration(
     assert _calibrate(client, model_id, work)["state"] == "done"
     _run(client, "uq", {"model_id": model_id, "settings": {
         "config_outputs_dir": str(work), "method": method, "num_steps": 20,
-        "num_walkers": 8}})
+        "num_walkers": 8, "posterior_predictive_samples": 30}})
 
     step = _steps(work)[f"{method}-1"]
+    # the step's posterior predictive check runs as the panel asked
+    assert step["settings"]["UQ_options"]["posterior_predictive_samples"] == 30
     assert step["kind"] == "uq" and step["result_from"] == "calibration-1"
     assert step["settings"]["UQ_options"]["method"] == method
     assert step["settings"]["UQ_options"]["num_steps"] == 20
@@ -334,6 +336,47 @@ def test_a_second_step_waits_for_the_running_one(client, study_workflow_on, tmp_
     assert r.status_code == 409
     assert "calibration-1" in r.json()["detail"]
     assert list(_steps(work)) == ["calibration-1"]
+
+
+def test_a_reopened_working_dirs_calibration_step_is_the_previous_best_fit(
+        client, fake_runs, tmp_path):
+    """In a new session no calibration has run, but the reopened study workflow has a done
+    calibration step: UQ at the best fit is a uq step from it, not a 422."""
+    work = tmp_path / "w"
+    model_id = _setup(client)
+    assert _calibrate(client, model_id, work)["state"] == "done"
+    step_dir = work / "workflows" / "study" / "calibration-1"
+    (step_dir / "step_result.json").write_text(json.dumps({
+        "step": "calibration-1", "kind": "calibration", "status": "done",
+        "finished": "2026-11-17T10:00:00",
+        "param_id_output_dir": str(step_dir / "param_id" / "CMA-ES_case")}))
+    calibration_mod.calibration.reset()           # a new session
+
+    # accepted (not a 422 for want of a calibration); the fake runner stores no posterior
+    _run(client, "uq", {"model_id": model_id, "settings": {
+        "config_outputs_dir": str(work), "method": "mcmc", "num_steps": 20,
+        "num_walkers": 8}})
+    assert _steps(work)["mcmc-1"]["result_from"] == "calibration-1"
+    # the direct runners take the same best fit as values
+    record = main._get_model(model_id)
+    assert main._previous_best_fit(record, {"config_outputs_dir": str(work)}) == dict(
+        zip(QNAMES, [1.0, 0.5, 0.25, 2.0]))
+
+
+def test_the_target_is_built_after_cas_cellml_model_submodule_is_imported(study_workflow_on):
+    """CA's package exports a ``cellml_model`` function and has a ``cellml_model`` submodule;
+    importing the submodule (CA's calibrated-CellML writer does, in the server process)
+    rebinds the package's name to the module."""
+    import importlib
+
+    from ca_imports import resolved_name
+
+    try:
+        importlib.import_module(resolved_name("calibration_workflow.cellml_model"))
+    except ImportError:
+        pytest.skip("this libcuflynx has no calibration_workflow.cellml_model module")
+    target = study_workflow.target_model(str(LV_MODEL_PATH), "cellml")
+    assert target["cellml_model_path"] == str(LV_MODEL_PATH)
 
 
 def test_set_steps_are_points_exactly_when_the_ca_schema_has_the_key(

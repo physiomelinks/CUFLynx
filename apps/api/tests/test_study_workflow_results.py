@@ -187,9 +187,20 @@ def _study(work: Path, steps=("calibration-1", "sobol-1", "local-sa-1", "mcmc-1"
     write_ca_results(str(case), [[q] for q in QNAMES], [2.5, 0.35, 0.45, 1.4], 0.25)
     calibrated = run / "calibration-1" / "calibration-1_calibrated.cellml"
     calibrated.write_text("<model/>")
+    inputs = {}
+    for kind, name in (("model", "lv.cellml"), ("obs_data", "lv_obs_data.json"),
+                       ("params_for_id", "lv_params_for_id.json")):
+        stored = work / "inputs" / kind / "2026-11-17_100000" / name
+        stored.parent.mkdir(parents=True, exist_ok=True)
+        stored.write_text("{}")
+        inputs[kind] = str(stored)
     _step(run, "calibration-1", {"kind": "calibration", "method": "CMA-ES",
                                  "param_id_output_dir": str(case),
-                                 "calibrated_model": str(calibrated)}, finished)
+                                 "calibrated_model": str(calibrated),
+                                 "model": {"cellml_model_path": inputs["model"]},
+                                 "inputs": {k: {"path": inputs[k]}
+                                            for k in ("obs_data", "params_for_id")}},
+          finished)
     _csv(run / "sobol-1" / "sensitivity" / "all_outputs_n8_Sobol_indices.csv",
          ["Parameter", *[f"{k}_{o}" for o in OUTPUTS for k in ("S1", "ST")]],
          [[q, 0.1, 0.2, 0.3, 0.4] for q in QNAMES])
@@ -222,6 +233,12 @@ def test_reopening_a_working_dir_fills_every_panel_from_its_study_workflow(tmp_p
     assert [p["qname"] for p in uq["params"]] == QNAMES and uq["method"] == "mcmc"
     assert uq["coverage"]["coverage"]["levels"]["0.95"]["predictive_coverage"] == 1.0
     assert uq["posterior_predictive"]["available"] and uq["has_posterior_predictive"]
+    # the study the steps ran, so the reopened working dir opens its model too
+    stored = work / "inputs"
+    assert found["study"]["model"] == str(stored / "model" / "2026-11-17_100000" / "lv.cellml")
+    assert found["study"]["obs_data"].endswith("lv_obs_data.json")
+    assert found["study"]["params_for_id"].endswith("lv_params_for_id.json")
+    assert found["study"]["file_prefix"] == "lv" and "study inputs" in found["found"]
 
 
 def test_the_latest_done_step_of_a_kind_wins(tmp_path):

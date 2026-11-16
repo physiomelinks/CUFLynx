@@ -679,6 +679,35 @@ def _with_study_steps(output_dir: str, result: dict, missing: list) -> None:
                 result[section] = value
         used[panel] = step.get("step")
     result["study_steps"] = used
+    result["study"] = _study_from_steps(result.get("study"), steps)
+
+
+def _study_from_steps(study: dict | None, steps: dict) -> dict:
+    """``study`` with what it could not find taken from the study workflow: the model the
+    steps ran (the target) and the obs_data and params_for_id of the latest calibration step
+    (else of the latest step; a uq step's obs_data is its MLE copy). A working dir reopened
+    with no model loaded has no file prefix to find them by."""
+    study = dict(study or {})
+    source = steps.get("calibration") or max(
+        steps.values(), key=lambda r: _iso_time(r.get("finished")) or 0)
+    inputs = source.get("inputs") or {}
+
+    def existing(path):
+        return path if isinstance(path, str) and os.path.isfile(path) else None
+
+    model = source.get("model") or {}
+    found = {
+        "model": existing(model.get("cellml_model_path") or model.get("external_model_path")),
+        "obs_data": existing((inputs.get("obs_data") or {}).get("path")),
+        "params_for_id": existing((inputs.get("params_for_id") or {}).get("path")),
+    }
+    if not study.get("model") and found["model"]:
+        study["model_is_calibrated"] = False
+        study["file_prefix"] = study.get("file_prefix") or os.path.splitext(
+            os.path.basename(found["model"]))[0]
+    for key, path in found.items():
+        study[key] = study.get(key) or path
+    return study
 
 
 def load_outputs(output_dir: str, file_prefix: str | None = None,

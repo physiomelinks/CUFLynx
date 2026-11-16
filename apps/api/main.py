@@ -4271,14 +4271,45 @@ def _study_inputs(config: dict, obs_path: str | None = None) -> dict:
     return out
 
 
+def _reopened_calibration(record: "_ModelRecord", settings: dict) -> dict | None:
+    """``{"step", "best"}``: the latest done calibration step of the study workflow in the
+    run's working dir, and its best fit, when it calibrated this study's parameters; else
+    None. What "the previous best fit" is in a working dir reopened in a new session, where
+    no calibration has run yet."""
+    directory = _working_dir_arg(settings.get("config_outputs_dir"))
+    if not directory:
+        return None
+    step = load_outputs.latest_study_steps(directory).get("calibration")
+    case = (step or {}).get("param_id_output_dir")
+    if not case:
+        return None
+    best = (ca_run_history.best_param_values(os.path.dirname(case)) or {}).get("params")
+    qnames = {q for e in _study_entries(record) for q in e.qnames}
+    if not best or not qnames or not qnames <= set(best):
+        return None
+    return {"step": step.get("step"), "best": best}
+
+
+def _previous_best_fit(record: "_ModelRecord", settings: dict) -> dict | None:
+    """The previous calibration's best fit: this session's, else a reopened study's."""
+    return (calibration.last_completed_best_params(record.model_id)
+            or (_reopened_calibration(record, settings) or {}).get("best"))
+
+
 def _study_point(plan, model_id: str, qnames: list) -> str | None:
     """The step a run starts from or is analysed at when it asks for the previous best fit:
-    that calibration's step when it finished in this workflow, else a set step with the
-    best fit (or the best-so-far of a calibration stopped early), its reason saying which."""
+    that calibration's step when it finished in this workflow (this session's, else the
+    latest done one of a reopened working dir), else a set step with the best fit (or the
+    best-so-far of a calibration stopped early), its reason saying which."""
     finished = calibration.last_completed_step(model_id)
     if finished and finished["workflow"] == plan.builder.path and finished["step"] in plan.builder.steps:
         return finished["step"]
     best = calibration.last_completed_best_params(model_id)
+    if not best and finished is None:
+        reopened = _reopened_calibration(_get_model(model_id),
+                                         {"config_outputs_dir": plan.working_dir})
+        if reopened and reopened["step"] in plan.builder.steps:
+            return reopened["step"]
     if not best:
         return None
     stopped = calibration.last_completed_step(model_id, finished_only=False)
@@ -4501,7 +4532,7 @@ def calibration_run(req: CalibrationRequest) -> dict:
     # backend supplies those values so the UI needn't carry them.
     best_fit_params = None
     if req.settings.get("start_from") == "best_fit":
-        best_fit_params = calibration.last_completed_best_params(req.model_id)
+        best_fit_params = _previous_best_fit(record, req.settings)
         if not best_fit_params:
             raise HTTPException(
                 status_code=422,
@@ -5084,7 +5115,7 @@ def sensitivity_run(req: SensitivityRequest) -> dict:
                 detail="a calibration is still running; wait for it to finish "
                 "before running local sensitivity about its best fit",
             )
-        best_params = calibration.last_completed_best_params(req.model_id)
+        best_params = _previous_best_fit(record, req.settings)
         if not best_params:
             raise HTTPException(
                 status_code=422,
@@ -5602,7 +5633,7 @@ def uq_run(req: UQRequest) -> dict:
                 detail="a calibration is still running; wait for it to finish before "
                 "running UQ (or enable 'run a fresh calibration first')",
             )
-        best_params = calibration.last_completed_best_params(req.model_id)
+        best_params = _previous_best_fit(record, req.settings)
         if not best_params:
             raise HTTPException(
                 status_code=422,

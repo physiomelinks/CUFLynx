@@ -57,10 +57,12 @@ LABELS = {"calibration": "calibration", "sobol": "sobol", "local": "local-sa",
           "mcmc": "mcmc", "laplace": "laplace", "sliders": "sliders",
           "bounds": "nominal", "best_fit": "best-fit"}
 
-#: Settings keys of a panel that are CUFLynx's own and never reach CA's option dicts.
+#: Settings keys of a panel that are CUFLynx's own and never reach CA's option dicts. A uq
+#: step's ``posterior_predictive`` / ``posterior_predictive_samples`` do: they are its
+#: ``UQ_options``.
 _PANEL_ONLY = {"start_from", "start_from_current", "use_emulator", "emulator_dir", "min_r2",
                "out_of_bounds", "fd_rel_step", "config_outputs_dir", "python_path",
-               "num_cores", "posterior_predictive", "posterior_predictive_samples"}
+               "num_cores"}
 
 _lock = threading.Lock()
 
@@ -74,8 +76,12 @@ def enabled() -> bool:
 
 
 def _ca(*names):
+    """Names from CA's ``calibration_workflow.builder``, where they are defined. Not from
+    the package: its ``cellml_model`` function is replaced by the ``cellml_model`` submodule
+    of the same name once anything imports that submodule (CA's calibrated-CellML writer
+    does), after which ``cellml_model(path)`` raises "'module' object is not callable"."""
     ensure_ca_path()
-    found = ca_from("calibration_workflow", *names)
+    found = ca_from("calibration_workflow.builder", *names)
     return found if len(names) > 1 else (found,)
 
 
