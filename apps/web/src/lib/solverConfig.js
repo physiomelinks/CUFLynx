@@ -37,11 +37,15 @@ export function solverFieldsForMethod(opts, solver, method) {
   )
 }
 
-/** A solver_info object seeded from a solver's schema defaults (non-null only). */
+/**
+ * A solver_info object seeded from a solver's schema defaults (non-null only).
+ * A field with `seed: false` stays unset: CA reads it differently unset than at
+ * its default (casadi `jit`), so it is sent only once the user changes it.
+ */
 export function defaultSolverInfo(opts, solver) {
   const out = {}
   for (const f of solverFields(opts, solver)) {
-    if (f.default != null) out[f.key] = f.default
+    if (f.default != null && f.seed !== false) out[f.key] = f.default
   }
   return out
 }
