@@ -17,8 +17,9 @@ directory draws it after every run.
   step names the obs_data and params_for_id it ran with.
 * **Values nobody fitted** -- the slider values, a bounds midpoint, the best-so-far of a
   calibration that was stopped -- go in a ``set`` step with the reason, and the step that uses
-  them takes them with ``start_from`` / ``result_from``. A previous calibration step is named
-  directly.
+  them takes them with ``start_from`` / ``result_from``. The step is ``"point": true`` (where
+  the CA has the key), so those values never reach the merged target. A previous calibration
+  step is named directly.
 
 Which runs have no workflow form, and so keep the direct runner, is decided in
 :func:`direct_reason`; the run log says why. A CA without the workflow features this needs
@@ -91,6 +92,19 @@ def unavailable_reason() -> str | None:
     if "start_from" not in inspect.signature(builder.add_calibration).parameters:
         return "this libcuflynx's calibration workflows have no start_from"
     return None
+
+
+def point_steps() -> bool:
+    """Whether the configured CA's workflow schema has a set step's ``point`` key: its values
+    are then only a point for ``start_from`` / ``result_from`` and are never merged into the
+    workflow's target. Without it, CUFLynx's set steps are merged like any other."""
+    try:
+        ensure_ca_path()
+        load_schema, name = ca_from("schemas", "load_schema", "CALIBRATION_WORKFLOW_SCHEMA")
+        step = load_schema(name)["$defs"]["step"]["properties"]
+    except (CaImportError, ImportError, KeyError, TypeError, OSError, ValueError):
+        return False
+    return "point" in step
 
 
 def workflow_path(working_dir: str) -> str:
@@ -253,10 +267,13 @@ class Plan:
         return next_id(self.builder, label, self.working_dir)
 
     def add_set(self, kind: str, entries: list[dict]) -> str | None:
-        """A set step of ``entries``, its id labelled by ``kind`` (:data:`LABELS`)."""
+        """A set step of ``entries``, its id labelled by ``kind`` (:data:`LABELS`). It is only
+        the point a later step starts from or analyses at, so it is written ``point: true``
+        where the CA has that key (:func:`point_steps`), and stays out of the merged target."""
         if not entries:
             return None
-        return self.add("add_set", self.new_id(LABELS[kind]), entries)
+        point = {"point": True} if point_steps() else {}
+        return self.add("add_set", self.new_id(LABELS[kind]), entries, **point)
 
     @property
     def step(self) -> str:

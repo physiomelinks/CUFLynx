@@ -1012,12 +1012,25 @@ def stored_distribution(directory: str) -> list | None:
     return _sample_marginals(flat, names)
 
 
+def stored_sample_count(directory: str) -> int | None:
+    """How many draws a stored distribution (``<step>/distribution/samples.npy``) holds, or
+    None when it has none."""
+    samples = _npy(directory, DISTRIBUTION_SAMPLES) if directory else None
+    if samples is None or getattr(samples, "ndim", 0) == 0:
+        return None
+    return int(samples.shape[0])
+
+
 #: The Laplace approximation CA's identifiability analysis writes (a workflow's
 #: identifiability step: ``<step dir>/<prefix>_laplace_{mean,covariance}.npy``).
 LAPLACE_MEAN_SUFFIX = "_laplace_mean.npy"
 LAPLACE_COVARIANCE_SUFFIX = "_laplace_covariance.npy"
 #: The z-scores of the 5th and 95th percentiles of a normal distribution.
 _Z95 = 1.6448536269514722
+#: What a Laplace marginal says in place of a std it does not have: the covariance (the
+#: inverse Hessian of the cost) is not positive definite along that parameter, so the data
+#: do not pin it down. CA stores that std as NaN.
+NOT_IDENTIFIABLE = "not identifiable (covariance not positive definite)"
 
 
 def laplace_distributions(mean_path: str, covariance_path: str,
@@ -1043,9 +1056,16 @@ def laplace_distributions(mean_path: str, covariance_path: str,
     return laplace_marginals(mean, cov, names)
 
 
-def laplace_marginals(mean, covariance, names: list | None = None) -> list | None:
+def laplace_marginals(mean, covariance, names: list | None = None,
+                      std: list | None = None) -> list | None:
     """:func:`laplace_distributions` of a mean and covariance given as arrays (a workflow uq
-    step's ``step_result.json`` ``laplace``), or None when their shapes disagree."""
+    step's ``step_result.json`` ``laplace``), or None when their shapes disagree.
+
+    A parameter whose variance is not a positive finite number, or whose ``std`` (CA's, when
+    given) is NaN, has no normal marginal: its entry keeps ``qname`` and ``mean`` (and
+    ``q50``), has ``std``, ``q05`` and ``q95`` None and no bins, and says why under
+    ``not_identifiable`` -- never a std of 0, which would read as perfectly determined.
+    """
     import math  # noqa: PLC0415
 
     import numpy as np  # noqa: PLC0415
@@ -1058,10 +1078,19 @@ def laplace_marginals(mean, covariance, names: list | None = None) -> list | Non
     if cov.shape != (mean.size, mean.size):
         return None
     names = list(names or [])
+    given_std = list(std) if std is not None else []
     out = []
     for i, mu in enumerate(mean):
-        std = math.sqrt(max(float(cov[i, i]), 0.0))
         qname = names[i] if i < len(names) else "parameter %d" % (i + 1)
+        variance = float(cov[i, i])
+        reported = given_std[i] if i < len(given_std) else 0.0
+        reported = float("nan") if reported is None else float(reported)
+        if not (math.isfinite(variance) and variance > 0) or math.isnan(reported):
+            out.append({"qname": qname, "mean": float(mu), "std": None, "q05": None,
+                        "q50": float(mu), "q95": None, "bins": [], "counts": [],
+                        "not_identifiable": NOT_IDENTIFIABLE})
+            continue
+        std = math.sqrt(variance)
         if std > 0:
             edges = np.linspace(mu - 4 * std, mu + 4 * std, NUM_BINS + 1)
             cdf = np.array([0.5 * (1 + math.erf((e - mu) / (std * math.sqrt(2))))

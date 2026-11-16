@@ -18,12 +18,14 @@ import pytest
 import calibration as calibration_mod
 import main
 import sensitivity as sensitivity_mod
+import study_workflow
 import uq as uq_mod
 from conftest import (
     LV_MODEL_PATH,
     LV_OBS_DATA_PATH,
     LV_PARAMS_CSV_PATH,
     WRITE_CA_RESULTS_SRC,
+    set_ca_module,
     upload_model,
 )
 
@@ -130,6 +132,8 @@ def test_a_calibration_from_the_sliders_is_a_set_step_and_a_calibration(
     assert sliders["kind"] == "set"
     assert {e["parameter"]: e["value"] for e in sliders["set"]} == SLIDERS
     assert {e["reason"] for e in sliders["set"]} == {"slider values in CUFLynx"}
+    # only a point to start from: never merged into the target (where the CA has the key)
+    assert sliders.get("point") == (True if study_workflow.point_steps() else None)
     cal = steps["calibration-1"]
     assert cal["start_from"] == "sliders-1"
     assert cal["settings"]["param_id_method"] == "CMA-ES"
@@ -179,6 +183,7 @@ def test_the_best_so_far_of_a_stopped_calibration_is_a_set_step(client, fake_run
     assert {e["parameter"]: e["value"] for e in entries} == dict(
         zip(QNAMES, (1.0, 0.5, 0.25, 2.0)))
     assert "calibration-1, which was stopped early" in entries[0]["reason"]
+    assert steps["best-fit-1"].get("point") == (True if study_workflow.point_steps() else None)
     assert steps["calibration-2"]["start_from"] == "best-fit-1"
 
 
@@ -211,6 +216,7 @@ def test_a_local_analysis_at_the_bounds_midpoint_is_at_a_set_step(client, fake_r
     assert values == pytest.approx({f"{LV}/alpha": 3.55, f"{LV}/beta": 1.005,
                                     f"{LV}/delta": 1.005, f"{LV}/gamma": 5.05})
     assert "midpoint of the params_for_id bounds" in steps["nominal-1"]["set"][0]["reason"]
+    assert steps["nominal-1"].get("point") == (True if study_workflow.point_steps() else None)
     local = steps["local-sa-1"]
     assert local["result_from"] == "nominal-1"
     sa = local["settings"]["sa_options"]
@@ -330,6 +336,32 @@ def test_a_second_step_waits_for_the_running_one(client, study_workflow_on, tmp_
     assert list(_steps(work)) == ["calibration-1"]
 
 
+def test_set_steps_are_points_exactly_when_the_ca_schema_has_the_key(
+        client, fake_runs, tmp_path, monkeypatch):
+    model_id = _setup(client)
+    for supported, work in ((True, tmp_path / "with"), (False, tmp_path / "without")):
+        monkeypatch.setattr(study_workflow, "point_steps", lambda s=supported: s)
+        assert _calibrate(client, model_id, work, start_from="current")["state"] == "done"
+        sliders = _steps(work)["sliders-1"]
+        assert sliders.get("point") == (True if supported else None)
+
+
+def test_the_point_probe_reads_the_ca_workflow_schema(monkeypatch):
+    import types
+
+    def schema(properties):
+        return types.SimpleNamespace(
+            CALIBRATION_WORKFLOW_SCHEMA="calibration_workflow",
+            load_schema=lambda name: {"$defs": {"step": {"properties": properties}}})
+
+    set_ca_module(monkeypatch, "schemas", schema({"id": {}, "set": {}, "point": {}}))
+    assert study_workflow.point_steps() is True
+    set_ca_module(monkeypatch, "schemas", schema({"id": {}, "set": {}}))
+    assert study_workflow.point_steps() is False
+    set_ca_module(monkeypatch, "schemas", None)          # a CA with no schemas package
+    assert study_workflow.point_steps() is False
+
+
 # -- reading a uq step's posterior ------------------------------------------------------
 
 def test_a_stored_distribution_reads_as_the_uq_panels_marginals(tmp_path):
@@ -361,6 +393,59 @@ def test_a_laplace_step_result_reads_as_normal_marginals():
     assert (a["qname"], a["mean"], a["std"]) == ("A/p", 1.0, pytest.approx(0.2))
     assert b["q95"] == pytest.approx(3.0 + 1.6448536, rel=1e-6)
     assert ca_run_history.laplace_marginals([1.0], [[1.0, 0.0], [0.0, 1.0]]) is None
+
+
+#: What CA stored for Lotka-Volterra's 4 parameters fitted to 2 observables: the inverse
+#: Hessian is indefinite, every std NaN, and 1179 of 2000 draws fell outside the bounds.
+LV_LAPLACE = {
+    "mean": [1.3654835, 0.3988897, 0.6737314, 1.7019225],
+    "covariance": [[-34.96, 0.9997, 1.3327, -16.673], [0.9997, -0.02623, -0.03189, 0.5143],
+                   [1.3327, -0.03189, -0.04039, 0.6517], [-16.673, 0.5143, 0.6517, -8.2805]],
+    "std": [float("nan")] * 4, "samples_outside_bounds": 1179}
+
+
+def test_an_indefinite_laplace_covariance_reads_as_not_identifiable_never_std_0():
+    import ca_run_history
+
+    marginals = ca_run_history.laplace_marginals(
+        LV_LAPLACE["mean"], LV_LAPLACE["covariance"], QNAMES, LV_LAPLACE["std"])
+    assert [m["qname"] for m in marginals] == QNAMES
+    for m, mean in zip(marginals, LV_LAPLACE["mean"]):
+        assert m["not_identifiable"] == "not identifiable (covariance not positive definite)"
+        assert (m["std"], m["q05"], m["q95"], m["bins"]) == (None, None, None, [])
+        assert m["mean"] == m["q50"] == mean
+    json.dumps(marginals, allow_nan=False)          # the status payload carries no NaN
+
+    # per parameter: CA's NaN std, or a variance that is not positive, marks that one only
+    a, b, c = ca_run_history.laplace_marginals(
+        [1.0, 2.0, 3.0], [[0.04, 0, 0], [0, 1.0, 0], [0, 0, -1.0]], ["A/p", "B/q", "C/r"],
+        [0.2, float("nan"), float("nan")])
+    assert a["std"] == pytest.approx(0.2) and "not_identifiable" not in a
+    assert b["std"] is None and c["std"] is None and "not_identifiable" in c
+    (d,) = ca_run_history.laplace_marginals([1.0], [[-1.0]], ["D/s"])   # no std from CA
+    assert d["std"] is None and d["not_identifiable"]
+
+
+def test_a_laplace_steps_draws_outside_the_bounds_are_counted(tmp_path):
+    import numpy as np
+
+    step_dir, dist = tmp_path / "laplace-1", tmp_path / "laplace-1" / "distribution"
+    dist.mkdir(parents=True)
+    np.save(dist / "samples.npy", np.zeros((821, 4)))
+    result = {"step": "laplace-1", "status": "done", "method": "laplace",
+              "parameters": QNAMES, "laplace": LV_LAPLACE, "distribution_dir": str(dist)}
+    (step_dir / "step_result.json").write_text(json.dumps(result))
+    job = uq_mod.UQJob("j", str(tmp_path))
+    job.study_step = {"step_dir": str(step_dir)}
+
+    assert uq_mod.UQManager._study_outside_bounds(job) == {"count": 1179, "of": 2000}
+    params = uq_mod.UQManager._study_params(job)
+    assert all(p["std"] is None and p["not_identifiable"] for p in params)
+    (dist / "samples.npy").unlink()
+    assert uq_mod.UQManager._study_outside_bounds(job) == {"count": 1179, "of": None}
+    del result["laplace"]["samples_outside_bounds"]
+    (step_dir / "step_result.json").write_text(json.dumps(result))
+    assert uq_mod.UQManager._study_outside_bounds(job) is None
 
 
 # -- the direct runners, where a run has no workflow form ---------------------------------

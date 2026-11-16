@@ -55,6 +55,9 @@ class UQJob:
         # How well the posterior reproduces the data it was fitted to, if the
         # engine could run the check. None means "not measured", not "bad".
         self.coverage: dict | None = None
+        # A Laplace step's draws that fell outside the params_for_id bounds and were dropped
+        # from its stored distribution: ``{count, of}``, or None when it has no such count.
+        self.outside_bounds: dict | None = None
         self.proc: subprocess.Popen | None = None
         # The temp file the runner was handed as argv[1], removed when it exits.
         self.config_path: str | None = None
@@ -205,6 +208,8 @@ class UQManager:
                     job.method = (read_meta_line(job.lines, META_MARKER).get("method")
                                   or job.method)
                     job.params = params
+                    if job.study_step:
+                        job.outside_bounds = self._study_outside_bounds(job)
                     job.state = "done"
                     job.coverage = self._read_coverage(job.output_dir)
                     if code != 0:
@@ -225,8 +230,21 @@ class UQManager:
         laplace = result.get("laplace") or {}
         if laplace.get("mean") is not None and laplace.get("covariance") is not None:
             return ca_run_history.laplace_marginals(laplace["mean"], laplace["covariance"],
-                                                    result.get("parameters"))
+                                                    result.get("parameters"),
+                                                    laplace.get("std"))
         return ca_run_history.stored_distribution(result.get("distribution_dir") or "")
+
+    @staticmethod
+    def _study_outside_bounds(job: UQJob) -> dict | None:
+        """How many of a Laplace step's draws fell outside the params_for_id bounds (CA's
+        ``laplace.samples_outside_bounds``), of how many: those kept, in the stored
+        distribution's samples, plus those dropped. None when CA did not count them."""
+        result = ca_run_history.step_result(job.study_step["step_dir"]) or {}
+        count = (result.get("laplace") or {}).get("samples_outside_bounds")
+        if not isinstance(count, int):
+            return None
+        kept = ca_run_history.stored_sample_count(result.get("distribution_dir") or "")
+        return {"count": count, "of": None if kept is None else kept + count}
 
     def _salvage_partial(self, job: UQJob) -> None:
         """Build the posterior from the chain a cancelled run had already sampled.
@@ -286,6 +304,7 @@ class UQManager:
                 "error": job.error,
                 "warning": job.warning,
                 "coverage": job.coverage,
+                "outside_bounds": job.outside_bounds,
                 "study_step": job.study_step,
             }
 

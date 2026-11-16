@@ -3542,6 +3542,7 @@ watch(() => obs.obsData.value, scheduleRun)
             :baseline-cost="activeBaseline"
             :uq-params="uq.params.value"
             :uq-method="uq.method.value"
+            :uq-outside-bounds="uq.outsideBounds.value"
             :coverage="uq.coverage.value"
             :posterior-predictive="uq.posteriorPredictive.value"
             :emulator-metadata="emu.metadata.value"
