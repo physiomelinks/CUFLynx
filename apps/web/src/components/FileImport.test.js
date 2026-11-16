@@ -13,6 +13,9 @@ vi.mock('../lib/api', () => ({
   peekInbox: vi.fn(),
   acceptInbox: vi.fn(),
   rejectInbox: vi.fn(),
+  openStudyManifest: vi.fn(),
+  inspectWorkingDirZip: vi.fn(),
+  extractWorkingDirZip: vi.fn(),
 }))
 
 import FileImport from './FileImport.vue'
@@ -28,6 +31,9 @@ import {
   peekInbox,
   acceptInbox,
   rejectInbox,
+  openStudyManifest,
+  inspectWorkingDirZip,
+  extractWorkingDirZip,
 } from '../lib/api'
 
 // Real <button> stub so the Edit button's disabled state + click are observable;
@@ -100,9 +106,133 @@ beforeEach(() => {
   acceptInbox.mockReset()
   rejectInbox.mockReset()
   peekInbox.mockResolvedValue(null)
+  openStudyManifest.mockReset()
+  inspectWorkingDirZip.mockReset()
+  extractWorkingDirZip.mockReset()
 })
 
 describe('FileImport', () => {
+  // A study run from circulatory_autogen is opened from the manifest it writes beside
+  // its results: the drop sets the working dir and reloads it, on any box.
+  it.each(['cellml-drop', 'obs-drop', 'params-drop'])(
+    'a dropped study manifest opens its study (%s)',
+    async (box) => {
+      openStudyManifest.mockResolvedValue({ dir: '/abs/study', study_name: 'RAAS6' })
+      const wrapper = mount(FileImport, { global: { stubs } })
+      const text = '{"schema": 1, "study_dir": "/abs/study"}'
+      await wrapper
+        .find(`[data-testid="${box}"]`)
+        .trigger('drop', { dataTransfer: { files: [jsonFile('RAAS6_cuflynx_study.json', text)] } })
+      await flushPromises()
+      expect(openStudyManifest).toHaveBeenCalledWith(text, undefined)
+      expect(wrapper.emitted('update:workingDir')[0]).toEqual(['/abs/study'])
+      expect(wrapper.emitted('load-working-dir')).toHaveLength(1)
+      expect(uploadCellML).not.toHaveBeenCalled()
+      expect(uploadObsData).not.toHaveBeenCalled()
+    },
+  )
+
+  // A zipped working dir is extracted where the user says, becomes the working dir and
+  // is reloaded, the path a dropped manifest takes; so its runs and settings load.
+  const zipFile = (name = 'W.zip') => new File(['PK'], name, { type: 'application/zip' })
+  const stagedZip = {
+    kind: 'working_dir',
+    token: 'a'.repeat(32),
+    study_name: 'LV',
+    default_dir: '/home/u/Downloads/LV',
+  }
+
+  it.each(['cellml-drop', 'obs-drop', 'params-drop'])(
+    'a dropped working-dir zip is extracted and opened (%s)',
+    async (box) => {
+      inspectWorkingDirZip.mockResolvedValue(stagedZip)
+      extractWorkingDirZip.mockResolvedValue({
+        dir: '/home/u/Downloads/LV', study_name: 'LV', file_prefix: 'LV', warnings: [],
+      })
+      const wrapper = mount(FileImport, { global: { stubs } })
+      const file = zipFile()
+      await wrapper.find(`[data-testid="${box}"]`).trigger('drop', { dataTransfer: { files: [file] } })
+      await flushPromises()
+      expect(inspectWorkingDirZip).toHaveBeenCalledWith(file, undefined)
+      // Asked first: nothing is extracted or opened until the user says where.
+      const dialog = wrapper.find('[data-testid="zip-dialog"]')
+      expect(dialog.exists()).toBe(true)
+      expect(dialog.find('[data-testid="zip-study"]').text()).toBe('LV')
+      expect(extractWorkingDirZip).not.toHaveBeenCalled()
+      expect(wrapper.emitted('update:workingDir')).toBeFalsy()
+
+      await wrapper.find('[data-testid="zip-extract"]').trigger('click')
+      await flushPromises()
+      expect(extractWorkingDirZip).toHaveBeenCalledWith(stagedZip.token, '/home/u/Downloads/LV', false)
+      expect(wrapper.emitted('update:workingDir')[0]).toEqual(['/home/u/Downloads/LV'])
+      expect(wrapper.emitted('load-working-dir')).toHaveLength(1)
+      expect(wrapper.text()).toContain('Extracted W.zip to /home/u/Downloads/LV')
+      expect(wrapper.find('[data-testid="zip-dialog"]').exists()).toBe(false)
+      expect(uploadOmex).not.toHaveBeenCalled()
+      expect(uploadCellML).not.toHaveBeenCalled()
+    },
+  )
+
+  it('an OMEX dropped as a .zip is loaded as an OMEX', async () => {
+    inspectWorkingDirZip.mockResolvedValue({ kind: 'omex' })
+    uploadOmex.mockResolvedValue({ model_id: 'm1', variable_count: 3, warnings: [] })
+    const wrapper = mount(FileImport, { global: { stubs } })
+    const file = zipFile('study.zip')
+    await wrapper.find('[data-testid="cellml-drop"]').trigger('drop', { dataTransfer: { files: [file] } })
+    await flushPromises()
+    expect(uploadOmex).toHaveBeenCalledWith(file, '')
+    expect(wrapper.emitted('model-loaded')).toHaveLength(1)
+    expect(wrapper.find('[data-testid="zip-dialog"]').exists()).toBe(false)
+    expect(extractWorkingDirZip).not.toHaveBeenCalled()
+  })
+
+  it('a zip the server refuses says why and opens nothing', async () => {
+    inspectWorkingDirZip.mockRejectedValue({
+      response: { status: 422, data: { detail: "This zip was not extracted: 'W/../x' climbs out" } },
+    })
+    const wrapper = mount(FileImport, { global: { stubs } })
+    await wrapper.find('[data-testid="obs-drop"]').trigger('drop', { dataTransfer: { files: [zipFile()] } })
+    await flushPromises()
+    expect(wrapper.text()).toContain('This zip was not extracted')
+    expect(wrapper.find('[data-testid="zip-dialog"]').exists()).toBe(false)
+    expect(wrapper.emitted('update:workingDir')).toBeFalsy()
+  })
+
+  it('a folder already holding files is extracted into only after a second press', async () => {
+    inspectWorkingDirZip.mockResolvedValue(stagedZip)
+    extractWorkingDirZip
+      .mockRejectedValueOnce({ response: { status: 409, data: { detail: '/home/u/Downloads/LV already holds files.' } } })
+      .mockResolvedValueOnce({
+        dir: '/home/u/Downloads/LV', study_name: 'LV',
+        warnings: ['This study wrote outputs outside its working dir: /data/emu'],
+      })
+    const wrapper = mount(FileImport, { global: { stubs } })
+    await wrapper.find('[data-testid="cellml-drop"]').trigger('drop', { dataTransfer: { files: [zipFile()] } })
+    await flushPromises()
+    await wrapper.find('[data-testid="zip-extract"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="zip-overwrite"]').text()).toContain('already holds files')
+    expect(wrapper.emitted('update:workingDir')).toBeFalsy()
+    expect(wrapper.find('[data-testid="zip-extract"]').text()).toBe('Extract anyway')
+
+    await wrapper.find('[data-testid="zip-extract"]').trigger('click')
+    await flushPromises()
+    expect(extractWorkingDirZip).toHaveBeenLastCalledWith(stagedZip.token, '/home/u/Downloads/LV', true)
+    expect(wrapper.emitted('update:workingDir')[0]).toEqual(['/home/u/Downloads/LV'])
+    expect(wrapper.text()).toContain('Extracted W.zip to /home/u/Downloads/LV')
+  })
+
+  it('a study manifest that cannot be opened says why', async () => {
+    openStudyManifest.mockRejectedValue({ response: { data: { detail: 'not on this machine' } } })
+    const wrapper = mount(FileImport, { global: { stubs } })
+    await wrapper
+      .find('[data-testid="obs-drop"]')
+      .trigger('drop', { dataTransfer: { files: [jsonFile('x_cuflynx_study.json', '{}')] } })
+    await flushPromises()
+    expect(wrapper.text()).toContain('not on this machine')
+    expect(wrapper.emitted('load-working-dir')).toBeFalsy()
+  })
+
   it('test_cellml_drop_calls_upload', async () => {
     uploadCellML.mockResolvedValue({ model_id: 'abc', name: 'm' })
     const wrapper = mount(FileImport, { global: { stubs } })
@@ -176,7 +306,7 @@ describe('FileImport', () => {
       props: {
         modelId: 'abc',
         convertedFrom: 'Courtemanche.model',
-        outputsDir: '/studies/heart',
+        workingDir: '/studies/heart',
       },
       global: { stubs },
     })
@@ -256,6 +386,18 @@ describe('FileImport', () => {
       params: [{ name: 'p' }],
       filename: 'p.csv',
     })
+  })
+
+  it('takes a params_for_id .json, the form circulatory_autogen reads', async () => {
+    uploadParamsForId.mockResolvedValue({ params: [{ name: 'p' }] })
+    const wrapper = mount(FileImport, { props: { modelId: 'abc' }, global: { stubs } })
+    const doc = jsonFile('m_params_for_id.json', '{"version": 1, "params": []}')
+    const zone = wrapper.find('[data-testid="params-drop"]')
+    expect(zone.find('input[type="file"]').attributes('accept')).toContain('.json')
+    await zone.trigger('drop', { dataTransfer: { files: [doc] } })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="import-error"]').exists()).toBe(false)
+    expect(uploadParamsForId).toHaveBeenCalledWith(doc, 'abc')
   })
 
   it('test_obs_drop_with_model_attaches_immediately', async () => {
@@ -387,7 +529,7 @@ describe('FileImport', () => {
       runs: true,
     })
     const wrapper = mount(FileImport, {
-      props: { modelId: 'abc', modelFormat: 'external_python', outputsDir: '/studies/heart' },
+      props: { modelId: 'abc', modelFormat: 'external_python', workingDir: '/studies/heart' },
       global: { stubs },
     })
     const btn = wrapper.find('[data-testid="start-edit"]')
@@ -421,7 +563,7 @@ describe('FileImport', () => {
       runs: false,
     })
     const wrapper = mount(FileImport, {
-      props: { modelId: 'abc', convertedFrom: 'br-1977.mmt', outputsDir: '/studies/heart' },
+      props: { modelId: 'abc', convertedFrom: 'br-1977.mmt', workingDir: '/studies/heart' },
       global: { stubs },
     })
     const btn = wrapper.find('[data-testid="start-edit"]')
@@ -445,7 +587,7 @@ describe('FileImport', () => {
       runs: true,
     })
     const wrapper = mount(FileImport, {
-      props: { modelId: 'abc', modelFormat: 'external_python', outputsDir: '/studies/heart' },
+      props: { modelId: 'abc', modelFormat: 'external_python', workingDir: '/studies/heart' },
       global: { stubs },
     })
     await wrapper.find('[data-testid="start-edit"]').trigger('click')
@@ -456,11 +598,11 @@ describe('FileImport', () => {
     expect(notice).toContain('/studies/heart/user_funcs/user_model.py')
   })
 
-  // The one real refusal: without an outputs directory there is nowhere the
+  // The one real refusal: without a working dir there is nowhere the
   // edit could safely live, and the backend says so.
-  it('no outputs directory is an error banner, not a silent temp file', async () => {
+  it('no working dir is an error banner, not a silent temp file', async () => {
     editModelSource.mockRejectedValue({
-      response: { data: { detail: 'no outputs directory is set, so there is nowhere...' } },
+      response: { data: { detail: 'no working dir is set, so there is nowhere...' } },
     })
     const wrapper = mount(FileImport, {
       props: { modelId: 'abc', modelFormat: 'external_python' },
@@ -469,7 +611,7 @@ describe('FileImport', () => {
     await wrapper.find('[data-testid="start-edit"]').trigger('click')
     await flushPromises()
     expect(wrapper.find('[data-testid="import-error"]').text()).toContain(
-      'no outputs directory is set',
+      'no working dir is set',
     )
   })
 
@@ -517,7 +659,7 @@ describe('FileImport', () => {
     sendToPhlynx.mockResolvedValue(SEND_OK)
     const wrapper = await openSend({
       paramValues: { 'aortic_root/C': 1.5 },
-      outputsDir: '/studies/heart',
+      workingDir: '/studies/heart',
     })
 
     await wrapper.find('[data-testid="phlynx-send-confirm"]').trigger('click')
@@ -526,7 +668,7 @@ describe('FileImport', () => {
     expect(sendToPhlynx).toHaveBeenCalledWith('abc', {
       source: 'current',
       values: { 'aortic_root/C': 1.5 },
-      outputDir: '/studies/heart',
+      workingDir: '/studies/heart',
     })
     // PhLynx picks its loader from `?open=`, and its own decoder builds the
     // data URI, so the fragment is bare base64.
@@ -586,13 +728,13 @@ describe('FileImport', () => {
     openSpy.mockRestore()
   })
 
-  it('the best-fit option needs an outputs directory to read it from', async () => {
-    const withDir = await openSend({ outputsDir: '/studies/heart' })
+  it('the best-fit option needs a working dir to read it from', async () => {
+    const withDir = await openSend({ workingDir: '/studies/heart' })
     expect(
       withDir.find('[data-testid="phlynx-source-best_fit"]').attributes('disabled'),
     ).toBeUndefined()
 
-    const without = await openSend({ outputsDir: '' })
+    const without = await openSend({ workingDir: '' })
     expect(
       without.find('[data-testid="phlynx-source-best_fit"]').attributes('disabled'),
     ).toBeDefined()
@@ -650,7 +792,7 @@ describe('FileImport', () => {
     sendToPhlynx.mockRejectedValue({
       response: { data: { detail: 'no calibration best fit was found' } },
     })
-    const wrapper = await openSend({ outputsDir: '/studies/heart' })
+    const wrapper = await openSend({ workingDir: '/studies/heart' })
     await wrapper.find('[data-testid="phlynx-source-best_fit"]').setValue()
     await wrapper.find('[data-testid="phlynx-send-confirm"]').trigger('click')
     await flushPromises()
@@ -999,6 +1141,28 @@ describe('FileImport omex (#149)', () => {
     await dropOn('obs-drop', json)
     expect(uploadOmex).not.toHaveBeenCalled()
   })
+
+  // The archive's own operation funcs are installed into Custom funcs on import;
+  // the notice names the ones that were, and the rest arrive as warnings.
+  it('names the funcs the archive added to Custom funcs', async () => {
+    uploadOmex.mockResolvedValue({
+      ...RESPONSE,
+      user_funcs: [
+        { kind: 'operation', name: 'ratio', origin: 'operation_funcs_user.py', status: 'installed' },
+        { kind: 'operation', name: 'spread', origin: 'operation_funcs_user.py', status: 'conflict' },
+      ],
+      warnings: ["operation 'spread' from operation_funcs_user.py was not installed"],
+    })
+    const wrapper = await dropOn('cellml-drop')
+    expect(wrapper.vm.notice).toContain('added to Custom funcs: ratio (operation)')
+    expect(wrapper.vm.notice).not.toContain('spread')
+    expect(wrapper.vm.warnings.join(' ')).toContain("'spread'")
+  })
+
+  it('says nothing about funcs when the archive carries none', async () => {
+    const wrapper = await dropOn('cellml-drop')
+    expect(wrapper.vm.notice).not.toContain('Custom funcs')
+  })
 })
 
 // External python models: the user drops a .py holding the solver class itself.
@@ -1063,14 +1227,29 @@ describe('FileImport accepts an external python model (.py)', () => {
   })
 })
 
-// --- reading what is already in the outputs directory (#255) -----------------
+// --- reading what is already in the working dir (#255) -----------------
+
+describe('FileImport — working dir field', () => {
+  it('is labelled "Working dir" and edits the working-dir model', async () => {
+    const wrapper = mount(FileImport, {
+      props: { workingDir: '/studies/heart' }, global: { stubs },
+    })
+    const label = wrapper.find('label.working-dir')
+    expect(label.exists()).toBe(true)
+    expect(label.text()).toContain('Working dir')
+    expect(wrapper.text()).not.toMatch(/outputs director/i)
+    const field = wrapper.findComponent('[data-testid="config-working-dir"]')
+    field.vm.$emit('update:modelValue', '/studies/lung')
+    expect(wrapper.emitted('update:workingDir')[0]).toEqual(['/studies/lung'])
+  })
+})
 
 describe('FileImport — load outputs', () => {
   it('offers a button to read the directory, disabled until one is set', async () => {
     const wrapper = mount(FileImport, {
-      props: { outputsDir: '' }, global: { stubs },
+      props: { workingDir: '' }, global: { stubs },
     })
-    const button = wrapper.find('[data-testid="outputs-load"]')
+    const button = wrapper.find('[data-testid="working-dir-load"]')
 
     expect(button.exists()).toBe(true)
     expect(button.attributes('disabled')).toBeDefined()
@@ -1078,15 +1257,15 @@ describe('FileImport — load outputs', () => {
 
   it('asks to load once a directory is set', async () => {
     const wrapper = mount(FileImport, {
-      props: { outputsDir: '/tmp/outputs' }, global: { stubs },
+      props: { workingDir: '/tmp/outputs' }, global: { stubs },
     })
-    const button = wrapper.find('[data-testid="outputs-load"]')
+    const button = wrapper.find('[data-testid="working-dir-load"]')
     expect(button.attributes('disabled')).toBeUndefined()
 
     await button.trigger('click')
     // A press, not a watcher: reading a directory is real work, and results
     // found there may not match what is loaded.
-    expect(wrapper.emitted('load-outputs')).toBeTruthy()
+    expect(wrapper.emitted('load-working-dir')).toBeTruthy()
   })
 })
 
@@ -1135,6 +1314,27 @@ describe('FileImport — the PhLynx inbox', () => {
     const members = wrapper.find('[data-testid="inbox-members"]').text()
     expect(members).toContain('model.cellml')
     expect(members).toContain('heart_obs_data.json')
+  })
+
+  // Accepting a study that carries funcs installs Python that CA later runs, so
+  // the dialog says so before the user agrees rather than after.
+  it('warns when the delivery carries Python funcs', async () => {
+    peekInbox.mockResolvedValue({
+      ...PENDING,
+      members: [...PENDING.members, 'operation_funcs_user.py'],
+      user_funcs: ['operation_funcs_user.py'],
+    })
+    const wrapper = await mounted()
+    const note = wrapper.find('[data-testid="inbox-user-funcs"]')
+    expect(note.exists()).toBe(true)
+    expect(note.text()).toContain('operation_funcs_user.py')
+    expect(note.text()).toContain('trust')
+  })
+
+  it('has no funcs warning for a study without them', async () => {
+    peekInbox.mockResolvedValue({ ...PENDING, user_funcs: [] })
+    const wrapper = await mounted()
+    expect(wrapper.find('[data-testid="inbox-user-funcs"]').exists()).toBe(false)
   })
 
   it('loads nothing until the user accepts', async () => {
@@ -1186,6 +1386,50 @@ describe('FileImport — the PhLynx inbox', () => {
     )
   })
 
+  // `cuflynx://open?study=` stages a study manifest already on this machine.
+  const STUDY = {
+    kind: 'study',
+    origin: 'A cuflynx:// link',
+    filename: 'cuflynx_study.json',
+    path: '/home/me/sa_ox1/cuflynx_study.json',
+    bytes: 1200,
+    members: ['model: /home/me/SN.cellml', 'emulator: /home/me/emulators/bundle', 'sensitivity: 1 recorded'],
+  }
+
+  it('a study link names the manifest path and what it declares', async () => {
+    peekInbox.mockResolvedValue(STUDY)
+    const wrapper = await mounted()
+    expect(wrapper.find('[data-testid="inbox-study"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="inbox-path"]').text()).toBe(STUDY.path)
+    expect(wrapper.find('[data-testid="inbox-members"]').text()).toContain('sensitivity: 1 recorded')
+    expect(acceptInbox).not.toHaveBeenCalled()
+  })
+
+  it('loading a study link opens its directory as a dropped manifest does', async () => {
+    peekInbox.mockResolvedValue(STUDY)
+    acceptInbox.mockResolvedValue({
+      kind: 'study',
+      dir: '/home/me/sa_ox1',
+      study_name: 'SN_full_ox1',
+      file_prefix: 'SN_full',
+      path: STUDY.path,
+      delivered_from: STUDY.origin,
+    })
+    const wrapper = await mounted()
+
+    await wrapper.find('[data-testid="inbox-accept"]').trigger('click')
+    await flushPromises()
+
+    expect(acceptInbox).toHaveBeenCalledOnce()
+    expect(wrapper.emitted('update:workingDir')[0]).toEqual(['/home/me/sa_ox1'])
+    expect(wrapper.emitted('load-working-dir')).toHaveLength(1)
+    expect(wrapper.emitted('model-loaded')).toBeFalsy()
+    expect(wrapper.find('[data-testid="import-notice"]').text()).toContain(
+      'Opening SN_full_ox1 from /home/me/sa_ox1',
+    )
+    expect(wrapper.find('[data-testid="inbox-dialog"]').exists()).toBe(false)
+  })
+
   it('a server that is not answering does not produce an error banner', async () => {
     // A delivery the user never asked for must not turn into a banner about a
     // feature they may not know exists.
@@ -1193,6 +1437,50 @@ describe('FileImport — the PhLynx inbox', () => {
     const wrapper = await mounted()
     expect(wrapper.find('[data-testid="import-error"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="inbox-dialog"]').exists()).toBe(false)
+  })
+
+  it('a cuflynx:// link that could not be opened is shown', async () => {
+    const failed = new Error(
+      'Could not open the study from https://example.org/x.omex: the server answered 404 Not Found',
+    )
+    failed.deliveryFailed = true
+    peekInbox.mockRejectedValue(failed)
+    const wrapper = await mounted()
+    expect(wrapper.find('[data-testid="import-error"]').text()).toContain('404 Not Found')
+    expect(wrapper.find('[data-testid="inbox-dialog"]').exists()).toBe(false)
+  })
+
+  it("says the starting values are the module library's calibrated values", async () => {
+    peekInbox.mockResolvedValue({ ...PENDING, origin: 'https://physiomelinks.github.io' })
+    acceptInbox.mockResolvedValue({
+      ...LOADED,
+      calibration: {
+        source: 'module library',
+        filename: 'hare_calibration.json',
+        cost: 0.27193979766414555,
+        method: 'CMA-ES',
+        date: '2026-10-01',
+        applied: ['alpha', 'beta'],
+        unresolved: [],
+      },
+    })
+    const wrapper = await mounted()
+    await wrapper.find('[data-testid="inbox-accept"]').trigger('click')
+    await flushPromises()
+    const notice = wrapper.find('[data-testid="import-notice"]').text()
+    expect(notice).toContain("module library's calibrated values")
+    expect(notice).toContain('cost 0.2719')
+    expect(notice).toContain('2 parameters')
+    expect(notice).toContain('hare_calibration.json')
+  })
+
+  it('says nothing about calibration when the archive carried none', async () => {
+    peekInbox.mockResolvedValue(PENDING)
+    acceptInbox.mockResolvedValue({ ...LOADED, calibration: null })
+    const wrapper = await mounted()
+    await wrapper.find('[data-testid="inbox-accept"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="import-notice"]').text()).not.toContain('calibrated')
   })
 })
 

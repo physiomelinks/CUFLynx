@@ -12,7 +12,8 @@ is one system expressed two ways:
   derivative is CA's chain rule over the two members.
 
 At theta = 1 they are the same point of the same system (their costs agree to
-the last bit), and the system is solvable in closed form:
+the solver's error on the cost; see COST_REL_TOL), and the system is solvable
+in closed form:
 
     x(T) = x0*exp(-theta*c1*T)  =>  d ln(x)/d ln(theta) = -c1*T  exactly
     y(T) = y0*exp(-theta*c2*T)  =>  d ln(y)/d ln(theta) = -c2*T  exactly
@@ -57,6 +58,8 @@ from __future__ import annotations
 import json
 import time
 
+import tempfile
+
 import pytest
 
 from conftest import RESOURCES_DIR, upload_model
@@ -73,6 +76,13 @@ SIM_TIME = 4.0  # the obs_data protocol window
 EXACT = {"x": -C1 * SIM_TIME, "y": -C2 * SIM_TIME}
 
 THETA_MIN, THETA_MAX = 0.5, 2.0
+
+# The native and modifier arms are different CVODES systems (one sensitivity
+# against two), so their step sequences may differ: identical on Linux, not on
+# macOS or Windows. Each cost then carries its own global error, which at the
+# rtol=atol=1e-8 _setup uses is 2.0e-6 relative against a 1e-12 reference
+# (measured); two arms erring oppositely give 4e-6, so 1e-5 bounds it.
+COST_REL_TOL = 1e-5
 
 NATIVE_PARAMS = {
     "version": 1,
@@ -155,6 +165,7 @@ def _local_sa(client, model_id, current_params) -> dict:
     resp = client.post("/api/sensitivity/run", json={
         "model_id": model_id,
         "settings": {
+            "working_dir": tempfile.mkdtemp(prefix="cuflynx-wd-"),
             "method": "local",
             # Analytic, not differenced: these are exactness comparisons.
             "gradient_method": "FSA",
@@ -291,8 +302,9 @@ def test_both_cost_bars_are_analytic_and_broadly_agree(client, requires_simulati
     native_row = next(r for r in native_body["params"] if r["name"] == NATIVE_ANCHOR)
     modifier_row = modifier_body["params"][0]
     assert abs(native_row["elasticity"]) > 1e-3
-    # The cost itself is the same number to the last bits -- that much is exact.
-    assert modifier_body["cost"] == pytest.approx(native_body["cost"], rel=1e-8)
+    # The same system's cost, from two separate CVODES solves: they agree to the
+    # solver's error on the cost, not to the last bit.
+    assert modifier_body["cost"] == pytest.approx(native_body["cost"], rel=COST_REL_TOL)
     # The gradient only has to be recognisably the same bar.
     assert modifier_row["elasticity"] == pytest.approx(
         native_row["elasticity"], rel=1e-2)

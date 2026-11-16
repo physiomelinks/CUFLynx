@@ -42,7 +42,8 @@ const settings = reactive({
   // completed calibration's best fit, so a stopped run can be continued, #83).
   start_from: 'model',
   num_cores: 1,
-  dt: 0.01,
+  // No dt: a run that names none is given the engine's (Settings, or a study's
+  // user_inputs), server-side. A literal here overrode both with 0.01.
   DEBUG: false,
 })
 
@@ -192,7 +193,6 @@ function buildSettings() {
   return {
     param_id_method: settings.param_id_method,
     num_cores: settings.num_cores,
-    dt: settings.dt,
     DEBUG: settings.DEBUG,
     ...(isGradientMethod.value ? { gradient_method: settings.gradient_method } : {}),
     ...(showStartFrom.value ? { start_from: settings.start_from } : {}),
@@ -363,7 +363,7 @@ function onRun() {
       </a>
     </p>
     <p v-if="!canRun" class="hint">
-      Load a model, an obs_data.json and a params_for_id.csv to calibrate.
+      Load a model, an obs_data.json and a params_for_id.json to calibrate.
     </p>
     <p v-if="error" class="cal-error">{{ error }}</p>
 

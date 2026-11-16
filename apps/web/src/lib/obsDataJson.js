@@ -1,228 +1,8 @@
-// Pure helpers for the "Edit obs_data" dialog: split the loaded data_items into
-// form-editable "constant" rows vs preserved (series/frequency/unknown-op) items,
-// build the obs_data JSON from edited rows, and derive a date-versioned filename.
-// No Vue here so these stay easy to unit-test. The operation/cost_type option
-// lists come from circulatory_autogen at runtime; the consts below are only
-// fallbacks used by the dialog when that fetch fails.
+// Helpers for the "Edit obs_data" dialog that protocol-kit does not hold: the
+// date-versioned name a saved copy gets, and the lanes a protocol must have.
+// Reading, editing and checking an obs_data document is protocol-kit's.
 
-export const FALLBACK_OPERATIONS = [
-  '',
-  'max',
-  'min',
-  'mean',
-  'max_minus_min',
-  'addition',
-  'subtraction',
-  'multiplication',
-  'division',
-]
-export const FALLBACK_COST_TYPES = ['MSE', 'AE', 'gaussian_MLE']
-export const FALLBACK_DATA_TYPES = ['constant', 'series', 'frequency', 'prob_dist']
-export const FALLBACK_PLOT_TYPES = [
-  '',
-  'horizontal',
-  'vertical',
-  'horizontal_from_min',
-  'series',
-  'frequency',
-]
-// The scalar data_type this form edits; other types are preserved untouched.
-export const SCALAR_DATA_TYPE = 'constant'
-
-/**
- * Partition data_items into form-editable rows and preserved items. A data_item
- * is editable only when it's a `constant` (or untyped) AND its operation is in
- * the (live, CA-sourced) `operations` list — so series/frequency items and any
- * constant with an unknown operation pass through untouched and are never
- * corrupted by the operation dropdown.
- */
-export function splitItems(dataItems = [], operations = FALLBACK_OPERATIONS) {
-  const editable = []
-  const preserved = []
-  for (const item of dataItems) {
-    const type = item.data_type ?? SCALAR_DATA_TYPE
-    const op = item.operation ?? ''
-    if (type === SCALAR_DATA_TYPE && operations.includes(op)) editable.push(itemToRow(item))
-    else preserved.push(item)
-  }
-  return { editable, preserved }
-}
-
-export function itemToRow(item) {
-  return {
-    _orig: item, // keep the full original so extra keys round-trip
-    // CA #466 split the two overloaded keys. `data_item_name` is the item's identity and must
-    // be unique across data_items + prediction_items; `trace_name_for_plotting` labels the
-    // trace and may repeat (the mean and the max of one variable share it). The legacy
-    // `variable` / `name_for_plotting` are still read so an older file opens.
-    data_item_name: item.data_item_name ?? item.variable ?? '',
-    trace_name_for_plotting:
-      item.trace_name_for_plotting ?? item.name_for_plotting ?? item.data_item_name ?? item.variable ?? '',
-    operation: item.operation ?? '',
-    // Per-data_item values for the operation's keyword args (e.g. threshold,
-    // window). Cloned so edits don't mutate the source; round-tripped on save.
-    operation_kwargs:
-      item.operation_kwargs && typeof item.operation_kwargs === 'object'
-        ? { ...item.operation_kwargs }
-        : {},
-    operands: Array.isArray(item.operands) ? [...item.operands] : [],
-    unit: item.unit ?? 'dimensionless',
-    value: item.value ?? null,
-    std: item.std ?? null,
-    weight: item.weight ?? 1.0,
-    experiment_idx: item.experiment_idx ?? 0,
-    subexperiment_idx: item.subexperiment_idx ?? 0,
-    cost_type: item.cost_type ?? '',
-    // Per-data_item values for the cost func's own keyword args (CA #370) — the
-    // cost-side twin of operation_kwargs. Cloned so edits don't mutate the source.
-    cost_kwargs:
-      item.cost_kwargs && typeof item.cost_kwargs === 'object' ? { ...item.cost_kwargs } : {},
-    plot_type: item.plot_type && item.plot_type !== 'None' ? item.plot_type : '',
-    // free-text provenance ("where the data came from"). CA's `source` may also be
-    // a dict of file paths — only surface/edit the string form here.
-    source: typeof item.source === 'string' ? item.source : '',
-    // free-text comment about this data item.
-    comment: typeof item.comment === 'string' ? item.comment : '',
-  }
-}
-
-export function newRow(experimentIdx = 0) {
-  return {
-    _orig: null,
-    data_type: SCALAR_DATA_TYPE,
-    data_item_name: '',
-    trace_name_for_plotting: '',
-    operation: 'max',
-    operation_kwargs: {},
-    operands: [],
-    unit: 'dimensionless',
-    value: 0,
-    std: 1,
-    weight: 1.0,
-    experiment_idx: experimentIdx,
-    subexperiment_idx: 0,
-    cost_type: '',
-    cost_kwargs: {},
-    plot_type: 'horizontal',
-    source: '',
-    comment: '',
-  }
-}
-
-function num(v, fallback) {
-  return v === '' || v == null || !Number.isFinite(Number(v)) ? fallback : Number(v)
-}
-
-export function rowToItem(row) {
-  const out = { ...(row._orig ?? {}) } // preserve extra keys (operation_kwargs, …)
-  out.data_type = SCALAR_DATA_TYPE
-  out.data_item_name = row.data_item_name
-  out.trace_name_for_plotting = row.trace_name_for_plotting || row.data_item_name
-  // never write both spellings back out -- CA rejects an item that sets a legacy key
-  // alongside its replacement
-  delete out.variable
-  delete out.name_for_plotting
-  // Empties dropped: clearing an operand in the editor is how one is removed,
-  // so a blank must not survive into the file as a nameless operand.
-  out.operands = (row.operands ?? []).filter((o) => o)
-  out.unit = row.unit
-  out.value = num(row.value, 0)
-  out.std = num(row.std, 0)
-  out.weight = num(row.weight, 1.0)
-  out.experiment_idx = num(row.experiment_idx, 0)
-  out.subexperiment_idx = num(row.subexperiment_idx, 0)
-  out.plot_type = row.plot_type || 'None'
-  if (row.operation) out.operation = row.operation
-  else delete out.operation
-  // Persist the operation's keyword-arg values (threaded to CA at run time). Drop
-  // when there are none, or when no operation is selected (kwargs have no meaning).
-  const kw = row.operation_kwargs && typeof row.operation_kwargs === 'object' ? row.operation_kwargs : {}
-  if (row.operation && Object.keys(kw).length) out.operation_kwargs = { ...kw }
-  else delete out.operation_kwargs
-  if (row.cost_type) out.cost_type = row.cost_type
-  else delete out.cost_type
-  // Persist the cost func's keyword-arg values (CA #370). Unlike operation_kwargs
-  // these survive an empty cost_type: CA still applies its default cost func, so
-  // "no cost_type" does not mean "no cost func to pass kwargs to", and deleting a
-  // hand-written cost_kwargs on that basis would be silent data loss. Stale keys
-  // are dropped by the editor when the cost func actually changes, where it knows
-  // what the new one accepts.
-  const ck = row.cost_kwargs && typeof row.cost_kwargs === 'object' ? row.cost_kwargs : {}
-  if (Object.keys(ck).length) out.cost_kwargs = { ...ck }
-  else delete out.cost_kwargs
-  // Write the text source, but never clobber a legacy dict source (file paths).
-  if (row.source) out.source = row.source
-  else if (typeof out.source === 'string') delete out.source
-  if (row.comment) out.comment = row.comment
-  else delete out.comment
-  return out
-}
-
-export function predToRow(pred) {
-  return {
-    _orig: pred,
-    // a prediction_item now names its model variable in `operands`, like a data_item;
-    // `variable` used to be both the qname and the item's name
-    data_item_name: pred.data_item_name ?? pred.variable ?? '',
-    operands: Array.isArray(pred.operands)
-      ? [...pred.operands]
-      : (pred.variable ? [pred.variable] : []),
-    unit: pred.unit ?? 'dimensionless',
-    trace_name_for_plotting:
-      pred.trace_name_for_plotting ?? pred.name_for_plotting ?? pred.data_item_name ?? pred.variable ?? '',
-    experiment_idx: pred.experiment_idx ?? 0,
-  }
-}
-
-export function newPredRow(experimentIdx = 0) {
-  return {
-    _orig: null,
-    data_item_name: '',
-    operands: [],
-    unit: 'dimensionless',
-    trace_name_for_plotting: '',
-    experiment_idx: experimentIdx,
-  }
-}
-
-export function predRowToItem(row) {
-  const out = { ...(row._orig ?? {}) }
-  out.data_item_name = row.data_item_name
-  out.operands = (row.operands ?? []).filter((o) => o)
-  if (!out.operands.length && row.data_item_name) out.operands = [row.data_item_name]
-  out.unit = row.unit
-  out.trace_name_for_plotting = row.trace_name_for_plotting || row.data_item_name
-  out.experiment_idx = num(row.experiment_idx, 0)
-  delete out.variable
-  delete out.name_for_plotting
-  return out
-}
-
-/**
- * Build the obs_data payload. With a protocol_info present, emit the object form
- * `{protocol_info, prediction_items, data_items}` (protocol_info passed through
- * verbatim). Without one (data-only), emit a bare array of data_items — the
- * backend requires protocol_info for the object form, and data-only files have
- * no prediction_items.
- */
-export function buildObsData({ protocolInfo, editableRows, preservedItems, predictionRows }) {
-  const data_items = [
-    ...(editableRows ?? []).map(rowToItem),
-    ...(preservedItems ?? []),
-  ]
-  if (protocolInfo != null) {
-    return {
-      protocol_info: protocolInfo,
-      prediction_items: (predictionRows ?? []).map(predRowToItem),
-      data_items,
-    }
-  }
-  return data_items
-}
-
-export function experimentIdxMax(experimentCount) {
-  return Math.max(0, (experimentCount || 1) - 1)
-}
+import { addParameter, ensureProtocol } from '@physiomelinks/protocol-kit'
 
 function yymmdd(date = new Date()) {
   const yy = String(date.getFullYear()).slice(-2)
@@ -241,4 +21,49 @@ export function versionedJsonName(loadedFilename, modelName, date = new Date()) 
     ? loadedFilename.replace(/\.json$/i, '')
     : `${modelName ?? 'model'}_obs_data`
   return `${stem}_${yymmdd(date)}.json`
+}
+
+/**
+ * A copy of an obs_data document (null for none) with a protocol_info that sets every
+ * parameter in `names`. One it does not set yet gets a lane with no value in every
+ * sub-experiment, which protocol-kit reports until a number or an input is given: how a
+ * workflow step's unset parameters are put in front of the user.
+ */
+export function withParameters(document, names = []) {
+  let out = ensureProtocol(document)
+  for (const name of names) out = addParameter(out, name, null)
+  return out
+}
+
+/**
+ * The prediction_items that "Include prediction items" can turn into SA / emulator
+ * features: those with an `operation` (a scalar of the trace). libcuflynx skips the
+ * others with a warning. Only used to say whether the box can do anything here --
+ * which items become features, and how, is libcuflynx's decision, not this file's.
+ */
+export function predictionFeatureItems(predictionItems = []) {
+  if (!Array.isArray(predictionItems)) return []
+  return predictionItems.filter((it) => {
+    const op = it && typeof it === 'object' ? it.operation : null
+    return typeof op === 'string' && op.trim() !== '' && op !== 'None'
+  })
+}
+
+/** Whether any prediction_item carries held-out data (a `value`, CA #535). */
+export function hasHeldOutData(predictionItems = []) {
+  return Array.isArray(predictionItems) &&
+    predictionItems.some((it) => it && typeof it === 'object' && it.value != null)
+}
+
+/**
+ * Which of an emulator's features are prediction features: libcuflynx lists them in
+ * `prediction_feature_labels` and puts them last in `feature_labels`, so it is the
+ * trailing positions -- by position, as libcuflynx itself reads them, since a
+ * data_item's label is free text. `[bool]`, one per feature label.
+ */
+export function emulatorPredictionFlags(meta) {
+  const labels = meta?.feature_labels ?? []
+  const n = (meta?.prediction_feature_labels ?? []).length
+  const first = labels.length - n
+  return labels.map((_, i) => n > 0 && i >= first)
 }

@@ -9,7 +9,7 @@ Two things this deliberately does not do:
 
 * It does not require the manifest. Real archives in the wild have missing or
   wrong manifests, and the contents are identifiable anyway -- a `.cellml` is a
-  CellML, `*params*.csv` is a params_for_id. The manifest is used to pick the
+  CellML, `*_params_for_id.json` is a params_for_id. The manifest is used to pick the
   *master* model when it says which one is master, and to rule out members whose
   declared format says they are not observations -- neither of which file names
   can tell you.
@@ -35,6 +35,12 @@ from xml.etree import ElementTree as ET
 
 # PhLynx's editor state, carried along so the archive round-trips through it.
 MODULE_CONFIG_NAME = "module_config.json"
+#: Where an archive keeps a packed calibration workflow (libcuflynx's pack_workflow): its
+#: own directory tree, run as it is, so none of it is a role of the archive's study.
+WORKFLOW_DIR = "workflow/"
+PACKED_WORKFLOW_NAME = "calibration_workflow.json"
+#: CA's calibration workflow file (``calibration_workflow.json``, or ``<x>_calibration_workflow.json``).
+CALIBRATION_WORKFLOW_RE = re.compile(r"(^|[_-])calibration_workflow\.json$", re.I)
 
 #: The COMBINE format specifiers PhLynx uses for its own state files (#287).
 #: The *format* is the contract, not the file name -- upstream is explicit that
@@ -49,9 +55,13 @@ PHLYNX_CHANGES_FORMAT = "application/x.vnd.phlynx-changes+json"
 _NON_OBS_FORMAT_MARKERS = (
     "x.vnd.phlynx-flow+json",
     "x.vnd.phlynx-changes+json",
+    "x.vnd.cuflynx-study+json",
     "sed-ml",
     "sedml",
 )
+
+#: The top-level keys that make a JSON object an obs_data (the last way one is found).
+OBS_DATA_KEYS = ("data_items", "protocol_info", "prediction_items")
 
 OMEX_SUFFIXES = (".omex",)
 
@@ -67,6 +77,41 @@ MAX_UNCOMPRESSED_BYTES = 512 * 1024 * 1024
 # converted to CellML on the way in exactly as a dropped one is (#27), so an
 # archive built around either is not a second kind of study.
 MODEL_SUFFIXES = (".cellml", ".mmt", ".model")
+
+#: The user-func kinds an archive can carry, one ``.py`` per kind, recognised by
+#: name: ``*operation_funcs*.py``, ``*cost_funcs*.py``, ``*modifier_funcs*.py`` --
+#: the names CUFLynx itself stores them under (``operation_funcs_user.py`` ...)
+#: and the names CA's ``*_funcs_external_path`` files conventionally carry.
+#: Mirrors ``user_funcs.FUNC_KINDS`` (checked by a test) rather than importing it,
+#: because this module stays free of the engine.
+USER_FUNC_KINDS = ("operation", "cost", "modifier")
+
+
+def is_user_inputs_name(name: str) -> bool:
+    """Whether a member is a libcuflynx ``user_inputs`` yaml, by its name.
+
+    ``*user_inputs*.yaml`` / ``.yml`` -- what CA's pipeline and CUFLynx's own
+    export (``user_inputs_<date>.yaml``) call it, and how ``load_outputs`` finds
+    one in a run directory.
+    """
+    path = Path(str(name or ""))
+    return path.suffix.lower() in (".yaml", ".yml") and "user_inputs" in path.stem.lower()
+
+
+def user_func_kind(name: str) -> str | None:
+    """The func kind a ``.py`` member holds, judged by its name, or None.
+
+    By name and not by manifest: a manifest says ``text/x-python`` for any Python
+    file, including an external_python *model*, which is not a funcs file and
+    must never be split into defs.
+    """
+    path = Path(str(name or ""))
+    if path.suffix.lower() != ".py":
+        return None
+    for kind in USER_FUNC_KINDS:
+        if f"{kind}_funcs" in path.stem.lower():
+            return kind
+    return None
 
 
 class OmexImportError(ValueError):
@@ -166,22 +211,26 @@ def _declared_phlynx_state(name: str, formats: dict[str, str]) -> bool:
     return any(marker in fmt for marker in (PHLYNX_FLOW_FORMAT, PHLYNX_CHANGES_FORMAT))
 
 
+def _declared_study(name: str, formats: dict[str, str]) -> bool:
+    """Whether the manifest declares this member as a CUFLynx study manifest."""
+    fmt = str(formats.get(Path(name).name.lower(), "")).lower()
+    return "x.vnd.cuflynx-study+json" in fmt
+
+
 def _declared_non_obs(name: str, formats: dict[str, str]) -> bool:
     fmt = str(formats.get(Path(name).name.lower(), "")).lower()
     return any(marker in fmt for marker in _NON_OBS_FORMAT_MARKERS)
 
 
-def _looks_like_obs_data(blob: bytes | None) -> bool:
-    """Whether a JSON member is plausibly an obs_data document.
-
-    circulatory_autogen accepts two shapes (``obs_data.parse_obs_data``): a bare
-    array of data_items, or an object with ``protocol_info`` / ``data_items``.
-    Nothing else in an archive looks like either, which is what lets a PhLynx
-    ``simulation.json`` -- declared as plain ``application/json``, exactly like a
-    real obs_data -- stay out of the observations slot instead of importing as a
-    parse-error banner.
-    """
-    return not why_not_obs_data(blob)
+def _json_object_has(blob: bytes | None, keys: tuple[str, ...]) -> bool:
+    """Whether ``blob`` is a JSON object with any of ``keys`` at its top level."""
+    if not blob:
+        return False
+    try:
+        doc = json.loads(blob.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return False
+    return isinstance(doc, dict) and any(k in doc for k in keys)
 
 
 def obs_verdict(blob: bytes | None) -> tuple[str, bool]:
@@ -202,6 +251,8 @@ def obs_verdict(blob: bytes | None) -> tuple[str, bool]:
     reason = why_not_obs_data(blob)
     if not reason:
         return "", False
+    if reason.startswith("it is a module config"):
+        return reason, True
     unreadable = (
         blob is None
         or not blob.strip()
@@ -233,16 +284,40 @@ def why_not_obs_data(blob: bytes | None) -> str:
     except ValueError as exc:
         return f"it is not valid JSON ({exc})"
     if isinstance(doc, list):
-        return ""
+        if doc and all(isinstance(e, dict) and ("module_type" in e or "vessel_type" in e) for e in doc):
+            return "it is a module config (a list of module entries), not observations"
+        # a bare list is only ever taken by its name (see _classify)
+        return (
+            "it is a JSON list, which is only taken as the obs_data under an obs_data name "
+            "(obs_data.json or <name>_obs_data.json)"
+        )
     if isinstance(doc, dict):
-        if "data_items" in doc or "protocol_info" in doc:
+        if any(k in doc for k in OBS_DATA_KEYS):
             return ""
         keys = ", ".join(repr(k) for k in list(doc)[:6]) or "no keys at all"
         return (
-            "it is a JSON object with neither 'data_items' nor 'protocol_info' "
+            "it is a JSON object with none of 'data_items', 'protocol_info' or 'prediction_items' "
             f"(it has {keys})"
         )
     return f"it is a JSON {type(doc).__name__}, not an obs_data object or array"
+
+
+def looks_like_calibration(blob: bytes | None) -> bool:
+    """Whether a JSON member is a module-library calibration result.
+
+    The module library (circulatory-autogen-modules) writes one per calibrated
+    instance as ``<instance>_calibration.json``: an object whose
+    ``calibrated_parameters`` maps parameter names to values, beside ``cost``,
+    ``method`` and ``date``. Matched by content as well as by name, so a renamed
+    one is still kept out of the obs_data and params_for_id slots.
+    """
+    if not blob:
+        return False
+    try:
+        doc = json.loads(blob.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return False
+    return isinstance(doc, dict) and isinstance(doc.get("calibrated_parameters"), dict)
 
 
 def _classify(
@@ -253,6 +328,10 @@ def _classify(
     """Sort archive members into the roles CUFLynx imports."""
     formats = formats or {}
     members = members or {}
+    # A packed calibration workflow is a tree of its own (its steps' obs_data, its
+    # modules' CellML): none of it is the study's model, obs_data or params_for_id.
+    workflow_pack = [n for n in names if n.startswith(WORKFLOW_DIR)]
+    names = [n for n in names if not n.startswith(WORKFLOW_DIR)]
 
     cellml = [n for n in names if n.lower().endswith(".cellml")]
     myokit = [n for n in names if n.lower().endswith(".mmt")]
@@ -263,12 +342,37 @@ def _classify(
     def named(candidates, word):
         return [n for n in candidates if re.search(word, Path(n).name, re.I)]
 
-    params_csv = named(csvs, r"param")
-    # A params_for_id is stored as **JSON** by CUFLynx (`_save_params_file`), so
-    # an archive CUFLynx writes has to be readable by CUFLynx: without this the
-    # params member would fall through to the obs_data pool and the study would
-    # come back missing its parameters.
-    params_json = named(jsons, r"param")
+    # The study manifest CUFLynx embeds (study_manifest.OMEX_FORMAT), by its declared
+    # format and never by its name -- `<prefix>_cuflynx_study.json` would otherwise be
+    # taken for a params_for_id whenever the prefix says "param". Out of every other
+    # pool from here on.
+    study = [n for n in jsons if _declared_study(n, formats)]
+    jsons = [n for n in jsons if n not in study]
+
+    # The module library's calibration result: ``<instance>_calibration.json``
+    # and ``<instance>_calibrated_parameters.csv``. Both are claimed before the
+    # params_for_id and obs_data pools are filled -- the CSV's name contains
+    # "param", and the JSON is otherwise a leftover JSON the obs_data sniff reads.
+    # Only those names (or a JSON with ``calibrated_parameters``): other files that
+    # mention calibration, such as a ``calibration_workflow.json``, keep their roles.
+    calibration_json = [
+        n for n in jsons
+        if re.search(r"(^|[_-])calibration\.json$", Path(n).name, re.I)
+        or looks_like_calibration(members.get(n))
+    ]
+    calibration_csv = named(csvs, r"(^|[_-])calibrated_parameters\.csv$")
+    csvs = [n for n in csvs if n not in calibration_csv]
+    jsons = [n for n in jsons if n not in calibration_json]
+
+    # Each role by its name, never by which member came first. A params_for_id is
+    # `params_for_id.json` / `.csv`, or ends in `_params_for_id` (or `-params_for_id`);
+    # the JSON wins, being the form CUFLynx stores and CA reads (a CSV is converted
+    # on load). A model's parameter values, `<prefix>_parameters.json` (or the CSV
+    # PhLynx writes), are not a params_for_id, and not observations either.
+    params_named = r"(^|[_-])params_for_id\.(csv|json)$"
+    params_csv = named(csvs, params_named)
+    params_json = named(jsons, params_named)
+    parameters = named(csvs + jsons, r"(^|[_-])parameters\.(csv|json)$")
     # PhLynx's editor state, by what the manifest calls it rather than by what it
     # is named. PhLynx flattened its workspace format (phlynx#542) and now writes
     # `flow-snapshot.json` + `changes.json` where it used to write
@@ -283,17 +387,36 @@ def _classify(
         if Path(n).name == MODULE_CONFIG_NAME or _declared_phlynx_state(n, formats)
     ]
 
-    spoken_for = set(module_config) | set(params_json)
+    # A calibration workflow (CA's calibration_workflow.json, which the module
+    # library's instance archives carry) is matched by name only: it is an object
+    # with "steps", and must never be sniffed into the obs_data pool.
+    calibration_workflow = [n for n in jsons if CALIBRATION_WORKFLOW_RE.search(Path(n).name)]
+
+    spoken_for = (set(module_config) | set(params_json) | set(parameters)
+                  | set(calibration_workflow))
+    # Held-out data (`<name>_validation_obs_data.json`) is never what to fit, by
+    # any of the three rules below: taking it whenever nothing else turned up
+    # would calibrate on the very data kept back to check the calibration.
+    held_out = [n for n in jsons if re.search(r"(^|[_-])validation[_-]obs_data\.json$", Path(n).name, re.I)]
     candidates = [
         n
         for n in jsons
-        if n not in spoken_for and not _declared_non_obs(n, formats)
+        if n not in spoken_for and n not in held_out and not _declared_non_obs(n, formats)
     ]
-    # An obviously named one wins, as it always has. Only the leftovers are
-    # sniffed, so an archive with no manifest and a plainly named obs_data keeps
-    # working exactly as before.
-    obs_named = named(candidates, r"obs")
-    obs = obs_named or [n for n in candidates if _looks_like_obs_data(members.get(n))]
+    # Three layers, first match wins, and with none there is no obs_data:
+    #   1. the name: `obs_data.json` or `<anything>_obs_data.json` (or `-obs_data.json`);
+    #   2. a JSON object naming itself with "obs_data_name";
+    #   3. a JSON object with "data_items", "protocol_info" or "prediction_items" (an
+    #      obs_data holding only held-out validation data has no data_items).
+    # A bare list is only ever taken by name: a module config is a bare list of
+    # entries too, and sniffing lists took a module library's config as its
+    # observations.
+    obs_named = named(candidates, r"(^|[_-])obs_data\.json$")
+    obs = (
+        obs_named
+        or [n for n in candidates if _json_object_has(members.get(n), ("obs_data_name",))]
+        or [n for n in candidates if _json_object_has(members.get(n), OBS_DATA_KEYS)]
+    )
 
     # Only when nothing was found. With an obs_data in hand the leftover JSON is
     # simply not observations -- a PhLynx `simulation.json` is the normal case --
@@ -304,8 +427,17 @@ def _classify(
     if not obs:
         for name in jsons:
             if name in spoken_for:
-                continue  # loaded as the params_for_id or PhLynx's own state
+                continue  # a params_for_id, a model's parameters or PhLynx's own state
             declared = (formats or {}).get(Path(name).name.lower())
+            if name in held_out:
+                # reported: "your observations were not loaded" with nothing but
+                # held-out data in the archive is worth one sentence
+                obs_skipped.append({
+                    "name": name,
+                    "reason": "it is held-out validation data, never the obs_data to fit",
+                    "identified": False,
+                })
+                continue
             if _declared_non_obs(name, formats):
                 reason = f"the manifest declares it as {declared!r}"
                 readable = True
@@ -325,10 +457,23 @@ def _classify(
             obs_skipped.append({
                 "name": name,
                 "reason": reason,
-                "identified": readable and declared is not None,
+                # a module config is positively not observations, whatever the manifest says
+                "identified": readable and (declared is not None or reason.startswith("it is a module config")),
             })
 
+    # The user's own operation / cost / modifier funcs (#58, CA #303/#383): an
+    # obs_data naming an operation the archive defines is not calibratable until
+    # that func is installed, so the archive's copy is what installs it.
+    user_funcs = [n for n in names if user_func_kind(n)]
+
+    # A libcuflynx user_inputs yaml: the solver, its solver_info and dt the study
+    # was run with. Only those are read from it (see main._solver_settings_from_
+    # user_inputs); everything else in it describes CA's own file layout.
+    user_inputs = [n for n in names if is_user_inputs_name(n)]
+
     return {
+        "user_funcs": user_funcs,
+        "user_inputs": user_inputs,
         "obs_skipped": obs_skipped,
         # A .mmt or an EasyML .model only counts when there is no CellML: an
         # archive holding both has presumably already been converted, and the
@@ -338,9 +483,15 @@ def _classify(
         # that other tools use, so it is the least trustworthy claim to be a
         # model in the archive.
         "cellml": cellml or myokit or easyml,
-        "params": params_csv or params_json or csvs,
+        "params": params_json or params_csv,
         "obs": obs,
         "module_config": module_config,
+        "study": study,
+        "calibration_workflow": calibration_workflow,
+        "workflow_pack": workflow_pack,
+        "parameters": parameters,
+        # JSON first: it carries the cost, the CSV only the values.
+        "calibration": calibration_json + calibration_csv,
     }
 
 
@@ -402,22 +553,47 @@ def unpack(data: bytes) -> dict:
         obs_name, obs_bytes = read_first(roles["obs"])
         params_name, params_bytes = read_first(roles["params"])
         cfg_name, cfg_bytes = read_first(roles["module_config"])
+        wf_name, wf_bytes = read_first(roles["calibration_workflow"])
         # All of them: PhLynx used to keep its state in one file and now keeps it
         # in two, so "the first one found" silently drops half of it.
         phlynx_state = [
             (Path(n).name, members[n]) for n in roles["module_config"] if n in members
         ]
 
+    study = _study_member(roles["study"], members)
+    pack = {n[len(WORKFLOW_DIR):]: members[n] for n in roles["workflow_pack"]}
+
     out = {
+        #: A packed calibration workflow (``workflow/``), as ``{path in the pack: bytes}``
+        #: with ``calibration_workflow.json`` among them; None when there is none.
+        "workflow_pack": pack if PACKED_WORKFLOW_NAME in pack else None,
+        #: The embedded study manifest, as ``{"name", "manifest", "funcs"}``: what the
+        #: archive says about solver settings and which members are the user's funcs
+        #: (``funcs`` is ``{kind: (member name, bytes)}``). None when there is none.
+        "study": study,
         "cellml": cellml,
         "master": Path(ordered[0]).name if ordered else None,
         "obs": (obs_name, obs_bytes) if obs_bytes is not None else None,
         "params": (params_name, params_bytes) if params_bytes is not None else None,
         "module_config": (cfg_name, cfg_bytes) if cfg_bytes is not None else None,
+        #: A calibration workflow carried by the archive, as ``(name, bytes)``.
+        "calibration_workflow": (wf_name, wf_bytes) if wf_bytes is not None else None,
         #: Every PhLynx state member as ``(name, bytes)``. ``module_config`` above
         #: is the first of these, kept because callers predate there being more
         #: than one.
         "phlynx_state": phlynx_state,
+        #: The module library's calibration members as ``(name, bytes)``, JSON
+        #: before CSV. See :mod:`library_calibration`.
+        "calibration": [(Path(n).name, members[n]) for n in roles["calibration"]],
+        #: ``(kind, name, bytes)`` per user-funcs file, for the importer to install
+        #: into the user funcs store (see :func:`user_func_kind`).
+        "user_funcs": [
+            (user_func_kind(n), Path(n).name, members[n]) for n in roles["user_funcs"]
+        ],
+        #: ``(name, bytes)`` of the first user_inputs yaml, or None.
+        "user_inputs": next(
+            ((Path(n).name, members[n]) for n in roles["user_inputs"]), None
+        ),
         # Everything, under its archive-relative name, for re-emission (#290).
         "members": members,
         "manifest": manifest,
@@ -429,10 +605,43 @@ def unpack(data: bytes) -> dict:
             "cellml": ordered,
             "obs": list(roles["obs"]),
             "params": list(roles["params"]),
+            "parameters": list(roles["parameters"]),
             "module_config": list(roles["module_config"]),
+            "study": list(roles["study"]),
+            #: ``{kind: member}`` of the funcs the study manifest declares (what an
+            #: export replaces); ``user_func_files`` is every member named like one.
+            "user_funcs": {kind: name for kind, (name, _) in (study or {}).get("funcs", {}).items()},
+            "calibration_workflow": list(roles["calibration_workflow"]),
+            "workflow_pack": list(roles["workflow_pack"]),
+            "calibration": list(roles["calibration"]),
+            "user_func_files": list(roles["user_funcs"]),
+            "user_inputs": list(roles["user_inputs"]),
         },
     }
     return out
+
+
+def _study_member(names: list[str], members: dict[str, bytes]) -> dict | None:
+    """The first embedded study manifest that reads, with the func members it names.
+
+    One that does not read is passed over rather than failing the import: the rest of
+    the archive is a perfectly good study without it.
+    """
+    import study_manifest  # noqa: PLC0415 - small, but keep this module's imports lean
+
+    for name in names:
+        try:
+            manifest = json.loads(members[name].decode("utf-8"))
+            study_manifest.check(manifest, name)
+        except (ValueError, UnicodeDecodeError, study_manifest.ManifestError):
+            continue
+        funcs = {}
+        for kind, member in (manifest.get("user_funcs") or {}).items():
+            member = str(member).lstrip("./")
+            if kind in study_manifest.USER_FUNC_KINDS and member in members:
+                funcs[kind] = (member, members[member])
+        return {"name": name, "manifest": manifest, "funcs": funcs}
+    return None
 
 
 def save_module_config(data: bytes, out_dir: str | None, name: str | None = None) -> str | None:

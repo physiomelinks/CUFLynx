@@ -43,7 +43,6 @@ import re
 import numpy as np
 
 import ca_obs
-from ca_imports import canonical_model_type
 
 _TINY = 1e-12
 
@@ -196,17 +195,7 @@ def resolve_gradient_method(settings: dict, model_type: str) -> str:
     the runner must call it to decide whether the FSA engine is needed, rather
     than testing the raw string -- resolving 'AUTO' only after that decision is
     how 'AUTO' came to demand an engine nobody had built.
-
-    ``model_type`` is canonicalised on the way in for the same reason the method
-    name is: it arrives from a **run config**, which carries CA's spelling by
-    design (``main`` writes ``ca_model_type(engine.model_type)`` there so an older
-    CA can parse it). Left alone, ``cellml_only`` matched neither entry of
-    :data:`LOCAL_GRADIENT_SUPPORT`, so against a pre-rename CA 'AUTO' resolved to
-    FSA and FSA was then refused -- while the menu, built from the canonical
-    ``engine.model_type``, had offered it. Offering an option and then refusing
-    it is #122 exactly.
     """
-    model_type = canonical_model_type(model_type)
     method = str(settings.get("gradient_method", "FD") or "").upper()
     if method == "CVODES":
         method = "FSA"  # legacy alias -> the Myokit forward-sensitivity path
@@ -358,6 +347,45 @@ def _ca_local_sensitivity(
     return local, output_names
 
 
+def _prediction_rows(sa, pid, settings, param_names, nominal, mins, maxs, local, output_names):
+    """Add the prediction features' rows (``include_prediction_items``); return their names.
+
+    Computed by libcuflynx, never here: its local SA's
+    ``SensitivityAnalysis._prediction_feature_sensitivities`` -- the same call its own
+    ``run_local_sensitivity`` makes, including the check that an emulator in use was
+    trained with these features -- evaluated at CUFLynx's nominal point, which is the one
+    thing libcuflynx's local SA does not let a caller choose (it linearises about the model
+    defaults). The rows are named by data_item_name (``" [prediction]"`` on a clash) and
+    normalised like the data_item rows. Nothing is added when the option is off or this
+    libcuflynx does not support it.
+    """
+    from obs_data import prediction_features_option  # noqa: PLC0415 (runners/ too)
+
+    if not prediction_features_option(settings):
+        return []
+    rows_for = getattr(sa, "_prediction_feature_sensitivities", None)
+    if rows_for is None:
+        print("warning: this libcuflynx's local sensitivity has no prediction features; "
+              "they are left out", flush=True)
+        return []
+    psens, pnominal, rows = rows_for(pid, nominal, dict.fromkeys(output_names))
+    labels = ca_obs.param_row_labels(pid.param_id_info) or list(param_names)
+    for row in rows:
+        denom = float(pnominal.get(row, float("nan")))
+        deriv_map = psens.get(row, {})
+        values: dict[str, float | None] = {}
+        for j, pname in enumerate(param_names):
+            entry_label = labels[j] if j < len(labels) else pname
+            deriv = deriv_map.get(entry_label)
+            if deriv is None:
+                deriv = deriv_map.get(pname)
+            values[pname] = (None if deriv is None else relative_coeff(
+                float(deriv), nominal[j], denom, maxs[j] - mins[j]))
+        local[row] = values
+        output_names.append(row)
+    return list(rows)
+
+
 #: Which model formats each gradient method supports **in this module**.
 #:
 #: Not a statement about the backends' capabilities: circulatory_autogen offers
@@ -379,12 +407,7 @@ def local_gradient_sources(sources, model_type: str) -> list:
     Unsupported entries are marked rather than dropped, so the menu still shows
     that a gradient exists for this backend and says why it is unavailable
     *here* -- dropping it silently would read as "this backend has no AD".
-
-    ``model_type`` is canonicalised first: CA's own ``cellml_only`` reaches this
-    from a run config, and against it every entry would be marked unsupported
-    with a reason naming a format the user never chose.
     """
-    model_type = canonical_model_type(model_type)
     out = []
     for src in sources or []:
         value = str(src.get("value", "")).upper()
@@ -427,12 +450,7 @@ def compute_local_sensitivity(
     grouped and modifier rows, and why CA #390 tightening that contract broke the
     AD path. What is left here is the nominal point, the normalisation and the
     labels -- the three things CA does not answer.
-
-    ``model_type`` comes from the runner's config, so it is in **CA's** spelling
-    (see :func:`resolve_gradient_method`) and is canonicalised before any of the
-    comparisons below.
     """
-    model_type = canonical_model_type(model_type)
     gradient_method = resolve_gradient_method(settings, model_type)
     if gradient_method == "AD" and model_type not in LOCAL_GRADIENT_SUPPORT["AD"]:
         raise NotImplementedError(
@@ -492,6 +510,10 @@ def compute_local_sensitivity(
         pid, param_names, nominal, mins, maxs,
         gradient_method=gradient_method, rel_step=h,
     )
+    # "Include prediction items": libcuflynx's own local SA supplies the extra rows
+    # (always FD), at *this* nominal point -- see _prediction_rows.
+    prediction_outputs = _prediction_rows(
+        sa, pid, settings, param_names, nominal, mins, maxs, local, output_names)
 
     source = {
         "AD": "AD jacobian",
@@ -507,6 +529,8 @@ def compute_local_sensitivity(
         "indices": {"local": local},
         "param_names": param_names,
         "output_names": output_names,
+        # The rows that are prediction features (include_prediction_items), by name.
+        "prediction_outputs": prediction_outputs,
         "method": "local",
         "gradient_method": gradient_method,
         "nominal": nominal.tolist(),

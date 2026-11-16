@@ -178,7 +178,7 @@ def test_an_unnamed_obs_data_is_recognised_by_its_contents():
             {
                 "m.cellml": "<model/>",
                 "simulation.json": json.dumps({"plots": []}),
-                "measurements.json": json.dumps([{"variable": "a/b"}]),
+                "measurements.json": json.dumps({"data_items": [{"variable": "a/b"}]}),
             }
         )
     )
@@ -200,6 +200,40 @@ def test_a_params_for_id_json_is_params_not_obs_data():
     )
     assert parts["params"][0] == "study_params_for_id.json"
     assert parts["obs"][0] == "study_obs_data.json"
+
+
+PARAMETERS_JSON = json.dumps({"schema_version": 1, "a": {"C": {"value": 1}}})
+
+
+@pytest.mark.parametrize("parameters_name", ["m_parameters.csv", "m_parameters.json"])
+def test_a_models_parameters_are_never_its_params_for_id(parameters_name):
+    """A module-array model's values (``<prefix>_parameters.json``, or the CSV
+    PhLynx writes) beside its params_for_id: each is picked by its name, never by
+    which came first or by "param" in the name."""
+    parts = omex_import.unpack(_zip({
+        "m.cellml": "<model/>",
+        parameters_name: PARAMETERS_JSON,
+        "m_params_for_id.json": json.dumps({"params": []}),
+    }))
+    assert parts["params"][0] == "m_params_for_id.json"
+    assert parts["roles"]["parameters"] == [parameters_name]
+
+
+def test_without_a_params_for_id_a_parameters_file_is_not_taken_for_one():
+    parts = omex_import.unpack(_zip({
+        "m.cellml": "<model/>", "m_parameters.json": PARAMETERS_JSON, "other.csv": "a,b\n"}))
+    assert parts["params"] is None
+    assert parts["obs_skipped"] == []
+
+
+def test_a_params_for_id_json_wins_over_its_csv():
+    """The JSON is the form CA reads; a CSV beside it is the older copy."""
+    parts = omex_import.unpack(_zip({
+        "m.cellml": "<model/>",
+        "m_params_for_id.csv": "vessel_name,param_name\n",
+        "m_params_for_id.json": json.dumps({"params": []}),
+    }))
+    assert parts["params"][0] == "m_params_for_id.json"
 
 
 def test_the_manifest_is_returned_parsed():
@@ -313,7 +347,8 @@ def test_module_config_lands_beside_the_model_not_among_the_outputs(client, tmp_
         )
     assert resp.status_code == 200, resp.text
     saved = Path(resp.json()["module_config_path"])
-    assert saved == tmp_path / "generated_models" / "3compartment_flat" / "module_config.json"
+    assert saved.name == "module_config.json"
+    assert saved.parent.parent == tmp_path / "inputs" / "generated_models" / "3compartment_flat"
     assert saved.is_file()
     assert not (tmp_path / "module_config.json").exists()
 
@@ -761,12 +796,8 @@ def test_a_found_obs_data_leaves_the_other_members_unremarked():
 
 
 # ---------------------------------------------------------------------------
-# An obs_data written before CA #466
-#
-# The archive the user had was correct when it was written: `variable` named the
-# item and was allowed to repeat across the mean/max/min of one trace. CA's
-# complaint is about the consequence (a duplicate `data_item_name`), so the
-# cause -- and the migrator that fixes it -- has to come from here.
+# An obs_data in the old vocabulary (`variable` / `name_for_plotting`) is
+# refused by CA's schema, by name.
 # ---------------------------------------------------------------------------
 def _legacy_obs() -> str:
     return json.dumps(
@@ -791,27 +822,12 @@ def _legacy_obs() -> str:
     )
 
 
-def test_a_pre_466_archive_is_told_what_changed_and_how_to_convert_it(client, requires_ca):
+def test_an_archive_in_the_old_vocabulary_gets_cas_refusal(client, requires_ca):
     resp = _upload(client, {"m.cellml": _model_bytes(), "obs_data.json": _legacy_obs()})
     assert resp.status_code == 200, resp.text
     error = resp.json()["obs_data"]["error"]
-    # CA's own complaint, unparaphrased, so it matches what a run would say...
-    assert "Duplicate 'data_item_name'" in error
-    # ...and then the part CA cannot know: why this file has duplicates at all.
-    assert "uses the old" in error
-    assert "cuflynx-migrate-obs-data" in error
-    assert "'variable'" in error and "'name_for_plotting'" in error
-
-
-def test_the_migration_hint_is_offered_from_the_document_alone():
-    """No CA needed: the old keys are in the file, and the advice is about them.
-    So a frozen app with no clone configured still explains the failure."""
-    import obs_data as obs_mod
-
-    hint = obs_mod.legacy_vocabulary_hint(json.loads(_legacy_obs()))
-    assert hint and "cuflynx-migrate-obs-data" in hint
-    # And it stays quiet about a file already in the current vocabulary.
-    assert obs_mod.legacy_vocabulary_hint(_example_obs_data()) is None
+    # CA's own complaint, unparaphrased, so it matches what a run would say.
+    assert "'variable'" in error and "unexpected" in error
 
 
 def test_an_mmt_archive_whose_protocol_filled_the_slot_is_not_told_it_has_none(
@@ -828,3 +844,120 @@ def test_an_mmt_archive_whose_protocol_filled_the_slot_is_not_told_it_has_none(
     body = resp.json()
     assert body["obs_data"] and body["obs_data"].get("derived_from_mmt")
     assert not any("carries no obs_data" in w for w in body["warnings"]), body["warnings"]
+
+
+# ---------------------------------------------------------------------------
+# obs_data: by name, then "obs_data_name", then data_items / protocol_info;
+# params_for_id: by name only. Nothing found means nothing loaded.
+# ---------------------------------------------------------------------------
+OBS_OBJECT = json.dumps({"protocol_info": {}, "data_items": []})
+
+
+def _members(**files) -> dict:
+    return {"model.cellml": "<model/>", **files}
+
+
+def test_a_library_instance_with_no_data_loads_no_obs_data_and_no_params():
+    """A module library's instance archive with only parameters: its module config
+    (a bare list), verification config and model parameters are none of them the
+    study's observations or its parameters to identify."""
+    parts = omex_import.unpack(_zip(_members(**{
+        "heart_vp_modules_config.json": json.dumps([{"module_type": "heart", "module_subtype": "vp"}]),
+        "heart_vp_verification_config.json": json.dumps({"sim_time": 1.0, "validation": {}}),
+        "default_parameters.csv": "variable_name,units,value\nT,second,1\n",
+        "heart_vp_default_model_parameters.csv": "variable_name,units,value\nT,second,1\n",
+    })))
+    assert parts["obs"] is None
+    assert parts["params"] is None
+
+
+def test_obs_data_is_found_by_its_name():
+    for name in ("obs_data.json", "inst_obs_data.json"):
+        parts = omex_import.unpack(_zip(_members(**{name: "[]", "other.json": OBS_OBJECT})))
+        assert parts["obs"][0] == name
+
+
+def test_a_validation_obs_data_is_never_the_obs_data():
+    """Held-out data is what checks a calibration, so it is never what the calibration
+    fits: not by its name, and not by its contents when nothing else turned up."""
+    parts = omex_import.unpack(_zip(_members(**{
+        "inst_validation_obs_data.json": OBS_OBJECT,
+        "inst_parameters.csv": "a,b\n",
+    })))
+    assert parts["obs"] is None
+    skipped = {s["name"]: s for s in parts["obs_skipped"]}
+    assert "held-out" in skipped["inst_validation_obs_data.json"]["reason"]
+    assert not skipped["inst_validation_obs_data.json"]["identified"]   # worth telling the user
+    parts = omex_import.unpack(_zip(_members(**{
+        "inst_validation_obs_data.json": OBS_OBJECT,
+        "inst_obs_data.json": OBS_OBJECT,
+    })))
+    assert parts["obs"][0] == "inst_obs_data.json"
+
+
+def test_names_may_join_with_a_hyphen():
+    parts = omex_import.unpack(_zip(_members(**{
+        "LV-obs_data.json": OBS_OBJECT,
+        "LV-params_for_id.csv": "vessel_name,param_name\nv,p\n",
+    })))
+    assert parts["obs"][0] == "LV-obs_data.json"
+    assert parts["params"][0] == "LV-params_for_id.csv"
+
+
+def test_the_library_instance_warning_names_only_what_could_be_observations():
+    """The module config is positively not observations and is not mentioned; the
+    verification config could have been, so it is named with what it has instead, and
+    the sentence states the rule actually used."""
+    import main
+    parts = omex_import.unpack(_zip(_members(**{
+        "heart_vp_modules_config.json": json.dumps([{"module_type": "heart", "module_subtype": "vp"}]),
+        "heart_vp_verification_config.json": json.dumps({"sim_time": 1.0, "validation": {}}),
+    })))
+    (warning,) = main._no_obs_data_warning(parts, "archive")
+    assert "heart_vp_modules_config.json" not in warning
+    assert "heart_vp_verification_config.json (it is a JSON object with none of" in warning
+    assert "'sim_time'" in warning
+    assert "()" not in warning
+    assert "'obs' in its name" not in warning
+    assert "obs_data.json or <name>_obs_data.json" in warning
+
+
+def test_an_unnamed_list_says_why_it_was_passed_over():
+    assert "only taken as the obs_data under an obs_data name" in omex_import.why_not_obs_data(b'[{"a": 1}]')
+    assert omex_import.obs_verdict(b'[{"module_type": "heart"}]') == (
+        "it is a module config (a list of module entries), not observations", True)
+
+
+def test_obs_data_name_comes_before_data_items():
+    parts = omex_import.unpack(_zip(_members(**{
+        "a.json": OBS_OBJECT,
+        "b.json": json.dumps({"obs_data_name": "b", "data_items": []}),
+    })))
+    assert parts["obs"][0] == "b.json"
+
+
+def test_a_bare_list_is_only_obs_data_by_name():
+    parts = omex_import.unpack(_zip(_members(**{"items.json": json.dumps([{"data_item_name": "a"}])})))
+    assert parts["obs"] is None
+
+
+def test_params_for_id_is_found_by_its_name_only():
+    parts = omex_import.unpack(_zip(_members(**{
+        "inst_parameters.csv": "a,b\n",
+        "params.csv": "a,b\n",
+        "inst_params_for_id.csv": "vessel_name,param_name\nv,p\n",
+    })))
+    assert parts["params"][0] == "inst_params_for_id.csv"
+    parts = omex_import.unpack(_zip(_members(**{"params.csv": "a,b\n", "fit_params.csv": "a,b\n"})))
+    assert parts["params"] is None
+
+
+def test_an_obs_data_with_only_validation_data_is_found_by_its_prediction_items():
+    held_out = json.dumps({"prediction_items": [
+        {"data_item_name": "x_validation", "operands": ["mod/x"], "unit": "dimensionless",
+         "data_type": "series", "value": [1.0, 2.0], "std": [0.1, 0.1], "obs_dt": 1.0}]})
+    parts = omex_import.unpack(_zip(_members(**{
+        "held_out.json": held_out,
+        "notes.json": json.dumps({"comment": "not observations"}),
+    })))
+    assert parts["obs"][0] == "held_out.json"

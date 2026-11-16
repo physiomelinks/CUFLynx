@@ -37,13 +37,26 @@ export function solverFieldsForMethod(opts, solver, method) {
   )
 }
 
-/** A solver_info object seeded from a solver's schema defaults (non-null only). */
+/**
+ * A solver_info object seeded from a solver's schema defaults (non-null only).
+ * A field with `seed: false` stays unset: CA reads it differently unset than at
+ * its default (casadi `jit`), so it is sent only once the user changes it.
+ */
 export function defaultSolverInfo(opts, solver) {
   const out = {}
   for (const f of solverFields(opts, solver)) {
-    if (f.default != null) out[f.key] = f.default
+    if (f.default != null && f.seed !== false) out[f.key] = f.default
   }
   return out
+}
+
+/**
+ * Why each solver this machine cannot run is missing from the menu, from
+ * /api/config's `cpp_compiler.unavailable_solvers` ({solver: why}); [] when the
+ * server says nothing (an older API, or every solver available).
+ */
+export function withheldSolverNotes(cppCompiler) {
+  return Object.values(cppCompiler?.unavailable_solvers ?? {}).filter(Boolean)
 }
 
 /** Distinct, meaningful operation names referenced by an obs_data's items. */

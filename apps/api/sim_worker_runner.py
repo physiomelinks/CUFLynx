@@ -85,6 +85,7 @@ sys.stdout = sys.stderr
 _CA_NAMESPACE = "libcuflynx"
 
 _CA_PACKAGES = frozenset({
+    "calibration_workflow",
     "checks",
     "coupler",
     "emulators",
@@ -95,6 +96,7 @@ _CA_PACKAGES = frozenset({
     "param_id",
     "parsers",
     "protocol_runners",
+    "reporting",
     "scripts",
     "sensitivity_analysis",
     "solver1d",
@@ -302,7 +304,7 @@ def _model_stamp(model_path):
 
     Kept identical in shape and in meaning: the path is part of it because an
     external_python study's model moves from the uploaded copy to the study's own
-    copy the moment an outputs directory exists, and that is a different file
+    copy the moment a working dir exists, and that is a different file
     under an unchanged model_id.
     """
     path = str(model_path)

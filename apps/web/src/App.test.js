@@ -8,6 +8,24 @@ import { shallowMount, flushPromises } from '@vue/test-utils'
 // blanking the whole app (the black screen). A setup-time error propagates out
 // of mount(), so this test fails if such a bug is reintroduced.
 vi.mock('./lib/api', () => ({
+  // The calibration-workflow store asks the backend on mount whether a workflow
+  // is open. Without these the mock factory has no such export, and every App
+  // mount raises an unhandled rejection -- 181 of them, which fails the run even
+  // though each test's own assertions pass. "Nothing open" is the honest default.
+  getWorkflow: vi.fn().mockResolvedValue(null),
+  loadWorkflow: vi.fn().mockResolvedValue(null),
+  uploadWorkflow: vi.fn().mockResolvedValue(null),
+  closeWorkflow: vi.fn().mockResolvedValue(null),
+  openWorkflowView: vi.fn().mockResolvedValue(null),
+  runWorkflow: vi.fn().mockResolvedValue({ job_id: 'w1' }),
+  getWorkflowStatus: vi.fn().mockResolvedValue({ state: 'done', lines: [], next_offset: 0 }),
+  cancelWorkflow: vi.fn().mockResolvedValue({ cancelled: true }),
+  getWorkflowStepInput: vi.fn().mockResolvedValue({ path: null, content: null }),
+  saveWorkflowStepInput: vi.fn().mockResolvedValue({ path: '/w/x.json', workflow: { loaded: true } }),
+  unsetParameters: (e) => e?.response?.data?.detail?.unset_parameters ?? null,
+  // The Variables panel's "LaTeX symbols" dialog.
+  getVariableMapping: vi.fn().mockResolvedValue({ path: '', exists: false, rows: [] }),
+  saveVariableMapping: vi.fn().mockResolvedValue({ path: '', exists: true, rows: [] }),
   getVariables: vi.fn().mockResolvedValue({}),
   simulate: vi.fn().mockResolvedValue({ time: [], outputs: {} }),
   runProtocol: vi.fn().mockResolvedValue({ experiments: [] }),
@@ -52,13 +70,14 @@ vi.mock('./lib/api', () => ({
     differentiable_operations: {},
   }),
   setConfig: vi.fn().mockResolvedValue({}),
+  uploadUserInputs: vi.fn(),
   saveParams: vi.fn().mockResolvedValue({ path: '/out/run_a.npy', outputs_path: null }),
   loadParams: vi.fn().mockResolvedValue({ values: {} }),
   listSavedRuns: vi.fn().mockResolvedValue({ runs: [] }),
   loadSavedRun: vi.fn().mockResolvedValue({}),
   exportPipeline: vi.fn().mockResolvedValue({}),
   exportPlotting: vi.fn().mockResolvedValue({}),
-  loadOutputsDirectory: vi.fn().mockResolvedValue({ found: [], missing: [] }),
+  loadWorkingDir: vi.fn().mockResolvedValue({ found: [], missing: [] }),
   openStudyFromOutputs: vi.fn().mockResolvedValue({}),
   // The real one; a failure path that reports "undefined is not a function"
   // instead of the server's reason would pass a test and fail a user.
@@ -66,14 +85,19 @@ vi.mock('./lib/api', () => ({
 }))
 
 import {
+  getWorkflowStepInput,
+  loadWorkflow,
+  openWorkflowView,
+  saveWorkflowStepInput,
   getConfig,
   setConfig,
+  uploadUserInputs,
   getEmulatorDefaults,
   getCalibrationPythons,
   saveParams,
   listSavedRuns,
   loadSavedRun,
-  loadOutputsDirectory,
+  loadWorkingDir,
   openStudyFromOutputs,
   simulate,
   runProtocol,
@@ -87,6 +111,7 @@ import { setNotificationCtor } from './lib/notify'
 import App from './App.vue'
 import TourOverlay from './components/TourOverlay.vue'
 import { TOUR_STEPS } from './lib/tourSteps'
+import { NO_WORKING_DIR_MESSAGE } from './lib/workingDir'
 
 // Auto-run is the only way a run starts, and it is debounced by 300ms. A test
 // that seeds its own displayed run has to let the run its study triggers happen
@@ -103,18 +128,18 @@ describe('App.vue', () => {
     expect(wrapper.find('.layout').exists()).toBe(true)
   })
 
-  it('asks where outputs should go on open, and persists the choice', async () => {
-    localStorage.removeItem('cuflynx-outputs-dir')
+  it('asks for a working dir on open, and persists the choice', async () => {
+    localStorage.removeItem('cuflynx-working-dir')
     const wrapper = shallowMount(App)
     await flushPromises() // onMounted bootstrap finishes, then opens the prompt
     const setup = wrapper
       .findAllComponents({ name: 'FileBrowserDialog' })
-      .find((d) => d.props('title') === 'Where should outputs be saved?')
+      .find((d) => d.props('title') === "Choose a working dir: the folder that keeps this study's inputs and outputs")
     expect(setup).toBeTruthy()
     expect(setup.props('visible')).toBe(true)
     setup.vm.$emit('select', '/data/outputs')
     await flushPromises()
-    expect(localStorage.getItem('cuflynx-outputs-dir')).toBe('/data/outputs')
+    expect(localStorage.getItem('cuflynx-working-dir')).toBe('/data/outputs')
   })
 
   it('shows that prompt without waiting for any startup request', async () => {
@@ -122,7 +147,7 @@ describe('App.vue', () => {
     // interpreter discovery that walks the filesystem -- so the only thing the
     // user was actually waiting on arrived after everything they could not see.
     // Nothing fetched at startup feeds this dialog.
-    localStorage.removeItem('cuflynx-outputs-dir')
+    localStorage.removeItem('cuflynx-working-dir')
     let releasePythons
     getCalibrationPythons.mockReturnValueOnce(
       new Promise((resolve) => {
@@ -134,7 +159,7 @@ describe('App.vue', () => {
 
     const setup = wrapper
       .findAllComponents({ name: 'FileBrowserDialog' })
-      .find((d) => d.props('title') === 'Where should outputs be saved?')
+      .find((d) => d.props('title') === "Choose a working dir: the folder that keeps this study's inputs and outputs")
     // Open while the slowest startup request is still in flight.
     expect(setup.props('visible')).toBe(true)
 
@@ -248,6 +273,25 @@ describe('App.vue', () => {
       wrapper.unmount()
     })
 
+    it('opens a zip dropped on the page body as a working dir', async () => {
+      const wrapper = shallowMount(App, { attachTo: document.body })
+      await flushPromises()
+      const importer = wrapper.findComponent({ name: 'FileImport' })
+      const handleOmex = vi.fn()
+      const handleWorkingDirZip = vi.fn().mockResolvedValue(true)
+      importer.vm.handleOmex = handleOmex
+      importer.vm.isOmexName = (n) => /\.omex$/i.test(n)
+      importer.vm.handleWorkingDirZip = handleWorkingDirZip
+      importer.vm.isZipName = (n) => /\.zip$/i.test(n)
+
+      window.dispatchEvent(fileDrop(['study.zip']))
+      await flushPromises()
+      expect(handleWorkingDirZip).toHaveBeenCalledTimes(1)
+      expect(handleOmex).not.toHaveBeenCalled()
+      expect(wrapper.find('[data-testid="page-drop-hint"]').exists()).toBe(false)
+      wrapper.unmount()
+    })
+
     it('says which box to use for anything that is not an archive', async () => {
       const wrapper = shallowMount(App, { attachTo: document.body })
       await flushPromises()
@@ -311,6 +355,26 @@ describe('App.vue', () => {
       expect(wrapper.find('[data-testid="page-drop-veil"]').exists()).toBe(false)
       wrapper.unmount()
     })
+  })
+
+  it('names the outputs an opened study left outside its working dir', async () => {
+    localStorage.setItem('cuflynx-working-dir', '/data/study')
+    const warning = 'This study wrote output outside its working dir, which was not carried '
+      + 'with the study: /elsewhere/sobol (sensitivity, sobol, missing here). Only what is '
+      + 'inside the working dir travels with it.'
+    loadWorkingDir.mockResolvedValueOnce({ found: [], missing: [], warnings: [warning] })
+    const wrapper = shallowMount(App, { global: { stubs: { Message: false } } })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="outside-outputs-warning"]').exists()).toBe(false)
+
+    wrapper.findComponent({ name: 'FileImport' }).vm.$emit('load-working-dir')
+    await flushPromises()
+    const banner = wrapper.findComponent('[data-testid="outside-outputs-warning"]')
+    expect(banner.exists()).toBe(true)
+    expect(banner.props('severity')).toBe('warn')
+    expect(banner.text()).toContain('/elsewhere/sobol')
+    expect(banner.text()).toContain('not carried with the study')
+    wrapper.unmount()
   })
 
   describe('resizable RHS import column', () => {
@@ -1395,7 +1459,7 @@ describe('App.vue best-fit overlay (#126)', () => {
     wrapper.vm.model.variables.value = { ...VARS }
     wrapper.vm.obs.setObsData({
       protocol_info: { pre_times: [0], sim_times: [[1]] },
-      data_items: [{ variable: 'm/x', operands: ['m/x'], plot_type: 'horizontal' }],
+      data_items: [{ data_item_name: 'm/x', operands: ['m/x'], plot_type: 'horizontal' }],
     })
     await drainAutoRun()
     wrapper.vm.sim.setExperiments([{ time: [0, 1], outputs: { 'm/x': [1, 2] } }])
@@ -1646,6 +1710,40 @@ describe('App.vue AADC availability (#122)', () => {
   })
 })
 
+// BE_batched_c builds each model with CMake and a C compiler; without them the
+// server leaves it off the solver menu, and Settings says why.
+describe('App.vue withheld solvers', () => {
+  const CONFIG = {
+    ca_dir: '',
+    ca_exists: true,
+    generated_model_format: 'cellml',
+    solver: 'CVODE_myokit',
+    solver_info: {},
+    differentiable_operations: {},
+  }
+
+  it('shows why BE_batched_c is not on the menu', async () => {
+    const why = 'BE_batched_c is not listed: it builds each model with CMake and a C compiler, and CMake was not found.'
+    getConfig.mockResolvedValueOnce({
+      ...CONFIG,
+      cpp_compiler: { present: true, hint: '', affects: '', alternatives: [], unavailable_solvers: { BE_batched_c: why } },
+    })
+    const wrapper = shallowMount(App)
+    await flushPromises()
+    expect(wrapper.vm.withheldSolvers).toEqual([why])
+  })
+
+  it('says nothing when every solver is available', async () => {
+    getConfig.mockResolvedValueOnce({
+      ...CONFIG,
+      cpp_compiler: { present: true, hint: '', affects: '', alternatives: [], unavailable_solvers: {} },
+    })
+    const wrapper = shallowMount(App)
+    await flushPromises()
+    expect(wrapper.vm.withheldSolvers).toEqual([])
+  })
+})
+
 // The run window has ONE source: the obs_data's protocol_info. The t₁/pre
 // spinners were a second one, and a calibration then ran over one window while
 // the live cost ran over the other -- the same parameters, two different costs.
@@ -1873,7 +1971,7 @@ describe('App.vue cost sensitivities (#188)', () => {
     wrapper.vm.obs.setObsData({
       // With a protocol: without one nothing runs at all, gradient included.
       protocol_info: { pre_times: [0], sim_times: [[1]] },
-      data_items: [{ variable: 'a/x', operands: ['a/x'] }],
+      data_items: [{ data_item_name: 'a/x', operands: ['a/x'] }],
     })
     wrapper.vm.sliders.addSlider('a/alpha', { min: 0, max: 2, value: 1 })
     wrapper.vm.sim.setResult({
@@ -2132,7 +2230,7 @@ describe('App.vue solver plots (external python extra_plots)', () => {
     const wrapper = await mountApp()
     wrapper.vm.obs.setObsData({
       protocol_info: { sim_times: [[1], [1]] },
-      data_items: [{ variable: 'heat/T_p1', operation: 'series' }],
+      data_items: [{ data_item_name: 'heat/T_p1', operation: 'series' }],
     })
     wrapper.vm.sim.setExperiments(
       [
@@ -2258,9 +2356,33 @@ describe('analysis runs carry the protocol window', () => {
     await flushPromises()
     wrapper.vm.model.modelId.value = 'abc'
     wrapper.vm.obs.setObsData(PROTOCOL)
+    wrapper.vm.workingDir = '/w'
     await flushPromises()
     return wrapper
   }
+
+  it('every run is refused up front without a working dir', async () => {
+    const api = await import('./lib/api')
+    api.startCalibration.mockClear()
+    api.startSensitivity.mockClear()
+    api.startUQ.mockClear()
+    startEmulatorTraining.mockClear()
+    const wrapper = await mountApp()
+    wrapper.vm.workingDir = ''
+    wrapper.vm.onRunCalibration({ param_id_method: 'genetic_algorithm' })
+    wrapper.vm.onRunSensitivity({ analysis_type: 'global' })
+    wrapper.vm.onRunUQ({ method: 'mcmc' })
+    wrapper.vm.onTrainEmulator({ model: 'GaussianProcess' })
+    await flushPromises()
+    expect(api.startCalibration).not.toHaveBeenCalled()
+    expect(api.startSensitivity).not.toHaveBeenCalled()
+    expect(api.startUQ).not.toHaveBeenCalled()
+    expect(startEmulatorTraining).not.toHaveBeenCalled()
+    for (const store of [wrapper.vm.calib, wrapper.vm.sa, wrapper.vm.uq, wrapper.vm.emu]) {
+      expect(store.state.value).toBe('error')
+      expect(store.error.value).toBe(NO_WORKING_DIR_MESSAGE)
+    }
+  })
 
   it('calibration payload includes sim_time/pre_time from the protocol', async () => {
     const { startCalibration } = await import('./lib/api')
@@ -2317,6 +2439,13 @@ describe('analysis runs carry the protocol window', () => {
   it('the exported pipeline states the same window', async () => {
     const wrapper = await mountApp()
     expect(wrapper.vm.exportPayload()).toMatchObject({ sim_time: 7, pre_time: 1.5 })
+  })
+
+  it("the exported pipeline's UQ stage flag is CA's do_uq", async () => {
+    const wrapper = await mountApp()
+    const enabled = wrapper.vm.exportPayload().enabled
+    expect(enabled).toHaveProperty('do_uq')
+    expect(enabled).not.toHaveProperty('do_mcmc')
   })
 })
 
@@ -2767,11 +2896,11 @@ describe('guided tour', () => {
   })
 })
 
-// Reopening an outputs directory (#255). Everything a finished run left is on
+// Reopening a working dir (#255). Everything a finished run left is on
 // disk; before this, clicking Load filled the result panels and left the study
 // itself -- the model, its obs_data, its params_for_id -- on the floor, and the
 // Progress tab and the sensitivity heatmap empty beside results that had loaded.
-describe('App.vue reopening an outputs directory', () => {
+describe('App.vue reopening a working dir', () => {
   const STUDY = {
     model: '/out/Model_calibrated.cellml',
     model_is_calibrated: true,
@@ -2844,16 +2973,16 @@ describe('App.vue reopening an outputs directory', () => {
   })
 
   beforeEach(() => {
-    loadOutputsDirectory.mockReset()
+    loadWorkingDir.mockReset()
     openStudyFromOutputs.mockReset()
   })
 
   const load = async (found = FOUND()) => {
-    loadOutputsDirectory.mockResolvedValue(found)
+    loadWorkingDir.mockResolvedValue(found)
     openStudyFromOutputs.mockResolvedValue(OPENED)
     const wrapper = shallowMount(App)
     await flushPromises()
-    wrapper.vm.outputsDir = '/out'
+    wrapper.vm.workingDir = '/out'
     await nextTick()
     await wrapper.vm.loadOutputsFromDirectory()
     await flushPromises()
@@ -2918,7 +3047,7 @@ describe('App.vue reopening an outputs directory', () => {
     const wrapper = await load()
     await wrapper.vm.loadOutputsFromDirectory()
     await flushPromises()
-    loadOutputsDirectory.mockResolvedValue(FOUND({ uq: { params: [], progress: null } }))
+    loadWorkingDir.mockResolvedValue(FOUND({ uq: { params: [], progress: null } }))
     await wrapper.vm.loadOutputsFromDirectory()
     await flushPromises()
     expect(wrapper.vm.uq.progress.value.steps).toBe(40)
@@ -2932,7 +3061,7 @@ describe('App.vue reopening an outputs directory', () => {
     await nextTick()
     await wrapper.vm.loadOutputsFromDirectory()
     await flushPromises()
-    expect(loadOutputsDirectory.mock.calls.at(-1)[1]).toBe('3compartment_flat')
+    expect(loadWorkingDir.mock.calls.at(-1)[1]).toBe('3compartment_flat')
     expect(openStudyFromOutputs.mock.calls.at(-1)[2]).toBe('3compartment_flat')
   })
 
@@ -2949,10 +3078,10 @@ describe('App.vue reopening an outputs directory', () => {
     openStudyFromOutputs.mockRejectedValue({
       response: { data: { detail: 'no model to open in /out' } },
     })
-    loadOutputsDirectory.mockResolvedValue(FOUND())
+    loadWorkingDir.mockResolvedValue(FOUND())
     const wrapper = shallowMount(App)
     await flushPromises()
-    wrapper.vm.outputsDir = '/out'
+    wrapper.vm.workingDir = '/out'
     await wrapper.vm.loadOutputsFromDirectory()
     await flushPromises()
     expect(wrapper.vm.calib.bestParams.value).toEqual({ 'a/alpha': 2 })
@@ -3034,5 +3163,157 @@ describe('a baseline set on a parameter that is not calibrated (#350)', () => {
     expect(values['aortic_root/C']).toBe(1e-8)
     expect(Object.keys(values)).toEqual(['aortic_root/C'])
     wrapper.unmount()
+  })
+})
+
+describe('App.vue: calibrating PhLynx selections (PhLynx #492)', () => {
+  const SELECTION_WORKFLOW = {
+    loaded: true, path: '/up/workflows/m1/calibration_workflow.json',
+    workflow: { workflow_name: 'from_phlynx', steps: [{ id: 'left', model: { select: ['C'] } }] },
+    plan: { steps: [{ id: 'left', model: { select: ['C'] } }] },
+  }
+  const UNSET = {
+    response: { data: { detail: {
+      message: 'step "left": 1 parameter(s) have no value: C/x.',
+      unset_parameters: { step_id: 'left', names: ['C/x'] },
+    } } },
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('opens an archive whose workflow calibrates selections straight away', async () => {
+    loadWorkflow.mockResolvedValueOnce(SELECTION_WORKFLOW)
+    openWorkflowView.mockResolvedValueOnce(null)
+    const wrapper = shallowMount(App)
+    await flushPromises()
+    wrapper.findComponent({ name: 'FileImport' }).vm.$emit('model-loaded', {
+      model_id: 'm1', model_filename: 'whole.cellml',
+      calibration_workflow: { filename: 'calibration_workflow.json',
+                              path: SELECTION_WORKFLOW.path, select_steps: ['left'] },
+    })
+    await flushPromises()
+    expect(loadWorkflow).toHaveBeenCalledWith(expect.objectContaining({ path: SELECTION_WORKFLOW.path }))
+    expect(wrapper.find('[data-testid="tab-workflow"]').classes()).toContain('active')
+  })
+
+  it('only offers a workflow without selections', async () => {
+    const wrapper = shallowMount(App)
+    await flushPromises()
+    wrapper.findComponent({ name: 'FileImport' }).vm.$emit('model-loaded', {
+      model_id: 'm2', calibration_workflow: { filename: 'w.json', path: '/w.json', select_steps: [] },
+    })
+    await flushPromises()
+    expect(loadWorkflow).not.toHaveBeenCalled()
+    expect(wrapper.findComponent({ name: 'WorkflowPanel' }).props('offered').path).toBe('/w.json')
+  })
+
+  it('gives a step the file the user picked, as text or as an obs_data document', async () => {
+    const wrapper = shallowMount(App)
+    await flushPromises()
+    const panel = wrapper.findComponent({ name: 'WorkflowPanel' })
+    // a picked File, by what App reads of it (jsdom's File has no text())
+    const file = (name, text) => ({ name, text: async () => text })
+    panel.vm.$emit('pick-input', { stepId: 'left', role: 'params_for_id',
+                                   file: file('p.csv', 'vessel_name,param_name\n') })
+    await flushPromises()
+    expect(saveWorkflowStepInput).toHaveBeenLastCalledWith('left', 'params_for_id', 'vessel_name,param_name\n')
+    panel.vm.$emit('pick-input', { stepId: 'right', role: 'obs_data',
+                                   file: file('o.json', '{"protocol_info": {}}') })
+    await flushPromises()
+    expect(saveWorkflowStepInput).toHaveBeenLastCalledWith('right', 'obs_data', { protocol_info: {} })
+    saveWorkflowStepInput.mockClear()
+    panel.vm.$emit('pick-input', { stepId: 'right', role: 'obs_data', file: file('bad.json', '{nope') })
+    await flushPromises()
+    expect(saveWorkflowStepInput).not.toHaveBeenCalled()
+  })
+
+  it("opens a step's protocol on its unset parameters, and the step again once saved", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const wrapper = shallowMount(App)
+    await flushPromises()
+    getWorkflowStepInput.mockResolvedValueOnce({
+      path: '/w/left_obs_data.json', content: '{"protocol_info": {"pre_times": [0]}}' })
+    openWorkflowView.mockRejectedValueOnce(UNSET)
+    wrapper.findComponent({ name: 'WorkflowPanel' }).vm.$emit('select', 'left')
+    await flushPromises()
+    expect(getWorkflowStepInput).toHaveBeenCalledWith('left', 'obs_data')
+    const editor = wrapper.findComponent({ name: 'EditObsDataDialog' })
+    expect(editor.exists()).toBe(true)
+    expect(editor.props('preselect')).toEqual(['C/x'])
+    expect(editor.props('document')).toEqual({ protocol_info: { pre_times: [0] } })
+    expect(wrapper.findComponent({ name: 'WorkflowPanel' }).props('unset')).toEqual(
+      { step_id: 'left', names: ['C/x'] })
+
+    // Save writes the step's obs_data; once the editor closes, the step opens again
+    const saved = await editor.props('save')({ protocol_info: { params_to_change: { 'C/x': [[1]] } } })
+    expect(saveWorkflowStepInput).toHaveBeenCalledWith(
+      'left', 'obs_data', { protocol_info: { params_to_change: { 'C/x': [[1]] } } })
+    openWorkflowView.mockResolvedValueOnce(null)
+    editor.vm.$emit('saved', saved)
+    editor.vm.$emit('update:visible', false)
+    await vi.advanceTimersByTimeAsync(5)
+    await flushPromises()
+    expect(wrapper.findComponent({ name: 'EditObsDataDialog' }).exists()).toBe(false)
+    expect(openWorkflowView).toHaveBeenLastCalledWith('left')
+    vi.useRealTimers()
+  })
+})
+
+// A user_inputs.yaml's solver settings are adopted server-side -- from inside an
+// .omex, a reopened run directory, or the Settings picker -- so the Settings
+// dialog has to re-read them rather than keep showing (and later POSTing back)
+// the ones it loaded at startup.
+describe('solver settings adopted from a user_inputs.yaml', () => {
+  const ADOPTED = {
+    ca_dir: '',
+    ca_exists: true,
+    generated_model_format: 'cellml',
+    solver: 'CVODE_myokit',
+    solver_info: { MaximumStep: 0.0001, dt: 0.01 },
+  }
+
+  it('re-reads the config after a study is imported', async () => {
+    const wrapper = shallowMount(App)
+    await flushPromises()
+    getConfig.mockClear()
+    getConfig.mockResolvedValueOnce(ADOPTED)
+
+    await wrapper.vm.onModelLoaded({ model_id: 'm1', name: 'm', solver_settings: {} })
+    await flushPromises()
+
+    expect(getConfig).toHaveBeenCalledTimes(1)
+    expect(wrapper.vm.solverInfo.MaximumStep).toBe(0.0001)
+  })
+
+  it('loads a picked user_inputs.yaml and shows what it adopted', async () => {
+    const wrapper = shallowMount(App)
+    await flushPromises()
+    uploadUserInputs.mockResolvedValueOnce({
+      ...ADOPTED,
+      solver_settings: { solver: 'CVODE_myokit', solver_info: { MaximumStep: 0.0001 }, dt: 0.01 },
+      warnings: ['Ignored MaximumNumberOfSteps from u.yaml: CVODE_myokit does not use it.'],
+    })
+    const file = new File(['solver_info: {}'], 'u.yaml')
+    const target = { files: [file], value: 'C:/fakepath/u.yaml' }
+
+    await wrapper.vm.onUserInputsPicked({ target })
+    await flushPromises()
+
+    expect(uploadUserInputs).toHaveBeenCalledWith(file, expect.any(String))
+    expect(target.value).toBe('') // the same file can be picked again
+    expect(wrapper.vm.solverInfo.MaximumStep).toBe(0.0001)
+    expect(wrapper.vm.userInputsMessage).toContain('CVODE_myokit')
+    expect(wrapper.vm.userInputsWarnings.join(' ')).toContain('MaximumNumberOfSteps')
+  })
+
+  it('reports a file the server would not read', async () => {
+    const wrapper = shallowMount(App)
+    await flushPromises()
+    uploadUserInputs.mockRejectedValueOnce({ response: { data: { detail: 'u.yaml could not be read as YAML' } } })
+    await wrapper.vm.onUserInputsPicked({ target: { files: [new File(['x'], 'u.yaml')], value: '' } })
+    await flushPromises()
+    expect(wrapper.vm.userInputsWarnings).toEqual(['u.yaml could not be read as YAML'])
   })
 })
