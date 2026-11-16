@@ -2131,13 +2131,13 @@ watch(
 // session's last finished Sobol run.
 async function refreshSobolRuns() {
   try {
-    const { runs } = await listSobolRuns(outputsDir.value.trim())
+    const { runs } = await listSobolRuns(workingDir.value.trim())
     sobolRuns.value = runs ?? []
   } catch {
     sobolRuns.value = []
   }
 }
-watch(outputsDir, refreshSobolRuns)
+watch(workingDir, refreshSobolRuns)
 watch(
   () => [sa.state.value, reduction.state.value],
   ([saState, rdState]) => {
@@ -2156,7 +2156,7 @@ function onRunReduction(settings) {
       ...settings,
       ...runTimes(),
       python_path: pythonPath.value,
-      config_outputs_dir: outputsDir.value.trim() || undefined,
+      working_dir: workingDir.value.trim() || undefined,
       use_emulator: emu.useEmulator.value,
     },
     { ...sliders.analysisDict.value },
@@ -2181,7 +2181,7 @@ function onRunIA(settings) {
     ...settings,
     ...runTimes(),
     python_path: pythonPath.value,
-    config_outputs_dir: outputsDir.value.trim() || undefined,
+    working_dir: workingDir.value.trim() || undefined,
     use_emulator: emu.useEmulator.value,
   })
 }
