@@ -100,7 +100,13 @@ jobs:
           # -- when the floor moved to 0.7.3 and this did not, the unit tier spent a month
           # testing a pairing pip itself would refuse to resolve, and only the weekly
           # `ca-pin-freshness` job said so.
-          ref: 0c546aa200e09e0f924addbaa54b0b36d5eaf670  # libcuflynx v0.7.3
+          #
+          # During release prep this is a commit on CA `devel`, which is what this
+          # release is built against; its marker reads `v<X.Y.Z>+devel` (the release
+          # devel is ahead of). When libcuflynx is released, pin the release's merge
+          # commit with a plain `v<X.Y.Z>` marker, and move integration.yml's
+          # `@devel` installs back to `@master`.
+          ref: 1f7c238aeaa2aac159fca6c5b6c885c534764e79  # libcuflynx v0.7.3+devel
           path: circulatory_autogen
       - uses: actions/setup-python@v5
         with:

@@ -22,8 +22,9 @@ WORKFLOW_DIR = REPO_ROOT / ".github" / "workflows"
 
 CA_REPO = "physiomelinks/circulatory_autogen"
 
-#: Branches that are not going anywhere. Anything else must be a SHA.
-PERMANENT_REFS = {"master", "main"}
+#: Branches that are not going anywhere. Anything else must be a SHA. `devel` is CA's
+#: long-lived integration branch, which CUFLynx tests against during release prep.
+PERMANENT_REFS = {"master", "main", "devel"}
 
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 
@@ -115,9 +116,11 @@ def test_no_revert_before_merge_marker_survives():
 
 _PYPROJECT = REPO_ROOT / "apps" / "api" / "pyproject.toml"
 
-#: `ref: <sha>  # libcuflynx v0.7.3`
+#: `ref: <sha>  # libcuflynx v0.7.3`, or `# libcuflynx v0.7.3+devel` for a commit on CA
+#: `devel` ahead of that release (release prep). The version read back is the release.
 _PINNED_RELEASE = re.compile(
-    r"^\s*ref:\s*([0-9a-f]{40})\s*#\s*libcuflynx\s+v(\d+(?:\.\d+)*)\s*$", re.MULTILINE
+    r"^\s*ref:\s*([0-9a-f]{40})\s*#\s*libcuflynx\s+v(\d+(?:\.\d+)*)(?:\+devel)?\s*$",
+    re.MULTILINE,
 )
 
 #: `"libcuflynx>=0.7.3"` and `"libcuflynx[emulation,uq]>=0.7.3"` alike.
@@ -173,3 +176,11 @@ def test_the_pin_is_not_older_than_the_libcuflynx_floor():
         f"against an engine pip would refuse to install alongside this app. Bump the "
         f"`ref:` in ci.yml to the v{floor} (or newer) merge commit and update its marker."
     )
+
+
+def test_a_devel_marker_names_the_release_it_is_ahead_of():
+    """During release prep the unit tier pins a CA `devel` commit, marked `v<X.Y.Z>+devel`;
+    the floor check still reads the release out of it."""
+    line = "          ref: " + "a" * 40 + "  # libcuflynx v0.7.3+devel\n"
+    assert _PINNED_RELEASE.findall(line) == [("a" * 40, "0.7.3")]
+    assert not _PINNED_RELEASE.findall(line.replace("+devel", "+next"))
