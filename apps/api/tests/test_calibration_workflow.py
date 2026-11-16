@@ -833,15 +833,20 @@ def _changed_values(arrays, files):
         missing = [key for key in old if key not in new]
         assert not missing, f"{name} leaves out the target's {missing}"
         for key, row in new.items():
+            # CA's origin column: empty where nothing set the value
+            row = {k: v for k, v in row.items() if not (k == "origin" and not v)}
             if key not in old:
                 assert not row["data_reference"].startswith("calibrated by workflow "), (
                     f"{name} marks {key} calibrated, which the target does not set")
+                assert row.get("origin") != "calibrated", key
                 continue
             if row == old[key]:
                 continue
-            assert {k: v for k, v in row.items() if k not in ("value", "data_reference")} == {
-                k: v for k, v in old[key].items() if k not in ("value", "data_reference")}
+            kept = ("value", "data_reference", "origin")
+            assert {k: v for k, v in row.items() if k not in kept} == {
+                k: v for k, v in old[key].items() if k not in kept}
             assert row["data_reference"].startswith("calibrated by workflow ")
+            assert row.get("origin", "calibrated") == "calibrated", key
             changed[key] = (float(old[key]["value"]), float(row["value"]))
     return changed
 
