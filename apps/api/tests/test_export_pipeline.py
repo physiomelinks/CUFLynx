@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 
 import export_pipeline as ep
+import optimiser_budget
 import pytest
 import yaml
 from conftest import (
@@ -239,7 +240,10 @@ def test_export_pipeline_writes_self_contained_folder(client, tmp_path):
 # CA present. These cases therefore assert the null contract directly.
 # ---------------------------------------------------------------------------
 NULLABLE_NUMERIC_SETTINGS = [
-    ("calibration", "num_calls_to_function", ("optimiser_options", "num_calls_to_function"), 100),
+    # Unset budget with no method named: one genetic-algorithm population, from CA's
+    # schema (test_optimiser_budget pins the arithmetic).
+    ("calibration", "num_calls_to_function", ("optimiser_options", "num_calls_to_function"),
+     lambda: optimiser_budget.default_num_calls("genetic_algorithm")),
     ("calibration", "cost_convergence", ("optimiser_options", "cost_convergence"), 0.0001),
     ("calibration", "max_patience", ("optimiser_options", "max_patience"), 10),
     ("sensitivity", "num_samples", ("sa_options", "num_samples"), 256),
@@ -252,7 +256,7 @@ NULLABLE_NUMERIC_SETTINGS = [
 def test_null_setting_falls_back_to_default(group, key, path, expected):
     ui = _ui(**{group: {key: None}})
     section, field = path
-    assert ui[section][field] == expected
+    assert ui[section][field] == (expected() if callable(expected) else expected)
 
 
 @pytest.mark.parametrize("group,key,path,expected", NULLABLE_NUMERIC_SETTINGS)
@@ -260,7 +264,7 @@ def test_blank_setting_falls_back_to_default(group, key, path, expected):
     # A cleared PrimeVue InputNumber can also serialise as an empty string.
     ui = _ui(**{group: {key: ""}})
     section, field = path
-    assert ui[section][field] == expected
+    assert ui[section][field] == (expected() if callable(expected) else expected)
 
 
 def test_null_settings_still_yaml_serialisable():
@@ -329,7 +333,9 @@ def test_export_route_accepts_null_option_values(client, tmp_path):
     export_dir = resp.json()["export_dir"]
     name = [f for f in os.listdir(export_dir) if f.startswith("user_inputs_")][0]
     ui = yaml.safe_load(open(os.path.join(export_dir, name)))
-    assert ui["optimiser_options"]["num_calls_to_function"] == 100
+    # One GA population: the smallest budget CA's GA runs (test_optimiser_budget).
+    assert ui["optimiser_options"]["num_calls_to_function"] == \
+        optimiser_budget.default_num_calls("genetic_algorithm")
     assert ui["UQ_options"]["num_walkers"] == 64
 
 

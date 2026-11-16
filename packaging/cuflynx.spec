@@ -86,6 +86,8 @@ for runner in (
     # The fields the runners read out of CA's parsed dicts. A leaf like ca_imports --
     # stdlib and ca_imports only -- so it ships with them for the same reason.
     "ca_obs.py",
+    # The unset calibration budget (one GA population), shared with the export.
+    "optimiser_budget.py",
     "local_sensitivity.py",
     # Every runner writes its results in circulatory_autogen's own formats and the
     # managers read them back from there (#210); this module is the one place that
