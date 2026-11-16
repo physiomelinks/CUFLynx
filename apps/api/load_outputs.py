@@ -217,7 +217,14 @@ def _study(output_dir, run_dir, file_prefix, missing, manifest=None):
     # directory produced by cuflynx-param-id has one there and no `*_calibrated.cellml`
     # at all. `generated` above already found it when there is exactly one CellML in the
     # prefix's folder; this names it when the folder holds more than the model.
-    model = (declared.get("model")
+    # A manifest written during a run declares the model it started from: the calibrated one
+    # this app writes appears only after the run's last record. So a declared model that is
+    # still the base model gives way to a calibrated one sitting where this app puts it.
+    declared_model = declared.get("model")
+    if declared_model and declared_model == declared.get("base_model"):
+        declared_model = (ca_run_history.calibrated_model_path(output_dir, prefix)
+                          or declared_model)
+    model = (declared_model
              or generated
              or ca_run_history.ca_calibrated_model(output_dir, prefix)
              or _calibrated_model(output_dir, file_prefix))
@@ -280,12 +287,29 @@ def _progress(run_dir, output_dir, missing):
     )
 
 
-def _sensitivity(output_dir, missing):
+def _sensitivity(output_dir, missing, declared=None):
+    """Local and Sobol results: the outputs directory's own, else the study's declared ones.
+
+    CA writes sensitivity results to ``sa_options.output_dir``, which is not the param-id
+    outputs directory unless the user made it so; the study manifest records where each
+    analysis actually went, newest first.
+    """
+    def first(reader, method):
+        found = reader(output_dir)
+        if found:
+            return found
+        for entry in declared or []:
+            if entry.get("method") in (method, None):
+                found = reader(entry["dir"])
+                if found:
+                    return found
+        return None
+
     return {
         "local": _safely("local sensitivity",
-                         lambda: ca_run_history.local_sensitivity(output_dir), missing),
+                         lambda: first(ca_run_history.local_sensitivity, "local"), missing),
         "sobol": _safely("Sobol indices",
-                         lambda: ca_run_history.sobol_indices(output_dir), missing),
+                         lambda: first(ca_run_history.sobol_indices, "sobol"), missing),
     }
 
 
@@ -451,7 +475,7 @@ def load_outputs(output_dir: str, file_prefix: str | None = None,
     manifest = None
     manifest_error = None
     try:
-        manifest = study_manifest.read(output_dir)
+        manifest = study_manifest.read(output_dir, file_prefix)
     except study_manifest.ManifestError as error:
         # Not swallowed into the conventions: a manifest that exists and cannot be read
         # means this directory is not what it claims, and answering from guesses would
@@ -486,7 +510,7 @@ def load_outputs(output_dir: str, file_prefix: str | None = None,
         "run_dir": run_dir,
         "calibration": _calibration(output_dir, file_prefix, missing),
         "progress": _progress(run_dir, output_dir, missing),
-        "sensitivity": _sensitivity(output_dir, missing),
+        "sensitivity": _sensitivity(output_dir, missing, (manifest or {}).get("sensitivity")),
         "uq": _uq(output_dir, run_dir, missing),
         "emulator": _emulator(output_dir, file_prefix, obs_path, missing,
                               declared=(manifest or {}).get("emulator")),

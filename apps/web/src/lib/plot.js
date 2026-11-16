@@ -1,4 +1,14 @@
-import { expandShape } from './protocolInfo'
+import { expandShape, normaliseShape } from '@physiomelinks/protocol-kit'
+
+/** A protocol_shapes entry over a sub-experiment as a {t, values} trace; null if it is not one. */
+function shapeTrace(shape, duration, name) {
+  if (shape == null) return null
+  try {
+    return expandShape(normaliseShape(shape, name), duration, name)
+  } catch {
+    return null
+  }
+}
 
 export const PALETTE = [
   '#5b9bd5',
@@ -84,7 +94,7 @@ export function obsModelVar(item) {
     )
     if (v) return v
   }
-  return item.data_item_name ?? item.variable
+  return item.data_item_name
 }
 
 /**
@@ -99,9 +109,9 @@ export function obsModelVar(item) {
 export function emulatorFeatureFor(features, item) {
   if (!features || !item) return null
   const itemName = item.data_item_name ?? ''
-  const name = item.trace_name_for_plotting ?? item.name_for_plotting ?? item.variable ?? ''
+  const name = item.trace_name_for_plotting ?? ''
   const op = item.operation
-  const operand = (item.operands ?? [])[0] ?? item.variable ?? ''
+  const operand = (item.operands ?? [])[0] ?? ''
   const candidates = [
     itemName,
     item.item_name_for_plotting,
@@ -212,12 +222,12 @@ export function derivePlotVariables(obsData) {
     placed.set(qname, group)
   }
   for (const p of obsData.prediction_items ?? []) {
-    const qname = (Array.isArray(p.operands) && p.operands[0]) || p.variable
-    add(qname, p.trace_name_for_plotting ?? p.name_for_plotting)
+    const qname = Array.isArray(p.operands) ? p.operands[0] : undefined
+    add(qname, p.trace_name_for_plotting)
   }
   for (const d of obsData.data_items ?? []) {
     if (!isPlottableOverlay(d)) continue
-    add(obsModelVar(d), d.trace_name_for_plotting ?? d.name_for_plotting)
+    add(obsModelVar(d), d.trace_name_for_plotting)
   }
   return [...byLabel.values()]
 }
@@ -260,7 +270,7 @@ export function controlledSeries(protocolInfo, expIdx) {
         // A name resolves to a point table (protocol_traces) or to a declared
         // shape (protocol_shapes), which is expanded to the same thing here so
         // the plot draws either without caring which the file used.
-        const tr = traces[val] ?? expandShape(shapes[val], dur)
+        const tr = traces[val] ?? shapeTrace(shapes[val], dur, val)
         if (tr && Array.isArray(tr.t) && Array.isArray(tr.values)) {
           const m = Math.min(tr.t.length, tr.values.length)
           for (let i = 0; i < m; i++) {

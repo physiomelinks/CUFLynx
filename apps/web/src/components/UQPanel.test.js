@@ -29,9 +29,6 @@ describe('UQPanel UQ options from CA schema', () => {
   ]
 
   it('renders the options CA now sends under uq_options', async () => {
-    // CA renamed the mode from 'mcmc' to 'uq', so /api/uq/defaults now carries them as
-    // `uq_options`. `mcmc_options` is still read (below) so a panel talking to an API that
-    // has not been restarted yet keeps rendering its form.
     const wrapper = mount(UQPanel, {
       props: { canRun: true, defaults: { method: 'mcmc', uq_options: MCMC_OPTIONS } },
       global: { stubs },
@@ -40,25 +37,17 @@ describe('UQPanel UQ options from CA schema', () => {
     expect(wrapper.find('[data-testid="mcmc-opt-thin"]').exists()).toBe(true)
   })
 
-  it('prefers uq_options when both spellings are present', async () => {
+  it('does not read the mcmc_options field', async () => {
     const wrapper = mount(UQPanel, {
-      props: {
-        canRun: true,
-        defaults: {
-          method: 'mcmc',
-          uq_options: [{ name: 'burn_in', type: 'float', default: 0.5 }],
-          mcmc_options: MCMC_OPTIONS,
-        },
-      },
+      props: { canRun: true, defaults: { method: 'mcmc', mcmc_options: MCMC_OPTIONS } },
       global: { stubs },
     })
-    expect(wrapper.find('[data-testid="mcmc-opt-burn_in"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="mcmc-opt-thin"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="mcmc-opt-num_steps"]').exists()).toBe(false)
   })
 
   it('renders the schema options and seeds their defaults', async () => {
     const wrapper = mount(UQPanel, {
-      props: { canRun: true, defaults: { method: 'mcmc', mcmc_options: MCMC_OPTIONS } },
+      props: { canRun: true, defaults: { method: 'mcmc', uq_options: MCMC_OPTIONS } },
       global: { stubs },
     })
     expect(wrapper.find('[data-testid="mcmc-opt-num_steps"]').exists()).toBe(true)
@@ -75,7 +64,7 @@ describe('UQPanel UQ options from CA schema', () => {
 
   it('hides the MCMC options for the Laplace method', () => {
     const wrapper = mount(UQPanel, {
-      props: { defaults: { method: 'laplace', mcmc_options: MCMC_OPTIONS } },
+      props: { defaults: { method: 'laplace', uq_options: MCMC_OPTIONS } },
       global: { stubs },
     })
     expect(wrapper.find('[data-testid="mcmc-opt-num_steps"]').exists()).toBe(false)
@@ -128,7 +117,7 @@ describe('UQPanel UQ options from CA schema', () => {
     // CA's identifiability sub_method ('parabola_fit') is the real instance.
     const opts = [...MCMC_OPTIONS, { name: 'moves', type: 'str', default: 'stretch' }]
     const wrapper = mount(UQPanel, {
-      props: { canRun: true, defaults: { method: 'mcmc', mcmc_options: opts } },
+      props: { canRun: true, defaults: { method: 'mcmc', uq_options: opts } },
       global: { stubs },
     })
     const tag = (id) => wrapper.find(`[data-testid="mcmc-opt-${id}"]`).element.tagName.toLowerCase()

@@ -10,7 +10,10 @@ const TESTID_SELECTOR = /^\[data-testid="[a-z0-9-]+"\]$/
 
 const SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
-/** Every `.vue` file under `src/`, read once. */
+/** protocol-kit's obs_data editor, which the "Edit obs_data" steps point into. */
+const PROTOCOL_KIT_EDITOR = path.resolve(SRC, '..', 'node_modules', '@physiomelinks', 'protocol-kit', 'dist', 'editor.js')
+
+/** Every `.vue` file under `src/`, and protocol-kit's editor, read once. */
 function vueSources() {
   const out = []
   const walk = (dir) => {
@@ -21,6 +24,7 @@ function vueSources() {
     }
   }
   walk(SRC)
+  out.push({ file: '@physiomelinks/protocol-kit/editor', text: fs.readFileSync(PROTOCOL_KIT_EDITOR, 'utf8') })
   return out
 }
 
@@ -184,7 +188,7 @@ describe('tourSteps', () => {
   // The guard that matters. The tour points at testids from a separate file, so
   // renaming one (say `eo-value`) breaks a step in the app and *nothing else* --
   // no compile error, no other test. This is that error.
-  it('points every anchor at a testid that still exists in a .vue file', () => {
+  it('points every anchor at a testid that still exists in a .vue file or protocol-kit', () => {
     const sources = vueSources()
     expect(sources.length).toBeGreaterThan(0)
     const missing = []

@@ -171,7 +171,7 @@ rewritten per run, and every rank of an MPI job writes the same file.
 ## For Developers: Install from source
 
 One-time setup (installs the backend + frontend and builds the UI). Works on
-Linux, macOS and Windows — needs **Python** and **Node.js**.
+Linux, macOS and Windows — needs **Python** and **Node.js 22 or newer**.
 
 ```bash
 python scripts/install.py

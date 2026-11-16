@@ -8,6 +8,21 @@ import { shallowMount, flushPromises } from '@vue/test-utils'
 // blanking the whole app (the black screen). A setup-time error propagates out
 // of mount(), so this test fails if such a bug is reintroduced.
 vi.mock('./lib/api', () => ({
+  // The calibration-workflow store asks the backend on mount whether a workflow
+  // is open. Without these the mock factory has no such export, and every App
+  // mount raises an unhandled rejection -- 181 of them, which fails the run even
+  // though each test's own assertions pass. "Nothing open" is the honest default.
+  getWorkflow: vi.fn().mockResolvedValue(null),
+  loadWorkflow: vi.fn().mockResolvedValue(null),
+  uploadWorkflow: vi.fn().mockResolvedValue(null),
+  closeWorkflow: vi.fn().mockResolvedValue(null),
+  openWorkflowView: vi.fn().mockResolvedValue(null),
+  runWorkflow: vi.fn().mockResolvedValue({ job_id: 'w1' }),
+  getWorkflowStatus: vi.fn().mockResolvedValue({ state: 'done', lines: [], next_offset: 0 }),
+  cancelWorkflow: vi.fn().mockResolvedValue({ cancelled: true }),
+  getWorkflowStepInput: vi.fn().mockResolvedValue({ path: null, content: null }),
+  saveWorkflowStepInput: vi.fn().mockResolvedValue({ path: '/w/x.json', workflow: { loaded: true } }),
+  unsetParameters: (e) => e?.response?.data?.detail?.unset_parameters ?? null,
   getVariables: vi.fn().mockResolvedValue({}),
   simulate: vi.fn().mockResolvedValue({ time: [], outputs: {} }),
   runProtocol: vi.fn().mockResolvedValue({ experiments: [] }),
@@ -66,6 +81,10 @@ vi.mock('./lib/api', () => ({
 }))
 
 import {
+  getWorkflowStepInput,
+  loadWorkflow,
+  openWorkflowView,
+  saveWorkflowStepInput,
   getConfig,
   setConfig,
   getEmulatorDefaults,
@@ -1395,7 +1414,7 @@ describe('App.vue best-fit overlay (#126)', () => {
     wrapper.vm.model.variables.value = { ...VARS }
     wrapper.vm.obs.setObsData({
       protocol_info: { pre_times: [0], sim_times: [[1]] },
-      data_items: [{ variable: 'm/x', operands: ['m/x'], plot_type: 'horizontal' }],
+      data_items: [{ data_item_name: 'm/x', operands: ['m/x'], plot_type: 'horizontal' }],
     })
     await drainAutoRun()
     wrapper.vm.sim.setExperiments([{ time: [0, 1], outputs: { 'm/x': [1, 2] } }])
@@ -1873,7 +1892,7 @@ describe('App.vue cost sensitivities (#188)', () => {
     wrapper.vm.obs.setObsData({
       // With a protocol: without one nothing runs at all, gradient included.
       protocol_info: { pre_times: [0], sim_times: [[1]] },
-      data_items: [{ variable: 'a/x', operands: ['a/x'] }],
+      data_items: [{ data_item_name: 'a/x', operands: ['a/x'] }],
     })
     wrapper.vm.sliders.addSlider('a/alpha', { min: 0, max: 2, value: 1 })
     wrapper.vm.sim.setResult({
@@ -2132,7 +2151,7 @@ describe('App.vue solver plots (external python extra_plots)', () => {
     const wrapper = await mountApp()
     wrapper.vm.obs.setObsData({
       protocol_info: { sim_times: [[1], [1]] },
-      data_items: [{ variable: 'heat/T_p1', operation: 'series' }],
+      data_items: [{ data_item_name: 'heat/T_p1', operation: 'series' }],
     })
     wrapper.vm.sim.setExperiments(
       [
@@ -2317,6 +2336,13 @@ describe('analysis runs carry the protocol window', () => {
   it('the exported pipeline states the same window', async () => {
     const wrapper = await mountApp()
     expect(wrapper.vm.exportPayload()).toMatchObject({ sim_time: 7, pre_time: 1.5 })
+  })
+
+  it("the exported pipeline's UQ stage flag is CA's do_uq", async () => {
+    const wrapper = await mountApp()
+    const enabled = wrapper.vm.exportPayload().enabled
+    expect(enabled).toHaveProperty('do_uq')
+    expect(enabled).not.toHaveProperty('do_mcmc')
   })
 })
 
@@ -3034,5 +3060,100 @@ describe('a baseline set on a parameter that is not calibrated (#350)', () => {
     expect(values['aortic_root/C']).toBe(1e-8)
     expect(Object.keys(values)).toEqual(['aortic_root/C'])
     wrapper.unmount()
+  })
+})
+
+describe('App.vue: calibrating PhLynx selections (PhLynx #492)', () => {
+  const SELECTION_WORKFLOW = {
+    loaded: true, path: '/up/workflows/m1/calibration_workflow.json',
+    workflow: { workflow_name: 'from_phlynx', steps: [{ id: 'left', model: { select: ['C'] } }] },
+    plan: { steps: [{ id: 'left', model: { select: ['C'] } }] },
+  }
+  const UNSET = {
+    response: { data: { detail: {
+      message: 'step "left": 1 parameter(s) have no value: C/x.',
+      unset_parameters: { step_id: 'left', names: ['C/x'] },
+    } } },
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('opens an archive whose workflow calibrates selections straight away', async () => {
+    loadWorkflow.mockResolvedValueOnce(SELECTION_WORKFLOW)
+    openWorkflowView.mockResolvedValueOnce(null)
+    const wrapper = shallowMount(App)
+    await flushPromises()
+    wrapper.findComponent({ name: 'FileImport' }).vm.$emit('model-loaded', {
+      model_id: 'm1', model_filename: 'whole.cellml',
+      calibration_workflow: { filename: 'calibration_workflow.json',
+                              path: SELECTION_WORKFLOW.path, select_steps: ['left'] },
+    })
+    await flushPromises()
+    expect(loadWorkflow).toHaveBeenCalledWith(expect.objectContaining({ path: SELECTION_WORKFLOW.path }))
+    expect(wrapper.find('[data-testid="tab-workflow"]').classes()).toContain('active')
+  })
+
+  it('only offers a workflow without selections', async () => {
+    const wrapper = shallowMount(App)
+    await flushPromises()
+    wrapper.findComponent({ name: 'FileImport' }).vm.$emit('model-loaded', {
+      model_id: 'm2', calibration_workflow: { filename: 'w.json', path: '/w.json', select_steps: [] },
+    })
+    await flushPromises()
+    expect(loadWorkflow).not.toHaveBeenCalled()
+    expect(wrapper.findComponent({ name: 'WorkflowPanel' }).props('offered').path).toBe('/w.json')
+  })
+
+  it('gives a step the file the user picked, as text or as an obs_data document', async () => {
+    const wrapper = shallowMount(App)
+    await flushPromises()
+    const panel = wrapper.findComponent({ name: 'WorkflowPanel' })
+    // a picked File, by what App reads of it (jsdom's File has no text())
+    const file = (name, text) => ({ name, text: async () => text })
+    panel.vm.$emit('pick-input', { stepId: 'left', role: 'params_for_id',
+                                   file: file('p.csv', 'vessel_name,param_name\n') })
+    await flushPromises()
+    expect(saveWorkflowStepInput).toHaveBeenLastCalledWith('left', 'params_for_id', 'vessel_name,param_name\n')
+    panel.vm.$emit('pick-input', { stepId: 'right', role: 'obs_data',
+                                   file: file('o.json', '{"protocol_info": {}}') })
+    await flushPromises()
+    expect(saveWorkflowStepInput).toHaveBeenLastCalledWith('right', 'obs_data', { protocol_info: {} })
+    saveWorkflowStepInput.mockClear()
+    panel.vm.$emit('pick-input', { stepId: 'right', role: 'obs_data', file: file('bad.json', '{nope') })
+    await flushPromises()
+    expect(saveWorkflowStepInput).not.toHaveBeenCalled()
+  })
+
+  it("opens a step's protocol on its unset parameters, and the step again once saved", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const wrapper = shallowMount(App)
+    await flushPromises()
+    getWorkflowStepInput.mockResolvedValueOnce({
+      path: '/w/left_obs_data.json', content: '{"protocol_info": {"pre_times": [0]}}' })
+    openWorkflowView.mockRejectedValueOnce(UNSET)
+    wrapper.findComponent({ name: 'WorkflowPanel' }).vm.$emit('select', 'left')
+    await flushPromises()
+    expect(getWorkflowStepInput).toHaveBeenCalledWith('left', 'obs_data')
+    const editor = wrapper.findComponent({ name: 'EditObsDataDialog' })
+    expect(editor.exists()).toBe(true)
+    expect(editor.props('preselect')).toEqual(['C/x'])
+    expect(editor.props('document')).toEqual({ protocol_info: { pre_times: [0] } })
+    expect(wrapper.findComponent({ name: 'WorkflowPanel' }).props('unset')).toEqual(
+      { step_id: 'left', names: ['C/x'] })
+
+    // Save writes the step's obs_data; once the editor closes, the step opens again
+    const saved = await editor.props('save')({ protocol_info: { params_to_change: { 'C/x': [[1]] } } })
+    expect(saveWorkflowStepInput).toHaveBeenCalledWith(
+      'left', 'obs_data', { protocol_info: { params_to_change: { 'C/x': [[1]] } } })
+    openWorkflowView.mockResolvedValueOnce(null)
+    editor.vm.$emit('saved', saved)
+    editor.vm.$emit('update:visible', false)
+    await vi.advanceTimersByTimeAsync(5)
+    await flushPromises()
+    expect(wrapper.findComponent({ name: 'EditObsDataDialog' }).exists()).toBe(false)
+    expect(openWorkflowView).toHaveBeenLastCalledWith('left')
+    vi.useRealTimers()
   })
 })
