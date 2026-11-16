@@ -326,7 +326,7 @@ def run(config: dict) -> dict:
 
     ca_run_history.write_uq_samples(output_dir, np.asarray(flat), qnames)
 
-    coverage = _posterior_predictive(config, settings, output_dir, engine)
+    coverage = _posterior_predictive(settings, engine)
     print(META_MARKER + json.dumps({"method": method}), flush=True)
     result = {"rank": 0, "method": method,
               "params": _distributions(np.asarray(flat), qnames)}
@@ -335,7 +335,7 @@ def run(config: dict) -> dict:
     return result
 
 
-def _posterior_predictive(config, settings, output_dir, engine):
+def _posterior_predictive(settings, engine):
     """Push posterior draws back through the model and report coverage.
 
     A chain says what the parameters could be; it does not say whether the model
@@ -366,8 +366,9 @@ def _posterior_predictive(config, settings, output_dir, engine):
     print(f"Posterior predictive: {num_samples} draws through the model",
           flush=True)
     try:
-        result = run_check(client=engine, num_samples=num_samples,
-                           output_dir=output_dir, save=True)
+        # No output_dir: CA reads the chain from, and saves the check into, the MCMC
+        # run's own directory.
+        result = run_check(client=engine, num_samples=num_samples, save=True)
     except Exception as exc:  # noqa: BLE001 - the posterior is still the result
         print(f"WARNING: posterior predictive check failed: {exc}", flush=True)
         return None

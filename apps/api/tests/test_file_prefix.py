@@ -163,8 +163,9 @@ def test_an_explicit_prefix_from_the_client_still_wins_for_an_export(client, tmp
     )
     if resp.status_code != 200:
         pytest.skip(f"export unavailable in this environment: {resp.text[:120]}")
-    exports = sorted(tmp_path.glob("export_*/generated_models/my_study"))
-    assert exports, sorted(p.name for p in tmp_path.iterdir())
+    # Written beside the working dir, as <W>_export_<yymmdd>.
+    exports = sorted(tmp_path.parent.glob(f"{tmp_path.name}_export_*/generated_models/my_study"))
+    assert exports, sorted(p.name for p in tmp_path.parent.iterdir())
 
 
 # --- the files CA is handed are named after the study, not after the session ----------

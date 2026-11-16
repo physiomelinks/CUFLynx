@@ -322,6 +322,20 @@ format, and no plumbing:
   which the old direct read could not. `has_results(output_dir, newer_than=…)`
   takes the job's start time so a run whose own results are missing fails
   instead of reporting someone else's numbers.
+- **An MCMC run has its own directory** (CA #650): `mcmc_<prefix>_<obs>/` (CA's
+  `paramID.case_dir_name` with `UQ_CASE_METHOD`) beside the calibration's
+  `<method>_<prefix>_<obs>/`, holding the chain, `param_names.csv` and the
+  posterior predictive check. `find_run_dir` answers the calibration's and passes
+  an MCMC dir over (its `best_param_vals.npy` is a posterior median);
+  `uq_run_dir` / `uq_source_dir` answer the MCMC run's, and every chain, coverage
+  and predictive reader goes through them.
+- **The pipeline export is CA's `write_pipeline_bundle`.** CUFLynx only turns the
+  GUI's settings into the user_inputs dict (`export_pipeline.build_user_inputs`,
+  emulator keys included) and writes the bundle *beside* the working dir
+  (`<W>_export_<yymmdd>/`): the bundle is a working dir of its own.
+- **No app module may share a name with a module in CA's `sys.path` dirs**
+  (`ca_imports.ca_paths()`): the runners put those first, so the app's module is
+  shadowed (`test_no_app_module_shares_a_name_with_one_on_cas_paths`).
 - **The study manifest is CA's** (`apps/api/study_manifest.py`). libcuflynx
   (`utilities/cuflynx_study.py`) records every calibration, UQ, sensitivity and emulator
   run from one config in `<param_id_output_dir>/<study_name>_cuflynx_study.json`: model,
@@ -423,7 +437,7 @@ bare names through the params_for_id rows, so the sliders, the entries'
 `initial_value` and a later send all start from them; the response's `calibration`
 says so and the UI's notice names the cost. Unmatched names are a warning.
 
-Value substitution goes through `calibrated_model.calibrated_cellml` — the same
+Value substitution goes through `calibrated_cellml.calibrated_cellml` — the same
 writer the calibrated-model save uses, so a send and a saved best fit produce the
 same file for the same values. Its report now names the owning `component/var` per
 parameter, which is how the send warns about a value written outside

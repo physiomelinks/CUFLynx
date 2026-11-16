@@ -44,6 +44,30 @@ def write_coverage(run, predictive=0.42):
             "samples_that_failed_to_simulate": 0}, handle)
 
 
+@pytest.mark.unit
+def test_a_study_opens_on_its_calibration_and_reads_the_uq_from_the_mcmc_run(tmp_path):
+    """libcuflynx records a calibration and the MCMC after it as two runs, newest first,
+    each in its own directory. The MCMC run's has no best fit or progress history, so the
+    study opens on the calibration's, and the UQ panel reads the MCMC run's."""
+    calibration = write_run(tmp_path, "genetic_algorithm_m_obs", chain=False)
+    with open(os.path.join(calibration, "best_cost_history.csv"), "w") as handle:
+        handle.write("1.0\n0.5\n")
+    mcmc = write_run(tmp_path, "mcmc_m_obs", best=False)
+    write_coverage(mcmc)
+    with open(os.path.join(str(tmp_path), "m_cuflynx_study.json"), "w") as handle:
+        json.dump({"schema": 1, "study_name": "m", "file_prefix": "m", "runs": [
+            {"dir": "mcmc_m_obs", "method": "mcmc", "analyses": ["mcmc"]},
+            {"dir": "genetic_algorithm_m_obs", "method": "genetic_algorithm",
+             "analyses": ["genetic_algorithm"]}]}, handle)
+
+    result = load_outputs.load_outputs(str(tmp_path))
+
+    assert result["run_dir"] == calibration
+    assert result["uq"]["run_dir"] == mcmc
+    assert result["uq"]["coverage"] is not None
+    assert {"calibration", "uq"} <= set(result["found"])
+
+
 # --- the posterior of a run we did not produce --------------------------------
 
 @pytest.mark.unit

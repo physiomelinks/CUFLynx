@@ -48,6 +48,59 @@ def test_the_output_dir_itself_counts_as_the_run_dir(tmp_path):
     assert crh.find_run_dir(str(tmp_path)) == str(tmp_path)
 
 
+def _mcmc_run(dir_path: Path, names=(["a/x"], ["a/y"]), steps=20, walkers=4):
+    """An MCMC run's own directory, as CA writes it: the chain and param_names.csv."""
+    dir_path.mkdir(parents=True, exist_ok=True)
+    rng = np.random.default_rng(0)
+    np.save(dir_path / "mcmc_chain.npy", rng.normal(size=(steps, walkers, len(names))))
+    with open(dir_path / "param_names.csv", "w", newline="") as fh:
+        csv.writer(fh).writerows(names)
+    return dir_path
+
+
+def test_the_mcmc_run_has_its_own_directory_beside_the_calibrations(tmp_path):
+    """CA writes a calibration to ``<method>_<prefix>_<obs>`` and the MCMC after it to
+    ``mcmc_<prefix>_<obs>``: each reader finds its own."""
+    calibration = _ca_run(tmp_path / "genetic_algorithm_m_obs")
+    mcmc = _mcmc_run(tmp_path / "mcmc_m_obs")
+
+    assert crh.find_run_dir(str(tmp_path)) == str(calibration)
+    assert crh.uq_run_dir(str(tmp_path)) == str(mcmc)
+    assert crh.uq_source_dir(str(tmp_path)) == str(mcmc)
+
+    params = crh.uq_distributions(str(tmp_path))
+    assert [p["qname"] for p in params] == ["a/x", "a/y"], "read from the MCMC run's own dir"
+
+
+def test_a_posterior_median_does_not_pass_for_the_calibration(tmp_path):
+    """An MCMC run with no calibration behind it writes its posterior median as
+    best_param_vals.npy in its own directory; the calibration's is still the best fit."""
+    calibration = _ca_run(tmp_path / "genetic_algorithm_m_obs", values=(1.0, 2.0))
+    median = _ca_run(tmp_path / "mcmc_m_uq_obs_data", values=(9.0, 9.0))
+    _mcmc_run(median)
+
+    assert crh.find_run_dir(str(tmp_path)) == str(calibration)
+    assert crh.uq_run_dir(str(tmp_path)) == str(median)
+
+
+def test_an_mcmc_run_alone_is_still_found(tmp_path):
+    mcmc = _ca_run(tmp_path / "mcmc_m_obs")
+    assert crh.find_run_dir(str(tmp_path)) == str(mcmc)
+
+
+def test_a_chain_in_the_calibrations_directory_is_still_read(tmp_path):
+    """A folder written before the MCMC run had a directory of its own."""
+    run = _mcmc_run(_ca_run(tmp_path / "genetic_algorithm_m_obs"))
+    assert crh.uq_run_dir(str(tmp_path)) == str(run)
+    assert crh.uq_distributions(str(tmp_path))
+
+
+def test_an_mcmc_run_that_has_not_written_its_chain_is_found_by_name(tmp_path):
+    _ca_run(tmp_path / "genetic_algorithm_m_obs")
+    (tmp_path / "mcmc_m_obs").mkdir()
+    assert crh.uq_run_dir(str(tmp_path)) == str(tmp_path / "mcmc_m_obs")
+
+
 def test_a_previous_runs_results_do_not_count_as_this_runs(tmp_path):
     """Searching for a ``<case_type>`` subdirectory can reach an *earlier* run's
     outputs, which the old direct read of a single file could not do. A run whose

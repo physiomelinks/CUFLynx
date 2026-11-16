@@ -257,3 +257,27 @@ def test_the_uq_engine_is_built_with_ca_uq_options(monkeypatch, tmp_path):
     assert seen["UQ_options"] == {"num_steps": 5}
     assert "mcmc_options" not in seen
     assert not hasattr(uq_runner, "uq_options_kwarg")
+
+
+def test_the_posterior_predictive_check_is_left_to_find_the_mcmc_runs_dir(monkeypatch):
+    """CA reads the chain from, and saves the check into, the MCMC run's own directory
+    (``mcmc_<prefix>_<obs>``) when no output_dir is given; the working dir holds no chain."""
+    import types
+
+    import uq_runner
+    from conftest import set_ca_module
+
+    seen = {}
+
+    def check(**kwargs):
+        seen.update(kwargs)
+        return types.SimpleNamespace(
+            summary=lambda: "", coverage={}, predictions=types.SimpleNamespace(shape=(3,)),
+            used_emulator=False, failures=0)
+
+    set_ca_module(monkeypatch, "param_id.posterior_predictive",
+                  types.SimpleNamespace(posterior_predictive=check))
+    engine = object()
+    assert uq_runner._posterior_predictive({}, engine) is not None
+    assert seen["client"] is engine
+    assert seen.get("output_dir") is None
