@@ -145,8 +145,8 @@ describe('panelSettings', () => {
     expect(stepPanel(undefined)).toBe('calibration')
     expect(stepPanel('uq')).toBe('uq')
     expect(stepPanel('emulation')).toBe('emulator')
-    expect(stepPanel('identifiability')).toBe('identifiability')
-    expect(stepPanel('reduction')).toBe('identifiability')
+    expect(stepPanel('identifiability')).toBe('ia')
+    expect(stepPanel('reduction')).toBe('ia')
     expect(stepPanel('set')).toBeNull()
   })
 
