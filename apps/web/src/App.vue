@@ -588,7 +588,7 @@ const calibrationPanel = ref(null)
 const sensitivityPanel = ref(null)
 const uqPanel = ref(null)
 const emulatorPanel = ref(null)
-// The Identifiability tab's panel joins this map where that tab exists (devel, #412).
+// The Identifiability tab's panel (tab 'ia') joins this map where that tab exists (#412).
 const PANEL_REFS = { calibration: calibrationPanel, sensitivity: sensitivityPanel, uq: uqPanel,
   emulator: emulatorPanel }
 

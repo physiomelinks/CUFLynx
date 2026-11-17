@@ -19,13 +19,13 @@ export const PANEL_KINDS = {
   sensitivity: 'sensitivity',
   uq: 'uq',
   emulator: 'emulation',
-  identifiability: 'identifiability',
+  ia: 'identifiability',
 }
 
 /** The left tab that shows the settings of a step of CA's `kind` (a reduction is made on
  * the Identifiability tab too), or null for a kind no panel makes (set, sweep). */
 const KIND_TABS = { ...Object.fromEntries(Object.entries(PANEL_KINDS).map(([t, k]) => [k, t])),
-  reduction: 'identifiability' }
+  reduction: 'ia' }
 
 /** The left tab whose panel makes steps of CA's `kind`, or null. */
 export function stepPanel(kind) {
