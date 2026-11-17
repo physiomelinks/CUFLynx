@@ -2557,6 +2557,13 @@ describe('Emulator tab when emulation is unavailable', () => {
     expect(tab.attributes('title')).toBeUndefined()
   })
 
+  it('is named Surrogate: emulators are one kind of surrogate, ROMs another', async () => {
+    getEmulatorDefaults.mockResolvedValueOnce({ ...UNAVAILABLE, available: true })
+    const wrapper = shallowMount(App)
+    await flushPromises()
+    expect(wrapper.find('[data-testid="tab-emulator"]').text()).toBe('Surrogate')
+  })
+
   // A circulatory_autogen with no emulators at all is the same story from the
   // user's side, and the backend reports it as unavailable too.
   it('treats a circulatory_autogen with no emulator support the same way', async () => {

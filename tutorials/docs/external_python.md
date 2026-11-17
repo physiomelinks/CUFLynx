@@ -162,17 +162,17 @@ conda activate fenicsx
 pip install -e "<CA_dir>[emulation]"
 ```
 
-**Take the `[emulation]` extra.** It is what the **Emulator** tab needs, and it is
+**Take the `[emulation]` extra.** It is what the **Surrogate** tab needs, and it is
 *not* part of the plain install and *not* part of `dev`: it pulls `autoemulate`, and
 with it torch, gpytorch, pyro-ppl and lightgbm, plus a Python floor of 3.10 the rest
 of CA does not have — which is why CA keeps it optional rather than making every
-calibration carry a deep-learning stack. Without it the **Emulator** tab is flagged
+calibration carry a deep-learning stack. Without it the **Surrogate** tab is flagged
 as unavailable and, when opened, shows only an explanation of how to enable it — no
 settings, no Train button. Everything else keeps working.
 
 | Extra | Brings | Take it if |
 |---|---|---|
-| `emulation` | `autoemulate` (surrogate models) | You want the **Emulator** tab. Needs Python `>=3.10,<3.13`. |
+| `emulation` | `autoemulate` (surrogate models) | You want the **Surrogate** tab. Needs Python `>=3.10,<3.13`. |
 | `uq` | `pymc` | You want the **UQ** tab's pyMC sampler. The default sampler, emcee, is a core dependency and needs nothing extra. |
 | `dev` | pytest, black, flake8, mypy | You are *developing* circulatory_autogen. Not needed to use CUFLynx, and it does **not** include `emulation`. |
 | `docs` | mkdocs-material, mkdocstrings | You are building CA's documentation. |
@@ -195,7 +195,7 @@ Open **Settings** (the gear icon):
   locked, with solver `external`.
 
 Changing the interpreter restarts the simulation worker, so the next run picks it
-up, and the **Emulator** tab is re-checked against the new interpreter at the same
+up, and the **Surrogate** tab is re-checked against the new interpreter at the same
 moment — no restart needed.
 
 ## The worked example: a FEniCSx heat equation
@@ -483,7 +483,7 @@ something expensive. **UQ** gives posteriors over the same parameters, by defaul
 with emcee; switching its **Library** to pyMC needs the `[uq]` extra in the same
 environment.
 
-**Emulator.** The **Emulator** tab trains a surrogate of the fitted scalar features
+**Emulator.** The **Surrogate** tab's Emulator section trains a surrogate of the fitted scalar features
 and lets sensitivity, calibration and UQ evaluate *that* instead of the model —
 which is the reason to bother on a model where a single run is a finite-element
 solve. Six scalar observables and two parameters make the heat example a legitimate

@@ -79,7 +79,7 @@ two in step. The exported `run_pipeline.py` is CA's own
 
 ## Key files
 
-- `apps/web/src/App.vue` — main UI (tabs: Parameters · Emulator · Identifiability · Sensitivity · Calibration · UQ; center: Output plots · Progress · Analysis)
+- `apps/web/src/App.vue` — main UI (tabs: Parameters · Surrogate · Identifiability · Sensitivity · Calibration · UQ; center: Output plots · Progress · Analysis)
 - `apps/web/src/components/TourOverlay.vue` + `lib/tourSteps.js` — the **Tutorial**
   button's guided tour. **Every anchor is a `data-testid`** and nothing else:
   renaming one breaks a tour step silently in the app, which is why
@@ -119,7 +119,8 @@ two in step. The exported `run_pipeline.py` is CA's own
 - **Identifiability tab** (`IAPanel.vue`, before Sensitivity) — two halves, both built from CA's descriptors (`GET /api/identifiability/defaults`). **Parameter reduction** (`ANALYSIS_OPTIONS['param_reduction']`) runs through `sensitivity_runner.py` in its own manager slot (`sensitivity.param_reduction`): after a Sobol run (`do_param_reduction`) or alone over an existing one (`reduce_only`, nothing simulated). Each option carries the `methods` that read it, from CA's `REDUCTIONS` registry, because CA refuses another method's option set to anything but its default. The report is CA's `param_reduction.json`, read by `ca_run_history.param_reduction` and found under the Sobol run (`find_param_reduction`), never located by a second copy of CA's default; "Calibrate these" adopts its `reduced_params_for_id.json` through `_save_params_file`. **Identifiability analysis** is the UQ runner's `laplace` method with `ia_options`; a profile-likelihood run reports CA's profiles (`ca_run_history.profile_likelihood`) instead of a posterior.
 - `apps/api/emulator.py` / `emulator_runner.py` — trains a **surrogate** of the
   model's scalar observable features with CA's `EmulatorTrainer` (CA #333);
-  `EmulatorPanel.vue`, tab between Parameters and Sensitivity. Two independent
+  `EmulatorPanel.vue`, the Emulator section of the **Surrogate** tab (between
+  Parameters and Sensitivity; reduced-order models are to join it). Two independent
   controls, because emulation has two steps: **Train** fits one against the
   solver, and the **use** tick box (`useEmulator` store) makes sensitivity,
   calibration and UQ evaluate it instead. `solver:` keeps meaning the truth

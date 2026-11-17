@@ -512,7 +512,7 @@ watch(pythonPath, async (p) => {
       /* keep the list we have; the chips just stay as they were */
     }
     // Emulation is judged by importing autoemulate *in the chosen interpreter*,
-    // so the Emulator tab's availability changes with this pick (#261).
+    // so the Surrogate tab's availability changes with this pick (#261).
     await refreshEmulatorDefaults()
   } catch {
     /* keep the in-session choice even if persisting fails */
@@ -2000,7 +2000,7 @@ function onRunCalibration(settings) {
       ...runTimes(),
       python_path: pythonPath.value,
       working_dir: workingDir.value.trim() || undefined,
-      // Evaluate the trained emulator instead of the solver (Emulator tab).
+      // Evaluate the trained emulator instead of the solver (Surrogate tab).
       use_emulator: emu.useEmulator.value,
       // Which bundle, when the study holds several. Sent with the run rather than
       // derived there: the panel shows one emulator's numbers, and a run that
@@ -2119,7 +2119,7 @@ function onRunSensitivity(settings) {
       ...runTimes(),
       python_path: pythonPath.value,
       working_dir: workingDir.value.trim() || undefined,
-      // Evaluate the trained emulator instead of the solver (Emulator tab).
+      // Evaluate the trained emulator instead of the solver (Surrogate tab).
       use_emulator: emu.useEmulator.value,
       // Which bundle, when the study holds several. Sent with the run rather than
       // derived there: the panel shows one emulator's numbers, and a run that
@@ -2337,7 +2337,7 @@ const emuUnavailable = computed(
 )
 const emuUnavailableTitle = computed(() =>
   emuDefaults.value?.unavailable_reason ||
-  'Emulation is unavailable — open the Emulator tab for how to enable it.',
+  'Emulation is unavailable — open the Surrogate tab for how to enable it.',
 )
 
 // ...and nothing downstream may keep evaluating a surrogate that cannot be
@@ -3153,7 +3153,7 @@ watch(() => obs.obsData.value, scheduleRun)
             :title="emuUnavailable ? emuUnavailableTitle : null"
             @click="leftTab = 'emulator'"
           >
-            Emulator
+            Surrogate
             <!-- Deliberately unmarked. An emulator is optional, so not having one is
                  a feature you are not using rather than something wrong, and an amber
                  tab with a warning glyph made a healthy app look faulty. The tooltip
