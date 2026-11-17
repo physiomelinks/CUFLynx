@@ -4237,8 +4237,10 @@ def _study_plan(record: "_ModelRecord", configured: str, config: dict, *,
         raise HTTPException(status_code=409, detail=(
             f"step {running} of the study workflow is running; this run is the next step "
             f"of the same workflow, so start it when that one has finished"))
+    # the CellML the workflow's model is, for a model type CA generates from it
+    config.setdefault("cellml_model_path", _model_file(record))
     try:
-        target = study_workflow.target_model(config["model_path"], config["model_type"])
+        target = _study_target(config)
         builder = study_workflow.open_workflow(configured, target)
     except (study_workflow.StudyWorkflowError, ValueError, OSError) as exc:
         raise HTTPException(status_code=422, detail=f"the study workflow: {exc}") from exc
@@ -4267,10 +4269,19 @@ def _study_settings(config: dict, settings: dict, extra: dict) -> dict:
     return out
 
 
+def _study_target(config: dict) -> dict | None:
+    """The workflow model of this run: the user's file for an external Python model, else
+    the CellML (the run's ``model_path`` is the generated ``.py`` for a generated type)."""
+    model_type = config["model_type"]
+    path = (config["model_path"] if model_type == "external_python"
+            else config.get("cellml_model_path") or config["model_path"])
+    return study_workflow.target_model(path, model_type)
+
+
 def _study_inputs(config: dict, obs_path: str | None = None) -> dict:
     """The model, obs_data and params_for_id every step of this run names, and the
     emulator it runs on when the Emulator tab's tick box is on."""
-    out = {"model": study_workflow.target_model(config["model_path"], config["model_type"]),
+    out = {"model": _study_target(config),
            "obs_data": obs_path or config["obs_path"], "params_for_id": config["params_path"]}
     if config.get("use_emulator"):
         out["emulator_dir"] = config["emulator_dir"]

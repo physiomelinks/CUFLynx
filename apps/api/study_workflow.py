@@ -122,13 +122,32 @@ def run_dir(working_dir: str, name: str) -> str:
     return os.path.join(working_dir, RUNS_DIR, name)
 
 
+def cellml_model_types() -> tuple:
+    """The model types a CellML workflow model runs as: CA's ``CELLML_MODEL_TYPES`` (CA
+    generates the step's backend from the CellML), or ``cellml`` alone on a CA without it."""
+    try:
+        ensure_ca_path()
+        return tuple(ca_from("calibration_workflow.spec", "CELLML_MODEL_TYPES"))
+    except ImportError:
+        return ("cellml",)
+
+
+def runs_from_cellml(model_type: str) -> bool:
+    """Whether a run of this model type is a CellML workflow model."""
+    return model_type in (None, "") or model_type in cellml_model_types()
+
+
 def target_model(model_path: str, model_type: str) -> dict | None:
-    """The workflow model for the loaded model, or None when it has no workflow form."""
+    """The workflow model for the loaded model, or None when it has no workflow form.
+
+    ``model_path`` is the CellML for every model type CA generates from it (never the
+    generated ``.py``), and the user's own file for ``external_python``.
+    """
     _, cellml_model, external_model = _ca("WorkflowBuilder", "cellml_model", "external_model")
-    if model_type in (None, "", "cellml"):
-        return cellml_model(os.path.abspath(model_path))
     if model_type == "external_python":
         return external_model(os.path.abspath(model_path))
+    if runs_from_cellml(model_type):
+        return cellml_model(os.path.abspath(model_path))
     return None
 
 
@@ -136,8 +155,8 @@ def direct_reason(model_type: str, *, held_out: bool = False,
                   modifier_point: bool = False, profile: bool = False) -> str | None:
     """Why this run keeps its direct runner, or None when it can be a workflow step.
 
-    * a model type with no workflow model kind: CA's CellML model runs as ``cellml`` only,
-      and a generated Python model has none;
+    * a model type with no workflow model kind: a CellML model runs only as the model types
+      CA generates from it in a workflow (:func:`cellml_model_types`), so ``cpp`` has none;
     * held-out data in the obs_data: the direct calibration validates the best fit against
       it (``validation_results.json``), which a workflow calibration step does not;
     * a point to start from or analyse at, when the params_for_id has a modifier entry: the
@@ -145,9 +164,9 @@ def direct_reason(model_type: str, *, held_out: bool = False,
     * a profile likelihood (the Identifiability tab): a uq step runs MCMC or a Laplace
       approximation, and the UQ panel reads the profiles from the direct run's files.
     """
-    if model_type not in (None, "", "cellml", "external_python"):
+    if model_type != "external_python" and not runs_from_cellml(model_type):
         return (f"the {model_type} model type has no calibration workflow model kind "
-                f"(a CellML runs as cellml only)")
+                f"(a CellML model runs in a workflow as {', '.join(cellml_model_types())})")
     if held_out:
         return ("the obs_data has held-out data, which a workflow calibration step does not "
                 "validate the best fit against")
@@ -228,8 +247,9 @@ def step_settings(*, model_type: str, solver: str | None, solver_info: dict | No
     and so is the values file each step's model is generated with.
     """
     out: dict = {}
-    if model_type in (None, "", "cellml"):
-        out["model_type"] = "cellml"
+    if model_type != "external_python" and runs_from_cellml(model_type):
+        # CA generates this backend from the step's CellML; without it the step runs as cellml
+        out["model_type"] = model_type or "cellml"
         if solver:
             out["solver"] = solver
     if solver_info:

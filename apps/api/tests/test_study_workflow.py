@@ -606,13 +606,63 @@ def test_held_out_data_keeps_the_direct_calibration(client, study_workflow_on, t
     assert not (work / "workflow").exists()
 
 
+CA_CELLML_MODEL_TYPES = ("cellml", "python", "casadi_python", "aadc_python")
+
+
+@pytest.mark.parametrize("types, recorded", [
+    (CA_CELLML_MODEL_TYPES, {"cellml", "python", "casadi_python", "aadc_python"}),
+    (("cellml",), {"cellml"}),           # a CA from before it generated other backends
+])
+def test_the_model_types_recorded_are_those_ca_generates_from_a_cellml(
+        study_workflow_on, monkeypatch, types, recorded):
+    monkeypatch.setattr(study_workflow, "cellml_model_types", lambda: types)
+    for model_type in ("cellml", "python", "casadi_python", "aadc_python", "cpp"):
+        reason = study_workflow.direct_reason(model_type)
+        assert (reason is None) == (model_type in recorded), (model_type, reason)
+    assert study_workflow.direct_reason("external_python") is None
+    assert "cpp model type" in study_workflow.direct_reason("cpp")
+
+
+def test_a_generated_models_workflow_model_is_its_cellml_not_the_py(
+        study_workflow_on, monkeypatch):
+    """CA generates the step's backend from the CellML, so the target names the CellML even
+    though the run itself is handed the generated .py."""
+    monkeypatch.setattr(study_workflow, "cellml_model_types", lambda: CA_CELLML_MODEL_TYPES)
+    target = main._study_target({"model_type": "python", "model_path": "/gen/LV.py",
+                                 "cellml_model_path": str(LV_MODEL_PATH)})
+    assert target == study_workflow.target_model(str(LV_MODEL_PATH), "cellml")
+
+
 @pytest.mark.integration
-def test_a_generated_python_model_keeps_the_direct_runner(client, study_workflow_on, tmp_path):
-    # the direct runner generates the Python model with CA's generators, which import
-    # scipy: the integration tier has it, the unit tier does not
+def test_a_generated_python_model_is_a_workflow_step_from_its_cellml(
+        client, fake_runs, tmp_path, monkeypatch):
+    # the run generates the Python model with CA's generators, which import scipy: the
+    # integration tier has it, the unit tier does not
     pytest.importorskip("scipy")
     import engine as engine_mod
 
+    if "python" not in study_workflow.cellml_model_types():
+        pytest.skip("this libcuflynx runs a CellML workflow model as cellml only (CA #671)")
+    work = tmp_path / "w"
+    model_id = _setup(client)
+    engine_mod.engine.model_type = "python"
+    status = _calibrate(client, model_id, work)
+
+    assert not any("not recorded" in ln for ln in status["lines"]), status["lines"]
+    workflow = _workflow(work)
+    assert workflow["target"]["cellml_model_path"].endswith(".cellml")
+    step = _steps(work)["calibration-1"]
+    assert step["model"]["cellml_model_path"].endswith(".cellml")
+    assert step["settings"]["model_type"] == "python"
+
+
+@pytest.mark.integration
+def test_a_generated_python_model_keeps_the_direct_runner_on_an_older_ca(
+        client, study_workflow_on, tmp_path, monkeypatch):
+    pytest.importorskip("scipy")
+    import engine as engine_mod
+
+    monkeypatch.setattr(study_workflow, "cellml_model_types", lambda: ("cellml",))
     _direct(tmp_path)
     work = tmp_path / "w"
     model_id = _setup(client)
