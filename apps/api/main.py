@@ -4587,9 +4587,14 @@ def _study_uq(record, config: dict, configured: str) -> list:
         else:
             at = _study_point(plan, record.model_id, qnames)
         if profile:
+            # a profile likelihood re-calibrates at each held value: it needs the budget a
+            # calibration made first gets (CA's GA refuses a step with none)
+            refit = {"param_id_method": settings.get("param_id_method", "genetic_algorithm"),
+                     "optimiser_options": _study_ga_options(
+                         settings, {"cost_convergence": 0.001, "cost_type": cost_type})}
             plan.add("add_identifiability", own,
                      **_study_inputs(config, obs), ia_options=ia, result_from=at,
-                     settings=_study_settings(config, settings, {}))
+                     settings=_study_settings(config, settings, refit))
         else:
             uq_options = dict(_uq_options(study_workflow.options(settings), _analysis_seed),
                               method=method)
