@@ -367,6 +367,42 @@ def test_a_reopened_working_dirs_calibration_step_is_the_previous_best_fit(
         zip(QNAMES, [1.0, 0.5, 0.25, 2.0]))
 
 
+def test_a_new_working_dir_closes_another_folders_study_workflow(
+        client, fake_runs, tmp_path):
+    """The workflow bar shows the working dir's study: choosing a folder without one
+    leaves no other folder's steps in it."""
+    import workflow_manager
+
+    first = tmp_path / "w1"
+    model_id = _setup(client)
+    assert _calibrate(client, model_id, first)["state"] == "done"
+    assert workflow_manager.workflow.path == str(first / "workflow" / "calibration_workflow.json")
+
+    second = tmp_path / "w2"
+    second.mkdir()
+    r = client.post("/api/workflow/working-dir", json={"config_outputs_dir": str(second)})
+    assert r.status_code == 200, r.text
+    assert r.json() == {"loaded": False}
+    assert not workflow_manager.workflow.loaded
+    # a half-typed relative path is refused, and changes nothing
+    r = client.post("/api/workflow/working-dir", json={"config_outputs_dir": "w1"})
+    assert r.status_code == 422
+
+
+@pytest.mark.integration
+def test_returning_to_a_working_dir_reopens_its_study_workflow(client, fake_runs, tmp_path):
+    pytest.importorskip("libcellml")         # describing the workflow plans it
+    import workflow_manager
+
+    first, second = tmp_path / "w1", tmp_path / "w2"
+    model_id = _setup(client)
+    assert _calibrate(client, model_id, first)["state"] == "done"
+    client.post("/api/workflow/working-dir", json={"config_outputs_dir": str(second)})
+    r = client.post("/api/workflow/working-dir", json={"config_outputs_dir": str(first)})
+    assert r.json()["loaded"] is True
+    assert workflow_manager.workflow.path == str(first / "workflow" / "calibration_workflow.json")
+
+
 def test_a_calibration_steps_tab_is_the_previous_best_fit_in_another_working_dir(
         client, fake_runs, tmp_path):
     """A study opened as a calibration step's tab (Workflow tab) shows that step's best fit,

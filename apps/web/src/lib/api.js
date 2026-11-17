@@ -807,6 +807,14 @@ export async function closeWorkflow() {
   return data
 }
 
+/** The working dir changed: the server opens its study workflow in place of another's. */
+export async function followWorkingDir(workingDir) {
+  const { data } = await axios.post(url('/api/workflow/working-dir'), {
+    config_outputs_dir: workingDir,
+  })
+  return data
+}
+
 /**
  * One tab of the workflow -- a step id, or 'target' -- as a study: the same response a
  * dropped .omex gives, plus `workflow_view` (fixed values, own results, what it waits for).

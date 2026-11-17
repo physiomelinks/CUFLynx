@@ -16,6 +16,7 @@ vi.mock('./lib/api', () => ({
   loadWorkflow: vi.fn().mockResolvedValue(null),
   uploadWorkflow: vi.fn().mockResolvedValue(null),
   closeWorkflow: vi.fn().mockResolvedValue(null),
+  followWorkingDir: vi.fn().mockResolvedValue({ loaded: false }),
   openWorkflowView: vi.fn().mockResolvedValue(null),
   runWorkflow: vi.fn().mockResolvedValue({ job_id: 'w1' }),
   getWorkflowStatus: vi.fn().mockResolvedValue({ state: 'done', lines: [], next_offset: 0 }),

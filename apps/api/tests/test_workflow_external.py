@@ -176,6 +176,18 @@ def test_an_external_step_tab_loads_its_py_with_the_step_s_values(
     assert body["workflow_view"]["view"] == "fit-k"
 
 
+def test_a_workflow_the_user_opened_stays_when_the_working_dir_changes(
+        client, opened, study, tmp_path):
+    """Only a study workflow follows the working dir; one opened from the Workflow tab is
+    the user's choice and stays open."""
+    other = tmp_path / "elsewhere"
+    other.mkdir()
+    r = client.post("/api/workflow/working-dir", json={"config_outputs_dir": str(other)})
+    assert r.status_code == 200, r.text
+    assert r.json()["loaded"] is True
+    assert r.json()["path"] == str(study / "workflow.json")
+
+
 @pytest.mark.parametrize("kind", ["calibration", "sensitivity"])
 def test_a_calibration_steps_tab_remembers_its_results_for_reuse(
         client, monkeypatch, study, tmp_path, requires_parameters_file, kind):
