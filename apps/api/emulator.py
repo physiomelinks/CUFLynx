@@ -21,11 +21,13 @@ import uuid
 
 import ca_run_history
 from calibration import (
+    WORKFLOW_RUNNER_PATH,
     _warn_no_mpiexec,
     clear_run_config,
     finished_before_exiting,
     read_meta_line,
     resolve_mpiexec,
+    study_popen_kwargs,
     teardown_warning,
     write_run_config,
 )
@@ -46,12 +48,17 @@ class EmulatorJob:
         self.warning: str | None = None
         self.proc: subprocess.Popen | None = None
         self.config_path: str | None = None
+        #: The study-workflow emulation step this run is ({workflow, run_dir, step, ...}),
+        #: or None for a direct run.
+        self.study_step: dict | None = None
         self.lock = threading.Lock()
 
 
 class EmulatorManager:
     def __init__(self):
         self.runner_path = RUNNER_PATH
+        #: What runs a training that is a study-workflow step (an ``emulation`` step).
+        self.study_runner_path = WORKFLOW_RUNNER_PATH
         self.python = default_python()
         self._job: EmulatorJob | None = None
         self._lock = threading.Lock()
@@ -77,7 +84,8 @@ class EmulatorManager:
         manager: a missing mpiexec costs the user parallelism, not the run.
         """
         python = config.get("python") or self.python
-        base = runner_command(python, self.runner_path, config_path)
+        script = self.study_runner_path if config.get("study_step") else self.runner_path
+        base = runner_command(python, script, config_path)
         num_cores = int(config.get("num_cores", 1) or 1)
         if num_cores > 1:
             mpiexec = resolve_mpiexec(python)
@@ -97,6 +105,7 @@ class EmulatorManager:
 
             job = EmulatorJob(uuid.uuid4().hex, output_dir)
             job.config_path = config_path
+            job.study_step = config.get("study_step")
             env = runner_launch_env(config.get("python") or self.python)
             job.proc = subprocess.Popen(
                 self.build_command(config, config_path),
@@ -105,8 +114,10 @@ class EmulatorManager:
                 text=True,
                 bufsize=1,
                 env=env,
+                **study_popen_kwargs(config),
             )
             self._job = job
+            job.lines.extend(config.get("log_preamble") or [])
 
         threading.Thread(target=self._reader, args=(job,), daemon=True).start()
         return job.id
@@ -139,6 +150,10 @@ class EmulatorManager:
                 job.lines, DONE_MARKER, FAIL_MARKER
             )
             meta = read_meta_line(job.lines, META_MARKER)
+            if job.study_step and not meta.get("emulator_dir"):
+                # an emulation step: CA records where it trained the emulator
+                result = ca_run_history.step_result(job.study_step["step_dir"]) or {}
+                meta = {"emulator_dir": result.get("emulator_dir")}
             metadata = None
             if finished and meta.get("emulator_dir"):
                 metadata = ca_run_history.emulator_metadata(meta["emulator_dir"])

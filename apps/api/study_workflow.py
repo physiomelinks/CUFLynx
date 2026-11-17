@@ -64,7 +64,7 @@ ENV_SWITCH = "CUFLYNX_STUDY_WORKFLOW"
 
 #: Step id labels, by kind of run.
 LABELS = {"calibration": "calibration", "sobol": "sobol", "local": "local-sa",
-          "mcmc": "mcmc", "laplace": "laplace", "sliders": "sliders",
+          "mcmc": "mcmc", "laplace": "laplace", "sliders": "sliders", "emulation": "surrogate",
           "bounds": "nominal", "best_fit": "best-fit"}
 
 #: Settings keys of a panel that are CUFLynx's own and never reach CA's option dicts. A uq

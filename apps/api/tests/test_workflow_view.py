@@ -136,6 +136,54 @@ def test_the_workflow_target_never_reaches_cas_options(client, fake_runs, tmp_pa
     assert "workflow_target" not in _steps(work)["sobol-1"]["settings"]["sa_options"]
 
 
+FAKE_EMULATION_RUNNER = """
+import json, sys
+from pathlib import Path
+cfg = json.loads(Path(sys.argv[1]).read_text())
+step = cfg["study_step"]
+d = Path(step["step_dir"])
+bundle = d / "emulator"
+bundle.mkdir(parents=True, exist_ok=True)
+(bundle / "emulator_metadata.json").write_text(json.dumps({"model": "RBF", "features": []}))
+(bundle / "training_data.npz").write_bytes(b"")   # CA saves the design beside it
+(d / "step_result.json").write_text(json.dumps({
+    "step": step["step"], "kind": "emulation", "status": "done", "emulator_dir": str(bundle)}))
+print(cfg["markers"]["done"], flush=True)
+"""
+
+
+def test_training_a_surrogate_is_an_emulation_step_and_its_emulator_is_found(
+        client, study_workflow_on, tmp_path):
+    import emulator as emulator_mod
+
+    script = tmp_path / "fake_emulation_runner.py"
+    script.write_text(FAKE_EMULATION_RUNNER)
+    emulator_mod.emulator.study_runner_path = str(script)
+    work = tmp_path / "w"
+    model_id = _setup(client)
+    r = client.post("/api/emulator/train", json={"model_id": model_id, "settings": {
+        "config_outputs_dir": str(work), "num_train_samples": 16}})
+    assert r.status_code == 200, r.text
+    job = r.json()["job_id"]
+    import time
+    for _ in range(300):
+        s = client.get(f"/api/emulator/{job}/status").json()
+        if s["state"] != "running":
+            break
+        time.sleep(0.05)
+    assert s["state"] == "done", s
+    (step,) = _steps(work).values()
+    assert step["id"] == "surrogate-1" and step["kind"] == "emulation"
+    assert step["settings"]["emulator_settings"]["num_train_samples"] == 16
+    assert "emulator_dir" not in step["settings"]["emulator_settings"]
+    # the Surrogate tab reads the step's emulator
+    bundle = str(work / "workflows" / "study" / "surrogate-1" / "emulator")
+    info = client.get("/api/emulator/info", params={
+        "model_id": model_id, "config_outputs_dir": str(work)}).json()
+    assert info["emulator_dir"] == bundle
+    assert bundle in [row["dir"] for row in info["choices"]]
+
+
 # -- independent workflows ------------------------------------------------------------------
 
 def test_a_new_workflow_is_its_own_directory_and_both_are_listed(client, fake_runs, tmp_path):

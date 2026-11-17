@@ -4565,6 +4565,27 @@ def _study_uq(record, config: dict, configured: str) -> list:
     return config["log_preamble"]
 
 
+def _study_emulation(record, config: dict, configured: str) -> list:
+    """Make this emulator training a step of the study workflow (an ``emulation`` step);
+    the run-log notes. Its emulator is where CA trains a step's (``<run>/<step>/``), and
+    the Emulator tab finds it there (``ca_run_history.workflow_emulator_bundles``)."""
+    from emulator_runner import DONE_MARKER, FAIL_MARKER, _emulator_settings  # noqa: PLC0415
+
+    settings = config["settings"]
+    with study_workflow.lock():
+        plan, notes = _study_plan(record, configured, config, flavour="emulation")
+        if plan is None:
+            return notes
+        emu = _emulator_settings(study_workflow.options(settings), "", _analysis_seed)
+        emu.pop("emulator_dir", None)     # CA trains a step's emulator in its step dir
+        inputs = _study_inputs(config)
+        inputs.pop("emulator_dir", None)
+        plan.add("add_emulation", plan.main_id(study_workflow.LABELS["emulation"]), **inputs,
+                 emulator_settings=emu, settings=_study_settings(config, settings, {}))
+        _study_start(plan, config, (DONE_MARKER, FAIL_MARKER), notes)
+    return config["log_preamble"]
+
+
 @app.get("/api/calibration/defaults")
 def calibration_defaults() -> dict:
     # `methods` is introspected from CA's PARAM_ID_METHODS schema (never hardcoded);
@@ -5600,8 +5621,12 @@ def emulator_train(req: EmulatorTrainRequest) -> dict:
         "num_cores": int(req.settings.get("num_cores", 1) or 1),
         "python": python_path,
         "settings": _with_engine_dt(req.settings),
+        "workflow_target": req.settings.get("workflow_target"),
         "seed": _analysis_seed,
     }
+    if emulator.busy:
+        raise HTTPException(status_code=409, detail="an emulator training job is already running")
+    config.setdefault("log_preamble", _study_emulation(record, config, configured))
     try:
         job_id = emulator.start(config)
     except RuntimeError as exc:
