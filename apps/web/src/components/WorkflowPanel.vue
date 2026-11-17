@@ -244,7 +244,8 @@ const progressText = computed(() => {
         />
       </div>
       <p class="wf-hint">
-        Runs go to <code>{{ workingDir ? `${workingDir}/workflows/<name>` : 'the working dir, once one is set' }}</code>.
+        <template v-if="workingDir">Runs go to <code>{{ `${workingDir}/workflows/<name>` }}</code>.</template>
+        <template v-else>Runs go to the working dir, once one is set.</template>
       </p>
     </template>
 
@@ -559,7 +560,6 @@ const progressText = computed(() => {
 .wf-missing {
   color: var(--p-orange-500, #f97316);
 }
-.wf-intro,
 .wf-check {
   display: flex;
   align-items: center;
@@ -573,6 +573,7 @@ const progressText = computed(() => {
   border: 1px solid var(--p-content-border-color, #555);
   border-radius: 4px;
 }
+.wf-intro,
 .wf-hint {
   margin: 0;
   opacity: 0.75;

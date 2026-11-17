@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
+import fs from 'node:fs'
 
 vi.mock('../lib/api', () => ({
   exportWorkflow: vi.fn(async () => ({
@@ -220,5 +221,28 @@ describe('WorkflowPanel: selection steps', () => {
     await input.trigger('change')
     expect(wrapper.emitted('pick-input')[0][0]).toEqual({ stepId: 'left', role: 'params_for_id', file })
     expect(wrapper.emitted('select')).toBeUndefined()
+  })
+})
+
+describe('WorkflowPanel intro', () => {
+  // jsdom computes no layout, so the rule is checked in the source: a flex
+  // paragraph makes each inline piece (the <strong>, the <code>) its own column.
+  it('lays the intro out as a paragraph, not a flex row', () => {
+    // vitest runs from apps/web; jsdom's import.meta.url is not a file: URL.
+    const src = fs.readFileSync('src/components/WorkflowPanel.vue', 'utf8')
+    const style = src.slice(src.indexOf('<style'))
+    const rules = [...style.matchAll(/([^{}]+)\{([^}]*)\}/g)]
+    const intro = rules.filter(([, sel]) => sel.split(',').some((s) => s.trim() === '.wf-intro'))
+    expect(intro.length).toBeGreaterThan(0)
+    for (const [, , body] of intro) expect(body).not.toMatch(/display:\s*flex/)
+  })
+
+  it('writes the run location as prose until a working dir is set', () => {
+    const runHint = (w) => w.findAll('.wf-hint').find((h) => h.text().startsWith('Runs go to'))
+    const unset = runHint(mountPanel({ described: { loaded: false }, tabs: [] }))
+    expect(unset.text()).toBe('Runs go to the working dir, once one is set.')
+    expect(unset.find('code').exists()).toBe(false)
+    const set = runHint(mountPanel({ described: { loaded: false }, tabs: [], workingDir: '/w' }))
+    expect(set.find('code').text()).toBe('/w/workflows/<name>')
   })
 })
