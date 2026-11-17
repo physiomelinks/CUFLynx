@@ -5,6 +5,7 @@ schema (or the built-in fallback). The casadi_python AD path itself is covered b
 the integration tests.
 """
 
+import copy
 import sys
 import types
 
@@ -144,6 +145,55 @@ def test_cvode_opencor_not_offered_because_no_opencor_bundled(schema):
     # cellml falls back to the Myokit CVODE that CUFLynx can actually run.
     assert opts["default_solver_by_format"]["cellml"] == "CVODE_myokit"
     assert "CVODE_myokit" in opts["solvers_by_format"]["cellml"]
+
+
+@pytest.mark.parametrize("importable", [False, True])
+def test_cvode_libopencor_offered_only_when_libopencor_importable(monkeypatch, importable):
+    """CVODE_libopencor is listed iff libopencor can be imported by this interpreter;
+    CVODE_opencor (its alias) is never listed."""
+    schema = copy.deepcopy(so.FALLBACK_SOLVER_SCHEMA)
+    schema["solvers_by_model_type"]["cellml"] = ["CVODE_myokit", "CVODE_opencor", "CVODE_libopencor"]
+    schema["methods_by_solver"]["CVODE_libopencor"] = ["CVODE"]
+    import aadc_check
+
+    monkeypatch.setattr(aadc_check, "_configured_analysis_python", lambda: None)
+    monkeypatch.setattr(
+        aadc_check.importlib.util, "find_spec", lambda name, *a, **k: object() if importable else None
+    )
+    opts = so._build_options(schema, {"max": True})
+    cellml = opts["solvers_by_format"]["cellml"]
+    assert ("CVODE_libopencor" in cellml) is importable
+    assert ("CVODE_libopencor" in opts["methods_by_solver"]) is importable
+    assert "CVODE_opencor" not in cellml
+
+
+@pytest.mark.parametrize("there", [False, True])
+def test_cvode_libopencor_follows_the_interpreter_chosen_in_settings(monkeypatch, there):
+    """The chosen interpreter runs live simulation and analysis, so its answer wins
+    over this process's -- either way round."""
+    import aadc_check
+
+    schema = copy.deepcopy(so.FALLBACK_SOLVER_SCHEMA)
+    schema["solvers_by_model_type"]["cellml"] = ["CVODE_myokit", "CVODE_libopencor"]
+    schema["methods_by_solver"]["CVODE_libopencor"] = ["CVODE"]
+    asked = []
+    monkeypatch.setattr(aadc_check, "_configured_analysis_python", lambda: "/venv/bin/python")
+    monkeypatch.setattr(
+        aadc_check, "_importable_in", lambda python, module: asked.append((python, module)) or there
+    )
+    monkeypatch.setattr(aadc_check, "_importable", lambda module: not there)
+    opts = so._build_options(schema, {"max": True})
+    assert ("CVODE_libopencor" in opts["solvers_by_format"]["cellml"]) is there
+    assert ("/venv/bin/python", "libopencor") in asked
+
+
+def test_cvode_libopencor_falls_back_to_this_process_when_the_choice_cannot_be_asked(monkeypatch):
+    import aadc_check
+
+    monkeypatch.setattr(aadc_check, "_configured_analysis_python", lambda: "/gone/bin/python")
+    monkeypatch.setattr(aadc_check, "_importable_in", lambda python, module: None)
+    monkeypatch.setattr(aadc_check, "_importable", lambda module: True)
+    assert so._libopencor_importable() is True
 
 
 @BOTH_SCHEMAS
