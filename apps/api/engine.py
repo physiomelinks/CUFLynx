@@ -24,7 +24,8 @@ from pathlib import Path
 import ca_imports
 from ca_imports import ca_from
 from compiler_check import compiler_hint
-from runtime_paths import is_frozen
+from runtime_paths import is_frozen, solver_build_cache_dir
+from solver_info_defaults import with_declared_step_defaults
 
 DEFAULT_DT = 0.01
 DEFAULT_MODEL_TYPE = "cellml"
@@ -466,9 +467,28 @@ def _solver_reason(captured: str) -> str:
 # rather than the prose keeps these stable across Sundials wordings.
 _HINTS = (
     (
-        # FIRST, because it must win: this message is long, quotes a compiler
-        # command line and a whole traceback, and so is wide open to matching a
-        # later entry's needles by accident -- a temp path containing "inf", say.
+        # BE_batched_c builds each model with CMake and a C compiler when it first
+        # runs it. Ahead of the Myokit entry, whose needles a CMake log can also hit.
+        ("cmake not found", "batchedbuilderror", "cmake --build", "cmake -s"),
+        "The BE_batched_c solver builds each model with CMake and a C compiler when "
+        "it first runs it, and that build failed or could not start — a toolchain "
+        "problem on this machine, not a solver setting. Switch the solver to "
+        "CVODE_myokit, or install CMake and a C compiler:\n"
+        + compiler_hint(),
+    ),
+    (
+        # BE_batched_c counts MaximumNumberOfSteps per block over the whole run, so
+        # this is the setting to raise -- unlike CVODE_myokit, which has none.
+        ("too many steps (maximumnumberofsteps)",),
+        "The BE_batched_c solver used up its step budget (MaximumNumberOfSteps, "
+        "counted per block over the whole run) — raise MaximumNumberOfSteps or "
+        "loosen rtol in Settings, or remove a small MaximumStep.",
+    ),
+    (
+        # Before every later entry, because it must win: this message is long,
+        # quotes a compiler command line and a whole traceback, and so is wide open
+        # to matching a later entry's needles by accident -- a temp path containing
+        # "inf", say.
         #
         # CVODE_myokit compiles each model to a native extension *when it runs*, so
         # a failed compile is a toolchain problem and no solver setting can touch
@@ -547,12 +567,13 @@ _HINTS = (
     ),
     (
         # circulatory_autogen refuses a time-varying protocol input on the CasADi,
-        # AADC and solve_ivp backends; only CVODE_myokit can drive a variable from
-        # a trace. Without this the generic tail advised tightening tolerances,
-        # which cannot possibly help and sends the user to the wrong dial.
+        # AADC and solve_ivp backends; only the cellml solvers (CVODE_myokit,
+        # BE_batched_c) can drive a variable from a trace. Without this the generic
+        # tail advised tightening tolerances, which cannot possibly help and sends
+        # the user to the wrong dial.
         ("cannot drive a variable from a time series", "protocol trace name"),
-        "This protocol drives a variable over time, which only the CVODE_myokit "
-        "solver can do — switch the backend to cellml / CVODE_myokit in "
+        "This protocol drives a variable over time, which only the cellml solvers "
+        "(CVODE_myokit, BE_batched_c) can do — switch the backend to cellml in "
         "Settings, or replace the time-varying input with a constant per "
         "sub-experiment in the obs_data protocol.",
     ),
@@ -620,7 +641,7 @@ def model_stamp(model_path) -> tuple:
 
     The path is part of the stamp, not only its mtime: an external_python study
     moves from the uploaded temp copy to the study's own copy the moment an
-    outputs directory exists, and that is a different file under an unchanged
+    working dir exists, and that is a different file under an unchanged
     cache key. A file that cannot be stat'd stamps as size ``-1`` rather than
     raising: an unreadable model is the run's problem to report, not the cache's.
     """
@@ -733,6 +754,11 @@ def _resolve_output_key(var2idx, name):
     return None
 
 
+#: Solvers that build each model with CMake and a C compiler when they first run it,
+#: and take the folder to keep those builds in as solver_info ``build_dir``.
+BUILD_CACHE_SOLVERS = ("BE_batched_c",)
+
+
 class SimulationEngine:
     """Caches one compiled helper and one ProtocolRunner per ``model_id``."""
 
@@ -760,6 +786,9 @@ class SimulationEngine:
         self._runner_protocol_info: dict[str, object] = {}
         # cache key -> the model_stamp() the cached helper/runner was built from.
         self._model_stamps: dict[tuple, tuple] = {}
+        # model_id -> the values file (``external_parameters_file``) an external_python
+        # model runs with: a calibration workflow step's values (set_external_parameters).
+        self.external_parameters: dict[str, str] = {}
         self._lock = threading.Lock()
 
     @property
@@ -777,6 +806,36 @@ class SimulationEngine:
     @solver_info.setter
     def solver_info(self, value) -> None:
         self._solver_info = dict(value or {})
+
+    def run_solver_info(self, solver: str, model_id: str | None = None) -> dict:
+        """The solver_info a run of ``solver`` is built with: the settings, over the
+        solver's own declared step defaults, plus where a solver that compiles each
+        model keeps its builds, and ``model_id``'s values file when it has one. Never
+        stored, so the settings stay what the user chose."""
+        _ensure_ca_on_path()
+        si = with_declared_step_defaults(solver, self.solver_info)
+        if solver in BUILD_CACHE_SOLVERS:
+            cache = solver_build_cache_dir(solver)
+            if cache is not None:
+                si.setdefault("build_dir", str(cache))
+        return self.with_external_parameters(si, model_id)
+
+    def set_external_parameters(self, model_id: str, path: str | None) -> None:
+        """Run ``model_id`` (an external_python model) with the values in ``path`` (CA's
+        ``external_parameters_file``) in place of its class defaults; None to stop."""
+        if path:
+            self.external_parameters[model_id] = str(path)
+        else:
+            self.external_parameters.pop(model_id, None)
+
+    def with_external_parameters(self, solver_info: dict, model_id: str | None) -> dict:
+        """``solver_info`` with ``model_id``'s ``external_parameters_file``, when it has one
+        and the backend is external_python: what the live engine and every run of that
+        model are given."""
+        path = self.external_parameters.get(model_id or "")
+        if not path or self.model_type != EXTERNAL_MODEL_TYPE:
+            return dict(solver_info)
+        return {**solver_info, "external_parameters_file": path}
 
     def live_backend(self) -> tuple:
         """``(model_type, solver, fell_back_from)`` for a live simulation.
@@ -895,7 +954,7 @@ class SimulationEngine:
     # ------------------------------------------------------------------
     # Worker delegation (#167)
     # ------------------------------------------------------------------
-    def _worker_settings(self) -> dict:
+    def _worker_settings(self, model_id: str | None = None) -> dict:
         from sim_worker import worker_settings  # noqa: PLC0415 - optional path
 
         return worker_settings(
@@ -903,10 +962,10 @@ class SimulationEngine:
             dt=self.dt,
             model_type=self.model_type,
             solver=self.solver,
-            solver_info=self.solver_info,
+            solver_info=self.run_solver_info(self.solver, model_id),
         )
 
-    def _acquire_worker(self):
+    def _acquire_worker(self, model_id: str | None = None):
         """The live worker for the current settings, starting it if needed.
 
         Returns None when live simulation should stay in-process: no interpreter
@@ -925,7 +984,7 @@ class SimulationEngine:
 
         from sim_worker import SimWorker, WorkerError  # noqa: PLC0415
 
-        settings = self._worker_settings()
+        settings = self._worker_settings(model_id)
         worker = self._worker
         if worker is not None and (not worker.alive or not worker.matches(python, settings)):
             worker.stop()
@@ -960,7 +1019,7 @@ class SimulationEngine:
         """
         from sim_worker import WorkerError  # noqa: PLC0415
 
-        worker = self._acquire_worker()
+        worker = self._acquire_worker(payload.get("model_id"))
         if worker is None:
             return {}
         try:
@@ -1166,7 +1225,7 @@ class SimulationEngine:
                         dt=self.dt,
                         sim_time=float(sim_time),
                         pre_time=float(pre_time),
-                        solver_info=self.solver_info,
+                        solver_info=self.run_solver_info(solver, model_id),
                         model_type=model_type,
                         solver=solver,
                     )
@@ -1289,7 +1348,7 @@ class SimulationEngine:
                     runner = self.runner_factory(
                         model_path=str(model_path),
                         dt=self.dt,
-                        solver_info=self.solver_info,
+                        solver_info=self.run_solver_info(solver, model_id),
                         model_type=model_type,
                         solver=solver,
                     )

@@ -117,6 +117,194 @@ def protocol_info_of(obj) -> dict | None:
     return None
 
 
+#: The keys that make a prediction_item carry held-out data (CA #535): measured
+#: values the calibrated model is checked against afterwards, never scored in the
+#: calibration itself. A CA predating #535 rejects every one of them as an
+#: unknown key, so they are removed before such a CA reads the document.
+HELD_OUT_KEYS = ("value", "data_type", "std", "obs_dt")
+
+#: The CA module that arrived with those keys; its presence is the capability test.
+_HELD_OUT_MODULE = "param_id.validation"
+
+#: A prediction_item's optional scalar of its trace, in a data_item's vocabulary.
+#: An item with an ``operation`` is what ``include_prediction_items`` makes a
+#: sensitivity / emulator feature. A libcuflynx without that feature rejects
+#: both keys as unknown, so they are removed before such a one reads the document.
+PREDICTION_OPERATION_KEYS = ("operation", "operation_kwargs")
+
+#: The option, in ``sa_options`` and in ``emulator_settings``, that asks libcuflynx
+#: to treat the prediction_items with an operation as features too.
+INCLUDE_PREDICTION_ITEMS = "include_prediction_items"
+
+#: libcuflynx's feature detect for :data:`INCLUDE_PREDICTION_ITEMS` and for an
+#: ``operation`` on a prediction_item: ``(module, constant)``, supported when the
+#: constant is truthy. **The one place its name is spelled** -- the API, the
+#: runners and the obs_data hand-over all ask :func:`ca_supports_prediction_features`.
+PREDICTION_FEATURES_FLAG = ("sensitivity_analysis", "SUPPORTS_PREDICTION_FEATURES")
+
+
+def prediction_items_of(obj) -> list:
+    """The ``prediction_items`` of an obs_data document; ``[]`` for a bare array."""
+    if isinstance(obj, dict):
+        items = obj.get("prediction_items") or []
+        return items if isinstance(items, list) else []
+    return []
+
+
+def has_held_out_data(obj) -> bool:
+    """Whether any prediction_item carries a ``value`` to validate against."""
+    return any(isinstance(it, dict) and it.get("value") is not None
+               for it in prediction_items_of(obj))
+
+
+def ca_accepts_held_out() -> bool:
+    """Whether the circulatory_autogen this process imports reads held-out keys.
+
+    Judged by the module CA added alongside them rather than by a version number:
+    the CA directory is chosen at runtime and a checkout carries no release. The
+    same module is what validates a calibration against them, so this is also
+    whether there will be a validation at all -- CUFLynx scores nothing itself.
+    """
+    try:
+        from ca_imports import ca_import, ensure_ca_path  # noqa: PLC0415
+
+        ensure_ca_path()
+        ca_import(_HELD_OUT_MODULE)
+    except Exception:  # noqa: BLE001 - no CA or an older one: neither reads them
+        return False
+    return True
+
+
+def ca_supports_prediction_features() -> bool:
+    """Whether this process's libcuflynx takes ``include_prediction_items`` and an
+    ``operation`` on a prediction_item (see :data:`PREDICTION_FEATURES_FLAG`)."""
+    module, name = PREDICTION_FEATURES_FLAG
+    try:
+        from ca_imports import ca_import, ensure_ca_path  # noqa: PLC0415
+
+        ensure_ca_path()
+        return bool(getattr(ca_import(module), name, False))
+    except Exception:  # noqa: BLE001 - no CA, or one that cannot say: not supported
+        return False
+
+
+def prediction_features_option(settings: dict) -> dict:
+    """``{include_prediction_items: True}`` for CA's options block, or ``{}``.
+
+    The key is sent only when the user asked for it *and* this libcuflynx supports
+    it: an older one rejects an unknown option, and ``False`` is its default anyway.
+    Asked for but unsupported is said in the run log rather than failing the run.
+    Which items become features -- and the warning for those that cannot -- is
+    libcuflynx's; nothing about it is decided here.
+    """
+    if not (settings or {}).get(INCLUDE_PREDICTION_ITEMS):
+        return {}
+    if ca_supports_prediction_features():
+        return {INCLUDE_PREDICTION_ITEMS: True}
+    print(
+        "warning: include_prediction_items ignored: this libcuflynx cannot include "
+        "prediction items as features; update it",
+        flush=True,
+    )
+    return {}
+
+
+def without_keys(obj, keys):
+    """A copy of ``obj`` with ``keys`` taken off its prediction_items.
+
+    The item itself stays -- its operand is still a prediction CA records -- only
+    what an older parser would refuse goes. ``obj`` is not modified.
+    """
+    if not isinstance(obj, dict) or not prediction_items_of(obj):
+        return obj
+    out = dict(obj)
+    out["prediction_items"] = [
+        {k: v for k, v in it.items() if k not in keys} if isinstance(it, dict) else it
+        for it in obj["prediction_items"]
+    ]
+    return out
+
+
+def without_held_out(obj):
+    """A copy of ``obj`` without the held-out keys on its prediction_items."""
+    return without_keys(obj, HELD_OUT_KEYS)
+
+
+def _unreadable_keys(obj) -> tuple:
+    """The prediction_item keys in ``obj`` this process's CA would reject."""
+    present = {k for it in prediction_items_of(obj) if isinstance(it, dict) for k in it}
+    drop: tuple = ()
+    if present & set(HELD_OUT_KEYS) and not ca_accepts_held_out():
+        drop += HELD_OUT_KEYS
+    if present & set(PREDICTION_OPERATION_KEYS) and not ca_supports_prediction_features():
+        drop += PREDICTION_OPERATION_KEYS
+    return drop
+
+
+def for_ca(obj):
+    """The document as the circulatory_autogen in this process can read it.
+
+    ``obj`` itself when CA understands every prediction_item key in it; otherwise
+    a copy without the held-out keys (CA #535) and/or ``operation`` /
+    ``operation_kwargs`` (prediction features) that it would refuse. Every
+    in-process hand-over to CA's parser goes through here, so such an obs_data
+    still loads, costs and calibrates against an older CA.
+    """
+    drop = _unreadable_keys(obj)
+    return without_keys(obj, drop) if drop else obj
+
+
+#: Kept alive until the process exits: CA reads the obs_data path at construction
+#: and again when it copies the study into its run directory.
+_ca_copies = None
+
+
+def ca_obs_path(obs_path: str) -> str:
+    """``obs_path``, or a copy the runner's CA can read (see :func:`for_ca`).
+
+    For the analysis runners, which hand CA a *path* and run in whichever
+    interpreter the user chose -- so the check has to be made there, not in the
+    server. The copy keeps the file's name, because CA and CUFLynx both derive
+    names from it (the run directory, the emulator directory), and lives in a
+    temp dir rather than the user's working dir.
+    """
+    global _ca_copies
+    import json  # noqa: PLC0415
+    import tempfile  # noqa: PLC0415
+    from pathlib import Path  # noqa: PLC0415
+
+    try:
+        obj = json.loads(Path(obs_path).read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 - let CA report an unreadable file itself
+        return obs_path
+    readable = for_ca(obj)
+    if readable is obj:
+        return obs_path
+    if _ca_copies is None:
+        _ca_copies = tempfile.TemporaryDirectory(prefix="cuflynx_obs_")
+    out = Path(_ca_copies.name) / Path(obs_path).name
+    out.write_text(json.dumps(readable, indent=4), encoding="utf-8")
+    print(
+        "libcuflynx here predates some prediction_items keys; it is given the "
+        "obs_data without them (held-out data then goes unvalidated, and prediction "
+        "operations are not used as features).",
+        flush=True,
+    )
+    return str(out)
+
+
+def with_ca_obs_path(config: dict) -> dict:
+    """A runner config whose ``obs_path`` this process's CA can read.
+
+    Each analysis runner calls it once, right after putting CA on ``sys.path``,
+    so everything downstream -- CA's engine and CUFLynx's own rewrites of the
+    file alike -- reads the same document.
+    """
+    if not config.get("obs_path"):
+        return config
+    return {**config, "obs_path": ca_obs_path(config["obs_path"])}
+
+
 def parse_obs_data(obj) -> ObsData:
     """Validate and structure a parsed obs_data JSON value.
 
@@ -247,7 +435,7 @@ def ca_verdict(obj) -> CaVerdict:
         )
 
     try:
-        parser.parse_obs_data_json(obs_data_dict=copy.deepcopy(obj))
+        parser.parse_obs_data_json(obs_data_dict=copy.deepcopy(for_ca(obj)))
     except ValueError as exc:
         return CaVerdict(error=str(exc))
     except Exception as exc:  # noqa: BLE001

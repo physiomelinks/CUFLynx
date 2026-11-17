@@ -25,7 +25,8 @@ from pathlib import Path
 import ca_obs
 import emulator_config
 from ca_imports import ensure_ca_path
-from obs_data import data_items_of
+from solver_info_defaults import with_declared_step_defaults
+from obs_data import data_items_of, with_ca_obs_path
 
 # Headless matplotlib for any plots circulatory_autogen produces server-side.
 os.environ.setdefault("MPLBACKEND", "Agg")
@@ -62,13 +63,21 @@ LAPLACE_SAMPLES = 100000
 
 
 def _optimiser_options(settings: dict, seed=None) -> dict:
-    """optimiser_options for the ``run_calibration_first`` best-fit search. A global
-    random ``seed`` lands under ``optimiser_options['seed']`` (the multi-start start
-    sampler key); ``None`` omits it."""
+    """optimiser_options for the ``run_calibration_first`` best-fit search, which the
+    identifiability analysis's profile re-calibrations take too. An empty budget is one
+    GA population (``optimiser_budget``), the smallest CA's GA runs. A global random
+    ``seed`` lands under ``optimiser_options['seed']`` (the multi-start start sampler
+    key); ``None`` omits it."""
+    from optimiser_budget import default_num_calls  # noqa: E402 (shipped into runners/ too)
+
+    method = settings.get("param_id_method") or "genetic_algorithm"
+    num_calls = settings.get("num_calls_to_function")
+    if num_calls is None or (isinstance(num_calls, str) and not num_calls.strip()):
+        num_calls = default_num_calls(method, debug=bool(settings.get("DEBUG", False)))
     opts = {
-        "num_calls_to_function": int(settings.get("num_calls_to_function", 100)),
-        "cost_convergence": float(settings.get("cost_convergence", 0.001)),
-        "max_patience": int(settings.get("max_patience", 10)),
+        "num_calls_to_function": int(num_calls),
+        "cost_convergence": float(settings.get("cost_convergence") or 0.001),
+        "max_patience": int(settings.get("max_patience") or 10),
         "cost_type": settings.get("cost_type", "gaussian_MLE"),
     }
     if seed is not None:
@@ -112,6 +121,9 @@ def _solver_info(config: dict, settings: dict) -> dict:
     Settings popup) with the solver name + CVODE step defaults filled in."""
     si = dict(config.get("solver_info") or {})
     si.setdefault("solver", config.get("solver") or settings.get("solver", "CVODE_myokit"))
+    # The solver's own step defaults first, so CVODE's 1e-4 cap only reaches solvers
+    # that list it (see solver_info_defaults and CA's solver_info_fields).
+    si = with_declared_step_defaults(si["solver"], si)
     if "MaximumStep" in ca_obs.solver_info_keys(si["solver"]):
         si.setdefault("MaximumStep", settings.get("MaximumStep", 0.0001))
     # No MaximumNumberOfSteps default: CA fills its own for the backends that use it.
@@ -128,9 +140,12 @@ def _mle_obs_path(config, cost_type: str) -> str:
     for item in data_items_of(obs):
         if isinstance(item, dict):
             item["cost_type"] = cost_type
-    out = os.path.join(config["output_dir"], "uq_obs_data.json")
-    Path(out).write_text(json.dumps(obs), encoding="utf-8")
-    return out
+    # An input of the run, so it is stored with the working dir's inputs as a version of
+    # its own.
+    import working_dir  # noqa: E402 (shipped into runners/ too)
+
+    return str(working_dir.store(config["output_dir"], "obs_data",
+                                 json.dumps(obs).encode("utf-8"), "uq_obs_data.json"))
 
 
 #: CA's ia_options method whose result is a Gaussian posterior.
@@ -222,6 +237,7 @@ def _distributions(flat, qnames):
 
 def run(config: dict) -> dict:
     _ensure_ca_on_path()
+    config = with_ca_obs_path(config)
     import numpy as np
 
     from ca_imports import ca_from, ca_import  # noqa: E402 (shipped into runners/ too)
@@ -340,8 +356,15 @@ def run(config: dict) -> dict:
 
     ca_run_history.write_uq_samples(output_dir, np.asarray(flat), qnames)
 
-    coverage = _posterior_predictive(config, settings, output_dir, engine)
-    print(META_MARKER + json.dumps({"method": method}), flush=True)
+    # A Laplace approximation has no chain: its check draws from the samples above and is
+    # saved beside them, in output_dir, which the meta line names for the manager.
+    laplace = method == "laplace"
+    coverage = _posterior_predictive(settings, engine, samples=flat if laplace else None,
+                                     output_dir=output_dir if laplace else None)
+    meta = {"method": method}
+    if laplace and coverage is not None:
+        meta["predictive_dir"] = output_dir
+    print(META_MARKER + json.dumps(meta), flush=True)
     result = {"rank": 0, "method": method,
               "params": _distributions(np.asarray(flat), qnames)}
     if coverage is not None:
@@ -349,13 +372,18 @@ def run(config: dict) -> dict:
     return result
 
 
-def _posterior_predictive(config, settings, output_dir, engine):
+def _posterior_predictive(settings, engine, samples=None, output_dir=None):
     """Push posterior draws back through the model and report coverage.
 
     A chain says what the parameters could be; it does not say whether the model
     at those parameters reproduces what was measured. Run here rather than left
     to the user because the engine is already built and the chain is already on
     disk -- the check costs one sweep and answers the question the chain cannot.
+
+    ``samples`` (with ``output_dir``, where the check is saved) are the draws of a
+    posterior with no chain (Laplace); without them CA reads the MCMC chain from, and
+    saves the check into, the MCMC run's own directory. An MCMC engine built without a
+    calibration has no ``param_id``; CA's check evaluates it through ``engine_of``.
 
     Returns None, quietly, when the engine predates the check or the user turned
     it off. A UQ run that produced a posterior has not failed because it could
@@ -380,8 +408,13 @@ def _posterior_predictive(config, settings, output_dir, engine):
     print(f"Posterior predictive: {num_samples} draws through the model",
           flush=True)
     try:
-        result = run_check(client=engine, num_samples=num_samples,
-                           output_dir=output_dir, save=True)
+        if samples is None:
+            # No output_dir: CA reads the chain from, and saves the check into, the MCMC
+            # run's own directory.
+            result = run_check(client=engine, num_samples=num_samples, save=True)
+        else:
+            result = run_check(client=engine, num_samples=num_samples, save=True,
+                               samples=samples, output_dir=output_dir)
     except Exception as exc:  # noqa: BLE001 - the posterior is still the result
         print(f"WARNING: posterior predictive check failed: {exc}", flush=True)
         return None

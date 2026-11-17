@@ -11,6 +11,7 @@ import pytest
 import export_pipeline
 import optimiser_budget
 import sensitivity_runner
+import uq_runner
 from conftest import set_ca_module
 
 # A GA schema with numbers unlike CA's real ones, so a test cannot pass by
@@ -64,8 +65,8 @@ def test_default_budget_without_a_schema_keeps_the_old_fallback(monkeypatch):
 def _export_calibration(**calibration):
     return export_pipeline.build_user_inputs(
         file_prefix="m", model_type="cellml_only", solver="CVODE_myokit", solver_info={},
-        dt=0.01, pre_time=0.0, sim_time=1.0, model_file="m.cellml", obs_file=None,
-        params_for_id_file=None, calibration=calibration, sensitivity=None, uq=None,
+        dt=0.01, pre_time=0.0, sim_time=1.0, model_path="m.cellml", obs_path=None,
+        params_for_id_path=None, calibration=calibration, sensitivity=None, uq=None,
         enabled=None,
     )["optimiser_options"]["num_calls_to_function"]
 
@@ -109,3 +110,29 @@ def test_calibrate_first_falls_back_to_one_population(monkeypatch, fake_schema):
         monkeypatch, {"param_id_method": "genetic_algorithm", "num_calls_to_function": None}) == (27, False)
     assert _calibrate_first_budget(
         monkeypatch, {"param_id_method": "genetic_algorithm", "num_calls_to_function": 300}) == (300, False)
+
+
+def test_a_study_steps_calibrate_first_falls_back_to_one_population(fake_schema):
+    """The study workflow's calibrate-first step (sensitivity and UQ) takes the same
+    fallback; the panel sends an empty budget as null, which must not be an error."""
+    import main
+
+    def budget(**settings):
+        return main._study_ga_options(settings, {"cost_convergence": 1e-4})["num_calls_to_function"]
+
+    assert budget() == 27
+    assert budget(num_calls_to_function=None, max_patience=None, cost_convergence=None) == 27
+    assert budget(num_calls_to_function=None, DEBUG=True) == 8
+    assert budget(num_calls_to_function=300) == 300
+
+
+def test_uq_calibrate_first_falls_back_to_one_population(fake_schema):
+    """The UQ runner's calibrate-first search (and the profile likelihood's
+    re-calibrations, which take its optimiser_options) gets the same fallback."""
+    def budget(**settings):
+        return uq_runner._optimiser_options(settings)["num_calls_to_function"]
+
+    assert budget() == 27
+    assert budget(num_calls_to_function=None, max_patience=None, cost_convergence=None) == 27
+    assert budget(DEBUG=True) == 8
+    assert budget(num_calls_to_function=300) == 300

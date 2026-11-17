@@ -92,8 +92,9 @@ def _wait(client, prefix, job_id, timeout=15):
     raise AssertionError("job did not finish; lines:\n" + "\n".join(lines))
 
 
-def _run_calibration_to_completion(client, model_id):
-    r = client.post("/api/calibration/run", json={"model_id": model_id, "settings": {}})
+def _run_calibration_to_completion(client, model_id, working_dir):
+    r = client.post("/api/calibration/run",
+                    json={"model_id": model_id, "settings": {"working_dir": working_dir}})
     assert r.status_code == 200, r.text
     status, _ = _wait(client, "calibration", r.json()["job_id"])
     assert status["state"] == "done"
@@ -155,7 +156,7 @@ def test_uq_run_calibration_first_completes(client, tmp_path):
     )
     resp = client.post(
         "/api/uq/run",
-        json={"model_id": model_id, "settings": {"run_calibration_first": True}},
+        json={"model_id": model_id, "settings": {"working_dir": str(tmp_path), "run_calibration_first": True}},
     )
     assert resp.status_code == 200, resp.text
     status, lines = _wait(client, "uq", resp.json()["job_id"])
@@ -177,11 +178,11 @@ def test_uq_reuse_after_calibration_completes(client, tmp_path):
     model_id = _setup_model_obs_params(
         client, LV_MODEL_PATH, LV_OBS_DATA_PATH, LV_PARAMS_CSV_PATH
     )
-    _run_calibration_to_completion(client, model_id)
+    _run_calibration_to_completion(client, model_id, str(tmp_path))
 
     resp = client.post(
         "/api/uq/run",
-        json={"model_id": model_id, "settings": {"method": "laplace"}},
+        json={"model_id": model_id, "settings": {"working_dir": str(tmp_path), "method": "laplace"}},
     )
     assert resp.status_code == 200, resp.text
     status, lines = _wait(client, "uq", resp.json()["job_id"])
@@ -256,3 +257,36 @@ def test_the_uq_engine_is_built_with_ca_uq_options(monkeypatch, tmp_path):
     assert seen["UQ_options"] == {"num_steps": 5}
     assert "mcmc_options" not in seen
     assert not hasattr(uq_runner, "uq_options_kwarg")
+
+
+def test_the_posterior_predictive_check_is_left_to_find_the_mcmc_runs_dir(monkeypatch):
+    """CA reads the chain from, and saves the check into, the MCMC run's own directory
+    (``mcmc_<prefix>_<obs>``) when no output_dir is given; the working dir holds no chain."""
+    import types
+
+    import uq_runner
+    from conftest import set_ca_module
+
+    seen = {}
+
+    def check(**kwargs):
+        seen.update(kwargs)
+        return types.SimpleNamespace(
+            summary=lambda: "", coverage={}, predictions=types.SimpleNamespace(shape=(3,)),
+            used_emulator=False, failures=0)
+
+    set_ca_module(monkeypatch, "param_id.posterior_predictive",
+                  types.SimpleNamespace(posterior_predictive=check))
+    engine = object()
+    assert uq_runner._posterior_predictive({}, engine) is not None
+    assert seen["client"] is engine
+    assert seen.get("output_dir") is None
+    assert seen.get("samples") is None
+
+    # A Laplace approximation has no chain: its check draws from its samples and is saved
+    # where the runner says (CA raised "no mcmc_chain.npy" for it before).
+    seen.clear()
+    draws = [[1.0, 2.0], [1.1, 2.1]]
+    assert uq_runner._posterior_predictive({}, engine, samples=draws,
+                                           output_dir="/w") is not None
+    assert seen["samples"] is draws and seen["output_dir"] == "/w"

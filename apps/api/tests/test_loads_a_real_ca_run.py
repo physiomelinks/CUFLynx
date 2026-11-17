@@ -88,6 +88,16 @@ def test_the_run_is_found_at_all(loaded, real_run):
     assert not loaded.get("error")
 
 
+def test_the_uq_is_read_from_the_mcmc_runs_own_directory(loaded, real_run):
+    """The chain and the posterior predictive check are in ``uq_dir``, the MCMC run's
+    directory beside the calibration's."""
+    uq_dir = real_run["result"].get("uq_dir")
+    if uq_dir is None:
+        pytest.skip("this circulatory_autogen writes the chain into the calibration's dir")
+    assert uq_dir != real_run["result"]["run_dir"]
+    assert loaded["uq"]["run_dir"] == uq_dir
+
+
 def test_nothing_failed_to_read(loaded):
     """A reader that quietly degrades is worse than one that fails: the panel is
     simply empty and nobody knows why."""

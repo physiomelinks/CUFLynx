@@ -27,7 +27,8 @@ const settings = reactive({
   method: 'mcmc',
   run_calibration_first: false,
   num_cores: 1,
-  dt: 0.01,
+  // No dt: a run that names none is given the engine's (Settings, or a study's
+  // user_inputs), server-side. A literal here overrode both with 0.01.
   DEBUG: false,
 })
 
