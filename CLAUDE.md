@@ -78,7 +78,7 @@ the user's own environment. Keep the three in step.
 
 ## Key files
 
-- `apps/web/src/App.vue` — main UI (tabs: Parameters · Emulator · Sensitivity · Calibration · UQ; center: Output plots · Progress · Analysis)
+- `apps/web/src/App.vue` — main UI (tabs: Parameters · Surrogate · Sensitivity · Calibration · UQ; center: Output plots · Progress · Analysis)
 - `apps/web/src/components/TourOverlay.vue` + `lib/tourSteps.js` — the **Tutorial**
   button's guided tour. **Every anchor is a `data-testid`** and nothing else:
   renaming one breaks a tour step silently in the app, which is why
@@ -117,7 +117,8 @@ the user's own environment. Keep the three in step.
 - `apps/api/uq.py` / `uq_runner.py` — uncertainty quantification; `UQPanel.vue`.
 - `apps/api/emulator.py` / `emulator_runner.py` — trains a **surrogate** of the
   model's scalar observable features with CA's `EmulatorTrainer` (CA #333);
-  `EmulatorPanel.vue`, tab between Parameters and Sensitivity. Two independent
+  `EmulatorPanel.vue`, the Emulator section of the **Surrogate** tab (between
+  Parameters and Sensitivity; reduced-order models are to join it). Two independent
   controls, because emulation has two steps: **Train** fits one against the
   solver, and the **use** tick box (`useEmulator` store) makes sensitivity,
   calibration and UQ evaluate it instead. `solver:` keeps meaning the truth
