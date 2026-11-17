@@ -4516,12 +4516,17 @@ def _study_uq(record, config: dict, configured: str) -> list:
     settings = config["settings"]
     method = settings.get("method", "mcmc")
     first = bool(settings.get("run_calibration_first"))
-    # The Identifiability tab's ia_options (CA's, from its descriptors); a profile
-    # likelihood keeps the direct runner.
+    # The Identifiability tab's ia_options (CA's, from its descriptors). A profile
+    # likelihood is an identifiability step (CA #673), not a uq step; on a CA without it, or
+    # on the emulator (an identifiability step takes none), it keeps the direct runner.
     ia = _ia_options(settings) if method == "laplace" else {}
+    profile = ia.get("method") == "profile_likelihood"
+    if profile and config.get("use_emulator"):
+        return [_study_note("this run is not recorded in it: an identifiability step does "
+                            "not run on an emulator.")]
     with study_workflow.lock():
         plan, notes = _study_plan(record, configured, config, needs_point=not first,
-                                  profile=ia.get("method") == "profile_likelihood")
+                                  profile=profile)
         if plan is None:
             return notes
         qnames = [q for e in _study_entries(record) for q in e.qnames]
@@ -4538,13 +4543,21 @@ def _study_uq(record, config: dict, configured: str) -> list:
                           settings=_study_settings(config, settings, ga))
         else:
             at = _study_point(plan, record.model_id, qnames)
-        uq_options = dict(_uq_options(study_workflow.options(settings), _analysis_seed),
-                          method=method)
-        extra = {"ia_options": ia} if method == "laplace" else {}
-        plan.add("add_uq", plan.new_id(study_workflow.LABELS.get(method, "uq")),
-                 **_study_inputs(config, obs), uq_options=uq_options, result_from=at,
-                 settings=_study_settings(config, settings, extra))
+        if profile:
+            plan.add("add_identifiability", plan.new_id(study_workflow.LABELS["profile"]),
+                     **_study_inputs(config, obs), ia_options=ia, result_from=at,
+                     settings=_study_settings(config, settings, {}))
+        else:
+            uq_options = dict(_uq_options(study_workflow.options(settings), _analysis_seed),
+                              method=method)
+            extra = {"ia_options": ia} if method == "laplace" else {}
+            plan.add("add_uq", plan.new_id(study_workflow.LABELS.get(method, "uq")),
+                     **_study_inputs(config, obs), uq_options=uq_options, result_from=at,
+                     settings=_study_settings(config, settings, extra))
         _study_start(plan, config, (DONE_MARKER, FAIL_MARKER), notes)
+        if profile:
+            # the uq manager reads the profiles where CA recorded them, not a uq posterior
+            config["study_step"]["ia_method"] = "profile_likelihood"
     return config["log_preamble"]
 
 

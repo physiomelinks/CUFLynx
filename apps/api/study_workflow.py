@@ -54,7 +54,8 @@ ENV_SWITCH = "CUFLYNX_STUDY_WORKFLOW"
 
 #: Step id labels, by kind of run.
 LABELS = {"calibration": "calibration", "sobol": "sobol", "local": "local-sa",
-          "mcmc": "mcmc", "laplace": "laplace", "sliders": "sliders",
+          "mcmc": "mcmc", "laplace": "laplace", "profile": "profile-likelihood",
+          "sliders": "sliders",
           "bounds": "nominal", "best_fit": "best-fit"}
 
 #: Settings keys of a panel that are CUFLynx's own and never reach CA's option dicts. A uq
@@ -184,9 +185,9 @@ def direct_reason(model_type: str, *, held_out: bool = False,
     if modifier_point:
         return ("the params_for_id has a modifier, and a set step cannot give a modifier's "
                 "theta as the point to start from or analyse at")
-    if profile:
+    if profile and not step_records("identifiability", "profile_likelihood_dir"):
         return ("a profile likelihood is not a uq step (those run MCMC or a Laplace "
-                "approximation)")
+                "approximation), and this CA's identifiability steps do not record one")
     return None
 
 

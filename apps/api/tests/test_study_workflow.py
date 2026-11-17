@@ -47,10 +47,21 @@ kinds = {s["id"]: s.get("kind", "calibration") for s in raw["steps"]}
 for sid in step["steps"]:
     d = Path(step["run_dir"], sid)
     d.mkdir(parents=True, exist_ok=True)
+    result = {"step": sid, "status": "done"}
     if kinds[sid] == "calibration":
         write_ca_results(str(d / "param_id" / "CMA-ES_case"),
                          [[q] for q in %(qnames)r], [1.0, 0.5, 0.25, 2.0], 0.1)
-    (d / "step_result.json").write_text(json.dumps({"step": sid, "status": "done"}))
+    if kinds[sid] == "identifiability":
+        # what CA #673 writes for a profile likelihood: one file per parameter, a summary
+        pl = d / "param_id" / "profile_likelihood"
+        pl.mkdir(parents=True, exist_ok=True)
+        (pl / "summary.json").write_text(json.dumps({"parameters": [%(qnames)r[0]]}))
+        (pl / "param_0_alpha.json").write_text(json.dumps({
+            "param_name": %(qnames)r[0], "best_val": 1.0, "best_cost": 0.1,
+            "ci_95": {"lower": 0.8, "upper": 1.2},
+            "param_values": [0.8, 1.0, 1.2], "costs": [2.0, 0.1, 2.0]}))
+        result["profile_likelihood_dir"] = str(pl) + "/"
+    (d / "step_result.json").write_text(json.dumps(result))
 print(cfg["markers"]["done"], flush=True)
 """ % {"qnames": QNAMES}
 
@@ -740,9 +751,56 @@ print("__UQ_FAILED__ direct", flush=True)
 """
 
 
-def test_a_profile_likelihood_keeps_the_direct_uq_runner(client, fake_runs, tmp_path):
-    """A profile likelihood is not a uq step: it runs on the direct runner, whose files the
-    UQ panel reads the profiles from, and the run log says why."""
+def _steps_profile(monkeypatch, records: bool):
+    real = study_workflow.step_records
+    monkeypatch.setattr(study_workflow, "step_records", lambda kind, output: (
+        records if (kind, output) == ("identifiability", "profile_likelihood_dir")
+        else real(kind, output)))
+
+
+def test_a_profile_likelihood_is_an_identifiability_step(client, fake_runs, tmp_path,
+                                                         monkeypatch):
+    """CA #673: an identifiability step records its profile likelihood, so the run is a step
+    at the calibration's best fit, and the panel reads the profiles CA recorded for it."""
+    _steps_profile(monkeypatch, True)
+    work = tmp_path / "w"
+    model_id = _setup(client)
+    assert _calibrate(client, model_id, work)["state"] == "done"
+    ia = {"method": "profile_likelihood", "num_points": 3}
+    status = _run(client, "uq", {"model_id": model_id, "settings": {
+        "config_outputs_dir": str(work), "method": "laplace", "ia_options": ia}})
+
+    assert status["state"] == "done", status["lines"]
+    step = _steps(work)["profile-likelihood-1"]
+    assert step["kind"] == "identifiability"
+    assert step["settings"]["ia_options"]["method"] == "profile_likelihood"
+    assert step["result_from"] == "calibration-1"
+    assert [p["param_name"] for p in status["profiles"]] == [QNAMES[0]]
+    assert status["profiles"][0]["ci_95"] == {"lower": 0.8, "upper": 1.2}
+
+
+def test_a_profile_likelihood_on_the_emulator_keeps_the_direct_uq_runner(
+        client, fake_runs, tmp_path, monkeypatch):
+    _steps_profile(monkeypatch, True)
+    work = tmp_path / "w"
+    model_id = _setup(client)
+    assert _calibrate(client, model_id, work)["state"] == "done"
+    script = tmp_path / "direct_uq.py"
+    script.write_text(DIRECT_UQ_RUNNER)
+    uq_mod.uq.runner_path = str(script)
+    monkeypatch.setattr(main, "_emulator_run_config", lambda *a, **k: {"use_emulator": True})
+    status = _run(client, "uq", {"model_id": model_id, "settings": {
+        "config_outputs_dir": str(work), "method": "laplace",
+        "ia_options": {"method": "profile_likelihood", "num_points": 3}}})
+    assert "direct uq runner" in status["lines"]
+    assert any("emulator" in ln for ln in status["lines"] if ln.startswith("Study workflow:"))
+
+
+def test_a_profile_likelihood_keeps_the_direct_uq_runner_on_an_older_ca(
+        client, fake_runs, tmp_path, monkeypatch):
+    """Without CA #673 a profile likelihood is not a step: it runs on the direct runner, whose
+    files the UQ panel reads the profiles from, and the run log says why."""
+    _steps_profile(monkeypatch, False)
     work = tmp_path / "w"
     model_id = _setup(client)
     assert _calibrate(client, model_id, work)["state"] == "done"

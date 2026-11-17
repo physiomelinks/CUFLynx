@@ -206,9 +206,9 @@ class UQManager:
             # from a summary it serialised for us (#210). Which method ran is the
             # only thing no file holds, so it comes over the pipe.
             meta = read_meta_line(job.lines, META_MARKER)
-            job.ia_method = meta.get("ia_method")
+            job.ia_method = meta.get("ia_method") or (job.study_step or {}).get("ia_method")
             if finished and job.ia_method:
-                job.profiles = ca_run_history.profile_likelihood(job.output_dir)
+                job.profiles = ca_run_history.profile_likelihood(self._profiles_dir(job))
                 if job.profiles is not None:
                     job.method = meta.get("method")
                     job.state = "done"
@@ -247,6 +247,17 @@ class UQManager:
                 job.state = "error"
                 job.error = (job.error or fail_message(job.lines, FAIL_MARKER)
                              or f"runner exited with code {code}")
+
+    @staticmethod
+    def _profiles_dir(job: UQJob) -> str:
+        """Where the profile likelihood's ``profile_likelihood/`` is: the direct run's output
+        dir, or the parent of the dir a workflow identifiability step recorded (CA #673)."""
+        if job.study_step:
+            result = ca_run_history.step_result(job.study_step["step_dir"]) or {}
+            recorded = result.get("profile_likelihood_dir")
+            if recorded:
+                return os.path.dirname(os.path.normpath(recorded))
+        return job.output_dir
 
     @staticmethod
     def _study_params(job: UQJob) -> list | None:
