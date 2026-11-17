@@ -1,0 +1,251 @@
+"""The Workflow view: which step a panel's run is, independent workflows of one working dir,
+and deleting and reordering a workflow's steps (``study_workflow``, ``/api/workflow/...``).
+
+A panel's run changes the workflow's latest step of its kind unless the user chose a new
+step (or a new workflow) in the Workflow view; a run that changes a step runs it and the
+steps that take from it.
+"""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+
+import study_workflow
+from test_study_workflow import (  # noqa: F401  (fake_runs is a fixture)
+    NEW_STEP,
+    _calibrate,
+    _run,
+    _setup,
+    _steps,
+    _workflow,
+    _workflow_dir,
+    fake_runs,
+)
+
+
+# -- which step a run is --------------------------------------------------------------------
+
+def test_running_the_calibration_again_changes_its_step(client, fake_runs, tmp_path):
+    work = tmp_path / "w"
+    model_id = _setup(client)
+    assert _calibrate(client, model_id, work, start_from="current")["state"] == "done"
+    status = _calibrate(client, model_id, work, start_from="current", num_calls_to_function=70)
+    assert status["state"] == "done", status["lines"]
+
+    steps = _steps(work)
+    # the one calibration, changed; its new start point above it, the unused old one gone
+    assert list(steps) == ["sliders-2", "calibration-1"]
+    assert steps["calibration-1"]["start_from"] == "sliders-2"
+    assert steps["calibration-1"]["settings"]["optimiser_options"]["num_calls_to_function"] == 70
+    config = fake_runs()[-1]
+    assert config["run_steps"] == ["sliders-2", "calibration-1"]
+    assert config["only"] is None and config["from_step"] is None
+    assert any("changes step calibration-1" in line for line in status["lines"])
+
+
+def test_a_new_calibration_has_to_be_asked_for(client, fake_runs, tmp_path):
+    work = tmp_path / "w"
+    model_id = _setup(client)
+    assert _calibrate(client, model_id, work)["state"] == "done"
+    assert _calibrate(client, model_id, work, workflow_target=NEW_STEP)["state"] == "done"
+    assert list(_steps(work)) == ["calibration-1", "calibration-2"]
+    # the default then changes the latest of them
+    assert _calibrate(client, model_id, work, num_calls_to_function=9)["state"] == "done"
+    steps = _steps(work)
+    assert list(steps) == ["calibration-1", "calibration-2"]
+    assert steps["calibration-2"]["settings"]["optimiser_options"]["num_calls_to_function"] == 9
+
+
+def test_changing_a_calibration_reruns_the_steps_that_take_from_it(
+        client, fake_runs, tmp_path):
+    work = tmp_path / "w"
+    model_id = _setup(client)
+    assert _calibrate(client, model_id, work)["state"] == "done"
+    _run(client, "sensitivity", {"model_id": model_id, "settings": {
+        "config_outputs_dir": str(work), "method": "sobol", "num_samples": 32}})
+    _run(client, "uq", {"model_id": model_id, "settings": {
+        "config_outputs_dir": str(work), "method": "mcmc", "num_steps": 20, "num_walkers": 8}})
+    assert _steps(work)["mcmc-1"]["result_from"] == "calibration-1"
+
+    assert _calibrate(client, model_id, work)["state"] == "done"
+    # the sobol step does not take from the calibration, so it does not run again
+    assert fake_runs()[-1]["run_steps"] == ["calibration-1", "mcmc-1"]
+
+
+def test_a_calibration_changed_to_start_from_its_own_best_fit(client, fake_runs, tmp_path):
+    work = tmp_path / "w"
+    model_id = _setup(client)
+    assert _calibrate(client, model_id, work)["state"] == "done"
+    assert _calibrate(client, model_id, work, start_from="best_fit")["state"] == "done"
+
+    steps = _steps(work)
+    assert list(steps) == ["best-fit-1", "calibration-1"]
+    assert steps["calibration-1"]["start_from"] == "best-fit-1"
+    assert "best fit of step calibration-1 before this run changed it" in \
+        steps["best-fit-1"]["set"][0]["reason"]
+
+
+def test_a_chosen_step_of_another_kind_is_refused(client, fake_runs, tmp_path):
+    work = tmp_path / "w"
+    model_id = _setup(client)
+    assert _calibrate(client, model_id, work)["state"] == "done"
+    r = client.post("/api/sensitivity/run", json={"model_id": model_id, "settings": {
+        "config_outputs_dir": str(work), "method": "sobol",
+        "workflow_target": {"mode": "edit", "step": "calibration-1"}}})
+    assert r.status_code == 422
+    assert "calibration step" in r.json()["detail"]
+    assert list(_steps(work)) == ["calibration-1"]
+
+
+def test_the_workflow_target_never_reaches_cas_options(client, fake_runs, tmp_path):
+    work = tmp_path / "w"
+    model_id = _setup(client)
+    _run(client, "sensitivity", {"model_id": model_id, "settings": {
+        "config_outputs_dir": str(work), "method": "sobol", "workflow_target": NEW_STEP}})
+    assert "workflow_target" not in _steps(work)["sobol-1"]["settings"]["sa_options"]
+
+
+# -- independent workflows ------------------------------------------------------------------
+
+def test_a_new_workflow_is_its_own_directory_and_both_are_listed(client, fake_runs, tmp_path):
+    work = tmp_path / "w"
+    model_id = _setup(client)
+    assert _calibrate(client, model_id, work)["state"] == "done"
+    status = _calibrate(client, model_id, work, workflow_target={"mode": "new_workflow"})
+    assert status["state"] == "done"
+
+    assert _workflow_dir(work) == work / "workflow" / "study-2"
+    assert [s["id"] for s in _workflow(work)["steps"]] == ["calibration-1"]
+    assert fake_runs()[-1]["workflow_output_dir"] == str(work / "workflows" / "study-2")
+    listed = client.get("/api/workflow/list", params={"config_outputs_dir": str(work)}).json()
+    assert [w["name"] for w in listed["workflows"]] == ["study-2", "study"]
+    assert listed["workflows"][1]["steps"] == [{"id": "calibration-1", "kind": "calibration"}]
+
+    # a run naming the first workflow goes to it, and changes its calibration
+    first = str(work / "workflow" / "study" / "calibration_workflow.json")
+    assert _calibrate(client, model_id, work, workflow_target={"workflow": first})[
+        "state"] == "done"
+    assert fake_runs()[-1]["workflow"] == first
+
+
+def test_an_older_single_file_workflow_is_still_listed(tmp_path):
+    (tmp_path / "workflow").mkdir()
+    (tmp_path / "workflow" / "calibration_workflow.json").write_text(json.dumps(
+        {"workflow_name": "study", "steps": [{"id": "calibration-1"}]}))
+    (tmp_path / "workflow" / "calibration_workflow_old.json").write_text(json.dumps(
+        {"workflow_name": "old", "steps": []}))
+    names = {w["name"] for w in study_workflow.list_workflows(str(tmp_path))}
+    assert names == {"study", "old"}
+    path = str(tmp_path / "workflow" / "calibration_workflow.json")
+    assert study_workflow.working_dir_of(path) == str(tmp_path)
+    assert study_workflow.working_dir_of(str(tmp_path / "elsewhere.json")) is None
+
+
+# -- deleting and moving steps --------------------------------------------------------------
+
+def _raw(*steps):
+    return {"workflow_name": "w", "steps": list(steps)}
+
+
+def test_deleting_a_step_reconnects_what_took_from_it(study_workflow_on):
+    raw = _raw({"id": "sliders-1", "kind": "set", "set": []},
+               {"id": "calibration-1", "start_from": "sliders-1"},
+               {"id": "mcmc-1", "kind": "uq", "result_from": "calibration-1"})
+    plan = study_workflow.delete_plan(raw, "calibration-1")
+    assert plan == {"deleted": ["calibration-1"], "dropped": [],
+                    "rewired": [{"step": "mcmc-1", "key": "result_from",
+                                 "from": "calibration-1", "to": "sliders-1"}]}
+
+
+def test_a_start_point_with_nothing_above_it_is_dropped(study_workflow_on):
+    raw = _raw({"id": "sliders-1", "kind": "set", "set": []},
+               {"id": "calibration-1", "start_from": "sliders-1"})
+    plan = study_workflow.delete_plan(raw, "sliders-1")
+    assert plan["deleted"] == ["sliders-1"]
+    assert plan["dropped"] == [{"step": "calibration-1", "key": "start_from",
+                                "from": "sliders-1"}]
+
+
+def test_a_step_with_nothing_to_reconnect_to_goes_too(study_workflow_on):
+    raw = _raw({"id": "calibration-1"},
+               {"id": "sobol-1", "kind": "sensitivity", "result_from": "calibration-1"},
+               {"id": "reduce-1", "kind": "reduction", "sensitivity_from": "sobol-1"},
+               {"id": "laplace-1", "kind": "uq"})
+    plan = study_workflow.delete_plan(raw, "calibration-1")
+    # the sensitivity step has no calibration or set step above it, and the reduction no
+    # sensitivity step but it
+    assert plan["deleted"] == ["calibration-1", "sobol-1", "reduce-1"]
+    assert plan["rewired"] == [] and plan["dropped"] == []
+
+
+def test_a_reference_skips_steps_of_a_kind_its_key_cannot_take(study_workflow_on):
+    raw = _raw({"id": "calibration-1"},
+               {"id": "sobol-1", "kind": "sensitivity", "result_from": "calibration-1"},
+               {"id": "reduce-1", "kind": "reduction", "sensitivity_from": "sobol-1"},
+               {"id": "calibration-2", "params_for_id_from": "reduce-1",
+                "fixed_from": ["calibration-1"]},
+               {"id": "mcmc-1", "kind": "uq", "result_from": "calibration-2"})
+    plan = study_workflow.delete_plan(raw, "calibration-2")
+    # calibration-2 takes from reduce-1 and calibration-1; a result_from takes a calibration
+    assert plan["rewired"] == [{"step": "mcmc-1", "key": "result_from",
+                                "from": "calibration-2", "to": "calibration-1"}]
+
+
+def test_a_move_above_a_step_it_takes_from_is_refused(tmp_path):
+    path = tmp_path / "calibration_workflow.json"
+    path.write_text(json.dumps(_raw({"id": "calibration-1"},
+                                    {"id": "mcmc-1", "kind": "uq",
+                                     "result_from": "calibration-1"})))
+    with pytest.raises(study_workflow.StudyWorkflowError, match="takes from"):
+        study_workflow.move_step(str(path), "mcmc-1", 0)
+    assert [s["id"] for s in json.loads(path.read_text())["steps"]] == [
+        "calibration-1", "mcmc-1"]
+
+
+def test_references_reads_every_key():
+    step = {"id": "x", "result_from": "a", "fixed_from": ["b", {"step": "c"}],
+            "priors_from": [{"step": "d", "kind": "mvnormal"}],
+            "set": [{"parameter": "p", "scale": 2, "of": "e"}]}
+    assert study_workflow.references(step) == [
+        ("result_from", "a"), ("fixed_from", "b"), ("fixed_from", "c"), ("priors_from", "d"),
+        ("scale_from", "e")]
+
+
+@pytest.fixture
+def described(monkeypatch):
+    """Describing the workflow plans it, and CA reads a CellML target's constants with
+    libCellML (the integration tier has it)."""
+    pytest.importorskip("libcellml")
+
+
+def test_the_delete_route_asks_before_a_cascade_and_moves_reorder(
+        client, fake_runs, described, tmp_path):
+    work = tmp_path / "w"
+    model_id = _setup(client)
+    assert _calibrate(client, model_id, work)["state"] == "done"
+    _run(client, "sensitivity", {"model_id": model_id, "settings": {
+        "config_outputs_dir": str(work), "method": "sobol", "num_samples": 32}})
+    _run(client, "uq", {"model_id": model_id, "settings": {
+        "config_outputs_dir": str(work), "method": "mcmc", "num_steps": 20, "num_walkers": 8}})
+
+    r = client.post("/api/workflow/step/delete", json={"step": "calibration-1"})
+    assert r.status_code == 200, r.text
+    assert r.json()["applied"] is False
+    assert r.json()["deleted"] == ["calibration-1", "mcmc-1"]
+    assert list(_steps(work)) == ["calibration-1", "sobol-1", "mcmc-1"]
+
+    r = client.post("/api/workflow/step/move", json={"step": "sobol-1", "index": 2})
+    assert r.status_code == 200, r.text
+    assert list(_steps(work)) == ["calibration-1", "mcmc-1", "sobol-1"]
+    r = client.post("/api/workflow/step/move", json={"step": "mcmc-1", "index": 0})
+    assert r.status_code == 422 and "takes from" in r.json()["detail"]
+
+    r = client.post("/api/workflow/step/delete", json={"step": "calibration-1",
+                                                      "confirm": True})
+    assert r.status_code == 200 and r.json()["applied"] is True
+    assert list(_steps(work)) == ["sobol-1"]
+    assert [s["id"] for s in r.json()["workflow"]["workflow"]["steps"]] == ["sobol-1"]
+    # the results stay where CA wrote them
+    assert (work / "workflows" / "study" / "calibration-1").is_dir()

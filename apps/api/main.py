@@ -4172,6 +4172,8 @@ def _with_engine_dt(settings: dict) -> dict:
     that is a caller asking for a specific step.
     """
     settings = dict(settings or {})
+    # which step of the study workflow the run is (the route reads it): never a CA option
+    settings.pop("workflow_target", None)
     if settings.get("dt") in (None, ""):
         settings["dt"] = engine.dt
     return settings
@@ -4194,8 +4196,7 @@ def _study_running_step() -> str | None:
         job = manager._job
         if job is not None and job.state == "running" and getattr(job, "study_step", None):
             return job.study_step["step"]
-    if workflow.busy and workflow.path and os.path.basename(
-            os.path.dirname(workflow.path)) == study_workflow.WORKFLOW_DIR:
+    if workflow.busy and study_workflow.working_dir_of(workflow.path):
         return workflow._job.current_step or "a step"
     return None
 
@@ -4207,10 +4208,16 @@ def _study_entries(record: "_ModelRecord") -> list:
         return []
 
 
-def _study_plan(record: "_ModelRecord", configured: str, config: dict, *,
+def _study_plan(record: "_ModelRecord", configured: str, config: dict, *, flavour: str,
                 held_out: bool = False, needs_point: bool = False):
     """``(plan, notes)``: the study workflow to add this run's steps to, or ``(None,
-    notes)`` when the run keeps its direct runner, ``notes`` saying why for the run log."""
+    notes)`` when the run keeps its direct runner, ``notes`` saying why for the run log.
+
+    The run's ``workflow_target`` (``config``) says which workflow and step it is
+    (:data:`study_workflow.TARGET_MODES`): by default the open workflow's latest step of
+    this ``flavour`` (:func:`study_workflow.flavour`) is changed, and a step is added only
+    when it has none of them.
+    """
     global _study_unavailable_said
     if not study_workflow.enabled():
         return None, []
@@ -4239,10 +4246,21 @@ def _study_plan(record: "_ModelRecord", configured: str, config: dict, *,
     config.setdefault("cellml_model_path", _model_file(record))
     try:
         target = _study_target(config)
-        builder = study_workflow.open_workflow(configured, target)
+        wanted = config.get("workflow_target") or {}
+        open_path = wanted.get("workflow") or (
+            workflow.path if study_workflow.working_dir_of(workflow.path) else None)
+        builder, note = study_workflow.open_workflow(
+            configured, target, path=open_path, new=wanted.get("mode") == "new_workflow")
+        edit = study_workflow.edited_step(builder, wanted, flavour)
     except (study_workflow.StudyWorkflowError, ValueError, OSError) as exc:
         raise HTTPException(status_code=422, detail=f"the study workflow: {exc}") from exc
-    return study_workflow.Plan(builder, configured), []
+    notes = [_study_note(note)] if note else []
+    if edit:
+        notes.append(_study_note(
+            f"this run changes step {edit} of workflow {builder.name}, and runs it and the "
+            f"steps that take from it (choose a new step in the Workflow view to add one "
+            f"instead)."))
+    return study_workflow.Plan(builder, configured, edit=edit), notes
 
 
 def _study_settings(config: dict, settings: dict, extra: dict) -> dict:
@@ -4332,21 +4350,34 @@ def _study_point(plan, model_id: str, qnames: list) -> str | None:
     latest done one of a reopened working dir), else a set step with the best fit (or the
     best-so-far of a calibration stopped early), its reason saying which."""
     finished = calibration.last_completed_step(model_id)
-    if finished and finished["workflow"] == plan.builder.path and finished["step"] in plan.builder.steps:
+    if finished and finished["workflow"] == plan.builder.path and finished["step"] == plan.edit:
+        # the step this run changes: its best fit as it stands, as values, since a step
+        # cannot start from itself
+        best = calibration.last_completed_best_params(model_id)
+        if best:
+            return plan.add_set("best_fit", study_workflow.set_entries(
+                best, qnames, f"best fit of step {plan.edit} before this run changed it"))
+    if finished and finished["workflow"] == plan.builder.path and \
+            finished["step"] in plan.builder.steps and finished["step"] != plan.edit:
         return finished["step"]
     best = calibration.last_completed_best_params(model_id)
     if not best and finished is None:
         record = _get_model(model_id)
         opened = _opened_calibration(record)
         if opened:
-            if opened["workflow"] == plan.builder.path and opened["step"] in plan.builder.steps:
+            if opened["workflow"] == plan.builder.path and opened["step"] in plan.builder.steps \
+                    and opened["step"] != plan.edit:
                 return opened["step"]
             return plan.add_set("best_fit", study_workflow.set_entries(
                 opened["best"], qnames,
                 f"best fit of calibration step {opened['step']} of {opened['workflow']}"))
         reopened = _reopened_calibration(record, {"config_outputs_dir": plan.working_dir})
         if reopened and reopened["step"] in plan.builder.steps:
-            return reopened["step"]
+            if reopened["step"] != plan.edit:
+                return reopened["step"]
+            return plan.add_set("best_fit", study_workflow.set_entries(
+                reopened["best"], qnames,
+                f"best fit of step {plan.edit} before this run changed it"))
     if not best:
         return None
     stopped = calibration.last_completed_step(model_id, finished_only=False)
@@ -4362,9 +4393,11 @@ def _study_start(plan, config: dict, markers: tuple, notes: list) -> None:
     plan.write()
     config.update(plan.runner_config({"done": markers[0], "fail": markers[1]}))
     config["log_preamble"] = notes + [_study_note(
-        f"step {plan.step} of {plan.builder.path} (adds {', '.join(plan.added)}); its results "
+        f"step {plan.step} of {plan.builder.path} ({'changes' if plan.edit else 'adds'} "
+        f"{', '.join(plan.added)}); its results "
         f"go to {plan.step_dir()}.")]
-    if not workflow.busy and (not workflow.loaded or workflow.path == plan.builder.path):
+    if not workflow.busy and (not workflow.loaded or workflow.path == plan.builder.path
+                              or study_workflow.working_dir_of(workflow.path)):
         try:
             workflow.load(plan.builder.path, plan.run_dir, [])
         except (workflow_manager.WorkflowError, workflow_manager.WorkflowUnavailable,
@@ -4400,7 +4433,8 @@ def _study_calibration(record, req, config: dict, configured: str) -> list:
     except (OSError, ValueError):
         held_out = False
     with study_workflow.lock():
-        plan, notes = _study_plan(record, configured, config, held_out=held_out,
+        plan, notes = _study_plan(record, configured, config, flavour="calibration",
+                                  held_out=held_out,
                                   needs_point=start_from in ("current", "best_fit"))
         if plan is None:
             return notes
@@ -4420,7 +4454,7 @@ def _study_calibration(record, req, config: dict, configured: str) -> list:
             notes.append(_study_note(f"the genetic algorithm draws its first population at "
                                      f"random, so it does not start at step {start}'s values "
                                      f"(they are recorded as where it was asked to start)."))
-        plan.add("add_calibration", plan.new_id(study_workflow.LABELS["calibration"]),
+        plan.add("add_calibration", plan.main_id(study_workflow.LABELS["calibration"]),
                  **_study_inputs(config), start_from=start,
                  settings=_study_settings(config, settings, extra))
         _study_start(plan, config, (DONE_MARKER, FAIL_MARKER), notes)
@@ -4448,7 +4482,8 @@ def _study_sensitivity(record, req, config: dict, configured: str) -> list:
         nominal in ("best_fit", "midpoint", "geometric")
         or (nominal == "current" and bool(req.current_params)))
     with study_workflow.lock():
-        plan, notes = _study_plan(record, configured, config, needs_point=needs_point)
+        plan, notes = _study_plan(record, configured, config, flavour=method,
+                                  needs_point=needs_point)
         if plan is None:
             return notes
         entries = _study_entries(record)
@@ -4457,7 +4492,8 @@ def _study_sensitivity(record, req, config: dict, configured: str) -> list:
         if first:
             ga = {"param_id_method": settings.get("param_id_method", "genetic_algorithm"),
                   "optimiser_options": _study_ga_options(settings, {"cost_convergence": 0.0001})}
-            at = plan.add("add_calibration", plan.new_id(study_workflow.LABELS["calibration"]),
+            at = plan.add("add_calibration", plan.first_id(study_workflow.LABELS["calibration"],
+                                                          "result_from"),
                           **_study_inputs(config), settings=_study_settings(config, settings, ga))
         elif local and nominal == "best_fit":
             at = _study_point(plan, record.model_id, qnames)
@@ -4480,7 +4516,7 @@ def _study_sensitivity(record, req, config: dict, configured: str) -> list:
             sa_options["gradient_method"] = gradient
             sa_options["fd_rel_step"] = float(settings.get("rel_step") or 0.01)
         label = study_workflow.LABELS["local" if local else "sobol"]
-        plan.add("add_sensitivity", plan.new_id(label), **_study_inputs(config),
+        plan.add("add_sensitivity", plan.main_id(label), **_study_inputs(config),
                  sa_options=sa_options, result_from=at,
                  settings=_study_settings(config, settings, {}))
         config["study_meta"] = {"method": method, "gradient_method": gradient}
@@ -4497,7 +4533,8 @@ def _study_uq(record, config: dict, configured: str) -> list:
     method = settings.get("method", "mcmc")
     first = bool(settings.get("run_calibration_first"))
     with study_workflow.lock():
-        plan, notes = _study_plan(record, configured, config, needs_point=not first)
+        plan, notes = _study_plan(record, configured, config, flavour=method,
+                                  needs_point=not first)
         if plan is None:
             return notes
         qnames = [q for e in _study_entries(record) for q in e.qnames]
@@ -4509,7 +4546,8 @@ def _study_uq(record, config: dict, configured: str) -> list:
             ga = {"param_id_method": settings.get("param_id_method", "genetic_algorithm"),
                   "optimiser_options": _study_ga_options(
                       settings, {"cost_convergence": 0.001, "cost_type": cost_type})}
-            at = plan.add("add_calibration", plan.new_id(study_workflow.LABELS["calibration"]),
+            at = plan.add("add_calibration", plan.first_id(study_workflow.LABELS["calibration"],
+                                                          "result_from"),
                           **_study_inputs(config, obs),
                           settings=_study_settings(config, settings, ga))
         else:
@@ -4517,7 +4555,7 @@ def _study_uq(record, config: dict, configured: str) -> list:
         uq_options = dict(_uq_options(study_workflow.options(settings), _analysis_seed),
                           method=method)
         extra = {"ia_options": {"method": "Laplace"}} if method == "laplace" else {}
-        plan.add("add_uq", plan.new_id(study_workflow.LABELS.get(method, "uq")),
+        plan.add("add_uq", plan.main_id(study_workflow.LABELS.get(method, "uq")),
                  **_study_inputs(config, obs), uq_options=uq_options, result_from=at,
                  settings=_study_settings(config, settings, extra))
         _study_start(plan, config, (DONE_MARKER, FAIL_MARKER), notes)
@@ -4602,6 +4640,7 @@ def calibration_run(req: CalibrationRequest) -> dict:
         "num_cores": int(req.settings.get("num_cores", 1) or 1),
         "python": python_path,
         "settings": _with_engine_dt(req.settings),
+        "workflow_target": req.settings.get("workflow_target"),
         # The original uploaded CellML, so the runner can save a calibrated copy
         # with best-fit values baked in (issue #114), independent of model_type.
         "cellml_path": _model_file(record),
@@ -4673,6 +4712,18 @@ class WorkflowLoadRequest(BaseModel):
     # The user's working dir; the run goes to <working dir>/workflows/<name>
     # unless run_dir names one.
     config_outputs_dir: str = ""
+
+
+class WorkflowStepDeleteRequest(BaseModel):
+    step: str
+    #: Delete the steps that would go with it too (``deleted`` of an unconfirmed answer).
+    confirm: bool = False
+
+
+class WorkflowStepMoveRequest(BaseModel):
+    step: str
+    #: Its new position in the workflow's steps, from 0.
+    index: int
 
 
 class WorkflowViewRequest(BaseModel):
@@ -4781,14 +4832,6 @@ class WorkflowWorkingDirRequest(BaseModel):
     config_outputs_dir: str = ""
 
 
-def _is_study_workflow(path: str | None) -> bool:
-    """Whether ``path`` is some working dir's study workflow (``<dir>/workflow/...``)."""
-    if not path:
-        return False
-    folder = os.path.dirname(os.path.dirname(os.path.abspath(path)))
-    return os.path.abspath(path) == os.path.abspath(study_workflow.workflow_path(folder))
-
-
 @app.post("/api/workflow/working-dir")
 def workflow_working_dir(req: WorkflowWorkingDirRequest) -> dict:
     """Follow a change of working dir: the study workflow open is that folder's.
@@ -4799,8 +4842,8 @@ def workflow_working_dir(req: WorkflowWorkingDirRequest) -> dict:
     directory = _working_dir_arg(req.config_outputs_dir)
     own = study_workflow.workflow_path(directory) if directory else None
     if not workflow.busy:
-        if workflow.loaded and _is_study_workflow(workflow.path) and (
-                not own or os.path.abspath(workflow.path) != os.path.abspath(own)):
+        folder = study_workflow.working_dir_of(workflow.path) if workflow.loaded else None
+        if folder and (not directory or os.path.abspath(folder) != os.path.abspath(directory)):
             workflow.reset()
         if own and os.path.isfile(own) and not workflow.loaded:
             try:
@@ -4808,6 +4851,69 @@ def workflow_working_dir(req: WorkflowWorkingDirRequest) -> dict:
             except HTTPException:
                 pass
     return _workflow_http(workflow.describe)
+
+
+@app.get("/api/workflow/list")
+def workflow_list(config_outputs_dir: str = "") -> dict:
+    """The working dir's workflows (``study_workflow.list_workflows``), the most recently
+    written first, and which one is open."""
+    directory = _working_dir_arg(config_outputs_dir)
+    found = study_workflow.list_workflows(directory) if directory else []
+    return {"workflows": found, "open": workflow.path if workflow.loaded else None}
+
+
+def _editable_workflow() -> str:
+    """The open workflow's file, when no run is using it; else an HTTP error."""
+    if not workflow.loaded or not workflow.path:
+        raise HTTPException(status_code=422, detail="no workflow is open")
+    running = _study_running_step()
+    if workflow.busy or running:
+        raise HTTPException(status_code=409, detail=(
+            f"step {running or 'a step'} of the workflow is running; change the workflow "
+            f"when it has finished"))
+    return workflow.path
+
+
+def _reopen_edited(path: str) -> dict:
+    """Re-read the edited workflow into the Workflow view, its run directory kept."""
+    output_dir = workflow.output_dir
+    loaded = _workflow_http(workflow.load, path, "", list(_module_library_dirs))
+    workflow.output_dir = output_dir or workflow_manager.default_output_dir(
+        study_workflow.working_dir_of(path) or "", loaded["name"], str(UPLOAD_DIR))
+    return _workflow_http(workflow.describe)
+
+
+@app.post("/api/workflow/step/delete")
+def workflow_step_delete(req: WorkflowStepDeleteRequest) -> dict:
+    """Delete a step of the open workflow, reconnecting the steps that took from it to what
+    it took from (``study_workflow.delete_plan``).
+
+    When some step has nothing to reconnect to, it would be deleted too: then nothing
+    changes until the request is made again with ``confirm``, and ``applied`` is false with
+    ``deleted`` naming every step that would go. The steps' results stay in the run
+    directory.
+    """
+    path = _editable_workflow()
+    with study_workflow.lock():
+        try:
+            result = study_workflow.delete_step(path, req.step, confirm=req.confirm)
+        except (study_workflow.StudyWorkflowError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+    described = _reopen_edited(path) if result["applied"] else _workflow_http(workflow.describe)
+    return {**result, "workflow": described}
+
+
+@app.post("/api/workflow/step/move")
+def workflow_step_move(req: WorkflowStepMoveRequest) -> dict:
+    """Move a step of the open workflow to another position. CA runs every step after the
+    steps it takes from, so a move that would put a step above one of those is refused."""
+    path = _editable_workflow()
+    with study_workflow.lock():
+        try:
+            study_workflow.move_step(path, req.step, req.index)
+        except (study_workflow.StudyWorkflowError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return _reopen_edited(path)
 
 
 @app.post("/api/workflow/view")
@@ -5229,6 +5335,7 @@ def sensitivity_run(req: SensitivityRequest) -> dict:
         "num_cores": num_cores,
         "python": python_path,
         "settings": _with_engine_dt(req.settings),
+        "workflow_target": req.settings.get("workflow_target"),
         "best_params": best_params,
         "current_params": req.current_params,
         # Global random seed (Settings popup); None => non-deterministic run.
@@ -5741,6 +5848,7 @@ def uq_run(req: UQRequest) -> dict:
         "num_cores": int(req.settings.get("num_cores", 1) or 1),
         "python": python_path,
         "settings": _with_engine_dt(req.settings),
+        "workflow_target": req.settings.get("workflow_target"),
         "best_params": best_params,
         # Global random seed (Settings popup); None => non-deterministic run.
         "seed": _analysis_seed,
