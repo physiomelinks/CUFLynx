@@ -875,6 +875,26 @@ describe('EditParamsDialog — modifier parameters', () => {
     expect(wrapper.find('[data-testid="ep-modifier-badge"]').exists()).toBe(false)
   })
 
+  it('deleting a modifier loaded from the file restores its targets', async () => {
+    const wrapper = mountDialog({
+      ...modProps,
+      currentParams: [{
+        qname: 'a/C', qnames: ['a/C', 'b/C'], name: 'C_scale',
+        modifies: ['a/C', 'b/C'], operation: 'scale',
+        baselines: { 'a/C': 2e-8, 'b/C': 4e-8 },
+        min: 0.5, max: 2, initial_value: 1.0,
+      }],
+    })
+    await flushPromises()
+    expect(wrapper.findAll('[data-testid="ep-row"]')).toHaveLength(2) // mod + c/R
+
+    await wrapper.find('[data-testid="ep-remove-modifier"]').trigger('click')
+    const names = wrapper.findAll('[data-testid="ep-row"]').map((r) => r.find('.ep-name').text())
+    expect(names).toHaveLength(3)
+    expect(names.some((n) => n.startsWith('a/C'))).toBe(true)
+    expect(names.some((n) => n.startsWith('b/C'))).toBe(true)
+  })
+
   it('groups differently-named parameters via the toolbar (override)', async () => {
     uploadParamsForId.mockResolvedValue({ params: [] })
     const wrapper = mountDialog(modProps)
