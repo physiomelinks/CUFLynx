@@ -47,6 +47,9 @@ const DEFAULTS = {
   },
   ia_options: [
     { name: 'method', type: 'enum', default: 'Laplace', choices: ['Laplace', 'profile_likelihood'] },
+    { name: 'gradient_source', type: 'enum', default: 'FD', choices: ['FD', 'AD', 'FSA'] },
+    { name: 'sub_method', type: 'enum', default: 'parabola_fit',
+      choices: ['parabola_fit', 'numdifftools_finite_diff'] },
     { name: 'num_points', type: 'int', default: 50 },
     { name: 'optimiser_options', type: 'dict', default: null },
   ],
@@ -158,16 +161,54 @@ describe('IAPanel parameter reduction results', () => {
 describe('IAPanel identifiability analysis', () => {
   it('sends CA\'s ia_options through the UQ runner\'s laplace method', async () => {
     const wrapper = mountPanel()
+    await wrapper.find('[data-testid="ia-opt-method"]').setValue('profile_likelihood')
     expect(wrapper.find('[data-testid="ia-opt-num_points"]').exists()).toBe(true)
     // A dict option has no field; CA's default applies.
     expect(wrapper.find('[data-testid="ia-opt-optimiser_options"]').exists()).toBe(false)
-    await wrapper.find('[data-testid="ia-opt-method"]').setValue('profile_likelihood')
     await wrapper.find('[data-testid="ia-run"]').trigger('click')
     expect(wrapper.emitted('run-ia')[0][0]).toEqual({
       method: 'laplace',
       run_calibration_first: false,
       ia_options: { method: 'profile_likelihood', num_points: 50 },
     })
+  })
+
+  it('shows and sends only the options the chosen method and gradient source read', async () => {
+    const wrapper = mountPanel()
+    const shown = (name) => wrapper.find(`[data-testid="ia-opt-${name}"]`).exists()
+    // Laplace with FD: the FD Hessian method, no profile-likelihood settings.
+    expect(shown('gradient_source')).toBe(true)
+    expect(shown('sub_method')).toBe(true)
+    expect(shown('num_points')).toBe(false)
+
+    await wrapper.find('[data-testid="ia-opt-gradient_source"]').setValue('AD')
+    expect(shown('sub_method')).toBe(false)
+    await wrapper.find('[data-testid="ia-run"]').trigger('click')
+    expect(wrapper.emitted('run-ia')[0][0].ia_options).toEqual({
+      method: 'Laplace',
+      gradient_source: 'AD',
+    })
+
+    await wrapper.find('[data-testid="ia-opt-gradient_source"]').setValue('FD')
+    expect(shown('sub_method')).toBe(true)
+    await wrapper.find('[data-testid="ia-opt-method"]').setValue('profile_likelihood')
+    expect(shown('gradient_source')).toBe(false)
+    expect(shown('sub_method')).toBe(false)
+  })
+
+  it('follows a when or methods key on CA\'s descriptor over its own table', async () => {
+    const wrapper = mountPanel({
+      defaults: {
+        ...DEFAULTS,
+        ia_options: [
+          DEFAULTS.ia_options[0],
+          { name: 'num_points', type: 'int', default: 50, methods: ['Laplace'] },
+          { name: 'sub_method', type: 'str', default: 'x', when: { method: ['profile_likelihood'] } },
+        ],
+      },
+    })
+    expect(wrapper.find('[data-testid="ia-opt-num_points"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="ia-opt-sub_method"]').exists()).toBe(false)
   })
 
   it('shows profile-likelihood intervals, with an open side as unbounded', () => {

@@ -147,6 +147,26 @@ function pct(v) {
 const iaDescriptors = computed(() => (props.defaults.ia_options ?? []).filter(renderable))
 const iaValues = reactive({})
 watch(iaDescriptors, (d) => seed(iaValues, d), { immediate: true })
+
+// When each IA option is read, as {option: [values]}. A descriptor's own `when`
+// or `methods` wins; CA's ia_options state these only in their descriptions, so
+// this table restates them for the options CA marks with neither.
+const IA_APPLIES = {
+  gradient_source: { method: ['Laplace'] },
+  sub_method: { method: ['Laplace'], gradient_source: ['FD'] },
+  num_points: { method: ['profile_likelihood'] },
+  range_factor: { method: ['profile_likelihood'] },
+  optimiser_options: { method: ['profile_likelihood'] },
+}
+function applies(o, values) {
+  const when = o.when ?? (o.methods ? { method: o.methods } : IA_APPLIES[o.name])
+  if (!when) return true
+  return Object.entries(when).every(
+    ([key, allowed]) => values[key] == null || allowed.includes(values[key]),
+  )
+}
+/** The IA options the current choices read: shown, and the only ones sent. */
+const iaShown = computed(() => iaDescriptors.value.filter((o) => applies(o, iaValues)))
 const runCalibrationFirst = ref(false)
 const iaRunning = computed(() => props.iaState === 'running')
 
@@ -156,7 +176,7 @@ function onRunIA() {
     // The UQ runner's method that runs CA's IdentifiabilityAnalysis.
     method: 'laplace',
     run_calibration_first: runCalibrationFirst.value,
-    ia_options: collect(iaValues, iaDescriptors.value),
+    ia_options: collect(iaValues, iaShown.value),
   })
 }
 
@@ -313,7 +333,7 @@ function ciBound(profile, side) {
     <!-- ---------------- Identifiability analysis ---------------- -->
     <h3 class="section-title">Identifiability analysis</h3>
     <div class="cal-form" data-testid="ia-settings">
-      <template v-for="opt in iaDescriptors" :key="opt.name">
+      <template v-for="opt in iaShown" :key="opt.name">
         <label v-if="opt.type === 'bool'" class="field checkbox">
           <Checkbox v-model="iaValues[opt.name]" :binary="true"
                     :input-id="'ia-opt-' + opt.name" :data-testid="'ia-opt-' + opt.name" />
