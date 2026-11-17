@@ -590,20 +590,47 @@ def test_a_libcuflynx_without_the_workflow_features_keeps_the_direct_runners(
     assert first["study_step"] is None
 
 
-def test_held_out_data_keeps_the_direct_calibration(client, study_workflow_on, tmp_path):
-    _direct(tmp_path)
-    work = tmp_path / "w"
+def _held_out_obs() -> dict:
     obs = json.loads(LV_OBS_DATA_PATH.read_text())
     obs["prediction_items"] = [{"data_item_name": "x_final", "data_type": "constant",
                                 "operation": "max", "operands": [f"{LV}/x"],
                                 "unit": "dimensionless", "experiment_idx": 0,
                                 "value": 3.0, "std": 0.1}]
-    model_id = _setup(client, obs)
+    return obs
+
+
+def _steps_validate(monkeypatch, validates: bool):
+    real = study_workflow.step_records
+    monkeypatch.setattr(study_workflow, "step_records", lambda kind, output: (
+        validates if (kind, output) == ("calibration", "validation_results")
+        else real(kind, output)))
+
+
+def test_held_out_data_keeps_the_direct_calibration_on_an_older_ca(
+        client, study_workflow_on, tmp_path, monkeypatch):
+    _steps_validate(monkeypatch, False)
+    _direct(tmp_path)
+    work = tmp_path / "w"
+    model_id = _setup(client, _held_out_obs())
     status = _calibrate(client, model_id, work)
 
     assert "direct runner" in status["lines"]
     assert any("held-out data" in ln for ln in status["lines"])
     assert not (work / "workflow").exists()
+
+
+def test_held_out_data_is_a_calibration_step_when_ca_validates_in_steps(
+        client, fake_runs, tmp_path, monkeypatch):
+    """CA #672: a calibration step validates its best fit against the held-out items, so
+    the run is recorded like any other."""
+    _steps_validate(monkeypatch, True)
+    work = tmp_path / "w"
+    model_id = _setup(client, _held_out_obs())
+    status = _calibrate(client, model_id, work)
+
+    assert not any("held-out data" in ln for ln in status["lines"]), status["lines"]
+    assert "direct runner" not in status["lines"]
+    assert "calibration-1" in _steps(work)
 
 
 CA_CELLML_MODEL_TYPES = ("cellml", "python", "casadi_python", "aadc_python")
