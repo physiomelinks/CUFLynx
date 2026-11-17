@@ -60,14 +60,15 @@ const settings = reactive({
 // each descriptor's default). Merged into the run/change payload flat.
 const optionValues = reactive({})
 
-// CA's sensitivity_analysis option descriptors, minus `method` (CUFLynx's own
-// top-level Sobol/local selector already covers that axis). Never hardcoded.
-// `include_prediction_items` is dropped too, should CA's schema list it: it has
-// its own checkbox below, which knows when it cannot apply.
+// CA's sensitivity_analysis option descriptors, minus the ones this panel has its own
+// control for: `method` (the Sobol/local selector), `gradient_method` (the gradient
+// source), `fd_rel_step` (the FD step, sent as rel_step) and `include_prediction_items`
+// (its checkbox below, which knows when it cannot apply). CA's defaults are merged last
+// into the payload, so forwarding them overrode the user's choice (CA's 'auto' turned a
+// chosen FD into AD). Never hardcoded otherwise.
+const PANEL_OWNED = new Set(['method', 'gradient_method', 'fd_rel_step', 'include_prediction_items'])
 const saOptions = computed(() =>
-  (props.defaults.options ?? []).filter(
-    (o) => o.name !== 'method' && o.name !== 'include_prediction_items',
-  ),
+  (props.defaults.options ?? []).filter((o) => !PANEL_OWNED.has(o.name)),
 )
 
 // "Include prediction items": available only when libcuflynx supports it (the API's
