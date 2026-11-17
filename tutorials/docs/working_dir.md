@@ -43,15 +43,28 @@ to have somewhere to keep what it was run from.
 │   └─ generated_models/<prefix>/<stamp>/   a Myokit / EasyML model converted to CellML,
 │                                    or PhLynx's module_config
 ├─ <prefix>_calibrated.cellml        the model with the best fit written in
-├─ <method>_<prefix>_<obs>/          one per calibration or UQ run (circulatory_autogen's case dir):
-│                                    best fit, progress history, error vectors, MCMC chain, plots,
-│                                    and the obs_data and params_for_id the run was made from
+├─ <method>_<prefix>_<obs>/          one per calibration (circulatory_autogen's run dir, <method> its
+│                                    param_id_method): best fit, progress history, error vectors, plots
+├─ mcmc_<prefix>_<obs>/              the MCMC run, in a directory of its own: the chain, param_names.csv,
+│                                    posterior statistics, median and mean, the posterior predictive check
+│                                    (<obs> is uq_obs_data for a UQ run from the app)
+├─ uq_posterior_samples.npy          the posterior a UQ run from the app settled on, + uq_param_names.csv
 ├─ sensitivity/                      Sobol indices and local sensitivity, with their plots (SA_plots/)
 ├─ emulators/<prefix>_<obs>/         trained emulator bundles
 ├─ workflows/<wf>/                   a calibration workflow's run: one folder per step and its result
-├─ saved_params/                     parameter sets saved from the sliders (.npy / .csv + _outputs.json)
-└─ export_<yymmdd>/                  an exported, runnable script bundle
+└─ saved_params/                     parameter sets saved from the sliders (.npy / .csv + _outputs.json)
 ```
+
+A run's obs_data and params_for_id are the versions in `inputs/` its manifest entry
+names; they are not copied into its run directory.
+
+**Export pipeline** writes a runnable script bundle beside the working dir, as
+`<W>_export_<yymmdd>/`, not inside it: circulatory_autogen writes the bundle
+(`write_pipeline_bundle`), and the bundle is a working dir of its own. Its
+`run_pipeline.py` writes the results, a study manifest and `inputs/` into the
+bundle folder, laid out as above. A trained emulator the study uses (Emulator tab,
+"use the emulator") is copied into it as `emulator/`; with none trained, the
+pipeline trains one first.
 
 `<stamp>` is the local date and time the version was first used,
 `yyyy-mm-dd_HHMMSS` (`_2`, `_3`... for a second version in the same second).

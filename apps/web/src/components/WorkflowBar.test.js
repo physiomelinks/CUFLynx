@@ -35,6 +35,18 @@ describe('WorkflowBar', () => {
     expect(tab.attributes('title')).toContain('no model to show')
   })
 
+  it('says why a set step has no tab', () => {
+    const bar = mount(WorkflowBar, { props: { tabs: [
+      { id: 'boundary', kind: 'step', stepKind: 'set', viewable: false, label: 'boundary',
+        detail: 'heat/u_D = 0.1',
+        noViewReason: 'a set step gives values to the target and has no model to show' },
+    ] } })
+    const tab = bar.find('[data-testid="workflow-tab-boundary"]')
+    expect(tab.attributes('disabled')).toBeDefined()
+    expect(tab.attributes('title')).toBe(
+      'heat/u_D = 0.1: a set step gives values to the target and has no model to show')
+  })
+
   it('switches tabs, and not while a tab is loading', async () => {
     const bar = mount(WorkflowBar, { props: { tabs, selected: null } })
     await bar.find('[data-testid="workflow-tab-target"]').trigger('click')

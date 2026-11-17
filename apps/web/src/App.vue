@@ -543,7 +543,7 @@ const workflowStates = computed(() =>
  * that step's own calibration results, if it has run, as a reopened run's are.
  */
 async function onSelectWorkflowTab(tabId) {
-  const opened = await wf.select(tabId)
+  const opened = await wf.select(tabId, workingDir.value.trim())
   if (!opened) {
     if (wf.error.value) sim.setError(wf.error.value)
     return
@@ -558,15 +558,21 @@ async function onSelectWorkflowTab(tabId) {
       filename: opened.params_for_id.filename,
     })
   }
+  // The step's calibration, and its MCMC run beside it, from CA's param_id dir.
   const runDir = opened.workflow_view?.param_id_output_dir
   if (runDir) {
     try {
-      const found = await loadWorkingDir(runDir, opened.workflow_view.view)
+      const view = opened.workflow_view
+      const found = await loadWorkingDir(
+        view.results_dir || runDir, view.step_id || view.view, runDir)
       if (!found.error) applyLoadedOutputs(found)
     } catch {
       /* the step's results are a bonus; the model is what the tab is for */
     }
   }
+  // A sensitivity, emulation or identifiability step's own results (read with the tab).
+  const stepOutputs = opened.workflow_view?.step_outputs
+  if (stepOutputs) applyLoadedOutputs(stepOutputs)
 }
 
 async function onOpenWorkflow(source) {
@@ -2003,6 +2009,11 @@ function exportPayload() {
     uq: { ...uqSettings.value },
     enabled: exportEnabled.value,
     working_dir: workingDir.value.trim() || undefined,
+    // The Emulator tab: the bundle carries the emulator the analyses use, or trains
+    // one with the panel's settings when none is trained.
+    use_emulator: emu.useEmulator.value,
+    emulator_dir: emu.selectedDir.value || undefined,
+    emulator: { ...emuSettings.value },
   }
 }
 
@@ -3204,6 +3215,7 @@ watch(() => obs.obsData.value, scheduleRun)
             :working-dir="workingDir"
             :module-library-dirs="moduleLibraryDirs"
             :mpiexec-available="mpiexecAvailable"
+            :provenance="wf.provenance.value"
             @open="onOpenWorkflow"
             @close="wf.close()"
             @select="onSelectWorkflowTab"

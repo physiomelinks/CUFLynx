@@ -1007,7 +1007,12 @@ class ExportPipelineRequest(BaseModel):
     sensitivity: dict = Field(default_factory=dict)
     uq: dict = Field(default_factory=dict)
     enabled: dict = Field(default_factory=dict)
-    # Base dir for the export folder; blank => the temp uploads dir.
+    # The Emulator tab: the "use" tick box, the bundle chosen when the study holds
+    # several, and the panel's training settings.
+    use_emulator: bool = False
+    emulator_dir: str = ""
+    emulator: dict = Field(default_factory=dict)
+    # The study's working dir; the export goes beside it. Blank => the temp uploads dir.
     config_outputs_dir: str = ""
 
 
@@ -1075,124 +1080,106 @@ def _fs_error(exc: OSError, action: str, fallback: Path, *, user_dir: bool) -> H
     )
 
 
+def _export_dir(configured: str, suffix: str) -> Path:
+    """Where a pipeline bundle is written: beside the working dir, as
+    ``<W>_export_<yymmdd>``, or in the temp uploads dir when there is none.
+
+    Not inside the working dir: the bundle is a working dir of its own (its
+    ``run_pipeline.py`` writes a study manifest, ``inputs/`` and run dirs into it),
+    and one nested in ``<W>`` would be read as part of ``<W>``'s study.
+    """
+    base = _export_base_dir(configured)
+    if base == UPLOAD_DIR:
+        return base / f"export_{suffix}"
+    return base.parent / f"{base.name}_export_{suffix}"
+
+
+def _export_emulator(req: ExportPipelineRequest) -> dict:
+    """``build_user_inputs``' emulator arguments from the Emulator tab's state.
+
+    The trained bundle the study would run on, when "use the emulator" is on and
+    one is trained (the same resolution an analysis run makes); without one, the
+    exported pipeline trains it first. The panel's training settings go with it.
+    """
+    emu_dir = None
+    if req.use_emulator:
+        resolved = _emulator_dir_for(req.model_id, {
+            "config_outputs_dir": req.config_outputs_dir,
+            "emulator_dir": req.emulator_dir,
+        })
+        if ca_run_history.emulator_metadata(resolved) is not None:
+            emu_dir = resolved
+    from emulator_runner import _emulator_settings  # noqa: PLC0415 - the runner's own rule
+
+    settings = _emulator_settings(dict(req.emulator or {}), "")
+    settings.pop("emulator_dir", None)
+    return {"use_emulator": req.use_emulator, "emulator_dir": emu_dir,
+            "emulator_settings": settings}
+
+
 @app.post("/api/export/pipeline")
 def export_pipeline_route(req: ExportPipelineRequest) -> dict:
-    """Write a self-contained, reproducible export folder: the dated
-    user_inputs yaml + run_pipeline.py + plot_outputs.py + copies of the model /
-    obs / params, all referenced by relative paths."""
+    """Write a self-contained, reproducible pipeline bundle with circulatory_autogen's
+    ``write_pipeline_bundle``: the dated user_inputs yaml, run_pipeline.py, the
+    plotting scripts and copies of the model, obs_data, params_for_id, user funcs
+    and a trained emulator the study uses, all referenced by relative paths."""
     record = _get_model(req.model_id)
     suffix = export_pipeline.dated_suffix()
     user_dir = bool((req.config_outputs_dir or "").strip())
-    export_dir = _export_base_dir(req.config_outputs_dir) / f"export_{suffix}"
-    resources = export_dir / "resources"
+    export_dir = _export_dir(req.config_outputs_dir, suffix)
 
-    # Use the loaded CellML file's prefix (e.g. "3compartment"), not the internal
-    # <model name> (often a generic "cardiovascularSystem"). The client passes it.
+    # The loaded file's prefix (e.g. "3compartment"), not the internal <model name>.
     file_prefix = req.file_prefix.strip() or _record_prefix(record)
-    # The model lives where circulatory_autogen resolves model_path:
-    # generated_models/<prefix>/<prefix>.cellml. obs/params go in resources/.
-    # The suffix is the uploaded file's own: an external_python model is a .py,
-    # and copying it out as ".cellml" would hand CA a file whose name says it is
-    # something it is not.
-    model_file = file_prefix + (Path(record.path).suffix or ".cellml")
-    external_model = Path(record.path).suffix.lower() == ".py"
-    model_dir = export_dir / "generated_models" / file_prefix
-
-    # An unwritable working dir, a full disk or a too-long path must say which
-    # path failed and why, not become a body-less 500 (issue #135).
-    obs_file = None
-    params_file = None
-    # Funcs the user wrote in the GUI, by CA config key -> filename in resources/.
-    # An obs_data data_item names its operation and cost_type *by name*, so a
-    # study using one of these is not reproducible unless the func travels with
-    # it — the exported run would die on an operation CA has never heard of.
-    user_func_files: dict[str, str] = {}
-    try:
-        resources.mkdir(parents=True, exist_ok=True)
-        model_dir.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(record.path, model_dir / model_file)
-        if record.obs_path is not None:
-            obs_file = "obs_data.json"
-            shutil.copyfile(record.obs_path, resources / obs_file)
-        if record.params_path is not None:
-            # Keep the stored suffix: CA branches CSV-vs-JSON on it, so an
-            # exported JSON doc renamed to .csv would be misparsed downstream.
-            params_file = "params_for_id" + Path(record.params_path).suffix
-            shutil.copyfile(record.params_path, resources / params_file)
-        # include_modules only for an external_python study: the stored
-        # user_model.py is whatever .py was uploaded last under this output dir,
-        # and a CellML study's bundle must not carry an external_model_path.
-        for key, src in user_func_paths(
-            req.config_outputs_dir or None, include_modules=external_model
-        ).items():
-            # Keep CA's own filenames: the export is meant to be readable and
-            # handed to circulatory_autogen directly.
-            name = Path(src).name
-            shutil.copyfile(src, resources / name)
-            user_func_files[key] = name
-    except OSError as exc:
-        raise _fs_error(exc, "write the export to", export_dir, user_dir=user_dir) from exc
+    model_source = Path(record.path)
+    external_model = model_source.suffix.lower() == ".py"
+    # include_modules only for an external_python study: the stored user_model.py is
+    # whatever .py was uploaded last under this working dir, and a CellML study's
+    # bundle must not carry an external_model_path.
+    funcs = user_func_paths(req.config_outputs_dir or None, include_modules=external_model)
 
     try:
-        user_inputs = export_pipeline.build_user_inputs(
-            file_prefix=file_prefix,
-            model_type=engine.model_type,
-            solver=engine.solver,
-            solver_info=dict(engine.solver_info),
-            dt=engine.dt,
-            pre_time=req.pre_time,
-            sim_time=req.sim_time,
-            model_file=model_file,
-            obs_file=obs_file,
-            params_for_id_file=params_file,
-            user_func_files=user_func_files,
-            calibration=req.calibration,
-            sensitivity=req.sensitivity,
-            uq=req.uq,
-            enabled=req.enabled,
-            # The yaml is for the libcuflynx the user has: an older one rejects
-            # the include_prediction_items key.
-            prediction_features=ca_supports_prediction_features(),
-        )
+        with tempfile.TemporaryDirectory() as staging:
+            # CA copies the model under its own file name: name it after the study.
+            model_path = model_source
+            wanted = file_prefix + (model_source.suffix or ".cellml")
+            if model_source.name != wanted:
+                model_path = Path(staging) / wanted
+                shutil.copyfile(model_source, model_path)
+            inp = export_pipeline.build_user_inputs(
+                file_prefix=file_prefix,
+                model_type=engine.model_type,
+                solver=engine.solver,
+                solver_info=dict(engine.solver_info),
+                dt=engine.dt,
+                pre_time=req.pre_time,
+                sim_time=req.sim_time,
+                model_path=str(model_path),
+                obs_path=str(record.obs_path) if record.obs_path else None,
+                params_for_id_path=str(record.params_path) if record.params_path else None,
+                user_func_paths={key: str(path) for key, path in funcs.items()},
+                calibration=req.calibration,
+                sensitivity=req.sensitivity,
+                uq=req.uq,
+                enabled=req.enabled,
+                # The yaml is for the libcuflynx the user has: an older one rejects
+                # the include_prediction_items key.
+                prediction_features=ca_supports_prediction_features(),
+                **_export_emulator(req),
+            )
+            files = export_pipeline.write_bundle(inp, str(export_dir))
     except export_pipeline.ExportPipelineError as exc:
-        # A malformed setting is the client's to fix, so report it as such: an
-        # unhandled error here surfaces as a bare 500 with no detail, which is
-        # all the user saw in issue #133.
+        # A malformed setting is the client's to fix: report it rather than a bare
+        # 500 with no detail (issue #133).
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    yaml_name = f"user_inputs_{suffix}.yaml"
-    try:
-        with open(export_dir / yaml_name, "w") as fh:
-            yaml.safe_dump(user_inputs, fh, default_flow_style=False, sort_keys=False)
-        (export_dir / "run_pipeline.py").write_text(
-            export_pipeline.render_pipeline_script(), encoding="utf-8"
-        )
-        (export_dir / export_pipeline.PLOT_UTILITIES_NAME).write_text(
-            export_pipeline.render_plot_utilities(), encoding="utf-8"
-        )
-        (export_dir / export_pipeline.PLOTTING_SCRIPT_NAME).write_text(
-            export_pipeline.render_plotting_script(
-                {"data_items": record.obs_data.data_items} if record.obs_data else None
-            ),
-            encoding="utf-8",
-        )
+    except ca_imports.CaImportError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"exporting a pipeline needs circulatory_autogen's bundle writer: {exc}",
+        ) from exc
     except OSError as exc:
+        # An unwritable location, a full disk or a too-long path says which path
+        # failed and why (issue #135).
         raise _fs_error(exc, "write the export to", export_dir, user_dir=user_dir) from exc
-
-    # Every file actually written, so the UI's "what shipped" list matches the
-    # folder. plot_utilities.py used to be written and not listed, which reads
-    # as a bundle missing the module its plotting script imports.
-    files = [
-        yaml_name,
-        "run_pipeline.py",
-        export_pipeline.PLOTTING_SCRIPT_NAME,
-        export_pipeline.PLOT_UTILITIES_NAME,
-        f"generated_models/{file_prefix}/{model_file}",
-    ]
-    if obs_file:
-        files.append(f"resources/{obs_file}")
-    if params_file:
-        files.append(f"resources/{params_file}")
-    files.extend(f"resources/{name}" for name in sorted(user_func_files.values()))
     return {"export_dir": str(export_dir), "files": files}
 
 
@@ -1786,6 +1773,41 @@ def _unpack_workflow(files: dict[str, bytes], directory: Path) -> Path:
     return root / omex_import.PACKED_WORKFLOW_NAME
 
 
+def _attach_study_inputs(record: "_ModelRecord", obs: tuple[str, bytes] | None,
+                         params: tuple[str, bytes] | None, result: dict) -> None:
+    """Give a loaded study its obs_data and params_for_id (each ``(name, bytes)`` or None),
+    filling ``result["obs_data"]`` / ``result["params_for_id"]`` as an import reports them
+    and adding the obs_data's warnings to ``result["warnings"]``. A part that fails to
+    parse is reported in its slot without losing the other."""
+    if obs:
+        name, blob = obs
+        try:
+            parsed = parse_obs_data(json.loads(blob))
+            record.obs_data = parsed
+            record.obs_path = _write_study_file(record, "_obs_data.json", blob)
+            result["obs_data"] = {
+                "filename": name,
+                **parsed.summary(),
+                "data_items": parsed.data_items,
+                "prediction_items": parsed.prediction_items,
+                "protocol_info": parsed.protocol_info,
+            }
+            result["warnings"].extend(parsed.warnings)
+        except (ValueError, ObsDataError) as exc:
+            result["obs_data"] = {"filename": name, "error": str(exc)}
+    if params:
+        name, blob = params
+        try:
+            entries = parse_params_for_id(blob, record.meta.initial_values)
+            record.params_path = _save_params_file(record, blob)
+            result["params_for_id"] = {
+                "filename": name,
+                "params": [e.as_dict() for e in entries],
+            }
+        except ParamsForIdError as exc:
+            result["params_for_id"] = {"filename": name, "error": str(exc)}
+
+
 def import_omex_bytes(data: bytes, output_dir: str | None = None,
                       source: str = "archive", bind: bool = True) -> dict:
     """Load an archive's bytes, whatever delivered them.
@@ -1984,35 +2006,7 @@ def import_omex_bytes(data: bytes, output_dir: str | None = None,
     # obs_data and params_for_id are optional: an archive with only a model is a
     # perfectly good archive, and refusing it would be worse than loading what is
     # there. A part that fails to parse is reported without losing the rest.
-    if parts["obs"]:
-        name, blob = parts["obs"]
-        try:
-            parsed = parse_obs_data(json.loads(blob))
-            _models[model_id].obs_data = parsed
-            _models[model_id].obs_path = _write_study_file(
-                _models[model_id], "_obs_data.json", blob)
-            result["obs_data"] = {
-                "filename": name,
-                **parsed.summary(),
-                "data_items": parsed.data_items,
-                "prediction_items": parsed.prediction_items,
-                "protocol_info": parsed.protocol_info,
-            }
-            load_warnings.extend(parsed.warnings)
-        except (ValueError, ObsDataError) as exc:
-            result["obs_data"] = {"filename": name, "error": str(exc)}
-
-    if parts["params"]:
-        name, blob = parts["params"]
-        try:
-            entries = parse_params_for_id(blob, meta.initial_values)
-            _models[model_id].params_path = _save_params_file(_models[model_id], blob)
-            result["params_for_id"] = {
-                "filename": name,
-                "params": [e.as_dict() for e in entries],
-            }
-        except ParamsForIdError as exc:
-            result["params_for_id"] = {"filename": name, "error": str(exc)}
+    _attach_study_inputs(_models[model_id], parts["obs"], parts["params"], result)
 
     # A calibration workflow in the archive is kept (the upload dir) and offered,
     # not opened: opening one replaces the study with the workflow's own tabs,
@@ -2326,6 +2320,12 @@ def workflow_export(req: WorkflowExportRequest) -> dict:
     work_dir = UPLOAD_DIR / "workflow_exports" / uuid.uuid4().hex
     try:
         target = _workflow_http(workflow.target_model, str(work_dir))
+        if (target.get("model") or {}).get("external_model_path"):
+            # A COMBINE archive here carries a CellML model; this target has none.
+            raise HTTPException(status_code=422, detail=(
+                "the target is an external Python model, and an exported archive carries a "
+                "CellML model: share the workflow's folder (the workflow file, the model's "
+                ".py and the files its steps name) instead"))
         cellml = Path(target.get("flat_model_path") or target["model_path"]).read_text(
             encoding="utf-8")
         name = _workflow_http(workflow.describe).get("workflow", {}).get("workflow_name") \
@@ -4226,7 +4226,7 @@ def calibration_run(req: CalibrationRequest) -> dict:
         ),
         "model_type": engine.model_type,
         "solver": engine.solver,
-        "solver_info": dict(engine.solver_info),
+        "solver_info": engine.with_external_parameters(engine.solver_info, req.model_id),
         "obs_path": str(record.obs_path),
         "params_path": str(record.params_path),
         # CUFLynx-authored operation/cost funcs, saved under the output dir; CA
@@ -4311,12 +4311,18 @@ class WorkflowLoadRequest(BaseModel):
 class WorkflowViewRequest(BaseModel):
     # A step id, or "target" for the supermodule the workflow calibrates.
     view: str
+    # The user's working dir: an external Python model is kept there as the study's
+    # model (inputs/funcs/user_model.py), as an upload keeps it.
+    config_outputs_dir: str = ""
 
 
 class WorkflowRunRequest(BaseModel):
     from_step: str = ""
     only: str = ""
     num_cores: int = 1
+    # Write the merged values beside the target (CA's <prefix>_calibrated_parameters.json)
+    # when the run completes.
+    write_calibrated: bool = False
 
 
 #: model_id -> the workflow file of the workflow tab it was loaded from: a study sent on from
@@ -4409,26 +4415,20 @@ def workflow_view(req: WorkflowViewRequest) -> dict:
 
     CA builds the model (``workflow_model``): a step's own model with the values its
     earlier steps have calibrated so far fixed in it, or the target with every
-    calibrated value. It is then packed with that step's obs_data and params_for_id
-    and loaded through :func:`import_omex_bytes`, so a tab behaves exactly like a
-    dropped study.
+    calibrated value. A CellML model is packed with that step's obs_data and
+    params_for_id and loaded through :func:`import_omex_bytes`, so a tab behaves exactly
+    like a dropped study; an external Python model is loaded as an uploaded ``.py`` is
+    (:func:`_load_external_view`), with the values CA wrote for it.
     """
     work_dir = UPLOAD_DIR / "workflow_views" / uuid.uuid4().hex
     view = _workflow_http(workflow.view, req.view, str(work_dir))
-    members: dict[str, bytes] = {}
-    prefix = req.view
-    # The flat model: the generated one imports its _modules / _units files.
-    members[f"{prefix}.cellml"] = Path(view.get("flat_model_path") or view["model_path"]).read_bytes()
-    if view.get("obs_data_path"):
-        members[f"{prefix}_obs_data.json"] = Path(view["obs_data_path"]).read_bytes()
-    if view.get("params_for_id_path"):
-        params = Path(view["params_for_id_path"])
-        members[f"{prefix}_params_for_id{params.suffix.lower()}"] = params.read_bytes()
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w") as zf:
-        for name, blob in members.items():
-            zf.writestr(name, blob)
-    result = import_omex_bytes(buf.getvalue(), None, source="calibration workflow")
+    try:
+        if (view.get("model") or {}).get("external_model_path"):
+            result = _load_external_view(view, req.view, req.config_outputs_dir)
+        else:
+            result = _load_cellml_view(view, req.view)
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
     _workflow_view_models[result["model_id"]] = workflow.path
     workflow.view_models[result["model_id"]] = req.view
     result["workflow_view"] = {
@@ -4437,8 +4437,115 @@ def workflow_view(req: WorkflowViewRequest) -> dict:
             "waiting_for", "stale", "param_id_output_dir", "obs_data_path",
             "params_for_id_path")
     }
-    shutil.rmtree(work_dir, ignore_errors=True)
+    # The calibration's run directory sits beside its MCMC run's (CA's param_id dir):
+    # results are loaded from there, with the calibration's run chosen.
+    case_dir = view.get("param_id_output_dir")
+    result["workflow_view"]["results_dir"] = os.path.dirname(case_dir) if case_dir else None
+    # A sensitivity, emulation or identifiability step's own results, as a loaded working
+    # dir reports them.
+    result["workflow_view"]["step_outputs"] = load_outputs.step_outputs(view.get("result"))
     return result
+
+
+def _view_inputs(view: dict, prefix: str) -> tuple:
+    """``(obs, params)`` of a workflow view, each ``(file name, bytes)`` or None."""
+    obs = params = None
+    if view.get("obs_data_path"):
+        obs = (f"{prefix}_obs_data.json", Path(view["obs_data_path"]).read_bytes())
+    if view.get("params_for_id_path"):
+        path = Path(view["params_for_id_path"])
+        params = (f"{prefix}_params_for_id{path.suffix.lower()}", path.read_bytes())
+    return obs, params
+
+
+def _load_cellml_view(view: dict, prefix: str) -> dict:
+    """A CellML view, packed with its inputs and loaded as an archive."""
+    members: dict[str, bytes] = {}
+    # The flat model: the generated one imports its _modules / _units files.
+    members[f"{prefix}.cellml"] = Path(view.get("flat_model_path") or view["model_path"]).read_bytes()
+    for part in _view_inputs(view, prefix):
+        if part:
+            members[part[0]] = part[1]
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        for name, blob in members.items():
+            zf.writestr(name, blob)
+    return import_omex_bytes(buf.getvalue(), None, source="calibration workflow")
+
+
+def _load_external_view(view: dict, prefix: str, output_dir: str) -> dict:
+    """An external Python view, loaded as ``/api/models/upload`` loads a ``.py``.
+
+    CA writes the values the step runs with (its class defaults under every value earlier
+    steps gave it) as ``parameters_path``, the model's ``external_parameters_file``. They
+    become the model's initial values -- what the sliders and the params_for_id start
+    from -- and the file is kept with the study and given to every simulation and run of
+    it (``engine.set_external_parameters``), so a parameter with no slider has the step's
+    value too.
+    """
+    blob = Path(view["model_path"]).read_bytes()
+    try:
+        meta = parse_py_model(blob)
+    except PyModelParseError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    model_id = uuid.uuid4().hex
+    path = UPLOAD_DIR / f"{model_id}.py"
+    path.write_bytes(blob)
+    record = _ModelRecord(model_id, path, meta, _remember_prefix(model_id, f"{prefix}.py"))
+    _models[model_id] = record
+    values_path = None
+    if view.get("parameters_path"):
+        values = _workflow_http(workflow_manager.external_parameter_values,
+                                view["parameters_path"])
+        meta.initial_values.update({k: v for k, v in values.items() if k in meta.initial_values})
+        values_path = _keep_view_parameters(record, view["parameters_path"], output_dir)
+    directory = _working_dir_arg(output_dir)
+    if directory:
+        # The step's model replaces the study's copy, which is what runs.
+        try:
+            save_model_module(blob, directory)
+        except OSError as exc:
+            raise _fs_error(exc, "keep the step's model in", Path(directory),
+                            user_dir=True) from exc
+    engine.set_external_parameters(model_id, values_path)
+    result = {
+        "model_id": model_id,
+        "warnings": [],
+        "name": meta.name,
+        "variable_count": meta.variable_count,
+        "params": meta.params,
+        "odes": meta.odes,
+        "model_format": "external_python",
+        "model_filename": Path(view["model_path"]).name,
+        "obs_data": None,
+        "params_for_id": None,
+        "converted_from": None,
+        "protocol_obs_data": None,
+        # The step's values file, and the values it gives each parameter.
+        "external_parameters_file": values_path,
+        "external_parameters": {k: meta.initial_values[k] for k in meta.params},
+    }
+    _attach_study_inputs(record, *_view_inputs(view, prefix), result)
+    if directory:
+        _bind_working_dir(record, directory)
+    return result
+
+
+def _keep_view_parameters(record: "_ModelRecord", source: str, output_dir: str) -> str:
+    """Keep a view's ``external_parameters_file`` with the study (``inputs/model/`` of the
+    working dir, else the uploads dir); its path."""
+    name = f"{_record_prefix(record)}_parameters.json"
+    directory = _working_dir_arg(output_dir)
+    if directory:
+        try:
+            return str(working_dir.store(directory, "model", source, name))
+        except OSError as exc:
+            raise _fs_error(exc, "keep the step's values in", Path(directory),
+                            user_dir=True) from exc
+    kept = UPLOAD_DIR / "workflow_values" / record.model_id / name
+    kept.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source, kept)
+    return str(kept)
 
 
 class WorkflowStepInputRequest(BaseModel):
@@ -4478,7 +4585,8 @@ def workflow_run(req: WorkflowRunRequest) -> dict:
                             + " Then open the workflow again.")
     job_id = _workflow_http(workflow.start, from_step=req.from_step or None,
                             only=req.only or None, num_cores=req.num_cores,
-                            python=calibration.python)
+                            python=calibration.python,
+                            write_calibrated=req.write_calibrated)
     return {"job_id": job_id}
 
 
@@ -4495,6 +4603,27 @@ def workflow_cancel(job_id: str) -> dict:
     if not workflow.cancel(job_id):
         raise HTTPException(status_code=404, detail="workflow job not found")
     return {"cancelled": True}
+
+
+#: The provenance files a run directory holds, by the name they are served under.
+_PROVENANCE_ROUTES = {"provenance.svg": ("svg", "image/svg+xml"),
+                      "provenance_graph.json": ("graph", "application/json")}
+
+
+@app.get("/api/workflow/provenance/{name}")
+def workflow_provenance(name: str) -> Response:
+    """The open workflow run's provenance, as CA wrote it into the run directory:
+    ``provenance.svg`` (the diagram) or ``provenance_graph.json`` (the graph it draws).
+    Served by URL so the page shows and links it as an ordinary file."""
+    if name not in _PROVENANCE_ROUTES:
+        raise HTTPException(status_code=404, detail=f"no provenance file {name!r}")
+    key, media_type = _PROVENANCE_ROUTES[name]
+    path = workflow.provenance_path(key)
+    if path is None:
+        raise HTTPException(status_code=404,
+                            detail="the workflow has not written its provenance yet: run it")
+    return Response(content=Path(path).read_bytes(), media_type=media_type,
+                    headers={"Cache-Control": "no-store"})
 
 
 # ---------------------------------------------------------------------------
@@ -4682,7 +4811,7 @@ def sensitivity_run(req: SensitivityRequest) -> dict:
         ),
         "model_type": engine.model_type,
         "solver": engine.solver,
-        "solver_info": dict(engine.solver_info),
+        "solver_info": engine.with_external_parameters(engine.solver_info, req.model_id),
         "obs_path": str(record.obs_path),
         "params_path": str(record.params_path),
         # CUFLynx-authored operation/cost funcs, saved under the output dir; CA
@@ -4943,7 +5072,7 @@ def emulator_train(req: EmulatorTrainRequest) -> dict:
         ),
         "model_type": engine.model_type,
         "solver": engine.solver,
-        "solver_info": dict(engine.solver_info),
+        "solver_info": engine.with_external_parameters(engine.solver_info, req.model_id),
         "obs_path": str(record.obs_path),
         "params_path": str(record.params_path),
         "operation_funcs_external_path": user_func_path("operation", configured or None),
@@ -5192,7 +5321,7 @@ def uq_run(req: UQRequest) -> dict:
         ),
         "model_type": engine.model_type,
         "solver": engine.solver,
-        "solver_info": dict(engine.solver_info),
+        "solver_info": engine.with_external_parameters(engine.solver_info, req.model_id),
         "obs_path": str(record.obs_path),
         "params_path": str(record.params_path),
         # CUFLynx-authored operation/cost funcs, saved under the output dir; CA

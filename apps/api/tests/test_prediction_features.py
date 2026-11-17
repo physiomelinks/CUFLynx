@@ -148,8 +148,8 @@ def test_the_runner_copy_drops_them_for_an_older_libcuflynx(unsupported, tmp_pat
 def _user_inputs(sensitivity, prediction_features):
     return export_pipeline.build_user_inputs(
         file_prefix="m", model_type="cellml", solver="CVODE_myokit", solver_info={},
-        dt=0.01, pre_time=0.0, sim_time=1.0, model_file="m.cellml",
-        obs_file="obs_data.json", params_for_id_file="params_for_id.csv",
+        dt=0.01, pre_time=0.0, sim_time=1.0, model_path="/s/m.cellml",
+        obs_path="/s/obs_data.json", params_for_id_path="/s/params_for_id.csv",
         calibration={}, sensitivity=sensitivity, uq={}, enabled={},
         prediction_features=prediction_features,
     )

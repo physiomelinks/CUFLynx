@@ -10,6 +10,7 @@ vi.mock('../lib/api', () => ({
   getWorkflowStatus: vi.fn(),
   cancelWorkflow: vi.fn(),
   saveWorkflowStepInput: vi.fn(),
+  workflowProvenanceUrl: (name, v) => `/api/workflow/provenance/${name}?v=${v}`,
   unsetParameters: (e) => e?.response?.data?.detail?.unset_parameters ?? null,
   errorMessage: (e) =>
     e?.response?.data?.detail?.message || e?.response?.data?.detail || String(e?.message || e),
@@ -24,9 +25,12 @@ import {
   saveWorkflowStepInput,
 } from '../lib/api'
 import {
+  KIND_WORDS,
   TARGET_VIEW,
   missingInputs,
   modelLabel,
+  provenanceLinks,
+  reductionWords,
   selectionWords,
   stepState,
   useWorkflow,
@@ -74,7 +78,7 @@ describe('workflowTabs', () => {
           { id: 'screen', kind: 'sensitivity',
             model: { module_type: 'chain', version: 'v1', parameterisation: 'screened' } },
           { id: 'reduce', kind: 'reduction', model: null, sensitivity_from: 'screen',
-            reduction: { top_n: 1, index_type: 'ST' } },
+            reduction: { method: 'sobol', n_params: 1, index_type: 'ST' } },
           { id: 'fit', kind: 'calibration', params_for_id_from: 'reduce',
             model: { module_type: 'chain', version: 'v1', parameterisation: 'screened' } },
         ],
@@ -132,6 +136,66 @@ describe('workflowTabs', () => {
     expect(tabs[1].detail).toBe('soma · rest_balance')
   })
 
+  it('names an external Python model by its file, as a step and as the target', () => {
+    const model = { external_model_path: '/w/heat1d/heat1d_model.py' }
+    expect(modelLabel(model)).toBe('heat1d_model.py')
+    expect(modelLabel(model, true)).toBe('external Python model heat1d_model.py')
+    const tabs = workflowTabs({
+      loaded: true,
+      plan: { target: model, steps: [{ id: 'fit-k', kind: 'calibration', model }] },
+    })
+    expect(tabs[0]).toMatchObject({ detail: 'heat1d_model.py', viewable: true })
+    expect(tabs[1]).toMatchObject({ label: 'heat1d_model.py',
+                                    detail: 'external Python model · heat1d_model.py' })
+  })
+
+  it('gives a set step and a sweep on the target no tab, and words for every kind', () => {
+    const tabs = workflowTabs({
+      loaded: true,
+      workflow: { workflow_name: 'h', steps: [
+        { id: 'boundary', kind: 'set', set: [{ parameter: 'heat/u_D', value: 0.1 }] },
+        { id: 'scan', kind: 'sweep', on_target: true, sweep: {} },
+        { id: 'grid', kind: 'sweep', model: { external_model_path: 'm.py' }, sweep: {} },
+      ] },
+      plan: { target: { external_model_path: 'm.py' }, steps: [
+        { id: 'boundary', kind: 'set', model: null,
+          set: [{ parameter: 'heat/u_D', value: 0.1, target_model_name: 'u_D_heat' }] },
+        { id: 'scan', kind: 'sweep', model: null },
+        { id: 'grid', kind: 'sweep', model: { external_model_path: 'm.py' } },
+      ] },
+    })
+    const byId = Object.fromEntries(tabs.map((t) => [t.id, t]))
+    expect(byId.boundary).toMatchObject({ viewable: false, detail: 'heat/u_D = 0.1' })
+    expect(byId.boundary.noViewReason).toContain('set step')
+    expect(byId.scan).toMatchObject({ viewable: false, detail: 'on the target' })
+    expect(byId.scan.noViewReason).toContain('open the target')
+    expect(byId.grid).toMatchObject({ viewable: true, detail: 'm.py' })
+    expect(KIND_WORDS.set).toBe('set by hand')
+    expect(KIND_WORDS.sweep).toBe('parameter sweep')
+  })
+
+  it("reads a reduction's options as CA keeps them, a PCA one with no fixed count", () => {
+    expect(reductionWords({ method: 'sobol', n_params: 3, index_type: 'S1' }))
+      .toBe('keeps the top 3 by Sobol S1')
+    expect(reductionWords({ method: 'pca', index_type: 'ST' })).toBe('PCA reduction by ST')
+    expect(reductionWords({ method: 'pca', n_params: 4 })).toBe('PCA reduction by ST, at most 4')
+    // from the file, when CA could not plan the workflow
+    const tabs = workflowTabs({ loaded: true, workflow: { workflow_name: 'w', steps: [
+      { id: 'r', kind: 'reduction', sensitivity_from: 's',
+        settings: { param_reduction_options: { method: 'pca' } } }] } })
+    expect(tabs[0].detail).toBe('PCA reduction by ST')
+  })
+
+  it("links the run's provenance once CA has written it, a new URL per rewrite", () => {
+    expect(provenanceLinks({ loaded: true })).toBeNull()
+    expect(provenanceLinks({ loaded: true, provenance: { svg: 5, graph: 6 } })).toEqual({
+      svg: '/api/workflow/provenance/provenance.svg?v=5',
+      graph: '/api/workflow/provenance/provenance_graph.json?v=6',
+    })
+    expect(provenanceLinks({ provenance: { graph: 6 } })).toEqual({
+      graph: '/api/workflow/provenance/provenance_graph.json?v=6' })
+  })
+
   it('has no tabs with no workflow open', () => {
     expect(workflowTabs({ loaded: false })).toEqual([])
   })
@@ -170,7 +234,8 @@ describe('useWorkflow', () => {
       model_id: 'm1', workflow_view: { view: 'rest', fixed: [{ model_name: 'p_mod_A' }] },
     })
     const wf = useWorkflow()
-    const result = await wf.select('rest')
+    const result = await wf.select('rest', '/work')
+    expect(openWorkflowView).toHaveBeenCalledWith('rest', '/work')
     expect(result.model_id).toBe('m1')
     expect(wf.selected.value).toBe('rest')
     expect(wf.view.value.fixed[0].model_name).toBe('p_mod_A')
@@ -189,7 +254,8 @@ describe('useWorkflow', () => {
     getWorkflow.mockResolvedValueOnce(DESCRIBED)
     const wf = useWorkflow({ intervalMs: 10 })
     await wf.run({ fromStep: 'fit_a', numCores: 2 })
-    expect(runWorkflow).toHaveBeenCalledWith({ fromStep: 'fit_a', only: '', numCores: 2 })
+    expect(runWorkflow).toHaveBeenCalledWith({ fromStep: 'fit_a', only: '', numCores: 2,
+                                               writeCalibrated: false })
     expect(wf.running.value).toBe(true)
     expect(wf.currentStep.value).toBe('fit_a')
     expect(wf.stateOf('rest')).toBe('queued')

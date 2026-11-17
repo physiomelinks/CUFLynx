@@ -496,6 +496,13 @@ export function calibratedModelUrl(jobId) {
   return url(`/api/calibration/${encodeURIComponent(jobId)}/calibrated_model`)
 }
 
+/** Direct URL to a provenance file of the open workflow run (`provenance.svg`,
+ * `provenance_graph.json`); `version` makes a rewritten file a new URL. */
+export function workflowProvenanceUrl(name, version = '') {
+  const v = version !== '' ? `?v=${encodeURIComponent(version)}` : ''
+  return url(`/api/workflow/provenance/${encodeURIComponent(name)}${v}`)
+}
+
 export async function getSensitivityDefaults() {
   const { data } = await axios.get(url('/api/sensitivity/defaults'))
   return data
@@ -804,8 +811,12 @@ export async function closeWorkflow() {
  * One tab of the workflow -- a step id, or 'target' -- as a study: the same response a
  * dropped .omex gives, plus `workflow_view` (fixed values, own results, what it waits for).
  */
-export async function openWorkflowView(view) {
-  const { data } = await axios.post(url('/api/workflow/view'), { view })
+/** Load one tab of the workflow; an external Python model is kept in `workingDir`. */
+export async function openWorkflowView(view, workingDir = '') {
+  const { data } = await axios.post(url('/api/workflow/view'), {
+    view,
+    config_outputs_dir: workingDir,
+  })
   return data
 }
 
@@ -831,11 +842,17 @@ export async function saveWorkflowStepInput(stepId, role, content) {
   return data
 }
 
-export async function runWorkflow({ fromStep = '', only = '', numCores = 1 } = {}) {
+export async function runWorkflow({
+  fromStep = '',
+  only = '',
+  numCores = 1,
+  writeCalibrated = false,
+} = {}) {
   const { data } = await axios.post(url('/api/workflow/run'), {
     from_step: fromStep,
     only,
     num_cores: numCores,
+    write_calibrated: writeCalibrated,
   })
   return data
 }

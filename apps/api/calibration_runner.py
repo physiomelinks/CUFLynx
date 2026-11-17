@@ -358,12 +358,18 @@ def _write_calibrated_cellml(config: dict, params: dict, output_dir: str) -> str
 
     Returns the written path, or None if there's no CellML to update or nothing
     resolved. The source is ``config["cellml_path"]`` (the original uploaded model,
-    regardless of the generated_model_format used for the run)."""
+    regardless of the generated_model_format used for the run).
+
+    Written with :func:`calibrated_cellml.calibrated_cellml`, not CA's
+    ``CVS0DParamID.write_calibrated_model``: the send to PhLynx and a module
+    library's calibration write through it too, so a send and a saved best fit are
+    the same file. It changes only the values (CA's re-serialises the model through
+    libCellML) and reports the component each value went into, which the send needs."""
     cellml_path = config.get("cellml_path")
     if not cellml_path or not str(cellml_path).endswith(".cellml") or not params:
         return None
     try:
-        from calibrated_model import calibrated_cellml  # local import: pure-XML
+        from calibrated_cellml import calibrated_cellml  # local import: pure-XML
 
         text = Path(cellml_path).read_text(encoding="utf-8")
         new_text, report = calibrated_cellml(text, params)

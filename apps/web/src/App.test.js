@@ -106,6 +106,7 @@ import {
   predictEmulator,
   costAtParams,
   getEmulatorInfo,
+  exportPipeline,
 } from './lib/api'
 import { setNotificationCtor } from './lib/notify'
 import App from './App.vue'
@@ -3256,7 +3257,7 @@ describe('App.vue: calibrating PhLynx selections (PhLynx #492)', () => {
     await vi.advanceTimersByTimeAsync(5)
     await flushPromises()
     expect(wrapper.findComponent({ name: 'EditObsDataDialog' }).exists()).toBe(false)
-    expect(openWorkflowView).toHaveBeenLastCalledWith('left')
+    expect(openWorkflowView.mock.lastCall[0]).toBe('left')
     vi.useRealTimers()
   })
 })
@@ -3315,5 +3316,24 @@ describe('solver settings adopted from a user_inputs.yaml', () => {
     await wrapper.vm.onUserInputsPicked({ target: { files: [new File(['x'], 'u.yaml')], value: '' } })
     await flushPromises()
     expect(wrapper.vm.userInputsWarnings).toEqual(['u.yaml could not be read as YAML'])
+  })
+})
+
+describe('the pipeline export', () => {
+  // The bundle reproduces the study only if it runs on the same forward model: the
+  // Emulator tab's state travels with the export.
+  it('sends the emulator the analyses use and the panel settings', async () => {
+    const wrapper = shallowMount(App)
+    await flushPromises()
+    wrapper.vm.model.modelId.value = 'abc'
+    wrapper.vm.emu.useEmulator.value = true
+    wrapper.vm.emu.selectedDir.value = '/w/emulators/m_obs'
+    wrapper.vm.emuSettings = { num_train_samples: 64, min_r2: 0.9 }
+    exportPipeline.mockClear()
+    await wrapper.vm.confirmExportPipeline()
+    const payload = exportPipeline.mock.calls[0][0]
+    expect(payload.use_emulator).toBe(true)
+    expect(payload.emulator_dir).toBe('/w/emulators/m_obs')
+    expect(payload.emulator).toEqual({ num_train_samples: 64, min_r2: 0.9 })
   })
 })
