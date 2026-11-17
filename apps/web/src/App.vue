@@ -3972,8 +3972,8 @@ watch(() => obs.obsData.value, scheduleRun)
           <InputNumber
             v-else
             v-model="solverInfo[f.key]"
-            :min-fraction-digits="1"
-            :max-fraction-digits="12"
+            :min-fraction-digits="f.integer ? 0 : 1"
+            :max-fraction-digits="f.integer ? 0 : 12"
             size="small"
             :data-testid="`solver-info-${f.key}`"
             @update:model-value="applyBackendSolver"

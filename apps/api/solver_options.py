@@ -1003,7 +1003,11 @@ def _si_field_from_descriptor(desc: dict) -> dict | None:
                 "default": desc.get("default"), "options": list(desc.get("choices") or [])}
     if typ == "bool":
         return {"key": name, "label": label, "type": "bool", "default": desc.get("default")}
-    return {"key": name, "label": label, "type": _NUM, "default": desc.get("default")}
+    field = {"key": name, "label": label, "type": _NUM, "default": desc.get("default")}
+    if typ == "int":
+        # Shown without decimals: a step count or a thread count is a whole number.
+        field["integer"] = True
+    return field
 
 
 # CA's SOLVER_INFO_FIELDS lists the keys a solver *accepts*, but not which of its
