@@ -158,17 +158,22 @@ def _available_formats() -> tuple:
 UNSUPPORTED_SOLVERS = ("CVODE_opencor",)
 
 # CA's CVODE_libopencor backend (CVODE_opencor is its alias) needs libOpenCOR, which
-# needs Python 3.12+ and the ``libcuflynx[libopencor]`` extra. The engine runs in this
-# process's interpreter, so it is offered only when that interpreter can import it.
+# needs Python 3.12+ and the ``libcuflynx[libopencor]`` extra. It is offered only when
+# the interpreter that would run it can import it.
 LIBOPENCOR_SOLVER = "CVODE_libopencor"
 
 
 def _libopencor_importable() -> bool:
-    """Whether this interpreter can import libopencor (``find_spec``: no import cost)."""
-    try:
-        return importlib.util.find_spec("libopencor") is not None
-    except Exception:  # noqa: BLE001 - a broken install is "not usable"
-        return False
+    """Whether the interpreter chosen in Settings can import libopencor.
+
+    That interpreter runs live simulation (the sim worker) and every analysis run,
+    so its answer decides. This process's own answer stands only when none is
+    chosen, or the chosen one cannot be asked. ``find_spec``: no import cost.
+    """
+    from aadc_check import _configured_analysis_python, _importable, _importable_in  # noqa: PLC0415
+
+    there = _importable_in(_configured_analysis_python(), "libopencor")
+    return _importable("libopencor") if there is None else there
 
 
 def _unsupported_solvers() -> tuple:
