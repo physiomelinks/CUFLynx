@@ -276,6 +276,10 @@ class _ModelRecord:
         self.working_dir: str | None = None
         #: The model as kept in the working dir (``inputs/model/<prefix>.cellml``).
         self.working_model: Path | None = None
+        #: The calibration whose results this study was opened with -- a calibration
+        #: step's tab in the Workflow tab -- as ``{"results_dir", "step", "workflow"}``.
+        #: Its best fit is the previous best fit until this session calibrates.
+        self.opened_calibration: dict | None = None
 
 
 # In-memory registry of uploaded models (process-scoped session store).
@@ -4290,9 +4294,24 @@ def _reopened_calibration(record: "_ModelRecord", settings: dict) -> dict | None
     return {"step": step.get("step"), "best": best}
 
 
+def _opened_calibration(record: "_ModelRecord") -> dict | None:
+    """``{"step", "workflow", "best"}``: the best fit of the calibration this study was
+    opened with (a calibration step's tab), when it calibrated this study's parameters."""
+    opened = getattr(record, "opened_calibration", None)
+    if not opened:
+        return None
+    best = (ca_run_history.best_param_values(opened["results_dir"]) or {}).get("params")
+    qnames = {q for e in _study_entries(record) for q in e.qnames}
+    if not best or not qnames or not qnames <= set(best):
+        return None
+    return {"step": opened.get("step"), "workflow": opened.get("workflow"), "best": best}
+
+
 def _previous_best_fit(record: "_ModelRecord", settings: dict) -> dict | None:
-    """The previous calibration's best fit: this session's, else a reopened study's."""
+    """The previous calibration's best fit: this session's, else that of the calibration
+    step this study was opened from, else a reopened study's."""
     return (calibration.last_completed_best_params(record.model_id)
+            or (_opened_calibration(record) or {}).get("best")
             or (_reopened_calibration(record, settings) or {}).get("best"))
 
 
@@ -4306,8 +4325,15 @@ def _study_point(plan, model_id: str, qnames: list) -> str | None:
         return finished["step"]
     best = calibration.last_completed_best_params(model_id)
     if not best and finished is None:
-        reopened = _reopened_calibration(_get_model(model_id),
-                                         {"config_outputs_dir": plan.working_dir})
+        record = _get_model(model_id)
+        opened = _opened_calibration(record)
+        if opened:
+            if opened["workflow"] == plan.builder.path and opened["step"] in plan.builder.steps:
+                return opened["step"]
+            return plan.add_set("best_fit", study_workflow.set_entries(
+                opened["best"], qnames,
+                f"best fit of calibration step {opened['step']} of {opened['workflow']}"))
+        reopened = _reopened_calibration(record, {"config_outputs_dir": plan.working_dir})
         if reopened and reopened["step"] in plan.builder.steps:
             return reopened["step"]
     if not best:
@@ -4771,6 +4797,10 @@ def workflow_view(req: WorkflowViewRequest) -> dict:
     # results are loaded from there, with the calibration's run chosen.
     case_dir = view.get("param_id_output_dir")
     result["workflow_view"]["results_dir"] = os.path.dirname(case_dir) if case_dir else None
+    if case_dir and (view.get("result") or {}).get("kind") == "calibration":
+        _models[result["model_id"]].opened_calibration = {
+            "results_dir": os.path.dirname(case_dir), "step": view.get("step_id"),
+            "workflow": workflow.path}
     # A sensitivity, emulation or identifiability step's own results, as a loaded working
     # dir reports them.
     result["workflow_view"]["step_outputs"] = load_outputs.step_outputs(view.get("result"))
