@@ -1462,3 +1462,15 @@ class TestTheChosenInterpretersAnswerIsFinal:
 
         assert len(got["models"]) == 12
         assert got["available"] is True
+
+
+def test_an_int_solver_info_field_is_marked_integer():
+    """CA's int fields (a step count, a thread count) are shown without decimals; the
+    form only knows "number", so the integer mark has to travel with the field."""
+    whole = so._si_field_from_descriptor(
+        {"name": "MaximumNumberOfSteps", "type": "int", "default": 5000}
+    )
+    real = so._si_field_from_descriptor({"name": "rtol", "type": "float", "default": 1e-6})
+    assert whole["type"] == real["type"] == "number"
+    assert whole["integer"] is True
+    assert "integer" not in real
