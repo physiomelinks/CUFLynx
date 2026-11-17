@@ -588,9 +588,9 @@ const calibrationPanel = ref(null)
 const sensitivityPanel = ref(null)
 const uqPanel = ref(null)
 const emulatorPanel = ref(null)
-// The Identifiability tab's panel (tab 'ia') joins this map where that tab exists (#412).
+const iaPanel = ref(null)
 const PANEL_REFS = { calibration: calibrationPanel, sensitivity: sensitivityPanel, uq: uqPanel,
-  emulator: emulatorPanel }
+  emulator: emulatorPanel, ia: iaPanel }
 
 /**
  * A step clicked in the Workflow view: its panel opens on the left with the step's
@@ -1014,7 +1014,8 @@ const leftTab = ref('params')
 // which the server opens in the Workflow tab: re-read it when a run ends and when the tab
 // is opened, so the tab shows each run as a step and the provenance drawn after it.
 watch(
-  () => [calib.state.value, sa.state.value, uq.state.value, emu.state.value],
+  () => [calib.state.value, sa.state.value, uq.state.value, emu.state.value,
+    iaJob.state.value],
   (now, before) => {
     if (anyRunEnded(now, before)) wf.refresh()
   },
@@ -1023,7 +1024,7 @@ watch(
 // A run that was to add a step or start a workflow has started: it is made once, and the
 // panel's next run changes it (a run the server refused leaves the choice as it was).
 for (const [job, kind] of [[calib, 'calibration'], [sa, 'sensitivity'], [uq, 'uq'],
-  [emu, 'emulation']]) {
+  [emu, 'emulation'], [iaJob, 'identifiability']]) {
   watch(
     () => job.state.value,
     (state) => {
@@ -2269,6 +2270,10 @@ function onRunIA(settings) {
   iaJob.start(model.modelId.value, {
     ...settings,
     ...runTimes(),
+    // a Laplace analysis is a uq step of the study workflow; a profile likelihood an
+    // identifiability step
+    workflow_target: wf.runTarget(
+      settings.ia_options?.method === 'profile_likelihood' ? 'identifiability' : 'uq'),
     python_path: pythonPath.value,
     working_dir: workingDir.value.trim() || undefined,
     use_emulator: emu.useEmulator.value,
@@ -3339,6 +3344,7 @@ watch(() => obs.obsData.value, scheduleRun)
         </div>
         <div v-show="leftTab === 'ia'" class="left-pane left-pane-scroll">
           <IAPanel
+            ref="iaPanel"
             :defaults="iaDefaults"
             :sobol-runs="sobolRuns"
             :can-run="canCalibrate"

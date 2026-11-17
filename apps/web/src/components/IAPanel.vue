@@ -180,6 +180,19 @@ function onRunIA() {
   })
 }
 
+/**
+ * Fill the panel from a workflow step's settings (lib/workflowTarget panelSettings), when
+ * an identifiability or reduction step is clicked in the Workflow view.
+ */
+function applySettings(values) {
+  Object.assign(iaValues, values?.ia_options ?? {})
+  Object.assign(reductionValues, values?.param_reduction_options ?? {})
+  if (typeof values?.run_calibration_first === 'boolean') {
+    runCalibrationFirst.value = values.run_calibration_first
+  }
+}
+defineExpose({ applySettings })
+
 function ciBound(profile, side) {
   const v = profile.ci_95?.[side]
   return v === null || v === undefined ? 'unbounded' : fmt(v)

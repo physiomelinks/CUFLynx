@@ -158,6 +158,21 @@ describe('IAPanel parameter reduction results', () => {
   })
 })
 
+describe('IAPanel: a step clicked in the Workflow view', () => {
+  it("fills the analysis from the step's ia_options and runs with them", async () => {
+    const wrapper = mountPanel()
+    wrapper.vm.applySettings({ ia_options: { method: 'profile_likelihood', num_points: 7 },
+                               run_calibration_first: true })
+    await wrapper.vm.$nextTick()
+    await wrapper.find('[data-testid="ia-run"]').trigger('click')
+    expect(wrapper.emitted('run-ia')[0][0]).toEqual({
+      method: 'laplace',
+      run_calibration_first: true,
+      ia_options: { method: 'profile_likelihood', num_points: 7 },
+    })
+  })
+})
+
 describe('IAPanel identifiability analysis', () => {
   it('sends CA\'s ia_options through the UQ runner\'s laplace method', async () => {
     const wrapper = mountPanel()
