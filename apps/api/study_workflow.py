@@ -429,6 +429,13 @@ def options(settings: dict, reserved=()) -> dict:
             if k not in _PANEL_ONLY and k not in reserved and v is not None}
 
 
+def first_description(step_id: str) -> str:
+    """The description of a calibration a sensitivity or UQ run makes first, for its step
+    ``step_id`` ("run a calibration first"): how the Workflow view tells it from a
+    calibration of the user's own, which the step may be at too."""
+    return f"calibrated first for step {step_id}"
+
+
 def set_entries(values: dict, qnames, reason: str) -> list[dict]:
     """Set-step entries for ``qnames`` (in that order) that ``values`` gives."""
     set_value = ca_from("calibration_workflow.builder", "set_value")
@@ -454,12 +461,15 @@ class Plan:
         """The id of the run's own step: the step it changes, else a new ``<label>-<n>``."""
         return self.edit or self.new_id(label)
 
-    def first_id(self, label: str, key: str) -> str:
-        """The id of a calibration the run makes first (``key`` of its own step names it).
-        When changing a step whose ``key`` is a calibration that no other step takes from,
-        that calibration is changed too, rather than left behind unused."""
+    def first_id(self, label: str, key: str, for_step: str) -> str:
+        """The id of a calibration the run makes first for its step ``for_step`` (whose
+        ``key`` names it). When changing a step whose ``key`` is the calibration made first
+        for it (:func:`first_description`) and no other step takes from it, that calibration
+        is changed too, rather than left behind unused; a calibration of the user's own is
+        never replaced."""
         old = self.edit and self.before.get(self.edit, {}).get(key)
-        if old and self.before.get(old, {}).get("kind", "calibration") == "calibration":
+        was = self.before.get(old) or {}
+        if old and was.get("description") == first_description(for_step):
             others = (s for i, s in self.before.items() if i not in (self.edit, old))
             if not any(r == old for s in others for _, r in references(s)):
                 return old

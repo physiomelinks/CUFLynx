@@ -10,8 +10,8 @@
  * (`doomed`) are marked until it is confirmed or cancelled.
  */
 import { computed, ref } from 'vue'
-import { KIND_WORDS } from '../stores/useWorkflow'
-import { edgesOf } from '../lib/workflowTarget'
+import { KIND_WORDS, SOURCE_WORDS } from '../stores/useWorkflow'
+import { edgesOf, referencesOf } from '../lib/workflowTarget'
 
 const props = defineProps({
   // The workflow file's steps ({id, kind, result_from, ...}), in order.
@@ -64,6 +64,15 @@ function kindWord(step) {
   const s = step.settings ?? {}
   const method = kind === 'sensitivity' ? s.sa_options?.method : kind === 'uq' ? s.UQ_options?.method : null
   return method ? `${KIND_NAMES[kind] ?? kind} · ${method}` : (KIND_NAMES[kind] ?? kind)
+}
+
+const FROM_WORDS = { ...SOURCE_WORDS, start_from: 'starts at', fixed_from: 'fixed from',
+  priors_from: 'priors from', scale_from: 'scales' }
+
+/** A step in a line: its model, and what it takes from which step. */
+function detailOf(step) {
+  const refs = referencesOf(step).map(([key, id]) => `${FROM_WORDS[key] ?? key} ${id}`)
+  return [props.details[step.id]?.detail, ...refs].filter(Boolean).join(' · ')
 }
 
 // Drag to reorder: the row being dragged and the row it would land on.
@@ -149,8 +158,8 @@ function onDragEnd() {
             <span v-if="step.id === editing" class="wf-badge">the next run changes it</span>
             <span v-if="doomed.includes(step.id)" class="wf-badge danger">would be deleted</span>
           </div>
-          <div class="wf-node-detail" :title="details[step.id]?.detail">
-            {{ details[step.id]?.detail }}
+          <div class="wf-node-detail" :title="detailOf(step)">
+            {{ detailOf(step) }}
           </div>
         </div>
         <button

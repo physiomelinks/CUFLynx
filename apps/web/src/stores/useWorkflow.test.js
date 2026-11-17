@@ -158,6 +158,18 @@ describe('workflowTabs', () => {
                                     detail: 'external Python model · heat1d_model.py' })
   })
 
+  it('names a CellML model (a study workflow) by its file, as a step and as the target', () => {
+    const model = { cellml_model_path: '../../inputs/model/s/LV.cellml' }
+    expect(modelLabel(model)).toBe('LV.cellml')
+    expect(modelLabel(model, true)).toBe('CellML model LV.cellml')
+    const tabs = workflowTabs({
+      loaded: true,
+      workflow: { target: model, steps: [{ id: 'calibration-1', model }] },
+    })
+    expect(tabs[0].detail).toBe('LV.cellml')
+    expect(tabs[1]).toMatchObject({ label: 'LV.cellml', detail: 'CellML model · LV.cellml' })
+  })
+
   it('gives a set step and a sweep on the target no tab, and words for every kind', () => {
     const tabs = workflowTabs({
       loaded: true,

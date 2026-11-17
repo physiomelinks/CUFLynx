@@ -110,9 +110,9 @@ export function edgesOf(steps) {
   return out
 }
 
-/** The step ids that take something from `stepId`, by any key. */
-function takers(steps, stepId) {
-  return steps.filter((s) => referencesOf(s).some(([, id]) => id === stepId)).map((s) => s.id)
+/** The description the server gives a calibration made first for step `stepId`. */
+export function firstDescription(stepId) {
+  return `calibrated first for step ${stepId}`
 }
 
 /**
@@ -152,10 +152,12 @@ export function panelSettings(step, described) {
       ...debug,
     }
   }
-  // A calibration that only this step takes from was made for it ("run a calibration first").
+  // The calibration the run made first for this step ("run a calibration first"): the server
+  // writes study_workflow.first_description on it. A calibration of the user's own that the
+  // step is at is the previous best fit, though no other step takes from it.
   const source = byId[step?.result_from]
   const madeFirst = !!source && kindOf(source) === 'calibration'
-    && takers(steps, source.id).every((id) => id === step.id)
+    && source.description === firstDescription(step.id)
   if (kind === 'sensitivity') {
     const sa = without(s.sa_options, ['seed', 'output_dir'])
     const out = { ...sa, ...debug }

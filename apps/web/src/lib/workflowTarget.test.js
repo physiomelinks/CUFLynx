@@ -22,10 +22,11 @@ const described = {
           optimiser_options: { num_calls_to_function: 50, seed: 3 },
         },
       },
+      { id: 'calibration-3', description: 'calibrated first for step local-sa-1', settings: {} },
       {
         id: 'local-sa-1',
         kind: 'sensitivity',
-        result_from: 'calibration-1',
+        result_from: 'calibration-3',
         settings: { sa_options: { method: 'local', fd_rel_step: 0.02, output_dir: 'x' } },
       },
       { id: 'calibration-2', settings: {} },
@@ -114,8 +115,8 @@ describe('panelSettings', () => {
     expect(panelSettings(steps['calibration-2'], described).start_from).toBe('model')
   })
 
-  it('a local analysis at the fit of a calibration other steps use is at its best fit', () => {
-    // calibration-1 is taken by local-sa-1 only: it was made first for it
+  it('a local analysis at the calibration made first for it says so', () => {
+    // calibration-3's description says the run made it for local-sa-1
     expect(panelSettings(steps['local-sa-1'], described)).toMatchObject({
       method: 'local',
       rel_step: 0.02,
@@ -123,11 +124,19 @@ describe('panelSettings', () => {
     })
   })
 
-  it('a uq step gives its options', () => {
+  it("a step at a calibration of the user's own is at its best fit, not after a fresh one", () => {
+    const local = { ...steps['local-sa-1'], result_from: 'calibration-1' }
+    expect(panelSettings(local, described)).toMatchObject({
+      run_calibration_first: false,
+      nominal: 'best_fit',
+    })
+  })
+
+  it('a uq step gives its options; the only step at a calibration is not its maker', () => {
     expect(panelSettings(steps['mcmc-1'], described)).toEqual({
       method: 'mcmc',
       num_steps: 20,
-      run_calibration_first: true,
+      run_calibration_first: false,
       DEBUG: false,
     })
   })

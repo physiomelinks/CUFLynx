@@ -68,6 +68,7 @@ const options = computed(() => {
 })
 
 const doomed = computed(() => props.pendingDelete?.deleted ?? [])
+const alsoDeleted = computed(() => doomed.value.filter((s) => s !== props.pendingDelete?.step))
 </script>
 
 <template>
@@ -120,9 +121,10 @@ const doomed = computed(() => props.pendingDelete?.deleted ?? [])
           data-testid="workflow-confirm-delete"
         >
           Deleting <strong>{{ pendingDelete.step }}</strong> also deletes
-          {{ pendingDelete.deleted.filter((s) => s !== pendingDelete.step).join(', ') }}:
-          they take from it and there is nothing above it of the right kind to take from
-          instead. Their results stay in the run directory.
+          {{ alsoDeleted.join(', ') }}:
+          {{ alsoDeleted.length === 1 ? 'it takes' : 'they take' }} from it, and nothing above
+          it is of a kind {{ alsoDeleted.length === 1 ? 'it' : 'they' }} could take from
+          instead. Results stay in the run directory.
           <div class="wv-confirm">
             <Button
               label="Delete them"

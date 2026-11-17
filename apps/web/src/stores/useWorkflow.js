@@ -56,6 +56,8 @@ export function modelLabel(model, full = false) {
   if (file) return full ? file : file.replace(ARRAY_SUFFIX, '')
   const py = externalFile(model)
   if (py) return full ? `external Python model ${py}` : py
+  const cellml = cellmlFile(model)
+  if (cellml) return full ? `CellML model ${cellml}` : cellml
   return full
     ? `${model.module_type} / ${model.version} / ${model.parameterisation}`
     : `${model.module_type} · ${model.parameterisation}`
@@ -137,7 +139,7 @@ export function missingInputs(fileStep) {
 /** The target's tab label: a module array's prefix, an external model's file, a module type. */
 function targetLabel(target) {
   if (!target) return 'target'
-  if (arrayFile(target) || externalFile(target)) return modelLabel(target)
+  if (arrayFile(target) || externalFile(target) || cellmlFile(target)) return modelLabel(target)
   return target.module_type
 }
 
@@ -145,6 +147,7 @@ function targetDetail(target) {
   if (!target) return 'target'
   if (arrayFile(target)) return `module array · ${arrayFile(target)}`
   if (externalFile(target)) return `external Python model · ${externalFile(target)}`
+  if (cellmlFile(target)) return `CellML model · ${cellmlFile(target)}`
   return `supermodule · ${target.parameterisation}`
 }
 

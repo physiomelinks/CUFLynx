@@ -87,6 +87,35 @@ def test_a_calibration_changed_to_start_from_its_own_best_fit(client, fake_runs,
         steps["best-fit-1"]["set"][0]["reason"]
 
 
+def test_a_calibration_made_first_says_for_which_step_and_is_changed_with_it(
+        client, fake_runs, tmp_path):
+    work = tmp_path / "w"
+    model_id = _setup(client)
+    uq = {"config_outputs_dir": str(work), "method": "mcmc", "num_steps": 20,
+          "num_walkers": 8, "run_calibration_first": True}
+    _run(client, "uq", {"model_id": model_id, "settings": uq})
+    steps = _steps(work)
+    assert steps["calibration-1"]["description"] == "calibrated first for step mcmc-1"
+    _run(client, "uq", {"model_id": model_id, "settings": {**uq, "num_calls_to_function": 9}})
+    # the same two steps, changed: no second calibration left behind
+    assert list(_steps(work)) == ["calibration-1", "mcmc-1"]
+
+
+def test_changing_a_step_never_replaces_the_users_own_calibration(client, fake_runs, tmp_path):
+    work = tmp_path / "w"
+    model_id = _setup(client)
+    assert _calibrate(client, model_id, work)["state"] == "done"
+    uq = {"config_outputs_dir": str(work), "method": "mcmc", "num_steps": 20, "num_walkers": 8}
+    _run(client, "uq", {"model_id": model_id, "settings": uq})
+    assert _steps(work)["mcmc-1"]["result_from"] == "calibration-1"
+    # now with a fresh calibration first: a new one, the user's calibration-1 untouched
+    _run(client, "uq", {"model_id": model_id, "settings": {**uq, "run_calibration_first": True}})
+    steps = _steps(work)
+    assert steps["mcmc-1"]["result_from"] == "calibration-2"
+    assert "description" not in steps["calibration-1"]
+    assert steps["calibration-1"]["settings"]["param_id_method"] == "CMA-ES"
+
+
 def test_a_chosen_step_of_another_kind_is_refused(client, fake_runs, tmp_path):
     work = tmp_path / "w"
     model_id = _setup(client)

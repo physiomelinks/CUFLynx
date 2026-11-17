@@ -4488,13 +4488,15 @@ def _study_sensitivity(record, req, config: dict, configured: str) -> list:
             return notes
         entries = _study_entries(record)
         qnames = [q for e in entries for q in e.qnames]
+        own = plan.main_id(study_workflow.LABELS["local" if local else "sobol"])
         at = None
         if first:
             ga = {"param_id_method": settings.get("param_id_method", "genetic_algorithm"),
                   "optimiser_options": _study_ga_options(settings, {"cost_convergence": 0.0001})}
             at = plan.add("add_calibration", plan.first_id(study_workflow.LABELS["calibration"],
-                                                          "result_from"),
-                          **_study_inputs(config), settings=_study_settings(config, settings, ga))
+                                                          "result_from", own),
+                          **_study_inputs(config), settings=_study_settings(config, settings, ga),
+                          description=study_workflow.first_description(own))
         elif local and nominal == "best_fit":
             at = _study_point(plan, record.model_id, qnames)
         elif local and nominal == "current" and req.current_params:
@@ -4515,8 +4517,7 @@ def _study_sensitivity(record, req, config: dict, configured: str) -> list:
                 settings, config["model_type"])
             sa_options["gradient_method"] = gradient
             sa_options["fd_rel_step"] = float(settings.get("rel_step") or 0.01)
-        label = study_workflow.LABELS["local" if local else "sobol"]
-        plan.add("add_sensitivity", plan.main_id(label), **_study_inputs(config),
+        plan.add("add_sensitivity", own, **_study_inputs(config),
                  sa_options=sa_options, result_from=at,
                  settings=_study_settings(config, settings, {}))
         config["study_meta"] = {"method": method, "gradient_method": gradient}
@@ -4542,20 +4543,22 @@ def _study_uq(record, config: dict, configured: str) -> list:
         # stored as an input of its own (as the direct runner stores it)
         cost_type = settings.get("cost_type", "gaussian_MLE")
         obs = _mle_obs_path(config, cost_type)
+        own = plan.main_id(study_workflow.LABELS.get(method, "uq"))
         if first:
             ga = {"param_id_method": settings.get("param_id_method", "genetic_algorithm"),
                   "optimiser_options": _study_ga_options(
                       settings, {"cost_convergence": 0.001, "cost_type": cost_type})}
             at = plan.add("add_calibration", plan.first_id(study_workflow.LABELS["calibration"],
-                                                          "result_from"),
+                                                          "result_from", own),
                           **_study_inputs(config, obs),
-                          settings=_study_settings(config, settings, ga))
+                          settings=_study_settings(config, settings, ga),
+                          description=study_workflow.first_description(own))
         else:
             at = _study_point(plan, record.model_id, qnames)
         uq_options = dict(_uq_options(study_workflow.options(settings), _analysis_seed),
                           method=method)
         extra = {"ia_options": {"method": "Laplace"}} if method == "laplace" else {}
-        plan.add("add_uq", plan.main_id(study_workflow.LABELS.get(method, "uq")),
+        plan.add("add_uq", own,
                  **_study_inputs(config, obs), uq_options=uq_options, result_from=at,
                  settings=_study_settings(config, settings, extra))
         _study_start(plan, config, (DONE_MARKER, FAIL_MARKER), notes)
