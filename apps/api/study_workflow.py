@@ -151,21 +151,32 @@ def target_model(model_path: str, model_type: str) -> dict | None:
     return None
 
 
+def step_records(kind: str, output: str) -> bool:
+    """Whether CA's workflow steps of ``kind`` record ``output`` (``runner.STEP_OUTPUTS``):
+    how a feature a step gained is detected, False on a CA without it."""
+    try:
+        ensure_ca_path()
+        outputs = ca_from("calibration_workflow.runner", "STEP_OUTPUTS")
+    except ImportError:
+        return False
+    return output in (outputs.get(kind) or ())
+
+
 def direct_reason(model_type: str, *, held_out: bool = False,
                   modifier_point: bool = False) -> str | None:
     """Why this run keeps its direct runner, or None when it can be a workflow step.
 
     * a model type with no workflow model kind: a CellML model runs only as the model types
       CA generates from it in a workflow (:func:`cellml_model_types`), so ``cpp`` has none;
-    * held-out data in the obs_data: the direct calibration validates the best fit against
-      it (``validation_results.json``), which a workflow calibration step does not;
+    * held-out data in the obs_data, on a CA whose calibration steps do not validate the
+      best fit against it (``validation_results.json``) as the direct calibration does;
     * a point to start from or analyse at, when the params_for_id has a modifier entry: the
       point is a modifier's theta, and a set step sets model values.
     """
     if model_type != "external_python" and not runs_from_cellml(model_type):
         return (f"the {model_type} model type has no calibration workflow model kind "
                 f"(a CellML model runs in a workflow as {', '.join(cellml_model_types())})")
-    if held_out:
+    if held_out and not step_records("calibration", "validation_results"):
         return ("the obs_data has held-out data, which a workflow calibration step does not "
                 "validate the best fit against")
     if modifier_point:
