@@ -33,8 +33,8 @@ export const EXTERNAL_PYTHON_TUTORIAL_URL =
   'https://github.com/physiomelinks/CUFLynx/blob/main/tutorials/docs/external_python.md'
 
 // The section of that tutorial that lists what has to be installed into the
-// chosen interpreter — including the `[emulation]` extra the Emulator tab needs.
-// Linked from the Emulator tab when autoemulate is missing, so the fix is one
+// chosen interpreter — including the `[emulation]` extra the Surrogate tab needs.
+// Linked from the Surrogate tab when autoemulate is missing, so the fix is one
 // click from the place the problem is reported.
 export const EXTERNAL_PYTHON_INSTALL_URL = `${EXTERNAL_PYTHON_TUTORIAL_URL}#installing-the-models-dependencies`
 
