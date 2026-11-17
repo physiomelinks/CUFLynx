@@ -11,7 +11,7 @@ Usage:  python -u workflow_runner.py <config.json>
 config.json:
 {
   "workflow": "...calibration_workflow.json", "output_dir": "...",
-  "module_library_dirs": ["..."], "from_step": null, "only": null,
+  "module_library_dirs": ["..."], "from_step": null, "only": null, "run_steps": null,
   "write_calibrated": false
 }
 
@@ -80,13 +80,23 @@ def run(config: dict) -> dict:
     # CA writes the merged values beside the target (<prefix>_calibrated_parameters.json)
     # after a complete run; only when asked, as that is outside the run directory.
     extra = {"write_calibrated": True} if config.get("write_calibrated") else {}
+    common = dict(output_dir=config.get("workflow_output_dir") or config["output_dir"],
+                  module_library_dirs=config.get("module_library_dirs") or [],
+                  progress=lambda event: print(event_line(event), flush=True))
+    steps = config.get("run_steps")
+    if steps:
+        # a changed step, then each step that takes from it: each alone, in this order, so
+        # each finds what it takes from current and the workflow's other steps do not run
+        result = None
+        for i, step in enumerate(steps):
+            result = run_workflow(config["workflow"], only=step, **common,
+                                  **(extra if i == len(steps) - 1 else {}))
+        return result
     return run_workflow(
         config["workflow"],
-        output_dir=config.get("workflow_output_dir") or config["output_dir"],
-        module_library_dirs=config.get("module_library_dirs") or [],
         from_step=config.get("from_step") or None,
         only=config.get("only") or None,
-        progress=lambda event: print(event_line(event), flush=True),
+        **common,
         **extra,
     )
 

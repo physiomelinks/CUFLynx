@@ -115,8 +115,15 @@ def _run(client, kind, payload) -> dict:
     raise AssertionError(f"{kind} did not finish")
 
 
+NEW_STEP = {"mode": "new_step"}
+
+
+def _workflow_dir(work: Path) -> Path:
+    return Path(study_workflow.workflow_path(str(work))).parent
+
+
 def _workflow(work: Path) -> dict:
-    return json.loads((work / "workflow" / "calibration_workflow.json").read_text())
+    return json.loads(Path(study_workflow.workflow_path(str(work))).read_text())
 
 
 def _steps(work: Path) -> dict:
@@ -153,8 +160,8 @@ def test_a_calibration_from_the_sliders_is_a_set_step_and_a_calibration(
     target = _workflow(work)["target"]
     assert "cellml_model_path" in target and cal["model"] == target
     # the step's inputs are the working dir's stored versions
-    assert cal["obs_data"].startswith("../inputs/obs_data/")
-    assert cal["params_for_id"].startswith("../inputs/params_for_id/")
+    assert cal["obs_data"].startswith("../../inputs/obs_data/")
+    assert cal["params_for_id"].startswith("../../inputs/params_for_id/")
 
     (config,) = fake_runs()
     # the set step runs first, so the run starts from it rather than running one step
@@ -171,7 +178,8 @@ def test_starting_from_the_best_fit_names_the_calibration_step(client, fake_runs
     work = tmp_path / "w"
     model_id = _setup(client)
     assert _calibrate(client, model_id, work)["state"] == "done"
-    assert _calibrate(client, model_id, work, start_from="best_fit")["state"] == "done"
+    assert _calibrate(client, model_id, work, start_from="best_fit",
+                      workflow_target=NEW_STEP)["state"] == "done"
 
     steps = _steps(work)
     assert list(steps) == ["calibration-1", "calibration-2"]
@@ -186,7 +194,8 @@ def test_the_best_so_far_of_a_stopped_calibration_is_a_set_step(client, fake_run
     assert _calibrate(client, model_id, work)["state"] == "done"
     # stopped early: its best-so-far is recovered, but the step has no result to name
     calibration_mod.calibration._job.state = "cancelled"
-    assert _calibrate(client, model_id, work, start_from="best_fit")["state"] == "done"
+    assert _calibrate(client, model_id, work, start_from="best_fit",
+                      workflow_target=NEW_STEP)["state"] == "done"
 
     steps = _steps(work)
     assert list(steps) == ["calibration-1", "best-fit-1", "calibration-2"]
@@ -243,7 +252,7 @@ def test_a_local_analysis_at_the_sliders_and_after_a_fresh_calibration(
         "config_outputs_dir": str(work), "method": "local", "nominal": "current"}})
     _run(client, "sensitivity", {"model_id": model_id, "settings": {
         "config_outputs_dir": str(work), "method": "local", "run_calibration_first": True,
-        "num_calls_to_function": 40}})
+        "num_calls_to_function": 40, "workflow_target": NEW_STEP}})
 
     steps = _steps(work)
     assert list(steps) == ["sliders-1", "local-sa-1", "calibration-1", "local-sa-2"]
@@ -273,7 +282,7 @@ def test_uq_at_the_best_fit_is_a_uq_step_from_the_calibration(
     if method == "laplace":
         assert step["settings"]["ia_options"] == {"method": "Laplace"}
     # MCMC and Laplace score the obs_data with an MLE cost
-    obs = json.loads((work / "workflow" / step["obs_data"]).read_text())
+    obs = json.loads((_workflow_dir(work) / step["obs_data"]).read_text())
     assert {i["cost_type"] for i in obs["data_items"]} == {"gaussian_MLE"}
     assert fake_runs()[-1]["only"] == f"{method}-1"
     assert fake_runs()[-1]["markers"]["done"] == "__UQ_DONE__"
@@ -310,7 +319,8 @@ def test_another_model_in_the_working_dir_starts_a_new_workflow(client, fake_run
     assert _calibrate(client, other, work)["state"] in ("done", "error")
 
     assert _workflow(work)["workflow_name"] == "study-2"
-    old = json.loads((work / "workflow" / "calibration_workflow_study.json").read_text())
+    assert _workflow_dir(work) == work / "workflow" / "study-2"
+    old = json.loads((work / "workflow" / "study" / "calibration_workflow.json").read_text())
     assert [s["id"] for s in old["steps"]] == ["calibration-1"]
     assert fake_runs()[-1]["workflow_output_dir"] == str(work / "workflows" / "study-2")
 
@@ -326,7 +336,7 @@ def test_the_workflow_opens_in_the_workflow_tab_and_again_with_the_working_dir(
     work = tmp_path / "w"
     model_id = _setup(client)
     assert _calibrate(client, model_id, work)["state"] == "done"
-    path = str(work / "workflow" / "calibration_workflow.json")
+    path = str(work / "workflow" / "study" / "calibration_workflow.json")
     described = client.get("/api/workflow").json()
     assert described["loaded"] and described["path"] == path
     assert described["output_dir"] == str(work / "workflows" / "study")
@@ -387,7 +397,7 @@ def test_a_new_working_dir_closes_another_folders_study_workflow(
     first = tmp_path / "w1"
     model_id = _setup(client)
     assert _calibrate(client, model_id, first)["state"] == "done"
-    assert workflow_manager.workflow.path == str(first / "workflow" / "calibration_workflow.json")
+    assert workflow_manager.workflow.path == str(first / "workflow" / "study" / "calibration_workflow.json")
 
     second = tmp_path / "w2"
     second.mkdir()
@@ -411,7 +421,7 @@ def test_returning_to_a_working_dir_reopens_its_study_workflow(client, fake_runs
     client.post("/api/workflow/working-dir", json={"config_outputs_dir": str(second)})
     r = client.post("/api/workflow/working-dir", json={"config_outputs_dir": str(first)})
     assert r.json()["loaded"] is True
-    assert workflow_manager.workflow.path == str(first / "workflow" / "calibration_workflow.json")
+    assert workflow_manager.workflow.path == str(first / "workflow" / "study" / "calibration_workflow.json")
 
 
 def test_a_calibration_steps_tab_is_the_previous_best_fit_in_another_working_dir(
@@ -427,7 +437,7 @@ def test_a_calibration_steps_tab_is_the_previous_best_fit_in_another_working_dir
     # what /api/workflow/view records for a calibration step's tab
     main._get_model(model_id).opened_calibration = {
         "results_dir": str(step_dir / "param_id"), "step": "calibration-1",
-        "workflow": str(first / "workflow" / "calibration_workflow.json")}
+        "workflow": str(first / "workflow" / "study" / "calibration_workflow.json")}
     best = dict(zip(QNAMES, [1.0, 0.5, 0.25, 2.0]))
     record = main._get_model(model_id)
     assert main._previous_best_fit(record, {"config_outputs_dir": str(second)}) == best

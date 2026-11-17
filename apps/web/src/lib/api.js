@@ -873,6 +873,29 @@ export async function getWorkflow() {
   return data
 }
 
+/** The working dir's workflows ({path, name, steps, modified}, latest first) and the open one. */
+export async function listWorkflows(workingDir = '') {
+  const { data } = await axios.get(url('/api/workflow/list'), {
+    params: { config_outputs_dir: workingDir },
+  })
+  return data
+}
+
+/**
+ * Delete a step of the open workflow, reconnecting what took from it. When more steps would
+ * go, nothing changes unless `confirm`: `{applied: false, deleted, rewired, dropped}`.
+ */
+export async function deleteWorkflowStep(step, confirm = false) {
+  const { data } = await axios.post(url('/api/workflow/step/delete'), { step, confirm })
+  return data
+}
+
+/** Move a step of the open workflow to `index`; the server refuses it above a step it takes from. */
+export async function moveWorkflowStep(step, index) {
+  const { data } = await axios.post(url('/api/workflow/step/move'), { step, index })
+  return data
+}
+
 /** Open a calibration_workflow.json by path, or reopen a workflow run directory. */
 export async function loadWorkflow({ path = '', runDir = '', workingDir = '' } = {}) {
   const { data } = await axios.post(url('/api/workflow/load'), {

@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import ControlPanel from './components/ControlPanel.vue'
 import VariableList from './components/VariableList.vue'
 import PlotPanel from './components/PlotPanel.vue'
@@ -12,7 +12,8 @@ import ProgressPanel from './components/ProgressPanel.vue'
 import SensitivityPanel from './components/SensitivityPanel.vue'
 import UQPanel from './components/UQPanel.vue'
 import WorkflowBar from './components/WorkflowBar.vue'
-import WorkflowPanel from './components/WorkflowPanel.vue'
+import WorkflowView from './components/WorkflowView.vue'
+import { PANEL_KINDS, modeSummary, panelSettings, stepPanel } from './lib/workflowTarget'
 import EditObsDataDialog from './components/EditObsDataDialog.vue'
 import EditVariableMappingDialog from './components/EditVariableMappingDialog.vue'
 import IAPanel from './components/IAPanel.vue'
@@ -179,7 +180,7 @@ async function loadOutputsFromDirectory(runDir) {
     if (found.workflow_run) {
       const opened = await wf.open({ runDir: dir })
       if (opened) {
-        leftTab.value = 'workflow'
+        workflowOpen.value = true
         loadedOutputsSummary.value = `Reopened calibration workflow ${opened.workflow?.workflow_name ?? ''}`
       } else {
         sim.setError(wf.error.value)
@@ -570,6 +571,47 @@ const workflowStates = computed(() =>
   Object.fromEntries(wf.tabs.value.map((t) => [t.id, wf.stateOf(t.id)])),
 )
 
+// What the next run from the open panel will be, for the Workflow bar's highlight: a new
+// workflow, a new step, or which step it changes (a panel that makes no steps: calibration).
+const workflowSummary = computed(() =>
+  modeSummary(wf.target.value, PANEL_KINDS[leftTab.value] ?? 'calibration', wf.described.value),
+)
+const workflowFileSteps = computed(() =>
+  wf.loaded.value ? (wf.described.value?.workflow?.steps ?? []) : [],
+)
+const workflowDetails = computed(() => Object.fromEntries(wf.tabs.value.map((t) => [t.id, t])))
+
+// The panels, so a step clicked in the Workflow view fills its panel's settings.
+const calibrationPanel = ref(null)
+const sensitivityPanel = ref(null)
+const uqPanel = ref(null)
+const PANEL_REFS = { calibration: calibrationPanel, sensitivity: sensitivityPanel, uq: uqPanel }
+
+/**
+ * A step clicked in the Workflow view: its panel opens on the left with the step's
+ * settings, and the next run from it changes this step (and reruns what takes from it).
+ */
+async function onSelectWorkflowStep(stepId) {
+  const step = workflowFileSteps.value.find((s) => s.id === stepId)
+  if (!step) return
+  const panel = stepPanel(step.kind)
+  if (!panel) {
+    wf.error.value = `Step ${stepId} is a ${step.kind} step: no panel makes it, so it has no settings to change here.`
+    return
+  }
+  wf.error.value = ''
+  wf.editStep(stepId)
+  leftTab.value = panel
+  await nextTick()
+  PANEL_REFS[panel].value?.applySettings?.(panelSettings(step, wf.described.value))
+}
+
+function onNewWorkflowStep(kind) {
+  wf.newStep(kind)
+  const panel = stepPanel(kind)
+  if (panel) leftTab.value = panel
+}
+
 /**
  * Load one tab of the workflow -- a submodule step, or the supermodule -- as the
  * current study, through the same handlers a dropped archive goes through; then
@@ -640,7 +682,7 @@ async function onEditStepInput({ stepId, preselect = [] }) {
   try {
     const { content } = await getWorkflowStepInput(stepId, 'obs_data')
     stepEditor.value = { stepId, document: content ? JSON.parse(content) : null, preselect }
-    leftTab.value = 'workflow'
+    workflowOpen.value = true
   } catch (e) {
     sim.setError(errorMessage(e))
   }
@@ -973,9 +1015,34 @@ watch(
     if (anyRunEnded(now, before)) wf.refresh()
   },
 )
-watch(leftTab, (tab) => {
-  if (tab === 'workflow') wf.refresh()
+
+// A run that was to add a step or start a workflow has started: it is made once, and the
+// panel's next run changes it (a run the server refused leaves the choice as it was).
+for (const [job, kind] of [[calib, 'calibration'], [sa, 'sensitivity'], [uq, 'uq']]) {
+  watch(
+    () => job.state.value,
+    (state) => {
+      if (state === 'running') wf.ranTarget(kind)
+    },
+  )
+}
+
+// The Workflow view, dropped down over the centre column from the Workflow bar (the
+// Output plots, Progress and Analysis tabs wait minimised at the bottom).
+const workflowOpen = ref(false)
+watch(workflowOpen, (open) => {
+  if (open) {
+    wf.refresh()
+    wf.listIn(workingDir.value.trim())
+  }
 })
+// A run of a new step or workflow, a delete or another workflow opened: list them again.
+watch(
+  () => [wf.described.value?.path, wf.described.value?.workflow?.steps?.length],
+  () => {
+    if (workflowOpen.value) wf.listIn(workingDir.value.trim())
+  },
+)
 
 // Emulator (CA #333). `emuDefaults` is CA's emulation settings schema;
 // `emuSettings` mirrors the panel's live values so a run can carry them.
@@ -1998,6 +2065,7 @@ function onRunCalibration(settings) {
     {
       ...settings,
       ...runTimes(),
+      workflow_target: wf.runTarget('calibration'),
       python_path: pythonPath.value,
       working_dir: workingDir.value.trim() || undefined,
       // Evaluate the trained emulator instead of the solver (Surrogate tab).
@@ -2117,6 +2185,7 @@ function onRunSensitivity(settings) {
       ...settings,
       ...calibFirst,
       ...runTimes(),
+      workflow_target: wf.runTarget('sensitivity'),
       python_path: pythonPath.value,
       working_dir: workingDir.value.trim() || undefined,
       // Evaluate the trained emulator instead of the solver (Surrogate tab).
@@ -2207,6 +2276,7 @@ function onRunUQ(settings) {
   uq.start(model.modelId.value, {
     ...settings,
     ...runTimes(),
+    workflow_target: wf.runTarget('uq'),
     python_path: pythonPath.value,
     working_dir: workingDir.value.trim() || undefined,
     use_emulator: emu.useEmulator.value,
@@ -2489,7 +2559,7 @@ async function onModelLoaded(data) {
   }
   // Once this study has loaded, so its late answers cannot land on the workflow's tab.
   if (openWorkflowNow) {
-    leftTab.value = 'workflow'
+    workflowOpen.value = true
     await onOpenWorkflow({ path: openWorkflowNow.path })
   }
 }
@@ -3220,20 +3290,6 @@ watch(() => obs.obsData.value, scheduleRun)
             UQ
             <span v-if="uq.running.value" class="tab-dot" title="UQ running" />
           </button>
-          <button
-            class="left-tab"
-            :class="{ active: leftTab === 'workflow' }"
-            data-testid="tab-workflow"
-            @click="leftTab = 'workflow'"
-          >
-            Workflow
-            <span v-if="wf.running.value" class="tab-dot" title="workflow running" />
-            <span
-              v-else-if="wf.offered.value && !wf.loaded.value"
-              class="tab-dot tab-dot-on"
-              title="the study you opened carries a calibration workflow"
-            />
-          </button>
         </div>
 
         <div v-show="leftTab === 'params'" class="left-pane left-pane-scroll">
@@ -3298,6 +3354,7 @@ watch(() => obs.obsData.value, scheduleRun)
         </div>
         <div v-show="leftTab === 'sensitivity'" class="left-pane left-pane-scroll">
           <SensitivityPanel
+            ref="sensitivityPanel"
             :defaults="saDefaults"
             :can-run="canCalibrate"
             :mpiexec-available="mpiexecAvailable"
@@ -3314,6 +3371,7 @@ watch(() => obs.obsData.value, scheduleRun)
         </div>
         <div v-show="leftTab === 'calibration'" class="left-pane left-pane-scroll">
           <CalibrationPanel
+            ref="calibrationPanel"
             :defaults="calibDefaults"
             :can-run="canCalibrate"
             :mpiexec-available="mpiexecAvailable"
@@ -3331,6 +3389,7 @@ watch(() => obs.obsData.value, scheduleRun)
         </div>
         <div v-show="leftTab === 'uq'" class="left-pane left-pane-scroll">
           <UQPanel
+            ref="uqPanel"
             :defaults="uqDefaults"
             :can-run="canCalibrate"
             :mpiexec-available="mpiexecAvailable"
@@ -3342,35 +3401,66 @@ watch(() => obs.obsData.value, scheduleRun)
             @cancel="uq.cancel()"
           />
         </div>
-        <div v-show="leftTab === 'workflow'" class="left-pane left-pane-scroll">
-          <WorkflowPanel
-            :described="wf.described.value"
-            :tabs="wf.tabs.value"
-            :selected="wf.selected.value"
-            :view="wf.view.value"
-            :states="workflowStates"
-            :job-state="wf.jobState.value"
-            :current-step="wf.currentStep.value"
-            :job-error="wf.jobError.value"
-            :lines="wf.lines.value"
-            :error="wf.error.value"
-            :busy="wf.busy.value"
-            :offered="wf.offered.value"
-            :unset="wf.unset.value"
-            :working-dir="workingDir"
-            :module-library-dirs="moduleLibraryDirs"
-            :mpiexec-available="mpiexecAvailable"
-            :provenance="wf.provenance.value"
-            @open="onOpenWorkflow"
-            @close="wf.close()"
-            @select="onSelectWorkflowTab"
-            @run="onRunWorkflow"
-            @cancel="wf.cancel()"
-            @open-settings="settingsOpen = true"
-            @edit-input="onEditStepInput"
-            @pick-input="onPickStepInput"
-          />
-          <EditObsDataDialog
+        </div>
+      </aside>
+
+      <section class="col col-center" :class="{ 'wf-open': workflowOpen }">
+        <WorkflowBar
+          :name="wf.name.value"
+          :tabs="wf.tabs.value"
+          :selected="wf.selected.value"
+          :states="workflowStates"
+          :busy="wf.busy.value"
+          :open="workflowOpen"
+          :summary="workflowSummary"
+          @select="onSelectWorkflowTab"
+          @toggle="workflowOpen = !workflowOpen"
+        />
+        <WorkflowView
+          v-if="workflowOpen"
+          :workflows="wf.workflows.value"
+          :open-path="wf.loaded.value ? (wf.described.value?.path ?? null) : null"
+          :target="wf.target.value"
+          :steps="workflowFileSteps"
+          :details="workflowDetails"
+          :states="workflowStates"
+          :editing="workflowSummary.mode === 'edit' ? workflowSummary.step : null"
+          :pending-delete="wf.pendingDelete.value"
+          :busy="wf.busy.value"
+          :running="wf.running.value"
+          :described="wf.described.value"
+          :tabs="wf.tabs.value"
+          :selected="wf.selected.value"
+          :view="wf.view.value"
+          :job-state="wf.jobState.value"
+          :current-step="wf.currentStep.value"
+          :job-error="wf.jobError.value"
+          :lines="wf.lines.value"
+          :error="wf.error.value"
+          :offered="wf.offered.value"
+          :unset="wf.unset.value"
+          :working-dir="workingDir"
+          :module-library-dirs="moduleLibraryDirs"
+          :mpiexec-available="mpiexecAvailable"
+          :provenance="wf.provenance.value"
+          @open-workflow="(path) => onOpenWorkflow({ path })"
+          @new-workflow="wf.newWorkflow()"
+          @new-step="onNewWorkflowStep"
+          @select-step="onSelectWorkflowStep"
+          @delete-step="(id) => wf.deleteStep(id)"
+          @confirm-delete="wf.confirmDelete()"
+          @cancel-delete="wf.cancelDelete()"
+          @move-step="({ step, index }) => wf.moveStep(step, index)"
+          @open="onOpenWorkflow"
+          @close="wf.close()"
+          @select="onSelectWorkflowTab"
+          @run="onRunWorkflow"
+          @cancel="wf.cancel()"
+          @open-settings="settingsOpen = true"
+          @edit-input="onEditStepInput"
+          @pick-input="onPickStepInput"
+        />
+        <EditObsDataDialog
             v-if="stepEditor"
             :visible="!!stepEditor"
             :document="stepEditor.document"
@@ -3384,34 +3474,20 @@ watch(() => obs.obsData.value, scheduleRun)
             @saved="onStepObsSaved"
             @update:visible="(v) => { if (!v) stepEditor = null }"
           />
-        </div>
-        </div>
-      </aside>
-
-      <section class="col col-center">
-        <WorkflowBar
-          v-if="wf.loaded.value"
-          :name="wf.name.value"
-          :tabs="wf.tabs.value"
-          :selected="wf.selected.value"
-          :states="workflowStates"
-          :busy="wf.busy.value"
-          @select="onSelectWorkflowTab"
-        />
-        <div class="left-tabs">
+        <div class="left-tabs center-tabs" data-testid="center-tabs">
           <button
             class="left-tab"
-            :class="{ active: centerTab === 'plots' }"
+            :class="{ active: centerTab === 'plots' && !workflowOpen }"
             data-testid="tab-plots"
-            @click="centerTab = 'plots'"
+            @click="centerTab = 'plots'; workflowOpen = false"
           >
             Output plots
           </button>
           <button
             class="left-tab"
-            :class="{ active: centerTab === 'progress' }"
+            :class="{ active: centerTab === 'progress' && !workflowOpen }"
             data-testid="tab-progress"
-            @click="centerTab = 'progress'"
+            @click="centerTab = 'progress'; workflowOpen = false"
           >
             Progress
             <span
@@ -3422,9 +3498,9 @@ watch(() => obs.obsData.value, scheduleRun)
           </button>
           <button
             class="left-tab"
-            :class="{ active: centerTab === 'analysis' }"
+            :class="{ active: centerTab === 'analysis' && !workflowOpen }"
             data-testid="tab-analysis"
-            @click="centerTab = 'analysis'"
+            @click="centerTab = 'analysis'; workflowOpen = false"
           >
             Analysis
             <span
@@ -4637,6 +4713,15 @@ watch(() => obs.obsData.value, scheduleRun)
 .col-center {
   display: flex;
   flex-direction: column;
+}
+/* The Workflow view open: the plots' tabs wait at the bottom, their content hidden. */
+.col-center.wf-open > :not(.workflow-bar):not(.workflow-view):not(.center-tabs) {
+  display: none !important;
+}
+.col-center.wf-open > .center-tabs {
+  order: 99;
+  margin-top: auto;
+  border-top: 1px solid var(--p-content-border-color, #444);
 }
 .warn-banner {
   margin: 0.5rem;

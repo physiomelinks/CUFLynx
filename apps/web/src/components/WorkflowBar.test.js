@@ -55,3 +55,27 @@ describe('WorkflowBar', () => {
     expect(bar.find('[data-testid="workflow-tab-fit_a"]').attributes('disabled')).toBeDefined()
   })
 })
+
+describe('WorkflowBar: the Workflow view', () => {
+  it('is labelled Workflow, and toggles the view', async () => {
+    const bar = mount(WorkflowBar, { props: { name: 'study', tabs: [] } })
+    const toggle = bar.find('[data-testid="workflow-toggle"]')
+    expect(toggle.text()).toContain('Workflow: study')
+    await toggle.trigger('click')
+    expect(bar.emitted('toggle')).toHaveLength(1)
+  })
+
+  it('highlights what the next run is', () => {
+    for (const [mode, step, on] of [
+      ['new_workflow', null, 'New workflow'],
+      ['new_step', null, 'New step'],
+      ['edit', 'calibration-1', 'Changing a step calibration-1'],
+    ]) {
+      const bar = mount(WorkflowBar, { props: { tabs: [], summary: { mode, step, text: '' } } })
+      expect(bar.find('[data-testid="workflow-mode"]').attributes('data-mode')).toBe(mode)
+      const lit = bar.findAll('.wf-mode.on')
+      expect(lit).toHaveLength(1)
+      expect(lit[0].text().replace(/\s+/g, ' ')).toBe(on)
+    }
+  })
+})
