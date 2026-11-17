@@ -5,20 +5,31 @@
  *
  * - `default`: the open workflow's latest step of the panel's kind is changed and run again
  *   with the steps that take from it; a step is added only when there is none of that kind;
- * - `new_step`: a step is added (the user chose "New ... step" in the Workflow view);
+ * - `new_step`: a step is added: the user chose "New step" in the Workflow view, and the
+ *   next run they start, of whatever kind, is that step;
  * - `edit` + `step`: that step is changed (the user clicked it in the Workflow view);
  * - `new_workflow`: a new workflow is started (the user chose "New workflow").
  *
  * So a second calibration is never made by accident: it has to be asked for.
  */
 
-/** CA's step kind of each panel that makes steps, by the left tab's id. */
-export const PANEL_KINDS = { calibration: 'calibration', sensitivity: 'sensitivity', uq: 'uq' }
+/** CA's step kind each left tab's panel makes, by the tab's id. */
+export const PANEL_KINDS = {
+  calibration: 'calibration',
+  sensitivity: 'sensitivity',
+  uq: 'uq',
+  emulator: 'emulation',
+  identifiability: 'identifiability',
+}
+
+/** The left tab that shows the settings of a step of CA's `kind` (a reduction is made on
+ * the Identifiability tab too), or null for a kind no panel makes (set, sweep). */
+const KIND_TABS = { ...Object.fromEntries(Object.entries(PANEL_KINDS).map(([t, k]) => [k, t])),
+  reduction: 'identifiability' }
 
 /** The left tab whose panel makes steps of CA's `kind`, or null. */
 export function stepPanel(kind) {
-  const k = kind ?? 'calibration'
-  return Object.keys(PANEL_KINDS).find((tab) => PANEL_KINDS[tab] === k) ?? null
+  return KIND_TABS[kind ?? 'calibration'] ?? null
 }
 
 function fileSteps(described) {
@@ -38,7 +49,8 @@ export function runTargetFor(target, kind, described) {
   const workflow = described?.loaded ? (described.path ?? undefined) : undefined
   const mode = target?.mode ?? 'default'
   if (mode === 'new_workflow') return { mode }
-  if (mode === 'new_step' && target.kind === kind) return { mode, workflow }
+  // "New step" waits for whatever is run next; a kind is only given by a caller that says so
+  if (mode === 'new_step' && (!target.kind || target.kind === kind)) return { mode, workflow }
   if (mode === 'edit') {
     const step = fileSteps(described).find((s) => s.id === target.step)
     if (step && kindOf(step) === kind) return { mode, step: step.id, workflow }
@@ -49,11 +61,14 @@ export function runTargetFor(target, kind, described) {
 /** The mode after a run of `kind` started: a new step or workflow is made once. */
 export function targetAfterRun(target, kind) {
   if (target?.mode === 'new_workflow') return { mode: 'default' }
-  if (target?.mode === 'new_step' && target.kind === kind) return { mode: 'default' }
+  if (target?.mode === 'new_step' && (!target.kind || target.kind === kind)) {
+    return { mode: 'default' }
+  }
   return target
 }
 
-const KIND_NAMES = { calibration: 'calibration', sensitivity: 'sensitivity analysis', uq: 'UQ' }
+const KIND_NAMES = { calibration: 'calibration', sensitivity: 'sensitivity analysis', uq: 'UQ',
+  emulation: 'surrogate', identifiability: 'identifiability analysis' }
 
 /**
  * What the next run from the panel making `kind` steps will be, for the Workflow bar's
@@ -67,7 +82,8 @@ export function modeSummary(target, kind, described) {
     return { mode: 'new_workflow', step: null, text: `Settings for a new workflow` }
   }
   if (sent.mode === 'new_step') {
-    return { mode: 'new_step', step: null, text: `A new ${what} step in ${name}` }
+    return { mode: 'new_step', step: null,
+             text: `A new step in ${name}: whatever you run next` }
   }
   if (sent.mode === 'edit') {
     return { mode: 'edit', step: sent.step, text: `Changing step ${sent.step} of ${name}` }
@@ -86,9 +102,19 @@ function without(obj, keys) {
 const REF_KEYS = ['result_from', 'start_from', 'sensitivity_from', 'emulator_from',
   'params_for_id_from']
 
-/** `[[key, step id]]`: every step `step` takes something from (CA's keys; a set entry's `of`). */
-export function referencesOf(step) {
+/**
+ * `[[key, step id]]`: every step `step` takes something from (CA's keys; a set entry's `of`).
+ * With the workflow's `steps`, an `emulator_dir` that is an emulation step's emulator
+ * (`.../<step id>/emulator`) is a reference to that step too.
+ */
+export function referencesOf(step, steps = null) {
   const refs = REF_KEYS.filter((k) => typeof step[k] === 'string').map((k) => [k, step[k]])
+  if (steps && typeof step.emulator_dir === 'string') {
+    const parts = step.emulator_dir.split(/[\\/]/).filter(Boolean)
+    const at = parts.lastIndexOf('emulator')
+    const source = at > 0 ? steps.find((s) => s.id === parts[at - 1] && kindOf(s) === 'emulation') : null
+    if (source) refs.push(['emulator_dir', source.id])
+  }
   for (const key of ['fixed_from', 'priors_from']) {
     for (const f of step[key] ?? []) {
       refs.push([key, typeof f === 'string' ? f : (f?.step ?? f?.from_step)])
@@ -103,7 +129,7 @@ export function edgesOf(steps) {
   const row = Object.fromEntries(steps.map((s, i) => [s.id, i]))
   const out = []
   steps.forEach((s, to) => {
-    for (const [key, id] of referencesOf(s)) {
+    for (const [key, id] of referencesOf(s, steps)) {
       if (id in row && row[id] !== to) out.push({ from: row[id], to, key })
     }
   })
@@ -176,5 +202,44 @@ export function panelSettings(step, described) {
       ...debug,
     }
   }
+  if (kind === 'emulation') {
+    return { ...without(s.emulator_settings, ['random_seed', 'emulator_dir']), ...debug }
+  }
+  if (kind === 'identifiability') {
+    return { ia_options: { ...(s.ia_options ?? {}) }, ...debug }
+  }
+  if (kind === 'reduction') {
+    return { param_reduction_options: { ...(s.param_reduction_options ?? step.reduction ?? {}) } }
+  }
   return {}
+}
+
+/**
+ * Where each step sits in the workflow chart: `{id: {col, row}}`. A step is one column right
+ * of the furthest-right step it takes from (so every arrow points right), and a column holds
+ * its steps in the file's order.
+ */
+export function layoutSteps(steps) {
+  const ids = new Set(steps.map((s) => s.id))
+  const col = Object.fromEntries(steps.map((s) => [s.id, 0]))
+  for (let pass = 0; pass <= steps.length; pass += 1) {
+    let changed = false
+    for (const s of steps) {
+      for (const [, source] of referencesOf(s, steps)) {
+        if (ids.has(source) && source !== s.id && col[s.id] < col[source] + 1) {
+          col[s.id] = col[source] + 1
+          changed = true
+        }
+      }
+    }
+    if (!changed) break
+  }
+  const rows = {}
+  const out = {}
+  for (const s of steps) {
+    const c = col[s.id]
+    rows[c] = (rows[c] ?? 0) + 1
+    out[s.id] = { col: c, row: rows[c] - 1 }
+  }
+  return out
 }

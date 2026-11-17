@@ -814,6 +814,28 @@ def emulator_dir(output_dir: str, file_prefix: str, obs_path: str | None) -> str
     return os.path.join(output_dir, EMULATOR_SUBDIR, f"{file_prefix}_{obs_prefix}")
 
 
+def workflow_emulator_bundles(output_dir: str) -> list[str]:
+    """The emulators the working dir's calibration workflows trained: every done
+    ``emulation`` step's ``emulator_dir``, as CA records it in the step's
+    ``step_result.json`` (``<W>/workflows/<name>/<step>/``)."""
+    runs = os.path.join(output_dir or "", "workflows")
+    if not os.path.isdir(runs):
+        return []
+    out = []
+    for name in sorted(os.listdir(runs)):
+        run = os.path.join(runs, name)
+        if not os.path.isdir(run):
+            continue
+        for entry in sorted(os.listdir(run)):
+            result = step_result(os.path.join(run, entry)) or {}
+            bundle = result.get("emulator_dir")
+            if result.get("kind") == "emulation" and result.get("status") == "done" \
+                    and isinstance(bundle, str) and os.path.isfile(
+                        os.path.join(bundle, EMULATOR_METADATA_FILE)):
+                out.append(bundle)
+    return out
+
+
 def find_emulator_dir(output_dir: str, file_prefix: str | None,
                       obs_path: str | None) -> str | None:
     """Where this run's emulator actually is, or None.
@@ -842,12 +864,14 @@ def find_emulator_dir(output_dir: str, file_prefix: str | None,
             return conventional
 
     root = os.path.join(output_dir, EMULATOR_SUBDIR)
-    if not os.path.isdir(root):
-        return None
-    try:
-        candidates = [entry.path for entry in os.scandir(root) if entry.is_dir()]
-    except OSError:
-        return None
+    candidates = []
+    if os.path.isdir(root):
+        try:
+            candidates = [entry.path for entry in os.scandir(root) if entry.is_dir()]
+        except OSError:
+            candidates = []
+    # and the emulators the working dir's workflows trained, as emulation steps
+    candidates += workflow_emulator_bundles(output_dir)
 
     bundles = [path for path in candidates if emulator_reusable(path)]
     if not bundles:
@@ -960,15 +984,18 @@ def emulator_choices(output_dir: str, file_prefix: str | None,
 
     seen: set[str] = set()
     summaries: list[dict] = []
-    for root in roots:
-        for bundle in emulator_bundles(root):
-            key = os.path.abspath(bundle)
-            if key in seen:
-                continue
-            seen.add(key)
-            summary = emulator_summary(bundle)
-            if summary:
-                summaries.append(summary)
+    found = [bundle for root in roots for bundle in emulator_bundles(root)]
+    if not declared:
+        # and the emulators the working dir's workflows trained, as emulation steps
+        found += workflow_emulator_bundles(output_dir)
+    for bundle in found:
+        key = os.path.abspath(bundle)
+        if key in seen:
+            continue
+        seen.add(key)
+        summary = emulator_summary(bundle)
+        if summary:
+            summaries.append(summary)
 
     def rank(row):
         worst = row.get("worst_r2")

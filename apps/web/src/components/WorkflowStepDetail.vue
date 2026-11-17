@@ -1,0 +1,166 @@
+<script setup>
+/**
+ * One step of the workflow, inspected (a double-click in the Workflow view's chart): what
+ * it is, what set its values, its model and data, what it takes from, its result, and its
+ * settings as the workflow file has them. From here the step's settings open in its panel,
+ * its model opens as the current study, or the step is deleted.
+ */
+import { computed } from 'vue'
+import Button from 'primevue/button'
+import Dialog from 'primevue/dialog'
+import { modelLabel } from '../stores/useWorkflow'
+import { referencesOf, stepPanel } from '../lib/workflowTarget'
+
+const props = defineProps({
+  // The step as the workflow file has it, or null when nothing is inspected.
+  step: { type: Object, default: null },
+  // Every step of the file, so its references can be named.
+  steps: { type: Array, default: () => [] },
+  // The tab's words for it (workflowTabs), and CA's status row ({status, best_cost, ...}).
+  detail: { type: Object, default: null },
+  result: { type: Object, default: null },
+  state: { type: String, default: 'not_run' },
+  busy: { type: Boolean, default: false },
+})
+const emit = defineEmits(['close', 'select', 'open-view', 'delete'])
+
+const kind = computed(() => props.step?.kind ?? 'calibration')
+const ORIGIN = { calibration: 'Calibrated: an optimiser fits these values',
+  set: 'Set by hand', emulation: 'A surrogate of the model',
+  sweep: 'A simulation', identifiability: 'An analysis', sensitivity: 'An analysis',
+  uq: 'An analysis', reduction: 'An analysis' }
+const refs = computed(() => (props.step ? referencesOf(props.step, props.steps) : []))
+const panel = computed(() => stepPanel(kind.value))
+const settingsText = computed(() => JSON.stringify(props.step?.settings ?? {}, null, 1))
+
+function path(value) {
+  if (typeof value === 'string') return value
+  return value ? '(inline in the workflow file)' : '—'
+}
+function num(value) {
+  return typeof value === 'number' ? value.toPrecision(6) : '—'
+}
+</script>
+
+<template>
+  <Dialog
+    :visible="!!step"
+    modal
+    :header="step ? `Step ${step.id}` : ''"
+    :style="{ width: 'min(720px, 95vw)' }"
+    data-testid="workflow-step-detail"
+    @update:visible="(v) => { if (!v) emit('close') }"
+  >
+    <template v-if="step">
+      <p class="sd-origin" :data-kind="kind">{{ ORIGIN[kind] ?? kind }} · {{ kind }}</p>
+      <p v-if="step.description" class="sd-hint">{{ step.description }}</p>
+      <dl class="sd-kv">
+        <dt>Model</dt>
+        <dd>{{ step.model ? modelLabel(step.model, true) : (detail?.detail || '—') }}</dd>
+        <template v-if="kind !== 'set'">
+          <dt>obs_data</dt>
+          <dd><code>{{ path(step.obs_data) }}</code></dd>
+          <dt>params_for_id</dt>
+          <dd><code>{{ path(step.params_for_id ?? (step.params_for_id_from ? `from ${step.params_for_id_from}` : null)) }}</code></dd>
+        </template>
+        <template v-else>
+          <dt>Values</dt>
+          <dd>
+            <div v-for="e in step.set ?? []" :key="e.parameter">
+              <code>{{ e.parameter }}</code> = {{ e.value ?? `${e.scale} × ${e.of}` }}
+              <span class="sd-hint">{{ e.reason }}</span>
+            </div>
+            <span v-if="step.point" class="sd-hint">A point only: not merged into the target.</span>
+          </dd>
+        </template>
+        <dt>Takes from</dt>
+        <dd>
+          <template v-if="refs.length">
+            <div v-for="[key, id] in refs" :key="key + id"><code>{{ key }}</code> {{ id }}</div>
+          </template>
+          <template v-else>the model's own values</template>
+        </dd>
+        <dt>Result</dt>
+        <dd data-testid="workflow-step-detail-result">
+          {{ state }}<template v-if="result?.stale"> (stale: an input changed since it ran)</template>
+          <template v-if="result?.best_cost != null"> · cost {{ num(result.best_cost) }}</template>
+          <template v-if="result?.duration_s != null"> · {{ num(result.duration_s) }} s</template>
+          <template v-if="result?.finished"> · finished {{ result.finished }}</template>
+        </dd>
+        <template v-if="detail?.calibrates?.length">
+          <dt>Calibrates</dt>
+          <dd>{{ detail.calibrates.map((c) => c.target_parameterisation_name ?? c.model_name).join(', ') }}</dd>
+        </template>
+      </dl>
+      <details class="sd-settings">
+        <summary>Settings, as the workflow file has them</summary>
+        <pre>{{ settingsText }}</pre>
+      </details>
+    </template>
+    <template #footer>
+      <Button
+        v-if="panel"
+        label="Change its settings"
+        size="small"
+        :disabled="busy"
+        data-testid="workflow-step-detail-edit"
+        @click="emit('select', step.id)"
+      />
+      <Button
+        v-if="detail?.viewable !== false"
+        label="Open its model"
+        size="small"
+        outlined
+        :disabled="busy"
+        title="Load this step's model, with the values earlier steps set, as the current study"
+        data-testid="workflow-step-detail-open"
+        @click="emit('open-view', step.id)"
+      />
+      <Button
+        label="Delete"
+        size="small"
+        severity="danger"
+        text
+        :disabled="busy"
+        data-testid="workflow-step-detail-delete"
+        @click="emit('delete', step.id)"
+      />
+    </template>
+  </Dialog>
+</template>
+
+<style scoped>
+.sd-origin {
+  margin: 0 0 0.4rem;
+  font-size: 0.75rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-weight: 600;
+}
+.sd-origin[data-kind='calibration'] { color: #2f6fde; }
+.sd-origin[data-kind='set'] { color: #c8372d; }
+.sd-origin[data-kind='emulation'] { color: #8a4fd6; }
+.sd-hint {
+  opacity: 0.7;
+  font-size: 0.85em;
+}
+.sd-kv {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.35rem 0.9rem;
+  margin: 0.4rem 0;
+}
+.sd-kv dt {
+  opacity: 0.7;
+}
+.sd-kv dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.sd-settings pre {
+  max-height: 260px;
+  overflow: auto;
+  font-size: 0.78rem;
+}
+</style>

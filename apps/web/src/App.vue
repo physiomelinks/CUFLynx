@@ -580,12 +580,17 @@ const workflowFileSteps = computed(() =>
   wf.loaded.value ? (wf.described.value?.workflow?.steps ?? []) : [],
 )
 const workflowDetails = computed(() => Object.fromEntries(wf.tabs.value.map((t) => [t.id, t])))
+// CA's status of each step ({status, stale, best_cost, duration_s, ...}), for the chart's boxes.
+const workflowResults = computed(() => wf.described.value?.status?.steps ?? {})
 
 // The panels, so a step clicked in the Workflow view fills its panel's settings.
 const calibrationPanel = ref(null)
 const sensitivityPanel = ref(null)
 const uqPanel = ref(null)
-const PANEL_REFS = { calibration: calibrationPanel, sensitivity: sensitivityPanel, uq: uqPanel }
+const emulatorPanel = ref(null)
+// The Identifiability tab's panel joins this map where that tab exists (devel, #412).
+const PANEL_REFS = { calibration: calibrationPanel, sensitivity: sensitivityPanel, uq: uqPanel,
+  emulator: emulatorPanel }
 
 /**
  * A step clicked in the Workflow view: its panel opens on the left with the step's
@@ -595,7 +600,7 @@ async function onSelectWorkflowStep(stepId) {
   const step = workflowFileSteps.value.find((s) => s.id === stepId)
   if (!step) return
   const panel = stepPanel(step.kind)
-  if (!panel) {
+  if (!panel || !PANEL_REFS[panel]) {
     wf.error.value = `Step ${stepId} is a ${step.kind} step: no panel makes it, so it has no settings to change here.`
     return
   }
@@ -606,10 +611,9 @@ async function onSelectWorkflowStep(stepId) {
   PANEL_REFS[panel].value?.applySettings?.(panelSettings(step, wf.described.value))
 }
 
-function onNewWorkflowStep(kind) {
-  wf.newStep(kind)
-  const panel = stepPanel(kind)
-  if (panel) leftTab.value = panel
+/** "New step": the next run, of whatever kind, is added as a step. */
+function onNewWorkflowStep() {
+  wf.newStep()
 }
 
 /**
@@ -1010,7 +1014,7 @@ const leftTab = ref('params')
 // which the server opens in the Workflow tab: re-read it when a run ends and when the tab
 // is opened, so the tab shows each run as a step and the provenance drawn after it.
 watch(
-  () => [calib.state.value, sa.state.value, uq.state.value],
+  () => [calib.state.value, sa.state.value, uq.state.value, emu.state.value],
   (now, before) => {
     if (anyRunEnded(now, before)) wf.refresh()
   },
@@ -1018,7 +1022,8 @@ watch(
 
 // A run that was to add a step or start a workflow has started: it is made once, and the
 // panel's next run changes it (a run the server refused leaves the choice as it was).
-for (const [job, kind] of [[calib, 'calibration'], [sa, 'sensitivity'], [uq, 'uq']]) {
+for (const [job, kind] of [[calib, 'calibration'], [sa, 'sensitivity'], [uq, 'uq'],
+  [emu, 'emulation']]) {
   watch(
     () => job.state.value,
     (state) => {
@@ -2308,6 +2313,7 @@ function onTrainEmulator(settings) {
     // stale -- "the model, parameter bounds, obs_data operations or protocol
     // differ". One source for the window is what keeps every side equal.
     ...runTimes(),
+    workflow_target: wf.runTarget('emulation'),
     python_path: pythonPath.value,
     working_dir: workingDir.value.trim() || undefined,
   })
@@ -3310,6 +3316,7 @@ watch(() => obs.obsData.value, scheduleRun)
         </div>
         <div v-show="leftTab === 'emulator'" class="left-pane left-pane-scroll">
           <EmulatorPanel
+            ref="emulatorPanel"
             v-model="emu.useEmulator.value"
             :defaults="emuDefaults"
             :can-run="canCalibrate"
@@ -3424,6 +3431,8 @@ watch(() => obs.obsData.value, scheduleRun)
           :steps="workflowFileSteps"
           :details="workflowDetails"
           :states="workflowStates"
+          :results="workflowResults"
+          :workflow-target="wf.described.value?.workflow?.target ?? null"
           :editing="workflowSummary.mode === 'edit' ? workflowSummary.step : null"
           :pending-delete="wf.pendingDelete.value"
           :busy="wf.busy.value"
@@ -3451,6 +3460,7 @@ watch(() => obs.obsData.value, scheduleRun)
           @confirm-delete="wf.confirmDelete()"
           @cancel-delete="wf.cancelDelete()"
           @move-step="({ step, index }) => wf.moveStep(step, index)"
+          @open-step-view="onSelectWorkflowTab"
           @open="onOpenWorkflow"
           @close="wf.close()"
           @select="onSelectWorkflowTab"

@@ -4,9 +4,10 @@
  *
  * Its header picks which of the working dir's workflows is open, starts a new one, and
  * opens a workflow file or run from elsewhere (WorkflowPanel's controls). Below, the open
- * workflow as a diagram (WorkflowDiagram): click a step to change its settings in its
- * panel on the left, drag it to reorder, delete it. "New ... step" makes the next run of
- * that panel add a step rather than change the latest one.
+ * workflow as a chart (WorkflowDiagram): click a step to change its settings in its panel
+ * on the left, double-click it to inspect it (WorkflowStepDetail), drag it to reorder,
+ * delete it. "New step" makes the next run, of whatever kind, add a step rather than change
+ * the latest one of its kind.
  *
  * Every other prop and event is WorkflowPanel's (run, export, provenance, ...), passed
  * through.
@@ -14,9 +15,10 @@
 import Button from 'primevue/button'
 import Message from 'primevue/message'
 import Select from 'primevue/select'
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import WorkflowDiagram from './WorkflowDiagram.vue'
 import WorkflowPanel from './WorkflowPanel.vue'
+import WorkflowStepDetail from './WorkflowStepDetail.vue'
 
 defineOptions({ inheritAttrs: false })
 
@@ -32,6 +34,10 @@ const props = defineProps({
   // Each step's words from the tabs (workflowTabs), by id.
   details: { type: Object, default: () => ({}) },
   states: { type: Object, default: () => ({}) },
+  // CA's status of each step ({best_cost, duration_s, ...}), by id.
+  results: { type: Object, default: () => ({}) },
+  // The workflow's target model (the file's `target`).
+  workflowTarget: { type: Object, default: null },
   // The step the next run of the open panel changes (modeSummary), or null.
   editing: { type: String, default: null },
   // A delete waiting for a confirmation ({step, deleted, rewired, dropped}), or null.
@@ -48,13 +54,18 @@ const emit = defineEmits([
   'confirm-delete',
   'cancel-delete',
   'move-step',
+  // a step's model, opened as the current study (the bar's tab does the same)
+  'open-step-view',
 ])
 
-const NEW_STEPS = [
-  { kind: 'calibration', label: 'New calibration' },
-  { kind: 'sensitivity', label: 'New sensitivity analysis' },
-  { kind: 'uq', label: 'New UQ' },
-]
+// The step being inspected (a double-click in the chart), or null.
+const inspected = ref(null)
+const inspectedStep = computed(() => props.steps.find((s) => s.id === inspected.value) ?? null)
+
+function fromDetail(event, id) {
+  inspected.value = null
+  emit(event, id)
+}
 
 const options = computed(() => {
   const listed = props.workflows.map((w) => ({
@@ -102,17 +113,25 @@ const alsoDeleted = computed(() => doomed.value.filter((s) => s !== props.pendin
       </template>
       <template #steps>
         <div class="wv-new-steps">
-          <span class="wv-hint">A run changes the step of its kind; to add one:</span>
           <Button
-            v-for="n in NEW_STEPS"
-            :key="n.kind"
-            :label="n.label"
+            label="New step"
+            icon="pi pi-plus"
             size="small"
-            :outlined="!(target.mode === 'new_step' && target.kind === n.kind)"
+            :outlined="target.mode !== 'new_step'"
             :disabled="running"
-            :data-testid="`workflow-new-${n.kind}`"
-            @click="emit('new-step', n.kind)"
+            title="The next run you start, of whatever kind, is added as a new step"
+            data-testid="workflow-new-step"
+            @click="emit('new-step')"
           />
+          <span class="wv-hint">
+            <template v-if="target.mode === 'new_step'">
+              Waiting: whatever you run next (a calibration, an analysis, a surrogate) is added
+              as a new step.
+            </template>
+            <template v-else>
+              A run changes the step of its kind already here; New step adds one instead.
+            </template>
+          </span>
         </div>
         <Message
           v-if="pendingDelete"
@@ -146,12 +165,27 @@ const alsoDeleted = computed(() => doomed.value.filter((s) => s !== props.pendin
           :steps="steps"
           :details="details"
           :states="states"
+          :results="results"
+          :target="workflowTarget"
           :editing="editing"
           :doomed="doomed"
           :busy="busy || running"
           @select="(id) => emit('select-step', id)"
+          @inspect="(id) => (inspected = id)"
           @delete="(id) => emit('delete-step', id)"
           @move="(m) => emit('move-step', m)"
+        />
+        <WorkflowStepDetail
+          :step="inspectedStep"
+          :steps="steps"
+          :detail="inspectedStep ? details[inspectedStep.id] : null"
+          :result="inspectedStep ? results[inspectedStep.id] : null"
+          :state="inspectedStep ? (states[inspectedStep.id] ?? 'not_run') : 'not_run'"
+          :busy="busy || running"
+          @close="inspected = null"
+          @select="(id) => fromDetail('select-step', id)"
+          @open-view="(id) => fromDetail('open-step-view', id)"
+          @delete="(id) => fromDetail('delete-step', id)"
         />
       </template>
     </WorkflowPanel>
