@@ -367,6 +367,34 @@ def test_a_reopened_working_dirs_calibration_step_is_the_previous_best_fit(
         zip(QNAMES, [1.0, 0.5, 0.25, 2.0]))
 
 
+def test_a_calibration_steps_tab_is_the_previous_best_fit_in_another_working_dir(
+        client, fake_runs, tmp_path):
+    """A study opened as a calibration step's tab (Workflow tab) shows that step's best fit,
+    so MCMC there starts from it, though this session has not calibrated and the working
+    dir it runs in has no calibration of its own."""
+    first, second = tmp_path / "w1", tmp_path / "w2"
+    model_id = _setup(client)
+    assert _calibrate(client, model_id, first)["state"] == "done"
+    step_dir = first / "workflows" / "study" / "calibration-1"
+    calibration_mod.calibration.reset()           # a new session
+    # what /api/workflow/view records for a calibration step's tab
+    main._get_model(model_id).opened_calibration = {
+        "results_dir": str(step_dir / "param_id"), "step": "calibration-1",
+        "workflow": str(first / "workflow" / "calibration_workflow.json")}
+    best = dict(zip(QNAMES, [1.0, 0.5, 0.25, 2.0]))
+    record = main._get_model(model_id)
+    assert main._previous_best_fit(record, {"config_outputs_dir": str(second)}) == best
+
+    _run(client, "uq", {"model_id": model_id, "settings": {
+        "config_outputs_dir": str(second), "method": "mcmc", "num_steps": 20,
+        "num_walkers": 8}})
+    steps = _steps(second)
+    start = steps[steps["mcmc-1"]["result_from"]]
+    assert start["kind"] == "set"
+    assert {e["parameter"]: e["value"] for e in start["set"]} == best
+    assert "calibration step calibration-1" in start["set"][0]["reason"]
+
+
 def test_the_target_is_built_after_cas_cellml_model_submodule_is_imported(study_workflow_on):
     """CA's package exports a ``cellml_model`` function and has a ``cellml_model`` submodule;
     importing the submodule (CA's calibrated-CellML writer does, in the server process)
