@@ -117,10 +117,20 @@ two in step. The exported `run_pipeline.py` is CA's own
 - `apps/api/calibration.py` / `calibration_runner.py` — GA parameter identification; `CalibrationPanel.vue` (also emits live settings reused by local-sensitivity "run calibration first").
 - `apps/api/uq.py` / `uq_runner.py` — uncertainty quantification; `UQPanel.vue`.
 - **Identifiability tab** (`IAPanel.vue`, before Sensitivity) — two halves, both built from CA's descriptors (`GET /api/identifiability/defaults`). **Parameter reduction** (`ANALYSIS_OPTIONS['param_reduction']`) runs through `sensitivity_runner.py` in its own manager slot (`sensitivity.param_reduction`): after a Sobol run (`do_param_reduction`) or alone over an existing one (`reduce_only`, nothing simulated). Each option carries the `methods` that read it, from CA's `REDUCTIONS` registry, because CA refuses another method's option set to anything but its default. The report is CA's `param_reduction.json`, read by `ca_run_history.param_reduction` and found under the Sobol run (`find_param_reduction`), never located by a second copy of CA's default; "Calibrate these" adopts its `reduced_params_for_id.json` through `_save_params_file`. **Identifiability analysis** is the UQ runner's `laplace` method with `ia_options`; a profile-likelihood run reports CA's profiles (`ca_run_history.profile_likelihood`) instead of a posterior.
+- `apps/api/rom.py` / `rom_runner.py` — **reduced-order models (ROMs)**, the Surrogate tab's second section
+  (`RomSection.vue`, under the Emulator one). A ROM is described by a *rom setup* file (libcuflynx
+  `rom_setup.schema.json`) and built by libcuflynx's `cuflynx-rom setup` (`libcuflynx.rom.setup_cli`): the runner
+  calls its `main(argv)` and CUFLynx keeps no ROM logic. Quick calls (`probe`, `generators`, `check`, `describe`)
+  run the runner to completion (`rom.call`); `runs` and `fit` are jobs in their own slot. Results stay in
+  libcuflynx's layout under the output folder (`runs/`, `fits/`, `results.json`, read back by `rom.read_results`).
+  **`libcuflynx.rom` is not in the public release yet**: on a public libcuflynx `/api/rom/availability` answers
+  unavailable with the reason, and the section shows only that. Using ROMs means pointing Settings (CA dir or
+  interpreter) at a libcuflynx that has them. The runner imports `libcuflynx.rom.setup_cli` by its namespaced name
+  (`ca_imports.NAMESPACE`), not through `ca_import`: `rom` has no flat spelling, so it is not one of `CA_PACKAGES`.
 - `apps/api/emulator.py` / `emulator_runner.py` — trains a **surrogate** of the
   model's scalar observable features with CA's `EmulatorTrainer` (CA #333);
   `EmulatorPanel.vue`, the Emulator section of the **Surrogate** tab (between
-  Parameters and Sensitivity; reduced-order models are to join it). Two independent
+  Parameters and Sensitivity; reduced-order models are its second section, below). Two independent
   controls, because emulation has two steps: **Train** fits one against the
   solver, and the **use** tick box (`useEmulator` store) makes sensitivity,
   calibration and UQ evaluate it instead. `solver:` keeps meaning the truth

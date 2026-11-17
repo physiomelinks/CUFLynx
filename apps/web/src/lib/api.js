@@ -632,6 +632,46 @@ export async function adoptReducedParams(modelId, reportDir) {
   return data
 }
 
+// --- Reduced-order models (the Surrogate tab's ROM section) --------------------
+//
+// A ROM is set up by a rom setup file (libcuflynx's rom_setup.schema.json) and built by libcuflynx's
+// `cuflynx-rom setup`; the backend launches it and reads back what it wrote. ROMs are not in the public
+// libcuflynx release yet, so `available: false` with a reason is the normal answer there.
+
+/** `{ available, reason, interpreter }`; `refresh` asks again instead of the cached answer. */
+export async function getRomAvailability(refresh = false) {
+  const { data } = await axios.get(url(`/api/rom/availability${refresh ? '?refresh=true' : ''}`))
+  return data
+}
+
+/** A setup's `{ ok, problems: [{where, message}], description, default_root, has_results }`. */
+export async function checkRomSetup(setup) {
+  const { data } = await axios.post(url('/api/rom/check'), { setup })
+  return data
+}
+
+/** Start `fit` (default) or `runs`; `{ job_id, root }`. */
+export async function startRomRun(setup, { action = 'fit', root = '', methods = null, seed = null } = {}) {
+  const { data } = await axios.post(url('/api/rom/run'), { setup, action, root, methods, seed })
+  return data
+}
+
+export async function getRomStatus(jobId, offset = 0) {
+  const { data } = await axios.get(url(`/api/rom/${jobId}/status?offset=${offset}`))
+  return data
+}
+
+export async function cancelRomRun(jobId) {
+  const { data } = await axios.post(url(`/api/rom/${jobId}/cancel`))
+  return data
+}
+
+/** A finished fit's `{ root, results, rows }` (rows: one per method). */
+export async function getRomResults(root) {
+  const { data } = await axios.get(url(`/api/rom/results?root=${encodeURIComponent(root)}`))
+  return data
+}
+
 // --- Emulator (surrogate model, CA #333) -------------------------------------
 
 /** The emulator settings form, from circulatory_autogen's `emulation` schema. */

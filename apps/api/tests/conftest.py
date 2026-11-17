@@ -26,6 +26,7 @@ os.environ["CUFLYNX_STUDY_WORKFLOW"] = "0"
 
 import calibration as calibration_mod  # noqa: E402
 import emulator as emulator_mod  # noqa: E402
+import rom as rom_mod  # noqa: E402
 import engine as engine_mod  # noqa: E402
 import main  # noqa: E402
 import model_codegen as model_codegen_mod  # noqa: E402
@@ -359,6 +360,7 @@ def _analysis_pythons() -> tuple:
         sensitivity_mod.param_reduction.python,
         uq_mod.uq.python,
         emulator_mod.emulator.python,
+        rom_mod.rom.python,
         engine_mod.engine.worker_python,
     )
 
@@ -370,6 +372,7 @@ def _set_analysis_pythons(pythons: tuple) -> None:
         sensitivity_mod.param_reduction.python,
         uq_mod.uq.python,
         emulator_mod.emulator.python,
+        rom_mod.rom.python,
         engine_mod.engine.worker_python,
     ) = pythons
 
@@ -412,6 +415,8 @@ def reset_app_state():
     # running would block the next test's start() on "an extraction is already
     # running".
     obs_extract_job_mod.obs_extract_jobs.reset()
+    rom_mod.rom.reset()
+    rom_mod.rom.runner_path = rom_mod.RUNNER_PATH
     yield
     main._models.clear()
     engine_mod.engine.reset()
@@ -434,6 +439,8 @@ def reset_app_state():
         manager.study_runner_path = calibration_mod.WORKFLOW_RUNNER_PATH
     main._study_unavailable_said = None
     os.environ["CUFLYNX_STUDY_WORKFLOW"] = "0"
+    rom_mod.rom.reset()
+    rom_mod.rom.runner_path = rom_mod.RUNNER_PATH
     _set_analysis_pythons(_pythons_before)
     main._analysis_seed = None
     # Restore CIRCULATORY_AUTOGEN_SRC so a /api/config test doesn't leak.
