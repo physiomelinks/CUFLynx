@@ -116,6 +116,7 @@ from user_funcs import (
 )
 from sensitivity import sensitivity
 from emulator import emulator
+from rom import RomCallError, read_results, rom, summary_rows
 from uq import uq
 
 app = FastAPI(title="CUFLynx API", version=__version__)
@@ -549,6 +550,7 @@ def _set_analysis_python(path: str) -> None:
     calibration.python = path
     sensitivity.python = path
     emulator.python = path
+    rom.python = path
     uq.python = path
     engine.worker_python = path
     reset_python_cache()
@@ -3450,6 +3452,125 @@ def sensitivity_run(req: SensitivityRequest) -> dict:
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"job_id": job_id}
+
+
+class RomCheckRequest(BaseModel):
+    setup: str
+
+
+class RomRunRequest(BaseModel):
+    setup: str
+    action: str = "fit"
+    root: str = ""
+    methods: list[str] | None = None
+    seed: int | None = None
+
+
+def _rom_setup_path(setup: str) -> str:
+    path = (setup or "").strip()
+    if not path or not os.path.isabs(path):
+        raise HTTPException(status_code=422, detail="the rom setup must be an absolute path to a .json file")
+    if not os.path.isfile(path):
+        raise HTTPException(status_code=422, detail=f"no rom setup file at {path}")
+    return path
+
+
+def _rom_default_root(setup: str) -> str:
+    """Where a setup's runs, fits and results go when no folder is given: beside the setup, named after it."""
+    stem = os.path.basename(setup)
+    for suffix in (".rom_setup.json", ".json"):
+        if stem.endswith(suffix):
+            stem = stem[: -len(suffix)]
+            break
+    return os.path.join(os.path.dirname(setup), f"rom_{stem}")
+
+
+def _rom_require_available() -> None:
+    probe = rom.probe()
+    if not probe.get("available"):
+        raise HTTPException(status_code=409, detail=probe.get("reason") or "reduced-order models are unavailable")
+
+
+@app.get("/api/rom/availability")
+def rom_availability(refresh: bool = False) -> dict:
+    """Whether the analysis interpreter's libcuflynx has reduced-order models (rom setups), and if not, why.
+
+    They are not in the public libcuflynx release yet, so "unavailable" with a reason is the usual answer there; the
+    Surrogate tab's ROM section shows it and stays out of the way. Cached per interpreter and CA dir; ``refresh``
+    asks again (after installing or pointing Settings at another checkout).
+    """
+    if refresh:
+        rom.reset()
+    return rom.probe()
+
+
+@app.get("/api/rom/generators")
+def rom_generators(external: str = "") -> dict:
+    """The schedule generators a rom setup can name, with their settings (libcuflynx.rom.schedules)."""
+    _rom_require_available()
+    try:
+        return {"generators": rom.call({"action": "generators", "external": external or None})}
+    except RomCallError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/api/rom/check")
+def rom_check(req: RomCheckRequest) -> dict:
+    """A rom setup's problems (each with where it is), and when it has none, what it names: fitted states, run
+    variables, W, beats and run sizes. Also the folder its results go to by default, and whether one is there."""
+    setup = _rom_setup_path(req.setup)
+    _rom_require_available()
+    try:
+        checked = rom.call({"action": "check", "setup": setup})
+        description = rom.call({"action": "describe", "setup": setup}) if checked.get("ok") else None
+    except RomCallError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    root = _rom_default_root(setup)
+    return {"ok": bool(checked.get("ok")), "problems": checked.get("problems", []), "description": description,
+            "default_root": root, "has_results": read_results(root) is not None}
+
+
+@app.post("/api/rom/run")
+def rom_run(req: RomRunRequest) -> dict:
+    """Start a ROM job: ``runs`` (the true runs) or ``fit`` (the runs, then every method, or ``methods``, fitted,
+    selected and scored). Finished runs and fits are kept under ``root`` and read back on a rerun."""
+    setup = _rom_setup_path(req.setup)
+    if req.action not in ("runs", "fit"):
+        raise HTTPException(status_code=422, detail="action must be 'runs' or 'fit'")
+    root = (req.root or "").strip() or _rom_default_root(setup)
+    if not os.path.isabs(root):
+        raise HTTPException(status_code=422, detail="root must be an absolute path")
+    _rom_require_available()
+    try:
+        job_id = rom.start({"action": req.action, "setup": setup, "root": root, "methods": req.methods or None,
+                            "seed": req.seed})
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"job_id": job_id, "root": root}
+
+
+@app.get("/api/rom/{job_id}/status")
+def rom_status(job_id: str, offset: int = 0) -> dict:
+    status = rom.status(job_id, offset)
+    if status is None:
+        raise HTTPException(status_code=404, detail="rom job not found")
+    return {**status, "rows": summary_rows(status.get("results"))}
+
+
+@app.post("/api/rom/{job_id}/cancel")
+def rom_cancel(job_id: str) -> dict:
+    if not rom.cancel(job_id):
+        raise HTTPException(status_code=404, detail="rom job not found")
+    return {"ok": True}
+
+
+@app.get("/api/rom/results")
+def rom_results(root: str) -> dict:
+    """A finished fit's results under ``root`` (libcuflynx's results.json) and its one-row-per-method table."""
+    if not os.path.isabs(root):
+        raise HTTPException(status_code=422, detail="root must be an absolute path")
+    results = read_results(root)
+    return {"root": root, "results": results, "rows": summary_rows(results)}
 
 
 class EmulatorTrainRequest(BaseModel):

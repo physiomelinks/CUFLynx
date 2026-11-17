@@ -31,6 +31,8 @@ const stubs = {
   InputText: true,
   Checkbox: CheckboxStub,
   Button: ButtonStub,
+  // The ROM section asks the backend on mount; RomSection.test.js covers it.
+  RomSection: true,
 }
 
 // What the backend serves from CA's ANALYSIS_OPTIONS['emulation'].
@@ -77,6 +79,12 @@ function mountPanel(props = {}) {
 }
 
 describe('EmulatorPanel', () => {
+  it('is headed Surrogate, with the emulator as one section of it', () => {
+    const wrapper = mountPanel()
+    expect(wrapper.find('h2').text()).toBe('Surrogate')
+    expect(wrapper.find('[data-testid="surrogate-emulator-heading"]').text()).toBe('Emulator')
+  })
+
   it("builds its form from circulatory_autogen's emulation schema", () => {
     const wrapper = mountPanel()
     expect(wrapper.find('[data-testid="emu-opt-num_train_samples"]').exists()).toBe(true)

@@ -78,7 +78,7 @@ the user's own environment. Keep the three in step.
 
 ## Key files
 
-- `apps/web/src/App.vue` — main UI (tabs: Parameters · Emulator · Sensitivity · Calibration · UQ; center: Output plots · Progress · Analysis)
+- `apps/web/src/App.vue` — main UI (tabs: Parameters · Surrogate · Sensitivity · Calibration · UQ; center: Output plots · Progress · Analysis)
 - `apps/web/src/components/TourOverlay.vue` + `lib/tourSteps.js` — the **Tutorial**
   button's guided tour. **Every anchor is a `data-testid`** and nothing else:
   renaming one breaks a tour step silently in the app, which is why
@@ -115,9 +115,20 @@ the user's own environment. Keep the three in step.
   **Every gradient source is computed by CA**, through the one backend-agnostic accessor `OpencorParamID.get_observable_sensitivities(param_vals, gradient_method, fd_rel_step)` — FD (`fd_backend`), AD (`casadi_backend`) and FSA (`fsa_backend`) alike, so the runner builds the param-id engine for all three. CUFLynx reimplemented the FD loop and the CasADi jacobian until #210's follow-up; that is why it had to mirror CA's flatten/fold contract for grouped and modifier rows, and why CA #390 tightening that contract broke the AD path. **Do not reimplement a gradient here.** What `local_sensitivity.py` legitimately owns is only what CA does not answer: the nominal point, the *signed* relative coefficient (CA's is unsigned and 0.0 on a degenerate denominator), the `var^{e,s} [op]` labels shared with the Sobol heatmap, and the `CVODES`/`AUTO` alias resolution. Two traps: read the nominal features **before** the sensitivities (CA's CasADi arm leaves the helper in AD mode, so a later numeric evaluation returns an `SX`), and pass `rel_step` explicitly as `fd_rel_step` (CUFLynx defaults to 1e-2, CA to 1e-3 — up to 48% apart).
 - `apps/api/calibration.py` / `calibration_runner.py` — GA parameter identification; `CalibrationPanel.vue` (also emits live settings reused by local-sensitivity "run calibration first").
 - `apps/api/uq.py` / `uq_runner.py` — uncertainty quantification; `UQPanel.vue`.
+- `apps/api/rom.py` / `rom_runner.py` — **reduced-order models (ROMs)**, the Surrogate tab's second section
+  (`RomSection.vue`, under the Emulator one). A ROM is described by a *rom setup* file (libcuflynx
+  `rom_setup.schema.json`) and built by libcuflynx's `cuflynx-rom setup` (`libcuflynx.rom.setup_cli`): the runner
+  calls its `main(argv)` and CUFLynx keeps no ROM logic. Quick calls (`probe`, `generators`, `check`, `describe`)
+  run the runner to completion (`rom.call`); `runs` and `fit` are jobs in their own slot. Results stay in
+  libcuflynx's layout under the output folder (`runs/`, `fits/`, `results.json`, read back by `rom.read_results`).
+  **`libcuflynx.rom` is not in the public release yet**: on a public libcuflynx `/api/rom/availability` answers
+  unavailable with the reason, and the section shows only that. Using ROMs means pointing Settings (CA dir or
+  interpreter) at a libcuflynx that has them. The runner imports `libcuflynx.rom.setup_cli` by its namespaced name
+  (`ca_imports.NAMESPACE`), not through `ca_import`: `rom` has no flat spelling, so it is not one of `CA_PACKAGES`.
 - `apps/api/emulator.py` / `emulator_runner.py` — trains a **surrogate** of the
   model's scalar observable features with CA's `EmulatorTrainer` (CA #333);
-  `EmulatorPanel.vue`, tab between Parameters and Sensitivity. Two independent
+  `EmulatorPanel.vue`, the Emulator section of the **Surrogate** tab (between
+  Parameters and Sensitivity; reduced-order models are its second section, below). Two independent
   controls, because emulation has two steps: **Train** fits one against the
   solver, and the **use** tick box (`useEmulator` store) makes sensitivity,
   calibration and UQ evaluate it instead. `solver:` keeps meaning the truth
