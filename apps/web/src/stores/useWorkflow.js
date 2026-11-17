@@ -3,6 +3,7 @@ import {
   cancelWorkflow,
   closeWorkflow,
   errorMessage,
+  followWorkingDir as postWorkingDir,
   getWorkflow,
   getWorkflowStatus,
   loadWorkflow,
@@ -319,6 +320,19 @@ export function useWorkflow(options = {}) {
     return d
   }
 
+  /** The working dir changed: show its study workflow, not another folder's. */
+  async function followWorkingDir(dir) {
+    const before = described.value?.path ?? null
+    const d = await guarded(() => postWorkingDir(dir))
+    if (!d) return
+    if ((d.path ?? null) !== before) {
+      selected.value = null
+      view.value = null
+      unset.value = null
+    }
+    described.value = d
+  }
+
   async function close() {
     const d = await guarded(closeWorkflow)
     if (d) {
@@ -445,6 +459,7 @@ export function useWorkflow(options = {}) {
     refresh,
     open,
     close,
+    followWorkingDir,
     select,
     saveStepInput,
     run,

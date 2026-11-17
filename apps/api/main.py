@@ -4787,6 +4787,40 @@ def workflow_close() -> dict:
     return {"loaded": False}
 
 
+class WorkflowWorkingDirRequest(BaseModel):
+    #: The working dir the user has just chosen; "" when it was cleared.
+    config_outputs_dir: str = ""
+
+
+def _is_study_workflow(path: str | None) -> bool:
+    """Whether ``path`` is some working dir's study workflow (``<dir>/workflow/...``)."""
+    if not path:
+        return False
+    folder = os.path.dirname(os.path.dirname(os.path.abspath(path)))
+    return os.path.abspath(path) == os.path.abspath(study_workflow.workflow_path(folder))
+
+
+@app.post("/api/workflow/working-dir")
+def workflow_working_dir(req: WorkflowWorkingDirRequest) -> dict:
+    """Follow a change of working dir: the study workflow open is that folder's.
+
+    A study workflow of another folder is closed, and this folder's opened when it has
+    one. A workflow the user opened themselves, or one that is running, stays open.
+    """
+    directory = _working_dir_arg(req.config_outputs_dir)
+    own = study_workflow.workflow_path(directory) if directory else None
+    if not workflow.busy:
+        if workflow.loaded and _is_study_workflow(workflow.path) and (
+                not own or os.path.abspath(workflow.path) != os.path.abspath(own)):
+            workflow.reset()
+        if own and os.path.isfile(own) and not workflow.loaded:
+            try:
+                _open_workflow_file(own, directory)
+            except HTTPException:
+                pass
+    return _workflow_http(workflow.describe)
+
+
 @app.post("/api/workflow/view")
 def workflow_view(req: WorkflowViewRequest) -> dict:
     """Load one tab of the workflow -- a step, or the target -- as the current study.

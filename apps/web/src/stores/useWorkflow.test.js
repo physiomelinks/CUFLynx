@@ -5,6 +5,7 @@ vi.mock('../lib/api', () => ({
   loadWorkflow: vi.fn(),
   uploadWorkflow: vi.fn(),
   closeWorkflow: vi.fn(),
+  followWorkingDir: vi.fn(),
   openWorkflowView: vi.fn(),
   runWorkflow: vi.fn(),
   getWorkflowStatus: vi.fn(),
@@ -17,6 +18,7 @@ vi.mock('../lib/api', () => ({
 }))
 
 import {
+  followWorkingDir,
   getWorkflow,
   getWorkflowStatus,
   loadWorkflow,
@@ -242,6 +244,32 @@ describe('useWorkflow', () => {
     expect(await wf.open({ path: '/bad' })).toBeNull()
     expect(wf.error.value).toBe('step "x" is wrong')
     expect(wf.loaded.value).toBe(true) // the open one stays open
+  })
+
+  it('a new working dir shows its own study workflow, dropping another\'s tab', async () => {
+    loadWorkflow.mockResolvedValueOnce(DESCRIBED)
+    openWorkflowView.mockResolvedValueOnce({ model_id: 'm1', workflow_view: { view: 'rest' } })
+    const wf = useWorkflow()
+    await wf.open({ path: '/w/calibration_workflow.json', workingDir: '/o' })
+    await wf.select('rest', '/o')
+
+    followWorkingDir.mockResolvedValueOnce({ loaded: false })
+    await wf.followWorkingDir('/new')
+    expect(followWorkingDir).toHaveBeenCalledWith('/new')
+    expect(wf.loaded.value).toBe(false)
+    expect(wf.selected.value).toBeNull()
+    expect(wf.view.value).toBeNull()
+  })
+
+  it('the same workflow kept across a working dir change keeps its tab', async () => {
+    loadWorkflow.mockResolvedValueOnce(DESCRIBED)
+    openWorkflowView.mockResolvedValueOnce({ model_id: 'm1', workflow_view: { view: 'rest' } })
+    const wf = useWorkflow()
+    await wf.open({ path: '/w/calibration_workflow.json', workingDir: '/o' })
+    await wf.select('rest', '/o')
+    followWorkingDir.mockResolvedValueOnce({ ...DESCRIBED })
+    await wf.followWorkingDir('/other')
+    expect(wf.selected.value).toBe('rest')
   })
 
   it('selecting a tab keeps the view the server returned', async () => {

@@ -140,6 +140,21 @@ const canRun = computed(() => model.hasModel.value && obs.hasProtocol.value)
 const workingDir = ref(readStoredWorkingDir())
 watch(workingDir, (v) => storeWorkingDir(v))
 
+// The workflow bar shows the working dir's study workflow: a new working dir (or a
+// reload with one stored) closes another folder's and opens this one's. Debounced, as
+// the field changes on every keystroke; a half-typed relative path is not sent.
+let followTimer = null
+watch(
+  workingDir,
+  (v) => {
+    clearTimeout(followTimer)
+    const dir = (v || '').trim()
+    if (dir && !/^([a-zA-Z]:)?[\\/]/.test(dir)) return
+    followTimer = setTimeout(() => wf.followWorkingDir(dir), 400)
+  },
+  { immediate: true },
+)
+
 // What the working dir already holds, once someone asks for it (#255).
 const loadedOutputs = ref(null)
 const loadingOutputs = ref(false)
