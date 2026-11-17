@@ -141,9 +141,29 @@ describe('panelSettings', () => {
     })
   })
 
-  it('maps kinds to panels', () => {
+  it('maps kinds to panels: a surrogate to its tab, identifiability and reduction to theirs', () => {
     expect(stepPanel(undefined)).toBe('calibration')
     expect(stepPanel('uq')).toBe('uq')
+    expect(stepPanel('emulation')).toBe('emulator')
+    expect(stepPanel('identifiability')).toBe('identifiability')
+    expect(stepPanel('reduction')).toBe('identifiability')
     expect(stepPanel('set')).toBeNull()
+  })
+
+  it('a surrogate step gives its training options, not the seed or the bundle dir', () => {
+    const step = { id: 'surrogate-1', kind: 'emulation', settings: { emulator_settings: {
+      models: ['RBF'], num_train_samples: 64, random_seed: 1, emulator_dir: 'x' } } }
+    expect(panelSettings(step, described)).toEqual({ models: ['RBF'], num_train_samples: 64, DEBUG: false })
+  })
+})
+
+describe('New step: whatever runs next', () => {
+  it('applies to a run of any kind, once', () => {
+    const target = { mode: 'new_step' }
+    for (const kind of ['calibration', 'sensitivity', 'uq', 'emulation']) {
+      expect(runTargetFor(target, kind, described).mode).toBe('new_step')
+    }
+    expect(targetAfterRun(target, 'emulation')).toEqual({ mode: 'default' })
+    expect(modeSummary(target, 'uq', described).text).toContain('whatever you run next')
   })
 })

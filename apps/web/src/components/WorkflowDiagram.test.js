@@ -1,16 +1,16 @@
 import { describe, expect, it } from 'vitest'
 import { mount } from '@vue/test-utils'
 import WorkflowDiagram from './WorkflowDiagram.vue'
-import { edgesOf } from '../lib/workflowTarget'
+import { edgesOf, layoutSteps } from '../lib/workflowTarget'
 
 const steps = [
-  { id: 'sliders-1', kind: 'set', set: [] },
-  { id: 'calibration-1', start_from: 'sliders-1' },
+  { id: 'sliders-1', kind: 'set', point: true, set: [{ parameter: 'm/alpha', value: 2 }] },
+  { id: 'calibration-1', start_from: 'sliders-1', settings: { param_id_method: 'CMA-ES' } },
   { id: 'sobol-1', kind: 'sensitivity', settings: { sa_options: { method: 'sobol' } } },
   { id: 'mcmc-1', kind: 'uq', result_from: 'calibration-1', fixed_from: ['sliders-1'] },
 ]
 
-describe('edgesOf', () => {
+describe('edgesOf / layoutSteps', () => {
   it('draws an arrow from each step to every step that takes from it', () => {
     expect(edgesOf(steps)).toEqual([
       { from: 0, to: 1, key: 'start_from' },
@@ -18,49 +18,99 @@ describe('edgesOf', () => {
       { from: 0, to: 3, key: 'fixed_from' },
     ])
   })
+
+  it('puts a step one column right of the furthest step it takes from', () => {
+    expect(layoutSteps(steps)).toEqual({
+      'sliders-1': { col: 0, row: 0 },
+      'calibration-1': { col: 1, row: 0 },
+      'sobol-1': { col: 0, row: 1 },
+      'mcmc-1': { col: 2, row: 0 },
+    })
+  })
 })
 
 describe('WorkflowDiagram', () => {
-  function diagram(props = {}) {
+  function chart(props = {}) {
     return mount(WorkflowDiagram, {
-      props: { steps, states: { 'calibration-1': 'done', 'mcmc-1': 'stale' }, ...props },
+      props: {
+        steps,
+        states: { 'calibration-1': 'done', 'mcmc-1': 'stale' },
+        results: { 'calibration-1': { best_cost: 0.0123456, duration_s: 9.4 } },
+        details: { 'calibration-1': { detail: 'LV.cellml', calibrates: [{ model_name: 'a' }, { model_name: 'b' }] } },
+        target: { cellml_model_path: '../inputs/LV.cellml' },
+        ...props,
+      },
     })
   }
 
-  it('has a node per step in file order, with its kind and state', () => {
-    const d = diagram()
-    const nodes = d.findAll('.wf-node')
-    expect(nodes.map((n) => n.attributes('data-testid'))).toEqual(
+  it('has the model, a box per step in columns by dependency, and the target', () => {
+    const c = chart()
+    expect(c.findAll('.wf-node').map((n) => n.attributes('data-testid'))).toEqual(
       steps.map((s) => `workflow-node-${s.id}`),
     )
-    expect(d.find('[data-testid="workflow-node-sobol-1"]').text()).toContain('sobol')
-    expect(d.find('[data-testid="workflow-node-mcmc-1"] .wf-dot').attributes('data-state'))
-      .toBe('stale')
-    expect(d.findAll('.wf-edge')).toHaveLength(3)
+    expect(c.find('[data-testid="workflow-node-model"]').text()).toContain('LV.cellml')
+    // only the calibration is merged into the target; the slider point is not
+    expect(c.find('[data-testid="workflow-node-target"]').text()).toContain('from calibration-1')
+    const left = (id) => parseFloat(c.find(`[data-testid="workflow-node-${id}"]`).attributes('style').match(/left: ([\d.]+)px/)[1])
+    expect(left('sliders-1')).toBeLessThan(left('calibration-1'))
+    expect(left('calibration-1')).toBeLessThan(left('mcmc-1'))
+    expect(left('sobol-1')).toBe(left('sliders-1'))
+    // 3 between steps, 2 from the model (to the steps that take from no step), 1 to the target
+    expect(c.findAll('.wf-edge.step')).toHaveLength(3)
+    expect(c.findAll('.wf-edge.model')).toHaveLength(2)
+    expect(c.findAll('.wf-edge.target')).toHaveLength(1)
   })
 
-  it('selects a step on click, and deletes it from the bin without selecting it', async () => {
-    const d = diagram()
-    await d.find('[data-testid="workflow-node-calibration-1"]').trigger('click')
-    expect(d.emitted('select')).toEqual([['calibration-1']])
-    await d.find('[data-testid="workflow-delete-mcmc-1"]').trigger('click')
-    expect(d.emitted('delete')).toEqual([['mcmc-1']])
-    expect(d.emitted('select')).toHaveLength(1)
+  it('says in each box what set its values, its cost, time and state', () => {
+    const c = chart()
+    const cal = c.find('[data-testid="workflow-node-calibration-1"]')
+    expect(cal.classes()).toContain('cal')
+    expect(cal.text()).toContain('cost 0.0123')
+    expect(cal.text()).toContain('9.4 s')
+    expect(cal.find('.wf-detail').text()).toBe('CMA-ES')
+    expect(cal.find('.wf-tag').text()).toContain('2 parameters')
+    expect(c.find('[data-testid="workflow-node-sliders-1"]').classes()).toContain('hand')
+    expect(c.find('[data-testid="workflow-node-sliders-1"] .wf-tag').text()).toContain('point only')
+    expect(c.find('[data-testid="workflow-node-sobol-1"]').classes()).toContain('analysis')
+    expect(c.find('[data-testid="workflow-node-mcmc-1"] .wf-dot').attributes('data-state')).toBe('stale')
   })
 
-  it('a step dragged onto another asks to move it there', async () => {
-    const d = diagram()
+  it('click selects, double-click inspects, the bin deletes without selecting', async () => {
+    const c = chart()
+    await c.find('[data-testid="workflow-node-calibration-1"]').trigger('click')
+    await c.find('[data-testid="workflow-node-calibration-1"]').trigger('dblclick')
+    expect(c.emitted('select')).toEqual([['calibration-1']])
+    expect(c.emitted('inspect')).toEqual([['calibration-1']])
+    await c.find('[data-testid="workflow-delete-mcmc-1"]').trigger('click')
+    expect(c.emitted('delete')).toEqual([['mcmc-1']])
+    expect(c.emitted('select')).toHaveLength(1)
+  })
+
+  it('a box dragged onto another asks to take its place in the file', async () => {
+    const c = chart()
     const data = { setData: () => {}, effectAllowed: '' }
-    await d.find('[data-testid="workflow-drag-sobol-1"]').trigger('dragstart', { dataTransfer: data })
-    await d.find('[data-testid="workflow-node-sliders-1"]').trigger('dragover')
-    await d.find('[data-testid="workflow-node-sliders-1"]').trigger('drop')
-    expect(d.emitted('move')).toEqual([[{ step: 'sobol-1', index: 0 }]])
+    await c.find('[data-testid="workflow-node-sobol-1"]').trigger('dragstart', { dataTransfer: data })
+    await c.find('[data-testid="workflow-node-sliders-1"]').trigger('dragover')
+    await c.find('[data-testid="workflow-node-sliders-1"]').trigger('drop')
+    expect(c.emitted('move')).toEqual([[{ step: 'sobol-1', index: 0 }]])
   })
 
   it('marks the step the next run changes and the steps a delete would take', () => {
-    const d = diagram({ editing: 'calibration-1', doomed: ['calibration-1', 'mcmc-1'] })
-    expect(d.find('[data-testid="workflow-node-calibration-1"]').classes()).toContain('editing')
-    expect(d.find('[data-testid="workflow-node-mcmc-1"]').classes()).toContain('doomed')
-    expect(d.find('[data-testid="workflow-node-sobol-1"]').classes()).not.toContain('doomed')
+    const c = chart({ editing: 'calibration-1', doomed: ['calibration-1', 'mcmc-1'] })
+    expect(c.find('[data-testid="workflow-node-calibration-1"]').classes()).toContain('editing')
+    expect(c.find('[data-testid="workflow-node-mcmc-1"]').classes()).toContain('doomed')
+    expect(c.find('[data-testid="workflow-node-sobol-1"]').classes()).not.toContain('doomed')
+  })
+
+  it('a surrogate step is drawn as one, with an arrow to the step on its emulator', () => {
+    const c = chart({ steps: [
+      { id: 'surrogate-1', kind: 'emulation', settings: { emulator_settings: { models: ['RBF'] } } },
+      { id: 'sobol-1', kind: 'sensitivity', emulator_dir: '../../workflows/study/surrogate-1/emulator',
+        settings: { sa_options: { method: 'sobol' } } },
+    ] })
+    expect(c.find('[data-testid="workflow-node-surrogate-1"]').classes()).toContain('surrogate')
+    expect(c.find('[data-testid="workflow-node-surrogate-1"] .wf-tag').text()).toContain('RBF')
+    expect(c.findAll('.wf-edge.step')).toHaveLength(1)
+    expect(c.find('.wf-edge-label').text()).toBe('emulator')
   })
 })
