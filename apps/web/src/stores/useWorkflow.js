@@ -1,7 +1,11 @@
 import { ref, computed } from 'vue'
+import { runTargetFor, targetAfterRun } from '../lib/workflowTarget'
 import {
   cancelWorkflow,
   closeWorkflow,
+  deleteWorkflowStep,
+  listWorkflows,
+  moveWorkflowStep,
   errorMessage,
   followWorkingDir as postWorkingDir,
   getWorkflow,
@@ -438,7 +442,88 @@ export function useWorkflow(options = {}) {
     return stepState(described.value, jobStates.value, stepId)
   }
 
+  // -- the Workflow view: which step the next panel run is, and editing the steps -------
+  // {mode: 'default' | 'new_step' | 'edit' | 'new_workflow', kind?, step?} (lib/workflowTarget)
+  const target = ref({ mode: 'default' })
+  // The working dir's workflows ({path, name, steps, modified}).
+  const workflows = ref([])
+  // A delete that would take more steps with it, waiting to be confirmed:
+  // {step, deleted, rewired, dropped}.
+  const pendingDelete = ref(null)
+
+  function newWorkflow() {
+    target.value = { mode: 'new_workflow' }
+  }
+  function newStep(kind) {
+    target.value = { mode: 'new_step', kind }
+  }
+  function editStep(stepId) {
+    target.value = { mode: 'edit', step: stepId }
+  }
+  function useDefault() {
+    target.value = { mode: 'default' }
+  }
+  /** The `workflow_target` a run from the panel making `kind` steps sends. */
+  function runTarget(kind) {
+    return runTargetFor(target.value, kind, described.value)
+  }
+  /** A run of `kind` has started: a new step or workflow is made once. */
+  function ranTarget(kind) {
+    target.value = targetAfterRun(target.value, kind)
+  }
+
+  async function listIn(workingDir) {
+    const found = await guarded(() => listWorkflows(workingDir))
+    workflows.value = found?.workflows ?? []
+    return workflows.value
+  }
+
+  /**
+   * Delete a step: done at once when the neighbours can be reconnected; else the steps that
+   * would go with it wait in `pendingDelete` for `confirmDelete`.
+   */
+  async function deleteStep(stepId, confirm = false) {
+    const result = await guarded(() => deleteWorkflowStep(stepId, confirm))
+    if (!result) return null
+    if (result.applied) {
+      pendingDelete.value = null
+      described.value = result.workflow
+      if (result.deleted.includes(selected.value)) selected.value = null
+      if (target.value.mode === 'edit' && result.deleted.includes(target.value.step)) useDefault()
+    } else {
+      pendingDelete.value = { step: stepId, ...result }
+    }
+    return result
+  }
+  async function confirmDelete() {
+    if (pendingDelete.value) return deleteStep(pendingDelete.value.step, true)
+    return null
+  }
+  function cancelDelete() {
+    pendingDelete.value = null
+  }
+
+  async function moveStep(stepId, index) {
+    const d = await guarded(() => moveWorkflowStep(stepId, index))
+    if (d) described.value = d
+    return d
+  }
+
   return {
+    target,
+    workflows,
+    pendingDelete,
+    newWorkflow,
+    newStep,
+    editStep,
+    useDefault,
+    runTarget,
+    ranTarget,
+    listIn,
+    deleteStep,
+    confirmDelete,
+    cancelDelete,
+    moveStep,
     described,
     loaded,
     tabs,

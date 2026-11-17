@@ -15,8 +15,19 @@ const props = defineProps({
   // tab id -> 'done' | 'stale' | 'not_run' | 'queued' | 'running' | 'failed' | 'cancelled'
   states: { type: Object, default: () => ({}) },
   busy: { type: Boolean, default: false },
+  // Whether the Workflow view is dropped down.
+  open: { type: Boolean, default: false },
+  // What the next run from the open panel is (lib/workflowTarget modeSummary):
+  // {mode: 'new_workflow' | 'new_step' | 'edit', step, text}.
+  summary: { type: Object, default: null },
 })
-const emit = defineEmits(['select'])
+const emit = defineEmits(['select', 'toggle'])
+
+const MODES = [
+  { mode: 'new_workflow', label: 'New workflow' },
+  { mode: 'new_step', label: 'New step' },
+  { mode: 'edit', label: 'Changing a step' },
+]
 
 const STATE_TITLES = {
   done: 'calibrated',
@@ -44,8 +55,30 @@ function title(tab) {
 
 <template>
   <div class="workflow-bar" data-testid="workflow-bar">
-    <span class="wf-name" :title="`Calibration workflow ${name}`">
-      <i class="pi pi-sitemap" /> {{ name }}
+    <button
+      class="wf-toggle"
+      :class="{ open }"
+      type="button"
+      :title="open ? 'Hide the Workflow view' : 'Show the Workflow view: its steps, to change, reorder or delete'"
+      data-testid="workflow-toggle"
+      @click="emit('toggle')"
+    >
+      <i class="pi pi-sitemap" /> Workflow<template v-if="name">: {{ name }}</template>
+      <i :class="open ? 'pi pi-chevron-up' : 'pi pi-chevron-down'" />
+    </button>
+    <span
+      v-if="summary"
+      class="wf-modes"
+      :title="summary.text"
+      data-testid="workflow-mode"
+      :data-mode="summary.mode"
+    >
+      <span
+        v-for="m in MODES"
+        :key="m.mode"
+        class="wf-mode"
+        :class="{ on: summary.mode === m.mode }"
+      >{{ summary.mode === 'edit' && m.mode === 'edit' ? `${m.label} ${summary.step}` : m.label }}</span>
     </span>
     <button
       v-for="tab in tabs"
@@ -80,10 +113,40 @@ function title(tab) {
   border-bottom: 1px solid var(--p-content-border-color, #444);
   font-size: 0.8rem;
 }
-.wf-name {
-  margin-right: 0.5rem;
-  opacity: 0.8;
+.wf-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin-right: 0.4rem;
+  padding: 0.15rem 0.55rem;
+  border: 1px solid var(--p-content-border-color, #555);
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
   white-space: nowrap;
+}
+.wf-toggle.open {
+  border-color: var(--p-primary-color, #4f8cff);
+}
+.wf-modes {
+  display: inline-flex;
+  border: 1px solid var(--p-content-border-color, #555);
+  border-radius: 4px;
+  overflow: hidden;
+  margin-right: 0.5rem;
+}
+.wf-mode {
+  padding: 0.1rem 0.45rem;
+  opacity: 0.55;
+  white-space: nowrap;
+}
+.wf-mode.on {
+  opacity: 1;
+  background: color-mix(in srgb, var(--p-primary-color, #4f8cff) 28%, transparent);
+  font-weight: 600;
 }
 .wf-tab {
   display: inline-flex;

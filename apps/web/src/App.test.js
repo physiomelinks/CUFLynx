@@ -13,6 +13,9 @@ vi.mock('./lib/api', () => ({
   // mount raises an unhandled rejection -- 181 of them, which fails the run even
   // though each test's own assertions pass. "Nothing open" is the honest default.
   getWorkflow: vi.fn().mockResolvedValue(null),
+  listWorkflows: vi.fn().mockResolvedValue({ workflows: [] }),
+  deleteWorkflowStep: vi.fn(),
+  moveWorkflowStep: vi.fn(),
   loadWorkflow: vi.fn().mockResolvedValue(null),
   uploadWorkflow: vi.fn().mockResolvedValue(null),
   closeWorkflow: vi.fn().mockResolvedValue(null),
@@ -2414,6 +2417,43 @@ describe('analysis runs carry the protocol window', () => {
     expect(settings.pre_time).toBe(1.5)
   })
 
+  it('a step clicked in the Workflow view opens its panel, and the next run changes it', async () => {
+    const { startCalibration } = await import('./lib/api')
+    startCalibration.mockClear()
+    const wrapper = await mountApp()
+    const path = '/w/workflow/study/calibration_workflow.json'
+    wrapper.vm.wf.described.value = {
+      loaded: true, path,
+      workflow: { workflow_name: 'study', steps: [
+        { id: 'calibration-1', settings: { param_id_method: 'CMA-ES' } },
+        { id: 'calibration-2', settings: {} },
+        { id: 'sliders-1', kind: 'set', set: [] },
+      ] },
+    }
+    // by default the latest calibration is changed
+    expect(wrapper.vm.workflowSummary).toMatchObject({ mode: 'edit', step: 'calibration-2' })
+
+    await wrapper.vm.onSelectWorkflowStep('calibration-1')
+    expect(wrapper.vm.leftTab).toBe('calibration')
+    expect(wrapper.vm.workflowSummary).toMatchObject({ mode: 'edit', step: 'calibration-1' })
+    wrapper.vm.onRunCalibration({ param_id_method: 'CMA-ES' })
+    await flushPromises()
+    expect(startCalibration.mock.calls[0][1].workflow_target).toEqual(
+      { mode: 'edit', step: 'calibration-1', workflow: path })
+
+    // a step no panel makes says so, and changes nothing
+    await wrapper.vm.onSelectWorkflowStep('sliders-1')
+    expect(wrapper.vm.wf.error.value).toContain('no panel makes it')
+    expect(wrapper.vm.leftTab).toBe('calibration')
+
+    // a second calibration has to be asked for, and is made once
+    wrapper.vm.onNewWorkflowStep('calibration')
+    expect(wrapper.vm.workflowSummary.mode).toBe('new_step')
+    wrapper.vm.onRunCalibration({ param_id_method: 'CMA-ES' })
+    await flushPromises()
+    expect(startCalibration.mock.calls[1][1].workflow_target).toEqual({ mode: 'new_step', workflow: path })
+  })
+
   it('sensitivity payload includes sim_time/pre_time from the protocol', async () => {
     const { startSensitivity } = await import('./lib/api')
     startSensitivity.mockClear()
@@ -3225,6 +3265,16 @@ describe('App.vue: calibrating PhLynx selections (PhLynx #492)', () => {
     vi.clearAllMocks()
   })
 
+  // The Workflow view, dropped down from the Workflow bar; WorkflowPanel's props and
+  // events pass through it.
+  async function openView(wrapper) {
+    if (!wrapper.findComponent({ name: 'WorkflowBar' }).props('open')) {
+      wrapper.findComponent({ name: 'WorkflowBar' }).vm.$emit('toggle')
+      await flushPromises()
+    }
+    return wrapper.findComponent({ name: 'WorkflowView' })
+  }
+
   it('opens an archive whose workflow calibrates selections straight away', async () => {
     loadWorkflow.mockResolvedValueOnce(SELECTION_WORKFLOW)
     openWorkflowView.mockResolvedValueOnce(null)
@@ -3237,15 +3287,16 @@ describe('App.vue: calibrating PhLynx selections (PhLynx #492)', () => {
     })
     await flushPromises()
     expect(loadWorkflow).toHaveBeenCalledWith(expect.objectContaining({ path: SELECTION_WORKFLOW.path }))
-    expect(wrapper.find('[data-testid="tab-workflow"]').classes()).toContain('active')
+    expect(wrapper.findComponent({ name: 'WorkflowBar' }).props('open')).toBe(true)
+    expect(wrapper.findComponent({ name: 'WorkflowView' }).exists()).toBe(true)
   })
 
-  it('re-reads the study workflow when the Workflow tab is opened', async () => {
+  it('re-reads the study workflow when the Workflow view is opened', async () => {
     const wrapper = shallowMount(App)
     await flushPromises()
     const before = getWorkflow.mock.calls.length
-    await wrapper.find('[data-testid="tab-workflow"]').trigger('click')
-    await flushPromises()
+    expect(wrapper.findComponent({ name: 'WorkflowView' }).exists()).toBe(false)
+    await openView(wrapper)
     expect(getWorkflow.mock.calls.length).toBe(before + 1)
   })
 
@@ -3257,13 +3308,13 @@ describe('App.vue: calibrating PhLynx selections (PhLynx #492)', () => {
     })
     await flushPromises()
     expect(loadWorkflow).not.toHaveBeenCalled()
-    expect(wrapper.findComponent({ name: 'WorkflowPanel' }).props('offered').path).toBe('/w.json')
+    expect((await openView(wrapper)).vm.$attrs.offered.path).toBe('/w.json')
   })
 
   it('gives a step the file the user picked, as text or as an obs_data document', async () => {
     const wrapper = shallowMount(App)
     await flushPromises()
-    const panel = wrapper.findComponent({ name: 'WorkflowPanel' })
+    const panel = await openView(wrapper)
     // a picked File, by what App reads of it (jsdom's File has no text())
     const file = (name, text) => ({ name, text: async () => text })
     panel.vm.$emit('pick-input', { stepId: 'left', role: 'params_for_id',
@@ -3287,14 +3338,14 @@ describe('App.vue: calibrating PhLynx selections (PhLynx #492)', () => {
     getWorkflowStepInput.mockResolvedValueOnce({
       path: '/w/left_obs_data.json', content: '{"protocol_info": {"pre_times": [0]}}' })
     openWorkflowView.mockRejectedValueOnce(UNSET)
-    wrapper.findComponent({ name: 'WorkflowPanel' }).vm.$emit('select', 'left')
+    ;(await openView(wrapper)).vm.$emit('select', 'left')
     await flushPromises()
     expect(getWorkflowStepInput).toHaveBeenCalledWith('left', 'obs_data')
     const editor = wrapper.findComponent({ name: 'EditObsDataDialog' })
     expect(editor.exists()).toBe(true)
     expect(editor.props('preselect')).toEqual(['C/x'])
     expect(editor.props('document')).toEqual({ protocol_info: { pre_times: [0] } })
-    expect(wrapper.findComponent({ name: 'WorkflowPanel' }).props('unset')).toEqual(
+    expect(wrapper.findComponent({ name: 'WorkflowView' }).vm.$attrs.unset).toEqual(
       { step_id: 'left', names: ['C/x'] })
 
     // Save writes the step's obs_data; once the editor closes, the step opens again

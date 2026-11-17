@@ -11,6 +11,9 @@ vi.mock('../lib/api', () => ({
   getWorkflowStatus: vi.fn(),
   cancelWorkflow: vi.fn(),
   saveWorkflowStepInput: vi.fn(),
+  listWorkflows: vi.fn(),
+  deleteWorkflowStep: vi.fn(),
+  moveWorkflowStep: vi.fn(),
   workflowProvenanceUrl: (name, v) => `/api/workflow/provenance/${name}?v=${v}`,
   unsetParameters: (e) => e?.response?.data?.detail?.unset_parameters ?? null,
   errorMessage: (e) =>
@@ -18,6 +21,9 @@ vi.mock('../lib/api', () => ({
 }))
 
 import {
+  deleteWorkflowStep,
+  listWorkflows,
+  moveWorkflowStep,
   followWorkingDir,
   getWorkflow,
   getWorkflowStatus,
@@ -397,5 +403,68 @@ describe('selection steps (PhLynx #492)', () => {
     expect(result.path).toBe('/w/right_obs_data.json')
     expect(wf.described.value).toEqual(SELECTION)
     expect(wf.unset.value).toBeNull()
+  })
+})
+
+describe('useWorkflow: the Workflow view', () => {
+  const STUDY = {
+    loaded: true,
+    path: '/w/workflow/study/calibration_workflow.json',
+    workflow: { workflow_name: 'study', steps: [{ id: 'calibration-1' }, { id: 'mcmc-1', kind: 'uq', result_from: 'calibration-1' }] },
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('a delete that takes other steps waits for a confirmation', async () => {
+    const wf = useWorkflow()
+    wf.described.value = STUDY
+    wf.editStep('mcmc-1')
+    deleteWorkflowStep.mockResolvedValueOnce({
+      applied: false, deleted: ['calibration-1', 'mcmc-1'], rewired: [], dropped: [],
+    })
+    await wf.deleteStep('calibration-1')
+    expect(wf.pendingDelete.value.deleted).toEqual(['calibration-1', 'mcmc-1'])
+    expect(wf.described.value).toEqual(STUDY)
+
+    const after = { ...STUDY, workflow: { workflow_name: 'study', steps: [] } }
+    deleteWorkflowStep.mockResolvedValueOnce({
+      applied: true, deleted: ['calibration-1', 'mcmc-1'], rewired: [], dropped: [], workflow: after,
+    })
+    await wf.confirmDelete()
+    expect(deleteWorkflowStep).toHaveBeenLastCalledWith('calibration-1', true)
+    expect(wf.pendingDelete.value).toBeNull()
+    expect(wf.described.value).toEqual(after)
+    // the step the next run was to change is gone: back to the default
+    expect(wf.target.value).toEqual({ mode: 'default' })
+  })
+
+  it('a move shows the workflow the server wrote, and a refused one says why', async () => {
+    const wf = useWorkflow()
+    moveWorkflowStep.mockResolvedValueOnce(STUDY)
+    await wf.moveStep('mcmc-1', 0)
+    expect(moveWorkflowStep).toHaveBeenCalledWith('mcmc-1', 0)
+    expect(wf.described.value).toEqual(STUDY)
+    moveWorkflowStep.mockRejectedValueOnce({ response: { data: { detail: 'takes from' } } })
+    await wf.moveStep('mcmc-1', 0)
+    expect(wf.error.value).toBe('takes from')
+  })
+
+  it('a new step is made once; the run target names the open workflow', () => {
+    const wf = useWorkflow()
+    wf.described.value = STUDY
+    wf.newStep('calibration')
+    expect(wf.runTarget('calibration')).toEqual({ mode: 'new_step', workflow: STUDY.path })
+    wf.ranTarget('calibration')
+    expect(wf.runTarget('calibration')).toEqual({ mode: 'default', workflow: STUDY.path })
+  })
+
+  it('lists the working dir workflows', async () => {
+    const wf = useWorkflow()
+    listWorkflows.mockResolvedValueOnce({ workflows: [{ path: 'a', name: 'study', steps: [] }] })
+    await wf.listIn('/w')
+    expect(listWorkflows).toHaveBeenCalledWith('/w')
+    expect(wf.workflows.value.map((w) => w.name)).toEqual(['study'])
   })
 })

@@ -1,0 +1,187 @@
+<script setup>
+/**
+ * The Workflow view, dropped down over the centre column from the Workflow bar.
+ *
+ * Its header picks which of the working dir's workflows is open, starts a new one, and
+ * opens a workflow file or run from elsewhere (WorkflowPanel's controls). Below, the open
+ * workflow as a diagram (WorkflowDiagram): click a step to change its settings in its
+ * panel on the left, drag it to reorder, delete it. "New ... step" makes the next run of
+ * that panel add a step rather than change the latest one.
+ *
+ * Every other prop and event is WorkflowPanel's (run, export, provenance, ...), passed
+ * through.
+ */
+import Button from 'primevue/button'
+import Message from 'primevue/message'
+import Select from 'primevue/select'
+import { computed } from 'vue'
+import WorkflowDiagram from './WorkflowDiagram.vue'
+import WorkflowPanel from './WorkflowPanel.vue'
+
+defineOptions({ inheritAttrs: false })
+
+const props = defineProps({
+  // The working dir's workflows ({path, name, steps, modified}).
+  workflows: { type: Array, default: () => [] },
+  // The open workflow's file, or null.
+  openPath: { type: String, default: null },
+  // The mode the next run follows (useWorkflow.target).
+  target: { type: Object, default: () => ({ mode: 'default' }) },
+  // The open workflow's steps as its file has them.
+  steps: { type: Array, default: () => [] },
+  // Each step's words from the tabs (workflowTabs), by id.
+  details: { type: Object, default: () => ({}) },
+  states: { type: Object, default: () => ({}) },
+  // The step the next run of the open panel changes (modeSummary), or null.
+  editing: { type: String, default: null },
+  // A delete waiting for a confirmation ({step, deleted, rewired, dropped}), or null.
+  pendingDelete: { type: Object, default: null },
+  busy: { type: Boolean, default: false },
+  running: { type: Boolean, default: false },
+})
+const emit = defineEmits([
+  'open-workflow',
+  'new-workflow',
+  'new-step',
+  'select-step',
+  'delete-step',
+  'confirm-delete',
+  'cancel-delete',
+  'move-step',
+])
+
+const NEW_STEPS = [
+  { kind: 'calibration', label: 'New calibration' },
+  { kind: 'sensitivity', label: 'New sensitivity analysis' },
+  { kind: 'uq', label: 'New UQ' },
+]
+
+const options = computed(() => {
+  const listed = props.workflows.map((w) => ({
+    value: w.path,
+    label: `${w.name} (${w.steps.length} step${w.steps.length === 1 ? '' : 's'})`,
+  }))
+  if (props.openPath && !listed.some((o) => o.value === props.openPath)) {
+    listed.unshift({ value: props.openPath, label: props.openPath.split(/[\\/]/).slice(-2).join('/') })
+  }
+  return listed
+})
+
+const doomed = computed(() => props.pendingDelete?.deleted ?? [])
+</script>
+
+<template>
+  <div class="workflow-view" data-testid="workflow-view-pane">
+    <WorkflowPanel v-bind="$attrs" :busy="busy">
+      <template #header>
+        <div class="wv-pick">
+          <Select
+            v-if="options.length"
+            :model-value="openPath"
+            :options="options"
+            option-label="label"
+            option-value="value"
+            size="small"
+            placeholder="Workflows in the working dir"
+            :disabled="busy || running"
+            data-testid="workflow-pick"
+            @update:model-value="(p) => p && p !== openPath && emit('open-workflow', p)"
+          />
+          <Button
+            label="New workflow"
+            icon="pi pi-plus"
+            size="small"
+            :outlined="target.mode !== 'new_workflow'"
+            :disabled="running"
+            title="The next run from a panel starts a new workflow of this model"
+            data-testid="workflow-new"
+            @click="emit('new-workflow')"
+          />
+        </div>
+      </template>
+      <template #steps>
+        <div class="wv-new-steps">
+          <span class="wv-hint">A run changes the step of its kind; to add one:</span>
+          <Button
+            v-for="n in NEW_STEPS"
+            :key="n.kind"
+            :label="n.label"
+            size="small"
+            :outlined="!(target.mode === 'new_step' && target.kind === n.kind)"
+            :disabled="running"
+            :data-testid="`workflow-new-${n.kind}`"
+            @click="emit('new-step', n.kind)"
+          />
+        </div>
+        <Message
+          v-if="pendingDelete"
+          severity="warn"
+          :closable="false"
+          data-testid="workflow-confirm-delete"
+        >
+          Deleting <strong>{{ pendingDelete.step }}</strong> also deletes
+          {{ pendingDelete.deleted.filter((s) => s !== pendingDelete.step).join(', ') }}:
+          they take from it and there is nothing above it of the right kind to take from
+          instead. Their results stay in the run directory.
+          <div class="wv-confirm">
+            <Button
+              label="Delete them"
+              size="small"
+              severity="danger"
+              data-testid="workflow-confirm-delete-yes"
+              @click="emit('confirm-delete')"
+            />
+            <Button
+              label="Keep them"
+              size="small"
+              text
+              data-testid="workflow-confirm-delete-no"
+              @click="emit('cancel-delete')"
+            />
+          </div>
+        </Message>
+        <WorkflowDiagram
+          :steps="steps"
+          :details="details"
+          :states="states"
+          :editing="editing"
+          :doomed="doomed"
+          :busy="busy || running"
+          @select="(id) => emit('select-step', id)"
+          @delete="(id) => emit('delete-step', id)"
+          @move="(m) => emit('move-step', m)"
+        />
+      </template>
+    </WorkflowPanel>
+  </div>
+</template>
+
+<style scoped>
+.workflow-view {
+  padding: 0.5rem 0.75rem;
+  overflow: auto;
+  flex: 1;
+  min-height: 0;
+}
+.wv-pick {
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
+}
+.wv-new-steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  align-items: center;
+  margin: 0.4rem 0 0.6rem;
+}
+.wv-hint {
+  font-size: 0.78rem;
+  opacity: 0.75;
+}
+.wv-confirm {
+  display: flex;
+  gap: 0.4rem;
+  margin-top: 0.4rem;
+}
+</style>
