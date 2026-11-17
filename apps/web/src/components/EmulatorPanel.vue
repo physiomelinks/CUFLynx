@@ -6,6 +6,7 @@ import InputNumber from 'primevue/inputnumber'
 import InputText from 'primevue/inputtext'
 import Select from 'primevue/select'
 import { EXTERNAL_PYTHON_INSTALL_URL } from '../lib/examples'
+import RomSection from './RomSection.vue'
 
 /**
  * Train a surrogate of the model's scalar observable features, then run the
@@ -351,7 +352,7 @@ function onRun() {
       <h2>Surrogate</h2>
       <span class="cal-state" :data-state="state">{{ state }}</span>
     </header>
-    <!-- One subheading per kind of surrogate; reduced-order models will sit beside it. -->
+    <!-- One subheading per kind of surrogate: Emulator here, Reduced-order model (RomSection) below. -->
     <h3 class="section-title" data-testid="surrogate-emulator-heading">Emulator</h3>
 
     <!-- Emulation the chosen interpreter cannot do: the explanation, and nothing
@@ -655,6 +656,10 @@ function onRun() {
 
       <pre ref="term" class="terminal" data-testid="emu-terminal">{{ lines.join('\n') }}</pre>
     </template>
+
+    <!-- The second kind of surrogate. Independent of the study loaded above and of emulation being available: a
+         reduced-order model is set up by its own file. -->
+    <RomSection />
   </section>
 </template>
 

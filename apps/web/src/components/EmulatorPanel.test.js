@@ -31,6 +31,8 @@ const stubs = {
   InputText: true,
   Checkbox: CheckboxStub,
   Button: ButtonStub,
+  // The ROM section asks the backend on mount; RomSection.test.js covers it.
+  RomSection: true,
 }
 
 // What the backend serves from CA's ANALYSIS_OPTIONS['emulation'].
