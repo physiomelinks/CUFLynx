@@ -837,9 +837,30 @@ export async function placeWorkflowNode(node, col, row) {
   return data
 }
 
-/** A new step on the chart (a draft): the description, with `draft` its id. */
-export async function addWorkflowDraft(col = null, row = null) {
-  const { data } = await axios.post(url('/api/workflow/draft'), { col, row })
+/**
+ * A new step on the chart (a draft): the description, with `draft` its id. `onTarget`: after
+ * the target, a simulation of the merged target set up in its form.
+ */
+export async function addWorkflowDraft(col = null, row = null, onTarget = false) {
+  const { data } = await axios.post(url('/api/workflow/draft'), { col, row, on_target: onTarget })
+  return data
+}
+
+/** Several boxes placed at once ({id: {col, row}}): a new column made in a gap. */
+export async function placeWorkflowNodes(positions) {
+  const { data } = await axios.post(url('/api/workflow/positions'), { positions })
+  return data
+}
+
+/**
+ * Make an after-target new step a simulation of the merged target: its protocol (`obsData`,
+ * else the study `modelId`'s obs_data), `outputs` recorded, swept `parameters`
+ * ({name: CA's sweep_range}), `design` and `dt`.
+ */
+export async function makeWorkflowSweep({ draft, obsData = null, modelId = null, outputs = [],
+  parameters = {}, design = null, dt = null }) {
+  const { data } = await axios.post(url('/api/workflow/sweep'), {
+    draft, obs_data: obsData, model_id: modelId, outputs, parameters, design, dt })
   return data
 }
 

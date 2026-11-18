@@ -48,8 +48,9 @@ const props = defineProps({
   layout: { type: Object, default: null },
   busy: { type: Boolean, default: false },
 })
-const emit = defineEmits(['select', 'inspect', 'delete', 'place', 'connect', 'edit-edge',
-  'select-draft', 'delete-draft', 'open-target', 'edge', 'figure', 'origin'])
+const emit = defineEmits(['select', 'inspect', 'delete', 'place', 'place-many', 'add-draft',
+  'connect', 'edit-edge', 'select-draft', 'delete-draft', 'setup-sweep', 'open-target', 'edge',
+  'figure', 'origin'])
 
 const W = 250
 const H = 78
@@ -163,9 +164,10 @@ function data(step) {
 // `on_target`); the external figures, each after what it reads.
 const positions = computed(() => props.layout?.positions ?? {})
 const pendingLinks = computed(() => props.layout?.links ?? [])
-const drafts = computed(() => (props.layout?.drafts ?? []).map((d) => ({ id: d.id, draft: true })))
-const onTarget = computed(() => props.steps.filter((s) => s.on_target))
-const mainSteps = computed(() => [...props.steps.filter((s) => !s.on_target), ...drafts.value])
+const drafts = computed(() => (props.layout?.drafts ?? []).map((d) =>
+  ({ id: d.id, draft: true, ...(d.on_target ? { on_target: true } : {}) })))
+const onTarget = computed(() => [...props.steps, ...drafts.value].filter((s) => s.on_target))
+const mainSteps = computed(() => [...props.steps, ...drafts.value].filter((s) => !s.on_target))
 const placed = computed(() => layoutSteps(mainSteps.value, positions.value, pendingLinks.value))
 const hasModel = computed(() => props.steps.length > 0)
 const colOffset = computed(() => (hasModel.value ? 1 : 0))
@@ -340,31 +342,21 @@ const modelName = computed(() =>
   cellmlFile(props.target) || externalFile(props.target) || modelLabel(props.target) || 'the model',
 )
 
-// -- an arrow: a click shows what passes along it, a double-click changes it ---------------
-// A click waits out a double-click first: what it opens is modal, and would take the second
-// click of a double-click.
-const DOUBLE_CLICK_MS = 260
-let edgeTimer = null
-
+// -- an arrow: a click or double-click shows what passes along it ---------------------------
+// An arrow between steps opens the arrow dialog (what passes, change it, pass more:
+// `edit-edge`); any other (from the model, into the target, to a figure) shows what passes.
 function editable(e) {
   return DRAWN.includes(e.key) && (e.kind === 'step' || e.kind === 'pending')
 }
 
 function onEdgeClick(e) {
-  const show = () => {
-    if (e.kind === 'origin') emit('origin', e.from.replace(/^origin:/, ''))
-    else if (e.kind !== 'pending') emit('edge', { source: e.from, target: e.to, key: e.key, files: e.files ?? null })
-  }
-  clearTimeout(edgeTimer)
-  if (!editable(e)) return show()
-  edgeTimer = setTimeout(show, DOUBLE_CLICK_MS)
+  if (editable(e)) emit('edit-edge', { source: e.from, target: e.to, key: e.key, pending: e.kind === 'pending' })
+  else if (e.kind === 'origin') emit('origin', e.from.replace(/^origin:/, ''))
+  else emit('edge', { source: e.from, target: e.to, key: e.key, files: e.files ?? null })
 }
 
 function onEdgeDblclick(e) {
-  clearTimeout(edgeTimer)
-  if (editable(e)) {
-    emit('edit-edge', { source: e.from, target: e.to, key: e.key, pending: e.kind === 'pending' })
-  }
+  onEdgeClick(e)
 }
 
 // -- moving a box: drag it; it goes to the column and row it is dropped in ---------------
@@ -401,22 +393,107 @@ function dropCell(id, x, y) {
   return { col, row }
 }
 
+// -- where a dragged box or new step would go -------------------------------------------
+// Between two columns (a gap: a new column there), in a column (between its boxes), or after
+// the target (a simulation of the merged target).
+const GAP_IN = 0.2 // the band of a gap: from 20 % to 80 % of the space between columns
+
+/** The gaps a drop can make a new column in: [{g, x, w}], g the column of steps it makes. */
+const gaps = computed(() => {
+  const out = []
+  for (let g = 0; g <= stepCols.value; g += 1) {
+    if (g === stepCols.value && !hasTarget.value) break
+    const x = colX(colOffset.value + g) - COL_GAP * (1 - GAP_IN)
+    out.push({ g, x, w: COL_GAP * (1 - 2 * GAP_IN) })
+  }
+  return out
+})
+const afterX = computed(() => (targetBox.value ? colX(targetCol.value) + W + COL_GAP * GAP_IN : null))
+
+/** The drop place at chart point (x, y) for box `id` (null: a new step):
+ * {kind: 'gap', g} | {kind: 'cell', col, row, bar} | {kind: 'after'}. */
+function zoneAt(x, y, id = null) {
+  if (afterX.value != null && x >= afterX.value) return { kind: 'after' }
+  const gap = gaps.value.find((z) => x >= z.x && x <= z.x + z.w)
+  if (gap) return { kind: 'gap', g: gap.g }
+  const unit = W + COL_GAP
+  const col = Math.max(0, Math.min(stepCols.value, Math.floor((x - colX(colOffset.value) + COL_GAP / 2) / unit)))
+  const { row } = dropCell(id, colX(colOffset.value + col), y - H / 2)
+  // the bar where it goes: between the boxes it would sit between
+  const others = mainSteps.value.filter((s) => s.id !== id && placed.value[s.id]?.col === col)
+    .map((s) => at(s.id).y).sort((a, b) => a - b)
+  const i = others.filter((oy) => oy + H / 2 < y).length
+  const bar = !others.length ? height.value / 2
+    : i === 0 ? others[0] - ROW_GAP / 2
+      : i === others.length ? others[others.length - 1] + H + ROW_GAP / 2
+        : others[i - 1] + H + ROW_GAP / 2
+  return { kind: 'cell', col, row, bar }
+}
+
+const dropping = ref(null) // the zone under a drag, while one is on
+const dragOn = computed(() => !!dropping.value || !!(moving.value?.moved))
+
+/** Every box in column `g` or right of it, one column on: a new column at `g`. */
+function shiftFrom(g, except = null) {
+  const out = {}
+  for (const s of mainSteps.value) {
+    const p = placed.value[s.id]
+    if (s.id !== except && p && p.col >= g) out[s.id] = { col: p.col + 1, row: p.key }
+  }
+  return out
+}
+
 function finishMove() {
   const m = moving.value
   moving.value = null
+  dropping.value = null
   if (!m?.moved) return
   justMoved = true
   const box = byId.value[m.id]
-  emit('place', { node: m.id, ...dropCell(m.id, box.x + m.dx, box.y + m.dy) })
+  const zone = zoneAt(box.x + m.dx + W / 2, box.y + m.dy + H / 2, m.id)
+  if (zone.kind === 'after') return // only a simulation runs on the merged target
+  if (zone.kind === 'gap') {
+    emit('place-many', { ...shiftFrom(zone.g, m.id), [m.id]: { col: zone.g, row: 0 } })
+    return
+  }
+  emit('place', { node: m.id, col: zone.col, row: zone.row })
+}
+
+// -- New step dragged in from its button ----------------------------------------------------
+const NEW_STEP_TYPE = 'application/x-cuflynx-new-step'
+
+function isNewStep(event) {
+  return [...(event.dataTransfer?.types ?? [])].includes(NEW_STEP_TYPE)
+}
+function onDragOverNew(event) {
+  if (!isNewStep(event) || props.busy) return
+  event.preventDefault()
+  const p = chartPoint(event)
+  dropping.value = zoneAt(p.x, p.y)
+}
+function onDragLeaveNew(event) {
+  if (!chart.value?.contains(event.relatedTarget)) dropping.value = null
+}
+function onDropNew(event) {
+  if (!isNewStep(event) || props.busy) return
+  event.preventDefault()
+  const p = chartPoint(event)
+  const zone = zoneAt(p.x, p.y)
+  dropping.value = null
+  if (zone.kind === 'after') emit('add-draft', { onTarget: true })
+  else if (zone.kind === 'gap') emit('add-draft', { col: zone.g, row: 0, shift: shiftFrom(zone.g) })
+  else emit('add-draft', { col: zone.col, row: zone.row })
 }
 
 /** A click on a box selects it, unless the box was just moved. */
-function onBoxClick(id, draft) {
+function onBoxClick(step) {
   if (justMoved) {
     justMoved = false
     return
   }
-  emit(draft ? 'select-draft' : 'select', id)
+  // a new step after the target is set up in its form; another is made by the next run
+  if (step.draft && step.on_target) emit('setup-sweep', step.id)
+  else emit(step.draft ? 'select-draft' : 'select', step.id)
 }
 
 function boxStyle(b) {
@@ -470,6 +547,10 @@ function onPanMove(event) {
     m.dx = p.x - m.x
     m.dy = p.y - m.y
     if (Math.abs(m.dx) + Math.abs(m.dy) > 4) m.moved = true
+    if (m.moved) {
+      const box = byId.value[m.id]
+      dropping.value = zoneAt(box.x + m.dx + W / 2, box.y + m.dy + H / 2, m.id)
+    }
     return
   }
   const d = drawing.value
@@ -505,6 +586,9 @@ function onPanEnd(event) {
       @pointermove="onPanMove"
       @pointerup="onPanEnd"
       @pointercancel="onPanEnd"
+      @dragover="onDragOverNew"
+      @dragleave="onDragLeaveNew"
+      @drop="onDropNew"
     >
     <div ref="chart" class="wf-chart" :style="{ width: `${width}px`, height: `${height}px` }">
       <svg class="wf-edges" :width="width" :height="height" aria-hidden="true">
@@ -586,8 +670,8 @@ function onPanEnd(event) {
         :data-node="b.step.id"
         :data-testid="`workflow-node-${b.step.id}`"
         @pointerdown="onBoxDown($event, b.step.id)"
-        @click="onBoxClick(b.step.id, b.step.draft)"
-        @dblclick="!b.step.draft && emit('inspect', b.step.id)"
+        @click="onBoxClick(b.step)"
+        @dblclick="b.step.draft ? (b.step.on_target && emit('setup-sweep', b.step.id)) : emit('inspect', b.step.id)"
       >
         <span
           class="wf-port"
@@ -608,9 +692,12 @@ function onPanEnd(event) {
               @dblclick.stop
             />
           </div>
-          <div class="wf-row2"><span class="wf-detail">New step: run a panel to make it</span></div>
+          <div class="wf-row2">
+            <span class="wf-detail">{{ b.step.on_target ? 'Simulation: double-click to set it up'
+              : 'New step: run a panel to make it' }}</span>
+          </div>
           <div class="wf-tag">
-            not run · its kind is what you run
+            {{ b.step.on_target ? 'not set up · runs on the merged target' : 'not run · its kind is what you run' }}
             <span v-if="b.step.id === editing" class="wf-badge" title="the next run makes this step">next run</span>
           </div>
         </template>
@@ -657,6 +744,32 @@ function onPanEnd(event) {
         <div class="wf-tag">external figures · {{ (fb.figure.writes ?? []).length }} files</div>
       </div>
 
+      <!-- where a dragged box or new step can go: every gap faintly, the one under it
+           strongly; the bar in a column where it would sit; after the target -->
+      <template v-if="dragOn">
+        <div
+          v-for="z in gaps"
+          :key="`gap-${z.g}`"
+          class="wf-drop-gap"
+          :class="{ on: dropping?.kind === 'gap' && dropping.g === z.g }"
+          :style="{ left: `${z.x}px`, width: `${z.w}px`, height: `${height}px` }"
+          :title="'A new stage here'"
+          :data-testid="`workflow-drop-gap-${z.g}`"
+        />
+        <div
+          v-if="afterX != null"
+          class="wf-drop-after"
+          :class="{ on: dropping?.kind === 'after' }"
+          :style="{ left: `${afterX}px`, width: `${Math.max(W, width - afterX)}px`, height: `${height}px` }"
+          data-testid="workflow-drop-after"
+        ><span>simulation of the merged target</span></div>
+        <div
+          v-if="dropping?.kind === 'cell'"
+          class="wf-drop-bar"
+          :style="{ left: `${colX(colOffset + dropping.col)}px`, top: `${dropping.bar - 2}px`, width: `${W}px` }"
+          data-testid="workflow-drop-cell"
+        />
+      </template>
       <!-- the arrow being drawn, above the boxes it passes over -->
       <svg v-if="drawing" class="wf-drawing" :width="width" :height="height" aria-hidden="true">
         <path
@@ -846,6 +959,37 @@ function onPanEnd(event) {
 }
 .wf-port:hover {
   background: var(--p-primary-color, #4f8cff);
+}
+.wf-drop-gap,
+.wf-drop-after {
+  position: absolute;
+  top: 0;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--p-primary-color, #4f8cff) 8%, transparent);
+  outline: 1px dashed color-mix(in srgb, var(--p-primary-color, #4f8cff) 45%, transparent);
+  pointer-events: none;
+  z-index: 1;
+}
+.wf-drop-gap.on,
+.wf-drop-after.on {
+  background: color-mix(in srgb, var(--p-primary-color, #4f8cff) 28%, transparent);
+  outline: 2px solid var(--p-primary-color, #4f8cff);
+}
+.wf-drop-after span {
+  position: absolute;
+  top: 6px;
+  left: 10px;
+  font-size: 0.75rem;
+  opacity: 0.85;
+}
+.wf-drop-bar {
+  position: absolute;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--p-primary-color, #4f8cff);
+  box-shadow: 0 0 6px var(--p-primary-color, #4f8cff);
+  pointer-events: none;
+  z-index: 5;
 }
 .wf-drawing {
   position: absolute;

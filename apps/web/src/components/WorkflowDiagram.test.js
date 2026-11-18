@@ -267,22 +267,61 @@ describe('WorkflowDiagram', () => {
     const pan = c.find('[data-testid="workflow-pan"]')
     pan.element.setPointerCapture = () => { throw new Error('should not pan') }
     const hit = c.find('[data-testid="workflow-edge-calibration-1-mcmc-1"]')
-    vi.useFakeTimers()
     await hit.trigger('pointerdown', { button: 0, pointerId: 1 })
-    await hit.trigger('click')
-    // it waits out a double-click: what it opens is modal and would take the second click
-    expect(c.emitted('edge')).toBeUndefined()
-    vi.advanceTimersByTime(300)
-    expect(c.emitted('edge')).toEqual([[{ source: 'calibration-1', target: 'mcmc-1',
-                                          key: 'result_from', files: null }]])
-    // a double-click edits the arrow and opens no detail
-    await hit.trigger('click')
+    // an arrow between steps: a click or a double-click opens the arrow dialog (what passes,
+    // change it, pass more)
     await hit.trigger('click')
     await hit.trigger('dblclick')
-    vi.advanceTimersByTime(300)
-    vi.useRealTimers()
-    expect(c.emitted('edge')).toHaveLength(1)
-    expect(c.emitted('edit-edge')).toHaveLength(1)
+    expect(c.emitted('edit-edge')).toEqual([
+      [{ source: 'calibration-1', target: 'mcmc-1', key: 'result_from', pending: false }],
+      [{ source: 'calibration-1', target: 'mcmc-1', key: 'result_from', pending: false }],
+    ])
+    // one from the model shows what passes, with nothing to change
+    await c.find('[data-testid="workflow-edge-model-sliders-1"]').trigger('click')
+    expect(c.emitted('edge')).toEqual([[{ source: 'model', target: 'sliders-1', key: 'model', files: null }]])
+  })
+
+  it('shows where a dragged new step can go, and drops it there', async () => {
+    const c = chart()
+    const pan = c.find('[data-testid="workflow-pan"]')
+    const types = ['application/x-cuflynx-new-step']
+    // jsdom has no layout: the chart is at (0, 0). The gap between the first and second
+    // columns of steps (x of step column 1, less the space between columns)
+    const gapX = 8 + 2 * (250 + 96) - 96 / 2
+    await pan.trigger('dragover', { clientX: gapX, clientY: 60, dataTransfer: { types } })
+    expect(c.find('[data-testid="workflow-drop-gap-1"]').classes()).toContain('on')
+    expect(c.find('[data-testid="workflow-drop-gap-0"]').classes()).not.toContain('on')
+    await pan.trigger('drop', { clientX: gapX, clientY: 60, dataTransfer: { types } })
+    const [[gap]] = c.emitted('add-draft')
+    // a new column of steps at 1: the boxes in it and right of it move one on
+    expect(gap).toMatchObject({ col: 1, row: 0 })
+    expect(gap.shift).toEqual({ 'calibration-1': { col: 2, row: 1 }, 'mcmc-1': { col: 3, row: 3 } })
+
+    // in a column: a bar where it would sit
+    const colX = 8 + 1 * (250 + 96) + 100
+    await pan.trigger('dragover', { clientX: colX, clientY: 5, dataTransfer: { types } })
+    expect(c.find('[data-testid="workflow-drop-cell"]').exists()).toBe(true)
+    await pan.trigger('drop', { clientX: colX, clientY: 5, dataTransfer: { types } })
+    expect(c.emitted('add-draft')[1][0]).toMatchObject({ col: 0 })
+
+    // after the target: a simulation
+    await pan.trigger('dragover', { clientX: 5000, clientY: 60, dataTransfer: { types } })
+    expect(c.find('[data-testid="workflow-drop-after"]').classes()).toContain('on')
+    await pan.trigger('drop', { clientX: 5000, clientY: 60, dataTransfer: { types } })
+    expect(c.emitted('add-draft')[2]).toEqual([{ onTarget: true }])
+    // something else dragged over the chart is not ours
+    await pan.trigger('dragover', { clientX: gapX, clientY: 60, dataTransfer: { types: ['Files'] } })
+    expect(c.find('[data-testid="workflow-drop-gap-1"]').exists()).toBe(false)
+  })
+
+  it('a box after the target is a simulation, set up in its form', async () => {
+    const c = chart({ layout: { positions: {}, drafts: [{ id: 'new-2', on_target: true }], links: [] } })
+    const box = c.find('[data-testid="workflow-node-new-2"]')
+    expect(box.text()).toContain('Simulation')
+    await box.trigger('click')
+    await box.trigger('dblclick')
+    expect(c.emitted('setup-sweep')).toEqual([['new-2'], ['new-2']])
+    expect(c.emitted('select-draft')).toBeUndefined()
   })
 
   it("shows where the model's values come from, as CA's provenance boxes them", async () => {

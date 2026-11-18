@@ -9,7 +9,7 @@
 import { ref, watch } from 'vue'
 import Dialog from 'primevue/dialog'
 import { errorMessage, getWorkflowEdge } from '../lib/api'
-import { modelLabel } from '../stores/useWorkflow'
+import WorkflowEdgeBody from './WorkflowEdgeBody.vue'
 
 const props = defineProps({
   // The clicked arrow ({source, target, key, files}), or null.
@@ -94,55 +94,7 @@ function num(v) {
     <template v-else-if="edge">
       <p v-if="loading" class="ed-hint">Reading the run…</p>
       <p v-if="error" class="ed-error">{{ error }}</p>
-      <template v-if="detail">
-        <p class="ed-what" data-testid="workflow-edge-what">
-          <strong>{{ detail.what }}</strong>
-          <span v-if="edge.key && !['model', 'merged', 'on_target', 'reads'].includes(edge.key)"
-                class="ed-hint"> ({{ edge.key }})</span>
-        </p>
-        <p v-if="detail.recorded === false && (detail.rows ?? []).length" class="ed-hint">
-          Not recorded by a run yet.
-        </p>
-        <p v-if="detail.model"><code>{{ modelLabel(detail.model, true) }}</code></p>
-
-        <template v-if="detail.prior">
-          <p>
-            A <strong>{{ detail.prior.kind }}</strong> prior
-            <template v-if="detail.prior.inflate && detail.prior.inflate !== 1">
-              (inflated × {{ detail.prior.inflate }})</template>
-            on {{ (detail.prior.parameters ?? []).join(', ') || 'the parameters both steps fit' }},
-            fitted to {{ name(edge.source) }}'s stored distribution:
-          </p>
-          <table v-if="detail.distribution" class="ed-table" data-testid="workflow-edge-distribution">
-            <tr><th>parameter</th><th>mean</th><th>sd</th><th>95 % interval</th></tr>
-            <tr v-for="(d, p) in detail.distribution" :key="p">
-              <td><code>{{ p }}</code></td><td>{{ num(d.mean) }}</td><td>{{ num(d.sd) }}</td>
-              <td>{{ num(d.q025) }} – {{ num(d.q975) }}</td>
-            </tr>
-          </table>
-        </template>
-
-        <template v-if="detail.emulator">
-          <p v-if="detail.emulator.dir"><code>{{ detail.emulator.dir }}</code></p>
-          <p v-if="detail.emulator.worst_r2 != null">
-            Held-out R²: worst {{ num(detail.emulator.worst_r2) }}<template
-              v-if="detail.emulator.median_r2 != null">, median {{ num(detail.emulator.median_r2) }}</template>.
-          </p>
-        </template>
-
-        <table v-if="(detail.rows ?? []).length" class="ed-table" data-testid="workflow-edge-rows">
-          <tr><th>parameter</th><th>value</th><th>units</th><th /></tr>
-          <tr v-for="(r, i) in detail.rows" :key="i">
-            <td><code>{{ r.name }}</code></td><td>{{ num(r.value) }}</td><td>{{ r.units }}</td>
-            <td class="ed-hint">{{ r.note }}</td>
-          </tr>
-        </table>
-
-        <ul v-if="(detail.files ?? []).length" class="ed-files">
-          <li v-for="f in detail.files" :key="f"><code>{{ f }}</code></li>
-        </ul>
-        <p v-if="detail.note" class="ed-hint">{{ detail.note }}</p>
-      </template>
+      <WorkflowEdgeBody v-if="detail" :edge="edge" :detail="detail" />
     </template>
   </Dialog>
 </template>
