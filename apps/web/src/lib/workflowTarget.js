@@ -265,6 +265,8 @@ export function layoutSteps(steps, positions = {}, pending = []) {
   // box right of what it takes from)
   const used = [...new Set(Object.values(col))].sort((a, b) => a - b)
   const packed = Object.fromEntries(used.map((c, i) => [c, i]))
+  // `raw`: the column in the layout's terms, which a move or drop has to write back
+  const raw = { ...col }
   for (const id of Object.keys(col)) col[id] = packed[col[id]]
   // within a column, by the order a box was put at (positions' row), else the file's
   const key = (s, i) => positions[s.id]?.row ?? i
@@ -274,7 +276,7 @@ export function layoutSteps(steps, positions = {}, pending = []) {
   for (const [s, k] of order) {
     const c = col[s.id]
     rows[c] = (rows[c] ?? 0) + 1
-    out[s.id] = { col: c, row: rows[c] - 1, key: k }
+    out[s.id] = { col: c, row: rows[c] - 1, key: k, raw: raw[s.id] }
   }
   return out
 }
