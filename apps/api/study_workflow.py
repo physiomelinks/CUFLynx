@@ -532,11 +532,48 @@ class Plan:
             new = [s for s in self.added if s not in self.before]
             if new:
                 move_before(path, new, self.edit)
+            self._keep_drawn(path)
             raw = read_raw(path)
             wanted = set(self.added) | {self.edit} | descendants(raw, self.edit)
             order = [s.id for s in _checked(raw, path).topological_order()]
             self.run_steps = [s for s in order if s in wanted]
         return path
+
+    #: What a changed step keeps from before when the panel's run does not say it: the arrows
+    #: drawn on the chart and what goes with them.
+    KEPT_KEYS = ("fixed_from", "priors_from", "emulator_from", "params_for_id_from",
+                 "sensitivity_from", "store_distribution")
+
+    def _keep_drawn(self, path: str) -> None:
+        """The changed step keeps the arrows drawn to it in the Workflow view (and a prior's
+        objective) that the panel's run does not set; CA checks the result."""
+        old = self.before.get(self.edit) or {}
+        raw = read_raw(path)
+        step = next((s for s in raw["steps"] if s["id"] == self.edit), None)
+        if step is None:
+            return
+        ids = {s["id"] for s in raw["steps"]}
+        changed = False
+        for key in self.KEPT_KEYS:
+            if key in old and key not in step:
+                value = old[key]
+                if key in ("fixed_from", "priors_from"):
+                    value = [e for e in value if _list_ref(e) in ids]
+                    if not value:
+                        continue
+                elif isinstance(value, str) and value not in ids:
+                    continue
+                step[key] = copy.deepcopy(value)
+                changed = True
+        objective = (old.get("settings") or {}).get("optimiser_options", {}).get("objective_function")
+        if objective and step.get("priors_from"):
+            opts = step.setdefault("settings", {}).setdefault("optimiser_options", {})
+            if "objective_function" not in opts:
+                opts["objective_function"] = objective
+                changed = True
+        if changed:
+            _checked(raw, path)
+            _write_raw(path, raw)
 
     def completes(self) -> bool:
         """Whether every step outside this run has a done result, so a run whose own steps

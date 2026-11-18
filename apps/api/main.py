@@ -4267,7 +4267,10 @@ def _study_plan(record: "_ModelRecord", configured: str, config: dict, *, flavou
             f"this run changes step {edit} of workflow {builder.name}, and runs it and the "
             f"steps that take from it (choose a new step in the Workflow view to add one "
             f"instead)."))
-    return study_workflow.Plan(builder, configured, edit=edit), notes
+    plan = study_workflow.Plan(builder, configured, edit=edit)
+    # a new step the user put on the chart (a draft), which this run makes a step
+    plan.draft = wanted.get("draft") if wanted.get("mode") == "new_step" else None
+    return plan, notes
 
 
 def _study_settings(config: dict, settings: dict, extra: dict) -> dict:
@@ -4397,8 +4400,19 @@ def _study_point(plan, model_id: str, qnames: list) -> str | None:
 
 
 def _study_start(plan, config: dict, markers: tuple, notes: list) -> None:
-    """Write the workflow, point ``config`` at its step and open it in the Workflow tab."""
+    """Write the workflow, point ``config`` at its step and open it in the Workflow tab.
+    A run made from a draft gives the new step the draft's place and arrows, checked by CA
+    (a 422 with CA's reason when it refuses one, before anything runs)."""
     plan.write()
+    if getattr(plan, "draft", None):
+        import workflow_layout  # noqa: PLC0415
+
+        try:
+            workflow_layout.draft_became(plan.builder.path, plan.draft, plan.step)
+        except (study_workflow.StudyWorkflowError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=(
+                f"step {plan.step} was added, but an arrow drawn to it was refused: {exc}. "
+                f"Change the arrow in the Workflow view and run again.")) from exc
     config.update(plan.runner_config({"done": markers[0], "fail": markers[1]}))
     config["log_preamble"] = notes + [_study_note(
         f"step {plan.step} of {plan.builder.path} ({'changes' if plan.edit else 'adds'} "
@@ -4951,6 +4965,10 @@ def workflow_step_delete(req: WorkflowStepDeleteRequest) -> dict:
     with study_workflow.lock():
         try:
             result = study_workflow.delete_step(path, req.step, confirm=req.confirm)
+            if result["applied"]:
+                import workflow_layout  # noqa: PLC0415
+
+                workflow_layout.forget(path, result.get("deleted") or [req.step])
         except (study_workflow.StudyWorkflowError, OSError, ValueError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
     described = _reopen_edited(path) if result["applied"] else _workflow_http(workflow.describe)
@@ -4966,9 +4984,88 @@ def workflow_step_rename(req: WorkflowStepRenameRequest) -> dict:
     with study_workflow.lock():
         try:
             study_workflow.rename_step(path, req.step, req.to, workflow.output_dir or None)
+            import workflow_layout  # noqa: PLC0415
+
+            workflow_layout.rename(path, req.step, req.to.strip())
         except (study_workflow.StudyWorkflowError, OSError, ValueError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
     return _reopen_edited(path)
+
+
+class WorkflowLinkRequest(BaseModel):
+    #: The step (or draft) the arrow leaves, and the one it points at.
+    source: str
+    target: str
+    #: CA's key: what the target takes from the source (fixed_from, priors_from, ...).
+    key: str
+    #: A list key's options: a prior's kind / inflate / parameters, a fixed arrow's parameters.
+    options: dict | None = None
+    #: The arrow's key before this change, when changing what it passes.
+    old_key: str | None = None
+
+
+class WorkflowPositionRequest(BaseModel):
+    node: str
+    col: int
+    row: float
+
+
+class WorkflowDraftRequest(BaseModel):
+    #: Where the new box goes (absent: the chart places it).
+    col: int | None = None
+    row: float | None = None
+    #: A draft to delete.
+    draft: str | None = None
+
+
+def _layout_edit(fn, *args, **kwargs) -> dict:
+    """Run a workflow_layout change on the open workflow; the Workflow view's description."""
+    import workflow_layout  # noqa: PLC0415
+
+    path = _editable_workflow()
+    with study_workflow.lock():
+        try:
+            getattr(workflow_layout, fn)(path, *args, **kwargs)
+        except (study_workflow.StudyWorkflowError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return _reopen_edited(path)
+
+
+@app.post("/api/workflow/link")
+def workflow_link(req: WorkflowLinkRequest) -> dict:
+    """Draw or change an arrow: ``target`` takes ``source`` by ``key``. Between two steps it
+    goes into the workflow file, checked by CA; with a new step (a draft) at either end it
+    waits until the draft is a step (``workflow_layout.set_link``)."""
+    return _layout_edit("set_link", req.source, req.target, req.key, req.options, req.old_key)
+
+
+@app.post("/api/workflow/link/delete")
+def workflow_link_delete(req: WorkflowLinkRequest) -> dict:
+    return _layout_edit("remove_link", req.source, req.target, req.key)
+
+
+@app.post("/api/workflow/position")
+def workflow_position(req: WorkflowPositionRequest) -> dict:
+    """Where a box sits on the chart: its column and its order there (the layout only)."""
+    return _layout_edit("set_position", req.node, req.col, req.row)
+
+
+@app.post("/api/workflow/draft")
+def workflow_draft(req: WorkflowDraftRequest) -> dict:
+    """A new step on the chart, to place and draw arrows to; a panel's run with
+    ``workflow_target {mode: "new_step", draft}`` makes it a step of that run's kind.
+    ``draft`` in the response is its id."""
+    import workflow_layout  # noqa: PLC0415
+
+    path = _editable_workflow()
+    with study_workflow.lock():
+        draft = workflow_layout.add_draft(path, req.col, req.row)
+    return {**_reopen_edited(path), "draft": draft}
+
+
+@app.post("/api/workflow/draft/delete")
+def workflow_draft_delete(req: WorkflowDraftRequest) -> dict:
+    return _layout_edit("delete_draft", req.draft or "")
 
 
 @app.post("/api/workflow/step/move")
