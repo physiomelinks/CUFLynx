@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest'
-import { mount } from '@vue/test-utils'
+import { describe, expect, it, vi } from 'vitest'
+import { flushPromises, mount } from '@vue/test-utils'
 import WorkflowStepDetail from './WorkflowStepDetail.vue'
 
 const DialogStub = {
@@ -48,6 +48,26 @@ describe('WorkflowStepDetail', () => {
     expect(d.emitted('select')).toEqual([['calibration-1']])
     expect(d.emitted('open-view')).toEqual([['calibration-1']])
     expect(d.emitted('delete')).toEqual([['calibration-1']])
+  })
+
+  it('renames the step, and says why when the name is refused', async () => {
+    const rename = vi.fn().mockResolvedValueOnce("another step is already called 'sliders-1'")
+      .mockResolvedValueOnce('')
+    const d = detail(steps[1], { rename })
+    const input = d.find('[data-testid="workflow-step-rename-input"]')
+    expect(input.element.value).toBe('calibration-1')
+    // unchanged: nothing to rename
+    expect(d.find('[data-testid="workflow-step-rename"]').attributes('disabled')).toBeDefined()
+    await input.setValue('sliders-1')
+    await d.find('form').trigger('submit')
+    await flushPromises()
+    expect(rename).toHaveBeenLastCalledWith('calibration-1', 'sliders-1')
+    expect(d.find('[data-testid="workflow-step-rename-error"]').text()).toContain('already called')
+    await input.setValue(' fit_lv ')
+    await d.find('form').trigger('submit')
+    await flushPromises()
+    expect(rename).toHaveBeenLastCalledWith('calibration-1', 'fit_lv')
+    expect(d.find('[data-testid="workflow-step-rename-error"]').exists()).toBe(false)
   })
 
   it('a set step lists its values and has no panel to change them in', () => {

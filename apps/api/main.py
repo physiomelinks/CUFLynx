@@ -4752,6 +4752,12 @@ class WorkflowStepDeleteRequest(BaseModel):
     confirm: bool = False
 
 
+class WorkflowStepRenameRequest(BaseModel):
+    step: str
+    #: The step's new id.
+    to: str
+
+
 class WorkflowStepMoveRequest(BaseModel):
     step: str
     #: Its new position in the workflow's steps, from 0.
@@ -4949,6 +4955,20 @@ def workflow_step_delete(req: WorkflowStepDeleteRequest) -> dict:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
     described = _reopen_edited(path) if result["applied"] else _workflow_http(workflow.describe)
     return {**result, "workflow": described}
+
+
+@app.post("/api/workflow/step/rename")
+def workflow_step_rename(req: WorkflowStepRenameRequest) -> dict:
+    """Rename a step of the open workflow, and every reference to it; its results folder in
+    the run directory moves with it, so it keeps its results
+    (``study_workflow.rename_step``)."""
+    path = _editable_workflow()
+    with study_workflow.lock():
+        try:
+            study_workflow.rename_step(path, req.step, req.to, workflow.output_dir or None)
+        except (study_workflow.StudyWorkflowError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return _reopen_edited(path)
 
 
 @app.post("/api/workflow/step/move")

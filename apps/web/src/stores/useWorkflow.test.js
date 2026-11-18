@@ -14,6 +14,7 @@ vi.mock('../lib/api', () => ({
   listWorkflows: vi.fn(),
   deleteWorkflowStep: vi.fn(),
   moveWorkflowStep: vi.fn(),
+  renameWorkflowStep: vi.fn(),
   workflowProvenanceUrl: (name, v) => `/api/workflow/provenance/${name}?v=${v}`,
   unsetParameters: (e) => e?.response?.data?.detail?.unset_parameters ?? null,
   errorMessage: (e) =>
@@ -24,6 +25,7 @@ import {
   deleteWorkflowStep,
   listWorkflows,
   moveWorkflowStep,
+  renameWorkflowStep,
   followWorkingDir,
   getWorkflow,
   getWorkflowStatus,
@@ -470,6 +472,20 @@ describe('useWorkflow: the Workflow view', () => {
     expect(wf.runTarget('calibration')).toEqual({ mode: 'new_step', workflow: STUDY.path })
     wf.ranTarget('calibration')
     expect(wf.runTarget('calibration')).toEqual({ mode: 'default', workflow: STUDY.path })
+  })
+
+  it('a rename shows the new workflow, and the step being edited follows it', async () => {
+    const wf = useWorkflow()
+    wf.described.value = STUDY
+    wf.editStep('calibration-1')
+    const renamed = { ...STUDY, workflow: { workflow_name: 'study', steps: [{ id: 'fit_lv' }] } }
+    renameWorkflowStep.mockResolvedValueOnce(renamed)
+    expect(await wf.renameStep('calibration-1', 'fit_lv')).toBe('')
+    expect(renameWorkflowStep).toHaveBeenCalledWith('calibration-1', 'fit_lv')
+    expect(wf.described.value).toEqual(renamed)
+    expect(wf.target.value).toEqual({ mode: 'edit', step: 'fit_lv' })
+    renameWorkflowStep.mockRejectedValueOnce({ response: { data: { detail: 'another step is already called' } } })
+    expect(await wf.renameStep('fit_lv', 'x')).toBe('another step is already called')
   })
 
   it('lists the working dir workflows', async () => {
