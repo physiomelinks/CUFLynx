@@ -27,6 +27,7 @@ const EDGES = [
   edge('whole->target', whole, target),
   ...sweeps.map((b, i) => edge(`target->s${i}`, target, b)),
 ]
+const routes = routeEdges(EDGES, BOXES, { colGap: GAP, height: HEIGHT })
 
 function segments(points) {
   return points.slice(1).map((p, i) => [points[i], p])
@@ -40,8 +41,6 @@ function crosses([[x1, y1], [x2, y2]], b) {
 }
 
 describe('routeEdges', () => {
-  const routes = routeEdges(EDGES, BOXES, { colGap: GAP, height: HEIGHT })
-
   it('never takes an arrow through a box it does not start or end at', () => {
     for (const e of EDGES) {
       for (const seg of segments(routes[e.id].points)) {
@@ -53,26 +52,66 @@ describe('routeEdges', () => {
     }
   })
 
-  it('gives every arrow its own lane and its own port at each end', () => {
-    const lanes = new Set(EDGES.map((e) => routes[e.id].lane))
-    expect(lanes.size).toBe(EDGES.length)
-    const ins = {}
-    const outs = {}
+  it('is straight where the boxes overlap in height, and has at most one elbow otherwise', () => {
+    // level boxes: no corner at all
+    expect(routes['whole->target'].corners).toBe(0)
+    expect(routes['c2->whole'].corners).toBe(0)
+    expect(routes['model->c2'].corners).toBe(0)
+    // one elbow (two corners) for the rest, the arrows that skip the whole_cell column too:
+    // they run between its neighbours' rows -- all but c2's, level with whole_cell, which has
+    // to leave its row to get round it (and come back): the only four-corner route
     for (const e of EDGES) {
-      const pts = routes[e.id].points
-      ;(outs[`${e.from.x},${e.from.y}`] ??= []).push(pts[0][1])
-      ;(ins[`${e.to.x},${e.to.y}`] ??= []).push(pts[pts.length - 1][1])
+      expect(routes[e.id].corners, e.id).toBeLessThanOrEqual(e.id === 'c2->target' ? 4 : 2)
     }
-    for (const ys of [...Object.values(ins), ...Object.values(outs)]) {
-      expect(new Set(ys).size).toBe(ys.length)
-    }
+    expect(routes['c2->target'].type).toBe('corridor')
   })
 
-  it('starts on the source box and ends at the target box', () => {
-    const r = routes['c0->target']
-    expect(r.points[0][0]).toBe(cal[0].x + W)
-    expect(r.points[r.points.length - 1][0]).toBe(target.x - 3)
-    // it skips whole_cell's column, so it runs a corridor clear of whole_cell
-    expect(r.points.length).toBe(6)
+  it("lines up the corners: a gap's vertical runs share an x unless they would overlap", () => {
+    const runs = {}
+    for (const e of EDGES) {
+      for (const [[ax, ay], [bx, by]] of segments(routes[e.id].points)) {
+        if (Math.abs(ax - bx) < 0.01 && Math.abs(ay - by) > 0.01) {
+          ;(runs[Math.round(ax)] ??= []).push([Math.min(ay, by), Math.max(ay, by), e.id])
+        }
+      }
+    }
+    // no two runs at one x overlap: the lines never lie on top of each other
+    for (const list of Object.values(runs)) {
+      for (let i = 0; i < list.length; i += 1) {
+        for (let j = i + 1; j < list.length; j += 1) {
+          const [a, b] = [list[i], list[j]]
+          expect(a[0] < b[1] && b[0] < a[1], `${a[2]} and ${b[2]} share a run`).toBe(false)
+        }
+      }
+    }
+    // the gap from the target out to the sweeps: the runs above the target's middle share one
+    // x, and so do the ones below it -- two turning lines, not a staircase of five
+    const out = sweeps.map((_, i) => routes[`target->s${i}`]).filter((r) => r.corners === 2)
+    const xs = new Set(out.map((r) => Math.round(r.points[1][0])))
+    expect(xs.size).toBeLessThanOrEqual(3)
+  })
+
+  it('never puts two arrows on one box edge closer than 8 px (no doubled lines)', () => {
+    const ends = {}
+    for (const e of EDGES) {
+      const pts = routes[e.id].points
+      ;(ends[`out ${e.from.x},${e.from.y}`] ??= []).push(pts[0][1])
+      ;(ends[`in ${e.to.x},${e.to.y}`] ??= []).push(pts[pts.length - 1][1])
+    }
+    for (const [side, ys] of Object.entries(ends)) {
+      const sorted = [...ys].sort((a, b) => a - b)
+      for (let i = 1; i < sorted.length; i += 1) {
+        expect(sorted[i] - sorted[i - 1], side).toBeGreaterThanOrEqual(8)
+      }
+    }
+    // whole_cell, level with the target, goes straight; c2, level with both, goes round
+    expect(routes['whole->target'].corners).toBe(0)
+  })
+
+  it('orders a box\'s entry points as its sources are ordered, top to top', () => {
+    const ends = cal.map((_, i) => routes[`c${i}->whole`].end.y)
+    expect([...ends].sort((a, b) => a - b)).toEqual(ends)
+    const intoTarget = cal.map((_, i) => routes[`c${i}->target`].end.y)
+    expect([...intoTarget].sort((a, b) => a - b)).toEqual(intoTarget)
   })
 })

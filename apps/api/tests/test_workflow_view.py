@@ -297,6 +297,60 @@ def described(monkeypatch):
     pytest.importorskip("libcellml")
 
 
+def test_a_run_from_a_step_opened_as_the_study_changes_that_step(
+        client, fake_runs, described, tmp_path):
+    """A block clicked in the chart loads the step as the study (a packed copy of its model);
+    a run from it names the workflow's own target, so it changes the step in the same
+    workflow rather than starting study-2 for a model it has not seen."""
+    import workflow_manager
+
+    work = tmp_path / "w"
+    model_id = _setup(client)
+    assert _calibrate(client, model_id, work)["state"] == "done"
+    # the fake runner records only status; CA's view also reads the step's values
+    step_dir = work / "workflows" / "study" / "calibration-1"
+    (step_dir / "step_result.json").write_text(json.dumps({
+        "step": "calibration-1", "kind": "calibration", "status": "done",
+        "calibrated": [], "fixed": [], "finished": "2026-11-18T12:00:00",
+        "param_id_output_dir": str(step_dir / "param_id" / "CMA-ES_case")}))
+    r = client.post("/api/workflow/view", json={"view": "calibration-1",
+                                                "config_outputs_dir": str(work)})
+    assert r.status_code == 200, r.text
+    opened = r.json()["model_id"]
+    assert opened != model_id
+    status = _run(client, "calibration", {"model_id": opened, "settings": {
+        "config_outputs_dir": str(work), "param_id_method": "CMA-ES",
+        "num_calls_to_function": 33}})
+    assert status["state"] == "done", status
+    listed = client.get("/api/workflow/list", params={"config_outputs_dir": str(work)}).json()
+    assert [w["name"] for w in listed["workflows"]] == ["study"]
+    steps = _steps(work)
+    assert list(steps) == ["calibration-1"]
+    assert steps["calibration-1"]["settings"]["optimiser_options"]["num_calls_to_function"] == 33
+    assert workflow_manager.workflow.loaded
+
+
+def test_a_step_opened_as_the_study_keeps_its_file_names_and_is_named_by_its_model(tmp_path):
+    import main
+
+    obs = tmp_path / "krapivinsky1998_obs_data.json"
+    obs.write_text("{}")
+    params = tmp_path / "krapivinsky1998_params_for_id.json"
+    params.write_text("{}")
+    view = {"obs_data_path": str(obs), "params_for_id_path": str(params),
+            "model": {"module_type": "i_K1", "version": "v1", "parameterisation": "krapivinsky1998"}}
+    (o, p) = main._view_inputs(view, "kir")
+    assert o[0] == "krapivinsky1998_obs_data.json" and p[0] == "krapivinsky1998_params_for_id.json"
+    assert main._view_model_name(view, "kir") == "kir: i_K1 · krapivinsky1998"
+    # a name that does not say which file it is gets the step's prefix, as the importer
+    # tells an archive's files apart by name
+    data = tmp_path / "targets.json"
+    data.write_text("{}")
+    (o, _) = main._view_inputs({"obs_data_path": str(data)}, "kir")
+    assert o[0] == "kir_obs_data.json"
+    assert main._view_model_name({"model": {"cellml_model_path": "../m/LV.cellml"}}, "c-1") == "c-1: LV.cellml"
+
+
 def test_the_delete_route_asks_before_a_cascade_and_moves_reorder(
         client, fake_runs, described, tmp_path):
     work = tmp_path / "w"

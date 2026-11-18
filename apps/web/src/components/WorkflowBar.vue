@@ -1,8 +1,8 @@
 <script setup>
 /**
  * The Workflow bar above the plots: the workflow's name (click to drop the Workflow view
- * down), the step the next run changes -- or that it adds a step, or starts a workflow --
- * and the model. Kept to that, so where the next run goes can be read at a glance; the steps
+ * down) and what the next run does -- "[Editing] sglt1", or that it adds a step, or starts a
+ * workflow. Kept to that, so where the next run goes can be read at a glance; the steps
  * themselves are in the Workflow view's chart.
  */
 const props = defineProps({
@@ -12,14 +12,13 @@ const props = defineProps({
   // What the next run from the open panel is (lib/workflowTarget modeSummary):
   // {mode: 'new_workflow' | 'new_step' | 'edit', step, text}.
   summary: { type: Object, default: null },
-  // The workflow's model, by its file name.
-  model: { type: String, default: '' },
 })
 const emit = defineEmits(['toggle'])
 
+// the chip says what the next run does; the step it changes follows it: "[Editing] sglt1"
 function chip(summary) {
   if (!summary) return ''
-  if (summary.mode === 'edit') return `Editing ${summary.step}`
+  if (summary.mode === 'edit') return 'Editing'
   return summary.mode === 'new_step' ? 'New step' : 'New workflow'
 }
 </script>
@@ -44,9 +43,11 @@ function chip(summary) {
       data-testid="workflow-mode"
       :data-mode="props.summary.mode"
     >{{ chip(props.summary) }}</span>
-    <span v-if="model" class="wf-model" :title="`Model: ${model}`" data-testid="workflow-model">
-      <i class="pi pi-file" /> {{ model }}
-    </span>
+    <strong
+      v-if="props.summary?.mode === 'edit' && props.summary.step"
+      class="wf-step"
+      data-testid="workflow-mode-step"
+    >{{ props.summary.step }}</strong>
   </div>
 </template>
 
