@@ -104,18 +104,36 @@ def set_positions(workflow_path: str, positions: dict) -> dict:
 
 # -- drafts --------------------------------------------------------------------------------
 
+#: The boxes of the step prep box's Actions: steps on no model, each made by its own form.
+#: ``set``: values set by hand; ``combine``: a parameter set chosen from several
+#: calibrations by cost (only where CA has the kind).
+ACTIONS = ("set", "combine")
+
+
 def add_draft(workflow_path: str, col: int | None = None, row: float | None = None,
-              on_target: bool = False) -> str:
-    """A new draft box (``new-<n>``); returns its id. ``on_target``: dropped after the
-    target, so it is a sweep run on the merged target (CA's only kind there), made from its
-    Simulation form (:func:`make_sweep`) rather than by a panel's run."""
+              on_target: bool = False, model=None, action: str | None = None) -> str:
+    """A new draft box (``new-<n>``); returns its id.
+
+    ``model``: a model box (a step's model as the workflow file writes it): what it becomes
+    is what is chosen for it (a panel's run, or its Simulation form). ``action``: an action
+    box (:data:`ACTIONS`), made by its own form. ``on_target``: dropped after the target, a
+    sweep run on the merged target, made from its Simulation form (:func:`make_sweep`)."""
+    if action is not None and action not in ACTIONS:
+        raise StudyWorkflowError(f"an action box is one of {ACTIONS}")
     layout = read(workflow_path)
     taken = {d.get("id") for d in layout["drafts"]} | set(_step_ids(workflow_path))
     n = 1
     while f"new-{n}" in taken:
         n += 1
     draft = f"new-{n}"
-    layout["drafts"].append({"id": draft, **({"on_target": True} if on_target else {})})
+    entry = {"id": draft}
+    if on_target:
+        entry["on_target"] = True
+    if model:
+        entry["model"] = copy.deepcopy(model)
+    if action:
+        entry["action"] = action
+    layout["drafts"].append(entry)
     if col is not None:
         layout["positions"][draft] = {"col": max(0, int(col)), "row": float(row or 0)}
     write(workflow_path, layout)
@@ -218,7 +236,12 @@ def make_sweep(workflow_path: str, draft: str, *, obs_data: str | None, outputs:
         sweep["design"] = design
     if zip_groups:
         sweep["zip"] = zip_groups
-    step = {"id": draft, "kind": "sweep", "on_target": True, "sweep": sweep}
+    # after the target it runs on the merged target; a model box runs on its own model
+    step = {"id": draft, "kind": "sweep", "sweep": sweep}
+    if entry.get("model"):
+        step["model"] = copy.deepcopy(entry["model"])
+    else:
+        step["on_target"] = True
     if settings:
         step["settings"] = dict(settings)
     if obs_data:
@@ -229,6 +252,49 @@ def make_sweep(workflow_path: str, draft: str, *, obs_data: str | None, outputs:
     layout["drafts"] = [d for d in layout["drafts"] if d.get("id") != draft]
     write(workflow_path, layout)
     return draft
+
+
+def make_set(workflow_path: str, draft: str, entries: list, point: bool = False) -> str:
+    """Make the action box ``draft`` a set step: each entry a value set by hand, with its
+    reason (``{parameter, value, reason}``, CA's set entry). ``point``: only a point for a
+    step to start from or be analysed at, not merged into the target. Checked by CA."""
+    layout = read(workflow_path)
+    entry = next((d for d in layout["drafts"] if d.get("id") == draft), None)
+    if entry is None:
+        raise StudyWorkflowError(f"there is no new step {draft!r}")
+    rows = []
+    for e in entries:
+        if not str(e.get("parameter") or "").strip():
+            continue
+        if not str(e.get("reason") or "").strip():
+            raise StudyWorkflowError(
+                f"{e['parameter']}: say why it has this value (a value set by hand needs a reason)")
+        rows.append({"parameter": str(e["parameter"]).strip(), "value": float(e["value"]),
+                     "reason": str(e["reason"]).strip()})
+    if not rows:
+        raise StudyWorkflowError("give at least one parameter and its value")
+    raw = copy.deepcopy(study_workflow.read_raw(workflow_path))
+    step = {"id": draft, "kind": "set", "set": rows}
+    if point:
+        step["point"] = True
+    raw.setdefault("steps", []).append(step)
+    _write_checked(workflow_path, raw)
+    layout["drafts"] = [d for d in layout["drafts"] if d.get("id") != draft]
+    write(workflow_path, layout)
+    return draft
+
+
+def step_kinds() -> list:
+    """The step kinds this CA has (its schema's ``kind`` enum), so an action box is offered
+    only where CA can make it (``combine``)."""
+    try:
+        spec = ca_import("calibration_workflow.spec")
+        root = os.path.dirname(os.path.dirname(os.path.abspath(spec.__file__)))
+        with open(os.path.join(root, "schemas", "calibration_workflow.schema.json")) as fh:
+            schema = json.load(fh)
+        return list(schema["$defs"]["step"]["properties"]["kind"]["enum"])
+    except (ImportError, OSError, ValueError, KeyError, TypeError, AttributeError):
+        return []
 
 
 # -- arrows --------------------------------------------------------------------------------
