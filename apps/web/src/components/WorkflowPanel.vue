@@ -89,11 +89,10 @@ const selectedStep = computed(() =>
   steps.value.find((t) => t.id === props.selected) ?? null,
 )
 const canRun = computed(
-  () => loaded.value && !props.described?.plan_error && !problems.value.length &&
-    !running.value && !props.busy,
+  () => loaded.value && !props.described?.plan_error && !running.value && !props.busy,
 )
-// What CA says is wrong with the workflow itself (two steps calibrating one parameter of the
-// target): CA's own message, an error here, and the workflow does not run until it is fixed.
+// What CA warns about the workflow itself (steps that give one parameter the same box): CA's
+// own message, shown as a warning. What CA refuses is plan_error, which stops the run.
 const problems = computed(() => props.described?.problems ?? [])
 const coresInvalid = computed(() => numCores.value > 1 && !props.mpiexecAvailable)
 
@@ -288,7 +287,7 @@ const progressText = computed(() => {
       <Message
         v-for="problem in problems"
         :key="problem"
-        severity="error"
+        severity="warn"
         :closable="false"
         data-testid="workflow-problem"
       >

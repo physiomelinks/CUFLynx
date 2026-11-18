@@ -157,14 +157,12 @@ describe('WorkflowPanel', () => {
     expect(panel.find('[data-testid="workflow-run"]').attributes('disabled')).toBeDefined()
   })
 
-  it("shows CA's problems with the workflow as errors and does not run it", () => {
+  it("shows CA's warnings about the workflow, which do not stop a run (CA's refusals do)", () => {
     const problem = 'calibration workflow "study": 1 parameter(s) of m are calibrated by more ' +
       "than one step, and the later step replaces the earlier: \"m/a\" by 'c-1', then 'c-2'"
     const panel = mountPanel({ described: { ...described, problems: [problem] }, tabs })
     expect(panel.find('[data-testid="workflow-problem"]').text()).toContain("'c-1', then 'c-2'")
-    expect(panel.find('[data-testid="workflow-run"]').attributes('disabled')).toBeDefined()
-    expect(mountPanel({ described: { ...described, problems: [] }, tabs })
-      .find('[data-testid="workflow-run"]').attributes('disabled')).toBeUndefined()
+    expect(panel.find('[data-testid="workflow-run"]').attributes('disabled')).toBeUndefined()
   })
 
   it('shows progress and lets a run be cancelled', async () => {
