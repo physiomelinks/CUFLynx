@@ -301,6 +301,15 @@ class WorkflowManager:
         except (OSError, ValueError) as exc:
             out["error"] = f"cannot read {self.path}: {exc}"
             return out
+        # the chart as the user arranged it, and what an arrow can be (CA's rules), whether or not CA can plan it
+        import workflow_layout  # noqa: PLC0415
+
+        out["layout"] = workflow_layout.read(self.path)
+        try:
+            out["link_kinds"] = workflow_layout.link_kinds()
+        except (ImportError, AttributeError):
+            out["link_kinds"] = {}
+        out["fixed_parameters"] = workflow_layout.fixed_parameters_supported()
         try:
             # CA's warnings about the workflow itself (two steps calibrating one parameter of
             # the target, the later replacing the earlier) are shown as problems in the view
@@ -314,15 +323,6 @@ class WorkflowManager:
             # says; it just cannot be resolved or run until the library is set.
             out["plan_error"] = str(exc)
             return out
-        # the chart as the user arranged it, and what an arrow can be (CA's rules)
-        import workflow_layout  # noqa: PLC0415
-
-        out["layout"] = workflow_layout.read(self.path)
-        try:
-            out["link_kinds"] = workflow_layout.link_kinds()
-        except (ImportError, AttributeError):
-            out["link_kinds"] = {}
-        out["fixed_parameters"] = workflow_layout.fixed_parameters_supported()
         if self.output_dir and os.path.isdir(self.output_dir):
             try:
                 out["status"] = _ca_call("workflow_status", self.path, self.output_dir,

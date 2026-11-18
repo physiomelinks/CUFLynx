@@ -44,7 +44,7 @@ function chip(summary) {
       :data-mode="props.summary.mode"
     >{{ chip(props.summary) }}</span>
     <strong
-      v-if="props.summary?.mode === 'edit' && props.summary.step"
+      v-if="props.summary?.step && props.summary.mode !== 'new_workflow'"
       class="wf-step"
       data-testid="workflow-mode-step"
     >{{ props.summary.step }}</strong>

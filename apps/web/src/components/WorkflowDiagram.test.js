@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
 import WorkflowDiagram from './WorkflowDiagram.vue'
 import { edgesOf, layoutSteps } from '../lib/workflowTarget'
@@ -132,6 +132,14 @@ describe('WorkflowDiagram', () => {
     expect(c.emitted('select')).toEqual([['sobol-1']])
   })
 
+  it('draws a box where it was moved to in its column, not in file order', () => {
+    const top = (c, id) => parseFloat(c.find(`[data-testid="workflow-node-${id}"]`).attributes('style').match(/top: ([\d.]+)px/)[1])
+    const before = chart()
+    expect(top(before, 'sliders-1')).toBeLessThan(top(before, 'sobol-1'))
+    const moved = chart({ layout: { positions: { 'sobol-1': { col: 0, row: -1 } }, drafts: [], links: [] } })
+    expect(top(moved, 'sobol-1')).toBeLessThan(top(moved, 'sliders-1'))
+  })
+
   it('draws an arrow from a box\'s handle to the box it is dropped on', async () => {
     const c = chart()
     const pan = pointers(c)
@@ -259,10 +267,22 @@ describe('WorkflowDiagram', () => {
     const pan = c.find('[data-testid="workflow-pan"]')
     pan.element.setPointerCapture = () => { throw new Error('should not pan') }
     const hit = c.find('[data-testid="workflow-edge-calibration-1-mcmc-1"]')
+    vi.useFakeTimers()
     await hit.trigger('pointerdown', { button: 0, pointerId: 1 })
     await hit.trigger('click')
+    // it waits out a double-click: what it opens is modal and would take the second click
+    expect(c.emitted('edge')).toBeUndefined()
+    vi.advanceTimersByTime(300)
     expect(c.emitted('edge')).toEqual([[{ source: 'calibration-1', target: 'mcmc-1',
                                           key: 'result_from', files: null }]])
+    // a double-click edits the arrow and opens no detail
+    await hit.trigger('click')
+    await hit.trigger('click')
+    await hit.trigger('dblclick')
+    vi.advanceTimersByTime(300)
+    vi.useRealTimers()
+    expect(c.emitted('edge')).toHaveLength(1)
+    expect(c.emitted('edit-edge')).toHaveLength(1)
   })
 
   it("shows where the model's values come from, as CA's provenance boxes them", async () => {

@@ -192,7 +192,9 @@ const cells = computed(() => {
     col.model = { col: 0, kind: 'model' }
     for (const o of boxesOf.filter((b) => b.mark !== 'set_by_hand')) col[`origin:${o.id}`] = { col: 0, kind: 'origin' }
   }
-  for (const s of mainSteps.value) col[s.id] = { col: placed.value[s.id].col + colOffset.value, kind: 'step' }
+  // in each column in the order laid out (where a box was moved to, else the file's)
+  const ordered = [...mainSteps.value].sort((a, b) => placed.value[a.id].row - placed.value[b.id].row)
+  for (const s of ordered) col[s.id] = { col: placed.value[s.id].col + colOffset.value, kind: 'step' }
   if (hasTarget.value) col.target = { col: targetCol.value, kind: 'target' }
   for (const s of onTarget.value) col[s.id] = { col: targetCol.value + 1, kind: 'step' }
   // a figure is one column right of the furthest thing it reads
@@ -337,6 +339,33 @@ const draftHelp = 'A new step: click it, then run a panel (a calibration, an ana
 const modelName = computed(() =>
   cellmlFile(props.target) || externalFile(props.target) || modelLabel(props.target) || 'the model',
 )
+
+// -- an arrow: a click shows what passes along it, a double-click changes it ---------------
+// A click waits out a double-click first: what it opens is modal, and would take the second
+// click of a double-click.
+const DOUBLE_CLICK_MS = 260
+let edgeTimer = null
+
+function editable(e) {
+  return DRAWN.includes(e.key) && (e.kind === 'step' || e.kind === 'pending')
+}
+
+function onEdgeClick(e) {
+  const show = () => {
+    if (e.kind === 'origin') emit('origin', e.from.replace(/^origin:/, ''))
+    else if (e.kind !== 'pending') emit('edge', { source: e.from, target: e.to, key: e.key, files: e.files ?? null })
+  }
+  clearTimeout(edgeTimer)
+  if (!editable(e)) return show()
+  edgeTimer = setTimeout(show, DOUBLE_CLICK_MS)
+}
+
+function onEdgeDblclick(e) {
+  clearTimeout(edgeTimer)
+  if (editable(e)) {
+    emit('edit-edge', { source: e.from, target: e.to, key: e.key, pending: e.kind === 'pending' })
+  }
+}
 
 // -- moving a box: drag it; it goes to the column and row it is dropped in ---------------
 const chart = ref(null)
@@ -507,19 +536,12 @@ function onPanEnd(event) {
             :data-testid="`workflow-edge-${e.from}-${e.to}`"
             @mouseenter="hovered = e.id"
             @mouseleave="hovered = null"
-            @click.stop="e.kind === 'origin' ? emit('origin', e.from.replace(/^origin:/, '')) : e.kind !== 'pending' && emit('edge', { source: e.from, target: e.to, key: e.key, files: e.files ?? null })"
-            @dblclick.stop="DRAWN.includes(e.key) && (e.kind === 'step' || e.kind === 'pending') && emit('edit-edge', { source: e.from, target: e.to, key: e.key, pending: e.kind === 'pending' })"
+            @click.stop="onEdgeClick(e)"
+            @dblclick.stop="onEdgeDblclick(e)"
           >
             <title>{{ e.from }} → {{ e.to }}: {{ LONG_WORDS[e.key] ?? e.key }}.{{ e.kind === 'pending' ? ' Waiting for the new step to run.' : ' Click to see what passes.' }}{{ DRAWN.includes(e.key) && (e.kind === 'step' || e.kind === 'pending') ? ' Double-click to change it.' : '' }}</title>
           </path>
         </g>
-        <path
-          v-if="drawing"
-          :d="`M${drawing.x0},${drawing.y0} L${drawing.x},${drawing.y}`"
-          class="wf-edge drawing"
-          marker-end="url(#wf-arrow-lit)"
-          data-testid="workflow-drawing"
-        />
       </svg>
 
       <div
@@ -635,6 +657,15 @@ function onPanEnd(event) {
         <div class="wf-tag">external figures · {{ (fb.figure.writes ?? []).length }} files</div>
       </div>
 
+      <!-- the arrow being drawn, above the boxes it passes over -->
+      <svg v-if="drawing" class="wf-drawing" :width="width" :height="height" aria-hidden="true">
+        <path
+          :d="`M${drawing.x0},${drawing.y0} L${drawing.x},${drawing.y}`"
+          class="wf-edge drawing"
+          marker-end="url(#wf-arrow-lit)"
+          data-testid="workflow-drawing"
+        />
+      </svg>
       <div
         v-if="targetBox"
         class="wf-box target"
@@ -815,6 +846,12 @@ function onPanEnd(event) {
 }
 .wf-port:hover {
   background: var(--p-primary-color, #4f8cff);
+}
+.wf-drawing {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  pointer-events: none;
 }
 .wf-edge.pending,
 .wf-edge.drawing {
