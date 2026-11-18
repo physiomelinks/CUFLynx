@@ -5,7 +5,7 @@
  * settings as the workflow file has them. From here the step's settings open in its panel,
  * its model opens as the current study, or the step is deleted.
  */
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 import Button from 'primevue/button'
 import Dialog from 'primevue/dialog'
 import { modelLabel } from '../stores/useWorkflow'
@@ -21,8 +21,24 @@ const props = defineProps({
   result: { type: Object, default: null },
   state: { type: String, default: 'not_run' },
   busy: { type: Boolean, default: false },
+  // Renames the step: async (step, to) => '' when done, else why not.
+  rename: { type: Function, default: null },
 })
 const emit = defineEmits(['close', 'select', 'open-view', 'delete'])
+
+// the name being typed, and why a rename was refused
+const name = ref('')
+const renameError = ref('')
+const renaming = ref(false)
+watch(() => props.step?.id, (id) => { name.value = id ?? ''; renameError.value = '' }, { immediate: true })
+
+async function doRename() {
+  const to = name.value.trim()
+  if (!props.rename || !props.step || !to || to === props.step.id) return
+  renaming.value = true
+  renameError.value = await props.rename(props.step.id, to)
+  renaming.value = false
+}
 
 const kind = computed(() => props.step?.kind ?? 'calibration')
 const ORIGIN = { calibration: 'Calibrated: an optimiser fits these values',
@@ -52,6 +68,25 @@ function num(value) {
     @update:visible="(v) => { if (!v) emit('close') }"
   >
     <template v-if="step">
+      <form v-if="rename" class="sd-rename" @submit.prevent="doRename">
+        <label for="sd-rename-input">Name</label>
+        <input
+          id="sd-rename-input"
+          v-model="name"
+          :disabled="busy || renaming"
+          spellcheck="false"
+          data-testid="workflow-step-rename-input"
+        />
+        <Button
+          type="submit"
+          label="Rename"
+          size="small"
+          outlined
+          :disabled="busy || renaming || !name.trim() || name.trim() === step.id"
+          data-testid="workflow-step-rename"
+        />
+      </form>
+      <p v-if="renameError" class="sd-error" data-testid="workflow-step-rename-error">{{ renameError }}</p>
       <p class="sd-origin" :data-kind="kind">{{ ORIGIN[kind] ?? kind }} · {{ kind }}</p>
       <p v-if="step.description" class="sd-hint">{{ step.description }}</p>
       <dl class="sd-kv">
@@ -143,6 +178,28 @@ function num(value) {
 .sd-hint {
   opacity: 0.7;
   font-size: 0.85em;
+}
+.sd-rename {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  margin-bottom: 0.6rem;
+}
+.sd-rename input {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  font-family: ui-monospace, monospace;
+  padding: 0.3rem 0.5rem;
+  border: 1px solid var(--p-content-border-color, #555);
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+}
+.sd-error {
+  color: #e84a5f;
+  font-size: 0.85em;
+  margin: -0.3rem 0 0.6rem;
 }
 .sd-kv {
   display: grid;

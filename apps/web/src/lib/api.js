@@ -899,6 +899,12 @@ export async function getWorkflowEdge(source, target, key) {
   return data
 }
 
+/** Rename a step of the open workflow (and every reference to it); its results move with it. */
+export async function renameWorkflowStep(step, to) {
+  const { data } = await axios.post(url('/api/workflow/step/rename'), { step, to })
+  return data
+}
+
 /** Move a step of the open workflow to `index`; the server refuses it above a step it takes from. */
 export async function moveWorkflowStep(step, index) {
   const { data } = await axios.post(url('/api/workflow/step/move'), { step, index })

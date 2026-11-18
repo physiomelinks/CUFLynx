@@ -816,6 +816,55 @@ def delete_step(path: str, step_id: str, *, confirm: bool = False) -> dict:
     return {**plan, "applied": True}
 
 
+#: A step id a rename may give: it names the step's results folder and data files.
+STEP_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.\-]{0,63}")
+
+
+def rename_step(path: str, old: str, new: str, run_dir: str | None = None) -> dict:
+    """Rename step ``old`` to ``new`` in the workflow file, and every reference to it (the
+    ``*_from`` keys, ``fixed_from`` / ``priors_from`` entries, a set entry's ``of``). CA keeps a
+    step's results in ``<run_dir>/<id>/`` and finds them by that name, so the folder is moved
+    with it and the step keeps its results. Returns the new file.
+
+    Raises:
+        StudyWorkflowError: no such step, a name a step id cannot have, a name another step
+            has (case aside: the folders would clash on Windows and macOS), or CA refuses the
+            file.
+    """
+    new = (new or "").strip()
+    raw = read_raw(path)
+    steps = raw.get("steps") or []
+    ids = [s["id"] for s in steps]
+    if old not in ids:
+        raise StudyWorkflowError(f"the workflow has no step {old!r}")
+    if new == old:
+        return raw
+    if not STEP_ID.fullmatch(new):
+        raise StudyWorkflowError(
+            f"{new!r} cannot name a step: use letters, digits, '_', '.' or '-' (it names the "
+            f"step's results folder), starting with a letter or digit, at most 64 characters")
+    if any(i.casefold() == new.casefold() for i in ids if i != old):
+        raise StudyWorkflowError(f"another step is already called {new!r}")
+    folder = os.path.join(run_dir, old) if run_dir else None
+    target = os.path.join(run_dir, new) if run_dir else None
+    if target and os.path.exists(target) and folder and os.path.exists(folder):
+        raise StudyWorkflowError(
+            f"{target} already exists, from an earlier step of that name: rename it or the "
+            f"folder first")
+    raw = copy.deepcopy(raw)
+    for step in raw["steps"]:
+        if step["id"] == old:
+            step["id"] = new
+        for key, ref in references(step):
+            if ref == old:
+                _replace_ref(step, key, old, new)
+    _checked(raw, path)
+    _write_raw(path, raw)
+    if folder and os.path.isdir(folder) and not os.path.exists(target):
+        os.rename(folder, target)
+    return raw
+
+
 def descendants(raw: dict, step_id: str) -> set[str]:
     """Every step that takes from ``step_id``, directly or through others."""
     steps = raw.get("steps") or []

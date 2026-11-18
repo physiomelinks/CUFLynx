@@ -351,6 +351,33 @@ def test_a_step_opened_as_the_study_keeps_its_file_names_and_is_named_by_its_mod
     assert main._view_model_name({"model": {"cellml_model_path": "../m/LV.cellml"}}, "c-1") == "c-1: LV.cellml"
 
 
+def test_renaming_a_step_renames_its_references_and_keeps_its_results(
+        client, fake_runs, tmp_path):
+    work = tmp_path / "w"
+    model_id = _setup(client)
+    assert _calibrate(client, model_id, work, start_from="current")["state"] == "done"
+    _run(client, "uq", {"model_id": model_id, "settings": {
+        "config_outputs_dir": str(work), "method": "mcmc", "num_steps": 20, "num_walkers": 8}})
+    path = str(_workflow_dir(work) / "calibration_workflow.json")
+    run = work / "workflows" / "study"
+    assert (run / "calibration-1" / "step_result.json").is_file()
+
+    study_workflow.rename_step(path, "calibration-1", "fit_lv", str(run))
+    steps = _steps(work)
+    assert list(steps) == ["sliders-1", "fit_lv", "mcmc-1"]
+    assert steps["mcmc-1"]["result_from"] == "fit_lv"       # the reference follows
+    assert steps["fit_lv"]["start_from"] == "sliders-1"
+    # CA finds a step's results by its id: the folder moves with it
+    assert (run / "fit_lv" / "step_result.json").is_file()
+    assert not (run / "calibration-1").exists()
+
+    for bad, why in (("mcmc-1", "already called"), ("MCMC-1", "already called"),
+                     ("has space", "cannot name a step"), ("", "cannot name a step")):
+        with pytest.raises(study_workflow.StudyWorkflowError, match=why):
+            study_workflow.rename_step(path, "fit_lv", bad, str(run))
+    assert list(_steps(work)) == ["sliders-1", "fit_lv", "mcmc-1"]
+
+
 def test_the_delete_route_asks_before_a_cascade_and_moves_reorder(
         client, fake_runs, described, tmp_path):
     work = tmp_path / "w"

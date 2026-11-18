@@ -43,6 +43,8 @@ const props = defineProps({
   figures: { type: Array, default: () => [] },
   // Where the model's values come from (describe's value_origins).
   origins: { type: Object, default: null },
+  // Renames a step: async (step, to) => '' when done, else why not.
+  renameStep: { type: Function, default: null },
   // The step the next run of the open panel changes (modeSummary), or null.
   editing: { type: String, default: null },
   // A delete waiting for a confirmation ({step, deleted, rewired, dropped}), or null.
@@ -70,6 +72,13 @@ const inspectedStep = computed(() => props.steps.find((s) => s.id === inspected.
 const clickedEdge = ref(null)
 const clickedFigure = ref(null)
 const clickedOrigin = ref(null)
+
+/** Rename the inspected step; the dialog stays on it under its new name. */
+async function onRename(step, to) {
+  const why = props.renameStep ? await props.renameStep(step, to) : 'renaming is not available'
+  if (!why) inspected.value = to.trim()
+  return why
+}
 
 function fromDetail(event, id) {
   inspected.value = null
@@ -204,6 +213,7 @@ const alsoDeleted = computed(() => doomed.value.filter((s) => s !== props.pendin
           :result="inspectedStep ? results[inspectedStep.id] : null"
           :state="inspectedStep ? (states[inspectedStep.id] ?? 'not_run') : 'not_run'"
           :busy="busy || running"
+          :rename="renameStep ? onRename : null"
           @close="inspected = null"
           @select="(id) => fromDetail('select-step', id)"
           @open-view="(id) => fromDetail('open-step-view', id)"

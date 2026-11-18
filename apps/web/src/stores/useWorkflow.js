@@ -6,6 +6,7 @@ import {
   deleteWorkflowStep,
   listWorkflows,
   moveWorkflowStep,
+  renameWorkflowStep,
   errorMessage,
   followWorkingDir as postWorkingDir,
   getWorkflow,
@@ -506,6 +507,22 @@ export function useWorkflow(options = {}) {
     pendingDelete.value = null
   }
 
+  /**
+   * Rename a step; returns '' when done, else why not (the server's reason). The step the
+   * next run changes, and the selected tab, follow the new name.
+   */
+  async function renameStep(stepId, to) {
+    try {
+      described.value = await renameWorkflowStep(stepId, to)
+    } catch (e) {
+      return errorMessage(e)
+    }
+    const name = String(to).trim()
+    if (target.value.mode === 'edit' && target.value.step === stepId) target.value = { mode: 'edit', step: name }
+    if (selected.value === stepId) selected.value = name
+    return ''
+  }
+
   async function moveStep(stepId, index) {
     const d = await guarded(() => moveWorkflowStep(stepId, index))
     if (d) described.value = d
@@ -527,6 +544,7 @@ export function useWorkflow(options = {}) {
     confirmDelete,
     cancelDelete,
     moveStep,
+    renameStep,
     described,
     loaded,
     tabs,
