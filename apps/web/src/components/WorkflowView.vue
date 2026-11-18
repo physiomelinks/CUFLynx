@@ -174,6 +174,7 @@ const alsoDeleted = computed(() => doomed.value.filter((s) => s !== props.pendin
           :results="results"
           :target="workflowTarget"
           :figures="figures"
+          :active="clickedEdge"
           :editing="editing"
           :doomed="doomed"
           :busy="busy || running"

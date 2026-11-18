@@ -16,6 +16,7 @@ import { computed, ref } from 'vue'
 import { SOURCE_WORDS, cellmlFile, externalFile, modelLabel } from '../stores/useWorkflow'
 
 import { figureReads, layoutSteps, referencesOf } from '../lib/workflowTarget'
+import { routeEdges } from '../lib/workflowRoutes'
 
 const props = defineProps({
   // The workflow file's steps ({id, kind, result_from, settings, ...}), in order.
@@ -32,6 +33,8 @@ const props = defineProps({
   figures: { type: Array, default: () => [] },
   // The step the next run changes, or null.
   editing: { type: String, default: null },
+  // The arrow whose detail is open ({source, target, key}), lit until it closes.
+  active: { type: Object, default: null },
   // Steps a delete would take with it, waiting for a confirmation.
   doomed: { type: Array, default: () => [] },
   busy: { type: Boolean, default: false },
@@ -43,6 +46,8 @@ const H = 78
 const COL_GAP = 96
 const ROW_GAP = 16
 const PAD = 8
+// room above and below the boxes for the corridors of arrows that skip columns
+const PAD_Y = 28
 
 // An arrow's label: short, as it sits in the gap between two columns (the full words are in
 // its tooltip and the step's detail).
@@ -190,7 +195,7 @@ const rowsIn = computed(() => {
 })
 const height = computed(() => {
   const most = Math.max(1, ...Object.values(rowsIn.value))
-  return PAD * 2 + most * H + (most - 1) * ROW_GAP
+  return PAD_Y * 2 + most * H + (most - 1) * ROW_GAP
 })
 
 function colX(col) {
@@ -218,86 +223,70 @@ const width = computed(() =>
   colX(Math.max(0, ...Object.values(cells.value).map((c) => c.col)) + 1) - COL_GAP + PAD,
 )
 
-function elbow(x1, y1, x2, y2) {
-  const xm = x2 - COL_GAP / 2
-  return `M ${x1} ${y1} H ${xm} V ${y2} H ${x2 - 3}`
+/** Every arrow before routing: what it joins, by box and column. */
+function link(from, to, fromId, toId, key, kind, extra = {}) {
+  return { id: `${fromId}->${toId}:${key}`, from: fromId, to: toId, key, kind,
+           fromBox: from, toBox: to, fromCol: cells.value[fromId]?.col,
+           toCol: cells.value[toId]?.col, ...extra }
 }
 
-/** One arrow: its path, what it is (`source`, `target`, `key`) and its label. */
-function arrow(from, to, fromBox, toBox, key, kind, labelled, extra = {}) {
-  const x1 = fromBox.x + W
-  const y1 = fromBox.y + H / 2
-  const y2 = toBox.y + H / 2
-  const tag = `${to}:${key}`
-  const label = labelled.has(tag) ? '' : (KEY_WORDS[key] ?? '')
-  labelled.add(tag)
-  return { d: elbow(x1, y1, toBox.x, y2), key, from, to, kind, label,
-           lx: toBox.x - COL_GAP / 2 + 4, ly: y2 - 5, x1, y1, x2: toBox.x, y2, ...extra }
-}
-
-/**
- * The part of each arrow a click picks it by: arrows into one box share their last segment
- * and arrows out of one box their first, so an arrow is clicked on the segment that is its
- * own -- the first when others end where it ends, the last when only others start where it
- * starts, the whole line when it shares neither. Where first segments still overlap (a step
- * feeding both the next step and the target), the arrows between steps are drawn on top of
- * the arrows into the target (`hitOrder`), and those stay clickable past the overlap.
- */
-function withHits(list) {
-  const into = {}
-  const outOf = {}
-  for (const e of list) {
-    into[e.to] = (into[e.to] ?? 0) + 1
-    outOf[e.from] = (outOf[e.from] ?? 0) + 1
-  }
-  return list.map((e) => {
-    const xm = e.x2 - COL_GAP / 2
-    const sharedEnd = into[e.to] > 1
-    const sharedStart = outOf[e.from] > 1
-    let hit = e.d
-    if (sharedEnd) hit = `M ${e.x1} ${e.y1} H ${xm}`
-    else if (sharedStart) hit = `M ${xm} ${e.y2} H ${e.x2}`
-    return { ...e, hit }
-  })
-}
-
-const HIT_RANK = { target: 0, model: 1, 'from-target': 2, step: 3, figure: 4 }
-// arrows into the target lowest, so a shared stretch picks the arrow between steps
-const hitOrder = computed(() =>
-  [...edges.value].sort((a, b) => (HIT_RANK[a.kind] ?? 3) - (HIT_RANK[b.kind] ?? 3)),
-)
-
-const edges = computed(() => {
+const links = computed(() => {
   const out = []
-  const labelled = new Set()
   for (const b of boxes.value) {
     const refs = referencesOf(b.step, props.steps).filter(([, id]) => byId.value[id])
-    for (const [key, id] of refs) {
-      out.push(arrow(id, b.step.id, byId.value[id], b, key, 'step', labelled))
-    }
+    for (const [key, id] of refs) out.push(link(byId.value[id], b, id, b.step.id, key, 'step'))
     if (b.step.on_target && targetBox.value) {
-      out.push(arrow('target', b.step.id, targetBox.value, b, 'on_target', 'from-target', labelled))
+      out.push(link(targetBox.value, b, 'target', b.step.id, 'on_target', 'from-target'))
     } else if (!refs.length && modelBox.value) {
-      out.push(arrow('model', b.step.id, modelBox.value, b, 'model', 'model', labelled))
+      out.push(link(modelBox.value, b, 'model', b.step.id, 'model', 'model'))
     }
   }
   if (targetBox.value) {
-    for (const s of merged.value) {
-      out.push(arrow(s.id, 'target', byId.value[s.id], targetBox.value, 'merged', 'target', labelled))
-    }
+    for (const s of merged.value) out.push(link(byId.value[s.id], targetBox.value, s.id, 'target', 'merged', 'target'))
   }
   for (const fb of figureBoxes.value) {
     for (const src of figureSources.value[fb.figure.id]) {
       const fromBox = src.from === 'target' ? targetBox.value
         : src.from.startsWith('figure:') ? at(src.from) : byId.value[src.from]
       if (fromBox) {
-        out.push(arrow(src.from, `figure:${fb.figure.id}`, fromBox, fb, 'reads', 'figure', labelled,
-                       { files: src.files }))
+        out.push(link(fromBox, fb, src.from, `figure:${fb.figure.id}`, 'reads', 'figure',
+                      { files: src.files }))
       }
     }
   }
-  return withHits(out)
+  return out.filter((e) => e.fromCol != null && e.toCol != null && e.toCol > e.fromCol)
 })
+
+// each arrow's own route: ports spread along the boxes, a lane of its own in each gap, and a
+// corridor clear of the boxes when it skips columns (lib/workflowRoutes)
+const routes = computed(() =>
+  routeEdges(
+    links.value.map((e) => ({
+      id: e.id, fromCol: e.fromCol, toCol: e.toCol,
+      from: { x: e.fromBox.x, y: e.fromBox.y, w: W, h: H },
+      to: { x: e.toBox.x, y: e.toBox.y, w: W, h: H },
+    })),
+    Object.values(cells.value).map((c) => ({ col: c.col, x: colX(c.col), y: colY(c.col, c.row), w: W, h: H })),
+    { colGap: COL_GAP, height: height.value },
+  ),
+)
+
+const edges = computed(() =>
+  links.value.map((e) => {
+    const r = routes.value[e.id]
+    return { ...e, d: r.d, end: r.end, label: KEY_WORDS[e.key] ?? '' }
+  }),
+)
+
+// The arrow lit: the one under the pointer, else the one whose detail is open (`active`).
+const hovered = ref(null)
+function isLit(e) {
+  if (hovered.value) return hovered.value === e.id
+  const a = props.active
+  return !!a && a.source === e.from && a.target === e.to && a.key === e.key
+}
+// the lit arrow is drawn last, so it is on top along its whole path
+const drawOrder = computed(() => [...edges.value].sort((a, b) => Number(isLit(a)) - Number(isLit(b))))
 
 const modelName = computed(() =>
   cellmlFile(props.target) || externalFile(props.target) || modelLabel(props.target) || 'the model',
@@ -370,28 +359,35 @@ function onPanEnd(event) {
           <marker id="wf-arrow" viewBox="0 0 6 6" refX="5" refY="3" markerWidth="7" markerHeight="7" orient="auto">
             <path d="M0,0 L6,3 L0,6 z" class="wf-arrow" />
           </marker>
+          <marker id="wf-arrow-lit" viewBox="0 0 6 6" refX="5" refY="3" markerWidth="6" markerHeight="6" orient="auto">
+            <path d="M0,0 L6,3 L0,6 z" class="wf-arrow lit" />
+          </marker>
         </defs>
-        <g v-for="(e, i) in edges" :key="i">
+        <g v-for="e in drawOrder" :key="e.id">
           <path
             :d="e.d"
             class="wf-edge"
-            :class="[e.kind, { doomed: doomed.includes(e.to) || doomed.includes(e.from) }]"
-            marker-end="url(#wf-arrow)"
+            :class="[e.kind, { doomed: doomed.includes(e.to) || doomed.includes(e.from), lit: isLit(e) }]"
+            :marker-end="isLit(e) ? 'url(#wf-arrow-lit)' : 'url(#wf-arrow)'"
+          />
+          <text
+            v-if="isLit(e) && e.label"
+            :x="e.end.x - 6"
+            :y="e.end.y - 5"
+            text-anchor="end"
+            class="wf-edge-label lit"
+          >{{ e.label }}</text>
+          <path
+            :d="e.d"
+            class="wf-hit"
+            :data-testid="`workflow-edge-${e.from}-${e.to}`"
+            @mouseenter="hovered = e.id"
+            @mouseleave="hovered = null"
+            @click.stop="emit('edge', { source: e.from, target: e.to, key: e.key, files: e.files ?? null })"
           >
-            <title>{{ e.to }} {{ e.kind === 'target' ? 'is merged into the target' : e.kind === 'model' ? 'runs the model' : `${LONG_WORDS[e.key] ?? e.key} ${e.from}` }}</title>
+            <title>{{ e.from }} → {{ e.to }}: {{ LONG_WORDS[e.key] ?? e.key }}. Click to see what passes.</title>
           </path>
-          <text v-if="e.label" :x="e.lx" :y="e.ly" class="wf-edge-label">{{ e.label }}</text>
         </g>
-        <path
-          v-for="e in hitOrder"
-          :key="`hit-${e.from}-${e.to}-${e.key}`"
-          :d="e.hit"
-          class="wf-hit"
-          :data-testid="`workflow-edge-${e.from}-${e.to}`"
-          @click.stop="emit('edge', { source: e.from, target: e.to, key: e.key, files: e.files ?? null })"
-        >
-          <title>Click to see what passes from {{ e.from }} to {{ e.to }}</title>
-        </path>
       </svg>
 
       <div
@@ -539,12 +535,24 @@ function onPanEnd(event) {
 .wf-hit {
   fill: none;
   stroke: transparent;
-  stroke-width: 12;
+  stroke-width: 8;
   pointer-events: stroke;
   cursor: pointer;
 }
-.wf-hit:hover {
-  stroke: color-mix(in srgb, var(--p-primary-color, #4f8cff) 35%, transparent);
+.wf-edge.lit {
+  stroke: var(--p-primary-color, #4f8cff);
+  stroke-width: 2.6;
+  stroke-dasharray: none;
+}
+.wf-arrow.lit {
+  fill: var(--p-primary-color, #4f8cff);
+}
+.wf-edge-label.lit {
+  fill: var(--p-primary-color, #4f8cff);
+  font-weight: 700;
+  paint-order: stroke;
+  stroke: var(--p-content-background, #1e1e1e);
+  stroke-width: 3px;
 }
 .wf-figure {
   cursor: pointer;
