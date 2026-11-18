@@ -85,6 +85,50 @@ def _distribution(run_dir: str, source: str) -> dict | None:
     return out
 
 
+#: CA's provenance graph (``reporting/provenance.py``): the schema versions read here, and the
+#: node of the model source whose counts say how many of the target's values nothing classifies
+GRAPH_VERSIONS = (3,)
+SOURCE_NODE = "__source__"
+TARGET_NODE = "__target__"
+
+
+def value_origins(graph_path: str | None) -> dict:
+    """The boxes of where the model's values come from, from CA's ``provenance_graph.json``:
+    ``{"boxes": [{id, title, mark, values: [{name, value, units, note}], to: [chart ids]}],
+    "model_counts": {mark: n}}``. A box is one of CA's ``values`` nodes (values set by hand,
+    measured, derived, calibrated before the run, the derivations' fixed constants), with the
+    chart boxes CA draws it giving values to (``__target__`` is the chart's ``target``). Empty
+    when the run has no graph, or one of a schema this does not read."""
+    empty = {"boxes": [], "model_counts": {}}
+    if not graph_path or not os.path.isfile(graph_path):
+        return empty
+    try:
+        with open(graph_path, encoding="utf-8") as handle:
+            graph = json.load(handle)
+    except (OSError, ValueError):
+        return empty
+    if graph.get("schema_version") not in GRAPH_VERSIONS:
+        return empty
+    edges = graph.get("edges") or []
+    boxes = []
+    model_counts = {}
+    for node in graph.get("nodes") or []:
+        if node.get("id") == SOURCE_NODE:
+            model_counts = {k: v for k, v in (node.get("counts") or {}).items() if v}
+        if node.get("kind") != "values":
+            continue
+        to = [TARGET if e.get("to") == TARGET_NODE else e.get("to")
+              for e in edges if e.get("from") == node.get("id")]
+        boxes.append({
+            "id": node.get("id"), "title": node.get("title"), "mark": node.get("mark"),
+            "values": [_row(p.get("name"), p.get("value"), p.get("units"),
+                            p.get("reason") or p.get("data_reference"))
+                       for p in node.get("parameters") or []],
+            "to": [t for t in to if t],
+        })
+    return {"boxes": boxes, "model_counts": model_counts}
+
+
 WORDS = {
     "fixed_from": "values fixed in the receiving step's model",
     "priors_from": "a distribution, used as the prior",

@@ -85,6 +85,32 @@ def test_the_models_arrow_names_the_model(run):
     assert "1 values in it are fixed" in d["note"]
 
 
+def test_the_values_by_origin_are_cas_provenance_boxes(tmp_path):
+    graph = tmp_path / "provenance_graph.json"
+    graph.write_text(json.dumps({"schema_version": 3, "nodes": [
+        {"id": "__source__", "kind": "source", "counts": {"unclassified": 73, "measured": 0}},
+        {"id": "__set_by_hand__", "kind": "values", "title": "Values set by hand",
+         "mark": "set_by_hand", "parameters": [
+             {"name": "v_ref_Kir_Kir", "value": 775.4, "units": "fmol_per_mm2_per_s",
+              "origin": "set_by_hand", "reason": "a normalisation of the Na flux signal"}]},
+        {"id": "kir", "kind": "step"},
+    ], "edges": [{"from": "__set_by_hand__", "to": "__target__", "style": "given"}]}))
+    d = we.value_origins(str(graph))
+    assert d["model_counts"] == {"unclassified": 73}
+    (box,) = d["boxes"]
+    assert box["mark"] == "set_by_hand" and box["to"] == ["target"]
+    assert box["values"] == [{"name": "v_ref_Kir_Kir", "value": 775.4,
+                              "units": "fmol_per_mm2_per_s",
+                              "note": "a normalisation of the Na flux signal"}]
+
+
+def test_a_graph_of_a_schema_not_read_here_gives_no_boxes(tmp_path):
+    graph = tmp_path / "provenance_graph.json"
+    graph.write_text(json.dumps({"schema_version": 99, "nodes": [{"id": "x", "kind": "values"}]}))
+    assert we.value_origins(str(graph)) == {"boxes": [], "model_counts": {}}
+    assert we.value_origins(None) == {"boxes": [], "model_counts": {}}
+
+
 def test_a_point_is_the_set_steps_values(run):
     d = we.edge_detail(run, WORKFLOW, "boundary", "fit-k", "start_from")
     assert d["rows"][0]["name"] == "heat/u_D" and d["note"].startswith("The values boundary sets")

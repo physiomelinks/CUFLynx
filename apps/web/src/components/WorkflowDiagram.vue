@@ -35,11 +35,14 @@ const props = defineProps({
   editing: { type: String, default: null },
   // The arrow whose detail is open ({source, target, key}), lit until it closes.
   active: { type: Object, default: null },
+  // Where the model's values come from, as CA's provenance graph boxes them
+  // (describe's value_origins): {boxes: [{id, title, mark, values, to}], model_counts}.
+  origins: { type: Object, default: null },
   // Steps a delete would take with it, waiting for a confirmation.
   doomed: { type: Array, default: () => [] },
   busy: { type: Boolean, default: false },
 })
-const emit = defineEmits(['select', 'inspect', 'delete', 'move', 'open-target', 'edge', 'figure'])
+const emit = defineEmits(['select', 'inspect', 'delete', 'move', 'open-target', 'edge', 'figure', 'origin'])
 
 const W = 250
 const H = 78
@@ -53,7 +56,8 @@ const PAD_Y = 28
 // its tooltip and the step's detail).
 const KEY_WORDS = { result_from: 'at fit', start_from: 'start', fixed_from: 'fixed',
   priors_from: 'prior', scale_from: 'scale', emulator_from: 'emulator', emulator_dir: 'emulator',
-  sensitivity_from: 'ranks', params_for_id_from: 'params', on_target: 'merged', reads: 'reads' }
+  sensitivity_from: 'ranks', params_for_id_from: 'params', on_target: 'merged', reads: 'reads',
+  given: 'given' }
 const LONG_WORDS = { ...SOURCE_WORDS, start_from: 'starts at', fixed_from: 'fixed from',
   priors_from: 'priors from', scale_from: 'scales', emulator_dir: 'on the emulator of' }
 
@@ -167,7 +171,12 @@ const targetCol = computed(() => stepCols.value + colOffset.value)
  * `figure:<id>`). A column holds its boxes in that order. */
 const cells = computed(() => {
   const col = {}
-  if (hasModel.value) col.model = { col: 0, kind: 'model' }
+  const boxesOf = props.origins?.boxes ?? []
+  if (hasModel.value) {
+    for (const o of boxesOf.filter((b) => b.mark === 'set_by_hand')) col[`origin:${o.id}`] = { col: 0, kind: 'origin' }
+    col.model = { col: 0, kind: 'model' }
+    for (const o of boxesOf.filter((b) => b.mark !== 'set_by_hand')) col[`origin:${o.id}`] = { col: 0, kind: 'origin' }
+  }
   for (const s of mainSteps.value) col[s.id] = { col: placed.value[s.id].col + colOffset.value, kind: 'step' }
   if (hasTarget.value) col.target = { col: targetCol.value, kind: 'target' }
   for (const s of onTarget.value) col[s.id] = { col: targetCol.value + 1, kind: 'step' }
@@ -219,6 +228,15 @@ const byId = computed(() => Object.fromEntries(boxes.value.map((b) => [b.step.id
 const modelBox = computed(() => (hasModel.value ? at('model') : null))
 const targetBox = computed(() => (hasTarget.value ? at('target') : null))
 const figureBoxes = computed(() => props.figures.map((f) => ({ figure: f, ...at(`figure:${f.id}`) })))
+const originBoxes = computed(() =>
+  hasModel.value ? (props.origins?.boxes ?? []).map((o) => ({ origin: o, ...at(`origin:${o.id}`) })) : [],
+)
+const ORIGIN_CLASS = { set_by_hand: 'hand', measured: 'measured', derived: 'derived', calibrated: 'cal' }
+const ORIGIN_WORDS = { set_by_hand: 'set by hand', measured: 'measured: from a cited source',
+  derived: 'derived from data', calibrated: 'calibrated before this run' }
+const modelCounts = computed(() =>
+  Object.entries(props.origins?.model_counts ?? {}).map(([mark, n]) => `${n} ${mark.replace(/_/g, ' ')}`).join(' · '),
+)
 const width = computed(() =>
   colX(Math.max(0, ...Object.values(cells.value).map((c) => c.col)) + 1) - COL_GAP + PAD,
 )
@@ -243,6 +261,12 @@ const links = computed(() => {
   }
   if (targetBox.value) {
     for (const s of merged.value) out.push(link(byId.value[s.id], targetBox.value, s.id, 'target', 'merged', 'target'))
+  }
+  for (const ob of originBoxes.value) {
+    for (const to of ob.origin.to) {
+      const toBox = to === 'target' ? targetBox.value : byId.value[to]
+      if (toBox) out.push(link(ob, toBox, `origin:${ob.origin.id}`, to, 'given', 'origin'))
+    }
   }
   for (const fb of figureBoxes.value) {
     for (const src of figureSources.value[fb.figure.id]) {
@@ -321,7 +345,7 @@ const pan = ref(null)
 const panning = ref(null) // {x, y, left, top, id} while the chart is held
 
 function onPanStart(event) {
-  if (event.button !== 0 || event.target.closest('.wf-node, .wf-hit, .wf-figure')) return
+  if (event.button !== 0 || event.target.closest('.wf-node, .wf-hit, .wf-figure, .wf-origin')) return
   const el = pan.value
   panning.value = { x: event.clientX, y: event.clientY, left: el.scrollLeft, top: el.scrollTop,
                     id: event.pointerId }
@@ -383,7 +407,7 @@ function onPanEnd(event) {
             :data-testid="`workflow-edge-${e.from}-${e.to}`"
             @mouseenter="hovered = e.id"
             @mouseleave="hovered = null"
-            @click.stop="emit('edge', { source: e.from, target: e.to, key: e.key, files: e.files ?? null })"
+            @click.stop="e.kind === 'origin' ? emit('origin', e.from.replace(/^origin:/, '')) : emit('edge', { source: e.from, target: e.to, key: e.key, files: e.files ?? null })"
           >
             <title>{{ e.from }} → {{ e.to }}: {{ LONG_WORDS[e.key] ?? e.key }}. Click to see what passes.</title>
           </path>
@@ -398,7 +422,23 @@ function onPanEnd(event) {
       >
         <div class="wf-row1"><strong>Model</strong></div>
         <div class="wf-row2" :title="modelName">{{ modelName }}</div>
-        <div class="wf-tag" title="every value no step sets comes from the model">inherited</div>
+        <div class="wf-tag" title="every value no step sets comes from the model; what set each, as CA's provenance counts them">
+          inherited<template v-if="modelCounts"> · {{ modelCounts }}</template></div>
+      </div>
+
+      <div
+        v-for="ob in originBoxes"
+        :key="ob.origin.id"
+        class="wf-box wf-origin"
+        :class="ORIGIN_CLASS[ob.origin.mark] ?? 'analysis'"
+        :style="{ left: `${ob.x}px`, top: `${ob.y}px`, width: `${W}px`, height: `${H}px` }"
+        :title="ob.origin.values.map((v) => `${v.name} = ${v.value}${v.note ? `: ${v.note}` : ''}`).join('\n')"
+        :data-testid="`workflow-origin-${ob.origin.mark}`"
+        @click="emit('origin', ob.origin.id)"
+      >
+        <div class="wf-row1"><strong class="wf-id">{{ ob.origin.title }}</strong></div>
+        <div class="wf-row2"><span class="wf-detail">{{ ob.origin.values.map((v) => v.name).join(', ') }}</span></div>
+        <div class="wf-tag">{{ ORIGIN_WORDS[ob.origin.mark] ?? ob.origin.mark }} · {{ ob.origin.values.length }} values</div>
       </div>
 
       <div
@@ -480,6 +520,7 @@ function onPanEnd(event) {
     <div class="wf-key" aria-label="Colour key">
       <span class="k cal">calibrated: an optimiser fitted it</span>
       <span class="k hand">set by hand</span>
+      <span class="k measured">measured: set by data</span>
       <span class="k analysis">analysis</span>
       <span class="k surrogate">surrogate</span>
       <span class="k inherited">inherited: from the model</span>
@@ -498,6 +539,8 @@ function onPanEnd(event) {
   --analysis: #6b7680;
   --surrogate: #8a4fd6;
   --inherited: #8b949c;
+  --measured: #2f9e5b;
+  --derived: #2a9d9f;
   min-width: 0;
 }
 /* the chart moves by dragging it (and by a trackpad or wheel); no scroll bar, and the key
@@ -586,6 +629,10 @@ function onPanEnd(event) {
 .wf-box.cal { border-color: var(--cal); }
 .wf-box.hand { border-color: var(--hand); }
 .wf-box.surrogate { border-color: var(--surrogate); }
+.wf-box.measured { border-color: var(--measured); }
+.wf-box.derived { border-color: var(--derived); }
+.wf-box.measured .wf-tag { color: var(--measured); }
+.wf-origin { cursor: pointer; }
 .wf-box.sim { border-color: var(--analysis); }
 .wf-box.inherited { border: 2px dashed var(--inherited); }
 .wf-box.target { border-color: var(--p-text-color, #ddd); cursor: pointer; }
@@ -715,6 +762,7 @@ function onPanEnd(event) {
 .wf-key .cal::before { border-color: var(--cal); }
 .wf-key .hand::before { border-color: var(--hand); }
 .wf-key .surrogate::before { border-color: var(--surrogate); }
+.wf-key .measured::before { border-color: var(--measured); }
 .wf-key .inherited::before { border: 2px dashed var(--inherited); }
 .wf-help {
   margin: 0.3rem 0 0;

@@ -41,6 +41,8 @@ const props = defineProps({
   workflowTarget: { type: Object, default: null },
   // The workflow's external figures (`external_figures`).
   figures: { type: Array, default: () => [] },
+  // Where the model's values come from (describe's value_origins).
+  origins: { type: Object, default: null },
   // The step the next run of the open panel changes (modeSummary), or null.
   editing: { type: String, default: null },
   // A delete waiting for a confirmation ({step, deleted, rewired, dropped}), or null.
@@ -67,6 +69,7 @@ const inspectedStep = computed(() => props.steps.find((s) => s.id === inspected.
 // The clicked arrow ({source, target, key, files}) or external figure, or null.
 const clickedEdge = ref(null)
 const clickedFigure = ref(null)
+const clickedOrigin = ref(null)
 
 function fromDetail(event, id) {
   inspected.value = null
@@ -175,6 +178,7 @@ const alsoDeleted = computed(() => doomed.value.filter((s) => s !== props.pendin
           :target="workflowTarget"
           :figures="figures"
           :active="clickedEdge"
+          :origins="origins"
           :editing="editing"
           :doomed="doomed"
           :busy="busy || running"
@@ -185,11 +189,13 @@ const alsoDeleted = computed(() => doomed.value.filter((s) => s !== props.pendin
           @open-target="emit('open-step-view', 'target')"
           @edge="(e) => (clickedEdge = e)"
           @figure="(id) => (clickedFigure = figures.find((f) => f.id === id) ?? null)"
+          @origin="(id) => (clickedOrigin = (origins?.boxes ?? []).find((b) => b.id === id) ?? null)"
         />
         <WorkflowEdgeDetail
           :edge="clickedEdge"
           :figure="clickedFigure"
-          @close="clickedEdge = null; clickedFigure = null"
+          :origin="clickedOrigin"
+          @close="clickedEdge = null; clickedFigure = null; clickedOrigin = null"
         />
         <WorkflowStepDetail
           :step="inspectedStep"
