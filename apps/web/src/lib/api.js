@@ -932,8 +932,16 @@ export async function placeWorkflowNode(node, col, row) {
  * A new step on the chart (a draft): the description, with `draft` its id. `onTarget`: after
  * the target, a simulation of the merged target set up in its form.
  */
-export async function addWorkflowDraft(col = null, row = null, onTarget = false) {
-  const { data } = await axios.post(url('/api/workflow/draft'), { col, row, on_target: onTarget })
+export async function addWorkflowDraft(col = null, row = null, onTarget = false, model = null,
+  action = null) {
+  const { data } = await axios.post(url('/api/workflow/draft'),
+    { col, row, on_target: onTarget, model, action })
+  return data
+}
+
+/** Make a Set values by hand box a set step: [{parameter, value, reason}]. */
+export async function setWorkflowValues({ draft, entries, point = false }) {
+  const { data } = await axios.post(url('/api/workflow/set_values'), { draft, entries, point })
   return data
 }
 

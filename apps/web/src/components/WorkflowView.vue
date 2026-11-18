@@ -23,6 +23,10 @@ import WorkflowStepDetail from './WorkflowStepDetail.vue'
 import WorkflowEdgeDetail from './WorkflowEdgeDetail.vue'
 import WorkflowLinkEditor from './WorkflowLinkEditor.vue'
 import WorkflowSweepForm from './WorkflowSweepForm.vue'
+import WorkflowStepPrep from './WorkflowStepPrep.vue'
+import WorkflowSetValuesForm from './WorkflowSetValuesForm.vue'
+import WorkflowDraftChoice from './WorkflowDraftChoice.vue'
+import { modelShort } from '../lib/workflowTarget'
 
 defineOptions({ inheritAttrs: false })
 
@@ -59,6 +63,9 @@ const props = defineProps({
   // What a simulation can record (states, algebraic) and sweep (constants): component/name.
   outputsOffered: { type: Array, default: () => [] },
   parametersOffered: { type: Array, default: () => [] },
+  // CA's step kinds (describe's step_kinds), and the left-hand tabs that make steps.
+  stepKinds: { type: Array, default: () => [] },
+  draftPanels: { type: Array, default: () => [] },
   // The step the next run of the open panel changes (modeSummary), or null.
   editing: { type: String, default: null },
   // A delete waiting for a confirmation ({step, deleted, rewired, dropped}), or null.
@@ -77,6 +84,8 @@ const emit = defineEmits([
   'move-step',
   // a step's model, opened as the current study (the bar's tab does the same)
   'open-step-view',
+  // a model box's choice: {draft, panel}: its model as the study, that tab open
+  'draft-action',
 ])
 
 // The step being inspected (a double-click in the chart), or null.
@@ -109,15 +118,43 @@ async function onEdit(action, ...args) {
   editError.value = props.editor ? await props.editor[action](...args) : 'editing is not available'
 }
 
+// The step prep box (New step), the model box whose choice is open, and the Set values by
+// hand box whose form is open.
+const prepOpen = ref(false)
+const choosing = ref(null)
+const setDraft = ref(null)
+
 /** New step dropped on the chart: a box there (a new column in a gap, moving the boxes right
- * of it on); after the target, a simulation, whose form opens. */
-async function onAddDraft({ col = null, row = null, shift = null, onTarget = false }) {
+ * of it on); after the target, a simulation, whose form opens. A model box or an action box
+ * from the step prep box carries its model or action. */
+async function onAddDraft({ col = null, row = null, shift = null, onTarget = false, model = null,
+  action = null }) {
   if (!props.editor) return
   editError.value = ''
-  const draft = await props.editor.addDraft(col, row, onTarget)
+  const draft = await props.editor.addDraft(col, row, onTarget, model, action)
   if (!draft) return
   if (shift && Object.keys(shift).length) editError.value = await props.editor.placeMany(shift)
   if (onTarget) sweepDraft.value = draft
+  prepOpen.value = false
+}
+
+/** A new step clicked: a model box asks what it does; an action box opens its form; a
+ * plain new step is what the next run makes. */
+function onSelectDraft(id) {
+  const d = (props.layout?.drafts ?? []).find((x) => x.id === id)
+  if (!d) return
+  if (d.model) choosing.value = d
+  else if (d.action === 'set') setDraft.value = id
+  else if (d.action === 'combine') editError.value = 'Choosing a parameter set by cost needs a newer circulatory_autogen (its combine step).'
+  else props.editor?.chooseDraft(id)
+}
+
+function onChoose({ panel, simulation }) {
+  const d = choosing.value
+  choosing.value = null
+  if (!d) return
+  if (simulation) sweepDraft.value = d.id
+  else emit('draft-action', { draft: d.id, model: d.model, panel })
 }
 
 /** "New step" dragged from its button onto the chart. */
@@ -190,12 +227,12 @@ const alsoDeleted = computed(() => doomed.value.filter((s) => s !== props.pendin
             size="small"
             :outlined="target.mode !== 'new_step'"
             :disabled="running"
-            title="Drag onto the chart: into a column, a gap between columns (a new stage), or after the target (a simulation). Click: a new step at the end."
+            title="Click: choose a model box or an action box to drag onto the chart. Drag this button: a plain new step (after the target: a simulation)."
             draggable="true"
             class="wv-new-step"
             data-testid="workflow-new-step"
             @dragstart="onNewStepDragStart"
-            @click="emit('new-step')"
+            @click="prepOpen = !prepOpen"
           />
           <span class="wv-hint">
             <template v-if="target.mode === 'new_step' && target.draft">
@@ -211,6 +248,13 @@ const alsoDeleted = computed(() => doomed.value.filter((s) => s !== props.pendin
             </template>
           </span>
         </div>
+        <WorkflowStepPrep
+          v-if="prepOpen"
+          :workflow="$attrs.described?.workflow ?? null"
+          :step-kinds="stepKinds"
+          @place="(box) => onAddDraft(box)"
+          @close="prepOpen = false"
+        />
         <Message
           v-if="pendingDelete"
           severity="warn"
@@ -267,7 +311,8 @@ const alsoDeleted = computed(() => doomed.value.filter((s) => s !== props.pendin
           @place="({ node, col, row }) => onEdit('place', node, col, row)"
           @connect="onConnect"
           @edit-edge="onEditEdge"
-          @select-draft="(id) => editor?.chooseDraft(id)"
+          @select-draft="onSelectDraft"
+          @refused="(why) => (editError = why)"
           @delete-draft="(id) => onEdit('deleteDraft', id)"
           @place-many="(positions) => onEdit('placeMany', positions)"
           @add-draft="onAddDraft"
@@ -282,6 +327,20 @@ const alsoDeleted = computed(() => doomed.value.filter((s) => s !== props.pendin
           :figure="clickedFigure"
           :origin="clickedOrigin"
           @close="clickedEdge = null; clickedFigure = null; clickedOrigin = null"
+        />
+        <WorkflowDraftChoice
+          :draft="choosing"
+          :panels="draftPanels"
+          :model-words="choosing ? modelShort(choosing.model) : ''"
+          @choose="onChoose"
+          @close="choosing = null"
+        />
+        <WorkflowSetValuesForm
+          :draft="setDraft"
+          :parameters-offered="parametersOffered"
+          :save="(form) => editor ? editor.setValues(form) : Promise.resolve('editing is not available')"
+          :busy="busy || running"
+          @close="setDraft = null"
         />
         <WorkflowSweepForm
           :draft="sweepDraft"

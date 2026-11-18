@@ -621,13 +621,29 @@ async function onNewWorkflowStep() {
   else wf.newStep()
 }
 
+/**
+ * A model box's choice: the box's model becomes the study (a step already on that model is
+ * opened, so Imports show its model, obs_data and params_for_id; the target for the
+ * target's model), the chosen tab opens on the left, and its next run makes the box that step.
+ */
+async function onWorkflowDraftAction({ draft, model: boxModel, panel }) {
+  const same = (m) => JSON.stringify(m ?? null) === JSON.stringify(boxModel ?? null)
+  const step = workflowFileSteps.value.find((s) => s.model && same(s.model))
+  const target = wf.described.value?.workflow?.target
+  if (step && workflowDetails.value[step.id]?.viewable !== false) await onSelectWorkflowTab(step.id)
+  else if (!step && same(target)) await onSelectWorkflowTab('target')
+  wf.chooseDraft(draft)
+  if (PANEL_REFS[panel]) leftTab.value = panel
+}
+
 // The chart's edits, for the Workflow view (each async, '' when done, else why not).
 const workflowEditor = {
   link: (arrow) => wf.link(arrow),
   unlink: (arrow) => wf.unlink(arrow),
   place: (node, col, row) => wf.place(node, col, row),
   placeMany: (positions) => wf.placeMany(positions),
-  addDraft: (col, row, onTarget) => wf.addDraft(col, row, onTarget),
+  addDraft: (col, row, onTarget, boxModel, action) => wf.addDraft(col, row, onTarget, boxModel, action),
+  setValues: (form) => wf.setValues(form),
   // a simulation's protocol is the study's obs_data unless its form names a file
   makeSweep: (form) => wf.makeSweep({ ...form, modelId: model.modelId.value }),
   chooseDraft: (draft) => wf.chooseDraft(draft),
@@ -3435,6 +3451,8 @@ watch(() => obs.obsData.value, scheduleRun)
           :link-kinds="wf.described.value?.link_kinds ?? {}"
           :fixed-parameters="!!wf.described.value?.fixed_parameters"
           :editor="workflowEditor"
+          :step-kinds="wf.described.value?.step_kinds ?? []"
+          :draft-panels="Object.keys(PANEL_REFS)"
           :outputs-offered="plottableVariables"
           :parameters-offered="model.variables.value.params ?? []"
           :editing="workflowSummary.mode !== 'new_workflow' ? workflowSummary.step : null"
@@ -3459,6 +3477,7 @@ watch(() => obs.obsData.value, scheduleRun)
           @open-workflow="(path) => onOpenWorkflow({ path })"
           @new-workflow="wf.newWorkflow()"
           @new-step="onNewWorkflowStep"
+          @draft-action="onWorkflowDraftAction"
           @select-step="onSelectWorkflowStep"
           @delete-step="(id) => wf.deleteStep(id)"
           @confirm-delete="wf.confirmDelete()"

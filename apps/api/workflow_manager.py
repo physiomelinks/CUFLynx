@@ -310,6 +310,7 @@ class WorkflowManager:
         except (ImportError, AttributeError):
             out["link_kinds"] = {}
         out["fixed_parameters"] = workflow_layout.fixed_parameters_supported()
+        out["step_kinds"] = workflow_layout.step_kinds()
         try:
             # CA's warnings about the workflow itself (two steps calibrating one parameter of
             # the target, the later replacing the earlier) are shown as problems in the view

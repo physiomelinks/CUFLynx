@@ -4215,6 +4215,54 @@ def _study_entries(record: "_ModelRecord") -> list:
         return []
 
 
+def _external_draft_plan(configured: str, config: dict):
+    """``(plan, notes)`` for a run that makes a model box of the open workflow when that
+    workflow is not one of the working dir's study workflows (one opened from elsewhere, such
+    as a workflow of module-library models): the step goes into that workflow's own file, on
+    the box's model, its results into that workflow's run directory, with its module
+    libraries. None for any other run.
+
+    Raises:
+        HTTPException: 422 when the box is not one a panel's run makes.
+    """
+    import workflow_layout  # noqa: PLC0415
+
+    wanted = config.get("workflow_target") or {}
+    path = wanted.get("workflow")
+    if wanted.get("mode") != "new_step" or not wanted.get("draft") or not path:
+        return None
+    if not workflow.loaded or os.path.abspath(path) != workflow.path \
+            or study_workflow.working_dir_of(workflow.path):
+        return None
+    draft = next((d for d in workflow_layout.read(path)["drafts"]
+                  if d.get("id") == wanted["draft"]), None)
+    if draft is None:
+        raise HTTPException(status_code=422, detail=f"the workflow has no new step {wanted['draft']!r}")
+    if not draft.get("model"):
+        raise HTTPException(status_code=422, detail=(
+            f"{draft['id']} is not on a model: in this workflow a step a panel runs is made "
+            f"from a model box (New step, Models)"))
+    try:
+        (builder_cls,) = study_workflow._ca("WorkflowBuilder")
+        builder = builder_cls.load(path)
+    except (ValueError, OSError) as exc:
+        raise HTTPException(status_code=422, detail=f"the workflow: {exc}") from exc
+    plan = study_workflow.Plan(builder, configured)
+    plan.external_run_dir = workflow.output_dir or None
+    plan.module_library_dirs = list(workflow.module_library_dirs or _module_library_dirs)
+    plan.draft = draft["id"]
+    # every step this run writes is on the box's model, not the study's: its paths resolved
+    # against the workflow's folder, and none at all when it is the target (a step with no
+    # model runs on the target)
+    model = study_workflow.resolved_model(draft["model"], os.path.dirname(path))
+    target = study_workflow.resolved_model(builder.to_dict().get("target"), os.path.dirname(path))
+    config["study_model"] = None if model == target else model
+    return plan, [_study_note(
+        f"this run makes {draft['id']} a step of {builder.name} on "
+        f"{study_workflow.model_words(draft['model'])}; its results go to "
+        f"{plan.run_dir}.")]
+
+
 def _study_plan(record: "_ModelRecord", configured: str, config: dict, *, flavour: str,
                 held_out: bool = False, needs_point: bool = False, profile: bool = False):
     """``(plan, notes)``: the study workflow to add this run's steps to, or ``(None,
@@ -4249,6 +4297,9 @@ def _study_plan(record: "_ModelRecord", configured: str, config: dict, *, flavou
         raise HTTPException(status_code=409, detail=(
             f"step {running} of the study workflow is running; this run is the next step "
             f"of the same workflow, so start it when that one has finished"))
+    external = _external_draft_plan(configured, config)
+    if external:
+        return external
     # the CellML the workflow's model is, for a model type CA generates from it; a study
     # opened from a study workflow's step runs as that workflow's own target
     study_target = getattr(record, "study_target", None)
@@ -4321,7 +4372,7 @@ def _study_target(config: dict) -> dict | None:
 def _study_inputs(config: dict, obs_path: str | None = None) -> dict:
     """The model, obs_data and params_for_id every step of this run names, and the
     emulator it runs on when the Emulator tab's tick box is on."""
-    out = {"model": _study_target(config),
+    out = {"model": config["study_model"] if "study_model" in config else _study_target(config),
            "obs_data": obs_path or config["obs_path"], "params_for_id": config["params_path"]}
     if config.get("use_emulator"):
         out["emulator_dir"] = config["emulator_dir"]
@@ -5089,8 +5140,19 @@ class WorkflowDraftRequest(BaseModel):
     row: float | None = None
     #: Dropped after the target: a sweep on the merged target.
     on_target: bool = False
+    #: A model box: the step's model as the workflow file writes it.
+    model: dict | str | None = None
+    #: An action box (workflow_layout.ACTIONS): set by hand, combine.
+    action: str | None = None
     #: A draft to delete.
     draft: str | None = None
+
+
+class WorkflowSetValuesRequest(BaseModel):
+    draft: str
+    #: [{parameter, value, reason}]
+    entries: list[dict]
+    point: bool = False
 
 
 def _layout_edit(fn, *args, **kwargs) -> dict:
@@ -5134,7 +5196,11 @@ def workflow_draft(req: WorkflowDraftRequest) -> dict:
 
     path = _editable_workflow()
     with study_workflow.lock():
-        draft = workflow_layout.add_draft(path, req.col, req.row, on_target=req.on_target)
+        try:
+            draft = workflow_layout.add_draft(path, req.col, req.row, on_target=req.on_target,
+                                              model=req.model, action=req.action)
+        except study_workflow.StudyWorkflowError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
     return {**_reopen_edited(path), "draft": draft}
 
 
@@ -5160,6 +5226,13 @@ def workflow_sweep(req: WorkflowSweepRequest) -> dict:
     return _layout_edit("make_sweep", req.draft, obs_data=obs, outputs=req.outputs,
                         parameters=req.parameters, design=req.design, zip_groups=req.zip,
                         settings={"dt": float(dt)} if dt else None)
+
+
+@app.post("/api/workflow/set_values")
+def workflow_set_values(req: WorkflowSetValuesRequest) -> dict:
+    """Make a Set values by hand action box a set step: each value with its reason, checked
+    by CA (a red set-by-hand box)."""
+    return _layout_edit("make_set", req.draft, req.entries, point=req.point)
 
 
 @app.post("/api/workflow/draft/delete")

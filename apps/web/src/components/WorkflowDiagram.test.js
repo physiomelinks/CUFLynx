@@ -314,6 +314,70 @@ describe('WorkflowDiagram', () => {
     expect(c.find('[data-testid="workflow-drop-gap-1"]').exists()).toBe(false)
   })
 
+  it('an arrow goes left to right only: a box in the same column or left of it is refused', async () => {
+    const c = chart()
+    const pan = pointers(c)
+    // sobol-1 is in the same column as sliders-1; calibration-1 is right of sliders-1
+    const left = c.find('[data-testid="workflow-node-sliders-1"]').element
+    document.elementFromPoint = () => left
+    await c.find('[data-testid="workflow-port-calibration-1"]').trigger('pointerdown',
+      { button: 0, clientX: 5, clientY: 5, pointerId: 6 })
+    await pan.trigger('pointermove', { clientX: 20, clientY: 40, pointerId: 6 })
+    expect(c.find('[data-testid="workflow-node-sliders-1"]').classes()).toContain('blocked')
+    await pan.trigger('pointerup', { clientX: 20, clientY: 40, pointerId: 6 })
+    expect(c.emitted('connect')).toBeUndefined()
+    expect(c.emitted('refused')[0][0]).toContain('left to right')
+    const same = c.find('[data-testid="workflow-node-sobol-1"]').element
+    document.elementFromPoint = () => same
+    await c.find('[data-testid="workflow-port-sliders-1"]').trigger('pointerdown',
+      { button: 0, clientX: 5, clientY: 5, pointerId: 7 })
+    await pan.trigger('pointerup', { clientX: 20, clientY: 40, pointerId: 7 })
+    expect(c.emitted('connect')).toBeUndefined()
+    delete document.elementFromPoint
+  })
+
+  it('a model or action box dropped from the step prep box carries what it is', async () => {
+    const c = chart()
+    const pan = c.find('[data-testid="workflow-pan"]')
+    const model = { module_type: 'i_K1', parameterisation: 'k1998' }
+    const types = ['application/x-cuflynx-new-step']
+    const colX = 8 + 1 * (250 + 96) + 100
+    await pan.trigger('drop', { clientX: colX, clientY: 5, dataTransfer: { types,
+      getData: () => JSON.stringify({ model }) } })
+    expect(c.emitted('add-draft')[0][0]).toMatchObject({ col: 0, model })
+    // after the target is only a simulation of the merged target
+    await pan.trigger('drop', { clientX: 5000, clientY: 60, dataTransfer: { types,
+      getData: () => JSON.stringify({ action: 'set' }) } })
+    expect(c.emitted('add-draft')).toHaveLength(1)
+    expect(c.emitted('refused')[0][0]).toContain('After the target')
+  })
+
+  it('a press on a box captures the pointer only once it moves, so a click reaches the box', async () => {
+    // captured at once, the browser sends the click to the chart, and the box never hears it
+    const c = chart()
+    const pan = c.find('[data-testid="workflow-pan"]')
+    const captured = []
+    pan.element.setPointerCapture = (id) => captured.push(id)
+    pan.element.releasePointerCapture = () => {}
+    const node = c.find('[data-testid="workflow-node-sobol-1"]')
+    await node.trigger('pointerdown', { button: 0, clientX: 10, clientY: 10, pointerId: 9 })
+    await pan.trigger('pointermove', { clientX: 11, clientY: 10, pointerId: 9 })
+    expect(captured).toEqual([])
+    await pan.trigger('pointermove', { clientX: 40, clientY: 10, pointerId: 9 })
+    expect(captured).toEqual([9])
+    await pan.trigger('pointerup', { clientX: 40, clientY: 10, pointerId: 9 })
+  })
+
+  it('a model box and an action box say what they are', () => {
+    const c = chart({ layout: { positions: {}, links: [], drafts: [
+      { id: 'new-1', model: { module_type: 'i_K1', parameterisation: 'k1998' } },
+      { id: 'new-2', action: 'set' }] } })
+    expect(c.find('[data-testid="workflow-node-new-1"]').text()).toContain('click: choose what it does')
+    const set = c.find('[data-testid="workflow-node-new-2"]')
+    expect(set.text()).toContain('Set values by hand')
+    expect(set.classes()).toContain('set-action')
+  })
+
   it('a box after the target is a simulation, set up in its form', async () => {
     const c = chart({ layout: { positions: {}, drafts: [{ id: 'new-2', on_target: true }], links: [] } })
     const box = c.find('[data-testid="workflow-node-new-2"]')

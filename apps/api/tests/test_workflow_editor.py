@@ -227,6 +227,70 @@ def test_a_drop_in_a_gap_moves_the_boxes_right_of_it_in_one_go(client, fake_runs
     assert r.status_code == 422
 
 
+def _external_copy(work):
+    """The study workflow copied to a folder that is not a study workflow's
+    (``<W>/project/enterocyte/``, as a workflow opened from elsewhere is), its relative input
+    paths still resolving."""
+    src = _workflow_dir(work) / "calibration_workflow.json"
+    dst = work / "project" / "enterocyte" / "calibration_workflow.json"
+    dst.parent.mkdir(parents=True)
+    dst.write_text(src.read_text())
+    return dst
+
+
+def test_a_model_box_on_a_workflow_from_elsewhere_is_made_there_by_a_panel_run(
+        client, fake_runs, tmp_path):
+    """A workflow opened from elsewhere (enterocyte's, of library models) is not a study
+    workflow: a run that makes one of its model boxes writes the step into its own file, on
+    the box's model, and runs it in its own run directory."""
+    work = tmp_path / "w"
+    model_id = _setup(client)
+    assert _calibrate(client, model_id, work)["state"] == "done"
+    ext = _external_copy(work)
+    run_dir = tmp_path / "ext_run"
+    r = client.post("/api/workflow/load", json={"path": str(ext), "run_dir": "",
+                                                "config_outputs_dir": str(run_dir)})
+    assert r.status_code == 200, r.text
+    model = json.loads(ext.read_text())["steps"][-1]["model"]
+    r = client.post("/api/workflow/draft", json={"col": 1, "row": 0, "model": model})
+    assert r.status_code == 200, r.text
+    draft = r.json()["draft"]
+    assert r.json()["layout"]["drafts"] == [{"id": draft, "model": model}]
+
+    status = _calibrate(client, model_id, work, workflow_target={
+        "mode": "new_step", "draft": draft, "workflow": str(ext)})
+    assert status["state"] == "done", status["lines"]
+    steps = {s["id"]: s for s in json.loads(ext.read_text())["steps"]}
+    assert list(steps) == ["calibration-1", "calibration-2"]
+    assert steps["calibration-2"]["model"] == model
+    config = fake_runs()[-1]
+    assert config["workflow"] == str(ext)
+    assert config["write_calibrated"] is False
+    # the study workflow in the working dir is untouched
+    assert list(_steps(work)) == ["calibration-1"]
+
+
+def test_an_action_box_sets_values_by_hand(client, fake_runs, tmp_path):
+    work = tmp_path / "w"
+    model_id = _setup(client)
+    assert _calibrate(client, model_id, work)["state"] == "done"
+    r = client.post("/api/workflow/draft", json={"col": 0, "row": 0, "action": "set"})
+    draft = r.json()["draft"]
+    assert r.json()["layout"]["drafts"] == [{"id": draft, "action": "set"}]
+    assert "set" in r.json()["step_kinds"]
+    r = client.post("/api/workflow/set_values", json={"draft": draft, "entries": [
+        {"parameter": f"{MODULE}/gamma", "value": 1.5, "reason": ""}]})
+    assert r.status_code == 422
+    assert "say why" in r.json()["detail"]
+    r = client.post("/api/workflow/set_values", json={"draft": draft, "entries": [
+        {"parameter": f"{MODULE}/gamma", "value": 1.5, "reason": "Smith 2001, Table 2"}]})
+    assert r.status_code == 200, r.text
+    assert _steps(work)[draft] == {"id": draft, "kind": "set", "set": [
+        {"parameter": f"{MODULE}/gamma", "value": 1.5, "reason": "Smith 2001, Table 2"}]}
+    r = client.post("/api/workflow/draft", json={"action": "teleport"})
+    assert r.status_code == 422
+
+
 def _wait(client, kind, job_id, seconds=420) -> dict:
     deadline = time.time() + seconds
     while time.time() < deadline:
