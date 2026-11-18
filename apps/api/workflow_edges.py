@@ -165,6 +165,12 @@ def edge_detail(run_dir: str, workflow: dict, source: str, target: str, key: str
         out["what"] = "values merged into the target"
         step = steps.get(source) or {}
         out["rows"], out["recorded"] = _values_of(run_dir, step)
+        # what the step carries on from earlier steps: the values fixed in its model, so a
+        # step whose values all pass through it needs no arrow of its own to the target
+        for f in _result(run_dir, source).get("fixed") or []:
+            out["rows"].append({"name": f.get("host_name") or f.get("model_name"),
+                                "value": f.get("value"), "units": f.get("units"),
+                                "note": f"from {f.get('from_step')}, fixed in {source}"})
         return out
 
     if source == TARGET:

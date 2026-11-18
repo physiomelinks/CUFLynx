@@ -69,8 +69,12 @@ def test_a_priors_from_arrow_carries_the_stored_distribution(run):
 
 
 def test_the_arrow_into_the_target_carries_the_calibrated_values(run):
+    """Its own calibrated values, and those it carries on from the steps whose values it
+    fixed (which then need no arrow of their own to the target)."""
     d = we.edge_detail(run, WORKFLOW, "fit-k", "target", "merged")
-    assert d["rows"] == [{"name": "heat/k", "value": 0.25, "units": "W", "note": ""}]
+    assert d["rows"] == [
+        {"name": "heat/k", "value": 0.25, "units": "W", "note": ""},
+        {"name": "heat/u_D", "value": 0.1, "units": "K", "note": "from boundary, fixed in fit-k"}]
 
 
 def test_a_step_on_the_target_takes_every_merged_value(run):
