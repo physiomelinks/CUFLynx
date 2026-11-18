@@ -18,7 +18,7 @@
 import { computed, ref } from 'vue'
 import { SOURCE_WORDS, cellmlFile, externalFile, modelLabel } from '../stores/useWorkflow'
 
-import { figureReads, layoutSteps, referencesOf } from '../lib/workflowTarget'
+import { figureReads, layoutSteps, modelShort, referencesOf } from '../lib/workflowTarget'
 import { routeEdges } from '../lib/workflowRoutes'
 
 const props = defineProps({
@@ -50,7 +50,7 @@ const props = defineProps({
 })
 const emit = defineEmits(['select', 'inspect', 'delete', 'place', 'place-many', 'add-draft',
   'connect', 'edit-edge', 'select-draft', 'delete-draft', 'setup-sweep', 'open-target', 'edge',
-  'figure', 'origin'])
+  'figure', 'origin', 'refused'])
 
 const W = 250
 const H = 78
@@ -165,7 +165,18 @@ function data(step) {
 const positions = computed(() => props.layout?.positions ?? {})
 const pendingLinks = computed(() => props.layout?.links ?? [])
 const drafts = computed(() => (props.layout?.drafts ?? []).map((d) =>
-  ({ id: d.id, draft: true, ...(d.on_target ? { on_target: true } : {}) })))
+  ({ id: d.id, draft: true, ...(d.on_target ? { on_target: true } : {}),
+     ...(d.model ? { draftModel: d.model } : {}), ...(d.action ? { action: d.action } : {}) })))
+
+/** A new step's second line and tag, by what it came from: a model box, an action box,
+ * after the target, or a plain new step. */
+function draftWords(step) {
+  if (step.on_target) return ['Simulation: double-click to set it up', 'not set up · runs on the merged target']
+  if (step.draftModel) return [modelShort(step.draftModel), 'model box · click: choose what it does']
+  if (step.action === 'set') return ['Set values by hand: click to give them', 'not set up · set by hand']
+  if (step.action === 'combine') return ['Choose a parameter set by cost', 'not set up · draw calibrations to it']
+  return ['New step: run a panel to make it', 'not run · its kind is what you run']
+}
 const onTarget = computed(() => [...props.steps, ...drafts.value].filter((s) => s.on_target))
 const mainSteps = computed(() => [...props.steps, ...drafts.value].filter((s) => !s.on_target))
 const placed = computed(() => layoutSteps(mainSteps.value, positions.value, pendingLinks.value))
@@ -372,8 +383,9 @@ function chartPoint(event) {
 function onBoxDown(event, id) {
   if (event.button !== 0 || props.busy || event.target.closest('.wf-delete, .wf-port')) return
   const p = chartPoint(event)
+  // the pointer is captured only once the box moves: captured at once, a plain click would
+  // go to the chart rather than the box
   moving.value = { id, x: p.x, y: p.y, dx: 0, dy: 0, moved: false, pointer: event.pointerId }
-  pan.value.setPointerCapture?.(event.pointerId)
 }
 
 /** Where a box dropped with its top-left at (x, y) goes: its column of steps, and an order
@@ -480,9 +492,26 @@ function onDropNew(event) {
   const p = chartPoint(event)
   const zone = zoneAt(p.x, p.y)
   dropping.value = null
-  if (zone.kind === 'after') emit('add-draft', { onTarget: true })
-  else if (zone.kind === 'gap') emit('add-draft', { col: zone.g, row: 0, shift: shiftFrom(zone.g) })
-  else emit('add-draft', { col: zone.col, row: zone.row })
+  // what was dragged: a model box or an action box from the step prep box, else a plain
+  // new step
+  let what = {}
+  try {
+    what = JSON.parse(event.dataTransfer.getData(NEW_STEP_TYPE) || '{}') ?? {}
+  } catch {
+    what = {}
+  }
+  const box = { ...(what.model ? { model: what.model } : {}), ...(what.action ? { action: what.action } : {}) }
+  if (zone.kind === 'after') {
+    if (Object.keys(box).length) {
+      emit('refused', 'After the target is a simulation of the merged target: drop a model or action box into a column, or a gap between columns.')
+      return
+    }
+    emit('add-draft', { onTarget: true })
+  } else if (zone.kind === 'gap') {
+    emit('add-draft', { col: zone.g, row: 0, shift: shiftFrom(zone.g), ...box })
+  } else {
+    emit('add-draft', { col: zone.col, row: zone.row, ...box })
+  }
 }
 
 /** A click on a box selects it, unless the box was just moved. */
@@ -521,11 +550,24 @@ function nodeUnder(event) {
   return el?.closest?.('[data-node]')?.getAttribute('data-node') ?? null
 }
 
+/** An arrow goes left to right only: into a box in a column right of its source's. */
+function leftToRight(source, target) {
+  const a = cells.value[source]?.col
+  const b = cells.value[target]?.col
+  return a != null && b != null && b > a
+}
+
 function finishDrawing(event) {
   const d = drawing.value
   drawing.value = null
   const target = nodeUnder(event) ?? d?.over
-  if (d && target && target !== d.source) emit('connect', { source: d.source, target })
+  if (!d || !target || target === d.source) return
+  if (!leftToRight(d.source, target)) {
+    emit('refused', `An arrow goes left to right: ${target} is not right of ${d.source}. ` +
+      `Move ${target} into a column right of ${d.source} first.`)
+    return
+  }
+  emit('connect', { source: d.source, target })
 }
 
 // -- panning: drag the chart by anything but a step box (a box drags to reorder) -------------
@@ -546,7 +588,10 @@ function onPanMove(event) {
     const p = chartPoint(event)
     m.dx = p.x - m.x
     m.dy = p.y - m.y
-    if (Math.abs(m.dx) + Math.abs(m.dy) > 4) m.moved = true
+    if (!m.moved && Math.abs(m.dx) + Math.abs(m.dy) > 4) {
+      m.moved = true
+      pan.value.setPointerCapture?.(m.pointer)
+    }
     if (m.moved) {
       const box = byId.value[m.id]
       dropping.value = zoneAt(box.x + m.dx + W / 2, box.y + m.dy + H / 2, m.id)
@@ -559,6 +604,7 @@ function onPanMove(event) {
     d.x = p.x
     d.y = p.y
     d.over = nodeUnder(event)
+    d.blocked = !!d.over && !leftToRight(d.source, d.over)
     return
   }
   const p = panning.value
@@ -567,7 +613,13 @@ function onPanMove(event) {
   pan.value.scrollTop = p.top - (event.clientY - p.y)
 }
 function onPanEnd(event) {
-  if (moving.value || drawing.value || panning.value) pan.value.releasePointerCapture?.(event.pointerId)
+  if (moving.value || drawing.value || panning.value) {
+    try {
+      pan.value.releasePointerCapture?.(event.pointerId)
+    } catch {
+      // not captured (a press that did not move)
+    }
+  }
   if (moving.value) finishMove()
   if (drawing.value) finishDrawing(event)
   panning.value = null
@@ -663,7 +715,9 @@ function onPanEnd(event) {
           editing: b.step.id === editing,
           doomed: doomed.includes(b.step.id),
           moving: moving?.id === b.step.id && moving.moved,
-          over: drawing && drawing.over === b.step.id && drawing.source !== b.step.id,
+          over: drawing && drawing.over === b.step.id && drawing.source !== b.step.id && !drawing.blocked,
+          blocked: drawing && drawing.over === b.step.id && drawing.blocked,
+          'set-action': b.step.action === 'set',
         }]"
         :style="boxStyle(b)"
         :title="b.step.draft ? draftHelp : data(b.step)"
@@ -693,11 +747,10 @@ function onPanEnd(event) {
             />
           </div>
           <div class="wf-row2">
-            <span class="wf-detail">{{ b.step.on_target ? 'Simulation: double-click to set it up'
-              : 'New step: run a panel to make it' }}</span>
+            <span class="wf-detail">{{ draftWords(b.step)[0] }}</span>
           </div>
           <div class="wf-tag">
-            {{ b.step.on_target ? 'not set up · runs on the merged target' : 'not run · its kind is what you run' }}
+            {{ draftWords(b.step)[1] }}
             <span v-if="b.step.id === editing" class="wf-badge" title="the next run makes this step">next run</span>
           </div>
         </template>
@@ -933,6 +986,13 @@ function onPanEnd(event) {
 }
 .wf-node.over {
   box-shadow: 0 0 0 3px var(--p-primary-color, #4f8cff);
+}
+.wf-node.blocked {
+  box-shadow: 0 0 0 3px #e84a5f;
+  cursor: not-allowed;
+}
+.wf-box.draft.set-action {
+  border-color: var(--hand);
 }
 .wf-box.draft {
   border: 2px dashed var(--p-primary-color, #4f8cff);

@@ -287,6 +287,19 @@ export function linkChoices(linkKinds, source, target) {
     .map(([key]) => key)
 }
 
+/** A step's model in a few words, as the chart's boxes name it: `i_K1 · krapivinsky1998`
+ * (a library module, its version left out), a file's name, or `the target`. */
+export function modelShort(model) {
+  if (!model) return 'the target'
+  if (typeof model === 'string') return model.split(/[\\/]/).pop()
+  if (model.module_type) return [model.module_type, model.parameterisation].filter(Boolean).join(' · ')
+  for (const key of ['cellml_model_path', 'external_model_path', 'module_array', 'module_array_path']) {
+    if (typeof model[key] === 'string') return model[key].split(/[\\/]/).pop()
+  }
+  if (Array.isArray(model.select)) return `a selection of ${model.select.join(', ')}`
+  return 'its model'
+}
+
 /** An arrow's entry in its target step (a list key's object with its options), or null. */
 export function linkEntry(step, source, key) {
   const value = step?.[key]
