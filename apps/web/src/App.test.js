@@ -2431,7 +2431,11 @@ describe('analysis runs carry the protocol window', () => {
     // by default the latest calibration is changed
     expect(wrapper.vm.workflowSummary).toMatchObject({ mode: 'edit', step: 'calibration-2' })
 
+    const { openWorkflowView } = await import('./lib/api')
+    openWorkflowView.mockClear()
     await wrapper.vm.onSelectWorkflowStep('calibration-1')
+    // the step becomes the current study, so Imports show its model and data
+    expect(openWorkflowView).toHaveBeenCalledWith('calibration-1', expect.anything())
     expect(wrapper.vm.leftTab).toBe('calibration')
     expect(wrapper.vm.workflowSummary).toMatchObject({ mode: 'edit', step: 'calibration-1' })
     wrapper.vm.onRunCalibration({ param_id_method: 'CMA-ES' })

@@ -280,6 +280,9 @@ class _ModelRecord:
         #: step's tab in the Workflow tab -- as ``{"results_dir", "step", "workflow"}``.
         #: Its best fit is the previous best fit until this session calibrates.
         self.opened_calibration: dict | None = None
+        # the study workflow's own target, when the study is one of its steps opened as the
+        # study (/api/workflow/view): what runs from it name as their model
+        self.study_target: str | None = None
 
 
 # In-memory registry of uploaded models (process-scoped session store).
@@ -4242,8 +4245,12 @@ def _study_plan(record: "_ModelRecord", configured: str, config: dict, *, flavou
         raise HTTPException(status_code=409, detail=(
             f"step {running} of the study workflow is running; this run is the next step "
             f"of the same workflow, so start it when that one has finished"))
-    # the CellML the workflow's model is, for a model type CA generates from it
-    config.setdefault("cellml_model_path", _model_file(record))
+    # the CellML the workflow's model is, for a model type CA generates from it; a study
+    # opened from a study workflow's step runs as that workflow's own target
+    study_target = getattr(record, "study_target", None)
+    config.setdefault("cellml_model_path", study_target or _model_file(record))
+    if study_target:
+        config["study_target_path"] = study_target
     try:
         target = _study_target(config)
         wanted = config.get("workflow_target") or {}
@@ -4289,7 +4296,8 @@ def _study_target(config: dict) -> dict | None:
     """The workflow model of this run: the user's file for an external Python model, else
     the CellML (the run's ``model_path`` is the generated ``.py`` for a generated type)."""
     model_type = config["model_type"]
-    path = (config["model_path"] if model_type == "external_python"
+    path = (config.get("study_target_path") or config["model_path"]
+            if model_type == "external_python"
             else config.get("cellml_model_path") or config["model_path"])
     return study_workflow.target_model(path, model_type)
 
@@ -4978,6 +4986,19 @@ def workflow_view(req: WorkflowViewRequest) -> dict:
         shutil.rmtree(work_dir, ignore_errors=True)
     _workflow_view_models[result["model_id"]] = workflow.path
     workflow.view_models[result["model_id"]] = req.view
+    result["name"] = _view_model_name(view, req.view)
+    # A step of a study workflow opened as the study (a block clicked in the chart): its
+    # model is a packed copy, so runs from it name the workflow's own target, or the next
+    # run would see another model and start a new workflow instead of changing the step.
+    if study_workflow.working_dir_of(workflow.path):
+        try:
+            target = study_workflow.read_raw(workflow.path).get("target") or {}
+        except (OSError, ValueError):
+            target = {}
+        rel = target.get("cellml_model_path") or target.get("external_model_path")
+        if isinstance(rel, str):
+            _models[result["model_id"]].study_target = os.path.normpath(
+                os.path.join(os.path.dirname(workflow.path), rel))
     result["workflow_view"] = {
         key: view.get(key) for key in (
             "view", "kind", "model", "step_id", "place", "fixed", "calibrated",
@@ -4999,14 +5020,36 @@ def workflow_view(req: WorkflowViewRequest) -> dict:
 
 
 def _view_inputs(view: dict, prefix: str) -> tuple:
-    """``(obs, params)`` of a workflow view, each ``(file name, bytes)`` or None."""
+    """``(obs, params)`` of a workflow view, each ``(file name, bytes)`` or None. Each keeps
+    the step's own file name (``krapivinsky1998_obs_data.json``), so the study shows the files
+    the step names; a name that does not say which it is gets the step's prefix instead, as
+    the archive importer tells them apart by name."""
     obs = params = None
     if view.get("obs_data_path"):
-        obs = (f"{prefix}_obs_data.json", Path(view["obs_data_path"]).read_bytes())
+        path = Path(view["obs_data_path"])
+        name = path.name if "obs" in path.name.lower() else f"{prefix}_obs_data.json"
+        obs = (name, path.read_bytes())
     if view.get("params_for_id_path"):
         path = Path(view["params_for_id_path"])
-        params = (f"{prefix}_params_for_id{path.suffix.lower()}", path.read_bytes())
+        name = (path.name if "param" in path.name.lower()
+                else f"{prefix}_params_for_id{path.suffix.lower()}")
+        params = (name, path.read_bytes())
     return obs, params
+
+
+def _view_model_name(view: dict, step: str) -> str:
+    """The study's name for a workflow view: the step and its model, ``kir: i_K1 ·
+    krapivinsky1998`` (a generated model's own name is the same for every step)."""
+    model = view.get("model") or {}
+    if model.get("module_type"):
+        label = f"{model['module_type']} · {model.get('parameterisation') or ''}".strip(" ·")
+    elif model.get("cellml_model_path") or model.get("external_model_path"):
+        label = Path(model.get("cellml_model_path") or model["external_model_path"]).name
+    elif model.get("module_array"):
+        label = Path(str(model["module_array"])).stem
+    else:
+        label = ""
+    return f"{step}: {label}" if label else step
 
 
 def _load_cellml_view(view: dict, prefix: str) -> dict:

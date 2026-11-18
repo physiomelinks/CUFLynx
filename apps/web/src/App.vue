@@ -571,10 +571,6 @@ const workflowFileSteps = computed(() =>
   wf.loaded.value ? (wf.described.value?.workflow?.steps ?? []) : [],
 )
 const workflowDetails = computed(() => Object.fromEntries(wf.tabs.value.map((t) => [t.id, t])))
-// The workflow's model, by its file name, for the bar (the target tab's label).
-const workflowModel = computed(
-  () => wf.tabs.value.find((t) => t.kind === 'target')?.label ?? '',
-)
 // CA's status of each step ({status, stale, best_cost, duration_s, ...}), for the chart's boxes.
 const workflowResults = computed(() => wf.described.value?.status?.steps ?? {})
 
@@ -600,6 +596,10 @@ async function onSelectWorkflowStep(stepId) {
     return
   }
   wf.error.value = ''
+  // the step becomes the current study, so Imports show its model, obs_data and
+  // params_for_id; a step with no model of its own (a set step, a sweep on the target) has
+  // nothing to load
+  if (workflowDetails.value[stepId]?.viewable !== false) await onSelectWorkflowTab(stepId)
   wf.editStep(stepId)
   leftTab.value = panel
   await nextTick()
@@ -3288,7 +3288,6 @@ watch(() => obs.obsData.value, scheduleRun)
           :name="wf.name.value"
           :open="workflowOpen"
           :summary="workflowSummary"
-          :model="workflowModel"
           @toggle="workflowOpen = !workflowOpen"
         />
         <WorkflowView

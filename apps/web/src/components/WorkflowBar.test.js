@@ -11,14 +11,16 @@ describe('WorkflowBar', () => {
     expect(bar.emitted('toggle')).toHaveLength(1)
   })
 
-  it('shows only the step the next run changes and the model', () => {
+  it('reads "[Editing] sglt1": the chip, then the step it changes, and nothing else', () => {
     const bar = mount(WorkflowBar, { props: {
-      name: 'study', model: 'Lotka_Volterra_forced.cellml',
-      summary: { mode: 'edit', step: 'calibration-1', text: 'Changing step calibration-1 of study' },
+      name: 'enterocyte',
+      summary: { mode: 'edit', step: 'sglt1', text: 'Changing step sglt1 of enterocyte' },
     } })
-    expect(bar.find('[data-testid="workflow-mode"]').text()).toBe('Editing calibration-1')
-    expect(bar.find('[data-testid="workflow-model"]').text()).toBe('Lotka_Volterra_forced.cellml')
-    // no step tabs: the steps are in the Workflow view's chart
+    expect(bar.find('[data-testid="workflow-mode"]').text()).toBe('Editing')
+    expect(bar.find('[data-testid="workflow-mode-step"]').text()).toBe('sglt1')
+    // no model name, no step tabs: the steps are in the Workflow view's chart
+    expect(bar.element.children).toHaveLength(3)
+    expect(bar.find('[data-testid="workflow-toggle"]').text()).toBe('Workflow: enterocyte')
     expect(bar.findAll('button')).toHaveLength(1)
   })
 
