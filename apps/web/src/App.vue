@@ -615,8 +615,19 @@ async function onSelectWorkflowStep(stepId) {
 }
 
 /** "New step": the next run, of whatever kind, is added as a step. */
-function onNewWorkflowStep() {
-  wf.newStep()
+/** New step: a new box on the workflow chart, which the next run of any kind makes a step. */
+async function onNewWorkflowStep() {
+  if (wf.loaded.value) await wf.addDraft()
+  else wf.newStep()
+}
+
+// The chart's edits, for the Workflow view (each async, '' when done, else why not).
+const workflowEditor = {
+  link: (arrow) => wf.link(arrow),
+  unlink: (arrow) => wf.unlink(arrow),
+  place: (node, col, row) => wf.place(node, col, row),
+  chooseDraft: (draft) => wf.chooseDraft(draft),
+  deleteDraft: (draft) => wf.deleteDraft(draft),
 }
 
 /**
@@ -3416,7 +3427,11 @@ watch(() => obs.obsData.value, scheduleRun)
           :figures="wf.described.value?.workflow?.external_figures ?? []"
           :origins="wf.described.value?.value_origins ?? null"
           :rename-step="(step, to) => wf.renameStep(step, to)"
-          :editing="workflowSummary.mode === 'edit' ? workflowSummary.step : null"
+          :layout="wf.described.value?.layout ?? null"
+          :link-kinds="wf.described.value?.link_kinds ?? {}"
+          :fixed-parameters="!!wf.described.value?.fixed_parameters"
+          :editor="workflowEditor"
+          :editing="workflowSummary.mode !== 'new_workflow' ? workflowSummary.step : null"
           :pending-delete="wf.pendingDelete.value"
           :busy="wf.busy.value"
           :running="wf.running.value"

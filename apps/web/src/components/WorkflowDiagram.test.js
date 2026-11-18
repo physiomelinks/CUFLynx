@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
 import WorkflowDiagram from './WorkflowDiagram.vue'
 import { edgesOf, layoutSteps } from '../lib/workflowTarget'
@@ -21,11 +21,29 @@ describe('edgesOf / layoutSteps', () => {
 
   it('puts a step one column right of the furthest step it takes from', () => {
     expect(layoutSteps(steps)).toEqual({
-      'sliders-1': { col: 0, row: 0 },
-      'calibration-1': { col: 1, row: 0 },
-      'sobol-1': { col: 0, row: 1 },
-      'mcmc-1': { col: 2, row: 0 },
+      'sliders-1': { col: 0, row: 0, key: 0 },
+      'calibration-1': { col: 1, row: 0, key: 1 },
+      'sobol-1': { col: 0, row: 1, key: 2 },
+      'mcmc-1': { col: 2, row: 0, key: 3 },
     })
+  })
+
+  it('puts a box where it was moved, never left of what it takes from', () => {
+    const placed = layoutSteps(steps, {
+      'sobol-1': { col: 3, row: 0 },
+      // above sliders-1 in its column
+      'calibration-1': { col: 0, row: -1 },
+    })
+    expect(placed['sobol-1']).toMatchObject({ col: 3, row: 0 })
+    // calibration-1 takes from sliders-1, so it stays right of it
+    expect(placed['calibration-1'].col).toBe(1)
+    expect(placed['mcmc-1'].col).toBe(2)
+  })
+
+  it('places a new step after what its waiting arrows come from', () => {
+    const drafts = [...steps, { id: 'new-1', draft: true }]
+    const placed = layoutSteps(drafts, {}, [{ source: 'mcmc-1', target: 'new-1', key: 'fixed_from' }])
+    expect(placed['new-1'].col).toBe(3)
   })
 })
 
@@ -86,13 +104,76 @@ describe('WorkflowDiagram', () => {
     expect(c.emitted('select')).toHaveLength(1)
   })
 
-  it('a box dragged onto another asks to take its place in the file', async () => {
+  function pointers(c) {
+    const pan = c.find('[data-testid="workflow-pan"]')
+    pan.element.setPointerCapture = () => {}
+    pan.element.releasePointerCapture = () => {}
+    return pan
+  }
+
+  it('a box dragged elsewhere asks to go to that column and row; a click still selects', async () => {
     const c = chart()
-    const data = { setData: () => {}, effectAllowed: '' }
-    await c.find('[data-testid="workflow-node-sobol-1"]').trigger('dragstart', { dataTransfer: data })
-    await c.find('[data-testid="workflow-node-sliders-1"]').trigger('dragover')
-    await c.find('[data-testid="workflow-node-sliders-1"]').trigger('drop')
-    expect(c.emitted('move')).toEqual([[{ step: 'sobol-1', index: 0 }]])
+    const pan = pointers(c)
+    const node = c.find('[data-testid="workflow-node-sobol-1"]')
+    await node.trigger('pointerdown', { button: 0, clientX: 10, clientY: 10, pointerId: 3 })
+    // jsdom has no layout: the chart is at (0, 0), so a move is chart coordinates; two
+    // columns right
+    await pan.trigger('pointermove', { clientX: 10 + 2 * (250 + 96), clientY: 10, pointerId: 3 })
+    expect(node.classes()).toContain('moving')
+    await pan.trigger('pointerup', { clientX: 10 + 2 * (250 + 96), clientY: 10, pointerId: 3 })
+    const [[placed]] = c.emitted('place')
+    expect(placed.node).toBe('sobol-1')
+    expect(placed.col).toBe(2)
+    expect(typeof placed.row).toBe('number')
+    // the click that ends a move does not select; the next one does
+    await node.trigger('click')
+    expect(c.emitted('select')).toBeUndefined()
+    await node.trigger('click')
+    expect(c.emitted('select')).toEqual([['sobol-1']])
+  })
+
+  it('draws a box where it was moved to in its column, not in file order', () => {
+    const top = (c, id) => parseFloat(c.find(`[data-testid="workflow-node-${id}"]`).attributes('style').match(/top: ([\d.]+)px/)[1])
+    const before = chart()
+    expect(top(before, 'sliders-1')).toBeLessThan(top(before, 'sobol-1'))
+    const moved = chart({ layout: { positions: { 'sobol-1': { col: 0, row: -1 } }, drafts: [], links: [] } })
+    expect(top(moved, 'sobol-1')).toBeLessThan(top(moved, 'sliders-1'))
+  })
+
+  it('draws an arrow from a box\'s handle to the box it is dropped on', async () => {
+    const c = chart()
+    const pan = pointers(c)
+    const target = c.find('[data-testid="workflow-node-mcmc-1"]').element
+    document.elementFromPoint = () => target
+    await c.find('[data-testid="workflow-port-calibration-1"]').trigger('pointerdown',
+      { button: 0, clientX: 5, clientY: 5, pointerId: 4 })
+    await pan.trigger('pointermove', { clientX: 900, clientY: 40, pointerId: 4 })
+    expect(c.find('[data-testid="workflow-drawing"]').exists()).toBe(true)
+    expect(c.find('[data-testid="workflow-node-mcmc-1"]').classes()).toContain('over')
+    await pan.trigger('pointerup', { clientX: 900, clientY: 40, pointerId: 4 })
+    expect(c.emitted('connect')).toEqual([[{ source: 'calibration-1', target: 'mcmc-1' }]])
+    expect(c.find('[data-testid="workflow-drawing"]').exists()).toBe(false)
+    delete document.elementFromPoint
+  })
+
+  it('shows new steps and the arrows waiting for them dashed; double-click edits an arrow', async () => {
+    const c = chart({ layout: { positions: {}, drafts: [{ id: 'new-1' }],
+      links: [{ source: 'calibration-1', target: 'new-1', key: 'fixed_from' }] }, editing: 'new-1' })
+    const draft = c.find('[data-testid="workflow-node-new-1"]')
+    expect(draft.classes()).toContain('draft')
+    expect(draft.text()).toContain('run a panel to make it')
+    expect(draft.text()).toContain('next run')
+    expect(c.findAll('.wf-edge.pending')).toHaveLength(1)
+    await draft.trigger('click')
+    expect(c.emitted('select-draft')).toEqual([['new-1']])
+    await c.find('[data-testid="workflow-delete-new-1"]').trigger('click')
+    expect(c.emitted('delete-draft')).toEqual([['new-1']])
+    await c.find('[data-testid="workflow-edge-calibration-1-new-1"]').trigger('dblclick')
+    await c.find('[data-testid="workflow-edge-calibration-1-mcmc-1"]').trigger('dblclick')
+    expect(c.emitted('edit-edge')).toEqual([
+      [{ source: 'calibration-1', target: 'new-1', key: 'fixed_from', pending: true }],
+      [{ source: 'calibration-1', target: 'mcmc-1', key: 'result_from', pending: false }],
+    ])
   })
 
   it('pans when the chart is dragged by its background, not by a step box', async () => {
@@ -186,10 +267,22 @@ describe('WorkflowDiagram', () => {
     const pan = c.find('[data-testid="workflow-pan"]')
     pan.element.setPointerCapture = () => { throw new Error('should not pan') }
     const hit = c.find('[data-testid="workflow-edge-calibration-1-mcmc-1"]')
+    vi.useFakeTimers()
     await hit.trigger('pointerdown', { button: 0, pointerId: 1 })
     await hit.trigger('click')
+    // it waits out a double-click: what it opens is modal and would take the second click
+    expect(c.emitted('edge')).toBeUndefined()
+    vi.advanceTimersByTime(300)
     expect(c.emitted('edge')).toEqual([[{ source: 'calibration-1', target: 'mcmc-1',
                                           key: 'result_from', files: null }]])
+    // a double-click edits the arrow and opens no detail
+    await hit.trigger('click')
+    await hit.trigger('click')
+    await hit.trigger('dblclick')
+    vi.advanceTimersByTime(300)
+    vi.useRealTimers()
+    expect(c.emitted('edge')).toHaveLength(1)
+    expect(c.emitted('edit-edge')).toHaveLength(1)
   })
 
   it("shows where the model's values come from, as CA's provenance boxes them", async () => {

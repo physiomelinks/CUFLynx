@@ -38,6 +38,7 @@ CUFLynx-authored is written there (#210).
 from __future__ import annotations
 
 import json
+import warnings
 import os
 import shutil
 import subprocess
@@ -300,8 +301,23 @@ class WorkflowManager:
         except (OSError, ValueError) as exc:
             out["error"] = f"cannot read {self.path}: {exc}"
             return out
+        # the chart as the user arranged it, and what an arrow can be (CA's rules), whether or not CA can plan it
+        import workflow_layout  # noqa: PLC0415
+
+        out["layout"] = workflow_layout.read(self.path)
         try:
-            out["plan"] = _ca_call("plan_workflow", self.path, self.module_library_dirs)
+            out["link_kinds"] = workflow_layout.link_kinds()
+        except (ImportError, AttributeError):
+            out["link_kinds"] = {}
+        out["fixed_parameters"] = workflow_layout.fixed_parameters_supported()
+        try:
+            # CA's warnings about the workflow itself (two steps calibrating one parameter of
+            # the target, the later replacing the earlier) are shown as problems in the view
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always", UserWarning)
+                out["plan"] = _ca_call("plan_workflow", self.path, self.module_library_dirs)
+            out["problems"] = list(dict.fromkeys(
+                str(w.message) for w in caught if issubclass(w.category, UserWarning)))
         except WorkflowError as exc:
             # A workflow whose library is not configured still shows what it
             # says; it just cannot be resolved or run until the library is set.

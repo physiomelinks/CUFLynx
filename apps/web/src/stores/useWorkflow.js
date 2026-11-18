@@ -7,6 +7,11 @@ import {
   listWorkflows,
   moveWorkflowStep,
   renameWorkflowStep,
+  drawWorkflowLink,
+  deleteWorkflowLink,
+  placeWorkflowNode,
+  addWorkflowDraft,
+  deleteWorkflowDraft,
   errorMessage,
   followWorkingDir as postWorkingDir,
   getWorkflow,
@@ -523,6 +528,42 @@ export function useWorkflow(options = {}) {
     return ''
   }
 
+  // -- editing the chart: new steps, arrows, where the boxes sit (workflow_layout) ------
+  /** Run an edit; '' when done (the new description shown), else the server's reason. */
+  async function layoutEdit(call) {
+    try {
+      described.value = await call()
+      return ''
+    } catch (e) {
+      return errorMessage(e)
+    }
+  }
+  /**
+   * Put a new step on the chart and make it the one the next run makes: whatever is run
+   * next becomes that step, with the arrows drawn to it. Returns its id, or null.
+   */
+  async function addDraft(col = null, row = null) {
+    try {
+      const d = await addWorkflowDraft(col, row)
+      described.value = d
+      target.value = { mode: 'new_step', draft: d.draft }
+      return d.draft
+    } catch (e) {
+      error.value = errorMessage(e)
+      return null
+    }
+  }
+  function chooseDraft(draft) {
+    target.value = { mode: 'new_step', draft }
+  }
+  function deleteDraft(draft) {
+    if (target.value.draft === draft) useDefault()
+    return layoutEdit(() => deleteWorkflowDraft(draft))
+  }
+  const link = (arrow) => layoutEdit(() => drawWorkflowLink(arrow))
+  const unlink = (arrow) => layoutEdit(() => deleteWorkflowLink(arrow))
+  const place = (node, col, row) => layoutEdit(() => placeWorkflowNode(node, col, row))
+
   async function moveStep(stepId, index) {
     const d = await guarded(() => moveWorkflowStep(stepId, index))
     if (d) described.value = d
@@ -545,6 +586,12 @@ export function useWorkflow(options = {}) {
     cancelDelete,
     moveStep,
     renameStep,
+    addDraft,
+    chooseDraft,
+    deleteDraft,
+    link,
+    unlink,
+    place,
     described,
     loaded,
     tabs,

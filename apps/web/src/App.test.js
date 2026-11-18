@@ -16,6 +16,7 @@ vi.mock('./lib/api', () => ({
   listWorkflows: vi.fn().mockResolvedValue({ workflows: [] }),
   deleteWorkflowStep: vi.fn(),
   moveWorkflowStep: vi.fn(),
+  addWorkflowDraft: vi.fn(),
   loadWorkflow: vi.fn().mockResolvedValue(null),
   uploadWorkflow: vi.fn().mockResolvedValue(null),
   closeWorkflow: vi.fn().mockResolvedValue(null),
@@ -2494,12 +2495,16 @@ describe('analysis runs carry the protocol window', () => {
     expect(wrapper.vm.wf.error.value).toContain('no panel makes it')
     expect(wrapper.vm.leftTab).toBe('calibration')
 
-    // a second calibration has to be asked for, and is made once
-    wrapper.vm.onNewWorkflowStep('calibration')
-    expect(wrapper.vm.workflowSummary.mode).toBe('new_step')
+    // a second calibration has to be asked for: New step puts a box on the chart, and the
+    // next run makes it, once
+    const { addWorkflowDraft } = await import('./lib/api')
+    addWorkflowDraft.mockResolvedValueOnce({ ...wrapper.vm.wf.described.value, draft: 'new-1' })
+    await wrapper.vm.onNewWorkflowStep()
+    expect(wrapper.vm.workflowSummary).toMatchObject({ mode: 'new_step', step: 'new-1' })
     wrapper.vm.onRunCalibration({ param_id_method: 'CMA-ES' })
     await flushPromises()
-    expect(startCalibration.mock.calls[1][1].workflow_target).toEqual({ mode: 'new_step', workflow: path })
+    expect(startCalibration.mock.calls[1][1].workflow_target).toEqual(
+      { mode: 'new_step', workflow: path, draft: 'new-1' })
   })
 
   it('sensitivity payload includes sim_time/pre_time from the protocol', async () => {

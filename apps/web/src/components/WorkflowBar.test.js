@@ -30,5 +30,8 @@ describe('WorkflowBar', () => {
       expect(bar.find('[data-testid="workflow-mode"]').attributes('data-mode')).toBe(mode)
       expect(bar.find('[data-testid="workflow-mode"]').text()).toBe(words)
     }
+    // a new step put on the chart is named: "[New step] new-1"
+    const bar = mount(WorkflowBar, { props: { summary: { mode: 'new_step', step: 'new-1', text: '' } } })
+    expect(bar.find('[data-testid="workflow-mode-step"]').text()).toBe('new-1')
   })
 })
