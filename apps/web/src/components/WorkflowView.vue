@@ -5,9 +5,10 @@
  * Its header picks which of the working dir's workflows is open, starts a new one, and
  * opens a workflow file or run from elsewhere (WorkflowPanel's controls). Below, the open
  * workflow as a chart (WorkflowDiagram): click a step to change its settings in its panel
- * on the left, double-click it to inspect it (WorkflowStepDetail), drag it to reorder,
- * delete it. "New step" makes the next run, of whatever kind, add a step rather than change
- * the latest one of its kind.
+ * on the left, double-click it to inspect it (WorkflowStepDetail), drag it to move it,
+ * delete it. "New step" puts a new box on the chart, to place and draw arrows to; the next
+ * run, of whatever kind, makes it a step of that kind. Arrows are drawn from a box's handle
+ * and changed by double-clicking them (WorkflowLinkEditor).
  *
  * Every other prop and event is WorkflowPanel's (run, export, provenance, ...), passed
  * through.
@@ -20,6 +21,7 @@ import WorkflowDiagram from './WorkflowDiagram.vue'
 import WorkflowPanel from './WorkflowPanel.vue'
 import WorkflowStepDetail from './WorkflowStepDetail.vue'
 import WorkflowEdgeDetail from './WorkflowEdgeDetail.vue'
+import WorkflowLinkEditor from './WorkflowLinkEditor.vue'
 
 defineOptions({ inheritAttrs: false })
 
@@ -45,6 +47,14 @@ const props = defineProps({
   origins: { type: Object, default: null },
   // Renames a step: async (step, to) => '' when done, else why not.
   renameStep: { type: Function, default: null },
+  // The chart as arranged (describe's layout), what an arrow can be (link_kinds), and
+  // whether a fixed arrow can name its parameters.
+  layout: { type: Object, default: null },
+  linkKinds: { type: Object, default: () => ({}) },
+  fixedParameters: { type: Boolean, default: false },
+  // The chart's edits (useWorkflow): {link, unlink, place, chooseDraft, deleteDraft}, each
+  // async and '' when done, else why not.
+  editor: { type: Object, default: null },
   // The step the next run of the open panel changes (modeSummary), or null.
   editing: { type: String, default: null },
   // A delete waiting for a confirmation ({step, deleted, rewired, dropped}), or null.
@@ -72,6 +82,26 @@ const inspectedStep = computed(() => props.steps.find((s) => s.id === inspected.
 const clickedEdge = ref(null)
 const clickedFigure = ref(null)
 const clickedOrigin = ref(null)
+
+// An arrow being drawn or changed ({source, target, key, pending}), and why an edit of the
+// chart was refused.
+const editedArrow = ref(null)
+const editError = ref('')
+const draftIds = computed(() => (props.layout?.drafts ?? []).map((d) => d.id))
+const chartSteps = computed(() => [...props.steps, ...draftIds.value.map((id) => ({ id, draft: true }))])
+
+function onConnect({ source, target }) {
+  clickedEdge.value = null
+  const pending = draftIds.value.includes(source) || draftIds.value.includes(target)
+  editedArrow.value = { source, target, key: null, pending }
+}
+function onEditEdge(arrow) {
+  clickedEdge.value = null
+  editedArrow.value = arrow
+}
+async function onEdit(action, ...args) {
+  editError.value = props.editor ? await props.editor[action](...args) : 'editing is not available'
+}
 
 /** Rename the inspected step; the dialog stays on it under its new name. */
 async function onRename(step, to) {
@@ -137,12 +167,16 @@ const alsoDeleted = computed(() => doomed.value.filter((s) => s !== props.pendin
             size="small"
             :outlined="target.mode !== 'new_step'"
             :disabled="running"
-            title="The next run you start, of whatever kind, is added as a new step"
+            title="A new step on the chart: place it, draw arrows to it, then run a panel to make it"
             data-testid="workflow-new-step"
             @click="emit('new-step')"
           />
           <span class="wv-hint">
-            <template v-if="target.mode === 'new_step'">
+            <template v-if="target.mode === 'new_step' && target.draft">
+              Waiting: whatever you run next (a calibration, an analysis, a surrogate) becomes
+              <strong>{{ target.draft }}</strong>, with the arrows drawn to it.
+            </template>
+            <template v-else-if="target.mode === 'new_step'">
               Waiting: whatever you run next (a calibration, an analysis, a surrogate) is added
               as a new step.
             </template>
@@ -179,6 +213,15 @@ const alsoDeleted = computed(() => doomed.value.filter((s) => s !== props.pendin
             />
           </div>
         </Message>
+        <Message
+          v-if="editError"
+          severity="error"
+          closable
+          data-testid="workflow-edit-error"
+          @close="editError = ''"
+        >
+          {{ editError }}
+        </Message>
         <WorkflowDiagram
           :steps="steps"
           :details="details"
@@ -190,11 +233,16 @@ const alsoDeleted = computed(() => doomed.value.filter((s) => s !== props.pendin
           :origins="origins"
           :editing="editing"
           :doomed="doomed"
+          :layout="layout"
           :busy="busy || running"
           @select="(id) => emit('select-step', id)"
           @inspect="(id) => (inspected = id)"
           @delete="(id) => emit('delete-step', id)"
-          @move="(m) => emit('move-step', m)"
+          @place="({ node, col, row }) => onEdit('place', node, col, row)"
+          @connect="onConnect"
+          @edit-edge="onEditEdge"
+          @select-draft="(id) => editor?.chooseDraft(id)"
+          @delete-draft="(id) => onEdit('deleteDraft', id)"
           @open-target="emit('open-step-view', 'target')"
           @edge="(e) => (clickedEdge = e)"
           @figure="(id) => (clickedFigure = figures.find((f) => f.id === id) ?? null)"
@@ -205,6 +253,18 @@ const alsoDeleted = computed(() => doomed.value.filter((s) => s !== props.pendin
           :figure="clickedFigure"
           :origin="clickedOrigin"
           @close="clickedEdge = null; clickedFigure = null; clickedOrigin = null"
+        />
+        <WorkflowLinkEditor
+          :arrow="editedArrow"
+          :steps="chartSteps"
+          :details="details"
+          :link-kinds="linkKinds"
+          :pending-links="layout?.links ?? []"
+          :fixed-parameters="fixedParameters"
+          :save="(a) => editor ? editor.link(a) : Promise.resolve('editing is not available')"
+          :remove="(a) => editor ? editor.unlink(a) : Promise.resolve('editing is not available')"
+          :busy="busy || running"
+          @close="editedArrow = null"
         />
         <WorkflowStepDetail
           :step="inspectedStep"

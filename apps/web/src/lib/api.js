@@ -814,6 +814,40 @@ export async function renameWorkflowStep(step, to) {
   return data
 }
 
+/**
+ * Draw or change an arrow of the open workflow: `target` takes `source` by `key` (CA's key),
+ * with a list key's `options` ({kind, inflate, parameters, objective}); `old_key` when
+ * changing what an existing arrow passes. Returns the workflow's description.
+ */
+export async function drawWorkflowLink({ source, target, key, options = null, oldKey = null }) {
+  const { data } = await axios.post(url('/api/workflow/link'),
+    { source, target, key, options, old_key: oldKey })
+  return data
+}
+
+/** Take an arrow of the open workflow away. */
+export async function deleteWorkflowLink({ source, target, key }) {
+  const { data } = await axios.post(url('/api/workflow/link/delete'), { source, target, key })
+  return data
+}
+
+/** Where a box of the chart sits: its column (of steps) and its order there. */
+export async function placeWorkflowNode(node, col, row) {
+  const { data } = await axios.post(url('/api/workflow/position'), { node, col, row })
+  return data
+}
+
+/** A new step on the chart (a draft): the description, with `draft` its id. */
+export async function addWorkflowDraft(col = null, row = null) {
+  const { data } = await axios.post(url('/api/workflow/draft'), { col, row })
+  return data
+}
+
+export async function deleteWorkflowDraft(draft) {
+  const { data } = await axios.post(url('/api/workflow/draft/delete'), { draft })
+  return data
+}
+
 /** Move a step of the open workflow to `index`; the server refuses it above a step it takes from. */
 export async function moveWorkflowStep(step, index) {
   const { data } = await axios.post(url('/api/workflow/step/move'), { step, index })

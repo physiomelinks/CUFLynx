@@ -7,10 +7,13 @@
  * optimiser fitted it), set by hand, an analysis, a surrogate.
  *
  * Click a box to change that step's settings in its panel; double-click it to inspect it;
- * drag it onto another box to put it in that one's place in the file (the server refuses a
- * place above a step it takes from); the bin deletes it. The step the next run changes is
- * outlined, and the steps a delete would take with it (`doomed`) are marked until it is
- * confirmed or cancelled.
+ * drag it to move it (to another row, or further right: never left of what it takes from,
+ * so every arrow still points right); drag from the handle on its right edge onto another
+ * box to draw an arrow (`connect`), and double-click an arrow to change what it passes
+ * (`edit-edge`); the bin deletes it. New steps not yet run (`drafts`) are dashed boxes,
+ * and arrows to or from them dashed until a run makes them steps. The step the next run
+ * changes or makes is outlined, and the steps a delete would take with it (`doomed`) are
+ * marked until it is confirmed or cancelled.
  */
 import { computed, ref } from 'vue'
 import { SOURCE_WORDS, cellmlFile, externalFile, modelLabel } from '../stores/useWorkflow'
@@ -40,9 +43,13 @@ const props = defineProps({
   origins: { type: Object, default: null },
   // Steps a delete would take with it, waiting for a confirmation.
   doomed: { type: Array, default: () => [] },
+  // The chart as arranged (describe's layout): {positions: {id: {col, row}}, drafts: [{id}],
+  // links: [{source, target, key, options}] (arrows with a new step at an end)}.
+  layout: { type: Object, default: null },
   busy: { type: Boolean, default: false },
 })
-const emit = defineEmits(['select', 'inspect', 'delete', 'move', 'open-target', 'edge', 'figure', 'origin'])
+const emit = defineEmits(['select', 'inspect', 'delete', 'place', 'connect', 'edit-edge',
+  'select-draft', 'delete-draft', 'open-target', 'edge', 'figure', 'origin'])
 
 const W = 250
 const H = 78
@@ -58,10 +65,14 @@ const KEY_WORDS = { result_from: 'at fit', start_from: 'start', fixed_from: 'fix
   priors_from: 'prior', scale_from: 'scale', emulator_from: 'emulator', emulator_dir: 'emulator',
   sensitivity_from: 'ranks', params_for_id_from: 'params', on_target: 'merged', reads: 'reads',
   given: 'given' }
+// the keys an arrow drawn on the chart can be, so the ones that can be changed there
+const DRAWN = ['fixed_from', 'priors_from', 'start_from', 'result_from', 'emulator_from',
+  'sensitivity_from', 'params_for_id_from']
 const LONG_WORDS = { ...SOURCE_WORDS, start_from: 'starts at', fixed_from: 'fixed from',
   priors_from: 'priors from', scale_from: 'scales', emulator_dir: 'on the emulator of' }
 
 function kindOf(step) {
+  if (step?.draft) return 'draft'
   return step?.kind ?? 'calibration'
 }
 
@@ -72,6 +83,7 @@ function classOf(step) {
   if (kind === 'set') return 'hand'
   if (kind === 'emulation') return 'surrogate'
   if (kind === 'sweep') return 'sim'
+  if (kind === 'draft') return 'draft'
   return 'analysis'
 }
 
@@ -149,9 +161,12 @@ function data(step) {
 // Columns, left to right: the model; the steps by what they take from (layoutSteps); the
 // target the calibrated values merge into; the steps run on that merged target (a sweep
 // `on_target`); the external figures, each after what it reads.
+const positions = computed(() => props.layout?.positions ?? {})
+const pendingLinks = computed(() => props.layout?.links ?? [])
+const drafts = computed(() => (props.layout?.drafts ?? []).map((d) => ({ id: d.id, draft: true })))
 const onTarget = computed(() => props.steps.filter((s) => s.on_target))
-const mainSteps = computed(() => props.steps.filter((s) => !s.on_target))
-const placed = computed(() => layoutSteps(mainSteps.value))
+const mainSteps = computed(() => [...props.steps.filter((s) => !s.on_target), ...drafts.value])
+const placed = computed(() => layoutSteps(mainSteps.value, positions.value, pendingLinks.value))
 const hasModel = computed(() => props.steps.length > 0)
 const colOffset = computed(() => (hasModel.value ? 1 : 0))
 const stepCols = computed(() => Math.max(0, ...Object.values(placed.value).map((p) => p.col + 1)))
@@ -223,7 +238,7 @@ function at(id) {
   return c ? { x: colX(c.col), y: colY(c.col, c.row) } : null
 }
 
-const boxes = computed(() => props.steps.map((s) => ({ step: s, ...at(s.id) })))
+const boxes = computed(() => [...props.steps, ...drafts.value].map((s) => ({ step: s, ...at(s.id) })))
 const byId = computed(() => Object.fromEntries(boxes.value.map((b) => [b.step.id, b])))
 const modelBox = computed(() => (hasModel.value ? at('model') : null))
 const targetBox = computed(() => (hasTarget.value ? at('target') : null))
@@ -251,11 +266,14 @@ function link(from, to, fromId, toId, key, kind, extra = {}) {
 const links = computed(() => {
   const out = []
   for (const b of boxes.value) {
-    const refs = referencesOf(b.step, props.steps).filter(([, id]) => byId.value[id])
+    const refs = b.step.draft ? []
+      : referencesOf(b.step, props.steps).filter(([, id]) => byId.value[id])
     for (const [key, id] of refs) out.push(link(byId.value[id], b, id, b.step.id, key, 'step'))
+    const waiting = pendingLinks.value.filter((l) => l.target === b.step.id && byId.value[l.source])
+    for (const l of waiting) out.push(link(byId.value[l.source], b, l.source, b.step.id, l.key, 'pending'))
     if (b.step.on_target && targetBox.value) {
       out.push(link(targetBox.value, b, 'target', b.step.id, 'on_target', 'from-target'))
-    } else if (!refs.length && modelBox.value) {
+    } else if (!refs.length && !waiting.length && !b.step.draft && modelBox.value) {
       out.push(link(modelBox.value, b, 'model', b.step.id, 'model', 'model'))
     }
   }
@@ -312,32 +330,96 @@ function isLit(e) {
 // the lit arrow is drawn last, so it is on top along its whole path
 const drawOrder = computed(() => [...edges.value].sort((a, b) => Number(isLit(a)) - Number(isLit(b))))
 
+const draftHelp = 'A new step: click it, then run a panel (a calibration, an analysis, a ' +
+  'surrogate) to make it a step of that kind, with the arrows drawn to it. Drag it to move ' +
+  'it; drag from its handle to draw an arrow from it.'
+
 const modelName = computed(() =>
   cellmlFile(props.target) || externalFile(props.target) || modelLabel(props.target) || 'the model',
 )
 
-// -- dragging a box onto another: it takes that one's place in the file ------------------
-const dragging = ref(null)
-const over = ref(null)
+// -- moving a box: drag it; it goes to the column and row it is dropped in ---------------
+const chart = ref(null)
+const moving = ref(null) // {id, x, y, dx, dy, moved, pointer} while a box is held
+let justMoved = false
 
-function onDragStart(event, id) {
-  dragging.value = id
-  event.dataTransfer.effectAllowed = 'move'
-  event.dataTransfer.setData('text/plain', id)
+function chartPoint(event) {
+  const r = chart.value.getBoundingClientRect()
+  return { x: event.clientX - r.left, y: event.clientY - r.top }
 }
-function onDragOver(id) {
-  if (dragging.value !== null) over.value = id
+
+function onBoxDown(event, id) {
+  if (event.button !== 0 || props.busy || event.target.closest('.wf-delete, .wf-port')) return
+  const p = chartPoint(event)
+  moving.value = { id, x: p.x, y: p.y, dx: 0, dy: 0, moved: false, pointer: event.pointerId }
+  pan.value.setPointerCapture?.(event.pointerId)
 }
-function onDrop(id) {
-  const from = dragging.value
-  dragging.value = null
-  over.value = null
-  if (from === null || from === id) return
-  emit('move', { step: from, index: props.steps.findIndex((s) => s.id === id) })
+
+/** Where a box dropped with its top-left at (x, y) goes: its column of steps, and an order
+ * key between those of the boxes it was dropped between. */
+function dropCell(id, x, y) {
+  const col = Math.max(0, Math.round((x - colX(colOffset.value)) / (W + COL_GAP)))
+  const others = mainSteps.value
+    .filter((s) => s.id !== id && placed.value[s.id]?.col === col)
+    .map((s) => ({ key: placed.value[s.id].key, y: at(s.id).y }))
+    .sort((a, b) => a.y - b.y)
+  const i = others.filter((o) => o.y + H / 2 < y + H / 2).length
+  let row
+  if (!others.length) row = 0
+  else if (i === 0) row = others[0].key - 1
+  else if (i === others.length) row = others[others.length - 1].key + 1
+  else row = (others[i - 1].key + others[i].key) / 2
+  return { col, row }
 }
-function onDragEnd() {
-  dragging.value = null
-  over.value = null
+
+function finishMove() {
+  const m = moving.value
+  moving.value = null
+  if (!m?.moved) return
+  justMoved = true
+  const box = byId.value[m.id]
+  emit('place', { node: m.id, ...dropCell(m.id, box.x + m.dx, box.y + m.dy) })
+}
+
+/** A click on a box selects it, unless the box was just moved. */
+function onBoxClick(id, draft) {
+  if (justMoved) {
+    justMoved = false
+    return
+  }
+  emit(draft ? 'select-draft' : 'select', id)
+}
+
+function boxStyle(b) {
+  const m = moving.value
+  const dx = m?.id === b.step.id ? m.dx : 0
+  const dy = m?.id === b.step.id ? m.dy : 0
+  return { left: `${b.x + dx}px`, top: `${b.y + dy}px`, width: `${W}px`, height: `${H}px` }
+}
+
+// -- drawing an arrow: from a box's handle, dropped on another box -------------------------
+const drawing = ref(null) // {source, x0, y0, x, y, over, pointer}
+
+function onPortDown(event, id) {
+  if (event.button !== 0 || props.busy) return
+  const b = byId.value[id]
+  const p = chartPoint(event)
+  drawing.value = { source: id, x0: b.x + W, y0: b.y + H / 2, x: p.x, y: p.y, over: null,
+                    pointer: event.pointerId }
+  pan.value.setPointerCapture?.(event.pointerId)
+  event.preventDefault()
+}
+
+function nodeUnder(event) {
+  const el = document.elementFromPoint?.(event.clientX, event.clientY)
+  return el?.closest?.('[data-node]')?.getAttribute('data-node') ?? null
+}
+
+function finishDrawing(event) {
+  const d = drawing.value
+  drawing.value = null
+  const target = nodeUnder(event) ?? d?.over
+  if (d && target && target !== d.source) emit('connect', { source: d.source, target })
 }
 
 // -- panning: drag the chart by anything but a step box (a box drags to reorder) -------------
@@ -345,7 +427,7 @@ const pan = ref(null)
 const panning = ref(null) // {x, y, left, top, id} while the chart is held
 
 function onPanStart(event) {
-  if (event.button !== 0 || event.target.closest('.wf-node, .wf-hit, .wf-figure, .wf-origin')) return
+  if (event.button !== 0 || event.target.closest('.wf-node, .wf-hit, .wf-figure, .wf-origin, .wf-port')) return
   const el = pan.value
   panning.value = { x: event.clientX, y: event.clientY, left: el.scrollLeft, top: el.scrollTop,
                     id: event.pointerId }
@@ -353,13 +435,31 @@ function onPanStart(event) {
   event.preventDefault()
 }
 function onPanMove(event) {
+  const m = moving.value
+  if (m && event.pointerId === m.pointer) {
+    const p = chartPoint(event)
+    m.dx = p.x - m.x
+    m.dy = p.y - m.y
+    if (Math.abs(m.dx) + Math.abs(m.dy) > 4) m.moved = true
+    return
+  }
+  const d = drawing.value
+  if (d && event.pointerId === d.pointer) {
+    const p = chartPoint(event)
+    d.x = p.x
+    d.y = p.y
+    d.over = nodeUnder(event)
+    return
+  }
   const p = panning.value
   if (!p || event.pointerId !== p.id) return
   pan.value.scrollLeft = p.left - (event.clientX - p.x)
   pan.value.scrollTop = p.top - (event.clientY - p.y)
 }
 function onPanEnd(event) {
-  if (panning.value) pan.value.releasePointerCapture?.(event.pointerId)
+  if (moving.value || drawing.value || panning.value) pan.value.releasePointerCapture?.(event.pointerId)
+  if (moving.value) finishMove()
+  if (drawing.value) finishDrawing(event)
   panning.value = null
 }
 </script>
@@ -377,7 +477,7 @@ function onPanEnd(event) {
       @pointerup="onPanEnd"
       @pointercancel="onPanEnd"
     >
-    <div class="wf-chart" :style="{ width: `${width}px`, height: `${height}px` }">
+    <div ref="chart" class="wf-chart" :style="{ width: `${width}px`, height: `${height}px` }">
       <svg class="wf-edges" :width="width" :height="height" aria-hidden="true">
         <defs>
           <marker id="wf-arrow" viewBox="0 0 6 6" refX="5" refY="3" markerWidth="7" markerHeight="7" orient="auto">
@@ -407,11 +507,19 @@ function onPanEnd(event) {
             :data-testid="`workflow-edge-${e.from}-${e.to}`"
             @mouseenter="hovered = e.id"
             @mouseleave="hovered = null"
-            @click.stop="e.kind === 'origin' ? emit('origin', e.from.replace(/^origin:/, '')) : emit('edge', { source: e.from, target: e.to, key: e.key, files: e.files ?? null })"
+            @click.stop="e.kind === 'origin' ? emit('origin', e.from.replace(/^origin:/, '')) : e.kind !== 'pending' && emit('edge', { source: e.from, target: e.to, key: e.key, files: e.files ?? null })"
+            @dblclick.stop="DRAWN.includes(e.key) && (e.kind === 'step' || e.kind === 'pending') && emit('edit-edge', { source: e.from, target: e.to, key: e.key, pending: e.kind === 'pending' })"
           >
-            <title>{{ e.from }} → {{ e.to }}: {{ LONG_WORDS[e.key] ?? e.key }}. Click to see what passes.</title>
+            <title>{{ e.from }} → {{ e.to }}: {{ LONG_WORDS[e.key] ?? e.key }}.{{ e.kind === 'pending' ? ' Waiting for the new step to run.' : ' Click to see what passes.' }}{{ DRAWN.includes(e.key) && (e.kind === 'step' || e.kind === 'pending') ? ' Double-click to change it.' : '' }}</title>
           </path>
         </g>
+        <path
+          v-if="drawing"
+          :d="`M${drawing.x0},${drawing.y0} L${drawing.x},${drawing.y}`"
+          class="wf-edge drawing"
+          marker-end="url(#wf-arrow-lit)"
+          data-testid="workflow-drawing"
+        />
       </svg>
 
       <div
@@ -448,20 +556,43 @@ function onPanEnd(event) {
         :class="[classOf(b.step), {
           editing: b.step.id === editing,
           doomed: doomed.includes(b.step.id),
-          dragging: dragging === b.step.id,
-          over: over === b.step.id && dragging !== b.step.id,
+          moving: moving?.id === b.step.id && moving.moved,
+          over: drawing && drawing.over === b.step.id && drawing.source !== b.step.id,
         }]"
-        :style="{ left: `${b.x}px`, top: `${b.y}px`, width: `${W}px`, height: `${H}px` }"
-        :title="data(b.step)"
-        :draggable="!busy"
+        :style="boxStyle(b)"
+        :title="b.step.draft ? draftHelp : data(b.step)"
+        :data-node="b.step.id"
         :data-testid="`workflow-node-${b.step.id}`"
-        @click="emit('select', b.step.id)"
-        @dblclick="emit('inspect', b.step.id)"
-        @dragstart="onDragStart($event, b.step.id)"
-        @dragend="onDragEnd"
-        @dragover.prevent="onDragOver(b.step.id)"
-        @drop.prevent="onDrop(b.step.id)"
+        @pointerdown="onBoxDown($event, b.step.id)"
+        @click="onBoxClick(b.step.id, b.step.draft)"
+        @dblclick="!b.step.draft && emit('inspect', b.step.id)"
       >
+        <span
+          class="wf-port"
+          title="Drag onto another step to draw an arrow"
+          :data-testid="`workflow-port-${b.step.id}`"
+          @pointerdown.stop="onPortDown($event, b.step.id)"
+        />
+        <template v-if="b.step.draft">
+          <div class="wf-row1">
+            <strong class="wf-id">{{ b.step.id }}</strong>
+            <button
+              class="wf-delete pi pi-trash"
+              type="button"
+              title="Take this new step off the chart"
+              :disabled="busy"
+              :data-testid="`workflow-delete-${b.step.id}`"
+              @click.stop="emit('delete-draft', b.step.id)"
+              @dblclick.stop
+            />
+          </div>
+          <div class="wf-row2"><span class="wf-detail">New step: run a panel to make it</span></div>
+          <div class="wf-tag">
+            not run · its kind is what you run
+            <span v-if="b.step.id === editing" class="wf-badge" title="the next run makes this step">next run</span>
+          </div>
+        </template>
+        <template v-else>
         <div class="wf-row1">
           <span class="wf-dot" :data-state="states[b.step.id] ?? 'not_run'" />
           <strong class="wf-id">{{ b.step.id }}</strong>
@@ -487,6 +618,7 @@ function onPanEnd(event) {
           <span v-if="b.step.id === editing" class="wf-badge" title="the next run changes this step">next run</span>
           <span v-if="doomed.includes(b.step.id)" class="wf-badge danger" title="a delete waiting for a confirmation would delete it">deleted?</span>
         </div>
+        </template>
       </div>
 
       <div
@@ -527,7 +659,8 @@ function onPanEnd(event) {
     </div>
     <p class="wf-help">
       Drag the chart to move along it · click a step to change its settings · double-click to
-      inspect it · drag a step onto another to take that one's place · the bin deletes it
+      inspect it · drag a step to move it · drag from a step's right-hand handle onto another
+      to draw an arrow · double-click an arrow to change what it passes · the bin deletes it
     </p>
   </div>
 </template>
@@ -648,12 +781,49 @@ function onPanEnd(event) {
 .wf-node.doomed {
   background: color-mix(in srgb, var(--hand) 14%, var(--p-content-background, #1e1e1e));
 }
-.wf-node.dragging {
-  opacity: 0.45;
+.wf-node.moving {
+  opacity: 0.8;
+  z-index: 3;
+  cursor: grabbing;
+  box-shadow: 0 6px 18px rgb(0 0 0 / 35%);
 }
 .wf-node.over {
   box-shadow: 0 0 0 3px var(--p-primary-color, #4f8cff);
-  border-style: dashed;
+}
+.wf-box.draft {
+  border: 2px dashed var(--p-primary-color, #4f8cff);
+  background: color-mix(in srgb, var(--p-primary-color, #4f8cff) 6%, var(--p-content-background, #1e1e1e));
+}
+/* the handle an arrow is drawn from: a dot on the right edge, shown on hover */
+.wf-port {
+  position: absolute;
+  right: 2px;
+  top: calc(50% - 7px);
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid var(--p-primary-color, #4f8cff);
+  background: var(--p-content-background, #1e1e1e);
+  cursor: crosshair;
+  opacity: 0;
+  transition: opacity 0.1s;
+  z-index: 2;
+}
+.wf-node:hover .wf-port,
+.wf-port:focus-visible {
+  opacity: 1;
+}
+.wf-port:hover {
+  background: var(--p-primary-color, #4f8cff);
+}
+.wf-edge.pending,
+.wf-edge.drawing {
+  stroke-dasharray: 6 4;
+}
+.wf-edge.drawing {
+  stroke: var(--p-primary-color, #4f8cff);
+  stroke-width: 2;
+  pointer-events: none;
 }
 .wf-row1,
 .wf-row2 {
