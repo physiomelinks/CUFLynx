@@ -333,8 +333,8 @@ def test_an_action_box_sets_values_by_hand(client, fake_runs, tmp_path):
 
 
 def test_an_action_box_combines_the_calibrations_drawn_into_it(client, fake_runs, tmp_path):
-    """Two calibrations of one parameter that do not take from each other: CA refuses to
-    merge both (CA #685); a combine step drawn from both gives the target one value."""
+    """Two calibrations of one parameter that do not take from each other: CA will not
+    merge both into the target (CA #685); a combine step drawn from both gives it one value."""
     work = tmp_path / "w"
     model_id = _setup(client)
     assert _calibrate(client, model_id, work)["state"] == "done"
@@ -344,7 +344,7 @@ def test_an_action_box_combines_the_calibrations_drawn_into_it(client, fake_runs
     draft = r.json()["draft"]
     assert r.json()["link_kinds"]["combine_from"]["users"] == ["combine"]
     assert _calibrate(client, model_id, work, workflow_target=NEW_STEP)["state"] == "done"
-    assert "calibration-1" in (client.get("/api/workflow").json().get("plan_error") or "")
+    assert "calibration-1" in " ".join(client.get("/api/workflow").json()["problems"])
     assert _link(client, "calibration-1", draft, "combine_from").status_code == 200
     r = client.post("/api/workflow/combine", json={"draft": draft})
     assert r.status_code == 422 and "two or more" in r.json()["detail"]
@@ -357,7 +357,8 @@ def test_an_action_box_combines_the_calibrations_drawn_into_it(client, fake_runs
                                    "combine_from": ["calibration-1", "calibration-2"],
                                    "combine": {"method": "mean"}}
     described = r.json()
-    assert not described.get("plan_error") and described["layout"]["links"] == []
+    assert not described.get("plan_error") and described["problems"] == []
+    assert described["layout"]["links"] == []
     assert described["layout"]["drafts"] == []
 
 
@@ -461,9 +462,9 @@ def test_three_parameters_in_three_calibration_steps_run_by_ca(
 @pytest.mark.integration
 def test_two_calibrations_of_one_parameter_combined_by_cost_run_by_ca(
         client, study_workflow_on, tmp_path):
-    """Run by CA (CA #685): a second calibration of alpha, unrelated to the first, is refused
-    until a combine step joins them; the step stays, a combine box drawn from both is made,
-    and re-running the second runs the combine after it, which chooses the lower cost."""
+    """Run by CA (CA #685): a second calibration of alpha, unrelated to the first, runs, and
+    the view says the target cannot take both; a combine box drawn from both is made, and
+    re-running the second runs the combine after it, which chooses the lower cost."""
     pytest.importorskip("libcellml")
     import workflow_layout as wl  # noqa: PLC0415
     if "combine" not in wl.step_kinds():
@@ -481,9 +482,9 @@ def test_two_calibrations_of_one_parameter_combined_by_cost_run_by_ca(
     model_id = _setup(client)
     _params_for(client, model_id, "alpha")
     assert run(model_id, {})["state"] == "done"
-    refused = run(model_id, {"workflow_target": {"mode": "new_step"}})
-    assert refused["state"] == "error"
-    assert "combine" in client.get("/api/workflow").json()["plan_error"]
+    second = run(model_id, {"workflow_target": {"mode": "new_step"}})
+    assert second["state"] == "done", second["lines"]
+    assert "combine" in " ".join(client.get("/api/workflow").json()["problems"])
     assert list(_steps(work)) == ["calibration-1", "calibration-2"]
 
     draft = client.post("/api/workflow/draft", json={"action": "combine"}).json()["draft"]
@@ -491,7 +492,7 @@ def test_two_calibrations_of_one_parameter_combined_by_cost_run_by_ca(
         assert _link(client, source, draft, "combine_from").status_code == 200
     r = client.post("/api/workflow/combine", json={"draft": draft})
     assert r.status_code == 200, r.text
-    assert not r.json().get("plan_error")
+    assert not r.json().get("plan_error") and r.json()["problems"] == []
 
     status = run(model_id, {"workflow_target": {"mode": "edit", "step": "calibration-2"}})
     assert status["state"] == "done", status["lines"]

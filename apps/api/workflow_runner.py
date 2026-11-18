@@ -74,12 +74,28 @@ def _rank() -> int:
         return 0
 
 
+def _target_overlap(config: dict) -> str | None:
+    """CA's message when two steps that do not take from each other give the target one
+    parameter (its plan's ``target_overlap``, CA #685), else None (also for a CA without it)."""
+    plan_workflow = ca_from("calibration_workflow", "plan_workflow")
+    plan = plan_workflow(config["workflow"],
+                         module_library_dirs=config.get("module_library_dirs") or [])
+    return (plan or {}).get("target_overlap") if isinstance(plan, dict) else None
+
+
 def run(config: dict) -> dict:
     ensure_ca_path()
     run_workflow = ca_from("calibration_workflow", "run_calibration_workflow")
     # CA writes the merged values beside the target (<prefix>_calibrated_parameters.json)
     # after a complete run; only when asked, as that is outside the run directory.
     extra = {"write_calibrated": True} if config.get("write_calibrated") else {}
+    overlap = _target_overlap(config) if extra else None
+    if overlap:
+        # two steps give the target one parameter, neither taking from the other: CA runs a
+        # step of it but will not write the merged values until a combine step joins them
+        print(f"The calibrated parameters are not written beside the target: {overlap}",
+              flush=True)
+        extra = {}
     common = dict(output_dir=config.get("workflow_output_dir") or config["output_dir"],
                   module_library_dirs=config.get("module_library_dirs") or [],
                   progress=lambda event: print(event_line(event), flush=True))

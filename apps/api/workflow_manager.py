@@ -317,8 +317,14 @@ class WorkflowManager:
             with warnings.catch_warnings(record=True) as caught:
                 warnings.simplefilter("always", UserWarning)
                 out["plan"] = _ca_call("plan_workflow", self.path, self.module_library_dirs)
-            out["problems"] = list(dict.fromkeys(
-                str(w.message) for w in caught if issubclass(w.category, UserWarning)))
+            problems = [str(w.message) for w in caught if issubclass(w.category, UserWarning)]
+            # two steps giving one parameter to the target, neither taking from the other: CA
+            # runs one step of it (with a warning) and refuses a run that merges the target
+            # until a combine step joins them (CA #685), so the view says so before then
+            overlap = (out["plan"] or {}).get("target_overlap")
+            if overlap and not any(overlap in p or p in overlap for p in problems):
+                problems.append(overlap)
+            out["problems"] = list(dict.fromkeys(problems))
         except WorkflowError as exc:
             # A workflow whose library is not configured still shows what it
             # says; it just cannot be resolved or run until the library is set.

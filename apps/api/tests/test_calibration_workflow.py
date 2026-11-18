@@ -615,6 +615,26 @@ def test_the_runner_reports_ca_s_unset_parameters(monkeypatch, tmp_path, capsys)
     assert workflow_runner.unset_parameters(ValueError("x")) is None
 
 
+@pytest.mark.parametrize("overlap", [None, "the target is given alpha by 'a' and 'b'"])
+def test_the_runner_writes_the_calibrated_parameters_only_where_ca_merges_the_target(
+        monkeypatch, capsys, overlap):
+    """CA #685 refuses write_calibrated while two steps that do not take from each other give
+    the target one parameter (its plan's target_overlap), but runs a step of it alone; so
+    the run goes ahead without the write and says why."""
+    import workflow_runner
+
+    calls = []
+    fakes = {"plan_workflow": lambda path, module_library_dirs: {"target_overlap": overlap},
+             "run_calibration_workflow": lambda path, **kw: calls.append(kw) or {"ok": True}}
+    monkeypatch.setattr(workflow_runner, "ensure_ca_path", lambda: None)
+    monkeypatch.setattr(workflow_runner, "ca_from", lambda module, name: fakes[name])
+    workflow_runner.run({"workflow": "w.json", "output_dir": "out", "only": "b",
+                         "write_calibrated": True})
+    assert calls[0].get("write_calibrated", False) is (overlap is None)
+    out = capsys.readouterr().out
+    assert ("not written beside the target" in out) is (overlap is not None)
+
+
 def test_one_run_at_a_time_and_it_can_be_cancelled(client, opened, tmp_path):
     _install_runner(tmp_path, SLOW_RUNNER)
     job = client.post("/api/workflow/run", json={}).json()["job_id"]
