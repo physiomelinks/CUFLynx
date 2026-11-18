@@ -346,6 +346,27 @@ def test_a_run_from_a_step_opened_as_the_study_changes_that_step(
     assert workflow_manager.workflow.loaded
 
 
+def test_a_view_opened_for_a_new_step_has_its_model_only(
+        client, fake_runs, described, tmp_path):
+    """A model box's Calibrate opens a step's model as the study without that step's
+    obs_data and params_for_id: a new step brings its own."""
+    work = tmp_path / "w"
+    model_id = _setup(client)
+    assert _calibrate(client, model_id, work)["state"] == "done"
+    step_dir = work / "workflows" / "study" / "calibration-1"
+    (step_dir / "step_result.json").write_text(json.dumps({
+        "step": "calibration-1", "kind": "calibration", "status": "done",
+        "calibrated": [], "fixed": [], "finished": "2026-11-18T12:00:00",
+        "param_id_output_dir": str(step_dir / "param_id" / "CMA-ES_case")}))
+    whole = client.post("/api/workflow/view", json={"view": "calibration-1",
+                                                    "config_outputs_dir": str(work)}).json()
+    assert whole["obs_data"] and whole["params_for_id"]
+    r = client.post("/api/workflow/view", json={"view": "calibration-1", "inputs": False,
+                                                "config_outputs_dir": str(work)})
+    assert r.status_code == 200, r.text
+    assert r.json()["model_id"] and not r.json()["obs_data"] and not r.json()["params_for_id"]
+
+
 def test_a_step_opened_as_the_study_keeps_its_file_names_and_is_named_by_its_model(tmp_path):
     import main
 

@@ -4844,6 +4844,9 @@ class WorkflowViewRequest(BaseModel):
     # The user's working dir: an external Python model is kept there as the study's
     # model (inputs/funcs/user_model.py), as an upload keeps it.
     config_outputs_dir: str = ""
+    # False: the view's model only, without the step's obs_data and params_for_id (a new
+    # step on that model brings its own).
+    inputs: bool = True
 
 
 class WorkflowRunRequest(BaseModel):
@@ -5222,6 +5225,8 @@ def workflow_view(req: WorkflowViewRequest) -> dict:
     """
     work_dir = UPLOAD_DIR / "workflow_views" / uuid.uuid4().hex
     view = _workflow_http(workflow.view, req.view, str(work_dir))
+    if not req.inputs:
+        view = {**view, "obs_data_path": None, "params_for_id_path": None}
     try:
         if (view.get("model") or {}).get("external_model_path"):
             result = _load_external_view(view, req.view, req.config_outputs_dir)

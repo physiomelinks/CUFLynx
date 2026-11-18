@@ -261,6 +261,11 @@ export function layoutSteps(steps, positions = {}, pending = []) {
     }
     if (!changed) break
   }
+  // no empty columns: the columns in use, numbered 0, 1, 2, ... in order (which keeps every
+  // box right of what it takes from)
+  const used = [...new Set(Object.values(col))].sort((a, b) => a - b)
+  const packed = Object.fromEntries(used.map((c, i) => [c, i]))
+  for (const id of Object.keys(col)) col[id] = packed[col[id]]
   // within a column, by the order a box was put at (positions' row), else the file's
   const key = (s, i) => positions[s.id]?.row ?? i
   const order = steps.map((s, i) => [s, key(s, i), i]).sort((a, b) => a[1] - b[1] || a[2] - b[2])

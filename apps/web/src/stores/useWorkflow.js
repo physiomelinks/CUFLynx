@@ -361,11 +361,11 @@ export function useWorkflow(options = {}) {
   }
 
   /** Load one tab as the current study; returns the import-shaped response. */
-  async function select(tabId, workingDir = '') {
+  async function select(tabId, workingDir = '', options = {}) {
     busy.value = true
     error.value = ''
     try {
-      const result = await openWorkflowView(tabId, workingDir)
+      const result = await openWorkflowView(tabId, workingDir, options)
       selected.value = tabId
       view.value = result.workflow_view ?? null
       if (unset.value?.step_id === tabId) unset.value = null

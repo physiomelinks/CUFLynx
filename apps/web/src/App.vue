@@ -614,16 +614,19 @@ async function onNewWorkflowStep() {
 }
 
 /**
- * A model box's choice: the box's model becomes the study (a step already on that model is
- * opened, so Imports show its model, obs_data and params_for_id; the target for the
- * target's model), the chosen tab opens on the left, and its next run makes the box that step.
+ * A model box's choice: the box's model becomes the study -- the model alone, taken from a
+ * step already on that model (the target for the target's model), with no obs_data or
+ * params_for_id, since a new step brings its own: Imports highlight its obs_data box. The
+ * chosen tab opens on the left, and its next run makes the box that step.
  */
 async function onWorkflowDraftAction({ draft, model: boxModel, panel }) {
   const same = (m) => JSON.stringify(m ?? null) === JSON.stringify(boxModel ?? null)
   const step = workflowFileSteps.value.find((s) => s.model && same(s.model))
   const target = wf.described.value?.workflow?.target
-  if (step && workflowDetails.value[step.id]?.viewable !== false) await onSelectWorkflowTab(step.id)
-  else if (!step && same(target)) await onSelectWorkflowTab('target')
+  const view = step && workflowDetails.value[step.id]?.viewable !== false ? step.id
+    : !step && same(target) ? 'target' : null
+  if (view) await onSelectWorkflowTab(view, { inputs: false })
+  needsObsData.value = true
   wf.chooseDraft(draft)
   if (PANEL_REFS[panel]) leftTab.value = panel
 }
@@ -647,8 +650,15 @@ const workflowEditor = {
  * current study, through the same handlers a dropped archive goes through; then
  * that step's own calibration results, if it has run, as a reopened run's are.
  */
-async function onSelectWorkflowTab(tabId) {
-  const opened = await wf.select(tabId, workingDir.value.trim())
+// A new workflow step on the study's model needs an obs_data of its own: Imports highlight
+// its obs_data box until one is given (a model box's choice sets it).
+const needsObsData = ref(false)
+
+/** Open a workflow tab as the study; `{inputs: false}`: its model only, with no obs_data or
+ * params_for_id (a new step on that model brings its own). */
+async function onSelectWorkflowTab(tabId, options = {}) {
+  needsObsData.value = false
+  const opened = await wf.select(tabId, workingDir.value.trim(), options)
   if (!opened) {
     if (wf.error.value) sim.setError(wf.error.value)
     return
@@ -3717,6 +3727,7 @@ watch(() => obs.obsData.value, scheduleRun)
           :current-params="loadedParamsRaw"
           :model-variables="model.variables.value"
           :model-name="model.name.value"
+          :needs-obs-data="needsObsData"
           :loaded-filename="loadedParamsFilename"
           :loaded-obs-filename="loadedObsFilename"
           :can-export="model.hasModel.value"

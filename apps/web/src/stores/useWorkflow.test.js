@@ -302,7 +302,7 @@ describe('useWorkflow', () => {
     })
     const wf = useWorkflow()
     const result = await wf.select('rest', '/work')
-    expect(openWorkflowView).toHaveBeenCalledWith('rest', '/work')
+    expect(openWorkflowView).toHaveBeenCalledWith('rest', '/work', {})
     expect(result.model_id).toBe('m1')
     expect(wf.selected.value).toBe('rest')
     expect(wf.view.value.fixed[0].model_name).toBe('p_mod_A')
