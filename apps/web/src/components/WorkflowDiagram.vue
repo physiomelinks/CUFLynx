@@ -450,9 +450,19 @@ function shiftFrom(g, except = null) {
   const out = {}
   for (const s of mainSteps.value) {
     const p = placed.value[s.id]
-    if (s.id !== except && p && p.col >= g) out[s.id] = { col: p.col + 1, row: p.key }
+    if (s.id !== except && p && p.col >= g) out[s.id] = { col: p.raw + 1, row: p.key }
   }
   return out
+}
+
+/** Drawn column `c` in the layout's own numbering, which a move or drop writes. The two
+ * differ where a column was emptied (the chart closes it up; the layout keeps the numbers),
+ * so writing the drawn number would land a box columns to the left. */
+function rawCol(c) {
+  const there = mainSteps.value.find((s) => placed.value[s.id]?.col === c)
+  if (there) return placed.value[there.id].raw
+  const top = Math.max(-1, ...mainSteps.value.map((s) => placed.value[s.id]?.raw ?? -1))
+  return top + 1 + Math.max(0, c - stepCols.value)
 }
 
 function finishMove() {
@@ -481,10 +491,10 @@ function finishMove() {
       `add a new step on ${m.id}'s model there (New step, Models).`)
   }
   if (zone.kind === 'gap') {
-    emit('place-many', { ...shiftFrom(zone.g, m.id), [m.id]: { col: zone.g, row: 0 } })
+    emit('place-many', { ...shiftFrom(zone.g, m.id), [m.id]: { col: rawCol(zone.g), row: 0 } })
     return
   }
-  emit('place', { node: m.id, col: zone.col, row: zone.row })
+  emit('place', { node: m.id, col: rawCol(zone.col), row: zone.row })
 }
 
 // -- New step dragged in from its button ----------------------------------------------------
@@ -524,9 +534,9 @@ function onDropNew(event) {
     }
     emit('add-draft', { onTarget: true })
   } else if (zone.kind === 'gap') {
-    emit('add-draft', { col: zone.g, row: 0, shift: shiftFrom(zone.g), ...box })
+    emit('add-draft', { col: rawCol(zone.g), row: 0, shift: shiftFrom(zone.g), ...box })
   } else {
-    emit('add-draft', { col: zone.col, row: zone.row, ...box })
+    emit('add-draft', { col: rawCol(zone.col), row: zone.row, ...box })
   }
 }
 

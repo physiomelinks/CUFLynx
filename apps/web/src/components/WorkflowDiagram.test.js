@@ -21,10 +21,10 @@ describe('edgesOf / layoutSteps', () => {
 
   it('puts a step one column right of the furthest step it takes from', () => {
     expect(layoutSteps(steps)).toEqual({
-      'sliders-1': { col: 0, row: 0, key: 0 },
-      'calibration-1': { col: 1, row: 0, key: 1 },
-      'sobol-1': { col: 0, row: 1, key: 2 },
-      'mcmc-1': { col: 2, row: 0, key: 3 },
+      'sliders-1': { col: 0, row: 0, key: 0, raw: 0 },
+      'calibration-1': { col: 1, row: 0, key: 1, raw: 1 },
+      'sobol-1': { col: 0, row: 1, key: 2, raw: 0 },
+      'mcmc-1': { col: 2, row: 0, key: 3, raw: 2 },
     })
   })
 
@@ -403,6 +403,24 @@ describe('WorkflowDiagram', () => {
     const set = c.find('[data-testid="workflow-node-new-2"]')
     expect(set.text()).toContain('Set values by hand')
     expect(set.classes()).toContain('set-action')
+  })
+
+  it("a drop writes the layout's own column, not the drawn one, where a column was closed up", async () => {
+    // as in the enterocyte layout: the first column was saved as 1 (column 0 emptied), so the
+    // chart draws it as 0; a drop in calibration-1's drawn column 1 is its saved column 2
+    const c = chart({ layout: { positions: { 'sliders-1': { col: 1, row: 0 }, 'sobol-1': { col: 1, row: 1 } },
+      drafts: [], links: [] } })
+    const pan = c.find('[data-testid="workflow-pan"]')
+    const types = ['application/x-cuflynx-new-step']
+    const colX = 8 + 2 * (250 + 96) + 100
+    await pan.trigger('drop', { clientX: colX, clientY: 5, dataTransfer: { types, getData: () => '{}' } })
+    expect(c.emitted('add-draft')[0][0]).toMatchObject({ col: 2 })
+    // a new stage in the gap before it: it takes column 2, and calibration-1 and mcmc-1 move on
+    const gapX = 8 + 2 * (250 + 96) - 96 / 2
+    await pan.trigger('drop', { clientX: gapX, clientY: 5, dataTransfer: { types, getData: () => '{}' } })
+    const gap = c.emitted('add-draft')[1][0]
+    expect(gap.col).toBe(2)
+    expect(gap.shift).toMatchObject({ 'calibration-1': { col: 3 }, 'mcmc-1': { col: 4 } })
   })
 
   it('a box after the target is a simulation, set up in its form', async () => {
