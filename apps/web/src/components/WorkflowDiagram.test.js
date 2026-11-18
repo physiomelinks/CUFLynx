@@ -152,7 +152,7 @@ describe('WorkflowDiagram', () => {
     expect(c.find('[data-testid="workflow-edge-figure:paper_plots-figure:paper_figures"]').exists()).toBe(true)
   })
 
-  it('each arrow is clicked on the segment that is its own', () => {
+  it('arrows into or out of one box run side by side, and the whole of one lights up', async () => {
     const c = chart({
       steps: [
         { id: 'kir', settings: {} },
@@ -162,13 +162,23 @@ describe('WorkflowDiagram', () => {
         { id: 'sweep_b', kind: 'sweep', on_target: true },
       ],
     })
-    const hit = (id) => c.find(`[data-testid="workflow-edge-${id}"]`).attributes('d')
-    // two arrows into whole_cell share their end: each is picked by its start, one level line
-    expect(hit('kir-whole_cell')).toMatch(/^M [\d.]+ [\d.]+ H [\d.]+$/)
-    expect(hit('kir-whole_cell')).not.toBe(hit('sglt1-whole_cell'))
-    // two arrows out of the target share their start: each is picked by its end
-    expect(hit('target-sweep_a')).toMatch(/^M [\d.]+ [\d.]+ H [\d.]+$/)
-    expect(hit('target-sweep_a')).not.toBe(hit('target-sweep_b'))
+    const path = (id) => c.find(`[data-testid="workflow-edge-${id}"]`).attributes('d')
+    // no two arrows share a line: each has its own route
+    expect(path('kir-whole_cell')).not.toBe(path('sglt1-whole_cell'))
+    const end = (d) => d.trim().split(/\s+/).slice(-1)[0]
+    expect(end(path('kir-whole_cell'))).not.toBe(end(path('sglt1-whole_cell')))
+    expect(path('target-sweep_a')).not.toBe(path('target-sweep_b'))
+    // hovering an arrow lights all of it (the drawn path, not a piece) and labels it
+    await c.find('[data-testid="workflow-edge-kir-whole_cell"]').trigger('mouseenter')
+    const lit = c.findAll('.wf-edge.lit')
+    expect(lit).toHaveLength(1)
+    expect(lit[0].attributes('d')).toBe(path('kir-whole_cell'))
+    expect(c.find('.wf-edge-label.lit').text()).toBe('fixed')
+    await c.find('[data-testid="workflow-edge-kir-whole_cell"]').trigger('mouseleave')
+    expect(c.findAll('.wf-edge.lit')).toHaveLength(0)
+    // the arrow whose detail is open stays lit
+    await c.setProps({ active: { source: 'target', target: 'sweep_b', key: 'on_target' } })
+    expect(c.find('.wf-edge.lit').attributes('d')).toBe(path('target-sweep_b'))
   })
 
   it('clicking an arrow says which it is, and does not pan', async () => {
@@ -189,7 +199,7 @@ describe('WorkflowDiagram', () => {
     expect(c.find('[data-testid="workflow-node-sobol-1"]').classes()).not.toContain('doomed')
   })
 
-  it('a surrogate step is drawn as one, with an arrow to the step on its emulator', () => {
+  it('a surrogate step is drawn as one, with an arrow to the step on its emulator', async () => {
     const c = chart({ steps: [
       { id: 'surrogate-1', kind: 'emulation', settings: { emulator_settings: { models: ['RBF'] } } },
       { id: 'sobol-1', kind: 'sensitivity', emulator_dir: '../../workflows/study/surrogate-1/emulator',
@@ -198,6 +208,7 @@ describe('WorkflowDiagram', () => {
     expect(c.find('[data-testid="workflow-node-surrogate-1"]').classes()).toContain('surrogate')
     expect(c.find('[data-testid="workflow-node-surrogate-1"] .wf-tag').text()).toContain('RBF')
     expect(c.findAll('.wf-edge.step')).toHaveLength(1)
+    await c.find('[data-testid="workflow-edge-surrogate-1-sobol-1"]').trigger('mouseenter')
     expect(c.find('.wf-edge-label').text()).toBe('emulator')
   })
 })
