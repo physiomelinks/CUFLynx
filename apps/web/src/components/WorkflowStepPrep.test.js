@@ -60,6 +60,17 @@ describe('WorkflowStepPrep', () => {
     expect(models.text()).toContain('choose a model')
     await prep.find('[data-testid="workflow-prep-place"]').trigger('click')
     expect(prep.emitted('place')).toEqual([[{ action: 'set' }]])
+    // a box in the open list drags straight onto the chart, and becomes the one chosen
+    await models.trigger('click')
+    const drag = { setData: vi.fn(), effectAllowed: '' }
+    await prep.find('[data-testid="workflow-prep-models-list"] .sp-option').trigger('dragstart', { dataTransfer: drag })
+    expect(drag.setData).toHaveBeenCalledWith('application/x-cuflynx-new-step',
+      JSON.stringify({ model: workflow.target }))
+    expect(models.text()).toContain('enterocyte_module_array.csv')
+    await new Promise((r) => setTimeout(r, 0))
+    // an action this CA cannot make does not drag
+    await actions.trigger('click')
+    expect(prep.find('[data-testid="workflow-prep-option-action:combine"]').attributes('draggable')).toBe('false')
     // Escape closes an open drop-down
     await models.trigger('click')
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))

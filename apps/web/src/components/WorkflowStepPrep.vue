@@ -70,11 +70,17 @@ function pick(box) {
   open.value = null
 }
 
-function onDragStart(event) {
-  if (!chosen.value) return
-  event.dataTransfer.setData(NEW_STEP_TYPE, JSON.stringify(chosen.value.payload))
+function onDragStart(event, box = chosen.value) {
+  if (!box || box.available === false) {
+    event.preventDefault()
+    return
+  }
+  event.dataTransfer.setData(NEW_STEP_TYPE, JSON.stringify(box.payload))
   event.dataTransfer.effectAllowed = 'copy'
-  open.value = null
+  // a box dragged from the open list is the one chosen, too
+  chosenKey.value = box.key
+  // the list closes once the drag is under way (closing it at once would end the drag)
+  setTimeout(() => { open.value = null }, 0)
 }
 
 // a click outside, or Escape, closes an open drop-down
@@ -143,8 +149,11 @@ onBeforeUnmount(() => {
             :class="[box.kind, { off: box.available === false, on: box.key === chosenKey }]"
             role="option"
             :aria-disabled="box.available === false"
+            :draggable="box.available !== false"
+            :title="box.available === false ? '' : 'Click to choose it, or drag it straight onto the chart'"
             :data-testid="`workflow-prep-option-${box.key}`"
             @click="pick(box)"
+            @dragstart="onDragStart($event, box)"
           >
             <strong class="sp-title">{{ box.title }}</strong>
             <span class="sp-line">{{ box.line }}</span>
@@ -284,6 +293,9 @@ onBeforeUnmount(() => {
   border-radius: 8px;
   background: var(--p-content-background, #1e1e1e);
   box-shadow: 0 8px 24px rgb(0 0 0 / 40%);
+}
+.sp-option[draggable='true'] {
+  cursor: grab;
 }
 .sp-option:hover:not(.off) {
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--p-primary-color, #4f8cff) 45%, transparent);

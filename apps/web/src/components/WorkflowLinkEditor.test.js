@@ -134,8 +134,14 @@ describe('WorkflowLinkEditor', () => {
   it('a fixed arrow names its parameters where CA takes them', async () => {
     const save = vi.fn().mockResolvedValue('')
     const e = editor({ source: 'fit_a', target: 'fit_b' }, { save, fixedParameters: true })
+    await flushPromises()
     const fixed = e.find('[data-testid="workflow-arrow-key-fixed_from"]')
-    const boxes = fixed.findAll('[data-testid="workflow-link-params-fixed_from"] input')
+    const params = fixed.find('[data-testid="workflow-link-params-fixed_from"]')
+    // each parameter with its value now, as the run reports it
+    expect(params.text()).toContain('m/a')
+    expect(params.text()).toContain('1.5000 mM')
+    expect(params.text()).toContain('2 of 2')
+    const boxes = params.findAll('input')
     await boxes[0].setValue(false)
     await fixed.find('[data-testid="workflow-link-save-fixed_from"]').trigger('click')
     await flushPromises()

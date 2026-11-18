@@ -23,8 +23,10 @@ const props = defineProps({
   // A key being added (no detail, no remove), or one waiting for a new step to run.
   isNew: { type: Boolean, default: false },
   pending: { type: Boolean, default: false },
-  // The source's parameters (model names), for a prior or a fixed arrow that names some.
+  // The source's parameters (model names), for a prior or a fixed arrow that names some, and
+  // each one's name as the run reports its value ({model name: component/parameter}).
   parameters: { type: Array, default: () => [] },
+  labels: { type: Object, default: () => ({}) },
   fixedParameters: { type: Boolean, default: false },
   // The target is (or may become) a calibration, which uses a prior only with its objective.
   takesCalibration: { type: Boolean, default: true },
@@ -66,7 +68,9 @@ watch(() => [props.name, props.options, props.parameters], reset, { immediate: t
 watch(() => [props.source, props.target, props.name, props.isNew, props.pending], async () => {
   detail.value = null
   detailError.value = ''
-  if (props.isNew || props.pending) return
+  // a new arrow too: what it would pass (the source's values now), so a choice of
+  // parameters can be made seeing them; a new step at either end has none to read
+  if (props.pending) return
   try {
     detail.value = await getWorkflowEdge(props.source, props.target, props.name)
   } catch (e) {
@@ -93,6 +97,19 @@ function current() {
 }
 
 const empty = computed(() => names.value && props.parameters.length > 0 && chosen.value.length === 0)
+
+// each parameter's value now, as the run reports it, by model name
+const valueOf = computed(() => {
+  const rows = Object.fromEntries((detail.value?.rows ?? []).map((r) => [r.name, r]))
+  return Object.fromEntries(props.parameters.map((p) => [p, rows[props.labels[p] ?? p] ?? rows[p] ?? null]))
+})
+// the detail shown above the choice: its values are in the choice, so not twice
+const shownDetail = computed(() => (detail.value && names.value && props.parameters.length
+  ? { ...detail.value, rows: [] } : detail.value))
+
+function num(v) {
+  return typeof v === 'number' ? v.toPrecision(5) : ''
+}
 defineExpose({ current, empty })
 </script>
 
@@ -108,15 +125,21 @@ defineExpose({ current, empty })
       Waits for the new step to run: then it is written into the workflow.
     </p>
     <p v-if="detailError" class="ak-error">{{ detailError }}</p>
-    <WorkflowEdgeBody v-if="detail" :edge="{ source, target, key: name }" :detail="detail" :heading="false" />
+    <WorkflowEdgeBody v-if="shownDetail" :edge="{ source, target, key: name }" :detail="shownDetail" :heading="false" />
 
     <div v-if="hasOptions" class="ak-options">
       <fieldset v-if="names && parameters.length" class="ak-params" :data-testid="`workflow-link-params-${name}`">
-        <legend>Parameters</legend>
+        <legend>{{ name === 'fixed_from' ? 'Fix these values' : 'Give these a prior' }}
+          ({{ chosen.length }} of {{ parameters.length }})</legend>
         <label v-for="p in parameters" :key="p">
           <input v-model="chosen" type="checkbox" :value="p" />
-          <code>{{ p }}</code>
+          <code>{{ labels[p] ?? p }}</code>
+          <span class="ak-value">{{ num(valueOf[p]?.value) }} {{ valueOf[p]?.units ?? '' }}</span>
         </label>
+        <span class="ak-all">
+          <button type="button" @click="chosen = [...parameters]">all</button>
+          <button type="button" @click="chosen = []">none</button>
+        </span>
       </fieldset>
       <template v-if="name === 'priors_from'">
         <label>As
@@ -206,9 +229,27 @@ defineExpose({ current, empty })
   opacity: 0.8;
 }
 .ak-params label {
-  display: flex;
-  gap: 0.4rem;
+  display: grid;
+  grid-template-columns: auto minmax(12rem, auto) 1fr;
+  gap: 0.5rem;
   align-items: center;
+}
+.ak-value {
+  font-variant-numeric: tabular-nums;
+  opacity: 0.85;
+}
+.ak-all {
+  display: flex;
+  gap: 0.6rem;
+  margin-top: 0.2rem;
+}
+.ak-all button {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--p-primary-color, #4f8cff);
+  cursor: pointer;
+  font-size: 0.8em;
 }
 .ak-options input[type='number'] {
   width: 5rem;
