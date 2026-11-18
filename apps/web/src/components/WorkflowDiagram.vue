@@ -34,7 +34,7 @@ const props = defineProps({
   doomed: { type: Array, default: () => [] },
   busy: { type: Boolean, default: false },
 })
-const emit = defineEmits(['select', 'inspect', 'delete', 'move'])
+const emit = defineEmits(['select', 'inspect', 'delete', 'move', 'open-target'])
 
 const W = 250
 const H = 78
@@ -243,10 +243,44 @@ function onDragEnd() {
   dragging.value = null
   over.value = null
 }
+
+// -- panning: drag the chart by anything but a step box (a box drags to reorder) -------------
+const pan = ref(null)
+const panning = ref(null) // {x, y, left, top, id} while the chart is held
+
+function onPanStart(event) {
+  if (event.button !== 0 || event.target.closest('.wf-node')) return
+  const el = pan.value
+  panning.value = { x: event.clientX, y: event.clientY, left: el.scrollLeft, top: el.scrollTop,
+                    id: event.pointerId }
+  el.setPointerCapture?.(event.pointerId)
+  event.preventDefault()
+}
+function onPanMove(event) {
+  const p = panning.value
+  if (!p || event.pointerId !== p.id) return
+  pan.value.scrollLeft = p.left - (event.clientX - p.x)
+  pan.value.scrollTop = p.top - (event.clientY - p.y)
+}
+function onPanEnd(event) {
+  if (panning.value) pan.value.releasePointerCapture?.(event.pointerId)
+  panning.value = null
+}
 </script>
 
 <template>
   <div class="wf-chart-wrap" data-testid="workflow-diagram">
+    <div
+      ref="pan"
+      class="wf-pan"
+      :class="{ panning: !!panning }"
+      title="Drag to move along the chart"
+      data-testid="workflow-pan"
+      @pointerdown="onPanStart"
+      @pointermove="onPanMove"
+      @pointerup="onPanEnd"
+      @pointercancel="onPanEnd"
+    >
     <div class="wf-chart" :style="{ width: `${width}px`, height: `${height}px` }">
       <svg class="wf-edges" :width="width" :height="height" aria-hidden="true">
         <defs>
@@ -329,6 +363,8 @@ function onDragEnd() {
       <div
         v-if="targetBox"
         class="wf-box target"
+        title="Click: open the target with every calibrated value as the current study"
+        @click="emit('open-target')"
         :style="{ left: `${targetBox.x}px`, top: `${targetBox.y}px`, width: `${W}px`, height: `${H}px` }"
         data-testid="workflow-node-target"
       >
@@ -336,6 +372,7 @@ function onDragEnd() {
         <div class="wf-row2">{{ modelName }} with the merged values</div>
         <div class="wf-tag">from {{ merged.map((s) => s.id).join(', ') }}</div>
       </div>
+    </div>
     </div>
     <div class="wf-key" aria-label="Colour key">
       <span class="k cal">calibrated: an optimiser fitted it</span>
@@ -345,8 +382,8 @@ function onDragEnd() {
       <span class="k inherited">inherited: from the model</span>
     </div>
     <p class="wf-help">
-      Click a step to change its settings · double-click to inspect it · drag it onto another
-      step to take that one's place · the bin deletes it
+      Drag the chart to move along it · click a step to change its settings · double-click to
+      inspect it · drag a step onto another to take that one's place · the bin deletes it
     </p>
   </div>
 </template>
@@ -358,8 +395,22 @@ function onDragEnd() {
   --analysis: #6b7680;
   --surrogate: #8a4fd6;
   --inherited: #8b949c;
-  overflow-x: auto;
-  padding-bottom: 0.25rem;
+  min-width: 0;
+}
+/* the chart moves by dragging it (and by a trackpad or wheel); no scroll bar, and the key
+   and help below stay where they are */
+.wf-pan {
+  overflow: auto;
+  scrollbar-width: none;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+.wf-pan::-webkit-scrollbar {
+  display: none;
+}
+.wf-pan.panning {
+  cursor: grabbing;
 }
 .wf-chart {
   position: relative;
@@ -408,7 +459,7 @@ function onDragEnd() {
 .wf-box.surrogate { border-color: var(--surrogate); }
 .wf-box.sim { border-color: var(--analysis); }
 .wf-box.inherited { border: 2px dashed var(--inherited); }
-.wf-box.target { border-color: var(--p-text-color, #ddd); }
+.wf-box.target { border-color: var(--p-text-color, #ddd); cursor: pointer; }
 .wf-node {
   cursor: pointer;
 }

@@ -1815,16 +1815,14 @@ describe('App.vue top bar run window', () => {
     expect(labels).not.toContain('Clear obs data')
   })
 
-  // The protocol readout is now the only visible statement of the run window, so
-  // it says the window and not only the shape of the protocol.
-  it('states the window the protocol sets', async () => {
+  // The run window comes from the protocol, which is not restated at the top (Finbar,
+  // 2026-11-18: the "Protocol: … experiment(s) · …" readout is removed).
+  it('runs over the window the protocol sets, with no readout of it', async () => {
     const wrapper = await mounted({ obsData: PROTOCOL })
-    const text = wrapper.find('[data-testid="protocol-summary"]').text()
-    expect(text).toContain('2 experiment(s)')
-    expect(text).toContain('9') // total sim_times
-    expect(text).toContain('2') // total pre_times
-    expect(wrapper.vm.simTime).toBe(9)
-    expect(wrapper.vm.preTime).toBe(2)
+    expect(wrapper.find('[data-testid="protocol-summary"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="no-protocol"]').exists()).toBe(false)
+    expect(wrapper.vm.simTime).toBe(9) // total sim_times
+    expect(wrapper.vm.preTime).toBe(2) // total pre_times
   })
 
   it('says what is missing when a model has no protocol to run over', async () => {
