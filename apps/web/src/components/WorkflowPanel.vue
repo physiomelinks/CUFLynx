@@ -448,19 +448,8 @@ const progressText = computed(() => {
 
       <div v-if="provenance" class="wf-provenance" data-testid="workflow-provenance">
         <h5>How every value was set</h5>
-        <a
-          v-if="provenance.svg"
-          :href="provenance.svg"
-          target="_blank"
-          rel="noopener"
-          title="Open the diagram on its own"
-        >
-          <img
-            :src="provenance.svg"
-            alt="The run's provenance: each step and the values it set"
-            data-testid="workflow-provenance-svg"
-          />
-        </a>
+        <!-- CA's diagram is not drawn here (the chart above shows the workflow); it opens on
+             its own from the link, beside its graph -->
         <p class="wf-hint">
           <a
             v-if="provenance.svg"

@@ -132,14 +132,13 @@ describe('WorkflowPanel', () => {
     expect(box({ module_type: 'heart', parameterisation: 'default' })).toBe(false)
   })
 
-  it("shows the run's provenance diagram and links it and its graph as plain links", () => {
+  it("links the run's provenance diagram and its graph, without drawing the diagram", () => {
     const provenance = { svg: '/api/workflow/provenance/provenance.svg?v=1',
                          graph: '/api/workflow/provenance/provenance_graph.json?v=1' }
     expect(mountPanel({ described, tabs }).find('[data-testid="workflow-provenance"]').exists())
       .toBe(false)
     const panel = mountPanel({ described, tabs, provenance })
-    expect(panel.find('[data-testid="workflow-provenance-svg"]').attributes('src'))
-      .toBe(provenance.svg)
+    expect(panel.find('img').exists()).toBe(false)
     for (const id of ['workflow-provenance-svg-link', 'workflow-provenance-graph']) {
       const link = panel.find(`[data-testid="${id}"]`)
       // a real link the user clicks: never a scripted open or a blob: URL
