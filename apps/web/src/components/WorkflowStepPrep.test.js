@@ -27,27 +27,45 @@ const workflow = {
 }
 
 describe('WorkflowStepPrep', () => {
-  it('offers each model once and the actions, as a box to drag onto the chart', async () => {
-    const prep = mount(WorkflowStepPrep, { props: { workflow, stepKinds: ['calibration', 'set'] } })
-    const models = prep.find('[data-testid="workflow-prep-models"]').findAll('option').slice(1)
-    expect(models.map((o) => o.text())).toEqual([expect.stringContaining('enterocyte'), expect.stringContaining('i_K1')])
-    // the combine step needs a newer CA
-    const actions = prep.find('[data-testid="workflow-prep-actions"]').findAll('option').slice(1)
-    expect(actions.map((o) => [o.element.value, o.element.disabled])).toEqual([['combine', true], ['set', false]])
-    expect(prep.find('[data-testid="workflow-prep-box"]').exists()).toBe(false)
-
-    await prep.find('[data-testid="workflow-prep-models"]').setValue(models[1].element.value)
-    const box = prep.find('[data-testid="workflow-prep-box"]')
-    expect(box.text()).toContain('used by kir, kir_again')
+  it('drop-downs drawn as the boxes they give; the chosen box drags from the drop-down', async () => {
+    const prep = mount(WorkflowStepPrep, { props: { workflow, stepKinds: ['calibration', 'set'] },
+      attachTo: document.body })
+    const models = prep.find('[data-testid="workflow-prep-models"]')
+    expect(models.text()).toContain('choose a model')
+    expect(models.attributes('draggable')).toBe('false')
+    await models.trigger('click')
+    const options = prep.findAll('[data-testid="workflow-prep-models-list"] .sp-option')
+    // each model once, as the chart names it
+    expect(options.map((o) => o.find('.sp-title').text())).toEqual(['enterocyte_module_array.csv', 'i_K1 · krapivinsky1998'])
+    expect(options[1].text()).toContain('used by kir, kir_again')
+    await options[1].trigger('click')
+    expect(prep.find('[data-testid="workflow-prep-models-list"]').exists()).toBe(false)
+    expect(models.text()).toContain('i_K1 · krapivinsky1998')
+    expect(models.attributes('draggable')).toBe('true')
     const data = { setData: vi.fn(), effectAllowed: '' }
-    await box.trigger('dragstart', { dataTransfer: data })
+    await models.trigger('dragstart', { dataTransfer: data })
     expect(data.setData).toHaveBeenCalledWith('application/x-cuflynx-new-step', JSON.stringify({ model: KIR }))
 
+    // the combine step needs a newer CA: shown, and not chosen
+    const actions = prep.find('[data-testid="workflow-prep-actions"]')
+    await actions.trigger('click')
+    const combine = prep.find('[data-testid="workflow-prep-option-action:combine"]')
+    expect(combine.classes()).toContain('off')
+    await combine.trigger('click')
+    expect(models.text()).toContain('i_K1')
     // choosing an action replaces the model's box
-    await prep.find('[data-testid="workflow-prep-actions"]').setValue('set')
-    expect(prep.find('[data-testid="workflow-prep-models"]').element.value).toBe('')
+    await prep.find('[data-testid="workflow-prep-option-action:set"]').trigger('click')
+    expect(actions.text()).toContain('Set values by hand')
+    expect(actions.classes()).toContain('set')
+    expect(models.text()).toContain('choose a model')
     await prep.find('[data-testid="workflow-prep-place"]').trigger('click')
     expect(prep.emitted('place')).toEqual([[{ action: 'set' }]])
+    // Escape closes an open drop-down
+    await models.trigger('click')
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    await prep.vm.$nextTick()
+    expect(prep.find('[data-testid="workflow-prep-models-list"]').exists()).toBe(false)
+    prep.unmount()
   })
 })
 
