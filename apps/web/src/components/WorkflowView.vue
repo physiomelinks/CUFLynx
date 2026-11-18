@@ -22,7 +22,6 @@ import WorkflowPanel from './WorkflowPanel.vue'
 import WorkflowStepDetail from './WorkflowStepDetail.vue'
 import WorkflowEdgeDetail from './WorkflowEdgeDetail.vue'
 import WorkflowLinkEditor from './WorkflowLinkEditor.vue'
-import WorkflowSweepForm from './WorkflowSweepForm.vue'
 import WorkflowStepPrep from './WorkflowStepPrep.vue'
 import WorkflowSetValuesForm from './WorkflowSetValuesForm.vue'
 import WorkflowDraftChoice from './WorkflowDraftChoice.vue'
@@ -60,9 +59,11 @@ const props = defineProps({
   // The chart's edits (useWorkflow): {link, unlink, place, placeMany, addDraft, makeSweep,
   // chooseDraft, deleteDraft}, each async; '' when done, else why not (addDraft: the id).
   editor: { type: Object, default: null },
-  // What a simulation can record (states, algebraic) and sweep (constants): component/name.
-  outputsOffered: { type: Array, default: () => [] },
+  // The model's constants (component/name), offered when setting values by hand.
   parametersOffered: { type: Array, default: () => [] },
+  // The Simulation box waiting for its obs_data, or null; whether the study has one.
+  simulationDraft: { type: String, default: null },
+  studyHasObs: { type: Boolean, default: false },
   // CA's step kinds (describe's step_kinds), and the left-hand tabs that make steps.
   stepKinds: { type: Array, default: () => [] },
   draftPanels: { type: Array, default: () => [] },
@@ -84,8 +85,11 @@ const emit = defineEmits([
   'move-step',
   // a step's model, opened as the current study (the bar's tab does the same)
   'open-step-view',
-  // a model box's choice: {draft, panel}: its model as the study, that tab open
+  // a model box's choice: {draft, model, panel} (that tab opens) or {draft, model,
+  // simulation: true}: its model as the study, alone, asking for its obs_data
   'draft-action',
+  // the waiting simulation was made (or put off: true)
+  'simulation-made',
 ])
 
 // The step being inspected (a double-click in the chart), or null.
@@ -105,8 +109,18 @@ const editNotice = ref('')
 const draftIds = computed(() => (props.layout?.drafts ?? []).map((d) => d.id))
 const chartSteps = computed(() => [...props.steps,
   ...(props.layout?.drafts ?? []).map((d) => ({ id: d.id, draft: true, on_target: !!d.on_target }))])
-// The after-target new step whose Simulation form is open, or null.
-const sweepDraft = ref(null)
+/** A Simulation box (a model box's choice, or a new step after the target): its model as the
+ * study, alone, and Imports asking for its obs_data, whose protocol says what varies
+ * (params_to_change); Add simulation, below, then makes it. */
+function simulate(d) {
+  emit('draft-action', { draft: d.id, model: d.model ?? null, simulation: true })
+}
+async function addSimulation() {
+  const why = props.editor ? await props.editor.makeSweep({ draft: props.simulationDraft })
+    : 'editing is not available'
+  if (why) editError.value = why
+  else emit('simulation-made')
+}
 
 function onConnect({ source, target }) {
   clickedEdge.value = null
@@ -136,7 +150,7 @@ async function onAddDraft({ col = null, row = null, shift = null, onTarget = fal
   const draft = await props.editor.addDraft(col, row, onTarget, model, action)
   if (!draft) return
   if (shift && Object.keys(shift).length) editError.value = await props.editor.placeMany(shift)
-  if (onTarget) sweepDraft.value = draft
+  if (onTarget) simulate({ id: draft })
   prepOpen.value = false
 }
 
@@ -155,7 +169,7 @@ function onChoose({ panel, simulation }) {
   const d = choosing.value
   choosing.value = null
   if (!d) return
-  if (simulation) sweepDraft.value = d.id
+  if (simulation) simulate(d)
   else emit('draft-action', { draft: d.id, model: d.model, panel })
 }
 
@@ -295,6 +309,27 @@ const alsoDeleted = computed(() => doomed.value.filter((s) => s !== props.pendin
           {{ editError }}
         </Message>
         <Message
+          v-if="simulationDraft"
+          severity="info"
+          :closable="false"
+          data-testid="workflow-simulation-waiting"
+        >
+          Simulation <strong>{{ simulationDraft }}</strong>: runs the model over its obs_data's
+          protocol; what varies is that protocol's <code>params_to_change</code> (edit it with the
+          obs_data's Edit). It records the variables the obs_data's items name.
+          <template v-if="!studyHasObs"> Give it an obs_data in Imports first.</template>
+          <div class="wv-confirm">
+            <Button
+              label="Add simulation"
+              size="small"
+              :disabled="!studyHasObs || busy || running"
+              data-testid="workflow-simulation-add"
+              @click="addSimulation"
+            />
+            <Button label="Not now" size="small" text @click="emit('simulation-made', true)" />
+          </div>
+        </Message>
+        <Message
           v-if="editNotice"
           severity="info"
           closable
@@ -328,7 +363,7 @@ const alsoDeleted = computed(() => doomed.value.filter((s) => s !== props.pendin
           @delete-draft="(id) => onEdit('deleteDraft', id)"
           @place-many="(positions) => onEdit('placeMany', positions)"
           @add-draft="onAddDraft"
-          @setup-sweep="(id) => (sweepDraft = id)"
+          @setup-sweep="(id) => simulate({ id })"
           @open-target="emit('open-step-view', 'target')"
           @edge="(e) => (clickedEdge = e)"
           @figure="(id) => (clickedFigure = figures.find((f) => f.id === id) ?? null)"
@@ -353,14 +388,6 @@ const alsoDeleted = computed(() => doomed.value.filter((s) => s !== props.pendin
           :save="(form) => editor ? editor.setValues(form) : Promise.resolve('editing is not available')"
           :busy="busy || running"
           @close="setDraft = null"
-        />
-        <WorkflowSweepForm
-          :draft="sweepDraft"
-          :outputs-offered="outputsOffered"
-          :parameters-offered="parametersOffered"
-          :save="(form) => editor ? editor.makeSweep(form) : Promise.resolve('editing is not available')"
-          :busy="busy || running"
-          @close="sweepDraft = null"
         />
         <WorkflowLinkEditor
           :arrow="editedArrow"

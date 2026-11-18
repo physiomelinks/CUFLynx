@@ -2438,6 +2438,30 @@ describe('analysis runs carry the protocol window', () => {
     expect(wrapper.vm.needsObsData).toBe(false)
   })
 
+  it("a model box's Simulation opens its model alone and waits for the obs_data to vary", async () => {
+    const { openWorkflowView } = await import('./lib/api')
+    const wrapper = await mountApp()
+    const kir = { module_type: 'i_K1', version: 'v1', parameterisation: 'k1998' }
+    wrapper.vm.wf.described.value = {
+      loaded: true, path: '/p/enterocyte_calibration_workflow.json',
+      workflow: { workflow_name: 'enterocyte', target: { module_array: 'a.json' },
+                  steps: [{ id: 'kir', model: kir }] },
+      layout: { positions: {}, links: [], drafts: [{ id: 'new-2', model: kir }] },
+    }
+    openWorkflowView.mockClear()
+    const tab = wrapper.vm.leftTab
+    await wrapper.vm.onWorkflowDraftAction({ draft: 'new-2', model: kir, simulation: true })
+    expect(openWorkflowView).toHaveBeenCalledWith('kir', expect.anything(), { inputs: false })
+    expect(wrapper.vm.needsObsData).toBe(true)
+    expect(wrapper.vm.simulationDraft).toBe('new-2')
+    // no panel makes a simulation: the tab stays, and no run is waiting to make the box
+    expect(wrapper.vm.leftTab).toBe(tab)
+    expect(wrapper.vm.wf.target.value.draft).toBeUndefined()
+    wrapper.vm.onSimulationMade()
+    expect(wrapper.vm.simulationDraft).toBe(null)
+    expect(wrapper.vm.needsObsData).toBe(false)
+  })
+
   it('a step clicked in the Workflow view opens its panel, and the next run changes it', async () => {
     const { startCalibration } = await import('./lib/api')
     startCalibration.mockClear()

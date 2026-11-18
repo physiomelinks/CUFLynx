@@ -22,6 +22,7 @@ import copy
 import json
 import os
 import re
+import shutil
 
 import study_workflow
 from ca_imports import ca_import
@@ -214,6 +215,23 @@ def forget(workflow_path: str, step_ids) -> None:
 SWEEP_DESIGNS = ("grid", "one_at_a_time")
 
 
+def obs_data_variables(obs_data_path: str) -> list:
+    """The variables an obs_data's data and prediction items name (their ``operands``), once
+    each in order: what a simulation on it records over time."""
+    try:
+        with open(obs_data_path, encoding="utf-8-sig") as handle:
+            doc = json.load(handle)
+    except (OSError, ValueError):
+        return []
+    out: list = []
+    for group in ("data_items", "prediction_items"):
+        for item in (doc.get(group) or []) if isinstance(doc, dict) else []:
+            for name in (item.get("operands") or []) if isinstance(item, dict) else []:
+                if isinstance(name, str) and name and name not in out:
+                    out.append(name)
+    return out
+
+
 def make_sweep(workflow_path: str, draft: str, *, obs_data: str | None, outputs: list,
                parameters: dict | None = None, design: str | None = None,
                zip_groups: list | None = None, settings: dict | None = None) -> str:
@@ -228,6 +246,8 @@ def make_sweep(workflow_path: str, draft: str, *, obs_data: str | None, outputs:
         raise StudyWorkflowError(f"there is no new step {draft!r}")
     raw = copy.deepcopy(study_workflow.read_raw(workflow_path))
     sweep: dict = {"parameters": dict(parameters or {})}
+    if not outputs and obs_data:
+        outputs = obs_data_variables(obs_data)
     if outputs:
         sweep["outputs"] = [str(o) for o in outputs]
     if design:
@@ -246,7 +266,15 @@ def make_sweep(workflow_path: str, draft: str, *, obs_data: str | None, outputs:
         step["settings"] = dict(settings)
     if obs_data:
         base = os.path.dirname(os.path.abspath(workflow_path))
-        step["obs_data"] = os.path.relpath(os.path.abspath(obs_data), base)
+        source = os.path.abspath(obs_data)
+        if os.path.commonpath([source, base]) != base:
+            # the step depends on it, so it lives beside the workflow (``data/<step>_obs_data
+            # .json``, as CA's builder writes one), not in a session's uploads, which are pruned
+            kept = os.path.join(base, "data", f"{draft}_obs_data.json")
+            os.makedirs(os.path.dirname(kept), exist_ok=True)
+            shutil.copyfile(source, kept)
+            source = kept
+        step["obs_data"] = os.path.relpath(source, base)
     raw.setdefault("steps", []).append(step)
     _write_checked(workflow_path, raw)
     layout["drafts"] = [d for d in layout["drafts"] if d.get("id") != draft]

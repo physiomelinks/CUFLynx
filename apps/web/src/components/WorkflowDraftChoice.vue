@@ -54,7 +54,7 @@ const PANELS = {
           data-testid="workflow-draft-choice-simulation"
           @click="emit('choose', { simulation: true })"
         >
-          <strong>Simulation</strong><span>run it, sweeping parameters if wanted (a form)</span>
+          <strong>Simulation</strong><span>run it over an obs_data's protocol; what varies is its params_to_change</span>
         </button>
         <button type="button" class="dc-item hand" disabled title="Needs a circulatory_autogen that records a choice made by hand (asked)">
           <strong>Choose parameters</strong><span>by hand, an orange box (needs a newer circulatory_autogen)</span>

@@ -213,6 +213,26 @@ def test_a_box_after_the_target_is_a_sweep_made_from_its_form(client, fake_runs,
     assert r.json()["layout"]["positions"][draft] == {"col": 2, "row": 0.0}
 
 
+def test_a_simulation_varies_what_its_obs_data_protocol_does_and_records_its_items(
+        client, fake_runs, tmp_path):
+    """A Simulation box takes the study's obs_data: what varies is that protocol's
+    params_to_change, so the step names no parameters; it records the variables the obs_data's
+    items name."""
+    work = tmp_path / "w"
+    model_id = _setup(client)
+    assert _calibrate(client, model_id, work)["state"] == "done"
+    draft = client.post("/api/workflow/draft", json={"on_target": True}).json()["draft"]
+    r = client.post("/api/workflow/sweep", json={"draft": draft, "model_id": model_id})
+    assert r.status_code == 200, r.text
+    step = _steps(work)[draft]
+    assert step["sweep"]["parameters"] == {}
+    # kept beside the workflow, which depends on it (not in the session's uploads)
+    assert step["obs_data"] == f"data/{draft}_obs_data.json"
+    obs = json.loads((_workflow_dir(work) / step["obs_data"]).read_text())
+    named = [v for i in obs["data_items"] for v in i["operands"]]
+    assert named and step["sweep"]["outputs"] == list(dict.fromkeys(named))
+
+
 def test_a_drop_in_a_gap_moves_the_boxes_right_of_it_in_one_go(client, fake_runs, tmp_path):
     work = tmp_path / "w"
     model_id = _setup(client)

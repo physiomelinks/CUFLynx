@@ -171,7 +171,7 @@ const drafts = computed(() => (props.layout?.drafts ?? []).map((d) =>
 /** A new step's second line and tag, by what it came from: a model box, an action box,
  * after the target, or a plain new step. */
 function draftWords(step) {
-  if (step.on_target) return ['Simulation: double-click to set it up', 'not set up · runs on the merged target']
+  if (step.on_target) return ['Simulation: click, then give its obs_data', 'not set up · runs on the merged target']
   if (step.draftModel) return [modelShort(step.draftModel), 'model box · click: choose what it does']
   if (step.action === 'set') return ['Set values by hand: click to give them', 'not set up · set by hand']
   if (step.action === 'combine') return ['Choose a parameter set by cost', 'not set up · draw calibrations to it']
