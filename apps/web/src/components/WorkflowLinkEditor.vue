@@ -68,8 +68,12 @@ const passed = computed(() => {
 const more = computed(() => (props.arrow ? linkChoices(props.linkKinds, source.value, target.value) : [])
   .filter((k) => !passed.value.some((p) => p.name === k)))
 const pending = computed(() => !!(source.value?.draft || target.value?.draft))
-const parameters = computed(() =>
-  (props.details[props.arrow?.source]?.calibrates ?? []).map((c) => c.model_name).filter(Boolean))
+// the source's parameters as CA names them in a fixed_from or priors_from entry (its model
+// names), and each one's name as the run reports its value (component/parameter)
+const calibrates = computed(() => (props.details[props.arrow?.source]?.calibrates ?? []).filter((c) => c.model_name))
+const parameters = computed(() => calibrates.value.map((c) => c.model_name))
+const labels = computed(() => Object.fromEntries(calibrates.value.map((c) =>
+  [c.model_name, c.target_parameterisation_name ?? c.target_host_name ?? c.model_name])))
 const takesCalibration = computed(() => !target.value || target.value.draft ||
   (target.value.kind ?? 'calibration') === 'calibration')
 const objectiveNow = computed(() => target.value?.settings?.optimiser_options?.objective_function ?? null)
@@ -138,6 +142,7 @@ async function addKey() {
         :pending="p.pending"
         :objective-now="objectiveNow"
         :parameters="parameters"
+        :labels="labels"
         :fixed-parameters="fixedParameters"
         :takes-calibration="takesCalibration"
         :busy="busy || working"
@@ -162,6 +167,7 @@ async function addKey() {
           :name="adding"
           is-new
           :parameters="parameters"
+          :labels="labels"
           :fixed-parameters="fixedParameters"
           :takes-calibration="takesCalibration"
           :busy="busy || working"
