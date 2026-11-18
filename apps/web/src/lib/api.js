@@ -799,6 +799,15 @@ export async function deleteWorkflowStep(step, confirm = false) {
   return data
 }
 
+/**
+ * What passes along one arrow of the open workflow's chart (`source` -> `target` by `key`):
+ * `{what, recorded, rows, prior, distribution, emulator, model, note}`.
+ */
+export async function getWorkflowEdge(source, target, key) {
+  const { data } = await axios.get(url('/api/workflow/edge'), { params: { source, target, key } })
+  return data
+}
+
 /** Move a step of the open workflow to `index`; the server refuses it above a step it takes from. */
 export async function moveWorkflowStep(step, index) {
   const { data } = await axios.post(url('/api/workflow/step/move'), { step, index })

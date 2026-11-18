@@ -19,6 +19,7 @@ import { computed, ref } from 'vue'
 import WorkflowDiagram from './WorkflowDiagram.vue'
 import WorkflowPanel from './WorkflowPanel.vue'
 import WorkflowStepDetail from './WorkflowStepDetail.vue'
+import WorkflowEdgeDetail from './WorkflowEdgeDetail.vue'
 
 defineOptions({ inheritAttrs: false })
 
@@ -38,6 +39,8 @@ const props = defineProps({
   results: { type: Object, default: () => ({}) },
   // The workflow's target model (the file's `target`).
   workflowTarget: { type: Object, default: null },
+  // The workflow's external figures (`external_figures`).
+  figures: { type: Array, default: () => [] },
   // The step the next run of the open panel changes (modeSummary), or null.
   editing: { type: String, default: null },
   // A delete waiting for a confirmation ({step, deleted, rewired, dropped}), or null.
@@ -61,6 +64,9 @@ const emit = defineEmits([
 // The step being inspected (a double-click in the chart), or null.
 const inspected = ref(null)
 const inspectedStep = computed(() => props.steps.find((s) => s.id === inspected.value) ?? null)
+// The clicked arrow ({source, target, key, files}) or external figure, or null.
+const clickedEdge = ref(null)
+const clickedFigure = ref(null)
 
 function fromDetail(event, id) {
   inspected.value = null
@@ -167,6 +173,7 @@ const alsoDeleted = computed(() => doomed.value.filter((s) => s !== props.pendin
           :states="states"
           :results="results"
           :target="workflowTarget"
+          :figures="figures"
           :editing="editing"
           :doomed="doomed"
           :busy="busy || running"
@@ -175,6 +182,13 @@ const alsoDeleted = computed(() => doomed.value.filter((s) => s !== props.pendin
           @delete="(id) => emit('delete-step', id)"
           @move="(m) => emit('move-step', m)"
           @open-target="emit('open-step-view', 'target')"
+          @edge="(e) => (clickedEdge = e)"
+          @figure="(id) => (clickedFigure = figures.find((f) => f.id === id) ?? null)"
+        />
+        <WorkflowEdgeDetail
+          :edge="clickedEdge"
+          :figure="clickedFigure"
+          @close="clickedEdge = null; clickedFigure = null"
         />
         <WorkflowStepDetail
           :step="inspectedStep"
