@@ -626,6 +626,10 @@ const workflowEditor = {
   link: (arrow) => wf.link(arrow),
   unlink: (arrow) => wf.unlink(arrow),
   place: (node, col, row) => wf.place(node, col, row),
+  placeMany: (positions) => wf.placeMany(positions),
+  addDraft: (col, row, onTarget) => wf.addDraft(col, row, onTarget),
+  // a simulation's protocol is the study's obs_data unless its form names a file
+  makeSweep: (form) => wf.makeSweep({ ...form, modelId: model.modelId.value }),
   chooseDraft: (draft) => wf.chooseDraft(draft),
   deleteDraft: (draft) => wf.deleteDraft(draft),
 }
@@ -3431,6 +3435,8 @@ watch(() => obs.obsData.value, scheduleRun)
           :link-kinds="wf.described.value?.link_kinds ?? {}"
           :fixed-parameters="!!wf.described.value?.fixed_parameters"
           :editor="workflowEditor"
+          :outputs-offered="plottableVariables"
+          :parameters-offered="model.variables.value.params ?? []"
           :editing="workflowSummary.mode !== 'new_workflow' ? workflowSummary.step : null"
           :pending-delete="wf.pendingDelete.value"
           :busy="wf.busy.value"

@@ -181,6 +181,52 @@ def test_renaming_or_deleting_a_step_carries_its_place_and_arrows(client, fake_r
     assert r.json()["layout"]["drafts"] == [] and r.json()["layout"]["links"] == []
 
 
+def test_a_box_after_the_target_is_a_sweep_made_from_its_form(client, fake_runs, tmp_path):
+    work = tmp_path / "w"
+    model_id = _setup(client)
+    assert _calibrate(client, model_id, work)["state"] == "done"
+    r = client.post("/api/workflow/draft", json={"col": 2, "row": 0, "on_target": True})
+    assert r.status_code == 200, r.text
+    draft = r.json()["draft"]
+    assert r.json()["layout"]["drafts"] == [{"id": draft, "on_target": True}]
+
+    # a panel's run cannot make it: only a sweep runs on the merged target
+    r = client.post("/api/calibration/run", json={"model_id": model_id, "settings": {
+        "config_outputs_dir": str(work), "param_id_method": "CMA-ES",
+        "num_calls_to_function": 50, "workflow_target": {"mode": "new_step", "draft": draft}}})
+    assert r.status_code == 422
+    assert "Simulation form" in r.json()["detail"]
+
+    r = client.post("/api/workflow/sweep", json={
+        "draft": draft, "model_id": model_id, "outputs": [f"{MODULE}/x"],
+        "parameters": {f"{MODULE}/alpha": {"values": [1.0, 2.0]}}, "design": "one_at_a_time"})
+    assert r.status_code == 200, r.text
+    step = _steps(work)[draft]
+    assert step["kind"] == "sweep" and step["on_target"] is True
+    assert step["sweep"] == {"parameters": {f"{MODULE}/alpha": {"values": [1.0, 2.0]}},
+                             "outputs": [f"{MODULE}/x"], "design": "one_at_a_time"}
+    # CA needs a step to record at: the one the app's solver uses
+    assert step["settings"]["dt"] > 0
+    # the study's obs_data, written relative to the workflow file
+    assert (_workflow_dir(work) / step["obs_data"]).is_file()
+    assert r.json()["layout"]["drafts"] == []
+    assert r.json()["layout"]["positions"][draft] == {"col": 2, "row": 0.0}
+
+
+def test_a_drop_in_a_gap_moves_the_boxes_right_of_it_in_one_go(client, fake_runs, tmp_path):
+    work = tmp_path / "w"
+    model_id = _setup(client)
+    assert _calibrate(client, model_id, work)["state"] == "done"
+    draft = _draft(client)
+    r = client.post("/api/workflow/positions", json={"positions": {
+        draft: {"col": 0, "row": 0}, "calibration-1": {"col": 1, "row": 0}}})
+    assert r.status_code == 200, r.text
+    assert r.json()["layout"]["positions"] == {draft: {"col": 0, "row": 0.0},
+                                               "calibration-1": {"col": 1, "row": 0.0}}
+    r = client.post("/api/workflow/positions", json={"positions": {"nope": {"col": 0, "row": 0}}})
+    assert r.status_code == 422
+
+
 def _wait(client, kind, job_id, seconds=420) -> dict:
     deadline = time.time() + seconds
     while time.time() < deadline:

@@ -3,6 +3,12 @@ import { flushPromises, mount } from '@vue/test-utils'
 import WorkflowLinkEditor from './WorkflowLinkEditor.vue'
 import { linkChoices, linkEntry } from '../lib/workflowTarget'
 
+vi.mock('../lib/api', () => ({
+  getWorkflowEdge: vi.fn().mockResolvedValue({
+    what: 'values fixed', rows: [{ name: 'm/a', value: 1.5, units: 'mM', note: '' }] }),
+  errorMessage: (e) => String(e?.message ?? e),
+}))
+
 const DialogStub = {
   props: ['visible', 'header'],
   template: '<div v-if="visible"><h2>{{ header }}</h2><slot /><slot name="footer" /></div>',
@@ -28,7 +34,7 @@ const steps = [
     priors_from: [{ step: 'mcmc-1', kind: 'normal', parameters: ['m/a'] }] },
   { id: 'new-1', draft: true },
 ]
-const details = { 'fit_a': { calibrates: [{ model_name: 'm/a' }, { model_name: 'm/b' }] },
+const details = { fit_a: { calibrates: [{ model_name: 'm/a' }, { model_name: 'm/b' }] },
                   'mcmc-1': { calibrates: [{ model_name: 'm/a' }, { model_name: 'm/b' }] } }
 
 function editor(arrow, extra = {}) {
@@ -58,63 +64,80 @@ describe('linkChoices / linkEntry', () => {
 })
 
 describe('WorkflowLinkEditor', () => {
-  it('a new arrow offers only what the two steps allow, and draws the chosen one', async () => {
+  it('shows what passes now, read from the run, and offers to pass more', async () => {
     const save = vi.fn().mockResolvedValue('')
-    const e = editor({ source: 'fit_a', target: 'fit_b', key: null }, { save })
-    expect(e.text()).toContain('New arrow fit_a → fit_b')
-    expect(e.findAll('input[type="radio"]').map((r) => r.element.value))
-      .toEqual(['fixed_from', 'priors_from', 'start_from'])
-    expect(e.find('[data-testid="workflow-link-save"]').attributes('disabled')).toBeDefined()
-    await e.find('[data-testid="workflow-link-key-fixed_from"]').setValue()
+    const e = editor({ source: 'fit_a', target: 'fit_b' }, { save })
+    await flushPromises()
+    expect(e.text()).toContain('fit_a → fit_b')
+    const fixed = e.find('[data-testid="workflow-arrow-key-fixed_from"]')
+    expect(fixed.text()).toContain('Fixed values')
+    // what passes, from the run
+    expect(fixed.find('[data-testid="workflow-edge-rows"]').text()).toContain('1.5000')
     // this CA fixes every value of the source
-    expect(e.find('[data-testid="workflow-link-fixed-all"]').exists()).toBe(true)
-    await e.find('[data-testid="workflow-link-save"]').trigger('click')
+    expect(fixed.find('[data-testid="workflow-link-fixed-all"]').exists()).toBe(true)
+    // pass more: what fit_b can still take from fit_a
+    const menu = e.find('[data-testid="workflow-link-more-select"]')
+    expect(menu.findAll('option').map((o) => o.element.value).slice(1))
+      .toEqual(['priors_from', 'start_from'])
+    await menu.setValue('start_from')
+    await e.find('[data-testid="workflow-link-add"]').trigger('click')
     await flushPromises()
     expect(save).toHaveBeenCalledWith(
-      { source: 'fit_a', target: 'fit_b', key: 'fixed_from', options: null, oldKey: null })
-    expect(e.emitted('close')).toHaveLength(1)
+      { source: 'fit_a', target: 'fit_b', key: 'start_from', options: null, oldKey: null })
   })
 
-  it('edits a prior: its parameters, kind, widening and objective', async () => {
+  it('a new arrow with one choice has it ready to pass', async () => {
     const save = vi.fn().mockResolvedValue('')
-    const e = editor({ source: 'mcmc-1', target: 'fit_b', key: 'priors_from' }, { save })
-    // the arrow's current options
-    expect(e.find('[data-testid="workflow-link-prior-kind"]').element.value).toBe('normal')
-    const boxes = e.findAll('[data-testid="workflow-link-params"] input')
+    const e = editor({ source: 'mcmc-1', target: 'new-1' }, { save,
+      linkKinds: { priors_from: LINK_KINDS.priors_from } })
+    expect(e.text()).toContain('Nothing passes')
+    expect(e.find('[data-testid="workflow-link-more-select"]').element.value).toBe('priors_from')
+    expect(e.find('[data-testid="workflow-link-prior-kind"]').exists()).toBe(true)
+    await e.find('[data-testid="workflow-link-inflate"]').setValue(3)
+    await e.find('[data-testid="workflow-link-add"]').trigger('click')
+    await flushPromises()
+    expect(save.mock.calls[0][0]).toMatchObject({ key: 'priors_from',
+      options: { inflate: 3, objective: 'likelihood' } })
+  })
+
+  it("changes a prior's options and stops passing something", async () => {
+    const save = vi.fn().mockResolvedValue('')
+    const remove = vi.fn().mockResolvedValue('')
+    const e = editor({ source: 'mcmc-1', target: 'fit_b' }, { save, remove })
+    const prior = e.find('[data-testid="workflow-arrow-key-priors_from"]')
+    expect(prior.find('[data-testid="workflow-link-prior-kind"]').element.value).toBe('normal')
+    const boxes = prior.findAll('[data-testid="workflow-link-params-priors_from"] input')
     expect(boxes.map((b) => b.element.checked)).toEqual([true, false])
     await boxes[1].setValue(true)
-    await e.find('[data-testid="workflow-link-inflate"]').setValue(2)
-    await e.find('[data-testid="workflow-link-objective"]').setValue(true)
-    await e.find('[data-testid="workflow-link-save"]').trigger('click')
+    await prior.find('[data-testid="workflow-link-save-priors_from"]').trigger('click')
     await flushPromises()
-    // every parameter chosen: none named
+    // every parameter chosen: none named; the objective was not set, so it stays off
     expect(save).toHaveBeenCalledWith({ source: 'mcmc-1', target: 'fit_b', key: 'priors_from',
-      options: { kind: 'normal', inflate: 2, objective: 'likelihood' }, oldKey: null })
+      options: { kind: 'normal' }, oldKey: null })
+    await prior.find('[data-testid="workflow-link-remove-priors_from"]').trigger('click')
+    await flushPromises()
+    expect(remove).toHaveBeenCalledWith({ source: 'mcmc-1', target: 'fit_b', key: 'priors_from' })
+    // that was the only thing it passed: the dialog closes
+    expect(e.emitted('close')).toHaveLength(1)
   })
 
-  it("shows CA's reason when it refuses, and removes an arrow", async () => {
+  it("shows CA's reason when it refuses", async () => {
     const save = vi.fn().mockResolvedValue('step "fit_b" takes priors, but ...')
-    const remove = vi.fn().mockResolvedValue('')
-    const e = editor({ source: 'fit_a', target: 'fit_b', key: 'fixed_from' }, { save, remove })
-    await e.find('[data-testid="workflow-link-key-start_from"]').setValue()
-    await e.find('[data-testid="workflow-link-save"]').trigger('click')
+    const e = editor({ source: 'fit_a', target: 'fit_b' }, { save })
+    await e.find('[data-testid="workflow-link-more-select"]').setValue('priors_from')
+    await e.find('[data-testid="workflow-link-add"]').trigger('click')
     await flushPromises()
-    expect(save.mock.calls[0][0]).toMatchObject({ key: 'start_from', oldKey: 'fixed_from' })
     expect(e.find('[data-testid="workflow-link-error"]').text()).toContain('takes priors')
     expect(e.emitted('close')).toBeUndefined()
-    await e.find('[data-testid="workflow-link-remove"]').trigger('click')
-    await flushPromises()
-    expect(remove).toHaveBeenCalledWith({ source: 'fit_a', target: 'fit_b', key: 'fixed_from' })
-    expect(e.emitted('close')).toHaveLength(1)
   })
 
   it('a fixed arrow names its parameters where CA takes them', async () => {
     const save = vi.fn().mockResolvedValue('')
-    const e = editor({ source: 'fit_a', target: 'fit_b', key: 'fixed_from' },
-      { save, fixedParameters: true })
-    const boxes = e.findAll('[data-testid="workflow-link-params"] input')
+    const e = editor({ source: 'fit_a', target: 'fit_b' }, { save, fixedParameters: true })
+    const fixed = e.find('[data-testid="workflow-arrow-key-fixed_from"]')
+    const boxes = fixed.findAll('[data-testid="workflow-link-params-fixed_from"] input')
     await boxes[0].setValue(false)
-    await e.find('[data-testid="workflow-link-save"]').trigger('click')
+    await fixed.find('[data-testid="workflow-link-save-fixed_from"]').trigger('click')
     await flushPromises()
     expect(save.mock.calls[0][0].options).toEqual({ parameters: ['m/b'] })
   })

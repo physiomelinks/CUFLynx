@@ -90,17 +90,32 @@ def set_position(workflow_path: str, node: str, col: int, row: float) -> dict:
     return layout
 
 
+def set_positions(workflow_path: str, positions: dict) -> dict:
+    """Put several boxes at once (``{id: {col, row}}``): a drop in the gap between two
+    columns makes a new column there, and every box right of it moves one column on."""
+    layout = read(workflow_path)
+    for node, at in positions.items():
+        if not _known(workflow_path, layout, node):
+            raise StudyWorkflowError(f"the workflow has no step {node!r}")
+        layout["positions"][node] = {"col": max(0, int(at["col"])), "row": float(at["row"])}
+    write(workflow_path, layout)
+    return layout
+
+
 # -- drafts --------------------------------------------------------------------------------
 
-def add_draft(workflow_path: str, col: int | None = None, row: float | None = None) -> str:
-    """A new draft box (``new-<n>``); returns its id."""
+def add_draft(workflow_path: str, col: int | None = None, row: float | None = None,
+              on_target: bool = False) -> str:
+    """A new draft box (``new-<n>``); returns its id. ``on_target``: dropped after the
+    target, so it is a sweep run on the merged target (CA's only kind there), made from its
+    Simulation form (:func:`make_sweep`) rather than by a panel's run."""
     layout = read(workflow_path)
     taken = {d.get("id") for d in layout["drafts"]} | set(_step_ids(workflow_path))
     n = 1
     while f"new-{n}" in taken:
         n += 1
     draft = f"new-{n}"
-    layout["drafts"].append({"id": draft})
+    layout["drafts"].append({"id": draft, **({"on_target": True} if on_target else {})})
     if col is not None:
         layout["positions"][draft] = {"col": max(0, int(col)), "row": float(row or 0)}
     write(workflow_path, layout)
@@ -176,6 +191,44 @@ def forget(workflow_path: str, step_ids) -> None:
         layout["positions"].pop(step_id, None)
     layout["links"] = [k for k in layout["links"] if not ({k["source"], k["target"]} & gone)]
     write(workflow_path, layout)
+
+
+SWEEP_DESIGNS = ("grid", "one_at_a_time")
+
+
+def make_sweep(workflow_path: str, draft: str, *, obs_data: str | None, outputs: list,
+               parameters: dict | None = None, design: str | None = None,
+               zip_groups: list | None = None, settings: dict | None = None) -> str:
+    """Make the after-target draft ``draft`` a sweep step run on the merged target (CA's
+    ``kind: sweep, on_target: true``): the protocol of ``obs_data`` (a path, written relative
+    to the workflow file), the variables ``outputs`` recorded over time, and the parameters
+    swept (``{"<vessel>/<param>": range}``, CA's sweep_range; none: one run as merged).
+    Checked by CA. Returns the step id (the draft's)."""
+    layout = read(workflow_path)
+    entry = next((d for d in layout["drafts"] if d.get("id") == draft), None)
+    if entry is None:
+        raise StudyWorkflowError(f"there is no new step {draft!r}")
+    raw = copy.deepcopy(study_workflow.read_raw(workflow_path))
+    sweep: dict = {"parameters": dict(parameters or {})}
+    if outputs:
+        sweep["outputs"] = [str(o) for o in outputs]
+    if design:
+        if design not in SWEEP_DESIGNS:
+            raise StudyWorkflowError(f"a sweep's design is one of {SWEEP_DESIGNS}")
+        sweep["design"] = design
+    if zip_groups:
+        sweep["zip"] = zip_groups
+    step = {"id": draft, "kind": "sweep", "on_target": True, "sweep": sweep}
+    if settings:
+        step["settings"] = dict(settings)
+    if obs_data:
+        base = os.path.dirname(os.path.abspath(workflow_path))
+        step["obs_data"] = os.path.relpath(os.path.abspath(obs_data), base)
+    raw.setdefault("steps", []).append(step)
+    _write_checked(workflow_path, raw)
+    layout["drafts"] = [d for d in layout["drafts"] if d.get("id") != draft]
+    write(workflow_path, layout)
+    return draft
 
 
 # -- arrows --------------------------------------------------------------------------------

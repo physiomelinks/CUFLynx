@@ -10,6 +10,8 @@ import {
   drawWorkflowLink,
   deleteWorkflowLink,
   placeWorkflowNode,
+  placeWorkflowNodes,
+  makeWorkflowSweep,
   addWorkflowDraft,
   deleteWorkflowDraft,
   errorMessage,
@@ -542,11 +544,12 @@ export function useWorkflow(options = {}) {
    * Put a new step on the chart and make it the one the next run makes: whatever is run
    * next becomes that step, with the arrows drawn to it. Returns its id, or null.
    */
-  async function addDraft(col = null, row = null) {
+  async function addDraft(col = null, row = null, onTarget = false) {
     try {
-      const d = await addWorkflowDraft(col, row)
+      const d = await addWorkflowDraft(col, row, onTarget)
       described.value = d
-      target.value = { mode: 'new_step', draft: d.draft }
+      // a box after the target is a simulation, set up in its form, not made by a run
+      if (!onTarget) target.value = { mode: 'new_step', draft: d.draft }
       return d.draft
     } catch (e) {
       error.value = errorMessage(e)
@@ -563,6 +566,8 @@ export function useWorkflow(options = {}) {
   const link = (arrow) => layoutEdit(() => drawWorkflowLink(arrow))
   const unlink = (arrow) => layoutEdit(() => deleteWorkflowLink(arrow))
   const place = (node, col, row) => layoutEdit(() => placeWorkflowNode(node, col, row))
+  const placeMany = (positions) => layoutEdit(() => placeWorkflowNodes(positions))
+  const makeSweep = (form) => layoutEdit(() => makeWorkflowSweep(form))
 
   async function moveStep(stepId, index) {
     const d = await guarded(() => moveWorkflowStep(stepId, index))
@@ -592,6 +597,8 @@ export function useWorkflow(options = {}) {
     link,
     unlink,
     place,
+    placeMany,
+    makeSweep,
     described,
     loaded,
     tabs,

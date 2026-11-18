@@ -22,6 +22,7 @@ import WorkflowPanel from './WorkflowPanel.vue'
 import WorkflowStepDetail from './WorkflowStepDetail.vue'
 import WorkflowEdgeDetail from './WorkflowEdgeDetail.vue'
 import WorkflowLinkEditor from './WorkflowLinkEditor.vue'
+import WorkflowSweepForm from './WorkflowSweepForm.vue'
 
 defineOptions({ inheritAttrs: false })
 
@@ -52,9 +53,12 @@ const props = defineProps({
   layout: { type: Object, default: null },
   linkKinds: { type: Object, default: () => ({}) },
   fixedParameters: { type: Boolean, default: false },
-  // The chart's edits (useWorkflow): {link, unlink, place, chooseDraft, deleteDraft}, each
-  // async and '' when done, else why not.
+  // The chart's edits (useWorkflow): {link, unlink, place, placeMany, addDraft, makeSweep,
+  // chooseDraft, deleteDraft}, each async; '' when done, else why not (addDraft: the id).
   editor: { type: Object, default: null },
+  // What a simulation can record (states, algebraic) and sweep (constants): component/name.
+  outputsOffered: { type: Array, default: () => [] },
+  parametersOffered: { type: Array, default: () => [] },
   // The step the next run of the open panel changes (modeSummary), or null.
   editing: { type: String, default: null },
   // A delete waiting for a confirmation ({step, deleted, rewired, dropped}), or null.
@@ -88,19 +92,38 @@ const clickedOrigin = ref(null)
 const editedArrow = ref(null)
 const editError = ref('')
 const draftIds = computed(() => (props.layout?.drafts ?? []).map((d) => d.id))
-const chartSteps = computed(() => [...props.steps, ...draftIds.value.map((id) => ({ id, draft: true }))])
+const chartSteps = computed(() => [...props.steps,
+  ...(props.layout?.drafts ?? []).map((d) => ({ id: d.id, draft: true, on_target: !!d.on_target }))])
+// The after-target new step whose Simulation form is open, or null.
+const sweepDraft = ref(null)
 
 function onConnect({ source, target }) {
   clickedEdge.value = null
-  const pending = draftIds.value.includes(source) || draftIds.value.includes(target)
-  editedArrow.value = { source, target, key: null, pending }
+  editedArrow.value = { source, target }
 }
-function onEditEdge(arrow) {
+function onEditEdge({ source, target }) {
   clickedEdge.value = null
-  editedArrow.value = arrow
+  editedArrow.value = { source, target }
 }
 async function onEdit(action, ...args) {
   editError.value = props.editor ? await props.editor[action](...args) : 'editing is not available'
+}
+
+/** New step dropped on the chart: a box there (a new column in a gap, moving the boxes right
+ * of it on); after the target, a simulation, whose form opens. */
+async function onAddDraft({ col = null, row = null, shift = null, onTarget = false }) {
+  if (!props.editor) return
+  editError.value = ''
+  const draft = await props.editor.addDraft(col, row, onTarget)
+  if (!draft) return
+  if (shift && Object.keys(shift).length) editError.value = await props.editor.placeMany(shift)
+  if (onTarget) sweepDraft.value = draft
+}
+
+/** "New step" dragged from its button onto the chart. */
+function onNewStepDragStart(event) {
+  event.dataTransfer.setData('application/x-cuflynx-new-step', 'new')
+  event.dataTransfer.effectAllowed = 'copy'
 }
 
 /** Rename the inspected step; the dialog stays on it under its new name. */
@@ -167,8 +190,11 @@ const alsoDeleted = computed(() => doomed.value.filter((s) => s !== props.pendin
             size="small"
             :outlined="target.mode !== 'new_step'"
             :disabled="running"
-            title="A new step on the chart: place it, draw arrows to it, then run a panel to make it"
+            title="Drag onto the chart: into a column, a gap between columns (a new stage), or after the target (a simulation). Click: a new step at the end."
+            draggable="true"
+            class="wv-new-step"
             data-testid="workflow-new-step"
+            @dragstart="onNewStepDragStart"
             @click="emit('new-step')"
           />
           <span class="wv-hint">
@@ -243,6 +269,9 @@ const alsoDeleted = computed(() => doomed.value.filter((s) => s !== props.pendin
           @edit-edge="onEditEdge"
           @select-draft="(id) => editor?.chooseDraft(id)"
           @delete-draft="(id) => onEdit('deleteDraft', id)"
+          @place-many="(positions) => onEdit('placeMany', positions)"
+          @add-draft="onAddDraft"
+          @setup-sweep="(id) => (sweepDraft = id)"
           @open-target="emit('open-step-view', 'target')"
           @edge="(e) => (clickedEdge = e)"
           @figure="(id) => (clickedFigure = figures.find((f) => f.id === id) ?? null)"
@@ -253,6 +282,14 @@ const alsoDeleted = computed(() => doomed.value.filter((s) => s !== props.pendin
           :figure="clickedFigure"
           :origin="clickedOrigin"
           @close="clickedEdge = null; clickedFigure = null; clickedOrigin = null"
+        />
+        <WorkflowSweepForm
+          :draft="sweepDraft"
+          :outputs-offered="outputsOffered"
+          :parameters-offered="parametersOffered"
+          :save="(form) => editor ? editor.makeSweep(form) : Promise.resolve('editing is not available')"
+          :busy="busy || running"
+          @close="sweepDraft = null"
         />
         <WorkflowLinkEditor
           :arrow="editedArrow"
@@ -302,6 +339,9 @@ const alsoDeleted = computed(() => doomed.value.filter((s) => s !== props.pendin
   gap: 0.3rem;
   align-items: center;
   margin: 0.4rem 0 0.6rem;
+}
+.wv-new-step {
+  cursor: grab;
 }
 .wv-hint {
   font-size: 0.78rem;
