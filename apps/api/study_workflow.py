@@ -693,7 +693,7 @@ def references(step: dict, ids=None) -> list[tuple[str, str]]:
     """``[(key, step id)]``: every step ``step`` takes something from, by CA's key
     (``scale_from`` for a set entry's ``of``). With ``ids``, only references to those."""
     out = [(k, step[k]) for k in _SINGLE_KEYS if isinstance(step.get(k), str)]
-    for key in ("fixed_from", "priors_from"):
+    for key in ("fixed_from", "priors_from", "combine_from"):
         value = step.get(key)
         for entry in (value if isinstance(value, list) else [value] if value else []):
             if _list_ref(entry):

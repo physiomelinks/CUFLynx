@@ -945,6 +945,13 @@ export async function setWorkflowValues({ draft, entries, point = false }) {
   return data
 }
 
+/** Make a Choose a parameter set by cost box a combine step of the steps drawn into it
+ * (CA's combine.method: best_fit or mean). */
+export async function combineWorkflowSteps({ draft, method = 'best_fit' }) {
+  const { data } = await axios.post(url('/api/workflow/combine'), { draft, method })
+  return data
+}
+
 /** Several boxes placed at once ({id: {col, row}}): a new column made in a gap. */
 export async function placeWorkflowNodes(positions) {
   const { data } = await axios.post(url('/api/workflow/positions'), { positions })

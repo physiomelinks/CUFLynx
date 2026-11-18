@@ -32,7 +32,12 @@ from study_workflow import StudyWorkflowError
 SINGLE_KEYS = ("result_from", "start_from", "emulator_from", "sensitivity_from",
                "params_for_id_from")
 #: The keys a step can list several sources under.
-LIST_KEYS = ("fixed_from", "priors_from")
+LIST_KEYS = ("fixed_from", "priors_from", "combine_from")
+#: The keys only an action box's step takes (a combine step's inputs), so a plain new step,
+#: whose kind is the panel run that makes it, is never offered them.
+ACTION_KEYS = {"combine_from": ("combine",)}
+#: A combine step's methods (CA's ``combine.method``), the first CA's default.
+COMBINE_METHODS = ("best_fit", "mean")
 LINK_KEYS = SINGLE_KEYS + LIST_KEYS
 #: What a priors_from entry may say besides its step (CA's ``prior``).
 PRIOR_OPTIONS = ("kind", "inflate", "parameters")
@@ -312,6 +317,36 @@ def make_set(workflow_path: str, draft: str, entries: list, point: bool = False)
     return draft
 
 
+def make_combine(workflow_path: str, draft: str, method: str = "best_fit") -> str:
+    """Make the action box ``draft`` a combine step (CA's ``kind: combine``): one value per
+    parameter from the calibration, set or combine steps drawn into it (its ``combine_from``
+    arrows), by ``method`` -- ``best_fit``, every value of the input with the lowest cost, or
+    ``mean``, each parameter's mean over the inputs that give it. Its arrows out wait until
+    now and join the workflow with it. Checked by CA."""
+    if method not in COMBINE_METHODS:
+        raise StudyWorkflowError(f"a combine step's method is one of {COMBINE_METHODS}")
+    layout = read(workflow_path)
+    entry = next((d for d in layout["drafts"] if d.get("id") == draft), None)
+    if entry is None:
+        raise StudyWorkflowError(f"there is no new step {draft!r}")
+    ids = set(_step_ids(workflow_path))
+    inputs = [k["source"] for k in layout["links"]
+              if k["target"] == draft and k["key"] == "combine_from" and k["source"] in ids]
+    if len(inputs) < 2:
+        raise StudyWorkflowError(
+            "draw arrows from two or more calibrations (or set or combine steps) into it first")
+    raw = copy.deepcopy(study_workflow.read_raw(workflow_path))
+    raw.setdefault("steps", []).append(
+        {"id": draft, "kind": "combine", "combine_from": inputs, "combine": {"method": method}})
+    _write_checked(workflow_path, raw)
+    layout["drafts"] = [d for d in layout["drafts"] if d.get("id") != draft]
+    layout["links"] = [k for k in layout["links"]
+                       if not (k["target"] == draft and k["key"] == "combine_from")]
+    write(workflow_path, layout)
+    apply_pending(workflow_path)
+    return draft
+
+
 def step_kinds() -> list:
     """The step kinds this CA has (its schema's ``kind`` enum), so an action box is offered
     only where CA can make it (``combine``)."""
@@ -460,5 +495,6 @@ def link_kinds() -> dict:
         users = {}
     for key in LINK_KEYS:
         if key in sources:
-            out[key] = {"sources": list(sources[key]), "users": list(users.get(key) or [])}
+            out[key] = {"sources": list(sources[key]),
+                        "users": list(users.get(key) or ACTION_KEYS.get(key) or [])}
     return out

@@ -332,6 +332,35 @@ def test_an_action_box_sets_values_by_hand(client, fake_runs, tmp_path):
     assert r.status_code == 422
 
 
+def test_an_action_box_combines_the_calibrations_drawn_into_it(client, fake_runs, tmp_path):
+    """Two calibrations of one parameter that do not take from each other: CA refuses to
+    merge both (CA #685); a combine step drawn from both gives the target one value."""
+    work = tmp_path / "w"
+    model_id = _setup(client)
+    assert _calibrate(client, model_id, work)["state"] == "done"
+    r = client.post("/api/workflow/draft", json={"action": "combine"})
+    if "combine" not in r.json()["step_kinds"]:
+        pytest.skip("this CA has no combine step (CA #685)")
+    draft = r.json()["draft"]
+    assert r.json()["link_kinds"]["combine_from"]["users"] == ["combine"]
+    assert _calibrate(client, model_id, work, workflow_target=NEW_STEP)["state"] == "done"
+    assert "calibration-1" in (client.get("/api/workflow").json().get("plan_error") or "")
+    assert _link(client, "calibration-1", draft, "combine_from").status_code == 200
+    r = client.post("/api/workflow/combine", json={"draft": draft})
+    assert r.status_code == 422 and "two or more" in r.json()["detail"]
+    assert _link(client, "calibration-2", draft, "combine_from").status_code == 200
+    r = client.post("/api/workflow/combine", json={"draft": draft, "method": "median"})
+    assert r.status_code == 422
+    r = client.post("/api/workflow/combine", json={"draft": draft, "method": "mean"})
+    assert r.status_code == 200, r.text
+    assert _steps(work)[draft] == {"id": draft, "kind": "combine",
+                                   "combine_from": ["calibration-1", "calibration-2"],
+                                   "combine": {"method": "mean"}}
+    described = r.json()
+    assert not described.get("plan_error") and described["layout"]["links"] == []
+    assert described["layout"]["drafts"] == []
+
+
 def _wait(client, kind, job_id, seconds=420) -> dict:
     deadline = time.time() + seconds
     while time.time() < deadline:
@@ -427,3 +456,50 @@ def test_three_parameters_in_three_calibration_steps_run_by_ca(
     first = json.loads((run_dir / "calibration-1" / "step_result.json").read_text())
     alpha = next(f["value"] for f in third["fixed"] if f["param"] == "alpha")
     assert alpha == pytest.approx(first["calibrated"][0]["value"])
+
+
+@pytest.mark.integration
+def test_two_calibrations_of_one_parameter_combined_by_cost_run_by_ca(
+        client, study_workflow_on, tmp_path):
+    """Run by CA (CA #685): a second calibration of alpha, unrelated to the first, is refused
+    until a combine step joins them; the step stays, a combine box drawn from both is made,
+    and re-running the second runs the combine after it, which chooses the lower cost."""
+    pytest.importorskip("libcellml")
+    import workflow_layout as wl  # noqa: PLC0415
+    if "combine" not in wl.step_kinds():
+        pytest.skip("this CA has no combine step (CA #685)")
+    work = tmp_path / "w"
+
+    def run(model_id, extra):
+        r = client.post("/api/calibration/run", json={
+            "model_id": model_id, "settings": {
+                "config_outputs_dir": str(work), "param_id_method": "CMA-ES",
+                "num_calls_to_function": 30, **extra}})
+        assert r.status_code == 200, r.text
+        return _wait(client, "calibration", r.json()["job_id"])
+
+    model_id = _setup(client)
+    _params_for(client, model_id, "alpha")
+    assert run(model_id, {})["state"] == "done"
+    refused = run(model_id, {"workflow_target": {"mode": "new_step"}})
+    assert refused["state"] == "error"
+    assert "combine" in client.get("/api/workflow").json()["plan_error"]
+    assert list(_steps(work)) == ["calibration-1", "calibration-2"]
+
+    draft = client.post("/api/workflow/draft", json={"action": "combine"}).json()["draft"]
+    for source in ("calibration-1", "calibration-2"):
+        assert _link(client, source, draft, "combine_from").status_code == 200
+    r = client.post("/api/workflow/combine", json={"draft": draft})
+    assert r.status_code == 200, r.text
+    assert not r.json().get("plan_error")
+
+    status = run(model_id, {"workflow_target": {"mode": "edit", "step": "calibration-2"}})
+    assert status["state"] == "done", status["lines"]
+    run_dir = work / "workflows" / "study"
+    costs = {s: json.loads((run_dir / s / "step_result.json").read_text())["best_cost"]
+             for s in ("calibration-1", "calibration-2")}
+    combined = json.loads((run_dir / draft / "step_result.json").read_text())
+    assert combined["chosen_from"] == min(costs, key=costs.get)
+    assert combined["best_cost"] == pytest.approx(min(costs.values()))
+    status = client.get("/api/workflow").json()["status"]["steps"]
+    assert status[draft]["chosen_from"] == combined["chosen_from"]
