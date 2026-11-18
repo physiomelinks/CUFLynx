@@ -100,6 +100,8 @@ const clickedOrigin = ref(null)
 // chart was refused.
 const editedArrow = ref(null)
 const editError = ref('')
+// what a chart edit did that it would not show by itself (a move that pushed other boxes on)
+const editNotice = ref('')
 const draftIds = computed(() => (props.layout?.drafts ?? []).map((d) => d.id))
 const chartSteps = computed(() => [...props.steps,
   ...(props.layout?.drafts ?? []).map((d) => ({ id: d.id, draft: true, on_target: !!d.on_target }))])
@@ -292,6 +294,15 @@ const alsoDeleted = computed(() => doomed.value.filter((s) => s !== props.pendin
         >
           {{ editError }}
         </Message>
+        <Message
+          v-if="editNotice"
+          severity="info"
+          closable
+          data-testid="workflow-edit-notice"
+          @close="editNotice = ''"
+        >
+          {{ editNotice }}
+        </Message>
         <WorkflowDiagram
           :steps="steps"
           :details="details"
@@ -313,6 +324,7 @@ const alsoDeleted = computed(() => doomed.value.filter((s) => s !== props.pendin
           @edit-edge="onEditEdge"
           @select-draft="onSelectDraft"
           @refused="(why) => (editError = why)"
+          @notice="(what) => (editNotice = what)"
           @delete-draft="(id) => onEdit('deleteDraft', id)"
           @place-many="(positions) => onEdit('placeMany', positions)"
           @add-draft="onAddDraft"

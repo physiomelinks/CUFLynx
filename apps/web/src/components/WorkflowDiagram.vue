@@ -50,7 +50,7 @@ const props = defineProps({
 })
 const emit = defineEmits(['select', 'inspect', 'delete', 'place', 'place-many', 'add-draft',
   'connect', 'edit-edge', 'select-draft', 'delete-draft', 'setup-sweep', 'open-target', 'edge',
-  'figure', 'origin', 'refused'])
+  'figure', 'origin', 'refused', 'notice'])
 
 const W = 250
 const H = 78
@@ -463,7 +463,23 @@ function finishMove() {
   justMoved = true
   const box = byId.value[m.id]
   const zone = zoneAt(box.x + m.dx + W / 2, box.y + m.dy + H / 2, m.id)
-  if (zone.kind === 'after') return // only a simulation runs on the merged target
+  if (zone.kind === 'after') {
+    emit('refused', `Only a simulation of the merged target goes after the target: ${m.id} stays where it was.`)
+    return
+  }
+  const col = zone.kind === 'gap' ? zone.g : zone.col
+  // the steps that take from it stay right of it (arrows go left to right): say so when
+  // this move pushes them on, as it otherwise looks as if the drop did not take
+  const pushed = mainSteps.value.filter((s) => s.id !== m.id && placed.value[s.id]?.col <= col &&
+    [...referencesOf(s, props.steps), ...pendingLinks.value.filter((l) => l.target === s.id)
+      .map((l) => [l.key, l.source])].some(([, src]) => src === m.id))
+  if (pushed.length) {
+    const names = pushed.map((s) => s.id).join(', ')
+    emit('notice', `${names} ${pushed.length === 1 ? 'takes' : 'take'} from ${m.id}, so ` +
+      `${pushed.length === 1 ? 'it stays' : 'they stay'} right of it and moved on too (arrows go ` +
+      `left to right). To put ${m.id} after ${names}, stop passing ${m.id} → ${names} first, or ` +
+      `add a new step on ${m.id}'s model there (New step, Models).`)
+  }
   if (zone.kind === 'gap') {
     emit('place-many', { ...shiftFrom(zone.g, m.id), [m.id]: { col: zone.g, row: 0 } })
     return

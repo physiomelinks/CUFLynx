@@ -382,6 +382,19 @@ describe('WorkflowDiagram', () => {
     await pan.trigger('pointerup', { clientX: 40, clientY: 10, pointerId: 9 })
   })
 
+  it('a move that pushes the steps taking from the box on says so', async () => {
+    const c = chart()
+    const pan = pointers(c)
+    const node = c.find('[data-testid="workflow-node-sliders-1"]')
+    // into calibration-1's column, which takes from sliders-1 (start_from)
+    await node.trigger('pointerdown', { button: 0, clientX: 10, clientY: 10, pointerId: 11 })
+    await pan.trigger('pointermove', { clientX: 10 + (250 + 96), clientY: 10, pointerId: 11 })
+    await pan.trigger('pointerup', { clientX: 10 + (250 + 96), clientY: 10, pointerId: 11 })
+    expect(c.emitted('place')[0][0]).toMatchObject({ node: 'sliders-1', col: 1 })
+    expect(c.emitted('notice')[0][0]).toContain('calibration-1 takes from sliders-1')
+    expect(c.emitted('notice')[0][0]).toContain('left to right')
+  })
+
   it('a model box and an action box say what they are', () => {
     const c = chart({ layout: { positions: {}, links: [], drafts: [
       { id: 'new-1', model: { module_type: 'i_K1', parameterisation: 'k1998' } },
