@@ -187,6 +187,28 @@ const stepCols = computed(() => Math.max(0, ...Object.values(placed.value).map((
 const merged = computed(() =>
   mainSteps.value.filter((s) => kindOf(s) === 'calibration' || (kindOf(s) === 'set' && !s.point)),
 )
+/**
+ * Whether every value step `s` gives the target reaches it through later steps, which then
+ * carry it on: a step merged into the target that fixes s's values (all of them, or the
+ * parameters it names) or refits them from s's prior. Then s needs no arrow of its own to the
+ * target (kir -> whole_cell -> target); it keeps one only for values no later step carries.
+ */
+function carriedOn(s) {
+  const mine = (props.details[s.id]?.calibrates ?? []).map((c) => c.model_name).filter(Boolean)
+  const carried = new Set()
+  let all = false
+  for (const d of merged.value) {
+    if (d.id === s.id) continue
+    for (const e of [...(d.fixed_from ?? []), ...(d.priors_from ?? [])]) {
+      const from = typeof e === 'string' ? e : (e?.step ?? e?.from_step)
+      if (from !== s.id) continue
+      if (typeof e === 'string' || !Array.isArray(e.parameters)) all = true
+      else e.parameters.forEach((p) => carried.add(p))
+    }
+  }
+  return all || (mine.length > 0 && mine.every((p) => carried.has(p)))
+}
+
 const figureSources = computed(() =>
   Object.fromEntries(props.figures.map((f) => [f.id, figureReads(f, props.steps, props.figures)])),
 )
@@ -293,7 +315,9 @@ const links = computed(() => {
     }
   }
   if (targetBox.value) {
-    for (const s of merged.value) out.push(link(byId.value[s.id], targetBox.value, s.id, 'target', 'merged', 'target'))
+    for (const s of merged.value) {
+      if (!carriedOn(s)) out.push(link(byId.value[s.id], targetBox.value, s.id, 'target', 'merged', 'target'))
+    }
   }
   for (const ob of originBoxes.value) {
     for (const to of ob.origin.to) {

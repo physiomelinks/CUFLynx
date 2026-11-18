@@ -423,6 +423,23 @@ describe('WorkflowDiagram', () => {
     expect(gap.shift).toMatchObject({ 'calibration-1': { col: 3 }, 'mcmc-1': { col: 4 } })
   })
 
+  it('draws an arrow into the target only for values no later step carries on', () => {
+    const kirSteps = [
+      { id: 'kir' },
+      { id: 'sglt1' },
+      { id: 'whole_cell', fixed_from: ['kir', { step: 'sglt1', parameters: ['a_mod'] }] },
+    ]
+    const details = { kir: { calibrates: [{ model_name: 'k_mod' }] },
+                      sglt1: { calibrates: [{ model_name: 'a_mod' }, { model_name: 'b_mod' }] } }
+    const c = chart({ steps: kirSteps, details, states: {}, results: {} })
+    const into = c.findAll('.wf-hit').map((h) => h.attributes('data-testid'))
+      .filter((t) => t.endsWith('-target'))
+    // kir's values all reach the target through whole_cell; sglt1's b_mod does not
+    expect(into.sort()).toEqual(['workflow-edge-sglt1-target', 'workflow-edge-whole_cell-target'])
+    // the target box still names every step whose values it merges
+    expect(c.find('[data-testid="workflow-node-target"]').text()).toContain('kir')
+  })
+
   it('a box after the target is a simulation, set up in its form', async () => {
     const c = chart({ layout: { positions: {}, drafts: [{ id: 'new-2', on_target: true }], links: [] } })
     const box = c.find('[data-testid="workflow-node-new-2"]')
