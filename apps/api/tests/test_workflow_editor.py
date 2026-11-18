@@ -119,6 +119,27 @@ def test_a_fixed_arrow_names_its_parameters_only_where_ca_takes_them(
     assert client.get("/api/workflow").json()["fixed_parameters"] is False
 
 
+def test_a_fixed_arrow_fixes_only_the_parameters_it_names_where_ca_takes_them(
+        client, fake_runs, tmp_path):
+    """CA #684: a fixed_from entry {"step", "parameters"} fixes only those values (model
+    names in the source step, as a prior's parameters)."""
+    if not workflow_layout.fixed_parameters_supported():
+        pytest.skip("this circulatory_autogen fixes every value of a fixed_from step (CA #684)")
+    work = tmp_path / "w"
+    model_id = _setup(client)
+    assert _calibrate(client, model_id, work)["state"] == "done"
+    assert _calibrate(client, model_id, work, workflow_target=NEW_STEP)["state"] == "done"
+    assert client.get("/api/workflow").json()["fixed_parameters"] is True
+    r = _link(client, "calibration-1", "calibration-2", "fixed_from",
+              options={"parameters": ["alpha_Lotka_Volterra_module"]})
+    assert r.status_code == 200, r.text
+    assert _steps(work)["calibration-2"]["fixed_from"] == [
+        {"step": "calibration-1", "parameters": ["alpha_Lotka_Volterra_module"]}]
+    # every value again: the bare id
+    r = _link(client, "calibration-1", "calibration-2", "fixed_from")
+    assert _steps(work)["calibration-2"]["fixed_from"] == ["calibration-1"]
+
+
 def test_a_new_step_is_placed_and_wired_before_it_runs_and_its_run_makes_it_a_step(
         client, fake_runs, tmp_path):
     work = tmp_path / "w"
