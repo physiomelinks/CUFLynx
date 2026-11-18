@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
+  linkChoices,
+  referencesOf,
   modeSummary,
   panelSettings,
   runTargetFor,
@@ -165,5 +167,23 @@ describe('New step: whatever runs next', () => {
     }
     expect(targetAfterRun(target, 'emulation')).toEqual({ mode: 'default' })
     expect(modeSummary(target, 'uq', described).text).toContain('whatever you run next')
+  })
+})
+
+describe('combine steps (CA #685)', () => {
+  const linkKinds = {
+    fixed_from: { sources: ['calibration', 'set', 'combine'], users: ['calibration', 'uq'] },
+    combine_from: { sources: ['calibration', 'set', 'combine'], users: ['combine'] },
+  }
+  it('a combine step takes from each step it combines', () => {
+    expect(referencesOf({ id: 'best', kind: 'combine', combine_from: ['a', 'b'] }))
+      .toEqual([['combine_from', 'a'], ['combine_from', 'b']])
+  })
+  it('an arrow into a combine box can only be combined; a plain new step is never offered it', () => {
+    const fit = { id: 'a' }
+    expect(linkChoices(linkKinds, fit, { id: 'new-1', draft: true, action: 'combine' })).toEqual(['combine_from'])
+    expect(linkChoices(linkKinds, fit, { id: 'new-2', draft: true })).toEqual(['fixed_from'])
+    expect(linkChoices(linkKinds, { id: 'new-1', draft: true, action: 'combine' }, { id: 'c' }))
+      .toEqual(['fixed_from'])
   })
 })

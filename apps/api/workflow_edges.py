@@ -139,6 +139,7 @@ WORDS = {
     "emulator_dir": "the emulator it runs on",
     "sensitivity_from": "the Sobol indices the reduction ranks",
     "params_for_id_from": "the parameters the reduction kept",
+    "combine_from": "values the combine step chooses from",
 }
 
 
@@ -233,6 +234,23 @@ def edge_detail(run_dir: str, workflow: dict, source: str, target: str, key: str
         out["recorded"] = bool(kept)
         if not kept:
             out["note"] = f"{source} has not run yet."
+        return out
+
+    if key == "combine_from":
+        out["rows"], out["recorded"] = _values_of(run_dir, sending)
+        method = ((steps.get(target) or {}).get("combine") or {}).get("method") or "best_fit"
+        chosen, costs = receiving.get("chosen_from"), receiving.get("costs") or {}
+        cost = costs.get(source)
+        at = f" (cost {cost:.4g})" if isinstance(cost, (int, float)) else ""
+        if method == "mean":
+            out["note"] = f"{target} takes each parameter's mean over its inputs, these included."
+        elif chosen == source:
+            out["note"] = f"{target} chose these: {source} has the lowest cost{at}."
+        elif chosen:
+            out["note"] = f"{target} chose {chosen}'s values; {source}'s cost{at} is higher."
+        else:
+            out["note"] = (f"{target} has not run yet: it will take the values of whichever "
+                           "input has the lowest cost.")
         return out
 
     if key == "sensitivity_from":

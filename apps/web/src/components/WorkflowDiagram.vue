@@ -65,12 +65,13 @@ const PAD_Y = 28
 const KEY_WORDS = { result_from: 'at fit', start_from: 'start', fixed_from: 'fixed',
   priors_from: 'prior', scale_from: 'scale', emulator_from: 'emulator', emulator_dir: 'emulator',
   sensitivity_from: 'ranks', params_for_id_from: 'params', on_target: 'merged', reads: 'reads',
-  given: 'given' }
+  given: 'given', combine_from: 'combined' }
 // the keys an arrow drawn on the chart can be, so the ones that can be changed there
 const DRAWN = ['fixed_from', 'priors_from', 'start_from', 'result_from', 'emulator_from',
-  'sensitivity_from', 'params_for_id_from']
+  'sensitivity_from', 'params_for_id_from', 'combine_from']
 const LONG_WORDS = { ...SOURCE_WORDS, start_from: 'starts at', fixed_from: 'fixed from',
-  priors_from: 'priors from', scale_from: 'scales', emulator_dir: 'on the emulator of' }
+  priors_from: 'priors from', scale_from: 'scales', emulator_dir: 'on the emulator of',
+  combine_from: 'combined into' }
 
 function kindOf(step) {
   if (step?.draft) return 'draft'
@@ -80,7 +81,7 @@ function kindOf(step) {
 /** What set a box's values, for its colour and tag: as CA's provenance names them. */
 function classOf(step) {
   const kind = kindOf(step)
-  if (kind === 'calibration') return 'cal'
+  if (kind === 'calibration' || kind === 'combine') return 'cal'
   if (kind === 'set') return 'hand'
   if (kind === 'emulation') return 'surrogate'
   if (kind === 'sweep') return 'sim'
@@ -100,12 +101,16 @@ function method(step) {
     return Array.isArray(models) ? models.join(', ') : (models ?? '')
   }
   if (kind === 'reduction') return s.param_reduction_options?.method ?? step.reduction?.method ?? ''
+  if (kind === 'combine') return COMBINE_WORDS[step.combine?.method ?? 'best_fit'] ?? step.combine?.method
   return ''
 }
 
+// a combine step's method (CA's combine.method), as its box says it
+const COMBINE_WORDS = { best_fit: 'lowest cost', mean: 'mean' }
+
 const TAGS = { calibration: 'calibrated', set: 'set by hand', sensitivity: 'sensitivity',
   uq: 'uq', identifiability: 'identifiability', emulation: 'surrogate', reduction: 'reduction',
-  sweep: 'simulation' }
+  sweep: 'simulation', combine: 'chosen by cost' }
 const STATE_WORDS = { stale: 'stale', not_run: 'not run', queued: 'queued', running: 'running',
   failed: 'failed', cancelled: 'cancelled' }
 
@@ -125,6 +130,10 @@ function line2(step) {
   const kind = kindOf(step)
   if (kind === 'set') {
     return (step.set ?? []).map((e) => `${e.parameter?.split('/').pop()} = ${e.value}`).join(', ')
+  }
+  if (kind === 'combine') {
+    const chosen = props.results[step.id]?.chosen_from
+    return chosen ? `chose ${chosen}` : `from ${(step.combine_from ?? []).join(', ')}`
   }
   const model = props.details[step.id]?.detail
   const own = !step.model || model === modelName.value
@@ -183,9 +192,10 @@ const placed = computed(() => layoutSteps(mainSteps.value, positions.value, pend
 const hasModel = computed(() => props.steps.length > 0)
 const colOffset = computed(() => (hasModel.value ? 1 : 0))
 const stepCols = computed(() => Math.max(0, ...Object.values(placed.value).map((p) => p.col + 1)))
-// the calibrated and hand-set values that are merged into the target
+// the calibrated, combined and hand-set values that are merged into the target
 const merged = computed(() =>
-  mainSteps.value.filter((s) => kindOf(s) === 'calibration' || (kindOf(s) === 'set' && !s.point)),
+  mainSteps.value.filter((s) => ['calibration', 'combine'].includes(kindOf(s))
+    || (kindOf(s) === 'set' && !s.point)),
 )
 /**
  * Whether every value step `s` gives the target reaches it through later steps, which then
@@ -199,6 +209,8 @@ function carriedOn(s) {
   let all = false
   for (const d of merged.value) {
     if (d.id === s.id) continue
+    // a combine step's values replace its inputs' in the target
+    if ((d.combine_from ?? []).includes(s.id)) return true
     for (const e of [...(d.fixed_from ?? []), ...(d.priors_from ?? [])]) {
       const from = typeof e === 'string' ? e : (e?.step ?? e?.from_step)
       if (from !== s.id) continue

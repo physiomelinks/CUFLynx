@@ -24,6 +24,7 @@ import WorkflowEdgeDetail from './WorkflowEdgeDetail.vue'
 import WorkflowLinkEditor from './WorkflowLinkEditor.vue'
 import WorkflowStepPrep from './WorkflowStepPrep.vue'
 import WorkflowSetValuesForm from './WorkflowSetValuesForm.vue'
+import WorkflowCombineForm from './WorkflowCombineForm.vue'
 import WorkflowDraftChoice from './WorkflowDraftChoice.vue'
 import { modelShort } from '../lib/workflowTarget'
 
@@ -139,6 +140,10 @@ async function onEdit(action, ...args) {
 const prepOpen = ref(false)
 const choosing = ref(null)
 const setDraft = ref(null)
+// the Choose a parameter set by cost box whose form is open, and the steps drawn into it
+const combineDraft = ref(null)
+const combineInputs = computed(() => (props.layout?.links ?? [])
+  .filter((l) => l.target === combineDraft.value && l.key === 'combine_from').map((l) => l.source))
 
 /** New step dropped on the chart: a box there (a new column in a gap, moving the boxes right
  * of it on); after the target, a simulation, whose form opens. A model box or an action box
@@ -161,7 +166,7 @@ function onSelectDraft(id) {
   if (!d) return
   if (d.model) choosing.value = d
   else if (d.action === 'set') setDraft.value = id
-  else if (d.action === 'combine') editError.value = 'Choosing a parameter set by cost needs a newer circulatory_autogen (its combine step).'
+  else if (d.action === 'combine') combineDraft.value = id
   else props.editor?.chooseDraft(id)
 }
 
@@ -388,6 +393,13 @@ const alsoDeleted = computed(() => doomed.value.filter((s) => s !== props.pendin
           :save="(form) => editor ? editor.setValues(form) : Promise.resolve('editing is not available')"
           :busy="busy || running"
           @close="setDraft = null"
+        />
+        <WorkflowCombineForm
+          :draft="combineDraft"
+          :inputs="combineInputs"
+          :save="(form) => editor ? editor.combine(form) : Promise.resolve('editing is not available')"
+          :busy="busy || running"
+          @close="combineDraft = null"
         />
         <WorkflowLinkEditor
           :arrow="editedArrow"

@@ -328,13 +328,16 @@ class WorkflowManager:
             try:
                 out["status"] = _ca_call("workflow_status", self.path, self.output_dir,
                                          self.module_library_dirs)
-                # how long each done step took, for the Workflow view's boxes (CA's status
-                # has the cost and when it finished; its step_result has the duration)
+                # how long each done step took, and which input a combine step chose, for
+                # the Workflow view's boxes (CA's status has the cost and when it finished;
+                # its step_result has the rest)
                 for step_id, row in (out["status"].get("steps") or {}).items():
                     if isinstance(row, dict) and row.get("status") == "done":
                         result = ca_run_history.step_result(
                             os.path.join(self.output_dir, step_id)) or {}
                         row.setdefault("duration_s", result.get("duration_s"))
+                        if result.get("chosen_from"):
+                            row.setdefault("chosen_from", result["chosen_from"])
             except WorkflowError as exc:
                 out["status_error"] = str(exc)
             # what of the run's provenance CA has written: {svg, graph} -> its mtime (ns)

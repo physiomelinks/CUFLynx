@@ -651,6 +651,7 @@ const workflowEditor = {
   placeMany: (positions) => wf.placeMany(positions),
   addDraft: (col, row, onTarget, boxModel, action) => wf.addDraft(col, row, onTarget, boxModel, action),
   setValues: (form) => wf.setValues(form),
+  combine: (form) => wf.combine(form),
   // a simulation's protocol is the study's obs_data unless its form names a file
   makeSweep: (form) => wf.makeSweep({ ...form, modelId: model.modelId.value }),
   chooseDraft: (draft) => wf.chooseDraft(draft),

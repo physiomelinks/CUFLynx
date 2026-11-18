@@ -440,6 +440,20 @@ describe('WorkflowDiagram', () => {
     expect(c.find('[data-testid="workflow-node-target"]').text()).toContain('kir')
   })
 
+  it('a combine step takes its inputs\' place in the target, and says which it chose', () => {
+    const fits = [
+      { id: 'fit-a' }, { id: 'fit-b' },
+      { id: 'best', kind: 'combine', combine_from: ['fit-a', 'fit-b'], combine: { method: 'best_fit' } },
+    ]
+    const c = chart({ steps: fits, details: {}, states: {}, results: { best: { chosen_from: 'fit-b' } } })
+    const hits = c.findAll('.wf-hit').map((h) => h.attributes('data-testid'))
+    expect(hits).toEqual(expect.arrayContaining(['workflow-edge-fit-a-best', 'workflow-edge-fit-b-best']))
+    expect(hits.filter((t) => t.endsWith('-target'))).toEqual(['workflow-edge-best-target'])
+    const box = c.find('[data-testid="workflow-node-best"]').text()
+    expect(box).toContain('chosen by cost')
+    expect(box).toContain('chose fit-b')
+  })
+
   it('a box after the target is a simulation, set up in its form', async () => {
     const c = chart({ layout: { positions: {}, drafts: [{ id: 'new-2', on_target: true }], links: [] } })
     const box = c.find('[data-testid="workflow-node-new-2"]')

@@ -118,3 +118,26 @@ def test_a_graph_of_a_schema_not_read_here_gives_no_boxes(tmp_path):
 def test_a_point_is_the_set_steps_values(run):
     d = we.edge_detail(run, WORKFLOW, "boundary", "fit-k", "start_from")
     assert d["rows"][0]["name"] == "heat/u_D" and d["note"].startswith("The values boundary sets")
+
+
+COMBINED = {"workflow_name": "w", "target": {"cellml_model_path": "m.cellml"}, "steps": [
+    {"id": "fit-a"}, {"id": "fit-b"},
+    {"id": "best", "kind": "combine", "combine_from": ["fit-a", "fit-b"],
+     "combine": {"method": "best_fit"}},
+]}
+
+
+def test_a_combined_arrow_says_whether_the_combine_step_chose_its_values(tmp_path):
+    """CA's combine step (CA #685) records the costs it compared and the input it chose."""
+    run = tmp_path / "run"
+    for step, k in (("fit-a", 0.3), ("fit-b", 0.4)):
+        _write(run, step, {"kind": "calibration", "best_cost": k, "calibrated": [
+            {"target_parameterisation_name": "heat/k", "value": k, "units": "W"}]})
+    d = we.edge_detail(run, COMBINED, "fit-a", "best", "combine_from")
+    assert d["rows"][0]["value"] == 0.3 and "has not run yet" in d["note"]
+    _write(run, "best", {"kind": "combine", "method": "best_fit", "chosen_from": "fit-a",
+                         "best_cost": 0.3, "costs": {"fit-a": 0.3, "fit-b": 0.4}})
+    assert we.edge_detail(run, COMBINED, "fit-a", "best", "combine_from")["note"] == (
+        "best chose these: fit-a has the lowest cost (cost 0.3).")
+    assert we.edge_detail(run, COMBINED, "fit-b", "best", "combine_from")["note"] == (
+        "best chose fit-a's values; fit-b's cost (cost 0.4) is higher.")

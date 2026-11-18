@@ -60,18 +60,24 @@ def test_a_new_calibration_has_to_be_asked_for(client, fake_runs, tmp_path):
 
 def test_two_calibrations_of_one_parameter_are_a_problem_the_view_shows(
         client, fake_runs, tmp_path):
-    """Two steps calibrating the same parameter of the target: the later replaces the
-    earlier. CA finds it (its message names the parameters and the steps); the view shows
-    it, and CUFLynx does not check it again."""
+    """Two steps calibrating the same parameter of the target, neither taking from the
+    other. CA finds it (its message names the parameter and the steps): a CA with the
+    combine step (CA #685) refuses to plan it, which stops the run until a combine step
+    joins them; an older CA warns that the later replaces the earlier. The view shows CA's
+    message either way, and CUFLynx does not check it again."""
     work = tmp_path / "w"
     model_id = _setup(client)
     assert _calibrate(client, model_id, work)["state"] == "done"
     assert client.get("/api/workflow").json()["problems"] == []
     assert _calibrate(client, model_id, work, workflow_target=NEW_STEP)["state"] == "done"
-    problems = client.get("/api/workflow").json()["problems"]
-    assert len(problems) == 1
-    assert "calibrated by more than one step" in problems[0]
-    assert "'calibration-1', then 'calibration-2'" in problems[0]
+    described = client.get("/api/workflow").json()
+    if "combine" in described["step_kinds"]:
+        message = described["plan_error"]
+    else:
+        assert len(described["problems"]) == 1
+        message = described["problems"][0]
+        assert "calibrated by more than one step" in message
+    assert "calibration-1" in message and "calibration-2" in message
 
 
 def test_changing_a_calibration_reruns_the_steps_that_take_from_it(

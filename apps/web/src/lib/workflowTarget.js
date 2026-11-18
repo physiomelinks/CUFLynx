@@ -118,7 +118,7 @@ export function referencesOf(step, steps = null) {
     const source = at > 0 ? steps.find((s) => s.id === parts[at - 1] && kindOf(s) === 'emulation') : null
     if (source) refs.push(['emulator_dir', source.id])
   }
-  for (const key of ['fixed_from', 'priors_from']) {
+  for (const key of ['fixed_from', 'priors_from', 'combine_from']) {
     for (const f of step[key] ?? []) {
       refs.push([key, typeof f === 'string' ? f : (f?.step ?? f?.from_step)])
     }
@@ -281,16 +281,22 @@ export function layoutSteps(steps, positions = {}, pending = []) {
   return out
 }
 
+// The kinds of step only an action box makes (by its own form, never by a panel run).
+const ACTION_KINDS = ['set', 'combine']
+
 /**
  * What an arrow from `source` to `target` can pass, by CA's rules (describe's link_kinds:
  * {key: {sources, users}}): the keys whose sources include the source's kind and whose users
- * include the target's. A new step (a draft) has no kind yet, so any.
+ * include the target's. An action box is the kind of step it makes; any other new step (a
+ * draft) has no kind yet, so any key a panel run's step can take.
  */
 export function linkChoices(linkKinds, source, target) {
-  const kind = (s) => (s && !s.draft ? kindOf(s) : null)
+  const kind = (s) => (s?.draft ? (s.action ?? null) : s ? kindOf(s) : null)
+  const actionOnly = (k) => k.users.length && k.users.every((u) => ACTION_KINDS.includes(u))
   return Object.entries(linkKinds ?? {})
     .filter(([, k]) => !kind(source) || k.sources.includes(kind(source)))
-    .filter(([, k]) => !kind(target) || !k.users.length || k.users.includes(kind(target)))
+    .filter(([, k]) => (kind(target) ? !k.users.length || k.users.includes(kind(target))
+      : !actionOnly(k)))
     .map(([key]) => key)
 }
 

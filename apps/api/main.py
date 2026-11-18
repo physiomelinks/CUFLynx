@@ -5114,6 +5114,12 @@ class WorkflowSetValuesRequest(BaseModel):
     point: bool = False
 
 
+class WorkflowCombineRequest(BaseModel):
+    draft: str
+    #: CA's combine.method: best_fit or mean
+    method: str = "best_fit"
+
+
 def _layout_edit(fn, *args, **kwargs) -> dict:
     """Run a workflow_layout change on the open workflow; the Workflow view's description."""
     import workflow_layout  # noqa: PLC0415
@@ -5192,6 +5198,13 @@ def workflow_set_values(req: WorkflowSetValuesRequest) -> dict:
     """Make a Set values by hand action box a set step: each value with its reason, checked
     by CA (a red set-by-hand box)."""
     return _layout_edit("make_set", req.draft, req.entries, point=req.point)
+
+
+@app.post("/api/workflow/combine")
+def workflow_combine(req: WorkflowCombineRequest) -> dict:
+    """Make a Choose a parameter set by cost action box a combine step of the steps drawn
+    into it (CA's ``kind: combine``), checked by CA. The workflow's Run runs it."""
+    return _layout_edit("make_combine", req.draft, req.method)
 
 
 @app.post("/api/workflow/draft/delete")

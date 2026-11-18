@@ -44,7 +44,9 @@ const kind = computed(() => props.step?.kind ?? 'calibration')
 const ORIGIN = { calibration: 'Calibrated: an optimiser fits these values',
   set: 'Set by hand', emulation: 'A surrogate of the model',
   sweep: 'A simulation', identifiability: 'An analysis', sensitivity: 'An analysis',
-  uq: 'An analysis', reduction: 'An analysis' }
+  uq: 'An analysis', reduction: 'An analysis',
+  combine: 'Chosen by cost: one value per parameter from the steps it combines' }
+const COMBINE_WORDS = { best_fit: 'the input with the lowest cost', mean: "each parameter's mean over its inputs" }
 const refs = computed(() => (props.step ? referencesOf(props.step, props.steps) : []))
 const panel = computed(() => stepPanel(kind.value))
 const settingsText = computed(() => JSON.stringify(props.step?.settings ?? {}, null, 1))
@@ -92,7 +94,15 @@ function num(value) {
       <dl class="sd-kv">
         <dt>Model</dt>
         <dd>{{ step.model ? modelLabel(step.model, true) : (detail?.detail || '—') }}</dd>
-        <template v-if="kind !== 'set'">
+        <template v-if="kind === 'combine'">
+          <dt>Values</dt>
+          <dd data-testid="workflow-step-detail-combine">
+            {{ COMBINE_WORDS[step.combine?.method ?? 'best_fit'] ?? step.combine?.method }}
+            of {{ (step.combine_from ?? []).join(', ') }}<template v-if="result?.chosen_from">:
+              chose <b>{{ result.chosen_from }}</b></template>
+          </dd>
+        </template>
+        <template v-else-if="kind !== 'set'">
           <dt>obs_data</dt>
           <dd><code>{{ path(step.obs_data) }}</code></dd>
           <dt>params_for_id</dt>
