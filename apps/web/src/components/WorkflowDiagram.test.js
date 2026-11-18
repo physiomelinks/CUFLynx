@@ -95,6 +95,37 @@ describe('WorkflowDiagram', () => {
     expect(c.emitted('move')).toEqual([[{ step: 'sobol-1', index: 0 }]])
   })
 
+  it('pans when the chart is dragged by its background, not by a step box', async () => {
+    const c = chart()
+    const pan = c.find('[data-testid="workflow-pan"]')
+    pan.element.setPointerCapture = () => {}
+    pan.element.releasePointerCapture = () => {}
+    pan.element.scrollLeft = 100
+    await pan.trigger('pointerdown', { button: 0, clientX: 300, clientY: 50, pointerId: 1 })
+    await pan.trigger('pointermove', { clientX: 240, clientY: 50, pointerId: 1 })
+    // jsdom has no layout, so scrollLeft takes whatever it is set to
+    expect(pan.element.scrollLeft).toBe(160)
+    await pan.trigger('pointerup', { pointerId: 1 })
+    // a press on a step box is that box's (click, or drag to reorder): no pan
+    pan.element.scrollLeft = 0
+    await c.find('[data-testid="workflow-node-sobol-1"]').trigger('pointerdown', {
+      button: 0, clientX: 300, clientY: 50, pointerId: 2 })
+    await pan.trigger('pointermove', { clientX: 200, clientY: 50, pointerId: 2 })
+    expect(pan.element.scrollLeft).toBe(0)
+  })
+
+  it('keeps the colour key outside the part that moves', () => {
+    const c = chart()
+    expect(c.find('[data-testid="workflow-pan"] .wf-key').exists()).toBe(false)
+    expect(c.find('.wf-key').exists()).toBe(true)
+  })
+
+  it('clicking the target opens it', async () => {
+    const c = chart()
+    await c.find('[data-testid="workflow-node-target"]').trigger('click')
+    expect(c.emitted('open-target')).toHaveLength(1)
+  })
+
   it('marks the step the next run changes and the steps a delete would take', () => {
     const c = chart({ editing: 'calibration-1', doomed: ['calibration-1', 'mcmc-1'] })
     expect(c.find('[data-testid="workflow-node-calibration-1"]').classes()).toContain('editing')

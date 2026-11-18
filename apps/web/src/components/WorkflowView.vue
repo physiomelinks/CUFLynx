@@ -174,6 +174,7 @@ const alsoDeleted = computed(() => doomed.value.filter((s) => s !== props.pendin
           @inspect="(id) => (inspected = id)"
           @delete="(id) => emit('delete-step', id)"
           @move="(m) => emit('move-step', m)"
+          @open-target="emit('open-step-view', 'target')"
         />
         <WorkflowStepDetail
           :step="inspectedStep"

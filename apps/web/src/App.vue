@@ -75,7 +75,6 @@ import {
   withOverlayVars,
   timeUnit,
 } from './lib/plot'
-import { fmtSigFigs } from './lib/format'
 import { predictionFeatureItems, hasHeldOutData } from './lib/obsDataJson'
 import SearchableSelect from './components/SearchableSelect.vue'
 import SaveParamsDialog from './components/SaveParamsDialog.vue'
@@ -572,6 +571,10 @@ const workflowFileSteps = computed(() =>
   wf.loaded.value ? (wf.described.value?.workflow?.steps ?? []) : [],
 )
 const workflowDetails = computed(() => Object.fromEntries(wf.tabs.value.map((t) => [t.id, t])))
+// The workflow's model, by its file name, for the bar (the target tab's label).
+const workflowModel = computed(
+  () => wf.tabs.value.find((t) => t.kind === 'target')?.label ?? '',
+)
 // CA's status of each step ({status, stale, best_cost, duration_s, ...}), for the chart's boxes.
 const workflowResults = computed(() => wf.described.value?.status?.steps ?? {})
 
@@ -1644,22 +1647,6 @@ watch(timeUnitOverride, (v) => localStorage.setItem('cuflynx-time-unit', (v || '
 const timeUnitLabel = computed(
   () => modelTimeUnit.value || timeUnitOverride.value.trim(),
 )
-
-// The run window, said out loud beside the experiment count: how long the study
-// simulates for, and how much of that is warm-up. The count alone described the
-// protocol's shape but never its length, which is the number the removed t₁/pre
-// spinners used to show — so it is stated here instead of nowhere.
-const runWindowLabel = computed(() => {
-  const unit = timeUnitLabel.value ? ` ${timeUnitLabel.value}` : ''
-  const pre = preTime.value
-    ? ` (+ ${fmtSigFigs(preTime.value, 4)}${unit} pre)`
-    : ''
-  return `${fmtSigFigs(simTime.value, 4)}${unit}${pre}`
-})
-
-const runWindowTitle =
-  'The run window comes from the obs_data protocol_info: the total of its ' +
-  'sim_times, after the total of its pre_times. Edit the protocol to change it.'
 
 // Variables the user has overlaid onto an existing plot (issue #196), as
 // cellKey -> [qname]. Keyed by the *cell* rather than by an id of its own
@@ -3079,20 +3066,12 @@ watch(() => obs.obsData.value, scheduleRun)
         @click="settingsOpen = true"
       />
       <!--
-        The run window, in the one place it is stated. There are no t₁/pre
-        spinners to disagree with it and no Run button: the protocol says how
-        long the run is, and every parameter change re-runs it.
+        No t₁/pre spinners and no Run button: the obs_data protocol says how long the
+        run is, and every parameter change re-runs it. Without one there is nothing to
+        run over, which is said here.
       -->
       <div
-        v-if="obs.hasProtocol.value"
-        class="protocol-summary"
-        data-testid="protocol-summary"
-        :title="runWindowTitle"
-      >
-        Protocol: {{ obs.experimentCount.value }} experiment(s) · {{ runWindowLabel }}
-      </div>
-      <div
-        v-else-if="model.hasModel.value"
+        v-if="!obs.hasProtocol.value && model.hasModel.value"
         class="protocol-summary no-protocol"
         data-testid="no-protocol"
       >
@@ -3307,13 +3286,9 @@ watch(() => obs.obsData.value, scheduleRun)
       <section class="col col-center" :class="{ 'wf-open': workflowOpen }">
         <WorkflowBar
           :name="wf.name.value"
-          :tabs="wf.tabs.value"
-          :selected="wf.selected.value"
-          :states="workflowStates"
-          :busy="wf.busy.value"
           :open="workflowOpen"
           :summary="workflowSummary"
-          @select="onSelectWorkflowTab"
+          :model="workflowModel"
           @toggle="workflowOpen = !workflowOpen"
         />
         <WorkflowView
