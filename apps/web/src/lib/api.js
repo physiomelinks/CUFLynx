@@ -1012,10 +1012,12 @@ export async function followWorkingDir(workingDir) {
  * dropped .omex gives, plus `workflow_view` (fixed values, own results, what it waits for).
  */
 /** Load one tab of the workflow; an external Python model is kept in `workingDir`. */
-export async function openWorkflowView(view, workingDir = '') {
+export async function openWorkflowView(view, workingDir = '', { inputs = true } = {}) {
   const { data } = await axios.post(url('/api/workflow/view'), {
     view,
     config_outputs_dir: workingDir,
+    // false: the model only, without the step's obs_data and params_for_id
+    ...(inputs ? {} : { inputs: false }),
   })
   return data
 }

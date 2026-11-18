@@ -40,6 +40,20 @@ describe('edgesOf / layoutSteps', () => {
     expect(placed['mcmc-1'].col).toBe(2)
   })
 
+  it('leaves no empty column: one a box was moved out of closes up', () => {
+    // sobol-1 pushed to column 5, past the empty 3 and 4; mcmc-1 alone in column 2
+    const placed = layoutSteps(steps, { 'sobol-1': { col: 5, row: 0 } })
+    expect(Object.fromEntries(Object.entries(placed).map(([id, p]) => [id, p.col]))).toEqual(
+      { 'sliders-1': 0, 'calibration-1': 1, 'mcmc-1': 2, 'sobol-1': 3 })
+    // a column emptied by a move: calibration-1 moved right of mcmc-1's column is still right
+    // of sliders-1, and nothing is left in column 1
+    const moved = layoutSteps(steps, { 'calibration-1': { col: 4, row: 0 } })
+    const cols = Object.values(moved).map((p) => p.col)
+    expect([...new Set(cols)].sort()).toEqual([0, 1, 2])
+    expect(moved['calibration-1'].col).toBeGreaterThan(moved['sliders-1'].col)
+    expect(moved['mcmc-1'].col).toBeGreaterThan(moved['calibration-1'].col)
+  })
+
   it('places a new step after what its waiting arrows come from', () => {
     const drafts = [...steps, { id: 'new-1', draft: true }]
     const placed = layoutSteps(drafts, {}, [{ source: 'mcmc-1', target: 'new-1', key: 'fixed_from' }])
