@@ -4270,6 +4270,15 @@ def _study_plan(record: "_ModelRecord", configured: str, config: dict, *, flavou
     plan = study_workflow.Plan(builder, configured, edit=edit)
     # a new step the user put on the chart (a draft), which this run makes a step
     plan.draft = wanted.get("draft") if wanted.get("mode") == "new_step" else None
+    if plan.draft:
+        import workflow_layout  # noqa: PLC0415
+
+        drafts = workflow_layout.read(builder.path)["drafts"]
+        if any(d.get("id") == plan.draft and d.get("on_target") for d in drafts):
+            raise HTTPException(status_code=422, detail=(
+                f"{plan.draft} is after the target, where a step is a simulation of the merged "
+                f"model: fill in its Simulation form (double-click it), or choose another new "
+                f"step for this {flavour} run"))
     return plan, notes
 
 
@@ -5010,10 +5019,32 @@ class WorkflowPositionRequest(BaseModel):
     row: float
 
 
+class WorkflowPositionsRequest(BaseModel):
+    #: {id: {col, row}}: several boxes at once (a new column made in a gap).
+    positions: dict[str, dict]
+
+
+class WorkflowSweepRequest(BaseModel):
+    #: The after-target new step this makes a sweep.
+    draft: str
+    #: The protocol's obs_data file; absent: the study's (``model_id``) current obs_data.
+    obs_data: str | None = None
+    model_id: str | None = None
+    outputs: list[str] = []
+    #: {"<vessel>/<param>": CA's sweep_range}; empty: one run of the merged target.
+    parameters: dict = {}
+    design: str | None = None
+    zip: list[list[str]] | None = None
+    #: The solver's output step; absent: the step the app's solver uses now.
+    dt: float | None = None
+
+
 class WorkflowDraftRequest(BaseModel):
     #: Where the new box goes (absent: the chart places it).
     col: int | None = None
     row: float | None = None
+    #: Dropped after the target: a sweep on the merged target.
+    on_target: bool = False
     #: A draft to delete.
     draft: str | None = None
 
@@ -5059,8 +5090,32 @@ def workflow_draft(req: WorkflowDraftRequest) -> dict:
 
     path = _editable_workflow()
     with study_workflow.lock():
-        draft = workflow_layout.add_draft(path, req.col, req.row)
+        draft = workflow_layout.add_draft(path, req.col, req.row, on_target=req.on_target)
     return {**_reopen_edited(path), "draft": draft}
+
+
+@app.post("/api/workflow/positions")
+def workflow_positions(req: WorkflowPositionsRequest) -> dict:
+    """Several boxes placed at once: a box dropped in the gap between two columns makes a
+    new column, and the boxes right of it move one column on."""
+    return _layout_edit("set_positions", req.positions)
+
+
+@app.post("/api/workflow/sweep")
+def workflow_sweep(req: WorkflowSweepRequest) -> dict:
+    """Make a new step dropped after the target a sweep on the merged target (its Simulation
+    form): CA's ``kind: sweep, on_target: true``, checked by CA. The workflow's Run runs it."""
+    obs = req.obs_data
+    if not obs and req.model_id:
+        record = _get_model(req.model_id)
+        obs = str(record.obs_path) if record.obs_path else None
+    if not obs:
+        raise HTTPException(status_code=422, detail=(
+            "a simulation needs a protocol: load an obs_data in the study, or give its file"))
+    dt = req.dt if req.dt is not None else engine.dt
+    return _layout_edit("make_sweep", req.draft, obs_data=obs, outputs=req.outputs,
+                        parameters=req.parameters, design=req.design, zip_groups=req.zip,
+                        settings={"dt": float(dt)} if dt else None)
 
 
 @app.post("/api/workflow/draft/delete")
