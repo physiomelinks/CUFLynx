@@ -192,6 +192,33 @@ describe('WorkflowDiagram', () => {
                                           key: 'result_from', files: null }]])
   })
 
+  it("shows where the model's values come from, as CA's provenance boxes them", async () => {
+    const c = chart({ origins: {
+      model_counts: { unclassified: 73 },
+      boxes: [
+        { id: '__set_by_hand__', title: 'Values set by hand', mark: 'set_by_hand', to: ['target'],
+          values: [{ name: 'v_ref_Kir_Kir', value: 775.4, units: 'fmol', note: 'a normalisation' }] },
+        { id: '__measured__', title: 'Measured values', mark: 'measured', to: ['calibration-1'],
+          values: [{ name: 'c_K_i', value: 140, units: 'mM', note: 'Krapivinsky 1998' }] },
+      ],
+    } })
+    const hand = c.find('[data-testid="workflow-origin-set_by_hand"]')
+    const measured = c.find('[data-testid="workflow-origin-measured"]')
+    expect(hand.classes()).toContain('hand')
+    expect(measured.classes()).toContain('measured')
+    const top = (w) => parseFloat(w.attributes('style').match(/top: ([\d.-]+)px/)[1])
+    const model = c.find('[data-testid="workflow-node-model"]')
+    // set by hand above the model, measured below it, in the model's column
+    expect(top(hand)).toBeLessThan(top(model))
+    expect(top(measured)).toBeGreaterThan(top(model))
+    expect(model.text()).toContain('73 unclassified')
+    expect(c.find('[data-testid="workflow-edge-origin:__set_by_hand__-target"]').exists()).toBe(true)
+    expect(c.find('[data-testid="workflow-edge-origin:__measured__-calibration-1"]').exists()).toBe(true)
+    await hand.trigger('click')
+    await c.find('[data-testid="workflow-edge-origin:__measured__-calibration-1"]').trigger('click')
+    expect(c.emitted('origin')).toEqual([['__set_by_hand__'], ['__measured__']])
+  })
+
   it('marks the step the next run changes and the steps a delete would take', () => {
     const c = chart({ editing: 'calibration-1', doomed: ['calibration-1', 'mcmc-1'] })
     expect(c.find('[data-testid="workflow-node-calibration-1"]').classes()).toContain('editing')

@@ -41,6 +41,15 @@ describe('WorkflowEdgeDetail', () => {
     expect(d.find('[data-testid="workflow-edge-distribution"]').text()).toContain('0.23200 – 0.27000')
   })
 
+  it('lists the values set by hand with their reasons', () => {
+    getWorkflowEdge.mockClear()
+    const d = mountIt({ origin: { title: 'Values set by hand', mark: 'set_by_hand', values: [
+      { name: 'Scale_met_Glc_sink', value: 0, units: 'dim', note: 'no cytosolic glucose data identify it' }] } })
+    expect(d.text()).toContain('Values set by hand')
+    expect(d.find('[data-testid="workflow-origin-values"]').text()).toContain('no cytosolic glucose data identify it')
+    expect(getWorkflowEdge).not.toHaveBeenCalled()
+  })
+
   it('shows what a figure reads and writes without asking the server', () => {
     getWorkflowEdge.mockClear()
     const d = mountIt({ figure: { id: 'paper_plots', command: 'make paper-plots',

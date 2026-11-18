@@ -323,6 +323,11 @@ class WorkflowManager:
             # what of the run's provenance CA has written: {svg, graph} -> its mtime (ns)
             out["provenance"] = {key: os.stat(path).st_mtime_ns for key in PROVENANCE_FILES
                                  if (path := self.provenance_path(key))}
+            # where the model's values come from (set by hand, measured, ...), as CA's
+            # provenance graph boxes them, for the Workflow view's chart
+            import workflow_edges  # noqa: PLC0415
+
+            out["value_origins"] = workflow_edges.value_origins(self.provenance_path("graph"))
         job = self._job
         if job is not None:
             with job.lock:

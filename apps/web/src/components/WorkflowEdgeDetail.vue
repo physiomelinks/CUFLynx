@@ -16,6 +16,8 @@ const props = defineProps({
   edge: { type: Object, default: null },
   // The clicked external figure ({id, description, command, reads, writes}), or null.
   figure: { type: Object, default: null },
+  // The clicked box of values by origin ({title, mark, values: [{name, value, units, note}]}).
+  origin: { type: Object, default: null },
 })
 const emit = defineEmits(['close'])
 
@@ -58,14 +60,28 @@ function num(v) {
 
 <template>
   <Dialog
-    :visible="!!(edge || figure)"
+    :visible="!!(edge || figure || origin)"
     modal
-    :header="figure ? `Figures: ${figure.id}` : edge ? `${name(edge.source)} → ${name(edge.target)}` : ''"
+    :header="origin ? origin.title : figure ? `Figures: ${figure.id}` : edge ? `${name(edge.source)} → ${name(edge.target)}` : ''"
     :style="{ width: 'min(720px, 95vw)' }"
     data-testid="workflow-edge-detail"
     @update:visible="(v) => { if (!v) emit('close') }"
   >
-    <template v-if="figure">
+    <template v-if="origin">
+      <p class="ed-hint">
+        As CA's provenance records them: each value's origin and its reason or data reference
+        come from the model's parameters files.
+      </p>
+      <table class="ed-table" data-testid="workflow-origin-values">
+        <tr><th>parameter</th><th>value</th><th>units</th><th>why</th></tr>
+        <tr v-for="(r, i) in origin.values" :key="i">
+          <td><code>{{ r.name }}</code></td><td>{{ num(r.value) }}</td><td>{{ r.units }}</td>
+          <td class="ed-hint">{{ r.note }}</td>
+        </tr>
+      </table>
+    </template>
+
+    <template v-else-if="figure">
       <p v-if="figure.description">{{ figure.description }}</p>
       <p class="ed-label">Command</p>
       <pre class="ed-code">{{ figure.command }}</pre>
