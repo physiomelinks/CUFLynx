@@ -126,6 +126,62 @@ describe('WorkflowDiagram', () => {
     expect(c.emitted('open-target')).toHaveLength(1)
   })
 
+  it('runs a step on_target from the target, not the model, and figures after what they read', () => {
+    // the enterocyte workflow's shape: calibrations merged, sweeps on the merged target,
+    // and external figures reading a sweep's results and another figure's output
+    const c = chart({
+      steps: [
+        { id: 'kir', settings: {} },
+        { id: 'whole_cell', fixed_from: ['kir'], settings: {} },
+        { id: 'energy_cost', kind: 'sweep', on_target: true },
+      ],
+      figures: [
+        { id: 'paper_plots', from: 'target', reads: ['workflow_result.json'], writes: ['pp/figures.json'] },
+        { id: 'paper_figures', from: 'target',
+          reads: ['pp/figures.json', 'energy_cost/sweep/sweep_results.npz', 'workflow_result.json'], writes: [] },
+      ],
+    })
+    const left = (id) => parseFloat(c.find(`[data-testid="${id}"]`).attributes('style').match(/left: ([\d.]+)px/)[1])
+    expect(left('workflow-node-target')).toBeGreaterThan(left('workflow-node-whole_cell'))
+    expect(left('workflow-node-energy_cost')).toBeGreaterThan(left('workflow-node-target'))
+    expect(left('workflow-figure-paper_figures')).toBeGreaterThan(left('workflow-node-energy_cost'))
+    // the sweep takes the merged target, not the model
+    expect(c.find('[data-testid="workflow-edge-target-energy_cost"]').exists()).toBe(true)
+    expect(c.find('[data-testid="workflow-edge-model-energy_cost"]').exists()).toBe(false)
+    expect(c.find('[data-testid="workflow-edge-energy_cost-figure:paper_figures"]').exists()).toBe(true)
+    expect(c.find('[data-testid="workflow-edge-figure:paper_plots-figure:paper_figures"]').exists()).toBe(true)
+  })
+
+  it('each arrow is clicked on the segment that is its own', () => {
+    const c = chart({
+      steps: [
+        { id: 'kir', settings: {} },
+        { id: 'sglt1', settings: {} },
+        { id: 'whole_cell', fixed_from: ['kir', 'sglt1'], settings: {} },
+        { id: 'sweep_a', kind: 'sweep', on_target: true },
+        { id: 'sweep_b', kind: 'sweep', on_target: true },
+      ],
+    })
+    const hit = (id) => c.find(`[data-testid="workflow-edge-${id}"]`).attributes('d')
+    // two arrows into whole_cell share their end: each is picked by its start, one level line
+    expect(hit('kir-whole_cell')).toMatch(/^M [\d.]+ [\d.]+ H [\d.]+$/)
+    expect(hit('kir-whole_cell')).not.toBe(hit('sglt1-whole_cell'))
+    // two arrows out of the target share their start: each is picked by its end
+    expect(hit('target-sweep_a')).toMatch(/^M [\d.]+ [\d.]+ H [\d.]+$/)
+    expect(hit('target-sweep_a')).not.toBe(hit('target-sweep_b'))
+  })
+
+  it('clicking an arrow says which it is, and does not pan', async () => {
+    const c = chart()
+    const pan = c.find('[data-testid="workflow-pan"]')
+    pan.element.setPointerCapture = () => { throw new Error('should not pan') }
+    const hit = c.find('[data-testid="workflow-edge-calibration-1-mcmc-1"]')
+    await hit.trigger('pointerdown', { button: 0, pointerId: 1 })
+    await hit.trigger('click')
+    expect(c.emitted('edge')).toEqual([[{ source: 'calibration-1', target: 'mcmc-1',
+                                          key: 'result_from', files: null }]])
+  })
+
   it('marks the step the next run changes and the steps a delete would take', () => {
     const c = chart({ editing: 'calibration-1', doomed: ['calibration-1', 'mcmc-1'] })
     expect(c.find('[data-testid="workflow-node-calibration-1"]').classes()).toContain('editing')

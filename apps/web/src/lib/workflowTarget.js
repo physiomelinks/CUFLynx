@@ -215,6 +215,27 @@ export function panelSettings(step, described) {
 }
 
 /**
+ * What an external figure (the workflow's `external_figures`: {id, from, reads, writes, ...})
+ * takes from, as `[{from, files}]`: a step when a file it reads is under that step's run
+ * folder (`energy_cost/sweep/...`), another figure when it reads a file that figure writes
+ * (`figure:<id>`), else the target (`workflow_result.json`, the calibrated model).
+ */
+export function figureReads(figure, steps, figures) {
+  const ids = new Set(steps.map((s) => s.id))
+  const writer = {}
+  for (const f of figures) for (const w of f.writes ?? []) writer[w] = `figure:${f.id}`
+  const out = {}
+  for (const read of figure.reads ?? []) {
+    const first = String(read).split(/[\\/]/)[0]
+    const from = writer[read] && writer[read] !== `figure:${figure.id}` ? writer[read]
+      : ids.has(first) ? first : 'target'
+    ;(out[from] ??= []).push(read)
+  }
+  if (!Object.keys(out).length && figure.from === 'target') out.target = []
+  return Object.entries(out).map(([from, files]) => ({ from, files }))
+}
+
+/**
  * Where each step sits in the workflow chart: `{id: {col, row}}`. A step is one column right
  * of the furthest-right step it takes from (so every arrow points right), and a column holds
  * its steps in the file's order.

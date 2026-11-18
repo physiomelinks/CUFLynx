@@ -4951,6 +4951,22 @@ def _reopen_edited(path: str) -> dict:
     return _workflow_http(workflow.describe)
 
 
+@app.get("/api/workflow/edge")
+def workflow_edge(source: str, target: str, key: str = "") -> dict:
+    """What passes along one arrow of the open workflow's chart: the values a step fixes in
+    the next, the distribution it gives as a prior, the point an analysis is at, the emulator,
+    the model, or the values merged into the target (``workflow_edges.edge_detail``)."""
+    import workflow_edges  # noqa: PLC0415
+
+    if not workflow.loaded or not workflow.path:
+        raise HTTPException(status_code=422, detail="no workflow is open")
+    try:
+        raw = study_workflow.read_raw(workflow.path)
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=f"cannot read {workflow.path}: {exc}") from exc
+    return workflow_edges.edge_detail(workflow.output_dir or "", raw, source, target, key)
+
+
 @app.post("/api/workflow/step/delete")
 def workflow_step_delete(req: WorkflowStepDeleteRequest) -> dict:
     """Delete a step of the open workflow, reconnecting the steps that took from it to what

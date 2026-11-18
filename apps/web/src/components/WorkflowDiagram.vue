@@ -15,7 +15,7 @@
 import { computed, ref } from 'vue'
 import { SOURCE_WORDS, cellmlFile, externalFile, modelLabel } from '../stores/useWorkflow'
 
-import { layoutSteps, referencesOf } from '../lib/workflowTarget'
+import { figureReads, layoutSteps, referencesOf } from '../lib/workflowTarget'
 
 const props = defineProps({
   // The workflow file's steps ({id, kind, result_from, settings, ...}), in order.
@@ -28,13 +28,15 @@ const props = defineProps({
   results: { type: Object, default: () => ({}) },
   // The workflow's target model (the file's `target`), for the model and target boxes.
   target: { type: Object, default: null },
+  // The workflow's external figures (`external_figures`: {id, from, command, reads, writes}).
+  figures: { type: Array, default: () => [] },
   // The step the next run changes, or null.
   editing: { type: String, default: null },
   // Steps a delete would take with it, waiting for a confirmation.
   doomed: { type: Array, default: () => [] },
   busy: { type: Boolean, default: false },
 })
-const emit = defineEmits(['select', 'inspect', 'delete', 'move', 'open-target'])
+const emit = defineEmits(['select', 'inspect', 'delete', 'move', 'open-target', 'edge', 'figure'])
 
 const W = 250
 const H = 78
@@ -46,7 +48,7 @@ const PAD = 8
 // its tooltip and the step's detail).
 const KEY_WORDS = { result_from: 'at fit', start_from: 'start', fixed_from: 'fixed',
   priors_from: 'prior', scale_from: 'scale', emulator_from: 'emulator', emulator_dir: 'emulator',
-  sensitivity_from: 'ranks', params_for_id_from: 'params' }
+  sensitivity_from: 'ranks', params_for_id_from: 'params', on_target: 'merged', reads: 'reads' }
 const LONG_WORDS = { ...SOURCE_WORDS, start_from: 'starts at', fixed_from: 'fixed from',
   priors_from: 'priors from', scale_from: 'scales', emulator_dir: 'on the emulator of' }
 
@@ -135,17 +137,55 @@ function data(step) {
 }
 
 // -- layout ----------------------------------------------------------------------------
-const placed = computed(() => layoutSteps(props.steps))
+// Columns, left to right: the model; the steps by what they take from (layoutSteps); the
+// target the calibrated values merge into; the steps run on that merged target (a sweep
+// `on_target`); the external figures, each after what it reads.
+const onTarget = computed(() => props.steps.filter((s) => s.on_target))
+const mainSteps = computed(() => props.steps.filter((s) => !s.on_target))
+const placed = computed(() => layoutSteps(mainSteps.value))
 const hasModel = computed(() => props.steps.length > 0)
 const colOffset = computed(() => (hasModel.value ? 1 : 0))
 const stepCols = computed(() => Math.max(0, ...Object.values(placed.value).map((p) => p.col + 1)))
 // the calibrated and hand-set values that are merged into the target
 const merged = computed(() =>
-  props.steps.filter((s) => kindOf(s) === 'calibration' || (kindOf(s) === 'set' && !s.point)),
+  mainSteps.value.filter((s) => kindOf(s) === 'calibration' || (kindOf(s) === 'set' && !s.point)),
 )
+const figureSources = computed(() =>
+  Object.fromEntries(props.figures.map((f) => [f.id, figureReads(f, props.steps, props.figures)])),
+)
+const hasTarget = computed(
+  () => merged.value.length > 0 || onTarget.value.length > 0 || props.figures.length > 0,
+)
+const targetCol = computed(() => stepCols.value + colOffset.value)
+
+/** Every box's column and row: `{id: {col, row, kind}}` (`model`, a step id, `target`, or
+ * `figure:<id>`). A column holds its boxes in that order. */
+const cells = computed(() => {
+  const col = {}
+  if (hasModel.value) col.model = { col: 0, kind: 'model' }
+  for (const s of mainSteps.value) col[s.id] = { col: placed.value[s.id].col + colOffset.value, kind: 'step' }
+  if (hasTarget.value) col.target = { col: targetCol.value, kind: 'target' }
+  for (const s of onTarget.value) col[s.id] = { col: targetCol.value + 1, kind: 'step' }
+  // a figure is one column right of the furthest thing it reads
+  const figCol = {}
+  for (let pass = 0; pass <= props.figures.length; pass += 1) {
+    for (const f of props.figures) {
+      const after = figureSources.value[f.id].map(({ from }) =>
+        from.startsWith('figure:') ? (figCol[from] ?? targetCol.value + 1) : (col[from]?.col ?? targetCol.value))
+      figCol[`figure:${f.id}`] = Math.max(targetCol.value, ...after) + 1
+    }
+  }
+  for (const f of props.figures) col[`figure:${f.id}`] = { col: figCol[`figure:${f.id}`], kind: 'figure' }
+  const rows = {}
+  for (const c of Object.values(col)) {
+    c.row = rows[c.col] ?? 0
+    rows[c.col] = c.row + 1
+  }
+  return col
+})
 const rowsIn = computed(() => {
   const out = {}
-  for (const p of Object.values(placed.value)) out[p.col] = Math.max(out[p.col] ?? 0, p.row + 1)
+  for (const c of Object.values(cells.value)) out[c.col] = Math.max(out[c.col] ?? 0, c.row + 1)
   return out
 })
 const height = computed(() => {
@@ -164,23 +204,18 @@ function colY(col, row) {
   return (height.value - block) / 2 + row * (H + ROW_GAP)
 }
 
-const boxes = computed(() =>
-  props.steps.map((s) => {
-    const p = placed.value[s.id]
-    return { step: s, x: colX(p.col + colOffset.value), y: colY(p.col, p.row) }
-  }),
-)
+function at(id) {
+  const c = cells.value[id]
+  return c ? { x: colX(c.col), y: colY(c.col, c.row) } : null
+}
+
+const boxes = computed(() => props.steps.map((s) => ({ step: s, ...at(s.id) })))
 const byId = computed(() => Object.fromEntries(boxes.value.map((b) => [b.step.id, b])))
-const modelBox = computed(() =>
-  hasModel.value ? { x: colX(0), y: (height.value - H) / 2 } : null,
-)
-const targetBox = computed(() =>
-  merged.value.length
-    ? { x: colX(stepCols.value + colOffset.value), y: (height.value - H) / 2 }
-    : null,
-)
+const modelBox = computed(() => (hasModel.value ? at('model') : null))
+const targetBox = computed(() => (hasTarget.value ? at('target') : null))
+const figureBoxes = computed(() => props.figures.map((f) => ({ figure: f, ...at(`figure:${f.id}`) })))
 const width = computed(() =>
-  colX(stepCols.value + colOffset.value + (targetBox.value ? 1 : 0)) - COL_GAP + PAD,
+  colX(Math.max(0, ...Object.values(cells.value).map((c) => c.col)) + 1) - COL_GAP + PAD,
 )
 
 function elbow(x1, y1, x2, y2) {
@@ -188,32 +223,80 @@ function elbow(x1, y1, x2, y2) {
   return `M ${x1} ${y1} H ${xm} V ${y2} H ${x2 - 3}`
 }
 
+/** One arrow: its path, what it is (`source`, `target`, `key`) and its label. */
+function arrow(from, to, fromBox, toBox, key, kind, labelled, extra = {}) {
+  const x1 = fromBox.x + W
+  const y1 = fromBox.y + H / 2
+  const y2 = toBox.y + H / 2
+  const tag = `${to}:${key}`
+  const label = labelled.has(tag) ? '' : (KEY_WORDS[key] ?? '')
+  labelled.add(tag)
+  return { d: elbow(x1, y1, toBox.x, y2), key, from, to, kind, label,
+           lx: toBox.x - COL_GAP / 2 + 4, ly: y2 - 5, x1, y1, x2: toBox.x, y2, ...extra }
+}
+
+/**
+ * The part of each arrow a click picks it by: arrows into one box share their last segment
+ * and arrows out of one box their first, so an arrow is clicked on the segment that is its
+ * own -- the first when others end where it ends, the last when only others start where it
+ * starts, the whole line when it shares neither. Where first segments still overlap (a step
+ * feeding both the next step and the target), the arrows between steps are drawn on top of
+ * the arrows into the target (`hitOrder`), and those stay clickable past the overlap.
+ */
+function withHits(list) {
+  const into = {}
+  const outOf = {}
+  for (const e of list) {
+    into[e.to] = (into[e.to] ?? 0) + 1
+    outOf[e.from] = (outOf[e.from] ?? 0) + 1
+  }
+  return list.map((e) => {
+    const xm = e.x2 - COL_GAP / 2
+    const sharedEnd = into[e.to] > 1
+    const sharedStart = outOf[e.from] > 1
+    let hit = e.d
+    if (sharedEnd) hit = `M ${e.x1} ${e.y1} H ${xm}`
+    else if (sharedStart) hit = `M ${xm} ${e.y2} H ${e.x2}`
+    return { ...e, hit }
+  })
+}
+
+const HIT_RANK = { target: 0, model: 1, 'from-target': 2, step: 3, figure: 4 }
+// arrows into the target lowest, so a shared stretch picks the arrow between steps
+const hitOrder = computed(() =>
+  [...edges.value].sort((a, b) => (HIT_RANK[a.kind] ?? 3) - (HIT_RANK[b.kind] ?? 3)),
+)
+
 const edges = computed(() => {
   const out = []
   const labelled = new Set()
   for (const b of boxes.value) {
     const refs = referencesOf(b.step, props.steps).filter(([, id]) => byId.value[id])
     for (const [key, id] of refs) {
-      const from = byId.value[id]
-      const y2 = b.y + H / 2
-      const label = labelled.has(`${b.step.id}:${key}`) ? '' : (KEY_WORDS[key] ?? key)
-      labelled.add(`${b.step.id}:${key}`)
-      out.push({ d: elbow(from.x + W, from.y + H / 2, b.x, y2), key, from: id, to: b.step.id,
-                 label, lx: b.x - COL_GAP / 2 + 4, ly: y2 - 5, kind: 'step' })
+      out.push(arrow(id, b.step.id, byId.value[id], b, key, 'step', labelled))
     }
-    if (!refs.length && modelBox.value) {
-      out.push({ d: elbow(modelBox.value.x + W, modelBox.value.y + H / 2, b.x, b.y + H / 2),
-                 key: 'model', from: 'model', to: b.step.id, label: '', kind: 'model' })
+    if (b.step.on_target && targetBox.value) {
+      out.push(arrow('target', b.step.id, targetBox.value, b, 'on_target', 'from-target', labelled))
+    } else if (!refs.length && modelBox.value) {
+      out.push(arrow('model', b.step.id, modelBox.value, b, 'model', 'model', labelled))
     }
   }
   if (targetBox.value) {
     for (const s of merged.value) {
-      const from = byId.value[s.id]
-      out.push({ d: elbow(from.x + W, from.y + H / 2, targetBox.value.x, targetBox.value.y + H / 2),
-                 key: 'merged', from: s.id, to: 'target', label: '', kind: 'target' })
+      out.push(arrow(s.id, 'target', byId.value[s.id], targetBox.value, 'merged', 'target', labelled))
     }
   }
-  return out
+  for (const fb of figureBoxes.value) {
+    for (const src of figureSources.value[fb.figure.id]) {
+      const fromBox = src.from === 'target' ? targetBox.value
+        : src.from.startsWith('figure:') ? at(src.from) : byId.value[src.from]
+      if (fromBox) {
+        out.push(arrow(src.from, `figure:${fb.figure.id}`, fromBox, fb, 'reads', 'figure', labelled,
+                       { files: src.files }))
+      }
+    }
+  }
+  return withHits(out)
 })
 
 const modelName = computed(() =>
@@ -249,7 +332,7 @@ const pan = ref(null)
 const panning = ref(null) // {x, y, left, top, id} while the chart is held
 
 function onPanStart(event) {
-  if (event.button !== 0 || event.target.closest('.wf-node')) return
+  if (event.button !== 0 || event.target.closest('.wf-node, .wf-hit, .wf-figure')) return
   const el = pan.value
   panning.value = { x: event.clientX, y: event.clientY, left: el.scrollLeft, top: el.scrollTop,
                     id: event.pointerId }
@@ -299,6 +382,16 @@ function onPanEnd(event) {
           </path>
           <text v-if="e.label" :x="e.lx" :y="e.ly" class="wf-edge-label">{{ e.label }}</text>
         </g>
+        <path
+          v-for="e in hitOrder"
+          :key="`hit-${e.from}-${e.to}-${e.key}`"
+          :d="e.hit"
+          class="wf-hit"
+          :data-testid="`workflow-edge-${e.from}-${e.to}`"
+          @click.stop="emit('edge', { source: e.from, target: e.to, key: e.key, files: e.files ?? null })"
+        >
+          <title>Click to see what passes from {{ e.from }} to {{ e.to }}</title>
+        </path>
       </svg>
 
       <div
@@ -361,6 +454,20 @@ function onPanEnd(event) {
       </div>
 
       <div
+        v-for="fb in figureBoxes"
+        :key="fb.figure.id"
+        class="wf-box sim wf-figure"
+        :style="{ left: `${fb.x}px`, top: `${fb.y}px`, width: `${W}px`, height: `${H}px` }"
+        :title="`${fb.figure.description ?? ''}\n${fb.figure.command ?? ''}`"
+        :data-testid="`workflow-figure-${fb.figure.id}`"
+        @click="emit('figure', fb.figure.id)"
+      >
+        <div class="wf-row1"><strong class="wf-id">{{ fb.figure.id }}</strong></div>
+        <div class="wf-row2"><span class="wf-detail">{{ fb.figure.description ?? fb.figure.command }}</span></div>
+        <div class="wf-tag">external figures · {{ (fb.figure.writes ?? []).length }} files</div>
+      </div>
+
+      <div
         v-if="targetBox"
         class="wf-box target"
         title="Click: open the target with every calibrated value as the current study"
@@ -370,7 +477,7 @@ function onPanEnd(event) {
       >
         <div class="wf-row1"><strong>Target</strong></div>
         <div class="wf-row2">{{ modelName }} with the merged values</div>
-        <div class="wf-tag">from {{ merged.map((s) => s.id).join(', ') }}</div>
+        <div class="wf-tag">{{ merged.length ? `from ${merged.map((s) => s.id).join(', ')}` : 'the model as merged' }}</div>
       </div>
     </div>
     </div>
@@ -427,6 +534,20 @@ function onPanEnd(event) {
 }
 .wf-edge.model {
   stroke-dasharray: 4 3;
+}
+/* an arrow is clicked by a band wider than its line */
+.wf-hit {
+  fill: none;
+  stroke: transparent;
+  stroke-width: 12;
+  pointer-events: stroke;
+  cursor: pointer;
+}
+.wf-hit:hover {
+  stroke: color-mix(in srgb, var(--p-primary-color, #4f8cff) 35%, transparent);
+}
+.wf-figure {
+  cursor: pointer;
 }
 .wf-edge.doomed {
   stroke: var(--hand);

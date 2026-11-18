@@ -3414,6 +3414,7 @@ watch(() => obs.obsData.value, scheduleRun)
           :states="workflowStates"
           :results="workflowResults"
           :workflow-target="wf.described.value?.workflow?.target ?? null"
+          :figures="wf.described.value?.workflow?.external_figures ?? []"
           :editing="workflowSummary.mode === 'edit' ? workflowSummary.step : null"
           :pending-delete="wf.pendingDelete.value"
           :busy="wf.busy.value"
