@@ -636,8 +636,8 @@ def test_each_panel_is_its_own_named_function():
     """The point of generating rather than looping: to change one panel you edit
     one function, instead of understanding the loop that draws all of them."""
     src = export_pipeline.render_plotting_script(OBS_DOC)
-    assert "def panel_v_AR(ax, t, series):" in src
-    assert "def panel_q_lv(ax, t, series):" in src
+    assert "def panel_flow_aortic_root(ax, t, series):" in src
+    assert "def panel_stroke_volume(ax, t, series):" in src
 
 
 def test_the_variables_are_written_into_the_panel():
@@ -658,7 +658,7 @@ def test_the_targets_are_written_in_with_their_operations():
 def test_the_panels_are_listed_so_one_can_be_dropped():
     src = export_pipeline.render_plotting_script(OBS_DOC)
     assert "PANELS = [" in src
-    assert "    panel_v_AR," in src
+    assert "    panel_flow_aortic_root," in src
 
 
 def test_the_observable_description_becomes_the_docstring():
@@ -734,7 +734,7 @@ def test_dropping_a_panel_drops_it_from_the_figure(tmp_path):
     _run(script)
     both = (tmp_path / "pyscript_plots" / "best_fit_exp0.png").stat().st_size
 
-    edited = script.read_text(encoding="utf-8").replace("    panel_q_lv,\n", "")
+    edited = script.read_text(encoding="utf-8").replace("    panel_stroke_volume,\n", "")
     script.write_text(edited, encoding="utf-8")
     result = _run(script)
     assert result.returncode == 0, result.stdout + result.stderr

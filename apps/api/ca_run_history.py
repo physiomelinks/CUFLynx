@@ -55,40 +55,93 @@ def _ca_run_history():
         return None
 
 
+#: CA's ``paramID.UQ_CASE_METHOD`` and ``MCMC_CHAIN_FILE``, for a CA that predates them.
+_UQ_CASE_METHOD = "mcmc"
+MCMC_CHAIN_FILE = "mcmc_chain.npy"
+
+
+def uq_case_method() -> str:
+    """What CA names an MCMC run's directory for: ``<this>_<prefix>_<obs>``
+    (``paramID.case_dir_name``), beside the calibration's ``<method>_<prefix>_<obs>``."""
+    from ca_imports import ca_from, ensure_ca_path  # noqa: PLC0415
+
+    try:
+        ensure_ca_path()
+        return str(ca_from("param_id.paramID", "UQ_CASE_METHOD"))
+    except Exception:  # noqa: BLE001 - a CA without it, or none at all
+        return _UQ_CASE_METHOD
+
+
+def is_uq_run_dir(path: str) -> bool:
+    return os.path.basename(os.path.normpath(path)).startswith(uq_case_method() + "_")
+
+
+def _newest_holding(output_dir: str, names, skip_uq: bool = False) -> str | None:
+    """``output_dir`` if it holds one of ``names``, else its subdir holding the newest."""
+    if any(os.path.isfile(os.path.join(output_dir, n)) for n in names):
+        return output_dir
+    candidates = []
+    for entry in os.scandir(output_dir):
+        if not entry.is_dir() or (skip_uq and is_uq_run_dir(entry.path)):
+            continue
+        stamps = [os.path.getmtime(os.path.join(entry.path, n)) for n in names
+                  if os.path.isfile(os.path.join(entry.path, n))]
+        if stamps:
+            candidates.append((max(stamps), entry.path))
+    return max(candidates)[1] if candidates else None
+
+
 def find_run_dir(output_dir: str) -> str | None:
-    """The directory CA actually wrote this run into, or None.
+    """The directory CA wrote this study's calibration into, or None.
 
     CA names it ``<param_id_method>_<file_prefix>_<obs_prefix>`` under the
     configured output dir, so the caller cannot know it without repeating CA's
     naming rule -- which is exactly the kind of duplicated knowledge this module
     exists to avoid. Delegates to CA when it can.
+
+    An MCMC run's directory (:func:`uq_run_dir`) is passed over while a
+    calibration's is there: it holds a ``best_param_vals.npy`` only as the
+    posterior median of a chain with no calibration behind it.
     """
     if not output_dir or not os.path.isdir(output_dir):
         return None
+    found = None
     mod = _ca_run_history()
     if mod is not None:
         try:
             found = mod.find_run_dir(output_dir)
         except Exception:  # noqa: BLE001 - a reader must never fail a finished run
             found = None
-        if found:
-            return str(found)
-    # Fallback: the dir itself if it holds a result file, else the newest subdir
-    # that does.
-    if any(os.path.isfile(os.path.join(output_dir, n)) for n in _RESULT_FILES):
-        return output_dir
-    candidates = []
-    for entry in os.scandir(output_dir):
-        if not entry.is_dir():
-            continue
-        for name in _RESULT_FILES:
-            path = os.path.join(entry.path, name)
-            if os.path.isfile(path):
-                candidates.append((os.path.getmtime(path), entry.path))
-                break
-    if not candidates:
+    if not found:
+        found = _newest_holding(output_dir, _RESULT_FILES)
+    if found and is_uq_run_dir(found):
+        found = _newest_holding(output_dir, _RESULT_FILES, skip_uq=True) or found
+    return str(found) if found else None
+
+
+def uq_run_dir(output_dir: str) -> str | None:
+    """The directory CA wrote this study's MCMC run into, or None.
+
+    CA gives an MCMC run a directory of its own, ``<uq_case_method>_<prefix>_<obs>``,
+    holding the chain, ``param_names.csv`` and the posterior predictive check; a
+    folder written by an older CA has the chain in the calibration's directory. The
+    directory holding the newest chain wins, else the newest MCMC directory (a run
+    that has not written its chain yet).
+    """
+    if not output_dir or not os.path.isdir(output_dir):
         return None
-    return max(candidates)[1]
+    found = _newest_holding(output_dir, (MCMC_CHAIN_FILE,))
+    if found:
+        return found
+    named = [(os.path.getmtime(entry.path), entry.path) for entry in os.scandir(output_dir)
+             if entry.is_dir() and is_uq_run_dir(entry.path)]
+    return max(named)[1] if named else None
+
+
+def uq_source_dir(output_dir: str) -> str:
+    """Where to read this study's MCMC artefacts: :func:`uq_run_dir`, else the
+    calibration's directory, else ``output_dir`` itself."""
+    return uq_run_dir(output_dir) or find_run_dir(output_dir) or output_dir
 
 
 def has_results(output_dir: str, newer_than: float | None = None) -> bool:
@@ -850,8 +903,8 @@ def _chain_samples(output_dir: str):
     """
     import numpy as np  # noqa: PLC0415
 
-    run_dir = find_run_dir(output_dir) or output_dir
-    chain_path = os.path.join(run_dir, "mcmc_chain.npy")
+    run_dir = uq_source_dir(output_dir)
+    chain_path = os.path.join(run_dir, MCMC_CHAIN_FILE)
     if not os.path.isfile(chain_path):
         return None, None
     try:

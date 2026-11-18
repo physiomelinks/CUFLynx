@@ -789,7 +789,7 @@ def test_calibration_saves_calibrated_model_that_reloads_with_best_fit(
 
     # 1. The calibrated CellML was saved on finish.
     cal_path = status["calibrated_model_path"]
-    assert cal_path and Path(cal_path).is_file(), "calibrated model was not saved"
+    assert cal_path and Path(cal_path).is_file(), "calibrated model was not saved:\n" + "\n".join(lines[-40:])
 
     # 2. Its parameter values equal the best fit (values baked into the model).
     meta = parse_cellml(Path(cal_path).read_bytes())

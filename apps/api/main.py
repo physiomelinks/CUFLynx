@@ -1007,7 +1007,12 @@ class ExportPipelineRequest(BaseModel):
     sensitivity: dict = Field(default_factory=dict)
     uq: dict = Field(default_factory=dict)
     enabled: dict = Field(default_factory=dict)
-    # Base dir for the export folder; blank => the temp uploads dir.
+    # The Emulator tab: the "use" tick box, the bundle chosen when the study holds
+    # several, and the panel's training settings.
+    use_emulator: bool = False
+    emulator_dir: str = ""
+    emulator: dict = Field(default_factory=dict)
+    # The study's working dir; the export goes beside it. Blank => the temp uploads dir.
     config_outputs_dir: str = ""
 
 
@@ -1075,124 +1080,106 @@ def _fs_error(exc: OSError, action: str, fallback: Path, *, user_dir: bool) -> H
     )
 
 
+def _export_dir(configured: str, suffix: str) -> Path:
+    """Where a pipeline bundle is written: beside the working dir, as
+    ``<W>_export_<yymmdd>``, or in the temp uploads dir when there is none.
+
+    Not inside the working dir: the bundle is a working dir of its own (its
+    ``run_pipeline.py`` writes a study manifest, ``inputs/`` and run dirs into it),
+    and one nested in ``<W>`` would be read as part of ``<W>``'s study.
+    """
+    base = _export_base_dir(configured)
+    if base == UPLOAD_DIR:
+        return base / f"export_{suffix}"
+    return base.parent / f"{base.name}_export_{suffix}"
+
+
+def _export_emulator(req: ExportPipelineRequest) -> dict:
+    """``build_user_inputs``' emulator arguments from the Emulator tab's state.
+
+    The trained bundle the study would run on, when "use the emulator" is on and
+    one is trained (the same resolution an analysis run makes); without one, the
+    exported pipeline trains it first. The panel's training settings go with it.
+    """
+    emu_dir = None
+    if req.use_emulator:
+        resolved = _emulator_dir_for(req.model_id, {
+            "config_outputs_dir": req.config_outputs_dir,
+            "emulator_dir": req.emulator_dir,
+        })
+        if ca_run_history.emulator_metadata(resolved) is not None:
+            emu_dir = resolved
+    from emulator_runner import _emulator_settings  # noqa: PLC0415 - the runner's own rule
+
+    settings = _emulator_settings(dict(req.emulator or {}), "")
+    settings.pop("emulator_dir", None)
+    return {"use_emulator": req.use_emulator, "emulator_dir": emu_dir,
+            "emulator_settings": settings}
+
+
 @app.post("/api/export/pipeline")
 def export_pipeline_route(req: ExportPipelineRequest) -> dict:
-    """Write a self-contained, reproducible export folder: the dated
-    user_inputs yaml + run_pipeline.py + plot_outputs.py + copies of the model /
-    obs / params, all referenced by relative paths."""
+    """Write a self-contained, reproducible pipeline bundle with circulatory_autogen's
+    ``write_pipeline_bundle``: the dated user_inputs yaml, run_pipeline.py, the
+    plotting scripts and copies of the model, obs_data, params_for_id, user funcs
+    and a trained emulator the study uses, all referenced by relative paths."""
     record = _get_model(req.model_id)
     suffix = export_pipeline.dated_suffix()
     user_dir = bool((req.config_outputs_dir or "").strip())
-    export_dir = _export_base_dir(req.config_outputs_dir) / f"export_{suffix}"
-    resources = export_dir / "resources"
+    export_dir = _export_dir(req.config_outputs_dir, suffix)
 
-    # Use the loaded CellML file's prefix (e.g. "3compartment"), not the internal
-    # <model name> (often a generic "cardiovascularSystem"). The client passes it.
+    # The loaded file's prefix (e.g. "3compartment"), not the internal <model name>.
     file_prefix = req.file_prefix.strip() or _record_prefix(record)
-    # The model lives where circulatory_autogen resolves model_path:
-    # generated_models/<prefix>/<prefix>.cellml. obs/params go in resources/.
-    # The suffix is the uploaded file's own: an external_python model is a .py,
-    # and copying it out as ".cellml" would hand CA a file whose name says it is
-    # something it is not.
-    model_file = file_prefix + (Path(record.path).suffix or ".cellml")
-    external_model = Path(record.path).suffix.lower() == ".py"
-    model_dir = export_dir / "generated_models" / file_prefix
-
-    # An unwritable working dir, a full disk or a too-long path must say which
-    # path failed and why, not become a body-less 500 (issue #135).
-    obs_file = None
-    params_file = None
-    # Funcs the user wrote in the GUI, by CA config key -> filename in resources/.
-    # An obs_data data_item names its operation and cost_type *by name*, so a
-    # study using one of these is not reproducible unless the func travels with
-    # it — the exported run would die on an operation CA has never heard of.
-    user_func_files: dict[str, str] = {}
-    try:
-        resources.mkdir(parents=True, exist_ok=True)
-        model_dir.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(record.path, model_dir / model_file)
-        if record.obs_path is not None:
-            obs_file = "obs_data.json"
-            shutil.copyfile(record.obs_path, resources / obs_file)
-        if record.params_path is not None:
-            # Keep the stored suffix: CA branches CSV-vs-JSON on it, so an
-            # exported JSON doc renamed to .csv would be misparsed downstream.
-            params_file = "params_for_id" + Path(record.params_path).suffix
-            shutil.copyfile(record.params_path, resources / params_file)
-        # include_modules only for an external_python study: the stored
-        # user_model.py is whatever .py was uploaded last under this output dir,
-        # and a CellML study's bundle must not carry an external_model_path.
-        for key, src in user_func_paths(
-            req.config_outputs_dir or None, include_modules=external_model
-        ).items():
-            # Keep CA's own filenames: the export is meant to be readable and
-            # handed to circulatory_autogen directly.
-            name = Path(src).name
-            shutil.copyfile(src, resources / name)
-            user_func_files[key] = name
-    except OSError as exc:
-        raise _fs_error(exc, "write the export to", export_dir, user_dir=user_dir) from exc
+    model_source = Path(record.path)
+    external_model = model_source.suffix.lower() == ".py"
+    # include_modules only for an external_python study: the stored user_model.py is
+    # whatever .py was uploaded last under this working dir, and a CellML study's
+    # bundle must not carry an external_model_path.
+    funcs = user_func_paths(req.config_outputs_dir or None, include_modules=external_model)
 
     try:
-        user_inputs = export_pipeline.build_user_inputs(
-            file_prefix=file_prefix,
-            model_type=engine.model_type,
-            solver=engine.solver,
-            solver_info=dict(engine.solver_info),
-            dt=engine.dt,
-            pre_time=req.pre_time,
-            sim_time=req.sim_time,
-            model_file=model_file,
-            obs_file=obs_file,
-            params_for_id_file=params_file,
-            user_func_files=user_func_files,
-            calibration=req.calibration,
-            sensitivity=req.sensitivity,
-            uq=req.uq,
-            enabled=req.enabled,
-            # The yaml is for the libcuflynx the user has: an older one rejects
-            # the include_prediction_items key.
-            prediction_features=ca_supports_prediction_features(),
-        )
+        with tempfile.TemporaryDirectory() as staging:
+            # CA copies the model under its own file name: name it after the study.
+            model_path = model_source
+            wanted = file_prefix + (model_source.suffix or ".cellml")
+            if model_source.name != wanted:
+                model_path = Path(staging) / wanted
+                shutil.copyfile(model_source, model_path)
+            inp = export_pipeline.build_user_inputs(
+                file_prefix=file_prefix,
+                model_type=engine.model_type,
+                solver=engine.solver,
+                solver_info=dict(engine.solver_info),
+                dt=engine.dt,
+                pre_time=req.pre_time,
+                sim_time=req.sim_time,
+                model_path=str(model_path),
+                obs_path=str(record.obs_path) if record.obs_path else None,
+                params_for_id_path=str(record.params_path) if record.params_path else None,
+                user_func_paths={key: str(path) for key, path in funcs.items()},
+                calibration=req.calibration,
+                sensitivity=req.sensitivity,
+                uq=req.uq,
+                enabled=req.enabled,
+                # The yaml is for the libcuflynx the user has: an older one rejects
+                # the include_prediction_items key.
+                prediction_features=ca_supports_prediction_features(),
+                **_export_emulator(req),
+            )
+            files = export_pipeline.write_bundle(inp, str(export_dir))
     except export_pipeline.ExportPipelineError as exc:
-        # A malformed setting is the client's to fix, so report it as such: an
-        # unhandled error here surfaces as a bare 500 with no detail, which is
-        # all the user saw in issue #133.
+        # A malformed setting is the client's to fix: report it rather than a bare
+        # 500 with no detail (issue #133).
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    yaml_name = f"user_inputs_{suffix}.yaml"
-    try:
-        with open(export_dir / yaml_name, "w") as fh:
-            yaml.safe_dump(user_inputs, fh, default_flow_style=False, sort_keys=False)
-        (export_dir / "run_pipeline.py").write_text(
-            export_pipeline.render_pipeline_script(), encoding="utf-8"
-        )
-        (export_dir / export_pipeline.PLOT_UTILITIES_NAME).write_text(
-            export_pipeline.render_plot_utilities(), encoding="utf-8"
-        )
-        (export_dir / export_pipeline.PLOTTING_SCRIPT_NAME).write_text(
-            export_pipeline.render_plotting_script(
-                {"data_items": record.obs_data.data_items} if record.obs_data else None
-            ),
-            encoding="utf-8",
-        )
+    except ca_imports.CaImportError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"exporting a pipeline needs circulatory_autogen's bundle writer: {exc}",
+        ) from exc
     except OSError as exc:
+        # An unwritable location, a full disk or a too-long path says which path
+        # failed and why (issue #135).
         raise _fs_error(exc, "write the export to", export_dir, user_dir=user_dir) from exc
-
-    # Every file actually written, so the UI's "what shipped" list matches the
-    # folder. plot_utilities.py used to be written and not listed, which reads
-    # as a bundle missing the module its plotting script imports.
-    files = [
-        yaml_name,
-        "run_pipeline.py",
-        export_pipeline.PLOTTING_SCRIPT_NAME,
-        export_pipeline.PLOT_UTILITIES_NAME,
-        f"generated_models/{file_prefix}/{model_file}",
-    ]
-    if obs_file:
-        files.append(f"resources/{obs_file}")
-    if params_file:
-        files.append(f"resources/{params_file}")
-    files.extend(f"resources/{name}" for name in sorted(user_func_files.values()))
     return {"export_dir": str(export_dir), "files": files}
 
 

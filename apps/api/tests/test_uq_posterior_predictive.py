@@ -150,6 +150,24 @@ def test_coverage_is_read_from_the_run_directory(job):
 
 
 @pytest.mark.unit
+def test_the_check_is_read_from_the_mcmc_runs_own_directory(job):
+    """CA writes the MCMC run to ``mcmc_<prefix>_<obs>/``, beside the calibration's
+    directory, and saves the check there with the chain."""
+    manager, _, tmp_path = job
+    calibration = tmp_path / "genetic_algorithm_m_obs"
+    calibration.mkdir()
+    np.save(calibration / "best_param_vals.npy", np.array([1.0, 2.0]))
+    mcmc = tmp_path / "mcmc_m_obs"
+    mcmc.mkdir()
+    np.save(mcmc / "mcmc_chain.npy", np.zeros((10, 4, 2)))
+    write_predictive(mcmc)
+    expected = write_coverage(mcmc)
+
+    assert manager._read_coverage(str(tmp_path)) == expected
+    assert manager.posterior_predictive("job-1")["available"] is True
+
+
+@pytest.mark.unit
 def test_missing_coverage_reads_as_none(job):
     manager, _, tmp_path = job
     assert manager._read_coverage(str(tmp_path)) is None

@@ -2003,6 +2003,11 @@ function exportPayload() {
     uq: { ...uqSettings.value },
     enabled: exportEnabled.value,
     working_dir: workingDir.value.trim() || undefined,
+    // The Emulator tab: the bundle carries the emulator the analyses use, or trains
+    // one with the panel's settings when none is trained.
+    use_emulator: emu.useEmulator.value,
+    emulator_dir: emu.selectedDir.value || undefined,
+    emulator: { ...emuSettings.value },
   }
 }
 
