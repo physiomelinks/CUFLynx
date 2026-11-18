@@ -89,8 +89,12 @@ const selectedStep = computed(() =>
   steps.value.find((t) => t.id === props.selected) ?? null,
 )
 const canRun = computed(
-  () => loaded.value && !props.described?.plan_error && !running.value && !props.busy,
+  () => loaded.value && !props.described?.plan_error && !problems.value.length &&
+    !running.value && !props.busy,
 )
+// What CA says is wrong with the workflow itself (two steps calibrating one parameter of the
+// target): CA's own message, an error here, and the workflow does not run until it is fixed.
+const problems = computed(() => props.described?.problems ?? [])
 const coresInvalid = computed(() => numCores.value > 1 && !props.mpiexecAvailable)
 
 // The target as CA reads it, and whether it is an external Python model.
@@ -279,6 +283,15 @@ const progressText = computed(() => {
         data-testid="workflow-plan-error"
       >
         {{ described.plan_error }}
+      </Message>
+      <Message
+        v-for="problem in problems"
+        :key="problem"
+        severity="error"
+        :closable="false"
+        data-testid="workflow-problem"
+      >
+        {{ problem }}
       </Message>
 
       <Message
