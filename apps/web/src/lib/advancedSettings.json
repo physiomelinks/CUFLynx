@@ -59,7 +59,6 @@
       "n_splits",
       "n_iter",
       "classifier_n_iter",
-      "tuning_metric",
       "out_of_bounds",
       "fd_rel_step"
     ],
@@ -76,15 +75,14 @@
   },
   "reduction": {
     "ca": [
+      "criterion",
       "min_mode_std",
       "variance_fraction",
       "min_index",
       "redundancy_check",
       "redundancy_statistic",
       "redundancy_converged_only",
-      "redundancy_convergence_tol",
-      "sensitivity_dir",
-      "output_dir"
+      "redundancy_convergence_tol"
     ],
     "cuflynx": []
   }

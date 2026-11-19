@@ -6,6 +6,8 @@ import InputText from 'primevue/inputtext'
 import Checkbox from 'primevue/checkbox'
 import RadioButton from 'primevue/radiobutton'
 import Button from 'primevue/button'
+import SettingsSections from './SettingsSections.vue'
+import { differs } from '../lib/advancedSettings'
 import { paramReductionHeatmapUrl } from '../lib/api'
 import { fmtSigFigs } from '../lib/format'
 
@@ -88,14 +90,17 @@ watch(reductionDescriptors, (d) => seed(reductionValues, d), { immediate: true }
 
 const source = ref('existing') // 'existing' | 'sobol_first'
 const SOBOL_RUN_OPTION = 'sensitivity_dir'
+// Not form fields: the Sobol run is chosen with its own picker (a run of this study, not a
+// typed path), and the reduction's output_dir is left to CA, which writes it under that
+// Sobol run, inside the working dir: a path box here could send it anywhere.
+const NOT_FIELDS = [SOBOL_RUN_OPTION, 'output_dir']
 
 /** The options the chosen method reads, plus the ones every method reads. */
 const reductionOptions = computed(() =>
   reductionDescriptors.value
     .filter((o) => o !== methodDescriptor.value && renderable(o))
     .filter((o) => !o.methods || o.methods.includes(reductionValues.method))
-    // Run-first reads the Sobol run it has just made.
-    .filter((o) => !(source.value === 'sobol_first' && o.name === SOBOL_RUN_OPTION)),
+    .filter((o) => !NOT_FIELDS.includes(o.name)),
 )
 
 const sobolRunChoices = computed(() =>
@@ -119,6 +124,9 @@ function onRunReduction() {
   const options = {
     ...(methodDescriptor.value ? { method: reductionValues.method } : {}),
     ...collect(reductionValues, reductionOptions.value),
+    // the run picked (run-first reads the Sobol run it has just made)
+    ...(source.value === 'existing' && reductionValues[SOBOL_RUN_OPTION]
+      ? { [SOBOL_RUN_OPTION]: reductionValues[SOBOL_RUN_OPTION] } : {}),
   }
   emit('run-reduction', { source: source.value, param_reduction_options: options })
 }
@@ -250,33 +258,36 @@ function ciBound(profile, side) {
           data-testid="pr-opt-method"
         />
       </label>
-      <template v-for="opt in reductionOptions" :key="opt.name">
-        <label v-if="opt.type === 'bool'" class="field checkbox">
-          <Checkbox v-model="reductionValues[opt.name]" :binary="true"
-                    :input-id="'pr-opt-' + opt.name" :data-testid="'pr-opt-' + opt.name" />
-          <span :title="opt.description">{{ optionLabel(opt.name) }}</span>
-        </label>
-        <label v-else-if="opt.type === 'enum'" class="field">
-          <span :title="opt.description">{{ optionLabel(opt.name) }}</span>
-          <Select v-model="reductionValues[opt.name]" :options="opt.choices ?? []" size="small"
-                  :data-testid="'pr-opt-' + opt.name" />
-        </label>
-        <label v-else-if="opt.type === 'str'" class="field">
-          <span :title="opt.description">{{ optionLabel(opt.name) }}</span>
-          <InputText v-model="reductionValues[opt.name]" size="small"
-                     :data-testid="'pr-opt-' + opt.name" />
-        </label>
-        <label v-else class="field">
-          <span :title="opt.description">{{ optionLabel(opt.name) }}</span>
-          <InputNumber
-            v-model="reductionValues[opt.name]"
-            :min-fraction-digits="opt.type === 'float' ? 1 : undefined"
-            :max-fraction-digits="opt.type === 'float' ? 10 : undefined"
-            size="small"
-            :data-testid="'pr-opt-' + opt.name"
-          />
-        </label>
-      </template>
+      <!-- Standard, then Advanced (lib/advancedSettings.json, "reduction"). -->
+      <SettingsSections tab="reduction" :items="reductionOptions" :changed="(o) => differs(reductionValues[o.name], o.default)">
+        <template #default="{ item: opt }">
+            <label v-if="opt.type === 'bool'" class="field checkbox">
+              <Checkbox v-model="reductionValues[opt.name]" :binary="true"
+                        :input-id="'pr-opt-' + opt.name" :data-testid="'pr-opt-' + opt.name" />
+              <span :title="opt.description">{{ optionLabel(opt.name) }}</span>
+            </label>
+            <label v-else-if="opt.type === 'enum'" class="field">
+              <span :title="opt.description">{{ optionLabel(opt.name) }}</span>
+              <Select v-model="reductionValues[opt.name]" :options="opt.choices ?? []" size="small"
+                      :data-testid="'pr-opt-' + opt.name" />
+            </label>
+            <label v-else-if="opt.type === 'str'" class="field">
+              <span :title="opt.description">{{ optionLabel(opt.name) }}</span>
+              <InputText v-model="reductionValues[opt.name]" size="small"
+                         :data-testid="'pr-opt-' + opt.name" />
+            </label>
+            <label v-else class="field">
+              <span :title="opt.description">{{ optionLabel(opt.name) }}</span>
+              <InputNumber
+                v-model="reductionValues[opt.name]"
+                :min-fraction-digits="opt.type === 'float' ? 1 : undefined"
+                :max-fraction-digits="opt.type === 'float' ? 10 : undefined"
+                size="small"
+                :data-testid="'pr-opt-' + opt.name"
+              />
+            </label>
+        </template>
+      </SettingsSections>
       <div class="cal-actions">
         <Button label="Reduce" icon="pi pi-play" size="small" data-testid="pr-run"
                 :disabled="!canReduce" @click="onRunReduction" />
@@ -346,33 +357,36 @@ function ciBound(profile, side) {
     <!-- ---------------- Identifiability analysis ---------------- -->
     <h3 class="section-title">Identifiability analysis</h3>
     <div class="cal-form" data-testid="ia-settings">
-      <template v-for="opt in iaShown" :key="opt.name">
-        <label v-if="opt.type === 'bool'" class="field checkbox">
-          <Checkbox v-model="iaValues[opt.name]" :binary="true"
-                    :input-id="'ia-opt-' + opt.name" :data-testid="'ia-opt-' + opt.name" />
-          <span :title="opt.description">{{ optionLabel(opt.name) }}</span>
-        </label>
-        <label v-else-if="opt.type === 'enum'" class="field">
-          <span :title="opt.description">{{ optionLabel(opt.name) }}</span>
-          <Select v-model="iaValues[opt.name]" :options="opt.choices ?? []" size="small"
-                  :data-testid="'ia-opt-' + opt.name" />
-        </label>
-        <label v-else-if="opt.type === 'str'" class="field">
-          <span :title="opt.description">{{ optionLabel(opt.name) }}</span>
-          <InputText v-model="iaValues[opt.name]" size="small"
-                     :data-testid="'ia-opt-' + opt.name" />
-        </label>
-        <label v-else class="field">
-          <span :title="opt.description">{{ optionLabel(opt.name) }}</span>
-          <InputNumber
-            v-model="iaValues[opt.name]"
-            :min-fraction-digits="opt.type === 'float' ? 1 : undefined"
-            :max-fraction-digits="opt.type === 'float' ? 10 : undefined"
-            size="small"
-            :data-testid="'ia-opt-' + opt.name"
-          />
-        </label>
-      </template>
+      <!-- Standard, then Advanced (lib/advancedSettings.json, "identifiability"). -->
+      <SettingsSections tab="identifiability" :items="iaShown" :changed="(o) => differs(iaValues[o.name], o.default)">
+        <template #default="{ item: opt }">
+            <label v-if="opt.type === 'bool'" class="field checkbox">
+              <Checkbox v-model="iaValues[opt.name]" :binary="true"
+                        :input-id="'ia-opt-' + opt.name" :data-testid="'ia-opt-' + opt.name" />
+              <span :title="opt.description">{{ optionLabel(opt.name) }}</span>
+            </label>
+            <label v-else-if="opt.type === 'enum'" class="field">
+              <span :title="opt.description">{{ optionLabel(opt.name) }}</span>
+              <Select v-model="iaValues[opt.name]" :options="opt.choices ?? []" size="small"
+                      :data-testid="'ia-opt-' + opt.name" />
+            </label>
+            <label v-else-if="opt.type === 'str'" class="field">
+              <span :title="opt.description">{{ optionLabel(opt.name) }}</span>
+              <InputText v-model="iaValues[opt.name]" size="small"
+                         :data-testid="'ia-opt-' + opt.name" />
+            </label>
+            <label v-else class="field">
+              <span :title="opt.description">{{ optionLabel(opt.name) }}</span>
+              <InputNumber
+                v-model="iaValues[opt.name]"
+                :min-fraction-digits="opt.type === 'float' ? 1 : undefined"
+                :max-fraction-digits="opt.type === 'float' ? 10 : undefined"
+                size="small"
+                :data-testid="'ia-opt-' + opt.name"
+              />
+            </label>
+        </template>
+      </SettingsSections>
       <label class="field checkbox">
         <Checkbox v-model="runCalibrationFirst" :binary="true" input-id="ia-fresh-calib" />
         <span title="Otherwise the analysis is about the latest completed calibration's best fit">
