@@ -69,6 +69,7 @@ import {
   loadWorkingDir,
   openStudyFromOutputs,
   getWorkflowStepInput,
+  workflowReductionCandidates,
 } from './lib/api'
 import {
   overlayItemsFor,
@@ -627,13 +628,21 @@ async function onNewWorkflowStep() {
  * params_for_id, since a new step brings its own: Imports highlight its obs_data box. The
  * chosen tab opens on the left, and its next run makes the box that step.
  */
-async function onWorkflowDraftAction({ draft, model: boxModel, panel, simulation = false }) {
+async function onWorkflowDraftAction({ draft, model: boxModel, panel, simulation = false,
+  chooseParams = false }) {
   const same = (m) => JSON.stringify(m ?? null) === JSON.stringify(boxModel ?? null)
   const step = boxModel ? workflowFileSteps.value.find((s) => s.model && same(s.model)) : null
   const target = wf.described.value?.workflow?.target
   const view = step && workflowDetails.value[step.id]?.viewable !== false ? step.id
     : boxModel && !step && same(target) ? 'target' : null
   if (view) await onSelectWorkflowTab(view, { inputs: false })
+  if (chooseParams) {
+    // no panel makes it: Choose parameters in the Workflow view does, from the study's
+    // params_for_id, which Imports ask for
+    needsParams.value = true
+    reductionDraft.value = draft
+    return
+  }
   needsObsData.value = !simulation || !loadedObsFilename.value || !!view
   if (simulation) {
     // no panel makes it: Add simulation in the Workflow view does, once it has its obs_data
@@ -642,6 +651,15 @@ async function onWorkflowDraftAction({ draft, model: boxModel, panel, simulation
   }
   wf.chooseDraft(draft)
   if (PANEL_REFS[panel]) leftTab.value = panel
+}
+
+// The Choose parameters box waiting for its params_for_id (the Workflow view's form), or null.
+const reductionDraft = ref(null)
+// Imports highlight the params_for_id box: a Choose parameters box chooses from its entries.
+const needsParams = ref(false)
+function onReductionMade() {
+  reductionDraft.value = null
+  needsParams.value = false
 }
 
 // The Simulation box waiting for its obs_data (Add simulation in the Workflow view), or null.
@@ -660,6 +678,9 @@ const workflowEditor = {
   addDraft: (col, row, onTarget, boxModel, action) => wf.addDraft(col, row, onTarget, boxModel, action),
   setValues: (form) => wf.setValues(form),
   combine: (form) => wf.combine(form),
+  // a reduction chosen by hand keeps entries of the study's params_for_id
+  chooseParameters: (form) => wf.chooseParameters({ ...form, modelId: model.modelId.value }),
+  reductionCandidates: () => workflowReductionCandidates(model.modelId.value),
   // a simulation's protocol is the study's obs_data unless its form names a file
   makeSweep: (form) => wf.makeSweep({ ...form, modelId: model.modelId.value }),
   chooseDraft: (draft) => wf.chooseDraft(draft),
@@ -3477,6 +3498,9 @@ watch(() => obs.obsData.value, scheduleRun)
           :step-kinds="wf.described.value?.step_kinds ?? []"
           :draft-panels="Object.keys(PANEL_REFS)"
           :simulation-draft="simulationDraft"
+          :reduction-draft="reductionDraft"
+          :study-has-params="!!loadedParamsFilename"
+          :manual-reduction="!!wf.described.value?.manual_reduction"
           :study-has-obs="!!loadedObsFilename"
           :parameters-offered="model.variables.value.params ?? []"
           :editing="workflowSummary.mode !== 'new_workflow' ? workflowSummary.step : null"
@@ -3503,6 +3527,7 @@ watch(() => obs.obsData.value, scheduleRun)
           @new-step="onNewWorkflowStep"
           @draft-action="onWorkflowDraftAction"
           @simulation-made="onSimulationMade"
+          @reduction-made="onReductionMade"
           @select-step="onSelectWorkflowStep"
           @delete-step="(id) => wf.deleteStep(id)"
           @confirm-delete="wf.confirmDelete()"
@@ -3856,6 +3881,7 @@ watch(() => obs.obsData.value, scheduleRun)
           :model-variables="model.variables.value"
           :model-name="model.name.value"
           :needs-obs-data="needsObsData"
+          :needs-params="needsParams"
           :loaded-filename="loadedParamsFilename"
           :loaded-obs-filename="loadedObsFilename"
           :can-export="model.hasModel.value"

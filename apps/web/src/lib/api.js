@@ -952,6 +952,19 @@ export async function combineWorkflowSteps({ draft, method = 'best_fit' }) {
   return data
 }
 
+/** The study's params_for_id entries a reduction chosen by hand can keep (CA's labels). */
+export async function workflowReductionCandidates(modelId) {
+  const { data } = await axios.get(url('/api/workflow/reduction_candidates'), { params: { model_id: modelId } })
+  return data
+}
+
+/** Make a model box a reduction chosen by hand: the entries kept, and why. */
+export async function chooseWorkflowParameters({ draft, modelId, parameters, reason }) {
+  const { data } = await axios.post(url('/api/workflow/choose_parameters'),
+    { draft, model_id: modelId, parameters, reason })
+  return data
+}
+
 /** Several boxes placed at once ({id: {col, row}}): a new column made in a gap. */
 export async function placeWorkflowNodes(positions) {
   const { data } = await axios.post(url('/api/workflow/positions'), { positions })

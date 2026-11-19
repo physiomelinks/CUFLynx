@@ -311,6 +311,7 @@ class WorkflowManager:
             out["link_kinds"] = {}
         out["fixed_parameters"] = workflow_layout.fixed_parameters_supported()
         out["step_kinds"] = workflow_layout.step_kinds()
+        out["manual_reduction"] = workflow_layout.manual_reduction_supported()
         try:
             # CA's warnings about the workflow itself (two steps calibrating one parameter of
             # the target, the later replacing the earlier) are shown as problems in the view

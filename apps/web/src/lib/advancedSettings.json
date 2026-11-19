@@ -30,7 +30,6 @@
       "jacobian_check_steps"
     ],
     "cuflynx": [
-      "include_prediction_items",
       "DEBUG"
     ]
   },

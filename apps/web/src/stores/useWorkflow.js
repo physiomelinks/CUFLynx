@@ -14,6 +14,7 @@ import {
   makeWorkflowSweep,
   setWorkflowValues,
   combineWorkflowSteps,
+  chooseWorkflowParameters,
   addWorkflowDraft,
   deleteWorkflowDraft,
   errorMessage,
@@ -573,6 +574,7 @@ export function useWorkflow(options = {}) {
   const makeSweep = (form) => layoutEdit(() => makeWorkflowSweep(form))
   const setValues = (form) => layoutEdit(() => setWorkflowValues(form))
   const combine = (form) => layoutEdit(() => combineWorkflowSteps(form))
+  const chooseParameters = (form) => layoutEdit(() => chooseWorkflowParameters(form))
 
   async function moveStep(stepId, index) {
     const d = await guarded(() => moveWorkflowStep(stepId, index))
@@ -606,6 +608,7 @@ export function useWorkflow(options = {}) {
     makeSweep,
     setValues,
     combine,
+    chooseParameters,
     described,
     loaded,
     tabs,
