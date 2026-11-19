@@ -5078,6 +5078,16 @@ class WorkflowPositionsRequest(BaseModel):
     positions: dict[str, dict]
 
 
+class WorkflowChooseParametersRequest(BaseModel):
+    #: The model box this makes a reduction chosen by hand.
+    draft: str
+    #: The study whose params_for_id holds the candidates.
+    model_id: str
+    #: Labels of the entries kept (``reduction_candidates``' names).
+    parameters: list[str]
+    reason: str
+
+
 class WorkflowSweepRequest(BaseModel):
     #: The after-target new step this makes a sweep.
     draft: str
@@ -5198,6 +5208,32 @@ def workflow_set_values(req: WorkflowSetValuesRequest) -> dict:
     """Make a Set values by hand action box a set step: each value with its reason, checked
     by CA (a red set-by-hand box)."""
     return _layout_edit("make_set", req.draft, req.entries, point=req.point)
+
+
+@app.get("/api/workflow/reduction_candidates")
+def workflow_reduction_candidates(model_id: str) -> dict:
+    """The study's params_for_id entries a reduction chosen by hand can keep, named as CA
+    names them, with their bounds."""
+    import workflow_layout  # noqa: PLC0415
+
+    record = _get_model(model_id)
+    if record.params_path is None:
+        raise HTTPException(status_code=422, detail="load the params_for_id to choose from")
+    try:
+        return {"params_for_id": Path(record.params_path).name,
+                "candidates": workflow_layout.reduction_candidates(str(record.params_path))}
+    except study_workflow.StudyWorkflowError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/api/workflow/choose_parameters")
+def workflow_choose_parameters(req: WorkflowChooseParametersRequest) -> dict:
+    """Make a model box's Choose parameters a reduction chosen by hand (CA's manual
+    reduction, an orange box): the study's params_for_id entries ticked, and why."""
+    record = _get_model(req.model_id)
+    return _layout_edit("make_manual_reduction", req.draft,
+                        str(record.params_path) if record.params_path else "",
+                        req.parameters, req.reason)
 
 
 @app.post("/api/workflow/combine")
