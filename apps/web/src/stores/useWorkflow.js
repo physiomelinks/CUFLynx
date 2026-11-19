@@ -486,9 +486,17 @@ export function useWorkflow(options = {}) {
     target.value = targetAfterRun(target.value, kind)
   }
 
-  async function listIn(workingDir) {
+  /**
+   * The working dir's workflows. `reopen`: with none open here (a server restarted since
+   * one was), open the one the list names as the working dir's (`open`), so the Workflow
+   * view shows it instead of an empty chart. Opening a workflow loads no model as the study.
+   */
+  async function listIn(workingDir, { reopen = false } = {}) {
     const found = await guarded(() => listWorkflows(workingDir))
     workflows.value = found?.workflows ?? []
+    if (reopen && !described.value?.loaded && found?.open) {
+      await open({ path: found.open, workingDir })
+    }
     return workflows.value
   }
 
