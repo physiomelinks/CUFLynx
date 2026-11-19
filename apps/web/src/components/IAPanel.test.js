@@ -88,6 +88,15 @@ describe('IAPanel parameter reduction form', () => {
     expect(has('redundancy_check')).toBe(false)
   })
 
+  it('does not offer the manual method: parameters chosen by hand are picked in the Workflow view', () => {
+    const wrapper = mountPanel({ defaults: { param_reduction: { options: [
+      { name: 'method', type: 'enum', default: 'pca', choices: ['pca', 'sobol', 'manual'] },
+      { name: 'parameters', type: 'list', default: null, methods: ['manual'] },
+    ] }, ia_options: [] } })
+    const method = wrapper.find('[data-testid="pr-opt-method"]')
+    expect(method.findAll('option').map((o) => o.text())).toEqual(['pca', 'sobol'])
+  })
+
   it('says so when this CA has no parameter reduction', () => {
     const wrapper = mountPanel({ defaults: { ia_options: [] } })
     expect(wrapper.find('[data-testid="pr-unavailable"]').exists()).toBe(true)

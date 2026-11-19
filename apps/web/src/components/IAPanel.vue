@@ -85,6 +85,12 @@ const reductionAvailable = computed(() => reductionDescriptors.value.length > 0)
 const methodDescriptor = computed(() =>
   reductionDescriptors.value.find((o) => o.name === 'method'),
 )
+// CA's reduction methods, but "manual" (CA #686): parameters chosen by hand are picked in
+// the Workflow view (a model box's Choose parameters, from the study's params_for_id), and
+// this form has no field for its list of names.
+const reductionMethods = computed(() =>
+  (methodDescriptor.value?.choices ?? []).filter((m) => m !== 'manual'),
+)
 const reductionValues = reactive({})
 watch(reductionDescriptors, (d) => seed(reductionValues, d), { immediate: true })
 
@@ -253,7 +259,7 @@ function ciBound(profile, side) {
         <span :title="methodDescriptor.description">Method</span>
         <Select
           v-model="reductionValues.method"
-          :options="methodDescriptor.choices ?? []"
+          :options="reductionMethods"
           size="small"
           data-testid="pr-opt-method"
         />

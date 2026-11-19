@@ -29,10 +29,12 @@ describe('advancedSettings', () => {
   })
 
   it("keeps a tab's own field apart from a CA option of the same name", () => {
-    // Sensitivity: the tab's own include_prediction_items box is advanced; a CA option of
-    // that name would be decided by the `ca` list, which does not name it.
-    expect(isAdvanced('sensitivity', { name: 'include_prediction_items', own: true })).toBe(true)
-    expect(isAdvanced('sensitivity', { name: 'include_prediction_items' })).toBe(false)
+    // Sensitivity: the tab's own DEBUG box is advanced; a CA option of that name would be
+    // decided by the `ca` list, which does not name it. Include prediction items is standard
+    // (Finbar, 2026-11-20).
+    expect(isAdvanced('sensitivity', { name: 'DEBUG', own: true })).toBe(true)
+    expect(isAdvanced('sensitivity', { name: 'DEBUG' })).toBe(false)
+    expect(isAdvanced('sensitivity', { name: 'include_prediction_items', own: true })).toBe(false)
     expect(isAdvanced('no_such_tab', { name: 'x' })).toBe(false)
   })
 

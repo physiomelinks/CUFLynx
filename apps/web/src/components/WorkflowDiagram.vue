@@ -73,6 +73,12 @@ const LONG_WORDS = { ...SOURCE_WORDS, start_from: 'starts at', fixed_from: 'fixe
   priors_from: 'priors from', scale_from: 'scales', emulator_dir: 'on the emulator of',
   combine_from: 'combined into' }
 
+/** A reduction chosen by hand (CA's manual method): its parameters are named, not ranked. */
+function byHand(step) {
+  return kindOf(step) === 'reduction'
+    && step.settings?.param_reduction_options?.method === 'manual'
+}
+
 function kindOf(step) {
   if (step?.draft) return 'draft'
   return step?.kind ?? 'calibration'
@@ -83,6 +89,7 @@ function classOf(step) {
   const kind = kindOf(step)
   if (kind === 'calibration' || kind === 'combine') return 'cal'
   if (kind === 'set') return 'hand'
+  if (byHand(step)) return 'chosen'
   if (kind === 'emulation') return 'surrogate'
   if (kind === 'sweep') return 'sim'
   if (kind === 'draft') return 'draft'
@@ -117,6 +124,10 @@ const STATE_WORDS = { stale: 'stale', not_run: 'not run', queued: 'queued', runn
 function tag(step) {
   const kind = kindOf(step)
   const n = (props.details[step.id]?.calibrates ?? []).length
+  if (byHand(step)) {
+    const n = (step.settings.param_reduction_options.parameters ?? []).length
+    return `chosen by hand · ${n} parameter${n === 1 ? '' : 's'}`
+  }
   const parts = [TAGS[kind] ?? kind]
   if (kind === 'set') parts.push(step.point ? 'point only' : `${(step.set ?? []).length} values`)
   else if (n) parts.push(`${n} parameter${n === 1 ? '' : 's'}`)
@@ -130,6 +141,9 @@ function line2(step) {
   const kind = kindOf(step)
   if (kind === 'set') {
     return (step.set ?? []).map((e) => `${e.parameter?.split('/').pop()} = ${e.value}`).join(', ')
+  }
+  if (byHand(step)) {
+    return (step.settings.param_reduction_options.parameters ?? []).map((p) => p.split('/').pop()).join(', ')
   }
   if (kind === 'combine') {
     const chosen = props.results[step.id]?.chosen_from
@@ -911,6 +925,7 @@ function onPanEnd(event) {
     <div class="wf-key" aria-label="Colour key">
       <span class="k cal">calibrated: an optimiser fitted it</span>
       <span class="k hand">set by hand</span>
+      <span class="k chosen">parameters chosen by hand</span>
       <span class="k measured">measured: set by data</span>
       <span class="k analysis">analysis</span>
       <span class="k surrogate">surrogate</span>
@@ -928,6 +943,7 @@ function onPanEnd(event) {
 .wf-chart-wrap {
   --cal: #2f6fde;
   --hand: #c8372d;
+  --chosen: #e8912d;
   --analysis: #6b7680;
   --surrogate: #8a4fd6;
   --inherited: #8b949c;
@@ -1020,6 +1036,7 @@ function onPanEnd(event) {
 }
 .wf-box.cal { border-color: var(--cal); }
 .wf-box.hand { border-color: var(--hand); }
+.wf-box.chosen { border-color: var(--chosen); }
 .wf-box.surrogate { border-color: var(--surrogate); }
 .wf-box.measured { border-color: var(--measured); }
 .wf-box.derived { border-color: var(--derived); }
@@ -1167,6 +1184,7 @@ function onPanEnd(event) {
 }
 .wf-box.cal .wf-tag { color: var(--cal); }
 .wf-box.hand .wf-tag { color: var(--hand); }
+.wf-box.chosen .wf-tag { color: var(--chosen); }
 .wf-box.surrogate .wf-tag { color: var(--surrogate); }
 .wf-state {
   text-transform: none;
@@ -1234,6 +1252,7 @@ function onPanEnd(event) {
 }
 .wf-key .cal::before { border-color: var(--cal); }
 .wf-key .hand::before { border-color: var(--hand); }
+.wf-key .chosen::before { border-color: var(--chosen); }
 .wf-key .surrogate::before { border-color: var(--surrogate); }
 .wf-key .measured::before { border-color: var(--measured); }
 .wf-key .inherited::before { border: 2px dashed var(--inherited); }

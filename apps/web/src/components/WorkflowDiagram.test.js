@@ -454,6 +454,16 @@ describe('WorkflowDiagram', () => {
     expect(box).toContain('chose fit-b')
   })
 
+  it('a reduction chosen by hand is an orange box that names what it keeps', () => {
+    const steps = [{ id: 'keep', kind: 'reduction', params_for_id: 'data/keep_params_for_id.json',
+      settings: { param_reduction_options: { method: 'manual', parameters: ['m/alpha', 'm/beta'], reason: 'x' } } }]
+    const c = chart({ steps, details: {}, states: {}, results: {} })
+    const box = c.find('[data-testid="workflow-node-keep"]')
+    expect(box.classes()).toContain('chosen')
+    expect(box.text()).toContain('chosen by hand · 2 parameters')
+    expect(box.text()).toContain('alpha, beta')
+  })
+
   it('a box after the target is a simulation, set up in its form', async () => {
     const c = chart({ layout: { positions: {}, drafts: [{ id: 'new-2', on_target: true }], links: [] } })
     const box = c.find('[data-testid="workflow-node-new-2"]')

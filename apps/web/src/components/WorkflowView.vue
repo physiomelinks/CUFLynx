@@ -25,6 +25,7 @@ import WorkflowLinkEditor from './WorkflowLinkEditor.vue'
 import WorkflowStepPrep from './WorkflowStepPrep.vue'
 import WorkflowSetValuesForm from './WorkflowSetValuesForm.vue'
 import WorkflowCombineForm from './WorkflowCombineForm.vue'
+import WorkflowChooseParamsForm from './WorkflowChooseParamsForm.vue'
 import WorkflowDraftChoice from './WorkflowDraftChoice.vue'
 import { modelShort } from '../lib/workflowTarget'
 
@@ -65,6 +66,11 @@ const props = defineProps({
   // The Simulation box waiting for its obs_data, or null; whether the study has one.
   simulationDraft: { type: String, default: null },
   studyHasObs: { type: Boolean, default: false },
+  // The Choose parameters box waiting for the study's params_for_id, or null; whether the
+  // study has one; whether this CA has a reduction chosen by hand (CA #686).
+  reductionDraft: { type: String, default: null },
+  studyHasParams: { type: Boolean, default: false },
+  manualReduction: { type: Boolean, default: false },
   // CA's step kinds (describe's step_kinds), and the left-hand tabs that make steps.
   stepKinds: { type: Array, default: () => [] },
   draftPanels: { type: Array, default: () => [] },
@@ -91,6 +97,8 @@ const emit = defineEmits([
   'draft-action',
   // the waiting simulation was made (or put off: true)
   'simulation-made',
+  // the waiting Choose parameters box was made (or put off: true)
+  'reduction-made',
 ])
 
 // The step being inspected (a double-click in the chart), or null.
@@ -170,11 +178,19 @@ function onSelectDraft(id) {
   else props.editor?.chooseDraft(id)
 }
 
-function onChoose({ panel, simulation }) {
+// the Choose parameters form, open on the waiting box
+const choosingParams = ref(null)
+function onParamsChosen() {
+  choosingParams.value = null
+  emit('reduction-made')
+}
+
+function onChoose({ panel, simulation, chooseParams }) {
   const d = choosing.value
   choosing.value = null
   if (!d) return
-  if (simulation) simulate(d)
+  if (chooseParams) emit('draft-action', { draft: d.id, model: d.model ?? null, chooseParams: true })
+  else if (simulation) simulate(d)
   else emit('draft-action', { draft: d.id, model: d.model, panel })
 }
 
@@ -335,6 +351,26 @@ const alsoDeleted = computed(() => doomed.value.filter((s) => s !== props.pendin
           </div>
         </Message>
         <Message
+          v-if="reductionDraft"
+          severity="info"
+          :closable="false"
+          data-testid="workflow-reduction-waiting"
+        >
+          Choose parameters <strong>{{ reductionDraft }}</strong>: keeps the entries of the
+          study's params_for_id you tick, chosen by hand, for a calibration to take.
+          <template v-if="!studyHasParams"> Give it a params_for_id in Imports first.</template>
+          <div class="wv-confirm">
+            <Button
+              label="Choose parameters"
+              size="small"
+              :disabled="!studyHasParams || busy || running"
+              data-testid="workflow-reduction-choose"
+              @click="choosingParams = reductionDraft"
+            />
+            <Button label="Not now" size="small" text @click="emit('reduction-made', true)" />
+          </div>
+        </Message>
+        <Message
           v-if="editNotice"
           severity="info"
           closable
@@ -384,6 +420,7 @@ const alsoDeleted = computed(() => doomed.value.filter((s) => s !== props.pendin
           :draft="choosing"
           :panels="draftPanels"
           :model-words="choosing ? modelShort(choosing.model) : ''"
+          :manual-reduction="manualReduction"
           @choose="onChoose"
           @close="choosing = null"
         />
@@ -393,6 +430,13 @@ const alsoDeleted = computed(() => doomed.value.filter((s) => s !== props.pendin
           :save="(form) => editor ? editor.setValues(form) : Promise.resolve('editing is not available')"
           :busy="busy || running"
           @close="setDraft = null"
+        />
+        <WorkflowChooseParamsForm
+          :draft="choosingParams"
+          :load="() => editor ? editor.reductionCandidates() : Promise.reject(new Error('editing is not available'))"
+          :save="async (form) => { const why = editor ? await editor.chooseParameters(form) : 'editing is not available'; if (!why) onParamsChosen(); return why }"
+          :busy="busy || running"
+          @close="choosingParams = null"
         />
         <WorkflowCombineForm
           :draft="combineDraft"
