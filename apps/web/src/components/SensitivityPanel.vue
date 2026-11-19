@@ -5,6 +5,8 @@ import InputNumber from 'primevue/inputnumber'
 import InputText from 'primevue/inputtext'
 import Checkbox from 'primevue/checkbox'
 import Button from 'primevue/button'
+import SettingsSections from './SettingsSections.vue'
+import { currentDefault, differs } from '../lib/advancedSettings'
 
 const props = defineProps({
   defaults: { type: Object, default: () => ({}) },
@@ -212,6 +214,25 @@ const nominals = computed(() =>
 )
 
 const isLocal = computed(() => settings.method === 'local')
+
+// Every setting the form shows, in order: Sobol's CA options and its cores, or the local
+// method's own fields; then those of both. SettingsSections puts the ones
+// advancedSettings.json lists under Advanced settings.
+const settingItems = computed(() => [
+  ...(isLocal.value
+    ? [{ name: 'gradient_method', own: true },
+       ...(usesFdStep.value ? [{ name: 'rel_step', own: true }] : []),
+       { name: 'nominal', own: true }, { name: 'run_calibration_first', own: true }]
+    : [...saOptions.value, { name: 'num_cores', own: true }]),
+  { name: 'include_prediction_items', own: true },
+  { name: 'DEBUG', own: true },
+])
+
+/** Whether a setting differs from its default (CA's default for its options). */
+function settingChanged(item) {
+  if (item.own) return item.name === 'rel_step' && differs(settings.rel_step, props.defaults.rel_step)
+  return differs(optionValues[item.name], currentDefault(item, settings.DEBUG))
+}
 const running = computed(() => props.state === 'running')
 
 // Cores>1 only applies to the Sobol (global) method, and only runs when an MPI
@@ -253,134 +274,147 @@ function onRun() {
           size="small"
         />
       </label>
-      <!-- Sobol (global) options, from CA's ANALYSIS_OPTIONS[sensitivity_analysis]. -->
-      <template v-if="!isLocal">
-        <template v-for="opt in saOptions" :key="opt.name">
-          <label v-if="opt.type === 'bool'" class="field checkbox">
-            <Checkbox v-model="optionValues[opt.name]" :binary="true" :input-id="'sa-opt-' + opt.name" />
-            <span :title="opt.description">{{ optionLabel(opt.name) }}</span>
-          </label>
-          <label v-else-if="opt.type === 'enum'" class="field">
-            <span :title="opt.description">{{ optionLabel(opt.name) }}</span>
-            <Select
-              v-model="optionValues[opt.name]"
-              :options="opt.choices"
-              size="small"
-              :data-testid="'sa-opt-' + opt.name"
-            />
-          </label>
-          <!-- 'str' needs a text box: falling through to InputNumber coerces a
-               string default (e.g. sample_type='saltelli') to NaN. -->
-          <label v-else-if="opt.type === 'str'" class="field">
-            <span :title="opt.description">{{ optionLabel(opt.name) }}</span>
-            <InputText
-              v-model="optionValues[opt.name]"
-              size="small"
-              :data-testid="'sa-opt-' + opt.name"
-            />
-          </label>
-          <label v-else class="field">
-            <span :title="opt.description">{{ optionLabel(opt.name) }}</span>
-            <InputNumber
-              v-model="optionValues[opt.name]"
-              :min-fraction-digits="opt.type === 'float' ? 1 : undefined"
-              :max-fraction-digits="opt.type === 'float' ? 10 : undefined"
-              size="small"
-              :data-testid="'sa-opt-' + opt.name"
-            />
-          </label>
+      <!-- The settings, standard then Advanced (lib/advancedSettings.json): Sobol's options from CA's ANALYSIS_OPTIONS[sensitivity_analysis], or local's own fields, then both's. -->
+      <SettingsSections tab="sensitivity" :items="settingItems" :changed="settingChanged">
+        <template #default="{ item: opt }">
+          <template v-if="opt.own">
+            <template v-if="opt.name === 'num_cores'">
+              <label class="field">
+                <span title="mpiexec -n N: parallel sample evaluation">Cores</span>
+                <InputNumber
+                  v-model="settings.num_cores"
+                  :min="1"
+                  :max="64"
+                  size="small"
+                  :invalid="coresInvalid"
+                  data-testid="sa-cores"
+                />
+                <small v-if="coresInvalid" class="cores-invalid" data-testid="sa-cores-invalid">
+                  Cores &gt; 1 not available (no MPI launcher). Set to 1, or pick a Python
+                  interpreter marked MPI ✓ in the top bar (Windows: install Microsoft MPI).
+                </small>
+              </label>
+            </template>
+            <template v-else-if="opt.name === 'gradient_method'">
+              <label class="field">
+                <span title="Gradient source for the local sensitivity. FD (finite difference) works for any model; AD (CasADi) needs casadi_python with differentiable ops; FSA (Myokit CVODES forward sensitivities) needs cellml + CVODE_myokit.">Gradient source</span>
+                <Select
+                  v-model="settings.gradient_method"
+                  :options="gradientMethods"
+                  option-label="label"
+                  option-value="value"
+                  :option-disabled="(o) => o.disabled"
+                  size="small"
+                  data-testid="gradient-method"
+                />
+              </label>
+            </template>
+            <template v-else-if="opt.name === 'rel_step'">
+              <label class="field" data-testid="rel-step-field">
+                <span title="Relative central-difference step about the nominal parameter value">Rel. step</span>
+                <InputNumber
+                  v-model="settings.rel_step"
+                  :min="1e-6"
+                  :max="0.5"
+                  :min-fraction-digits="2"
+                  :max-fraction-digits="6"
+                  size="small"
+                />
+              </label>
+            </template>
+            <template v-else-if="opt.name === 'nominal'">
+              <label class="field">
+                <span title="Parameter point to linearise about. 'current' uses the model's current values; 'best_fit' reuses a completed calibration.">Nominal point</span>
+                <Select
+                  v-model="settings.nominal"
+                  :options="nominals"
+                  option-label="label"
+                  option-value="value"
+                  :disabled="settings.run_calibration_first"
+                  size="small"
+                />
+              </label>
+            </template>
+            <template v-else-if="opt.name === 'run_calibration_first'">
+              <label class="field checkbox">
+                <Checkbox
+                  v-model="settings.run_calibration_first"
+                  :binary="true"
+                  input-id="sa-run-calib-first"
+                  data-testid="sa-run-calib-first"
+                />
+                <span title="Run a fresh calibration (using the Calibration tab's settings), then take the local sensitivity about that best fit">
+                  Run calibration first (about best fit)
+                </span>
+              </label>
+            </template>
+            <template v-else-if="opt.name === 'include_prediction_items'">
+              <!-- Both methods: libcuflynx reports the prediction features for Sobol and
+                   local alike (sa_options.include_prediction_items). -->
+              <label
+                class="field checkbox"
+                :class="{ 'opt-off': predictionFeaturesDisabled }"
+                :title="predictionFeaturesReason"
+                data-testid="sa-include-prediction-items-field"
+              >
+                <Checkbox
+                  v-model="settings.include_prediction_items"
+                  :binary="true"
+                  :disabled="predictionFeaturesDisabled"
+                  input-id="sa-include-prediction-items"
+                  data-testid="sa-include-prediction-items"
+                />
+                <span>Include prediction items</span>
+              </label>
+              <small class="hint" data-testid="sa-include-prediction-items-hint">
+                Prediction items with an operation become features; the others are skipped.
+                <template v-if="isLocal">Their rows are finite differences.</template>
+              </small>
+            </template>
+            <template v-else-if="opt.name === 'DEBUG'">
+              <label class="field checkbox">
+                <Checkbox v-model="settings.DEBUG" :binary="true" input-id="sa-debug" />
+                <span>DEBUG (more output info)</span>
+              </label>
+            </template>
+          </template>
+          <template v-else>
+            <label v-if="opt.type === 'bool'" class="field checkbox">
+              <Checkbox v-model="optionValues[opt.name]" :binary="true" :input-id="'sa-opt-' + opt.name" />
+              <span :title="opt.description">{{ optionLabel(opt.name) }}</span>
+            </label>
+            <label v-else-if="opt.type === 'enum'" class="field">
+              <span :title="opt.description">{{ optionLabel(opt.name) }}</span>
+              <Select
+                v-model="optionValues[opt.name]"
+                :options="opt.choices"
+                size="small"
+                :data-testid="'sa-opt-' + opt.name"
+              />
+            </label>
+            <!-- 'str' needs a text box: falling through to InputNumber coerces a
+                 string default (e.g. sample_type='saltelli') to NaN. -->
+            <label v-else-if="opt.type === 'str'" class="field">
+              <span :title="opt.description">{{ optionLabel(opt.name) }}</span>
+              <InputText
+                v-model="optionValues[opt.name]"
+                size="small"
+                :data-testid="'sa-opt-' + opt.name"
+              />
+            </label>
+            <label v-else class="field">
+              <span :title="opt.description">{{ optionLabel(opt.name) }}</span>
+              <InputNumber
+                v-model="optionValues[opt.name]"
+                :min-fraction-digits="opt.type === 'float' ? 1 : undefined"
+                :max-fraction-digits="opt.type === 'float' ? 10 : undefined"
+                size="small"
+                :data-testid="'sa-opt-' + opt.name"
+              />
+            </label>
+          </template>
         </template>
-        <label class="field">
-          <span title="mpiexec -n N: parallel sample evaluation">Cores</span>
-          <InputNumber
-            v-model="settings.num_cores"
-            :min="1"
-            :max="64"
-            size="small"
-            :invalid="coresInvalid"
-            data-testid="sa-cores"
-          />
-          <small v-if="coresInvalid" class="cores-invalid" data-testid="sa-cores-invalid">
-            Cores &gt; 1 not available (no MPI launcher). Set to 1, or pick a Python
-            interpreter marked MPI ✓ in the top bar (Windows: install Microsoft MPI).
-          </small>
-        </label>
-      </template>
-
-      <!-- Local (derivative-based) options -->
-      <template v-else>
-        <label class="field">
-          <span title="Gradient source for the local sensitivity. FD (finite difference) works for any model; AD (CasADi) needs casadi_python with differentiable ops; FSA (Myokit CVODES forward sensitivities) needs cellml + CVODE_myokit.">Gradient source</span>
-          <Select
-            v-model="settings.gradient_method"
-            :options="gradientMethods"
-            option-label="label"
-            option-value="value"
-            :option-disabled="(o) => o.disabled"
-            size="small"
-            data-testid="gradient-method"
-          />
-        </label>
-        <label v-if="usesFdStep" class="field" data-testid="rel-step-field">
-          <span title="Relative central-difference step about the nominal parameter value">Rel. step</span>
-          <InputNumber
-            v-model="settings.rel_step"
-            :min="1e-6"
-            :max="0.5"
-            :min-fraction-digits="2"
-            :max-fraction-digits="6"
-            size="small"
-          />
-        </label>
-        <label class="field">
-          <span title="Parameter point to linearise about. 'current' uses the model's current values; 'best_fit' reuses a completed calibration.">Nominal point</span>
-          <Select
-            v-model="settings.nominal"
-            :options="nominals"
-            option-label="label"
-            option-value="value"
-            :disabled="settings.run_calibration_first"
-            size="small"
-          />
-        </label>
-        <label class="field checkbox">
-          <Checkbox
-            v-model="settings.run_calibration_first"
-            :binary="true"
-            input-id="sa-run-calib-first"
-            data-testid="sa-run-calib-first"
-          />
-          <span title="Run a fresh calibration (using the Calibration tab's settings), then take the local sensitivity about that best fit">
-            Run calibration first (about best fit)
-          </span>
-        </label>
-      </template>
-
-      <!-- Both methods: libcuflynx reports the prediction features for Sobol and
-           local alike (sa_options.include_prediction_items). -->
-      <label
-        class="field checkbox"
-        :class="{ 'opt-off': predictionFeaturesDisabled }"
-        :title="predictionFeaturesReason"
-        data-testid="sa-include-prediction-items-field"
-      >
-        <Checkbox
-          v-model="settings.include_prediction_items"
-          :binary="true"
-          :disabled="predictionFeaturesDisabled"
-          input-id="sa-include-prediction-items"
-          data-testid="sa-include-prediction-items"
-        />
-        <span>Include prediction items</span>
-      </label>
-      <small class="hint" data-testid="sa-include-prediction-items-hint">
-        Prediction items with an operation become features; the others are skipped.
-        <template v-if="isLocal">Their rows are finite differences.</template>
-      </small>
-      <label class="field checkbox">
-        <Checkbox v-model="settings.DEBUG" :binary="true" input-id="sa-debug" />
-        <span>DEBUG (more output info)</span>
-      </label>
+      </SettingsSections>
     </div>
 
     <div class="cal-actions">
