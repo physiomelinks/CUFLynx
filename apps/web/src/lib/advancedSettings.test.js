@@ -12,6 +12,14 @@ describe('advancedSettings', () => {
     }
   })
 
+  it('keeps Cores a standard setting on every tab (Finbar, 2026-11-20)', () => {
+    for (const [tab, entry] of Object.entries(ADVANCED)) {
+      if (tab === 'about') continue
+      expect(entry.cuflynx, tab).not.toContain('num_cores')
+      expect(entry.ca, tab).not.toContain('num_cores')
+    }
+  })
+
   it('a setting not in the table is standard, so a new CA option is too', () => {
     const items = [{ name: 'num_calls_to_function' }, { name: 'num_elite' },
       { name: 'an_option_ca_adds_later' }, { name: 'num_cores', own: true }]
