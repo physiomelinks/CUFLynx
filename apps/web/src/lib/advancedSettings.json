@@ -82,8 +82,7 @@
       "redundancy_check",
       "redundancy_statistic",
       "redundancy_converged_only",
-      "redundancy_convergence_tol",
-      "sensitivity_dir"
+      "redundancy_convergence_tol"
     ],
     "cuflynx": []
   }
