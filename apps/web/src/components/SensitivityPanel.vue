@@ -6,7 +6,7 @@ import InputText from 'primevue/inputtext'
 import Checkbox from 'primevue/checkbox'
 import Button from 'primevue/button'
 import SettingsSections from './SettingsSections.vue'
-import { appliesToMethod, currentDefault, differs } from '../lib/advancedSettings'
+import { appliesToMethod, currentDefault, differs, marksMethods } from '../lib/advancedSettings'
 
 const props = defineProps({
   defaults: { type: Object, default: () => ({}) },
@@ -80,7 +80,8 @@ const saOptions = computed(() =>
 )
 // The options for the method chosen: CA's `methods` marker where it has one, else Sobol's,
 // the only method whose form shows CA's options.
-const methodOptions = computed(() => saOptions.value.filter((o) => appliesToMethod(o, settings.method, 'sobol')))
+const methodOptions = computed(() => saOptions.value.filter(
+  (o) => appliesToMethod(o, settings.method, 'sobol', marksMethods(props.defaults.options))))
 
 // "Include prediction items": available only when libcuflynx supports it (the API's
 // feature detect) and the obs_data has a prediction_item with an operation. Which

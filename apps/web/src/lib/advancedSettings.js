@@ -36,15 +36,21 @@ export function differs(value, def) {
   return value !== def
 }
 
+/** Whether any of a schema's options carries CA's `methods` marker (CA #688). */
+export function marksMethods(options) {
+  return (options ?? []).some((o) => Array.isArray(o?.methods))
+}
+
 /**
- * Whether a CA option applies to `method`: CA marks an option that only some methods read
- * with `methods` (as it marks pyMC-only ones with `libraries`). An unmarked option applies
- * to `unmarked` (the method the panel's form has always shown them for), or to every
- * method when `unmarked` is null.
+ * Whether a CA option applies to `method`. CA marks an option that only some methods read
+ * with `methods` (CA #688, as it marks pyMC-only ones with `libraries`), and an unmarked
+ * option is then read by every method (`marked`: the schema marks any). A CA older than
+ * the marker marks none: an unmarked option then keeps to `unmarked`, the method the
+ * panel's form has always shown them for (every method when null).
  */
-export function appliesToMethod(opt, method, unmarked = null) {
+export function appliesToMethod(opt, method, unmarked = null, marked = false) {
   if (Array.isArray(opt?.methods)) return opt.methods.includes(method)
-  return unmarked == null || method === unmarked
+  return marked || unmarked == null || method === unmarked
 }
 
 /** The default an option has now: its DEBUG default when DEBUG is on and it has one. */
