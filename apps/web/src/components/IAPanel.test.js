@@ -72,10 +72,18 @@ describe('IAPanel parameter reduction form', () => {
     expect(has('min_mode_std')).toBe(true)
     expect(has('redundancy_check')).toBe(true)
     expect(has('criterion')).toBe(false)
-    expect(has('output_dir')).toBe(true)
+    // no path boxes: the Sobol run has its own picker, and CA writes the reduction under
+    // that run, inside the working dir
+    expect(has('output_dir')).toBe(false)
+    expect(has('sensitivity_dir')).toBe(false)
+    // the PCA tuning is under Advanced settings (lib/advancedSettings.json)
+    const advanced = wrapper.find('[data-testid="reduction-advanced"]')
+    expect(advanced.find('[data-testid="pr-opt-min_mode_std"]').exists()).toBe(true)
+    expect(advanced.find('[data-testid="pr-opt-n_params"]').exists()).toBe(false)
 
     await wrapper.find('[data-testid="pr-opt-method"]').setValue('sobol')
     expect(has('criterion')).toBe(true)
+    expect(wrapper.find('[data-testid="reduction-advanced"] [data-testid="pr-opt-criterion"]').exists()).toBe(true)
     expect(has('min_mode_std')).toBe(false)
     expect(has('redundancy_check')).toBe(false)
   })
