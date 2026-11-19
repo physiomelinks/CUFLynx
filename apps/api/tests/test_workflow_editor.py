@@ -362,6 +362,46 @@ def test_an_action_box_combines_the_calibrations_drawn_into_it(client, fake_runs
     assert described["layout"]["drafts"] == []
 
 
+def test_a_model_box_keeps_parameters_chosen_by_hand(client, fake_runs, tmp_path):
+    """CA #686: a model box's Choose parameters is a reduction chosen by hand, of the study's
+    params_for_id entries ticked (named as CA labels them), with its reason; the file is kept
+    beside the workflow, and a calibration can take it with params_for_id_from."""
+    work = tmp_path / "w"
+    model_id = _setup(client)
+    assert _calibrate(client, model_id, work)["state"] == "done"
+    described = client.get("/api/workflow").json()
+    if not described.get("manual_reduction"):
+        pytest.skip("this CA has no reduction chosen by hand (CA #686)")
+    model = _steps(work)["calibration-1"].get("model") or described["workflow"]["target"]
+    draft = client.post("/api/workflow/draft", json={"model": model}).json()["draft"]
+
+    r = client.get(f"/api/workflow/reduction_candidates?model_id={model_id}")
+    assert r.status_code == 200, r.text
+    names = [c["name"] for c in r.json()["candidates"]]
+    assert f"{MODULE}/alpha" in names
+    alpha = next(c for c in r.json()["candidates"] if c["name"] == f"{MODULE}/alpha")
+    assert (alpha["min"], alpha["max"]) == BOUNDS["alpha"]
+
+    choose = {"draft": draft, "model_id": model_id, "parameters": [f"{MODULE}/alpha"]}
+    assert client.post("/api/workflow/choose_parameters",
+                       json={**choose, "reason": " "}).status_code == 422
+    assert client.post("/api/workflow/choose_parameters",
+                       json={**choose, "parameters": [], "reason": "x"}).status_code == 422
+    r = client.post("/api/workflow/choose_parameters",
+                    json={**choose, "parameters": ["no/such"], "reason": "x"})
+    assert r.status_code == 422 and "no/such" in r.json()["detail"]   # against CA's labels
+    r = client.post("/api/workflow/choose_parameters",
+                    json={**choose, "reason": "the data only constrain alpha"})
+    assert r.status_code == 200, r.text
+    step = _steps(work)[draft]
+    assert step["kind"] == "reduction"
+    assert step["settings"]["param_reduction_options"] == {
+        "method": "manual", "parameters": [f"{MODULE}/alpha"],
+        "reason": "the data only constrain alpha"}
+    assert (_workflow_dir(work) / step["params_for_id"]).is_file()
+    assert r.json()["layout"]["drafts"] == []
+
+
 def _wait(client, kind, job_id, seconds=420) -> dict:
     deadline = time.time() + seconds
     while time.time() < deadline:

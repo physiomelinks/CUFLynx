@@ -36,6 +36,8 @@ const props = defineProps({
   // A new workflow step on this model needs an obs_data of its own (none is filled in for
   // it): the obs_data box is highlighted until one is dropped or written.
   needsObsData: { type: Boolean, default: false },
+  // A Choose parameters box chooses from the study's params_for_id: highlight its box.
+  needsParams: { type: Boolean, default: false },
   loadedFilename: { type: String, default: null },
   // For the obs_data Edit dialog: the loaded obs filename, for versioning.
   loadedObsFilename: { type: String, default: null },
@@ -929,7 +931,7 @@ async function onParamsDrop(event) {
     <div class="params-row">
       <label
         class="dropzone"
-        :class="{ compact: paramsLoaded, 'drag-over': dragOver === 'params' }"
+        :class="{ compact: paramsLoaded, 'drag-over': dragOver === 'params', attention: needsParams && !paramsLoaded }"
         data-testid="params-drop"
         @dragover.prevent="onDragEnter('params')"
         @dragleave="onDragLeave('params')"

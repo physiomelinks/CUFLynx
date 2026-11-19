@@ -347,6 +347,86 @@ def make_combine(workflow_path: str, draft: str, method: str = "best_fit") -> st
     return draft
 
 
+def _workflow_schema() -> dict:
+    spec = ca_import("calibration_workflow.spec")
+    root = os.path.dirname(os.path.dirname(os.path.abspath(spec.__file__)))
+    with open(os.path.join(root, "schemas", "calibration_workflow.schema.json")) as fh:
+        return json.load(fh)
+
+
+def manual_reduction_supported() -> bool:
+    """Whether this CA has a reduction chosen by hand (``param_reduction_options.method``
+    ``manual``, CA #686), read from its workflow schema."""
+    try:
+        method = _workflow_schema()["$defs"]["param_reduction_options"]["properties"]["method"]
+        return "manual" in method.get("enum", [])
+    except (ImportError, OSError, ValueError, KeyError, TypeError, AttributeError):
+        return False
+
+
+def reduction_candidates(params_for_id_path: str) -> list:
+    """The entries of a params_for_id a manual reduction can keep: ``[{name, min, max}]``,
+    each named as CA labels it (``param_entry_labels``: ``vessel/variable``, a grouped entry's
+    names joined by ``+``, a modifier's name), the names CA checks the choice against."""
+    from ca_imports import ca_from  # noqa: PLC0415
+
+    parser = ca_from("parsers.PrimitiveParsers", "ObsAndParamDataParser")
+    labels = ca_from("parsers.PrimitiveParsers", "param_entry_labels")
+    try:
+        info = parser().get_param_id_info(params_for_id_path)
+    except Exception as exc:  # noqa: BLE001  (CA's parser raises a variety of errors)
+        raise StudyWorkflowError(f"cannot read {params_for_id_path}: {exc}") from exc
+    # CA gives the bounds as numpy arrays
+    mins = [] if info.get("param_mins") is None else list(info["param_mins"])
+    maxs = [] if info.get("param_maxs") is None else list(info["param_maxs"])
+    out = []
+    for i, name in enumerate(labels(info)):
+        out.append({"name": str(name),
+                    "min": float(mins[i]) if i < len(mins) else None,
+                    "max": float(maxs[i]) if i < len(maxs) else None})
+    return out
+
+
+def make_manual_reduction(workflow_path: str, draft: str, params_for_id: str, parameters: list,
+                          reason: str) -> str:
+    """Make the model box ``draft`` a reduction chosen by hand (CA's ``kind: reduction``,
+    ``method: manual``): the ``parameters`` of ``params_for_id`` it keeps, and why. The
+    params_for_id is kept beside the workflow (``data/<draft>_params_for_id.json``), as the
+    step depends on it and a session's uploads are pruned. Its arrows out wait until now (a
+    calibration taking it with params_for_id_from). Checked by CA."""
+    layout = read(workflow_path)
+    if not any(d.get("id") == draft for d in layout["drafts"]):
+        raise StudyWorkflowError(f"there is no new step {draft!r}")
+    names = [str(n).strip() for n in parameters or [] if str(n).strip()]
+    if not names:
+        raise StudyWorkflowError("tick the parameters to keep")
+    if not str(reason or "").strip():
+        raise StudyWorkflowError("say why these parameters were chosen")
+    if not params_for_id or not os.path.isfile(params_for_id):
+        raise StudyWorkflowError("the study has no params_for_id to choose from: load one first")
+    # CA checks the names only when it plans the workflow; refused here, before the step
+    # exists, against CA's own labels of the file
+    labels = [c["name"] for c in reduction_candidates(params_for_id)]
+    unknown = [n for n in names if n not in labels]
+    if unknown:
+        raise StudyWorkflowError(f"the params_for_id has no entry {unknown} (its parameters: "
+                                 f"{labels})")
+    base = os.path.dirname(os.path.abspath(workflow_path))
+    kept = os.path.join(base, "data", f"{draft}_params_for_id.json")
+    os.makedirs(os.path.dirname(kept), exist_ok=True)
+    shutil.copyfile(params_for_id, kept)
+    raw = copy.deepcopy(study_workflow.read_raw(workflow_path))
+    raw.setdefault("steps", []).append({
+        "id": draft, "kind": "reduction", "params_for_id": os.path.relpath(kept, base),
+        "settings": {"param_reduction_options": {
+            "method": "manual", "parameters": names, "reason": str(reason).strip()}}})
+    _write_checked(workflow_path, raw)
+    layout["drafts"] = [d for d in layout["drafts"] if d.get("id") != draft]
+    write(workflow_path, layout)
+    apply_pending(workflow_path)
+    return draft
+
+
 def step_kinds() -> list:
     """The step kinds this CA has (its schema's ``kind`` enum), so an action box is offered
     only where CA can make it (``combine``)."""

@@ -2,18 +2,21 @@
 /**
  * What a model box on the chart does, chosen by clicking it: a calibration or analysis opens
  * its tab on the left (the box's model loaded as the study, the tab's next run making the
- * box that step); a simulation opens its form; choosing parameters by hand waits for CA.
+ * box that step); a simulation and choosing parameters by hand open their forms, once the
+ * study has the obs_data or params_for_id they need.
  */
 import Button from 'primevue/button'
 import Dialog from 'primevue/dialog'
 
-defineProps({
+const props = defineProps({
   // The model box ({id, model}), or null.
   draft: { type: Object, default: null },
   // The left-hand tabs that make steps here (calibration, sensitivity, uq, emulator, ia).
   panels: { type: Array, default: () => [] },
   // Its model, in words.
   modelWords: { type: String, default: '' },
+  // Whether this CA has a reduction chosen by hand (CA #686).
+  manualReduction: { type: Boolean, default: false },
 })
 const emit = defineEmits(['choose', 'close'])
 
@@ -56,8 +59,15 @@ const PANELS = {
         >
           <strong>Simulation</strong><span>run it over an obs_data's protocol; what varies is its params_to_change</span>
         </button>
-        <button type="button" class="dc-item hand" disabled title="Needs a circulatory_autogen that records a choice made by hand (asked)">
-          <strong>Choose parameters</strong><span>by hand, an orange box (needs a newer circulatory_autogen)</span>
+        <button
+          type="button"
+          class="dc-item hand"
+          :disabled="!props.manualReduction"
+          :title="props.manualReduction ? '' : 'Needs a circulatory_autogen with a reduction chosen by hand (#686)'"
+          data-testid="workflow-draft-choice-params"
+          @click="emit('choose', { chooseParams: true })"
+        >
+          <strong>Choose parameters</strong><span>by hand, from its params_for_id: an orange box a calibration takes{{ props.manualReduction ? '' : ' (needs a newer circulatory_autogen)' }}</span>
         </button>
       </div>
     </template>
