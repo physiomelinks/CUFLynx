@@ -8,7 +8,6 @@ import RadioButton from 'primevue/radiobutton'
 import Button from 'primevue/button'
 import SettingsSections from './SettingsSections.vue'
 import { differs } from '../lib/advancedSettings'
-import { paramReductionHeatmapUrl } from '../lib/api'
 import { fmtSigFigs } from '../lib/format'
 
 /**
@@ -46,7 +45,6 @@ const props = defineProps({
 const emit = defineEmits([
   'run-reduction',
   'cancel-reduction',
-  'adopt',
   'refresh-runs',
   'run-ia',
   'cancel-ia',
@@ -137,24 +135,9 @@ function onRunReduction() {
   emit('run-reduction', { source: source.value, param_reduction_options: options })
 }
 
-const kept = computed(() => props.reduction?.selected ?? [])
-const modes = computed(() => props.reduction?.modes ?? null)
-const unexplained = computed(() =>
-  Object.entries(props.reduction?.unexplained_effects ?? {}).map(([parameter, effect]) => ({
-    parameter,
-    effect,
-  })),
-)
-const heatmapUrl = computed(() =>
-  props.reduction?.heatmap ? paramReductionHeatmapUrl(props.reduction.report_dir) : null,
-)
-const canAdopt = computed(() => !!props.reduction?.reduced_params_for_id)
 
 function fmt(v, digits = 3) {
   return typeof v === 'number' && Number.isFinite(v) ? fmtSigFigs(v, digits) : '—'
-}
-function pct(v) {
-  return typeof v === 'number' ? `${(100 * v).toFixed(1)}%` : '—'
 }
 
 // ---- identifiability analysis ------------------------------------------------
@@ -308,57 +291,9 @@ function ciBound(profile, side) {
         reductionLines.join('\n') }}</pre>
     </div>
 
-    <div v-if="reduction" class="results" data-testid="pr-results">
-      <h4>Kept ({{ reduction.reduction?.method }})</h4>
-      <table class="tbl" data-testid="pr-kept">
-        <thead><tr><th>Parameter</th><th>Score</th><th>Mode</th></tr></thead>
-        <tbody>
-          <tr v-for="row in kept" :key="row.parameter">
-            <td>{{ row.parameter }}</td>
-            <td>{{ fmt(row.score) }}</td>
-            <td>{{ row.mode ?? '—' }}</td>
-          </tr>
-        </tbody>
-      </table>
-      <Button label="Calibrate these" icon="pi pi-arrow-right" size="small"
-              data-testid="pr-adopt" :disabled="!canAdopt"
-              @click="emit('adopt', reduction.report_dir)" />
-
-      <template v-if="modes">
-        <h4 title="Each mode's spread over the Sobol samples, in obs_data noise stds">
-          PCA modes ({{ reduction.n_informative_modes ?? '?' }} informative)
-        </h4>
-        <table class="tbl" data-testid="pr-modes">
-          <thead>
-            <tr><th>Mode</th><th>Std (noise stds)</th><th>Share</th><th>Informative</th></tr>
-          </thead>
-          <tbody>
-            <tr v-for="m in modes" :key="m.mode">
-              <td>{{ m.mode }}</td>
-              <td>{{ fmt(m.std) }}</td>
-              <td>{{ pct(m.variance_share) }}</td>
-              <td>{{ m.informative ? 'yes' : 'no' }}</td>
-            </tr>
-          </tbody>
-        </table>
-      </template>
-      <template v-if="unexplained.length">
-        <h4 title="What each parameter not kept moves the data by, once the kept ones are accounted for">
-          Not kept: unexplained effect
-        </h4>
-        <table class="tbl" data-testid="pr-unexplained">
-          <thead><tr><th>Parameter</th><th>Effect (noise stds)</th></tr></thead>
-          <tbody>
-            <tr v-for="row in unexplained" :key="row.parameter">
-              <td>{{ row.parameter }}</td>
-              <td>{{ fmt(row.effect) }}</td>
-            </tr>
-          </tbody>
-        </table>
-      </template>
-      <img v-if="heatmapUrl" :src="heatmapUrl" alt="ST per PCA mode" class="heatmap"
-           data-testid="pr-heatmap" />
-    </div>
+    <p v-if="reduction" class="hint" data-testid="pr-results-moved">
+      The reduction's results are in the Analysis tab (Parameter reduction).
+    </p>
 
     <!-- ---------------- Identifiability analysis ---------------- -->
     <h3 class="section-title">Identifiability analysis</h3>

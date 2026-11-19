@@ -1,4 +1,6 @@
 <script setup>
+import { vFold } from '../lib/vFold'
+import ReductionResults from './ReductionResults.vue'
 import { ref, computed, watch } from 'vue'
 import { renderMath, renderOutputLabel } from '../lib/math'
 import { fmtSci } from '../lib/format'
@@ -7,6 +9,11 @@ import ScatterChart from './ScatterChart.vue'
 import { emulatorPredictionFlags } from '../lib/obsDataJson'
 
 const props = defineProps({
+  // The section of the workflow step selected (calibration, sensitivity, uq, emulator,
+  // reduction, identifiability): only it is open by default; none: every section is.
+  focus: { type: String, default: null },
+  // A parameter reduction's results (the Identifiability tab runs it), or null.
+  reduction: { type: Object, default: null },
   // Sensitivity: { S1: {outName: {param: val}}, ST: {...}, local: {...} }
   indices: { type: Object, default: null },
   paramNames: { type: Array, default: () => [] },
@@ -76,7 +83,7 @@ const props = defineProps({
   calibrationUsedEmulator: { type: Boolean, default: false },
 })
 
-const emit = defineEmits(['select-result', 'remove-result', 'clear-results'])
+const emit = defineEmits(['adopt-reduction', 'select-result', 'remove-result', 'clear-results'])
 
 // ---- Validation ------------------------------------------------------------
 // Read from CA's validation_results.json; nothing is recomputed here. The scores
@@ -729,12 +736,17 @@ const predictiveBandLeft = computed(
   () => `${((PREDICTIVE_LIMIT - 1) / (2 * PREDICTIVE_LIMIT)) * 100}%`,
 )
 const predictiveBandWidth = computed(() => `${(2 / (2 * PREDICTIVE_LIMIT)) * 100}%`)
+
+/** Whether a section starts open: all of them, or only the selected step's. */
+function sectionOpen(key) {
+  return !props.focus || props.focus === key
+}
 </script>
 
 <template>
   <div class="analysis-panel" data-testid="analysis-panel">
     <!-- Sensitivity --------------------------------------------------------->
-    <section class="analysis-section">
+    <section class="analysis-section" v-fold="sectionOpen('sensitivity')">
       <h2>Sensitivity</h2>
       <p v-if="!hasSensitivity" class="empty-hint">
         Run a sensitivity analysis to see the heatmap.
@@ -851,7 +863,7 @@ const predictiveBandWidth = computed(() => `${(2 / (2 * PREDICTIVE_LIMIT)) * 100
     </section>
 
     <!-- Calibration --------------------------------------------------------->
-    <section class="analysis-section">
+    <section class="analysis-section" v-fold="sectionOpen('calibration')">
       <h2>Calibration</h2>
 
       <!--
@@ -970,7 +982,7 @@ const predictiveBandWidth = computed(() => `${(2 / (2 * PREDICTIVE_LIMIT)) * 100
         one of which nothing on screen said was superseded.
       -->
       <template v-if="bothSourcesAvailable && compareEmulator">
-        <section class="error-chart">
+        <section v-fold class="error-chart">
           <h3>Percentage error — forward model vs emulator</h3>
           <div class="chart-legend" data-testid="emulator-compare-legend">
             <span class="legend-item">
@@ -1002,7 +1014,7 @@ const predictiveBandWidth = computed(() => `${(2 / (2 * PREDICTIVE_LIMIT)) * 100
             </div>
           </div>
         </section>
-        <section class="error-chart">
+        <section v-fold class="error-chart">
           <h3>Error in standard deviations — forward model vs emulator</h3>
           <div class="bar-list" data-testid="emulator-std-chart">
             <div v-for="(b, i) in modelStdBars" :key="`em-s${i}`" class="bar-row">
@@ -1027,7 +1039,7 @@ const predictiveBandWidth = computed(() => `${(2 / (2 * PREDICTIVE_LIMIT)) * 100
       </template>
 
       <template v-else-if="comparable && compare">
-        <section class="error-chart">
+        <section v-fold class="error-chart">
           <h3>Percentage error — current vs {{ baselineCost?.label ?? 'baseline' }}</h3>
           <div class="chart-legend" data-testid="compare-legend">
             <span class="legend-item">
@@ -1059,7 +1071,7 @@ const predictiveBandWidth = computed(() => `${(2 / (2 * PREDICTIVE_LIMIT)) * 100
             </div>
           </div>
         </section>
-        <section class="error-chart">
+        <section v-fold class="error-chart">
           <h3>Error in standard deviations — current vs {{ baselineCost?.label ?? 'baseline' }}</h3>
           <div class="chart-legend" data-testid="compare-legend">
             <span class="legend-item">
@@ -1098,7 +1110,7 @@ const predictiveBandWidth = computed(() => `${(2 / (2 * PREDICTIVE_LIMIT)) * 100
         series, so leaving these below would plot the same numbers twice.
       -->
       <template v-else-if="hasCalibration">
-        <section class="error-chart">
+        <section v-fold class="error-chart">
           <h3>Percentage error per observable</h3>
           <div class="bar-list" data-testid="percent-error-chart">
             <div v-for="(b, i) in percentBars" :key="i" class="bar-row">
@@ -1114,7 +1126,7 @@ const predictiveBandWidth = computed(() => `${(2 / (2 * PREDICTIVE_LIMIT)) * 100
             </div>
           </div>
         </section>
-        <section class="error-chart">
+        <section v-fold class="error-chart">
           <h3>Error in standard deviations per observable</h3>
           <div class="bar-list" data-testid="std-error-chart">
             <div v-for="(b, i) in stdBars" :key="i" class="bar-row">
@@ -1141,7 +1153,7 @@ const predictiveBandWidth = computed(() => `${(2 / (2 * PREDICTIVE_LIMIT)) * 100
       class="emu-error-note"
       data-testid="validation-needs-newer"
     >{{ validationNote }}</p>
-    <section v-if="hasValidation" class="analysis-section" data-testid="validation-section">
+    <section v-if="hasValidation" class="analysis-section" v-fold="sectionOpen('calibration')" data-testid="validation-section">
       <h2>Validation</h2>
       <table class="emu-error-table" data-testid="validation-table">
         <thead>
@@ -1175,7 +1187,7 @@ const predictiveBandWidth = computed(() => `${(2 / (2 * PREDICTIVE_LIMIT)) * 100
         data's range, so items in different units can be compared.
       </p>
 
-      <section
+      <section v-fold
         v-if="validationFeaturePlot"
         class="error-chart"
         data-testid="validation-features-chart"
@@ -1198,7 +1210,7 @@ const predictiveBandWidth = computed(() => `${(2 / (2 * PREDICTIVE_LIMIT)) * 100
         />
       </section>
 
-      <section
+      <section v-fold
         v-for="plot in validationPlots"
         :key="plot.name"
         class="error-chart"
@@ -1225,7 +1237,7 @@ const predictiveBandWidth = computed(() => `${(2 / (2 * PREDICTIVE_LIMIT)) * 100
     </section>
 
     <!-- Emulator ------------------------------------------------------------>
-    <section class="analysis-section">
+    <section class="analysis-section" v-fold="sectionOpen('emulator')">
       <h2>
         Emulator
         <span v-if="emulatorInUse" class="uq-method"> · in use for analyses</span>
@@ -1289,7 +1301,7 @@ const predictiveBandWidth = computed(() => `${(2 / (2 * PREDICTIVE_LIMIT)) * 100
             </select>
           </label>
 
-          <section class="error-chart">
+          <section v-fold class="error-chart">
             <h3>Predicted vs simulated</h3>
             <ScatterChart
               data-testid="emu-parity"
@@ -1307,7 +1319,7 @@ const predictiveBandWidth = computed(() => `${(2 / (2 * PREDICTIVE_LIMIT)) * 100
             </small>
           </section>
 
-          <section
+          <section v-fold
             v-for="param in residualByParam"
             :key="param.label"
             class="error-chart"
@@ -1333,7 +1345,7 @@ const predictiveBandWidth = computed(() => `${(2 / (2 * PREDICTIVE_LIMIT)) * 100
     </section>
 
     <!-- UQ ------------------------------------------------------------------>
-    <section class="analysis-section">
+    <section class="analysis-section" v-fold="sectionOpen('uq')">
       <h2>UQ<span v-if="uqMethodLabel" class="uq-method"> · {{ uqMethodLabel }}</span></h2>
       <p v-if="!hasUQ" class="empty-hint">
         Run a UQ analysis to see parameter posteriors.
@@ -1386,7 +1398,7 @@ const predictiveBandWidth = computed(() => `${(2 / (2 * PREDICTIVE_LIMIT)) * 100
 
       <!-- Does the posterior reproduce the data it was fitted to? ----------->
       <template v-if="hasUQ">
-        <section v-if="coverageRows.length" class="error-chart" data-testid="coverage">
+        <section v-fold v-if="coverageRows.length" class="error-chart" data-testid="coverage">
           <h3>
             Coverage
             <span v-if="coverageObservables" class="uq-method">
@@ -1425,7 +1437,8 @@ const predictiveBandWidth = computed(() => `${(2 / (2 * PREDICTIVE_LIMIT)) * 100
           </table>
         </section>
 
-        <section v-if="hasPredictive" class="error-chart" data-testid="posterior-predictive">
+
+        <section v-fold v-if="hasPredictive" class="error-chart" data-testid="posterior-predictive">
           <h3>Posterior predictive against the data</h3>
           <p class="empty-hint">
             Each bar is the model's 95% interval over posterior draws, in units of
@@ -1465,10 +1478,32 @@ const predictiveBandWidth = computed(() => `${(2 / (2 * PREDICTIVE_LIMIT)) * 100
         </p>
       </template>
     </section>
+    <section class="analysis-section" v-fold="sectionOpen('reduction')" data-testid="reduction-section">
+      <h2>Parameter reduction</h2>
+      <p v-if="!reduction" class="empty-hint">
+        Run a parameter reduction in the Identifiability tab to see the parameters it keeps.
+      </p>
+      <ReductionResults v-else :reduction="reduction" @adopt="(dir) => emit('adopt-reduction', dir)" />
+    </section>
   </div>
 </template>
 
 <style scoped>
+/* v-fold: a heading folds its section; a folded section shows its heading alone */
+.fold-head {
+  cursor: pointer;
+  user-select: none;
+}
+.fold-head::before {
+  content: '▾ ';
+  opacity: 0.6;
+}
+[data-folded] > .fold-head::before {
+  content: '▸ ';
+}
+[data-folded] > :not(.fold-head) {
+  display: none !important;
+}
 .emu-error-table {
   width: 100%;
   border-collapse: collapse;
