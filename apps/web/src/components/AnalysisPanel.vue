@@ -1,5 +1,6 @@
 <script setup>
 import { vFold } from '../lib/vFold'
+import ReductionResults from './ReductionResults.vue'
 import { ref, computed, watch } from 'vue'
 import { renderMath, renderOutputLabel } from '../lib/math'
 import { fmtSci } from '../lib/format'
@@ -11,6 +12,8 @@ const props = defineProps({
   // The section of the workflow step selected (calibration, sensitivity, uq, emulator,
   // reduction, identifiability): only it is open by default; none: every section is.
   focus: { type: String, default: null },
+  // A parameter reduction's results (the Identifiability tab runs it), or null.
+  reduction: { type: Object, default: null },
   // Sensitivity: { S1: {outName: {param: val}}, ST: {...}, local: {...} }
   indices: { type: Object, default: null },
   paramNames: { type: Array, default: () => [] },
@@ -80,7 +83,7 @@ const props = defineProps({
   calibrationUsedEmulator: { type: Boolean, default: false },
 })
 
-const emit = defineEmits(['select-result', 'remove-result', 'clear-results'])
+const emit = defineEmits(['adopt-reduction', 'select-result', 'remove-result', 'clear-results'])
 
 // ---- Validation ------------------------------------------------------------
 // Read from CA's validation_results.json; nothing is recomputed here. The scores
@@ -1434,6 +1437,7 @@ function sectionOpen(key) {
           </table>
         </section>
 
+
         <section v-fold v-if="hasPredictive" class="error-chart" data-testid="posterior-predictive">
           <h3>Posterior predictive against the data</h3>
           <p class="empty-hint">
@@ -1473,6 +1477,13 @@ function sectionOpen(key) {
           posterior predictive check, or it was turned off for the run.
         </p>
       </template>
+    </section>
+    <section class="analysis-section" v-fold="sectionOpen('reduction')" data-testid="reduction-section">
+      <h2>Parameter reduction</h2>
+      <p v-if="!reduction" class="empty-hint">
+        Run a parameter reduction in the Identifiability tab to see the parameters it keeps.
+      </p>
+      <ReductionResults v-else :reduction="reduction" @adopt="(dir) => emit('adopt-reduction', dir)" />
     </section>
   </div>
 </template>

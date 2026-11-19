@@ -3559,8 +3559,8 @@ describe('App.vue Identifiability tab', () => {
   it('"Calibrate these" adopts the reduced params_for_id and opens Calibration', async () => {
     const wrapper = shallowMount(App)
     await flushPromises()
-    await wrapper.find('[data-testid="tab-ia"]').trigger('click')
-    wrapper.findComponent({ name: 'IAPanel' }).vm.$emit('adopt', '/out/sa/param_reduction')
+    // the results, with Calibrate these, are in the Analysis tab
+    wrapper.findComponent({ name: 'AnalysisPanel' }).vm.$emit('adopt-reduction', '/out/sa/param_reduction')
     await flushPromises()
 
     expect(adoptReducedParams).toHaveBeenCalledWith(null, '/out/sa/param_reduction')

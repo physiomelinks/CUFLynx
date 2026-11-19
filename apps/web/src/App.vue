@@ -3424,7 +3424,6 @@ watch(() => obs.obsData.value, scheduleRun)
             :ia-profiles="iaJob.profiles.value"
             @run-reduction="onRunReduction"
             @cancel-reduction="reduction.cancel()"
-            @adopt="onAdoptReduction"
             @refresh-runs="refreshSobolRuns"
             @run-ia="onRunIA"
             @cancel-ia="iaJob.cancel()"
@@ -3824,6 +3823,8 @@ watch(() => obs.obsData.value, scheduleRun)
         <div v-show="centerTab === 'analysis'" class="plot-groups">
           <AnalysisPanel
             :focus="analysisFocus"
+            :reduction="reduction.reduction.value"
+            @adopt-reduction="onAdoptReduction"
             :indices="sa.indices.value"
             :param-names="sa.paramNames.value"
             :output-names="sa.outputNames.value"
