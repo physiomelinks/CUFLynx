@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { ADVANCED, appliesToMethod, currentDefault, differs, isAdvanced, splitSettings } from './advancedSettings'
+import { ADVANCED, appliesToMethod, currentDefault, differs, isAdvanced, marksMethods, splitSettings } from './advancedSettings'
 
 describe('advancedSettings', () => {
   it('lists, per tab, CA option names and its own fields apart, each once', () => {
@@ -44,6 +44,11 @@ describe('advancedSettings', () => {
     expect(appliesToMethod({}, 'mcmc', 'mcmc')).toBe(true)
     expect(appliesToMethod({}, 'laplace', 'mcmc')).toBe(false)
     expect(appliesToMethod({}, 'laplace')).toBe(true)
+    // CA #688: a schema that marks any option makes an unmarked one every method's
+    expect(appliesToMethod({}, 'laplace', 'mcmc', true)).toBe(true)
+    expect(appliesToMethod({ methods: ['mcmc'] }, 'laplace', 'mcmc', true)).toBe(false)
+    expect(marksMethods([{ name: 'a' }, { name: 'b', methods: ['mcmc'] }])).toBe(true)
+    expect(marksMethods([{ name: 'a' }])).toBe(false)
   })
 
   it('counts a value as changed only when it differs from the default', () => {

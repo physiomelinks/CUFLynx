@@ -73,7 +73,9 @@ describe('UQPanel UQ options from CA schema', () => {
 
     const laplace = mount(UQPanel, { props: { canRun: true, defaults: { method: 'laplace', uq_options: options } }, global: { stubs } })
     expect(laplace.find('[data-testid="mcmc-opt-num_samples"]').exists()).toBe(true)
-    expect(laplace.find('[data-testid="mcmc-opt-num_steps"]').exists()).toBe(false)
+    // a schema that marks methods (CA #688): an unmarked option (num_steps here) is read
+    // by every method, so it shows under Laplace too
+    expect(laplace.find('[data-testid="mcmc-opt-num_steps"]').exists()).toBe(true)
     await laplace.find('[data-testid="run-uq"]').trigger('click')
     expect(laplace.emitted('run')[0][0].num_samples).toBe(2000)
   })

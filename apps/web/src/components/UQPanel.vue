@@ -6,7 +6,7 @@ import InputText from 'primevue/inputtext'
 import Checkbox from 'primevue/checkbox'
 import Button from 'primevue/button'
 import SettingsSections from './SettingsSections.vue'
-import { appliesToMethod, currentDefault, differs } from '../lib/advancedSettings'
+import { appliesToMethod, currentDefault, differs, marksMethods } from '../lib/advancedSettings'
 
 const props = defineProps({
   defaults: { type: Object, default: () => ({}) },
@@ -84,7 +84,8 @@ const mcmcOptions = computed(() =>
 )
 // The options for the method chosen: CA's `methods` marker where it has one (num_samples
 // is Laplace's), else MCMC's, the only method whose form has shown CA's options.
-const methodOptions = computed(() => mcmcOptions.value.filter((o) => appliesToMethod(o, settings.method, 'mcmc')))
+const methodOptions = computed(() => mcmcOptions.value.filter(
+  (o) => appliesToMethod(o, settings.method, 'mcmc', marksMethods(schemaOptions.value))))
 
 // Seed each option's default when the schema arrives, keeping any user value.
 watch(

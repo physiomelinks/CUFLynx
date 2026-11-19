@@ -232,6 +232,9 @@ def test_reducing_an_existing_sobol_run_returns_the_report(client, tmp_path):
     assert status["state"] == "done", "\n".join(lines)
     assert status["reduction"]["selected"][0]["parameter"] == "Lotka_Volterra_module/alpha"
     assert status["reduction"]["report_dir"] == str(sa_dir / "param_reduction")
+    # the runner's marker lines (__SENSITIVITY_DONE__, ...) are the manager's, never the
+    # log's: a reduction's log ended in one, which hid what it found (Finbar, 2026-11-20)
+    assert not any(line.startswith("__") for line in lines), lines
 
 
 def test_a_missing_sobol_file_reaches_the_user_in_cas_words(client, tmp_path):

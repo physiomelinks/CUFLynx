@@ -124,6 +124,7 @@ import {
   getEmulatorInfo,
   exportPipeline,
   adoptReducedParams,
+  getParamReductionStatus,
 } from './lib/api'
 import { setNotificationCtor } from './lib/notify'
 import App from './App.vue'
@@ -3576,6 +3577,28 @@ describe('App.vue Identifiability tab', () => {
     expect(ids).toContain('tab-ia')
     expect(ids.indexOf('tab-ia')).toBe(ids.indexOf('tab-sensitivity') - 1)
     expect(ids.indexOf('tab-ia')).toBeGreaterThan(ids.indexOf('tab-emulator'))
+  })
+
+  it('a finished reduction opens the Analysis tab on its section, where its results are', async () => {
+    vi.useFakeTimers()
+    try {
+      getParamReductionStatus.mockResolvedValue({ state: 'done', lines: [], next_offset: 0,
+        reduction: { selected: [{ parameter: 'm/alpha' }], report_dir: '/r' } })
+      const wrapper = shallowMount(App)
+      await flushPromises()
+      await wrapper.find('[data-testid="tab-ia"]').trigger('click')
+      wrapper.findComponent({ name: 'IAPanel' }).vm.$emit('run-reduction', { source: 'existing',
+        param_reduction_options: { method: 'pca', sensitivity_dir: '/sa' } })
+      for (let i = 0; i < 10; i += 1) {
+        await vi.advanceTimersByTimeAsync(1000)
+        await flushPromises()
+      }
+      expect(wrapper.find('[data-testid="tab-analysis"]').classes()).toContain('active')
+      expect(wrapper.findComponent({ name: 'AnalysisPanel' }).props('focus')).toBe('reduction')
+    } finally {
+      getParamReductionStatus.mockResolvedValue({ state: 'error', lines: [], error: '' })
+      vi.useRealTimers()
+    }
   })
 
   it('"Calibrate these" adopts the reduced params_for_id and opens Calibration', async () => {
