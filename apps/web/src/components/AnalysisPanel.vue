@@ -746,6 +746,121 @@ function sectionOpen(key) {
 <template>
   <div class="analysis-panel" data-testid="analysis-panel">
     <!-- Sensitivity --------------------------------------------------------->
+    <section class="analysis-section" v-fold="sectionOpen('emulator')">
+      <h2>
+        Emulator
+        <span v-if="emulatorInUse" class="uq-method"> · in use for analyses</span>
+      </h2>
+      <p v-if="!hasEmulator" class="empty-hint">
+        Train an emulator in the Emulator tab to see how well it reproduces the
+        model.
+      </p>
+      <template v-else>
+        <table class="emu-error-table" data-testid="emulator-error-table">
+          <thead>
+            <tr>
+              <th>Feature</th><th>R²</th><th>nRMSE</th><th>RMSE</th>
+              <th>MAE</th><th>Bias</th><th>Max |err|</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="(row, i) in emulatorRows" :key="row.label">
+              <td class="emu-error-label">
+                <span v-html="renderMath(row.label)" />
+                <span
+                  v-if="row.prediction"
+                  class="pred-tag"
+                  data-testid="emulator-prediction-tag"
+                >prediction</span>
+              </td>
+              <td>{{ fmtStat(row.r2) }}</td>
+              <td>{{ fmtStat(row.nrmse) }}</td>
+              <td>{{ fmtStat(row.rmse, 3) }}</td>
+              <td>{{ fmtStat(row.mae, 3) }}</td>
+              <td>{{ fmtStat(row.bias, 3) }}</td>
+              <td>{{ fmtStat(row.maxAbs, 3) }}</td>
+            </tr>
+          </tbody>
+        </table>
+        <p class="emu-error-note">
+          Measured on held-out points the emulator was never fitted to. Bias is
+          signed (prediction − truth), so a systematically high emulator is
+          distinguishable from a merely noisy one; nRMSE is relative to each
+          feature's own spread, so features in different units can be compared.
+        </p>
+
+        <p v-if="!emulatorErrorPoints" class="empty-hint" data-testid="emu-no-points">
+          This emulator was trained before circulatory_autogen saved its held-out
+          points, so only the summary above is available. Retrain it to see where
+          the error falls.
+        </p>
+        <template v-else>
+          <label class="field emu-feature-pick">
+            <span>Feature</span>
+            <!-- A native select: this panel mounts without the PrimeVue plugin
+                 in tests, and one dropdown is not worth changing that. -->
+            <select
+              v-model="emulatorFeature"
+              class="emu-feature-select"
+              data-testid="emu-feature-select"
+            >
+              <option v-for="o in emulatorFeatureOptions" :key="o.value" :value="o.value">
+                {{ o.label }}
+              </option>
+            </select>
+          </label>
+
+          <section v-fold class="error-chart">
+            <h3>Predicted vs simulated</h3>
+            <ScatterChart
+              data-testid="emu-parity"
+              :points="parityPoints?.points ?? []"
+              :x-domain="[parityPoints?.lo ?? 0, parityPoints?.hi ?? 1]"
+              :y-domain="[parityPoints?.lo ?? 0, parityPoints?.hi ?? 1]"
+              x-label="simulated"
+              y-label="emulated"
+              guide="diagonal"
+              square
+            />
+            <small class="emu-error-note">
+              Points on the diagonal are exact. Both axes share one range — a
+              parity plot with independent axes makes any emulator look perfect.
+            </small>
+          </section>
+
+          <section v-fold
+            v-for="param in residualByParam"
+            :key="param.label"
+            class="error-chart"
+          >
+            <h3>Normalised residual vs {{ param.label }}</h3>
+            <ScatterChart
+              data-testid="emu-residual"
+              :points="param.points"
+              :x-domain="[param.lo, param.hi]"
+              :y-domain="[-param.worst, param.worst]"
+              :x-label="param.label"
+              :y-label="residualBasis.axis"
+              guide="zero"
+            />
+            <small class="emu-error-note">
+              Structure here — a trend, or a cluster far from the line — means the
+              emulator is wrong in a particular part of the parameter space, not
+              uniformly. The axis is {{ residualBasis.note }}.
+            </small>
+          </section>
+        </template>
+      </template>
+    </section>
+
+    <section class="analysis-section" v-fold="sectionOpen('reduction')" data-testid="reduction-section">
+      <h2>Parameter reduction</h2>
+      <p v-if="!reduction" class="empty-hint">
+        Run a parameter reduction in the Identifiability tab to see the parameters it keeps.
+      </p>
+      <ReductionResults v-else :reduction="reduction" @adopt="(dir) => emit('adopt-reduction', dir)" />
+    </section>
+
     <section class="analysis-section" v-fold="sectionOpen('sensitivity')">
       <h2>Sensitivity</h2>
       <p v-if="!hasSensitivity" class="empty-hint">
@@ -1237,112 +1352,6 @@ function sectionOpen(key) {
     </section>
 
     <!-- Emulator ------------------------------------------------------------>
-    <section class="analysis-section" v-fold="sectionOpen('emulator')">
-      <h2>
-        Emulator
-        <span v-if="emulatorInUse" class="uq-method"> · in use for analyses</span>
-      </h2>
-      <p v-if="!hasEmulator" class="empty-hint">
-        Train an emulator in the Surrogate tab to see how well it reproduces the
-        model.
-      </p>
-      <template v-else>
-        <table class="emu-error-table" data-testid="emulator-error-table">
-          <thead>
-            <tr>
-              <th>Feature</th><th>R²</th><th>nRMSE</th><th>RMSE</th>
-              <th>MAE</th><th>Bias</th><th>Max |err|</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="(row, i) in emulatorRows" :key="row.label">
-              <td class="emu-error-label">
-                <span v-html="renderMath(row.label)" />
-                <span
-                  v-if="row.prediction"
-                  class="pred-tag"
-                  data-testid="emulator-prediction-tag"
-                >prediction</span>
-              </td>
-              <td>{{ fmtStat(row.r2) }}</td>
-              <td>{{ fmtStat(row.nrmse) }}</td>
-              <td>{{ fmtStat(row.rmse, 3) }}</td>
-              <td>{{ fmtStat(row.mae, 3) }}</td>
-              <td>{{ fmtStat(row.bias, 3) }}</td>
-              <td>{{ fmtStat(row.maxAbs, 3) }}</td>
-            </tr>
-          </tbody>
-        </table>
-        <p class="emu-error-note">
-          Measured on held-out points the emulator was never fitted to. Bias is
-          signed (prediction − truth), so a systematically high emulator is
-          distinguishable from a merely noisy one; nRMSE is relative to each
-          feature's own spread, so features in different units can be compared.
-        </p>
-
-        <p v-if="!emulatorErrorPoints" class="empty-hint" data-testid="emu-no-points">
-          This emulator was trained before circulatory_autogen saved its held-out
-          points, so only the summary above is available. Retrain it to see where
-          the error falls.
-        </p>
-        <template v-else>
-          <label class="field emu-feature-pick">
-            <span>Feature</span>
-            <!-- A native select: this panel mounts without the PrimeVue plugin
-                 in tests, and one dropdown is not worth changing that. -->
-            <select
-              v-model="emulatorFeature"
-              class="emu-feature-select"
-              data-testid="emu-feature-select"
-            >
-              <option v-for="o in emulatorFeatureOptions" :key="o.value" :value="o.value">
-                {{ o.label }}
-              </option>
-            </select>
-          </label>
-
-          <section v-fold class="error-chart">
-            <h3>Predicted vs simulated</h3>
-            <ScatterChart
-              data-testid="emu-parity"
-              :points="parityPoints?.points ?? []"
-              :x-domain="[parityPoints?.lo ?? 0, parityPoints?.hi ?? 1]"
-              :y-domain="[parityPoints?.lo ?? 0, parityPoints?.hi ?? 1]"
-              x-label="simulated"
-              y-label="emulated"
-              guide="diagonal"
-              square
-            />
-            <small class="emu-error-note">
-              Points on the diagonal are exact. Both axes share one range — a
-              parity plot with independent axes makes any emulator look perfect.
-            </small>
-          </section>
-
-          <section v-fold
-            v-for="param in residualByParam"
-            :key="param.label"
-            class="error-chart"
-          >
-            <h3>Normalised residual vs {{ param.label }}</h3>
-            <ScatterChart
-              data-testid="emu-residual"
-              :points="param.points"
-              :x-domain="[param.lo, param.hi]"
-              :y-domain="[-param.worst, param.worst]"
-              :x-label="param.label"
-              :y-label="residualBasis.axis"
-              guide="zero"
-            />
-            <small class="emu-error-note">
-              Structure here — a trend, or a cluster far from the line — means the
-              emulator is wrong in a particular part of the parameter space, not
-              uniformly. The axis is {{ residualBasis.note }}.
-            </small>
-          </section>
-        </template>
-      </template>
-    </section>
 
     <!-- UQ ------------------------------------------------------------------>
     <section class="analysis-section" v-fold="sectionOpen('uq')">
@@ -1477,13 +1486,6 @@ function sectionOpen(key) {
           posterior predictive check, or it was turned off for the run.
         </p>
       </template>
-    </section>
-    <section class="analysis-section" v-fold="sectionOpen('reduction')" data-testid="reduction-section">
-      <h2>Parameter reduction</h2>
-      <p v-if="!reduction" class="empty-hint">
-        Run a parameter reduction in the Identifiability tab to see the parameters it keeps.
-      </p>
-      <ReductionResults v-else :reduction="reduction" @adopt="(dir) => emit('adopt-reduction', dir)" />
     </section>
   </div>
 </template>
