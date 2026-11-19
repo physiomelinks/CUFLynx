@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { ADVANCED, currentDefault, differs, isAdvanced, splitSettings } from './advancedSettings'
+import { ADVANCED, appliesToMethod, currentDefault, differs, isAdvanced, splitSettings } from './advancedSettings'
 
 describe('advancedSettings', () => {
   it('lists, per tab, CA option names and its own fields apart, each once', () => {
@@ -21,11 +21,19 @@ describe('advancedSettings', () => {
   })
 
   it("keeps a tab's own field apart from a CA option of the same name", () => {
-    // Sensitivity: CA's gradient_method (for local runs, in the Sobol form) is advanced;
-    // the local method's own gradient source is not.
-    expect(isAdvanced('sensitivity', { name: 'gradient_method' })).toBe(true)
-    expect(isAdvanced('sensitivity', { name: 'gradient_method', own: true })).toBe(false)
+    // Sensitivity: the tab's own include_prediction_items box is advanced; a CA option of
+    // that name would be decided by the `ca` list, which does not name it.
+    expect(isAdvanced('sensitivity', { name: 'include_prediction_items', own: true })).toBe(true)
+    expect(isAdvanced('sensitivity', { name: 'include_prediction_items' })).toBe(false)
     expect(isAdvanced('no_such_tab', { name: 'x' })).toBe(false)
+  })
+
+  it("follows CA's `methods` marker; an unmarked option keeps to the form's method", () => {
+    expect(appliesToMethod({ methods: ['laplace'] }, 'mcmc', 'mcmc')).toBe(false)
+    expect(appliesToMethod({ methods: ['laplace'] }, 'laplace', 'mcmc')).toBe(true)
+    expect(appliesToMethod({}, 'mcmc', 'mcmc')).toBe(true)
+    expect(appliesToMethod({}, 'laplace', 'mcmc')).toBe(false)
+    expect(appliesToMethod({}, 'laplace')).toBe(true)
   })
 
   it('counts a value as changed only when it differs from the default', () => {

@@ -6,7 +6,7 @@ import InputText from 'primevue/inputtext'
 import Checkbox from 'primevue/checkbox'
 import Button from 'primevue/button'
 import SettingsSections from './SettingsSections.vue'
-import { currentDefault, differs } from '../lib/advancedSettings'
+import { appliesToMethod, currentDefault, differs } from '../lib/advancedSettings'
 
 const props = defineProps({
   defaults: { type: Object, default: () => ({}) },
@@ -38,12 +38,11 @@ const settings = reactive({
 // each descriptor's default). Merged into the run/change payload flat.
 const optionValues = reactive({})
 
-const isMcmc = computed(() => settings.method === 'mcmc')
 
 // Every setting the form shows, in order: MCMC's CA options (MCMC only), then this tab's
 // own fields. SettingsSections puts the ones advancedSettings.json lists under Advanced.
 const settingItems = computed(() => [
-  ...(isMcmc.value ? mcmcOptions.value : []),
+  ...methodOptions.value,
   { name: 'num_cores', own: true },
   { name: 'run_calibration_first', own: true },
   { name: 'DEBUG', own: true },
@@ -83,6 +82,9 @@ const mcmcOptions = computed(() =>
     // annotation sends, so this filter is a no-op there rather than an empty form.
     .filter((o) => !o.libraries || o.libraries.includes(selectedLibrary.value)),
 )
+// The options for the method chosen: CA's `methods` marker where it has one (num_samples
+// is Laplace's), else MCMC's, the only method whose form has shown CA's options.
+const methodOptions = computed(() => mcmcOptions.value.filter((o) => appliesToMethod(o, settings.method, 'mcmc')))
 
 // Seed each option's default when the schema arrives, keeping any user value.
 watch(
@@ -115,7 +117,9 @@ function optionLabel(name) {
 // The run/change payload: CUFLynx-level settings + the MCMC option values.
 function buildSettings() {
   const opts = {}
-  for (const o of mcmcOptions.value) opts[o.name] = optionValues[o.name]
+  for (const o of mcmcOptions.value) {
+    if (appliesToMethod(o, settings.method)) opts[o.name] = optionValues[o.name]
+  }
   return { ...settings, ...opts }
 }
 

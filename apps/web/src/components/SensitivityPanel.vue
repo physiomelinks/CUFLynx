@@ -6,7 +6,7 @@ import InputText from 'primevue/inputtext'
 import Checkbox from 'primevue/checkbox'
 import Button from 'primevue/button'
 import SettingsSections from './SettingsSections.vue'
-import { currentDefault, differs } from '../lib/advancedSettings'
+import { appliesToMethod, currentDefault, differs } from '../lib/advancedSettings'
 
 const props = defineProps({
   defaults: { type: Object, default: () => ({}) },
@@ -66,11 +66,21 @@ const optionValues = reactive({})
 // top-level Sobol/local selector already covers that axis). Never hardcoded.
 // `include_prediction_items` is dropped too, should CA's schema list it: it has
 // its own checkbox below, which knows when it cannot apply.
+//
+// Every option this panel holds itself is dropped as well (the local method's
+// gradient_method, ...), and fd_rel_step, which is the local method's own rel_step under
+// CA's name (the runner passes rel_step as fd_rel_step). Sent as well as settings, CA's
+// copies replaced the user's choice: a local run asked for FD went out as "auto".
+const OWN_AS_CA = ['fd_rel_step']
 const saOptions = computed(() =>
   (props.defaults.options ?? []).filter(
-    (o) => o.name !== 'method' && o.name !== 'include_prediction_items',
+    (o) => o.name !== 'method' && o.name !== 'include_prediction_items'
+      && !(o.name in settings) && !OWN_AS_CA.includes(o.name),
   ),
 )
+// The options for the method chosen: CA's `methods` marker where it has one, else Sobol's,
+// the only method whose form shows CA's options.
+const methodOptions = computed(() => saOptions.value.filter((o) => appliesToMethod(o, settings.method, 'sobol')))
 
 // "Include prediction items": available only when libcuflynx supports it (the API's
 // feature detect) and the obs_data has a prediction_item with an operation. Which
@@ -128,7 +138,9 @@ function optionLabel(name) {
 // The run/change payload: CUFLynx-level settings + the Sobol option values.
 function buildSettings() {
   const opts = {}
-  for (const o of saOptions.value) opts[o.name] = optionValues[o.name]
+  for (const o of saOptions.value) {
+    if (appliesToMethod(o, settings.method)) opts[o.name] = optionValues[o.name]
+  }
   return { ...settings, ...opts }
 }
 
@@ -223,7 +235,7 @@ const settingItems = computed(() => [
     ? [{ name: 'gradient_method', own: true },
        ...(usesFdStep.value ? [{ name: 'rel_step', own: true }] : []),
        { name: 'nominal', own: true }, { name: 'run_calibration_first', own: true }]
-    : [...saOptions.value, { name: 'num_cores', own: true }]),
+    : [...methodOptions.value, { name: 'num_cores', own: true }]),
   { name: 'include_prediction_items', own: true },
   { name: 'DEBUG', own: true },
 ])
