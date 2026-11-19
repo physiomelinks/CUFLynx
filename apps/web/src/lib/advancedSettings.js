@@ -36,6 +36,17 @@ export function differs(value, def) {
   return value !== def
 }
 
+/**
+ * Whether a CA option applies to `method`: CA marks an option that only some methods read
+ * with `methods` (as it marks pyMC-only ones with `libraries`). An unmarked option applies
+ * to `unmarked` (the method the panel's form has always shown them for), or to every
+ * method when `unmarked` is null.
+ */
+export function appliesToMethod(opt, method, unmarked = null) {
+  if (Array.isArray(opt?.methods)) return opt.methods.includes(method)
+  return unmarked == null || method === unmarked
+}
+
 /** The default an option has now: its DEBUG default when DEBUG is on and it has one. */
 export function currentDefault(opt, debug = false) {
   return debug && opt?.debug_default != null ? opt.debug_default : opt?.default

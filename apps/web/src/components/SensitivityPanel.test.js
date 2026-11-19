@@ -38,6 +38,44 @@ const GRAD_CELLML = [
     requires_all_differentiable: false },
 ]
 
+describe("SensitivityPanel: CA's copies of the panel's own settings", () => {
+  // CA's sensitivity schema lists gradient_method and fd_rel_step (for local runs). Sent
+  // with the panel's settings, CA's default replaced the user's choice: a local run asked
+  // for FD went out as "auto".
+  const CA_OPTIONS = [
+    { name: 'gradient_method', type: 'enum', default: 'auto', choices: ['auto', 'AD', 'FSA', 'FD'] },
+    { name: 'fd_rel_step', type: 'float', default: 0.001 },
+    { name: 'num_samples', type: 'int', default: 32 },
+  ]
+
+  it("a local run sends the gradient source and step chosen, not CA's defaults", async () => {
+    const wrapper = mount(SensitivityPanel, {
+      props: { canRun: true, adAvailable: true,
+        defaults: { method: 'local', gradient_method: 'FD', rel_step: 0.01, gradient_methods: GRAD_CASADI, options: CA_OPTIONS } },
+      global: { stubs },
+    })
+    await wrapper.find('[data-testid="run-sensitivity"]').trigger('click')
+    const payload = wrapper.emitted('run')[0][0]
+    expect(payload.gradient_method).toBe('FD')
+    expect(payload.rel_step).toBe(0.01)
+    expect(payload).not.toHaveProperty('fd_rel_step')
+  })
+
+  it("the Sobol form does not show CA's local options, and a `methods` marker is followed", () => {
+    const wrapper = mount(SensitivityPanel, {
+      props: { defaults: { method: 'sobol', options: [...CA_OPTIONS,
+        { name: 'jacobian_points', type: 'int', default: 8, methods: ['sobol'] },
+        { name: 'a_local_option', type: 'int', default: 1, methods: ['local'] }] } },
+      global: { stubs },
+    })
+    expect(wrapper.find('[data-testid="sa-opt-gradient_method"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="sa-opt-fd_rel_step"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="sa-opt-num_samples"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="sa-opt-jacobian_points"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="sa-opt-a_local_option"]').exists()).toBe(false)
+  })
+})
+
 describe('SensitivityPanel AD gating', () => {
   it('disables the AD gradient source when AD is unavailable', () => {
     const wrapper = mount(SensitivityPanel, {

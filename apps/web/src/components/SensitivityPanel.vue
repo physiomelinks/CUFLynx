@@ -6,7 +6,7 @@ import InputText from 'primevue/inputtext'
 import Checkbox from 'primevue/checkbox'
 import Button from 'primevue/button'
 import SettingsSections from './SettingsSections.vue'
-import { currentDefault, differs } from '../lib/advancedSettings'
+import { appliesToMethod, currentDefault, differs } from '../lib/advancedSettings'
 
 const props = defineProps({
   defaults: { type: Object, default: () => ({}) },
@@ -72,6 +72,9 @@ const PANEL_OWNED = new Set(['method', 'gradient_method', 'fd_rel_step', 'includ
 const saOptions = computed(() =>
   (props.defaults.options ?? []).filter((o) => !PANEL_OWNED.has(o.name)),
 )
+// The options for the method chosen: CA's `methods` marker where it has one, else Sobol's,
+// the only method whose form shows CA's options.
+const methodOptions = computed(() => saOptions.value.filter((o) => appliesToMethod(o, settings.method, 'sobol')))
 
 // "Include prediction items": available only when libcuflynx supports it (the API's
 // feature detect) and the obs_data has a prediction_item with an operation. Which
@@ -129,7 +132,9 @@ function optionLabel(name) {
 // The run/change payload: CUFLynx-level settings + the Sobol option values.
 function buildSettings() {
   const opts = {}
-  for (const o of saOptions.value) opts[o.name] = optionValues[o.name]
+  for (const o of saOptions.value) {
+    if (appliesToMethod(o, settings.method)) opts[o.name] = optionValues[o.name]
+  }
   return { ...settings, ...opts }
 }
 
@@ -224,7 +229,7 @@ const settingItems = computed(() => [
     ? [{ name: 'gradient_method', own: true },
        ...(usesFdStep.value ? [{ name: 'rel_step', own: true }] : []),
        { name: 'nominal', own: true }, { name: 'run_calibration_first', own: true }]
-    : [...saOptions.value, { name: 'num_cores', own: true }]),
+    : [...methodOptions.value, { name: 'num_cores', own: true }]),
   { name: 'include_prediction_items', own: true },
   { name: 'DEBUG', own: true },
 ])

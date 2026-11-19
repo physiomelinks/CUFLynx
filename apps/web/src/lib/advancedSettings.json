@@ -3,6 +3,7 @@
   "calibration": {
     "ca": [
       "objective_function",
+      "cost_convergence",
       "use_relative_cost_tolerance",
       "relative_cost_tolerance",
       "num_elite",
@@ -16,31 +17,36 @@
       "no_new_starts_on_convergence",
       "convergence_cluster_tol_frac"
     ],
-    "cuflynx": []
+    "cuflynx": [
+      "DEBUG"
+    ]
   },
   "sensitivity": {
     "ca": [
-      "gradient_method",
-      "fd_rel_step",
-      "sample_type",
       "jacobian_points",
       "jacobian_location",
       "jacobian_scheme",
       "jacobian_step",
       "jacobian_check_steps"
     ],
-    "cuflynx": ["rel_step"]
+    "cuflynx": [
+      "include_prediction_items",
+      "DEBUG"
+    ]
   },
   "uq": {
     "ca": [
-      "library",
+      "num_walkers",
+      "posterior_predictive",
       "num_tune",
       "pymc_method",
       "num_samples",
       "posterior_predictive_samples",
       "chain_save_every"
     ],
-    "cuflynx": []
+    "cuflynx": [
+      "DEBUG"
+    ]
   },
   "emulator": {
     "ca": [
@@ -57,10 +63,15 @@
       "out_of_bounds",
       "fd_rel_step"
     ],
-    "cuflynx": ["sampling_stages"]
+    "cuflynx": [
+      "sampling_stages"
+    ]
   },
   "identifiability": {
-    "ca": ["sub_method", "optimiser_options"],
+    "ca": [
+      "sub_method",
+      "optimiser_options"
+    ],
     "cuflynx": []
   },
   "reduction": {
