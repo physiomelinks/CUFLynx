@@ -5,6 +5,8 @@ import InputNumber from 'primevue/inputnumber'
 import InputText from 'primevue/inputtext'
 import Checkbox from 'primevue/checkbox'
 import Button from 'primevue/button'
+import SettingsSections from './SettingsSections.vue'
+import { currentDefault, differs } from '../lib/advancedSettings'
 
 const props = defineProps({
   defaults: { type: Object, default: () => ({}) },
@@ -37,6 +39,20 @@ const settings = reactive({
 const optionValues = reactive({})
 
 const isMcmc = computed(() => settings.method === 'mcmc')
+
+// Every setting the form shows, in order: MCMC's CA options (MCMC only), then this tab's
+// own fields. SettingsSections puts the ones advancedSettings.json lists under Advanced.
+const settingItems = computed(() => [
+  ...(isMcmc.value ? mcmcOptions.value : []),
+  { name: 'num_cores', own: true },
+  { name: 'run_calibration_first', own: true },
+  { name: 'DEBUG', own: true },
+])
+
+/** Whether a setting differs from its default (CA's default for its options). */
+function settingChanged(item) {
+  return !item.own && differs(optionValues[item.name], currentDefault(item, settings.DEBUG))
+}
 
 // CA's UQ option descriptors (num_steps, num_walkers, …), never hardcoded.
 const schemaOptions = computed(() => props.defaults.uq_options ?? [])
@@ -170,73 +186,83 @@ function onRun() {
           size="small"
         />
       </label>
-      <!-- MCMC options, from CA's ANALYSIS_OPTIONS[mcmc]. -->
-      <template v-if="isMcmc">
-        <template v-for="opt in mcmcOptions" :key="opt.name">
-          <label v-if="opt.type === 'bool'" class="field checkbox">
-            <Checkbox v-model="optionValues[opt.name]" :binary="true" :input-id="'mcmc-opt-' + opt.name" />
-            <span :title="opt.description">{{ optionLabel(opt.name) }}</span>
-          </label>
-          <label v-else-if="opt.type === 'enum'" class="field">
-            <span :title="opt.description">{{ optionLabel(opt.name) }}</span>
-            <Select
-              v-model="optionValues[opt.name]"
-              :options="opt.choices"
-              size="small"
-              :data-testid="'mcmc-opt-' + opt.name"
-            />
-          </label>
-          <!-- 'str' needs a text box: falling through to InputNumber coerces a
-               string default (e.g. sub_method='parabola_fit') to NaN. -->
-          <label v-else-if="opt.type === 'str'" class="field">
-            <span :title="opt.description">{{ optionLabel(opt.name) }}</span>
-            <InputText
-              v-model="optionValues[opt.name]"
-              size="small"
-              :data-testid="'mcmc-opt-' + opt.name"
-            />
-          </label>
-          <label v-else class="field">
-            <span :title="opt.description">{{ optionLabel(opt.name) }}</span>
-            <InputNumber
-              v-model="optionValues[opt.name]"
-              :min-fraction-digits="opt.type === 'float' ? 1 : undefined"
-              :max-fraction-digits="opt.type === 'float' ? 10 : undefined"
-              size="small"
-              :data-testid="'mcmc-opt-' + opt.name"
-            />
-          </label>
+      <!-- The settings, standard then Advanced (lib/advancedSettings.json): MCMC's options from CA's uq schema, then this tab's own fields. -->
+      <SettingsSections tab="uq" :items="settingItems" :changed="settingChanged">
+        <template #default="{ item: opt }">
+          <template v-if="opt.own">
+            <template v-if="opt.name === 'num_cores'">
+              <label class="field">
+                <span title="mpiexec -n N: parallel sampling / calibration">Cores</span>
+                <InputNumber
+                  v-model="settings.num_cores"
+                  :min="1"
+                  :max="64"
+                  size="small"
+                  :invalid="coresInvalid"
+                  data-testid="uq-cores"
+                />
+                <small v-if="coresInvalid" class="cores-invalid" data-testid="uq-cores-invalid">
+                  Cores &gt; 1 not available (no MPI launcher). Set to 1, or pick a Python
+                  interpreter marked MPI ✓ in the top bar (Windows: install Microsoft MPI).
+                </small>
+              </label>
+            </template>
+            <template v-else-if="opt.name === 'run_calibration_first'">
+              <label class="field checkbox">
+                <Checkbox
+                  v-model="settings.run_calibration_first"
+                  :binary="true"
+                  input-id="uq-fresh-calib"
+                />
+                <span title="Otherwise UQ reuses the latest completed calibration's best fit">
+                  Run a fresh calibration first
+                </span>
+              </label>
+            </template>
+            <template v-else-if="opt.name === 'DEBUG'">
+              <label class="field checkbox">
+                <Checkbox v-model="settings.DEBUG" :binary="true" input-id="uq-debug" />
+                <span>DEBUG (small/fast)</span>
+              </label>
+            </template>
+          </template>
+          <template v-else>
+            <label v-if="opt.type === 'bool'" class="field checkbox">
+              <Checkbox v-model="optionValues[opt.name]" :binary="true" :input-id="'mcmc-opt-' + opt.name" />
+              <span :title="opt.description">{{ optionLabel(opt.name) }}</span>
+            </label>
+            <label v-else-if="opt.type === 'enum'" class="field">
+              <span :title="opt.description">{{ optionLabel(opt.name) }}</span>
+              <Select
+                v-model="optionValues[opt.name]"
+                :options="opt.choices"
+                size="small"
+                :data-testid="'mcmc-opt-' + opt.name"
+              />
+            </label>
+            <!-- 'str' needs a text box: falling through to InputNumber coerces a
+                 string default (e.g. sub_method='parabola_fit') to NaN. -->
+            <label v-else-if="opt.type === 'str'" class="field">
+              <span :title="opt.description">{{ optionLabel(opt.name) }}</span>
+              <InputText
+                v-model="optionValues[opt.name]"
+                size="small"
+                :data-testid="'mcmc-opt-' + opt.name"
+              />
+            </label>
+            <label v-else class="field">
+              <span :title="opt.description">{{ optionLabel(opt.name) }}</span>
+              <InputNumber
+                v-model="optionValues[opt.name]"
+                :min-fraction-digits="opt.type === 'float' ? 1 : undefined"
+                :max-fraction-digits="opt.type === 'float' ? 10 : undefined"
+                size="small"
+                :data-testid="'mcmc-opt-' + opt.name"
+              />
+            </label>
+          </template>
         </template>
-      </template>
-      <label class="field">
-        <span title="mpiexec -n N: parallel sampling / calibration">Cores</span>
-        <InputNumber
-          v-model="settings.num_cores"
-          :min="1"
-          :max="64"
-          size="small"
-          :invalid="coresInvalid"
-          data-testid="uq-cores"
-        />
-        <small v-if="coresInvalid" class="cores-invalid" data-testid="uq-cores-invalid">
-          Cores &gt; 1 not available (no MPI launcher). Set to 1, or pick a Python
-          interpreter marked MPI ✓ in the top bar (Windows: install Microsoft MPI).
-        </small>
-      </label>
-      <label class="field checkbox">
-        <Checkbox
-          v-model="settings.run_calibration_first"
-          :binary="true"
-          input-id="uq-fresh-calib"
-        />
-        <span title="Otherwise UQ reuses the latest completed calibration's best fit">
-          Run a fresh calibration first
-        </span>
-      </label>
-      <label class="field checkbox">
-        <Checkbox v-model="settings.DEBUG" :binary="true" input-id="uq-debug" />
-        <span>DEBUG (small/fast)</span>
-      </label>
+      </SettingsSections>
     </div>
 
     <div class="cal-actions">

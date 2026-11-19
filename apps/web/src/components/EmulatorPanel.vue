@@ -1,6 +1,8 @@
 <script setup>
 import { computed, nextTick, reactive, ref, watch } from 'vue'
 import Button from 'primevue/button'
+import SettingsSections from './SettingsSections.vue'
+import { currentDefault, differs } from '../lib/advancedSettings'
 import Checkbox from 'primevue/checkbox'
 import InputNumber from 'primevue/inputnumber'
 import InputText from 'primevue/inputtext'
@@ -264,6 +266,20 @@ function weightApplies(i) {
 const generalOptions = computed(() =>
   emulatorOptions.value.filter((o) => !STAGE_OPTIONS.includes(o.name)),
 )
+
+// Every setting the form shows, in order: the prediction-items box, CA's options, then the
+// per-stage rows (shown once there is more than one stage). SettingsSections puts the ones
+// advancedSettings.json lists under Advanced settings.
+const settingItems = computed(() => [
+  { name: 'include_prediction_items', own: true },
+  ...generalOptions.value,
+  { name: 'sampling_stages', own: true },
+])
+
+/** Whether a setting differs from its default (CA's default for its options). */
+function settingChanged(item) {
+  return !item.own && differs(optionValues[item.name], currentDefault(item))
+}
 
 function asList(value) {
   if (Array.isArray(value)) return [...value]
@@ -535,203 +551,212 @@ function onRun() {
       </div>
 
       <div class="cal-form" data-testid="emu-settings">
-        <label
-          class="field checkbox"
-          :class="{ 'opt-off': predictionFeaturesDisabled }"
-          :title="predictionFeaturesReason"
-          data-testid="emu-include-prediction-items-field"
-        >
-          <Checkbox
-            v-model="settings.include_prediction_items"
-            :binary="true"
-            :disabled="predictionFeaturesDisabled"
-            input-id="emu-include-prediction-items"
-            data-testid="emu-include-prediction-items"
-          />
-          <span>Include prediction items</span>
-        </label>
-        <small class="hint" data-testid="emu-include-prediction-items-hint">
-          Prediction items with an operation become features; the others are skipped.
-        </small>
-        <!-- CA's emulation options, from ANALYSIS_OPTIONS['emulation']. -->
-        <template v-for="opt in generalOptions" :key="opt.name">
-          <label
-            v-if="opt.type === 'bool'"
-            class="field checkbox"
-            :class="{ 'opt-off': optionDisabled(opt.name) }"
-          >
-            <Checkbox
-              v-model="optionValues[opt.name]"
-              :binary="true"
-              :disabled="optionDisabled(opt.name)"
-              :input-id="'emu-opt-' + opt.name"
-              :data-testid="'emu-opt-' + opt.name"
-            />
-            <span :title="opt.description">{{ optionLabel(opt.name) }}</span>
-          </label>
-          <label
-            v-else-if="opt.type === 'enum'"
-            class="field"
-            :class="{ 'opt-off': optionDisabled(opt.name) }"
-          >
-            <span :title="opt.description">{{ optionLabel(opt.name) }}</span>
-            <Select
-              v-model="optionValues[opt.name]"
-              :options="opt.choices"
-              :disabled="optionDisabled(opt.name)"
-              size="small"
-              :data-testid="'emu-opt-' + opt.name"
-            />
-          </label>
-          <!-- `models` is a runtime registry: a menu when the backend could read
-               it, free text when it could not. -->
-          <label v-else-if="opt.name === 'models' && modelChoices.length" class="field">
-            <span :title="opt.description">{{ optionLabel(opt.name) }}</span>
-            <Select
-              v-model="optionValues[opt.name]"
-              :options="modelChoices"
-              :editable="true"
-              size="small"
-              :data-testid="'emu-opt-' + opt.name"
-            />
-          </label>
-          <label v-else-if="opt.type === 'str'" class="field">
-            <span :title="opt.description">{{ optionLabel(opt.name) }}</span>
-            <InputText
-              v-model="optionValues[opt.name]"
-              size="small"
-              :data-testid="'emu-opt-' + opt.name"
-            />
-          </label>
-          <label v-else class="field" :class="{ 'opt-off': optionDisabled(opt.name) }">
-            <span :title="opt.description">{{ optionLabel(opt.name) }}</span>
-            <InputNumber
-              v-model="optionValues[opt.name]"
-              :min-fraction-digits="opt.type === 'float' ? 1 : undefined"
-              :max-fraction-digits="opt.type === 'float' ? 10 : undefined"
-              :disabled="optionDisabled(opt.name)"
-              size="small"
-              :data-testid="'emu-opt-' + opt.name"
-            />
-          </label>
-          <!-- Why the reuse box cannot be ticked: there is nothing on disk to
-               refit. Said here rather than left to a failed run. -->
-          <small
-            v-if="opt.name === REUSE_FLAG && !reusable"
-            class="hint"
-            data-testid="emu-reuse-unavailable"
-          >
-            Train an emulator first — reuse refits samples a previous run simulated.
-          </small>
-          <small
-            v-else-if="opt.name === REUSE_FLAG && reuseOn"
-            class="hint"
-            data-testid="emu-reuse-on"
-          >
-            Reusing the saved design: no simulations are run, so the design settings
-            below are ignored. The fit settings still apply.
-          </small>
-        </template>
+        <!-- The settings, standard then Advanced (lib/advancedSettings.json): CA's ANALYSIS_OPTIONS['emulation'] options and this tab's own fields. -->
+        <SettingsSections tab="emulator" :items="settingItems" :changed="settingChanged">
+          <template #default="{ item: opt }">
+            <template v-if="opt.own">
+              <template v-if="opt.name === 'include_prediction_items'">
+                <label
+                  class="field checkbox"
+                  :class="{ 'opt-off': predictionFeaturesDisabled }"
+                  :title="predictionFeaturesReason"
+                  data-testid="emu-include-prediction-items-field"
+                >
+                  <Checkbox
+                    v-model="settings.include_prediction_items"
+                    :binary="true"
+                    :disabled="predictionFeaturesDisabled"
+                    input-id="emu-include-prediction-items"
+                    data-testid="emu-include-prediction-items"
+                  />
+                  <span>Include prediction items</span>
+                </label>
+                <small class="hint" data-testid="emu-include-prediction-items-hint">
+                  Prediction items with an operation become features; the others are skipped.
+                </small>
+              </template>
+              <template v-else-if="opt.name === 'sampling_stages'">
+                <!-- One row per sampling stage, shown only once there is more than one.
+                     CA needs frac_per_stage and method_per_stage to be exactly num_stages
+                     long and the fractions to sum to 1, so the rows are generated from the
+                     count rather than typed as lists. -->
+                <div v-if="multiStage" class="emu-stages" data-testid="emu-stages">
+                  <span class="emu-stages-title">Sampling stages</span>
+                  <p class="hint">
+                    The sample budget is split across these stages in order. A
+                    <code>gradient_weighted</code> stage places its points between the
+                    neighbouring samples whose features differ most; an
+                    <code>error_weighted</code> one places them where a cheap surrogate of the
+                    samples so far is worst. Either can only sharpen what an earlier stage found,
+                    so leave the first stage big enough to find it — and neither can be the first
+                    stage. Clustering points on a cliff helps an emulator that can represent one
+                    (a forest, or a <code>two_phase_</code> model) and hurts a smooth global fit,
+                    so match the stage to the emulator you are fitting.
+                  </p>
+                  <div v-for="(_, i) in stageCount" :key="i" class="emu-stage-row">
+                    <span class="emu-stage-label">Stage {{ i + 1 }}</span>
+                    <label class="field">
+                      <span title="Share of num_train_samples drawn in this stage.">Fraction</span>
+                      <InputNumber
+                        v-model="optionValues.frac_per_stage[i]"
+                        :min="0"
+                        :max="1"
+                        :min-fraction-digits="1"
+                        :max-fraction-digits="4"
+                        :disabled="optionDisabled('frac_per_stage')"
+                        size="small"
+                        :data-testid="'emu-stage-frac-' + i"
+                      />
+                    </label>
+                    <label class="field">
+                      <span title="How this stage draws its points.">Method</span>
+                      <Select
+                        v-model="optionValues.method_per_stage[i]"
+                        :options="stageMethods"
+                        :disabled="optionDisabled('method_per_stage')"
+                        size="small"
+                        :data-testid="'emu-stage-method-' + i"
+                      />
+                    </label>
+                    <!-- Only shown for a stage that has scores to follow; a space-filling
+                         stage has none, and CA ignores the value. -->
+                    <label v-if="weightApplies(i)" class="field">
+                      <span
+                        title="0 ignores the scores, 0.5 half-follows them, 1 draws in proportion to them, above 1 concentrates harder."
+                        >Weight</span
+                      >
+                      <InputNumber
+                        v-model="optionValues.weight_per_stage[i]"
+                        :min="0"
+                        :min-fraction-digits="1"
+                        :max-fraction-digits="3"
+                        :disabled="optionDisabled('weight_per_stage')"
+                        size="small"
+                        :data-testid="'emu-stage-weight-' + i"
+                      />
+                    </label>
+                  </div>
+                  <!-- CA refuses a plan whose shares do not add up, and refuses it after the
+                       model has been generated. Said here instead. -->
+                  <small v-if="!fractionsSumToOne" class="hint" data-testid="emu-stages-sum">
+                    The fractions add up to {{ stageFractionTotal.toFixed(3) }}, not 1 — CA will
+                    refuse this plan.
+                  </small>
+                  <small v-if="adaptiveFirst" class="hint" data-testid="emu-stages-first">
+                    Stage 1 cannot be <code>{{ ADAPTIVE_METHOD }}</code>: it places points using
+                    features an earlier stage simulated, and at the first stage there are none.
+                  </small>
+                </div>
 
-        <!-- One row per sampling stage, shown only once there is more than one.
-             CA needs frac_per_stage and method_per_stage to be exactly num_stages
-             long and the fractions to sum to 1, so the rows are generated from the
-             count rather than typed as lists. -->
-        <div v-if="multiStage" class="emu-stages" data-testid="emu-stages">
-          <span class="emu-stages-title">Sampling stages</span>
-          <p class="hint">
-            The sample budget is split across these stages in order. A
-            <code>gradient_weighted</code> stage places its points between the
-            neighbouring samples whose features differ most; an
-            <code>error_weighted</code> one places them where a cheap surrogate of the
-            samples so far is worst. Either can only sharpen what an earlier stage found,
-            so leave the first stage big enough to find it — and neither can be the first
-            stage. Clustering points on a cliff helps an emulator that can represent one
-            (a forest, or a <code>two_phase_</code> model) and hurts a smooth global fit,
-            so match the stage to the emulator you are fitting.
-          </p>
-          <div v-for="(_, i) in stageCount" :key="i" class="emu-stage-row">
-            <span class="emu-stage-label">Stage {{ i + 1 }}</span>
-            <label class="field">
-              <span title="Share of num_train_samples drawn in this stage.">Fraction</span>
-              <InputNumber
-                v-model="optionValues.frac_per_stage[i]"
-                :min="0"
-                :max="1"
-                :min-fraction-digits="1"
-                :max-fraction-digits="4"
-                :disabled="optionDisabled('frac_per_stage')"
-                size="small"
-                :data-testid="'emu-stage-frac-' + i"
-              />
-            </label>
-            <label class="field">
-              <span title="How this stage draws its points.">Method</span>
-              <Select
-                v-model="optionValues.method_per_stage[i]"
-                :options="stageMethods"
-                :disabled="optionDisabled('method_per_stage')"
-                size="small"
-                :data-testid="'emu-stage-method-' + i"
-              />
-            </label>
-            <!-- Only shown for a stage that has scores to follow; a space-filling
-                 stage has none, and CA ignores the value. -->
-            <label v-if="weightApplies(i)" class="field">
-              <span
-                title="0 ignores the scores, 0.5 half-follows them, 1 draws in proportion to them, above 1 concentrates harder."
-                >Weight</span
+
+                <label class="field" :class="{ 'opt-off': reuseOn }">
+                  <span
+                    :title="
+                      reuseOn
+                        ? 'A reuse run refits samples already on disk and runs no simulations, so one process is all it needs.'
+                        : 'mpiexec -n N: the training simulations are split across ranks'
+                    "
+                  >Cores</span>
+                  <InputNumber
+                    v-model="settings.num_cores"
+                    :min="1"
+                    :max="64"
+                    size="small"
+                    :invalid="coresInvalid"
+                    data-testid="emu-cores"
+                  />
+                  <small v-if="coresInvalid" class="cores-invalid" data-testid="emu-cores-invalid">
+                    Cores &gt; 1 not available (no MPI launcher). Set to 1, or pick a Python
+                    interpreter marked MPI ✓ in the top bar.
+                  </small>
+                </label>
+
+                <label class="field checkbox">
+                  <Checkbox v-model="settings.DEBUG" :binary="true" input-id="emu-debug" />
+                  <span>DEBUG (more output info)</span>
+                </label>
+              </template>
+            </template>
+            <template v-else>
+              <label
+                v-if="opt.type === 'bool'"
+                class="field checkbox"
+                :class="{ 'opt-off': optionDisabled(opt.name) }"
               >
-              <InputNumber
-                v-model="optionValues.weight_per_stage[i]"
-                :min="0"
-                :min-fraction-digits="1"
-                :max-fraction-digits="3"
-                :disabled="optionDisabled('weight_per_stage')"
-                size="small"
-                :data-testid="'emu-stage-weight-' + i"
-              />
-            </label>
-          </div>
-          <!-- CA refuses a plan whose shares do not add up, and refuses it after the
-               model has been generated. Said here instead. -->
-          <small v-if="!fractionsSumToOne" class="hint" data-testid="emu-stages-sum">
-            The fractions add up to {{ stageFractionTotal.toFixed(3) }}, not 1 — CA will
-            refuse this plan.
-          </small>
-          <small v-if="adaptiveFirst" class="hint" data-testid="emu-stages-first">
-            Stage 1 cannot be <code>{{ ADAPTIVE_METHOD }}</code>: it places points using
-            features an earlier stage simulated, and at the first stage there are none.
-          </small>
-        </div>
-
-
-        <label class="field" :class="{ 'opt-off': reuseOn }">
-          <span
-            :title="
-              reuseOn
-                ? 'A reuse run refits samples already on disk and runs no simulations, so one process is all it needs.'
-                : 'mpiexec -n N: the training simulations are split across ranks'
-            "
-          >Cores</span>
-          <InputNumber
-            v-model="settings.num_cores"
-            :min="1"
-            :max="64"
-            size="small"
-            :invalid="coresInvalid"
-            data-testid="emu-cores"
-          />
-          <small v-if="coresInvalid" class="cores-invalid" data-testid="emu-cores-invalid">
-            Cores &gt; 1 not available (no MPI launcher). Set to 1, or pick a Python
-            interpreter marked MPI ✓ in the top bar.
-          </small>
-        </label>
-
-        <label class="field checkbox">
-          <Checkbox v-model="settings.DEBUG" :binary="true" input-id="emu-debug" />
-          <span>DEBUG (more output info)</span>
-        </label>
+                <Checkbox
+                  v-model="optionValues[opt.name]"
+                  :binary="true"
+                  :disabled="optionDisabled(opt.name)"
+                  :input-id="'emu-opt-' + opt.name"
+                  :data-testid="'emu-opt-' + opt.name"
+                />
+                <span :title="opt.description">{{ optionLabel(opt.name) }}</span>
+              </label>
+              <label
+                v-else-if="opt.type === 'enum'"
+                class="field"
+                :class="{ 'opt-off': optionDisabled(opt.name) }"
+              >
+                <span :title="opt.description">{{ optionLabel(opt.name) }}</span>
+                <Select
+                  v-model="optionValues[opt.name]"
+                  :options="opt.choices"
+                  :disabled="optionDisabled(opt.name)"
+                  size="small"
+                  :data-testid="'emu-opt-' + opt.name"
+                />
+              </label>
+              <!-- `models` is a runtime registry: a menu when the backend could read
+                   it, free text when it could not. -->
+              <label v-else-if="opt.name === 'models' && modelChoices.length" class="field">
+                <span :title="opt.description">{{ optionLabel(opt.name) }}</span>
+                <Select
+                  v-model="optionValues[opt.name]"
+                  :options="modelChoices"
+                  :editable="true"
+                  size="small"
+                  :data-testid="'emu-opt-' + opt.name"
+                />
+              </label>
+              <label v-else-if="opt.type === 'str'" class="field">
+                <span :title="opt.description">{{ optionLabel(opt.name) }}</span>
+                <InputText
+                  v-model="optionValues[opt.name]"
+                  size="small"
+                  :data-testid="'emu-opt-' + opt.name"
+                />
+              </label>
+              <label v-else class="field" :class="{ 'opt-off': optionDisabled(opt.name) }">
+                <span :title="opt.description">{{ optionLabel(opt.name) }}</span>
+                <InputNumber
+                  v-model="optionValues[opt.name]"
+                  :min-fraction-digits="opt.type === 'float' ? 1 : undefined"
+                  :max-fraction-digits="opt.type === 'float' ? 10 : undefined"
+                  :disabled="optionDisabled(opt.name)"
+                  size="small"
+                  :data-testid="'emu-opt-' + opt.name"
+                />
+              </label>
+              <!-- Why the reuse box cannot be ticked: there is nothing on disk to
+                   refit. Said here rather than left to a failed run. -->
+              <small
+                v-if="opt.name === REUSE_FLAG && !reusable"
+                class="hint"
+                data-testid="emu-reuse-unavailable"
+              >
+                Train an emulator first — reuse refits samples a previous run simulated.
+              </small>
+              <small
+                v-else-if="opt.name === REUSE_FLAG && reuseOn"
+                class="hint"
+                data-testid="emu-reuse-on"
+              >
+                Reusing the saved design: no simulations are run, so the design settings
+                below are ignored. The fit settings still apply.
+              </small>
+            </template>
+          </template>
+        </SettingsSections>
       </div>
 
       <div class="cal-actions">
