@@ -568,6 +568,17 @@ const workflowStates = computed(() =>
 const workflowSummary = computed(() =>
   modeSummary(wf.target.value, PANEL_KINDS[leftTab.value] ?? 'calibration', wf.described.value),
 )
+// The Analysis tab's section for the workflow step selected (a step clicked in the chart):
+// only it is open by default. No step selected: every section is.
+const ANALYSIS_SECTIONS = { calibration: 'calibration', combine: 'calibration',
+  sensitivity: 'sensitivity', uq: 'uq', emulation: 'emulator', reduction: 'reduction',
+  identifiability: 'identifiability' }
+const analysisFocus = computed(() => {
+  const t = wf.target.value
+  if (t?.mode !== 'edit' || !t.step) return null
+  const step = workflowFileSteps.value.find((s) => s.id === t.step)
+  return step ? (ANALYSIS_SECTIONS[step.kind ?? 'calibration'] ?? null) : null
+})
 const workflowFileSteps = computed(() =>
   wf.loaded.value ? (wf.described.value?.workflow?.steps ?? []) : [],
 )
@@ -3699,6 +3710,7 @@ watch(() => obs.obsData.value, scheduleRun)
         </div>
         <div v-show="centerTab === 'analysis'" class="plot-groups">
           <AnalysisPanel
+            :focus="analysisFocus"
             :indices="sa.indices.value"
             :param-names="sa.paramNames.value"
             :output-names="sa.outputNames.value"
