@@ -514,4 +514,20 @@ describe('useWorkflow: the Workflow view', () => {
     expect(listWorkflows).toHaveBeenCalledWith('/w')
     expect(wf.workflows.value.map((w) => w.name)).toEqual(['study'])
   })
+
+  it("reopens the working dir's workflow when none is open (a server restarted since)", async () => {
+    const wf = useWorkflow()
+    listWorkflows.mockResolvedValueOnce({ workflows: [{ path: 'a', name: 'study', steps: [] }], open: 'a' })
+    loadWorkflow.mockResolvedValueOnce({ loaded: true, path: 'a', workflow: { steps: [] } })
+    await wf.listIn('/w', { reopen: true })
+    expect(loadWorkflow).toHaveBeenCalledWith({ path: 'a', runDir: '', workingDir: '/w' })
+    expect(wf.described.value.path).toBe('a')
+    // with one open, nothing is reopened; without `reopen`, nothing either
+    loadWorkflow.mockClear()
+    listWorkflows.mockResolvedValue({ workflows: [], open: 'b' })
+    await wf.listIn('/w', { reopen: true })
+    wf.described.value = { loaded: false }
+    await wf.listIn('/w')
+    expect(loadWorkflow).not.toHaveBeenCalled()
+  })
 })
