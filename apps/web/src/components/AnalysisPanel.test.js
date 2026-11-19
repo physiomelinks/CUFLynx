@@ -15,6 +15,12 @@ describe('AnalysisPanel sections fold', () => {
     expect(sections(w)[0].folded).toBe(true)
   })
 
+  it('lists its sections in the order of the left tabs (Finbar, 2026-11-20)', () => {
+    // Surrogate (Emulator), Sensitivity, Calibration, UQ
+    expect(sections(mount(AnalysisPanel)).map((s) => s.title)).toEqual(
+      ['Emulator', 'Sensitivity', 'Calibration', 'UQ'])
+  })
+
   it("opens only the selected step's section", async () => {
     const w = mount(AnalysisPanel, { props: { focus: 'uq' } })
     const open = sections(w).filter((s) => !s.folded).map((s) => s.title)
