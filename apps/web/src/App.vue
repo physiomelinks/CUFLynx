@@ -1129,10 +1129,10 @@ for (const [job, kind] of [[calib, 'calibration'], [sa, 'sensitivity'], [uq, 'uq
 // The Workflow view, dropped down over the centre column from the Workflow bar (the
 // Output plots, Progress and Analysis tabs wait minimised at the bottom).
 const workflowOpen = ref(false)
-watch(workflowOpen, (open) => {
+watch(workflowOpen, async (open) => {
   if (open) {
-    wf.refresh()
-    wf.listIn(workingDir.value.trim())
+    await wf.refresh()
+    await wf.listIn(workingDir.value.trim(), { reopen: true })
   }
 })
 // A run of a new step or workflow, a delete or another workflow opened: list them again.
