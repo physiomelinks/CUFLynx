@@ -323,6 +323,16 @@ const solverOpts = ref({})
 const generatedModelFormat = ref('cellml')
 const solver = ref('CVODE_myokit')
 const solverInfo = ref({})
+// The top bar's solver chip: what the solver runs and with which settings, on hover.
+const solverTitle = computed(() => {
+  const info = solverInfo.value ?? {}
+  const parts = [`Solver: ${solver.value || 'not set'} (model format ${generatedModelFormat.value})`]
+  for (const [key, value] of Object.entries(info)) {
+    if (value !== null && value !== undefined && value !== '') parts.push(`${key}: ${value}`)
+  }
+  parts.push('Click to change it in Settings.')
+  return parts.join('\n')
+})
 
 // Myokit JIT-compiles each model, so without a C toolchain every simulation
 // fails with an opaque 500. The backend detects this (compiler_check.py) and we
@@ -2619,6 +2629,19 @@ watch(() => obs.obsData.value, scheduleRun)
       <!-- Shared Python interpreter for calibration / sensitivity / UQ runs.
            Not a <label>: two controls (Select + browse Button) would make label
            clicks forward to the button and hijack the dropdown. -->
+      <!-- The solver every run uses (Settings): said here because it decides what a run is
+           (which backends, which gradients, whether a model is regenerated), and it is
+           otherwise only visible with the Settings dialog open. -->
+      <button
+        type="button"
+        class="solver-chip"
+        data-testid="solver-chip"
+        :title="solverTitle"
+        @click="settingsOpen = true"
+      >
+        <span class="py-label">Solver</span>
+        <strong>{{ solver || '—' }}</strong>
+      </button>
       <div class="python-bar" data-testid="python-bar">
         <span class="py-label" title="Interpreter/env used for calibration, sensitivity and UQ">
           Python
@@ -3752,6 +3775,25 @@ watch(() => obs.obsData.value, scheduleRun)
 }
 .spacer {
   flex: 1;
+}
+.solver-chip {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  font: inherit;
+  font-size: 0.8rem;
+  color: inherit;
+  background: transparent;
+  border: 1px solid var(--p-content-border-color, #555);
+  border-radius: 4px;
+  padding: 0.15rem 0.45rem;
+  cursor: pointer;
+}
+.solver-chip:hover {
+  border-color: var(--p-primary-color, #4f8cff);
+}
+.solver-chip .py-label {
+  opacity: 0.7;
 }
 .python-bar {
   display: flex;
