@@ -6,6 +6,16 @@ import {
   deleteWorkflowStep,
   listWorkflows,
   moveWorkflowStep,
+  renameWorkflowStep,
+  drawWorkflowLink,
+  deleteWorkflowLink,
+  placeWorkflowNode,
+  placeWorkflowNodes,
+  makeWorkflowSweep,
+  setWorkflowValues,
+  combineWorkflowSteps,
+  addWorkflowDraft,
+  deleteWorkflowDraft,
   errorMessage,
   followWorkingDir as postWorkingDir,
   getWorkflow,
@@ -352,11 +362,11 @@ export function useWorkflow(options = {}) {
   }
 
   /** Load one tab as the current study; returns the import-shaped response. */
-  async function select(tabId, workingDir = '') {
+  async function select(tabId, workingDir = '', options = {}) {
     busy.value = true
     error.value = ''
     try {
-      const result = await openWorkflowView(tabId, workingDir)
+      const result = await openWorkflowView(tabId, workingDir, options)
       selected.value = tabId
       view.value = result.workflow_view ?? null
       if (unset.value?.step_id === tabId) unset.value = null
@@ -506,6 +516,64 @@ export function useWorkflow(options = {}) {
     pendingDelete.value = null
   }
 
+  /**
+   * Rename a step; returns '' when done, else why not (the server's reason). The step the
+   * next run changes, and the selected tab, follow the new name.
+   */
+  async function renameStep(stepId, to) {
+    try {
+      described.value = await renameWorkflowStep(stepId, to)
+    } catch (e) {
+      return errorMessage(e)
+    }
+    const name = String(to).trim()
+    if (target.value.mode === 'edit' && target.value.step === stepId) target.value = { mode: 'edit', step: name }
+    if (selected.value === stepId) selected.value = name
+    return ''
+  }
+
+  // -- editing the chart: new steps, arrows, where the boxes sit (workflow_layout) ------
+  /** Run an edit; '' when done (the new description shown), else the server's reason. */
+  async function layoutEdit(call) {
+    try {
+      described.value = await call()
+      return ''
+    } catch (e) {
+      return errorMessage(e)
+    }
+  }
+  /**
+   * Put a new step on the chart and make it the one the next run makes: whatever is run
+   * next becomes that step, with the arrows drawn to it. Returns its id, or null.
+   */
+  async function addDraft(col = null, row = null, onTarget = false, model = null, action = null) {
+    try {
+      const d = await addWorkflowDraft(col, row, onTarget, model, action)
+      described.value = d
+      // a box after the target (a simulation) or an action box is made by its own form;
+      // a model box waits for what is chosen for it; a plain new step for the next run
+      if (!onTarget && !action && !model) target.value = { mode: 'new_step', draft: d.draft }
+      return d.draft
+    } catch (e) {
+      error.value = errorMessage(e)
+      return null
+    }
+  }
+  function chooseDraft(draft) {
+    target.value = { mode: 'new_step', draft }
+  }
+  function deleteDraft(draft) {
+    if (target.value.draft === draft) useDefault()
+    return layoutEdit(() => deleteWorkflowDraft(draft))
+  }
+  const link = (arrow) => layoutEdit(() => drawWorkflowLink(arrow))
+  const unlink = (arrow) => layoutEdit(() => deleteWorkflowLink(arrow))
+  const place = (node, col, row) => layoutEdit(() => placeWorkflowNode(node, col, row))
+  const placeMany = (positions) => layoutEdit(() => placeWorkflowNodes(positions))
+  const makeSweep = (form) => layoutEdit(() => makeWorkflowSweep(form))
+  const setValues = (form) => layoutEdit(() => setWorkflowValues(form))
+  const combine = (form) => layoutEdit(() => combineWorkflowSteps(form))
+
   async function moveStep(stepId, index) {
     const d = await guarded(() => moveWorkflowStep(stepId, index))
     if (d) described.value = d
@@ -527,6 +595,17 @@ export function useWorkflow(options = {}) {
     confirmDelete,
     cancelDelete,
     moveStep,
+    renameStep,
+    addDraft,
+    chooseDraft,
+    deleteDraft,
+    link,
+    unlink,
+    place,
+    placeMany,
+    makeSweep,
+    setValues,
+    combine,
     described,
     loaded,
     tabs,

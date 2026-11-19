@@ -282,6 +282,9 @@ class _ModelRecord:
         #: step's tab in the Workflow tab -- as ``{"results_dir", "step", "workflow"}``.
         #: Its best fit is the previous best fit until this session calibrates.
         self.opened_calibration: dict | None = None
+        # the study workflow's own target, when the study is one of its steps opened as the
+        # study (/api/workflow/view): what runs from it name as their model
+        self.study_target: str | None = None
 
 
 # In-memory registry of uploaded models (process-scoped session store).
@@ -4212,6 +4215,54 @@ def _study_entries(record: "_ModelRecord") -> list:
         return []
 
 
+def _external_draft_plan(configured: str, config: dict):
+    """``(plan, notes)`` for a run that makes a model box of the open workflow when that
+    workflow is not one of the working dir's study workflows (one opened from elsewhere, such
+    as a workflow of module-library models): the step goes into that workflow's own file, on
+    the box's model, its results into that workflow's run directory, with its module
+    libraries. None for any other run.
+
+    Raises:
+        HTTPException: 422 when the box is not one a panel's run makes.
+    """
+    import workflow_layout  # noqa: PLC0415
+
+    wanted = config.get("workflow_target") or {}
+    path = wanted.get("workflow")
+    if wanted.get("mode") != "new_step" or not wanted.get("draft") or not path:
+        return None
+    if not workflow.loaded or os.path.abspath(path) != workflow.path \
+            or study_workflow.working_dir_of(workflow.path):
+        return None
+    draft = next((d for d in workflow_layout.read(path)["drafts"]
+                  if d.get("id") == wanted["draft"]), None)
+    if draft is None:
+        raise HTTPException(status_code=422, detail=f"the workflow has no new step {wanted['draft']!r}")
+    if not draft.get("model"):
+        raise HTTPException(status_code=422, detail=(
+            f"{draft['id']} is not on a model: in this workflow a step a panel runs is made "
+            f"from a model box (New step, Models)"))
+    try:
+        (builder_cls,) = study_workflow._ca("WorkflowBuilder")
+        builder = builder_cls.load(path)
+    except (ValueError, OSError) as exc:
+        raise HTTPException(status_code=422, detail=f"the workflow: {exc}") from exc
+    plan = study_workflow.Plan(builder, configured)
+    plan.external_run_dir = workflow.output_dir or None
+    plan.module_library_dirs = list(workflow.module_library_dirs or _module_library_dirs)
+    plan.draft = draft["id"]
+    # every step this run writes is on the box's model, not the study's: its paths resolved
+    # against the workflow's folder, and none at all when it is the target (a step with no
+    # model runs on the target)
+    model = study_workflow.resolved_model(draft["model"], os.path.dirname(path))
+    target = study_workflow.resolved_model(builder.to_dict().get("target"), os.path.dirname(path))
+    config["study_model"] = None if model == target else model
+    return plan, [_study_note(
+        f"this run makes {draft['id']} a step of {builder.name} on "
+        f"{study_workflow.model_words(draft['model'])}; its results go to "
+        f"{plan.run_dir}.")]
+
+
 def _study_plan(record: "_ModelRecord", configured: str, config: dict, *, flavour: str,
                 held_out: bool = False, needs_point: bool = False, profile: bool = False):
     """``(plan, notes)``: the study workflow to add this run's steps to, or ``(None,
@@ -4246,8 +4297,15 @@ def _study_plan(record: "_ModelRecord", configured: str, config: dict, *, flavou
         raise HTTPException(status_code=409, detail=(
             f"step {running} of the study workflow is running; this run is the next step "
             f"of the same workflow, so start it when that one has finished"))
-    # the CellML the workflow's model is, for a model type CA generates from it
-    config.setdefault("cellml_model_path", _model_file(record))
+    external = _external_draft_plan(configured, config)
+    if external:
+        return external
+    # the CellML the workflow's model is, for a model type CA generates from it; a study
+    # opened from a study workflow's step runs as that workflow's own target
+    study_target = getattr(record, "study_target", None)
+    config.setdefault("cellml_model_path", study_target or _model_file(record))
+    if study_target:
+        config["study_target_path"] = study_target
     try:
         target = _study_target(config)
         wanted = config.get("workflow_target") or {}
@@ -4264,7 +4322,19 @@ def _study_plan(record: "_ModelRecord", configured: str, config: dict, *, flavou
             f"this run changes step {edit} of workflow {builder.name}, and runs it and the "
             f"steps that take from it (choose a new step in the Workflow view to add one "
             f"instead)."))
-    return study_workflow.Plan(builder, configured, edit=edit), notes
+    plan = study_workflow.Plan(builder, configured, edit=edit)
+    # a new step the user put on the chart (a draft), which this run makes a step
+    plan.draft = wanted.get("draft") if wanted.get("mode") == "new_step" else None
+    if plan.draft:
+        import workflow_layout  # noqa: PLC0415
+
+        drafts = workflow_layout.read(builder.path)["drafts"]
+        if any(d.get("id") == plan.draft and d.get("on_target") for d in drafts):
+            raise HTTPException(status_code=422, detail=(
+                f"{plan.draft} is after the target, where a step is a simulation of the merged "
+                f"model: fill in its Simulation form (double-click it), or choose another new "
+                f"step for this {flavour} run"))
+    return plan, notes
 
 
 def _study_settings(config: dict, settings: dict, extra: dict) -> dict:
@@ -4293,7 +4363,8 @@ def _study_target(config: dict) -> dict | None:
     """The workflow model of this run: the user's file for an external Python model, else
     the CellML (the run's ``model_path`` is the generated ``.py`` for a generated type)."""
     model_type = config["model_type"]
-    path = (config["model_path"] if model_type == "external_python"
+    path = (config.get("study_target_path") or config["model_path"]
+            if model_type == "external_python"
             else config.get("cellml_model_path") or config["model_path"])
     return study_workflow.target_model(path, model_type)
 
@@ -4301,7 +4372,7 @@ def _study_target(config: dict) -> dict | None:
 def _study_inputs(config: dict, obs_path: str | None = None) -> dict:
     """The model, obs_data and params_for_id every step of this run names, and the
     emulator it runs on when the Emulator tab's tick box is on."""
-    out = {"model": _study_target(config),
+    out = {"model": config["study_model"] if "study_model" in config else _study_target(config),
            "obs_data": obs_path or config["obs_path"], "params_for_id": config["params_path"]}
     if config.get("use_emulator"):
         out["emulator_dir"] = config["emulator_dir"]
@@ -4393,8 +4464,19 @@ def _study_point(plan, model_id: str, qnames: list) -> str | None:
 
 
 def _study_start(plan, config: dict, markers: tuple, notes: list) -> None:
-    """Write the workflow, point ``config`` at its step and open it in the Workflow tab."""
+    """Write the workflow, point ``config`` at its step and open it in the Workflow tab.
+    A run made from a draft gives the new step the draft's place and arrows, checked by CA
+    (a 422 with CA's reason when it refuses one, before anything runs)."""
     plan.write()
+    if getattr(plan, "draft", None):
+        import workflow_layout  # noqa: PLC0415
+
+        try:
+            workflow_layout.draft_became(plan.builder.path, plan.draft, plan.step)
+        except (study_workflow.StudyWorkflowError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=(
+                f"step {plan.step} was added, but an arrow drawn to it was refused: {exc}. "
+                f"Change the arrow in the Workflow view and run again.")) from exc
     config.update(plan.runner_config({"done": markers[0], "fail": markers[1]}))
     config["log_preamble"] = notes + [_study_note(
         f"step {plan.step} of {plan.builder.path} ({'changes' if plan.edit else 'adds'} "
@@ -4788,6 +4870,12 @@ class WorkflowStepDeleteRequest(BaseModel):
     confirm: bool = False
 
 
+class WorkflowStepRenameRequest(BaseModel):
+    step: str
+    #: The step's new id.
+    to: str
+
+
 class WorkflowStepMoveRequest(BaseModel):
     step: str
     #: Its new position in the workflow's steps, from 0.
@@ -4800,6 +4888,9 @@ class WorkflowViewRequest(BaseModel):
     # The user's working dir: an external Python model is kept there as the study's
     # model (inputs/funcs/user_model.py), as an upload keeps it.
     config_outputs_dir: str = ""
+    # False: the view's model only, without the step's obs_data and params_for_id (a new
+    # step on that model brings its own).
+    inputs: bool = True
 
 
 class WorkflowRunRequest(BaseModel):
@@ -4951,6 +5042,22 @@ def _reopen_edited(path: str) -> dict:
     return _workflow_http(workflow.describe)
 
 
+@app.get("/api/workflow/edge")
+def workflow_edge(source: str, target: str, key: str = "") -> dict:
+    """What passes along one arrow of the open workflow's chart: the values a step fixes in
+    the next, the distribution it gives as a prior, the point an analysis is at, the emulator,
+    the model, or the values merged into the target (``workflow_edges.edge_detail``)."""
+    import workflow_edges  # noqa: PLC0415
+
+    if not workflow.loaded or not workflow.path:
+        raise HTTPException(status_code=422, detail="no workflow is open")
+    try:
+        raw = study_workflow.read_raw(workflow.path)
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=f"cannot read {workflow.path}: {exc}") from exc
+    return workflow_edges.edge_detail(workflow.output_dir or "", raw, source, target, key)
+
+
 @app.post("/api/workflow/step/delete")
 def workflow_step_delete(req: WorkflowStepDeleteRequest) -> dict:
     """Delete a step of the open workflow, reconnecting the steps that took from it to what
@@ -4965,10 +5072,188 @@ def workflow_step_delete(req: WorkflowStepDeleteRequest) -> dict:
     with study_workflow.lock():
         try:
             result = study_workflow.delete_step(path, req.step, confirm=req.confirm)
+            if result["applied"]:
+                import workflow_layout  # noqa: PLC0415
+
+                workflow_layout.forget(path, result.get("deleted") or [req.step])
         except (study_workflow.StudyWorkflowError, OSError, ValueError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
     described = _reopen_edited(path) if result["applied"] else _workflow_http(workflow.describe)
     return {**result, "workflow": described}
+
+
+@app.post("/api/workflow/step/rename")
+def workflow_step_rename(req: WorkflowStepRenameRequest) -> dict:
+    """Rename a step of the open workflow, and every reference to it; its results folder in
+    the run directory moves with it, so it keeps its results
+    (``study_workflow.rename_step``)."""
+    path = _editable_workflow()
+    with study_workflow.lock():
+        try:
+            study_workflow.rename_step(path, req.step, req.to, workflow.output_dir or None)
+            import workflow_layout  # noqa: PLC0415
+
+            workflow_layout.rename(path, req.step, req.to.strip())
+        except (study_workflow.StudyWorkflowError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return _reopen_edited(path)
+
+
+class WorkflowLinkRequest(BaseModel):
+    #: The step (or draft) the arrow leaves, and the one it points at.
+    source: str
+    target: str
+    #: CA's key: what the target takes from the source (fixed_from, priors_from, ...).
+    key: str
+    #: A list key's options: a prior's kind / inflate / parameters, a fixed arrow's parameters.
+    options: dict | None = None
+    #: The arrow's key before this change, when changing what it passes.
+    old_key: str | None = None
+
+
+class WorkflowPositionRequest(BaseModel):
+    node: str
+    col: int
+    row: float
+
+
+class WorkflowPositionsRequest(BaseModel):
+    #: {id: {col, row}}: several boxes at once (a new column made in a gap).
+    positions: dict[str, dict]
+
+
+class WorkflowSweepRequest(BaseModel):
+    #: The after-target new step this makes a sweep.
+    draft: str
+    #: The protocol's obs_data file; absent: the study's (``model_id``) current obs_data.
+    obs_data: str | None = None
+    model_id: str | None = None
+    outputs: list[str] = []
+    #: {"<vessel>/<param>": CA's sweep_range}; empty: one run of the merged target.
+    parameters: dict = {}
+    design: str | None = None
+    zip: list[list[str]] | None = None
+    #: The solver's output step; absent: the step the app's solver uses now.
+    dt: float | None = None
+
+
+class WorkflowDraftRequest(BaseModel):
+    #: Where the new box goes (absent: the chart places it).
+    col: int | None = None
+    row: float | None = None
+    #: Dropped after the target: a sweep on the merged target.
+    on_target: bool = False
+    #: A model box: the step's model as the workflow file writes it.
+    model: dict | str | None = None
+    #: An action box (workflow_layout.ACTIONS): set by hand, combine.
+    action: str | None = None
+    #: A draft to delete.
+    draft: str | None = None
+
+
+class WorkflowSetValuesRequest(BaseModel):
+    draft: str
+    #: [{parameter, value, reason}]
+    entries: list[dict]
+    point: bool = False
+
+
+class WorkflowCombineRequest(BaseModel):
+    draft: str
+    #: CA's combine.method: best_fit or mean
+    method: str = "best_fit"
+
+
+def _layout_edit(fn, *args, **kwargs) -> dict:
+    """Run a workflow_layout change on the open workflow; the Workflow view's description."""
+    import workflow_layout  # noqa: PLC0415
+
+    path = _editable_workflow()
+    with study_workflow.lock():
+        try:
+            getattr(workflow_layout, fn)(path, *args, **kwargs)
+        except (study_workflow.StudyWorkflowError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return _reopen_edited(path)
+
+
+@app.post("/api/workflow/link")
+def workflow_link(req: WorkflowLinkRequest) -> dict:
+    """Draw or change an arrow: ``target`` takes ``source`` by ``key``. Between two steps it
+    goes into the workflow file, checked by CA; with a new step (a draft) at either end it
+    waits until the draft is a step (``workflow_layout.set_link``)."""
+    return _layout_edit("set_link", req.source, req.target, req.key, req.options, req.old_key)
+
+
+@app.post("/api/workflow/link/delete")
+def workflow_link_delete(req: WorkflowLinkRequest) -> dict:
+    return _layout_edit("remove_link", req.source, req.target, req.key)
+
+
+@app.post("/api/workflow/position")
+def workflow_position(req: WorkflowPositionRequest) -> dict:
+    """Where a box sits on the chart: its column and its order there (the layout only)."""
+    return _layout_edit("set_position", req.node, req.col, req.row)
+
+
+@app.post("/api/workflow/draft")
+def workflow_draft(req: WorkflowDraftRequest) -> dict:
+    """A new step on the chart, to place and draw arrows to; a panel's run with
+    ``workflow_target {mode: "new_step", draft}`` makes it a step of that run's kind.
+    ``draft`` in the response is its id."""
+    import workflow_layout  # noqa: PLC0415
+
+    path = _editable_workflow()
+    with study_workflow.lock():
+        try:
+            draft = workflow_layout.add_draft(path, req.col, req.row, on_target=req.on_target,
+                                              model=req.model, action=req.action)
+        except study_workflow.StudyWorkflowError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {**_reopen_edited(path), "draft": draft}
+
+
+@app.post("/api/workflow/positions")
+def workflow_positions(req: WorkflowPositionsRequest) -> dict:
+    """Several boxes placed at once: a box dropped in the gap between two columns makes a
+    new column, and the boxes right of it move one column on."""
+    return _layout_edit("set_positions", req.positions)
+
+
+@app.post("/api/workflow/sweep")
+def workflow_sweep(req: WorkflowSweepRequest) -> dict:
+    """Make a new step dropped after the target a sweep on the merged target (its Simulation
+    form): CA's ``kind: sweep, on_target: true``, checked by CA. The workflow's Run runs it."""
+    obs = req.obs_data
+    if not obs and req.model_id:
+        record = _get_model(req.model_id)
+        obs = str(record.obs_path) if record.obs_path else None
+    if not obs:
+        raise HTTPException(status_code=422, detail=(
+            "a simulation needs a protocol: load an obs_data in the study, or give its file"))
+    dt = req.dt if req.dt is not None else engine.dt
+    return _layout_edit("make_sweep", req.draft, obs_data=obs, outputs=req.outputs,
+                        parameters=req.parameters, design=req.design, zip_groups=req.zip,
+                        settings={"dt": float(dt)} if dt else None)
+
+
+@app.post("/api/workflow/set_values")
+def workflow_set_values(req: WorkflowSetValuesRequest) -> dict:
+    """Make a Set values by hand action box a set step: each value with its reason, checked
+    by CA (a red set-by-hand box)."""
+    return _layout_edit("make_set", req.draft, req.entries, point=req.point)
+
+
+@app.post("/api/workflow/combine")
+def workflow_combine(req: WorkflowCombineRequest) -> dict:
+    """Make a Choose a parameter set by cost action box a combine step of the steps drawn
+    into it (CA's ``kind: combine``), checked by CA. The workflow's Run runs it."""
+    return _layout_edit("make_combine", req.draft, req.method)
+
+
+@app.post("/api/workflow/draft/delete")
+def workflow_draft_delete(req: WorkflowDraftRequest) -> dict:
+    return _layout_edit("delete_draft", req.draft or "")
 
 
 @app.post("/api/workflow/step/move")
@@ -4997,6 +5282,8 @@ def workflow_view(req: WorkflowViewRequest) -> dict:
     """
     work_dir = UPLOAD_DIR / "workflow_views" / uuid.uuid4().hex
     view = _workflow_http(workflow.view, req.view, str(work_dir))
+    if not req.inputs:
+        view = {**view, "obs_data_path": None, "params_for_id_path": None}
     try:
         if (view.get("model") or {}).get("external_model_path"):
             result = _load_external_view(view, req.view, req.config_outputs_dir)
@@ -5006,6 +5293,19 @@ def workflow_view(req: WorkflowViewRequest) -> dict:
         shutil.rmtree(work_dir, ignore_errors=True)
     _workflow_view_models[result["model_id"]] = workflow.path
     workflow.view_models[result["model_id"]] = req.view
+    result["name"] = _view_model_name(view, req.view)
+    # A step of a study workflow opened as the study (a block clicked in the chart): its
+    # model is a packed copy, so runs from it name the workflow's own target, or the next
+    # run would see another model and start a new workflow instead of changing the step.
+    if study_workflow.working_dir_of(workflow.path):
+        try:
+            target = study_workflow.read_raw(workflow.path).get("target") or {}
+        except (OSError, ValueError):
+            target = {}
+        rel = target.get("cellml_model_path") or target.get("external_model_path")
+        if isinstance(rel, str):
+            _models[result["model_id"]].study_target = os.path.normpath(
+                os.path.join(os.path.dirname(workflow.path), rel))
     result["workflow_view"] = {
         key: view.get(key) for key in (
             "view", "kind", "model", "step_id", "place", "fixed", "calibrated",
@@ -5027,14 +5327,36 @@ def workflow_view(req: WorkflowViewRequest) -> dict:
 
 
 def _view_inputs(view: dict, prefix: str) -> tuple:
-    """``(obs, params)`` of a workflow view, each ``(file name, bytes)`` or None."""
+    """``(obs, params)`` of a workflow view, each ``(file name, bytes)`` or None. Each keeps
+    the step's own file name (``krapivinsky1998_obs_data.json``), so the study shows the files
+    the step names; a name that does not say which it is gets the step's prefix instead, as
+    the archive importer tells them apart by name."""
     obs = params = None
     if view.get("obs_data_path"):
-        obs = (f"{prefix}_obs_data.json", Path(view["obs_data_path"]).read_bytes())
+        path = Path(view["obs_data_path"])
+        name = path.name if "obs" in path.name.lower() else f"{prefix}_obs_data.json"
+        obs = (name, path.read_bytes())
     if view.get("params_for_id_path"):
         path = Path(view["params_for_id_path"])
-        params = (f"{prefix}_params_for_id{path.suffix.lower()}", path.read_bytes())
+        name = (path.name if "param" in path.name.lower()
+                else f"{prefix}_params_for_id{path.suffix.lower()}")
+        params = (name, path.read_bytes())
     return obs, params
+
+
+def _view_model_name(view: dict, step: str) -> str:
+    """The study's name for a workflow view: the step and its model, ``kir: i_K1 ·
+    krapivinsky1998`` (a generated model's own name is the same for every step)."""
+    model = view.get("model") or {}
+    if model.get("module_type"):
+        label = f"{model['module_type']} · {model.get('parameterisation') or ''}".strip(" ·")
+    elif model.get("cellml_model_path") or model.get("external_model_path"):
+        label = Path(model.get("cellml_model_path") or model["external_model_path"]).name
+    elif model.get("module_array"):
+        label = Path(str(model["module_array"])).stem
+    else:
+        label = ""
+    return f"{step}: {label}" if label else step
 
 
 def _load_cellml_view(view: dict, prefix: str) -> dict:

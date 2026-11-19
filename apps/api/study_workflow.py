@@ -328,6 +328,41 @@ def open_workflow(working_dir: str, target: dict, *, path: str | None = None,
     return builder, note
 
 
+#: The keys of a step's model that are file paths, relative to the workflow's folder.
+_MODEL_PATH_KEYS = ("cellml_model_path", "external_model_path", "module_array")
+
+
+def resolved_model(model, directory: str):
+    """``model`` (a step's or the target's, as the workflow file writes it) with its file
+    paths made absolute against the workflow's folder ``directory``."""
+    if isinstance(model, str):
+        return os.path.normpath(os.path.join(directory, model))
+    if not isinstance(model, dict):
+        return model
+    out = copy.deepcopy(model)
+    for key in _MODEL_PATH_KEYS:
+        if isinstance(out.get(key), str):
+            out[key] = os.path.normpath(os.path.join(directory, out[key]))
+    return out
+
+
+def model_words(model) -> str:
+    """A step's model in a few words, for the run log: ``i_K1 · krapivinsky1998``, a file's
+    name, or ``the target``."""
+    if not model:
+        return "the target"
+    if isinstance(model, str):
+        return os.path.basename(model)
+    if model.get("module_type"):
+        return " · ".join(str(model[k]) for k in ("module_type", "parameterisation") if model.get(k))
+    for key in ("cellml_model_path", "external_model_path", "module_array"):
+        if model.get(key):
+            return os.path.basename(str(model[key]))
+    if model.get("select"):
+        return "a selection of " + ", ".join(map(str, model["select"]))
+    return "its model"
+
+
 #: How a run says which step it is (``workflow_target.mode``): ``default`` changes the
 #: workflow's latest step of the same kind of analysis, or adds one when it has none;
 #: ``new_step`` adds one; ``edit`` changes ``step``; ``new_workflow`` starts a workflow.
@@ -517,9 +552,15 @@ class Plan:
         """The step whose results the panel reads: the last one added."""
         return self.added[-1]
 
+    #: Set for a run into a workflow that is not one of the working dir's study workflows
+    #: (one opened from elsewhere, such as a module-library workflow): its own run directory
+    #: and module libraries.
+    external_run_dir: str | None = None
+    module_library_dirs: list = []
+
     @property
     def run_dir(self) -> str:
-        return run_dir(self.working_dir, self.builder.name)
+        return self.external_run_dir or run_dir(self.working_dir, self.builder.name)
 
     def step_dir(self, step_id: str | None = None) -> str:
         return os.path.join(self.run_dir, step_id or self.step)
@@ -538,11 +579,48 @@ class Plan:
             new = [s for s in self.added if s not in self.before]
             if new:
                 move_before(path, new, self.edit)
+            self._keep_drawn(path)
             raw = read_raw(path)
             wanted = set(self.added) | {self.edit} | descendants(raw, self.edit)
             order = [s.id for s in _checked(raw, path).topological_order()]
             self.run_steps = [s for s in order if s in wanted]
         return path
+
+    #: What a changed step keeps from before when the panel's run does not say it: the arrows
+    #: drawn on the chart and what goes with them.
+    KEPT_KEYS = ("fixed_from", "priors_from", "emulator_from", "params_for_id_from",
+                 "sensitivity_from", "store_distribution")
+
+    def _keep_drawn(self, path: str) -> None:
+        """The changed step keeps the arrows drawn to it in the Workflow view (and a prior's
+        objective) that the panel's run does not set; CA checks the result."""
+        old = self.before.get(self.edit) or {}
+        raw = read_raw(path)
+        step = next((s for s in raw["steps"] if s["id"] == self.edit), None)
+        if step is None:
+            return
+        ids = {s["id"] for s in raw["steps"]}
+        changed = False
+        for key in self.KEPT_KEYS:
+            if key in old and key not in step:
+                value = old[key]
+                if key in ("fixed_from", "priors_from"):
+                    value = [e for e in value if _list_ref(e) in ids]
+                    if not value:
+                        continue
+                elif isinstance(value, str) and value not in ids:
+                    continue
+                step[key] = copy.deepcopy(value)
+                changed = True
+        objective = (old.get("settings") or {}).get("optimiser_options", {}).get("objective_function")
+        if objective and step.get("priors_from"):
+            opts = step.setdefault("settings", {}).setdefault("optimiser_options", {})
+            if "objective_function" not in opts:
+                opts["objective_function"] = objective
+                changed = True
+        if changed:
+            _checked(raw, path)
+            _write_raw(path, raw)
 
     def completes(self) -> bool:
         """Whether every step outside this run has a done result, so a run whose own steps
@@ -577,7 +655,8 @@ class Plan:
             only = self.added[0] if len(self.added) == 1 else None
             from_step, steps = (None if only else self.added[0]), list(self.added)
         return {
-            "write_calibrated": self.completes(),
+            # a workflow opened from elsewhere writes its own calibrated values when it runs
+            "write_calibrated": not self.external_run_dir and self.completes(),
             "study_step": {"workflow": self.builder.path, "run_dir": self.run_dir,
                            "step": self.step, "steps": steps,
                            "step_dir": self.step_dir(), "edited": self.edit},
@@ -586,7 +665,7 @@ class Plan:
             "only": only,
             "from_step": from_step,
             "run_steps": steps if self.run_steps is not None else None,
-            "module_library_dirs": [],
+            "module_library_dirs": list(self.module_library_dirs),
             "markers": markers,
         }
 
@@ -614,7 +693,7 @@ def references(step: dict, ids=None) -> list[tuple[str, str]]:
     """``[(key, step id)]``: every step ``step`` takes something from, by CA's key
     (``scale_from`` for a set entry's ``of``). With ``ids``, only references to those."""
     out = [(k, step[k]) for k in _SINGLE_KEYS if isinstance(step.get(k), str)]
-    for key in ("fixed_from", "priors_from"):
+    for key in ("fixed_from", "priors_from", "combine_from"):
         value = step.get(key)
         for entry in (value if isinstance(value, list) else [value] if value else []):
             if _list_ref(entry):
@@ -814,6 +893,55 @@ def delete_step(path: str, step_id: str, *, confirm: bool = False) -> dict:
     _checked(raw, path)
     _write_raw(path, raw)
     return {**plan, "applied": True}
+
+
+#: A step id a rename may give: it names the step's results folder and data files.
+STEP_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.\-]{0,63}")
+
+
+def rename_step(path: str, old: str, new: str, run_dir: str | None = None) -> dict:
+    """Rename step ``old`` to ``new`` in the workflow file, and every reference to it (the
+    ``*_from`` keys, ``fixed_from`` / ``priors_from`` entries, a set entry's ``of``). CA keeps a
+    step's results in ``<run_dir>/<id>/`` and finds them by that name, so the folder is moved
+    with it and the step keeps its results. Returns the new file.
+
+    Raises:
+        StudyWorkflowError: no such step, a name a step id cannot have, a name another step
+            has (case aside: the folders would clash on Windows and macOS), or CA refuses the
+            file.
+    """
+    new = (new or "").strip()
+    raw = read_raw(path)
+    steps = raw.get("steps") or []
+    ids = [s["id"] for s in steps]
+    if old not in ids:
+        raise StudyWorkflowError(f"the workflow has no step {old!r}")
+    if new == old:
+        return raw
+    if not STEP_ID.fullmatch(new):
+        raise StudyWorkflowError(
+            f"{new!r} cannot name a step: use letters, digits, '_', '.' or '-' (it names the "
+            f"step's results folder), starting with a letter or digit, at most 64 characters")
+    if any(i.casefold() == new.casefold() for i in ids if i != old):
+        raise StudyWorkflowError(f"another step is already called {new!r}")
+    folder = os.path.join(run_dir, old) if run_dir else None
+    target = os.path.join(run_dir, new) if run_dir else None
+    if target and os.path.exists(target) and folder and os.path.exists(folder):
+        raise StudyWorkflowError(
+            f"{target} already exists, from an earlier step of that name: rename it or the "
+            f"folder first")
+    raw = copy.deepcopy(raw)
+    for step in raw["steps"]:
+        if step["id"] == old:
+            step["id"] = new
+        for key, ref in references(step):
+            if ref == old:
+                _replace_ref(step, key, old, new)
+    _checked(raw, path)
+    _write_raw(path, raw)
+    if folder and os.path.isdir(folder) and not os.path.exists(target):
+        os.rename(folder, target)
+    return raw
 
 
 def descendants(raw: dict, step_id: str) -> set[str]:

@@ -16,6 +16,7 @@ vi.mock('./lib/api', () => ({
   listWorkflows: vi.fn().mockResolvedValue({ workflows: [] }),
   deleteWorkflowStep: vi.fn(),
   moveWorkflowStep: vi.fn(),
+  addWorkflowDraft: vi.fn(),
   loadWorkflow: vi.fn().mockResolvedValue(null),
   uploadWorkflow: vi.fn().mockResolvedValue(null),
   closeWorkflow: vi.fn().mockResolvedValue(null),
@@ -1815,16 +1816,14 @@ describe('App.vue top bar run window', () => {
     expect(labels).not.toContain('Clear obs data')
   })
 
-  // The protocol readout is now the only visible statement of the run window, so
-  // it says the window and not only the shape of the protocol.
-  it('states the window the protocol sets', async () => {
+  // The run window comes from the protocol, which is not restated at the top (Finbar,
+  // 2026-11-18: the "Protocol: … experiment(s) · …" readout is removed).
+  it('runs over the window the protocol sets, with no readout of it', async () => {
     const wrapper = await mounted({ obsData: PROTOCOL })
-    const text = wrapper.find('[data-testid="protocol-summary"]').text()
-    expect(text).toContain('2 experiment(s)')
-    expect(text).toContain('9') // total sim_times
-    expect(text).toContain('2') // total pre_times
-    expect(wrapper.vm.simTime).toBe(9)
-    expect(wrapper.vm.preTime).toBe(2)
+    expect(wrapper.find('[data-testid="protocol-summary"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="no-protocol"]').exists()).toBe(false)
+    expect(wrapper.vm.simTime).toBe(9) // total sim_times
+    expect(wrapper.vm.preTime).toBe(2) // total pre_times
   })
 
   it('says what is missing when a model has no protocol to run over', async () => {
@@ -2463,6 +2462,52 @@ describe('analysis runs carry the protocol window', () => {
     expect(settings.pre_time).toBe(1.5)
   })
 
+  it("a model box's Calibrate opens its model alone and asks for the step's obs_data", async () => {
+    const { openWorkflowView } = await import('./lib/api')
+    const wrapper = await mountApp()
+    const kir = { module_type: 'i_K1', version: 'v1', parameterisation: 'k1998' }
+    wrapper.vm.wf.described.value = {
+      loaded: true, path: '/p/enterocyte_calibration_workflow.json',
+      workflow: { workflow_name: 'enterocyte', target: { module_array: 'a.json' },
+                  steps: [{ id: 'kir', model: kir }] },
+      layout: { positions: {}, links: [], drafts: [{ id: 'new-1', model: kir }] },
+    }
+    openWorkflowView.mockClear()
+    await wrapper.vm.onWorkflowDraftAction({ draft: 'new-1', model: kir, panel: 'calibration' })
+    // kir's model, without kir's obs_data and params_for_id: a new step brings its own
+    expect(openWorkflowView).toHaveBeenCalledWith('kir', expect.anything(), { inputs: false })
+    expect(wrapper.vm.needsObsData).toBe(true)
+    expect(wrapper.vm.leftTab).toBe('calibration')
+    expect(wrapper.vm.wf.target.value).toEqual({ mode: 'new_step', draft: 'new-1' })
+    // opening another step as the study asks for nothing
+    await wrapper.vm.onSelectWorkflowTab('kir')
+    expect(wrapper.vm.needsObsData).toBe(false)
+  })
+
+  it("a model box's Simulation opens its model alone and waits for the obs_data to vary", async () => {
+    const { openWorkflowView } = await import('./lib/api')
+    const wrapper = await mountApp()
+    const kir = { module_type: 'i_K1', version: 'v1', parameterisation: 'k1998' }
+    wrapper.vm.wf.described.value = {
+      loaded: true, path: '/p/enterocyte_calibration_workflow.json',
+      workflow: { workflow_name: 'enterocyte', target: { module_array: 'a.json' },
+                  steps: [{ id: 'kir', model: kir }] },
+      layout: { positions: {}, links: [], drafts: [{ id: 'new-2', model: kir }] },
+    }
+    openWorkflowView.mockClear()
+    const tab = wrapper.vm.leftTab
+    await wrapper.vm.onWorkflowDraftAction({ draft: 'new-2', model: kir, simulation: true })
+    expect(openWorkflowView).toHaveBeenCalledWith('kir', expect.anything(), { inputs: false })
+    expect(wrapper.vm.needsObsData).toBe(true)
+    expect(wrapper.vm.simulationDraft).toBe('new-2')
+    // no panel makes a simulation: the tab stays, and no run is waiting to make the box
+    expect(wrapper.vm.leftTab).toBe(tab)
+    expect(wrapper.vm.wf.target.value.draft).toBeUndefined()
+    wrapper.vm.onSimulationMade()
+    expect(wrapper.vm.simulationDraft).toBe(null)
+    expect(wrapper.vm.needsObsData).toBe(false)
+  })
+
   it('a step clicked in the Workflow view opens its panel, and the next run changes it', async () => {
     const { startCalibration } = await import('./lib/api')
     startCalibration.mockClear()
@@ -2479,7 +2524,11 @@ describe('analysis runs carry the protocol window', () => {
     // by default the latest calibration is changed
     expect(wrapper.vm.workflowSummary).toMatchObject({ mode: 'edit', step: 'calibration-2' })
 
+    const { openWorkflowView } = await import('./lib/api')
+    openWorkflowView.mockClear()
     await wrapper.vm.onSelectWorkflowStep('calibration-1')
+    // the step becomes the current study, so Imports show its model and data
+    expect(openWorkflowView).toHaveBeenCalledWith('calibration-1', expect.anything(), {})
     expect(wrapper.vm.leftTab).toBe('calibration')
     expect(wrapper.vm.workflowSummary).toMatchObject({ mode: 'edit', step: 'calibration-1' })
     wrapper.vm.onRunCalibration({ param_id_method: 'CMA-ES' })
@@ -2492,12 +2541,16 @@ describe('analysis runs carry the protocol window', () => {
     expect(wrapper.vm.wf.error.value).toContain('no panel makes it')
     expect(wrapper.vm.leftTab).toBe('calibration')
 
-    // a second calibration has to be asked for, and is made once
-    wrapper.vm.onNewWorkflowStep('calibration')
-    expect(wrapper.vm.workflowSummary.mode).toBe('new_step')
+    // a second calibration has to be asked for: New step puts a box on the chart, and the
+    // next run makes it, once
+    const { addWorkflowDraft } = await import('./lib/api')
+    addWorkflowDraft.mockResolvedValueOnce({ ...wrapper.vm.wf.described.value, draft: 'new-1' })
+    await wrapper.vm.onNewWorkflowStep()
+    expect(wrapper.vm.workflowSummary).toMatchObject({ mode: 'new_step', step: 'new-1' })
     wrapper.vm.onRunCalibration({ param_id_method: 'CMA-ES' })
     await flushPromises()
-    expect(startCalibration.mock.calls[1][1].workflow_target).toEqual({ mode: 'new_step', workflow: path })
+    expect(startCalibration.mock.calls[1][1].workflow_target).toEqual(
+      { mode: 'new_step', workflow: path, draft: 'new-1' })
   })
 
   it('sensitivity payload includes sim_time/pre_time from the protocol', async () => {

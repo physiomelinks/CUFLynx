@@ -80,7 +80,6 @@ import {
   withOverlayVars,
   timeUnit,
 } from './lib/plot'
-import { fmtSigFigs } from './lib/format'
 import { predictionFeatureItems, hasHeldOutData } from './lib/obsDataJson'
 import SearchableSelect from './components/SearchableSelect.vue'
 import SaveParamsDialog from './components/SaveParamsDialog.vue'
@@ -605,6 +604,10 @@ async function onSelectWorkflowStep(stepId) {
     return
   }
   wf.error.value = ''
+  // the step becomes the current study, so Imports show its model, obs_data and
+  // params_for_id; a step with no model of its own (a set step, a sweep on the target) has
+  // nothing to load
+  if (workflowDetails.value[stepId]?.viewable !== false) await onSelectWorkflowTab(stepId)
   wf.editStep(stepId)
   leftTab.value = panel
   await nextTick()
@@ -612,8 +615,55 @@ async function onSelectWorkflowStep(stepId) {
 }
 
 /** "New step": the next run, of whatever kind, is added as a step. */
-function onNewWorkflowStep() {
-  wf.newStep()
+/** New step: a new box on the workflow chart, which the next run of any kind makes a step. */
+async function onNewWorkflowStep() {
+  if (wf.loaded.value) await wf.addDraft()
+  else wf.newStep()
+}
+
+/**
+ * A model box's choice: the box's model becomes the study -- the model alone, taken from a
+ * step already on that model (the target for the target's model), with no obs_data or
+ * params_for_id, since a new step brings its own: Imports highlight its obs_data box. The
+ * chosen tab opens on the left, and its next run makes the box that step.
+ */
+async function onWorkflowDraftAction({ draft, model: boxModel, panel, simulation = false }) {
+  const same = (m) => JSON.stringify(m ?? null) === JSON.stringify(boxModel ?? null)
+  const step = boxModel ? workflowFileSteps.value.find((s) => s.model && same(s.model)) : null
+  const target = wf.described.value?.workflow?.target
+  const view = step && workflowDetails.value[step.id]?.viewable !== false ? step.id
+    : boxModel && !step && same(target) ? 'target' : null
+  if (view) await onSelectWorkflowTab(view, { inputs: false })
+  needsObsData.value = !simulation || !loadedObsFilename.value || !!view
+  if (simulation) {
+    // no panel makes it: Add simulation in the Workflow view does, once it has its obs_data
+    simulationDraft.value = draft
+    return
+  }
+  wf.chooseDraft(draft)
+  if (PANEL_REFS[panel]) leftTab.value = panel
+}
+
+// The Simulation box waiting for its obs_data (Add simulation in the Workflow view), or null.
+const simulationDraft = ref(null)
+function onSimulationMade() {
+  simulationDraft.value = null
+  needsObsData.value = false
+}
+
+// The chart's edits, for the Workflow view (each async, '' when done, else why not).
+const workflowEditor = {
+  link: (arrow) => wf.link(arrow),
+  unlink: (arrow) => wf.unlink(arrow),
+  place: (node, col, row) => wf.place(node, col, row),
+  placeMany: (positions) => wf.placeMany(positions),
+  addDraft: (col, row, onTarget, boxModel, action) => wf.addDraft(col, row, onTarget, boxModel, action),
+  setValues: (form) => wf.setValues(form),
+  combine: (form) => wf.combine(form),
+  // a simulation's protocol is the study's obs_data unless its form names a file
+  makeSweep: (form) => wf.makeSweep({ ...form, modelId: model.modelId.value }),
+  chooseDraft: (draft) => wf.chooseDraft(draft),
+  deleteDraft: (draft) => wf.deleteDraft(draft),
 }
 
 /**
@@ -621,8 +671,15 @@ function onNewWorkflowStep() {
  * current study, through the same handlers a dropped archive goes through; then
  * that step's own calibration results, if it has run, as a reopened run's are.
  */
-async function onSelectWorkflowTab(tabId) {
-  const opened = await wf.select(tabId, workingDir.value.trim())
+// A new workflow step on the study's model needs an obs_data of its own: Imports highlight
+// its obs_data box until one is given (a model box's choice sets it).
+const needsObsData = ref(false)
+
+/** Open a workflow tab as the study; `{inputs: false}`: its model only, with no obs_data or
+ * params_for_id (a new step on that model brings its own). */
+async function onSelectWorkflowTab(tabId, options = {}) {
+  needsObsData.value = false
+  const opened = await wf.select(tabId, workingDir.value.trim(), options)
   if (!opened) {
     if (wf.error.value) sim.setError(wf.error.value)
     return
@@ -1653,22 +1710,6 @@ watch(timeUnitOverride, (v) => localStorage.setItem('cuflynx-time-unit', (v || '
 const timeUnitLabel = computed(
   () => modelTimeUnit.value || timeUnitOverride.value.trim(),
 )
-
-// The run window, said out loud beside the experiment count: how long the study
-// simulates for, and how much of that is warm-up. The count alone described the
-// protocol's shape but never its length, which is the number the removed t₁/pre
-// spinners used to show — so it is stated here instead of nowhere.
-const runWindowLabel = computed(() => {
-  const unit = timeUnitLabel.value ? ` ${timeUnitLabel.value}` : ''
-  const pre = preTime.value
-    ? ` (+ ${fmtSigFigs(preTime.value, 4)}${unit} pre)`
-    : ''
-  return `${fmtSigFigs(simTime.value, 4)}${unit}${pre}`
-})
-
-const runWindowTitle =
-  'The run window comes from the obs_data protocol_info: the total of its ' +
-  'sim_times, after the total of its pre_times. Edit the protocol to change it.'
 
 // Variables the user has overlaid onto an existing plot (issue #196), as
 // cellKey -> [qname]. Keyed by the *cell* rather than by an id of its own
@@ -3156,20 +3197,12 @@ watch(() => obs.obsData.value, scheduleRun)
         @click="settingsOpen = true"
       />
       <!--
-        The run window, in the one place it is stated. There are no t₁/pre
-        spinners to disagree with it and no Run button: the protocol says how
-        long the run is, and every parameter change re-runs it.
+        No t₁/pre spinners and no Run button: the obs_data protocol says how long the
+        run is, and every parameter change re-runs it. Without one there is nothing to
+        run over, which is said here.
       -->
       <div
-        v-if="obs.hasProtocol.value"
-        class="protocol-summary"
-        data-testid="protocol-summary"
-        :title="runWindowTitle"
-      >
-        Protocol: {{ obs.experimentCount.value }} experiment(s) · {{ runWindowLabel }}
-      </div>
-      <div
-        v-else-if="model.hasModel.value"
+        v-if="!obs.hasProtocol.value && model.hasModel.value"
         class="protocol-summary no-protocol"
         data-testid="no-protocol"
       >
@@ -3420,13 +3453,8 @@ watch(() => obs.obsData.value, scheduleRun)
       <section class="col col-center" :class="{ 'wf-open': workflowOpen }">
         <WorkflowBar
           :name="wf.name.value"
-          :tabs="wf.tabs.value"
-          :selected="wf.selected.value"
-          :states="workflowStates"
-          :busy="wf.busy.value"
           :open="workflowOpen"
           :summary="workflowSummary"
-          @select="onSelectWorkflowTab"
           @toggle="workflowOpen = !workflowOpen"
         />
         <WorkflowView
@@ -3439,7 +3467,19 @@ watch(() => obs.obsData.value, scheduleRun)
           :states="workflowStates"
           :results="workflowResults"
           :workflow-target="wf.described.value?.workflow?.target ?? null"
-          :editing="workflowSummary.mode === 'edit' ? workflowSummary.step : null"
+          :figures="wf.described.value?.workflow?.external_figures ?? []"
+          :origins="wf.described.value?.value_origins ?? null"
+          :rename-step="(step, to) => wf.renameStep(step, to)"
+          :layout="wf.described.value?.layout ?? null"
+          :link-kinds="wf.described.value?.link_kinds ?? {}"
+          :fixed-parameters="!!wf.described.value?.fixed_parameters"
+          :editor="workflowEditor"
+          :step-kinds="wf.described.value?.step_kinds ?? []"
+          :draft-panels="Object.keys(PANEL_REFS)"
+          :simulation-draft="simulationDraft"
+          :study-has-obs="!!loadedObsFilename"
+          :parameters-offered="model.variables.value.params ?? []"
+          :editing="workflowSummary.mode !== 'new_workflow' ? workflowSummary.step : null"
           :pending-delete="wf.pendingDelete.value"
           :busy="wf.busy.value"
           :running="wf.running.value"
@@ -3461,6 +3501,8 @@ watch(() => obs.obsData.value, scheduleRun)
           @open-workflow="(path) => onOpenWorkflow({ path })"
           @new-workflow="wf.newWorkflow()"
           @new-step="onNewWorkflowStep"
+          @draft-action="onWorkflowDraftAction"
+          @simulation-made="onSimulationMade"
           @select-step="onSelectWorkflowStep"
           @delete-step="(id) => wf.deleteStep(id)"
           @confirm-delete="wf.confirmDelete()"
@@ -3813,6 +3855,7 @@ watch(() => obs.obsData.value, scheduleRun)
           :current-params="loadedParamsRaw"
           :model-variables="model.variables.value"
           :model-name="model.name.value"
+          :needs-obs-data="needsObsData"
           :loaded-filename="loadedParamsFilename"
           :loaded-obs-filename="loadedObsFilename"
           :can-export="model.hasModel.value"

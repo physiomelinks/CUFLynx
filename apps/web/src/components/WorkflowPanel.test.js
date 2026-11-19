@@ -133,14 +133,13 @@ describe('WorkflowPanel', () => {
     expect(box({ module_type: 'heart', parameterisation: 'default' })).toBe(false)
   })
 
-  it("shows the run's provenance diagram and links it and its graph as plain links", () => {
+  it("links the run's provenance diagram and its graph, without drawing the diagram", () => {
     const provenance = { svg: '/api/workflow/provenance/provenance.svg?v=1',
                          graph: '/api/workflow/provenance/provenance_graph.json?v=1' }
     expect(mountPanel({ described, tabs }).find('[data-testid="workflow-provenance"]').exists())
       .toBe(false)
     const panel = mountPanel({ described, tabs, provenance })
-    expect(panel.find('[data-testid="workflow-provenance-svg"]').attributes('src'))
-      .toBe(provenance.svg)
+    expect(panel.find('img').exists()).toBe(false)
     for (const id of ['workflow-provenance-svg-link', 'workflow-provenance-graph']) {
       const link = panel.find(`[data-testid="${id}"]`)
       // a real link the user clicks: never a scripted open or a blob: URL
@@ -156,6 +155,14 @@ describe('WorkflowPanel', () => {
     const panel = mountPanel({ described: { ...described, plan_error: 'no lin_a' }, tabs })
     expect(panel.find('[data-testid="workflow-plan-error"]').text()).toContain('no lin_a')
     expect(panel.find('[data-testid="workflow-run"]').attributes('disabled')).toBeDefined()
+  })
+
+  it("shows CA's warnings about the workflow, which do not stop a run (CA's refusals do)", () => {
+    const problem = 'calibration workflow "study": 1 parameter(s) of m are calibrated by more ' +
+      "than one step, and the later step replaces the earlier: \"m/a\" by 'c-1', then 'c-2'"
+    const panel = mountPanel({ described: { ...described, problems: [problem] }, tabs })
+    expect(panel.find('[data-testid="workflow-problem"]').text()).toContain("'c-1', then 'c-2'")
+    expect(panel.find('[data-testid="workflow-run"]').attributes('disabled')).toBeUndefined()
   })
 
   it('shows progress and lets a run be cancelled', async () => {

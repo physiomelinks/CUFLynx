@@ -91,6 +91,9 @@ const selectedStep = computed(() =>
 const canRun = computed(
   () => loaded.value && !props.described?.plan_error && !running.value && !props.busy,
 )
+// What CA warns about the workflow itself (steps that give one parameter the same box): CA's
+// own message, shown as a warning. What CA refuses is plan_error, which stops the run.
+const problems = computed(() => props.described?.problems ?? [])
 const coresInvalid = computed(() => numCores.value > 1 && !props.mpiexecAvailable)
 
 // The target as CA reads it, and whether it is an external Python model.
@@ -281,6 +284,15 @@ const progressText = computed(() => {
       >
         {{ described.plan_error }}
       </Message>
+      <Message
+        v-for="problem in problems"
+        :key="problem"
+        severity="warn"
+        :closable="false"
+        data-testid="workflow-problem"
+      >
+        {{ problem }}
+      </Message>
 
       <Message
         v-if="unset"
@@ -449,19 +461,8 @@ const progressText = computed(() => {
 
       <div v-if="provenance" class="wf-provenance" data-testid="workflow-provenance">
         <h5>How every value was set</h5>
-        <a
-          v-if="provenance.svg"
-          :href="provenance.svg"
-          target="_blank"
-          rel="noopener"
-          title="Open the diagram on its own"
-        >
-          <img
-            :src="provenance.svg"
-            alt="The run's provenance: each step and the values it set"
-            data-testid="workflow-provenance-svg"
-          />
-        </a>
+        <!-- CA's diagram is not drawn here (the chart above shows the workflow); it opens on
+             its own from the link, beside its graph -->
         <p class="wf-hint">
           <a
             v-if="provenance.svg"

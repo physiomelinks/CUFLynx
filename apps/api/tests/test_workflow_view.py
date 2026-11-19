@@ -58,6 +58,29 @@ def test_a_new_calibration_has_to_be_asked_for(client, fake_runs, tmp_path):
     assert steps["calibration-2"]["settings"]["optimiser_options"]["num_calls_to_function"] == 9
 
 
+def test_two_calibrations_of_one_parameter_are_a_problem_the_view_shows(
+        client, fake_runs, tmp_path):
+    """Two steps calibrating the same parameter of the target, neither taking from the
+    other. CA finds it (its message names the parameter and the steps): a CA with the
+    combine step (CA #685) runs either step alone and refuses a run that merges the target
+    until a combine step joins them (its plan's target_overlap); an older CA warns that the
+    later replaces the earlier. The view shows CA's message either way, and CUFLynx does
+    not check it again."""
+    work = tmp_path / "w"
+    model_id = _setup(client)
+    assert _calibrate(client, model_id, work)["state"] == "done"
+    assert client.get("/api/workflow").json()["problems"] == []
+    assert _calibrate(client, model_id, work, workflow_target=NEW_STEP)["state"] == "done"
+    described = client.get("/api/workflow").json()
+    assert not described.get("plan_error")
+    assert len(described["problems"]) == 1
+    message = described["problems"][0]
+    assert "calibration-1" in message and "calibration-2" in message
+    if "combine" in described["step_kinds"]:
+        # CA's warning carries the plan's target_overlap, so the view shows it once
+        assert described["plan"]["target_overlap"] in message
+
+
 def test_changing_a_calibration_reruns_the_steps_that_take_from_it(
         client, fake_runs, tmp_path):
     work = tmp_path / "w"
@@ -295,6 +318,108 @@ def described(monkeypatch):
     """Describing the workflow plans it, and CA reads a CellML target's constants with
     libCellML (the integration tier has it)."""
     pytest.importorskip("libcellml")
+
+
+def test_a_run_from_a_step_opened_as_the_study_changes_that_step(
+        client, fake_runs, described, tmp_path):
+    """A block clicked in the chart loads the step as the study (a packed copy of its model);
+    a run from it names the workflow's own target, so it changes the step in the same
+    workflow rather than starting study-2 for a model it has not seen."""
+    import workflow_manager
+
+    work = tmp_path / "w"
+    model_id = _setup(client)
+    assert _calibrate(client, model_id, work)["state"] == "done"
+    # the fake runner records only status; CA's view also reads the step's values
+    step_dir = work / "workflows" / "study" / "calibration-1"
+    (step_dir / "step_result.json").write_text(json.dumps({
+        "step": "calibration-1", "kind": "calibration", "status": "done",
+        "calibrated": [], "fixed": [], "finished": "2026-11-18T12:00:00",
+        "param_id_output_dir": str(step_dir / "param_id" / "CMA-ES_case")}))
+    r = client.post("/api/workflow/view", json={"view": "calibration-1",
+                                                "config_outputs_dir": str(work)})
+    assert r.status_code == 200, r.text
+    opened = r.json()["model_id"]
+    assert opened != model_id
+    status = _run(client, "calibration", {"model_id": opened, "settings": {
+        "config_outputs_dir": str(work), "param_id_method": "CMA-ES",
+        "num_calls_to_function": 33}})
+    assert status["state"] == "done", status
+    listed = client.get("/api/workflow/list", params={"config_outputs_dir": str(work)}).json()
+    assert [w["name"] for w in listed["workflows"]] == ["study"]
+    steps = _steps(work)
+    assert list(steps) == ["calibration-1"]
+    assert steps["calibration-1"]["settings"]["optimiser_options"]["num_calls_to_function"] == 33
+    assert workflow_manager.workflow.loaded
+
+
+def test_a_view_opened_for_a_new_step_has_its_model_only(
+        client, fake_runs, described, tmp_path):
+    """A model box's Calibrate opens a step's model as the study without that step's
+    obs_data and params_for_id: a new step brings its own."""
+    work = tmp_path / "w"
+    model_id = _setup(client)
+    assert _calibrate(client, model_id, work)["state"] == "done"
+    step_dir = work / "workflows" / "study" / "calibration-1"
+    (step_dir / "step_result.json").write_text(json.dumps({
+        "step": "calibration-1", "kind": "calibration", "status": "done",
+        "calibrated": [], "fixed": [], "finished": "2026-11-18T12:00:00",
+        "param_id_output_dir": str(step_dir / "param_id" / "CMA-ES_case")}))
+    whole = client.post("/api/workflow/view", json={"view": "calibration-1",
+                                                    "config_outputs_dir": str(work)}).json()
+    assert whole["obs_data"] and whole["params_for_id"]
+    r = client.post("/api/workflow/view", json={"view": "calibration-1", "inputs": False,
+                                                "config_outputs_dir": str(work)})
+    assert r.status_code == 200, r.text
+    assert r.json()["model_id"] and not r.json()["obs_data"] and not r.json()["params_for_id"]
+
+
+def test_a_step_opened_as_the_study_keeps_its_file_names_and_is_named_by_its_model(tmp_path):
+    import main
+
+    obs = tmp_path / "krapivinsky1998_obs_data.json"
+    obs.write_text("{}")
+    params = tmp_path / "krapivinsky1998_params_for_id.json"
+    params.write_text("{}")
+    view = {"obs_data_path": str(obs), "params_for_id_path": str(params),
+            "model": {"module_type": "i_K1", "version": "v1", "parameterisation": "krapivinsky1998"}}
+    (o, p) = main._view_inputs(view, "kir")
+    assert o[0] == "krapivinsky1998_obs_data.json" and p[0] == "krapivinsky1998_params_for_id.json"
+    assert main._view_model_name(view, "kir") == "kir: i_K1 · krapivinsky1998"
+    # a name that does not say which file it is gets the step's prefix, as the importer
+    # tells an archive's files apart by name
+    data = tmp_path / "targets.json"
+    data.write_text("{}")
+    (o, _) = main._view_inputs({"obs_data_path": str(data)}, "kir")
+    assert o[0] == "kir_obs_data.json"
+    assert main._view_model_name({"model": {"cellml_model_path": "../m/LV.cellml"}}, "c-1") == "c-1: LV.cellml"
+
+
+def test_renaming_a_step_renames_its_references_and_keeps_its_results(
+        client, fake_runs, tmp_path):
+    work = tmp_path / "w"
+    model_id = _setup(client)
+    assert _calibrate(client, model_id, work, start_from="current")["state"] == "done"
+    _run(client, "uq", {"model_id": model_id, "settings": {
+        "config_outputs_dir": str(work), "method": "mcmc", "num_steps": 20, "num_walkers": 8}})
+    path = str(_workflow_dir(work) / "calibration_workflow.json")
+    run = work / "workflows" / "study"
+    assert (run / "calibration-1" / "step_result.json").is_file()
+
+    study_workflow.rename_step(path, "calibration-1", "fit_lv", str(run))
+    steps = _steps(work)
+    assert list(steps) == ["sliders-1", "fit_lv", "mcmc-1"]
+    assert steps["mcmc-1"]["result_from"] == "fit_lv"       # the reference follows
+    assert steps["fit_lv"]["start_from"] == "sliders-1"
+    # CA finds a step's results by its id: the folder moves with it
+    assert (run / "fit_lv" / "step_result.json").is_file()
+    assert not (run / "calibration-1").exists()
+
+    for bad, why in (("mcmc-1", "already called"), ("MCMC-1", "already called"),
+                     ("has space", "cannot name a step"), ("", "cannot name a step")):
+        with pytest.raises(study_workflow.StudyWorkflowError, match=why):
+            study_workflow.rename_step(path, "fit_lv", bad, str(run))
+    assert list(_steps(work)) == ["sliders-1", "fit_lv", "mcmc-1"]
 
 
 def test_the_delete_route_asks_before_a_cascade_and_moves_reorder(
