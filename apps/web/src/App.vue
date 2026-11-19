@@ -581,7 +581,11 @@ const workflowSummary = computed(() =>
 const ANALYSIS_SECTIONS = { calibration: 'calibration', combine: 'calibration',
   sensitivity: 'sensitivity', uq: 'uq', emulation: 'emulator', reduction: 'reduction',
   identifiability: 'identifiability' }
+// A section a finished run opens (a parameter reduction's), until a step is selected.
+const analysisFocusRun = ref(null)
+watch(() => wf.target.value, () => { analysisFocusRun.value = null })
 const analysisFocus = computed(() => {
+  if (analysisFocusRun.value) return analysisFocusRun.value
   const t = wf.target.value
   if (t?.mode !== 'edit' || !t.step) return null
   const step = workflowFileSteps.value.find((s) => s.id === t.step)
@@ -2586,6 +2590,16 @@ watch(
     emu.refresh(model.modelId.value, workingDir.value.trim() || '')
   },
   { immediate: true },
+)
+
+// When a parameter reduction finishes, show what it kept: the Analysis tab, its section open.
+watch(
+  () => reduction.state.value,
+  (state) => {
+    if (state !== 'done') return
+    analysisFocusRun.value = 'reduction'
+    centerTab.value = 'analysis'
+  },
 )
 
 // When a UQ run finishes, surface the posterior distributions automatically.

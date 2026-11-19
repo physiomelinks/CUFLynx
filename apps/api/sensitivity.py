@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import threading
@@ -38,6 +39,9 @@ from runtime_paths import default_python, runner_command, runner_launch_env, run
 
 RUNNER_PATH = str(runner_path("sensitivity_runner.py"))
 
+
+#: A runner's protocol line (__SENSITIVITY_DONE__, __SENSITIVITY_META__ {...}, ...).
+_MARKER_LINE = re.compile(r"__[A-Z][A-Z_]*__")
 
 class SensitivityJob:
     def __init__(self, job_id: str, output_dir: str):
@@ -276,12 +280,14 @@ class SensitivityManager:
         if job is None or job.id != job_id:
             return None
         with job.lock:
-            lines = job.lines[offset:]
+            raw = job.lines[offset:]
             return {
                 "job_id": job.id,
                 "state": job.state,
-                "lines": lines,
-                "next_offset": offset + len(lines),
+                # the runner's __*__ marker lines are for this manager, not the user: a
+                # reduction's log ended in __SENSITIVITY_DONE__, which hid what it found
+                "lines": [line for line in raw if not _MARKER_LINE.match(line)],
+                "next_offset": offset + len(raw),
                 "indices": job.indices,
                 "param_names": job.param_names,
                 "output_names": job.output_names,
