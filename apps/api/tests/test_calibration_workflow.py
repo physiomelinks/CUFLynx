@@ -255,6 +255,29 @@ def test_clicking_back_to_a_tab_reuses_its_study_until_a_result_changes(
     assert made() == 3
 
 
+@pytest.mark.parametrize("takes_validate", [True, False])
+def test_a_tab_skips_cas_validation_run_where_ca_can(monkeypatch, tmp_path, takes_validate):
+    """CA #693: workflow_model(validate=False) skips the trial compile a tab does not need
+    (the live simulation compiles the model next); a CA without the keyword gets none."""
+    import workflow_manager as wm  # noqa: PLC0415
+
+    seen = {}
+    if takes_validate:
+        def workflow_model(path, view, output_dir, work_dir, module_library_dirs=None,
+                           validate=True):
+            seen.update(validate=validate)
+            return {}
+    else:
+        def workflow_model(path, view, output_dir, work_dir, module_library_dirs=None):
+            seen.update(validate="not asked")
+            return {}
+    monkeypatch.setattr(wm, "ca_workflow", lambda name: workflow_model)
+    manager = wm.WorkflowManager()
+    manager.path, manager.output_dir = str(tmp_path / "w.json"), str(tmp_path / "run")
+    manager.view("fit_a", str(tmp_path / "work"))
+    assert seen["validate"] == (False if takes_validate else "not asked")
+
+
 def test_a_workflow_opened_builds_its_tabs_in_the_background(
         client, monkeypatch, workflow_file, tmp_path):
     """Once a workflow is open, every box's study is built in the background, so a click
