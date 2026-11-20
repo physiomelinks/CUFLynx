@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import ControlPanel from './components/ControlPanel.vue'
 import VariableList from './components/VariableList.vue'
 import PlotPanel from './components/PlotPanel.vue'
@@ -12,7 +12,8 @@ import ProgressPanel from './components/ProgressPanel.vue'
 import SensitivityPanel from './components/SensitivityPanel.vue'
 import UQPanel from './components/UQPanel.vue'
 import WorkflowBar from './components/WorkflowBar.vue'
-import WorkflowPanel from './components/WorkflowPanel.vue'
+import WorkflowView from './components/WorkflowView.vue'
+import { PANEL_KINDS, modeSummary, panelSettings, stepPanel } from './lib/workflowTarget'
 import EditObsDataDialog from './components/EditObsDataDialog.vue'
 import EditVariableMappingDialog from './components/EditVariableMappingDialog.vue'
 import AnalysisPanel from './components/AnalysisPanel.vue'
@@ -63,6 +64,7 @@ import {
   loadWorkingDir,
   openStudyFromOutputs,
   getWorkflowStepInput,
+  workflowReductionCandidates,
 } from './lib/api'
 import {
   overlayItemsFor,
@@ -74,7 +76,6 @@ import {
   withOverlayVars,
   timeUnit,
 } from './lib/plot'
-import { fmtSigFigs } from './lib/format'
 import { predictionFeatureItems, hasHeldOutData } from './lib/obsDataJson'
 import SearchableSelect from './components/SearchableSelect.vue'
 import SaveParamsDialog from './components/SaveParamsDialog.vue'
@@ -171,7 +172,7 @@ async function loadOutputsFromDirectory(runDir) {
     if (found.workflow_run) {
       const opened = await wf.open({ runDir: dir })
       if (opened) {
-        leftTab.value = 'workflow'
+        workflowOpen.value = true
         loadedOutputsSummary.value = `Reopened calibration workflow ${opened.workflow?.workflow_name ?? ''}`
       } else {
         sim.setError(wf.error.value)
@@ -562,16 +563,161 @@ const workflowStates = computed(() =>
   Object.fromEntries(wf.tabs.value.map((t) => [t.id, wf.stateOf(t.id)])),
 )
 
+// What the next run from the open panel will be, for the Workflow bar's highlight: a new
+// workflow, a new step, or which step it changes (a panel that makes no steps: calibration).
+const workflowSummary = computed(() =>
+  modeSummary(wf.target.value, PANEL_KINDS[leftTab.value] ?? 'calibration', wf.described.value),
+)
+// The Analysis tab's section for the workflow step selected (a step clicked in the chart):
+// only it is open by default. No step selected: every section is.
+const ANALYSIS_SECTIONS = { calibration: 'calibration', combine: 'calibration',
+  sensitivity: 'sensitivity', uq: 'uq', emulation: 'emulator', reduction: 'reduction',
+  identifiability: 'identifiability' }
+const analysisFocus = computed(() => {
+  const t = wf.target.value
+  if (t?.mode !== 'edit' || !t.step) return null
+  const step = workflowFileSteps.value.find((s) => s.id === t.step)
+  return step ? (ANALYSIS_SECTIONS[step.kind ?? 'calibration'] ?? null) : null
+})
+const workflowFileSteps = computed(() =>
+  wf.loaded.value ? (wf.described.value?.workflow?.steps ?? []) : [],
+)
+const workflowDetails = computed(() => Object.fromEntries(wf.tabs.value.map((t) => [t.id, t])))
+// CA's status of each step ({status, stale, best_cost, duration_s, ...}), for the chart's boxes.
+const workflowResults = computed(() => wf.described.value?.status?.steps ?? {})
+
+// The panels, so a step clicked in the Workflow view fills its panel's settings.
+const calibrationPanel = ref(null)
+const sensitivityPanel = ref(null)
+const uqPanel = ref(null)
+const emulatorPanel = ref(null)
+// The Identifiability tab's panel (tab 'ia') joins this map where that tab exists (#412).
+const PANEL_REFS = { calibration: calibrationPanel, sensitivity: sensitivityPanel, uq: uqPanel,
+  emulator: emulatorPanel }
+
+/**
+ * A step clicked in the Workflow view: its panel opens on the left with the step's
+ * settings, and the next run from it changes this step (and reruns what takes from it).
+ */
+async function onSelectWorkflowStep(stepId) {
+  const step = workflowFileSteps.value.find((s) => s.id === stepId)
+  if (!step) return
+  const panel = stepPanel(step.kind)
+  if (!panel || !PANEL_REFS[panel]) {
+    wf.error.value = `Step ${stepId} is a ${step.kind} step: no panel makes it, so it has no settings to change here.`
+    return
+  }
+  wf.error.value = ''
+  // Selected and its panel filled at once; its model then loads behind (CA generates it,
+  // seconds on a library model), so a click is not held up by it.
+  wf.editStep(stepId)
+  leftTab.value = panel
+  await nextTick()
+  const fill = () => PANEL_REFS[panel].value?.applySettings?.(panelSettings(step, wf.described.value))
+  fill()
+  // the step becomes the current study, so Imports show its model, obs_data and
+  // params_for_id; a step with no model of its own (a set step, a sweep on the target) has
+  // nothing to load
+  if (workflowDetails.value[stepId]?.viewable !== false) {
+    const loaded = await onSelectWorkflowTab(stepId)
+    // a study loaded may re-seed a panel's defaults: fill it again, if still this step's
+    if (loaded && wf.target.value?.step === stepId) fill()
+  }
+}
+
+/** "New step": the next run, of whatever kind, is added as a step. */
+/** New step: a new box on the workflow chart, which the next run of any kind makes a step. */
+async function onNewWorkflowStep() {
+  if (wf.loaded.value) await wf.addDraft()
+  else wf.newStep()
+}
+
+/**
+ * A model box's choice: the box's model becomes the study -- the model alone, taken from a
+ * step already on that model (the target for the target's model), with no obs_data or
+ * params_for_id, since a new step brings its own: Imports highlight its obs_data box. The
+ * chosen tab opens on the left, and its next run makes the box that step.
+ */
+async function onWorkflowDraftAction({ draft, model: boxModel, panel, simulation = false,
+  chooseParams = false }) {
+  const same = (m) => JSON.stringify(m ?? null) === JSON.stringify(boxModel ?? null)
+  const step = boxModel ? workflowFileSteps.value.find((s) => s.model && same(s.model)) : null
+  const target = wf.described.value?.workflow?.target
+  const view = step && workflowDetails.value[step.id]?.viewable !== false ? step.id
+    : boxModel && !step && same(target) ? 'target' : null
+  if (view) await onSelectWorkflowTab(view, { inputs: false })
+  if (chooseParams) {
+    // no panel makes it: Choose parameters in the Workflow view does, from the study's
+    // params_for_id, which Imports ask for
+    needsParams.value = true
+    reductionDraft.value = draft
+    return
+  }
+  needsObsData.value = !simulation || !loadedObsFilename.value || !!view
+  if (simulation) {
+    // no panel makes it: Add simulation in the Workflow view does, once it has its obs_data
+    simulationDraft.value = draft
+    return
+  }
+  wf.chooseDraft(draft)
+  if (PANEL_REFS[panel]) leftTab.value = panel
+}
+
+// The Choose parameters box waiting for its params_for_id (the Workflow view's form), or null.
+const reductionDraft = ref(null)
+// Imports highlight the params_for_id box: a Choose parameters box chooses from its entries.
+const needsParams = ref(false)
+function onReductionMade() {
+  reductionDraft.value = null
+  needsParams.value = false
+}
+
+// The Simulation box waiting for its obs_data (Add simulation in the Workflow view), or null.
+const simulationDraft = ref(null)
+function onSimulationMade() {
+  simulationDraft.value = null
+  needsObsData.value = false
+}
+
+// The chart's edits, for the Workflow view (each async, '' when done, else why not).
+const workflowEditor = {
+  link: (arrow) => wf.link(arrow),
+  unlink: (arrow) => wf.unlink(arrow),
+  place: (node, col, row) => wf.place(node, col, row),
+  placeMany: (positions) => wf.placeMany(positions),
+  addDraft: (col, row, onTarget, boxModel, action) => wf.addDraft(col, row, onTarget, boxModel, action),
+  setValues: (form) => wf.setValues(form),
+  combine: (form) => wf.combine(form),
+  // a reduction chosen by hand keeps entries of the study's params_for_id
+  chooseParameters: (form) => wf.chooseParameters({ ...form, modelId: model.modelId.value }),
+  reductionCandidates: () => workflowReductionCandidates(model.modelId.value),
+  // a simulation's protocol is the study's obs_data unless its form names a file
+  makeSweep: (form) => wf.makeSweep({ ...form, modelId: model.modelId.value }),
+  chooseDraft: (draft) => wf.chooseDraft(draft),
+  deleteDraft: (draft) => wf.deleteDraft(draft),
+}
+
 /**
  * Load one tab of the workflow -- a submodule step, or the supermodule -- as the
  * current study, through the same handlers a dropped archive goes through; then
  * that step's own calibration results, if it has run, as a reopened run's are.
  */
-async function onSelectWorkflowTab(tabId) {
-  const opened = await wf.select(tabId, workingDir.value.trim())
+// A new workflow step on the study's model needs an obs_data of its own: Imports highlight
+// its obs_data box until one is given (a model box's choice sets it).
+const needsObsData = ref(false)
+
+/** Open a workflow tab as the study; `{inputs: false}`: its model only, with no obs_data or
+ * params_for_id (a new step on that model brings its own). */
+// The latest tab asked for: a slower load of an earlier click is not applied over it.
+let selectSeq = 0
+async function onSelectWorkflowTab(tabId, options = {}) {
+  needsObsData.value = false
+  const mine = ++selectSeq
+  const opened = await wf.select(tabId, workingDir.value.trim(), options)
+  if (mine !== selectSeq) return false
   if (!opened) {
     if (wf.error.value) sim.setError(wf.error.value)
-    return
+    return false
   }
   await onModelLoaded({ ...opened, filename: opened.model_filename })
   if (opened.obs_data && !opened.obs_data.error) {
@@ -598,6 +744,7 @@ async function onSelectWorkflowTab(tabId) {
   // A sensitivity, emulation or identifiability step's own results (read with the tab).
   const stepOutputs = opened.workflow_view?.step_outputs
   if (stepOutputs) applyLoadedOutputs(stepOutputs)
+  return true
 }
 
 async function onOpenWorkflow(source) {
@@ -632,7 +779,7 @@ async function onEditStepInput({ stepId, preselect = [] }) {
   try {
     const { content } = await getWorkflowStepInput(stepId, 'obs_data')
     stepEditor.value = { stepId, document: content ? JSON.parse(content) : null, preselect }
-    leftTab.value = 'workflow'
+    workflowOpen.value = true
   } catch (e) {
     sim.setError(errorMessage(e))
   }
@@ -960,14 +1107,40 @@ const leftTab = ref('params')
 // which the server opens in the Workflow tab: re-read it when a run ends and when the tab
 // is opened, so the tab shows each run as a step and the provenance drawn after it.
 watch(
-  () => [calib.state.value, sa.state.value, uq.state.value],
+  () => [calib.state.value, sa.state.value, uq.state.value, emu.state.value],
   (now, before) => {
     if (anyRunEnded(now, before)) wf.refresh()
   },
 )
-watch(leftTab, (tab) => {
-  if (tab === 'workflow') wf.refresh()
+
+// A run that was to add a step or start a workflow has started: it is made once, and the
+// panel's next run changes it (a run the server refused leaves the choice as it was).
+for (const [job, kind] of [[calib, 'calibration'], [sa, 'sensitivity'], [uq, 'uq'],
+  [emu, 'emulation']]) {
+  watch(
+    () => job.state.value,
+    (state) => {
+      if (state === 'running') wf.ranTarget(kind)
+    },
+  )
+}
+
+// The Workflow view, dropped down over the centre column from the Workflow bar (the
+// Output plots, Progress and Analysis tabs wait minimised at the bottom).
+const workflowOpen = ref(false)
+watch(workflowOpen, async (open) => {
+  if (open) {
+    await wf.refresh()
+    await wf.listIn(workingDir.value.trim(), { reopen: true })
+  }
 })
+// A run of a new step or workflow, a delete or another workflow opened: list them again.
+watch(
+  () => [wf.described.value?.path, wf.described.value?.workflow?.steps?.length],
+  () => {
+    if (workflowOpen.value) wf.listIn(workingDir.value.trim())
+  },
+)
 
 // Emulator (CA #333). `emuDefaults` is CA's emulation settings schema;
 // `emuSettings` mirrors the panel's live values so a run can carry them.
@@ -1573,22 +1746,6 @@ const timeUnitLabel = computed(
   () => modelTimeUnit.value || timeUnitOverride.value.trim(),
 )
 
-// The run window, said out loud beside the experiment count: how long the study
-// simulates for, and how much of that is warm-up. The count alone described the
-// protocol's shape but never its length, which is the number the removed t₁/pre
-// spinners used to show — so it is stated here instead of nowhere.
-const runWindowLabel = computed(() => {
-  const unit = timeUnitLabel.value ? ` ${timeUnitLabel.value}` : ''
-  const pre = preTime.value
-    ? ` (+ ${fmtSigFigs(preTime.value, 4)}${unit} pre)`
-    : ''
-  return `${fmtSigFigs(simTime.value, 4)}${unit}${pre}`
-})
-
-const runWindowTitle =
-  'The run window comes from the obs_data protocol_info: the total of its ' +
-  'sim_times, after the total of its pre_times. Edit the protocol to change it.'
-
 // Variables the user has overlaid onto an existing plot (issue #196), as
 // cellKey -> [qname]. Keyed by the *cell* rather than by an id of its own
 // because every kind of plot can take an overlay — an obs-derived cell, the
@@ -1986,6 +2143,7 @@ function onRunCalibration(settings) {
     {
       ...settings,
       ...runTimes(),
+      workflow_target: wf.runTarget('calibration'),
       python_path: pythonPath.value,
       working_dir: workingDir.value.trim() || undefined,
       // Evaluate the trained emulator instead of the solver (Emulator tab).
@@ -2105,6 +2263,7 @@ function onRunSensitivity(settings) {
       ...settings,
       ...calibFirst,
       ...runTimes(),
+      workflow_target: wf.runTarget('sensitivity'),
       python_path: pythonPath.value,
       working_dir: workingDir.value.trim() || undefined,
       // Evaluate the trained emulator instead of the solver (Emulator tab).
@@ -2135,6 +2294,7 @@ function onRunUQ(settings) {
   uq.start(model.modelId.value, {
     ...settings,
     ...runTimes(),
+    workflow_target: wf.runTarget('uq'),
     python_path: pythonPath.value,
     working_dir: workingDir.value.trim() || undefined,
     use_emulator: emu.useEmulator.value,
@@ -2166,6 +2326,7 @@ function onTrainEmulator(settings) {
     // stale -- "the model, parameter bounds, obs_data operations or protocol
     // differ". One source for the window is what keeps every side equal.
     ...runTimes(),
+    workflow_target: wf.runTarget('emulation'),
     python_path: pythonPath.value,
     working_dir: workingDir.value.trim() || undefined,
   })
@@ -2417,7 +2578,7 @@ async function onModelLoaded(data) {
   }
   // Once this study has loaded, so its late answers cannot land on the workflow's tab.
   if (openWorkflowNow) {
-    leftTab.value = 'workflow'
+    workflowOpen.value = true
     await onOpenWorkflow({ path: openWorkflowNow.path })
   }
 }
@@ -3003,20 +3164,12 @@ watch(() => obs.obsData.value, scheduleRun)
         @click="settingsOpen = true"
       />
       <!--
-        The run window, in the one place it is stated. There are no t₁/pre
-        spinners to disagree with it and no Run button: the protocol says how
-        long the run is, and every parameter change re-runs it.
+        No t₁/pre spinners and no Run button: the obs_data protocol says how long the
+        run is, and every parameter change re-runs it. Without one there is nothing to
+        run over, which is said here.
       -->
       <div
-        v-if="obs.hasProtocol.value"
-        class="protocol-summary"
-        data-testid="protocol-summary"
-        :title="runWindowTitle"
-      >
-        Protocol: {{ obs.experimentCount.value }} experiment(s) · {{ runWindowLabel }}
-      </div>
-      <div
-        v-else-if="model.hasModel.value"
+        v-if="!obs.hasProtocol.value && model.hasModel.value"
         class="protocol-summary no-protocol"
         data-testid="no-protocol"
       >
@@ -3135,20 +3288,6 @@ watch(() => obs.obsData.value, scheduleRun)
             UQ
             <span v-if="uq.running.value" class="tab-dot" title="UQ running" />
           </button>
-          <button
-            class="left-tab"
-            :class="{ active: leftTab === 'workflow' }"
-            data-testid="tab-workflow"
-            @click="leftTab = 'workflow'"
-          >
-            Workflow
-            <span v-if="wf.running.value" class="tab-dot" title="workflow running" />
-            <span
-              v-else-if="wf.offered.value && !wf.loaded.value"
-              class="tab-dot tab-dot-on"
-              title="the study you opened carries a calibration workflow"
-            />
-          </button>
         </div>
 
         <div v-show="leftTab === 'params'" class="left-pane left-pane-scroll">
@@ -3169,6 +3308,7 @@ watch(() => obs.obsData.value, scheduleRun)
         </div>
         <div v-show="leftTab === 'emulator'" class="left-pane left-pane-scroll">
           <EmulatorPanel
+            ref="emulatorPanel"
             v-model="emu.useEmulator.value"
             :defaults="emuDefaults"
             :can-run="canCalibrate"
@@ -3191,6 +3331,7 @@ watch(() => obs.obsData.value, scheduleRun)
         </div>
         <div v-show="leftTab === 'sensitivity'" class="left-pane left-pane-scroll">
           <SensitivityPanel
+            ref="sensitivityPanel"
             :defaults="saDefaults"
             :can-run="canCalibrate"
             :mpiexec-available="mpiexecAvailable"
@@ -3207,6 +3348,7 @@ watch(() => obs.obsData.value, scheduleRun)
         </div>
         <div v-show="leftTab === 'calibration'" class="left-pane left-pane-scroll">
           <CalibrationPanel
+            ref="calibrationPanel"
             :defaults="calibDefaults"
             :can-run="canCalibrate"
             :mpiexec-available="mpiexecAvailable"
@@ -3224,6 +3366,7 @@ watch(() => obs.obsData.value, scheduleRun)
         </div>
         <div v-show="leftTab === 'uq'" class="left-pane left-pane-scroll">
           <UQPanel
+            ref="uqPanel"
             :defaults="uqDefaults"
             :can-run="canCalibrate"
             :mpiexec-available="mpiexecAvailable"
@@ -3235,35 +3378,82 @@ watch(() => obs.obsData.value, scheduleRun)
             @cancel="uq.cancel()"
           />
         </div>
-        <div v-show="leftTab === 'workflow'" class="left-pane left-pane-scroll">
-          <WorkflowPanel
-            :described="wf.described.value"
-            :tabs="wf.tabs.value"
-            :selected="wf.selected.value"
-            :view="wf.view.value"
-            :states="workflowStates"
-            :job-state="wf.jobState.value"
-            :current-step="wf.currentStep.value"
-            :job-error="wf.jobError.value"
-            :lines="wf.lines.value"
-            :error="wf.error.value"
-            :busy="wf.busy.value"
-            :offered="wf.offered.value"
-            :unset="wf.unset.value"
-            :working-dir="workingDir"
-            :module-library-dirs="moduleLibraryDirs"
-            :mpiexec-available="mpiexecAvailable"
-            :provenance="wf.provenance.value"
-            @open="onOpenWorkflow"
-            @close="wf.close()"
-            @select="onSelectWorkflowTab"
-            @run="onRunWorkflow"
-            @cancel="wf.cancel()"
-            @open-settings="settingsOpen = true"
-            @edit-input="onEditStepInput"
-            @pick-input="onPickStepInput"
-          />
-          <EditObsDataDialog
+        </div>
+      </aside>
+
+      <section class="col col-center" :class="{ 'wf-open': workflowOpen }">
+        <WorkflowBar
+          :name="wf.name.value"
+          :open="workflowOpen"
+          :summary="workflowSummary"
+          @toggle="workflowOpen = !workflowOpen"
+        />
+        <WorkflowView
+          v-if="workflowOpen"
+          :workflows="wf.workflows.value"
+          :open-path="wf.loaded.value ? (wf.described.value?.path ?? null) : null"
+          :target="wf.target.value"
+          :steps="workflowFileSteps"
+          :details="workflowDetails"
+          :states="workflowStates"
+          :results="workflowResults"
+          :workflow-target="wf.described.value?.workflow?.target ?? null"
+          :figures="wf.described.value?.workflow?.external_figures ?? []"
+          :origins="wf.described.value?.value_origins ?? null"
+          :rename-step="(step, to) => wf.renameStep(step, to)"
+          :layout="wf.described.value?.layout ?? null"
+          :link-kinds="wf.described.value?.link_kinds ?? {}"
+          :fixed-parameters="!!wf.described.value?.fixed_parameters"
+          :editor="workflowEditor"
+          :step-kinds="wf.described.value?.step_kinds ?? []"
+          :draft-panels="Object.keys(PANEL_REFS)"
+          :simulation-draft="simulationDraft"
+          :reduction-draft="reductionDraft"
+          :study-has-params="!!loadedParamsFilename"
+          :manual-reduction="!!wf.described.value?.manual_reduction"
+          :study-has-obs="!!loadedObsFilename"
+          :parameters-offered="model.variables.value.params ?? []"
+          :editing="workflowSummary.mode !== 'new_workflow' ? workflowSummary.step : null"
+          :pending-delete="wf.pendingDelete.value"
+          :busy="wf.busy.value"
+          :running="wf.running.value"
+          :described="wf.described.value"
+          :tabs="wf.tabs.value"
+          :selected="wf.selected.value"
+          :view="wf.view.value"
+          :job-state="wf.jobState.value"
+          :current-step="wf.currentStep.value"
+          :job-error="wf.jobError.value"
+          :lines="wf.lines.value"
+          :error="wf.error.value"
+          :offered="wf.offered.value"
+          :unset="wf.unset.value"
+          :working-dir="workingDir"
+          :module-library-dirs="moduleLibraryDirs"
+          :mpiexec-available="mpiexecAvailable"
+          :provenance="wf.provenance.value"
+          @open-workflow="(path) => onOpenWorkflow({ path })"
+          @new-workflow="wf.newWorkflow()"
+          @new-step="onNewWorkflowStep"
+          @draft-action="onWorkflowDraftAction"
+          @simulation-made="onSimulationMade"
+          @reduction-made="onReductionMade"
+          @select-step="onSelectWorkflowStep"
+          @delete-step="(id) => wf.deleteStep(id)"
+          @confirm-delete="wf.confirmDelete()"
+          @cancel-delete="wf.cancelDelete()"
+          @move-step="({ step, index }) => wf.moveStep(step, index)"
+          @open-step-view="onSelectWorkflowTab"
+          @open="onOpenWorkflow"
+          @close="wf.close()"
+          @select="onSelectWorkflowTab"
+          @run="onRunWorkflow"
+          @cancel="wf.cancel()"
+          @open-settings="settingsOpen = true"
+          @edit-input="onEditStepInput"
+          @pick-input="onPickStepInput"
+        />
+        <EditObsDataDialog
             v-if="stepEditor"
             :visible="!!stepEditor"
             :document="stepEditor.document"
@@ -3277,34 +3467,20 @@ watch(() => obs.obsData.value, scheduleRun)
             @saved="onStepObsSaved"
             @update:visible="(v) => { if (!v) stepEditor = null }"
           />
-        </div>
-        </div>
-      </aside>
-
-      <section class="col col-center">
-        <WorkflowBar
-          v-if="wf.loaded.value"
-          :name="wf.name.value"
-          :tabs="wf.tabs.value"
-          :selected="wf.selected.value"
-          :states="workflowStates"
-          :busy="wf.busy.value"
-          @select="onSelectWorkflowTab"
-        />
-        <div class="left-tabs">
+        <div class="left-tabs center-tabs" data-testid="center-tabs">
           <button
             class="left-tab"
-            :class="{ active: centerTab === 'plots' }"
+            :class="{ active: centerTab === 'plots' && !workflowOpen }"
             data-testid="tab-plots"
-            @click="centerTab = 'plots'"
+            @click="centerTab = 'plots'; workflowOpen = false"
           >
             Output plots
           </button>
           <button
             class="left-tab"
-            :class="{ active: centerTab === 'progress' }"
+            :class="{ active: centerTab === 'progress' && !workflowOpen }"
             data-testid="tab-progress"
-            @click="centerTab = 'progress'"
+            @click="centerTab = 'progress'; workflowOpen = false"
           >
             Progress
             <span
@@ -3315,9 +3491,9 @@ watch(() => obs.obsData.value, scheduleRun)
           </button>
           <button
             class="left-tab"
-            :class="{ active: centerTab === 'analysis' }"
+            :class="{ active: centerTab === 'analysis' && !workflowOpen }"
             data-testid="tab-analysis"
-            @click="centerTab = 'analysis'"
+            @click="centerTab = 'analysis'; workflowOpen = false"
           >
             Analysis
             <span
@@ -3546,6 +3722,7 @@ watch(() => obs.obsData.value, scheduleRun)
         </div>
         <div v-show="centerTab === 'analysis'" class="plot-groups">
           <AnalysisPanel
+            :focus="analysisFocus"
             :indices="sa.indices.value"
             :param-names="sa.paramNames.value"
             :output-names="sa.outputNames.value"
@@ -3614,6 +3791,8 @@ watch(() => obs.obsData.value, scheduleRun)
           :current-params="loadedParamsRaw"
           :model-variables="model.variables.value"
           :model-name="model.name.value"
+          :needs-obs-data="needsObsData"
+          :needs-params="needsParams"
           :loaded-filename="loadedParamsFilename"
           :loaded-obs-filename="loadedObsFilename"
           :can-export="model.hasModel.value"
@@ -4530,6 +4709,15 @@ watch(() => obs.obsData.value, scheduleRun)
 .col-center {
   display: flex;
   flex-direction: column;
+}
+/* The Workflow view open: the plots' tabs wait at the bottom, their content hidden. */
+.col-center.wf-open > :not(.workflow-bar):not(.workflow-view):not(.center-tabs) {
+  display: none !important;
+}
+.col-center.wf-open > .center-tabs {
+  order: 99;
+  margin-top: auto;
+  border-top: 1px solid var(--p-content-border-color, #444);
 }
 .warn-banner {
   margin: 0.5rem;

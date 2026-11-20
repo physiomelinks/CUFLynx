@@ -33,6 +33,11 @@ const props = defineProps({
   currentParams: { type: Array, default: () => [] },
   modelVariables: { type: Object, default: () => ({}) },
   modelName: { type: String, default: null },
+  // A new workflow step on this model needs an obs_data of its own (none is filled in for
+  // it): the obs_data box is highlighted until one is dropped or written.
+  needsObsData: { type: Boolean, default: false },
+  // A Choose parameters box chooses from the study's params_for_id: highlight its box.
+  needsParams: { type: Boolean, default: false },
   loadedFilename: { type: String, default: null },
   // For the obs_data Edit dialog: the loaded obs filename, for versioning.
   loadedObsFilename: { type: String, default: null },
@@ -887,10 +892,13 @@ async function onParamsDrop(event) {
       />
     </div>
 
+    <p v-if="needsObsData && !obsLoaded" class="needs-obs" data-testid="obs-needed">
+      The new step needs its obs_data: drop one here, or write one with Edit.
+    </p>
     <div class="params-row">
       <label
         class="dropzone"
-        :class="{ compact: obsLoaded, 'drag-over': dragOver === 'obs' }"
+        :class="{ compact: obsLoaded, 'drag-over': dragOver === 'obs', attention: needsObsData && !obsLoaded }"
         data-testid="obs-drop"
         @dragover.prevent="onDragEnter('obs')"
         @dragleave="onDragLeave('obs')"
@@ -913,6 +921,7 @@ async function onParamsDrop(event) {
         size="small"
         class="params-edit-btn"
         data-testid="obs-edit"
+        :class="{ attention: needsObsData && !obsLoaded }"
         title="Edit obs_data items, save a new dated JSON"
         :disabled="!modelId"
         @click="editObsOpen = true"
@@ -922,7 +931,7 @@ async function onParamsDrop(event) {
     <div class="params-row">
       <label
         class="dropzone"
-        :class="{ compact: paramsLoaded, 'drag-over': dragOver === 'params' }"
+        :class="{ compact: paramsLoaded, 'drag-over': dragOver === 'params', attention: needsParams && !paramsLoaded }"
         data-testid="params-drop"
         @dragover.prevent="onDragEnter('params')"
         @dragleave="onDragLeave('params')"
@@ -1311,6 +1320,20 @@ async function onParamsDrop(event) {
   flex-direction: column;
   gap: 0.5rem;
   padding: 0.75rem;
+}
+/* what a new workflow step still needs: pulsing until it is given */
+.attention {
+  outline: 2px solid #e8912d;
+  outline-offset: 1px;
+  animation: needs-pulse 1.6s ease-in-out infinite;
+}
+@keyframes needs-pulse {
+  50% { outline-color: color-mix(in srgb, #e8912d 30%, transparent); }
+}
+.needs-obs {
+  margin: 0;
+  color: #e8912d;
+  font-size: 0.85em;
 }
 .dropzone {
   border: 1px dashed var(--p-content-border-color, #555);

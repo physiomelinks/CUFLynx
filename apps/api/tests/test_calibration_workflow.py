@@ -231,6 +231,73 @@ def test_a_tab_loads_as_a_study(client, monkeypatch, workflow_file, tmp_path):
     assert ("model", "fit_a", str(tmp_path / "workflows" / "demo")) in calls
 
 
+def test_clicking_back_to_a_tab_reuses_its_study_until_a_result_changes(
+        client, monkeypatch, workflow_file, tmp_path):
+    """Generating a step's model takes CA seconds (a Myokit compile to validate it), and a
+    new study recompiles the live simulation: a tab opened again with nothing changed is
+    the study it was. A step result written since makes it a new one."""
+    calls = _fake_ca(monkeypatch)
+    client.post("/api/workflow/load",
+                json={"path": str(workflow_file), "config_outputs_dir": str(tmp_path)})
+    run_dir = tmp_path / "workflows" / "demo"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    made = lambda: sum(1 for c in calls if c[:2] == ("model", "fit_a"))  # noqa: E731
+    first = client.post("/api/workflow/view", json={"view": "fit_a"}).json()
+    again = client.post("/api/workflow/view", json={"view": "fit_a"}).json()
+    assert made() == 1 and again["model_id"] == first["model_id"]
+    (run_dir / "fit_a").mkdir(exist_ok=True)
+    (run_dir / "fit_a" / "step_result.json").write_text('{"status": "done"}')
+    rerun = client.post("/api/workflow/view", json={"view": "fit_a"}).json()
+    assert made() == 2 and rerun["model_id"] != first["model_id"]
+    # the workflow file edited: also a new one
+    workflow_file.write_text(workflow_file.read_text() + "\n")
+    client.post("/api/workflow/view", json={"view": "fit_a"})
+    assert made() == 3
+
+
+@pytest.mark.parametrize("takes_validate", [True, False])
+def test_a_tab_skips_cas_validation_run_where_ca_can(monkeypatch, tmp_path, takes_validate):
+    """CA #693: workflow_model(validate=False) skips the trial compile a tab does not need
+    (the live simulation compiles the model next); a CA without the keyword gets none."""
+    import workflow_manager as wm  # noqa: PLC0415
+
+    seen = {}
+    if takes_validate:
+        def workflow_model(path, view, output_dir, work_dir, module_library_dirs=None,
+                           validate=True):
+            seen.update(validate=validate)
+            return {}
+    else:
+        def workflow_model(path, view, output_dir, work_dir, module_library_dirs=None):
+            seen.update(validate="not asked")
+            return {}
+    monkeypatch.setattr(wm, "ca_workflow", lambda name: workflow_model)
+    manager = wm.WorkflowManager()
+    manager.path, manager.output_dir = str(tmp_path / "w.json"), str(tmp_path / "run")
+    manager.view("fit_a", str(tmp_path / "work"))
+    assert seen["validate"] == (False if takes_validate else "not asked")
+
+
+def test_a_workflow_opened_builds_its_tabs_in_the_background(
+        client, monkeypatch, workflow_file, tmp_path):
+    """Once a workflow is open, every box's study is built in the background, so a click
+    finds it ready; a step with no model of its own is not built."""
+    import main  # noqa: PLC0415
+
+    calls = _fake_ca(monkeypatch)
+    (tmp_path / "workflows" / "demo").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("CUFLYNX_WARM_VIEWS", "1")
+    client.post("/api/workflow/load",
+                json={"path": str(workflow_file), "config_outputs_dir": str(tmp_path)})
+    main._warm_thread.join(timeout=60)
+    built = sorted({c[1] for c in calls if c[0] == "model"})
+    assert "fit_a" in built and "target" in built
+    # a click on a built box generates nothing more
+    before = len([c for c in calls if c[0] == "model"])
+    client.post("/api/workflow/view", json={"view": "fit_a"})
+    assert len([c for c in calls if c[0] == "model"]) == before
+
+
 def test_a_tab_with_unset_parameters_names_the_step_and_them(
         client, monkeypatch, workflow_file, tmp_path):
     _fake_ca(monkeypatch, model_error=UnsetParametersError("sel", ["C/x", "C/y"]))
@@ -613,6 +680,26 @@ def test_the_runner_reports_ca_s_unset_parameters(monkeypatch, tmp_path, capsys)
     assert any(ln.startswith(workflow_runner.FAIL_MARKER) for ln in lines)
     # any other error is only the failure line
     assert workflow_runner.unset_parameters(ValueError("x")) is None
+
+
+@pytest.mark.parametrize("overlap", [None, "the target is given alpha by 'a' and 'b'"])
+def test_the_runner_writes_the_calibrated_parameters_only_where_ca_merges_the_target(
+        monkeypatch, capsys, overlap):
+    """CA #685 refuses write_calibrated while two steps that do not take from each other give
+    the target one parameter (its plan's target_overlap), but runs a step of it alone; so
+    the run goes ahead without the write and says why."""
+    import workflow_runner
+
+    calls = []
+    fakes = {"plan_workflow": lambda path, module_library_dirs: {"target_overlap": overlap},
+             "run_calibration_workflow": lambda path, **kw: calls.append(kw) or {"ok": True}}
+    monkeypatch.setattr(workflow_runner, "ensure_ca_path", lambda: None)
+    monkeypatch.setattr(workflow_runner, "ca_from", lambda module, name: fakes[name])
+    workflow_runner.run({"workflow": "w.json", "output_dir": "out", "only": "b",
+                         "write_calibrated": True})
+    assert calls[0].get("write_calibrated", False) is (overlap is None)
+    out = capsys.readouterr().out
+    assert ("not written beside the target" in out) is (overlap is not None)
 
 
 def test_one_run_at_a_time_and_it_can_be_cancelled(client, opened, tmp_path):

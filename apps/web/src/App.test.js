@@ -13,6 +13,10 @@ vi.mock('./lib/api', () => ({
   // mount raises an unhandled rejection -- 181 of them, which fails the run even
   // though each test's own assertions pass. "Nothing open" is the honest default.
   getWorkflow: vi.fn().mockResolvedValue(null),
+  listWorkflows: vi.fn().mockResolvedValue({ workflows: [] }),
+  deleteWorkflowStep: vi.fn(),
+  moveWorkflowStep: vi.fn(),
+  addWorkflowDraft: vi.fn(),
   loadWorkflow: vi.fn().mockResolvedValue(null),
   uploadWorkflow: vi.fn().mockResolvedValue(null),
   closeWorkflow: vi.fn().mockResolvedValue(null),
@@ -1801,16 +1805,14 @@ describe('App.vue top bar run window', () => {
     expect(labels).not.toContain('Clear obs data')
   })
 
-  // The protocol readout is now the only visible statement of the run window, so
-  // it says the window and not only the shape of the protocol.
-  it('states the window the protocol sets', async () => {
+  // The run window comes from the protocol, which is not restated at the top (Finbar,
+  // 2026-11-18: the "Protocol: … experiment(s) · …" readout is removed).
+  it('runs over the window the protocol sets, with no readout of it', async () => {
     const wrapper = await mounted({ obsData: PROTOCOL })
-    const text = wrapper.find('[data-testid="protocol-summary"]').text()
-    expect(text).toContain('2 experiment(s)')
-    expect(text).toContain('9') // total sim_times
-    expect(text).toContain('2') // total pre_times
-    expect(wrapper.vm.simTime).toBe(9)
-    expect(wrapper.vm.preTime).toBe(2)
+    expect(wrapper.find('[data-testid="protocol-summary"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="no-protocol"]').exists()).toBe(false)
+    expect(wrapper.vm.simTime).toBe(9) // total sim_times
+    expect(wrapper.vm.preTime).toBe(2) // total pre_times
   })
 
   it('says what is missing when a model has no protocol to run over', async () => {
@@ -2412,6 +2414,120 @@ describe('analysis runs carry the protocol window', () => {
     const settings = startCalibration.mock.calls[0][1]
     expect(settings.sim_time).toBe(7)
     expect(settings.pre_time).toBe(1.5)
+  })
+
+  it('a clicked step is selected and its panel opened before its model has loaded', async () => {
+    const { openWorkflowView } = await import('./lib/api')
+    const wrapper = await mountApp()
+    wrapper.vm.wf.described.value = {
+      loaded: true, path: '/p/w.json',
+      workflow: { workflow_name: 'w', target: { cellml_model_path: 'm.cellml' },
+                  steps: [{ id: 'kir' }, { id: 'sglt1' }] },
+    }
+    // the view (CA generating the model) takes long: it has not answered yet
+    let answer
+    openWorkflowView.mockReturnValueOnce(new Promise((resolve) => { answer = resolve }))
+    const click = wrapper.vm.onSelectWorkflowStep('kir')
+    await flushPromises()
+    expect(wrapper.vm.wf.target.value).toEqual({ mode: 'edit', step: 'kir' })
+    expect(wrapper.vm.leftTab).toBe('calibration')
+    // another box clicked meanwhile: kir's late answer is not loaded over it
+    openWorkflowView.mockResolvedValueOnce(null)
+    await wrapper.vm.onSelectWorkflowTab('sglt1')
+    answer({ model_id: 'kir-model', model_filename: 'kir.cellml', workflow_view: {} })
+    await click
+    expect(wrapper.vm.model.modelId.value).not.toBe('kir-model')
+  })
+
+  it("a model box's Calibrate opens its model alone and asks for the step's obs_data", async () => {
+    const { openWorkflowView } = await import('./lib/api')
+    const wrapper = await mountApp()
+    const kir = { module_type: 'i_K1', version: 'v1', parameterisation: 'k1998' }
+    wrapper.vm.wf.described.value = {
+      loaded: true, path: '/p/enterocyte_calibration_workflow.json',
+      workflow: { workflow_name: 'enterocyte', target: { module_array: 'a.json' },
+                  steps: [{ id: 'kir', model: kir }] },
+      layout: { positions: {}, links: [], drafts: [{ id: 'new-1', model: kir }] },
+    }
+    openWorkflowView.mockClear()
+    await wrapper.vm.onWorkflowDraftAction({ draft: 'new-1', model: kir, panel: 'calibration' })
+    // kir's model, without kir's obs_data and params_for_id: a new step brings its own
+    expect(openWorkflowView).toHaveBeenCalledWith('kir', expect.anything(), { inputs: false })
+    expect(wrapper.vm.needsObsData).toBe(true)
+    expect(wrapper.vm.leftTab).toBe('calibration')
+    expect(wrapper.vm.wf.target.value).toEqual({ mode: 'new_step', draft: 'new-1' })
+    // opening another step as the study asks for nothing
+    await wrapper.vm.onSelectWorkflowTab('kir')
+    expect(wrapper.vm.needsObsData).toBe(false)
+  })
+
+  it("a model box's Simulation opens its model alone and waits for the obs_data to vary", async () => {
+    const { openWorkflowView } = await import('./lib/api')
+    const wrapper = await mountApp()
+    const kir = { module_type: 'i_K1', version: 'v1', parameterisation: 'k1998' }
+    wrapper.vm.wf.described.value = {
+      loaded: true, path: '/p/enterocyte_calibration_workflow.json',
+      workflow: { workflow_name: 'enterocyte', target: { module_array: 'a.json' },
+                  steps: [{ id: 'kir', model: kir }] },
+      layout: { positions: {}, links: [], drafts: [{ id: 'new-2', model: kir }] },
+    }
+    openWorkflowView.mockClear()
+    const tab = wrapper.vm.leftTab
+    await wrapper.vm.onWorkflowDraftAction({ draft: 'new-2', model: kir, simulation: true })
+    expect(openWorkflowView).toHaveBeenCalledWith('kir', expect.anything(), { inputs: false })
+    expect(wrapper.vm.needsObsData).toBe(true)
+    expect(wrapper.vm.simulationDraft).toBe('new-2')
+    // no panel makes a simulation: the tab stays, and no run is waiting to make the box
+    expect(wrapper.vm.leftTab).toBe(tab)
+    expect(wrapper.vm.wf.target.value.draft).toBeUndefined()
+    wrapper.vm.onSimulationMade()
+    expect(wrapper.vm.simulationDraft).toBe(null)
+    expect(wrapper.vm.needsObsData).toBe(false)
+  })
+
+  it('a step clicked in the Workflow view opens its panel, and the next run changes it', async () => {
+    const { startCalibration } = await import('./lib/api')
+    startCalibration.mockClear()
+    const wrapper = await mountApp()
+    const path = '/w/workflow/study/calibration_workflow.json'
+    wrapper.vm.wf.described.value = {
+      loaded: true, path,
+      workflow: { workflow_name: 'study', steps: [
+        { id: 'calibration-1', settings: { param_id_method: 'CMA-ES' } },
+        { id: 'calibration-2', settings: {} },
+        { id: 'sliders-1', kind: 'set', set: [] },
+      ] },
+    }
+    // by default the latest calibration is changed
+    expect(wrapper.vm.workflowSummary).toMatchObject({ mode: 'edit', step: 'calibration-2' })
+
+    const { openWorkflowView } = await import('./lib/api')
+    openWorkflowView.mockClear()
+    await wrapper.vm.onSelectWorkflowStep('calibration-1')
+    // the step becomes the current study, so Imports show its model and data
+    expect(openWorkflowView).toHaveBeenCalledWith('calibration-1', expect.anything(), {})
+    expect(wrapper.vm.leftTab).toBe('calibration')
+    expect(wrapper.vm.workflowSummary).toMatchObject({ mode: 'edit', step: 'calibration-1' })
+    wrapper.vm.onRunCalibration({ param_id_method: 'CMA-ES' })
+    await flushPromises()
+    expect(startCalibration.mock.calls[0][1].workflow_target).toEqual(
+      { mode: 'edit', step: 'calibration-1', workflow: path })
+
+    // a step no panel makes says so, and changes nothing
+    await wrapper.vm.onSelectWorkflowStep('sliders-1')
+    expect(wrapper.vm.wf.error.value).toContain('no panel makes it')
+    expect(wrapper.vm.leftTab).toBe('calibration')
+
+    // a second calibration has to be asked for: New step puts a box on the chart, and the
+    // next run makes it, once
+    const { addWorkflowDraft } = await import('./lib/api')
+    addWorkflowDraft.mockResolvedValueOnce({ ...wrapper.vm.wf.described.value, draft: 'new-1' })
+    await wrapper.vm.onNewWorkflowStep()
+    expect(wrapper.vm.workflowSummary).toMatchObject({ mode: 'new_step', step: 'new-1' })
+    wrapper.vm.onRunCalibration({ param_id_method: 'CMA-ES' })
+    await flushPromises()
+    expect(startCalibration.mock.calls[1][1].workflow_target).toEqual(
+      { mode: 'new_step', workflow: path, draft: 'new-1' })
   })
 
   it('sensitivity payload includes sim_time/pre_time from the protocol', async () => {
@@ -3225,6 +3341,16 @@ describe('App.vue: calibrating PhLynx selections (PhLynx #492)', () => {
     vi.clearAllMocks()
   })
 
+  // The Workflow view, dropped down from the Workflow bar; WorkflowPanel's props and
+  // events pass through it.
+  async function openView(wrapper) {
+    if (!wrapper.findComponent({ name: 'WorkflowBar' }).props('open')) {
+      wrapper.findComponent({ name: 'WorkflowBar' }).vm.$emit('toggle')
+      await flushPromises()
+    }
+    return wrapper.findComponent({ name: 'WorkflowView' })
+  }
+
   it('opens an archive whose workflow calibrates selections straight away', async () => {
     loadWorkflow.mockResolvedValueOnce(SELECTION_WORKFLOW)
     openWorkflowView.mockResolvedValueOnce(null)
@@ -3237,15 +3363,16 @@ describe('App.vue: calibrating PhLynx selections (PhLynx #492)', () => {
     })
     await flushPromises()
     expect(loadWorkflow).toHaveBeenCalledWith(expect.objectContaining({ path: SELECTION_WORKFLOW.path }))
-    expect(wrapper.find('[data-testid="tab-workflow"]').classes()).toContain('active')
+    expect(wrapper.findComponent({ name: 'WorkflowBar' }).props('open')).toBe(true)
+    expect(wrapper.findComponent({ name: 'WorkflowView' }).exists()).toBe(true)
   })
 
-  it('re-reads the study workflow when the Workflow tab is opened', async () => {
+  it('re-reads the study workflow when the Workflow view is opened', async () => {
     const wrapper = shallowMount(App)
     await flushPromises()
     const before = getWorkflow.mock.calls.length
-    await wrapper.find('[data-testid="tab-workflow"]').trigger('click')
-    await flushPromises()
+    expect(wrapper.findComponent({ name: 'WorkflowView' }).exists()).toBe(false)
+    await openView(wrapper)
     expect(getWorkflow.mock.calls.length).toBe(before + 1)
   })
 
@@ -3257,13 +3384,13 @@ describe('App.vue: calibrating PhLynx selections (PhLynx #492)', () => {
     })
     await flushPromises()
     expect(loadWorkflow).not.toHaveBeenCalled()
-    expect(wrapper.findComponent({ name: 'WorkflowPanel' }).props('offered').path).toBe('/w.json')
+    expect((await openView(wrapper)).vm.$attrs.offered.path).toBe('/w.json')
   })
 
   it('gives a step the file the user picked, as text or as an obs_data document', async () => {
     const wrapper = shallowMount(App)
     await flushPromises()
-    const panel = wrapper.findComponent({ name: 'WorkflowPanel' })
+    const panel = await openView(wrapper)
     // a picked File, by what App reads of it (jsdom's File has no text())
     const file = (name, text) => ({ name, text: async () => text })
     panel.vm.$emit('pick-input', { stepId: 'left', role: 'params_for_id',
@@ -3287,14 +3414,14 @@ describe('App.vue: calibrating PhLynx selections (PhLynx #492)', () => {
     getWorkflowStepInput.mockResolvedValueOnce({
       path: '/w/left_obs_data.json', content: '{"protocol_info": {"pre_times": [0]}}' })
     openWorkflowView.mockRejectedValueOnce(UNSET)
-    wrapper.findComponent({ name: 'WorkflowPanel' }).vm.$emit('select', 'left')
+    ;(await openView(wrapper)).vm.$emit('select', 'left')
     await flushPromises()
     expect(getWorkflowStepInput).toHaveBeenCalledWith('left', 'obs_data')
     const editor = wrapper.findComponent({ name: 'EditObsDataDialog' })
     expect(editor.exists()).toBe(true)
     expect(editor.props('preselect')).toEqual(['C/x'])
     expect(editor.props('document')).toEqual({ protocol_info: { pre_times: [0] } })
-    expect(wrapper.findComponent({ name: 'WorkflowPanel' }).props('unset')).toEqual(
+    expect(wrapper.findComponent({ name: 'WorkflowView' }).vm.$attrs.unset).toEqual(
       { step_id: 'left', names: ['C/x'] })
 
     // Save writes the step's obs_data; once the editor closes, the step opens again

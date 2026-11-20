@@ -782,6 +782,127 @@ export async function getWorkflow() {
   return data
 }
 
+/** The working dir's workflows ({path, name, steps, modified}, latest first) and the open one. */
+export async function listWorkflows(workingDir = '') {
+  const { data } = await axios.get(url('/api/workflow/list'), {
+    params: { config_outputs_dir: workingDir },
+  })
+  return data
+}
+
+/**
+ * Delete a step of the open workflow, reconnecting what took from it. When more steps would
+ * go, nothing changes unless `confirm`: `{applied: false, deleted, rewired, dropped}`.
+ */
+export async function deleteWorkflowStep(step, confirm = false) {
+  const { data } = await axios.post(url('/api/workflow/step/delete'), { step, confirm })
+  return data
+}
+
+/**
+ * What passes along one arrow of the open workflow's chart (`source` -> `target` by `key`):
+ * `{what, recorded, rows, prior, distribution, emulator, model, note}`.
+ */
+export async function getWorkflowEdge(source, target, key) {
+  const { data } = await axios.get(url('/api/workflow/edge'), { params: { source, target, key } })
+  return data
+}
+
+/** Rename a step of the open workflow (and every reference to it); its results move with it. */
+export async function renameWorkflowStep(step, to) {
+  const { data } = await axios.post(url('/api/workflow/step/rename'), { step, to })
+  return data
+}
+
+/**
+ * Draw or change an arrow of the open workflow: `target` takes `source` by `key` (CA's key),
+ * with a list key's `options` ({kind, inflate, parameters, objective}); `old_key` when
+ * changing what an existing arrow passes. Returns the workflow's description.
+ */
+export async function drawWorkflowLink({ source, target, key, options = null, oldKey = null }) {
+  const { data } = await axios.post(url('/api/workflow/link'),
+    { source, target, key, options, old_key: oldKey })
+  return data
+}
+
+/** Take an arrow of the open workflow away. */
+export async function deleteWorkflowLink({ source, target, key }) {
+  const { data } = await axios.post(url('/api/workflow/link/delete'), { source, target, key })
+  return data
+}
+
+/** Where a box of the chart sits: its column (of steps) and its order there. */
+export async function placeWorkflowNode(node, col, row) {
+  const { data } = await axios.post(url('/api/workflow/position'), { node, col, row })
+  return data
+}
+
+/**
+ * A new step on the chart (a draft): the description, with `draft` its id. `onTarget`: after
+ * the target, a simulation of the merged target set up in its form.
+ */
+export async function addWorkflowDraft(col = null, row = null, onTarget = false, model = null,
+  action = null) {
+  const { data } = await axios.post(url('/api/workflow/draft'),
+    { col, row, on_target: onTarget, model, action })
+  return data
+}
+
+/** Make a Set values by hand box a set step: [{parameter, value, reason}]. */
+export async function setWorkflowValues({ draft, entries, point = false }) {
+  const { data } = await axios.post(url('/api/workflow/set_values'), { draft, entries, point })
+  return data
+}
+
+/** Make a Choose a parameter set by cost box a combine step of the steps drawn into it
+ * (CA's combine.method: best_fit or mean). */
+export async function combineWorkflowSteps({ draft, method = 'best_fit' }) {
+  const { data } = await axios.post(url('/api/workflow/combine'), { draft, method })
+  return data
+}
+
+/** The study's params_for_id entries a reduction chosen by hand can keep (CA's labels). */
+export async function workflowReductionCandidates(modelId) {
+  const { data } = await axios.get(url('/api/workflow/reduction_candidates'), { params: { model_id: modelId } })
+  return data
+}
+
+/** Make a model box a reduction chosen by hand: the entries kept, and why. */
+export async function chooseWorkflowParameters({ draft, modelId, parameters, reason }) {
+  const { data } = await axios.post(url('/api/workflow/choose_parameters'),
+    { draft, model_id: modelId, parameters, reason })
+  return data
+}
+
+/** Several boxes placed at once ({id: {col, row}}): a new column made in a gap. */
+export async function placeWorkflowNodes(positions) {
+  const { data } = await axios.post(url('/api/workflow/positions'), { positions })
+  return data
+}
+
+/**
+ * Make an after-target new step a simulation of the merged target: its protocol (`obsData`,
+ * else the study `modelId`'s obs_data), `outputs` recorded, swept `parameters`
+ * ({name: CA's sweep_range}), `design` and `dt`.
+ */
+export async function makeWorkflowSweep({ draft, obsData = null, modelId = null, outputs = [],
+  parameters = {}, design = null, dt = null }) {
+  const { data } = await axios.post(url('/api/workflow/sweep'), {
+    draft, obs_data: obsData, model_id: modelId, outputs, parameters, design, dt })
+  return data
+}
+
+export async function deleteWorkflowDraft(draft) {
+  const { data } = await axios.post(url('/api/workflow/draft/delete'), { draft })
+  return data
+}
+
+/** Move a step of the open workflow to `index`; the server refuses it above a step it takes from. */
+export async function moveWorkflowStep(step, index) {
+  const { data } = await axios.post(url('/api/workflow/step/move'), { step, index })
+  return data
+}
+
 /** Open a calibration_workflow.json by path, or reopen a workflow run directory. */
 export async function loadWorkflow({ path = '', runDir = '', workingDir = '' } = {}) {
   const { data } = await axios.post(url('/api/workflow/load'), {
@@ -820,10 +941,12 @@ export async function followWorkingDir(workingDir) {
  * dropped .omex gives, plus `workflow_view` (fixed values, own results, what it waits for).
  */
 /** Load one tab of the workflow; an external Python model is kept in `workingDir`. */
-export async function openWorkflowView(view, workingDir = '') {
+export async function openWorkflowView(view, workingDir = '', { inputs = true } = {}) {
   const { data } = await axios.post(url('/api/workflow/view'), {
     view,
     config_outputs_dir: workingDir,
+    // false: the model only, without the step's obs_data and params_for_id
+    ...(inputs ? {} : { inputs: false }),
   })
   return data
 }

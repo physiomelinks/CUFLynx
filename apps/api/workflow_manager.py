@@ -38,6 +38,7 @@ CUFLynx-authored is written there (#210).
 from __future__ import annotations
 
 import json
+import warnings
 import os
 import shutil
 import subprocess
@@ -47,6 +48,7 @@ import time
 import uuid
 from pathlib import Path
 
+import ca_run_history
 from ca_imports import CaImportError, ca_from, ensure_ca_path
 from calibration import (
     _warn_no_mpiexec,
@@ -190,6 +192,16 @@ def _ca_call(name: str, *args, **kwargs):
         raise WorkflowError(str(exc)) from exc
 
 
+def _takes(fn, name: str) -> bool:
+    """Whether ``fn`` accepts keyword ``name`` (a CA that predates it does not)."""
+    import inspect  # noqa: PLC0415
+
+    try:
+        return name in inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
+
+
 def default_output_dir(outputs_dir: str, workflow_name: str, fallback_root: str) -> str:
     """``<working dir>/workflows/<name>``, or under ``fallback_root`` with no working dir."""
     root = outputs_dir.strip() if outputs_dir else ""
@@ -299,8 +311,31 @@ class WorkflowManager:
         except (OSError, ValueError) as exc:
             out["error"] = f"cannot read {self.path}: {exc}"
             return out
+        # the chart as the user arranged it, and what an arrow can be (CA's rules), whether or not CA can plan it
+        import workflow_layout  # noqa: PLC0415
+
+        out["layout"] = workflow_layout.read(self.path)
         try:
-            out["plan"] = _ca_call("plan_workflow", self.path, self.module_library_dirs)
+            out["link_kinds"] = workflow_layout.link_kinds()
+        except (ImportError, AttributeError):
+            out["link_kinds"] = {}
+        out["fixed_parameters"] = workflow_layout.fixed_parameters_supported()
+        out["step_kinds"] = workflow_layout.step_kinds()
+        out["manual_reduction"] = workflow_layout.manual_reduction_supported()
+        try:
+            # CA's warnings about the workflow itself (two steps calibrating one parameter of
+            # the target, the later replacing the earlier) are shown as problems in the view
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always", UserWarning)
+                out["plan"] = _ca_call("plan_workflow", self.path, self.module_library_dirs)
+            problems = [str(w.message) for w in caught if issubclass(w.category, UserWarning)]
+            # two steps giving one parameter to the target, neither taking from the other: CA
+            # runs one step of it (with a warning) and refuses a run that merges the target
+            # until a combine step joins them (CA #685), so the view says so before then
+            overlap = (out["plan"] or {}).get("target_overlap")
+            if overlap and not any(overlap in p or p in overlap for p in problems):
+                problems.append(overlap)
+            out["problems"] = list(dict.fromkeys(problems))
         except WorkflowError as exc:
             # A workflow whose library is not configured still shows what it
             # says; it just cannot be resolved or run until the library is set.
@@ -310,11 +345,26 @@ class WorkflowManager:
             try:
                 out["status"] = _ca_call("workflow_status", self.path, self.output_dir,
                                          self.module_library_dirs)
+                # how long each done step took, and which input a combine step chose, for
+                # the Workflow view's boxes (CA's status has the cost and when it finished;
+                # its step_result has the rest)
+                for step_id, row in (out["status"].get("steps") or {}).items():
+                    if isinstance(row, dict) and row.get("status") == "done":
+                        result = ca_run_history.step_result(
+                            os.path.join(self.output_dir, step_id)) or {}
+                        row.setdefault("duration_s", result.get("duration_s"))
+                        if result.get("chosen_from"):
+                            row.setdefault("chosen_from", result["chosen_from"])
             except WorkflowError as exc:
                 out["status_error"] = str(exc)
             # what of the run's provenance CA has written: {svg, graph} -> its mtime (ns)
             out["provenance"] = {key: os.stat(path).st_mtime_ns for key in PROVENANCE_FILES
                                  if (path := self.provenance_path(key))}
+            # where the model's values come from (set by hand, measured, ...), as CA's
+            # provenance graph boxes them, for the Workflow view's chart
+            import workflow_edges  # noqa: PLC0415
+
+            out["value_origins"] = workflow_edges.value_origins(self.provenance_path("graph"))
         job = self._job
         if job is not None:
             with job.lock:
@@ -330,8 +380,12 @@ class WorkflowManager:
             raise WorkflowError("no workflow is open")
         if not self.output_dir:
             raise WorkflowError("the workflow has no run directory; set a working dir")
+        # a tab's model needs no trial run: the live simulation compiles it straight after,
+        # so CA's validation compile (seconds) is skipped where CA can (CA #693)
+        extra = {"validate": False} if _takes(ca_workflow("workflow_model"), "validate") else {}
         return _ca_call("workflow_model", self.path, view, output_dir=self.output_dir,
-                        work_dir=work_dir, module_library_dirs=self.module_library_dirs)
+                        work_dir=work_dir, module_library_dirs=self.module_library_dirs,
+                        **extra)
 
     def provenance_path(self, key: str) -> str | None:
         """The run directory's provenance diagram (``svg``) or graph (``graph``), or None

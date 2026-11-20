@@ -1,7 +1,22 @@
 import { ref, computed } from 'vue'
+import { runTargetFor, targetAfterRun } from '../lib/workflowTarget'
 import {
   cancelWorkflow,
   closeWorkflow,
+  deleteWorkflowStep,
+  listWorkflows,
+  moveWorkflowStep,
+  renameWorkflowStep,
+  drawWorkflowLink,
+  deleteWorkflowLink,
+  placeWorkflowNode,
+  placeWorkflowNodes,
+  makeWorkflowSweep,
+  setWorkflowValues,
+  combineWorkflowSteps,
+  chooseWorkflowParameters,
+  addWorkflowDraft,
+  deleteWorkflowDraft,
   errorMessage,
   followWorkingDir as postWorkingDir,
   getWorkflow,
@@ -52,6 +67,8 @@ export function modelLabel(model, full = false) {
   if (file) return full ? file : file.replace(ARRAY_SUFFIX, '')
   const py = externalFile(model)
   if (py) return full ? `external Python model ${py}` : py
+  const cellml = cellmlFile(model)
+  if (cellml) return full ? `CellML model ${cellml}` : cellml
   return full
     ? `${model.module_type} / ${model.version} / ${model.parameterisation}`
     : `${model.module_type} · ${model.parameterisation}`
@@ -133,7 +150,7 @@ export function missingInputs(fileStep) {
 /** The target's tab label: a module array's prefix, an external model's file, a module type. */
 function targetLabel(target) {
   if (!target) return 'target'
-  if (arrayFile(target) || externalFile(target)) return modelLabel(target)
+  if (arrayFile(target) || externalFile(target) || cellmlFile(target)) return modelLabel(target)
   return target.module_type
 }
 
@@ -141,6 +158,7 @@ function targetDetail(target) {
   if (!target) return 'target'
   if (arrayFile(target)) return `module array · ${arrayFile(target)}`
   if (externalFile(target)) return `external Python model · ${externalFile(target)}`
+  if (cellmlFile(target)) return `CellML model · ${cellmlFile(target)}`
   return `supermodule · ${target.parameterisation}`
 }
 
@@ -345,11 +363,11 @@ export function useWorkflow(options = {}) {
   }
 
   /** Load one tab as the current study; returns the import-shaped response. */
-  async function select(tabId, workingDir = '') {
+  async function select(tabId, workingDir = '', options = {}) {
     busy.value = true
     error.value = ''
     try {
-      const result = await openWorkflowView(tabId, workingDir)
+      const result = await openWorkflowView(tabId, workingDir, options)
       selected.value = tabId
       view.value = result.workflow_view ?? null
       if (unset.value?.step_id === tabId) unset.value = null
@@ -438,7 +456,167 @@ export function useWorkflow(options = {}) {
     return stepState(described.value, jobStates.value, stepId)
   }
 
+  // -- the Workflow view: which step the next panel run is, and editing the steps -------
+  // {mode: 'default' | 'new_step' | 'edit' | 'new_workflow', kind?, step?} (lib/workflowTarget)
+  const target = ref({ mode: 'default' })
+  // The working dir's workflows ({path, name, steps, modified}).
+  const workflows = ref([])
+  // A delete that would take more steps with it, waiting to be confirmed:
+  // {step, deleted, rewired, dropped}.
+  const pendingDelete = ref(null)
+
+  function newWorkflow() {
+    target.value = { mode: 'new_workflow' }
+  }
+  function newStep(kind) {
+    target.value = { mode: 'new_step', kind }
+  }
+  function editStep(stepId) {
+    target.value = { mode: 'edit', step: stepId }
+  }
+  function useDefault() {
+    target.value = { mode: 'default' }
+  }
+  /** The `workflow_target` a run from the panel making `kind` steps sends. */
+  function runTarget(kind) {
+    return runTargetFor(target.value, kind, described.value)
+  }
+  /** A run of `kind` has started: a new step or workflow is made once. */
+  function ranTarget(kind) {
+    target.value = targetAfterRun(target.value, kind)
+  }
+
+  /**
+   * The working dir's workflows. `reopen`: with none open here (a server restarted since
+   * one was), open the one the list names as the working dir's (`open`), so the Workflow
+   * view shows it instead of an empty chart. Opening a workflow loads no model as the study.
+   */
+  async function listIn(workingDir, { reopen = false } = {}) {
+    const found = await guarded(() => listWorkflows(workingDir))
+    workflows.value = found?.workflows ?? []
+    if (reopen && !described.value?.loaded && found?.open) {
+      await open({ path: found.open, workingDir })
+    }
+    return workflows.value
+  }
+
+  /**
+   * Delete a step: done at once when the neighbours can be reconnected; else the steps that
+   * would go with it wait in `pendingDelete` for `confirmDelete`.
+   */
+  async function deleteStep(stepId, confirm = false) {
+    const result = await guarded(() => deleteWorkflowStep(stepId, confirm))
+    if (!result) return null
+    if (result.applied) {
+      pendingDelete.value = null
+      described.value = result.workflow
+      if (result.deleted.includes(selected.value)) selected.value = null
+      if (target.value.mode === 'edit' && result.deleted.includes(target.value.step)) useDefault()
+    } else {
+      pendingDelete.value = { step: stepId, ...result }
+    }
+    return result
+  }
+  async function confirmDelete() {
+    if (pendingDelete.value) return deleteStep(pendingDelete.value.step, true)
+    return null
+  }
+  function cancelDelete() {
+    pendingDelete.value = null
+  }
+
+  /**
+   * Rename a step; returns '' when done, else why not (the server's reason). The step the
+   * next run changes, and the selected tab, follow the new name.
+   */
+  async function renameStep(stepId, to) {
+    try {
+      described.value = await renameWorkflowStep(stepId, to)
+    } catch (e) {
+      return errorMessage(e)
+    }
+    const name = String(to).trim()
+    if (target.value.mode === 'edit' && target.value.step === stepId) target.value = { mode: 'edit', step: name }
+    if (selected.value === stepId) selected.value = name
+    return ''
+  }
+
+  // -- editing the chart: new steps, arrows, where the boxes sit (workflow_layout) ------
+  /** Run an edit; '' when done (the new description shown), else the server's reason. */
+  async function layoutEdit(call) {
+    try {
+      described.value = await call()
+      return ''
+    } catch (e) {
+      return errorMessage(e)
+    }
+  }
+  /**
+   * Put a new step on the chart and make it the one the next run makes: whatever is run
+   * next becomes that step, with the arrows drawn to it. Returns its id, or null.
+   */
+  async function addDraft(col = null, row = null, onTarget = false, model = null, action = null) {
+    try {
+      const d = await addWorkflowDraft(col, row, onTarget, model, action)
+      described.value = d
+      // a box after the target (a simulation) or an action box is made by its own form;
+      // a model box waits for what is chosen for it; a plain new step for the next run
+      if (!onTarget && !action && !model) target.value = { mode: 'new_step', draft: d.draft }
+      return d.draft
+    } catch (e) {
+      error.value = errorMessage(e)
+      return null
+    }
+  }
+  function chooseDraft(draft) {
+    target.value = { mode: 'new_step', draft }
+  }
+  function deleteDraft(draft) {
+    if (target.value.draft === draft) useDefault()
+    return layoutEdit(() => deleteWorkflowDraft(draft))
+  }
+  const link = (arrow) => layoutEdit(() => drawWorkflowLink(arrow))
+  const unlink = (arrow) => layoutEdit(() => deleteWorkflowLink(arrow))
+  const place = (node, col, row) => layoutEdit(() => placeWorkflowNode(node, col, row))
+  const placeMany = (positions) => layoutEdit(() => placeWorkflowNodes(positions))
+  const makeSweep = (form) => layoutEdit(() => makeWorkflowSweep(form))
+  const setValues = (form) => layoutEdit(() => setWorkflowValues(form))
+  const combine = (form) => layoutEdit(() => combineWorkflowSteps(form))
+  const chooseParameters = (form) => layoutEdit(() => chooseWorkflowParameters(form))
+
+  async function moveStep(stepId, index) {
+    const d = await guarded(() => moveWorkflowStep(stepId, index))
+    if (d) described.value = d
+    return d
+  }
+
   return {
+    target,
+    workflows,
+    pendingDelete,
+    newWorkflow,
+    newStep,
+    editStep,
+    useDefault,
+    runTarget,
+    ranTarget,
+    listIn,
+    deleteStep,
+    confirmDelete,
+    cancelDelete,
+    moveStep,
+    renameStep,
+    addDraft,
+    chooseDraft,
+    deleteDraft,
+    link,
+    unlink,
+    place,
+    placeMany,
+    makeSweep,
+    setValues,
+    combine,
+    chooseParameters,
     described,
     loaded,
     tabs,
