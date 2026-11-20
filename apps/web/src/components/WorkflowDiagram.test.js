@@ -474,6 +474,20 @@ describe('WorkflowDiagram', () => {
     expect(c.emitted('select-draft')).toBeUndefined()
   })
 
+  it('draws values given to the model source into the model box, from a column before it', () => {
+    // CA #692: the values are in the model source, so every step generated from it has them
+    const c = chart({ origins: { boxes: [
+      { id: '__set_by_hand__', title: 'Values set by hand', mark: 'set_by_hand', to: ['model'], values: [] },
+    ] } })
+    expect(c.find('[data-testid="workflow-edge-origin:__set_by_hand__-model"]').exists()).toBe(true)
+    const left = (w) => parseFloat(w.attributes('style').match(/left: ([\d.-]+)px/)[1])
+    const hand = c.find('[data-testid="workflow-origin-set_by_hand"]')
+    const model = c.find('[data-testid="workflow-node-model"]')
+    const firstStep = c.find('[data-testid="workflow-node-sliders-1"]')
+    expect(left(hand)).toBeLessThan(left(model))
+    expect(left(model)).toBeLessThan(left(firstStep))
+  })
+
   it("shows where the model's values come from, as CA's provenance boxes them", async () => {
     const c = chart({ origins: {
       model_counts: { unclassified: 73 },

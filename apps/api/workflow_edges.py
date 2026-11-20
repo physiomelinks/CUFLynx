@@ -97,7 +97,8 @@ def value_origins(graph_path: str | None) -> dict:
     ``{"boxes": [{id, title, mark, values: [{name, value, units, note}], to: [chart ids]}],
     "model_counts": {mark: n}}``. A box is one of CA's ``values`` nodes (values set by hand,
     measured, derived, calibrated before the run, the derivations' fixed constants), with the
-    chart boxes CA draws it giving values to (``__target__`` is the chart's ``target``). Empty
+    chart boxes CA draws it giving values to (``__target__`` is the chart's ``target``,
+    ``__source__`` its ``model``). Empty
     when the run has no graph, or one of a schema this does not read."""
     empty = {"boxes": [], "model_counts": {}}
     if not graph_path or not os.path.isfile(graph_path):
@@ -117,7 +118,11 @@ def value_origins(graph_path: str | None) -> dict:
             model_counts = {k: v for k, v in (node.get("counts") or {}).items() if v}
         if node.get("kind") != "values":
             continue
-        to = [TARGET if e.get("to") == TARGET_NODE else e.get("to")
+        # CA ends a values box's edges at the model source when a step is generated from it
+        # (CA #692: the values are in that source, so every step's model has them), and at
+        # the target only when none is
+        ends = {TARGET_NODE: TARGET, SOURCE_NODE: MODEL}
+        to = [ends.get(e.get("to"), e.get("to"))
               for e in edges if e.get("from") == node.get("id")]
         boxes.append({
             "id": node.get("id"), "title": node.get("title"), "mark": node.get("mark"),
