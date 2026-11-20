@@ -178,8 +178,8 @@ function pct(v) {
 .mode-tab.on { background: var(--p-primary-color, #3b82f6); color: var(--p-primary-contrast-color, #fff); border-color: transparent; }
 .mode-tab.dim:not(.on) { opacity: 0.6; }
 .mode-panel h4 { font-size: 0.8rem; margin: 0.3rem 0; font-weight: 600; }
-.bars { display: grid; grid-template-columns: minmax(8rem, max-content) minmax(8rem, 1fr) 4rem; gap: 0.15rem 0.5rem; align-items: center; font-size: 0.78rem; max-width: 46rem; }
-.bar-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 20rem; }
+.bars { display: grid; grid-template-columns: 16rem minmax(8rem, 1fr) 4rem; gap: 0.15rem 0.5rem; align-items: center; font-size: 0.78rem; max-width: 46rem; }
+.bar-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bar-track { position: relative; height: 0.8rem; background: color-mix(in srgb, currentColor 6%, transparent); }
 .bars.signed .bar-track::after { content: ''; position: absolute; left: 50%; top: 0; bottom: 0; border-left: 1px solid color-mix(in srgb, currentColor 40%, transparent); }
 .bar { position: absolute; top: 0; bottom: 0; background: var(--p-primary-color, #3b82f6); }
