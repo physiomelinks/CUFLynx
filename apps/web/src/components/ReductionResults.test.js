@@ -41,6 +41,58 @@ describe('ReductionResults', () => {
     )
   })
 
+  const COMPOSITION = [
+    {
+      mode: 1,
+      features: [
+        { label: 'x (max) (Exp0, Sub0)', loading: 0.3 },
+        { label: 'y (max) (Exp0, Sub0)', loading: -0.9 },
+        { label: 'z (mean) (Exp0, Sub0)', loading: null },
+      ],
+      parameters: [
+        { parameter: 'm/alpha', S1: 0.1, ST: 0.2 },
+        { parameter: 'm/beta', S1: 0.6, ST: 0.8 },
+      ],
+    },
+    { mode: 2, features: [{ label: 'x (max) (Exp0, Sub0)', loading: 0.5 }], parameters: [] },
+  ]
+
+  it('shows a tab per PCA mode, with its signed feature loadings and parameter ST bars', async () => {
+    const wrapper = mount(ReductionResults, {
+      props: { reduction: { ...REDUCTION, mode_composition: COMPOSITION } },
+      global: { stubs: { Button: ButtonStub } },
+    })
+    const tabs = wrapper.findAll('[role="tab"]')
+    expect(tabs.map((t) => t.text())).toEqual(['Mode 1 (90.0%)', 'Mode 2 (10.0%)'])
+    expect(tabs[0].attributes('aria-selected')).toBe('true')
+    expect(tabs[1].classes()).toContain('dim') // not informative
+
+    // Largest |loading| first; a negative one runs left of the centre line; nan is dropped.
+    const loadings = wrapper.find('[data-testid="pr-mode-loadings"]')
+    expect(loadings.findAll('.bar-label').map((l) => l.text())).toEqual([
+      'y (max) (Exp0, Sub0)',
+      'x (max) (Exp0, Sub0)',
+    ])
+    const bars = loadings.findAll('.bar')
+    expect(bars[0].classes()).toContain('neg')
+    expect(bars[0].attributes('style')).toContain('right: 50%')
+    expect(bars[0].attributes('style')).toContain('width: 50%')
+    expect(bars[1].attributes('style')).toContain('left: 50%')
+    const st = wrapper.find('[data-testid="pr-mode-st"]')
+    expect(st.findAll('.bar-label').map((l) => l.text())).toEqual(['m/beta', 'm/alpha'])
+    expect(st.find('.bar').attributes('style')).toContain('width: 80%')
+
+    await wrapper.find('[data-testid="pr-mode-tab-2"]').trigger('click')
+    expect(wrapper.find('[data-testid="pr-mode-tab-2"]').attributes('aria-selected')).toBe('true')
+    expect(wrapper.find('[data-testid="pr-mode-loadings"]').findAll('.bar-label')).toHaveLength(1)
+    expect(wrapper.find('[data-testid="pr-mode-st"]').exists()).toBe(false)
+  })
+
+  it('has no mode section without CA\'s mode files', () => {
+    const wrapper = mount(ReductionResults, { props: { reduction: REDUCTION }, global: { stubs: { Button: ButtonStub } } })
+    expect(wrapper.find('[data-testid="pr-composition"]').exists()).toBe(false)
+  })
+
   it('"Calibrate these" adopts the reduction\'s params_for_id', async () => {
     const wrapper = mount(ReductionResults, { props: { reduction: REDUCTION }, global: { stubs: { Button: ButtonStub } } })
     await wrapper.find('[data-testid="pr-adopt"]').trigger('click')
