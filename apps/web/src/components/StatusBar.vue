@@ -1,9 +1,18 @@
 <script setup>
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import Button from 'primevue/button'
 import Message from 'primevue/message'
 import ProgressSpinner from 'primevue/progressspinner'
 
-defineProps({
+// A run shorter than this needs neither a clock nor a way out.
+const SLOW_RUN_MS = 3000
+
+const props = defineProps({
   status: { type: String, default: 'idle' },
+  // Date.now() when the run in progress started, for its elapsed time.
+  startedAt: { type: Number, default: null },
+  // Why the last Cancel did not stop the run, if it did not.
+  cancelNote: { type: String, default: '' },
   message: { type: String, default: '' },
   lastRunMs: { type: Number, default: null },
   // A standing caveat about the run rather than a failure — e.g. live plots
@@ -11,6 +20,28 @@ defineProps({
   // alongside the status, not instead of it: the run did succeed.
   notice: { type: String, default: '' },
 })
+const emit = defineEmits(['cancel'])
+
+const now = ref(Date.now())
+let tick = null
+watch(
+  () => props.status === 'running' && props.startedAt != null,
+  (running) => {
+    clearInterval(tick)
+    tick = null
+    if (running) {
+      now.value = Date.now()
+      tick = setInterval(() => (now.value = Date.now()), 1000)
+    }
+  },
+  { immediate: true },
+)
+onBeforeUnmount(() => clearInterval(tick))
+
+const elapsedMs = computed(() =>
+  props.startedAt == null ? 0 : Math.max(0, now.value - props.startedAt),
+)
+const slow = computed(() => props.status === 'running' && elapsedMs.value >= SLOW_RUN_MS)
 </script>
 
 <template>
@@ -20,7 +51,21 @@ defineProps({
       style="width: 1rem; height: 1rem"
       stroke-width="6"
     />
-    <span v-if="status === 'running'">Simulating…</span>
+    <span v-if="status === 'running'" data-testid="status-running">
+      Simulating…<span v-if="slow"> {{ Math.floor(elapsedMs / 1000) }} s</span>
+    </span>
+    <Button
+      v-if="slow"
+      label="Cancel"
+      size="small"
+      text
+      severity="secondary"
+      data-testid="status-cancel"
+      @click="emit('cancel')"
+    />
+    <span v-if="status === 'running' && cancelNote" class="idle" data-testid="status-cancel-note">
+      {{ cancelNote }}
+    </span>
     <span v-else-if="status === 'ok'" class="ok">
       Done<span v-if="lastRunMs != null"> in {{ Math.round(lastRunMs) }} ms</span>
     </span>
@@ -38,6 +83,9 @@ defineProps({
     >
       {{ message }}
     </Message>
+    <span v-else-if="status === 'cancelled'" class="idle" data-testid="status-cancelled">
+      Cancelled. The plots show the last finished run.
+    </span>
     <span v-else class="idle">Ready</span>
     <Message
       v-if="notice"
