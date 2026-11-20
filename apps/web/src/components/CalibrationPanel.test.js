@@ -25,6 +25,28 @@ const stubs = {
 const selectStubs = { ...stubs, Select: SelectStub }
 
 describe('CalibrationPanel', () => {
+  it("puts the options advancedSettings.json lists under Advanced settings, the rest above", () => {
+    const wrapper = mount(CalibrationPanel, {
+      props: {
+        defaults: {
+          methods: [{ value: 'genetic_algorithm', label: 'GA', gradient_based: false, options: [
+            { name: 'num_calls_to_function', type: 'int', default: 100 },
+            { name: 'num_elite', type: 'int', default: 12, debug_default: 4 },
+            { name: 'a_new_ca_option', type: 'int', default: 1 },
+          ] }],
+        },
+      },
+      global: { stubs },
+    })
+    const adv = wrapper.find('[data-testid="calibration-advanced"]')
+    expect(adv.find('[data-testid="calib-opt-num_elite"]').exists()).toBe(true)
+    expect(adv.find('[data-testid="calib-opt-num_calls_to_function"]').exists()).toBe(false)
+    // an option CA adds is a standard setting until the table lists it
+    expect(adv.find('[data-testid="calib-opt-a_new_ca_option"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="calib-opt-a_new_ca_option"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="calib-cores"]').exists()).toBe(true)
+  })
+
   it('renders streamed terminal lines', () => {
     const wrapper = mount(CalibrationPanel, {
       props: { lines: ['generation 0', 'best cost: 0.25'], state: 'running' },
