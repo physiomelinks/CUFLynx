@@ -92,6 +92,68 @@ def test_param_reduction_reader_tolerates_missing_and_partial_reports(tmp_path):
     assert ca_run_history.param_reduction(str(tmp_path / "r"))["heatmap"] is None
 
 
+#: CA's pca_modes.csv and pca_mode_sobol_indices.csv, in the shape
+#: ParamReduction writes them (feature labels carry commas, so they are quoted).
+PCA_MODES_CSV = (
+    'mode,variance,variance_share,informative,"loading_x (max) (Exp0, Sub0)",'
+    '"loading_y (max) (Exp0, Sub0)"\n'
+    "1,16.0,0.9,True,0.8,-0.6\n"
+    "2,0.25,0.1,False,0.6,nan\n"
+)
+PCA_MODE_INDICES_CSV = (
+    "Parameter,S1_mode_1,ST_mode_1,S1_mode_2,ST_mode_2\n"
+    "Lotka_Volterra_module/alpha,0.7,0.75,0.1,0.2\n"
+    "Lotka_Volterra_module/beta,0.05,0.1,0.6,0.9\n"
+)
+
+
+def _write_mode_files(report_dir, *, indices=True):
+    with open(os.path.join(report_dir, "param_reduction.json")) as fh:
+        report = json.load(fh)
+    report["files"].update({"modes": "pca_modes.csv",
+                            "mode_indices": "pca_mode_sobol_indices.csv"})
+    with open(os.path.join(report_dir, "param_reduction.json"), "w") as fh:
+        json.dump(report, fh)
+    with open(os.path.join(report_dir, "pca_modes.csv"), "w") as fh:
+        fh.write(PCA_MODES_CSV)
+    if indices:
+        with open(os.path.join(report_dir, "pca_mode_sobol_indices.csv"), "w") as fh:
+            fh.write(PCA_MODE_INDICES_CSV)
+
+
+def test_param_reduction_reader_returns_each_pca_modes_loadings_and_indices(tmp_path):
+    report_dir = str(tmp_path / "r")
+    _write_report(report_dir)
+    _write_mode_files(report_dir)
+
+    composition = ca_run_history.param_reduction(report_dir)["mode_composition"]
+
+    assert [m["mode"] for m in composition] == [1, 2]
+    assert composition[0]["features"] == [
+        {"label": "x (max) (Exp0, Sub0)", "loading": 0.8},
+        {"label": "y (max) (Exp0, Sub0)", "loading": -0.6},
+    ]
+    assert composition[1]["features"][1]["loading"] is None  # CA's nan
+    assert composition[1]["parameters"] == [
+        {"parameter": "Lotka_Volterra_module/alpha", "S1": 0.1, "ST": 0.2},
+        {"parameter": "Lotka_Volterra_module/beta", "S1": 0.6, "ST": 0.9},
+    ]
+
+
+def test_mode_composition_without_ca_files_is_none_or_has_no_parameters(tmp_path):
+    # A report naming no modes file (a sobol reduction, an older CA): None.
+    _write_report(str(tmp_path / "a"))
+    assert ca_run_history.param_reduction(str(tmp_path / "a"))["mode_composition"] is None
+    _write_report(str(tmp_path / "s"), method="sobol")
+    assert ca_run_history.param_reduction(str(tmp_path / "s"))["mode_composition"] is None
+    # The loadings without the indices file: the modes, with no parameters.
+    _write_report(str(tmp_path / "b"))
+    _write_mode_files(str(tmp_path / "b"), indices=False)
+    composition = ca_run_history.param_reduction(str(tmp_path / "b"))["mode_composition"]
+    assert [m["parameters"] for m in composition] == [[], []]
+    assert len(composition[0]["features"]) == 2
+
+
 def test_find_param_reduction_takes_the_newest_report_after_the_job_started(tmp_path):
     old = tmp_path / "param_reduction"
     _write_report(str(old))
