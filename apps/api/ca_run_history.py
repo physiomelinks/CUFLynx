@@ -451,8 +451,11 @@ def _sobol_indices_files(directory: str) -> list[str]:
     return sorted(glob.glob(os.path.join(directory, SOBOL_INDICES_GLOB)))
 
 
-def sobol_runs(root: str, max_depth: int = 3) -> list[dict]:
+def sobol_runs(root: str, max_depth: int = 4) -> list[dict]:
     """The Sobol runs under ``root``, newest first.
+
+    ``max_depth`` 4 reaches a study workflow step's run,
+    ``<working dir>/workflows/<name>/<step>/sensitivity``.
 
     One entry per directory holding CA's ``all_outputs_n<N>_Sobol_indices.csv``:
     ``{dir, num_samples, mtime, has_samples}``. ``has_samples`` says whether the run

@@ -306,6 +306,19 @@ def test_sobol_runs_endpoint_scans_the_outputs_directory(client, tmp_path):
     assert [r["dir"] for r in runs] == [str(tmp_path)]
 
 
+def test_sobol_runs_endpoint_finds_a_study_workflow_steps_run(client, tmp_path):
+    """A Sobol run from the Sensitivity tab is a study workflow step: its results are in
+    <W>/workflows/study/sobol-1/sensitivity, and a reopened working dir must offer it."""
+    step = tmp_path / "workflows" / "study" / "sobol-1" / "sensitivity"
+    step.mkdir(parents=True)
+    for suffix in ("indices", "samples", "outputs"):
+        (step / f"all_outputs_n64_Sobol_{suffix}.csv").write_text("Parameter\n")
+    (step / "sobol_problem.json").write_text("{}")
+    runs = client.get("/api/param_reduction/sobol_runs",
+                      params={"config_outputs_dir": str(tmp_path)}).json()["runs"]
+    assert [(r["dir"], r["has_samples"]) for r in runs] == [(str(step), True)]
+
+
 # ---------------------------------------------------------------------------
 # Identifiability analysis through the UQ runner
 # ---------------------------------------------------------------------------
