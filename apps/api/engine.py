@@ -59,6 +59,15 @@ class SimulationError(RuntimeError):
     """Raised when the underlying solver fails (maps to HTTP 500)."""
 
 
+class LiveRunStopped(RuntimeError):
+    """A live run stopped on purpose (maps to HTTP 409): ``reason`` is
+    ``"superseded"`` (a newer live run took the worker) or ``"cancelled"``."""
+
+    def __init__(self, reason: str):
+        super().__init__(f"the live run was {reason}")
+        self.reason = reason
+
+
 # ---------------------------------------------------------------------------
 # Divergence (issue #175)
 # ---------------------------------------------------------------------------
@@ -790,6 +799,9 @@ class SimulationEngine:
         # model runs with: a calibration workflow step's values (set_external_parameters).
         self.external_parameters: dict[str, str] = {}
         self._lock = threading.Lock()
+        # Starting a worker is serialised apart from running one: two requests
+        # that both find the worker stopped must not start two.
+        self._worker_start_lock = threading.Lock()
 
     @property
     def solver_info(self) -> dict:
@@ -966,6 +978,10 @@ class SimulationEngine:
         )
 
     def _acquire_worker(self, model_id: str | None = None):
+        with self._worker_start_lock:
+            return self._acquire_worker_locked(model_id)
+
+    def _acquire_worker_locked(self, model_id: str | None = None):
         """The live worker for the current settings, starting it if needed.
 
         Returns None when live simulation should stay in-process: no interpreter
@@ -1010,23 +1026,36 @@ class SimulationEngine:
             self._worker = worker
         return worker
 
-    def _worker_call(self, op: str, extra: dict, **payload) -> dict:
+    def _worker_call(self, op: str, extra: dict, live: bool = False, **payload) -> dict:
         """One request, with the reply turned back into today's error text.
 
         The worker returns the captured solver output and a fallback reason and
         leaves the wording here, so the issue #138 error quality lives in one
         place rather than being reimplemented on the far side of a pipe.
-        """
-        from sim_worker import WorkerError  # noqa: PLC0415
 
-        worker = self._acquire_worker(payload.get("model_id"))
-        if worker is None:
-            return {}
-        try:
-            reply = worker.call(op, **payload)
-        except WorkerError as exc:
-            self._worker = None
-            raise SimulationError(self.failure_message(str(exc), **extra)) from exc
+        ``live`` marks the plots' own run: a newer one may stop it, and so may
+        ``cancel_live`` (``LiveRunStopped``).
+        """
+        from sim_worker import WorkerError, WorkerGone, WorkerStopped  # noqa: PLC0415
+
+        for attempt in (0, 1):
+            worker = self._acquire_worker(payload.get("model_id"))
+            if worker is None:
+                return {}
+            try:
+                reply = worker.call(op, live=live, **payload)
+                break
+            except WorkerStopped as exc:
+                self._forget_worker(worker)
+                raise LiveRunStopped(exc.reason) from exc
+            except WorkerGone as exc:
+                # Stopped under the run this one waited behind: start anew.
+                self._forget_worker(worker)
+                if attempt:
+                    raise SimulationError(self.failure_message(str(exc), **extra)) from exc
+            except WorkerError as exc:
+                self._forget_worker(worker)
+                raise SimulationError(self.failure_message(str(exc), **extra)) from exc
 
         if reply.get("ok"):
             return {
@@ -1035,6 +1064,20 @@ class SimulationEngine:
             }
         reason = _solver_reason(reply.get("captured") or "") or (reply.get("reason") or "")
         raise SimulationError(self.failure_message(reason, **extra))
+
+    def _forget_worker(self, worker) -> None:
+        # Only this worker: another request may already have started its successor.
+        if self._worker is worker:
+            self._worker = None
+
+    def cancel_live(self) -> bool:
+        """Stop the live run in flight, if the worker is running one.
+
+        Only a worker can be stopped: an in-process run holds this process, so
+        with no interpreter chosen in Settings this returns False.
+        """
+        worker = self._worker
+        return bool(worker is not None and worker.interrupt("cancelled"))
 
     # ------------------------------------------------------------------
     # Failure reporting (issue #138)
@@ -1183,6 +1226,7 @@ class SimulationEngine:
         pre_time: float,
         outputs: list[str],
         best_effort_outputs: bool = False,
+        live: bool = False,
     ) -> dict:
         # The worker first, and without live_backend(): its fallback answers
         # "what can *this* process import", which is the wrong question once the
@@ -1193,6 +1237,7 @@ class SimulationEngine:
         remote = self._worker_call(
             "simulate",
             {"sim_time": sim_time, "pre_time": pre_time},
+            live=live,
             model_id=model_id,
             model_path=str(model_path),
             params=params or {},
@@ -1315,6 +1360,7 @@ class SimulationEngine:
         protocol_info: dict,
         params: dict[str, float],
         outputs: list[str],
+        live: bool = False,
     ) -> dict:
         # See simulate(): the worker runs the configured backend, and the
         # in-process fallback below is for when there is no worker.
@@ -1322,6 +1368,7 @@ class SimulationEngine:
         remote = self._worker_call(
             "run_protocol",
             {"experiments": _n_experiments(protocol_info)},
+            live=live,
             model_id=model_id,
             model_path=str(model_path),
             protocol_info=protocol_info,

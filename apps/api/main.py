@@ -73,7 +73,7 @@ from aadc_check import aadc_status
 import editor_launch
 from version import __version__
 from compiler_check import compiler_status
-from engine import SimulationError, engine, _circulatory_autogen_src
+from engine import LiveRunStopped, SimulationError, engine, _circulatory_autogen_src
 from examples import EXAMPLE_MODELS, media_type as example_media_type
 from local_sensitivity import local_gradient_sources
 import ca_imports
@@ -2696,6 +2696,36 @@ def _protocol_run_cost(record, result: dict, protocol_info, output_dir) -> dict 
     )
 
 
+_STOPPED_MESSAGES = {
+    "superseded": "A newer live run replaced this one before it finished.",
+    "cancelled": "The live run was cancelled.",
+}
+
+
+def _live_run_stopped(exc: LiveRunStopped) -> HTTPException:
+    """409 for a live run stopped on purpose; ``stopped`` says why, so the plots
+    can ignore a superseded run and say a cancelled one was cancelled."""
+    return HTTPException(
+        status_code=409,
+        detail={"stopped": exc.reason, "message": _STOPPED_MESSAGES.get(exc.reason, str(exc))},
+    )
+
+
+@app.post("/api/simulate/cancel")
+def simulate_cancel() -> dict:
+    """Stop the live run in flight. Only a run in the simulation worker can be
+    stopped (an interpreter chosen in Settings); ``cancelled`` says whether one was."""
+    if engine.cancel_live():
+        return {"cancelled": True}
+    reason = (
+        "No live run is in progress."
+        if engine.uses_worker()
+        else "Live runs in the app's own interpreter cannot be stopped; "
+        "choose a Python interpreter in Settings to make them stoppable."
+    )
+    return {"cancelled": False, "reason": reason}
+
+
 @app.post("/api/simulate")
 def simulate(req: SimulateRequest) -> dict:
     record = _get_model(req.model_id)
@@ -2725,7 +2755,10 @@ def simulate(req: SimulateRequest) -> dict:
             pre_time=req.pre_time,
             outputs=outputs,
             best_effort_outputs=req.best_effort_outputs,
+            live=True,
         )
+    except LiveRunStopped as exc:
+        raise _live_run_stopped(exc) from exc
     except SimulationError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     except (KeyError, ValueError) as exc:
@@ -2778,7 +2811,10 @@ def protocol_run(req: ProtocolRunRequest) -> dict:
             protocol_info=protocol_info,
             params=req.params,
             outputs=outputs,
+            live=True,
         )
+    except LiveRunStopped as exc:
+        raise _live_run_stopped(exc) from exc
     except SimulationError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     except (KeyError, ValueError) as exc:

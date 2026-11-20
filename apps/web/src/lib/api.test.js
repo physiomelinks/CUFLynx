@@ -19,6 +19,8 @@ import {
   editModelSource,
   modelSourceUrl,
   peekInbox,
+  liveRunStopped,
+  cancelLiveRun,
 } from './api'
 
 beforeEach(() => {
@@ -248,5 +250,33 @@ describe('peekInbox', () => {
       deliveryFailed: true,
       message: 'Could not open it',
     })
+  })
+})
+
+// A live run stopped on purpose answers 409 with detail {stopped, message}.
+describe('stopped live runs', () => {
+  const stoppedError = (reason) =>
+    Object.assign(new Error('Request failed with status code 409'), {
+      response: { status: 409, data: { detail: { stopped: reason, message: `The live run was ${reason}.` } } },
+    })
+
+  it('names why the run stopped', () => {
+    expect(liveRunStopped(stoppedError('superseded'))).toBe('superseded')
+    expect(liveRunStopped(stoppedError('cancelled'))).toBe('cancelled')
+  })
+
+  it('is null for any other failure', () => {
+    expect(liveRunStopped({ response: { status: 500, data: { detail: 'boom' } } })).toBe(null)
+    expect(liveRunStopped(new Error('Network Error'))).toBe(null)
+  })
+
+  it('reads the message of a structured detail', () => {
+    expect(errorMessage(stoppedError('cancelled'))).toBe('The live run was cancelled.')
+  })
+
+  it('cancels through the API', async () => {
+    axios.post.mockResolvedValue({ data: { cancelled: true } })
+    expect(await cancelLiveRun()).toEqual({ cancelled: true })
+    expect(axios.post.mock.calls[0][0]).toMatch(/\/api\/simulate\/cancel$/)
   })
 })

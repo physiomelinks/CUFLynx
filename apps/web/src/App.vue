@@ -47,6 +47,8 @@ import {
   // No `simulate`: a run is a protocol run now, because the run window is the
   // protocol's and a single run has no other way to say how long it lasts.
   runProtocol,
+  liveRunStopped,
+  cancelLiveRun,
   costSensitivity,
   costAtParams,
   getCalibrationDefaults,
@@ -3021,7 +3023,28 @@ async function runSimulation() {
     // asked for it (#188).
     scheduleCostSensitivity()
   } catch (e) {
-    sim.setError(errorMessage(e))
+    const stopped = liveRunStopped(e)
+    // A newer run took over: it owns the status bar now.
+    if (stopped === 'superseded') return
+    if (stopped === 'cancelled') sim.setCancelled()
+    else sim.setError(errorMessage(e))
+  }
+}
+
+// Why the last Cancel could not stop the run (an in-process run), shown beside it.
+const cancelNote = ref('')
+watch(
+  () => sim.status.value,
+  (s) => {
+    if (s !== 'running') cancelNote.value = ''
+  },
+)
+async function cancelSimulation() {
+  try {
+    const res = await cancelLiveRun()
+    cancelNote.value = res?.cancelled ? '' : res?.reason || ''
+  } catch (e) {
+    cancelNote.value = errorMessage(e)
   }
 }
 
@@ -3910,7 +3933,10 @@ watch(() => obs.obsData.value, scheduleRun)
           :status="sim.status.value"
           :message="sim.message.value"
           :last-run-ms="sim.lastRunMs.value"
+          :started-at="sim.startedAt.value"
+          :cancel-note="cancelNote"
           :notice="backendFallbackNotice"
+          @cancel="cancelSimulation"
         />
       </section>
 
