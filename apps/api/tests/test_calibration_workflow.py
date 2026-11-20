@@ -255,6 +255,26 @@ def test_clicking_back_to_a_tab_reuses_its_study_until_a_result_changes(
     assert made() == 3
 
 
+def test_a_workflow_opened_builds_its_tabs_in_the_background(
+        client, monkeypatch, workflow_file, tmp_path):
+    """Once a workflow is open, every box's study is built in the background, so a click
+    finds it ready; a step with no model of its own is not built."""
+    import main  # noqa: PLC0415
+
+    calls = _fake_ca(monkeypatch)
+    (tmp_path / "workflows" / "demo").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("CUFLYNX_WARM_VIEWS", "1")
+    client.post("/api/workflow/load",
+                json={"path": str(workflow_file), "config_outputs_dir": str(tmp_path)})
+    main._warm_thread.join(timeout=60)
+    built = sorted({c[1] for c in calls if c[0] == "model"})
+    assert "fit_a" in built and "target" in built
+    # a click on a built box generates nothing more
+    before = len([c for c in calls if c[0] == "model"])
+    client.post("/api/workflow/view", json={"view": "fit_a"})
+    assert len([c for c in calls if c[0] == "model"]) == before
+
+
 def test_a_tab_with_unset_parameters_names_the_step_and_them(
         client, monkeypatch, workflow_file, tmp_path):
     _fake_ca(monkeypatch, model_error=UnsetParametersError("sel", ["C/x", "C/y"]))

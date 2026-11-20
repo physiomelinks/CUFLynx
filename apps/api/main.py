@@ -4870,8 +4870,9 @@ _workflow_view_cache: dict[tuple, dict] = {}
 
 def _view_key(req) -> tuple | None:
     """What a tab's study depends on: the workflow file, every step's result in its run
-    directory (a run, a rerun or a deletion changes them), the CA dir and the request. None
-    when there is no run directory to read."""
+    directory (a run, a rerun or a deletion changes them), the CA dir, the tab and whether
+    its inputs come with it. None when there is no run directory to read. (The working dir
+    matters only to an external model's tab, which is not kept.)"""
     out = workflow.output_dir
     if not workflow.path or not out or not os.path.isdir(out):
         return None
@@ -4890,7 +4891,7 @@ def _view_key(req) -> tuple | None:
     top_stat = os.stat(top).st_mtime_ns if os.path.isfile(top) else 0
     return (workflow.path, own.st_mtime_ns, own.st_size, tuple(results), top_stat,
             tuple(workflow.module_library_dirs or ()), os.environ.get("CIRCULATORY_AUTOGEN_SRC", ""),
-            req.view, bool(req.inputs), req.config_outputs_dir or "")
+            req.view, bool(req.inputs))
 
 
 def _workflow_http(fn, *args, **kwargs):
@@ -4921,7 +4922,9 @@ def _open_workflow_file(path: str, outputs_dir: str) -> dict:
 def workflow_describe() -> dict:
     """The open workflow: its file, which parameter of each step lands where, and
     where each step stands in the run directory."""
-    return _workflow_http(workflow.describe)
+    described = _workflow_http(workflow.describe)
+    _warm_views()
+    return described
 
 
 @app.post("/api/workflow/load")
@@ -4936,8 +4939,11 @@ def workflow_load(req: WorkflowLoadRequest) -> dict:
     outputs_dir = _working_dir_arg(req.config_outputs_dir) or ""
     if req.run_dir.strip():
         _workflow_http(workflow.load_run, req.run_dir.strip(), list(_module_library_dirs))
-        return _workflow_http(workflow.describe)
-    return _open_workflow_file(req.path.strip(), outputs_dir)
+        described = _workflow_http(workflow.describe)
+    else:
+        described = _open_workflow_file(req.path.strip(), outputs_dir)
+    _warm_views()
+    return described
 
 
 @app.post("/api/workflow/upload")
@@ -5025,7 +5031,9 @@ def _reopen_edited(path: str) -> dict:
     loaded = _workflow_http(workflow.load, path, "", list(_module_library_dirs))
     workflow.output_dir = output_dir or workflow_manager.default_output_dir(
         study_workflow.working_dir_of(path) or "", loaded["name"], str(UPLOAD_DIR))
-    return _workflow_http(workflow.describe)
+    described = _workflow_http(workflow.describe)
+    _warm_views()
+    return described
 
 
 @app.get("/api/workflow/edge")
@@ -5293,6 +5301,17 @@ def workflow_step_move(req: WorkflowStepMoveRequest) -> dict:
 
 @app.post("/api/workflow/view")
 def workflow_view(req: WorkflowViewRequest) -> dict:
+    """Load one tab of the workflow -- a step, or the target -- as the current study (see
+    :func:`_workflow_view`)."""
+    return _workflow_view(req)
+
+
+#: One tab's model is generated at a time: Myokit changes the process's directory while it
+#: compiles, and the background warm-up (:func:`_warm_views`) and a click share it.
+_view_lock = threading.Lock()
+
+
+def _workflow_view(req: WorkflowViewRequest) -> dict:
     """Load one tab of the workflow -- a step, or the target -- as the current study.
 
     CA builds the model (``workflow_model``): a step's own model with the values its
@@ -5306,6 +5325,15 @@ def workflow_view(req: WorkflowViewRequest) -> dict:
     cached = _workflow_view_cache.get(key) if key else None
     if cached and cached["model_id"] in _models:
         return copy.deepcopy(cached)
+    with _view_lock:
+        # the warm-up may have built it while this waited
+        cached = _workflow_view_cache.get(key) if key else None
+        if cached and cached["model_id"] in _models:
+            return copy.deepcopy(cached)
+        return _generate_view(req, key)
+
+
+def _generate_view(req: WorkflowViewRequest, key: tuple | None) -> dict:
     work_dir = UPLOAD_DIR / "workflow_views" / uuid.uuid4().hex
     view = _workflow_http(workflow.view, req.view, str(work_dir))
     if not req.inputs:
@@ -5349,11 +5377,51 @@ def workflow_view(req: WorkflowViewRequest) -> dict:
     # A sensitivity, emulation or identifiability step's own results, as a loaded working
     # dir reports them.
     result["workflow_view"]["step_outputs"] = load_outputs.step_outputs(view.get("result"))
-    if key:
+    if key and not (view.get("model") or {}).get("external_model_path"):
         if len(_workflow_view_cache) > 64:
             _workflow_view_cache.clear()
         _workflow_view_cache[key] = copy.deepcopy(result)
     return result
+
+
+#: The thread building every box's study in the background (:func:`_warm_views`).
+_warm_thread: threading.Thread | None = None
+#: Step kinds with no model of their own, so no tab to build.
+_NO_TAB_KINDS = ("reduction", "set", "combine")
+
+
+def _warm_views() -> None:
+    """Build every box's study of the open workflow in the background, once, so a click on
+    a box finds it ready (CA generates a step's model in seconds). One at a time, through
+    the same lock a click takes; it stops when another workflow is opened, and a box already
+    built costs nothing. Started whenever the workflow is described."""
+    global _warm_thread
+    if os.environ.get("CUFLYNX_WARM_VIEWS", "1") == "0":  # off: the test suite
+        return
+    if _warm_thread is not None and _warm_thread.is_alive():
+        return
+    if not workflow.loaded or not workflow.output_dir:
+        return
+    path = workflow.path
+
+    def warm():
+        try:
+            steps = study_workflow.read_raw(path).get("steps") or []
+        except (OSError, ValueError):
+            return
+        views = [s["id"] for s in steps if isinstance(s, dict) and s.get("id")
+                 and not s.get("on_target")
+                 and (s.get("kind") or "calibration") not in _NO_TAB_KINDS]
+        for view in [*views, "target"]:
+            if workflow.path != path:
+                return
+            try:
+                _workflow_view(WorkflowViewRequest(view=view))
+            except Exception:  # noqa: BLE001  (a box that cannot load says so when clicked)
+                continue
+
+    _warm_thread = threading.Thread(target=warm, name="workflow-view-warm-up", daemon=True)
+    _warm_thread.start()
 
 
 def _view_inputs(view: dict, prefix: str) -> tuple:
