@@ -9,7 +9,7 @@ in its COMBINE archive, beside the model it was calibrated on:
   the same values in the library's parameters-file layout.
 
 :func:`apply` writes those values into the model's ``initial_value`` attributes
-through :func:`calibrated_cellml.calibrated_cellml` -- the writer a CUFLynx
+through :func:`calibrated_cellml.substitute_values` -- the writer a CUFLynx
 calibration's saved model uses -- so the study opens with the calibrated values
 as the parameters' starting values, and the sliders, the params_for_id entries'
 ``initial_value`` and a later send to PhLynx all read them from the one model.
@@ -26,7 +26,7 @@ import io
 import json
 import math
 
-from calibrated_cellml import calibrated_cellml
+from calibrated_cellml import substitute_values
 from cellml_meta import parse_cellml
 from params_for_id import ParamsForIdError, parse_params_for_id
 
@@ -99,7 +99,7 @@ def apply(cellml: bytes, members: list[tuple[str, bytes]],
             targets[q] = value
         applied.append(name)
 
-    new_text, written = calibrated_cellml(text, targets)
+    new_text, written = substitute_values(text, targets)
     # A target the writer could not place: report the library name it came from.
     missed = set(written["unresolved"])
     if missed:

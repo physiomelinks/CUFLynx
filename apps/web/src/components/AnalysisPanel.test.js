@@ -56,6 +56,40 @@ describe('AnalysisPanel UQ section', () => {
   })
 })
 
+describe('AnalysisPanel UQ section, a Laplace covariance that is not positive definite', () => {
+  const NOT_PD = 'not identifiable (covariance not positive definite)'
+  const LAPLACE = [
+    { ...UQ_PARAMS[0] },
+    {
+      qname: 'Lotka_Volterra_module/beta', mean: 0.4, std: null, q05: null, q50: 0.4,
+      q95: null, bins: [], counts: [], not_identifiable: NOT_PD,
+    },
+  ]
+
+  it('says a parameter is not identifiable instead of showing a std or a density', () => {
+    const wrapper = mount(AnalysisPanel, { props: { uqParams: LAPLACE, uqMethod: 'laplace' } })
+    const rows = wrapper.findAll('[data-testid="uq-row"]')
+    expect(rows).toHaveLength(2)
+    expect(rows[0].find('[data-testid="uq-density"]').exists()).toBe(true)
+    expect(rows[1].find('[data-testid="uq-density"]').exists()).toBe(false)
+    expect(rows[1].find('[data-testid="uq-axis"]').exists()).toBe(false)
+    expect(rows[1].get('[data-testid="uq-not-identifiable"]').text()).toContain(NOT_PD)
+    // never a std of 0, which would read as perfectly determined
+    expect(rows[1].text()).not.toContain('±')
+    expect(rows[1].text()).not.toContain('90% CI')
+  })
+
+  it('reports how many draws fell outside the bounds', () => {
+    const wrapper = mount(AnalysisPanel, {
+      props: { uqParams: LAPLACE, uqMethod: 'laplace', uqOutsideBounds: { count: 1179, of: 2000 } },
+    })
+    expect(wrapper.get('[data-testid="uq-outside-bounds"]').text()).toContain(
+      '1179 of 2000 draws fell outside the params_for_id bounds')
+    const bare = mount(AnalysisPanel, { props: { uqParams: LAPLACE, uqMethod: 'laplace' } })
+    expect(bare.find('[data-testid="uq-outside-bounds"]').exists()).toBe(false)
+  })
+})
+
 const SENS = {
   indices: { local: { 'y^{0,0} [max]': { 'm/a': 0.5, 'm/b': -0.2 } } },
   paramNames: ['m/a', 'm/b'],

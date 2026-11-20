@@ -72,6 +72,7 @@ CA_PACKAGES = frozenset({
     "parsers",
     "protocol_runners",
     "reporting",
+    "schemas",
     "scripts",
     "sensitivity_analysis",
     "solver1d",

@@ -22,6 +22,8 @@ export function useUQ(options = {}) {
   // Whether the posterior reproduces the data it was fitted to. null means the
   // run was not scored, which is not the same as scoring badly.
   const coverage = ref(null)
+  // A Laplace step's draws outside the params_for_id bounds: {count, of}, or null.
+  const outsideBounds = ref(null)
   const posteriorPredictive = ref(null)
   const error = ref('')
   // Set when a result is real but qualified -- a posterior from a cancelled run's partial chain.
@@ -46,6 +48,7 @@ export function useUQ(options = {}) {
     method.value = null
     params.value = []
     coverage.value = null
+    outsideBounds.value = null
     posteriorPredictive.value = null
     error.value = ''
     warning.value = ''
@@ -83,6 +86,7 @@ export function useUQ(options = {}) {
         error.value = s.error || ''
         warning.value = s.warning || ''
         coverage.value = s.coverage ?? null
+        outsideBounds.value = s.outside_bounds ?? null
         // Fetched once, on the way out. It is a whole sweep of the model, so it
         // exists only after the run has finished, and it never changes after.
         await fetchPosteriorPredictive()
@@ -208,7 +212,8 @@ export function useUQ(options = {}) {
     }
   }
 
-  return { state, lines, method, params, medianParams, coverage, posteriorPredictive,
+  return { state, lines, method, params, medianParams, coverage, outsideBounds,
+    posteriorPredictive,
     error, warning, running, progress, start, cancel,
     reset }
 }

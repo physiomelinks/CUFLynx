@@ -326,8 +326,15 @@ def run(config: dict) -> dict:
 
     ca_run_history.write_uq_samples(output_dir, np.asarray(flat), qnames)
 
-    coverage = _posterior_predictive(settings, engine)
-    print(META_MARKER + json.dumps({"method": method}), flush=True)
+    # A Laplace approximation has no chain: its check draws from the samples above and is
+    # saved beside them, in output_dir, which the meta line names for the manager.
+    laplace = method == "laplace"
+    coverage = _posterior_predictive(settings, engine, samples=flat if laplace else None,
+                                     output_dir=output_dir if laplace else None)
+    meta = {"method": method}
+    if laplace and coverage is not None:
+        meta["predictive_dir"] = output_dir
+    print(META_MARKER + json.dumps(meta), flush=True)
     result = {"rank": 0, "method": method,
               "params": _distributions(np.asarray(flat), qnames)}
     if coverage is not None:
@@ -335,13 +342,18 @@ def run(config: dict) -> dict:
     return result
 
 
-def _posterior_predictive(settings, engine):
+def _posterior_predictive(settings, engine, samples=None, output_dir=None):
     """Push posterior draws back through the model and report coverage.
 
     A chain says what the parameters could be; it does not say whether the model
     at those parameters reproduces what was measured. Run here rather than left
     to the user because the engine is already built and the chain is already on
     disk -- the check costs one sweep and answers the question the chain cannot.
+
+    ``samples`` (with ``output_dir``, where the check is saved) are the draws of a
+    posterior with no chain (Laplace); without them CA reads the MCMC chain from, and
+    saves the check into, the MCMC run's own directory. An MCMC engine built without a
+    calibration has no ``param_id``; CA's check evaluates it through ``engine_of``.
 
     Returns None, quietly, when the engine predates the check or the user turned
     it off. A UQ run that produced a posterior has not failed because it could
@@ -366,9 +378,13 @@ def _posterior_predictive(settings, engine):
     print(f"Posterior predictive: {num_samples} draws through the model",
           flush=True)
     try:
-        # No output_dir: CA reads the chain from, and saves the check into, the MCMC
-        # run's own directory.
-        result = run_check(client=engine, num_samples=num_samples, save=True)
+        if samples is None:
+            # No output_dir: CA reads the chain from, and saves the check into, the MCMC
+            # run's own directory.
+            result = run_check(client=engine, num_samples=num_samples, save=True)
+        else:
+            result = run_check(client=engine, num_samples=num_samples, save=True,
+                               samples=samples, output_dir=output_dir)
     except Exception as exc:  # noqa: BLE001 - the posterior is still the result
         print(f"WARNING: posterior predictive check failed: {exc}", flush=True)
         return None

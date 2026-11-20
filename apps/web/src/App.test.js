@@ -16,6 +16,7 @@ vi.mock('./lib/api', () => ({
   loadWorkflow: vi.fn().mockResolvedValue(null),
   uploadWorkflow: vi.fn().mockResolvedValue(null),
   closeWorkflow: vi.fn().mockResolvedValue(null),
+  followWorkingDir: vi.fn().mockResolvedValue({ loaded: false }),
   openWorkflowView: vi.fn().mockResolvedValue(null),
   runWorkflow: vi.fn().mockResolvedValue({ job_id: 'w1' }),
   getWorkflowStatus: vi.fn().mockResolvedValue({ state: 'done', lines: [], next_offset: 0 }),
@@ -85,6 +86,7 @@ vi.mock('./lib/api', () => ({
 }))
 
 import {
+  getWorkflow,
   getWorkflowStepInput,
   loadWorkflow,
   openWorkflowView,
@@ -375,6 +377,21 @@ describe('App.vue', () => {
     expect(banner.props('severity')).toBe('warn')
     expect(banner.text()).toContain('/elsewhere/sobol')
     expect(banner.text()).toContain('not carried with the study')
+    wrapper.unmount()
+  })
+
+  it('shows the study workflow the server opened with a working dir', async () => {
+    localStorage.setItem('cuflynx-working-dir', '/data/study')
+    loadWorkingDir.mockResolvedValueOnce({
+      found: [], missing: [], warnings: [],
+      study_workflow: { path: '/data/study/workflow/calibration_workflow.json', opened: true },
+    })
+    const wrapper = shallowMount(App)
+    await flushPromises()
+    const before = getWorkflow.mock.calls.length
+    wrapper.findComponent({ name: 'FileImport' }).vm.$emit('load-working-dir')
+    await flushPromises()
+    expect(getWorkflow.mock.calls.length).toBe(before + 1)
     wrapper.unmount()
   })
 
@@ -3042,6 +3059,30 @@ describe('App.vue reopening a working dir', () => {
     expect(wrapper.vm.uq.params.value).toHaveLength(1)
   })
 
+  it('fills every panel from the study workflow steps the server read', async () => {
+    const band = { available: true, labels: ['a/x'], lo: [-1], median: [0], hi: [1] }
+    const wrapper = await load(FOUND({
+      sensitivity: {
+        sobol: { indices: { S1: { 'x (Exp0, Sub0)': { 'a/alpha': 0.4 } } },
+          param_names: ['a/alpha'], output_names: ['x (Exp0, Sub0)'] },
+        local: { indices: { local: { 'x (Exp0, Sub0)': { 'a/alpha': -0.7 } } },
+          param_names: ['a/alpha'], output_names: ['x (Exp0, Sub0)'] },
+      },
+      uq: { params: [{ qname: 'a/alpha', mean: 1 }], method: 'laplace',
+        coverage: { coverage: { levels: {} } }, posterior_predictive: band, progress: null },
+      study_steps: { calibration: 'calibration-2', sobol: 'sobol-1', local: 'local-sa-1',
+        uq: 'laplace-1' },
+    }))
+    expect(wrapper.vm.calib.bestParams.value).toEqual({ 'a/alpha': 2 })
+    expect(wrapper.vm.sa.results.value.map((r) => r.method).sort()).toEqual(['local', 'sobol'])
+    expect(wrapper.vm.uq.method.value).toBe('laplace')
+    expect(wrapper.vm.uq.posteriorPredictive.value).toEqual(band)
+    expect(wrapper.vm.uq.coverage.value).toEqual({ coverage: { levels: {} } })
+    expect(wrapper.vm.loadedOutputsSummary).toContain(
+      'From study workflow steps: calibration calibration-2, sobol sobol-1, local local-sa-1, '
+      + 'uq laplace-1')
+  })
+
   it('a directory with no chain leaves the trace plots as they were', async () => {
     // Same rule the live poll follows: a payload with no steps is not a chain,
     // and must not replace one already on screen.
@@ -3197,6 +3238,15 @@ describe('App.vue: calibrating PhLynx selections (PhLynx #492)', () => {
     await flushPromises()
     expect(loadWorkflow).toHaveBeenCalledWith(expect.objectContaining({ path: SELECTION_WORKFLOW.path }))
     expect(wrapper.find('[data-testid="tab-workflow"]').classes()).toContain('active')
+  })
+
+  it('re-reads the study workflow when the Workflow tab is opened', async () => {
+    const wrapper = shallowMount(App)
+    await flushPromises()
+    const before = getWorkflow.mock.calls.length
+    await wrapper.find('[data-testid="tab-workflow"]').trigger('click')
+    await flushPromises()
+    expect(getWorkflow.mock.calls.length).toBe(before + 1)
   })
 
   it('only offers a workflow without selections', async () => {

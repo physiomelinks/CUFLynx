@@ -125,6 +125,14 @@ describe('WorkflowPanel', () => {
     expect(panel.emitted('run').map(([w]) => w.writeCalibrated)).toEqual([true, false])
   })
 
+  it('writes the calibrated values beside a CellML target, not a library or array one', () => {
+    const box = (target) => mountPanel({ described: { ...described, plan: { target } }, tabs })
+      .find('[data-testid="workflow-write-calibrated"]').element.checked
+    expect(box({ cellml_model_path: '/w/inputs/model/s/lv.cellml' })).toBe(true)
+    expect(box({ module_array_path: '/w/chain_module_config.json' })).toBe(false)
+    expect(box({ module_type: 'heart', parameterisation: 'default' })).toBe(false)
+  })
+
   it("shows the run's provenance diagram and links it and its graph as plain links", () => {
     const provenance = { svg: '/api/workflow/provenance/provenance.svg?v=1',
                          graph: '/api/workflow/provenance/provenance_graph.json?v=1' }

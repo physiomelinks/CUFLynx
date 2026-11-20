@@ -24,15 +24,16 @@ import re
 
 import ca_run_history
 import study_manifest
+import study_workflow
 import working_dir
 import mcmc_progress
 
 #: What a caller can ask for, and the order the summary lists them in.
 SECTIONS = ("calibration", "progress", "sensitivity", "uq", "emulator")
 
-COVERAGE_FILE = "posterior_predictive_coverage.json"
-PREDICTIVE_FILE = "posterior_predictive.npz"
-SERIES_FILE = "posterior_predictive_series.npz"
+COVERAGE_FILE = ca_run_history.PREDICTIVE_COVERAGE_FILE
+PREDICTIVE_FILE = ca_run_history.PREDICTIVE_FILE
+SERIES_FILE = ca_run_history.PREDICTIVE_SERIES_FILE
 
 
 #: Files that mark a directory as holding a finished run.
@@ -402,6 +403,9 @@ def _uq(output_dir, run_dir, missing):
 
     payload["has_posterior_predictive"] = os.path.isfile(
         os.path.join(answered, PREDICTIVE_FILE))
+    if payload["has_posterior_predictive"]:
+        payload["posterior_predictive"] = ca_run_history.posterior_predictive_band(
+            answered, payload["coverage"])
     payload["has_sample_traces"] = os.path.isfile(os.path.join(answered, SERIES_FILE))
 
     # The chain itself, as the three views the UQ Progress tab draws (#244). The posterior
@@ -492,7 +496,7 @@ def step_outputs(step_result: dict | None) -> dict | None:
     if sensitivity_dir:
         out["sensitivity"] = {
             "local": _safely("local sensitivity",
-                             lambda: ca_run_history.local_sensitivity(sensitivity_dir), missing),
+                             lambda: ca_run_history.step_local_sensitivity(result), missing),
             "sobol": _safely("Sobol indices",
                              lambda: ca_run_history.sobol_indices(sensitivity_dir), missing),
         }
@@ -518,6 +522,192 @@ def step_outputs(step_result: dict | None) -> dict | None:
         if params:
             out["found"].append("Laplace posterior")
     return out
+
+
+#: The panels a study workflow step fills: ``(kind, method)`` of its ``step_result.json``.
+STUDY_PANELS = ("calibration", "sobol", "local", "uq")
+
+
+def _step_panel(result: dict) -> str | None:
+    kind = result.get("kind")
+    if kind == "calibration":
+        return "calibration"
+    if kind == "sensitivity":
+        return "local" if result.get("method") == "local" else "sobol"
+    if kind == "uq":
+        return "uq"
+    return None
+
+
+def _iso_time(text) -> float | None:
+    """A step's ``finished`` (local ISO time, as CA writes it) as a timestamp, or None."""
+    import datetime  # noqa: PLC0415
+
+    try:
+        return datetime.datetime.fromisoformat(str(text)).timestamp()
+    except (TypeError, ValueError):
+        return None
+
+
+def latest_study_steps(output_dir: str) -> dict:
+    """``{panel: step_result}``: per panel (:data:`STUDY_PANELS`), the ``step_result.json``
+    of the study workflow's latest done step of that kind, by its ``finished`` time. Empty
+    when the working dir has no study workflow, or no step has finished."""
+    path = study_workflow.workflow_path(output_dir)
+    try:
+        with open(path, encoding="utf-8") as handle:
+            name = json.load(handle).get("workflow_name")
+    except (OSError, ValueError, AttributeError):
+        return {}
+    run = study_workflow.run_dir(output_dir, str(name or study_workflow.WORKFLOW_NAME))
+    if not os.path.isdir(run):
+        return {}
+    latest: dict = {}
+    for entry in sorted(os.listdir(run)):
+        result = ca_run_history.step_result(os.path.join(run, entry))
+        if not result or result.get("status") != "done":
+            continue
+        panel = _step_panel(result)
+        finished = _iso_time(result.get("finished"))
+        if panel is None or finished is None:
+            continue
+        if panel not in latest or finished >= latest[panel][0]:
+            latest[panel] = (finished, result)
+    return {panel: result for panel, (_, result) in latest.items()}
+
+
+def _study_step_uq(result: dict, missing: list) -> dict:
+    """A workflow uq step's results in :func:`_uq`'s shape: its posterior, its posterior
+    predictive check (coverage and band) and, for MCMC, its chain."""
+    predictive = ca_run_history.step_predictive_dir(result)
+    coverage = _safely("posterior predictive coverage",
+                       lambda: ca_run_history.predictive_coverage(predictive), missing)
+    payload = {
+        "params": _safely("UQ posteriors", lambda: ca_run_history.step_uq_marginals(result),
+                          missing),
+        "method": result.get("method") or "mcmc",
+        "coverage": coverage,
+        "progress": None,
+        "run_dir": result.get("uq_output_dir"),
+        "has_posterior_predictive": bool(
+            predictive and os.path.isfile(os.path.join(predictive, PREDICTIVE_FILE))),
+        "has_sample_traces": bool(
+            predictive and os.path.isfile(os.path.join(predictive, SERIES_FILE))),
+    }
+    if payload["has_posterior_predictive"]:
+        payload["posterior_predictive"] = ca_run_history.posterior_predictive_band(
+            predictive, coverage)
+    uq_dir = result.get("uq_output_dir")
+    if payload["method"] == "mcmc" and uq_dir and os.path.isdir(uq_dir):
+        labels = [str(p) for p in result.get("parameters") or []]
+        progress = _safely("MCMC progress", lambda: mcmc_progress.progress(uq_dir, labels),
+                           missing)
+        payload["progress"] = progress if (progress or {}).get("steps") else None
+    return payload
+
+
+def _study_step_sections(panel: str, result: dict, missing: list) -> dict:
+    """The sections of :func:`load_outputs`' result that ``result`` (a workflow step's
+    ``step_result.json``) fills for ``panel``."""
+    if panel == "calibration":
+        case = result.get("param_id_output_dir") or ""
+        base = os.path.dirname(case)
+        calibration = _calibration(base, None, missing)
+        calibration["calibrated_model"] = (result.get("calibrated_model")
+                                           or calibration.get("calibrated_model"))
+        return {"calibration": calibration, "progress": _progress(case, base, missing)}
+    if panel in ("sobol", "local"):
+        outputs = step_outputs(result) or {}
+        missing.extend(outputs.get("missing") or [])
+        return {"sensitivity": {panel: (outputs.get("sensitivity") or {}).get(panel)}}
+    return {"uq": _study_step_uq(result, missing)}
+
+
+def _mtime(paths) -> float | None:
+    """The newest modification time of the files among ``paths``, or None."""
+    times = [os.path.getmtime(p) for p in paths if p and os.path.isfile(p)]
+    return max(times) if times else None
+
+
+def _direct_times(output_dir: str, result: dict) -> dict:
+    """``{panel: time}`` of the direct results :func:`load_outputs` read, for comparing
+    with the study workflow's steps: when each run's result files were written."""
+    run_dir = result.get("run_dir") or ""
+    sensitivity_dirs = [os.path.join(output_dir, working_dir.SENSITIVITY), output_dir]
+    uq_dir = (result.get("uq") or {}).get("run_dir") or ""
+    return {
+        "calibration": _mtime([os.path.join(run_dir, "best_param_vals.npy")]),
+        "sobol": _mtime([p for d in sensitivity_dirs
+                         for p in glob.glob(os.path.join(d, "*Sobol_indices.csv"))]),
+        "local": _mtime([os.path.join(d, ca_run_history.LOCAL_SA_FILES["relative"])
+                         for d in sensitivity_dirs]),
+        "uq": _mtime([os.path.join(uq_dir, ca_run_history.UQ_SAMPLES_FILE),
+                      os.path.join(uq_dir, "mcmc_chain.npy"),
+                      os.path.join(output_dir, ca_run_history.UQ_SAMPLES_FILE)]),
+    }
+
+
+def _has_direct(panel: str, result: dict) -> bool:
+    if panel == "calibration":
+        return bool((result.get("calibration") or {}).get("best"))
+    if panel in ("sobol", "local"):
+        return bool((result.get("sensitivity") or {}).get(panel))
+    return bool((result.get("uq") or {}).get("params"))
+
+
+def _with_study_steps(output_dir: str, result: dict, missing: list) -> None:
+    """Fill each panel from the study workflow's latest done step of its kind
+    (:func:`latest_study_steps`), unless the direct result read for that panel is newer
+    (a direct run's files written after the step finished). ``study_steps`` names the step
+    each filled panel came from."""
+    steps = latest_study_steps(output_dir)
+    if not steps:
+        return
+    times = _direct_times(output_dir, result)
+    used = {}
+    for panel in STUDY_PANELS:
+        step = steps.get(panel)
+        if step is None:
+            continue
+        direct = times.get(panel) if _has_direct(panel, result) else None
+        if direct is not None and direct > (_iso_time(step.get("finished")) or 0):
+            continue
+        for section, value in _study_step_sections(panel, step, missing).items():
+            if section == "sensitivity":
+                result["sensitivity"] = {**(result.get("sensitivity") or {}), **value}
+            else:
+                result[section] = value
+        used[panel] = step.get("step")
+    result["study_steps"] = used
+    result["study"] = _study_from_steps(result.get("study"), steps)
+
+
+def _study_from_steps(study: dict | None, steps: dict) -> dict:
+    """``study`` with what it could not find taken from the study workflow: the model the
+    steps ran (the target) and the obs_data and params_for_id of the latest calibration step
+    (else of the latest step; a uq step's obs_data is its MLE copy). A working dir reopened
+    with no model loaded has no file prefix to find them by."""
+    study = dict(study or {})
+    source = steps.get("calibration") or max(
+        steps.values(), key=lambda r: _iso_time(r.get("finished")) or 0)
+    inputs = source.get("inputs") or {}
+
+    def existing(path):
+        return path if isinstance(path, str) and os.path.isfile(path) else None
+
+    model = source.get("model") or {}
+    found = {
+        "model": existing(model.get("cellml_model_path") or model.get("external_model_path")),
+        "obs_data": existing((inputs.get("obs_data") or {}).get("path")),
+        "params_for_id": existing((inputs.get("params_for_id") or {}).get("path")),
+    }
+    if not study.get("model") and found["model"]:
+        study["model_is_calibrated"] = False
+        study["file_prefix"] = study.get("file_prefix") or os.path.splitext(
+            os.path.basename(found["model"]))[0]
+    for key, path in found.items():
+        study[key] = study.get(key) or path
+    return study
 
 
 def load_outputs(output_dir: str, file_prefix: str | None = None,
@@ -595,6 +785,9 @@ def load_outputs(output_dir: str, file_prefix: str | None = None,
         # Outputs the study recorded outside its working dir: not carried with it.
         "warnings": study_manifest.outside_warnings(manifest),
     }
+    # The study workflow's steps fill the panels a newer direct run has not.
+    _safely("study workflow steps",
+            lambda: _with_study_steps(output_dir, result, missing), missing)
 
     found = []
     if (result["calibration"] or {}).get("best"):
