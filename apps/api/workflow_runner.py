@@ -77,7 +77,10 @@ def _rank() -> int:
 def _target_overlap(config: dict) -> str | None:
     """CA's message when two steps that do not take from each other give the target one
     parameter (its plan's ``target_overlap``, CA #685), else None (also for a CA without it)."""
-    plan_workflow = ca_from("calibration_workflow", "plan_workflow")
+    try:
+        plan_workflow = ca_from("calibration_workflow", "plan_workflow")
+    except ImportError:  # a libcuflynx without it reports no overlap
+        return None
     plan = plan_workflow(config["workflow"],
                          module_library_dirs=config.get("module_library_dirs") or [])
     return (plan or {}).get("target_overlap") if isinstance(plan, dict) else None
