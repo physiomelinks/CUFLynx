@@ -46,86 +46,6 @@ from runtime_paths import default_python
 # this format needs" is trivially yes -- it uploads it and hands CA the path.
 SUPPORTED_FORMATS = ("cellml", "python", "casadi_python", "external_python")
 
-#: model_type spellings circulatory_autogen has renamed, old -> current.
-#:
-#: CA renamed ``cellml_only`` to ``cellml``. The CA directory is chosen at runtime
-#: and can be any checkout (Settings -> CA dir), so CUFLynx meets both spellings
-#: and has to translate in *both* directions:
-#:
-#: * inbound -- an older CA's SOLVER_SCHEMA advertises ``cellml_only``, and a
-#:   dropdown built straight from it would put the retired name in front of the
-#:   user and write it into new configs;
-#: * outbound -- an older CA's ``parse_user_inputs_file`` exits on a model_type it
-#:   does not recognise, so sending it ``cellml`` makes every calibration, SA and
-#:   UQ run die at startup.
-#:
-#: So: one canonical spelling everywhere inside CUFLynx, translated back to
-#: whatever the connected CA advertises at the moment a run config is written.
-#: This is also what stops the app breaking in the window between updating the
-#: two repos, which is a window every developer with a sibling checkout lands in.
-#:
-#: The table and the inbound half live in :mod:`ca_imports` and are re-exported
-#: here, because the runner tier needs them and this module does not ship into
-#: ``runners/``. Only the outbound half is this module's own: it depends on what
-#: the *connected* CA advertised, which only a schema introspection knows.
-MODEL_TYPE_ALIASES = ca_imports.MODEL_TYPE_ALIASES
-canonical_model_type = ca_imports.canonical_model_type
-
-#: Current name -> the spelling the *connected* CA advertises. Identity unless an
-#: older CA said otherwise; rebuilt on every schema introspection. ``None`` means
-#: "no CA has been asked yet", which is **not** the same as "asked, and it uses
-#: the current names": treating it as the latter made :func:`ca_model_type` the
-#: identity function until something happened to call :func:`get_solver_options`
-#: first, so a run config written before that went out saying ``cellml`` to a CA
-#: that only accepts ``cellml_only``.
-_ca_model_type_spelling: dict[str, str] | None = None
-
-
-def ca_model_type(model_type: str | None) -> str | None:
-    """The spelling to write into a config the **connected** CA will parse.
-
-    Identity for a current CA. Call this at the boundary -- a run config, an
-    exported pipeline -- never inside CUFLynx, where the canonical name is the
-    only one that should appear.
-
-    Introspects the connected CA on first use rather than answering "current
-    names" by default: the answer is a property of the CA on the other side, and
-    guessing it is the failure this exists to prevent. A CA that cannot be read
-    leaves the table empty, which is the identity -- the best available guess
-    when there is nothing to translate against.
-    """
-    if not model_type:
-        return model_type
-    spelling = _ca_model_type_spelling
-    if spelling is None:
-        try:
-            get_solver_options()
-        except Exception:  # noqa: BLE001 - no CA / an unreadable one: stay identity
-            pass
-        spelling = _ca_model_type_spelling or {}
-    return spelling.get(model_type, model_type)
-
-
-def _canonicalise_model_types(schema: dict) -> dict:
-    """Rewrite a CA schema's model_type keys into CUFLynx's spelling, and record
-    what that CA actually called them so :func:`ca_model_type` can translate back.
-    """
-    global _ca_model_type_spelling
-    spelling: dict[str, str] = {}
-    for old, current in MODEL_TYPE_ALIASES.items():
-        if old in schema.get("model_types", []):
-            spelling[current] = old
-    _ca_model_type_spelling = spelling
-    if not spelling:
-        return schema
-
-    out = dict(schema)
-    out["model_types"] = [canonical_model_type(m) for m in schema.get("model_types", [])]
-    for key in ("solvers_by_model_type", "default_solver_by_model_type"):
-        if isinstance(schema.get(key), dict):
-            out[key] = {canonical_model_type(m): v for m, v in schema[key].items()}
-    return out
-
 # Formats CUFLynx can run, but only when an optional third-party library is
 # present (#122). aadc_python needs Matlogica's AADC, which is proprietary and
 # licensed; CA imports it lazily, so without this gate the format would appear on
@@ -157,6 +77,24 @@ def _available_formats() -> tuple:
 # every payload (both the CA-introspected schema and the fallback below).
 UNSUPPORTED_SOLVERS = ("CVODE_opencor",)
 
+# CA's CVODE_libopencor backend (CVODE_opencor is its alias) needs libOpenCOR, which
+# needs Python 3.12+ and the ``libcuflynx[libopencor]`` extra. The engine runs in this
+# process's interpreter, so it is offered only when that interpreter can import it.
+LIBOPENCOR_SOLVER = "CVODE_libopencor"
+
+
+def _libopencor_importable() -> bool:
+    """Whether this interpreter can import libopencor (``find_spec``: no import cost)."""
+    try:
+        return importlib.util.find_spec("libopencor") is not None
+    except Exception:  # noqa: BLE001 - a broken install is "not usable"
+        return False
+
+
+def _unsupported_solvers() -> tuple:
+    """UNSUPPORTED_SOLVERS, plus CVODE_libopencor when libOpenCOR is not importable."""
+    return UNSUPPORTED_SOLVERS if _libopencor_importable() else UNSUPPORTED_SOLVERS + (LIBOPENCOR_SOLVER,)
+
 # solver_info keys an older CA advertises for a solver whose backend cannot
 # honour them.
 #
@@ -176,26 +114,6 @@ UNSUPPORTED_SOLVERS = ("CVODE_opencor",)
 # add or rename one.
 UNSUPPORTED_SOLVER_INFO_KEYS: dict[str, frozenset[str]] = {
     "CVODE_myokit": frozenset({"MaximumNumberOfSteps"}),
-}
-
-# Methods CA advertises for a solver that cannot perform a *forward solve* (#175).
-#
-# CA's methods_by_solver mixes two kinds of thing under one key. For AADC, most
-# entries name an integrator in aadc_python_solver_helper.run(); 'bdf_tape' and
-# 'bdf_kernel' name neither -- they exist only in param_id/aadc_backend.py as
-# _cost_and_grad_bdf_tape / _cost_and_grad_bdf_kernel, which are *gradient
-# strategies* for calibration and do their own stepping. Selecting one and moving
-# a slider therefore always fails with "Unknown AADC solver_info method", because
-# the forward dispatch has no branch for it.
-#
-# Same shape and same rule as UNSUPPORTED_SOLVERS: it composes with the
-# introspection and can only ever remove a method CA offers, never add or rename
-# one. Note this also withdraws them as calibration gradient strategies, since one
-# solver_info['method'] serves both tiers -- the alternative is offering a setting
-# that breaks every live plot. Retire it once CA separates forward integrators
-# from gradient strategies (circulatory_autogen#346), which is the real fix.
-UNSUPPORTED_METHODS: dict[str, frozenset[str]] = {
-    "aadc_semi_implicit": frozenset({"bdf_tape", "bdf_kernel"}),
 }
 
 # solver_info keys that are framework metadata rather than integrator settings.
@@ -236,8 +154,7 @@ def supported_methods(solver: str, methods, stiff: bool = False) -> list:
 
     ``forward_methods_by_solver`` (CA #347) lists what a plain solve can actually run.
     ``methods_by_solver`` mixes forward integrators with calibration gradient strategies, so
-    without this the menu offers methods that only ever raise (#175). On an older CA the
-    UNSUPPORTED_METHODS fallback covers the two known cases.
+    without this the menu offers methods that only ever raise (#175).
 
     ``stiff_suitable_methods`` (CA #347) lists what is trustworthy on a stiff model, which the
     cardiovascular models are (#177). This one matters more than it looks: the excluded methods
@@ -245,13 +162,7 @@ def supported_methods(solver: str, methods, stiff: bool = False) -> list:
     low, and is advertised as AD-suitable, so a calibration would pick it and report clean
     convergence. Filtering is the difference between a wrong answer and no answer.
     """
-    # The local list stays an always-applied floor. CA #347 drops bdf_tape/bdf_kernel from
-    # methods_by_solver entirely, so a CA-derived exclusion can no longer name them -- but they
-    # still arrive from configs saved before the rename, and they still cannot forward-solve.
-    excluded = UNSUPPORTED_METHODS.get(solver, frozenset())
-    from_ca = _ca_excluded("forward_methods_by_solver", solver)
-    if from_ca:
-        excluded = excluded | from_ca
+    excluded = _ca_excluded("forward_methods_by_solver", solver) or frozenset()
     if stiff:
         not_stiff = _ca_excluded("stiff_suitable_methods", solver)
         if not_stiff:
@@ -301,13 +212,16 @@ def default_solver_info(solver: str) -> dict:
     back into the /api/config payload); a duplicate in ``solver_info`` would be a
     second place for it to be wrong. A field CA gives no default for stays unset —
     unset means the backend's own default, and inventing one here is the original
-    mistake again.
+    mistake again. So does a field marked ``seed: False``
+    (:data:`_UNSEEDED_SOLVER_INFO_KEYS`), whose unset value means something its
+    default does not.
     """
     fields = (get_solver_options().get("solver_info_schema") or {}).get(solver) or []
     return {
         f["key"]: f["default"]
         for f in fields
         if f.get("key") and f["key"] != "dt" and f.get("default") is not None
+        and f.get("seed") is not False
     }
 
 
@@ -464,8 +378,8 @@ _FALLBACK_PARAM_PRIOR_TYPES = {
     ],
 }
 
-# The modifier-operation vocabulary offered when CA can't be introspected —
-# mirrors PrimitiveParsers.PARAM_MODIFIER_OPERATIONS so the params editor still
+# The modifier vocabulary offered when CA can't be introspected —
+# mirrors PrimitiveParsers.PARAM_MODIFIERS so the params editor still
 # offers the one operation CA has always had. `identity` is the θ at which every
 # target sits at its baseline (what a fresh modifier slider is set to).
 _FALLBACK_PARAM_MODIFIER_OPERATIONS = {
@@ -545,7 +459,7 @@ _modifier_cache: dict | None = None
 def reset_cache() -> None:
     """Drop the cached options (call when the CA directory changes)."""
     global _cache, _param_id_cache, _analysis_cache, _prior_cache, _modifier_cache
-    global _ca_model_type_spelling, _analysis_error
+    global _analysis_error
     _cache = None
     _param_id_cache = None
     _analysis_cache = None
@@ -554,10 +468,6 @@ def reset_cache() -> None:
     # Paired with _analysis_cache: it describes why *that* introspection failed, so a
     # new CA directory must not inherit the previous one's diagnosis.
     _analysis_error = None
-    # Which spelling the connected CA uses is a fact about *that* CA, so it is a
-    # cache like the rest -- and one that was never cleared, so a new CA dir (and,
-    # in the test process, the next test) inherited the previous one's answer.
-    _ca_model_type_spelling = None
 
 
 #: The sys.path entries CA's parser/operation modules need, and the helper that
@@ -724,7 +634,29 @@ def _introspect_analysis_options() -> dict:
             "options_key": meta.get("options_key"),
             "options": [dict(o) for o in (meta.get("options") or [])],
         }
+    if "param_reduction" in out:
+        _annotate_reduction_methods(out["param_reduction"]["options"])
     return out
+
+
+def _annotate_reduction_methods(options: list[dict]) -> None:
+    """Mark each ``param_reduction`` option with the ``methods`` that read it.
+
+    From CA's ``REDUCTIONS`` registry (each method's ``OPTIONS``), so a form shows
+    only the chosen method's options -- ``ParamReduction.from_options`` refuses an
+    option of another method set to anything but its default. ``method`` and the
+    path options are read by every method and stay unmarked, as does everything
+    when this CA has no registry.
+    """
+    try:
+        reductions = ca_from("sensitivity_analysis.parameter_reduction", "REDUCTIONS")
+    except Exception:  # noqa: BLE001 - an older CA, or one missing pandas: show them all
+        return
+    for option in options:
+        methods = [name for name, cls in reductions.items()
+                   if option.get("name") in getattr(cls, "OPTIONS", ())]
+        if methods:
+            option["methods"] = methods
 
 
 #: Source text run by *another* interpreter, so it cannot call :mod:`ca_imports`
@@ -1023,6 +955,14 @@ _SOLVER_INFO_LABELS = {
 # it, so the user is the only one who could fill it in.
 _JSON_DICT_FIELDS = frozenset({"user_config"})
 
+# Fields CA reads differently when unset than when set to their default, so they
+# are never seeded (the field carries ``seed: False``; the form shows the default
+# for an unset one, and the key is sent only once the user changes it).
+# casadi_integrator's ``jit`` defaults to true, but only an unset jit falls back to
+# no jit when there is no C compiler; ``jit: true`` is an error there. Seeding it
+# made every casadi_python run an explicit request the user never made.
+_UNSEEDED_SOLVER_INFO_KEYS = frozenset({"jit"})
+
 
 def _pretty_label(name: str) -> str:
     s = str(name).replace("_", " ").strip()
@@ -1116,6 +1056,8 @@ def _solver_info_schema_from_ca(
                 continue
             if field["key"] in gates:
                 field["methods"] = gates[field["key"]]
+            if field["key"] in _UNSEEDED_SOLVER_INFO_KEYS:
+                field["seed"] = False
             fields.append(field)
         out[solver] = fields
     return out
@@ -1212,6 +1154,7 @@ def _apply_aadc_tape_constraint(ad_suitable: dict, methods_by_solver: dict) -> t
 
 def _build_options(schema: dict, differentiable: dict[str, bool]) -> dict:
     supported = _available_formats()
+    unsupported = _unsupported_solvers()
     formats = [m for m in schema.get("model_types", []) if m in supported]
     solvers_by_model_type = schema.get("solvers_by_model_type", {})
     defaults = schema.get("default_solver_by_model_type", {})
@@ -1224,7 +1167,7 @@ def _build_options(schema: dict, differentiable: dict[str, bool]) -> dict:
     }
 
     def _supported(solvers):
-        return [s for s in solvers if s not in UNSUPPORTED_SOLVERS]
+        return [s for s in solvers if s not in unsupported]
 
     solvers_by_format = {m: _supported(solvers_by_model_type.get(m, [])) for m in formats}
     # If CA names an unsupported solver (e.g. CVODE_opencor) as a format's default,
@@ -1232,7 +1175,7 @@ def _build_options(schema: dict, differentiable: dict[str, bool]) -> dict:
     default_solver_by_format = {}
     for m in formats:
         d = defaults.get(m)
-        if not d or d in UNSUPPORTED_SOLVERS:
+        if not d or d in unsupported:
             d = solvers_by_format[m][0] if solvers_by_format[m] else ""
         default_solver_by_format[m] = d
     all_diff = bool(differentiable) and all(differentiable.values())
@@ -1275,7 +1218,7 @@ def _build_options(schema: dict, differentiable: dict[str, bool]) -> dict:
         "solvers_by_format": solvers_by_format,
         "default_solver_by_format": default_solver_by_format,
         "methods_by_solver": {
-            s: list(m) for s, m in methods_by_solver.items() if s not in UNSUPPORTED_SOLVERS
+            s: list(m) for s, m in methods_by_solver.items() if s not in unsupported
         },
         # Filter the CA-introspected schema (not a rebuilt one) so the OpenCOR
         # exclusion composes with SOLVER_INFO_FIELDS introspection rather than
@@ -1284,14 +1227,14 @@ def _build_options(schema: dict, differentiable: dict[str, bool]) -> dict:
         "solver_info_schema": {
             s: [f for f in fields if f.get("key") not in unsupported_solver_info_keys(s)]
             for s, fields in solver_info_schema.items()
-            if s not in UNSUPPORTED_SOLVERS
+            if s not in unsupported
         },
         "differentiable_operations": dict(differentiable),
         "all_differentiable": all_diff,
         # Per-integrator suitability for the backend's analytic gradient, so the UI
         # can offer AD/FSA only for a suitable integrator and warn otherwise (#298).
-        "ad_suitable_methods": {s: list(m) for s, m in ad_suitable.items() if s not in UNSUPPORTED_SOLVERS},
-        "fsa_suitable_methods": {s: list(m) for s, m in fsa_suitable.items() if s not in UNSUPPORTED_SOLVERS},
+        "ad_suitable_methods": {s: list(m) for s, m in ad_suitable.items() if s not in unsupported},
+        "fsa_suitable_methods": {s: list(m) for s, m in fsa_suitable.items() if s not in unsupported},
         "default_method_by_solver": dict(default_method),
     }
 
@@ -1340,10 +1283,6 @@ def get_solver_options(refresh: bool = False) -> dict:
     if _cache is not None and not refresh:
         return _cache
     schema, ok_schema = _safe(_introspect_solver_schema, FALLBACK_SOLVER_SCHEMA)
-    # One canonical model_type spelling from here inwards, whichever CA answered
-    # (or none at all) -- see MODEL_TYPE_ALIASES. Deliberately here rather than
-    # inside the introspection, so the fallback schema goes through it too.
-    schema = _canonicalise_model_types(schema)
     diff, ok_diff = _safe(_introspect_differentiable, dict(_FALLBACK_DIFFERENTIABLE))
     opts = _build_options(schema, diff)
     if ok_schema and ok_diff:
@@ -1382,22 +1321,18 @@ def _introspect_param_modifier_operations(output_dir: str | None = None) -> dict
     operations and costs — otherwise they could save one and never select it.
     """
     _ensure_ca_path()
-    DEFAULT_PARAM_MODIFIER_OPERATION, param_modifier_operations = ca_from(
+    DEFAULT_PARAM_MODIFIER, param_modifiers = ca_from(
         "parsers.PrimitiveParsers",
-        "DEFAULT_PARAM_MODIFIER_OPERATION",
-        "param_modifier_operations",
+        "DEFAULT_PARAM_MODIFIER",
+        "param_modifiers",
     )
 
     import user_funcs
 
-    external_path = user_funcs.external_path("modifier", output_dir)
-    try:
-        registry = param_modifier_operations(external_path)
-    except TypeError:  # older CA whose registry predates the external_path arg
-        registry = param_modifier_operations()
+    registry = param_modifiers(user_funcs.external_path("modifier", output_dir))
 
     return {
-        "default": DEFAULT_PARAM_MODIFIER_OPERATION,
+        "default": DEFAULT_PARAM_MODIFIER,
         "operations": [
             {
                 "value": name,
@@ -1475,31 +1410,11 @@ def get_param_prior_types(refresh: bool = False) -> dict:
     return priors
 
 
-def _normalise_uq_mode_key(opts: dict) -> dict:
-    """Present CA's UQ block under 'uq' whichever CA is installed.
-
-    CA renamed the mode from 'mcmc' to 'uq' (with options_key UQ_options and
-    enable_flag do_uq) once MCMC became one method of uncertainty quantification
-    rather than the whole of it. CUFLynx keys off 'uq' internally, so an older CA
-    that still reports 'mcmc' is mapped here -- one place, rather than every panel
-    and runner having to know which CA it is talking to.
-    """
-    if "uq" in opts or "mcmc" not in opts:
-        return opts
-    legacy = dict(opts.pop("mcmc"))
-    legacy.setdefault("label", "Uncertainty quantification")
-    opts["uq"] = legacy
-    return opts
-
-
 def get_analysis_options(refresh: bool = False) -> dict:
     """Analysis-mode option blocks from CA's ``ANALYSIS_OPTIONS`` schema
     (introspected, not hardcoded), keyed by mode ('sensitivity_analysis', 'uq',
     'identifiability_analysis'). Each value carries ``label``/``enable_flag``/
     ``options_key`` and the per-mode ``options`` descriptors the SA/UQ panels render.
-
-    An older CA reporting the pre-rename 'mcmc' mode is normalised to 'uq', so the
-    rest of CUFLynx has one spelling to know about.
 
     Degrades to :data:`_FALLBACK_ANALYSIS_OPTIONS` on an older CA that lacks the
     schema. Caches a successful introspection; returns the fallback uncached so a
@@ -1512,7 +1427,6 @@ def get_analysis_options(refresh: bool = False) -> dict:
         _introspect_analysis_options,
         {k: dict(v, options=[dict(o) for o in v["options"]]) for k, v in _FALLBACK_ANALYSIS_OPTIONS.items()},
     )
-    opts = _normalise_uq_mode_key(opts)
     if ok:
         _analysis_cache = opts
     _analysis_error = None if ok else err

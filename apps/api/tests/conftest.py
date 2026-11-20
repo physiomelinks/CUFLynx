@@ -41,6 +41,17 @@ SN_OBS_DATA_PATH = RESOURCES_DIR / "SN_simple_obs_data.json"
 SN_PARAMS_CSV_PATH = RESOURCES_DIR / "SN_simple_params_for_id.csv"
 
 
+def params_for_id_json(csv_path, directory) -> Path:
+    """A params_for_id CSV from ``resources/`` as the JSON the app stores and CA reads
+    (``cuflynx-upgrade params-for-id``'s form), written into ``directory``: a runner is
+    handed what an upload leaves, and CA refuses the CSV."""
+    import params_json
+
+    out = Path(directory) / (Path(csv_path).stem + ".json")
+    out.write_text(params_json.csv_to_file_text(Path(csv_path).read_bytes()), encoding="utf-8")
+    return out
+
+
 def all_mmt_fixtures():
     """Every .mmt under resources/: the two at the top plus the third-party set.
 
@@ -279,6 +290,7 @@ def _analysis_pythons() -> tuple:
     return (
         calibration_mod.calibration.python,
         sensitivity_mod.sensitivity.python,
+        sensitivity_mod.param_reduction.python,
         uq_mod.uq.python,
         emulator_mod.emulator.python,
         engine_mod.engine.worker_python,
@@ -289,6 +301,7 @@ def _set_analysis_pythons(pythons: tuple) -> None:
     (
         calibration_mod.calibration.python,
         sensitivity_mod.sensitivity.python,
+        sensitivity_mod.param_reduction.python,
         uq_mod.uq.python,
         emulator_mod.emulator.python,
         engine_mod.engine.worker_python,
@@ -321,6 +334,8 @@ def reset_app_state():
     # passed in 0.1s on its canned indices.
     sensitivity_mod.sensitivity.reset()
     sensitivity_mod.sensitivity.runner_path = sensitivity_mod.RUNNER_PATH
+    sensitivity_mod.param_reduction.reset()
+    sensitivity_mod.param_reduction.runner_path = sensitivity_mod.RUNNER_PATH
     uq_mod.uq.reset()
     uq_mod.uq.runner_path = uq_mod.RUNNER_PATH
     yield
@@ -333,6 +348,8 @@ def reset_app_state():
     calibration_mod.calibration.runner_path = calibration_mod.RUNNER_PATH
     sensitivity_mod.sensitivity.reset()
     sensitivity_mod.sensitivity.runner_path = sensitivity_mod.RUNNER_PATH
+    sensitivity_mod.param_reduction.reset()
+    sensitivity_mod.param_reduction.runner_path = sensitivity_mod.RUNNER_PATH
     uq_mod.uq.reset()
     uq_mod.uq.runner_path = uq_mod.RUNNER_PATH
     _set_analysis_pythons(_pythons_before)

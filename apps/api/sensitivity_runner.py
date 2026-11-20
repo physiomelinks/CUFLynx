@@ -34,6 +34,7 @@ import sys
 import traceback
 from pathlib import Path
 
+import ca_obs
 import emulator_config
 from ca_imports import ensure_ca_path
 
@@ -58,6 +59,9 @@ _SA_RESERVED = {
     "sim_time", "pre_time", "cost_type", "generated_model_format",
     "config_outputs_dir", "param_id_method", "num_calls_to_function",
     "max_patience", "cost_convergence",
+    # Parameter reduction (ANALYSIS_OPTIONS['param_reduction']) runs after the Sobol
+    # run; its settings are CA user_inputs keys, not sa_options.
+    "do_param_reduction", "param_reduction_options",
 }
 
 
@@ -142,11 +146,9 @@ def _solver_info_from_config(config: dict, settings: dict) -> dict:
     Settings popup) with the solver name + CVODE step defaults filled in."""
     si = dict(config.get("solver_info") or {})
     si.setdefault("solver", config.get("solver") or settings.get("solver", "CVODE_myokit"))
-    si.setdefault("MaximumStep", settings.get("MaximumStep", 0.0001))
-    # No MaximumNumberOfSteps default: myokit_helper never reads it (myokit's
-    # Simulation has no max-step-count knob), CA's migrate_legacy_solver_info_keys
-    # pops it for solve_ivp/casadi, and CA fills its own default for the backends
-    # that do use it. Injecting it here only seeded an inert setting.
+    if "MaximumStep" in ca_obs.solver_info_keys(si["solver"]):
+        si.setdefault("MaximumStep", settings.get("MaximumStep", 0.0001))
+    # No MaximumNumberOfSteps default: CA fills its own for the backends that use it.
     return si
 
 
@@ -199,8 +201,14 @@ def _calibrate_for_nominal(config: dict, settings: dict, solver_info: dict, mode
 
     CVS0DParamID = ca_from("param_id.paramID", "CVS0DParamID")
 
+    from optimiser_budget import default_num_calls  # noqa: E402 (shipped into runners/ too)
+
+    method = settings.get("param_id_method", "genetic_algorithm")
+    num_calls = settings.get("num_calls_to_function")
+    if num_calls is None:
+        num_calls = default_num_calls(method, debug=bool(settings.get("DEBUG", False)))
     optimiser_options = {
-        "num_calls_to_function": int(settings.get("num_calls_to_function", 100)),
+        "num_calls_to_function": int(num_calls),
         "cost_convergence": float(settings.get("cost_convergence", 0.0001)),
         "max_patience": int(settings.get("max_patience", 10)),
     }
@@ -258,14 +266,48 @@ def run(config: dict) -> dict:
         raise _with_gradient_hint(exc) from exc
 
 
+def _reduce(config: dict, settings: dict, sensitivity_dir: str) -> list:
+    """CA's parameter reduction over the Sobol run in ``sensitivity_dir``.
+
+    ``settings['param_reduction_options']`` is CA's ``param_reduction_options``; CA
+    writes ``reduced_params_for_id.json`` and its report into the options'
+    ``output_dir`` (by default ``<sensitivity_dir>/param_reduction``). The
+    params_for_id is the study's, which is the one the Sobol run analysed.
+    """
+    from ca_imports import ca_from  # noqa: E402 (shipped into runners/ too)
+
+    run_param_reduction = ca_from(
+        "sensitivity_analysis.parameter_reduction", "run_param_reduction")
+    options = {k: v for k, v in (settings.get("param_reduction_options") or {}).items()
+               if v is not None and v != ""}
+    options.setdefault("sensitivity_dir", sensitivity_dir)
+    print(f"Parameter reduction ({options.get('method', 'default method')}) over the "
+          f"Sobol run in {options['sensitivity_dir']}", flush=True)
+    selected = run_param_reduction({
+        "param_reduction_options": options,
+        "params_for_id_path": config["params_path"],
+        "sa_options": {"output_dir": sensitivity_dir},
+    })
+    print(f"Parameter reduction kept {[row['parameter'] for row in selected]}", flush=True)
+    return selected
+
+
 def _run(config: dict) -> dict:
     _ensure_ca_on_path()
     from ca_imports import ca_from  # noqa: E402 (shipped into runners/ too)
 
+    settings = config.get("settings", {})
+    if config.get("reduce_only"):
+        # Over an existing Sobol run: no model is built and nothing is simulated.
+        sensitivity_dir = (settings.get("param_reduction_options") or {}).get(
+            "sensitivity_dir") or config["output_dir"]
+        _reduce(config, settings, sensitivity_dir)
+        print(META_MARKER + json.dumps({"method": "param_reduction"}), flush=True)
+        return {"rank": 0}
+
     SensitivityAnalysis = ca_from(
         "sensitivity_analysis.sensitivityAnalysis", "SensitivityAnalysis")
 
-    settings = config.get("settings", {})
     method = settings.get("method", "sobol")
     output_dir = config["output_dir"]
     os.makedirs(output_dir, exist_ok=True)
@@ -383,8 +425,10 @@ def _run(config: dict) -> dict:
         result.update(payload)
         # Nothing written here: CA already wrote all_outputs_n<N>_Sobol_indices.csv
         # into this directory, and the manager reads that (#210).
-        print(META_MARKER + json.dumps({"method": sa_options["method"]}), flush=True)
         _collect_plots(output_dir)
+        if settings.get("do_param_reduction"):
+            _reduce(config, settings, output_dir)
+        print(META_MARKER + json.dumps({"method": sa_options["method"]}), flush=True)
     return result
 
 

@@ -39,6 +39,16 @@ vi.mock('./lib/api', () => ({
   cancelUQ: vi.fn().mockResolvedValue({}),
   getSensitivityDefaults: vi.fn().mockResolvedValue({}),
   getUQDefaults: vi.fn().mockResolvedValue({}),
+  getIdentifiabilityDefaults: vi.fn().mockResolvedValue({}),
+  listSobolRuns: vi.fn().mockResolvedValue({ runs: [] }),
+  startParamReduction: vi.fn().mockResolvedValue({ job_id: 'job-5' }),
+  getParamReductionStatus: vi.fn().mockResolvedValue({ state: 'error', lines: [], error: '' }),
+  cancelParamReduction: vi.fn().mockResolvedValue({}),
+  paramReductionHeatmapUrl: vi.fn((d) => `/api/param_reduction/heatmap?report_dir=${d}`),
+  adoptReducedParams: vi.fn().mockResolvedValue({
+    params: [{ qnames: ['m/alpha'], min: 0.1, max: 7 }],
+    filename: 'reduced_params_for_id.json',
+  }),
   getEmulatorDefaults: vi.fn().mockResolvedValue({}),
   getEmulatorInfo: vi.fn().mockResolvedValue({}),
   predictEmulator: vi.fn().mockResolvedValue({ labels: [], values: [], cost: null }),
@@ -82,6 +92,7 @@ import {
   predictEmulator,
   costAtParams,
   getEmulatorInfo,
+  adoptReducedParams,
 } from './lib/api'
 import { setNotificationCtor } from './lib/notify'
 import App from './App.vue'
@@ -1395,7 +1406,7 @@ describe('App.vue best-fit overlay (#126)', () => {
     wrapper.vm.model.variables.value = { ...VARS }
     wrapper.vm.obs.setObsData({
       protocol_info: { pre_times: [0], sim_times: [[1]] },
-      data_items: [{ variable: 'm/x', operands: ['m/x'], plot_type: 'horizontal' }],
+      data_items: [{ data_item_name: 'm/x', operands: ['m/x'], plot_type: 'horizontal' }],
     })
     await drainAutoRun()
     wrapper.vm.sim.setExperiments([{ time: [0, 1], outputs: { 'm/x': [1, 2] } }])
@@ -1873,7 +1884,7 @@ describe('App.vue cost sensitivities (#188)', () => {
     wrapper.vm.obs.setObsData({
       // With a protocol: without one nothing runs at all, gradient included.
       protocol_info: { pre_times: [0], sim_times: [[1]] },
-      data_items: [{ variable: 'a/x', operands: ['a/x'] }],
+      data_items: [{ data_item_name: 'a/x', operands: ['a/x'] }],
     })
     wrapper.vm.sliders.addSlider('a/alpha', { min: 0, max: 2, value: 1 })
     wrapper.vm.sim.setResult({
@@ -2132,7 +2143,7 @@ describe('App.vue solver plots (external python extra_plots)', () => {
     const wrapper = await mountApp()
     wrapper.vm.obs.setObsData({
       protocol_info: { sim_times: [[1], [1]] },
-      data_items: [{ variable: 'heat/T_p1', operation: 'series' }],
+      data_items: [{ data_item_name: 'heat/T_p1', operation: 'series' }],
     })
     wrapper.vm.sim.setExperiments(
       [
@@ -2317,6 +2328,13 @@ describe('analysis runs carry the protocol window', () => {
   it('the exported pipeline states the same window', async () => {
     const wrapper = await mountApp()
     expect(wrapper.vm.exportPayload()).toMatchObject({ sim_time: 7, pre_time: 1.5 })
+  })
+
+  it("the exported pipeline's UQ stage flag is CA's do_uq", async () => {
+    const wrapper = await mountApp()
+    const enabled = wrapper.vm.exportPayload().enabled
+    expect(enabled).toHaveProperty('do_uq')
+    expect(enabled).not.toHaveProperty('do_mcmc')
   })
 })
 
@@ -2712,7 +2730,7 @@ describe('guided tour', () => {
     expect(tour.exists()).toBe(true)
     expect(tour.props('step')).toBe(0)
     expect(tour.props('steps')).toBe(TOUR_STEPS)
-    expect(tour.props('steps').length).toBe(41)
+    expect(tour.props('steps').length).toBe(43)
     // The ctx is getters over App's own state, read on the overlay's tick.
     expect(typeof tour.props('ctx').hasModel).toBe('function')
     expect(tour.props('ctx').hasModel()).toBe(false)
@@ -3034,5 +3052,31 @@ describe('a baseline set on a parameter that is not calibrated (#350)', () => {
     expect(values['aortic_root/C']).toBe(1e-8)
     expect(Object.keys(values)).toEqual(['aortic_root/C'])
     wrapper.unmount()
+  })
+})
+
+describe('App.vue Identifiability tab', () => {
+  it('sits before the Sensitivity tab', () => {
+    const wrapper = shallowMount(App)
+    const ids = wrapper
+      .findAll('.left-tabs button')
+      .map((b) => b.attributes('data-testid'))
+    expect(ids).toContain('tab-ia')
+    expect(ids.indexOf('tab-ia')).toBe(ids.indexOf('tab-sensitivity') - 1)
+    expect(ids.indexOf('tab-ia')).toBeGreaterThan(ids.indexOf('tab-emulator'))
+  })
+
+  it('"Calibrate these" adopts the reduced params_for_id and opens Calibration', async () => {
+    const wrapper = shallowMount(App)
+    await flushPromises()
+    await wrapper.find('[data-testid="tab-ia"]').trigger('click')
+    wrapper.findComponent({ name: 'IAPanel' }).vm.$emit('adopt', '/out/sa/param_reduction')
+    await flushPromises()
+
+    expect(adoptReducedParams).toHaveBeenCalledWith(null, '/out/sa/param_reduction')
+    expect(wrapper.find('[data-testid="tab-calibration"]').classes()).toContain('active')
+    expect(wrapper.findComponent({ name: 'FileImport' }).props('loadedFilename')).toBe(
+      'reduced_params_for_id.json',
+    )
   })
 })
