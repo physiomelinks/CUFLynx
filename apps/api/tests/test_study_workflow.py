@@ -424,6 +424,78 @@ def test_returning_to_a_working_dir_reopens_its_study_workflow(client, fake_runs
     assert workflow_manager.workflow.path == str(first / "workflow" / "study" / "calibration_workflow.json")
 
 
+def _open_elsewhere(path, output_dir):
+    """A workflow opened as /api/workflow/load opens one (no libCellML needed)."""
+    main.workflow.path = str(path)
+    main.workflow.output_dir = str(output_dir)
+
+
+@pytest.fixture
+def opened_files(monkeypatch):
+    """Record what the routes open as a working dir's study workflow."""
+    opened = []
+
+    def fake_open(path, outputs_dir):
+        opened.append(path)
+        main.workflow.path, main.workflow.output_dir = path, outputs_dir
+        return {}
+
+    monkeypatch.setattr(main, "_open_workflow_file", fake_open)
+    return opened
+
+
+def _with_study_workflow(work):
+    path = Path(study_workflow.workflow_path(str(work)))
+    path.parent.mkdir(parents=True)
+    path.write_text("{}")
+    return str(path)
+
+
+def test_reloading_a_working_dir_replaces_a_workflow_that_runs_elsewhere(
+        client, opened_files, tmp_path):
+    """A workflow reopened from a run directory elsewhere gives way to the reloaded working
+    dir's study workflow (Finbar reloaded TEMP_1 and got the enterocyte workflow)."""
+    work = tmp_path / "TEMP_1"
+    own = _with_study_workflow(work)
+    _open_elsewhere(tmp_path / "entero" / "enterocyte_workflow.json", tmp_path / "entero" / "run")
+
+    found = client.get("/api/working-dir/load", params={"dir": str(work)}).json()
+
+    assert found["study_workflow"] == {"path": own, "opened": True}
+    assert opened_files == [own]
+
+
+def test_reloading_keeps_a_workflow_the_user_opened_that_runs_in_the_working_dir(
+        client, opened_files, tmp_path):
+    work = tmp_path / "TEMP_1"
+    own = _with_study_workflow(work)
+    library = tmp_path / "library" / "kir_workflow.json"
+    _open_elsewhere(library, work / "workflows" / "kir")
+
+    found = client.get("/api/working-dir/load", params={"dir": str(work)}).json()
+
+    assert found["study_workflow"] == {"path": own}
+    assert opened_files == []
+    assert main.workflow.path == str(library)
+
+
+def test_changing_working_dir_closes_a_workflow_that_runs_elsewhere(
+        client, opened_files, tmp_path):
+    work = tmp_path / "TEMP_1"
+    own = _with_study_workflow(work)
+    _open_elsewhere(tmp_path / "entero" / "enterocyte_workflow.json", tmp_path / "entero" / "run")
+
+    client.post("/api/workflow/working-dir", json={"config_outputs_dir": str(work)})
+    assert opened_files == [own]
+
+    # A folder without a study workflow: a user's workflow running in it stays open.
+    other = tmp_path / "other"
+    other.mkdir()
+    _open_elsewhere(tmp_path / "lib" / "w.json", other / "workflows" / "w")
+    client.post("/api/workflow/working-dir", json={"config_outputs_dir": str(other)})
+    assert main.workflow.path == str(tmp_path / "lib" / "w.json")
+
+
 def test_a_calibration_steps_tab_is_the_previous_best_fit_in_another_working_dir(
         client, fake_runs, tmp_path):
     """A study opened as a calibration step's tab (Workflow tab) shows that step's best fit,
