@@ -192,6 +192,16 @@ def _ca_call(name: str, *args, **kwargs):
         raise WorkflowError(str(exc)) from exc
 
 
+def _takes(fn, name: str) -> bool:
+    """Whether ``fn`` accepts keyword ``name`` (a CA that predates it does not)."""
+    import inspect  # noqa: PLC0415
+
+    try:
+        return name in inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
+
+
 def default_output_dir(outputs_dir: str, workflow_name: str, fallback_root: str) -> str:
     """``<working dir>/workflows/<name>``, or under ``fallback_root`` with no working dir."""
     root = outputs_dir.strip() if outputs_dir else ""
@@ -370,8 +380,12 @@ class WorkflowManager:
             raise WorkflowError("no workflow is open")
         if not self.output_dir:
             raise WorkflowError("the workflow has no run directory; set a working dir")
+        # a tab's model needs no trial run: the live simulation compiles it straight after,
+        # so CA's validation compile (seconds) is skipped where CA can (CA #693)
+        extra = {"validate": False} if _takes(ca_workflow("workflow_model"), "validate") else {}
         return _ca_call("workflow_model", self.path, view, output_dir=self.output_dir,
-                        work_dir=work_dir, module_library_dirs=self.module_library_dirs)
+                        work_dir=work_dir, module_library_dirs=self.module_library_dirs,
+                        **extra)
 
     def provenance_path(self, key: str) -> str | None:
         """The run directory's provenance diagram (``svg``) or graph (``graph``), or None
