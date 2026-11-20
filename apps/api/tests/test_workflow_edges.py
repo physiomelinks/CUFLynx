@@ -108,6 +108,18 @@ def test_the_values_by_origin_are_cas_provenance_boxes(tmp_path):
                               "note": "a normalisation of the Na flux signal"}]
 
 
+def test_given_values_into_the_model_source_go_to_the_charts_model_box(tmp_path):
+    """CA #692: a values box's edges end at __source__ when a step is generated from the
+    model source (the values are in it, so every step's model has them)."""
+    graph = tmp_path / "provenance_graph.json"
+    graph.write_text(json.dumps({"schema_version": 3, "nodes": [
+        {"id": "__source__", "kind": "source"},
+        {"id": "__set_by_hand__", "kind": "values", "mark": "set_by_hand", "parameters": []},
+    ], "edges": [{"from": "__set_by_hand__", "to": "__source__", "style": "given"}]}))
+    (box,) = we.value_origins(str(graph))["boxes"]
+    assert box["to"] == ["model"]
+
+
 def test_a_graph_of_a_schema_not_read_here_gives_no_boxes(tmp_path):
     graph = tmp_path / "provenance_graph.json"
     graph.write_text(json.dumps({"schema_version": 99, "nodes": [{"id": "x", "kind": "values"}]}))
