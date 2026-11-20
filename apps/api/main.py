@@ -3625,7 +3625,7 @@ def load_outputs_directory(
     study_path = study_workflow.workflow_path(dir)
     if os.path.isfile(study_path):
         found["study_workflow"] = {"path": study_path}
-        if not workflow.busy and (not workflow.loaded or workflow.path == study_path):
+        if not workflow.busy and (study_path == workflow.path or not _stays_open_in(dir)):
             try:
                 _open_workflow_file(study_path, dir)
                 found["study_workflow"]["opened"] = True
@@ -5063,18 +5063,42 @@ class WorkflowWorkingDirRequest(BaseModel):
     config_outputs_dir: str = ""
 
 
+def _workflow_runs_in(directory: str | None) -> bool:
+    """Whether the open workflow's run directory is inside ``directory``."""
+    if not directory or not workflow.output_dir:
+        return False
+    root = os.path.abspath(directory)
+    run_dir = os.path.abspath(workflow.output_dir)
+    return os.path.commonpath([root, run_dir]) == root
+
+
+def _stays_open_in(directory: str | None) -> bool:
+    """Whether the open workflow stays open when ``directory`` is the working dir.
+
+    A study workflow stays only if it is this folder's. A workflow the user opened stays
+    unless it runs in another folder (a run directory elsewhere) and this folder has a
+    study workflow of its own to show instead.
+    """
+    if not workflow.loaded:
+        return False
+    folder = study_workflow.working_dir_of(workflow.path)
+    if folder:
+        return bool(directory) and os.path.abspath(folder) == os.path.abspath(directory)
+    own = study_workflow.workflow_path(directory) if directory else None
+    return _workflow_runs_in(directory) or not (own and os.path.isfile(own))
+
+
 @app.post("/api/workflow/working-dir")
 def workflow_working_dir(req: WorkflowWorkingDirRequest) -> dict:
-    """Follow a change of working dir: the study workflow open is that folder's.
+    """Follow a change of working dir: the workflow open is that folder's.
 
-    A study workflow of another folder is closed, and this folder's opened when it has
-    one. A workflow the user opened themselves, or one that is running, stays open.
+    An open workflow that does not stay (``_stays_open_in``) is closed, and this folder's
+    study workflow opened when it has one. A running workflow stays open.
     """
     directory = _working_dir_arg(req.config_outputs_dir)
     own = study_workflow.workflow_path(directory) if directory else None
     if not workflow.busy:
-        folder = study_workflow.working_dir_of(workflow.path) if workflow.loaded else None
-        if folder and (not directory or os.path.abspath(folder) != os.path.abspath(directory)):
+        if workflow.loaded and not _stays_open_in(directory):
             workflow.reset()
         if own and os.path.isfile(own) and not workflow.loaded:
             try:
