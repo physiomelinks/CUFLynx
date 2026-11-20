@@ -620,14 +620,21 @@ async function onSelectWorkflowStep(stepId) {
     return
   }
   wf.error.value = ''
-  // the step becomes the current study, so Imports show its model, obs_data and
-  // params_for_id; a step with no model of its own (a set step, a sweep on the target) has
-  // nothing to load
-  if (workflowDetails.value[stepId]?.viewable !== false) await onSelectWorkflowTab(stepId)
+  // Selected and its panel filled at once; its model then loads behind (CA generates it,
+  // seconds on a library model), so a click is not held up by it.
   wf.editStep(stepId)
   leftTab.value = panel
   await nextTick()
-  PANEL_REFS[panel].value?.applySettings?.(panelSettings(step, wf.described.value))
+  const fill = () => PANEL_REFS[panel].value?.applySettings?.(panelSettings(step, wf.described.value))
+  fill()
+  // the step becomes the current study, so Imports show its model, obs_data and
+  // params_for_id; a step with no model of its own (a set step, a sweep on the target) has
+  // nothing to load
+  if (workflowDetails.value[stepId]?.viewable !== false) {
+    const loaded = await onSelectWorkflowTab(stepId)
+    // a study loaded may re-seed a panel's defaults: fill it again, if still this step's
+    if (loaded && wf.target.value?.step === stepId) fill()
+  }
 }
 
 /** "New step": the next run, of whatever kind, is added as a step. */
@@ -713,12 +720,16 @@ const needsObsData = ref(false)
 
 /** Open a workflow tab as the study; `{inputs: false}`: its model only, with no obs_data or
  * params_for_id (a new step on that model brings its own). */
+// The latest tab asked for: a slower load of an earlier click is not applied over it.
+let selectSeq = 0
 async function onSelectWorkflowTab(tabId, options = {}) {
   needsObsData.value = false
+  const mine = ++selectSeq
   const opened = await wf.select(tabId, workingDir.value.trim(), options)
+  if (mine !== selectSeq) return false
   if (!opened) {
     if (wf.error.value) sim.setError(wf.error.value)
-    return
+    return false
   }
   await onModelLoaded({ ...opened, filename: opened.model_filename })
   if (opened.obs_data && !opened.obs_data.error) {
@@ -745,6 +756,7 @@ async function onSelectWorkflowTab(tabId, options = {}) {
   // A sensitivity, emulation or identifiability step's own results (read with the tab).
   const stepOutputs = opened.workflow_view?.step_outputs
   if (stepOutputs) applyLoadedOutputs(stepOutputs)
+  return true
 }
 
 async function onOpenWorkflow(source) {

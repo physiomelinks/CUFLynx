@@ -2463,6 +2463,29 @@ describe('analysis runs carry the protocol window', () => {
     expect(settings.pre_time).toBe(1.5)
   })
 
+  it('a clicked step is selected and its panel opened before its model has loaded', async () => {
+    const { openWorkflowView } = await import('./lib/api')
+    const wrapper = await mountApp()
+    wrapper.vm.wf.described.value = {
+      loaded: true, path: '/p/w.json',
+      workflow: { workflow_name: 'w', target: { cellml_model_path: 'm.cellml' },
+                  steps: [{ id: 'kir' }, { id: 'sglt1' }] },
+    }
+    // the view (CA generating the model) takes long: it has not answered yet
+    let answer
+    openWorkflowView.mockReturnValueOnce(new Promise((resolve) => { answer = resolve }))
+    const click = wrapper.vm.onSelectWorkflowStep('kir')
+    await flushPromises()
+    expect(wrapper.vm.wf.target.value).toEqual({ mode: 'edit', step: 'kir' })
+    expect(wrapper.vm.leftTab).toBe('calibration')
+    // another box clicked meanwhile: kir's late answer is not loaded over it
+    openWorkflowView.mockResolvedValueOnce(null)
+    await wrapper.vm.onSelectWorkflowTab('sglt1')
+    answer({ model_id: 'kir-model', model_filename: 'kir.cellml', workflow_view: {} })
+    await click
+    expect(wrapper.vm.model.modelId.value).not.toBe('kir-model')
+  })
+
   it("a model box's Calibrate opens its model alone and asks for the step's obs_data", async () => {
     const { openWorkflowView } = await import('./lib/api')
     const wrapper = await mountApp()
