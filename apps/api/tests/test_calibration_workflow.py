@@ -231,6 +231,30 @@ def test_a_tab_loads_as_a_study(client, monkeypatch, workflow_file, tmp_path):
     assert ("model", "fit_a", str(tmp_path / "workflows" / "demo")) in calls
 
 
+def test_clicking_back_to_a_tab_reuses_its_study_until_a_result_changes(
+        client, monkeypatch, workflow_file, tmp_path):
+    """Generating a step's model takes CA seconds (a Myokit compile to validate it), and a
+    new study recompiles the live simulation: a tab opened again with nothing changed is
+    the study it was. A step result written since makes it a new one."""
+    calls = _fake_ca(monkeypatch)
+    client.post("/api/workflow/load",
+                json={"path": str(workflow_file), "config_outputs_dir": str(tmp_path)})
+    run_dir = tmp_path / "workflows" / "demo"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    made = lambda: sum(1 for c in calls if c[:2] == ("model", "fit_a"))  # noqa: E731
+    first = client.post("/api/workflow/view", json={"view": "fit_a"}).json()
+    again = client.post("/api/workflow/view", json={"view": "fit_a"}).json()
+    assert made() == 1 and again["model_id"] == first["model_id"]
+    (run_dir / "fit_a").mkdir(exist_ok=True)
+    (run_dir / "fit_a" / "step_result.json").write_text('{"status": "done"}')
+    rerun = client.post("/api/workflow/view", json={"view": "fit_a"}).json()
+    assert made() == 2 and rerun["model_id"] != first["model_id"]
+    # the workflow file edited: also a new one
+    workflow_file.write_text(workflow_file.read_text() + "\n")
+    client.post("/api/workflow/view", json={"view": "fit_a"})
+    assert made() == 3
+
+
 def test_a_tab_with_unset_parameters_names_the_step_and_them(
         client, monkeypatch, workflow_file, tmp_path):
     _fake_ca(monkeypatch, model_error=UnsetParametersError("sel", ["C/x", "C/y"]))

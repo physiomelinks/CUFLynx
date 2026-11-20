@@ -24,6 +24,7 @@ import contextlib
 import errno
 import io
 import json
+import copy
 import os
 import re
 import secrets
@@ -4905,6 +4906,35 @@ class WorkflowRunRequest(BaseModel):
 #: model_id -> the workflow file of the workflow tab it was loaded from: a study sent on from
 #: a tab carries its workflow, packed.
 _workflow_view_models: dict[str, str] = {}
+#: Each tab loaded as the study, by what it was built from (``_view_key``): clicking back to a
+#: box returns the same study, so neither CA's model generation (seconds: a Myokit compile
+#: to validate it) nor the live simulation's compile runs again.
+_workflow_view_cache: dict[tuple, dict] = {}
+
+
+def _view_key(req) -> tuple | None:
+    """What a tab's study depends on: the workflow file, every step's result in its run
+    directory (a run, a rerun or a deletion changes them), the CA dir and the request. None
+    when there is no run directory to read."""
+    out = workflow.output_dir
+    if not workflow.path or not out or not os.path.isdir(out):
+        return None
+    try:
+        own = os.stat(workflow.path)
+    except OSError:
+        return None
+    results = []
+    for name in sorted(os.listdir(out)):
+        for leaf in ("step_result.json", ""):
+            path = os.path.join(out, name, leaf) if leaf else os.path.join(out, name)
+            if leaf and os.path.isfile(path):
+                st = os.stat(path)
+                results.append((name, st.st_mtime_ns, st.st_size))
+    top = os.path.join(out, "workflow_result.json")
+    top_stat = os.stat(top).st_mtime_ns if os.path.isfile(top) else 0
+    return (workflow.path, own.st_mtime_ns, own.st_size, tuple(results), top_stat,
+            tuple(workflow.module_library_dirs or ()), os.environ.get("CIRCULATORY_AUTOGEN_SRC", ""),
+            req.view, bool(req.inputs), req.config_outputs_dir or "")
 
 
 def _workflow_http(fn, *args, **kwargs):
@@ -5316,6 +5346,10 @@ def workflow_view(req: WorkflowViewRequest) -> dict:
     like a dropped study; an external Python model is loaded as an uploaded ``.py`` is
     (:func:`_load_external_view`), with the values CA wrote for it.
     """
+    key = _view_key(req)
+    cached = _workflow_view_cache.get(key) if key else None
+    if cached and cached["model_id"] in _models:
+        return copy.deepcopy(cached)
     work_dir = UPLOAD_DIR / "workflow_views" / uuid.uuid4().hex
     view = _workflow_http(workflow.view, req.view, str(work_dir))
     if not req.inputs:
@@ -5359,6 +5393,10 @@ def workflow_view(req: WorkflowViewRequest) -> dict:
     # A sensitivity, emulation or identifiability step's own results, as a loaded working
     # dir reports them.
     result["workflow_view"]["step_outputs"] = load_outputs.step_outputs(view.get("result"))
+    if key:
+        if len(_workflow_view_cache) > 64:
+            _workflow_view_cache.clear()
+        _workflow_view_cache[key] = copy.deepcopy(result)
     return result
 
 
