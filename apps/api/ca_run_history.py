@@ -663,7 +663,8 @@ def param_reduction(report_dir: str) -> dict | None:
     The ``param_reduction.json`` as CA wrote it (``reduction``, ``selected`` and, for
     ``pca``, ``modes``, ``unexplained_effects`` and the rest), plus three resolved
     paths: ``report_dir``, ``reduced_params_for_id`` (the file a calibration
-    adopts) and ``heatmap`` (the ``pca`` mode heatmap, or None).
+    adopts) and ``heatmap`` (the ``pca`` mode heatmap, or None), and
+    ``mode_composition`` (``pca_mode_composition``, or None).
     """
     if not report_dir:
         return None
@@ -680,14 +681,76 @@ def param_reduction(report_dir: str) -> dict | None:
     reduced = report.get("reduced_params_for_id")
     if not reduced or not os.path.isfile(reduced):
         reduced = os.path.join(report_dir, REDUCED_PARAMS_FOR_ID_FILE)
-    heatmap = (report.get("files") or {}).get("heatmap")
+    files = report.get("files") or {}
+    heatmap = files.get("heatmap")
     heatmap = os.path.join(report_dir, heatmap) if heatmap else None
     return {
         **report,
         "report_dir": report_dir,
         "reduced_params_for_id": reduced if os.path.isfile(reduced) else None,
         "heatmap": heatmap if heatmap and os.path.isfile(heatmap) else None,
+        "mode_composition": pca_mode_composition(report_dir, files),
     }
+
+
+def _csv_rows(path: str) -> list[dict] | None:
+    try:
+        with open(path, encoding="utf-8", newline="") as fh:
+            return list(csv.DictReader(fh))
+    except (OSError, csv.Error, UnicodeDecodeError):
+        return None
+
+
+def _float_or_none(value) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number == number else None  # NaN reads as None
+
+
+def pca_mode_composition(report_dir: str, files: dict) -> list[dict] | None:
+    """What each ``pca`` mode is made of, from the two CSVs CA's reduction names.
+
+    ``files["modes"]`` (``pca_modes.csv``) holds each mode's loading on every
+    feature, in ``loading_<feature label>`` columns; ``files["mode_indices"]``
+    (``pca_mode_sobol_indices.csv``) the parameters' ``S1_mode_<k>`` and
+    ``ST_mode_<k>`` for each mode. One ``{mode, features: [{label, loading}],
+    parameters: [{parameter, S1, ST}]}`` per mode, in CA's order; ``parameters``
+    is empty without the indices file. None when the modes file is absent (a
+    ``sobol`` reduction, or a CA that writes no loadings).
+    """
+    name = files.get("modes")
+    rows = _csv_rows(os.path.join(report_dir, name)) if name else None
+    if not rows:
+        return None
+    prefix = "loading_"
+    composition: list[dict] = []
+    for row in rows:
+        try:
+            mode = int(row.get("mode"))
+        except (TypeError, ValueError):
+            continue
+        composition.append({
+            "mode": mode,
+            "features": [{"label": key[len(prefix):], "loading": _float_or_none(value)}
+                         for key, value in row.items()
+                         if key and key.startswith(prefix)],
+            "parameters": [],
+        })
+    name = files.get("mode_indices")
+    indices = _csv_rows(os.path.join(report_dir, name)) if name else None
+    for entry in composition:
+        k = entry["mode"]
+        for row in indices or []:
+            if f"ST_mode_{k}" not in row:
+                continue
+            entry["parameters"].append({
+                "parameter": row.get("Parameter"),
+                "S1": _float_or_none(row.get(f"S1_mode_{k}")),
+                "ST": _float_or_none(row.get(f"ST_mode_{k}")),
+            })
+    return composition
 
 
 # ---------------------------------------------------------------------------
