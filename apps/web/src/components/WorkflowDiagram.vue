@@ -204,7 +204,11 @@ const onTarget = computed(() => [...props.steps, ...drafts.value].filter((s) => 
 const mainSteps = computed(() => [...props.steps, ...drafts.value].filter((s) => !s.on_target))
 const placed = computed(() => layoutSteps(mainSteps.value, positions.value, pendingLinks.value))
 const hasModel = computed(() => props.steps.length > 0)
-const colOffset = computed(() => (hasModel.value ? 1 : 0))
+// CA ends the given-values edges at the model source (CA #692): those boxes then stand in a
+// column of their own before the model's, and the steps one column further on
+const originsToModel = computed(() =>
+  (props.origins?.boxes ?? []).some((b) => (b.to ?? []).includes('model')))
+const colOffset = computed(() => (hasModel.value ? (originsToModel.value ? 2 : 1) : 0))
 const stepCols = computed(() => Math.max(0, ...Object.values(placed.value).map((p) => p.col + 1)))
 // the calibrated, combined and hand-set values that are merged into the target
 const merged = computed(() =>
@@ -250,7 +254,8 @@ const cells = computed(() => {
   const boxesOf = props.origins?.boxes ?? []
   if (hasModel.value) {
     for (const o of boxesOf.filter((b) => b.mark === 'set_by_hand')) col[`origin:${o.id}`] = { col: 0, kind: 'origin' }
-    col.model = { col: 0, kind: 'model' }
+    // values given to the model source (CA #692) come into its box from a column of their own
+    col.model = { col: originsToModel.value ? 1 : 0, kind: 'model' }
     for (const o of boxesOf.filter((b) => b.mark !== 'set_by_hand')) col[`origin:${o.id}`] = { col: 0, kind: 'origin' }
   }
   // in each column in the order laid out (where a box was moved to, else the file's)
@@ -347,7 +352,7 @@ const links = computed(() => {
   }
   for (const ob of originBoxes.value) {
     for (const to of ob.origin.to) {
-      const toBox = to === 'target' ? targetBox.value : byId.value[to]
+      const toBox = to === 'target' ? targetBox.value : to === 'model' ? modelBox.value : byId.value[to]
       if (toBox) out.push(link(ob, toBox, `origin:${ob.origin.id}`, to, 'given', 'origin'))
     }
   }
