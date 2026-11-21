@@ -157,7 +157,7 @@ class UQManager:
         same reason the posterior is: the file is the result, and a run that was
         salvaged or reattached to has the file but not the pipe.
         """
-        run_dir = ca_run_history.find_run_dir(output_dir) or output_dir
+        run_dir = ca_run_history.uq_source_dir(output_dir)
         path = os.path.join(run_dir, "posterior_predictive_coverage.json")
         if not os.path.isfile(path):
             return None
@@ -228,7 +228,7 @@ class UQManager:
                 note += " discarded instead"
             flat = samples[cut:].reshape(-1, samples.shape[2])
 
-            run_dir = ca_run_history.find_run_dir(job.output_dir) or job.output_dir
+            run_dir = ca_run_history.uq_source_dir(job.output_dir)
             qnames = [row[0] for row in ca_run_history.param_names(run_dir) or []]
             if len(qnames) != samples.shape[2]:
                 qnames = [f"param_{i}" for i in range(samples.shape[2])]
@@ -273,7 +273,7 @@ class UQManager:
         # param_names.csv lives in CA's run directory, not the one CA was handed -- the same
         # place the chain does. Reading the job dir found nothing, so every parameter came back
         # as "parameter 1".
-        run_dir = ca_run_history.find_run_dir(job.output_dir) or job.output_dir
+        run_dir = ca_run_history.uq_source_dir(job.output_dir)
         labels = [row[0] for row in ca_run_history.param_names(run_dir) or []]
         return {
             "job_id": job.id,
@@ -292,7 +292,7 @@ class UQManager:
         if job is None or job.id != job_id:
             return None
 
-        run_dir = ca_run_history.find_run_dir(job.output_dir) or job.output_dir
+        run_dir = ca_run_history.uq_source_dir(job.output_dir)
         path = os.path.join(run_dir, "posterior_predictive.npz")
         if not os.path.isfile(path):
             return {"available": False, "coverage": job.coverage}
