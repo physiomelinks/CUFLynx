@@ -19,6 +19,7 @@ import subprocess
 import sys
 import threading
 import warnings as _warnings
+from collections import OrderedDict
 from pathlib import Path
 
 import ca_imports
@@ -26,6 +27,36 @@ from ca_imports import ca_from
 from compiler_check import compiler_hint
 from runtime_paths import is_frozen, solver_build_cache_dir
 from solver_info_defaults import with_declared_step_defaults
+
+
+#: How many compiled models the live tier keeps (helpers and protocol runners, each). A
+#: large module-array model costs ~60 MB compiled, and every workflow tab is its own model.
+MAX_CACHED_MODELS = 8
+
+
+class _ModelLRU(OrderedDict):
+    """A dict of compiled models that keeps the ``max_size`` used last: ``get`` marks a
+    model used, and adding one past the cap drops the oldest and calls ``on_evict(key)``."""
+
+    def __init__(self, max_size: int = MAX_CACHED_MODELS, on_evict=None):
+        super().__init__()
+        self.max_size = max_size
+        self.on_evict = on_evict
+
+    def get(self, key, default=None):
+        if key in self:
+            self.move_to_end(key)
+            return self[key]
+        return default
+
+    def __setitem__(self, key, value):
+        super().__setitem__(key, value)
+        self.move_to_end(key)
+        while len(self) > self.max_size:
+            old, _ = self.popitem(last=False)
+            if self.on_evict is not None:
+                self.on_evict(old)
+
 
 DEFAULT_DT = 0.01
 DEFAULT_MODEL_TYPE = "cellml"
@@ -779,8 +810,10 @@ class SimulationEngine:
         # who never opens Settings gets.
         self.worker_python: str | None = None
         self._worker = None
-        self._helpers: dict[str, object] = {}
-        self._runners: dict[str, object] = {}
+        self._helpers: dict[str, object] = _ModelLRU()
+        # A runner built again must be bound to its protocol again.
+        self._runners: dict[str, object] = _ModelLRU(
+            on_evict=lambda key: self._runner_protocol_info.pop(key, None))
         # model_id -> last protocol_info object whose pace binding is active on
         # the cached runner's helper (avoids re-binding/recreating every run).
         self._runner_protocol_info: dict[str, object] = {}
