@@ -126,6 +126,21 @@ describe('panelSettings', () => {
     })
   })
 
+  it('a reduction gives its options and the Sobol run of the step it reduces', () => {
+    const step = { id: 'reduction-1', kind: 'reduction', sensitivity_from: 'sobol-1',
+      settings: { param_reduction_options: { method: 'sobol', n_params: 2 } } }
+    const run = { ...described, output_dir: '/w/workflows/study/' }
+    expect(panelSettings(step, run)).toEqual({ param_reduction_options: {
+      method: 'sobol', n_params: 2, sensitivity_dir: '/w/workflows/study/sobol-1/sensitivity' } })
+    const windows = { ...described, output_dir: 'C:\\w\\workflows\\study' }
+    expect(panelSettings(step, windows).param_reduction_options.sensitivity_dir).toBe(
+      'C:\\w\\workflows\\study\\sobol-1\\sensitivity')
+    // a reduction chosen by hand reads no Sobol run
+    const manual = { id: 'r', kind: 'reduction',
+      settings: { param_reduction_options: { method: 'manual' } } }
+    expect(panelSettings(manual, run)).toEqual({ param_reduction_options: { method: 'manual' } })
+  })
+
   it("a step at a calibration of the user's own is at its best fit, not after a fresh one", () => {
     const local = { ...steps['local-sa-1'], result_from: 'calibration-1' }
     expect(panelSettings(local, described)).toMatchObject({

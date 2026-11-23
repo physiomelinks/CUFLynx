@@ -212,7 +212,15 @@ export function panelSettings(step, described) {
     return { ia_options: { ...(s.ia_options ?? {}) }, ...debug }
   }
   if (kind === 'reduction') {
-    return { param_reduction_options: { ...(s.param_reduction_options ?? step.reduction ?? {}) } }
+    const options = { ...(s.param_reduction_options ?? step.reduction ?? {}) }
+    // the Sobol run it reduces: its sensitivity step's results in the run directory
+    const runDir = described?.output_dir
+    if (step.sensitivity_from && runDir) {
+      const sep = runDir.includes('/') || !runDir.includes('\\') ? '/' : '\\'
+      options.sensitivity_dir = [runDir.replace(/[\\/]+$/, ''), step.sensitivity_from,
+        'sensitivity'].join(sep)
+    }
+    return { param_reduction_options: options }
   }
   return {}
 }

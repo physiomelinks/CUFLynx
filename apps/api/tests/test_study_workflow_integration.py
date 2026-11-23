@@ -164,6 +164,38 @@ def test_every_run_is_a_step_of_one_study_workflow(client, requires_simulation,
         s["id"] for s in steps}
 
 
+def test_a_reduction_from_the_identifiability_tab_is_a_reduction_step(
+        client, requires_simulation, study_workflow_on, tmp_path):
+    """Sobol first, then a reduction of it: a Sobol step and a reduction step that CA runs
+    through the workflow; reducing that Sobol step again changes the reduction step."""
+    if not hasattr(study_workflow_on._ca("WorkflowBuilder")[0], "add_reduction"):
+        pytest.skip("this libcuflynx's workflows have no reduction step")
+    work = tmp_path / "study"
+    model_id = _setup(client, work)
+    common = {"config_outputs_dir": str(work), "dt": 0.01, "num_samples": 8,
+              "sample_type": "saltelli"}
+
+    first, lines = _run(client, "param_reduction", {"model_id": model_id, "settings": {
+        **common, "source": "sobol_first",
+        "param_reduction_options": {"method": "sobol", "n_params": 2}}})
+    steps = {s["id"]: s for s in _steps(work)}
+    assert steps["reduction-1"]["kind"] == "reduction"
+    assert steps["reduction-1"]["sensitivity_from"] == "sobol-1"
+    step_dir = work / "workflows" / "study" / "reduction-1"
+    assert first["reduction"]["report_dir"] == str(step_dir), "\n".join(lines[-40:])
+    assert len(first["reduction"]["selected"]) == 2
+    assert (step_dir / "reduction-1_params_for_id.json").is_file()
+    assert first["param_names"] == QNAMES
+
+    sobol_dir = work / "workflows" / "study" / "sobol-1" / "sensitivity"
+    again, lines = _run(client, "param_reduction", {"model_id": model_id, "settings": {
+        **common, "source": "existing",
+        "param_reduction_options": {"method": "sobol", "n_params": 1,
+                                    "sensitivity_dir": str(sobol_dir)}}})
+    assert [s["id"] for s in _steps(work)] == ["sobol-1", "reduction-1"]
+    assert len(again["reduction"]["selected"]) == 1, "\n".join(lines[-40:])
+
+
 def _heat1d_dir() -> Path | None:
     """CA's external-model example (``funcs_user/example_model_external``), or None."""
     import os

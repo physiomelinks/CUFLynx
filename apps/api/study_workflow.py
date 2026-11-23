@@ -66,7 +66,7 @@ ENV_SWITCH = "CUFLYNX_STUDY_WORKFLOW"
 LABELS = {"calibration": "calibration", "sobol": "sobol", "local": "local-sa",
           "mcmc": "mcmc", "laplace": "laplace", "profile": "profile-likelihood",
           "sliders": "sliders", "emulation": "surrogate",
-          "bounds": "nominal", "best_fit": "best-fit"}
+          "bounds": "nominal", "best_fit": "best-fit", "reduction": "reduction"}
 
 #: Settings keys of a panel that are CUFLynx's own and never reach CA's option dicts. A uq
 #: step's ``posterior_predictive`` / ``posterior_predictive_samples`` do: they are its
@@ -422,6 +422,59 @@ def edited_step(builder, target: dict | None, flavour_name: str) -> str | None:
         return step_id
     same = [s["id"] for s in steps if flavour(s) == flavour_name]
     return same[-1] if same else None
+
+
+def sobol_step_of(sensitivity_dir: str, workflows) -> dict | None:
+    """The Sobol step whose results ``sensitivity_dir`` is (``<run dir>/<step>/sensitivity``),
+    as ``{workflow, run_dir, step}``, searching ``workflows`` (``[(workflow file, run dir)]``);
+    None for a Sobol run that is no workflow step (a direct run)."""
+    found = os.path.normpath(os.path.abspath(sensitivity_dir))
+    if os.path.basename(found) != "sensitivity":
+        return None
+    step_dir = os.path.dirname(found)
+    step_id, runs = os.path.basename(step_dir), os.path.dirname(step_dir)
+    for path, run in workflows:
+        if not run or os.path.normpath(os.path.abspath(run)) != runs:
+            continue
+        try:
+            steps = read_raw(path).get("steps") or []
+        except (OSError, ValueError):
+            continue
+        step = next((s for s in steps if s.get("id") == step_id), None)
+        if step is not None and flavour(step) == "sobol":
+            return {"workflow": os.path.abspath(path), "run_dir": run, "step": step_id}
+    return None
+
+
+def edited_reduction(builder, target: dict | None, sensitivity_from: str) -> str | None:
+    """The reduction step a reduction of the Sobol step ``sensitivity_from`` changes, from its
+    ``workflow_target``; None when it adds one. By default that is the latest reduction of the
+    same Sobol step (a reduction of another Sobol run is a step of its own); ``edit`` and
+    ``new_step`` are :func:`edited_step`'s."""
+    mode = (target or {}).get("mode") or "default"
+    if mode != "default":
+        return edited_step(builder, target, "reduction")
+    same = [s["id"] for s in file_steps(builder)
+            if s.get("kind") == "reduction" and s.get("sensitivity_from") == sensitivity_from]
+    return same[-1] if same else None
+
+
+def reduction_options(options: dict, add_reduction) -> tuple[dict, list[str]]:
+    """``(kwargs, left_out)``: the IA panel's ``param_reduction_options`` as the keyword
+    arguments of CA's ``add_reduction``. The paths (``sensitivity_dir``, ``output_dir``) are
+    the workflow's to choose, and any other key ``add_reduction`` does not take is left out
+    and named."""
+    accepted = set(inspect.signature(add_reduction).parameters) - {
+        "self", "id", "sensitivity_from", "params_for_id", "description", "comment"}
+    kwargs, left_out = {}, []
+    for key, value in (options or {}).items():
+        if value is None or value == "" or key in ("sensitivity_dir", "output_dir"):
+            continue
+        if key in accepted:
+            kwargs[key] = value
+        else:
+            left_out.append(key)
+    return kwargs, left_out
 
 
 def next_id(builder, label: str, working_dir: str) -> str:

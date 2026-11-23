@@ -61,6 +61,20 @@ for sid in step["steps"]:
             "ci_95": {"lower": 0.8, "upper": 1.2},
             "param_values": [0.8, 1.0, 1.2], "costs": [2.0, 0.1, 2.0]}))
         result["profile_likelihood_dir"] = str(pl) + "/"
+    if kinds[sid] == "sensitivity":
+        sd = d / "sensitivity"
+        sd.mkdir(parents=True, exist_ok=True)
+        (sd / "all_outputs_n8_Sobol_indices.csv").write_text(
+            "Parameter,S1_x_max,ST_x_max\\n" + "".join(f"{q},0.5,0.6\\n" for q in %(qnames)r))
+    if kinds[sid] == "reduction":
+        # what CA's reduction step writes: the kept entries and the report, in its step dir
+        kept = d / f"{sid}_params_for_id.json"
+        kept.write_text(json.dumps({"version": 1, "params": [
+            {"targets": [%(qnames)r[0]], "min": 0.1, "max": 7}]}))
+        (d / "param_reduction.json").write_text(json.dumps({
+            "reduction": {"method": "sobol"}, "reduced_params_for_id": str(kept),
+            "selected": [{"parameter": %(qnames)r[0], "score": 0.7}]}))
+        result["params_for_id"] = str(kept)
     (d / "step_result.json").write_text(json.dumps(result))
 print(cfg["markers"]["done"], flush=True)
 """ % {"qnames": QNAMES}
@@ -81,8 +95,9 @@ def fake_runs(study_workflow_on, tmp_path, monkeypatch):
     seen = tmp_path / "seen"
     seen.mkdir()
     monkeypatch.setenv("SEEN_DIR", str(seen))
-    for manager in (calibration_mod.calibration, sensitivity_mod.sensitivity, uq_mod.uq):
-        manager.study_runner_path = str(script)
+    for manager in (calibration_mod.calibration, sensitivity_mod.sensitivity, uq_mod.uq,
+                    sensitivity_mod.param_reduction):
+        monkeypatch.setattr(manager, "study_runner_path", str(script))
 
     def configs():
         return [json.loads(p.read_text()) for p in sorted(seen.glob("*.json"))]
@@ -221,6 +236,120 @@ def test_a_sobol_analysis_is_a_sensitivity_step(client, fake_runs, tmp_path):
     (config,) = fake_runs()
     assert config["only"] == "sobol-1"
     assert config["markers"]["done"] == "__SENSITIVITY_DONE__"
+
+
+def _reduce(client, model_id, work, sensitivity_dir=None, target=None, **options) -> dict:
+    options = {"method": "sobol", "n_params": 1, **options}
+    if sensitivity_dir is not None:
+        options["sensitivity_dir"] = str(sensitivity_dir)
+    settings = {"config_outputs_dir": str(work), "param_reduction_options": options,
+                "source": "existing" if sensitivity_dir is not None else "sobol_first",
+                "num_samples": 8}
+    if target:
+        settings["workflow_target"] = target
+    return _run(client, "param_reduction", {"model_id": model_id, "settings": settings})
+
+
+def _sobol_step(client, model_id, work) -> Path:
+    _run(client, "sensitivity", {"model_id": model_id, "settings": {
+        "config_outputs_dir": str(work), "method": "sobol", "num_samples": 8}})
+    return work / "workflows" / "study" / "sobol-1" / "sensitivity"
+
+
+def test_reducing_a_sobol_step_is_a_reduction_step_of_its_workflow(client, fake_runs, tmp_path):
+    """The IA tab's reduction of a Sobol run from the Sensitivity tab was a direct run, so
+    the Workflow view never showed it: it is a reduction step taking from that Sobol step."""
+    work = tmp_path / "w"
+    model_id = _setup(client)
+    sobol = _sobol_step(client, model_id, work)
+
+    status = _reduce(client, model_id, work, sobol)
+
+    assert status["state"] == "done", status
+    step = _steps(work)["reduction-1"]
+    assert step["kind"] == "reduction" and step["sensitivity_from"] == "sobol-1"
+    # the paths are the workflow's to choose, not options of the step
+    assert step["settings"]["param_reduction_options"] == {"method": "sobol", "n_params": 1}
+    config = fake_runs()[-1]
+    assert config["only"] == "reduction-1"
+    assert config["markers"]["done"] == "__SENSITIVITY_DONE__"
+    step_dir = work / "workflows" / "study" / "reduction-1"
+    assert status["reduction"]["report_dir"] == str(step_dir)
+    assert status["reduction"]["selected"][0]["parameter"] == QNAMES[0]
+    # the indices shown beside it are the Sobol step's
+    assert status["param_names"] == QNAMES
+    assert status["study_step"]["step"] == "reduction-1"
+
+
+def test_reducing_the_same_sobol_step_again_changes_its_reduction(client, fake_runs, tmp_path):
+    work = tmp_path / "w"
+    model_id = _setup(client)
+    sobol = _sobol_step(client, model_id, work)
+    _reduce(client, model_id, work, sobol)
+
+    _reduce(client, model_id, work, sobol, n_params=2)
+    steps = _steps(work)
+    assert [s for s in steps if s.startswith("reduction")] == ["reduction-1"]
+    assert steps["reduction-1"]["settings"]["param_reduction_options"]["n_params"] == 2
+
+    _reduce(client, model_id, work, sobol, target=NEW_STEP)
+    assert [s for s in _steps(work) if s.startswith("reduction")] == [
+        "reduction-1", "reduction-2"]
+
+
+def test_a_sobol_first_reduction_is_a_sobol_step_and_its_reduction(client, fake_runs, tmp_path):
+    work = tmp_path / "w"
+    model_id = _setup(client)
+
+    status = _reduce(client, model_id, work)
+
+    assert status["state"] == "done", status
+    steps = _steps(work)
+    assert steps["sobol-1"]["kind"] == "sensitivity"
+    assert steps["sobol-1"]["settings"]["sa_options"]["num_samples"] == 8
+    assert "do_param_reduction" not in steps["sobol-1"]["settings"]["sa_options"]
+    assert steps["reduction-1"]["sensitivity_from"] == "sobol-1"
+    config = fake_runs()[-1]
+    assert config["from_step"] == "sobol-1"
+    assert config["study_step"]["steps"] == ["sobol-1", "reduction-1"]
+    assert status["reduction"]["report_dir"] == str(work / "workflows" / "study" / "reduction-1")
+    assert status["param_names"] == QNAMES
+
+    # a second one is a Sobol run of its own and a reduction of it: nothing is replaced
+    _reduce(client, model_id, work)
+    assert {"sobol-2", "reduction-2"} <= set(_steps(work))
+    assert _steps(work)["reduction-2"]["sensitivity_from"] == "sobol-2"
+
+
+def test_a_sobol_run_that_is_no_step_is_reduced_directly(client, fake_runs, tmp_path,
+                                                          monkeypatch):
+    work = tmp_path / "w"
+    model_id = _setup(client)
+    direct = tmp_path / "sa"
+    direct.mkdir()
+    started = {}
+    monkeypatch.setattr(sensitivity_mod.param_reduction, "start",
+                        lambda config: started.update(config) or "job")
+    r = client.post("/api/param_reduction/run", json={"model_id": model_id, "settings": {
+        "config_outputs_dir": str(work), "source": "existing",
+        "param_reduction_options": {"method": "pca", "sensitivity_dir": str(direct)}}})
+
+    assert r.status_code == 200, r.text
+    assert started["reduce_only"] and "study_step" not in started
+    assert "is not a step of a workflow" in started["log_preamble"][0]
+    assert not Path(study_workflow.workflow_path(str(work))).exists()
+
+
+def test_reduction_options_leave_out_the_paths_and_name_what_ca_does_not_take():
+    def add_reduction(self, id, *, sensitivity_from=None, method="pca", n_params=None,
+                      description=None):
+        pass
+
+    kwargs, left_out = study_workflow.reduction_options(
+        {"method": "pca", "n_params": 3, "sensitivity_dir": "/x", "output_dir": "/y",
+         "threshold": 0.1, "min_index": None}, add_reduction)
+    assert kwargs == {"method": "pca", "n_params": 3}
+    assert left_out == ["threshold"]
 
 
 def test_a_local_analysis_at_the_bounds_midpoint_is_at_a_set_step(client, fake_runs, tmp_path):

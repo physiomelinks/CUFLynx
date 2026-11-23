@@ -125,6 +125,7 @@ import {
   exportPipeline,
   adoptReducedParams,
   getParamReductionStatus,
+  startParamReduction,
 } from './lib/api'
 import { setNotificationCtor } from './lib/notify'
 import App from './App.vue'
@@ -3578,6 +3579,32 @@ describe('App.vue Identifiability tab', () => {
     expect(ids).toContain('tab-ia')
     expect(ids.indexOf('tab-ia')).toBe(ids.indexOf('tab-sensitivity') - 1)
     expect(ids.indexOf('tab-ia')).toBeGreaterThan(ids.indexOf('tab-emulator'))
+  })
+
+  it('a reduction run says which workflow step it is, and the chart is read again after it', async () => {
+    vi.useFakeTimers()
+    try {
+      getParamReductionStatus.mockResolvedValue({ state: 'done', lines: [], next_offset: 0,
+        reduction: { selected: [{ parameter: 'm/alpha' }], report_dir: '/r' } })
+      const wrapper = shallowMount(App)
+      await flushPromises()
+      startParamReduction.mockClear()
+      const before = getWorkflow.mock.calls.length
+      await wrapper.find('[data-testid="tab-ia"]').trigger('click')
+      wrapper.findComponent({ name: 'IAPanel' }).vm.$emit('run-reduction', { source: 'existing',
+        param_reduction_options: { method: 'pca', sensitivity_dir: '/sa' } })
+      await flushPromises()
+      const settings = startParamReduction.mock.calls[0][1]
+      expect(settings.workflow_target).toEqual(expect.objectContaining({ mode: 'default' }))
+      for (let i = 0; i < 5; i += 1) {
+        await vi.advanceTimersByTimeAsync(1000)
+        await flushPromises()
+      }
+      expect(getWorkflow.mock.calls.length).toBeGreaterThan(before)
+    } finally {
+      getParamReductionStatus.mockResolvedValue({ state: 'error', lines: [], error: '' })
+      vi.useRealTimers()
+    }
   })
 
   it('a finished reduction opens the Analysis tab on its section, where its results are', async () => {

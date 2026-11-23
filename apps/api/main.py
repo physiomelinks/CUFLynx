@@ -4200,7 +4200,7 @@ def _study_note(text: str) -> str:
 
 def _study_running_step() -> str | None:
     """The study-workflow step a panel or the Workflow tab is running, or None."""
-    for manager in (calibration, sensitivity, uq):
+    for manager in (calibration, sensitivity, uq, param_reduction_jobs):
         job = manager._job
         if job is not None and job.state == "running" and getattr(job, "study_step", None):
             return job.study_step["step"]
@@ -4625,6 +4625,126 @@ def _study_sensitivity(record, req, config: dict, configured: str) -> list:
         config["study_meta"] = {"method": method, "gradient_method": gradient}
         _study_start(plan, config, (DONE_MARKER, FAIL_MARKER), notes)
     return config["log_preamble"]
+
+
+def _reduction_supported() -> bool:
+    """Whether the configured CA's workflows have reduction steps (``add_reduction``)."""
+    try:
+        (builder_cls,) = study_workflow._ca("WorkflowBuilder")
+        kinds = ca_imports.ca_from("calibration_workflow.spec", "STEP_KINDS")
+    except ImportError:
+        return False
+    return "reduction" in kinds and hasattr(builder_cls, "add_reduction")
+
+
+def _add_reduction_step(plan, options: dict, sensitivity_from: str, notes: list) -> str:
+    """Add the reduction step of ``sensitivity_from`` with the panel's options; its id."""
+    (builder_cls,) = study_workflow._ca("WorkflowBuilder")
+    kwargs, left_out = study_workflow.reduction_options(options, builder_cls.add_reduction)
+    if left_out:
+        notes.append(_study_note(
+            f"the reduction step does not take {', '.join(sorted(left_out))}, which this "
+            f"libcuflynx's workflows have no place for; they are left out."))
+    return plan.add("add_reduction", plan.main_id(study_workflow.LABELS["reduction"]),
+                    sensitivity_from=sensitivity_from, **kwargs)
+
+
+def _study_reduction(record, config: dict, configured: str, options: dict, *,
+                     sobol_first: bool) -> list:
+    """Make this parameter reduction a ``reduction`` step of a workflow (``sensitivity_from``
+    its Sobol step), setting ``config`` up to run it through workflow_runner; the run-log
+    notes. When it stays a direct run ``config`` is left as it was.
+
+    * ``sobol_first``: a new Sobol step of the study workflow and the reduction of it, run
+      together. By default both are new; a reduction step chosen in the Workflow view is
+      changed, and takes from the new Sobol step.
+    * else the Sobol run chosen (``options['sensitivity_dir']``) must be a step of a workflow
+      of the working dir, or of the open workflow: the reduction is a step of that workflow,
+      and by default changes the latest reduction of the same Sobol step. A Sobol run that is
+      no step (a direct run) is reduced directly.
+    """
+    from sensitivity_runner import DONE_MARKER, FAIL_MARKER, _sa_options  # noqa: PLC0415
+
+    if not study_workflow.enabled():
+        return []
+    reason = study_workflow.unavailable_reason() or (
+        None if _reduction_supported() else "this libcuflynx's workflows have no reduction step")
+    if reason:
+        return [_study_note(f"this run is not recorded in it, because {reason}; it runs as "
+                            f"before.")]
+    wanted = dict(config.get("workflow_target") or {})
+    if sobol_first:
+        if (wanted.get("mode") or "default") == "default":
+            # the Sobol run made for this reduction is a new step, and so is its reduction
+            config["workflow_target"] = {**wanted, "mode": "new_step"}
+        with study_workflow.lock():
+            plan, notes = _study_plan(record, configured, config, flavour="reduction")
+            if plan is None:
+                return notes
+            settings = config["settings"]
+            sa_options = _sa_options(study_workflow.options(settings), "", _analysis_seed)
+            sa_options.pop("output_dir", None)
+            sobol = plan.add("add_sensitivity", plan.new_id(study_workflow.LABELS["sobol"]),
+                             **_study_inputs(config), sa_options=sa_options,
+                             settings=_study_settings(config, settings, {}))
+            reduction = _add_reduction_step(plan, options, sobol, notes)
+            _study_start(plan, config, (DONE_MARKER, FAIL_MARKER), notes)
+            config["sobol_dir"] = os.path.join(plan.step_dir(sobol), "sensitivity")
+            config["reduction_dir"] = plan.step_dir(reduction)
+        return config["log_preamble"]
+
+    sensitivity_dir = options.get("sensitivity_dir") or ""
+    workflows = [(w["path"], study_workflow.run_dir(configured, w["name"]))
+                 for w in (study_workflow.list_workflows(configured) if configured else [])]
+    if workflow.loaded and workflow.path and workflow.output_dir:
+        workflows.append((workflow.path, workflow.output_dir))
+    found = study_workflow.sobol_step_of(sensitivity_dir, workflows)
+    if found is None:
+        return [_study_note(
+            f"this run is not recorded in it: the Sobol run {sensitivity_dir} is not a step of "
+            f"a workflow (a Sobol run from the Sensitivity tab, or 'Run a Sobol analysis "
+            f"first', is one).")]
+    running = _study_running_step()
+    if running:
+        raise HTTPException(status_code=409, detail=(
+            f"step {running} of the study workflow is running; this reduction is a step of "
+            f"the same workflow, so start it when that one has finished"))
+    with study_workflow.lock():
+        try:
+            (builder_cls,) = study_workflow._ca("WorkflowBuilder")
+            builder = builder_cls.load(found["workflow"])
+            edit = study_workflow.edited_reduction(builder, wanted, found["step"])
+        except (study_workflow.StudyWorkflowError, ValueError, OSError) as exc:
+            raise HTTPException(status_code=422, detail=f"the study workflow: {exc}") from exc
+        owner = study_workflow.working_dir_of(found["workflow"])
+        plan = study_workflow.Plan(builder, owner or configured, edit=edit)
+        if owner is None:
+            # the open workflow, from elsewhere: its own run directory and module libraries
+            plan.external_run_dir = found["run_dir"]
+            plan.module_library_dirs = list(workflow.module_library_dirs
+                                            or _module_library_dirs)
+        if wanted.get("mode") == "new_step" and os.path.abspath(
+                wanted.get("workflow") or "") == found["workflow"]:
+            plan.draft = wanted.get("draft")
+        notes = []
+        if edit:
+            notes.append(_study_note(
+                f"this run changes step {edit} of workflow {builder.name}, and runs it and the "
+                f"steps that take from it."))
+        reduction = _add_reduction_step(plan, options, found["step"], notes)
+        _study_start(plan, config, (DONE_MARKER, FAIL_MARKER), notes)
+        config["sobol_dir"] = sensitivity_dir
+        config["reduction_dir"] = plan.step_dir(reduction)
+    return config["log_preamble"]
+
+
+def _study_reduction_or_422(record, config: dict, configured: str, options: dict, *,
+                            sobol_first: bool) -> list:
+    """:func:`_study_reduction`, a refused step being a 422 with CA's reason."""
+    try:
+        return _study_reduction(record, config, configured, options, sobol_first=sobol_first)
+    except study_workflow.StudyWorkflowError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 def _study_uq(record, config: dict, configured: str) -> list:
@@ -6590,14 +6710,19 @@ def param_reduction_run(req: ParamReductionRequest) -> dict:
     settings = dict(req.settings)
     options = dict(settings.get("param_reduction_options") or {})
     source = settings.pop("source", "existing")
+    if param_reduction_jobs.busy:
+        raise HTTPException(status_code=409, detail="a parameter reduction is already running")
     if source == "sobol_first":
-        # The Sensitivity tab's runner and config, with Sobol and the reduction on.
+        # The Sensitivity tab's runner and config, with Sobol and the reduction on: a Sobol
+        # step and its reduction step of the study workflow, or a direct run.
         config = _sensitivity_config(SensitivityRequest(
             model_id=req.model_id,
             settings={**settings, "method": "sobol", "do_param_reduction": True,
                       "param_reduction_options": options},
             current_params=req.current_params,
         ))
+        config["log_preamble"] = _study_reduction_or_422(
+            _get_model(req.model_id), config, config["output_dir"], options, sobol_first=True)
     elif source == "existing":
         record = _get_model(req.model_id)
         if record.params_path is None:
@@ -6628,7 +6753,12 @@ def param_reduction_run(req: ParamReductionRequest) -> dict:
             "num_cores": 1,
             "python": python_path,
             "settings": {"param_reduction_options": options},
+            "workflow_target": settings.get("workflow_target"),
         }
+        # a reduction of a Sobol step is a step of that step's workflow
+        configured = _working_dir_arg(settings.get("config_outputs_dir")) or ""
+        config["log_preamble"] = _study_reduction_or_422(
+            record, config, configured, options, sobol_first=False)
     else:
         raise HTTPException(status_code=422, detail=f"unknown source {source!r}")
     try:
