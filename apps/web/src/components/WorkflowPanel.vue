@@ -32,6 +32,8 @@ const props = defineProps({
   offered: { type: Object, default: null },
   // A step's parameters nothing gives a value ({step_id, names}), for its protocol to set.
   unset: { type: Object, default: null },
+  // The background build of the tabs (useWorkflow.warmUp): paused asks whether to go on.
+  warmUp: { type: Object, default: null },
   workingDir: { type: String, default: '' },
   moduleLibraryDirs: { type: Array, default: () => [] },
   mpiexecAvailable: { type: Boolean, default: true },
@@ -49,7 +51,15 @@ const emit = defineEmits([
   'edit-input',
   // {stepId, role, file}: give a step a file of its own
   'pick-input',
+  // true: build every tab ahead; false: none (a click builds its own)
+  'build-tabs',
 ])
+
+/** Seconds as "35 s" or "6 min". */
+function duration(seconds) {
+  if (!(seconds > 0)) return 'a moment'
+  return seconds < 90 ? `${Math.round(seconds)} s` : `${Math.round(seconds / 60)} min`
+}
 
 const path = ref('')
 const numCores = ref(1)
@@ -308,6 +318,31 @@ const progressText = computed(() => {
           text
           data-testid="workflow-unset-edit"
           @click="emit('edit-input', { stepId: unset.step_id, role: 'obs_data', preselect: unset.names })"
+        />
+      </Message>
+
+      <Message
+        v-if="warmUp?.state === 'paused' && warmUp.left?.length"
+        severity="info"
+        :closable="false"
+        data-testid="workflow-warm-up"
+      >
+        A box takes about {{ duration(warmUp.seconds_per_box) }} to build here, so the
+        {{ warmUp.left.length }} not built yet would take about
+        {{ duration(warmUp.predicted_s) }}. Until then each box is built when you click it.
+        <Button
+          label="Build all now"
+          size="small"
+          text
+          data-testid="workflow-warm-up-all"
+          @click="emit('build-tabs', true)"
+        />
+        <Button
+          label="Only when clicked"
+          size="small"
+          text
+          data-testid="workflow-warm-up-none"
+          @click="emit('build-tabs', false)"
         />
       </Message>
 

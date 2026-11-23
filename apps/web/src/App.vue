@@ -3428,6 +3428,7 @@ watch(() => obs.obsData.value, scheduleRun)
           :error="wf.error.value"
           :offered="wf.offered.value"
           :unset="wf.unset.value"
+          :warm-up="wf.warmUp.value"
           :working-dir="workingDir"
           :module-library-dirs="moduleLibraryDirs"
           :mpiexec-available="mpiexecAvailable"
@@ -3452,6 +3453,7 @@ watch(() => obs.obsData.value, scheduleRun)
           @open-settings="settingsOpen = true"
           @edit-input="onEditStepInput"
           @pick-input="onPickStepInput"
+          @build-tabs="(everything) => wf.buildTabs(everything)"
         />
         <EditObsDataDialog
             v-if="stepEditor"

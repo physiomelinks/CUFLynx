@@ -300,6 +300,62 @@ def test_a_workflow_opened_builds_its_tabs_in_the_background(
     assert len([c for c in calls if c[0] == "model"]) == before
 
 
+def _models_built(calls):
+    return [c[1] for c in calls if c[0] == "model"]
+
+
+@pytest.fixture
+def slow_warm_up(client, monkeypatch, workflow_file, tmp_path):
+    """A workflow whose boxes take longer to build than the warm-up may spend unasked."""
+    import main  # noqa: PLC0415
+
+    calls = _fake_ca(monkeypatch)
+    (tmp_path / "workflows" / "demo").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("CUFLYNX_WARM_VIEWS", "1")
+    monkeypatch.setattr(main, "WARM_BUDGET_S", 0.0)
+    monkeypatch.setattr(main, "_warm", {})
+    r = client.post("/api/workflow/load",
+                    json={"path": str(workflow_file), "config_outputs_dir": str(tmp_path)})
+    assert r.json()["warm_up"]["state"] == "building"
+    main._warm_thread.join(timeout=60)
+    return calls
+
+
+def test_a_slow_workflow_builds_one_box_and_asks_about_the_rest(client, slow_warm_up):
+    import main  # noqa: PLC0415
+
+    assert _models_built(slow_warm_up) == ["fit_a"]
+    status = client.get("/api/workflow/warm-up").json()["warm_up"]
+    assert status["state"] == "paused"
+    assert status["left"] == ["rest", "target"]
+    assert status["predicted_s"] == round(2 * status["seconds_per_box"], 1)
+    # describing the workflow again does not start building again
+    assert client.get("/api/workflow").json()["warm_up"]["state"] == "paused"
+    if main._warm_thread.is_alive():
+        main._warm_thread.join(timeout=60)
+    assert _models_built(slow_warm_up) == ["fit_a"]
+
+
+def test_build_all_builds_every_box_however_long(client, slow_warm_up):
+    import main  # noqa: PLC0415
+
+    r = client.post("/api/workflow/warm-up", json={"everything": True})
+    assert r.status_code == 200, r.text
+    main._warm_thread.join(timeout=60)
+    assert _models_built(slow_warm_up) == ["fit_a", "rest", "target"]
+    status = client.get("/api/workflow/warm-up").json()["warm_up"]
+    assert status["state"] == "done" and status["left"] == []
+
+
+def test_build_none_leaves_each_box_to_its_click(client, slow_warm_up):
+    r = client.post("/api/workflow/warm-up", json={"everything": False})
+    assert r.json()["warm_up"]["state"] == "declined"
+    client.post("/api/workflow/view", json={"view": "rest"})
+    status = client.get("/api/workflow/warm-up").json()["warm_up"]
+    assert status["left"] == ["target"]
+    assert _models_built(slow_warm_up) == ["fit_a", "rest"]
+
+
 def test_a_tab_with_unset_parameters_names_the_step_and_them(
         client, monkeypatch, workflow_file, tmp_path):
     _fake_ca(monkeypatch, model_error=UnsetParametersError("sel", ["C/x", "C/y"]))

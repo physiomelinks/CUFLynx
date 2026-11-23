@@ -42,6 +42,7 @@ import os
 import sys
 import traceback
 import warnings
+from collections import OrderedDict
 
 # stdout is the wire. Anything that writes to it -- CA's own prints, a library's
 # banner -- would corrupt a response, so the real stdout is claimed here and
@@ -316,6 +317,36 @@ def _model_stamp(model_path):
     return (path, st.st_mtime_ns, st.st_size)
 
 
+#: How many compiled models the live tier keeps (helpers and protocol runners, each). A
+#: large module-array model costs ~60 MB compiled, and every workflow tab is its own model.
+MAX_CACHED_MODELS = 8
+
+
+class _ModelLRU(OrderedDict):
+    """A dict of compiled models that keeps the ``max_size`` used last: ``get`` marks a
+    model used, and adding one past the cap drops the oldest and calls ``on_evict(key)``.
+    The same as ``engine._ModelLRU``: this script imports nothing from the app."""
+
+    def __init__(self, max_size: int = MAX_CACHED_MODELS, on_evict=None):
+        super().__init__()
+        self.max_size = max_size
+        self.on_evict = on_evict
+
+    def get(self, key, default=None):
+        if key in self:
+            self.move_to_end(key)
+            return self[key]
+        return default
+
+    def __setitem__(self, key, value):
+        super().__setitem__(key, value)
+        self.move_to_end(key)
+        while len(self) > self.max_size:
+            old, _ = self.popitem(last=False)
+            if self.on_evict is not None:
+                self.on_evict(old)
+
+
 class Worker:
     def __init__(self):
         self.ca_src = ""
@@ -323,8 +354,10 @@ class Worker:
         self.model_type = "cellml"
         self.solver = "CVODE_myokit"
         self.solver_info: dict = {}
-        self._helpers: dict = {}
-        self._runners: dict = {}
+        self._helpers: dict = _ModelLRU()
+        # A runner built again must be bound to its protocol again.
+        self._runners: dict = _ModelLRU(
+            on_evict=lambda key: self._runner_protocol_info.pop(key, None))
         self._runner_protocol_info: dict = {}
         # model_id -> the _model_stamp() the cached helper/runner was built from.
         self._model_stamps: dict = {}
