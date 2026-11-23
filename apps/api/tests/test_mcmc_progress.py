@@ -297,3 +297,14 @@ def test_a_ragged_chain_still_produces_a_running_mean_per_chain():
     assert all(v is not None for v in finished)
     assert any(v is not None for v in partial) and partial[-1] is None
     assert json.dumps(out)
+
+
+@pytest.mark.parametrize("run_dir", ["mcmc_m_obs", "genetic_algorithm_m_obs"])
+def test_the_chain_is_found_in_the_mcmc_runs_dir_or_the_calibrations(tmp_path, run_dir):
+    """CA #650 writes the chain to ``mcmc_<prefix>_<obs>/``; an older run has it in the
+    calibration's directory. Either is read from the working dir."""
+    run = tmp_path / run_dir
+    run.mkdir()
+    samples = _chain(run)
+    assert mcmc_progress.chain_path(str(tmp_path)) == str(run / mcmc_progress.CHAIN_FILE)
+    assert mcmc_progress.read_chain(str(tmp_path)).shape == samples.shape

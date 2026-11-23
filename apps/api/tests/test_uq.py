@@ -290,3 +290,43 @@ def test_the_posterior_predictive_check_is_left_to_find_the_mcmc_runs_dir(monkey
     assert uq_runner._posterior_predictive({}, engine, samples=draws,
                                            output_dir="/w") is not None
     assert seen["samples"] is draws and seen["output_dir"] == "/w"
+
+
+@pytest.mark.integration
+def test_a_real_calibration_then_mcmc_is_read_back_from_the_working_dir(
+    client, requires_simulation, tmp_path
+):
+    """Both run through the real runners into one working dir: the chain, its parameter
+    names and the posterior are read back whichever directory this CA put the MCMC run in
+    (``mcmc_<prefix>_<obs>`` with CA #650, the calibration's before it)."""
+    import os
+
+    import ca_run_history
+    from conftest import RESOURCES_DIR
+
+    model_id = _setup_model_obs_params(
+        client, RESOURCES_DIR / "3compartment_flat.cellml",
+        RESOURCES_DIR / "3compartment_obs_data.json",
+        RESOURCES_DIR / "3compartment_params_for_id.csv")
+    out = str(tmp_path / "work")
+    os.makedirs(out)
+    r = client.post("/api/calibration/run", json={"model_id": model_id, "settings": {
+        "param_id_method": "genetic_algorithm", "num_calls_to_function": 30,
+        "DEBUG": True, "dt": 0.01, "config_outputs_dir": out}})
+    assert r.status_code == 200, r.text
+    status, lines = _wait(client, "calibration", r.json()["job_id"], timeout=300)
+    assert status["state"] == "done", "\n".join(lines)
+
+    r = client.post("/api/uq/run", json={"model_id": model_id, "settings": {
+        "method": "mcmc", "num_steps": 40, "num_walkers": 8, "DEBUG": True, "dt": 0.01,
+        "posterior_predictive": False, "config_outputs_dir": out}})
+    assert r.status_code == 200, r.text
+    status, lines = _wait(client, "uq", r.json()["job_id"], timeout=300)
+    assert status["state"] == "done", "\n".join(lines)
+
+    uq_dir = ca_run_history.uq_run_dir(out)
+    assert uq_dir and os.path.isfile(os.path.join(uq_dir, ca_run_history.MCMC_CHAIN_FILE))
+    if ca_run_history.uq_case_method() == "mcmc" and os.path.basename(uq_dir).startswith("mcmc_"):
+        assert ca_run_history.find_run_dir(out) != uq_dir, "the calibration keeps its own dir"
+    assert [p["qname"] for p in ca_run_history.uq_distributions(out)]
+    assert status.get("params"), "the posterior reached the UQ status"

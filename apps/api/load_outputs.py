@@ -247,6 +247,9 @@ def _study(output_dir, run_dir, file_prefix, missing, manifest=None):
         obs, params = _snapshot_pair(run_dir)
     obs = obs or declared.get("obs_data")
     params = params or declared.get("params_for_id")
+    # A run in a working dir keeps no copies of its inputs: ``inputs/`` holds them.
+    obs = obs or _stored_input(output_dir, "obs_data")
+    params = params or _stored_input(output_dir, "params_for_id")
 
     # Looked for in the working dir, which is where a generated pipeline bundle puts
     # it. Absent is ordinary -- a run started from this app has never written one -- so it
@@ -273,6 +276,18 @@ def _study(output_dir, run_dir, file_prefix, missing, manifest=None):
         "user_inputs": user_inputs,
         "file_prefix": prefix,
     }
+
+
+def _stored_input(output_dir, kind):
+    """The newest ``kind`` input in the working dir's ``inputs/``, or None (also for a
+    libcuflynx without working dirs)."""
+    try:
+        from ca_imports import ca_from, ensure_ca_path  # noqa: PLC0415
+
+        ensure_ca_path()
+        return ca_from("utilities.cuflynx_study", "latest_input")(output_dir, kind)
+    except Exception:  # noqa: BLE001 - an older CA, or a dir that is not a working dir
+        return None
 
 
 def _prefix_from_calibrated_model(output_dir):

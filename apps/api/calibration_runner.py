@@ -267,7 +267,8 @@ def run(config: dict) -> dict:
         # were a volume or a compliance.
         try:
             expanded = _expanded_best_fit(info, param_names, best_vals)
-            calibrated_path = _write_calibrated_cellml(config, expanded, output_dir)
+            calibrated_path = (_ca_write_calibrated_model(param_id, config, output_dir)
+                               or _write_calibrated_cellml(config, expanded, output_dir))
         except Exception as exc:  # noqa: BLE001 - best-effort, never fails the run
             print(
                 f"warning: could not expand the modifier best fit for the "
@@ -350,6 +351,23 @@ def _expanded_best_fit(param_id_info: dict, param_names, best_vals) -> dict:
             for qname in name_list:
                 out[qname] = float(slot)
     return out
+
+
+def _ca_write_calibrated_model(param_id, config: dict, output_dir: str) -> str | None:
+    """Have CA write ``<output_dir>/<prefix>_calibrated.cellml`` and record it in the study
+    manifest, when this CA can (``CVS0DParamID.write_calibrated_model``, CA #650).
+
+    None when it can't or didn't, so the caller's own writer runs."""
+    write = getattr(param_id, "write_calibrated_model", None)
+    cellml_path = config.get("cellml_path")
+    if write is None or not cellml_path or not str(cellml_path).endswith(".cellml"):
+        return None
+    try:
+        path = write(cellml_path=cellml_path, output_dir=output_dir)
+    except Exception as exc:  # noqa: BLE001 - best-effort, the fallback writer follows
+        print(f"warning: CA could not write the calibrated model: {exc}", flush=True)
+        return None
+    return path if path and os.path.isfile(path) else None
 
 
 def _write_calibrated_cellml(config: dict, params: dict, output_dir: str) -> str | None:

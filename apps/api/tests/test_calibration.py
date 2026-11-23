@@ -1314,3 +1314,47 @@ def test_unresolved_baselines_refuse_to_pose_as_physical_values(requires_params_
                            "targets": ["a/C"], "baselines": None}]}
     with pytest.raises(ValueError, match="baselines"):
         cr._expanded_best_fit(info, [["a/C"]], [1.5])
+
+
+# --- the calibrated model under CA #650 ------------------------------------------------
+
+def _runner():
+    import calibration_runner
+    return calibration_runner
+
+
+def test_ca_writes_the_calibrated_model_when_it_can(tmp_path):
+    """A CA with ``write_calibrated_model`` writes ``<prefix>_calibrated.cellml`` (and the
+    manifest's ``model``) itself; CUFLynx reports the path it returns."""
+    out = tmp_path / "lv_calibrated.cellml"
+    seen = {}
+
+    class Engine:
+        def write_calibrated_model(self, cellml_path=None, output_dir=None):
+            seen.update(cellml_path=cellml_path, output_dir=output_dir)
+            out.write_text("<model/>")
+            return str(out)
+
+    got = _runner()._ca_write_calibrated_model(
+        Engine(), {"cellml_path": str(LV_MODEL_PATH)}, str(tmp_path))
+    assert got == str(out)
+    assert seen == {"cellml_path": str(LV_MODEL_PATH), "output_dir": str(tmp_path)}
+
+
+def test_a_ca_without_the_calibrated_model_writer_falls_back_to_cuflynxs_own(tmp_path):
+    runner = _runner()
+    assert runner._ca_write_calibrated_model(
+        object(), {"cellml_path": str(LV_MODEL_PATH)}, str(tmp_path)) is None
+    config = {"cellml_path": str(LV_MODEL_PATH), "file_prefix": "lv"}
+    path = runner._write_calibrated_cellml(config, {"Lotka_Volterra_module/alpha": 0.9},
+                                           str(tmp_path))
+    assert os.path.basename(path) == "lv_calibrated.cellml"
+
+
+def test_a_failing_ca_writer_falls_back(tmp_path):
+    class Engine:
+        def write_calibrated_model(self, **kwargs):
+            raise RuntimeError("boom")
+
+    assert _runner()._ca_write_calibrated_model(
+        Engine(), {"cellml_path": str(LV_MODEL_PATH)}, str(tmp_path)) is None

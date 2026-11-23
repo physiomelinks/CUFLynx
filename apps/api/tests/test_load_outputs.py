@@ -8,6 +8,7 @@ directory unreadable rather than merely unread.
 import csv
 import json
 import os
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -957,3 +958,32 @@ def test_a_run_from_cas_own_scripts_has_its_fitted_model_found(tmp_path):
     # It is a fitted model, but not one carrying CUFLynx's name -- the flag follows the
     # name, and saying "calibrated" for CA's layout would need CA to record that it was.
     assert study["model_is_calibrated"] is False
+
+
+@pytest.mark.unit
+def test_a_run_with_no_input_copies_reads_them_from_the_working_dirs_inputs(tmp_path):
+    """A run in a working dir keeps no obs_data / params_for_id of its own; ``inputs/`` does."""
+    from conftest import RESOURCES_DIR  # noqa: PLC0415
+
+    try:
+        from ca_imports import ca_from, ensure_ca_path
+        ensure_ca_path()
+        store_input = ca_from("utilities.cuflynx_study", "store_input")
+    except Exception:  # noqa: BLE001
+        pytest.skip("this circulatory_autogen has no working-dir inputs/")
+    write_run(tmp_path, "genetic_algorithm_run", chain=False, best=True)
+    store_input(str(tmp_path), "obs_data", str(RESOURCES_DIR / "Lotka_Volterra_obs_data.json"))
+    store_input(str(tmp_path), "params_for_id",
+                str(RESOURCES_DIR / "Lotka_Volterra_params_for_id.csv"))
+
+    study = load_outputs.load_outputs(str(tmp_path))["study"]
+
+    assert "/inputs/obs_data/" in Path(study["obs_data"]).as_posix()
+    assert "/inputs/params_for_id/" in Path(study["params_for_id"]).as_posix()
+
+
+@pytest.mark.unit
+def test_a_run_with_no_input_copies_and_no_inputs_dir_reports_none(tmp_path):
+    write_run(tmp_path, "genetic_algorithm_run", chain=False, best=True)
+    study = load_outputs.load_outputs(str(tmp_path))["study"]
+    assert study["obs_data"] is None and study["params_for_id"] is None
