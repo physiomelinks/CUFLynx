@@ -4951,17 +4951,18 @@ _workflow_view_cache: dict[tuple, dict] = {}
 def _view_key(req) -> tuple | None:
     """What a tab's study depends on: the workflow file, every step's result in its run
     directory (a run, a rerun or a deletion changes them), the CA dir, the tab and whether
-    its inputs come with it. None when there is no run directory to read. (The working dir
-    matters only to an external model's tab, which is not kept.)"""
+    its inputs come with it. A workflow never run has no run directory yet: no results.
+    None when no workflow is open. (The working dir matters only to an external model's
+    tab, which is not kept.)"""
     out = workflow.output_dir
-    if not workflow.path or not out or not os.path.isdir(out):
+    if not workflow.path or not out:
         return None
     try:
         own = os.stat(workflow.path)
     except OSError:
         return None
     results = []
-    for name in sorted(os.listdir(out)):
+    for name in sorted(os.listdir(out)) if os.path.isdir(out) else ():
         for leaf in ("step_result.json", ""):
             path = os.path.join(out, name, leaf) if leaf else os.path.join(out, name)
             if leaf and os.path.isfile(path):
