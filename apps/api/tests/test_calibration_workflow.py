@@ -77,8 +77,10 @@ def _fake_ca(monkeypatch, calls=None, plan_error=None, refuse=None, model_error=
 
     def workflow_model(path, view, output_dir, work_dir, module_library_dirs=None):
         calls.append(("model", view, output_dir))
-        if model_error:
+        if isinstance(model_error, BaseException):
             raise model_error
+        if model_error:
+            model_error()
         return {"view": view, "kind": "step", "model": WORKFLOW["steps"][0]["model"],
                 "step_id": view, "place": "A",
                 "model_path": str(LV_MODEL_PATH), "obs_data_path": str(LV_OBS_DATA_PATH),
@@ -317,6 +319,35 @@ def test_any_other_refusal_stays_a_plain_message(client, monkeypatch, workflow_f
                 json={"path": str(workflow_file), "config_outputs_dir": str(tmp_path)})
     r = client.post("/api/workflow/view", json={"view": "sel"})
     assert r.status_code == 422 and r.json()["detail"] == "no such step"
+
+
+def _ca_parser_exits():
+    """CA's ModelParsers on a units mismatch: print the reason, then exit()."""
+    print("")
+    print("ERROR: units of m3 in the parameters file does not \n"
+          "match with units of dimensionless in module_config.json file \n"
+          "for param Delta_q, exiting \n")
+    exit()
+
+
+def test_ca_exiting_while_it_builds_a_tab_is_that_tab_s_error(
+        client, monkeypatch, workflow_file, tmp_path):
+    """CA's parsers exit() on a bad model: the tab says why, and the app keeps running."""
+    _fake_ca(monkeypatch, model_error=_ca_parser_exits)
+    client.post("/api/workflow/load",
+                json={"path": str(workflow_file), "config_outputs_dir": str(tmp_path)})
+    r = client.post("/api/workflow/view", json={"view": "fit_a"})
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"] == (
+        "ERROR: units of m3 in the parameters file does not match with units of "
+        "dimensionless in module_config.json file for param Delta_q, exiting")
+    assert client.get("/api/health").status_code == 200
+
+
+def test_ca_exiting_without_a_word_is_still_named():
+    import workflow_manager as wm  # noqa: PLC0415
+
+    assert "without saying why" in wm.exit_reason("Running...\n")
 
 
 # ---------------------------------------------------------------------------
