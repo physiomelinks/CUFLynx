@@ -1132,7 +1132,7 @@ const leftTab = ref('params')
 // is opened, so the tab shows each run as a step and the provenance drawn after it.
 watch(
   () => [calib.state.value, sa.state.value, uq.state.value, emu.state.value,
-    iaJob.state.value],
+    iaJob.state.value, reduction.state.value],
   (now, before) => {
     if (anyRunEnded(now, before)) wf.refresh()
   },
@@ -1141,7 +1141,7 @@ watch(
 // A run that was to add a step or start a workflow has started: it is made once, and the
 // panel's next run changes it (a run the server refused leaves the choice as it was).
 for (const [job, kind] of [[calib, 'calibration'], [sa, 'sensitivity'], [uq, 'uq'],
-  [emu, 'emulation'], [iaJob, 'identifiability']]) {
+  [emu, 'emulation'], [iaJob, 'identifiability'], [reduction, 'reduction']]) {
   watch(
     () => job.state.value,
     (state) => {
@@ -2346,6 +2346,8 @@ function onRunReduction(settings) {
       ...sobolFirst,
       ...settings,
       ...runTimes(),
+      // a reduction step of the Sobol step's workflow (or of a Sobol step made first)
+      workflow_target: wf.runTarget('reduction'),
       python_path: pythonPath.value,
       working_dir: workingDir.value.trim() || undefined,
       use_emulator: emu.useEmulator.value,

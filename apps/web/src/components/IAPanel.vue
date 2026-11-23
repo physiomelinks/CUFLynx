@@ -184,6 +184,8 @@ function onRunIA() {
 function applySettings(values) {
   Object.assign(iaValues, values?.ia_options ?? {})
   Object.assign(reductionValues, values?.param_reduction_options ?? {})
+  // a reduction step reduces its Sobol step's run, which the picker then shows
+  if (values?.param_reduction_options?.[SOBOL_RUN_OPTION]) source.value = 'existing'
   if (typeof values?.run_calibration_first === 'boolean') {
     runCalibrationFirst.value = values.run_calibration_first
   }

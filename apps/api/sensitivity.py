@@ -147,8 +147,11 @@ class SensitivityManager:
             os.makedirs(output_dir, exist_ok=True)
             config_path = write_run_config(config, "sa_config.json")
 
-            # Results are read where the runner writes them.
-            job = SensitivityJob(uuid.uuid4().hex, study_read_dir(config, "sensitivity")
+            # Results are read where the runner writes them. A reduction step's Sobol indices
+            # are its Sobol step's (``sobol_dir``), and its report is in its own step dir
+            # (``reduction_dir``).
+            job = SensitivityJob(uuid.uuid4().hex, config.get("sobol_dir")
+                                 or study_read_dir(config, "sensitivity")
                                  or config.get("sa_output_dir") or output_dir)
             job.config_path = config_path
             job.study_step = config.get("study_step")
@@ -158,7 +161,8 @@ class SensitivityManager:
             if job.reduce_only or settings.get("do_param_reduction"):
                 # The Sobol run's directory: where the runner wrote its indices.
                 job.reduction_root = (
-                    (settings.get("param_reduction_options") or {}).get("sensitivity_dir")
+                    config.get("reduction_dir")
+                    or (settings.get("param_reduction_options") or {}).get("sensitivity_dir")
                     or job.output_dir
                 )
             env = runner_launch_env(config.get("python") or self.python)
@@ -223,7 +227,7 @@ class SensitivityManager:
                     job.error = "the parameter reduction wrote no param_reduction.json"
             if finished and job.reduce_only:
                 # Nothing was simulated: the Sobol indices are the run's it reduced.
-                data = ca_run_history.sobol_indices(job.reduction_root) or {
+                data = ca_run_history.sobol_indices(job.output_dir) or {
                     "indices": None, "param_names": [], "output_names": []}
             elif finished:
                 if meta.get("method") == "local" and job.study_step:

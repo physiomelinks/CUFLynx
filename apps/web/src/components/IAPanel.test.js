@@ -159,6 +159,22 @@ describe('IAPanel: a step clicked in the Workflow view', () => {
   })
 })
 
+describe('IAPanel: a reduction step clicked in the Workflow view', () => {
+  it('reduces the Sobol run of the step, with its options', async () => {
+    const wrapper = mountPanel({ sobolRuns: [{ dir: '/w/workflows/study/sobol-1/sensitivity',
+      num_samples: 8, has_samples: true }] })
+    await wrapper.find('[data-testid="pr-source-sobol"]').trigger('change')
+    wrapper.vm.applySettings({ param_reduction_options: { method: 'sobol',
+      sensitivity_dir: '/w/workflows/study/sobol-1/sensitivity' } })
+    await wrapper.vm.$nextTick()
+    await wrapper.find('[data-testid="pr-run"]').trigger('click')
+    const payload = wrapper.emitted('run-reduction')[0][0]
+    expect(payload.source).toBe('existing')
+    expect(payload.param_reduction_options).toMatchObject({
+      method: 'sobol', sensitivity_dir: '/w/workflows/study/sobol-1/sensitivity' })
+  })
+})
+
 describe('IAPanel identifiability analysis', () => {
   it('sends CA\'s ia_options through the UQ runner\'s laplace method', async () => {
     const wrapper = mountPanel()
