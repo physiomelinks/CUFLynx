@@ -8,6 +8,7 @@ directory unreadable rather than merely unread.
 import csv
 import json
 import os
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -977,8 +978,8 @@ def test_a_run_with_no_input_copies_reads_them_from_the_working_dirs_inputs(tmp_
 
     study = load_outputs.load_outputs(str(tmp_path))["study"]
 
-    assert "/inputs/obs_data/" in study["obs_data"]
-    assert "/inputs/params_for_id/" in study["params_for_id"]
+    assert "/inputs/obs_data/" in Path(study["obs_data"]).as_posix()
+    assert "/inputs/params_for_id/" in Path(study["params_for_id"]).as_posix()
 
 
 @pytest.mark.unit
