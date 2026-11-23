@@ -152,6 +152,18 @@ def test_editing_a_declared_file_keeps_everything_else_in_it(ca_study, monkeypat
     assert "SCALE = 2.0" in ca_study["funcs"].read_text()
 
 
+def test_renaming_a_func_in_a_declared_file_replaces_it(ca_study, monkeypatch):
+    monkeypatch.setattr(user_funcs, "_refresh_options", lambda: None)
+    base = str(ca_study["out"])
+    user_funcs.save_user_func(
+        "operation", "ratio",
+        "def mean_ratio(a, b, series_output=False):\n    return np.mean(a) / np.mean(b)\n",
+        base)
+    text = ca_study["funcs"].read_text()
+    assert "def mean_ratio(" in text and "def ratio(" not in text
+    assert "SCALE = 2.0" in text
+
+
 def test_without_a_manifest_funcs_stay_in_the_outputs_directory(tmp_path):
     (tmp_path / "user_funcs").mkdir()
     (tmp_path / "user_funcs" / "operation_funcs_user.py").write_text("def f(x):\n    return x\n")
