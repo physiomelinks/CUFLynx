@@ -300,6 +300,18 @@ def test_a_workflow_opened_builds_its_tabs_in_the_background(
     assert len([c for c in calls if c[0] == "model"]) == before
 
 
+def test_a_workflow_never_run_keeps_its_built_tabs(client, monkeypatch, workflow_file, tmp_path):
+    """No run directory yet: a box is still built once, not on every click (nor thrown
+    away by the background build)."""
+    calls = _fake_ca(monkeypatch)
+    client.post("/api/workflow/load",
+                json={"path": str(workflow_file), "config_outputs_dir": str(tmp_path)})
+    assert not (tmp_path / "workflows" / "demo").exists()
+    for _ in range(2):
+        assert client.post("/api/workflow/view", json={"view": "fit_a"}).status_code == 200
+    assert _models_built(calls) == ["fit_a"]
+
+
 def _models_built(calls):
     return [c[1] for c in calls if c[0] == "model"]
 
