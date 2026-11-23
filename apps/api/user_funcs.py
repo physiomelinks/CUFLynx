@@ -840,20 +840,21 @@ def save_user_func(
     order, sources = _parse_existing(kind, base_dir)
 
     previous_name = (previous_name or "").strip()
-    if previous_name and previous_name != name and previous_name in sources:
-        # Renamed in place: keep its position in the file so the list does not
-        # reshuffle under the user on a rename.
-        order = [name if n == previous_name else n for n in order]
-        del sources[previous_name]
-
     if _is_declared(kind, base_dir):
-        # Not ours to re-render: see _splice.
+        # Not ours to re-render: see _splice. The edited def (renamed or not) is replaced
+        # in place; a new name is appended.
         target = previous_name if previous_name in sources else name
         path = _user_file(kind, base_dir)
         _write_user_file(path, _splice(path, target if target in sources else None, source),
                          base_dir)
         _refresh_options()
         return read_user_funcs(kind, base_dir)
+
+    if previous_name and previous_name != name and previous_name in sources:
+        # Renamed in place: keep its position in the file so the list does not
+        # reshuffle under the user on a rename.
+        order = [name if n == previous_name else n for n in order]
+        del sources[previous_name]
 
     if name not in order:
         order.append(name)
