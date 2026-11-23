@@ -196,6 +196,37 @@ describe('useCalibration', () => {
     vi.useRealTimers()
   })
 
+  it("a stopped run's best-so-far errors arrive after it stops", async () => {
+    vi.useFakeTimers()
+    try {
+      startCalibration.mockResolvedValue({ job_id: 'j4' })
+      getCalibrationStatus
+        .mockResolvedValueOnce({ state: 'running', lines: ['gen 0'], next_offset: 1 })
+        .mockResolvedValueOnce({ state: 'cancelled', lines: ['writing'], next_offset: 2,
+          errors_pending: true, percent_error: null })
+        .mockResolvedValueOnce({ state: 'cancelled', lines: [], next_offset: 2,
+          errors_pending: false, percent_error: [12.5], std_error: [1.5],
+          error_labels: ['x_max'] })
+      const c = useCalibration({ intervalMs: 10 })
+      await c.start('m1', {})
+      await c.cancel()
+      expect(c.state.value).toBe('cancelled')
+      expect(c.percentError.value).toBe(null)
+      await vi.advanceTimersByTimeAsync(15)
+      expect(c.percentError.value).toBe(null) // still being written
+      await vi.advanceTimersByTimeAsync(15)
+      expect(c.percentError.value).toEqual([12.5])
+      expect(c.stdError.value).toEqual([1.5])
+      expect(c.errorLabels.value).toEqual(['x_max'])
+      expect(c.lines.value).toEqual(['gen 0', 'writing'])
+      expect(c.state.value).toBe('cancelled')
+      await vi.advanceTimersByTimeAsync(50)
+      expect(getCalibrationStatus).toHaveBeenCalledTimes(3) // and then it stops
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   // Regression: when calibration finishes, the best-fit values must reach the
   // sliders. App.vue does this with a watcher on `state` that calls
   // applyBestParams once done. This only works if poll() sets `bestParams`

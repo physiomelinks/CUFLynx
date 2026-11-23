@@ -556,6 +556,12 @@ class CalibrationJob:
         self.study_step: dict | None = None
         # Where the calibrated CellML is (the step dir for a workflow step).
         self.model_dir: str = output_dir
+        # The run's config, so a stopped run's error vectors can be written from it.
+        self.config: dict = {}
+        # A stopped run whose best-so-far error vectors are still being written; the
+        # process writing them.
+        self.errors_pending = False
+        self.errors_proc: subprocess.Popen | None = None
         self.lock = threading.Lock()
 
 
@@ -572,8 +578,9 @@ class CalibrationManager:
         with self._lock:
             job = self._job
             self._job = None
-        if job and job.proc and job.proc.poll() is None:
-            job.proc.terminate()
+        for proc in (job.proc, job.errors_proc) if job else ():
+            if proc and proc.poll() is None:
+                proc.terminate()
 
     @property
     def busy(self) -> bool:
@@ -636,6 +643,10 @@ class CalibrationManager:
         with self._lock:
             if self.busy:
                 raise RuntimeError("a calibration job is already running")
+            previous = self._job
+            if previous and previous.errors_proc and previous.errors_proc.poll() is None:
+                # a new run removes the stopped one's results; its errors are not wanted now
+                previous.errors_proc.terminate()
             output_dir = config["output_dir"]
             os.makedirs(output_dir, exist_ok=True)
             # A workflow step's results are read from its param_id dir, which CA empties
@@ -653,6 +664,7 @@ class CalibrationManager:
             )
             job.config_path = config_path
             job.study_step = config.get("study_step")
+            job.config = dict(config)
             # Both halves of the calibrated model's filename are known here, so
             # the path never has to be round-tripped back from the runner. CA names a
             # workflow step's <step>_calibrated.cellml, in the step dir.
@@ -697,6 +709,52 @@ class CalibrationManager:
             # dir, since the cleanup has already happened.
             clear_run_config(job.config_path)
             self._finalize(job, code)
+            if job.state == "cancelled":
+                self._stopped_errors(job)
+
+    def _read_errors(self, job: CalibrationJob) -> None:
+        errors = ca_run_history.error_vectors(job.output_dir)
+        with job.lock:
+            job.percent_error = errors["percent_error"]
+            job.std_error = errors["std_error"]
+            job.error_labels = errors["error_labels"]
+
+    def _stopped_errors(self, job: CalibrationJob) -> None:
+        """The error vectors of a stopped run's best so far. Stopping terminates the runner,
+        so CA never gets to write them (it does on an interrupt it sees, and on a finished
+        run): the runner is run again in ``best_fit_errors_only`` mode, which rebuilds the
+        run's CA object and has it write them from ``best_param_vals.npy``. ``errors_pending``
+        stays set until then, so the panel waits for them."""
+        try:
+            if job.best_params is None or job.study_step:
+                # nothing was saved to write them from; or a study-workflow step, whose
+                # config is the workflow runner's, not one a CA object can be built from
+                return
+            if not ca_run_history.has_error_vectors(job.output_dir, job.started_at):
+                config = {**job.config, "best_fit_errors_only": True, "num_cores": 1}
+                path = write_run_config(config, "calib_errors_config.json")
+                python = config.get("python") or self.python
+                try:
+                    proc = subprocess.Popen(
+                        runner_command(python, self.runner_path, path),
+                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                        bufsize=1, env=runner_launch_env(python),
+                    )
+                    job.errors_proc = proc
+                    assert proc.stdout is not None
+                    for line in proc.stdout:
+                        with job.lock:
+                            job.lines.append(line.rstrip("\n"))
+                    proc.wait()
+                finally:
+                    clear_run_config(path)
+            if ca_run_history.has_error_vectors(job.output_dir, job.started_at):
+                self._read_errors(job)
+        except Exception as exc:  # noqa: BLE001 - the stopped run stands without them
+            with job.lock:
+                job.lines.append(f"warning: the best-so-far error vectors were not written: {exc}")
+        finally:
+            job.errors_pending = False
 
     def _finalize(self, job: CalibrationJob, code: int) -> None:
         with job.lock:
@@ -762,6 +820,8 @@ class CalibrationManager:
                 "std_error": job.std_error,
                 "error_labels": job.error_labels,
                 "validation": job.validation,
+                # a stopped run's error vectors are still being written: poll again
+                "errors_pending": job.errors_pending,
                 "error": job.error,
                 "warning": job.warning,
                 "study_step": job.study_step,
@@ -787,6 +847,8 @@ class CalibrationManager:
         with job.lock:
             if job.state == "running":
                 job.state = "cancelled"
+                # its best-so-far error vectors follow (_stopped_errors)
+                job.errors_pending = True
                 if job.proc and job.proc.poll() is None:
                     job.proc.terminate()
         return True

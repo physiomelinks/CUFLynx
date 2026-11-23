@@ -135,18 +135,24 @@ def _apply_start_point(param_id, values: dict, source_label: str) -> None:
         print(f"warning: could not apply {source_label} start point: {exc}", flush=True)
 
 
-def run(config: dict) -> dict:
+def _param_id_class():
     _ensure_ca_on_path()
     from ca_imports import ca_from  # noqa: E402 (shipped into runners/ too)
+
+    return ca_from("param_id.paramID", "CVS0DParamID")
+
+
+def _build_param_id(config: dict, *, announce: bool = True):
+    """CA's ``CVS0DParamID`` for this run's config: the calibration ``run`` makes, and the
+    object a stopped run's error vectors are written from (:func:`write_best_fit_errors`),
+    which must be the same so its output directory and observables are the run's."""
     from local_sensitivity import resolve_gradient_method  # noqa: E402
 
-    from obs_data import prediction_items_of, with_ca_obs_path  # noqa: E402 (runners/ too)
+    from obs_data import with_ca_obs_path  # noqa: E402 (runners/ too)
 
-    CVS0DParamID = ca_from("param_id.paramID", "CVS0DParamID")
+    CVS0DParamID = _param_id_class()
 
-    # The prediction_items as the user wrote them, held-out data included: the CA
-    # below may only be shown the document without it (obs_data.for_ca).
-    prediction_items = prediction_items_of(_read_json(config["obs_path"]))
+    # CA may only be shown the obs_data without its held-out data (obs_data.for_ca)
     config = with_ca_obs_path(config)
 
     settings = config.get("settings", {})
@@ -175,25 +181,27 @@ def run(config: dict) -> dict:
 
     optimiser_options = _optimiser_options(settings, seed)
 
-    print(
-        f"Starting {settings.get('param_id_method', 'genetic_algorithm')} "
-        f"calibration ({optimiser_options.get('num_calls_to_function', '?')} max evals)",
-        flush=True,
-    )
+    if announce:
+        print(
+            f"Starting {settings.get('param_id_method', 'genetic_algorithm')} "
+            f"calibration ({optimiser_options.get('num_calls_to_function', '?')} max evals)",
+            flush=True,
+        )
 
     emulator_kwargs = emulator_config.engine_kwargs(config)
     note = emulator_config.describe(config)
-    if note:
+    if note and announce:
         print(note, flush=True)
 
     dt = float(settings.get("dt", 0.01))
     # What the solve is configured with, said once: a study's adopted user_inputs
     # (or Settings) decide these, and a run log that cannot show them leaves "was my
     # MaximumStep used?" unanswerable.
-    print(f"Solver: {solver_info.get('solver')}, dt = {dt:g}, solver_info = "
-          f"{json.dumps(solver_info, sort_keys=True)}", flush=True)
+    if announce:
+        print(f"Solver: {solver_info.get('solver')}, dt = {dt:g}, solver_info = "
+              f"{json.dumps(solver_info, sort_keys=True)}", flush=True)
 
-    param_id = CVS0DParamID(
+    return CVS0DParamID(
         model_path=config["model_path"],
         model_type=model_type,
         param_id_method=settings.get("param_id_method", "genetic_algorithm"),
@@ -214,6 +222,36 @@ def run(config: dict) -> dict:
         cost_funcs_external_path=config.get("cost_funcs_external_path"),
         **emulator_kwargs,
     )
+
+
+def write_best_fit_errors(config: dict) -> dict:
+    """The error vectors of a calibration that was stopped before it wrote them: CA's
+    ``save_best_fit_errors`` on an object rebuilt from the run's config, at the run's
+    ``best_param_vals.npy`` (its best so far). A libcuflynx without it writes nothing."""
+    if not hasattr(_param_id_class(), "save_best_fit_errors"):
+        print("This libcuflynx does not write a stopped calibration's error vectors.",
+              flush=True)
+        return {"rank": 0, "errors": None}
+    print("Writing the best-so-far fit's error per observable", flush=True)
+    param_id = _build_param_id(config, announce=False)
+    paths = param_id.save_best_fit_errors()
+    if paths is None and getattr(param_id, "rank", 0) == 0:
+        print("The stopped calibration saved no best fit, so it has no errors.", flush=True)
+    return {"rank": getattr(param_id, "rank", 0), "errors": paths}
+
+
+def run(config: dict) -> dict:
+    if config.get("best_fit_errors_only"):
+        return write_best_fit_errors(config)
+    from obs_data import prediction_items_of  # noqa: E402 (runners/ too)
+
+    settings = config.get("settings", {})
+    output_dir = config["output_dir"]
+    # The prediction_items as the user wrote them, held-out data included: the CA
+    # object is only shown the document without it (obs_data.for_ca).
+    prediction_items = prediction_items_of(_read_json(config["obs_path"]))
+    emulated = bool(emulator_config.engine_kwargs(config))
+    param_id = _build_param_id(config)
 
     # Gradient descent (sp_minimize) starts from param_init, which CA seeds from the
     # model's built-in initial values. The user can instead start from a chosen point
@@ -238,7 +276,7 @@ def run(config: dict) -> dict:
     # The best fit against the obs_data's held-out data, if it carries any.
     # Rank 0 only, like everything CA writes after a run.
     if getattr(param_id, "rank", 0) == 0:
-        _validate_held_out(param_id, prediction_items, bool(emulator_kwargs))
+        _validate_held_out(param_id, prediction_items, emulated)
 
     # Under mpiexec every rank runs this script; only rank 0 holds the
     # authoritative best fit and writes the results (mirrors param_id_run_script).
@@ -416,22 +454,25 @@ def _write_calibrated_cellml(config: dict, params: dict, output_dir: str) -> str
 
 
 def _generate_error_vectors(param_id, output_dir: str) -> dict:
-    """Run circulatory_autogen's post-calibration plotting to produce the
-    per-observable percent/std error vectors, then load them.
+    """Load the best fit's per-observable percent/std error vectors.
 
-    Mirrors plot_param_id_script (simulate_with_best_param_vals -> plot_outputs),
-    which writes ``percent_error_vec.npy`` / ``std_error_vec.npy`` to output_dir.
+    A libcuflynx with ``save_best_fit_errors`` writes them itself when ``run`` ends
+    (``percent_error_vec.npy``, ``std_error_vec.npy``, ``error_vec_names.npy``), from one
+    simulation at the best fit and without figures. An older one writes them only from
+    its plotting, so for it this runs plot_param_id_script's steps
+    (simulate_with_best_param_vals -> plot_outputs) first.
     Returns ``{"percent_error", "std_error", "error_labels"}`` on rank 0 (values
-    may be None when plotting is unavailable); ``{}`` on other ranks. Best-effort:
-    a plotting failure must not fail the calibration.
+    may be None when they could not be made); ``{}`` on other ranks. Best-effort:
+    a failure here must not fail the calibration.
     """
     import numpy as np
 
-    try:
-        param_id.simulate_with_best_param_vals()
-        param_id.plot_outputs()
-    except Exception as exc:  # noqa: BLE001 - plotting is best-effort
-        print(f"warning: post-calibration error plots skipped: {exc}", flush=True)
+    if not hasattr(param_id, "save_best_fit_errors"):
+        try:
+            param_id.simulate_with_best_param_vals()
+            param_id.plot_outputs()
+        except Exception as exc:  # noqa: BLE001 - plotting is best-effort
+            print(f"warning: post-calibration error plots skipped: {exc}", flush=True)
 
     if getattr(param_id, "rank", 0) != 0:
         return {}
@@ -531,7 +572,8 @@ def main(argv: list[str]) -> int:
         return 1
     # Only rank 0 reports completion (avoids duplicate markers under mpiexec).
     if result.get("rank", 0) == 0:
-        print(f"best cost: {result['cost']}", flush=True)
+        if "cost" in result:
+            print(f"best cost: {result['cost']}", flush=True)
         print(DONE_MARKER, flush=True)
     return 0
 

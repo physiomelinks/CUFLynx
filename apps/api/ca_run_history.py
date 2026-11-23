@@ -316,6 +316,21 @@ def error_vectors(output_dir: str) -> dict:
     }
 
 
+def has_error_vectors(output_dir: str, newer_than: float | None = None) -> bool:
+    """Whether the run's best-fit error vectors are written (``percent_error_vec.npy``
+    in :func:`find_run_dir`), and since ``newer_than`` (the run's start, with
+    :func:`has_results`' second of slack): an older libcuflynx leaves an earlier run's
+    vectors in place when a run starts."""
+    run_dir = find_run_dir(output_dir)
+    path = os.path.join(run_dir, "percent_error_vec.npy") if run_dir else None
+    if not path or not os.path.isfile(path):
+        return False
+    try:
+        return newer_than is None or os.path.getmtime(path) >= newer_than - 1.0
+    except OSError:
+        return False
+
+
 #: The suffix CUFLynx's runner gives a calibrated model. **The one definition.**
 #: It was spelled out in four places -- the runner that writes it, the reader
 #: below, the loader that hunts for one, and the loader's prefix parser -- which
