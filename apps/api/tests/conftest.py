@@ -162,6 +162,26 @@ def requires_ca():
 
 
 @pytest.fixture
+def requires_ca_operations():
+    """For assertions about CA's *operation registry*, not just its parser.
+
+    Heavier than ``requires_ca``, and the difference matters: CA's parser imports
+    with numpy alone, but ``operation_funcs_user`` does ``from scipy.signal import
+    find_peaks`` at module level. On an install without scipy -- the backend unit
+    CI tier is one -- the parser loads, ``requires_ca`` passes, and the registry
+    that merges user funcs never does, so the options fall back to a built-in list
+    that can never contain an installed operation. That made a correct feature look
+    broken on every platform in that tier.
+    """
+    import obs_options
+
+    obs_options.reset_cache()
+    if obs_options.get_operation_funcs() is None:
+        pytest.skip("circulatory_autogen's operation registry is not importable "
+                    "here (scipy missing?); user operations cannot be merged")
+
+
+@pytest.fixture
 def requires_easyml():
     """For the EasyML reader, which is circulatory_autogen's alone.
 

@@ -29,11 +29,13 @@ obs_data, params_for_id, and no editor state, because CUFLynx has none to invent
 from __future__ import annotations
 
 import io
+import json
 import zipfile
 from pathlib import Path
 from xml.sax.saxutils import quoteattr
 
 import omex_import
+import study_manifest
 from calibrated_model import calibrated_cellml
 from params_for_id import PARAM_COMPONENTS
 
@@ -61,6 +63,7 @@ _FORMATS_BY_SUFFIX = {
     ".json": "application/json",
     ".csv": "text/csv",
     ".mmt": "http://purl.org/NET/mediatypes/text/x-myokit",
+    ".py": "text/x-python",
 }
 
 
@@ -158,6 +161,52 @@ def _replace_member(
         entries.append(_entry_for(new_name))
 
 
+def _final_member(parts, role, new_name, new_bytes, members):
+    """The archive member that ends up holding ``role``, or None."""
+    if new_bytes is not None and new_name in members:
+        return new_name
+    existing = (parts["roles"][role] or [None])[0] if parts else None
+    return existing if existing in members else None
+
+
+def _embed_study(members, entries, parts, study, funcs, model_member, obs_member,
+                 params_member) -> None:
+    """Write the study manifest and the user funcs into the archive.
+
+    Results do not travel -- ``runs``, ``sensitivity``, ``emulator`` and ``study_dir``
+    describe directories on one machine -- so they are dropped, and the paths that remain
+    are archive members, which is what ``omex_import`` resolves them against.
+    """
+    roles = parts["roles"] if parts else {}
+    old_funcs = roles.get("user_funcs") or {}
+    func_members = {}
+    for kind, (filename, blob) in sorted(funcs.items()):
+        name = f"user_funcs/{filename}"
+        _replace_member(members, entries, old_funcs.get(kind), name, blob)
+        func_members[kind] = name
+    # A func the study no longer has must not come back from the source archive.
+    for kind, name in old_funcs.items():
+        if kind not in func_members:
+            members.pop(name, None)
+            entries[:] = [e for e in entries if _relative(e["location"]) != name]
+
+    dropped = {"runs", "sensitivity", "emulator", "study_dir", "base_model", "user_inputs",
+               "manifest_path", "missing"}
+    record = {"schema": study_manifest.SCHEMA}
+    record.update({k: v for k, v in study.items() if v is not None and k not in dropped})
+    record.update({"model": model_member, "obs_data": obs_member,
+                   "params_for_id": params_member, "user_funcs": func_members})
+    record = {k: v for k, v in record.items() if v not in (None, {}, [])}
+
+    prefix = study.get("study_name") or study.get("file_prefix") or "study"
+    name = f"{prefix}{study_manifest.MANIFEST_SUFFIX}"
+    old = (roles.get("study") or [None])[0]
+    _replace_member(members, entries, old, name, (json.dumps(record, indent=2) + "\n").encode())
+    for entry in entries:
+        if _relative(entry["location"]) == name:
+            entry["format"] = study_manifest.OMEX_FORMAT
+
+
 def build_archive(
     *,
     cellml_text: str,
@@ -168,11 +217,22 @@ def build_archive(
     params_bytes: bytes | None = None,
     params_name: str = "params_for_id.json",
     model_name: str = DEFAULT_MODEL_NAME,
+    study: dict | None = None,
+    funcs: dict[str, tuple[str, bytes]] | None = None,
 ) -> tuple[bytes, dict]:
     """Return ``(omex_bytes, report)``.
 
     ``report`` carries the substitution outcome (``updated`` / ``unresolved`` /
     ``outside_parameters``) and ``members``, the names written.
+
+    ``study`` (``file_prefix``, ``study_name``, ``solver_info``, ...) and ``funcs``
+    (``{kind: (filename, bytes)}``) are the two things a study needs that no other member
+    carries: the settings it is solved with and the user funcs its obs_data and
+    params_for_id name. They travel as a study manifest -- the same document circulatory
+    _autogen writes beside a study's results, declared ``study_manifest.OMEX_FORMAT`` --
+    with its paths pointing at the archive's own members, plus the func files under
+    ``user_funcs/``. Both are CUFLynx's own, so unlike PhLynx's members they are replaced
+    on the way out, never carried through stale.
     """
     new_cellml, report = substitute_values(cellml_text, values or {})
 
@@ -240,6 +300,12 @@ def build_archive(
     # obs_data: added when the archive has none, never replaced when it has one.
     if obs_bytes is not None and not (parts and parts["roles"]["obs"]):
         _replace_member(members, entries, None, obs_name, obs_bytes)
+
+    if study is not None:
+        _embed_study(members, entries, parts, study, funcs or {}, model_out,
+                     obs_member=_final_member(parts, "obs", obs_name, obs_bytes, members),
+                     params_member=_final_member(parts, "params", params_name, params_bytes,
+                                                 members))
 
     report = {
         "updated": report.get("updated", []),
