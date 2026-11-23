@@ -267,6 +267,17 @@ export async function uploadOmex(file, outputDir = '') {
   return data
 }
 
+// Adopt a libcuflynx user_inputs.yaml's solver settings (solver, solver_info,
+// dt). Returns the config payload plus `solver_settings` and `warnings`.
+export async function uploadUserInputs(file, outputDir = '') {
+  const form = new FormData()
+  form.append('file', file)
+  const { data } = await axios.post(url('/api/user_inputs/upload'), form, {
+    params: outputDir ? { output_dir: outputDir } : {},
+  })
+  return data
+}
+
 // PhLynx hands a study to a running CUFLynx by posting it to the inbox (#287).
 // It is *staged*, not imported: CORS stops a page reading our responses, not
 // sending requests, so the confirmation in the UI is the security control and
