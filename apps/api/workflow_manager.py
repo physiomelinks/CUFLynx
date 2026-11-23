@@ -182,14 +182,31 @@ def _ca_call(name: str, *args, **kwargs):
     """
     from workflow_runner import unset_parameters  # noqa: PLC0415
 
+    from engine import _tee_stdout  # noqa: PLC0415
+
     fn = ca_workflow(name)
     try:
-        return fn(*args, **kwargs)
+        with _tee_stdout() as printed:
+            return fn(*args, **kwargs)
     except (ValueError, FileNotFoundError, KeyError) as exc:
         unset = unset_parameters(exc)
         if unset:
             raise UnsetParameters(str(exc), **unset) from exc
         raise WorkflowError(str(exc)) from exc
+    except SystemExit as exc:
+        # CA's model parsers print the reason and call exit(): in the server that would
+        # stop the whole app, so it is the request's error instead
+        raise WorkflowError(exit_reason(printed.getvalue())) from exc
+
+
+def exit_reason(printed: str) -> str:
+    """What CA printed before it called ``exit()``: from its last ``ERROR`` on, on one
+    line, or a general sentence when it printed none."""
+    start = printed.rfind("ERROR")
+    if start < 0:
+        return "circulatory_autogen stopped while building the model, without saying why"
+    reason = " ".join(printed[start:].split())
+    return reason[:600] + ("..." if len(reason) > 600 else "")
 
 
 def _takes(fn, name: str) -> bool:
