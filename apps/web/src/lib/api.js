@@ -892,6 +892,21 @@ export async function getWorkflow() {
   return data
 }
 
+/**
+ * The background build of the open workflow's tabs: {state: building | paused | done |
+ * declined, left, seconds_per_box, predicted_s, budget_s}, or null.
+ */
+export async function getWorkflowWarmUp() {
+  const { data } = await axios.get(url('/api/workflow/warm-up'))
+  return data.warm_up ?? null
+}
+
+/** Build every tab of the open workflow ahead (everything), or none. */
+export async function buildWorkflowTabs(everything) {
+  const { data } = await axios.post(url('/api/workflow/warm-up'), { everything })
+  return data.warm_up ?? null
+}
+
 /** The working dir's workflows ({path, name, steps, modified}, latest first) and the open one. */
 export async function listWorkflows(workingDir = '') {
   const { data } = await axios.get(url('/api/workflow/list'), {

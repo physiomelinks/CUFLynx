@@ -5002,9 +5002,14 @@ def _open_workflow_file(path: str, outputs_dir: str) -> dict:
 def workflow_describe() -> dict:
     """The open workflow: its file, which parameter of each step lands where, and
     where each step stands in the run directory."""
-    described = _workflow_http(workflow.describe)
-    _warm_views()
-    return described
+    return _with_warm_up(_workflow_http(workflow.describe))
+
+
+def _with_warm_up(described: dict) -> dict:
+    """A described workflow, its tabs being built in the background (:func:`_warm_views`),
+    with what that build is doing as ``warm_up`` when it is doing anything."""
+    warm_up = _warm_views()
+    return {**described, "warm_up": warm_up} if warm_up else described
 
 
 @app.post("/api/workflow/load")
@@ -5022,8 +5027,7 @@ def workflow_load(req: WorkflowLoadRequest) -> dict:
         described = _workflow_http(workflow.describe)
     else:
         described = _open_workflow_file(req.path.strip(), outputs_dir)
-    _warm_views()
-    return described
+    return _with_warm_up(described)
 
 
 @app.post("/api/workflow/upload")
@@ -5135,9 +5139,7 @@ def _reopen_edited(path: str) -> dict:
     loaded = _workflow_http(workflow.load, path, "", list(_module_library_dirs))
     workflow.output_dir = output_dir or workflow_manager.default_output_dir(
         study_workflow.working_dir_of(path) or "", loaded["name"], str(UPLOAD_DIR))
-    described = _workflow_http(workflow.describe)
-    _warm_views()
-    return described
+    return _with_warm_up(_workflow_http(workflow.describe))
 
 
 @app.get("/api/workflow/edge")
@@ -5492,40 +5494,126 @@ def _generate_view(req: WorkflowViewRequest, key: tuple | None) -> dict:
 _warm_thread: threading.Thread | None = None
 #: Step kinds with no model of their own, so no tab to build.
 _NO_TAB_KINDS = ("reduction", "set", "combine")
+#: Seconds the warm-up may spend without asking. Past it, the warm-up builds one box,
+#: predicts the rest from it and stops; the user then builds all, or clicks the boxes
+#: wanted. A 240-instance module array takes ~35 s a box, the enterocyte workflow ~3 s.
+WARM_BUDGET_S = float(os.environ.get("CUFLYNX_WARM_BUDGET_S", "30"))
+#: The warm-up of the open workflow: its ``path``, ``state`` (building, paused, done,
+#: declined), whether the user asked for ``everything``, and the ``seconds_per_box`` seen.
+_warm: dict = {}
 
 
-def _warm_views() -> None:
-    """Build every box's study of the open workflow in the background, once, so a click on
-    a box finds it ready (CA generates a step's model in seconds). One at a time, through
-    the same lock a click takes; it stops when another workflow is opened, and a box already
-    built costs nothing. Started whenever the workflow is described."""
+def _tab_views(path: str) -> list[str]:
+    """The tabs of a workflow that have a model to build: its steps', then the target."""
+    steps = study_workflow.read_raw(path).get("steps") or []
+    views = [s["id"] for s in steps if isinstance(s, dict) and s.get("id")
+             and not s.get("on_target")
+             and (s.get("kind") or "calibration") not in _NO_TAB_KINDS]
+    return [*views, "target"]
+
+
+def _view_built(view: str) -> bool:
+    key = _view_key(WorkflowViewRequest(view=view))
+    cached = _workflow_view_cache.get(key) if key else None
+    return bool(cached and cached["model_id"] in _models)
+
+
+def _warm_status() -> dict | None:
+    """What the warm-up of the open workflow is doing, the tabs not built yet (``left``),
+    and how long they would take (``predicted_s``) once one box has been timed."""
+    if not _warm or _warm.get("path") != workflow.path:
+        return None
+    try:
+        left = [v for v in _tab_views(_warm["path"]) if not _view_built(v)]
+    except (OSError, ValueError):
+        left = []
+    per_box = _warm.get("seconds_per_box")
+    return {"state": _warm["state"], "left": left, "seconds_per_box": per_box,
+            "predicted_s": round(per_box * len(left), 1) if per_box else None,
+            "budget_s": WARM_BUDGET_S}
+
+
+def _warm_views(everything: bool = False) -> dict | None:
+    """Build every box's study of the open workflow in the background, so a click on a box
+    finds it ready. One at a time, through the same lock a click takes; it stops when
+    another workflow is opened, and a box already built costs nothing. Started whenever
+    the workflow is described.
+
+    The first box built is timed. When the rest would take longer than
+    :data:`WARM_BUDGET_S`, the warm-up stops there (``paused``) and builds no more until
+    the user asks for ``everything`` (``POST /api/workflow/warm-up``). Returns
+    :func:`_warm_status`.
+    """
     global _warm_thread
     if os.environ.get("CUFLYNX_WARM_VIEWS", "1") == "0":  # off: the test suite
-        return
-    if _warm_thread is not None and _warm_thread.is_alive():
-        return
+        return None
     if not workflow.loaded or not workflow.output_dir:
-        return
+        return None
     path = workflow.path
+    if _warm.get("path") != path:
+        _warm.clear()
+        _warm.update(path=path, state="building", everything=False, seconds_per_box=None)
+    if everything:
+        _warm["everything"] = True
+    elif _warm["state"] in ("paused", "declined"):
+        return _warm_status()
+    if _warm_thread is not None and _warm_thread.is_alive():
+        return _warm_status()
+    _warm["state"] = "building"
 
     def warm():
         try:
-            steps = study_workflow.read_raw(path).get("steps") or []
+            views = _tab_views(path)
         except (OSError, ValueError):
+            _warm["state"] = "done"
             return
-        views = [s["id"] for s in steps if isinstance(s, dict) and s.get("id")
-                 and not s.get("on_target")
-                 and (s.get("kind") or "calibration") not in _NO_TAB_KINDS]
-        for view in [*views, "target"]:
+        times: list[float] = []
+        for i, view in enumerate(views):
             if workflow.path != path:
                 return
+            if _view_built(view):
+                continue
+            if times and not _warm["everything"]:
+                left = [v for v in views[i:] if not _view_built(v)]
+                if sum(times) / len(times) * len(left) > WARM_BUDGET_S:
+                    _warm["state"] = "paused"
+                    return
+            started = time.monotonic()
             try:
                 _workflow_view(WorkflowViewRequest(view=view))
             except Exception:  # noqa: BLE001  (a box that cannot load says so when clicked)
                 continue
+            times.append(time.monotonic() - started)
+            _warm["seconds_per_box"] = round(sum(times) / len(times), 2)
+        _warm["state"] = "done"
 
     _warm_thread = threading.Thread(target=warm, name="workflow-view-warm-up", daemon=True)
     _warm_thread.start()
+    return _warm_status()
+
+
+class WarmUpRequest(BaseModel):
+    # True: build every tab ahead, however long it takes. False: build none ahead (a
+    # click still builds its own box).
+    everything: bool
+
+
+@app.get("/api/workflow/warm-up")
+def workflow_warm_up_status() -> dict:
+    """What the background build of the open workflow's tabs is doing (:func:`_warm_status`)."""
+    return {"warm_up": _warm_status()}
+
+
+@app.post("/api/workflow/warm-up")
+def workflow_warm_up(req: WarmUpRequest) -> dict:
+    """Build every tab of the open workflow ahead, or none."""
+    if not workflow.loaded:
+        raise HTTPException(status_code=409, detail="no workflow is open")
+    if req.everything:
+        return {"warm_up": _warm_views(everything=True)}
+    if _warm.get("path") == workflow.path:
+        _warm["state"] = "declined"
+    return {"warm_up": _warm_status()}
 
 
 def _view_inputs(view: dict, prefix: str) -> tuple:

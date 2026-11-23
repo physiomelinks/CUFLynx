@@ -65,6 +65,23 @@ describe('WorkflowPanel', () => {
     expect(panel.emitted('select')).toEqual([['screen']])
   })
 
+  it('asks before building the rest of a slow workflow\'s tabs', async () => {
+    const warmUp = { state: 'paused', left: ['rest', 'target'], seconds_per_box: 35,
+                     predicted_s: 70, budget_s: 30 }
+    const wrapper = mountPanel({ described, tabs, warmUp })
+    const note = wrapper.find('[data-testid="workflow-warm-up"]')
+    expect(note.text()).toContain('about 35 s')
+    expect(note.text()).toContain('2 not built yet would take about 70 s')
+    await wrapper.find('[data-testid="workflow-warm-up-all"]').trigger('click')
+    await wrapper.find('[data-testid="workflow-warm-up-none"]').trigger('click')
+    expect(wrapper.emitted('build-tabs')).toEqual([[true], [false]])
+
+    await wrapper.setProps({ warmUp: { ...warmUp, predicted_s: 400 } })
+    expect(wrapper.find('[data-testid="workflow-warm-up"]').text()).toContain('about 7 min')
+    await wrapper.setProps({ warmUp: { ...warmUp, state: 'declined' } })
+    expect(wrapper.find('[data-testid="workflow-warm-up"]').exists()).toBe(false)
+  })
+
   it('exports the workflow as an archive, offered as a plain link', async () => {
     const panel = mountPanel({ described, tabs, workingDir: '/out' })
     await panel.find('[data-testid="workflow-export"]').trigger('click')

@@ -1,4 +1,4 @@
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { runTargetFor, targetAfterRun } from '../lib/workflowTarget'
 import {
   cancelWorkflow,
@@ -16,11 +16,13 @@ import {
   combineWorkflowSteps,
   chooseWorkflowParameters,
   addWorkflowDraft,
+  buildWorkflowTabs,
   deleteWorkflowDraft,
   errorMessage,
   followWorkingDir as postWorkingDir,
   getWorkflow,
   getWorkflowStatus,
+  getWorkflowWarmUp,
   loadWorkflow,
   openWorkflowView,
   runWorkflow,
@@ -443,6 +445,32 @@ export function useWorkflow(options = {}) {
     }
   }
 
+  // The background build of the tabs (GET /api/workflow/warm-up), polled while it builds.
+  // Paused: the rest would take longer than the server builds unasked (buildTabs).
+  const warmUp = ref(null)
+  let warmTimer = null
+  function followWarmUp(status) {
+    warmUp.value = status ?? null
+    if (warmTimer) clearTimeout(warmTimer)
+    warmTimer = null
+    if (warmUp.value?.state !== 'building') return
+    warmTimer = setTimeout(async () => {
+      warmTimer = null
+      try {
+        followWarmUp(await getWorkflowWarmUp())
+      } catch {
+        // a box that failed says so when clicked; the build carries on regardless
+      }
+    }, intervalMs * 2)
+  }
+  watch(() => described.value?.warm_up, followWarmUp)
+
+  /** Build every tab ahead (true), or none (false: a click still builds its own). */
+  async function buildTabs(everything) {
+    const status = await guarded(() => buildWorkflowTabs(everything))
+    if (status) followWarmUp(status)
+  }
+
   async function cancel() {
     if (!jobId) return
     try {
@@ -622,6 +650,8 @@ export function useWorkflow(options = {}) {
     tabs,
     name,
     provenance,
+    warmUp,
+    buildTabs,
     busy,
     error,
     selected,

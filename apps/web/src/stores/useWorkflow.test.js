@@ -17,6 +17,8 @@ vi.mock('../lib/api', () => ({
   renameWorkflowStep: vi.fn(),
   addWorkflowDraft: vi.fn(),
   drawWorkflowLink: vi.fn(),
+  getWorkflowWarmUp: vi.fn(),
+  buildWorkflowTabs: vi.fn(),
   workflowProvenanceUrl: (name, v) => `/api/workflow/provenance/${name}?v=${v}`,
   unsetParameters: (e) => e?.response?.data?.detail?.unset_parameters ?? null,
   errorMessage: (e) =>
@@ -30,6 +32,8 @@ import {
   renameWorkflowStep,
   addWorkflowDraft,
   drawWorkflowLink,
+  buildWorkflowTabs,
+  getWorkflowWarmUp,
   followWorkingDir,
   getWorkflow,
   getWorkflowStatus,
@@ -330,6 +334,30 @@ describe('useWorkflow', () => {
     expect(wf.jobState.value).toBe('done')
     expect(wf.lines.value).toEqual(['a', 'b'])
     expect(getWorkflow).toHaveBeenCalled()
+    vi.useRealTimers()
+  })
+
+  it('follows the tabs\' build until it pauses, then builds all when asked', async () => {
+    vi.useFakeTimers()
+    const paused = { state: 'paused', left: ['rest', 'target'], seconds_per_box: 35,
+                     predicted_s: 70, budget_s: 30 }
+    loadWorkflow.mockResolvedValueOnce({ ...DESCRIBED, warm_up: { state: 'building', left: [] } })
+    getWorkflowWarmUp.mockResolvedValueOnce(paused)
+    const wf = useWorkflow({ intervalMs: 10 })
+    await wf.open({ path: '/w/calibration_workflow.json' })
+    expect(wf.warmUp.value.state).toBe('building')
+    await vi.advanceTimersByTimeAsync(25)
+    expect(wf.warmUp.value).toEqual(paused)
+    // paused: no more polling
+    await vi.advanceTimersByTimeAsync(100)
+    expect(getWorkflowWarmUp).toHaveBeenCalledTimes(1)
+
+    buildWorkflowTabs.mockResolvedValueOnce({ ...paused, state: 'building' })
+    getWorkflowWarmUp.mockResolvedValueOnce({ ...paused, state: 'done', left: [] })
+    await wf.buildTabs(true)
+    expect(buildWorkflowTabs).toHaveBeenCalledWith(true)
+    await vi.advanceTimersByTimeAsync(25)
+    expect(wf.warmUp.value.state).toBe('done')
     vi.useRealTimers()
   })
 
