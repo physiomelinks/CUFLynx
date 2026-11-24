@@ -299,7 +299,8 @@ def _workflow_route(out: Path, obs: dict) -> dict:
     assert result.get("complete"), result
 
     fit = json.loads((run_dir / "fit" / "step_result.json").read_text())
-    params = {("global/" if c["vessel"] == "global" else f"{c['vessel']}/") + c["param"]:
+    # a calibrated record names its module (CA #716; ``vessel`` on a CA before it)
+    params = {f"{c['module'] if 'module' in c else c['vessel']}/{c['param']}":
               float(c["value"]) for c in fit["calibrated"]}
     flat = sorted((run_dir / "fit" / "model").rglob("*_flat.cellml"))
     assert len(flat) == 1, flat
