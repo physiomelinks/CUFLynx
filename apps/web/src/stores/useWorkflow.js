@@ -132,7 +132,8 @@ export const SOURCE_WORDS = {
 export function selectionWords(selection) {
   if (!selection) return ''
   if (selection.runs_as === 'library_module') {
-    return `runs as ${modelLabel(selection.module)} at ${selection.vessel}`
+    // `place` (CA #716); `vessel` from a CA before it
+    return `runs as ${modelLabel(selection.module)} at ${selection.place ?? selection.vessel}`
   }
   return `runs as the module array of ${(selection.records ?? []).join(', ')}`
 }
@@ -205,8 +206,9 @@ export function workflowTabs(described) {
     sources: Object.keys(SOURCE_WORDS)
       .filter((key) => s[key])
       .map((key) => ({ key, step: s[key] })),
-    // where the step's model sits in the target: a submodule or vessel ('' or none: as is)
-    place: s.place ?? s.submodule ?? s.vessel ?? null,
+    // where the step's model sits in the target: a submodule or module ('' or none: as is);
+    // `vessel` is the key a CA before #716 used for `module`
+    place: s.place ?? s.submodule ?? s.module ?? s.vessel ?? null,
     calibrates: s.calibrates ?? [],
     // CA's plan names every value a step is given ({from_step, model_name, in_step});
     // the file alone only names the steps.
