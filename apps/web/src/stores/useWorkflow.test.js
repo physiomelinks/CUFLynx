@@ -386,7 +386,7 @@ describe('selection steps (PhLynx #492)', () => {
     plan: {
       steps: [
         { id: 'left', model: { select: ['C'] }, calibrates: [], fixed_from: [], priors_from: [],
-          selection: { runs_as: 'library_module', vessel: 'C',
+          selection: { runs_as: 'library_module', place: 'C',
                        module: { module_type: 'lin', version: 'v1', parameterisation: 'base' } } },
         { id: 'right', model: { select: ['D', 'E'] }, calibrates: [], fixed_from: [],
           priors_from: [], selection: { runs_as: 'module_array', records: ['D', 'E'] } },
@@ -401,6 +401,20 @@ describe('selection steps (PhLynx #492)', () => {
     expect(left.detail).toBe('selection · C')
     expect(left.selection).toBe('runs as lin · base at C')
     expect(right.selection).toBe('runs as the module array of D, E')
+  })
+
+  it("names where a step sits by CA #716's keys, and by a CA's before it", () => {
+    const lib = { module_type: 'lin', version: 'v1', parameterisation: 'base' }
+    expect(selectionWords({ runs_as: 'library_module', place: 'C', module: lib }))
+      .toBe('runs as lin · base at C')
+    expect(selectionWords({ runs_as: 'library_module', vessel: 'C', module: lib }))
+      .toBe('runs as lin · base at C')
+    const placed = (step) => workflowTabs({ loaded: true, workflow: {
+      workflow_name: 'w', target: { module_array: 't.json' },
+      steps: [{ id: 's', model: { module_array: 'a.json' }, ...step }] } })[0].place
+    expect(placed({ module: 'heart' })).toBe('heart')
+    expect(placed({ vessel: 'heart' })).toBe('heart')
+    expect(placed({ submodule: 'lv' })).toBe('lv')
   })
 
   it("lists the inputs a calibration step's file names none of", () => {
