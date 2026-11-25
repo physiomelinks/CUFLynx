@@ -107,7 +107,18 @@ const inspectedStep = computed(() => props.steps.find((s) => s.id === inspected.
 // The clicked arrow ({source, target, key, files}) or external figure, or null.
 const clickedEdge = ref(null)
 const clickedFigure = ref(null)
+// The clicked box of values by origin, by id, so it is read again from `origins` after an
+// edit moves a value out of it (an empty box keeps its title while open).
 const clickedOrigin = ref(null)
+const openOrigin = computed(() => {
+  if (!clickedOrigin.value) return null
+  const { id, title, mark } = clickedOrigin.value
+  return (props.origins?.boxes ?? []).find((b) => b.id === id) ?? { id, title, mark, values: [] }
+})
+function onOrigin(id) {
+  const box = (props.origins?.boxes ?? []).find((b) => b.id === id)
+  clickedOrigin.value = box ? { id, title: box.title, mark: box.mark } : null
+}
 
 // An arrow being drawn or changed ({source, target, key, pending}), and why an edit of the
 // chart was refused.
@@ -408,14 +419,18 @@ const alsoDeleted = computed(() => doomed.value.filter((s) => s !== props.pendin
           @open-target="emit('open-step-view', 'target')"
           @edge="(e) => (clickedEdge = e)"
           @figure="(id) => (clickedFigure = figures.find((f) => f.id === id) ?? null)"
-          @origin="(id) => (clickedOrigin = (origins?.boxes ?? []).find((b) => b.id === id) ?? null)"
+          @origin="onOrigin"
         />
         <WorkflowEdgeDetail
           :edge="clickedEdge"
           :figure="clickedFigure"
-          :origin="clickedOrigin"
+          :origin="openOrigin"
+          :boxes="origins?.boxes ?? []"
+          :origin-kinds="origins?.editable && editor ? (origins.origins ?? []) : []"
+          :save-origin="(form) => editor ? editor.setValueOrigin(form) : Promise.resolve('editing is not available')"
           @close="clickedEdge = null; clickedFigure = null; clickedOrigin = null"
           @step="(id) => { clickedOrigin = null; emit('select-step', id) }"
+          @open-origin="onOrigin"
         />
         <WorkflowDraftChoice
           :draft="choosing"

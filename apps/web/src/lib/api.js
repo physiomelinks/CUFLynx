@@ -970,6 +970,18 @@ export async function setWorkflowValues({ draft, entries, point = false }) {
   return data
 }
 
+/**
+ * Record where a value of the workflow's target comes from, in the target's parameters file:
+ * its origin (one of libcuflynx's; '' for not recorded), data reference and reason. Returns
+ * the workflow described again, the value in its origin's box.
+ */
+export async function setWorkflowValueOrigin({ name, origin = '', dataReference = '', reason = '' }) {
+  const { data } = await axios.post(url('/api/workflow/value_origin'), {
+    name, origin: origin || null, data_reference: dataReference, reason,
+  })
+  return data
+}
+
 /** Make a Choose a parameter set by cost box a combine step of the steps drawn into it
  * (CA's combine.method: best_fit or mean). */
 export async function combineWorkflowSteps({ draft, method = 'best_fit' }) {

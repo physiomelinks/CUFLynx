@@ -5849,6 +5849,22 @@ def workflow_write_step_input(req: WorkflowStepInputRequest) -> dict:
     return {"path": path, "workflow": _workflow_http(workflow.describe)}
 
 
+class WorkflowValueOriginRequest(BaseModel):
+    name: str
+    origin: str | None = None  # libcuflynx's parameters_file.ORIGINS; none: not recorded
+    data_reference: str = ""
+    reason: str = ""
+
+
+@app.post("/api/workflow/value_origin")
+def workflow_value_origin(req: WorkflowValueOriginRequest) -> dict:
+    """Record where a value of the target comes from in the target's parameters file, then
+    describe the workflow again, the value in its origin's box."""
+    _workflow_http(workflow.set_value_origin, req.name, req.origin, req.data_reference,
+                   req.reason)
+    return _workflow_http(workflow.describe)
+
+
 @app.post("/api/workflow/run")
 def workflow_run(req: WorkflowRunRequest) -> dict:
     """Run the open workflow -- all of it, from a step, or one step -- with CA."""

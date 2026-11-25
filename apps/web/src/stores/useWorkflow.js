@@ -14,6 +14,7 @@ import {
   placeWorkflowNodes,
   makeWorkflowSweep,
   setWorkflowValues,
+  setWorkflowValueOrigin,
   combineWorkflowSteps,
   chooseWorkflowParameters,
   addWorkflowDraft,
@@ -618,6 +619,8 @@ export function useWorkflow(options = {}) {
   const placeMany = (positions) => layoutEdit(() => placeWorkflowNodes(positions))
   const makeSweep = (form) => layoutEdit(() => makeWorkflowSweep(form))
   const setValues = (form) => layoutEdit(() => setWorkflowValues(form))
+  // where a value of the target comes from (the origin boxes' form)
+  const setValueOrigin = (form) => layoutEdit(() => setWorkflowValueOrigin(form))
   const combine = (form) => layoutEdit(() => combineWorkflowSteps(form))
   const chooseParameters = (form) => layoutEdit(() => chooseWorkflowParameters(form))
 
@@ -652,6 +655,7 @@ export function useWorkflow(options = {}) {
     placeMany,
     makeSweep,
     setValues,
+    setValueOrigin,
     combine,
     chooseParameters,
     described,

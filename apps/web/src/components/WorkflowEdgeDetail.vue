@@ -6,7 +6,7 @@
  * target -- read from CA's records by the server (`/api/workflow/edge`) -- or the files a
  * figure reads and writes.
  */
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import Dialog from 'primevue/dialog'
 import { errorMessage, getWorkflowEdge } from '../lib/api'
 import WorkflowEdgeBody from './WorkflowEdgeBody.vue'
@@ -16,12 +16,63 @@ const props = defineProps({
   edge: { type: Object, default: null },
   // The clicked external figure ({id, description, command, reads, writes}), or null.
   figure: { type: Object, default: null },
-  // The clicked box of values by origin ({title, mark, values: [{name, value, units, note,
-  // calibrated_by}]}).
+  // The clicked box of values by origin ({id, title, mark, values: [{name, value, units, note,
+  // calibrated_by, origin, data_reference, reason}]}).
   origin: { type: Object, default: null },
+  // Every box of values by origin, to say where an edited value has gone.
+  boxes: { type: Array, default: () => [] },
+  // What a value's origin can be (libcuflynx's); empty when origins cannot be recorded.
+  originKinds: { type: Array, default: () => [] },
+  // async ({name, origin, dataReference, reason}) => '' when recorded, else why not
+  saveOrigin: { type: Function, default: null },
 })
-// step: a step id named in "calibrated in", to open that step
-const emit = defineEmits(['close', 'step'])
+// step: a step id named in "calibrated in", to open that step; open-origin: a box id
+const emit = defineEmits(['close', 'step', 'open-origin'])
+
+// the words for an origin in the form (the boxes' own titles)
+const ORIGIN_LABELS = {
+  '': 'not recorded', set_by_hand: 'set by hand', derived: 'from data',
+  measured: 'from literature', calibrated: 'calibrated before', inherited: 'inherited',
+}
+const originLabel = (o) => ORIGIN_LABELS[o ?? ''] ?? o
+
+// the value whose origin is being edited, its form, and the last one recorded
+const editing = ref(null)
+const form = ref({ origin: '', dataReference: '', reason: '' })
+const saveError = ref('')
+const saving = ref(false)
+const saved = ref(null)
+
+function startEdit(r) {
+  editing.value = r.name
+  form.value = { origin: r.origin ?? '', dataReference: r.data_reference ?? '', reason: r.reason ?? '' }
+  saveError.value = ''
+  saved.value = null
+}
+
+async function save() {
+  saving.value = true
+  saveError.value = (await props.saveOrigin?.({ name: editing.value, ...form.value })) ?? ''
+  saving.value = false
+  if (!saveError.value) {
+    saved.value = editing.value
+    editing.value = null
+  }
+}
+
+// where the value last recorded is now: null while it is in this box
+const movedTo = computed(() => {
+  if (!saved.value || props.origin?.values?.some((v) => v.name === saved.value)) return null
+  return props.boxes.find((b) => b.values?.some((v) => v.name === saved.value)) ?? null
+})
+
+// a new box (or none) forgets the form
+watch(() => props.origin?.id, (id, before) => {
+  if (id === before) return
+  editing.value = null
+  saveError.value = ''
+  if (!id) saved.value = null
+})
 
 const detail = ref(null)
 const error = ref('')
@@ -73,23 +124,71 @@ function num(v) {
       <p class="ed-hint">
         Each value's origin and its reason or data reference come from the model's parameters
         files; a step named under "calibrated in" fits it.
+        <template v-if="originKinds.length">Edit records them there, and the value moves to
+          its origin's box.</template>
       </p>
-      <table class="ed-table" data-testid="workflow-origin-values">
-        <tr><th>parameter</th><th>value</th><th>units</th><th>why</th><th>calibrated in</th></tr>
-        <tr v-for="(r, i) in origin.values" :key="i">
-          <td><code>{{ r.name }}</code></td><td>{{ num(r.value) }}</td><td>{{ r.units }}</td>
-          <td class="ed-hint">{{ r.note }}</td>
-          <td>
-            <a
-              v-for="s in r.calibrated_by ?? []"
-              :key="s"
-              href="#"
-              class="ed-step"
-              :data-testid="`workflow-origin-step-${s}`"
-              @click.prevent="emit('step', s)"
-            >{{ s }}</a>
-          </td>
+      <p v-if="movedTo" class="ed-moved" data-testid="workflow-origin-moved">
+        <code>{{ saved }}</code> is now in
+        <a href="#" @click.prevent="emit('open-origin', movedTo.id)">{{ movedTo.title }}</a>.
+      </p>
+      <p v-else-if="saved" class="ed-moved" data-testid="workflow-origin-moved">
+        Recorded for <code>{{ saved }}</code>.
+      </p>
+      <p v-if="!origin.values.length" class="ed-hint">No values are left in this box.</p>
+      <table v-else class="ed-table" data-testid="workflow-origin-values">
+        <tr>
+          <th>parameter</th><th>value</th><th>units</th><th>why</th><th>calibrated in</th>
+          <th v-if="originKinds.length" />
         </tr>
+        <template v-for="r in origin.values" :key="r.name">
+          <tr>
+            <td><code>{{ r.name }}</code></td><td>{{ num(r.value) }}</td><td>{{ r.units }}</td>
+            <td class="ed-hint">{{ r.note }}</td>
+            <td>
+              <a
+                v-for="s in r.calibrated_by ?? []"
+                :key="s"
+                href="#"
+                class="ed-step"
+                :data-testid="`workflow-origin-step-${s}`"
+                @click.prevent="emit('step', s)"
+              >{{ s }}</a>
+            </td>
+            <td v-if="originKinds.length">
+              <a
+                v-if="editing !== r.name"
+                href="#"
+                :data-testid="`workflow-origin-edit-${r.name}`"
+                @click.prevent="startEdit(r)"
+              >Edit</a>
+            </td>
+          </tr>
+          <tr v-if="editing === r.name" class="ed-form-row">
+            <td colspan="6">
+              <form class="ed-form" data-testid="workflow-origin-form" @submit.prevent="save">
+                <label>Origin
+                  <select v-model="form.origin" data-testid="workflow-origin-kind">
+                    <option value="">{{ originLabel('') }}</option>
+                    <option v-for="k in originKinds" :key="k" :value="k">{{ originLabel(k) }}</option>
+                  </select>
+                </label>
+                <label>Data reference
+                  <input v-model="form.dataReference" data-testid="workflow-origin-reference"
+                         placeholder="a citation, a data file, a derivation" />
+                </label>
+                <label>Reason
+                  <input v-model="form.reason" data-testid="workflow-origin-reason"
+                         placeholder="why this value (for one set by hand)" />
+                </label>
+                <span class="ed-form-buttons">
+                  <button type="submit" :disabled="saving" data-testid="workflow-origin-save">Save</button>
+                  <button type="button" @click="editing = null">Cancel</button>
+                </span>
+              </form>
+              <p v-if="saveError" class="ed-error" data-testid="workflow-origin-error">{{ saveError }}</p>
+            </td>
+          </tr>
+        </template>
       </table>
     </template>
 
@@ -159,4 +258,25 @@ function num(v) {
   font-weight: 600;
 }
 .ed-step + .ed-step { margin-left: 0.5em; }
+.ed-moved {
+  margin: 0.3rem 0;
+  font-size: 0.88em;
+}
+.ed-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 0.8rem;
+  align-items: flex-end;
+  padding: 0.3rem 0;
+}
+.ed-form label {
+  display: flex;
+  flex-direction: column;
+  font-size: 0.78rem;
+  gap: 2px;
+}
+.ed-form input {
+  min-width: 14rem;
+}
+.ed-form-buttons button + button { margin-left: 0.4rem; }
 </style>

@@ -156,8 +156,9 @@ ORIGIN_BOXES = (
 def parameter_origins(plan: dict | None) -> dict | None:
     """Every value of the target in a box by where it comes from, before any step runs, from
     CA's plan (``plan_workflow``'s ``target_values``): ``{"boxes": [{id, title, mark, values:
-    [{name, value, units, note, calibrated_by}], to}], "model_counts": {}}``, the shape of
-    ``value_origins``. ``to`` is the chart's model box, whose parameters hold the values, or
+    [{name, value, units, note, calibrated_by, origin, data_reference, reason}], to}],
+    "model_counts": {}, "editable"}``, the shape of ``value_origins``; ``editable``: the target
+    has a parameters file to record each value's origin in (``set_value_origin``). ``to`` is the chart's model box, whose parameters hold the values, or
     for "to be calibrated" the steps that calibrate them. None when the plan has no
     ``target_values`` (a libcuflynx before it)."""
     values = (plan or {}).get("target_values")
@@ -175,7 +176,9 @@ def parameter_origins(plan: dict | None) -> dict | None:
         note = v.get("reason") if origin == "set_by_hand" else v.get("data_reference")
         row = _row(v.get("name"), v.get("value"), v.get("units"),
                    note or v.get("reason") or v.get("data_reference"))
-        by_box.setdefault(box, []).append(dict(row, calibrated_by=list(v.get("calibrated_by") or [])))
+        by_box.setdefault(box, []).append(dict(
+            row, calibrated_by=list(v.get("calibrated_by") or []), origin=origin,
+            data_reference=v.get("data_reference") or "", reason=v.get("reason") or ""))
     boxes = []
     for box_id, title, mark in ORIGIN_BOXES:
         rows = by_box.get(box_id)
@@ -184,7 +187,7 @@ def parameter_origins(plan: dict | None) -> dict | None:
         to = ([s for s in dict.fromkeys(s for r in rows for s in r["calibrated_by"])]
               if box_id == "to_calibrate" else [MODEL])
         boxes.append({"id": box_id, "title": title, "mark": mark, "values": rows, "to": to})
-    return {"boxes": boxes, "model_counts": {}}
+    return {"boxes": boxes, "model_counts": {}, "editable": bool(plan.get("target_parameters"))}
 
 
 WORDS = {
