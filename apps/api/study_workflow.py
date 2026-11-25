@@ -618,6 +618,13 @@ class Plan:
     def step_dir(self, step_id: str | None = None) -> str:
         return os.path.join(self.run_dir, step_id or self.step)
 
+    @property
+    def path(self) -> str:
+        """The workflow file. A str, though CA's ``WorkflowBuilder.path`` is a ``pathlib.Path``
+        in newer libcuflynx: it goes into the runner's JSON config and is compared with the
+        paths read back from it."""
+        return os.fspath(self.builder.path)
+
     def write(self) -> str:
         """Write the workflow. When the run changes a step, the steps it added go just above
         that step, and :attr:`run_steps` is that step, what it now takes from that the run
@@ -625,9 +632,10 @@ class Plan:
         try:
             if self.edit:
                 self._drop_unused_points()
-            path = self.builder.write()
+            self.builder.write()
         except (ValueError, OSError) as exc:
             raise StudyWorkflowError(f"the study workflow was not written: {exc}") from exc
+        path = self.path
         if self.edit:
             new = [s for s in self.added if s not in self.before]
             if new:
@@ -710,10 +718,10 @@ class Plan:
         return {
             # a workflow opened from elsewhere writes its own calibrated values when it runs
             "write_calibrated": not self.external_run_dir and self.completes(),
-            "study_step": {"workflow": self.builder.path, "run_dir": self.run_dir,
+            "study_step": {"workflow": self.path, "run_dir": self.run_dir,
                            "step": self.step, "steps": steps,
                            "step_dir": self.step_dir(), "edited": self.edit},
-            "workflow": self.builder.path,
+            "workflow": self.path,
             "workflow_output_dir": self.run_dir,
             "only": only,
             "from_step": from_step,
