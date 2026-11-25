@@ -16,10 +16,12 @@ const props = defineProps({
   edge: { type: Object, default: null },
   // The clicked external figure ({id, description, command, reads, writes}), or null.
   figure: { type: Object, default: null },
-  // The clicked box of values by origin ({title, mark, values: [{name, value, units, note}]}).
+  // The clicked box of values by origin ({title, mark, values: [{name, value, units, note,
+  // calibrated_by}]}).
   origin: { type: Object, default: null },
 })
-const emit = defineEmits(['close'])
+// step: a step id named in "calibrated in", to open that step
+const emit = defineEmits(['close', 'step'])
 
 const detail = ref(null)
 const error = ref('')
@@ -69,14 +71,24 @@ function num(v) {
   >
     <template v-if="origin">
       <p class="ed-hint">
-        As CA's provenance records them: each value's origin and its reason or data reference
-        come from the model's parameters files.
+        Each value's origin and its reason or data reference come from the model's parameters
+        files; a step named under "calibrated in" fits it.
       </p>
       <table class="ed-table" data-testid="workflow-origin-values">
-        <tr><th>parameter</th><th>value</th><th>units</th><th>why</th></tr>
+        <tr><th>parameter</th><th>value</th><th>units</th><th>why</th><th>calibrated in</th></tr>
         <tr v-for="(r, i) in origin.values" :key="i">
           <td><code>{{ r.name }}</code></td><td>{{ num(r.value) }}</td><td>{{ r.units }}</td>
           <td class="ed-hint">{{ r.note }}</td>
+          <td>
+            <a
+              v-for="s in r.calibrated_by ?? []"
+              :key="s"
+              href="#"
+              class="ed-step"
+              :data-testid="`workflow-origin-step-${s}`"
+              @click.prevent="emit('step', s)"
+            >{{ s }}</a>
+          </td>
         </tr>
       </table>
     </template>
@@ -146,4 +158,5 @@ function num(v) {
   opacity: 0.7;
   font-weight: 600;
 }
+.ed-step + .ed-step { margin-left: 0.5em; }
 </style>

@@ -415,6 +415,7 @@ const alsoDeleted = computed(() => doomed.value.filter((s) => s !== props.pendin
           :figure="clickedFigure"
           :origin="clickedOrigin"
           @close="clickedEdge = null; clickedFigure = null; clickedOrigin = null"
+          @step="(id) => { clickedOrigin = null; emit('select-step', id) }"
         />
         <WorkflowDraftChoice
           :draft="choosing"

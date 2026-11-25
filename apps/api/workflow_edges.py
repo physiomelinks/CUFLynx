@@ -138,6 +138,55 @@ def value_origins(graph_path: str | None) -> dict:
     return {"boxes": boxes, "model_counts": model_counts}
 
 
+#: the boxes ``parameter_origins`` puts the target's values in, in the chart's order: ``(id,
+#: title, mark)``. A value with an origin its parameters file records is in that origin's box,
+#: calibrated by a step or not; one with none, or ``inherited``, that a step calibrates is "to
+#: be calibrated".
+ORIGIN_BOXES = (
+    ("set_by_hand", "Values set by hand", "set_by_hand"),
+    ("derived", "Values from data", "derived"),
+    ("measured", "Values from literature", "measured"),
+    ("calibrated", "Values calibrated before this workflow", "calibrated"),
+    ("to_calibrate", "Values to be calibrated", "to_calibrate"),
+    ("inherited", "Values inherited from the model", "inherited"),
+    ("unrecorded", "Origin not recorded", "unclassified"),
+)
+
+
+def parameter_origins(plan: dict | None) -> dict | None:
+    """Every value of the target in a box by where it comes from, before any step runs, from
+    CA's plan (``plan_workflow``'s ``target_values``): ``{"boxes": [{id, title, mark, values:
+    [{name, value, units, note, calibrated_by}], to}], "model_counts": {}}``, the shape of
+    ``value_origins``. ``to`` is the chart's model box, whose parameters hold the values, or
+    for "to be calibrated" the steps that calibrate them. None when the plan has no
+    ``target_values`` (a libcuflynx before it)."""
+    values = (plan or {}).get("target_values")
+    if values is None:
+        return None
+    by_box: dict[str, list] = {}
+    for v in values:
+        origin = v.get("origin")
+        if origin in ("set_by_hand", "derived", "measured", "calibrated"):
+            box = origin
+        elif v.get("calibrated_by"):
+            box = "to_calibrate"
+        else:
+            box = "inherited" if origin == "inherited" else "unrecorded"
+        note = v.get("reason") if origin == "set_by_hand" else v.get("data_reference")
+        row = _row(v.get("name"), v.get("value"), v.get("units"),
+                   note or v.get("reason") or v.get("data_reference"))
+        by_box.setdefault(box, []).append(dict(row, calibrated_by=list(v.get("calibrated_by") or [])))
+    boxes = []
+    for box_id, title, mark in ORIGIN_BOXES:
+        rows = by_box.get(box_id)
+        if not rows:
+            continue
+        to = ([s for s in dict.fromkeys(s for r in rows for s in r["calibrated_by"])]
+              if box_id == "to_calibrate" else [MODEL])
+        boxes.append({"id": box_id, "title": title, "mark": mark, "values": rows, "to": to})
+    return {"boxes": boxes, "model_counts": {}}
+
+
 WORDS = {
     "fixed_from": "values fixed in the receiving step's model",
     "priors_from": "a distribution, used as the prior",

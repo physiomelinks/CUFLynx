@@ -127,6 +127,83 @@ def test_a_graph_of_a_schema_not_read_here_gives_no_boxes(tmp_path):
     assert we.value_origins(None) == {"boxes": [], "model_counts": {}}
 
 
+def _value(name, origin=None, calibrated_by=(), **extra):
+    return dict({"name": name, "value": 1.0, "units": "s", "origin": origin,
+                 "data_reference": "", "reason": "", "calibrated_by": list(calibrated_by)}, **extra)
+
+
+def test_every_value_of_the_target_is_in_one_box_by_its_origin():
+    """Q-0053: a value whose origin is recorded stays in that origin's box when a step
+    calibrates it, marked with the step; one with no origin (or inherited) that a step
+    calibrates is "to be calibrated"; one with none that nothing calibrates is shown too."""
+    plan = {"target_values": [
+        _value("m/lit", "measured", ["fit-a"], data_reference="smith2001; Table 2"),
+        _value("m/hand", "set_by_hand", reason="a round number"),
+        _value("m/data", "derived", data_reference="derive_k"),
+        _value("m/earlier", "calibrated"),
+        _value("m/inh", "inherited"),
+        _value("m/inh_fit", "inherited", ["fit-b"]),
+        _value("m/free", None, ["fit-a", "fit-b"]),
+        _value("m/none"),
+    ]}
+    boxes = {b["id"]: b for b in we.parameter_origins(plan)["boxes"]}
+    assert list(boxes) == ["set_by_hand", "derived", "measured", "calibrated", "to_calibrate",
+                           "inherited", "unrecorded"]
+    names = {k: [v["name"] for v in b["values"]] for k, b in boxes.items()}
+    assert names["measured"] == ["m/lit"] and names["unrecorded"] == ["m/none"]
+    assert names["to_calibrate"] == ["m/inh_fit", "m/free"] and names["inherited"] == ["m/inh"]
+    assert sum(len(n) for n in names.values()) == len(plan["target_values"])
+    (lit,) = boxes["measured"]["values"]
+    assert lit["calibrated_by"] == ["fit-a"] and lit["note"] == "smith2001; Table 2"
+    assert boxes["set_by_hand"]["values"][0]["note"] == "a round number"
+    # the values are in the model's parameters; those to be calibrated go to their steps
+    assert boxes["measured"]["to"] == ["model"]
+    assert boxes["to_calibrate"]["to"] == ["fit-b", "fit-a"]
+
+
+def test_a_plan_without_target_values_leaves_the_boxes_to_the_provenance_graph():
+    assert we.parameter_origins({"steps": []}) is None and we.parameter_origins(None) is None
+    assert we.parameter_origins({"target_values": []}) == {"boxes": [], "model_counts": {}}
+
+
+@pytest.mark.integration
+def test_the_charts_boxes_hold_every_constant_of_a_cellml_target(client, requires_simulation,
+                                                                 tmp_path):
+    """Before any run, CA's plan boxes every constant of the target by its origin."""
+    import shutil
+
+    from ca_imports import ca_from
+    from conftest import LV_MODEL_PATH, LV_OBS_DATA_PATH
+
+    builder = ca_from("calibration_workflow", "WorkflowBuilder")
+    cellml_model = ca_from("calibration_workflow", "cellml_model")
+    for f in (LV_MODEL_PATH, LV_OBS_DATA_PATH):
+        shutil.copy(f, tmp_path)
+    (tmp_path / "values.json").write_text(json.dumps({"schema_version": 1, "Lotka_Volterra_module": {
+        "alpha": {"value": "4.0", "units": "dimensionless", "origin": "measured",
+                  "data_reference": "smith2001; Table 2"},
+        "beta": {"value": "0.3", "units": "dimensionless", "origin": "set_by_hand",
+                 "reason": "a round number"}}}))
+    (tmp_path / "params.json").write_text(json.dumps({"version": 1, "params": [
+        {"targets": [f"Lotka_Volterra_module/{p}"], "min": 0.1, "max": 10.0}
+        for p in ("alpha", "gamma")]}))
+    model = cellml_model(str(tmp_path / LV_MODEL_PATH.name), str(tmp_path / "values.json"))
+    wf = builder("origins", target=model, directory=str(tmp_path / "wf"))
+    wf.add_calibration("fit", obs_data=str(tmp_path / LV_OBS_DATA_PATH.name),
+                       params_for_id=str(tmp_path / "params.json"))
+    r = client.post("/api/workflow/load",
+                    json={"path": str(wf.write()), "config_outputs_dir": str(tmp_path / "out")})
+    assert r.status_code == 200, r.text
+    if "target_values" not in r.json()["plan"]:
+        pytest.skip("this libcuflynx's plan has no target_values")
+    boxes = {b["id"]: b for b in r.json()["value_origins"]["boxes"]}
+    names = {k: [v["name"].partition("/")[2] for v in b["values"]] for k, b in boxes.items()}
+    assert names["set_by_hand"] == ["beta"] and names["measured"] == ["alpha"]
+    assert boxes["measured"]["values"][0]["calibrated_by"] == ["fit"]
+    assert names["to_calibrate"] == ["gamma"] and boxes["to_calibrate"]["to"] == ["fit"]
+    assert sorted(names["unrecorded"]) == ["delta", "u_alpha", "u_gamma"]
+
+
 def test_a_point_is_the_set_steps_values(run):
     d = we.edge_detail(run, WORKFLOW, "boundary", "fit-k", "start_from")
     assert d["rows"][0]["name"] == "heat/u_D" and d["note"].startswith("The values boundary sets")
