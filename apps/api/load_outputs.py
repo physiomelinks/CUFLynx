@@ -392,24 +392,11 @@ def _emulator(output_dir, file_prefix, obs_path, missing, declared=None, chosen=
                                                 declared),
         missing) or []
 
-    emu_dir = None
-    if chosen and any(os.path.abspath(row["dir"]) == os.path.abspath(chosen)
-                      for row in choices):
-        emu_dir = chosen
-    elif declared and ca_run_history.emulator_metadata(declared) is not None:
-        # A declaration that names one bundle outright still means that bundle, even
-        # when the search below would have ranked another above it.
-        emu_dir = declared
-    elif choices:
-        emu_dir = choices[0]["dir"]
-    else:
-        # find_ rather than the plain resolver: this reads a run it did not produce,
-        # and emulator_dir is a setting a study can point anywhere -- one trained
-        # emulator reused across several obs_data has to.
-        emu_dir = _safely(
-            "emulator directory",
-            lambda: ca_run_history.find_emulator_dir(output_dir, file_prefix, obs_path),
-            missing)
+    emu_dir = _safely(
+        "emulator directory",
+        lambda: ca_run_history.default_emulator_dir(output_dir, file_prefix, obs_path,
+                                                    choices, declared, chosen),
+        missing)
     if not emu_dir:
         return {"dir": None, "metadata": None, "error_points": None, "choices": []}
     return {

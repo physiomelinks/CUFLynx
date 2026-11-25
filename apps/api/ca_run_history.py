@@ -694,6 +694,42 @@ def emulator_choices(output_dir: str, file_prefix: str | None,
     return sorted(summaries, key=rank, reverse=True)
 
 
+def emulator_choice_named(choices: list[dict], path: str | None) -> str | None:
+    """The bundle in ``choices`` that ``path`` names, or None when it names none of them."""
+    if not (path or "").strip():
+        return None
+    target = os.path.abspath(path.strip())
+    for row in choices:
+        if os.path.abspath(row["dir"]) == target:
+            return row["dir"]
+    return None
+
+
+def default_emulator_dir(output_dir: str, file_prefix: str | None, obs_path: str | None,
+                         choices: list[dict], declared: str | None = None,
+                         chosen: str | None = None) -> str | None:
+    """The bundle a study is read with, from the bundles :func:`emulator_choices` offers.
+
+    In order: the caller's pick, when it is one of ``choices``; a declared path that is
+    itself a bundle; the conventional bundle (where this app's training writes), when it
+    is on offer; else the first choice, the safest. The Results view, the Emulator panel,
+    emulator runs and the live prediction all ask this, so they read the same bundle.
+    """
+    picked = emulator_choice_named(choices, chosen)
+    if picked:
+        return picked
+    if declared and emulator_metadata(declared) is not None:
+        return declared
+    if file_prefix:
+        conventional = emulator_choice_named(
+            choices, emulator_dir(output_dir, file_prefix, obs_path))
+        if conventional:
+            return conventional
+    if choices:
+        return choices[0]["dir"]
+    return find_emulator_dir(output_dir, file_prefix, obs_path)
+
+
 def emulator_error_points(emu_dir: str) -> dict | None:
     """The emulator's held-out points, as the Analysis view plots them.
 

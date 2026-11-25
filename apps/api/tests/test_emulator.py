@@ -1279,3 +1279,48 @@ def test_training_runs_across_ranks_when_asked_for_more_than_one(
         f"a {PARALLEL_CORES}-rank training ended {state.get('state')}:\n{log[-3000:]}")
     assert "MPI_ABORT" not in log, f"a rank aborted:\n{log[-3000:]}"
     _assert_parallelism(recorded_commands, PARALLEL_CORES)
+
+
+def test_results_and_the_emulator_panel_default_to_the_same_bundle(client, tmp_path):
+    """Two bundles under emulators/ and no pick: the Results view (load_outputs) and the
+    Emulator panel, runs and cost (_emulator_dir_for, via /api/emulator/info) read the
+    same one, the safest. The panel used to take the newest."""
+    import os
+    import load_outputs
+    from conftest import BG_MODEL_PATH
+
+    with open(BG_MODEL_PATH, "rb") as fh:
+        model_id = client.post(
+            "/api/models/upload", files={"file": (BG_MODEL_PATH.name, fh, "application/xml")}
+        ).json()["model_id"]
+
+    root = tmp_path / "emulators"
+    safe = _family(root / "x_two_phase_RBF", "two_phase_RadialBasisFunctions", [0.9, 0.95])
+    risky = _family(root / "x_two_phase_RandomForest", "two_phase_RandomForest", [0.6, 0.99])
+    os.utime(safe, (1_000_000, 1_000_000))  # the safer bundle was written first
+
+    info = client.get("/api/emulator/info", params={
+        "model_id": model_id, "config_outputs_dir": str(tmp_path)}).json()
+    loaded = load_outputs.load_outputs(str(tmp_path))["emulator"]
+
+    assert os.path.abspath(loaded["dir"]) == os.path.abspath(safe)
+    assert os.path.abspath(info["emulator_dir"]) == os.path.abspath(safe)
+    assert info["chosen"] is False
+
+    picked = client.get("/api/emulator/info", params={
+        "model_id": model_id, "config_outputs_dir": str(tmp_path),
+        "emulator_dir": risky}).json()
+    assert os.path.abspath(picked["emulator_dir"]) == os.path.abspath(risky)
+    assert picked["chosen"] is True
+
+
+def test_the_conventional_bundle_is_the_default_over_a_safer_one(tmp_path):
+    """The bundle this app's training writes is the one it reads, even beside a safer one."""
+    import ca_run_history
+
+    conventional = _family(Path(ca_run_history.emulator_dir(str(tmp_path), "m", None)),
+                           "two_phase_MLP", [0.5])
+    _family(tmp_path / "emulators" / "m_other", "two_phase_RadialBasisFunctions", [0.9])
+    choices = ca_run_history.emulator_choices(str(tmp_path), "m", None)
+    assert len(choices) == 2 and choices[0]["dir"] != conventional
+    assert ca_run_history.default_emulator_dir(str(tmp_path), "m", None, choices) == conventional
