@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import re
 
+import phlynx_components
 from cellml_meta import parse_cellml
 from params_for_id import _build_gen_index, resolve_model_qname
 
@@ -83,12 +84,23 @@ def substitute_values(cellml_text: str, values: dict[str, float]) -> tuple[str, 
 
     ``report`` is ``{"updated": [...], "unresolved": [...], "resolved": {name:
     "component/variable"}}``. Written by CA's writer when the configured CA has
-    it, else by :func:`calibrated_cellml`.
+    it, else by :func:`calibrated_cellml`. A model PhLynx wrote with component ids
+    is written by :func:`calibrated_cellml` too: CA's writer finds components by
+    name, so it would write into a modeller's own ``instance_parameters`` rather
+    than PhLynx's ``instance_parameters_1`` (#422) until it reads the ids.
     """
     writer = ca_substitute_parameter_values()
-    if writer is None:
+    if writer is None or _has_phlynx_ids(cellml_text):
         return calibrated_cellml(cellml_text, values)
     return writer(cellml_text, values)
+
+
+def _has_phlynx_ids(cellml_text: str) -> bool:
+    try:
+        ids = parse_cellml(cellml_text).component_ids.values()
+    except ValueError:
+        return False
+    return any(phlynx_components.is_generated(cid) for cid in ids)
 
 
 def calibrated_cellml(cellml_text: str, best_params: dict[str, float]) -> tuple[str, dict]:
@@ -108,7 +120,7 @@ def calibrated_cellml(cellml_text: str, best_params: dict[str, float]) -> tuple[
     per #287 that is a change PhLynx will not pick up.
     """
     meta = parse_cellml(cellml_text)
-    gen_index = _build_gen_index(meta.initial_values)
+    gen_index = _build_gen_index(meta.initial_values, meta.component_ids)
 
     # Group the resolved targets by owning component so we substitute inside the
     # right block (bare variable names can repeat across components).

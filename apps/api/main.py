@@ -1811,7 +1811,7 @@ def _attach_study_inputs(record: "_ModelRecord", obs: tuple[str, bytes] | None,
     if params:
         name, blob = params
         try:
-            entries = parse_params_for_id(blob, record.meta.initial_values)
+            entries = parse_params_for_id(blob, record.meta.initial_values, record.meta.component_ids)
             record.params_path = _save_params_file(record, blob)
             result["params_for_id"] = {
                 "filename": name,
@@ -4160,11 +4160,13 @@ async def upload_params_for_id(
         data = await request.body()
 
     initial_values: dict[str, float] = {}
+    component_ids = None
     if model_id and model_id in _models:
         initial_values = _models[model_id].meta.initial_values
+        component_ids = _models[model_id].meta.component_ids
 
     try:
-        entries = parse_params_for_id(data, initial_values)
+        entries = parse_params_for_id(data, initial_values, component_ids)
     except ParamsForIdError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -6872,7 +6874,7 @@ def param_reduction_adopt(req: AdoptReductionRequest) -> dict:
                             detail="this reduction wrote no reduced_params_for_id.json")
     data = Path(path).read_bytes()
     try:
-        entries = parse_params_for_id(data, record.meta.initial_values)
+        entries = parse_params_for_id(data, record.meta.initial_values, record.meta.component_ids)
     except ParamsForIdError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     record.params_path = _save_params_file(record, data)

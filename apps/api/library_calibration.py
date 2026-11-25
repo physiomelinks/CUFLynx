@@ -83,7 +83,7 @@ def apply(cellml: bytes, members: list[tuple[str, bytes]],
     entries = []
     if params_blob:
         try:
-            entries = parse_params_for_id(params_blob, meta.initial_values)
+            entries = parse_params_for_id(params_blob, meta.initial_values, meta.component_ids)
         except ParamsForIdError:
             entries = []
 
