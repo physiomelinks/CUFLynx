@@ -4426,14 +4426,14 @@ def _study_point(plan, model_id: str, qnames: list) -> str | None:
     latest done one of a reopened working dir), else a set step with the best fit (or the
     best-so-far of a calibration stopped early), its reason saying which."""
     finished = calibration.last_completed_step(model_id)
-    if finished and finished["workflow"] == plan.builder.path and finished["step"] == plan.edit:
+    if finished and finished["workflow"] == plan.path and finished["step"] == plan.edit:
         # the step this run changes: its best fit as it stands, as values, since a step
         # cannot start from itself
         best = calibration.last_completed_best_params(model_id)
         if best:
             return plan.add_set("best_fit", study_workflow.set_entries(
                 best, qnames, f"best fit of step {plan.edit} before this run changed it"))
-    if finished and finished["workflow"] == plan.builder.path and \
+    if finished and finished["workflow"] == plan.path and \
             finished["step"] in plan.builder.steps and finished["step"] != plan.edit:
         return finished["step"]
     best = calibration.last_completed_best_params(model_id)
@@ -4441,7 +4441,7 @@ def _study_point(plan, model_id: str, qnames: list) -> str | None:
         record = _get_model(model_id)
         opened = _opened_calibration(record)
         if opened:
-            if opened["workflow"] == plan.builder.path and opened["step"] in plan.builder.steps \
+            if opened["workflow"] == plan.path and opened["step"] in plan.builder.steps \
                     and opened["step"] != plan.edit:
                 return opened["step"]
             return plan.add_set("best_fit", study_workflow.set_entries(
@@ -4473,20 +4473,20 @@ def _study_start(plan, config: dict, markers: tuple, notes: list) -> None:
         import workflow_layout  # noqa: PLC0415
 
         try:
-            workflow_layout.draft_became(plan.builder.path, plan.draft, plan.step)
+            workflow_layout.draft_became(plan.path, plan.draft, plan.step)
         except (study_workflow.StudyWorkflowError, OSError, ValueError) as exc:
             raise HTTPException(status_code=422, detail=(
                 f"step {plan.step} was added, but an arrow drawn to it was refused: {exc}. "
                 f"Change the arrow in the Workflow view and run again.")) from exc
     config.update(plan.runner_config({"done": markers[0], "fail": markers[1]}))
     config["log_preamble"] = notes + [_study_note(
-        f"step {plan.step} of {plan.builder.path} ({'changes' if plan.edit else 'adds'} "
+        f"step {plan.step} of {plan.path} ({'changes' if plan.edit else 'adds'} "
         f"{', '.join(plan.added)}); its results "
         f"go to {plan.step_dir()}.")]
-    if not workflow.busy and (not workflow.loaded or workflow.path == plan.builder.path
+    if not workflow.busy and (not workflow.loaded or workflow.path == plan.path
                               or study_workflow.working_dir_of(workflow.path)):
         try:
-            workflow.load(plan.builder.path, plan.run_dir, [])
+            workflow.load(plan.path, plan.run_dir, [])
         except (workflow_manager.WorkflowError, workflow_manager.WorkflowUnavailable,
                 RuntimeError):
             pass

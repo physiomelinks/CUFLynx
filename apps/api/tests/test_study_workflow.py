@@ -1030,3 +1030,30 @@ def test_a_profile_likelihood_keeps_the_direct_uq_runner_on_an_older_ca(
     assert any("profile likelihood" in ln for ln in status["lines"]
                if ln.startswith("Study workflow:"))
     assert "laplace-1" not in _steps(work)
+
+
+def test_the_runner_config_names_the_workflow_as_a_str_when_ca_gives_a_path(tmp_path):
+    """Newer libcuflynx's WorkflowBuilder.path is a pathlib.Path: the config is JSON (the
+    runner's argv[1]) and its workflow is compared with paths read back from it."""
+    import json
+    from pathlib import Path
+
+    import study_workflow
+
+    class Builder:
+        name = "study"
+        path = Path(tmp_path) / "workflow" / "calibration_workflow.json"
+        steps = ["sobol-1"]
+
+        def to_dict(self):
+            return {"steps": []}
+
+        def write(self):
+            pass
+
+    plan = study_workflow.Plan(Builder(), str(tmp_path))
+    plan.added = ["sobol-1"]
+    config = plan.runner_config({})
+    json.dumps(config)
+    assert config["workflow"] == config["study_step"]["workflow"] == str(Builder.path)
+    assert plan.path == str(Builder.path) and plan.write() == str(Builder.path)
