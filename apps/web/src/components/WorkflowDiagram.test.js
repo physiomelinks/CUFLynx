@@ -247,6 +247,36 @@ describe('WorkflowDiagram', () => {
     expect(c.find('[data-testid="workflow-edge-figure:paper_plots-figure:paper_figures"]').exists()).toBe(true)
   })
 
+  it('draws a figure step after the steps it reads, after the target when one runs on it', () => {
+    const c = chart({
+      steps: [
+        { id: 'fit', settings: {} },
+        { id: 'run', kind: 'simulate', fixed_from: ['fit'] },
+        { id: 'scan', kind: 'sweep', on_target: true },
+        { id: 'traces', kind: 'figure', function: 'figures/standard_figures.py:sweep_traces',
+          inputs: { sweep: { sweep: 'run' } } },
+        { id: 'both', kind: 'figure', function: 'figures/mine.py:draw',
+          inputs: { curves: { sweep: 'scan' }, fit: { values: 'fit' } } },
+      ],
+      results: { traces: { figures: ['figure/a.png', 'figure/b.png'] } },
+    })
+    const left = (id) => parseFloat(c.find(`[data-testid="${id}"]`).attributes('style').match(/left: ([\d.]+)px/)[1])
+    expect(left('workflow-node-traces')).toBeGreaterThan(left('workflow-node-run'))
+    // reads a sweep on the merged target, so sits right of it, and of the target
+    expect(left('workflow-node-both')).toBeGreaterThan(left('workflow-node-scan'))
+    expect(left('workflow-node-scan')).toBeGreaterThan(left('workflow-node-target'))
+    for (const id of ['run-traces', 'scan-both', 'fit-both']) {
+      expect(c.find(`[data-testid="workflow-edge-${id}"]`).exists(), id).toBe(true)
+    }
+    // a figure step takes nothing from the model, and is never merged into the target
+    expect(c.find('[data-testid="workflow-edge-model-traces"]').exists()).toBe(false)
+    expect(c.find('[data-testid="workflow-edge-traces-target"]').exists()).toBe(false)
+    const box = c.find('[data-testid="workflow-node-traces"]').text()
+    expect(box).toContain('figures · 2 files · sweep_traces')
+    expect(box).toContain('sweep ← run')
+    expect(c.find('[data-testid="workflow-node-run"]').text()).toContain('simulation')
+  })
+
   it('arrows into or out of one box run side by side, and the whole of one lights up', async () => {
     const c = chart({
       steps: [

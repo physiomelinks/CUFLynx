@@ -1,4 +1,5 @@
 import { ref, computed, watch } from 'vue'
+import { figureFunction } from '../lib/workflowFigures'
 import { runTargetFor, targetAfterRun } from '../lib/workflowTarget'
 import {
   cancelWorkflow,
@@ -84,17 +85,21 @@ export const KIND_WORDS = {
   identifiability: 'identifiability',
   set: 'set by hand',
   sweep: 'parameter sweep',
+  simulate: 'simulation',
+  figure: 'figures',
 }
 
 /**
- * Why a step has no model to show, or '' when it has one: a reduction or a set step has
- * none, and a sweep run on the target (`on_target`) has none of its own.
+ * Why a step has no model to show, or '' when it has one: a reduction, a set step or a
+ * figure step has none, and a sweep or simulation run on the target (`on_target`) has none
+ * of its own.
  */
 export function noViewReason(kind, fileStep) {
   if (kind === 'reduction') return 'a reduction has no model to show'
   if (kind === 'set') return 'a set step gives values to the target and has no model to show'
-  if (kind === 'sweep' && fileStep?.on_target) {
-    return 'a sweep on the target has no model of its own: open the target'
+  if (kind === 'figure') return 'a figure step draws from other steps and has no model: its figures are in Analysis'
+  if ((kind === 'sweep' || kind === 'simulate') && fileStep?.on_target) {
+    return `a ${kind === 'sweep' ? 'sweep' : 'simulation'} on the target has no model of its own: open the target`
   }
   return ''
 }
@@ -188,6 +193,8 @@ export function workflowTabs(described) {
       detail = reductionWords(s.reduction ?? file?.settings?.param_reduction_options)
     } else if (kind === 'set') {
       detail = setWords(s.set ?? file?.set)
+    } else if (kind === 'figure') {
+      detail = figureFunction(file ?? s)
     } else if (noView) {
       detail = 'on the target'
     }

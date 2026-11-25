@@ -205,6 +205,25 @@ describe('workflowTabs', () => {
     expect(KIND_WORDS.sweep).toBe('parameter sweep')
   })
 
+  it('gives a figure step and a simulation on the target no tab; a simulation of its own has one', () => {
+    const tabs = workflowTabs({
+      loaded: true,
+      workflow: { workflow_name: 'h', steps: [
+        { id: 'run', kind: 'simulate', model: { cellml_model_path: 'LV.cellml' } },
+        { id: 'merged', kind: 'simulate', on_target: true },
+        { id: 'traces', kind: 'figure', function: 'figures/standard_figures.py:sweep_traces',
+          inputs: { sweep: { sweep: 'run' } } },
+      ] },
+    })
+    const byId = Object.fromEntries(tabs.map((t) => [t.id, t]))
+    expect(byId.run).toMatchObject({ viewable: true, detail: 'LV.cellml' })
+    expect(byId.merged).toMatchObject({ viewable: false, detail: 'on the target' })
+    expect(byId.merged.noViewReason).toContain('a simulation on the target')
+    expect(byId.traces).toMatchObject({ viewable: false, detail: 'sweep_traces' })
+    expect(byId.traces.noViewReason).toContain('figures are in Analysis')
+    expect([KIND_WORDS.simulate, KIND_WORDS.figure]).toEqual(['simulation', 'figures'])
+  })
+
   it("reads a reduction's options as CA keeps them, a PCA one with no fixed count", () => {
     expect(reductionWords({ method: 'sobol', n_params: 3, index_type: 'S1' }))
       .toBe('keeps the top 3 by Sobol S1')

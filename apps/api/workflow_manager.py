@@ -367,11 +367,14 @@ class WorkflowManager:
                 # its step_result has the rest)
                 for step_id, row in (out["status"].get("steps") or {}).items():
                     if isinstance(row, dict) and row.get("status") == "done":
-                        result = ca_run_history.step_result(
-                            os.path.join(self.output_dir, step_id)) or {}
+                        step_dir = os.path.join(self.output_dir, step_id)
+                        result = ca_run_history.step_result(step_dir) or {}
                         row.setdefault("duration_s", result.get("duration_s"))
                         if result.get("chosen_from"):
                             row.setdefault("chosen_from", result["chosen_from"])
+                        # a figure step's files, relative to its step dir (figure_path)
+                        if result.get("kind") == "figure":
+                            row["figures"] = ca_run_history.step_figures(step_dir)
             except WorkflowError as exc:
                 out["status_error"] = str(exc)
             # what of the run's provenance CA has written: {svg, graph} -> its mtime (ns)
@@ -412,6 +415,17 @@ class WorkflowManager:
             return None
         path = os.path.join(self.output_dir, name)
         return path if os.path.isfile(path) else None
+
+    def figure_path(self, step_id: str, name: str) -> str | None:
+        """A file the figure step ``step_id`` of the open run drew, by the name describe lists
+        under its ``figures``, or None. Only those files: the name is never joined to a path
+        on its own."""
+        if not self.output_dir or not step_id or os.path.basename(step_id) != step_id:
+            return None
+        step_dir = os.path.join(self.output_dir, step_id)
+        if name not in ca_run_history.step_figures(step_dir):
+            return None
+        return os.path.join(step_dir, *name.split("/"))
 
     def pack(self, dest_dir: str) -> dict[str, bytes]:
         """The open workflow as CA packs it: ``{path in the pack: bytes}``, inputs only."""
