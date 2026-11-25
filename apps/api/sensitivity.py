@@ -303,7 +303,27 @@ class SensitivityManager:
                 "error": job.error,
                 "warning": job.warning,
                 "study_step": job.study_step,
+                "progress": self._progress(job),
             }
+
+    @staticmethod
+    def _progress(job: SensitivityJob) -> dict | None:
+        """The Sobol run's ``progress.json``, when this job wrote one (a local analysis and a
+        reduction of an earlier Sobol run write none)."""
+        return ca_run_history.run_progress(job.output_dir, newer_than=job.started_at - 1,
+                                           finished=job.state != "running")
+
+    def sobol_progress(self, job_id: str) -> dict | None:
+        """This job's Sobol design with each sample's status, and the convergence of its
+        indices once written: ``{design, convergence}``, each None until CA writes it. None
+        when there is no such job."""
+        job = self._job
+        if job is None or job.id != job_id:
+            return None
+        if job.reduce_only or self._progress(job) is None:
+            return {"design": None, "convergence": None}
+        return {"design": ca_run_history.sobol_design(job.output_dir),
+                "convergence": ca_run_history.sobol_convergence(job.output_dir)}
 
     def cancel(self, job_id: str) -> bool:
         job = self._job

@@ -12,6 +12,7 @@ import os
 import shutil
 import subprocess
 import threading
+import time
 import uuid
 from pathlib import Path
 
@@ -34,6 +35,8 @@ import mcmc_progress
 from runtime_paths import default_python, runner_command, runner_launch_env, runner_path
 
 RUNNER_PATH = str(runner_path("uq_runner.py"))
+#: CA's ia_options method that profiles each entry (the other is Laplace).
+PROFILE_LIKELIHOOD = "profile_likelihood"
 
 
 class UQJob:
@@ -52,6 +55,10 @@ class UQJob:
         # profile_likelihood): CA's profiles, in place of a posterior.
         self.profiles: list | None = None
         self.ia_method: str | None = None
+        # Whether the run is a profile likelihood, known from its start (ia_method is only
+        # known once its meta line is read).
+        self.profiling = False
+        self.started_at = time.time()
         self.error: str | None = None
         # Set when the run finished but its process failed on the way out.
         self.warning: str | None = None
@@ -132,6 +139,9 @@ class UQManager:
             settings = config.get("settings") or config
             if job.study_step:
                 job.method = settings.get("method", "mcmc")
+            job.profiling = PROFILE_LIKELIHOOD in (
+                (settings.get("ia_options") or {}).get("method"),
+                (job.study_step or {}).get("ia_method"))
             job.burn_in = settings.get("burn_in", 0.5)
             # The configured run length, which the burn-in fraction is taken against. Coerced
             # rather than trusted: it arrives from a form, so "100000" is as likely as 100000,
@@ -341,7 +351,20 @@ class UQManager:
                 "coverage": job.coverage,
                 "outside_bounds": job.outside_bounds,
                 "study_step": job.study_step,
+                "progress": self._progress(job),
             }
+
+    @staticmethod
+    def _progress(job: UQJob) -> dict | None:
+        """A profile likelihood's ``progress.json``, in the ``profile_likelihood/`` of the run's
+        output folder (or of its workflow step's); None for any other method."""
+        if not job.profiling:
+            return None
+        root = job.study_step["step_dir"] if job.study_step else os.path.join(
+            job.output_dir, ca_run_history.PROFILE_LIKELIHOOD_SUBDIR)
+        return ca_run_history.find_progress(root, "profile_likelihood",
+                                            newer_than=job.started_at - 1,
+                                            finished=job.state != "running")
 
     def progress(self, job_id: str) -> dict | None:
         """The growing chain, for the live plots (#244).

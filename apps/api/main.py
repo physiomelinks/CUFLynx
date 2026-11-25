@@ -6651,6 +6651,16 @@ def sensitivity_status(job_id: str, offset: int = 0) -> dict:
     return status
 
 
+@app.get("/api/sensitivity/{job_id}/sobol-progress")
+def sensitivity_sobol_progress(job_id: str) -> dict:
+    """The Sobol run's design, each sample's status and the indices' convergence (CA #702),
+    for the Progress tab's pairs and convergence plots."""
+    found = sensitivity.sobol_progress(job_id)
+    if found is None:
+        raise HTTPException(status_code=404, detail="sensitivity job not found")
+    return found
+
+
 @app.post("/api/sensitivity/{job_id}/cancel")
 def sensitivity_cancel(job_id: str) -> dict:
     if not sensitivity.cancel(job_id):
@@ -6787,6 +6797,15 @@ def param_reduction_status(job_id: str, offset: int = 0) -> dict:
     if status is None:
         raise HTTPException(status_code=404, detail="parameter reduction job not found")
     return status
+
+
+@app.get("/api/param_reduction/{job_id}/sobol-progress")
+def param_reduction_sobol_progress(job_id: str) -> dict:
+    """A "Sobol first" reduction's Sobol design and convergence, as for a Sobol run."""
+    found = param_reduction_jobs.sobol_progress(job_id)
+    if found is None:
+        raise HTTPException(status_code=404, detail="parameter reduction job not found")
+    return found
 
 
 @app.post("/api/param_reduction/{job_id}/cancel")

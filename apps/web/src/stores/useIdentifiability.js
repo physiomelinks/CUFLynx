@@ -6,15 +6,18 @@ import {
   startUQ,
   getUQStatus,
   cancelUQ,
+  getSobolProgress,
   errorMessage,
 } from '../lib/api'
+import { useSobolFollow } from '../lib/sobolProgress'
 
 /**
  * A polled analysis job: start, stream the log, keep the final status.
  *
  * `api` is `{ start(modelId, settings, currentParams), status(jobId, offset),
- * cancel(jobId) }`; `result` is the last status the server returned for a
- * finished run.
+ * cancel(jobId) }`, and `sobolProgress(jobId)` for a job that may run a Sobol
+ * analysis; `result` is the last status the server returned for a finished run and
+ * `progress` the run's CA progress file (CA #702), as the last poll read it.
  */
 function usePolledJob(api, options = {}) {
   const intervalMs = options.intervalMs ?? 1000
@@ -22,6 +25,8 @@ function usePolledJob(api, options = {}) {
   const lines = ref([])
   const error = ref('')
   const result = ref(null)
+  const progress = ref(null)
+  const sobol = api.sobolProgress ? useSobolFollow(api.sobolProgress, options) : null
   let jobId = null
   let offset = 0
   let timer = null
@@ -35,6 +40,8 @@ function usePolledJob(api, options = {}) {
     lines.value = []
     error.value = ''
     result.value = null
+    progress.value = null
+    sobol?.reset()
   }
 
   async function start(modelId, settings, currentParams = null) {
@@ -43,6 +50,7 @@ function usePolledJob(api, options = {}) {
     try {
       const { job_id } = await api.start(modelId, settings, currentParams)
       jobId = job_id
+      sobol?.follow(jobId)
       await poll()
     } catch (e) {
       state.value = 'error'
@@ -59,9 +67,11 @@ function usePolledJob(api, options = {}) {
         offset = s.next_offset
       }
       state.value = s.state
+      progress.value = s.progress ?? null
       if (s.state === 'running') {
         timer = setTimeout(poll, intervalMs)
       } else {
+        sobol?.finish(jobId)
         result.value = s.state === 'done' ? s : null
         error.value = s.error || ''
       }
@@ -77,6 +87,8 @@ function usePolledJob(api, options = {}) {
     if (jobId) {
       try {
         await api.cancel(jobId)
+        sobol?.finish(jobId)
+        progress.value = (await api.status(jobId, offset)).progress ?? null
       } catch {
         /* best effort */
       }
@@ -85,13 +97,19 @@ function usePolledJob(api, options = {}) {
   }
 
   const running = computed(() => state.value === 'running')
-  return { state, lines, error, result, running, start, cancel, reset }
+  const sobolProgress = sobol?.data ?? ref(null)
+  return { state, lines, error, result, progress, sobolProgress, running, start, cancel, reset }
 }
 
 /** Parameter reduction over a Sobol run (CA's `param_reduction`). */
 export function useParamReduction(options = {}) {
   const job = usePolledJob(
-    { start: startParamReduction, status: getParamReductionStatus, cancel: cancelParamReduction },
+    {
+      start: startParamReduction,
+      status: getParamReductionStatus,
+      cancel: cancelParamReduction,
+      sobolProgress: (id) => getSobolProgress(id, 'param_reduction'),
+    },
     options,
   )
   const reduction = computed(() => job.result.value?.reduction ?? null)

@@ -50,12 +50,12 @@ describe('ProgressPanel', () => {
     expect(wrapper.vm.xLabel).toBe('iteration')
     // The panel renders even though costHistory is empty.
     expect(wrapper.find('[data-testid="progress-panel"]').exists()).toBe(true)
-    expect(wrapper.text()).not.toContain('Run a calibration')
+    expect(wrapper.text()).not.toContain('Run an analysis')
   })
 
   it('test_shows_empty_hint_without_any_data', () => {
     const wrapper = mount(ProgressPanel, { props: { costHistory: [], startCosts: [] } })
-    expect(wrapper.text()).toContain('Run a calibration')
+    expect(wrapper.text()).toContain('Run an analysis')
   })
 
   it('test_multi_start_cost_lines_are_shades_of_one_base_colour', () => {
@@ -336,5 +336,41 @@ describe('ProgressPanel data cursor', () => {
     const chart = { ctx, chartArea: { top: 0, bottom: 100 }, tooltip: { getActiveElements: () => [] } }
     ga().vm.crosshair.afterDatasetsDraw(chart)
     expect(ctx.moveTo).not.toHaveBeenCalled()
+  })
+})
+
+describe('ProgressPanel sections (CA #702 progress files)', () => {
+  const run = (kind, phases = []) => ({ kind, state: 'running', started: '', updated: '', phases })
+
+  it('shows a section per analysis that has a progress file, under the Analysis headings', () => {
+    const w = mount(ProgressPanel, {
+      props: {
+        emulatorProgress: run('emulation'),
+        profileProgress: run('profile_likelihood'),
+        sensitivityProgress: run('sobol'),
+        sensitivitySobol: {
+          design: { names: ['a', 'b'], bounds: [[0, 1], [0, 1]], rows: [], status: [],
+                    counts: { total: 4, ran: 0, failed: 0, not_run: 4 } },
+          convergence: null,
+        },
+      },
+    })
+    const headings = w.findAll('section.progress-section > h2').map((h) => h.text())
+    expect(headings).toEqual(['Emulator', 'Identifiability', 'Sensitivity'])
+    expect(w.get('[data-testid="progress-identifiability"]').text()).toContain('Profile likelihood')
+    expect(w.get('[data-testid="progress-sensitivity"]').find('[data-testid="sobol-pairs"]').exists())
+      .toBe(true)
+    expect(w.text()).not.toContain('Run an analysis')
+  })
+
+  it("puts a reduction's Sobol run under Identifiability, not Sensitivity", () => {
+    const w = mount(ProgressPanel, { props: { reductionProgress: run('sobol') } })
+    expect(w.get('[data-testid="progress-identifiability"]').text()).toContain('Parameter reduction')
+    expect(w.find('[data-testid="progress-sensitivity"]').exists()).toBe(false)
+  })
+
+  it('keeps the calibration charts under Calibration', () => {
+    const w = mount(ProgressPanel, { props: { costHistory: [[1.0], [0.5]] } })
+    expect(w.get('[data-testid="progress-calibration"] h2').text()).toBe('Calibration')
   })
 })
