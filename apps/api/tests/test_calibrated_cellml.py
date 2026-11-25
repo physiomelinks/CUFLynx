@@ -204,22 +204,3 @@ def test_a_library_calibration_writes_through_cas_writer(ca_writer):
     text, _ = library_calibration.apply(LV_TEXT.encode(), members, params)
     assert ca_writer.calls == [{"Lotka_Volterra_module/alpha": 0.5}]
     assert _reparse(text.decode())["Lotka_Volterra_module/alpha"] == pytest.approx(0.5)
-
-
-def test_a_direct_calibrations_saved_model_writes_through_cas_writer(ca_writer, tmp_path):
-    import calibration_runner
-
-    out = calibration_runner._write_calibrated_cellml(
-        {"cellml_path": str(RESOURCES_DIR / "Lotka_Volterra_forced.cellml"), "file_prefix": "lv"},
-        LV_ALPHA, str(tmp_path))
-    assert ca_writer.calls == [LV_ALPHA]
-    assert _reparse(open(out).read())["Lotka_Volterra_module/alpha"] == pytest.approx(7.5)
-
-
-def test_a_direct_calibrations_saved_model_falls_back_on_an_old_ca(old_ca, tmp_path):
-    import calibration_runner
-
-    out = calibration_runner._write_calibrated_cellml(
-        {"cellml_path": str(RESOURCES_DIR / "Lotka_Volterra_forced.cellml"), "file_prefix": "lv"},
-        LV_ALPHA, str(tmp_path))
-    assert _reparse(open(out).read())["Lotka_Volterra_module/alpha"] == pytest.approx(7.5)

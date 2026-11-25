@@ -1294,28 +1294,6 @@ def test_result_modifiers_carry_theta_at_the_anchor():
     }]
 
 
-def test_expanded_best_fit_writes_physical_values(requires_params_csv):
-    """theta=1.5 over baselines [2, 4] -> 3.0 / 6.0 at the targets; the free
-    slot passes through. The arithmetic is CA's expand_modifier_param_vals, not
-    a reimplementation."""
-    import calibration_runner as cr
-
-    out = cr._expanded_best_fit(_MOD_INFO, [["x/k"], ["a/C", "b/C"]], [7.0, 1.5])
-    assert out == {"x/k": 7.0, "a/C": 3.0, "b/C": 6.0}
-
-
-def test_unresolved_baselines_refuse_to_pose_as_physical_values(requires_params_csv):
-    """Baselines still None means the expansion cannot run -- raising here is
-    what stops theta being baked into a calibrated CellML as if it were a
-    compliance."""
-    import calibration_runner as cr
-
-    info = {"modifiers": [{"index": 0, "name": "s", "operation": "scale",
-                           "targets": ["a/C"], "baselines": None}]}
-    with pytest.raises(ValueError, match="baselines"):
-        cr._expanded_best_fit(info, [["a/C"]], [1.5])
-
-
 # --- the calibrated model under CA #650 ------------------------------------------------
 
 def _runner():
@@ -1341,20 +1319,29 @@ def test_ca_writes_the_calibrated_model_when_it_can(tmp_path):
     assert seen == {"cellml_path": str(LV_MODEL_PATH), "output_dir": str(tmp_path)}
 
 
-def test_a_ca_without_the_calibrated_model_writer_falls_back_to_cuflynxs_own(tmp_path):
+def test_a_ca_without_the_calibrated_model_writer_says_which_one_is_needed(tmp_path, capsys):
+    """No fallback writer: CUFLynx's own was removed (R-0013), users upgrade CA. The run
+    log names the version that writes the calibrated model."""
     runner = _runner()
     assert runner._ca_write_calibrated_model(
         object(), {"cellml_path": str(LV_MODEL_PATH)}, str(tmp_path)) is None
-    config = {"cellml_path": str(LV_MODEL_PATH), "file_prefix": "lv"}
-    path = runner._write_calibrated_cellml(config, {"Lotka_Volterra_module/alpha": 0.9},
-                                           str(tmp_path))
-    assert os.path.basename(path) == "lv_calibrated.cellml"
+    out = capsys.readouterr().out
+    assert "ERROR:" in out and "libcuflynx 0.8.0" in out and "#650" in out
+    assert not list(tmp_path.iterdir())
+    assert not hasattr(runner, "_write_calibrated_cellml")
 
 
-def test_a_failing_ca_writer_falls_back(tmp_path):
+def test_a_failing_ca_writer_is_reported_and_keeps_the_calibration(tmp_path, capsys):
     class Engine:
         def write_calibrated_model(self, **kwargs):
             raise RuntimeError("boom")
 
     assert _runner()._ca_write_calibrated_model(
         Engine(), {"cellml_path": str(LV_MODEL_PATH)}, str(tmp_path)) is None
+    assert "could not write the calibrated model: boom" in capsys.readouterr().out
+
+
+def test_a_model_that_is_not_cellml_has_no_calibrated_model(tmp_path, capsys):
+    assert _runner()._ca_write_calibrated_model(
+        object(), {"cellml_path": "model.py"}, str(tmp_path)) is None
+    assert capsys.readouterr().out == ""
