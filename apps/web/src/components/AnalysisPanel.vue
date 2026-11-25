@@ -40,9 +40,14 @@ const props = defineProps({
   // std_error, cost}]}; null when unknown, which is not the same as zero.
   currentCost: { type: Object, default: null },
   baselineCost: { type: Object, default: null },
-  // UQ: per-parameter posteriors [{qname, mean, std, q05, q50, q95, bins, counts}].
+  // UQ: per-parameter posteriors [{qname, mean, std, q05, q50, q95, bins, counts}]. A
+  // Laplace marginal the data do not pin down has std null and says why in
+  // `not_identifiable`; it is shown as that, never as a std of 0.
   uqParams: { type: Array, default: () => [] },
   uqMethod: { type: String, default: null },
+  // A Laplace step's draws outside the params_for_id bounds, dropped from its
+  // stored distribution: {count, of} (of may be null), or null when not counted.
+  uqOutsideBounds: { type: Object, default: null },
   // How well the posterior reproduces the data it was fitted to. null means the
   // run was not scored -- an older engine, or the check turned off -- which is
   // not the same as scoring badly, so the panel says so rather than showing 0.
@@ -642,8 +647,19 @@ function densityGeometry(p) {
 }
 
 const uqPlots = computed(() =>
-  props.uqParams.map((p) => ({ ...p, geom: densityGeometry(p) })),
+  props.uqParams.map((p) => ({
+    ...p,
+    geom: p.not_identifiable || p.std == null ? null : densityGeometry(p),
+  })),
 )
+
+const uqOutsideBoundsText = computed(() => {
+  const ob = props.uqOutsideBounds
+  if (!ob || typeof ob.count !== 'number') return ''
+  const of = typeof ob.of === 'number' ? ` of ${ob.of}` : ''
+  return `${ob.count}${of} draws fell outside the params_for_id bounds and were dropped`
+    + ' from the stored distribution.'
+})
 
 const uqMethodLabel = computed(() =>
   props.uqMethod === 'laplace' ? 'Laplace' : props.uqMethod === 'mcmc' ? 'MCMC' : '',
@@ -1323,10 +1339,17 @@ const predictiveBandWidth = computed(() => `${(2 / (2 * PREDICTIVE_LIMIT)) * 100
         Run a UQ analysis to see parameter posteriors.
       </p>
       <div v-else class="uq-list">
+        <p v-if="uqOutsideBoundsText" class="empty-hint" data-testid="uq-outside-bounds">
+          {{ uqOutsideBoundsText }}
+        </p>
         <div v-for="(p, i) in uqPlots" :key="i" class="uq-row" data-testid="uq-row">
           <div class="uq-head">
             <span class="uq-label" v-html="renderMath(paramLabels[p.qname] ?? p.qname)" />
-            <span class="uq-stats">
+            <span v-if="!p.geom" class="uq-stats" data-testid="uq-not-identifiable">
+              {{ p.mean.toPrecision(3) }}:
+              {{ p.not_identifiable || 'not identifiable (no finite std)' }}
+            </span>
+            <span v-else class="uq-stats">
               {{ p.mean.toPrecision(3) }} ± {{ p.std.toPrecision(2) }}
               <span class="uq-ci">
                 90% CI [{{ p.q05.toPrecision(3) }}, {{ p.q95.toPrecision(3) }}]
@@ -1334,6 +1357,7 @@ const predictiveBandWidth = computed(() => `${(2 / (2 * PREDICTIVE_LIMIT)) * 100
             </span>
           </div>
           <svg
+            v-if="p.geom"
             class="uq-plot"
             viewBox="0 0 260 60"
             preserveAspectRatio="none"
@@ -1352,7 +1376,7 @@ const predictiveBandWidth = computed(() => `${(2 / (2 * PREDICTIVE_LIMIT)) * 100
               y2="60"
             />
           </svg>
-          <div class="uq-axis" data-testid="uq-axis">
+          <div v-if="p.geom" class="uq-axis" data-testid="uq-axis">
             <span v-for="t in p.geom.ticks" :key="'l' + t.at" :style="{ left: t.pct + '%' }">
               {{ t.text }}
             </span>

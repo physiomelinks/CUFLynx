@@ -241,6 +241,39 @@ elsewhere. The old name, "Outputs directory", survives only in the aliases below
   drop the middleware. CA's own `param_id_output_dir` keeps its name. The browser
   setting is `cuflynx-working-dir`, migrated once from `cuflynx-outputs-dir`.
 
+**Every analysis run is a step of the study workflow** (`apps/api/study_workflow.py`).
+A working dir has one growing CA calibration workflow,
+`<W>/workflow/calibration_workflow.json`, written with CA's `WorkflowBuilder`; its run
+directory is `<W>/workflows/study/`. Each calibration, sensitivity (Sobol or local) and
+UQ (MCMC or Laplace) run from a panel adds a step (`calibration-2`, `sobol-1`, ...) and
+the panel's own manager runs it alone through `workflow_runner.py` (`only=`, or
+`from_step=` when the run also added the step it starts from). Results are read from the
+step dir (`<step>/param_id`, `<step>/sensitivity`, `<step>/uq`, `step_result.json`), so
+the panels, progress polls and status shapes are unchanged. Values nobody fitted (the
+sliders, a bounds midpoint, a stopped calibration's best-so-far) are a `set` step with
+its reason, taken by `start_from` / `result_from`; a finished calibration is named
+directly. Rules: the target is the loaded model (`cellml_model`, or `external_model` for
+a `.py`), and every step names it; another model in the same working dir starts
+`study-2` and keeps the old file as `calibration_workflow_study.json`. One step of the
+study workflow runs at a time (409 otherwise). The direct runners stay for what has no
+workflow form, decided in `study_workflow.direct_reason` and said in the run log: a
+generated Python model type, held-out data (the direct calibration validates it), a
+point for a params_for_id with a modifier, an external model run with a step's values
+file, and emulator training (its bundle must stay under `emulators/` for the emulator
+lookup). A libcuflynx without `cellml_model` / the `uq` kind / `start_from` keeps every
+run direct (said once). `CUFLYNX_STUDY_WORKFLOW=0` does the same, and the test suite
+sets it: route tests that want the workflow take the `study_workflow_on` fixture.
+What the panels read from a step, all through `ca_run_history`: a local-SA step's
+**signed** `local_sensitivity_signed.csv` (`step_local_sensitivity`; its rows carry the
+Sobol indices' labels, `<item> (Exp<e>, Sub<s>)`, so the two heatmaps share axes, while a
+direct local run labels them `var^{e,s} [op]`); a uq step's posterior predictive check
+(`<step>/posterior_predictive`, `step_predictive_dir`, band by
+`posterior_predictive_band`). A study run passes `write_calibrated` whenever it leaves
+the workflow complete (CA refuses it otherwise), so the CellML target gets its
+`<stem>_calibrated_parameters.json` and calibrated CellML. **Reopening** a working dir
+(`load_outputs._with_study_steps`) fills each panel from the latest done step of its kind
+(`study_steps` names them), unless a direct run's result files are newer than the step.
+
 **Only circulatory_autogen writes results to the user's working dir** (#210). A run
 leaves CA's own files there and nothing else — no CUFLynx-authored results
 format, and no plumbing:
@@ -432,14 +465,17 @@ and `<instance>_calibrated_parameters.csv`. `omex_import` claims both as the
 `calibration` role -- by `calibrat` in the name, and a JSON by a
 `calibrated_parameters` object -- *before* the params_for_id and obs_data pools
 are filled (the CSV's name contains "param"). `import_omex_bytes` writes the values
-into the model with `calibrated_cellml` before parsing it, resolving the library's
+into the model with `calibrated_cellml.substitute_values` before parsing it, resolving the library's
 bare names through the params_for_id rows, so the sliders, the entries'
 `initial_value` and a later send all start from them; the response's `calibration`
 says so and the UI's notice names the cost. Unmatched names are a warning.
 
-Value substitution goes through `calibrated_cellml.calibrated_cellml` — the same
-writer the calibrated-model save uses, so a send and a saved best fit produce the
-same file for the same values. Its report now names the owning `component/var` per
+Value substitution goes through `calibrated_cellml.substitute_values` — libcuflynx's
+`param_id.calibrated_model.substitute_parameter_values` (the writer a workflow step's
+calibrated model and the direct calibrated-model save use), so a send and a saved best
+fit produce the same file for the same values. The built-in `calibrated_cellml` is
+only the fallback for a CA that predates that writer (a capability probe, same report
+shape). The report names the owning `component/var` per
 parameter, which is how the send warns about a value written outside
 `parameters` / `parameters_global`: per #287 PhLynx will not read those back.
 

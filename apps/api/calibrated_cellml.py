@@ -1,4 +1,16 @@
-"""Write a *calibrated* CellML model (issue #114).
+"""Write parameter values into a CellML model (issue #114).
+
+:func:`substitute_values` is the one entry point: the calibrated-model save of a
+direct calibration run, the send to PhLynx (``omex_export``) and a module
+library's calibration (``library_calibration``) all write through it. It uses
+libcuflynx's writer, ``param_id.calibrated_model.substitute_parameter_values``,
+the one a workflow step's calibrated model is written with, so every calibrated
+model is the same file for the same values.
+
+:func:`calibrated_cellml` below is the **fallback** for a configured
+circulatory_autogen that predates that writer (probed by
+:func:`ca_substitute_parameter_values`), and for the packaged app with no CA
+directory set. Its report has the same shape as CA's.
 
 When a calibration finishes, CUFLynx substitutes the best-fit parameter values
 into the uploaded flat CellML's ``initial_value`` attributes and saves the result,
@@ -54,8 +66,36 @@ def _set_initial_value(component_block: str, var: str, val: float) -> tuple[str,
     return _VARIABLE_TAG.sub(repl, component_block), changed
 
 
+def ca_substitute_parameter_values():
+    """libcuflynx's ``substitute_parameter_values``, or None when the configured
+    circulatory_autogen does not have it (or none is reachable)."""
+    try:
+        from ca_imports import ca_from  # local: runners/ sibling, a leaf
+
+        return ca_from("param_id.calibrated_model", "substitute_parameter_values")
+    except ImportError:
+        return None
+
+
+def substitute_values(cellml_text: str, values: dict[str, float]) -> tuple[str, dict]:
+    """``(new_text, report)``: ``values`` (``vessel/param`` -> value) written into
+    the model's ``initial_value`` attributes, nothing else changed.
+
+    ``report`` is ``{"updated": [...], "unresolved": [...], "resolved": {name:
+    "component/variable"}}``. Written by CA's writer when the configured CA has
+    it, else by :func:`calibrated_cellml`.
+    """
+    writer = ca_substitute_parameter_values()
+    if writer is None:
+        return calibrated_cellml(cellml_text, values)
+    return writer(cellml_text, values)
+
+
 def calibrated_cellml(cellml_text: str, best_params: dict[str, float]) -> tuple[str, dict]:
     """Return ``(new_cellml_text, report)`` with each best-fit value substituted.
+
+    The fallback writer, for a CA without ``substitute_parameter_values``; callers
+    go through :func:`substitute_values`.
 
     ``best_params`` maps ``"vessel/param"`` -> value. ``report`` is
     ``{"updated": [...], "unresolved": [...], "resolved": {...}}`` — full names

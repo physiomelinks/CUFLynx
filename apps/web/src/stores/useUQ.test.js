@@ -180,3 +180,23 @@ describe('useUQ medianParams', () => {
     expect(uq.medianParams.value).toBeNull()
   })
 })
+
+describe('useUQ Laplace draws outside the bounds', () => {
+  it('reads the count from the status and clears it for the next run', async () => {
+    getUQStatus.mockResolvedValueOnce({
+      state: 'done', lines: [], next_offset: 0, method: 'laplace', params: [],
+      outside_bounds: { count: 1179, of: 2000 },
+    })
+    getUQProgress.mockResolvedValue({ ...CHAIN, steps: 0 })
+
+    const uq = useUQ()
+    await uq.start('m1', {})
+    expect(uq.outsideBounds.value).toEqual({ count: 1179, of: 2000 })
+
+    getUQStatus.mockResolvedValueOnce({
+      state: 'done', lines: [], next_offset: 0, method: 'mcmc', params: [],
+    })
+    await uq.start('m1', {})
+    expect(uq.outsideBounds.value).toBe(null)
+  })
+})

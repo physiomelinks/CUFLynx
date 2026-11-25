@@ -38,7 +38,7 @@ import { useCalibration, applyBestParams, expandBestFitParams } from './stores/u
 import { useEmulator } from './stores/useEmulator'
 import { useSensitivity } from './stores/useSensitivity'
 import { useUQ } from './stores/useUQ'
-import { useWorkflow } from './stores/useWorkflow'
+import { anyRunEnded, useWorkflow } from './stores/useWorkflow'
 import {
   getVariables,
   // No `simulate`: a run is a protocol run now, because the run window is the
@@ -132,6 +132,21 @@ const canRun = computed(() => model.hasModel.value && obs.hasProtocol.value)
 const workingDir = ref(readStoredWorkingDir())
 watch(workingDir, (v) => storeWorkingDir(v))
 
+// The workflow bar shows the working dir's study workflow: a new working dir (or a
+// reload with one stored) closes another folder's and opens this one's. Debounced, as
+// the field changes on every keystroke; a half-typed relative path is not sent.
+let followTimer = null
+watch(
+  workingDir,
+  (v) => {
+    clearTimeout(followTimer)
+    const dir = (v || '').trim()
+    if (dir && !/^([a-zA-Z]:)?[\\/]/.test(dir)) return
+    followTimer = setTimeout(() => wf.followWorkingDir(dir), 400)
+  },
+  { immediate: true },
+)
+
 // What the working dir already holds, once someone asks for it (#255).
 const loadedOutputs = ref(null)
 const loadingOutputs = ref(false)
@@ -167,6 +182,9 @@ async function loadOutputsFromDirectory(runDir) {
       sim.setError(found.error)
       return
     }
+    // The working dir's study workflow, which the server has opened: its steps are the
+    // runs made from the panels, in the Workflow tab.
+    if (found.study_workflow?.opened) wf.refresh()
     // The study first: installing a model clears the obs_data, the params and
     // every derived store, so results applied before it would be wiped by it.
     const study = await openLoadedStudy(dir, found)
@@ -177,6 +195,11 @@ async function loadOutputsFromDirectory(runDir) {
       ? `Loaded ${found.found.join(', ')}`
       : 'Found no results in that directory'
     const which = found.run_dir ? ` from ${found.run_dir.split('/').pop()}` : ''
+    // Panels filled from the study workflow's latest step of their kind, by step id.
+    const steps = Object.entries(found.study_steps ?? {})
+    const fromSteps = steps.length
+      ? `. From study workflow steps: ${steps.map(([panel, id]) => `${panel} ${id}`).join(', ')}`
+      : ''
     const missed = found.missing?.length ? ` (could not read: ${found.missing.join('; ')})` : ''
     // The study is reported separately from the panels: "which model am I now
     // looking at" is the question a reopened directory raises first, and the
@@ -186,7 +209,7 @@ async function loadOutputsFromDirectory(runDir) {
       ? `. Opened ${study.name || 'the study'}${study.calibrated ? ' (calibrated model)' : ''}`
       : ''
     const studyFailed = study?.error ? `. Could not open the study: ${study.error}` : ''
-    loadedOutputsSummary.value = parts + which + missed + opened + studyFailed
+    loadedOutputsSummary.value = parts + which + fromSteps + missed + opened + studyFailed
     if (!found.found.length) sim.setError(loadedOutputsSummary.value)
   } catch (e) {
     sim.setError(`Could not read ${dir}: ${errorMessage(e)}`)
@@ -294,7 +317,9 @@ function applyLoadedOutputs(found) {
   // null is "not scored", which the panel says out loud -- so it is assigned
   // either way rather than only when present.
   uq.coverage.value = found.uq?.coverage ?? null
-  uq.posteriorPredictive.value = null
+  // The predictive band the run saved (a reopened direct run's, or a study workflow uq
+  // step's), or null when it saved none.
+  uq.posteriorPredictive.value = found.uq?.posterior_predictive ?? null
 
   if (found.emulator?.metadata) {
     emu.metadata.value = found.emulator.metadata
@@ -930,6 +955,19 @@ useRunNotifications(
 
 // Left column tab: 'params' | 'sensitivity' | 'calibration' | 'uq'
 const leftTab = ref('params')
+
+// Every calibration, sensitivity and UQ run is a step of the working dir's study workflow,
+// which the server opens in the Workflow tab: re-read it when a run ends and when the tab
+// is opened, so the tab shows each run as a step and the provenance drawn after it.
+watch(
+  () => [calib.state.value, sa.state.value, uq.state.value],
+  (now, before) => {
+    if (anyRunEnded(now, before)) wf.refresh()
+  },
+)
+watch(leftTab, (tab) => {
+  if (tab === 'workflow') wf.refresh()
+})
 
 // Emulator (CA #333). `emuDefaults` is CA's emulation settings schema;
 // `emuSettings` mirrors the panel's live values so a run can carry them.
@@ -3526,6 +3564,7 @@ watch(() => obs.obsData.value, scheduleRun)
             :baseline-cost="activeBaseline"
             :uq-params="uq.params.value"
             :uq-method="uq.method.value"
+            :uq-outside-bounds="uq.outsideBounds.value"
             :coverage="uq.coverage.value"
             :posterior-predictive="uq.posteriorPredictive.value"
             :emulator-metadata="emu.metadata.value"

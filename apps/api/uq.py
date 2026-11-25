@@ -8,7 +8,6 @@ fake runner by setting ``uq.runner_path``.
 
 from __future__ import annotations
 
-import json
 import os
 import shutil
 import subprocess
@@ -18,6 +17,9 @@ from pathlib import Path
 
 # Interpreter discovery is shared with calibration — same machine, same probe.
 from calibration import (  # noqa: F401  (list_python_interpreters re-exported)
+    WORKFLOW_RUNNER_PATH,
+    study_popen_kwargs,
+    study_read_dir,
     _warn_no_mpiexec,
     clear_run_config,
     finished_before_exiting,
@@ -52,15 +54,25 @@ class UQJob:
         # How well the posterior reproduces the data it was fitted to, if the
         # engine could run the check. None means "not measured", not "bad".
         self.coverage: dict | None = None
+        # A Laplace step's draws that fell outside the params_for_id bounds and were dropped
+        # from its stored distribution: ``{count, of}``, or None when it has no such count.
+        self.outside_bounds: dict | None = None
         self.proc: subprocess.Popen | None = None
         # The temp file the runner was handed as argv[1], removed when it exits.
         self.config_path: str | None = None
+        # The study-workflow step this run is, or None for a direct run.
+        self.study_step: dict | None = None
+        # Where this run's posterior predictive check was saved, once it has finished: a
+        # workflow uq step's ``posterior_predictive_dir``, the directory a direct Laplace
+        # run names on its meta line, else the MCMC run's directory.
+        self.predictive_dir: str | None = None
         self.lock = threading.Lock()
 
 
 class UQManager:
     def __init__(self):
         self.runner_path = RUNNER_PATH
+        self.study_runner_path = WORKFLOW_RUNNER_PATH
         self.python = default_python()
         self._job: UQJob | None = None
         self._lock = threading.Lock()
@@ -91,7 +103,8 @@ class UQManager:
         ``mpiexec`` (which would crash the request with an HTTP 500).
         """
         python = config.get("python") or self.python
-        base = runner_command(python, self.runner_path, config_path)
+        script = self.study_runner_path if config.get("study_step") else self.runner_path
+        base = runner_command(python, script, config_path)
         num_cores = int(config.get("num_cores", 1) or 1)
         if num_cores > 1:
             mpiexec = resolve_mpiexec(python)
@@ -109,8 +122,12 @@ class UQManager:
             os.makedirs(output_dir, exist_ok=True)
             config_path = write_run_config(config, "uq_config.json")
 
-            job = UQJob(uuid.uuid4().hex, output_dir)
+            # A workflow uq step runs in <step>/uq/: its MCMC run dir is there.
+            job = UQJob(uuid.uuid4().hex, study_read_dir(config, "uq") or output_dir)
+            job.study_step = config.get("study_step")
             settings = config.get("settings") or config
+            if job.study_step:
+                job.method = settings.get("method", "mcmc")
             job.burn_in = settings.get("burn_in", 0.5)
             # The configured run length, which the burn-in fraction is taken against. Coerced
             # rather than trusted: it arrives from a form, so "100000" is as likely as 100000,
@@ -129,8 +146,10 @@ class UQManager:
                 text=True,
                 bufsize=1,
                 env=env,
+                **study_popen_kwargs(config),
             )
             self._job = job
+            job.lines.extend(config.get("log_preamble") or [])
 
         threading.Thread(target=self._reader, args=(job,), daemon=True).start()
         return job.id
@@ -157,15 +176,15 @@ class UQManager:
         same reason the posterior is: the file is the result, and a run that was
         salvaged or reattached to has the file but not the pipe.
         """
-        run_dir = ca_run_history.uq_source_dir(output_dir)
-        path = os.path.join(run_dir, "posterior_predictive_coverage.json")
-        if not os.path.isfile(path):
-            return None
-        try:
-            with open(path) as handle:
-                return json.load(handle)
-        except (OSError, ValueError):
-            return None
+        return ca_run_history.predictive_coverage(ca_run_history.uq_source_dir(output_dir))
+
+    @staticmethod
+    def _predictive_dir(job: UQJob, meta: dict) -> str | None:
+        """Where a finished run's posterior predictive check is (see ``UQJob.predictive_dir``)."""
+        if job.study_step:
+            return ca_run_history.step_predictive_dir(
+                ca_run_history.step_result(job.study_step["step_dir"]))
+        return meta.get("predictive_dir") or ca_run_history.uq_source_dir(job.output_dir)
 
     def _finalize(self, job: UQJob, code: int) -> None:
         with job.lock:
@@ -182,23 +201,55 @@ class UQManager:
             # The posterior is re-derived from the samples the run persisted, not
             # from a summary it serialised for us (#210). Which method ran is the
             # only thing no file holds, so it comes over the pipe.
-            params = (
-                ca_run_history.uq_distributions(job.output_dir) if finished else None
-            )
+            # A workflow uq step's posterior is the one CA stored for it.
+            params = None
+            if finished:
+                params = (self._study_params(job) if job.study_step
+                          else ca_run_history.uq_distributions(job.output_dir))
             if params is not None:
                 try:
-                    job.method = read_meta_line(job.lines, META_MARKER).get("method")
+                    meta = read_meta_line(job.lines, META_MARKER)
+                    job.method = meta.get("method") or job.method
                     job.params = params
+                    warnings = []
+                    if job.study_step:
+                        job.outside_bounds = self._study_outside_bounds(job)
+                        failed = ca_run_history.step_predictive_error(
+                            ca_run_history.step_result(job.study_step["step_dir"]))
+                        if failed:
+                            warnings.append(f"The posterior predictive check failed: {failed}")
+                    job.predictive_dir = self._predictive_dir(job, meta)
+                    job.coverage = ca_run_history.predictive_coverage(job.predictive_dir)
                     job.state = "done"
-                    job.coverage = self._read_coverage(job.output_dir)
                     if code != 0:
-                        job.warning = teardown_warning(code, job.lines)
+                        warnings.append(teardown_warning(code, job.lines))
+                    job.warning = " ".join(w for w in warnings if w) or None
                 except Exception as exc:  # noqa: BLE001
                     job.state = "error"
                     job.error = f"failed to read results: {exc}"
             else:
                 job.state = "error"
                 job.error = job.error or f"runner exited with code {code}"
+
+    @staticmethod
+    def _study_params(job: UQJob) -> list | None:
+        """A workflow uq step's posterior: a Laplace approximation's normal marginals from
+        ``step_result.json`` (as the direct run's draws approximate them), an MCMC's stored
+        distribution (the chain after CA's burn-in)."""
+        return ca_run_history.step_uq_marginals(
+            ca_run_history.step_result(job.study_step["step_dir"]))
+
+    @staticmethod
+    def _study_outside_bounds(job: UQJob) -> dict | None:
+        """How many of a Laplace step's draws fell outside the params_for_id bounds (CA's
+        ``laplace.samples_outside_bounds``), of how many: those kept, in the stored
+        distribution's samples, plus those dropped. None when CA did not count them."""
+        result = ca_run_history.step_result(job.study_step["step_dir"]) or {}
+        count = (result.get("laplace") or {}).get("samples_outside_bounds")
+        if not isinstance(count, int):
+            return None
+        kept = ca_run_history.stored_sample_count(result.get("distribution_dir") or "")
+        return {"count": count, "of": None if kept is None else kept + count}
 
     def _salvage_partial(self, job: UQJob) -> None:
         """Build the posterior from the chain a cancelled run had already sampled.
@@ -258,6 +309,8 @@ class UQManager:
                 "error": job.error,
                 "warning": job.warning,
                 "coverage": job.coverage,
+                "outside_bounds": job.outside_bounds,
+                "study_step": job.study_step,
             }
 
     def progress(self, job_id: str) -> dict | None:
@@ -292,46 +345,10 @@ class UQManager:
         if job is None or job.id != job_id:
             return None
 
-        run_dir = ca_run_history.uq_source_dir(job.output_dir)
-        path = os.path.join(run_dir, "posterior_predictive.npz")
-        if not os.path.isfile(path):
-            return {"available": False, "coverage": job.coverage}
-
-        import numpy as np  # noqa: PLC0415 (only needed on this path)
-
-        try:
-            with np.load(path, allow_pickle=True) as data:
-                preds = np.asarray(data["predictions"], dtype=float)
-                truth = np.asarray(data["ground_truth"], dtype=float)
-                std = np.asarray(data["std"], dtype=float)
-                labels = [str(x) for x in data["labels"]]
-        except Exception as exc:  # noqa: BLE001
-            # numpy's failure modes for a damaged .npz are varied -- OSError,
-            # ValueError, KeyError and UnpicklingError have all been seen -- and
-            # a file that cannot be read is a missing figure, not a 500.
-            return {"available": False, "error": str(exc),
-                    "coverage": job.coverage}
-
-        keep = ~np.all(np.isnan(preds), axis=0)
-        idx = np.where(keep)[0]
-        if idx.size == 0:
-            return {"available": False, "coverage": job.coverage}
-
-        # A zero std would divide the whole observable away; leave those in real
-        # units rather than dropping the row.
-        scale = np.where(np.abs(std[idx]) > 0, np.abs(std[idx]), 1.0)
-        centred = lambda values: ((values - truth[idx]) / scale).tolist()  # noqa: E731
-
-        return {
-            "available": True,
-            "coverage": job.coverage,
-            "labels": [labels[i] for i in idx],
-            "lo": centred(np.nanpercentile(preds[:, idx], 2.5, axis=0)),
-            "median": centred(np.nanmedian(preds[:, idx], axis=0)),
-            "hi": centred(np.nanpercentile(preds[:, idx], 97.5, axis=0)),
-            "num_samples": int(preds.shape[0]),
-            "units": "measurement standard deviations from the measured value",
-        }
+        directory = job.predictive_dir
+        if directory is None and not job.study_step:
+            directory = ca_run_history.uq_source_dir(job.output_dir)
+        return ca_run_history.posterior_predictive_band(directory, job.coverage)
 
     def cancel(self, job_id: str) -> bool:
         job = self._job

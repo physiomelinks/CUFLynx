@@ -5,6 +5,7 @@ vi.mock('../lib/api', () => ({
   loadWorkflow: vi.fn(),
   uploadWorkflow: vi.fn(),
   closeWorkflow: vi.fn(),
+  followWorkingDir: vi.fn(),
   openWorkflowView: vi.fn(),
   runWorkflow: vi.fn(),
   getWorkflowStatus: vi.fn(),
@@ -17,6 +18,7 @@ vi.mock('../lib/api', () => ({
 }))
 
 import {
+  followWorkingDir,
   getWorkflow,
   getWorkflowStatus,
   loadWorkflow,
@@ -26,6 +28,7 @@ import {
 } from '../lib/api'
 import {
   KIND_WORDS,
+  anyRunEnded,
   TARGET_VIEW,
   missingInputs,
   modelLabel,
@@ -201,6 +204,20 @@ describe('workflowTabs', () => {
   })
 })
 
+describe('anyRunEnded (each run is a study-workflow step)', () => {
+  it('is true when a running job stops, whichever way', () => {
+    expect(anyRunEnded(['done', 'idle', 'idle'], ['running', 'idle', 'idle'])).toBe(true)
+    expect(anyRunEnded(['idle', 'idle', 'error'], ['idle', 'idle', 'running'])).toBe(true)
+    expect(anyRunEnded(['idle', 'cancelled', 'idle'], ['idle', 'running', 'idle'])).toBe(true)
+  })
+
+  it('is false while runs go on, when one starts, and on the first look', () => {
+    expect(anyRunEnded(['running', 'idle', 'idle'], ['running', 'idle', 'idle'])).toBe(false)
+    expect(anyRunEnded(['running', 'idle', 'idle'], ['done', 'idle', 'idle'])).toBe(false)
+    expect(anyRunEnded(['done', 'idle', 'idle'], undefined)).toBe(false)
+  })
+})
+
 describe('stepState', () => {
   it('prefers the live run, then CA\'s record, marking stale results', () => {
     expect(stepState(DESCRIBED, {}, 'fit_a')).toBe('done')
@@ -227,6 +244,32 @@ describe('useWorkflow', () => {
     expect(await wf.open({ path: '/bad' })).toBeNull()
     expect(wf.error.value).toBe('step "x" is wrong')
     expect(wf.loaded.value).toBe(true) // the open one stays open
+  })
+
+  it('a new working dir shows its own study workflow, dropping another\'s tab', async () => {
+    loadWorkflow.mockResolvedValueOnce(DESCRIBED)
+    openWorkflowView.mockResolvedValueOnce({ model_id: 'm1', workflow_view: { view: 'rest' } })
+    const wf = useWorkflow()
+    await wf.open({ path: '/w/calibration_workflow.json', workingDir: '/o' })
+    await wf.select('rest', '/o')
+
+    followWorkingDir.mockResolvedValueOnce({ loaded: false })
+    await wf.followWorkingDir('/new')
+    expect(followWorkingDir).toHaveBeenCalledWith('/new')
+    expect(wf.loaded.value).toBe(false)
+    expect(wf.selected.value).toBeNull()
+    expect(wf.view.value).toBeNull()
+  })
+
+  it('the same workflow kept across a working dir change keeps its tab', async () => {
+    loadWorkflow.mockResolvedValueOnce(DESCRIBED)
+    openWorkflowView.mockResolvedValueOnce({ model_id: 'm1', workflow_view: { view: 'rest' } })
+    const wf = useWorkflow()
+    await wf.open({ path: '/w/calibration_workflow.json', workingDir: '/o' })
+    await wf.select('rest', '/o')
+    followWorkingDir.mockResolvedValueOnce({ ...DESCRIBED })
+    await wf.followWorkingDir('/other')
+    expect(wf.selected.value).toBe('rest')
   })
 
   it('selecting a tab keeps the view the server returned', async () => {

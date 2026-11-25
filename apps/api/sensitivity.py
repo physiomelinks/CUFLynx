@@ -21,12 +21,15 @@ from pathlib import Path
 # Interpreter discovery is shared with calibration — same machine, same probe.
 import ca_run_history
 from calibration import (  # noqa: F401  (list_python_interpreters re-exported)
+    WORKFLOW_RUNNER_PATH,
     _warn_no_mpiexec,
     clear_run_config,
     finished_before_exiting,
     read_meta_line,
     list_python_interpreters,
     resolve_mpiexec,
+    study_popen_kwargs,
+    study_read_dir,
     teardown_warning,
     write_run_config,
 )
@@ -63,6 +66,10 @@ class SensitivityJob:
         self.proc: subprocess.Popen | None = None
         # The temp file the runner was handed as argv[1], removed when it exits.
         self.config_path: str | None = None
+        # The study-workflow step this run is, or None for a direct run; with ``meta``, what
+        # the runner's meta line says for a direct run (the method, the gradient source).
+        self.study_step: dict | None = None
+        self.meta: dict = {}
         self.lock = threading.Lock()
 
 
@@ -77,6 +84,7 @@ def _failure_reason(lines: list[str], fail_marker: str) -> str | None:
 class SensitivityManager:
     def __init__(self):
         self.runner_path = RUNNER_PATH
+        self.study_runner_path = WORKFLOW_RUNNER_PATH
         self.python = default_python()
         self._job: SensitivityJob | None = None
         self._lock = threading.Lock()
@@ -109,7 +117,8 @@ class SensitivityManager:
         ``mpiexec`` (which would crash the request with an HTTP 500).
         """
         python = config.get("python") or self.python
-        base = runner_command(python, self.runner_path, config_path)
+        script = self.study_runner_path if config.get("study_step") else self.runner_path
+        base = runner_command(python, script, config_path)
         num_cores = int(config.get("num_cores", 1) or 1)
         if num_cores > 1:
             mpiexec = resolve_mpiexec(python)
@@ -128,8 +137,11 @@ class SensitivityManager:
             config_path = write_run_config(config, "sa_config.json")
 
             # Results are read where the runner writes them.
-            job = SensitivityJob(uuid.uuid4().hex, config.get("sa_output_dir") or output_dir)
+            job = SensitivityJob(uuid.uuid4().hex, study_read_dir(config, "sensitivity")
+                                 or config.get("sa_output_dir") or output_dir)
             job.config_path = config_path
+            job.study_step = config.get("study_step")
+            job.meta = dict(config.get("study_meta") or {})
             env = runner_launch_env(config.get("python") or self.python)
             job.proc = subprocess.Popen(
                 self.build_command(config, config_path),
@@ -138,8 +150,10 @@ class SensitivityManager:
                 text=True,
                 bufsize=1,
                 env=env,
+                **study_popen_kwargs(config),
             )
             self._job = job
+            job.lines.extend(config.get("log_preamble") or [])
 
         threading.Thread(target=self._reader, args=(job,), daemon=True).start()
         return job.id
@@ -177,10 +191,14 @@ class SensitivityManager:
             # CSV CA writes, or the local-sensitivity CSVs in CA's format. Only
             # the run metadata that no file holds -- which method ran, and the
             # point a local run was linearised about -- arrives on the pipe.
-            meta = read_meta_line(job.lines, META_MARKER)
+            meta = read_meta_line(job.lines, META_MARKER) or self._study_meta(job)
             data = None
             if finished:
-                if meta.get("method") == "local":
+                if meta.get("method") == "local" and job.study_step:
+                    # libcuflynx's signed d ln Y / d ln p, labelled as its Sobol indices
+                    data = ca_run_history.step_local_sensitivity(
+                        ca_run_history.step_result(job.study_step["step_dir"]))
+                elif meta.get("method") == "local":
                     data = ca_run_history.local_sensitivity(job.output_dir)
                 else:
                     data = ca_run_history.sobol_indices(job.output_dir)
@@ -208,6 +226,23 @@ class SensitivityManager:
                 job.error = job.error or _failure_reason(job.lines, FAIL_MARKER) or (
                     f"runner exited with code {code}")
 
+    @staticmethod
+    def _study_meta(job: SensitivityJob) -> dict:
+        """A workflow step's meta, which no runner line carries: the method and gradient
+        source it was started with, and the point a local analysis was about, from CA's
+        ``step_result.json`` (``nominal``)."""
+        if not job.study_step:
+            return {}
+        meta = dict(job.meta)
+        result = ca_run_history.step_result(job.study_step["step_dir"]) or {}
+        nominal = result.get("nominal") or {}
+        if nominal.get("values") is not None:
+            meta["nominal"] = list(nominal["values"])
+            source = nominal.get("source") or "model"
+            meta["nominal_source"] = ("the model's own values" if source == "model"
+                                      else f"study workflow step {source}")
+        return meta
+
     def status(self, job_id: str, offset: int = 0) -> dict | None:
         job = self._job
         if job is None or job.id != job_id:
@@ -228,6 +263,7 @@ class SensitivityManager:
                 "gradient_method": job.gradient_method,
                 "error": job.error,
                 "warning": job.warning,
+                "study_step": job.study_step,
             }
 
     def cancel(self, job_id: str) -> bool:

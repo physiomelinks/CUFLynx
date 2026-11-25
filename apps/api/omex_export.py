@@ -42,7 +42,7 @@ from xml.sax.saxutils import quoteattr
 
 import omex_import
 import study_manifest
-from calibrated_cellml import calibrated_cellml
+import calibrated_cellml
 from params_for_id import PARAM_COMPONENTS
 
 #: The components #287 says PhLynx will read parameter changes back out of. A
@@ -109,15 +109,15 @@ def build_manifest(entries: list[dict]) -> bytes:
 def substitute_values(cellml_text: str, values: dict[str, float]) -> tuple[str, dict]:
     """The model with ``values`` written into it, plus what happened.
 
-    Delegates to :func:`calibrated_cellml.calibrated_cellml`, which already maps a
-    params_for_id ``vessel/param`` onto the flat model's owning component and
-    substitutes without a libCellML round-trip. There is deliberately no second
-    substituter here: a send and a saved calibrated model must write the same
-    file for the same values.
+    Delegates to :func:`calibrated_cellml.substitute_values` (libcuflynx's writer,
+    or the built-in one on an older CA), which maps a params_for_id ``vessel/param``
+    onto the model's owning component and substitutes without a libCellML
+    round-trip. There is deliberately no second substituter here: a send and a
+    saved calibrated model must write the same file for the same values.
     """
     if not values:
         return cellml_text, {"updated": [], "unresolved": [], "resolved": {}}
-    return calibrated_cellml(cellml_text, values)
+    return calibrated_cellml.substitute_values(cellml_text, values)
 
 
 def outside_parameter_components(report: dict) -> list[str]:

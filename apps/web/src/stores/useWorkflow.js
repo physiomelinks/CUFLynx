@@ -3,6 +3,7 @@ import {
   cancelWorkflow,
   closeWorkflow,
   errorMessage,
+  followWorkingDir as postWorkingDir,
   getWorkflow,
   getWorkflowStatus,
   loadWorkflow,
@@ -28,6 +29,12 @@ function arrayFile(model) {
 /** An external Python model's file name ({external_model_path}), or null. */
 export function externalFile(model) {
   const path = model?.external_model_path
+  return typeof path === 'string' && path ? path.split(/[\\/]/).pop() : null
+}
+
+/** The file name of a CellML workflow model (`cellml_model_path`), or null. */
+export function cellmlFile(model) {
+  const path = model?.cellml_model_path
   return typeof path === 'string' && path ? path.split(/[\\/]/).pop() : null
 }
 
@@ -238,6 +245,15 @@ export function provenanceLinks(described) {
   return Object.keys(links).length ? links : null
 }
 
+/**
+ * Whether a run that was going has stopped, between two lists of job states (`running`,
+ * `done`, ...): each calibration, sensitivity and UQ run is a step of the study workflow,
+ * so the open workflow is re-read when one ends.
+ */
+export function anyRunEnded(now, before) {
+  return !!before && now.some((state, i) => before[i] === 'running' && state !== 'running')
+}
+
 /** Drives the open calibration workflow: load, tabs, run and poll. */
 export function useWorkflow(options = {}) {
   const intervalMs = options.intervalMs ?? 1000
@@ -302,6 +318,19 @@ export function useWorkflow(options = {}) {
       resetJob()
     }
     return d
+  }
+
+  /** The working dir changed: show its study workflow, not another folder's. */
+  async function followWorkingDir(dir) {
+    const before = described.value?.path ?? null
+    const d = await guarded(() => postWorkingDir(dir))
+    if (!d) return
+    if ((d.path ?? null) !== before) {
+      selected.value = null
+      view.value = null
+      unset.value = null
+    }
+    described.value = d
   }
 
   async function close() {
@@ -430,6 +459,7 @@ export function useWorkflow(options = {}) {
     refresh,
     open,
     close,
+    followWorkingDir,
     select,
     saveStepInput,
     run,

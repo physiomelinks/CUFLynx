@@ -14,6 +14,11 @@ config.json:
   "module_library_dirs": ["..."], "from_step": null, "only": null,
   "write_calibrated": false
 }
+
+A panel's run of one study-workflow step (``study_workflow``) hands this runner its own
+config with ``workflow_output_dir`` (the workflow's run directory; ``output_dir`` is then the
+working dir) and ``markers``: the done and fail markers that panel's manager reads, printed
+beside this runner's own.
 """
 
 from __future__ import annotations
@@ -77,7 +82,7 @@ def run(config: dict) -> dict:
     extra = {"write_calibrated": True} if config.get("write_calibrated") else {}
     return run_workflow(
         config["workflow"],
-        output_dir=config["output_dir"],
+        output_dir=config.get("workflow_output_dir") or config["output_dir"],
         module_library_dirs=config.get("module_library_dirs") or [],
         from_step=config.get("from_step") or None,
         only=config.get("only") or None,
@@ -91,6 +96,7 @@ def main(argv: list[str]) -> int:
         print(f"{FAIL_MARKER} usage: workflow_runner.py <config.json>", flush=True)
         return 2
     config = json.loads(Path(argv[1]).read_text())
+    markers = config.get("markers") or {}
     try:
         run(config)
     except Exception as exc:  # surface to the captured stdout for the UI
@@ -99,12 +105,16 @@ def main(argv: list[str]) -> int:
             # the step and its parameters, so the GUI can open the step's protocol on them
             print(event_line({"event": "unset_parameters", "step": unset["step_id"],
                               "names": unset["names"]}), flush=True)
-        print(f"{FAIL_MARKER} {exc}", flush=True)
+        for marker in (markers.get("fail"), FAIL_MARKER):
+            if marker:
+                print(f"{marker} {exc}", flush=True)
         traceback.print_exc()
         _abort_mpi()
         return 1
     if _rank() == 0:
-        print(DONE_MARKER, flush=True)
+        for marker in (markers.get("done"), DONE_MARKER):
+            if marker:
+                print(marker, flush=True)
     return 0
 
 

@@ -29,6 +29,26 @@ from runtime_paths import (
 )
 
 RUNNER_PATH = str(runner_path("calibration_runner.py"))
+#: What runs a study-workflow step (``study_workflow``) for every analysis manager.
+WORKFLOW_RUNNER_PATH = str(runner_path("workflow_runner.py"))
+
+
+def study_read_dir(config: dict, subdir: str) -> str | None:
+    """Where a study-workflow step's results are read (``<step dir>/<subdir>``), or None
+    for a direct run."""
+    step = config.get("study_step")
+    return os.path.join(step["step_dir"], subdir) if step else None
+
+
+def study_popen_kwargs(config: dict) -> dict:
+    """A study-workflow step runs in the workflow's run directory, as a Workflow-tab run
+    does (``workflow_manager.start``): an explicit working directory, since the server's own
+    can be a Myokit build directory that is about to be deleted."""
+    step = config.get("study_step")
+    if not step:
+        return {}
+    os.makedirs(step["run_dir"], exist_ok=True)
+    return {"cwd": step["run_dir"]}
 
 
 def _warn_no_mpiexec(num_cores: int) -> None:
@@ -531,12 +551,18 @@ class CalibrationJob:
         self.file_prefix: str | None = None
         # When the run started; results older than this belong to a previous one.
         self.started_at: float | None = None
+        # The study-workflow step this run is ({workflow, run_dir, step, steps, step_dir}),
+        # or None for a direct run.
+        self.study_step: dict | None = None
+        # Where the calibrated CellML is (the step dir for a workflow step).
+        self.model_dir: str = output_dir
         self.lock = threading.Lock()
 
 
 class CalibrationManager:
     def __init__(self):
         self.runner_path = RUNNER_PATH
+        self.study_runner_path = WORKFLOW_RUNNER_PATH
         self.python = default_python()
         self._job: CalibrationJob | None = None
         self._lock = threading.Lock()
@@ -568,6 +594,16 @@ class CalibrationManager:
             return None
         return job.best_params or None
 
+    def last_completed_step(self, model_id: str, finished_only: bool = True) -> dict | None:
+        """The study-workflow step of the most recent calibration of ``model_id`` that
+        finished, or None. A step stopped early has no step result, so it counts only with
+        ``finished_only=False``."""
+        job = self._job
+        states = ("done",) if finished_only else ("done", "cancelled")
+        if job is None or job.model_id != model_id or job.state not in states:
+            return None
+        return job.study_step
+
     def build_command(self, config: dict, config_path: str) -> list[str]:
         """Single-process by default; ``mpiexec -n N`` when num_cores > 1.
 
@@ -585,7 +621,8 @@ class CalibrationManager:
         # An explicit interpreter runs the runner script; with none, the frozen app
         # runs it in-process (runner mode) and from source uses the serving Python.
         python = config.get("python") or self.python
-        base = runner_command(python, self.runner_path, config_path)
+        script = self.study_runner_path if config.get("study_step") else self.runner_path
+        base = runner_command(python, script, config_path)
         num_cores = int(config.get("num_cores", 1) or 1)
         if num_cores > 1:
             mpiexec = resolve_mpiexec(python)
@@ -601,18 +638,28 @@ class CalibrationManager:
                 raise RuntimeError("a calibration job is already running")
             output_dir = config["output_dir"]
             os.makedirs(output_dir, exist_ok=True)
-            # A reused output_dir may hold a previous run's progress history; clear
-            # it so this run's live plots start fresh instead of reading stale data.
-            ca_run_history.clear_run_history(output_dir)
+            # A workflow step's results are read from its param_id dir, which CA empties
+            # when the step starts.
+            read_dir = study_read_dir(config, "param_id")
+            if read_dir is None:
+                # A reused output_dir may hold a previous run's progress history; clear
+                # it so this run's live plots start fresh instead of reading stale data.
+                ca_run_history.clear_run_history(output_dir)
             config_path = write_run_config(config, "calib_config.json")
 
             job = CalibrationJob(
-                uuid.uuid4().hex, output_dir, config.get("model_id"), config.get("params_path"),
+                uuid.uuid4().hex, read_dir or output_dir, config.get("model_id"),
+                config.get("params_path"),
             )
             job.config_path = config_path
+            job.study_step = config.get("study_step")
             # Both halves of the calibrated model's filename are known here, so
-            # the path never has to be round-tripped back from the runner.
+            # the path never has to be round-tripped back from the runner. CA names a
+            # workflow step's <step>_calibrated.cellml, in the step dir.
             job.file_prefix = config.get("file_prefix")
+            if job.study_step:
+                job.file_prefix = job.study_step["step"]
+                job.model_dir = job.study_step["step_dir"]
             # When this run started, so a previous run's results left in the same
             # working dir cannot be reported as this one's.
             job.started_at = time.time()
@@ -624,8 +671,10 @@ class CalibrationManager:
                 text=True,
                 bufsize=1,
                 env=env,
+                **study_popen_kwargs(config),
             )
             self._job = job
+            job.lines.extend(config.get("log_preamble") or [])
 
         threading.Thread(target=self._reader, args=(job,), daemon=True).start()
         return job.id
@@ -682,7 +731,7 @@ class CalibrationManager:
                     job.error_labels = errors["error_labels"]
                     job.validation = ca_run_history.validation_results(job.output_dir)
                     job.calibrated_model_path = ca_run_history.calibrated_model_path(
-                        job.output_dir, job.file_prefix
+                        job.model_dir, job.file_prefix
                     )
                     job.state = "done"
                     if code != 0:
@@ -715,6 +764,7 @@ class CalibrationManager:
                 "validation": job.validation,
                 "error": job.error,
                 "warning": job.warning,
+                "study_step": job.study_step,
             }
 
     def progress(self, job_id: str) -> dict | None:
