@@ -4332,14 +4332,14 @@ def _study_point(plan, model_id: str, qnames: list) -> str | None:
     latest done one of a reopened working dir), else a set step with the best fit (or the
     best-so-far of a calibration stopped early), its reason saying which."""
     finished = calibration.last_completed_step(model_id)
-    if finished and finished["workflow"] == plan.builder.path and finished["step"] in plan.builder.steps:
+    if finished and finished["workflow"] == plan.path and finished["step"] in plan.builder.steps:
         return finished["step"]
     best = calibration.last_completed_best_params(model_id)
     if not best and finished is None:
         record = _get_model(model_id)
         opened = _opened_calibration(record)
         if opened:
-            if opened["workflow"] == plan.builder.path and opened["step"] in plan.builder.steps:
+            if opened["workflow"] == plan.path and opened["step"] in plan.builder.steps:
                 return opened["step"]
             return plan.add_set("best_fit", study_workflow.set_entries(
                 opened["best"], qnames,
@@ -4362,11 +4362,11 @@ def _study_start(plan, config: dict, markers: tuple, notes: list) -> None:
     plan.write()
     config.update(plan.runner_config({"done": markers[0], "fail": markers[1]}))
     config["log_preamble"] = notes + [_study_note(
-        f"step {plan.step} of {plan.builder.path} (adds {', '.join(plan.added)}); its results "
+        f"step {plan.step} of {plan.path} (adds {', '.join(plan.added)}); its results "
         f"go to {plan.step_dir()}.")]
-    if not workflow.busy and (not workflow.loaded or workflow.path == plan.builder.path):
+    if not workflow.busy and (not workflow.loaded or workflow.path == plan.path):
         try:
-            workflow.load(plan.builder.path, plan.run_dir, [])
+            workflow.load(plan.path, plan.run_dir, [])
         except (workflow_manager.WorkflowError, workflow_manager.WorkflowUnavailable,
                 RuntimeError):
             pass

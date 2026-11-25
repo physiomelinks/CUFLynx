@@ -789,3 +789,30 @@ def test_a_run_writes_the_calibrated_values_when_it_leaves_the_workflow_complete
     _run(client, "sensitivity", {"model_id": model_id, "settings": {
         "config_outputs_dir": str(work), "method": "sobol", "num_samples": 8}})
     assert fake_runs()[-1]["write_calibrated"] is False
+
+
+def test_the_runner_config_names_the_workflow_as_a_str_when_ca_gives_a_path(tmp_path):
+    """Newer libcuflynx's WorkflowBuilder.path is a pathlib.Path: the config is JSON (the
+    runner's argv[1]) and its workflow is compared with paths read back from it."""
+    import json
+    from pathlib import Path
+
+    import study_workflow
+
+    class Builder:
+        name = "study"
+        path = Path(tmp_path) / "workflow" / "calibration_workflow.json"
+        steps = ["sobol-1"]
+
+        def to_dict(self):
+            return {"steps": []}
+
+        def write(self):
+            pass
+
+    plan = study_workflow.Plan(Builder(), str(tmp_path))
+    plan.added = ["sobol-1"]
+    config = plan.runner_config({})
+    json.dumps(config)
+    assert config["workflow"] == config["study_step"]["workflow"] == str(Builder.path)
+    assert plan.path == str(Builder.path) and plan.write() == str(Builder.path)

@@ -325,9 +325,17 @@ class Plan:
     def step_dir(self, step_id: str | None = None) -> str:
         return os.path.join(self.run_dir, step_id or self.step)
 
+    @property
+    def path(self) -> str:
+        """The workflow file. A str, though CA's ``WorkflowBuilder.path`` is a ``pathlib.Path``
+        in newer libcuflynx: it goes into the runner's JSON config and is compared with the
+        paths read back from it."""
+        return os.fspath(self.builder.path)
+
     def write(self) -> str:
         try:
-            return self.builder.write()
+            self.builder.write()
+            return self.path
         except (ValueError, OSError) as exc:
             raise StudyWorkflowError(f"the study workflow was not written: {exc}") from exc
 
@@ -356,10 +364,10 @@ class Plan:
         only = self.added[0] if len(self.added) == 1 else None
         return {
             "write_calibrated": self.completes(),
-            "study_step": {"workflow": self.builder.path, "run_dir": self.run_dir,
+            "study_step": {"workflow": self.path, "run_dir": self.run_dir,
                            "step": self.step, "steps": list(self.added),
                            "step_dir": self.step_dir()},
-            "workflow": self.builder.path,
+            "workflow": self.path,
             "workflow_output_dir": self.run_dir,
             "only": only,
             "from_step": None if only else self.added[0],
