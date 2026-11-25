@@ -6296,8 +6296,9 @@ class EmulatorPredictRequest(BaseModel):
     settings: dict = Field(default_factory=dict)
 
 
-def _emulator_candidates(model_id: str, settings: dict) -> tuple[str, list[dict]]:
-    """This study's outputs directory and every emulator it could be read with.
+def _emulator_candidates(model_id: str, settings: dict) -> tuple[str, str | None, list[dict]]:
+    """This study's outputs directory, its manifest's declared emulator, and every
+    emulator it could be read with.
 
     One place that answers "what is on offer here", so the chooser, the info route
     and the run config cannot disagree about which bundles exist.
@@ -6315,7 +6316,8 @@ def _emulator_candidates(model_id: str, settings: dict) -> tuple[str, list[dict]
         # A broken manifest is reported by the loader, which is where a user can act
         # on it. Here it only means "no declaration", and the conventions still apply.
         declared = None
-    return output_dir, ca_run_history.emulator_choices(output_dir, prefix, obs, declared)
+    return output_dir, declared, ca_run_history.emulator_choices(output_dir, prefix, obs,
+                                                                  declared)
 
 
 def _chosen_emulator_dir(settings: dict, choices: list[dict]) -> str | None:
@@ -6328,14 +6330,7 @@ def _chosen_emulator_dir(settings: dict, choices: list[dict]) -> str | None:
     discovered set, it cannot: the user picks among this study's own emulators, and an
     unknown path falls back to the default rather than being read.
     """
-    wanted = (settings.get("emulator_dir") or "").strip()
-    if not wanted:
-        return None
-    target = os.path.abspath(wanted)
-    for row in choices:
-        if os.path.abspath(row["dir"]) == target:
-            return row["dir"]
-    return None
+    return ca_run_history.emulator_choice_named(choices, settings.get("emulator_dir"))
 
 
 def _emulator_dir_for(model_id: str, settings: dict) -> str:
@@ -6345,37 +6340,19 @@ def _emulator_dir_for(model_id: str, settings: dict) -> str:
     without a second setting to keep in step, and so an emulator trained by CA's
     own script into the same working dir is found here too.
 
-    A study may hold several -- one design fitted by several emulator families -- and
-    then derivation cannot answer on its own, because every one of them is equally
-    "the emulator for this study". So an explicit choice wins when the caller made
-    one, and the derived answer remains the default for the ordinary case of exactly
-    one bundle.
+    A study may hold several -- one design fitted by several emulator families. Which
+    one is read is :func:`ca_run_history.default_emulator_dir`'s answer, the same one
+    the Results view gets from ``load_outputs``.
     """
     record = _get_model(model_id)
-    configured = _working_dir_arg(settings.get("config_outputs_dir")) or ""
-    output_dir = configured or str(UPLOAD_DIR / f"emu_{model_id}")
+    output_dir, declared, choices = _emulator_candidates(model_id, settings)
     prefix = _record_prefix(record)
     obs = str(record.obs_path) if record.obs_path else None
-    if (settings.get("emulator_dir") or "").strip():
-        _, choices = _emulator_candidates(model_id, settings)
-        chosen = _chosen_emulator_dir(settings, choices)
-        if chosen:
-            return chosen
-    conventional = ca_run_history.emulator_dir(output_dir, prefix, obs)
-    if ca_run_history.emulator_metadata(conventional) is not None:
-        return conventional
-    # The convention is the right question while *this* app is the thing training: both
-    # sides derive the path and neither has to pass it. It is only a guess for a directory
-    # someone else produced -- `emulator_settings.emulator_dir` is a setting, and the
-    # conventional name embeds the obs file. So the Analysis panel would list the emulator
-    # it had found while this route, asking the convention, answered "no trained emulator
-    # for this study; train one in the Emulator tab" about the very bundle on screen.
-    #
-    # Same search the loader uses, so what was found is what gets predicted with.
-    found = ca_run_history.find_emulator_dir(output_dir, prefix, obs)
-    # Falls back to the conventional path rather than None so a genuinely absent emulator
-    # still reports the place it was expected, which is what makes that message actionable.
-    return found or conventional
+    found = ca_run_history.default_emulator_dir(output_dir, prefix, obs, choices, declared,
+                                                settings.get("emulator_dir"))
+    # A missing emulator still reports where training would put it, which is
+    # what makes "train one in the Emulator tab" actionable.
+    return found or ca_run_history.emulator_dir(output_dir, prefix, obs)
 
 
 def _emulator_run_config(model_id: str, settings: dict) -> dict:
@@ -6465,7 +6442,7 @@ def emulator_info(model_id: str, config_outputs_dir: str = "",
     """
     settings = {"config_outputs_dir": config_outputs_dir,
                 "emulator_dir": emulator_dir}
-    _, choices = _emulator_candidates(model_id, settings)
+    _, _, choices = _emulator_candidates(model_id, settings)
     emu_dir = _emulator_dir_for(model_id, settings)
     metadata = ca_run_history.emulator_metadata(emu_dir)
     # The held-out points travel with the metadata rather than behind a second
