@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import fs from 'node:fs'
 import { mount } from '@vue/test-utils'
 import WorkflowDiagram from './WorkflowDiagram.vue'
 import { edgesOf, layoutSteps } from '../lib/workflowTarget'
@@ -587,5 +588,13 @@ describe('WorkflowDiagram', () => {
     expect(c.findAll('.wf-edge.step')).toHaveLength(1)
     await c.find('[data-testid="workflow-edge-surrogate-1-sobol-1"]').trigger('mouseenter')
     expect(c.find('.wf-edge-label').text()).toBe('emulator')
+  })
+
+  it('draws "origin not recorded" in red, dotted, in the chart and the key', () => {
+    // jsdom computes no styles, so the rule is read from the stylesheet
+    const src = fs.readFileSync('src/components/WorkflowDiagram.vue', 'utf8')
+    expect(src).toMatch(/\.wf-box\.unrecorded \{ border: 2px dotted var\(--hand\); \}/)
+    expect(src).toMatch(/\.wf-box\.unrecorded \.wf-tag \{ color: var\(--hand\); \}/)
+    expect(src).toMatch(/\.wf-key \.unrecorded::before \{ border: 2px dotted var\(--hand\); \}/)
   })
 })

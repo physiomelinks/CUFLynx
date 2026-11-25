@@ -60,6 +60,50 @@ describe('WorkflowEdgeDetail', () => {
     expect(d.emitted('step')).toEqual([['fit-b']])
   })
 
+  const KINDS = ['measured', 'inherited', 'set_by_hand', 'derived', 'calibrated']
+  const UNRECORDED = { id: 'unrecorded', title: 'Origin not recorded', mark: 'unclassified', values: [
+    { name: 'm/delta', value: 0.2, units: '', note: '', origin: null, data_reference: '', reason: '', calibrated_by: [] }] }
+
+  it("edits a value's origin, and says which box it has moved to", async () => {
+    const saveOrigin = vi.fn().mockResolvedValue('')
+    const d = mountIt({ origin: UNRECORDED, boxes: [UNRECORDED], originKinds: KINDS, saveOrigin })
+    await d.find('[data-testid="workflow-origin-edit-m/delta"]').trigger('click')
+    const options = d.findAll('[data-testid="workflow-origin-kind"] option').map((o) => o.text())
+    expect(options).toEqual(['not recorded', 'from literature', 'inherited', 'set by hand',
+                             'from data', 'calibrated before'])
+    await d.find('[data-testid="workflow-origin-kind"]').setValue('set_by_hand')
+    await d.find('[data-testid="workflow-origin-reason"]').setValue('no data identify it')
+    await d.find('[data-testid="workflow-origin-form"]').trigger('submit')
+    await flushPromises()
+    expect(saveOrigin).toHaveBeenCalledWith({ name: 'm/delta', origin: 'set_by_hand',
+                                              dataReference: '', reason: 'no data identify it' })
+    expect(d.find('[data-testid="workflow-origin-form"]').exists()).toBe(false)
+    // the workflow described again: the value has left this box for the set-by-hand one
+    const hand = { id: 'set_by_hand', title: 'Values set by hand', mark: 'set_by_hand',
+                   values: [{ ...UNRECORDED.values[0], origin: 'set_by_hand', note: 'no data identify it' }] }
+    await d.setProps({ origin: { ...UNRECORDED, values: [] }, boxes: [hand] })
+    expect(d.text()).toContain('No values are left in this box.')
+    const moved = d.find('[data-testid="workflow-origin-moved"]')
+    expect(moved.text()).toContain('m/delta is now in Values set by hand')
+    await moved.find('a').trigger('click')
+    expect(d.emitted('open-origin')).toEqual([['set_by_hand']])
+  })
+
+  it("shows why an origin was not recorded, and keeps the form", async () => {
+    const saveOrigin = vi.fn().mockResolvedValue('the target names no parameters file')
+    const d = mountIt({ origin: UNRECORDED, boxes: [UNRECORDED], originKinds: KINDS, saveOrigin })
+    await d.find('[data-testid="workflow-origin-edit-m/delta"]').trigger('click')
+    await d.find('[data-testid="workflow-origin-form"]').trigger('submit')
+    await flushPromises()
+    expect(d.find('[data-testid="workflow-origin-error"]').text()).toContain('no parameters file')
+    expect(d.find('[data-testid="workflow-origin-form"]').exists()).toBe(true)
+  })
+
+  it('offers no edit when origins cannot be recorded', () => {
+    const d = mountIt({ origin: UNRECORDED, boxes: [UNRECORDED] })
+    expect(d.find('[data-testid="workflow-origin-edit-m/delta"]').exists()).toBe(false)
+  })
+
   it('shows what a figure reads and writes without asking the server', () => {
     getWorkflowEdge.mockClear()
     const d = mountIt({ figure: { id: 'paper_plots', command: 'make paper-plots',

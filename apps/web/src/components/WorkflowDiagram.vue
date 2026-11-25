@@ -1092,7 +1092,8 @@ function onPanEnd(event) {
 .wf-origin { cursor: pointer; }
 .wf-box.sim { border-color: var(--analysis); }
 .wf-box.inherited { border: 2px dashed var(--inherited); }
-.wf-box.unrecorded { border: 2px dotted var(--inherited); }
+.wf-box.unrecorded { border: 2px dotted var(--hand); }
+.wf-box.unrecorded .wf-tag { color: var(--hand); }
 .wf-box.target { border-color: var(--p-text-color, #ddd); cursor: pointer; }
 .wf-node {
   cursor: pointer;
@@ -1306,7 +1307,7 @@ function onPanEnd(event) {
 .wf-key .measured::before { border-color: var(--measured); }
 .wf-key .inherited::before { border: 2px dashed var(--inherited); }
 .wf-key .derived::before { border-color: var(--derived); }
-.wf-key .unrecorded::before { border: 2px dotted var(--inherited); }
+.wf-key .unrecorded::before { border: 2px dotted var(--hand); }
 .wf-help {
   margin: 0.3rem 0 0;
   font-size: 0.75rem;

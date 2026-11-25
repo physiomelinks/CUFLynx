@@ -718,6 +718,7 @@ const workflowEditor = {
   placeMany: (positions) => wf.placeMany(positions),
   addDraft: (col, row, onTarget, boxModel, action) => wf.addDraft(col, row, onTarget, boxModel, action),
   setValues: (form) => wf.setValues(form),
+  setValueOrigin: (form) => wf.setValueOrigin(form),
   combine: (form) => wf.combine(form),
   // a reduction chosen by hand keeps entries of the study's params_for_id
   chooseParameters: (form) => wf.chooseParameters({ ...form, modelId: model.modelId.value }),

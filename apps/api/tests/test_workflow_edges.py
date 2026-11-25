@@ -163,7 +163,23 @@ def test_every_value_of_the_target_is_in_one_box_by_its_origin():
 
 def test_a_plan_without_target_values_leaves_the_boxes_to_the_provenance_graph():
     assert we.parameter_origins({"steps": []}) is None and we.parameter_origins(None) is None
-    assert we.parameter_origins({"target_values": []}) == {"boxes": [], "model_counts": {}}
+    assert we.parameter_origins({"target_values": []}) == {"boxes": [], "model_counts": {},
+                                                           "editable": False}
+
+
+def test_each_value_carries_what_its_form_edits():
+    """The box's form edits a value's origin, data reference and reason, in the target's
+    parameters file: editable only when the plan names one."""
+    plan = {"target_parameters": "/w/lv_parameters.json", "target_values": [
+        _value("m/hand", "set_by_hand", reason="a round number", data_reference="notes.md"),
+        _value("m/none")]}
+    d = we.parameter_origins(plan)
+    assert d["editable"] is True
+    (hand,) = d["boxes"][0]["values"]
+    assert (hand["origin"], hand["data_reference"], hand["reason"]) == (
+        "set_by_hand", "notes.md", "a round number")
+    assert d["boxes"][1]["values"][0]["origin"] is None
+    assert we.parameter_origins(dict(plan, target_parameters=None))["editable"] is False
 
 
 @pytest.mark.integration

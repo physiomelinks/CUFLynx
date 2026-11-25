@@ -50,3 +50,40 @@ describe('WorkflowView: a simulation waiting for its obs_data', () => {
     expect(v.emitted('simulation-made')).toBeUndefined()
   })
 })
+
+describe('WorkflowView: the boxes of values by origin', () => {
+  const box = (id, title, names) => ({ id, title, mark: id, to: ['model'],
+    values: names.map((name) => ({ name, value: 1, units: '', note: '', calibrated_by: [] })) })
+
+  it('keeps the opened box open as an edit moves its values, and records through the editor', async () => {
+    const setValueOrigin = vi.fn().mockResolvedValue('')
+    const kinds = ['measured', 'set_by_hand']
+    const v = view({ editor: { setValueOrigin }, origins: { editable: true, origins: kinds, boxes: [
+      box('unrecorded', 'Origin not recorded', ['m/a', 'm/b'])] } })
+    v.findComponent({ name: 'WorkflowDiagram' }).vm.$emit('origin', 'unrecorded')
+    await flushPromises()
+    const detail = () => v.findComponent({ name: 'WorkflowEdgeDetail' })
+    expect(detail().props('originKinds')).toEqual(kinds)
+    await detail().props('saveOrigin')({ name: 'm/a', origin: 'set_by_hand' })
+    expect(setValueOrigin).toHaveBeenCalledWith({ name: 'm/a', origin: 'set_by_hand' })
+    // described again: m/a in its new box, the opened box read again by its id
+    await v.setProps({ origins: { editable: true, origins: kinds, boxes: [
+      box('set_by_hand', 'Values set by hand', ['m/a']), box('unrecorded', 'Origin not recorded', ['m/b'])] } })
+    expect(detail().props('origin').values.map((r) => r.name)).toEqual(['m/b'])
+    expect(detail().props('boxes').map((b) => b.id)).toEqual(['set_by_hand', 'unrecorded'])
+    // its last value moved too: the box stays open, empty
+    await v.setProps({ origins: { editable: true, origins: kinds, boxes: [
+      box('set_by_hand', 'Values set by hand', ['m/a', 'm/b'])] } })
+    expect(detail().props('origin')).toMatchObject({ id: 'unrecorded', title: 'Origin not recorded', values: [] })
+    detail().vm.$emit('open-origin', 'set_by_hand')
+    await flushPromises()
+    expect(detail().props('origin').id).toBe('set_by_hand')
+  })
+
+  it('offers no edit when the target has no parameters file', async () => {
+    const v = view({ editor: {}, origins: { editable: false, boxes: [box('unrecorded', 'Origin not recorded', ['m/a'])] } })
+    v.findComponent({ name: 'WorkflowDiagram' }).vm.$emit('origin', 'unrecorded')
+    await flushPromises()
+    expect(v.findComponent({ name: 'WorkflowEdgeDetail' }).props('originKinds')).toEqual([])
+  })
+})

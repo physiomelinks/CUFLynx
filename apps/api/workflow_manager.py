@@ -49,7 +49,7 @@ import uuid
 from pathlib import Path
 
 import ca_run_history
-from ca_imports import CaImportError, ca_from, ensure_ca_path
+from ca_imports import CaImportError, ca_from, ca_import, ensure_ca_path
 from calibration import (
     _warn_no_mpiexec,
     calibration,
@@ -387,6 +387,9 @@ class WorkflowManager:
 
         out["value_origins"] = (workflow_edges.parameter_origins(out["plan"])
                                 or workflow_edges.value_origins(self.provenance_path("graph")))
+        if (out["value_origins"] or {}).get("editable"):
+            # what an origin can be, for the box's form (libcuflynx's parameters_file.ORIGINS)
+            out["value_origins"]["origins"] = list(ca_import("utilities.parameters_file").ORIGINS)
         job = self._job
         if job is not None:
             with job.lock:
@@ -501,16 +504,21 @@ class WorkflowManager:
         names. A params_for_id CSV is converted to the JSON CA reads (``cuflynx-upgrade
         params-for-id``'s form), and a step that names a CSV is pointed at a new ``.json``.
 
-        A workflow opened from a version stored in a working dir
-        (``inputs/workflows/<wf>/<stamp>/``) is not written in place: its folder is copied,
-        the edit made in the copy, the copy stored as a new version (``working_dir.store``)
-        and the workflow opened from there.
+        A workflow opened from a version stored in a working dir is edited as ``_edit`` says.
         """
         if self.busy:
             raise RuntimeError("a workflow is running; its inputs change after it")
+        return self._edit(lambda: self._write_step_input(step_id, role, content))
+
+    def _edit(self, write) -> str:
+        """Run ``write()``, which writes a file of the workflow and returns its path. A workflow
+        opened from a version stored in a working dir (``inputs/workflows/<wf>/<stamp>/``) is
+        not written in place: its folder is copied, ``write`` runs on the copy (``self.path``
+        names the copy meanwhile), the copy is stored as a new version (``working_dir.store``)
+        and the workflow opened from there. Returns where the written file then is."""
         stored = working_dir.stored_version(self.path)
         if stored is None:
-            return self._write_step_input(step_id, role, content)
+            return write()
         root, kind, folder = stored
         original = self.path
         relative = os.path.relpath(os.path.realpath(original), folder)
@@ -518,7 +526,7 @@ class WorkflowManager:
         try:
             shutil.copytree(folder, scratch, dirs_exist_ok=True)
             self.path = os.path.join(scratch, relative)
-            written = self._write_step_input(step_id, role, content)
+            written = write()
             self.path = str(working_dir.store(root, kind, scratch, relative))
         except BaseException:
             self.path = original
@@ -526,11 +534,70 @@ class WorkflowManager:
         finally:
             shutil.rmtree(scratch, ignore_errors=True)
         if not working_dir.is_inside(scratch, written):
-            return written                  # a step input outside the workflow's folder
+            return written                  # a file outside the workflow's folder
         new_folder = Path(self.path)
         for _ in Path(relative).parts:
             new_folder = new_folder.parent
         return str(new_folder / os.path.relpath(written, scratch))
+
+    def set_value_origin(self, name: str, origin: str | None, data_reference: str = "",
+                         reason: str = "") -> str:
+        """Record where the target's value ``name`` comes from in the target's parameters file
+        (the one CA's ``plan_workflow`` names): its ``origin`` (one of libcuflynx's
+        ``parameters_file.ORIGINS``; empty removes it: "origin not recorded"), its
+        ``data_reference`` and its ``reason``. A value the file does not set yet (a CellML
+        model's constant) is added with the value and units the model gives it. A value given
+        an origin other than ``derived`` loses its ``derivation`` (libcuflynx's schema). The next
+        ``describe`` puts the value in its origin's box. Returns the file's path."""
+        if self.busy:
+            raise RuntimeError("a workflow is running; its inputs change after it")
+        return self._edit(lambda: self._write_value_origin(name, origin or None,
+                                                           data_reference, reason))
+
+    def _write_value_origin(self, name, origin, data_reference, reason) -> str:
+        ensure_ca_path()
+        try:
+            pf = ca_import("utilities.parameters_file")
+        except CaImportError as exc:
+            raise WorkflowUnavailable(NEEDS_CA) from exc
+        if origin is not None and origin not in pf.ORIGINS:
+            raise WorkflowError(f'"{origin}" is not an origin: one of {", ".join(pf.ORIGINS)}')
+        plan = _ca_call("plan_workflow", self.path, self.module_library_dirs)
+        row = next((v for v in plan.get("target_values") or [] if v.get("name") == name), None)
+        if row is None:
+            raise WorkflowError(f'the target has no parameter "{name}"')
+        path = plan.get("target_parameters")
+        target = plan.get("target") or {}
+        if not path:
+            raise WorkflowError(
+                "the target is an external Python model: its values are its class defaults, "
+                "with no parameters file to record their origins in"
+                if target.get("external_model_path") else
+                'the target names no parameters file to record origins in: give its model one '
+                '("parameters" beside "cellml_model_path" in the workflow file)')
+        if working_dir.stored_version(path) is not None:
+            raise WorkflowError(
+                f"{path} is a version stored in a working dir, which is never rewritten: store "
+                "an edited copy as a new version and point the workflow at that")
+        kind = pf.MODULE if "module_type" in target else pf.MODEL
+        doc = pf.read_parameters_file(path, kind=kind) if os.path.isfile(path) else pf.new_document()
+        where = pf.name_path(name, kind)
+        leaf = dict(pf.get_leaf(doc, where) or {
+            "value": row.get("value"), "units": row.get("units") or "", "data_reference": ""})
+        leaf["data_reference"] = str(data_reference or "").strip()
+        for key, text in (("origin", origin), ("reason", str(reason or "").strip())):
+            if text:
+                leaf[key] = text
+            else:
+                leaf.pop(key, None)
+        if origin != pf.DERIVED:
+            # a value a derivation calculates has origin derived (libcuflynx's schema): one set
+            # another way no longer names the derivation
+            leaf.pop(pf.DERIVATION, None)
+            leaf.pop(pf.FIXED_CONSTANTS, None)
+        pf.set_leaf(doc, where, leaf)
+        pf.write_parameters_file(path, doc)
+        return path
 
     def _write_step_input(self, step_id: str, role: str, content: str) -> str:
         if role == "obs_data":
