@@ -183,7 +183,10 @@ runners (one job; refused while a calibration runs, and vice versa), and loads e
 tab through CA's `workflow_model` -> `import_omex_bytes`, so a step tab is an
 ordinary study. A step's `kind` (calibration, sensitivity, reduction, emulation,
 identifiability; CA #585) is shown in the step list with what it takes from where; a
-reduction has no model, so no tab. **Export .omex** (`/api/workflow/export`) puts the
+reduction has no model, so no tab. Neither has a `figure` step (CA #705): its arrows are its
+inputs (`input:<parameter>`, `figureInputs`), describe's status lists the files a done one drew
+(`ca_run_history.step_figures`, rebased onto the run dir), `/api/workflow/figure` serves only
+those, and Analysis shows them (`lib/workflowFigures.js`); a `simulate` step is shown like a sweep. **Export .omex** (`/api/workflow/export`) puts the
 target model and the workflow as CA's `pack_workflow` packs it under `workflow/` in an
 archive (no results), and a study sent from a workflow tab carries the pack too; an
 imported archive's `workflow/` is unpacked whole into the uploads dir and offered, so

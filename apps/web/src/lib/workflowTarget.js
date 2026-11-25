@@ -124,7 +124,24 @@ export function referencesOf(step, steps = null) {
     }
   }
   for (const e of step.set ?? []) if (typeof e?.of === 'string') refs.push(['scale_from', e.of])
+  for (const [name, source] of Object.entries(figureInputs(step))) refs.push([`input:${name}`, source.step])
   return refs
+}
+
+/**
+ * A figure step's inputs, `{parameter: {kind, step}}`: the file writes each as
+ * `{<input kind>: <step id>}` under `inputs`, CA's plan as `{kind, step}` under `figure.inputs`.
+ */
+export function figureInputs(step) {
+  const out = {}
+  if (step?.kind !== 'figure') return out
+  for (const [name, source] of Object.entries(step.inputs ?? step.figure?.inputs ?? {})) {
+    if (!source || typeof source !== 'object') continue
+    const [kind, id] = typeof source.step === 'string' ? [source.kind, source.step]
+      : (Object.entries(source)[0] ?? [])
+    if (typeof id === 'string') out[name] = { kind, step: id }
+  }
+  return out
 }
 
 /** Every `{from, to, key}` reference between `steps`, by their rows. */

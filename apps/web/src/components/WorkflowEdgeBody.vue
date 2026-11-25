@@ -64,6 +64,10 @@ function num(v) {
       </p>
     </template>
 
+    <p v-if="detail.input?.description" data-testid="workflow-edge-input">
+      The function's <code>{{ detail.input.name }}</code> is {{ detail.input.description }}.
+    </p>
+
     <table v-if="(detail.rows ?? []).length" class="ed-table" data-testid="workflow-edge-rows">
       <tr><th>parameter</th><th>value</th><th>units</th><th /></tr>
       <tr v-for="(r, i) in detail.rows" :key="i">

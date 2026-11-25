@@ -17,8 +17,9 @@
  */
 import { computed, ref } from 'vue'
 import { SOURCE_WORDS, cellmlFile, externalFile, modelLabel } from '../stores/useWorkflow'
+import { figureFunction } from '../lib/workflowFigures'
 
-import { figureReads, layoutSteps, modelShort, referencesOf } from '../lib/workflowTarget'
+import { figureInputs, figureReads, layoutSteps, modelShort, referencesOf } from '../lib/workflowTarget'
 import { routeEdges } from '../lib/workflowRoutes'
 
 const props = defineProps({
@@ -91,7 +92,7 @@ function classOf(step) {
   if (kind === 'set') return 'hand'
   if (byHand(step)) return 'chosen'
   if (kind === 'emulation') return 'surrogate'
-  if (kind === 'sweep') return 'sim'
+  if (['sweep', 'simulate', 'figure'].includes(kind)) return 'sim'
   if (kind === 'draft') return 'draft'
   return 'analysis'
 }
@@ -109,6 +110,7 @@ function method(step) {
   }
   if (kind === 'reduction') return s.param_reduction_options?.method ?? step.reduction?.method ?? ''
   if (kind === 'combine') return COMBINE_WORDS[step.combine?.method ?? 'best_fit'] ?? step.combine?.method
+  if (kind === 'figure') return figureFunction(step)
   return ''
 }
 
@@ -117,7 +119,7 @@ const COMBINE_WORDS = { best_fit: 'lowest cost', mean: 'mean' }
 
 const TAGS = { calibration: 'calibrated', set: 'set by hand', sensitivity: 'sensitivity',
   uq: 'uq', identifiability: 'identifiability', emulation: 'surrogate', reduction: 'reduction',
-  sweep: 'simulation', combine: 'chosen by cost' }
+  sweep: 'simulation', simulate: 'simulation', figure: 'figures', combine: 'chosen by cost' }
 const STATE_WORDS = { stale: 'stale', not_run: 'not run', queued: 'queued', running: 'running',
   failed: 'failed', cancelled: 'cancelled' }
 
@@ -130,7 +132,10 @@ function tag(step) {
   }
   const parts = [TAGS[kind] ?? kind]
   if (kind === 'set') parts.push(step.point ? 'point only' : `${(step.set ?? []).length} values`)
-  else if (n) parts.push(`${n} parameter${n === 1 ? '' : 's'}`)
+  else if (kind === 'figure' && props.results[step.id]?.figures) {
+    const files = props.results[step.id].figures.length
+    parts.push(`${files} file${files === 1 ? '' : 's'}`)
+  } else if (n) parts.push(`${n} parameter${n === 1 ? '' : 's'}`)
   const m = method(step)
   if (m && kind !== 'calibration') parts.push(m)
   return parts.join(' · ')
@@ -144,6 +149,9 @@ function line2(step) {
   }
   if (byHand(step)) {
     return (step.settings.param_reduction_options.parameters ?? []).map((p) => p.split('/').pop()).join(', ')
+  }
+  if (kind === 'figure') {
+    return Object.entries(figureInputs(step)).map(([name, s]) => `${name} ← ${s.step}`).join(', ')
   }
   if (kind === 'combine') {
     const chosen = props.results[step.id]?.chosen_from
@@ -200,8 +208,22 @@ function draftWords(step) {
   if (step.action === 'combine') return ['Choose a parameter set by cost', 'not set up · draw calibrations to it']
   return ['New step: run a panel to make it', 'not run · its kind is what you run']
 }
-const onTarget = computed(() => [...props.steps, ...drafts.value].filter((s) => s.on_target))
-const mainSteps = computed(() => [...props.steps, ...drafts.value].filter((s) => !s.on_target))
+// the steps after the target: those run on it (`on_target`), and the figure steps that read
+// one of them, so every arrow points right
+const afterTarget = computed(() => {
+  const ids = new Set(props.steps.filter((s) => s.on_target).map((s) => s.id))
+  for (const d of drafts.value) if (d.on_target) ids.add(d.id)
+  for (let pass = 0; pass <= props.steps.length; pass += 1) {
+    const before = ids.size
+    for (const s of props.steps) {
+      if (Object.values(figureInputs(s)).some((i) => ids.has(i.step))) ids.add(s.id)
+    }
+    if (ids.size === before) break
+  }
+  return ids
+})
+const onTarget = computed(() => [...props.steps, ...drafts.value].filter((s) => afterTarget.value.has(s.id)))
+const mainSteps = computed(() => [...props.steps, ...drafts.value].filter((s) => !afterTarget.value.has(s.id)))
 const placed = computed(() => layoutSteps(mainSteps.value, positions.value, pendingLinks.value))
 const hasModel = computed(() => props.steps.length > 0)
 // CA ends the given-values edges at the model source (CA #692): those boxes then stand in a
@@ -262,7 +284,13 @@ const cells = computed(() => {
   const ordered = [...mainSteps.value].sort((a, b) => placed.value[a.id].row - placed.value[b.id].row)
   for (const s of ordered) col[s.id] = { col: placed.value[s.id].col + colOffset.value, kind: 'step' }
   if (hasTarget.value) col.target = { col: targetCol.value, kind: 'target' }
-  for (const s of onTarget.value) col[s.id] = { col: targetCol.value + 1, kind: 'step' }
+  // run on the target: the column after it; a figure step: one right of what it reads
+  for (let pass = 0; pass <= onTarget.value.length; pass += 1) {
+    for (const s of onTarget.value) {
+      const after = Object.values(figureInputs(s)).map((i) => col[i.step]?.col ?? targetCol.value)
+      col[s.id] = { col: Math.max(targetCol.value, ...after) + 1, kind: 'step' }
+    }
+  }
   // a figure is one column right of the furthest thing it reads
   const figCol = {}
   for (let pass = 0; pass <= props.figures.length; pass += 1) {
@@ -386,7 +414,9 @@ const routes = computed(() =>
 const edges = computed(() =>
   links.value.map((e) => {
     const r = routes.value[e.id]
-    return { ...e, d: r.d, end: r.end, label: KEY_WORDS[e.key] ?? '' }
+    // into a figure step: the parameter of its function the input is
+    const label = KEY_WORDS[e.key] ?? (e.key?.startsWith('input:') ? e.key.slice(6) : '')
+    return { ...e, d: r.d, end: r.end, label }
   }),
 )
 

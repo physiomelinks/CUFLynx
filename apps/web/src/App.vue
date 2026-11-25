@@ -15,6 +15,7 @@ import UQPanel from './components/UQPanel.vue'
 import WorkflowBar from './components/WorkflowBar.vue'
 import WorkflowView from './components/WorkflowView.vue'
 import { PANEL_KINDS, modeSummary, panelSettings, stepPanel } from './lib/workflowTarget'
+import { workflowFigures } from './lib/workflowFigures'
 import EditObsDataDialog from './components/EditObsDataDialog.vue'
 import EditVariableMappingDialog from './components/EditVariableMappingDialog.vue'
 import IAPanel from './components/IAPanel.vue'
@@ -596,7 +597,7 @@ const workflowSummary = computed(() =>
 // only it is open by default. No step selected: every section is.
 const ANALYSIS_SECTIONS = { calibration: 'calibration', combine: 'calibration',
   sensitivity: 'sensitivity', uq: 'uq', emulation: 'emulator', reduction: 'reduction',
-  identifiability: 'identifiability' }
+  identifiability: 'identifiability', figure: 'figures' }
 // A section a finished run opens (a parameter reduction's), until a step is selected.
 const analysisFocusRun = ref(null)
 watch(() => wf.target.value, () => { analysisFocusRun.value = null })
@@ -613,6 +614,8 @@ const workflowFileSteps = computed(() =>
 const workflowDetails = computed(() => Object.fromEntries(wf.tabs.value.map((t) => [t.id, t])))
 // CA's status of each step ({status, stale, best_cost, duration_s, ...}), for the chart's boxes.
 const workflowResults = computed(() => wf.described.value?.status?.steps ?? {})
+// what the workflow's figure steps drew, for the Analysis tab
+const workflowFigureList = computed(() => workflowFigures(workflowFileSteps.value, workflowResults.value))
 
 // The panels, so a step clicked in the Workflow view fills its panel's settings.
 const calibrationPanel = ref(null)
@@ -3938,6 +3941,7 @@ watch(() => obs.obsData.value, scheduleRun)
             :best-fit-model-cost="bestFitScores?.model ?? null"
             :best-fit-emulator-cost="bestFitScores?.emulator ?? null"
             :calibration-used-emulator="lastCalibrationUsedEmulator"
+            :workflow-figures="workflowFigureList"
             @select-result="sa.selectResult"
             @remove-result="sa.removeResult"
             @clear-results="sa.clearResults"

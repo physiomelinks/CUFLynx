@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  figureInputs,
   linkChoices,
   referencesOf,
   modeSummary,
@@ -182,6 +183,17 @@ describe('New step: whatever runs next', () => {
     }
     expect(targetAfterRun(target, 'emulation')).toEqual({ mode: 'default' })
     expect(modeSummary(target, 'uq', described).text).toContain('whatever you run next')
+  })
+})
+
+describe('figure steps (CA #705)', () => {
+  it('a figure step takes from each step it reads, as the file or the plan writes its inputs', () => {
+    const file = { id: 'f', kind: 'figure', inputs: { curves: { sweep: 'scan' }, fit: { values: 'cal' } } }
+    expect(referencesOf(file)).toEqual([['input:curves', 'scan'], ['input:fit', 'cal']])
+    const plan = { id: 'f', kind: 'figure', figure: { inputs: { curves: { kind: 'sweep', step: 'scan' } } } }
+    expect(figureInputs(plan)).toEqual({ curves: { kind: 'sweep', step: 'scan' } })
+    // only a figure step's inputs are inputs
+    expect(referencesOf({ id: 'c', inputs: { x: { sweep: 'scan' } } })).toEqual([])
   })
 })
 

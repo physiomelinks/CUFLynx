@@ -76,4 +76,18 @@ describe('WorkflowStepDetail', () => {
     expect(d.text()).toContain('A point only: not merged into the target.')
     expect(d.find('[data-testid="workflow-step-detail-edit"]').exists()).toBe(false)
   })
+
+  it('a figure step shows its function, what it reads and what it drew, and no model', () => {
+    const fig = { id: 'traces', kind: 'figure', function: 'figures/standard_figures.py:sweep_traces',
+                  inputs: { sweep: { sweep: 'run' } } }
+    const d = detail(fig, { detail: { viewable: false }, result: { status: 'done',
+      finished: 't1', figures: ['figure/traces_exp_0.png', 'figure/scores.csv'] } })
+    expect(d.text()).toContain("Figures drawn from other steps' results")
+    expect(d.text()).not.toContain('Model')
+    expect(d.find('[data-testid="workflow-step-detail-inputs"]').text()).toBe('sweep ← sweep of run')
+    const drawn = d.find('[data-testid="workflow-step-detail-figures"]')
+    expect(drawn.find('img').attributes('src')).toContain('name=figure%2Ftraces_exp_0.png')
+    expect(drawn.text()).toContain('scores.csv')
+    expect(d.find('[data-testid="workflow-step-detail-open"]').exists()).toBe(false)
+  })
 })
