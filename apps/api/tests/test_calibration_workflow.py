@@ -180,10 +180,19 @@ def test_a_workflow_ca_cannot_resolve_still_shows_what_it_says(
 
 
 def test_ca_refusals_reach_the_user_verbatim(client, monkeypatch, workflow_file):
-    _fake_ca(monkeypatch, refuse='step "rest" takes values from unknown step "nope".')
+    """A workflow CA refuses (C-0012: one written before figure steps, with
+    external_figures) still opens, its steps shown and CA's reason as plan_error, which
+    stops a run; a file that is no workflow is not opened."""
+    why = 'step "rest" takes values from unknown step "nope".'
+    _fake_ca(monkeypatch, refuse=why, plan_error=why)
     r = client.post("/api/workflow/load", json={"path": str(workflow_file)})
-    assert r.status_code == 422
-    assert r.json()["detail"] == 'step "rest" takes values from unknown step "nope".'
+    assert r.status_code == 200, r.text
+    assert r.json()["plan_error"] == why
+    assert [s["id"] for s in r.json()["workflow"]["steps"]] == ["fit_a", "rest"]
+    not_a_workflow = workflow_file.parent / "obs_data.json"
+    not_a_workflow.write_text(json.dumps({"protocol_info": {}, "data_items": []}))
+    r = client.post("/api/workflow/load", json={"path": str(not_a_workflow)})
+    assert r.status_code == 422 and r.json()["detail"] == why
 
 
 def test_an_older_ca_without_workflows_is_named(client, monkeypatch, workflow_file):

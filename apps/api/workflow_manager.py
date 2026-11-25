@@ -276,17 +276,32 @@ class WorkflowManager:
     # -- loading -------------------------------------------------------------
 
     def load(self, path: str, output_dir: str, module_library_dirs: list[str]) -> dict:
-        """Open the workflow file at ``path``, its run going to ``output_dir``."""
+        """Open the workflow file at ``path``, its run going to ``output_dir``.
+
+        A workflow CA refuses (one written for another libcuflynx, say with
+        ``external_figures``) still opens when the file is a workflow, a JSON object with
+        ``steps``: the view shows its steps and CA's reason as ``plan_error``, and it cannot
+        run until that is fixed. Any other file CA refuses is not opened."""
         if self.busy:
             raise RuntimeError("a workflow is running; cancel it before opening another")
         path = os.path.abspath(path)
         if not os.path.isfile(path):
             raise WorkflowError(f"no workflow file at {path}")
-        workflow = _ca_call("load_workflow", path, module_library_dirs)
+        try:
+            name = _ca_call("load_workflow", path, module_library_dirs).name
+        except WorkflowError:
+            try:
+                with open(path) as fh:
+                    raw = json.load(fh)
+            except (OSError, ValueError):
+                raw = None
+            if not (isinstance(raw, dict) and isinstance(raw.get("steps"), list)):
+                raise
+            name = raw.get("workflow_name") or Path(path).stem
         self.path = path
         self.output_dir = os.path.abspath(output_dir) if output_dir else None
         self.module_library_dirs = list(module_library_dirs)
-        return {"name": workflow.name}
+        return {"name": name}
 
     def load_run(self, run_dir: str, module_library_dirs: list[str]) -> dict:
         """Reopen a workflow run directory: the workflow CA stored there, and its results."""
