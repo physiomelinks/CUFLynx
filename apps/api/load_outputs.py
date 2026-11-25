@@ -549,18 +549,23 @@ def _iso_time(text) -> float | None:
         return None
 
 
+def _study_run_dir(output_dir: str) -> str | None:
+    """The run directory of the working dir's study workflow, or None when it has none."""
+    try:
+        with open(study_workflow.workflow_path(output_dir), encoding="utf-8") as handle:
+            name = json.load(handle).get("workflow_name")
+    except (OSError, ValueError, AttributeError):
+        return None
+    run = study_workflow.run_dir(output_dir, str(name or study_workflow.WORKFLOW_NAME))
+    return run if os.path.isdir(run) else None
+
+
 def latest_study_steps(output_dir: str) -> dict:
     """``{panel: step_result}``: per panel (:data:`STUDY_PANELS`), the ``step_result.json``
     of the study workflow's latest done step of that kind, by its ``finished`` time. Empty
     when the working dir has no study workflow, or no step has finished."""
-    path = study_workflow.workflow_path(output_dir)
-    try:
-        with open(path, encoding="utf-8") as handle:
-            name = json.load(handle).get("workflow_name")
-    except (OSError, ValueError, AttributeError):
-        return {}
-    run = study_workflow.run_dir(output_dir, str(name or study_workflow.WORKFLOW_NAME))
-    if not os.path.isdir(run):
+    run = _study_run_dir(output_dir)
+    if run is None:
         return {}
     latest: dict = {}
     for entry in sorted(os.listdir(run)):
@@ -682,6 +687,45 @@ def _with_study_steps(output_dir: str, result: dict, missing: list) -> None:
     result["study"] = _study_from_steps(result.get("study"), steps)
 
 
+def _sobol_progress(directory: str) -> dict | None:
+    """A Sobol run's progress file with its design and convergence, or None."""
+    progress = ca_run_history.run_progress(directory, finished=True)
+    if (progress or {}).get("kind") != "sobol":
+        return None
+    return {"progress": progress, "design": ca_run_history.sobol_design(directory),
+            "convergence": ca_run_history.sobol_convergence(directory)}
+
+
+def _run_progress(output_dir: str, result: dict) -> dict:
+    """CA's progress files (CA #702) of the runs whose results the panels show, for the
+    Progress tab: ``{sobol: {progress, design, convergence}, emulator, profile}``, each None
+    when there is none. Read as finished runs, so one left ``running`` reads ``stopped``.
+
+    The Sobol run is the one the indices came from: the study step's when the panel was
+    filled from one, else the working dir's ``sensitivity/`` (its top level in an older
+    folder). The emulator's is in its bundle. A profile likelihood's is the newest in the
+    working dir's ``profile_likelihood/`` or a study step's ``uq/profile_likelihood/``.
+    """
+    sobol_dirs = [os.path.join(output_dir, working_dir.SENSITIVITY), output_dir]
+    if "sobol" in (result.get("study_steps") or {}):
+        sobol_dirs = [(latest_study_steps(output_dir).get("sobol") or {}).get("sensitivity_dir")]
+    sobol = next((found for found in map(_sobol_progress, filter(None, sobol_dirs)) if found),
+                 None)
+
+    emulator = ca_run_history.run_progress((result.get("emulator") or {}).get("dir") or "",
+                                           finished=True)
+    if (emulator or {}).get("kind") != "emulation":
+        emulator = None
+
+    roots = [os.path.join(output_dir, ca_run_history.PROFILE_LIKELIHOOD_SUBDIR),
+             _study_run_dir(output_dir)]
+    profiles = [ca_run_history.find_progress(root, "profile_likelihood", finished=True)
+                for root in roots if root]
+    profile = max(filter(None, profiles), key=lambda p: str(p.get("updated") or ""),
+                  default=None)
+    return {"sobol": sobol, "emulator": emulator, "profile": profile}
+
+
 def _study_from_steps(study: dict | None, steps: dict) -> dict:
     """``study`` with what it could not find taken from the study workflow: the model the
     steps ran (the target) and the obs_data and params_for_id of the latest calibration step
@@ -788,6 +832,8 @@ def load_outputs(output_dir: str, file_prefix: str | None = None,
     # The study workflow's steps fill the panels a newer direct run has not.
     _safely("study workflow steps",
             lambda: _with_study_steps(output_dir, result, missing), missing)
+    result["run_progress"] = _safely("progress files",
+                                     lambda: _run_progress(output_dir, result), missing)
 
     found = []
     if (result["calibration"] or {}).get("best"):
