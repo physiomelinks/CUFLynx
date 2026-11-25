@@ -227,6 +227,9 @@ def _study(output_dir, run_dir, file_prefix, missing, manifest=None):
         obs, params = _snapshot_pair(run_dir)
     obs = obs or declared.get("obs_data")
     params = params or declared.get("params_for_id")
+    # A run in a working dir keeps no copies of its inputs: ``inputs/`` holds them.
+    obs = obs or _stored_input(output_dir, "obs_data")
+    params = params or _stored_input(output_dir, "params_for_id")
 
     # Looked for in the outputs directory, which is where a generated pipeline bundle puts
     # it. Absent is ordinary -- a run started from this app has never written one -- so it
@@ -245,6 +248,18 @@ def _study(output_dir, run_dir, file_prefix, missing, manifest=None):
         "user_inputs": user_inputs,
         "file_prefix": prefix,
     }
+
+
+def _stored_input(output_dir, kind):
+    """The newest ``kind`` input in the working dir's ``inputs/``, or None (also for a
+    libcuflynx without working dirs)."""
+    try:
+        from ca_imports import ca_from, ensure_ca_path  # noqa: PLC0415
+
+        ensure_ca_path()
+        return ca_from("utilities.cuflynx_study", "latest_input")(output_dir, kind)
+    except Exception:  # noqa: BLE001 - an older CA, or a dir that is not a working dir
+        return None
 
 
 def _prefix_from_calibrated_model(output_dir):
@@ -311,6 +326,10 @@ def _uq(output_dir, run_dir, missing):
         # finished UQ in it. Observed on a real outputs directory.
         found = ca_run_history.uq_distributions(source)
         if found:
+            # Without its own samples file, the posterior came from the chain in the
+            # MCMC run's directory.
+            if not os.path.isfile(os.path.join(source, ca_run_history.UQ_SAMPLES_FILE)):
+                uq_source["path"] = ca_run_history.uq_source_dir(source)
             return found
         # Newest first, so "the UQ" means the most recent one, consistent with how the run
         # itself is chosen. An explicit run_dir that *has* a chain never reaches here, so a
@@ -470,13 +489,15 @@ def load_outputs(output_dir: str, file_prefix: str | None = None,
         # was asked for.
         runs = [run for run in runs if run["path"] in declared_runs] or runs
 
-    # An explicit choice wins; otherwise the manifest's first run, otherwise the newest,
-    # which is what find_run_dir would have picked anyway -- but now the caller can see
-    # the alternatives.
+    # An explicit choice wins; otherwise the manifest's first calibration run, otherwise
+    # the newest, which is what find_run_dir would have picked anyway -- but now the caller
+    # can see the alternatives. An MCMC run has a directory of its own, with no best fit or
+    # progress history to show; the UQ panel finds it for itself.
     if run_dir and any(run["path"] == run_dir for run in runs):
         chosen = run_dir
     elif declared_runs:
-        chosen = declared_runs[0]
+        chosen = next((d for d in declared_runs if not ca_run_history.is_uq_run_dir(d)),
+                      declared_runs[0])
     else:
         chosen = ca_run_history.find_run_dir(output_dir)
     run_dir = chosen

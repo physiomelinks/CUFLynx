@@ -8,6 +8,7 @@ directory unreadable rather than merely unread.
 import csv
 import json
 import os
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -42,6 +43,30 @@ def write_coverage(run, predictive=0.42):
                     "sample_interval_coverage": 0.3, "z": 1.2816}}},
             "used_emulator": False, "num_samples": 100,
             "samples_that_failed_to_simulate": 0}, handle)
+
+
+@pytest.mark.unit
+def test_a_study_opens_on_its_calibration_and_reads_the_uq_from_the_mcmc_run(tmp_path):
+    """libcuflynx records a calibration and the MCMC after it as two runs, newest first,
+    each in its own directory. The MCMC run's has no best fit or progress history, so the
+    study opens on the calibration's, and the UQ panel reads the MCMC run's."""
+    calibration = write_run(tmp_path, "genetic_algorithm_m_obs", chain=False)
+    with open(os.path.join(calibration, "best_cost_history.csv"), "w") as handle:
+        handle.write("1.0\n0.5\n")
+    mcmc = write_run(tmp_path, "mcmc_m_obs", best=False)
+    write_coverage(mcmc)
+    with open(os.path.join(str(tmp_path), "m_cuflynx_study.json"), "w") as handle:
+        json.dump({"schema": 1, "study_name": "m", "file_prefix": "m", "runs": [
+            {"dir": "mcmc_m_obs", "method": "mcmc", "analyses": ["mcmc"]},
+            {"dir": "genetic_algorithm_m_obs", "method": "genetic_algorithm",
+             "analyses": ["genetic_algorithm"]}]}, handle)
+
+    result = load_outputs.load_outputs(str(tmp_path))
+
+    assert result["run_dir"] == calibration
+    assert result["uq"]["run_dir"] == mcmc
+    assert result["uq"]["coverage"] is not None
+    assert {"calibration", "uq"} <= set(result["found"])
 
 
 # --- the posterior of a run we did not produce --------------------------------
@@ -933,3 +958,32 @@ def test_a_run_from_cas_own_scripts_has_its_fitted_model_found(tmp_path):
     # It is a fitted model, but not one carrying CUFLynx's name -- the flag follows the
     # name, and saying "calibrated" for CA's layout would need CA to record that it was.
     assert study["model_is_calibrated"] is False
+
+
+@pytest.mark.unit
+def test_a_run_with_no_input_copies_reads_them_from_the_working_dirs_inputs(tmp_path):
+    """A run in a working dir keeps no obs_data / params_for_id of its own; ``inputs/`` does."""
+    from conftest import RESOURCES_DIR  # noqa: PLC0415
+
+    try:
+        from ca_imports import ca_from, ensure_ca_path
+        ensure_ca_path()
+        store_input = ca_from("utilities.cuflynx_study", "store_input")
+    except Exception:  # noqa: BLE001
+        pytest.skip("this circulatory_autogen has no working-dir inputs/")
+    write_run(tmp_path, "genetic_algorithm_run", chain=False, best=True)
+    store_input(str(tmp_path), "obs_data", str(RESOURCES_DIR / "Lotka_Volterra_obs_data.json"))
+    store_input(str(tmp_path), "params_for_id",
+                str(RESOURCES_DIR / "Lotka_Volterra_params_for_id.csv"))
+
+    study = load_outputs.load_outputs(str(tmp_path))["study"]
+
+    assert "/inputs/obs_data/" in Path(study["obs_data"]).as_posix()
+    assert "/inputs/params_for_id/" in Path(study["params_for_id"]).as_posix()
+
+
+@pytest.mark.unit
+def test_a_run_with_no_input_copies_and_no_inputs_dir_reports_none(tmp_path):
+    write_run(tmp_path, "genetic_algorithm_run", chain=False, best=True)
+    study = load_outputs.load_outputs(str(tmp_path))["study"]
+    assert study["obs_data"] is None and study["params_for_id"] is None

@@ -366,8 +366,10 @@ def _posterior_predictive(config, settings, output_dir, engine):
     print(f"Posterior predictive: {num_samples} draws through the model",
           flush=True)
     try:
-        result = run_check(client=engine, num_samples=num_samples,
-                           output_dir=output_dir, save=True)
+        # A CA with the MCMC run's own directory (``mcmc_chain_path``) reads the chain from,
+        # and saves the check into, that directory; an older one is handed the output dir.
+        kwargs = {} if hasattr(engine, "mcmc_chain_path") else {"output_dir": output_dir}
+        result = run_check(client=engine, num_samples=num_samples, save=True, **kwargs)
     except Exception as exc:  # noqa: BLE001 - the posterior is still the result
         print(f"WARNING: posterior predictive check failed: {exc}", flush=True)
         return None

@@ -231,22 +231,10 @@ def run(config: dict) -> dict:
         cost = getattr(getattr(param_id, "param_id", None), "best_cost", None)
         info = getattr(param_id, "param_id_info", None) or {}
         modifiers = _result_modifiers(info, best_vals)
-        # Save the calibrated CellML (best-fit values baked into the flat model)
-        # so it can be reloaded and reproduce the calibrated simulation (#114).
-        # The write gets *physical* values: a modifier slot's theta expands to
-        # theta*baseline_i via CA's own expansion. If that expansion fails with
-        # modifiers present, skip the write rather than bake theta in as if it
-        # were a volume or a compliance.
-        try:
-            expanded = _expanded_best_fit(info, param_names, best_vals)
-            calibrated_path = _write_calibrated_cellml(config, expanded, output_dir)
-        except Exception as exc:  # noqa: BLE001 - best-effort, never fails the run
-            print(
-                f"warning: could not expand the modifier best fit for the "
-                f"calibrated CellML: {exc}",
-                flush=True,
-            )
-            calibrated_path = None
+        # The calibrated model (the best fit written into the model, #114) is CA's to write
+        # (CVS0DParamID.write_calibrated_model, CA #650), with modifiers expanded as the
+        # calibration ran them; it records the file in the study manifest too.
+        calibrated_path = _ca_write_calibrated_model(param_id, config, output_dir)
         # No results.json. Everything below is already on disk, written by CA
         # itself, and the manager reads it from there (#210) -- serialising a
         # second copy put a file in the user's outputs directory that is no part
@@ -292,75 +280,34 @@ def _result_modifiers(param_id_info: dict, best_vals) -> list:
     return out
 
 
-def _expanded_best_fit(param_id_info: dict, param_names, best_vals) -> dict:
-    """Best-fit values as *physical* model values, one per member qname.
-
-    A modifier's slot (theta) expands to ``theta * baseline_i`` through CA's
-    ``expand_modifier_param_vals`` -- the same arithmetic the calibration ran
-    with, not a reimplementation. On a CA predating modifiers the vector passes
-    through raw, which is exactly today's behavior (no modifiers can exist
-    there). Unresolved baselines raise: writing theta into a CellML as if it
-    were a physical value is the failure this function exists to prevent.
-    """
-    vals = [float(v) for v in best_vals]
-    try:
-        from ca_imports import ca_from  # noqa: PLC0415
-
-        expand_modifier_param_vals = ca_from(
-            "parsers.PrimitiveParsers", "expand_modifier_param_vals")
-    except ImportError:
-        expanded = vals
-    else:
-        expanded = expand_modifier_param_vals(param_id_info or {}, vals)
-    out: dict[str, float] = {}
-    for i, name_list in enumerate(param_names):
-        slot = expanded[i]
-        if isinstance(slot, (list, tuple)):
-            for qname, val in zip(name_list, slot):
-                out[qname] = float(val)
-        else:
-            for qname in name_list:
-                out[qname] = float(slot)
-    return out
+#: what a libcuflynx without CVS0DParamID.write_calibrated_model is told
+CALIBRATED_MODEL_NEEDS = ("this circulatory_autogen has no write_calibrated_model, which writes "
+                          "the calibrated model: upgrade to libcuflynx 0.8.0 or later "
+                          "(circulatory_autogen #650). The calibration result is kept; "
+                          "only the calibrated CellML is not written.")
 
 
-def _write_calibrated_cellml(config: dict, params: dict, output_dir: str) -> str | None:
-    """Bake the best-fit values into the uploaded flat CellML and save it beside
-    the results (issue #114). Best-effort: never fails the calibration.
+def _ca_write_calibrated_model(param_id, config: dict, output_dir: str) -> str | None:
+    """CA writes ``<output_dir>/<prefix>_calibrated.cellml`` and records it in the study
+    manifest (``CVS0DParamID.write_calibrated_model``, CA #650); returns its path.
 
-    Returns the written path, or None if there's no CellML to update or nothing
-    resolved. The source is ``config["cellml_path"]`` (the original uploaded model,
-    regardless of the generated_model_format used for the run)."""
+    None for a model that is not CellML (nothing to write), and when CA has no such writer
+    or the write fails: both are said in the run log, and neither fails the calibration,
+    whose result is already on disk and can be written into a model again from there."""
     cellml_path = config.get("cellml_path")
-    if not cellml_path or not str(cellml_path).endswith(".cellml") or not params:
+    if not cellml_path or not str(cellml_path).endswith(".cellml"):
+        return None
+    write = getattr(param_id, "write_calibrated_model", None)
+    if write is None:
+        print(f"ERROR: {CALIBRATED_MODEL_NEEDS}", flush=True)
         return None
     try:
-        from calibrated_cellml import calibrated_cellml  # local import: pure-XML
-
-        text = Path(cellml_path).read_text(encoding="utf-8")
-        new_text, report = calibrated_cellml(text, params)
-        if not report["updated"]:
-            return None
-        prefix = config.get("file_prefix") or Path(cellml_path).stem
-        # The name comes from `ca_run_history`, which is what reads it back and
-        # ships beside this runner for exactly that reason -- writer and readers
-        # spelling it separately is how the file and the lookup drift apart.
-        from ca_run_history import calibrated_model_name  # local: runners/ sibling
-
-        out_path = os.path.join(output_dir, calibrated_model_name(prefix))
-        Path(out_path).write_text(new_text, encoding="utf-8")
-        if report["unresolved"]:
-            print(
-                f"calibrated model: {len(report['updated'])} params written, "
-                f"{len(report['unresolved'])} unresolved: {report['unresolved']}",
-                flush=True,
-            )
-        else:
-            print(f"Saved calibrated model: {out_path}", flush=True)
-        return out_path
-    except Exception as exc:  # noqa: BLE001 - saving the model must not fail the run
-        print(f"WARNING: could not save calibrated model: {exc}", flush=True)
+        path = write(cellml_path=cellml_path, output_dir=output_dir)
+    except Exception as exc:  # noqa: BLE001 - the calibration result stands without it
+        print(f"WARNING: circulatory_autogen could not write the calibrated model: {exc}",
+              flush=True)
         return None
+    return path if path and os.path.isfile(path) else None
 
 
 def _generate_error_vectors(param_id, output_dir: str) -> dict:
