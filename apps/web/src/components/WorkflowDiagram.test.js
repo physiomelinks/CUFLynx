@@ -556,14 +556,14 @@ describe('WorkflowDiagram', () => {
         values: [{ name: 'm/x', value: 4, units: '', note: '', calibrated_by: [] }] },
     ] } })
     const lit = c.find('[data-testid="workflow-origin-measured"]')
-    expect(lit.text()).toContain('2 values · 1 calibrated')
+    expect(lit.text()).toContain('cited · 2 values · 1 calibrated')
     expect(lit.attributes('title')).toContain('m/K = 1: smith2001 (calibrated in calibration-1)')
     const toCal = c.find('[data-testid="workflow-origin-to_calibrate"]')
     expect(toCal.classes()).toContain('cal')
-    expect(toCal.text()).toContain('calibrated by a step · 1 values')
+    expect(toCal.text()).toContain('a step fits them · 1 value')
     expect(toCal.text()).not.toContain('1 calibrated')
     expect(c.find('[data-testid="workflow-origin-unclassified"]').classes()).toContain('unrecorded')
-    expect(c.find('[data-testid="workflow-origin-unclassified"]').text()).toContain('origin not recorded')
+    expect(c.find('[data-testid="workflow-origin-unclassified"]').text()).toContain('not recorded · 1 value')
     // the values are in the model; those to be calibrated go to the step that fits them
     expect(c.find('[data-testid="workflow-edge-origin:measured-model"]').exists()).toBe(true)
     expect(c.find('[data-testid="workflow-edge-origin:to_calibrate-calibration-1"]').exists()).toBe(true)

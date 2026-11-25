@@ -146,9 +146,9 @@ ORIGIN_BOXES = (
     ("set_by_hand", "Values set by hand", "set_by_hand"),
     ("derived", "Values from data", "derived"),
     ("measured", "Values from literature", "measured"),
-    ("calibrated", "Values calibrated before this workflow", "calibrated"),
+    ("calibrated", "Values calibrated before", "calibrated"),
     ("to_calibrate", "Values to be calibrated", "to_calibrate"),
-    ("inherited", "Values inherited from the model", "inherited"),
+    ("inherited", "Values inherited", "inherited"),
     ("unrecorded", "Origin not recorded", "unclassified"),
 )
 

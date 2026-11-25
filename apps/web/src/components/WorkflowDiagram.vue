@@ -346,15 +346,14 @@ const originBoxes = computed(() =>
 // and unclassified
 const ORIGIN_CLASS = { set_by_hand: 'hand', measured: 'measured', derived: 'derived', calibrated: 'cal',
   to_calibrate: 'cal', inherited: 'inherited', unclassified: 'unrecorded' }
-const ORIGIN_WORDS = { set_by_hand: 'set by hand', measured: 'measured: from a cited source',
-  derived: 'derived from data', calibrated: 'calibrated before this run',
-  to_calibrate: 'calibrated by a step', inherited: 'inherited from the model',
-  unclassified: 'origin not recorded' }
-/** How many of a box's values a step calibrates, said in its tag beside its origin. */
-function calibratedCount(origin) {
-  if (origin.mark === 'to_calibrate') return ''
-  const n = origin.values.filter((v) => v.calibrated_by?.length).length
-  return n ? ` · ${n} calibrated` : ''
+const ORIGIN_WORDS = { set_by_hand: 'set by hand', measured: 'cited', derived: 'from data',
+  calibrated: 'calibrated before', to_calibrate: 'a step fits them', inherited: 'from the model',
+  unclassified: 'not recorded' }
+/** A box's tag: its origin, how many values, and how many of them a step calibrates. */
+function originTag(origin) {
+  const n = origin.values.length
+  const fitted = origin.mark === 'to_calibrate' ? 0 : origin.values.filter((v) => v.calibrated_by?.length).length
+  return `${ORIGIN_WORDS[origin.mark] ?? origin.mark} · ${n} value${n === 1 ? '' : 's'}${fitted ? ` · ${fitted} calibrated` : ''}`
 }
 const modelCounts = computed(() =>
   Object.entries(props.origins?.model_counts ?? {}).map(([mark, n]) => `${n} ${mark.replace(/_/g, ' ')}`).join(' · '),
@@ -827,7 +826,7 @@ function onPanEnd(event) {
       >
         <div class="wf-row1"><strong class="wf-id">{{ ob.origin.title }}</strong></div>
         <div class="wf-row2"><span class="wf-detail">{{ ob.origin.values.map((v) => v.name).join(', ') }}</span></div>
-        <div class="wf-tag">{{ ORIGIN_WORDS[ob.origin.mark] ?? ob.origin.mark }} · {{ ob.origin.values.length }} values{{ calibratedCount(ob.origin) }}</div>
+        <div class="wf-tag">{{ originTag(ob.origin) }}</div>
       </div>
 
       <div
@@ -973,10 +972,12 @@ function onPanEnd(event) {
       <span class="k cal">calibrated: an optimiser fitted it</span>
       <span class="k hand">set by hand</span>
       <span class="k chosen">parameters chosen by hand</span>
-      <span class="k measured">measured: set by data</span>
+      <span class="k measured">measured: from a cited source</span>
+      <span class="k derived">derived from data</span>
       <span class="k analysis">analysis</span>
       <span class="k surrogate">surrogate</span>
       <span class="k inherited">inherited: from the model</span>
+      <span class="k unrecorded">origin not recorded</span>
     </div>
     <p class="wf-help">
       Drag the chart to move along it · click a step to change its settings · double-click to
@@ -1304,6 +1305,8 @@ function onPanEnd(event) {
 .wf-key .surrogate::before { border-color: var(--surrogate); }
 .wf-key .measured::before { border-color: var(--measured); }
 .wf-key .inherited::before { border: 2px dashed var(--inherited); }
+.wf-key .derived::before { border-color: var(--derived); }
+.wf-key .unrecorded::before { border: 2px dotted var(--inherited); }
 .wf-help {
   margin: 0.3rem 0 0;
   font-size: 0.75rem;
