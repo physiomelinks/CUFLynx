@@ -81,6 +81,9 @@ const props = defineProps({
   // toggle starts on, so what is first on screen is what the calibration
   // actually minimised and its reported cost reconciles rather than puzzles.
   calibrationUsedEmulator: { type: Boolean, default: false },
+  // The open workflow's figure steps that have drawn (lib/workflowFigures.workflowFigures):
+  // [{step, function, files: [{name, url, image}]}]. None: the section is not shown.
+  workflowFigures: { type: Array, default: () => [] },
 })
 
 const emit = defineEmits(['adopt-reduction', 'select-result', 'remove-result', 'clear-results'])
@@ -1487,10 +1490,37 @@ function sectionOpen(key) {
         </p>
       </template>
     </section>
+
+    <section v-if="workflowFigures.length" class="analysis-section" v-fold="sectionOpen('figures')"
+             data-testid="figures-section">
+      <h2>Figures</h2>
+      <p class="empty-hint">Drawn by the workflow's figure steps from the results of other steps.</p>
+      <section v-for="fig in workflowFigures" :key="fig.step" v-fold class="error-chart"
+               :data-testid="`figures-${fig.step}`">
+        <h3>{{ fig.step }} <span class="empty-hint">· {{ fig.function }}</span></h3>
+        <div class="workflow-figures">
+          <a v-for="f in fig.files" :key="f.url" :href="f.url" target="_blank" rel="noopener" :title="f.name">
+            <img v-if="f.image" :src="f.url" :alt="`${fig.step}: ${f.name}`" />
+            <code v-else>{{ f.name }}</code>
+          </a>
+        </div>
+      </section>
+    </section>
   </div>
 </template>
 
 <style scoped>
+.workflow-figures {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: flex-start;
+}
+.workflow-figures img {
+  max-width: 100%;
+  width: 420px;
+  border: 1px solid var(--p-content-border-color, #ccc);
+}
 /* v-fold: a heading folds its section; a folded section shows its heading alone */
 .fold-head {
   cursor: pointer;

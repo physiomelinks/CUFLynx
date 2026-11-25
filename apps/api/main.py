@@ -5578,7 +5578,7 @@ def _generate_view(req: WorkflowViewRequest, key: tuple | None) -> dict:
 #: The thread building every box's study in the background (:func:`_warm_views`).
 _warm_thread: threading.Thread | None = None
 #: Step kinds with no model of their own, so no tab to build.
-_NO_TAB_KINDS = ("reduction", "set", "combine")
+_NO_TAB_KINDS = ("reduction", "set", "combine", "figure")
 #: Seconds the warm-up may spend without asking. Past it, the warm-up builds one box,
 #: predicts the rest from it and stops; the user then builds all, or clicks the boxes
 #: wanted. A 240-instance module array takes ~35 s a box, the enterocyte workflow ~3 s.
@@ -5900,6 +5900,17 @@ def workflow_provenance(name: str) -> Response:
                             detail="the workflow has not written its provenance yet: run it")
     return Response(content=Path(path).read_bytes(), media_type=media_type,
                     headers={"Cache-Control": "no-store"})
+
+
+@app.get("/api/workflow/figure")
+def workflow_figure(step: str, name: str) -> FileResponse:
+    """A file a figure step of the open workflow run drew, by the name the described status
+    lists under that step's ``figures``. Served by URL, so the page shows an image as an
+    ``<img>`` and links any other file."""
+    path = workflow.figure_path(step, name)
+    if path is None:
+        raise HTTPException(status_code=404, detail=f"step {step!r} drew no file {name!r}")
+    return FileResponse(path, headers={"Cache-Control": "no-store"})
 
 
 # ---------------------------------------------------------------------------

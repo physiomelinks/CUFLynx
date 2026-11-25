@@ -1375,6 +1375,22 @@ def step_result(step_dir: str) -> dict | None:
     return found if isinstance(found, dict) else None
 
 
+def step_figures(step_dir: str) -> list[str]:
+    """The files a workflow figure step drew (its ``step_result.json``'s ``figures``), as
+    paths relative to ``step_dir``, for those still there. CA records absolute paths, so a
+    run directory moved or opened from a copy is read where it is now: each path is taken
+    relative to the step directory CA wrote it in (``figure_dir``'s parent)."""
+    result = step_result(step_dir) or {}
+    written_in = os.path.dirname(str(result.get("figure_dir") or ""))
+    out = []
+    for path in result.get("figures") or []:
+        rel = os.path.relpath(str(path), written_in) if written_in else ""
+        if rel and not rel.startswith(os.pardir) and not os.path.isabs(rel) \
+                and os.path.isfile(os.path.join(step_dir, rel)):
+            out.append(rel.replace(os.sep, "/"))
+    return out
+
+
 def stored_distribution(directory: str) -> list | None:
     """The marginals (:func:`uq_distributions`' shape) of a distribution a workflow step
     stored (``<step>/distribution/``: an MCMC chain after CA's burn-in, or a Laplace

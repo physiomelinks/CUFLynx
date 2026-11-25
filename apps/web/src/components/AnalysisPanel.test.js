@@ -28,6 +28,25 @@ describe('AnalysisPanel sections fold', () => {
     await w.setProps({ focus: 'calibration' })
     expect(sections(w).filter((s) => !s.folded).map((s) => s.title)).toEqual(['Calibration'])
   })
+
+  it("shows the workflow's figures last, only when a figure step has drawn", async () => {
+    const figures = [{ step: 'traces', function: 'sweep_traces', files: [
+      { name: 'a.png', url: '/api/workflow/figure?step=traces&name=figure%2Fa.png', image: true },
+      { name: 'scores.csv', url: '/api/workflow/figure?step=traces&name=figure%2Fscores.csv', image: false },
+    ] }]
+    const w = mount(AnalysisPanel, { props: { focus: 'figures', workflowFigures: figures } })
+    expect(sections(w).map((s) => s.title).at(-1)).toBe('Figures')
+    expect(sections(w).filter((s) => !s.folded).map((s) => s.title)).toEqual(['Figures'])
+    const step = w.find('[data-testid="figures-traces"]')
+    expect(step.text()).toContain('sweep_traces')
+    expect(step.find('img').attributes('src')).toBe(figures[0].files[0].url)
+    // a file that is not an image is a link, never a blob: the server serves it
+    const links = step.findAll('a')
+    expect(links.map((a) => a.attributes('href'))).toEqual(figures[0].files.map((f) => f.url))
+    expect(links.every((a) => a.attributes('target') === '_blank')).toBe(true)
+    await w.setProps({ workflowFigures: [] })
+    expect(w.find('[data-testid="figures-section"]').exists()).toBe(false)
+  })
 })
 
 const UQ_PARAMS = [

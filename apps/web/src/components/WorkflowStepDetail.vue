@@ -9,7 +9,8 @@ import { computed, ref, watch } from 'vue'
 import Button from 'primevue/button'
 import Dialog from 'primevue/dialog'
 import { modelLabel } from '../stores/useWorkflow'
-import { referencesOf, stepPanel } from '../lib/workflowTarget'
+import { figureInputs, referencesOf, stepPanel } from '../lib/workflowTarget'
+import { workflowFigures } from '../lib/workflowFigures'
 
 const props = defineProps({
   // The step as the workflow file has it, or null when nothing is inspected.
@@ -43,12 +44,17 @@ async function doRename() {
 const kind = computed(() => props.step?.kind ?? 'calibration')
 const ORIGIN = { calibration: 'Calibrated: an optimiser fits these values',
   set: 'Set by hand', emulation: 'A surrogate of the model',
-  sweep: 'A simulation', identifiability: 'An analysis', sensitivity: 'An analysis',
+  sweep: 'A simulation', simulate: 'A simulation', figure: 'Figures drawn from other steps\' results',
+  identifiability: 'An analysis', sensitivity: 'An analysis',
   uq: 'An analysis', reduction: 'An analysis',
   combine: 'Chosen by cost: one value per parameter from the steps it combines' }
 const COMBINE_WORDS = { best_fit: 'the input with the lowest cost', mean: "each parameter's mean over its inputs" }
 const refs = computed(() => (props.step ? referencesOf(props.step, props.steps) : []))
 const panel = computed(() => stepPanel(kind.value))
+// a figure step: what its function reads, and the files it drew
+const inputs = computed(() => Object.entries(figureInputs(props.step)))
+const drawn = computed(() =>
+  (props.step ? workflowFigures([props.step], { [props.step.id]: props.result })[0]?.files : null) ?? [])
 const settingsText = computed(() => JSON.stringify(props.step?.settings ?? {}, null, 1))
 
 function path(value) {
@@ -92,14 +98,26 @@ function num(value) {
       <p class="sd-origin" :data-kind="kind">{{ ORIGIN[kind] ?? kind }} · {{ kind }}</p>
       <p v-if="step.description" class="sd-hint">{{ step.description }}</p>
       <dl class="sd-kv">
-        <dt>Model</dt>
-        <dd>{{ step.model ? modelLabel(step.model, true) : (detail?.detail || '—') }}</dd>
+        <template v-if="kind !== 'figure'">
+          <dt>Model</dt>
+          <dd>{{ step.model ? modelLabel(step.model, true) : (detail?.detail || '—') }}</dd>
+        </template>
         <template v-if="kind === 'combine'">
           <dt>Values</dt>
           <dd data-testid="workflow-step-detail-combine">
             {{ COMBINE_WORDS[step.combine?.method ?? 'best_fit'] ?? step.combine?.method }}
             of {{ (step.combine_from ?? []).join(', ') }}<template v-if="result?.chosen_from">:
               chose <b>{{ result.chosen_from }}</b></template>
+          </dd>
+        </template>
+        <template v-else-if="kind === 'figure'">
+          <dt>Function</dt>
+          <dd><code>{{ step.function }}</code></dd>
+          <dt>Reads</dt>
+          <dd data-testid="workflow-step-detail-inputs">
+            <div v-for="[name, input] in inputs" :key="name">
+              <code>{{ name }}</code> ← {{ input.kind }} of {{ input.step }}
+            </div>
           </dd>
         </template>
         <template v-else-if="kind !== 'set'">
@@ -118,8 +136,8 @@ function num(value) {
             <span v-if="step.point" class="sd-hint">A point only: not merged into the target.</span>
           </dd>
         </template>
-        <dt>Takes from</dt>
-        <dd>
+        <dt v-if="kind !== 'figure'">Takes from</dt>
+        <dd v-if="kind !== 'figure'">
           <template v-if="refs.length">
             <div v-for="[key, id] in refs" :key="key + id"><code>{{ key }}</code> {{ id }}</div>
           </template>
@@ -135,6 +153,15 @@ function num(value) {
         <template v-if="detail?.calibrates?.length">
           <dt>Calibrates</dt>
           <dd>{{ detail.calibrates.map((c) => c.target_parameterisation_name ?? c.model_name).join(', ') }}</dd>
+        </template>
+        <template v-if="drawn.length">
+          <dt>Figures</dt>
+          <dd class="sd-figures" data-testid="workflow-step-detail-figures">
+            <a v-for="f in drawn" :key="f.url" :href="f.url" target="_blank" rel="noopener" :title="f.name">
+              <img v-if="f.image" :src="f.url" :alt="f.name" />
+              <code v-else>{{ f.name }}</code>
+            </a>
+          </dd>
         </template>
       </dl>
       <details class="sd-settings">
@@ -185,6 +212,16 @@ function num(value) {
 .sd-origin[data-kind='calibration'] { color: #2f6fde; }
 .sd-origin[data-kind='set'] { color: #c8372d; }
 .sd-origin[data-kind='emulation'] { color: #8a4fd6; }
+.sd-figures {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+.sd-figures img {
+  max-width: 200px;
+  max-height: 150px;
+  border: 1px solid var(--p-content-border-color, #ccc);
+}
 .sd-hint {
   opacity: 0.7;
   font-size: 0.85em;

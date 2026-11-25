@@ -2,8 +2,9 @@
 
 An arrow is ``(source, target, key)``: a step's reference to another (``fixed_from``,
 ``priors_from``, ``result_from``, ...), the model a step runs (``source == "model"``), a
-step's values merged into the target (``target == "target"``) or a step run on the merged
-target (``source == "target"``, a sweep ``on_target``). Everything comes from what CA wrote
+step's values merged into the target (``target == "target"``), a step run on the merged
+target (``source == "target"``, a sweep ``on_target``) or an input a figure step reads
+(``input:<name>``, the parameter of its function). Everything comes from what CA wrote
 -- the receiving step's ``step_result.json`` (``fixed`` rows, ``priors``), the sending step's
 (``calibrated``, ``set``, ``distribution_dir``, ``emulator_dir``), ``workflow_result.json``
 (``merged_parameters``) -- or, for a step that has not run, from the workflow file, said so
@@ -16,9 +17,12 @@ import json
 import os
 
 import ca_run_history
+from ca_imports import CaImportError, ca_from
 
 MODEL = "model"
 TARGET = "target"
+#: the key of the arrow into a figure step from each step it reads: ``input:<parameter>``
+FIGURE_INPUT = "input:"
 
 
 def _result(run_dir: str, step_id: str) -> dict:
@@ -194,6 +198,10 @@ def edge_detail(run_dir: str, workflow: dict, source: str, target: str, key: str
         out["recorded"] = bool(merged)
         return out
 
+    if key.startswith(FIGURE_INPUT):
+        return _figure_input(out, run_dir, steps.get(target) or {}, source,
+                             key[len(FIGURE_INPUT):])
+
     receiving = _result(run_dir, target)
     sending = steps.get(source) or {"id": source}
     if key == "fixed_from":
@@ -282,4 +290,26 @@ def edge_detail(run_dir: str, workflow: dict, source: str, target: str, key: str
                                                        else "."))
     if not out["recorded"]:
         out["note"] += f" {source} has not run yet."
+    return out
+
+
+def _input_kinds() -> dict:
+    """CA's figure input kinds, ``{name: description}``; empty for a CA without them."""
+    try:
+        return {name: kind.description
+                for name, kind in ca_from("calibration_workflow.figures", "INPUT_KINDS").items()}
+    except (CaImportError, AttributeError):
+        return {}
+
+
+def _figure_input(out: dict, run_dir: str, figure: dict, source: str, name: str) -> dict:
+    """The input ``name`` a figure step reads from ``source``: its kind (the file writes
+    ``{kind: step}``), what CA loads for that kind, and whether ``source`` has run."""
+    kind = next((k for k, step in ((figure.get("inputs") or {}).get(name) or {}).items()
+                 if step == source), "")
+    out["what"] = f"{kind or 'an input'} of {source}, as the figure's {name}"
+    out["input"] = {"name": name, "kind": kind, "description": _input_kinds().get(kind, "")}
+    out["recorded"] = bool(_result(run_dir, source))
+    if not out["recorded"]:
+        out["note"] = f"{source} has not run yet: the figure is drawn once it has."
     return out
