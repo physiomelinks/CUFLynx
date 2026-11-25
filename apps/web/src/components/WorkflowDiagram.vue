@@ -342,9 +342,20 @@ const figureBoxes = computed(() => props.figures.map((f) => ({ figure: f, ...at(
 const originBoxes = computed(() =>
   hasModel.value ? (props.origins?.boxes ?? []).map((o) => ({ origin: o, ...at(`origin:${o.id}`) })) : [],
 )
-const ORIGIN_CLASS = { set_by_hand: 'hand', measured: 'measured', derived: 'derived', calibrated: 'cal' }
+// a box's mark: CA's origin of its values, or (describe's boxes from CA's plan) to_calibrate
+// and unclassified
+const ORIGIN_CLASS = { set_by_hand: 'hand', measured: 'measured', derived: 'derived', calibrated: 'cal',
+  to_calibrate: 'cal', inherited: 'inherited', unclassified: 'unrecorded' }
 const ORIGIN_WORDS = { set_by_hand: 'set by hand', measured: 'measured: from a cited source',
-  derived: 'derived from data', calibrated: 'calibrated before this run' }
+  derived: 'derived from data', calibrated: 'calibrated before this run',
+  to_calibrate: 'calibrated by a step', inherited: 'inherited from the model',
+  unclassified: 'origin not recorded' }
+/** How many of a box's values a step calibrates, said in its tag beside its origin. */
+function calibratedCount(origin) {
+  if (origin.mark === 'to_calibrate') return ''
+  const n = origin.values.filter((v) => v.calibrated_by?.length).length
+  return n ? ` · ${n} calibrated` : ''
+}
 const modelCounts = computed(() =>
   Object.entries(props.origins?.model_counts ?? {}).map(([mark, n]) => `${n} ${mark.replace(/_/g, ' ')}`).join(' · '),
 )
@@ -809,13 +820,14 @@ function onPanEnd(event) {
         class="wf-box wf-origin"
         :class="ORIGIN_CLASS[ob.origin.mark] ?? 'analysis'"
         :style="{ left: `${ob.x}px`, top: `${ob.y}px`, width: `${W}px`, height: `${H}px` }"
-        :title="ob.origin.values.map((v) => `${v.name} = ${v.value}${v.note ? `: ${v.note}` : ''}`).join('\n')"
+        :title="ob.origin.values.map((v) => `${v.name} = ${v.value}${v.note ? `: ${v.note}` : ''}${
+          v.calibrated_by?.length ? ` (calibrated in ${v.calibrated_by.join(', ')})` : ''}`).join('\n')"
         :data-testid="`workflow-origin-${ob.origin.mark}`"
         @click="emit('origin', ob.origin.id)"
       >
         <div class="wf-row1"><strong class="wf-id">{{ ob.origin.title }}</strong></div>
         <div class="wf-row2"><span class="wf-detail">{{ ob.origin.values.map((v) => v.name).join(', ') }}</span></div>
-        <div class="wf-tag">{{ ORIGIN_WORDS[ob.origin.mark] ?? ob.origin.mark }} · {{ ob.origin.values.length }} values</div>
+        <div class="wf-tag">{{ ORIGIN_WORDS[ob.origin.mark] ?? ob.origin.mark }} · {{ ob.origin.values.length }} values{{ calibratedCount(ob.origin) }}</div>
       </div>
 
       <div
@@ -1079,6 +1091,7 @@ function onPanEnd(event) {
 .wf-origin { cursor: pointer; }
 .wf-box.sim { border-color: var(--analysis); }
 .wf-box.inherited { border: 2px dashed var(--inherited); }
+.wf-box.unrecorded { border: 2px dotted var(--inherited); }
 .wf-box.target { border-color: var(--p-text-color, #ddd); cursor: pointer; }
 .wf-node {
   cursor: pointer;

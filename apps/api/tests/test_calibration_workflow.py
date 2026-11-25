@@ -68,7 +68,12 @@ def _fake_ca(monkeypatch, calls=None, plan_error=None, refuse=None, model_error=
         if plan_error:
             raise FakeWorkflowError(plan_error)
         return {"workflow_name": "demo", "steps": [{"id": "fit_a"}, {"id": "rest"}],
-                "target": json.loads(Path(path).read_text())["target"]}
+                "target": json.loads(Path(path).read_text())["target"],
+                "target_values": [
+                    {"name": "A/p", "value": 1.0, "units": "", "origin": "measured",
+                     "data_reference": "smith2001", "reason": "", "calibrated_by": ["fit_a"]},
+                    {"name": "C/k", "value": 2.0, "units": "", "origin": None,
+                     "data_reference": "", "reason": "", "calibrated_by": []}]}
 
     def workflow_status(path, output_dir, module_library_dirs=None):
         calls.append(("status", path, output_dir))
@@ -161,6 +166,8 @@ def test_opening_a_workflow_asks_ca_with_the_configured_libraries(
     assert ("load", str(workflow_file), [str(library)]) in calls
     # nothing has run there yet, so there is no status to ask CA for
     assert "status" not in body
+    # but every value of the target is in a box by its origin, from CA's plan
+    assert [b["id"] for b in body["value_origins"]["boxes"]] == ["measured", "unrecorded"]
     assert client.get("/api/workflow").json()["path"] == str(workflow_file)
 
 

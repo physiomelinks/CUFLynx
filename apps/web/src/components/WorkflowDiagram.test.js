@@ -545,6 +545,30 @@ describe('WorkflowDiagram', () => {
     expect(c.emitted('origin')).toEqual([['__set_by_hand__'], ['__measured__']])
   })
 
+  it("boxes every value of the target by its origin, from CA's plan", async () => {
+    const c = chart({ origins: { model_counts: {}, boxes: [
+      { id: 'measured', title: 'Values from literature', mark: 'measured', to: ['model'], values: [
+        { name: 'm/K', value: 1, units: 'mM', note: 'smith2001', calibrated_by: ['calibration-1'] },
+        { name: 'm/V', value: 2, units: 'mM', note: 'smith2001', calibrated_by: [] }] },
+      { id: 'to_calibrate', title: 'Values to be calibrated', mark: 'to_calibrate',
+        to: ['calibration-1'], values: [{ name: 'm/k', value: 3, units: '', note: '', calibrated_by: ['calibration-1'] }] },
+      { id: 'unrecorded', title: 'Origin not recorded', mark: 'unclassified', to: ['model'],
+        values: [{ name: 'm/x', value: 4, units: '', note: '', calibrated_by: [] }] },
+    ] } })
+    const lit = c.find('[data-testid="workflow-origin-measured"]')
+    expect(lit.text()).toContain('2 values · 1 calibrated')
+    expect(lit.attributes('title')).toContain('m/K = 1: smith2001 (calibrated in calibration-1)')
+    const toCal = c.find('[data-testid="workflow-origin-to_calibrate"]')
+    expect(toCal.classes()).toContain('cal')
+    expect(toCal.text()).toContain('calibrated by a step · 1 values')
+    expect(toCal.text()).not.toContain('1 calibrated')
+    expect(c.find('[data-testid="workflow-origin-unclassified"]').classes()).toContain('unrecorded')
+    expect(c.find('[data-testid="workflow-origin-unclassified"]').text()).toContain('origin not recorded')
+    // the values are in the model; those to be calibrated go to the step that fits them
+    expect(c.find('[data-testid="workflow-edge-origin:measured-model"]').exists()).toBe(true)
+    expect(c.find('[data-testid="workflow-edge-origin:to_calibrate-calibration-1"]').exists()).toBe(true)
+  })
+
   it('marks the step the next run changes and the steps a delete would take', () => {
     const c = chart({ editing: 'calibration-1', doomed: ['calibration-1', 'mcmc-1'] })
     expect(c.find('[data-testid="workflow-node-calibration-1"]').classes()).toContain('editing')

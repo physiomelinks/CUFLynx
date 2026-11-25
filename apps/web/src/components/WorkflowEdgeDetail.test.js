@@ -50,6 +50,16 @@ describe('WorkflowEdgeDetail', () => {
     expect(getWorkflowEdge).not.toHaveBeenCalled()
   })
 
+  it('names the step that calibrates a value, and opens it', async () => {
+    const d = mountIt({ origin: { title: 'Values from literature', mark: 'measured', values: [
+      { name: 'm/K', value: 1, units: 'mM', note: 'smith2001', calibrated_by: ['fit-a', 'fit-b'] },
+      { name: 'm/V', value: 2, units: 'mM', note: 'smith2001', calibrated_by: [] }] } })
+    const rows = d.find('[data-testid="workflow-origin-values"]')
+    expect(rows.text()).toContain('calibrated in')
+    await d.find('[data-testid="workflow-origin-step-fit-b"]').trigger('click')
+    expect(d.emitted('step')).toEqual([['fit-b']])
+  })
+
   it('shows what a figure reads and writes without asking the server', () => {
     getWorkflowEdge.mockClear()
     const d = mountIt({ figure: { id: 'paper_plots', command: 'make paper-plots',
