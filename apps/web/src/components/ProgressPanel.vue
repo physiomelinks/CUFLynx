@@ -14,6 +14,10 @@ import {
 } from 'chart.js'
 import { PALETTE, shadeForStart } from '../lib/plot'
 import MCMCProgress from './MCMCProgress.vue'
+import RunPhases from './RunPhases.vue'
+import SobolPairs from './SobolPairs.vue'
+import SobolConvergence from './SobolConvergence.vue'
+import { vFold } from '../lib/vFold'
 
 ChartJS.register(
   LinearScale,
@@ -102,7 +106,28 @@ const props = defineProps({
   uqState: { type: String, default: 'idle' },
   // qname -> plotting name, shared with the Analysis panel's posteriors.
   paramLabels: { type: Object, default: () => ({}) },
+  // CA's progress files (CA #702) of the last run of each analysis that writes one, as its
+  // status poll read them: an emulator training, a parameter reduction's Sobol run, a
+  // profile likelihood and a Sobol analysis. Null when there is none.
+  emulatorProgress: { type: Object, default: null },
+  reductionProgress: { type: Object, default: null },
+  profileProgress: { type: Object, default: null },
+  sensitivityProgress: { type: Object, default: null },
+  // A Sobol run's `{ design, convergence }` (`/sobol-progress`), for the pairs and
+  // convergence plots: the reduction's and the Sobol analysis'.
+  reductionSobol: { type: Object, default: null },
+  sensitivitySobol: { type: Object, default: null },
 })
+
+const hasIdentifiability = computed(() => !!(props.reductionProgress || props.profileProgress))
+const hasAnything = computed(
+  () =>
+    hasData.value ||
+    hasMCMC.value ||
+    !!props.emulatorProgress ||
+    hasIdentifiability.value ||
+    !!props.sensitivityProgress,
+)
 
 const hasData = computed(
   () =>
@@ -483,19 +508,50 @@ const paramOptions = {
 
 <template>
   <div class="progress-panel" data-testid="progress-panel">
-    <!-- MCMC first while it samples: it is the run that is happening now, and an MCMC run
-         leaves the calibration charts below empty because it produces no cost history. -->
-    <MCMCProgress
-      v-if="hasMCMC"
-      :progress="uqProgress"
-      :running="uqRunning"
-      :finished="uqFinished"
-      :param-labels="paramLabels"
-    />
-    <p v-if="!hasData && !hasMCMC" class="empty-hint">
-      Run a calibration to see cost and parameter progress.
+    <p v-if="!hasAnything" class="empty-hint">
+      Run an analysis to see how far it is: emulator training, parameter reduction, profile
+      likelihood, sensitivity, calibration or UQ.
     </p>
-    <template v-else-if="hasData">
+
+    <!-- The sections follow the Analysis tab's headings, in the order of the left-hand tabs. -->
+    <section v-if="emulatorProgress" v-fold class="progress-section" data-testid="progress-emulator">
+      <h2>Emulator</h2>
+      <RunPhases :progress="emulatorProgress" />
+    </section>
+
+    <section v-if="hasIdentifiability" v-fold class="progress-section"
+             data-testid="progress-identifiability">
+      <h2>Identifiability</h2>
+      <template v-if="reductionProgress">
+        <h3>Parameter reduction: Sobol run</h3>
+        <RunPhases :progress="reductionProgress" />
+        <SobolPairs v-if="reductionSobol?.design" :design="reductionSobol.design"
+                    :labels="paramLabels" />
+        <SobolConvergence v-if="reductionSobol?.convergence"
+                          :convergence="reductionSobol.convergence" :labels="paramLabels" />
+      </template>
+      <template v-if="profileProgress">
+        <h3>Profile likelihood: points per parameter</h3>
+        <RunPhases :progress="profileProgress" :labels="paramLabels" />
+      </template>
+    </section>
+
+    <section v-if="sensitivityProgress" v-fold class="progress-section"
+             data-testid="progress-sensitivity">
+      <h2>Sensitivity</h2>
+      <RunPhases :progress="sensitivityProgress" />
+      <template v-if="sensitivitySobol?.design">
+        <h3>Samples, one parameter against another</h3>
+        <SobolPairs :design="sensitivitySobol.design" :labels="paramLabels" />
+      </template>
+      <template v-if="sensitivitySobol?.convergence">
+        <h3>Convergence of the indices</h3>
+        <SobolConvergence :convergence="sensitivitySobol.convergence" :labels="paramLabels" />
+      </template>
+    </section>
+
+    <section v-if="hasData" v-fold class="progress-section" data-testid="progress-calibration">
+      <h2>Calibration</h2>
       <section class="progress-chart">
         <div class="chart-head">
           <h3>{{ metricLabel === 'cost' ? 'Cost' : 'Cost gradient' }} vs {{ xLabel }}</h3>
@@ -555,11 +611,53 @@ const paramOptions = {
           <Line :data="paramData" :options="paramOptions" :plugins="[crosshair]" />
         </div>
       </section>
-    </template>
+    </section>
+
+    <section v-if="hasMCMC" v-fold class="progress-section" data-testid="progress-uq">
+      <h2>UQ</h2>
+      <MCMCProgress
+        :progress="uqProgress"
+        :running="uqRunning"
+        :finished="uqFinished"
+        :param-labels="paramLabels"
+      />
+    </section>
   </div>
 </template>
 
 <style scoped>
+/* v-fold: a heading folds its section; a folded section shows its heading alone */
+.fold-head {
+  cursor: pointer;
+  user-select: none;
+}
+.fold-head::before {
+  content: '▾ ';
+  opacity: 0.6;
+}
+[data-folded] > .fold-head::before {
+  content: '▸ ';
+}
+[data-folded] > :not(.fold-head) {
+  display: none !important;
+}
+.progress-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+.progress-section > h2 {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 600;
+  border-bottom: 1px solid var(--p-content-border-color, #333);
+  padding-bottom: 0.25rem;
+}
+.progress-section > h3 {
+  margin: 0.4rem 0 0;
+  font-size: 0.95rem;
+  font-weight: 600;
+}
 .progress-panel {
   display: flex;
   flex-direction: column;

@@ -4,9 +4,10 @@ vi.mock('../lib/api', () => ({
   startSensitivity: vi.fn(),
   getSensitivityStatus: vi.fn(),
   cancelSensitivity: vi.fn(),
+  getSobolProgress: vi.fn(),
 }))
 
-import { startSensitivity, getSensitivityStatus } from '../lib/api'
+import { startSensitivity, getSensitivityStatus, getSobolProgress } from '../lib/api'
 import { useSensitivity } from './useSensitivity'
 
 const INDICES = { local: { 'y^{0,0} [max]': { 'a/x': 0.5 } } }
@@ -139,5 +140,26 @@ describe('a run loaded from a working dir', () => {
     const sa = useSensitivity()
     expect(sa.addLoadedResult({ param_names: [] }, {})).toBeNull()
     expect(sa.results.value).toHaveLength(0)
+  })
+})
+
+describe('useSensitivity progress (CA #702)', () => {
+  it("keeps the run's progress file and reads its Sobol design once more at the end", async () => {
+    const progress = { kind: 'sobol', state: 'done', phases: [] }
+    getSobolProgress.mockResolvedValue({ design: { names: ['a/x'] }, convergence: { n: [4] } })
+    const sa = await runWith({ method: 'sobol' }, { progress })
+    expect(sa.progress.value).toEqual(progress)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(getSobolProgress).toHaveBeenCalledWith('j1')
+    expect(sa.sobolProgress.value.convergence).toEqual({ n: [4] })
+  })
+
+  it('forgets both when a new run starts', async () => {
+    getSobolProgress.mockResolvedValue({ design: null, convergence: null })
+    const sa = await runWith({ method: 'sobol' }, { progress: { kind: 'sobol', phases: [] } })
+    startSensitivity.mockReturnValue(new Promise(() => {}))
+    sa.start('m1', { method: 'sobol' })
+    expect(sa.progress.value).toBe(null)
+    expect(sa.sobolProgress.value).toBe(null)
   })
 })
