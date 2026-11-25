@@ -18,7 +18,7 @@ const OK = '#5b9bd5'
 const FAILED = '#e84a5f'
 const W = 360
 const H = 300
-const M = { left: 56, right: 12, top: 10, bottom: 40 }
+const M = { left: 56, right: 28, top: 10, bottom: 40 }
 
 const names = computed(() => props.design.names ?? [])
 const label = (name) => props.labels[name] ?? name
@@ -71,7 +71,7 @@ function tip(p) {
   <div class="sobol-pairs" data-testid="sobol-pairs">
     <p class="muted" data-testid="sobol-pairs-counts">
       {{ counts.ran + counts.failed }} of {{ counts.total }} samples run,
-      <span class="failed-text">{{ counts.failed }} failed</span>
+      <span :class="{ 'failed-text': counts.failed }">{{ counts.failed }} failed</span>
       <span v-if="design.rows?.length < counts.ran + counts.failed">
         (every failure and {{ design.rows.length - counts.failed }} of the others shown)
       </span>

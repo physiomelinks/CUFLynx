@@ -91,7 +91,12 @@ const options = computed(() => ({
     x: {
       type: 'logarithmic',
       title: { display: true, text: 'base samples' },
-      ticks: { callback: (v) => ((props.convergence.n ?? []).includes(v) ? v : null) },
+      // a tick at each n CA evaluated, rather than the log scale's own 10, 20, 50
+      afterBuildTicks: (axis) => {
+        axis.ticks = (props.convergence.n ?? []).map((value) => ({ value }))
+      },
+      // the log scale's own labels show only 1, 2 and 5 times a power of ten
+      ticks: { callback: (value) => String(value) },
     },
     y: { type: 'linear', title: { display: true, text: index.value } },
   },

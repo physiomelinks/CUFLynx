@@ -35,6 +35,13 @@ describe('SobolConvergence', () => {
     expect(w.getComponent({ name: 'Line' }).props('data').datasets[0].data[1].y).toBe(null)
   })
 
+  it("ticks the x axis at CA's sample counts, not the log scale's own", () => {
+    const w = mount(SobolConvergence, { props: { convergence: convergence(['a']) } })
+    const axis = { ticks: [{ value: 10 }, { value: 20 }] }
+    w.getComponent({ name: 'Line' }).props('options').scales.x.afterBuildTicks(axis)
+    expect(axis.ticks).toEqual([{ value: 8 }, { value: 16 }])
+  })
+
   it('keeps the parameters with the largest ST, each in one colour for every output', async () => {
     const params = ['p0', 'p1', 'p2', 'p3', 'p4', 'p5', 'p6', 'p7']
     const w = mount(SobolConvergence, { props: { convergence: convergence(params) } })
