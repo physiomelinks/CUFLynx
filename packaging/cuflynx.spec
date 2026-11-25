@@ -96,6 +96,8 @@ for runner in (
     "calibrated_model.py",
     "cellml_meta.py",
     "params_for_id.py",
+    # which components hold a model's parameters (PhLynx's by id, #422); both import it
+    "phlynx_components.py",
     # An obs_data.json is an object *or* a bare array of data_items; uq_runner
     # rewrites one (MLE cost_type) and reads its items through the single helper
     # that knows both shapes, rather than assuming the object form.

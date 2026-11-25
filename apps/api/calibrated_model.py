@@ -68,7 +68,7 @@ def calibrated_cellml(cellml_text: str, best_params: dict[str, float]) -> tuple[
     per #287 that is a change PhLynx will not pick up.
     """
     meta = parse_cellml(cellml_text)
-    gen_index = _build_gen_index(meta.initial_values)
+    gen_index = _build_gen_index(meta.initial_values, meta.component_ids)
 
     # Group the resolved targets by owning component so we substitute inside the
     # right block (bare variable names can repeat across components).
