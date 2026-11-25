@@ -27,6 +27,8 @@ export function useEmulator(options = {}) {
   const state = ref('idle') // idle | running | done | error | cancelled
   const lines = ref([])
   const error = ref('')
+  /** CA's progress.json of the running (or last) training (CA #702), or null. */
+  const progress = ref(null)
 
   /** CA's emulator_metadata.json for the trained emulator, or null. */
   const metadata = ref(null)
@@ -147,6 +149,7 @@ export function useEmulator(options = {}) {
     state.value = 'idle'
     lines.value = []
     error.value = ''
+    progress.value = null
   }
 
   async function train(modelId, settings) {
@@ -171,6 +174,7 @@ export function useEmulator(options = {}) {
         offset = s.next_offset
       }
       state.value = s.state
+      progress.value = s.progress ?? null
       if (s.state === 'running') {
         timer = setTimeout(() => poll(modelId, configWorkingDir), intervalMs)
       } else {
@@ -201,6 +205,8 @@ export function useEmulator(options = {}) {
     if (jobId) {
       try {
         await cancelEmulatorTraining(jobId)
+        // the last word on how far it got: its progress now reads stopped
+        progress.value = (await getEmulatorStatus(jobId, offset)).progress ?? null
       } catch {
         /* best effort */
       }
@@ -212,6 +218,7 @@ export function useEmulator(options = {}) {
     state,
     lines,
     error,
+    progress,
     running,
     metadata,
     errorPoints,

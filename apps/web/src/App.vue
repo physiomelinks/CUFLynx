@@ -3848,6 +3848,12 @@ watch(() => obs.obsData.value, scheduleRun)
             :uq-running="uq.running.value"
             :uq-state="uq.state.value"
             :param-labels="paramLabels"
+            :emulator-progress="emu.progress.value"
+            :reduction-progress="reduction.progress.value"
+            :reduction-sobol="reduction.sobolProgress.value"
+            :profile-progress="iaJob.progress.value"
+            :sensitivity-progress="sa.progress.value"
+            :sensitivity-sobol="sa.sobolProgress.value"
           />
         </div>
         <div v-show="centerTab === 'analysis'" class="plot-groups">

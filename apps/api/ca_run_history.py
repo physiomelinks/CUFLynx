@@ -754,6 +754,118 @@ def pca_mode_composition(report_dir: str, files: dict) -> list[dict] | None:
 
 
 # ---------------------------------------------------------------------------
+# Progress files (CA #702)
+# ---------------------------------------------------------------------------
+#: A Sobol run, an emulator training and a profile likelihood each rewrite this in the
+#: directory their results go to (``libcuflynx.utilities.progress``, schema
+#: ``progress.schema.json``): ``{kind, state, started, updated, phases[{name, state, done,
+#: total, failed, ...}]}``.
+PROGRESS_FILE = "progress.json"
+#: The Sobol run's design (samples by parameters, in run order), its columns, and one int8
+#: per row: 0 not run, 1 ran, 2 failed.
+SOBOL_DESIGN = "sobol_design.npy"
+SOBOL_DESIGN_PARAMS = "sobol_design_params.json"
+SOBOL_SAMPLE_STATUS = "sobol_sample_status.npy"
+#: S1 and ST with their confidence half-widths at growing numbers of base samples, written
+#: at the end: ``{n: [...], outputs: {output: {S1: {param: [[value, conf], ...]}, ST}}}``.
+SOBOL_CONVERGENCE = "sobol_convergence.json"
+
+
+def run_progress(directory: str, newer_than: float | None = None,
+                 finished: bool = False) -> dict | None:
+    """The ``progress.json`` in ``directory``, or None.
+
+    ``newer_than`` (a time stamp) refuses a file last written before it: an earlier run's,
+    left in a directory reused by this one. ``finished`` says the run's process has exited:
+    CA leaves a killed run ``running``, so such a file, and its running phases, read
+    ``stopped``.
+    """
+    path = os.path.join(directory or "", PROGRESS_FILE)
+    try:
+        if newer_than is not None and os.path.getmtime(path) < newer_than:
+            return None
+    except OSError:
+        return None
+    document = _json(directory, PROGRESS_FILE)
+    if not isinstance(document, dict) or not isinstance(document.get("phases"), list):
+        return None
+    if finished and document.get("state") == "running":
+        document["state"] = "stopped"
+        for phase in document["phases"]:
+            if isinstance(phase, dict) and phase.get("state") in ("running", "queued"):
+                phase["state"] = "stopped"
+    return document
+
+
+def find_progress(root: str, kind: str, newer_than: float | None = None,
+                  finished: bool = False, depth: int = 3) -> dict | None:
+    """The newest ``progress.json`` of ``kind`` at most ``depth`` folders below ``root``,
+    read as :func:`run_progress` reads it: for a run whose output folder is only named once
+    it is over (an emulator's bundle, a workflow step's profile likelihood)."""
+    if not root or not os.path.isdir(root):
+        return None
+    base = os.path.normpath(root).count(os.sep)
+    found = []
+    for folder, subfolders, files in os.walk(root):
+        if os.path.normpath(folder).count(os.sep) - base >= depth:
+            subfolders[:] = []
+        if PROGRESS_FILE in files:
+            found.append(folder)
+    found.sort(key=lambda d: os.path.getmtime(os.path.join(d, PROGRESS_FILE)), reverse=True)
+    for folder in found:
+        document = run_progress(folder, newer_than=newer_than, finished=finished)
+        if document is not None and document.get("kind") == kind:
+            return document
+    return None
+
+
+def sobol_design(directory: str, max_points: int = 2000) -> dict | None:
+    """A Sobol run's design and which samples failed, for a pairs plot, or None.
+
+    ``{names, bounds, rows, status, counts: {total, ran, failed, not_run}}``: ``rows`` are
+    every failed sample and an even spread of the others that ran, at most ``max_points``
+    in all, with ``status`` (1 ran, 2 failed) beside each. Samples not run yet are left out.
+    """
+    import numpy as np  # noqa: PLC0415
+
+    params = _json(directory, SOBOL_DESIGN_PARAMS)
+    try:
+        design = np.load(os.path.join(directory, SOBOL_DESIGN))
+    except Exception:  # noqa: BLE001
+        return None
+    if not isinstance(params, dict) or design.ndim != 2:
+        return None
+    try:
+        status = np.load(os.path.join(directory, SOBOL_SAMPLE_STATUS))
+    except Exception:  # noqa: BLE001
+        status = np.zeros(len(design), dtype=np.int8)
+    if status.shape != (len(design),):
+        status = np.zeros(len(design), dtype=np.int8)
+    failed = np.flatnonzero(status == 2)
+    ran = np.flatnonzero(status == 1)
+    room = max(max_points - len(failed), 0)
+    if len(ran) > room:
+        ran = ran[np.linspace(0, len(ran) - 1, room).astype(int)] if room else ran[:0]
+    keep = np.sort(np.concatenate([failed[:max_points], ran]))
+    return {
+        "names": [str(n) for n in params.get("names") or []],
+        "bounds": params.get("bounds"),
+        "rows": design[keep].tolist(),
+        "status": status[keep].astype(int).tolist(),
+        "counts": {"total": int(len(design)), "ran": int((status == 1).sum()),
+                   "failed": int((status == 2).sum()), "not_run": int((status == 0).sum())},
+    }
+
+
+def sobol_convergence(directory: str) -> dict | None:
+    """A finished Sobol run's ``sobol_convergence.json``, or None."""
+    document = _json(directory, SOBOL_CONVERGENCE)
+    if not isinstance(document, dict) or not isinstance(document.get("outputs"), dict):
+        return None
+    return document
+
+
+# ---------------------------------------------------------------------------
 # Profile likelihood
 # ---------------------------------------------------------------------------
 #: CA's ``ProfileLikelihood`` writes ``profile_likelihood/summary.json`` and one JSON

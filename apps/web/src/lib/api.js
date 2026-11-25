@@ -576,6 +576,16 @@ export async function getSensitivityStatus(jobId, offset = 0) {
   return data
 }
 
+/**
+ * A Sobol run's design with each sample's status, and its indices' convergence once
+ * written (CA #702): `{ design, convergence }`, each null until CA writes it. `slot` is
+ * 'param_reduction' for a reduction's "Sobol first" run.
+ */
+export async function getSobolProgress(jobId, slot = 'sensitivity') {
+  const { data } = await axios.get(url(`/api/${slot}/${jobId}/sobol-progress`))
+  return data
+}
+
 export async function cancelSensitivity(jobId) {
   const { data } = await axios.post(url(`/api/sensitivity/${jobId}/cancel`))
   return data

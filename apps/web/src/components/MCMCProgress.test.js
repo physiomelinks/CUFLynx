@@ -167,12 +167,12 @@ describe('ProgressPanel with a running MCMC', () => {
     // calibration" for the entire run.
     const w = mount(ProgressPanel, { props: { uqRunning: true, uqProgress: payload() } })
     expect(w.find('[data-testid="mcmc-progress"]').exists()).toBe(true)
-    expect(w.text()).not.toContain('Run a calibration')
+    expect(w.text()).not.toContain('Run an analysis')
   })
 
   it('still says to run a calibration when nothing at all is going on', () => {
     const w = mount(ProgressPanel)
-    expect(w.text()).toContain('Run a calibration')
+    expect(w.text()).toContain('Run an analysis')
     expect(w.find('[data-testid="mcmc-progress"]').exists()).toBe(false)
   })
 })

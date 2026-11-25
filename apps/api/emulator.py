@@ -17,6 +17,7 @@ from __future__ import annotations
 import os
 import subprocess
 import threading
+import time
 import uuid
 
 import ca_run_history
@@ -51,6 +52,7 @@ class EmulatorJob:
         #: The study-workflow emulation step this run is ({workflow, run_dir, step, ...}),
         #: or None for a direct run.
         self.study_step: dict | None = None
+        self.started_at = time.time()
         self.lock = threading.Lock()
 
 
@@ -184,7 +186,17 @@ class EmulatorManager:
                 "metadata": job.metadata,
                 "error": job.error,
                 "warning": job.warning,
+                "progress": self._progress(job),
             }
+
+    @staticmethod
+    def _progress(job: EmulatorJob) -> dict | None:
+        """The training's ``progress.json``. CA writes it in the emulator's folder, which the
+        run names only once it is over, so it is looked for under the working dir (or the
+        workflow step's folder)."""
+        root = job.study_step["step_dir"] if job.study_step else job.output_dir
+        return ca_run_history.find_progress(root, "emulation", newer_than=job.started_at - 1,
+                                            finished=job.state != "running")
 
     def cancel(self, job_id: str) -> bool:
         job = self._job
