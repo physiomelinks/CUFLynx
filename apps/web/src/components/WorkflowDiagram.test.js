@@ -560,7 +560,7 @@ describe('WorkflowDiagram', () => {
     expect(lit.text()).toContain('cited · 2 values · 1 calibrated')
     expect(lit.attributes('title')).toContain('m/K = 1: smith2001 (calibrated in calibration-1)')
     const toCal = c.find('[data-testid="workflow-origin-to_calibrate"]')
-    expect(toCal.classes()).toContain('cal')
+    expect(toCal.classes()).toContain('tocal')
     expect(toCal.text()).toContain('a step fits them · 1 value')
     expect(toCal.text()).not.toContain('1 calibrated')
     expect(c.find('[data-testid="workflow-origin-unclassified"]').classes()).toContain('unrecorded')
@@ -596,5 +596,13 @@ describe('WorkflowDiagram', () => {
     expect(src).toMatch(/\.wf-box\.unrecorded \{ border: 2px dotted var\(--hand\); \}/)
     expect(src).toMatch(/\.wf-box\.unrecorded \.wf-tag \{ color: var\(--hand\); \}/)
     expect(src).toMatch(/\.wf-key \.unrecorded::before \{ border: 2px dotted var\(--hand\); \}/)
+  })
+
+  it('draws "values to be calibrated" in grey, solid, not in the calibrated blue', () => {
+    const src = fs.readFileSync('src/components/WorkflowDiagram.vue', 'utf8')
+    expect(src).toMatch(/\.wf-box\.tocal \{ border-color: var\(--inherited\); \}/)
+    expect(src).toMatch(/\.wf-box\.tocal \.wf-tag \{ color: var\(--inherited\); \}/)
+    expect(src).toMatch(/\.wf-key \.tocal::before \{ border-color: var\(--inherited\); \}/)
+    expect(src).toContain('<span class="k tocal">to be calibrated</span>')
   })
 })

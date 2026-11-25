@@ -345,7 +345,7 @@ const originBoxes = computed(() =>
 // a box's mark: CA's origin of its values, or (describe's boxes from CA's plan) to_calibrate
 // and unclassified
 const ORIGIN_CLASS = { set_by_hand: 'hand', measured: 'measured', derived: 'derived', calibrated: 'cal',
-  to_calibrate: 'cal', inherited: 'inherited', unclassified: 'unrecorded' }
+  to_calibrate: 'tocal', inherited: 'inherited', unclassified: 'unrecorded' }
 const ORIGIN_WORDS = { set_by_hand: 'set by hand', measured: 'cited', derived: 'from data',
   calibrated: 'calibrated before', to_calibrate: 'a step fits them', inherited: 'from the model',
   unclassified: 'not recorded' }
@@ -976,6 +976,7 @@ function onPanEnd(event) {
       <span class="k derived">derived from data</span>
       <span class="k analysis">analysis</span>
       <span class="k surrogate">surrogate</span>
+      <span class="k tocal">to be calibrated</span>
       <span class="k inherited">inherited: from the model</span>
       <span class="k unrecorded">origin not recorded</span>
     </div>
@@ -1093,6 +1094,8 @@ function onPanEnd(event) {
 .wf-box.sim { border-color: var(--analysis); }
 .wf-box.inherited { border: 2px dashed var(--inherited); }
 .wf-box.unrecorded { border: 2px dotted var(--hand); }
+.wf-box.tocal { border-color: var(--inherited); }
+.wf-box.tocal .wf-tag { color: var(--inherited); }
 .wf-box.unrecorded .wf-tag { color: var(--hand); }
 .wf-box.target { border-color: var(--p-text-color, #ddd); cursor: pointer; }
 .wf-node {
@@ -1308,6 +1311,7 @@ function onPanEnd(event) {
 .wf-key .inherited::before { border: 2px dashed var(--inherited); }
 .wf-key .derived::before { border-color: var(--derived); }
 .wf-key .unrecorded::before { border: 2px dotted var(--hand); }
+.wf-key .tocal::before { border-color: var(--inherited); }
 .wf-help {
   margin: 0.3rem 0 0;
   font-size: 0.75rem;
