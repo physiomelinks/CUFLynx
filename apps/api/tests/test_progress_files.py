@@ -243,3 +243,77 @@ def test_a_real_sobol_run_reports_cas_progress_and_design(client, requires_simul
     assert found["design"]["counts"]["total"] == sampling["total"]
     assert found["design"]["counts"]["not_run"] == 0
     assert found["convergence"]["n"]
+    # reopening the working dir shows the same run's progress
+    import load_outputs  # noqa: PLC0415
+
+    reopened = load_outputs.load_outputs(str(tmp_path))["run_progress"]["sobol"]
+    assert reopened["progress"]["state"] == "done"
+    assert reopened["design"]["counts"] == found["design"]["counts"]
+
+
+# --- reopening a working dir -------------------------------------------------
+
+def _updated(path, when):
+    with open(path) as f:
+        doc = json.load(f)
+    doc["updated"] = when
+    with open(path, "w") as f:
+        json.dump(doc, f)
+
+
+def test_reopening_reads_the_sobol_runs_progress_design_and_convergence(tmp_path):
+    import load_outputs  # noqa: PLC0415
+
+    sens = tmp_path / "sensitivity"
+    _progress(sens)
+    _design(sens, [1, 2, 0])
+    (sens / ca_run_history.SOBOL_CONVERGENCE).write_text(json.dumps({"n": [4], "outputs": {}}))
+    found = load_outputs.load_outputs(str(tmp_path))["run_progress"]
+    # a run that never wrote its end reads stopped, not running
+    assert found["sobol"]["progress"]["state"] == "stopped"
+    assert found["sobol"]["design"]["counts"]["failed"] == 1
+    assert found["sobol"]["convergence"]["n"] == [4]
+    assert found["emulator"] is None and found["profile"] is None
+
+
+def test_reopening_reads_the_sobol_progress_of_the_step_the_indices_came_from(tmp_path):
+    import load_outputs  # noqa: PLC0415
+    from test_study_workflow_results import _study  # noqa: PLC0415
+
+    work = tmp_path / "w"
+    run = _study(work, finished=time.strftime("%Y-%m-%dT%H:%M:%S"))
+    # an earlier direct run's progress, with no indices newer than the step
+    _progress(work / "sensitivity", phases=[])
+    _progress(run / "sobol-1" / "sensitivity", state="done")
+    found = load_outputs.load_outputs(str(work))
+    assert found["study_steps"]["sobol"] == "sobol-1"
+    assert found["run_progress"]["sobol"]["progress"]["state"] == "done"
+
+
+def test_reopening_reads_the_emulators_progress_from_its_bundle(tmp_path):
+    import load_outputs  # noqa: PLC0415
+
+    bundle = tmp_path / "emulators" / "m_obs"
+    _progress(bundle, kind="emulation", state="done")
+    found = load_outputs._run_progress(str(tmp_path), {"emulator": {"dir": str(bundle)}})
+    assert found["emulator"]["kind"] == "emulation"
+    # a bundle holding another kind's file has no training progress
+    _progress(bundle, kind="sobol")
+    assert load_outputs._run_progress(
+        str(tmp_path), {"emulator": {"dir": str(bundle)}})["emulator"] is None
+
+
+def test_reopening_reads_the_newest_profile_likelihood(tmp_path):
+    import load_outputs  # noqa: PLC0415
+    from test_study_workflow_results import _study  # noqa: PLC0415
+
+    work = tmp_path / "w"
+    run = _study(work)
+    direct = _progress(work / "profile_likelihood", kind="profile_likelihood")
+    step = _progress(run / "mcmc-1" / "uq" / "profile_likelihood", kind="profile_likelihood",
+                     state="done")
+    _updated(direct, "2026-11-26T02:00:00+00:00")
+    _updated(step, "2026-11-26T03:00:00+00:00")
+    assert load_outputs._run_progress(str(work), {})["profile"]["state"] == "done"
+    _updated(direct, "2026-11-26T04:00:00+00:00")
+    assert load_outputs._run_progress(str(work), {})["profile"]["state"] == "stopped"

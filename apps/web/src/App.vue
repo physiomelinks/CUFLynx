@@ -9,6 +9,7 @@ import StatusBar from './components/StatusBar.vue'
 import CalibrationPanel from './components/CalibrationPanel.vue'
 import EmulatorPanel from './components/EmulatorPanel.vue'
 import ProgressPanel from './components/ProgressPanel.vue'
+import { applyReopenedProgress } from './lib/runProgress'
 import SensitivityPanel from './components/SensitivityPanel.vue'
 import UQPanel from './components/UQPanel.vue'
 import WorkflowBar from './components/WorkflowBar.vue'
@@ -334,6 +335,9 @@ function applyLoadedOutputs(found) {
     emu.metadata.value = found.emulator.metadata
     emu.errorPoints.value = found.emulator.error_points ?? null
   }
+  // CA's progress files of those runs: the Progress tab's Sobol, emulator and profile
+  // likelihood sections.
+  applyReopenedProgress(found.run_progress, { sa, emu, ia: iaJob })
 }
 // On open, ask the user for a working dir (the first thing they see).
 const workingDirSetupOpen = ref(false)
