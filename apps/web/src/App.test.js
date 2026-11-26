@@ -1410,7 +1410,7 @@ describe('App.vue best-fit overlay (#126)', () => {
     wrapper.vm.model.variables.value = { ...VARS }
     wrapper.vm.obs.setObsData({
       protocol_info: { pre_times: [0], sim_times: [[1]] },
-      data_items: [{ variable: 'm/x', operands: ['m/x'], plot_type: 'horizontal' }],
+      data_items: [{ data_item_name: 'm/x', operands: ['m/x'], plot_type: 'horizontal' }],
     })
     await drainAutoRun()
     wrapper.vm.sim.setExperiments([{ time: [0, 1], outputs: { 'm/x': [1, 2] } }])
@@ -1888,7 +1888,7 @@ describe('App.vue cost sensitivities (#188)', () => {
     wrapper.vm.obs.setObsData({
       // With a protocol: without one nothing runs at all, gradient included.
       protocol_info: { pre_times: [0], sim_times: [[1]] },
-      data_items: [{ variable: 'a/x', operands: ['a/x'] }],
+      data_items: [{ data_item_name: 'a/x', operands: ['a/x'] }],
     })
     wrapper.vm.sliders.addSlider('a/alpha', { min: 0, max: 2, value: 1 })
     wrapper.vm.sim.setResult({
@@ -2147,7 +2147,7 @@ describe('App.vue solver plots (external python extra_plots)', () => {
     const wrapper = await mountApp()
     wrapper.vm.obs.setObsData({
       protocol_info: { sim_times: [[1], [1]] },
-      data_items: [{ variable: 'heat/T_p1', operation: 'series' }],
+      data_items: [{ data_item_name: 'heat/T_p1', operation: 'series' }],
     })
     wrapper.vm.sim.setExperiments(
       [
@@ -2169,6 +2169,41 @@ describe('App.vue solver plots (external python extra_plots)', () => {
     await nextTick()
     expect(wrapper.vm.plotGroups[0].cells.some((c) => c.kind === 'image')).toBe(false)
     expect(wrapper.findAllComponents({ name: 'ImagePanel' })).toHaveLength(0)
+  })
+})
+
+describe('App.vue integer solver_info fields', () => {
+  const CONFIG = {
+    ca_dir: '', ca_exists: true, generated_model_format: 'cellml',
+    solver: 'CVODE_libopencor', solver_info: {}, differentiable_operations: {},
+    model_formats: ['cellml'],
+    solvers_by_format: { cellml: ['CVODE_libopencor'] },
+    default_solver_by_format: { cellml: 'CVODE_libopencor' },
+    solver_info_schema: {
+      CVODE_libopencor: [
+        { key: 'MaximumNumberOfSteps', label: 'Max # steps', type: 'number', default: 5000, integer: true },
+        { key: 'rtol', label: 'Rel. tol', type: 'number', default: 1e-8 },
+      ],
+    },
+  }
+  beforeEach(() => getConfig.mockResolvedValue({ ...CONFIG }))
+  afterEach(() => {
+    getConfig.mockResolvedValue({
+      ca_dir: '', ca_exists: true, generated_model_format: 'cellml',
+      solver: 'CVODE_myokit', solver_info: {}, differentiable_operations: {},
+    })
+  })
+
+  it('shows a step count without decimals and a tolerance with them', async () => {
+    const wrapper = shallowMount(App, {
+      global: { stubs: { Dialog: { template: '<div><slot /></div>' } } },
+    })
+    await flushPromises()
+    const steps = wrapper.find('[data-testid="solver-info-MaximumNumberOfSteps"]')
+    const rtol = wrapper.find('[data-testid="solver-info-rtol"]')
+    expect(steps.attributes('max-fraction-digits')).toBe('0')
+    expect(steps.attributes('min-fraction-digits')).toBe('0')
+    expect(rtol.attributes('max-fraction-digits')).toBe('12')
   })
 })
 
@@ -2332,6 +2367,13 @@ describe('analysis runs carry the protocol window', () => {
   it('the exported pipeline states the same window', async () => {
     const wrapper = await mountApp()
     expect(wrapper.vm.exportPayload()).toMatchObject({ sim_time: 7, pre_time: 1.5 })
+  })
+
+  it("the exported pipeline's UQ stage flag is CA's do_uq", async () => {
+    const wrapper = await mountApp()
+    const enabled = wrapper.vm.exportPayload().enabled
+    expect(enabled).toHaveProperty('do_uq')
+    expect(enabled).not.toHaveProperty('do_mcmc')
   })
 })
 

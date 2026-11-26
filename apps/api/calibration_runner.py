@@ -84,11 +84,9 @@ def _solver_info_from_config(config: dict, settings: dict) -> dict:
     Settings popup) with the solver name + CVODE step defaults filled in."""
     si = dict(config.get("solver_info") or {})
     si.setdefault("solver", config.get("solver") or settings.get("solver", "CVODE_myokit"))
-    si.setdefault("MaximumStep", settings.get("MaximumStep", 0.0001))
-    # No MaximumNumberOfSteps default: myokit_helper never reads it (myokit's
-    # Simulation has no max-step-count knob), CA's migrate_legacy_solver_info_keys
-    # pops it for solve_ivp/casadi, and CA fills its own default for the backends
-    # that do use it. Injecting it here only seeded an inert setting.
+    if "MaximumStep" in ca_obs.solver_info_keys(si["solver"]):
+        si.setdefault("MaximumStep", settings.get("MaximumStep", 0.0001))
+    # No MaximumNumberOfSteps default: CA fills its own for the backends that use it.
     return si
 
 
@@ -337,7 +335,7 @@ def _write_calibrated_cellml(config: dict, params: dict, output_dir: str) -> str
     if not cellml_path or not str(cellml_path).endswith(".cellml") or not params:
         return None
     try:
-        from calibrated_model import calibrated_cellml  # local import: pure-XML
+        from calibrated_cellml import calibrated_cellml  # local import: pure-XML
 
         text = Path(cellml_path).read_text(encoding="utf-8")
         new_text, report = calibrated_cellml(text, params)
