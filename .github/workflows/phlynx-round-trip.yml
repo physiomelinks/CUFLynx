@@ -1,0 +1,183 @@
+name: PhLynx round trip
+
+# The CUFLynx -> PhLynx -> CUFLynx round trip (apps/api/tests/test_phlynx_round_trip_live.py)
+# against PhLynx's real code, which no other job checks out (#418).
+#
+# - nightly, against PhLynx `main` (what staging deploys), skipped when neither repo's
+#   head has moved since the last `main` run reported on PhLynx's status issue;
+# - by hand, against any PhLynx branch, tag or commit (`phlynx_ref`);
+# - from PhLynx's production deploy, as a job its build `needs`, so a broken round
+#   trip stops the deploy:
+#
+#       round-trip:
+#         uses: physiomelinks/CUFLynx/.github/workflows/phlynx-round-trip.yml@main
+#         with:
+#           phlynx_ref: ${{ github.sha }}
+#         secrets: inherit
+#       build:
+#         needs: round-trip
+#
+# - on a CUFLynx pull request that changes the test, its bridge or this workflow.
+#
+# The status issue ("CUFLynx round trip status", on PhLynx) is written with a GitHub App
+# token: the App's id in the `PHLYNX_ROUND_TRIP_APP_ID` variable and its key in the
+# `PHLYNX_ROUND_TRIP_APP_KEY` secret, set on the organisation, with `issues: write` on
+# PhLynx. Without them the round trip still runs and decides the job; only the skip
+# check and the report are left out, with a warning.
+
+on:
+  schedule:
+    - cron: "23 15 * * *"   # 04:23 NZDT
+  workflow_dispatch:
+    inputs:
+      phlynx_ref:
+        description: PhLynx branch, tag or full commit SHA to test
+        default: main
+      cuflynx_ref:
+        description: CUFLynx branch, tag or full commit SHA to test
+        default: main
+  workflow_call:
+    inputs:
+      phlynx_ref:
+        description: PhLynx branch, tag or full commit SHA to test
+        type: string
+        default: main
+      cuflynx_ref:
+        description: CUFLynx branch, tag or full commit SHA to test
+        type: string
+        default: main
+  pull_request:
+    paths:
+      - .github/workflows/phlynx-round-trip.yml
+      - .github/scripts/phlynx_round_trip_status.py
+      - apps/api/tests/test_phlynx_round_trip_live.py
+      - apps/api/tests/phlynx_bridge/**
+
+permissions:
+  contents: read
+
+concurrency:
+  group: phlynx-round-trip-${{ github.event_name }}-${{ inputs.phlynx_ref || github.ref }}
+  cancel-in-progress: false
+
+env:
+  PHLYNX_REPO: physiomelinks/PhLynx
+  CUFLYNX_REPO: physiomelinks/CUFLynx
+
+jobs:
+  round-trip:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Resolve both commits
+        id: refs
+        env:
+          PHLYNX_REF: ${{ inputs.phlynx_ref || 'main' }}
+          # a pull request tests its own head; every other run CUFLynx main or the input
+          CUFLYNX_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || inputs.cuflynx_ref || 'main' }}
+        run: |
+          resolve() {  # <repo> <ref>: the commit of a branch, a tag or a full commit sha
+            if [[ "$2" =~ ^[0-9a-f]{40}$ ]]; then echo "$2"; return; fi
+            # an annotated tag lists its commit (^{}) after the tag object
+            git ls-remote "https://github.com/$1" "refs/heads/$2" "refs/tags/$2" "refs/tags/$2^{}" \
+              | tail -1 | cut -f1
+          }
+          phlynx=$(resolve "$PHLYNX_REPO" "$PHLYNX_REF")
+          cuflynx=$(resolve "$CUFLYNX_REPO" "$CUFLYNX_REF")
+          [ -n "$phlynx" ] || { echo "::error::PhLynx has no ref '$PHLYNX_REF'"; exit 1; }
+          [ -n "$cuflynx" ] || { echo "::error::CUFLynx has no ref '$CUFLYNX_REF'"; exit 1; }
+          echo "phlynx=$phlynx" >> "$GITHUB_OUTPUT"
+          echo "cuflynx=$cuflynx" >> "$GITHUB_OUTPUT"
+          echo "phlynx_ref=$PHLYNX_REF" >> "$GITHUB_OUTPUT"
+          echo "PhLynx $PHLYNX_REF = $phlynx; CUFLynx $CUFLYNX_REF = $cuflynx"
+
+      - name: Token for PhLynx's status issue
+        id: token
+        if: github.event_name != 'pull_request' && vars.PHLYNX_ROUND_TRIP_APP_ID != ''
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.PHLYNX_ROUND_TRIP_APP_ID }}
+          private-key: ${{ secrets.PHLYNX_ROUND_TRIP_APP_KEY }}
+          owner: physiomelinks
+          repositories: PhLynx
+
+      - name: No token
+        if: github.event_name != 'pull_request' && steps.token.outcome != 'success'
+        run: echo "::warning::No PHLYNX_ROUND_TRIP_APP_ID/KEY, so the status issue is not read or written."
+
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.CUFLYNX_REPO }}
+          ref: ${{ steps.refs.outputs.cuflynx }}
+
+      # Only the nightly run skips: a run by hand or from a deploy always runs.
+      - name: Has either repo moved since the last main run?
+        id: check
+        if: github.event_name == 'schedule' && steps.token.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+        run: |
+          python .github/scripts/phlynx_round_trip_status.py check --repo "$PHLYNX_REPO" \
+            --cuflynx "${{ steps.refs.outputs.cuflynx }}" --phlynx "${{ steps.refs.outputs.phlynx }}"
+
+      - name: Check out PhLynx
+        if: steps.check.outputs.run != 'false'
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.PHLYNX_REPO }}
+          ref: ${{ steps.refs.outputs.phlynx }}
+          path: phlynx
+
+      - uses: actions/setup-node@v4
+        if: steps.check.outputs.run != 'false'
+        with:
+          node-version: "24"   # PhLynx's
+
+      - name: Install PhLynx
+        if: steps.check.outputs.run != 'false'
+        working-directory: phlynx
+        run: corepack enable && yarn install --immutable
+
+      - name: Install the CUFLynx web app (the bridge's jsdom)
+        if: steps.check.outputs.run != 'false'
+        working-directory: apps/web
+        run: yarn install --frozen-lockfile
+
+      - uses: actions/setup-python@v5
+        if: steps.check.outputs.run != 'false'
+        with:
+          python-version: "3.10"
+
+      - name: Install the CUFLynx API
+        if: steps.check.outputs.run != 'false'
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e "apps/api[dev]"
+
+      # A skip is a failure here: every test of the file must run.
+      - name: Run the round trip
+        id: test
+        if: steps.check.outputs.run != 'false'
+        working-directory: apps/api
+        env:
+          PHLYNX_DIR: ${{ github.workspace }}/phlynx
+        run: |
+          pytest -m integration tests/test_phlynx_round_trip_live.py -rs -v \
+            --junitxml=junit-round-trip.xml
+          python ../../.github/scripts/assert_tests_ran.py --min-ran 4 junit-round-trip.xml
+
+      # Runs of PhLynx main and runs called from PhLynx (its deploy; in a called workflow
+      # `github` is the caller's) report, a failed install included. A run of another
+      # branch by hand does not, so it cannot close or reopen the issue for main.
+      - name: Report on PhLynx's status issue
+        if: >-
+          always() && job.status != 'cancelled'
+          && steps.token.outcome == 'success' && steps.check.outputs.run != 'false'
+          && (steps.refs.outputs.phlynx_ref == 'main' || github.repository == env.PHLYNX_REPO)
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+        run: |
+          python .github/scripts/phlynx_round_trip_status.py report --repo "$PHLYNX_REPO" \
+            --cuflynx "${{ steps.refs.outputs.cuflynx }}" --phlynx "${{ steps.refs.outputs.phlynx }}" \
+            --ref "${{ steps.refs.outputs.phlynx_ref }}" --result "${{ job.status }}" \
+            --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"

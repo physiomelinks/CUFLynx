@@ -6,15 +6,11 @@ it imports PhLynx's **actual** modules and pushes a real CUFLynx archive through
 them. The two are complementary -- the transcription says what we believe, this
 says what PhLynx does -- and when they disagree, this one is right.
 
-That is not hypothetical. The transcription's claim that a snapshot-less archive
-opens PhLynx empty was true when written and false forty minutes later, when
-phlynx 98a327b ("Fix loading with no flow snapshot") replaced the library-only
-fallback with `parseCellMLConnections` + `loadFromCellML`. Nothing in a
-transcription can notice that; this can.
-
 Skipped unless a PhLynx checkout is present, so the suite still runs anywhere:
-set ``PHLYNX_DIR``, or keep the checkout beside CUFLynx. It also needs node and a
-PhLynx new enough to have the OMEX import service at all.
+set ``PHLYNX_DIR``, or keep the checkout beside CUFLynx. It also needs node, and
+both installs (PhLynx's ``yarn install``, CUFLynx's ``apps/web``). The
+``PhLynx round trip`` workflow (``.github/workflows/phlynx-round-trip.yml``) runs
+it nightly and before every PhLynx production deploy, where a skip is a failure.
 """
 from __future__ import annotations
 
@@ -33,9 +29,8 @@ STUDY = REPO / "resources" / "3compartment.omex"
 
 
 #: The module PhLynx gained in #517. Its absence is a *failure*, not a skip: a
-#: PhLynx that cannot import an OMEX archive cannot be sent one, and that is the
-#: state phlynx.com is in today. Skipping it would be how the exchange silently
-#: stays broken -- exactly the trap the transcription-only tests fell into.
+#: PhLynx that cannot import an OMEX archive cannot be sent one. Skipping it would
+#: be how the exchange silently stays broken -- exactly the trap the transcription-only tests fell into.
 IMPORT_SERVICE = Path("src") / "services" / "import" / "omex.js"
 
 
@@ -69,8 +64,7 @@ def phlynx() -> Path:
             f"the PhLynx at {path} has no {IMPORT_SERVICE.as_posix()}, so it cannot "
             f"import an OMEX archive at all -- its `?open=omex` loader looks up a "
             f"literal 'model.cellml' and throws on anything else, which is every "
-            f"archive CUFLynx builds. That is PhLynx `main`, and what phlynx.com "
-            f"serves. The exchange needs phlynx #517."
+            f"archive CUFLynx builds. The exchange needs phlynx #517."
         )
     if not (path / "node_modules" / "jszip").is_dir():
         pytest.skip(f"PhLynx at {path} has no node_modules -- run its install first")
@@ -117,8 +111,6 @@ def exchanged(phlynx, tmp_path_factory) -> dict:
         ["node", str(BRIDGE), str(out_path), str(back_path)],
         capture_output=True, text=True, env=env, timeout=300,
     )
-    if proc.returncode == 3:
-        pytest.skip(proc.stderr.strip().splitlines()[-1])
     if proc.returncode != 0:
         pytest.fail(f"the PhLynx half failed:\n{proc.stderr[-3000:]}")
 
@@ -133,11 +125,10 @@ def exchanged(phlynx, tmp_path_factory) -> dict:
 
 @pytest.mark.integration
 def test_phlynx_opens_what_cuflynx_sends(exchanged):
-    """The first leg. phlynx.com cannot do this, which is the point of the test.
+    """The first leg: PhLynx opens the archive and finds its CellML.
 
-    PhLynx `main` -- what phlynx.com serves -- looks up a literal `model.cellml`
-    and throws when it is absent. CUFLynx names its model after the study, so on
-    `main` this leg fails before anything reaches the canvas.
+    CUFLynx names its model after the study, not `model.cellml`, so a PhLynx that
+    looks up a literal name fails here, before anything reaches the canvas.
     """
     assert exchanged["phlynx"]["opened"]
     assert exchanged["phlynx"]["cellml"].endswith(".cellml")

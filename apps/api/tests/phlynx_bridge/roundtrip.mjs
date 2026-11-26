@@ -2,10 +2,9 @@
  * The PhLynx half of the CUFLynx -> PhLynx -> CUFLynx round trip.
  *
  * Runs PhLynx's *real* modules out of a checkout, rather than transcribing them:
- * a transcription is only true until PhLynx moves, and PhLynx moved 40 minutes
- * after the last one was written (phlynx 98a327b, "Fix loading with no flow
- * snapshot"). Point PHLYNX_DIR at the checkout; everything imported below is
- * theirs.
+ * a transcription is only true until PhLynx moves. Point PHLYNX_DIR at the
+ * checkout (installed with `yarn install`); everything imported below is theirs,
+ * loaded by PhLynx's own Vite.
  *
  * Reads the archive CUFLynx would send on argv[2], writes what PhLynx would send
  * back to argv[3], and prints a JSON report on stdout for the Python test to
@@ -26,18 +25,13 @@ const PHLYNX_DIR = process.env.PHLYNX_DIR
 const WEB_DIR = process.env.CUFLYNX_WEB_DIR
 const [, , inPath, outPath] = process.argv
 
-// Resolve this script's own packages explicitly: ESM ignores NODE_PATH, and the
-// two halves live in different installs -- jszip/pinia/vue in PhLynx's, jsdom in
-// CUFLynx's web app. PhLynx's own `import 'vue'` still resolves from its own
-// node_modules, because Node resolves bare specifiers from the importing file.
+// The two halves live in different installs: vite in PhLynx's, jsdom in
+// CUFLynx's web app. ESM ignores NODE_PATH, so each is resolved from its own.
 const fromPhlynx = createRequire(`${PHLYNX_DIR}/package.json`)
 const fromWeb = createRequire(`${WEB_DIR}/package.json`)
 
-// Load a package by the same entry point PhLynx's own `import` statements get.
-// `require.resolve` hands back the CommonJS entry, and for a dual-published
-// package that is a *different module instance* from the ESM one -- which for
-// pinia means `setActivePinia` here would not be the `getActivePinia` PhLynx's
-// store calls, and every store lookup fails with "no active Pinia".
+// Load a package by its ESM entry point: `require.resolve` hands back the
+// CommonJS entry, which an ESM-only package (vite) does not have.
 async function load(req, name) {
   const pkgPath = req.resolve(`${name}/package.json`)
   const pkg = JSON.parse(await readFile(pkgPath, 'utf8'))
@@ -49,41 +43,44 @@ async function load(req, name) {
   return import(typeof entry === 'string' ? new URL(entry, base).href : pathToFileURL(req.resolve(name)).href)
 }
 
-// PhLynx is a Vite app, so its own imports are extensionless (`./omexClassifiers`).
-// Vite resolves those; plain Node ESM does not. Add the extension on the way past
-// rather than asking PhLynx to write imports that suit our test runner.
-const { registerHooks } = await import('node:module')
-if (typeof registerHooks !== 'function') {
-  console.error('BRIDGE_UNSUPPORTED: node is too old for module.registerHooks (need >= 22.15)')
-  process.exit(3)
-}
-registerHooks({
-  resolve(specifier, context, nextResolve) {
-    try {
-      return nextResolve(specifier, context)
-    } catch (err) {
-      // Also covers a package whose `module` field is extensionless -- jszip
-      // points at `lib/index`, which bundlers accept and Node does not.
-      const looksLikePath = specifier.startsWith('.') || specifier.startsWith('file:')
-      if (looksLikePath && !/\.[mc]?js$/.test(specifier)) {
-        return nextResolve(`${specifier}.js`, context)
-      }
-      throw err
-    }
-  },
-})
-
 const { JSDOM } = await load(fromWeb, 'jsdom')
 const dom = new JSDOM('<!doctype html><html></html>')
 globalThis.DOMParser = dom.window.DOMParser
 globalThis.Node = dom.window.Node
 
-const { extractOmexArchive, importOmexFile } = await import(`${PHLYNX_DIR}/src/services/import/omex.js`)
-const { parseCellMLConnections } = await import(`${PHLYNX_DIR}/src/services/import/parseCellmlConnections.js`)
-const { generateOmexArchive } = await import(`${PHLYNX_DIR}/src/services/compress.js`)
-const { useOmexStore } = await import(`${PHLYNX_DIR}/src/stores/omexStore.js`)
-const { setActivePinia, createPinia } = await load(fromPhlynx, 'pinia')
-const JSZip = (await load(fromPhlynx, 'jszip')).default
+// PhLynx is a Vite app: extensionless imports, `.json` imports without an import
+// attribute, `import.meta.glob`, its aliases and `define`s. So its modules are
+// loaded through its own Vite with its own config, as `yarn dev` would load them,
+// rather than by plain Node, which handles none of those. Its packages (pinia,
+// jszip) come through a module of PhLynx's root importing them, so they are the
+// instances PhLynx's code gets: a second pinia would leave PhLynx's store with
+// "no active Pinia".
+const PACKAGES = 'virtual:cuflynx-bridge-packages'
+const packagesModule = {
+  name: 'cuflynx-bridge-packages',
+  resolveId: (id) => (id === PACKAGES ? `\0${PACKAGES}` : undefined),
+  load: (id) => (id === `\0${PACKAGES}`
+    ? "export { setActivePinia, createPinia } from 'pinia'\nexport { default as JSZip } from 'jszip'\n"
+    : undefined),
+}
+const { createServer } = await load(fromPhlynx, 'vite')
+const vite = await createServer({
+  root: PHLYNX_DIR,
+  configFile: `${PHLYNX_DIR}/vite.config.js`,
+  plugins: [packagesModule],
+  server: { middlewareMode: true, hmr: false, ws: false },
+  appType: 'custom',
+  logLevel: 'error',
+  // Packages are Node's to load: Vite would inline a CommonJS one (jszip) as ESM.
+  ssr: { external: true },
+})
+const phlynx = (path) => vite.ssrLoadModule(path)
+
+const { extractOmexArchive, importOmexFile } = await phlynx('/src/services/import/omex.js')
+const { parseCellMLConnections } = await phlynx('/src/services/import/parseCellmlConnections.js')
+const { generateOmexArchive } = await phlynx('/src/services/compress.js')
+const { useOmexStore } = await phlynx('/src/stores/omexStore.js')
+const { setActivePinia, createPinia, JSZip } = await phlynx(PACKAGES)
 
 setActivePinia(createPinia())
 
@@ -138,3 +135,4 @@ console.log(JSON.stringify({
   canvas_edges: parsed.edges.length,
   returned_members: Object.keys((await JSZip.loadAsync(bytes)).files),
 }))
+await vite.close()
