@@ -213,6 +213,33 @@ export function useCalibration(options = {}) {
         /* best effort */
       }
       state.value = 'cancelled'
+      timer = setTimeout(followStopped, intervalMs)
+    }
+  }
+
+  /**
+   * A stopped run's best-so-far error vectors are written after it stops (the server
+   * says `errors_pending` until then): keep reading its status until they are, for the
+   * Analysis tab's error bars.
+   */
+  async function followStopped() {
+    timer = null
+    if (!jobId) return
+    try {
+      const s = await getCalibrationStatus(jobId, offset)
+      if (s.lines?.length) {
+        lines.value = lines.value.concat(s.lines)
+        offset = s.next_offset
+      }
+      if (s.errors_pending) {
+        timer = setTimeout(followStopped, intervalMs)
+        return
+      }
+      percentError.value = s.percent_error ?? null
+      stdError.value = s.std_error ?? null
+      errorLabels.value = s.error_labels ?? []
+    } catch {
+      /* the job is gone: the stopped run stands without its errors */
     }
   }
 
