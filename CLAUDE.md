@@ -472,6 +472,12 @@ Three traps:
   `_ModelRecord.archive_path`, restored by `_get_model`'s disk-recovery path.
   Deliberately **not** in `MODEL_SOURCE_SUFFIXES`: that tuple drives "Edit source",
   which would try to open a zip in the user's text editor.
+- **A modular archive is a bundle of paths, not names** (#407). PhLynx's export marks
+  `document.sedml` master; `model.cellml` (the SED-ML's `<model source>`) imports
+  module files beside it and units from `units/`. `unpack` keys CellMLs by archive
+  path and follows a SED-ML master to its model; `cellml_flatten.flatten_bundle`
+  writes the bundle at those paths. Writing by basename breaks every `units/` href.
+  `resources/phlynx_modular_decay.omex` is PhLynx's own output.
 
 **A module-library archive opens at its calibrated values**
 (`apps/api/library_calibration.py`). circulatory-autogen-modules ships

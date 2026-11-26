@@ -961,3 +961,52 @@ def test_an_obs_data_with_only_validation_data_is_found_by_its_prediction_items(
         "notes.json": json.dumps({"comment": "not observations"}),
     })))
     assert parts["obs"][0] == "held_out.json"
+
+
+# ---------------------------------------------------------------------------
+# A modular archive (PhLynx #1050, CUFLynx #407)
+# ---------------------------------------------------------------------------
+#: PhLynx's own modular export, from its ``modularOmex.integration.test.js``:
+#: ``document.sedml`` is the manifest's master and runs ``model.cellml``, which
+#: imports ``decay.cellml`` and ``units/ticks.cellml``; ``decay.cellml`` imports
+#: the units file too.
+MODULAR = RESOURCES_DIR / "phlynx_modular_decay.omex"
+
+
+def test_a_sedml_master_leads_to_the_model_it_runs():
+    parts = omex_import.unpack(MODULAR.read_bytes())
+    assert parts["master"] == "model.cellml"
+    assert parts["roles"]["cellml"][0] == "model.cellml"
+    # Keyed by archive path, so the units file keeps its folder.
+    assert set(parts["cellml"]) == {"model.cellml", "decay.cellml", "units/ticks.cellml"}
+
+
+def test_without_a_manifest_master_the_import_root_is_the_model():
+    data = _zip(
+        {
+            "units/u.cellml": "<model/>",
+            "a_module.cellml": '<model><import xlink:href="units/u.cellml"/></model>',
+            "main.cellml": '<model><import xlink:href="a_module.cellml"/></model>',
+        }
+    )
+    assert omex_import.unpack(data)["master"] == "main.cellml"
+
+
+def test_a_phlynx_modular_archive_loads(client, tmp_path, requires_simulation):
+    with open(MODULAR, "rb") as fh:
+        resp = client.post(
+            "/api/omex/upload",
+            params={"output_dir": str(tmp_path)},
+            files={"file": (MODULAR.name, fh, "application/zip")},
+        )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["model_filename"] == "model.cellml"
+    variables = client.get(f"/api/models/{body['model_id']}/variables").json()
+    assert variables["odes"] == ["decay_1/x", "decay_2/x"]
+    assert variables["initial_values"] == {
+        "instance_parameters/decay_1_x_init": 2.0,
+        "instance_parameters/decay_1_k": 0.5,
+        "instance_parameters/decay_2_x_init": 2.0,
+        "instance_parameters/decay_2_k": 0.5,
+    }

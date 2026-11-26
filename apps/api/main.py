@@ -53,7 +53,7 @@ from calibration import (
 )
 from cellml_flatten import (
     CellMLFlattenError,
-    flatten_cellml,
+    flatten_bundle,
     has_imports,
     pick_main_cellml,
 )
@@ -1562,15 +1562,11 @@ async def upload_model(
         raw = only_bytes
     else:
         # A main model + sisters (or a single file that itself imports): resolve
-        # imports and flatten to one CellML 2.0 document. Write the bundle to a
-        # temp dir so libCellML resolves the sisters by their relative hrefs.
+        # imports and flatten to one CellML 2.0 document.
         try:
-            main_name = pick_main_cellml(raw_by_name)
-            with tempfile.TemporaryDirectory() as td:
-                for name, data in raw_by_name.items():
-                    (Path(td) / os.path.basename(name)).write_bytes(data)
-                flat = flatten_cellml(str(Path(td) / os.path.basename(main_name)), td)
-            raw = flat.encode("utf-8")
+            bundle = {os.path.basename(name): data for name, data in raw_by_name.items()}
+            main_name = pick_main_cellml(bundle)
+            raw = flatten_bundle(bundle, main_name).encode("utf-8")
         except CellMLFlattenError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -1890,12 +1886,7 @@ def import_omex_bytes(data: bytes, output_dir: str | None = None,
     else:
         try:
             main_name = parts["master"] or pick_main_cellml(raw_by_name)
-            with tempfile.TemporaryDirectory() as td:
-                for name, blob in raw_by_name.items():
-                    (Path(td) / os.path.basename(name)).write_bytes(blob)
-                raw = flatten_cellml(
-                    str(Path(td) / os.path.basename(main_name)), td
-                ).encode("utf-8")
+            raw = flatten_bundle(raw_by_name, main_name).encode("utf-8")
         except CellMLFlattenError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -1943,7 +1934,7 @@ def import_omex_bytes(data: bytes, output_dir: str | None = None,
         "variable_count": meta.variable_count,
         "params": meta.params,
         "odes": meta.odes,
-        "model_filename": parts["master"],
+        "model_filename": Path(parts["master"]).name if parts["master"] else None,
         "obs_data": None,
         "params_for_id": None,
         # Where PhLynx's editor state was kept, so the archive round-trips (#149).
