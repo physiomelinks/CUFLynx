@@ -5,6 +5,8 @@ on:
     branches: [main, devel_FA]
   pull_request:
 
+# All workflows pin ubuntu-24.04: the PyPI libcellml wheel needs libxml2.so.2, which ubuntu-latest
+# (26.04) does not have.
 jobs:
   # `pip install -e .` is how a user installs from source (scripts/install.py runs
   # exactly this), and nothing in CI exercised it: every other job installs the
@@ -18,7 +20,7 @@ jobs:
   # question the other jobs already answer.
   packaging:
     name: Editable install (packaging metadata)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Every job here runs in seconds to ~2 minutes, so 15 is a backstop rather than a
     # budget: without one, a job that hangs holds a runner until GitHub's 360-minute
     # default. release.yml carries the same backstop, after `Install Sundials (Linux)`
@@ -68,7 +70,7 @@ jobs:
         # while this tier does not install it, moving past the engine's own ceiling would
         # test an interpreter libcuflynx cannot fully support (circulatory_autogen#459).
         # 3.10 stays as the floor because that is what libcuflynx requires (#278).
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-24.04, macos-latest, windows-latest]
         python-version: ["3.10", "3.11", "3.12"]
     defaults:
       run:
@@ -96,19 +98,27 @@ jobs:
           # -- when the floor moved to 0.7.3 and this did not, the unit tier spent a month
           # testing a pairing pip itself would refuse to resolve, and only the weekly
           # `ca-pin-freshness` job said so.
-          ref: a3531f580c635180ac01c0b62a509fcab2a8c7da  # libcuflynx v0.7.3
+          #
+          # During release prep this is a commit on CA `devel`, which is what this
+          # release is built against; its marker reads `v<X.Y.Z>+devel` (the release
+          # devel is ahead of). When libcuflynx is released, pin the release's merge
+          # commit with a plain `v<X.Y.Z>` marker, and move integration.yml's
+          # `@devel` installs back to `@master`.
+          ref: 1f7c238aeaa2aac159fca6c5b6c885c534764e79  # libcuflynx v0.7.3+devel
           path: circulatory_autogen
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
       # Install only the light deps needed by the unit tier; the heavy
       # simulation stack (myokit/libcellml) is exercised by the integration
-      # marker, which is skipped here. pyyaml is for CA's parser module.
+      # marker, which is skipped here. pyyaml and jsonschema are for CA's parser
+      # module: without jsonschema it skips the schema checks the obs_data and
+      # params_for_id tests expect.
       # matplotlib is for the extra-figure pipeline: without it the
       # sim-worker child degrades to "no extra figures" by design, which
       # would silently gut test_solver_plots_worker's drift guards.
       - name: Install unit-test deps
-        run: pip install fastapi "uvicorn[standard]" numpy pandas pyyaml python-multipart httpx matplotlib pytest pytest-cov
+        run: pip install fastapi "uvicorn[standard]" numpy pandas pyyaml jsonschema python-multipart httpx matplotlib pytest pytest-cov
       - name: Run unit tests
         run: pytest -m "not integration" -q
 
@@ -123,7 +133,7 @@ jobs:
       # files off disk -- a path or line-ending assumption that only breaks on
       # Windows is exactly the kind of thing this catches.
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-24.04, macos-latest, windows-latest]
     defaults:
       run:
         working-directory: apps/web
@@ -205,7 +215,7 @@ jobs:
   # after an await, which Safari refuses and Chromium tolerates.
   frontend-e2e:
     name: Frontend e2e (WebKit + Chromium)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     defaults:
       run:

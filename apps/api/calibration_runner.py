@@ -335,7 +335,7 @@ def _write_calibrated_cellml(config: dict, params: dict, output_dir: str) -> str
     if not cellml_path or not str(cellml_path).endswith(".cellml") or not params:
         return None
     try:
-        from calibrated_model import calibrated_cellml  # local import: pure-XML
+        from calibrated_cellml import calibrated_cellml  # local import: pure-XML
 
         text = Path(cellml_path).read_text(encoding="utf-8")
         new_text, report = calibrated_cellml(text, params)
