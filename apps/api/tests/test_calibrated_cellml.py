@@ -6,13 +6,31 @@ from xml.etree import ElementTree as ET
 
 import pytest
 
-from calibrated_model import calibrated_cellml
+from calibrated_cellml import calibrated_cellml
 from cellml_meta import parse_cellml
 from conftest import RESOURCES_DIR
 
 
 def _reparse(text):
     return parse_cellml(text).initial_values
+
+
+def test_no_app_module_shares_a_name_with_one_on_cas_paths():
+    """The runners put circulatory_autogen's directories ahead of their own on
+    ``sys.path`` (``ca_imports.ensure_ca_path``), so an app module named like one
+    of CA's imports CA's instead: ``from calibrated_model import ...`` in the
+    calibration runner reached ``libcuflynx/param_id/calibrated_model.py``."""
+    import os
+
+    import ca_imports
+
+    app_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    mine = {name for name in os.listdir(app_dir) if name.endswith(".py")}
+    dirs = [path for path in ca_imports.ca_paths() if os.path.isdir(path)]
+    if not dirs:
+        pytest.skip("no circulatory_autogen directories on this machine")
+    clashes = {path: sorted(mine & set(os.listdir(path))) for path in dirs}
+    assert not any(clashes.values()), clashes
 
 
 def test_substitutes_best_fit_into_flat_model_parameters():

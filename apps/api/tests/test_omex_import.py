@@ -202,6 +202,40 @@ def test_a_params_for_id_json_is_params_not_obs_data():
     assert parts["obs"][0] == "study_obs_data.json"
 
 
+PARAMETERS_JSON = json.dumps({"schema_version": 1, "a": {"C": {"value": 1}}})
+
+
+@pytest.mark.parametrize("parameters_name", ["m_parameters.csv", "m_parameters.json"])
+def test_a_models_parameters_are_never_its_params_for_id(parameters_name):
+    """A module-array model's values (``<prefix>_parameters.json``, or the CSV
+    PhLynx writes) beside its params_for_id: each is picked by its name, never by
+    which came first or by "param" in the name."""
+    parts = omex_import.unpack(_zip({
+        "m.cellml": "<model/>",
+        parameters_name: PARAMETERS_JSON,
+        "m_params_for_id.json": json.dumps({"params": []}),
+    }))
+    assert parts["params"][0] == "m_params_for_id.json"
+    assert parts["roles"]["parameters"] == [parameters_name]
+
+
+def test_without_a_params_for_id_a_parameters_file_is_not_taken_for_one():
+    parts = omex_import.unpack(_zip({
+        "m.cellml": "<model/>", "m_parameters.json": PARAMETERS_JSON, "other.csv": "a,b\n"}))
+    assert parts["params"] is None
+    assert parts["obs_skipped"] == []
+
+
+def test_a_params_for_id_json_wins_over_its_csv():
+    """The JSON is the form CA reads; a CSV beside it is the older copy."""
+    parts = omex_import.unpack(_zip({
+        "m.cellml": "<model/>",
+        "m_params_for_id.csv": "vessel_name,param_name\n",
+        "m_params_for_id.json": json.dumps({"params": []}),
+    }))
+    assert parts["params"][0] == "m_params_for_id.json"
+
+
 def test_the_manifest_is_returned_parsed():
     parts = omex_import.unpack(_phlynx_archive())
     entries = parts["manifest"]["entries"]
@@ -761,12 +795,8 @@ def test_a_found_obs_data_leaves_the_other_members_unremarked():
 
 
 # ---------------------------------------------------------------------------
-# An obs_data written before CA #466
-#
-# The archive the user had was correct when it was written: `variable` named the
-# item and was allowed to repeat across the mean/max/min of one trace. CA's
-# complaint is about the consequence (a duplicate `data_item_name`), so the
-# cause -- and the migrator that fixes it -- has to come from here.
+# An obs_data in the old vocabulary (`variable` / `name_for_plotting`) is
+# refused by CA's schema, by name.
 # ---------------------------------------------------------------------------
 def _legacy_obs() -> str:
     return json.dumps(
@@ -791,27 +821,12 @@ def _legacy_obs() -> str:
     )
 
 
-def test_a_pre_466_archive_is_told_what_changed_and_how_to_convert_it(client, requires_ca):
+def test_an_archive_in_the_old_vocabulary_gets_cas_refusal(client, requires_ca):
     resp = _upload(client, {"m.cellml": _model_bytes(), "obs_data.json": _legacy_obs()})
     assert resp.status_code == 200, resp.text
     error = resp.json()["obs_data"]["error"]
-    # CA's own complaint, unparaphrased, so it matches what a run would say...
-    assert "Duplicate 'data_item_name'" in error
-    # ...and then the part CA cannot know: why this file has duplicates at all.
-    assert "uses the old" in error
-    assert "cuflynx-migrate-obs-data" in error
-    assert "'variable'" in error and "'name_for_plotting'" in error
-
-
-def test_the_migration_hint_is_offered_from_the_document_alone():
-    """No CA needed: the old keys are in the file, and the advice is about them.
-    So a frozen app with no clone configured still explains the failure."""
-    import obs_data as obs_mod
-
-    hint = obs_mod.legacy_vocabulary_hint(json.loads(_legacy_obs()))
-    assert hint and "cuflynx-migrate-obs-data" in hint
-    # And it stays quiet about a file already in the current vocabulary.
-    assert obs_mod.legacy_vocabulary_hint(_example_obs_data()) is None
+    # CA's own complaint, unparaphrased, so it matches what a run would say.
+    assert "'variable'" in error and "unexpected" in error
 
 
 def test_an_mmt_archive_whose_protocol_filled_the_slot_is_not_told_it_has_none(

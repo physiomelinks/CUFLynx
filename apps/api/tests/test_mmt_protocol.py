@@ -32,8 +32,10 @@ def requires_protocol_shapes(requires_simulation, requires_myokit_parser):
     # engine's first simulation, so an import here can fail for the wrong reason.
     from engine import _circulatory_autogen_src  # noqa: PLC0415
 
+    # Either module layout: namespaced (libcuflynx/utilities) or flat (utilities).
     src = Path(_circulatory_autogen_src() or "")
-    if not (src / "utilities" / "protocol_shapes.py").is_file():
+    if not any((src / pkg / "utilities" / "protocol_shapes.py").is_file()
+               for pkg in ("libcuflynx", ".")):
         pytest.skip("this circulatory_autogen has no protocol_shapes support yet")
 
 def _requires_engine_reader():
