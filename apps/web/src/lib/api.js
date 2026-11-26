@@ -594,6 +594,18 @@ export async function openStudyFromOutputs(dir, runDir = null, filePrefix = null
   return data
 }
 
+/**
+ * Which outputs directory a dropped `<study>_cuflynx_study.json` opens. `text` is
+ * the file's contents; `path` is its location when the shell knows it (a browser
+ * drop does not, and the manifest's own `study_dir` answers instead).
+ */
+export async function openStudyManifest(text, path) {
+  const body = { content: text }
+  if (path) body.path = path
+  const { data } = await axios.post(url('/api/outputs/manifest'), body)
+  return data
+}
+
 export async function loadOutputsDirectory(dir, filePrefix, runDir) {
   const params = new URLSearchParams({ dir })
   if (filePrefix) params.set('file_prefix', filePrefix)
