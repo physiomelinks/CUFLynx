@@ -49,27 +49,22 @@ def test_upload_3compartment_obs_returns_protocol_summary(client):
     assert body["protocol_info"]["pre_times"] == [10.0]
 
 
-def test_bare_list_obs_data_is_still_supported():
-    # The data-only (bare array) format remains valid -> data-only obs.
-    parsed = obs_mod.parse_obs_data(
-        [
-            {
-                "data_item_name": "flow",
-                "operands": ["aortic_root/v"],
-                "data_type": "constant",
-                "plot_type": "horizontal",
-                "value": 1e-4,
-                # `unit` and `std` are REQUIRED by CA, which now vets the
-                # document at upload; the shipped 3compartment obs_data (the
-                # same bare-list format) carries both.
-                "unit": "m3_per_s",
-                "std": 1e-5,
-            }
-        ]
-    )
-    assert parsed.has_protocol is False
-    assert parsed.protocol_info is None
-    assert len(parsed.data_items) == 1
+def test_a_bare_list_obs_data_is_refused():
+    """libcuflynx reads only the object form with a protocol_info."""
+    with pytest.raises(obs_mod.ObsDataError, match="cuflynx-upgrade obs-data"):
+        obs_mod.parse_obs_data(
+            [
+                {
+                    "data_item_name": "flow",
+                    "operands": ["aortic_root/v"],
+                    "data_type": "constant",
+                    "plot_type": "horizontal",
+                    "value": 1e-4,
+                    "unit": "m3_per_s",
+                    "std": 1e-5,
+                }
+            ]
+        )
 
 
 def test_upload_3compartment_model_metadata(client):

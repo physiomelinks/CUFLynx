@@ -389,7 +389,7 @@ def _text(item: dict, key: str) -> str | None:
 def _modifier_operation_meta(operation: str | None) -> tuple[str, dict]:
     """The resolved operation name and its vocabulary entry.
 
-    The vocabulary is CA's ``PARAM_MODIFIER_OPERATIONS`` (introspected by
+    The vocabulary is CA's ``PARAM_MODIFIERS`` (introspected by
     ``solver_options`` with a fallback), so an operation CA grows is accepted
     here without a change -- and one this CA cannot run is refused by name.
     """
@@ -433,7 +433,7 @@ def _modifier_entry(
         raise ParamsForIdError(
             f"row {idx} ({label}): unknown modifier operation '{op}'; the "
             f"available operations come from circulatory_autogen's "
-            f"PARAM_MODIFIER_OPERATIONS."
+            f"PARAM_MODIFIERS."
         )
     if unbounded:
         # CA raises here too: the meaningful version of an unbounded multiplier
@@ -514,10 +514,14 @@ def _entries_from_doc(
     for idx, item in enumerate(doc.get("params") or []):
         targets = [str(t).strip() for t in (item.get("targets") or []) if str(t).strip()]
         modifies = [str(t).strip() for t in (item.get("modifies") or []) if str(t).strip()]
-        # ``modifier`` is CA's name for this since #385 (a modifier acts on
-        # parameters; an operation acts on outputs). ``operation`` is still
-        # accepted so files written before the rename keep loading.
-        operation = _text(item, "modifier") or _text(item, "operation")
+        # A modifier acts on parameters; ``operation`` is the obs_data key for
+        # what acts on outputs, so on an entry it is refused, as CA does.
+        if "operation" in item:
+            raise ParamsForIdError(
+                f"row {idx}: 'operation' is not a params_for_id key; name a "
+                f"modifier entry's function with 'modifier'"
+            )
+        operation = _text(item, "modifier")
         # Minimal structural checks, stated here for the no-CA JSON path; with
         # CA importable, load_doc has already run resolve_params_for_id_doc and
         # these (plus the deeper cross-entry rules) were judged with CA's wording.
@@ -527,7 +531,7 @@ def _entries_from_doc(
             )
         if operation and not modifies:
             raise ParamsForIdError(
-                f"row {idx}: 'operation' is only valid on a modifier entry "
+                f"row {idx}: 'modifier' is only valid on a modifier entry "
                 f"(one that sets 'modifies')"
             )
         if not targets and not modifies:

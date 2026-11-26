@@ -28,23 +28,23 @@ const obs = {
   n_experiments: 3,
   experiment_labels: ['SHR', 'SHR M', 'I_ramp'],
   prediction_items: [
-    { variable: 'var_SN/Cai', name_for_plotting: 'Ca_{ter}', experiment_idx: 0 },
-    { variable: 'soma_SN/V', name_for_plotting: 'V', experiment_idx: 0 },
+    { data_item_name: 'Cai', operands: ['var_SN/Cai'], trace_name_for_plotting: 'Ca_{ter}', experiment_idx: 0 },
+    { data_item_name: 'V', operands: ['soma_SN/V'], trace_name_for_plotting: 'V', experiment_idx: 0 },
   ],
   data_items: [
-    { variable: 'soma_SN/V', operands: ['soma_SN/V'], data_type: 'constant', plot_type: 'horizontal', value: 20, experiment_idx: 2 },
-    { variable: 'soma_SN/V', operands: ['time', 'soma_SN/V'], data_type: 'constant', plot_type: 'vertical', value: 2.02, experiment_idx: 0 },
-    { variable: 'soma_SN/V', operands: ['time', 'soma_SN/V'], data_type: 'constant', plot_type: 'None', value: 0, experiment_idx: 0 },
+    { data_item_name: 'soma_SN/V', operands: ['soma_SN/V'], data_type: 'constant', plot_type: 'horizontal', value: 20, experiment_idx: 2 },
+    { data_item_name: 'soma_SN/V', operands: ['time', 'soma_SN/V'], data_type: 'constant', plot_type: 'vertical', value: 2.02, experiment_idx: 0 },
+    { data_item_name: 'soma_SN/V', operands: ['time', 'soma_SN/V'], data_type: 'constant', plot_type: 'None', value: 0, experiment_idx: 0 },
   ],
 }
 
 describe('obs plot helpers', () => {
   it('obsModelVar picks the non-time operand', () => {
     expect(obsModelVar({ operands: ['time', 'soma_SN/V'] })).toBe('soma_SN/V')
-    expect(obsModelVar({ operands: ['Lotka_Volterra_module/x'], variable: 'x_max' })).toBe(
+    expect(obsModelVar({ operands: ['Lotka_Volterra_module/x'], data_item_name: 'x_max' })).toBe(
       'Lotka_Volterra_module/x',
     )
-    expect(obsModelVar({ variable: 'var_SN/Cai' })).toBe('var_SN/Cai')
+    expect(obsModelVar({ data_item_name: 'var_SN/Cai' })).toBe('var_SN/Cai')
   })
 
   it('isPlottableOverlay skips frequency and plot_type None', () => {
@@ -78,9 +78,9 @@ describe('data-only obs_data (3compartment shape)', () => {
   const obs3 = {
     has_protocol: false,
     data_items: [
-      { variable: 'flow aortic root', operands: ['aortic_root/v'], data_type: 'constant', plot_type: 'horizontal', value: 1e-4 },
-      { variable: 'stroke volume', operands: ['heart/q_lv'], data_type: 'constant', plot_type: 'horizontal_from_min', value: 1.04e-4 },
-      { variable: 'pressure aortic root', operands: ['aortic_root/u'], data_type: 'constant', plot_type: 'horizontal', value: 16000 },
+      { data_item_name: 'flow aortic root', operands: ['aortic_root/v'], data_type: 'constant', plot_type: 'horizontal', value: 1e-4 },
+      { data_item_name: 'stroke volume', operands: ['heart/q_lv'], data_type: 'constant', plot_type: 'horizontal_from_min', value: 1.04e-4 },
+      { data_item_name: 'pressure aortic root', operands: ['aortic_root/u'], data_type: 'constant', plot_type: 'horizontal', value: 16000 },
     ],
   }
 
@@ -175,7 +175,7 @@ describe('controlledSeries (params_to_change)', () => {
 
 describe('emulatorFeatureFor', () => {
   const item = {
-    name_for_plotting: 'x_{SS}',
+    trace_name_for_plotting: 'x_{SS}',
     operation: 'steady_state_avg',
     operands: ['benchmark/x'],
   }
@@ -218,7 +218,7 @@ describe('buildChartData calculated features', () => {
   it('plots the calculated feature beside the experimental value', () => {
     const sim = { time: [0, 1, 2], outputs: { 'aortic_root/v': [1e-4, 5e-4, 2e-4] } }
     const item = {
-      name_for_plotting: 'v_{AR}',
+      trace_name_for_plotting: 'v_{AR}',
       data_type: 'constant',
       operation: 'max',
       operands: ['aortic_root/v'],
@@ -241,7 +241,7 @@ describe('buildChartData calculated features', () => {
     // model says -- so a user dragging a parameter can see where they diverge.
     const sim = { time: [0, 1, 2], outputs: { 'aortic_root/v': [1e-4, 5e-4, 2e-4] } }
     const item = {
-      name_for_plotting: 'v_{AR}',
+      trace_name_for_plotting: 'v_{AR}',
       data_type: 'constant',
       operation: 'max',
       operands: ['aortic_root/v'],
@@ -269,7 +269,7 @@ describe('buildChartData calculated features', () => {
   it('draws no emulator line when no emulator is in use', () => {
     const sim = { time: [0, 1], outputs: { 'aortic_root/v': [1e-4, 5e-4] } }
     const item = {
-      name_for_plotting: 'v_{AR}',
+      trace_name_for_plotting: 'v_{AR}',
       data_type: 'constant',
       operation: 'max',
       operands: ['aortic_root/v'],
@@ -285,7 +285,7 @@ describe('buildChartData calculated features', () => {
     // unshifted emulator value would sit somewhere the eye cannot compare it.
     const sim = { time: [0, 1, 2], outputs: { 'heart/q_lv': [10, 40, 20] } }
     const item = {
-      name_for_plotting: 'q',
+      trace_name_for_plotting: 'q',
       data_type: 'constant',
       operation: 'max_minus_min',
       operands: ['heart/q_lv'],
@@ -303,7 +303,7 @@ describe('buildChartData calculated features', () => {
   it('drops the emulator overlay on a phase-plane cell, as it does the obs ones', () => {
     const sim = { time: [0, 1], outputs: { 'a/y': [1, 2] } }
     const item = {
-      name_for_plotting: 'y',
+      trace_name_for_plotting: 'y',
       data_type: 'constant',
       operation: 'max',
       operands: ['a/y'],
@@ -427,7 +427,7 @@ describe('buildChartData reference lines', () => {
 
   it('renders a vertical line spanning the y-range at x=value', () => {
     const { datasets } = buildChartData(simResult, {
-      dataItems: [{ name_for_plotting: 't_peak', plot_type: 'vertical', value: 2.02, data_type: 'constant' }],
+      dataItems: [{ trace_name_for_plotting: 't_peak', plot_type: 'vertical', value: 2.02, data_type: 'constant' }],
     })
     const v = datasets.find((d) => d.kind === 'obs-vertical')
     expect(v).toBeTruthy()
@@ -437,7 +437,7 @@ describe('buildChartData reference lines', () => {
 
   it('renders a horizontal line for a constant overlay', () => {
     const { datasets } = buildChartData(simResult, {
-      dataItems: [{ name_for_plotting: 'V_max', plot_type: 'horizontal', value: 20, data_type: 'constant' }],
+      dataItems: [{ trace_name_for_plotting: 'V_max', plot_type: 'horizontal', value: 20, data_type: 'constant' }],
     })
     expect(datasets.some((d) => d.kind === 'obs-constant' && Array.isArray(d.borderDash))).toBe(true)
   })
@@ -446,8 +446,8 @@ describe('buildChartData reference lines', () => {
 describe('series_output overlay (issue #111)', () => {
   it('attachOutputSeries attaches the transformed series by data_item index', () => {
     const allItems = [
-      { variable: 'a', operands: ['m/a'] },
-      { variable: 'b', operands: ['m/b'] },
+      { data_item_name: 'a', operands: ['m/a'] },
+      { data_item_name: 'b', operands: ['m/b'] },
     ]
     const seriesByIndex = { 1: [60, 30, 20] } // only the 2nd item has one
     const attached = attachOutputSeries([allItems[1], allItems[0]], seriesByIndex, allItems)
@@ -458,7 +458,7 @@ describe('series_output overlay (issue #111)', () => {
   })
 
   it('attachOutputSeries is a no-op without a series map', () => {
-    const items = [{ variable: 'a' }]
+    const items = [{ data_item_name: 'a' }]
     expect(attachOutputSeries(items, undefined, items)).toBe(items)
   })
 
@@ -466,7 +466,7 @@ describe('series_output overlay (issue #111)', () => {
     // Raw operand is the period; the operation transforms it to 60/period.
     const sim = { time: [0, 1, 2, 3], outputs: { 'heart/period': [1, 2, 3, 4] } }
     const item = {
-      name_for_plotting: 'HR',
+      trace_name_for_plotting: 'HR',
       data_type: 'constant',
       operation: 'mean_heart_rate_bpm_in_range',
       operands: ['heart/period'],
@@ -486,7 +486,7 @@ describe('series_output overlay (issue #111)', () => {
   it('falls back to the raw operand when no series_output is attached', () => {
     const sim = { time: [0, 1, 2, 3], outputs: { 'heart/period': [1, 2, 3, 4] } }
     const item = {
-      name_for_plotting: 'HR',
+      trace_name_for_plotting: 'HR',
       data_type: 'constant',
       operation: 'mean_heart_rate_bpm_in_range',
       operands: ['heart/period'],
@@ -678,7 +678,7 @@ describe('buildChartData with a non-time x axis', () => {
     const { datasets } = buildChartData(sim, {
       dataItems: [
         {
-          variable: 'heart/P_lv',
+          data_item_name: 'heart/P_lv',
           operands: ['heart/P_lv'],
           data_type: 'constant',
           plot_type: 'horizontal',

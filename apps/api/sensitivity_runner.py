@@ -34,6 +34,7 @@ import sys
 import traceback
 from pathlib import Path
 
+import ca_obs
 import emulator_config
 from ca_imports import ensure_ca_path
 
@@ -142,11 +143,9 @@ def _solver_info_from_config(config: dict, settings: dict) -> dict:
     Settings popup) with the solver name + CVODE step defaults filled in."""
     si = dict(config.get("solver_info") or {})
     si.setdefault("solver", config.get("solver") or settings.get("solver", "CVODE_myokit"))
-    si.setdefault("MaximumStep", settings.get("MaximumStep", 0.0001))
-    # No MaximumNumberOfSteps default: myokit_helper never reads it (myokit's
-    # Simulation has no max-step-count knob), CA's migrate_legacy_solver_info_keys
-    # pops it for solve_ivp/casadi, and CA fills its own default for the backends
-    # that do use it. Injecting it here only seeded an inert setting.
+    if "MaximumStep" in ca_obs.solver_info_keys(si["solver"]):
+        si.setdefault("MaximumStep", settings.get("MaximumStep", 0.0001))
+    # No MaximumNumberOfSteps default: CA fills its own for the backends that use it.
     return si
 
 
@@ -199,8 +198,14 @@ def _calibrate_for_nominal(config: dict, settings: dict, solver_info: dict, mode
 
     CVS0DParamID = ca_from("param_id.paramID", "CVS0DParamID")
 
+    from optimiser_budget import default_num_calls  # noqa: E402 (shipped into runners/ too)
+
+    method = settings.get("param_id_method", "genetic_algorithm")
+    num_calls = settings.get("num_calls_to_function")
+    if num_calls is None:
+        num_calls = default_num_calls(method, debug=bool(settings.get("DEBUG", False)))
     optimiser_options = {
-        "num_calls_to_function": int(settings.get("num_calls_to_function", 100)),
+        "num_calls_to_function": int(num_calls),
         "cost_convergence": float(settings.get("cost_convergence", 0.0001)),
         "max_patience": int(settings.get("max_patience", 10)),
     }
