@@ -142,6 +142,28 @@ describe('App.vue', () => {
     await flushPromises()
   })
 
+  // The solver decides what a run is, and is otherwise visible only in Settings.
+  it('names the selected solver in the top bar, before Python, and opens Settings', async () => {
+    getConfig.mockResolvedValueOnce({
+      ca_dir: '', ca_exists: true, generated_model_format: 'casadi_python',
+      solver: 'casadi_integrator', solver_info: { method: 'cvodes', reltol: 1e-8 },
+      differentiable_operations: {},
+    })
+    const wrapper = shallowMount(App)
+    await flushPromises()
+    const chip = wrapper.find('[data-testid="solver-chip"]')
+    expect(chip.text()).toContain('casadi_integrator')
+    expect(chip.attributes('title')).toContain('model format casadi_python')
+    expect(chip.attributes('title')).toContain('method: cvodes')
+    // left of the Python picker
+    const bar = wrapper.find('header.topbar').element
+    const order = [...bar.querySelectorAll('[data-testid="solver-chip"], [data-testid="python-bar"]')]
+      .map((el) => el.dataset.testid)
+    expect(order).toEqual(['solver-chip', 'python-bar'])
+    await chip.trigger('click')
+    expect(wrapper.vm.$.setupState.settingsOpen).toBe(true)
+  })
+
   // Myokit JIT-compiles every model, so a missing C toolchain breaks all
   // simulation. The packaged desktop app can't ship a compiler, making this the
   // most likely first-run failure — warn instead of letting sims 500.
