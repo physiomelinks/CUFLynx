@@ -25,7 +25,12 @@ const InputNumberStub = {
   emits: ['update:modelValue'],
   template: '<input type="number" :disabled="disabled" :value="modelValue" v-bind="$attrs" />',
 }
+const EmulatorBundleDialogStub = {
+  props: ['visible', 'choices', 'currentDir', 'chosen'],
+  template: '<div data-testid="emu-bundle-dialog" v-if="visible" />',
+}
 const stubs = {
+  EmulatorBundleDialog: EmulatorBundleDialogStub,
   Select: SelectStub,
   InputNumber: InputNumberStub,
   InputText: true,
@@ -564,5 +569,50 @@ describe('sampling stages', () => {
     wrapper.vm.optionValues.method_per_stage[0] = 'error_weighted'
     await wrapper.vm.$nextTick()
     expect(wrapper.find('[data-testid="emu-stages-first"]').exists()).toBe(true)
+  })
+})
+
+describe('EmulatorPanel choosing between several emulators', () => {
+  const CHOICES = [
+    { dir: '/s/emulators/a_RBF', name: 'a_RBF', model_name: 'two_phase_RadialBasisFunctions',
+      worst_r2: 0.31, median_r2: 0.63, num_features: 36, num_samples: 12000, reusable: true },
+    { dir: '/s/emulators/a_MLP', name: 'a_MLP', model_name: 'two_phase_MLP',
+      worst_r2: 0.28, median_r2: 0.70, num_features: 36, num_samples: 12000, reusable: true },
+  ]
+
+  it('offers no choice when the study has only one emulator', () => {
+    // The overwhelmingly common case, and a chooser over a single option is noise.
+    const wrapper = mountPanel({ metadata: METADATA, choices: [CHOICES[0]] })
+    expect(wrapper.find('[data-testid="emu-choice"]').exists()).toBe(false)
+  })
+
+  it('offers a choice when the study holds several', () => {
+    const wrapper = mountPanel({ metadata: METADATA, choices: CHOICES })
+    expect(wrapper.find('[data-testid="emu-choice"]').exists()).toBe(true)
+  })
+
+  it('says when the emulator on screen was fallen back to rather than chosen', () => {
+    // Without this the panel shows the newest bundle exactly as it shows a
+    // deliberately picked one, and only one of them is a decision.
+    const wrapper = mountPanel({ metadata: METADATA, choices: CHOICES, chosen: false })
+    expect(wrapper.find('[data-testid="emu-choice"]').text()).toContain('not chosen')
+  })
+
+  it('does not say so once a choice has been made', () => {
+    const wrapper = mountPanel({ metadata: METADATA, choices: CHOICES, chosen: true })
+    expect(wrapper.find('[data-testid="emu-choice"]').text()).not.toContain('not chosen')
+  })
+
+  it('opens the chooser and passes the selection up', async () => {
+    const wrapper = mountPanel({ metadata: METADATA, choices: CHOICES, chosen: true })
+    await wrapper.find('[data-testid="emu-choose"]').trigger('click')
+    expect(wrapper.find('[data-testid="emu-bundle-dialog"]').exists()).toBe(true)
+    wrapper.findComponent(EmulatorBundleDialogStub).vm.$emit('select', CHOICES[1].dir)
+    expect(wrapper.emitted('select-bundle')[0]).toEqual([CHOICES[1].dir])
+  })
+
+  it('offers nothing to choose when no emulator is trained', () => {
+    const wrapper = mountPanel({ metadata: null, choices: CHOICES })
+    expect(wrapper.find('[data-testid="emu-choice"]').exists()).toBe(false)
   })
 })

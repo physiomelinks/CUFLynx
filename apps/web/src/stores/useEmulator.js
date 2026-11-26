@@ -44,6 +44,28 @@ export function useEmulator(options = {}) {
    * usable emulator with nothing to refit.
    */
   const reusable = ref(false)
+  /**
+   * Every bundle this study could be read with, best-first: `{dir, name,
+   * model_name, worst_r2, median_r2, num_features, num_samples, reusable}`.
+   *
+   * Normally one, and then there is nothing to choose. A study that fits one
+   * design with several emulator families -- the same simulations under RBF, an
+   * MLP and a forest -- has several, and without a choice the backend falls back
+   * to whichever was written last. That is a coin toss dressed as an answer, so
+   * the list is surfaced and the user picks.
+   */
+  const choices = ref([])
+  /**
+   * The bundle the user picked, or '' for "let the backend decide".
+   *
+   * Held here rather than on the server because it is a view preference, not a
+   * property of the study: two windows on the same outputs directory may
+   * reasonably be looking at different emulators. It is sent with every run so
+   * the analysis evaluates the emulator on screen and not another one.
+   */
+  const selectedDir = ref('')
+  /** Whether the reported bundle is the user's pick rather than a fallback. */
+  const chosen = ref(false)
   /** The tick box: evaluate the emulator in SA / calibration / UQ. */
   const useEmulator = ref(false)
 
@@ -79,17 +101,38 @@ export function useEmulator(options = {}) {
   async function refresh(modelId, configOutputsDir = '') {
     if (!modelId) return
     try {
-      const info = await getEmulatorInfo(modelId, configOutputsDir)
+      const info = await getEmulatorInfo(modelId, configOutputsDir, selectedDir.value)
       emulatorDir.value = info.emulator_dir ?? ''
       metadata.value = info.metadata ?? null
       errorPoints.value = info.error_points ?? null
       reusable.value = info.reusable === true
+      choices.value = info.choices ?? []
+      chosen.value = info.chosen === true
+      // A selection that no longer names one of the choices is dropped rather than
+      // kept and quietly ignored: the study may have been retrained into different
+      // directories, and a stale pick would leave the panel claiming a choice while
+      // the backend served the default.
+      if (selectedDir.value && !chosen.value) selectedDir.value = ''
       if (!metadata.value) useEmulator.value = false
     } catch (e) {
       // Not an error state for the panel: no emulator is the normal start.
       metadata.value = null
       reusable.value = false
+      choices.value = []
+      chosen.value = false
     }
+  }
+
+  /**
+   * Pick a bundle and reload from it. Passing '' returns to the default.
+   *
+   * The reload is the point: metadata, held-out points and reusability all belong
+   * to one bundle, and leaving any of them from the previous pick on screen would
+   * describe an emulator that is not the one selected.
+   */
+  async function select(dir, modelId, configOutputsDir = '') {
+    selectedDir.value = dir || ''
+    await refresh(modelId, configOutputsDir)
   }
 
   function reset() {
@@ -173,9 +216,13 @@ export function useEmulator(options = {}) {
     worstR2,
     trained,
     reusable,
+    choices,
+    selectedDir,
+    chosen,
     canUse,
     useEmulator,
     refresh,
+    select,
     train,
     cancel,
     reset,

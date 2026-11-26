@@ -1716,6 +1716,10 @@ function onRunCalibration(settings) {
       config_outputs_dir: outputsDir.value.trim() || undefined,
       // Evaluate the trained emulator instead of the solver (Emulator tab).
       use_emulator: emu.useEmulator.value,
+      // Which bundle, when the study holds several. Sent with the run rather than
+      // derived there: the panel shows one emulator's numbers, and a run that
+      // silently evaluated a different one would be reported against the wrong R2.
+      emulator_dir: emu.selectedDir.value || undefined,
     },
     // Live slider values, so gradient descent can start from the user's current
     // parameter values when "start from current" is enabled (#65). The θ-aware
@@ -1814,6 +1818,10 @@ function onRunSensitivity(settings) {
       config_outputs_dir: outputsDir.value.trim() || undefined,
       // Evaluate the trained emulator instead of the solver (Emulator tab).
       use_emulator: emu.useEmulator.value,
+      // Which bundle, when the study holds several. Sent with the run rather than
+      // derived there: the panel shows one emulator's numbers, and a run that
+      // silently evaluated a different one would be reported against the wrong R2.
+      emulator_dir: emu.selectedDir.value || undefined,
     },
     // Live slider values, so local SA with nominal="current" linearises about the
     // user's current parameter values rather than the model defaults (#65). The
@@ -1838,7 +1846,22 @@ function onRunUQ(settings) {
     python_path: pythonPath.value,
     config_outputs_dir: outputsDir.value.trim() || undefined,
     use_emulator: emu.useEmulator.value,
+      // Which bundle, when the study holds several. Sent with the run rather than
+      // derived there: the panel shows one emulator's numbers, and a run that
+      // silently evaluated a different one would be reported against the wrong R2.
+      emulator_dir: emu.selectedDir.value || undefined,
   })
+}
+
+/**
+ * Read the study through a different trained emulator.
+ *
+ * Everything downstream follows because the store reloads: the panel's per-feature
+ * table, the Analysis view's held-out points, and the `emulator_dir` sent with the
+ * next run all come from the bundle picked here.
+ */
+function onSelectEmulatorBundle(dir) {
+  emu.select(dir, model.modelId.value, outputsDir.value.trim() || '')
 }
 
 function onTrainEmulator(settings) {
@@ -2012,6 +2035,7 @@ async function refreshBestFitScores() {
         simTime: simTime.value,
         preTime: preTime.value,
         outputsDir: outputsDir.value.trim() || undefined,
+        emulatorDir: emu.selectedDir.value || undefined,
       },
     )
     bestFitScores.value = { model: res.cost ?? null, emulator: res.emulator_cost ?? null }
@@ -2833,8 +2857,12 @@ watch(() => obs.obsData.value, scheduleRun)
             :metadata="emu.metadata.value"
             :features="emu.features.value"
             :reusable="emu.reusable.value"
+            :choices="emu.choices.value"
+            :emulator-dir="emu.emulatorDir.value"
+            :chosen="emu.chosen.value"
             @run="onTrainEmulator"
             @change="(s) => (emuSettings = s)"
+            @select-bundle="onSelectEmulatorBundle"
             @cancel="emu.cancel()"
           />
         </div>
