@@ -155,8 +155,7 @@ def _ca_engine(obs_data: dict, output_dir: str | None, dt: float):
         from ca_imports import ca_first_of, ca_from, ensure_ca_path  # noqa: PLC0415
 
         ensure_ca_path()
-        # Both spellings: CA renamed this, and CUFLynx supports engines either side.
-        ParamID = ca_first_of("param_id.paramID", "ParamID", "OpencorParamID")
+        ParamID = ca_first_of("param_id.paramID", "ParamID")
         ObsAndParamDataParser, scriptFunctionParser = ca_from(
             "parsers.PrimitiveParsers", "ObsAndParamDataParser", "scriptFunctionParser")
     except Exception:  # noqa: BLE001 - no CA, or one too old
@@ -164,7 +163,7 @@ def _ca_engine(obs_data: dict, output_dir: str | None, dt: float):
 
     try:
         parser = ObsAndParamDataParser()
-        parsed = parser.parse_obs_data_json(obs_data_dict=obs_data, pre_time=0.0, sim_time=1.0)
+        parsed = parser.parse_obs_data_json(obs_data_dict=obs_data)
         # get_ground_truth_values writes its .npy copies unconditionally; a temp
         # dir keeps a cost evaluation from depositing files in the user's outputs.
         with tempfile.TemporaryDirectory() as scratch:
