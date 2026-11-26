@@ -271,8 +271,16 @@ export async function uploadOmex(file, outputDir = '') {
 // It is *staged*, not imported: CORS stops a page reading our responses, not
 // sending requests, so the confirmation in the UI is the security control and
 // these three calls are what drives it.
+//
+// `peekInbox` throws an error with `deliveryFailed: true` when a cuflynx:// link
+// could not be opened (the server reports that once, on the next poll).
 export async function peekInbox() {
   const { data } = await axios.get(url('/api/inbox'))
+  if (data.error) {
+    const err = new Error(data.error.message || 'A cuflynx:// link could not be opened')
+    err.deliveryFailed = true
+    throw err
+  }
   return data.pending
 }
 
@@ -591,6 +599,18 @@ export async function openStudyFromOutputs(dir, runDir = null, filePrefix = null
     run_dir: runDir,
     file_prefix: filePrefix,
   })
+  return data
+}
+
+/**
+ * Which outputs directory a dropped `<study>_cuflynx_study.json` opens. `text` is
+ * the file's contents; `path` is its location when the shell knows it (a browser
+ * drop does not, and the manifest's own `study_dir` answers instead).
+ */
+export async function openStudyManifest(text, path) {
+  const body = { content: text }
+  if (path) body.path = path
+  const { data } = await axios.post(url('/api/outputs/manifest'), body)
   return data
 }
 

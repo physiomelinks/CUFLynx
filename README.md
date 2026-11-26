@@ -101,6 +101,37 @@ PyInstaller packaging, not malware. Restore it and allow it, or download again.
 sensitivity and UQ all run out of the box.
 
 
+### Open a study from a web page
+
+A page can link straight to a COMBINE archive with
+`cuflynx://open?url=<percent-encoded https:, http: or file: URL of a .omex>` (the
+module library's HTML report does). The first time the downloaded app runs it
+registers itself for these links, for your user only.
+
+A study on your own machine -- with its sensitivity analyses, emulator and runs,
+which an archive does not carry -- opens with
+`cuflynx://open?study=<percent-encoded file: URL>`, naming its
+`*_cuflynx_study.json` (or `cuflynx_study.json`) or the directory holding it. It
+opens that directory as the outputs directory, as dropping the manifest does. Only
+`file:` URLs on this computer are accepted. From a terminal:
+`xdg-open 'cuflynx://open?study=file%3A%2F%2F%2Fhome%2Fme%2Fstudy%2Fcuflynx_study.json'`.
+
+Registration:
+
+- **Linux**: `~/.local/share/applications/cuflynx-url-handler.desktop`, made the
+  `x-scheme-handler/cuflynx` default with `xdg-mime`.
+- **Windows**: `HKEY_CURRENT_USER\Software\Classes\cuflynx`.
+- **macOS**: a small helper app, `~/Applications/CUFLynx Link Handler.app`, that
+  passes each link to the CUFLynx executable.
+
+Move the executable and the next launch registers the new location. Clicking a
+link opens it in the CUFLynx already running, or starts one; CUFLynx downloads
+the archive (or reads the study manifest) and asks before loading it, naming where
+it came from. Run
+`CUFLynx --register-url-scheme` to register by hand (from source:
+`python apps/desktop/app.py --register-url-scheme`), and set
+`CUFLYNX_NO_URL_SCHEME=1` to stop the automatic registration.
+
 For the tutorial click 'Tutorial at the top right of the CUFLynx page.
 For more info, see **[Using CUFLynx](tutorials/docs/misc.md)** — solver backends, Myokit `.mmt`
 models, and replotting a run outside the app.
