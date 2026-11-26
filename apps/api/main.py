@@ -78,6 +78,7 @@ from examples import EXAMPLE_MODELS, media_type as example_media_type
 from local_sensitivity import local_gradient_sources
 import ca_imports
 import export_pipeline
+from optimiser_budget import default_method as default_param_id_method
 from model_codegen import resolve_model_path, reset_cache as reset_codegen
 from obs_data import (
     ObsData,
@@ -4184,6 +4185,7 @@ class CalibrationRequest(BaseModel):
 
 
 CALIBRATION_DEFAULTS = {
+    # Replaced by CA's default method in calibration_defaults().
     "param_id_method": "genetic_algorithm",
     # NB: `methods` is replaced by the CA-introspected list in calibration_defaults();
     # this literal is only a shape placeholder.
@@ -4867,7 +4869,8 @@ def calibration_defaults() -> dict:
     # `methods` is introspected from CA's PARAM_ID_METHODS schema (never hardcoded);
     # falls back to the built-in list on an older CA without that schema. `dt` is
     # the engine's, which is what a run that names none is given.
-    return {**CALIBRATION_DEFAULTS, "dt": engine.dt, "methods": get_param_id_methods()}
+    return {**CALIBRATION_DEFAULTS, "dt": engine.dt, "methods": get_param_id_methods(),
+            "param_id_method": default_param_id_method()}
 
 
 @app.get("/api/calibration/pythons")
@@ -6940,6 +6943,7 @@ def uq_defaults() -> dict:
     return {
         **UQ_DEFAULTS,
         "dt": engine.dt,
+        "param_id_method": default_param_id_method(),
         "uq_options": uq_options,
         "ia_options": ao.get("identifiability_analysis", {}).get("options", []),
     }

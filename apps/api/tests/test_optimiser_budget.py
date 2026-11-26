@@ -136,3 +136,58 @@ def test_uq_calibrate_first_falls_back_to_one_population(fake_schema):
     assert budget(num_calls_to_function=None, max_patience=None, cost_convergence=None) == 27
     assert budget(DEBUG=True) == 8
     assert budget(num_calls_to_function=300) == 300
+
+
+# CA declares its default calibration method (CMA-ES from libcuflynx 0.8.0); an older
+# CA declares none and keeps the genetic algorithm.
+@pytest.fixture
+def ca_default_cma(monkeypatch):
+    set_ca_module(monkeypatch, "parsers.PrimitiveParsers", types.SimpleNamespace(
+        DEFAULT_PARAM_ID_METHOD="CMA-ES",
+        param_id_method_options=lambda m: METHOD_OPTIONS.get(m, [])))
+
+
+def test_default_method_is_cas(ca_default_cma):
+    assert optimiser_budget.default_method() == "CMA-ES"
+    # An unset method gets that method's budget, not a GA population.
+    assert optimiser_budget.default_num_calls(None) == 5000
+
+
+def test_default_method_without_a_declared_default_is_ga(fake_schema):
+    assert optimiser_budget.default_method() == "genetic_algorithm"
+
+
+def test_defaults_routes_offer_cas_default_method(client, ca_default_cma):
+    assert client.get("/api/calibration/defaults").json()["param_id_method"] == "CMA-ES"
+    assert client.get("/api/uq/defaults").json()["param_id_method"] == "CMA-ES"
+
+
+def test_defaults_routes_without_a_declared_default_offer_ga(client, fake_schema):
+    assert client.get("/api/calibration/defaults").json()["param_id_method"] == "genetic_algorithm"
+    assert client.get("/api/uq/defaults").json()["param_id_method"] == "genetic_algorithm"
+
+
+def test_export_and_runners_fall_back_to_cas_default_method(monkeypatch, ca_default_cma):
+    user_inputs = export_pipeline.build_user_inputs(
+        file_prefix="m", model_type="cellml_only", solver="CVODE_myokit", solver_info={},
+        dt=0.01, pre_time=0.0, sim_time=1.0, model_file="m.cellml", obs_file=None,
+        params_for_id_file=None, calibration={}, sensitivity=None, uq=None, enabled=None,
+    )
+    assert user_inputs["param_id_method"] == "CMA-ES"
+    assert user_inputs["optimiser_options"]["num_calls_to_function"] == 5000
+    assert uq_runner._optimiser_options({})["num_calls_to_function"] == 5000
+
+    seen = {}
+
+    class FakeParamID:
+        def __init__(self, **kwargs):
+            seen.update(kwargs)
+            raise _StopAfterInit
+
+    set_ca_module(monkeypatch, "param_id.paramID",
+                  types.SimpleNamespace(CVS0DParamID=FakeParamID))
+    config = {"model_path": "m.cellml", "params_path": "p.json", "obs_path": "o.json",
+              "output_dir": "out"}
+    with pytest.raises(_StopAfterInit):
+        sensitivity_runner._calibrate_for_nominal(config, {}, {}, "cellml_only")
+    assert seen["param_id_method"] == "CMA-ES"

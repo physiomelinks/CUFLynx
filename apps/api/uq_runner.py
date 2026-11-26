@@ -27,6 +27,7 @@ import emulator_config
 from ca_imports import ensure_ca_path
 from solver_info_defaults import with_declared_step_defaults
 from obs_data import data_items_of, with_ca_obs_path
+from optimiser_budget import default_method
 
 # Headless matplotlib for any plots circulatory_autogen produces server-side.
 os.environ.setdefault("MPLBACKEND", "Agg")
@@ -70,7 +71,7 @@ def _optimiser_options(settings: dict, seed=None) -> dict:
     key); ``None`` omits it."""
     from optimiser_budget import default_num_calls  # noqa: E402 (shipped into runners/ too)
 
-    method = settings.get("param_id_method") or "genetic_algorithm"
+    method = settings.get("param_id_method") or default_method()
     num_calls = settings.get("num_calls_to_function")
     if num_calls is None or (isinstance(num_calls, str) and not num_calls.strip()):
         num_calls = default_num_calls(method, debug=bool(settings.get("DEBUG", False)))
@@ -171,7 +172,7 @@ def _make_param_id(config, settings, obs_path, *, mcmc, options_key, options):
     kwargs = dict(
         model_path=config["model_path"],
         model_type=config.get("model_type", "cellml"),
-        param_id_method=settings.get("param_id_method", "genetic_algorithm"),
+        param_id_method=settings.get("param_id_method") or default_method(),
         mcmc_instead=mcmc,
         file_name_prefix=config.get("file_prefix", "model"),
         params_for_id_path=config["params_path"],

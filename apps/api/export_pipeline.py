@@ -17,7 +17,7 @@ from datetime import date
 
 from ca_imports import ca_from, ensure_ca_path
 from obs_data import INCLUDE_PREDICTION_ITEMS
-from optimiser_budget import default_num_calls
+from optimiser_budget import default_method, default_num_calls
 
 
 def dated_suffix() -> str:
@@ -140,7 +140,7 @@ def build_user_inputs(
         # names its func by name, so the study does not run without the file.
         **dict(user_func_paths or {}),
         # --- parameter identification (calibration) ---
-        "param_id_method": calibration.get("param_id_method") or "genetic_algorithm",
+        "param_id_method": calibration.get("param_id_method") or default_method(),
         "do_ad": str(calibration.get("gradient_method", "FD")).upper() == "AD",
         "optimiser_options": optimiser_options,
         # --- sensitivity ---
