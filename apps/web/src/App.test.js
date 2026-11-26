@@ -2168,6 +2168,41 @@ describe('App.vue solver plots (external python extra_plots)', () => {
   })
 })
 
+describe('App.vue integer solver_info fields', () => {
+  const CONFIG = {
+    ca_dir: '', ca_exists: true, generated_model_format: 'cellml',
+    solver: 'CVODE_libopencor', solver_info: {}, differentiable_operations: {},
+    model_formats: ['cellml'],
+    solvers_by_format: { cellml: ['CVODE_libopencor'] },
+    default_solver_by_format: { cellml: 'CVODE_libopencor' },
+    solver_info_schema: {
+      CVODE_libopencor: [
+        { key: 'MaximumNumberOfSteps', label: 'Max # steps', type: 'number', default: 5000, integer: true },
+        { key: 'rtol', label: 'Rel. tol', type: 'number', default: 1e-8 },
+      ],
+    },
+  }
+  beforeEach(() => getConfig.mockResolvedValue({ ...CONFIG }))
+  afterEach(() => {
+    getConfig.mockResolvedValue({
+      ca_dir: '', ca_exists: true, generated_model_format: 'cellml',
+      solver: 'CVODE_myokit', solver_info: {}, differentiable_operations: {},
+    })
+  })
+
+  it('shows a step count without decimals and a tolerance with them', async () => {
+    const wrapper = shallowMount(App, {
+      global: { stubs: { Dialog: { template: '<div><slot /></div>' } } },
+    })
+    await flushPromises()
+    const steps = wrapper.find('[data-testid="solver-info-MaximumNumberOfSteps"]')
+    const rtol = wrapper.find('[data-testid="solver-info-rtol"]')
+    expect(steps.attributes('max-fraction-digits')).toBe('0')
+    expect(steps.attributes('min-fraction-digits')).toBe('0')
+    expect(rtol.attributes('max-fraction-digits')).toBe('12')
+  })
+})
+
 // CA types a solver_info field `json` when it is a free-form object handed to
 // the backend untouched -- external_python's `user_config`, which is the whole
 // of an external solver's configuration. Rendered as a number input (the form's

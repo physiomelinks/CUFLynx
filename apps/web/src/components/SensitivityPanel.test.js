@@ -68,6 +68,33 @@ describe('SensitivityPanel AD gating', () => {
     expect(fsa.attributes('disabled')).toBeUndefined()
   })
 
+  it("sends the chosen gradient source, not CA's 'auto' default for it", async () => {
+    // CA's sa_options schema lists gradient_method ('auto') and fd_rel_step; the panel
+    // has its own controls for both, and CA's defaults must not override them.
+    const wrapper = mount(SensitivityPanel, {
+      props: {
+        defaults: {
+          method: 'local', gradient_methods: GRAD_CASADI,
+          options: [
+            { name: 'method', type: 'enum', default: 'sobol', choices: ['sobol', 'local'] },
+            { name: 'gradient_method', type: 'str', default: 'auto' },
+            { name: 'fd_rel_step', type: 'float', default: 0.001 },
+            { name: 'num_samples', type: 'int', default: 32 },
+          ],
+        },
+        adAvailable: true,
+        canRun: true,
+      },
+      global: { stubs },
+    })
+    await wrapper.find('[data-testid="run-sensitivity"]').trigger('click')
+    const sent = wrapper.emitted('run')[0][0]
+    expect(sent.gradient_method).toBe('FD')
+    expect(sent.rel_step).toBe(0.01)
+    expect(sent).not.toHaveProperty('fd_rel_step')
+    expect(sent.num_samples).toBe(32) // CA's other options still flow through
+  })
+
   it('resets a selected AD gradient source when AD becomes unavailable', async () => {
     const wrapper = mount(SensitivityPanel, {
       props: {

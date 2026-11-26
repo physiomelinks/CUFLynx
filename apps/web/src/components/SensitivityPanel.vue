@@ -52,10 +52,14 @@ const settings = reactive({
 // each descriptor's default). Merged into the run/change payload flat.
 const optionValues = reactive({})
 
-// CA's sensitivity_analysis option descriptors, minus `method` (CUFLynx's own
-// top-level Sobol/local selector already covers that axis). Never hardcoded.
+// CA's sensitivity_analysis option descriptors, minus the ones this panel has its own
+// control for: `method` (the Sobol/local selector), `gradient_method` (the gradient
+// source) and `fd_rel_step` (the FD step, sent as rel_step). Their CA defaults are
+// merged last into the payload, so forwarding them overrode the user's choice (CA's
+// 'auto' turned a chosen FD into AD). Never hardcoded otherwise.
+const PANEL_OWNED = new Set(['method', 'gradient_method', 'fd_rel_step'])
 const saOptions = computed(() =>
-  (props.defaults.options ?? []).filter((o) => o.name !== 'method'),
+  (props.defaults.options ?? []).filter((o) => !PANEL_OWNED.has(o.name)),
 )
 
 // Seed each option's default when the schema arrives, keeping any value the user

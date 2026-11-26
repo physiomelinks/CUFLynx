@@ -154,14 +154,46 @@ def test_cvode_libopencor_offered_only_when_libopencor_importable(monkeypatch, i
     schema = copy.deepcopy(so.FALLBACK_SOLVER_SCHEMA)
     schema["solvers_by_model_type"]["cellml"] = ["CVODE_myokit", "CVODE_opencor", "CVODE_libopencor"]
     schema["methods_by_solver"]["CVODE_libopencor"] = ["CVODE"]
+    import aadc_check
+
+    monkeypatch.setattr(aadc_check, "_configured_analysis_python", lambda: None)
     monkeypatch.setattr(
-        so.importlib.util, "find_spec", lambda name, *a, **k: object() if importable else None
+        aadc_check.importlib.util, "find_spec", lambda name, *a, **k: object() if importable else None
     )
     opts = so._build_options(schema, {"max": True})
     cellml = opts["solvers_by_format"]["cellml"]
     assert ("CVODE_libopencor" in cellml) is importable
     assert ("CVODE_libopencor" in opts["methods_by_solver"]) is importable
     assert "CVODE_opencor" not in cellml
+
+
+@pytest.mark.parametrize("there", [False, True])
+def test_cvode_libopencor_follows_the_interpreter_chosen_in_settings(monkeypatch, there):
+    """The chosen interpreter runs live simulation and analysis, so its answer wins
+    over this process's -- either way round."""
+    import aadc_check
+
+    schema = copy.deepcopy(so.FALLBACK_SOLVER_SCHEMA)
+    schema["solvers_by_model_type"]["cellml"] = ["CVODE_myokit", "CVODE_libopencor"]
+    schema["methods_by_solver"]["CVODE_libopencor"] = ["CVODE"]
+    asked = []
+    monkeypatch.setattr(aadc_check, "_configured_analysis_python", lambda: "/venv/bin/python")
+    monkeypatch.setattr(
+        aadc_check, "_importable_in", lambda python, module: asked.append((python, module)) or there
+    )
+    monkeypatch.setattr(aadc_check, "_importable", lambda module: not there)
+    opts = so._build_options(schema, {"max": True})
+    assert ("CVODE_libopencor" in opts["solvers_by_format"]["cellml"]) is there
+    assert ("/venv/bin/python", "libopencor") in asked
+
+
+def test_cvode_libopencor_falls_back_to_this_process_when_the_choice_cannot_be_asked(monkeypatch):
+    import aadc_check
+
+    monkeypatch.setattr(aadc_check, "_configured_analysis_python", lambda: "/gone/bin/python")
+    monkeypatch.setattr(aadc_check, "_importable_in", lambda python, module: None)
+    monkeypatch.setattr(aadc_check, "_importable", lambda module: True)
+    assert so._libopencor_importable() is True
 
 
 @BOTH_SCHEMAS
@@ -1430,3 +1462,15 @@ class TestTheChosenInterpretersAnswerIsFinal:
 
         assert len(got["models"]) == 12
         assert got["available"] is True
+
+
+def test_an_int_solver_info_field_is_marked_integer():
+    """CA's int fields (a step count, a thread count) are shown without decimals; the
+    form only knows "number", so the integer mark has to travel with the field."""
+    whole = so._si_field_from_descriptor(
+        {"name": "MaximumNumberOfSteps", "type": "int", "default": 5000}
+    )
+    real = so._si_field_from_descriptor({"name": "rtol", "type": "float", "default": 1e-6})
+    assert whole["type"] == real["type"] == "number"
+    assert whole["integer"] is True
+    assert "integer" not in real

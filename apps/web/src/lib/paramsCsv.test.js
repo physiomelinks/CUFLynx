@@ -215,8 +215,10 @@ describe('grouped parameters — reading', () => {
     name_for_plotting: 'E_{AR}',
   }
 
+  const listed = (rows) => rows.filter((r) => !r.groupedInto && !r.modifiedBy)
+
   it('keeps the row whole instead of one row per vessel', () => {
-    const rows = mergedRows([groupedParam], {})
+    const rows = listed(mergedRows([groupedParam], {}))
     expect(rows).toHaveLength(1)
     expect(rows[0].qnames).toEqual(['ao_A/E', 'ao_B/E'])
   })
@@ -228,7 +230,20 @@ describe('grouped parameters — reading', () => {
       params: ['ao_A/E', 'ao_B/E', 'ao_C/E'],
       initial_values: {},
     })
-    expect(rows.map((r) => r.qname)).toEqual(['ao_A/E', 'ao_C/E'])
+    expect(listed(rows).map((r) => r.qname)).toEqual(['ao_A/E', 'ao_C/E'])
+  })
+
+  it('ungrouping a loaded group gives each member back as its own row', () => {
+    const rows = mergedRows([groupedParam], {
+      params: ['ao_A/E', 'ao_B/E', 'ao_C/E'],
+      initial_values: { 'ao_B/E': 7e5 },
+    })
+    const head = rows.find((r) => r.qname === 'ao_A/E')
+    for (const r of rows) if (r.groupedInto === head.qname) removeFromGroup(head, r)
+    expect(head.qnames).toEqual(['ao_A/E'])
+    const member = listed(rows).find((r) => r.qname === 'ao_B/E')
+    expect(member.initial_value).toBe(7e5)
+    expect(rowsToSave(rows).map((r) => r.qname)).toEqual(['ao_A/E', 'ao_B/E'])
   })
 
   it('gives an ordinary row a one-member group', () => {
@@ -384,6 +399,27 @@ describe('modifier parameters', () => {
     expect(mod.name).toBe('C_scale')
     expect(mod.baselines).toEqual({ 'a/C': 2e-8, 'b/C': 4e-8 })
     // Its targets are claimed, not offered again as separate rows.
-    expect(rows.filter((r) => r.qname === 'b/C')).toHaveLength(0)
+    expect(rows.filter((r) => r.qname === 'b/C' && !r.modifiedBy)).toHaveLength(0)
+    expect(rowsToSave(rows).map((r) => r.name)).toEqual(['C_scale'])
+  })
+
+  it('deleting a loaded modifier gives its targets back as their own rows', () => {
+    const rows = mergedRows(
+      [{
+        qname: 'a/C', qnames: ['a/C', 'b/C'], name: 'C_scale',
+        modifies: ['a/C', 'b/C'], operation: 'scale',
+        baselines: { 'a/C': 2e-8, 'b/C': 4e-8 },
+        min: 0.5, max: 2, initial_value: 1.0, identity: 1.0,
+      }],
+      { params: ['a/C', 'b/C', 'c/R'], initial_values: { 'a/C': 2e-8, 'c/R': 5 } },
+    )
+    removeModifier(rows, rows.find((r) => r.kind === 'modifier'))
+    const saved = rowsToSave(rows)
+    expect(saved.map((r) => r.qname).sort()).toEqual(['a/C', 'b/C'])
+    // Selectable again, e.g. as the targets of a new modifier.
+    expect(canCreateModifier(saved)).toBe(true)
+    // The model's default where it has one, else the modifier's baseline.
+    expect(saved.find((r) => r.qname === 'a/C').initial_value).toBe(2e-8)
+    expect(saved.find((r) => r.qname === 'b/C').initial_value).toBe(4e-8)
   })
 })
