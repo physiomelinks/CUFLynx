@@ -13,10 +13,11 @@ import pytest
 
 import params_json
 
-# One row per feature of the mapping: a grouped (multi-vessel) row, a plain row,
-# every passthrough column, a boolean, and a prior with hyper-parameters.
+# One row per feature of the mapping: a grouped (multi-vessel) row with a nested
+# vessel, a plain row, every passthrough column, a boolean, and a prior with
+# hyper-parameters.
 RICH_CSV = """vessel_name,param_name,param_type,min,max,name_for_plotting,comment,prior,prior_mean,prior_std,unbounded
-heart aorta,C,const,1e-9,5e-8,C_{ao},shared compliance,normal,2e-9,1e-9,false
+heart__lv aorta,C,const,1e-9,5e-8,C_{ao},shared compliance,normal,2e-9,1e-9,false
 venous,R,const,1e6,1e8,R_{v},,uniform,,,true
 """
 
@@ -25,12 +26,24 @@ venous,R,const,1e6,1e8,R_{v},,uniform,,,true
 def without_ca(monkeypatch):
     """Make CA unimportable, the way a packaged app with no CA directory is."""
     monkeypatch.setattr(params_json, "_ca_csv_converter", lambda: None)
+    monkeypatch.setattr(params_json, "_ca_doc_resolver", lambda: None)
+    monkeypatch.setattr(params_json, "_ca_dump", lambda: None)
 
 
 def test_a_csv_loads_without_circulatory_autogen(without_ca):
     """The bug: this raised "circulatory_autogen ... is not available"."""
     doc = params_json.csv_to_json(RICH_CSV)
-    assert [p["name"] for p in doc["params"]] == ["heart/C", "venous/R"]
+    assert [p["targets"][0] for p in doc["params"]] == ["heart/lv/C", "venous/R"]
+
+
+def test_the_fallback_writes_what_ca_writes(without_ca):
+    """CA's form (``cuflynx-upgrade params-for-id``): a nested vessel's ``__``
+    levels as its path, no ``name`` (CA names an entry by its first target) and
+    no empty ``defaults``."""
+    doc = params_json._csv_to_json_without_ca(RICH_CSV)
+    assert "defaults" not in doc
+    assert all("name" not in p for p in doc["params"])
+    assert doc["params"][0]["targets"] == ["heart/lv/C", "aorta/C"]
 
 
 def test_a_grouped_row_keeps_every_target(without_ca):
@@ -40,7 +53,7 @@ def test_a_grouped_row_keeps_every_target(without_ca):
     a state the model never has.
     """
     doc = params_json.csv_to_json(RICH_CSV)
-    assert doc["params"][0]["targets"] == ["heart/C", "aorta/C"]
+    assert doc["params"][0]["targets"] == ["heart/lv/C", "aorta/C"]
     assert doc["params"][1]["targets"] == ["venous/R"]
 
 
@@ -78,7 +91,7 @@ def test_a_csv_without_the_required_columns_says_which_it_has(without_ca):
 def test_a_utf8_bom_does_not_reach_the_first_column_name(without_ca):
     """Excel writes one, and it would otherwise make column 1 unrecognisable."""
     doc = params_json.csv_to_json(RICH_CSV.encode("utf-8-sig"))
-    assert doc["params"][0]["targets"] == ["heart/C", "aorta/C"]
+    assert doc["params"][0]["targets"] == ["heart/lv/C", "aorta/C"]
 
 
 def test_params_csv_fallback_matches_ca():
@@ -94,6 +107,9 @@ def test_params_csv_fallback_matches_ca():
     if convert is None:
         pytest.skip("circulatory_autogen is not importable in this environment")
 
+    # As converted, before CA's resolver names each entry and maps its targets to
+    # the model's names, which would hide a difference in the conversion itself.
+    assert params_json._csv_to_json_without_ca(RICH_CSV) == convert(RICH_CSV)
     from_ca = params_json.load_doc(convert(RICH_CSV))
     from_fallback = params_json.load_doc(params_json._csv_to_json_without_ca(RICH_CSV))
     assert from_fallback == from_ca

@@ -40,8 +40,8 @@ describe('PlotPanel', () => {
   it('test_renders_horizontal_line_for_constant_data_item', () => {
     const dataItems = [
       {
-        variable: 'x_max',
-        name_for_plotting: 'x_{max}',
+        data_item_name: 'x_max',
+        trace_name_for_plotting: 'x_{max}',
         data_type: 'constant',
         value: 30,
       },
@@ -57,7 +57,7 @@ describe('PlotPanel', () => {
   it('test_renders_series_overlay_for_series_data_item', () => {
     const dataItems = [
       {
-        variable: 'x_trace',
+        data_item_name: 'x_trace',
         data_type: 'series',
         obs_dt: 0.5,
         value: [20, 21, 22, 23],
@@ -329,7 +329,7 @@ describe('PlotPanel', () => {
     it('converts the obs overlays too, so the comparison stays valid', async () => {
       const wrapper = mountWithUnit({
         dataItems: [
-          { variable: 'x_max', name_for_plotting: 'x', data_type: 'constant', value: 30 },
+          { data_item_name: 'x_max', trace_name_for_plotting: 'x', data_type: 'constant', value: 30 },
         ],
       })
       const before = wrapper.vm.displayData.datasets.map((d) => d.data.map((p) => p.y))
