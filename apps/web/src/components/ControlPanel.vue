@@ -98,7 +98,7 @@ function groupTitle(s) {
 
     <p v-if="entries.length === 0" class="empty-hint">
       No active sliders. Add a parameter from the variable list or import a
-      params_for_id.csv file.
+      params_for_id file.
     </p>
 
     <div
