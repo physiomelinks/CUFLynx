@@ -9,7 +9,10 @@ PhLynx's ``flow.json`` / ``changes.json`` editor state, its SED-ML and
 So the rule this module implements is *copy everything, replace two things*:
 
 * the model CellML, by CUFLynx's flattened copy with the current parameter
-  values substituted into its ``initial_value`` attributes;
+  values substituted into its ``initial_value`` attributes -- or, when the
+  archive's model imports others (PhLynx's modular export, #407), by the
+  archive's own model with the values written into it, its imports and every
+  imported file kept;
 * params_for_id, by the study's own, so range and selection edits made in the
   params editor travel back.
 
@@ -35,6 +38,7 @@ from xml.sax.saxutils import quoteattr
 
 import omex_import
 from calibrated_cellml import calibrated_cellml
+from cellml_flatten import has_imports
 from params_for_id import PARAM_COMPONENTS
 
 #: The components #287 says PhLynx will read parameter changes back out of. A
@@ -122,7 +126,7 @@ def outside_parameter_components(report: dict) -> list[str]:
 
 
 def _relative(location: str) -> str:
-    return location.lstrip("./")
+    return omex_import.member_path(location)
 
 
 def _entry_for(location: str, master: bool = False) -> dict:
@@ -174,8 +178,6 @@ def build_archive(
     ``report`` carries the substitution outcome (``updated`` / ``unresolved`` /
     ``outside_parameters``) and ``members``, the names written.
     """
-    new_cellml, report = substitute_values(cellml_text, values or {})
-
     members: dict[str, bytes] = {}
     entries: list[dict] = []
     parts: dict | None = None
@@ -200,8 +202,19 @@ def build_archive(
                 continue
             entries.append(dict(entry))
 
-    if parts is not None and parts["roles"]["cellml"]:
-        model_member = parts["roles"]["cellml"][0]
+    model_member = parts["roles"]["cellml"][0] if parts and parts["roles"]["cellml"] else None
+    # A modular model (PhLynx's export, #407): the values go into the archive's
+    # own model text and every module and units file leaves as it came, so
+    # PhLynx gets back its own files. A constant that lives in a module file is
+    # not in that text and is reported unresolved.
+    modular = model_member is not None and has_imports(parts["members"][model_member])
+    source_text = parts["members"][model_member].decode("utf-8") if modular else cellml_text
+    new_cellml, report = substitute_values(source_text, values or {})
+
+    if modular:
+        members[model_member] = new_cellml.encode("utf-8")
+        model_out = model_member
+    elif model_member:
         # Exactly one CellML leaves. The others are the master's imports, and
         # CUFLynx's model is the *flattened* document that subsumes them --
         # shipping both would hand PhLynx the same definitions twice, and per
@@ -210,10 +223,7 @@ def build_archive(
         # verbatim, and the flattening is why.
         for extra in parts["roles"]["cellml"][1:]:
             members.pop(extra, None)
-            base = Path(extra).name.lower()
-            entries = [
-                e for e in entries if Path(_relative(e["location"])).name.lower() != base
-            ]
+            entries = [e for e in entries if _relative(e["location"]) != extra]
         _replace_member(members, entries, model_member, model_member, new_cellml.encode("utf-8"))
         model_out = model_member
         # `master` is deliberately left exactly as the source manifest had it. A
