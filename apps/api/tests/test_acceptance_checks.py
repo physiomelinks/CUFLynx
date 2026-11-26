@@ -64,21 +64,18 @@ def test_the_example_loads_whole(app, requires_ca):
     assert acceptance.check_example_loads_whole(app)
 
 
-def test_a_pre_466_archive_is_refused_with_the_migrator_named(app, requires_ca, tmp_path):
-    """Built here rather than shipped: the point is the *vocabulary*, and a fixture
-    of it would have to be exempted from every check that keeps `resources/` current."""
+def test_an_old_form_archive_is_refused_with_the_converter_named(app, requires_ca, tmp_path):
+    """Built here rather than shipped: a fixture in an old form would have to be
+    exempted from every check that keeps `resources/` current."""
     import io
     import zipfile
 
-    obs = {
-        "protocol_info": {"pre_times": [0.0], "sim_times": [[1.0]], "params_to_change": {}},
-        "data_items": [
-            {"variable": "pressure", "name_for_plotting": "u", "data_type": "constant",
-             "operation": op, "operands": ["a/u"], "unit": "J_per_m3", "weight": 1.0,
-             "value": 1.0, "std": 0.1, "cost_type": "gaussian_MLE"}
-            for op in ("mean", "max", "min")
-        ],
-    }
+    obs = [
+        {"data_item_name": f"pressure {op}", "data_type": "constant",
+         "operation": op, "operands": ["a/u"], "unit": "J_per_m3", "weight": 1.0,
+         "value": 1.0, "std": 0.1, "cost_type": "gaussian_MLE"}
+        for op in ("mean", "max", "min")
+    ]
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
         zf.writestr("m.cellml", (RESOURCES_DIR / "Lotka_Volterra_forced.cellml").read_bytes())

@@ -22,6 +22,7 @@ import sys
 import traceback
 from pathlib import Path
 
+import ca_obs
 import emulator_config
 from ca_imports import ensure_ca_path
 from obs_data import data_items_of
@@ -59,13 +60,21 @@ LAPLACE_SAMPLES = 100000
 
 
 def _optimiser_options(settings: dict, seed=None) -> dict:
-    """optimiser_options for the ``run_calibration_first`` best-fit search. A global
-    random ``seed`` lands under ``optimiser_options['seed']`` (the multi-start start
-    sampler key); ``None`` omits it."""
+    """optimiser_options for the ``run_calibration_first`` best-fit search, which the
+    identifiability analysis's profile re-calibrations take too. An empty budget is one
+    GA population (``optimiser_budget``), the smallest CA's GA runs. A global random
+    ``seed`` lands under ``optimiser_options['seed']`` (the multi-start start sampler
+    key); ``None`` omits it."""
+    from optimiser_budget import default_num_calls  # noqa: E402 (shipped into runners/ too)
+
+    method = settings.get("param_id_method") or "genetic_algorithm"
+    num_calls = settings.get("num_calls_to_function")
+    if num_calls is None or (isinstance(num_calls, str) and not num_calls.strip()):
+        num_calls = default_num_calls(method, debug=bool(settings.get("DEBUG", False)))
     opts = {
-        "num_calls_to_function": int(settings.get("num_calls_to_function", 100)),
-        "cost_convergence": float(settings.get("cost_convergence", 0.001)),
-        "max_patience": int(settings.get("max_patience", 10)),
+        "num_calls_to_function": int(num_calls),
+        "cost_convergence": float(settings.get("cost_convergence") or 0.001),
+        "max_patience": int(settings.get("max_patience") or 10),
         "cost_type": settings.get("cost_type", "gaussian_MLE"),
     }
     if seed is not None:
@@ -109,11 +118,9 @@ def _solver_info(config: dict, settings: dict) -> dict:
     Settings popup) with the solver name + CVODE step defaults filled in."""
     si = dict(config.get("solver_info") or {})
     si.setdefault("solver", config.get("solver") or settings.get("solver", "CVODE_myokit"))
-    si.setdefault("MaximumStep", settings.get("MaximumStep", 0.0001))
-    # No MaximumNumberOfSteps default: myokit_helper never reads it (myokit's
-    # Simulation has no max-step-count knob), CA's migrate_legacy_solver_info_keys
-    # pops it for solve_ivp/casadi, and CA fills its own default for the backends
-    # that do use it. Injecting it here only seeded an inert setting.
+    if "MaximumStep" in ca_obs.solver_info_keys(si["solver"]):
+        si.setdefault("MaximumStep", settings.get("MaximumStep", 0.0001))
+    # No MaximumNumberOfSteps default: CA fills its own for the backends that use it.
     return si
 
 
@@ -121,13 +128,7 @@ def _mle_obs_path(config, cost_type: str) -> str:
     """Write a copy of the obs_data with every data_item's ``cost_type`` set to an
     MLE cost. MCMC / Laplace require ``ln L = -cost``, and the per-observable cost
     is read from the data_items at construction (defaults to MSE otherwise).
-
-    The items are reached through :func:`obs_data.data_items_of` because an
-    obs_data may be an object *or* a bare array of data_items, and only the
-    object form was handled here: UQ on a data-only file (3compartment,
-    heat_fenics) died with ``'list' object has no attribute 'get'``. The items
-    are edited in place and the document written back in the shape it arrived
-    in, so CA reads the same shape the user supplied.
+    The items are edited in place and the whole document written back.
     """
     obs = json.loads(Path(config["obs_path"]).read_text())
     for item in data_items_of(obs):
@@ -140,8 +141,7 @@ def _mle_obs_path(config, cost_type: str) -> str:
 
 def _make_param_id(config, settings, obs_path, *, mcmc, options_key, options):
     """Construct a CVS0DParamID (no run). ``options_key`` is 'optimiser_options' or
-    the UQ options kwarg this CA takes (see uq_options_kwarg); ``mcmc`` toggles
-    mcmc_instead."""
+    'UQ_options'; ``mcmc`` toggles mcmc_instead."""
     from ca_imports import ca_from  # noqa: E402 (shipped into runners/ too)
 
     CVS0DParamID = ca_from("param_id.paramID", "CVS0DParamID")
@@ -170,37 +170,6 @@ def _make_param_id(config, settings, obs_path, *, mcmc, options_key, options):
     )
     kwargs[options_key] = options
     return CVS0DParamID(**kwargs)
-
-
-def _has_run_uq(param_id) -> bool:
-    """Whether this CA can run UQ on an already-built engine (CA #392).
-
-    Older CA only offers ``run_mcmc()`` on an object constructed with
-    ``mcmc_instead=True``, so the caller must keep building a second one.
-    """
-    return callable(getattr(param_id, "run_UQ", None))
-
-
-def uq_options_kwarg() -> str:
-    """Whether this CA takes ``UQ_options=`` or the older ``mcmc_options=``.
-
-    CA renamed the argument once MCMC became one method of uncertainty
-    quantification rather than the whole of it. It still accepts the old name as a
-    deprecated alias that warns on every construction, so detecting the supported
-    spelling keeps a current CA quiet without breaking an older one.
-    """
-    try:
-        import inspect
-
-        from ca_imports import ca_from
-
-        CVS0DParamID = ca_from("param_id.paramID", "CVS0DParamID")
-
-        if "UQ_options" in inspect.signature(CVS0DParamID.__init__).parameters:
-            return "UQ_options"
-    except Exception:
-        pass
-    return "mcmc_options"
 
 
 def _flat_param_names(param_id):
@@ -270,14 +239,12 @@ def run(config: dict) -> dict:
         np.random.seed(int(seed))
     optimiser_options = _optimiser_options(settings, seed)
     uq_options = _uq_options(settings, seed)
-    uq_key = uq_options_kwarg()
     # Minimal inp_data_dict so ensure_mle_cost_type_for_bayesian_inner can pick the
     # MLE cost from our option dicts (required for ln L = -cost in MCMC / Laplace).
-    # Keyed by the spelling this CA reads, so the cost_type is found either way.
     inp = {
         "DEBUG": bool(settings.get("DEBUG", False)),
         "optimiser_options": optimiser_options,
-        uq_key: uq_options,
+        "UQ_options": uq_options,
     }
 
     run_calib = bool(settings.get("run_calibration_first", False))
@@ -306,20 +273,15 @@ def run(config: dict) -> dict:
     if method == "mcmc":
         # Reuse the calibration engine when one was just built: CA's run_UQ
         # promotes it in place (MCMC.from_param_id), so the model
-        # compiled for the GA is the one UQ samples with. Before CA #392 the
-        # only way in was mcmc_instead=True at construction, which forced a
-        # second CVS0DParamID and a second compile (CUFLynx #216/#217).
-        mcmc = ga if (run_calib and _has_run_uq(ga)) else _make_param_id(
-            config, settings, obs_path, mcmc=True, options_key=uq_key,
+        # compiled for the GA is the one UQ samples with.
+        mcmc = ga if run_calib else _make_param_id(
+            config, settings, obs_path, mcmc=True, options_key="UQ_options",
             options=uq_options,
         )
         best = best if run_calib else _best_from_reuse(mcmc, reuse_best)
         mcmc.set_best_param_vals(best)
         ensure_mle_cost_type_for_bayesian_inner(pid.mcmc_object, inp)
-        if _has_run_uq(mcmc):
-            mcmc.run_UQ(uq_options)
-        else:
-            mcmc.run_mcmc()  # a CA predating run_UQ
+        mcmc.run_UQ(uq_options)
         rank = getattr(mcmc, "rank", 0)
         if rank != 0:
             return {"rank": rank}
