@@ -9,7 +9,10 @@ PhLynx's ``flow.json`` / ``changes.json`` editor state, its SED-ML and
 So the rule this module implements is *copy everything, replace two things*:
 
 * the model CellML, by CUFLynx's flattened copy with the current parameter
-  values substituted into its ``initial_value`` attributes;
+  values substituted into its ``initial_value`` attributes -- or, when the
+  archive's model imports others (PhLynx's modular export, #407), by the
+  archive's own model with the values written into it, its imports and every
+  imported file kept;
 * params_for_id, by the study's own, so range and selection edits made in the
   params editor travel back.
 
@@ -43,6 +46,7 @@ from xml.sax.saxutils import quoteattr
 import omex_import
 import study_manifest
 import calibrated_cellml
+from cellml_flatten import has_imports
 from cellml_meta import CellMLParseError, parse_cellml
 from params_for_id import PARAM_COMPONENTS
 
@@ -275,8 +279,6 @@ def build_archive(
     back: its target's module array and parameters file with the merged values, which PhLynx
     re-imports. Each replaces a top-level member of the same name.
     """
-    new_cellml, report = substitute_values(cellml_text, values or {})
-
     members: dict[str, bytes] = {}
     entries: list[dict] = []
     parts: dict | None = None
@@ -301,8 +303,19 @@ def build_archive(
                 continue
             entries.append(dict(entry))
 
-    if parts is not None and parts["roles"]["cellml"]:
-        model_member = parts["roles"]["cellml"][0]
+    model_member = parts["roles"]["cellml"][0] if parts and parts["roles"]["cellml"] else None
+    # A modular model (PhLynx's export, #407): the values go into the archive's
+    # own model text and every module and units file leaves as it came, so
+    # PhLynx gets back its own files. A constant that lives in a module file is
+    # not in that text and is reported unresolved.
+    modular = model_member is not None and has_imports(parts["members"][model_member])
+    source_text = parts["members"][model_member].decode("utf-8") if modular else cellml_text
+    new_cellml, report = substitute_values(source_text, values or {})
+
+    if modular:
+        members[model_member] = new_cellml.encode("utf-8")
+        model_out = model_member
+    elif model_member:
         # Exactly one CellML leaves. The others are the master's imports, and
         # CUFLynx's model is the *flattened* document that subsumes them --
         # shipping both would hand PhLynx the same definitions twice, and per
