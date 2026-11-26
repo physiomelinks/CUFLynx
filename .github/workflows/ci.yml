@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, devel_FA]
+    branches: [main]   # a PR branch's push runs once, as its pull_request run
   pull_request:
 
 # All workflows pin ubuntu-24.04: the PyPI libcellml wheel needs libxml2.so.2, which ubuntu-latest
