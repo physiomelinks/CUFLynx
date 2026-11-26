@@ -81,3 +81,23 @@ def test_roundtrip_matches_reloaded_slider_values():
     loaded = {e.qname: e.initial_value for e in parse_params_for_id(csv, meta.initial_values)}
     for name, val in best.items():
         assert loaded[name] == pytest.approx(val)
+
+
+def test_a_component_inside_an_import_does_not_hide_the_next_one():
+    """An import's self-closing ``<component .../>`` has no body: a match
+    starting there ran on to the next ``</component>`` and swallowed it, so a
+    value in the first real component was reported written and never was."""
+    text = (
+        '<model xmlns="http://www.cellml.org/cellml/2.0#" name="m">\n'
+        '  <import xmlns:xlink="http://www.w3.org/1999/xlink" xlink:href="decay.cellml">\n'
+        '    <component component_ref="decay" name="decay_1"/>\n'
+        "  </import>\n"
+        '  <component name="instance_parameters">\n'
+        '    <variable name="decay_1_k" units="dimensionless" initial_value="0.5"'
+        ' interface="public"/>\n'
+        "  </component>\n"
+        "</model>\n"
+    )
+    new_text, report = calibrated_cellml(text, {"instance_parameters/decay_1_k": 0.25})
+    assert report["updated"] == ["instance_parameters/decay_1_k"]
+    assert parse_cellml(new_text).initial_values["instance_parameters/decay_1_k"] == 0.25

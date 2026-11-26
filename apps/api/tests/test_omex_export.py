@@ -507,3 +507,84 @@ def test_a_value_written_somewhere_else_is_still_reported():
     """The check still has to fire, or the warning becomes decorative."""
     report = {"resolved": {"heart/E": "heart_module/E_lv", "a/C": "parameters/C_a"}}
     assert omex_export.outside_parameter_components(report) == ["heart/E -> heart_module/E_lv"]
+
+
+# ---------------------------------------------------------------------------
+# A modular archive goes back as PhLynx's own files (#407)
+# ---------------------------------------------------------------------------
+#: PhLynx's modular export: ``model.cellml`` imports ``decay.cellml`` and
+#: ``units/ticks.cellml`` and holds every value in ``instance_parameters``.
+MODULAR = RESOURCES_DIR / "phlynx_modular_decay.omex"
+
+
+def test_a_modular_model_keeps_its_imports_and_its_module_files():
+    src = MODULAR.read_bytes()
+    out, report = omex_export.build_archive(
+        cellml_text="<model/>",  # the flattened copy is not what leaves
+        values={"instance_parameters/decay_1_k": 0.25},
+        source_archive=src,
+    )
+    # Files only: a zip's folder entries (`units/`) are not members.
+    before = {n: b for n, b in _read(src).items() if not n.endswith("/")}
+    after = _read(out)
+    assert set(after) == set(before)
+    for name in set(before) - {"manifest.xml", "model.cellml"}:
+        assert after[name] == before[name], name
+    model = after["model.cellml"].decode()
+    assert 'xlink:href="decay.cellml"' in model
+    assert 'xlink:href="units/ticks.cellml"' in model
+    from cellml_meta import parse_cellml
+
+    iv = parse_cellml(model).initial_values
+    assert iv["instance_parameters/decay_1_k"] == pytest.approx(0.25)
+    assert iv["instance_parameters/decay_2_k"] == pytest.approx(0.5)
+    assert report["updated"] == ["instance_parameters/decay_1_k"]
+    assert report["model_name"] == "model.cellml"
+    # The SED-ML stays master, as PhLynx's manifest marked it.
+    master = [omex_import.member_path(e["location"]) for e in _manifest_entries(out) if e["master"]]
+    assert master == ["document.sedml"]
+
+
+def test_a_value_not_in_the_modular_model_is_named_unresolved():
+    """A constant held in a module file is not in the model's own text; writing
+    it would mean editing PhLynx's module, so it is named rather than lost.
+    (``decay_1/k`` would resolve: it is ``instance_parameters/decay_1_k``.)"""
+    _, report = omex_export.build_archive(
+        cellml_text="<model/>",
+        values={"decay_1/c": 0.25},
+        source_archive=MODULAR.read_bytes(),
+    )
+    assert report["unresolved"] == ["decay_1/c"]
+    assert report["updated"] == []
+
+
+def test_a_sent_modular_study_re_imports_with_the_new_value(client, tmp_path, requires_simulation):
+    with open(MODULAR, "rb") as fh:
+        resp = client.post(
+            "/api/omex/upload",
+            params={"output_dir": str(tmp_path)},
+            files={"file": (MODULAR.name, fh, "application/zip")},
+        )
+    assert resp.status_code == 200, resp.text
+    resp = client.post(
+        "/api/phlynx/send",
+        json={
+            "model_id": resp.json()["model_id"],
+            "source": "current",
+            "values": {"instance_parameters/decay_1_k": 0.25},
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["unresolved"] == []
+    blob = base64.b64decode(resp.json()["base64"])
+    assert {"decay.cellml", "units/ticks.cellml"} <= set(_read(blob))
+
+    resp = client.post(
+        "/api/omex/upload",
+        params={"output_dir": str(tmp_path / "back")},
+        files={"file": ("back.omex", blob, "application/zip")},
+    )
+    assert resp.status_code == 200, resp.text
+    variables = client.get(f"/api/models/{resp.json()['model_id']}/variables").json()
+    assert variables["initial_values"]["instance_parameters/decay_1_k"] == pytest.approx(0.25)
+    assert variables["odes"] == ["decay_1/x", "decay_2/x"]

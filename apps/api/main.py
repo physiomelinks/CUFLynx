@@ -1784,7 +1784,7 @@ def phlynx_send(req: PhlynxSendRequest):
 
     Every member of the archive the study was loaded from is returned
     byte-for-byte except the model (flattened, with the chosen values
-    substituted) and params_for_id (refreshed from the study). obs_data is never
+    substituted; a modular model keeps its imports) and params_for_id (refreshed from the study). obs_data is never
     replaced, only added when the archive has none. See :mod:`omex_export`.
     """
     record = _get_model(req.model_id)

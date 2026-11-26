@@ -23,7 +23,12 @@ from cellml_meta import parse_cellml
 from params_for_id import _build_gen_index, resolve_model_qname
 
 _VARIABLE_TAG = re.compile(r"<variable\b[^>]*?/?>")
-_COMPONENT = re.compile(r'<component\b[^>]*?\bname="(?P<name>[^"]+)".*?</component>', re.S)
+# A component with a body. The self-closing `<component .../>` inside an
+# `<import>` is not one, and must not start a match that runs on into the next
+# real component.
+_COMPONENT = re.compile(
+    r'<component\b[^>]*?\bname="(?P<name>[^"]+)"[^>]*(?<!/)>.*?</component>', re.S
+)
 
 
 def _format_value(val: float) -> str:

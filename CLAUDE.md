@@ -217,7 +217,8 @@ A study travels between the two apps as a **COMBINE archive**, and the contract 
 asymmetric: CUFLynx owns the model's constants and **nothing else in the archive**.
 So `unpack` returns every member and the parsed manifest — not just the four roles
 it understands — and `build_archive` copies them all back byte-for-byte with exactly
-two exceptions: the model CellML (flattened, with the chosen values substituted) and
+two exceptions: the model CellML (flattened, with the chosen values substituted;
+a modular model keeps its own text and imports, see below) and
 params_for_id (refreshed from the study, so range/selection edits travel). **obs_data
 is never replaced** — verbatim when the archive has one, *added* only when it does
 not. PhLynx's `flow.json` / `changes.json` / `module_config.json` / SED-ML /
@@ -250,7 +251,11 @@ Three traps:
   module files beside it and units from `units/`. `unpack` keys CellMLs by archive
   path and follows a SED-ML master to its model; `cellml_flatten.flatten_bundle`
   writes the bundle at those paths. Writing by basename breaks every `units/` href.
-  `resources/phlynx_modular_decay.omex` is PhLynx's own output.
+  `resources/phlynx_modular_decay.omex` is PhLynx's own output. **Sending it back**
+  writes the values into the archive's own `model.cellml` text (PhLynx keeps every
+  value in its `instance_parameters`) and returns the module and units files
+  verbatim; a value whose constant lives in a module file comes back `unresolved`
+  rather than being written into PhLynx's module.
 
 Value substitution goes through `calibrated_model.calibrated_cellml` — the same
 writer the calibrated-model save uses, so a send and a saved best fit produce the
