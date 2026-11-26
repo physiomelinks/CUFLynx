@@ -40,8 +40,28 @@ DEFAULT_TIMEOUT = 900.0
 _EOF = object()
 
 
+# How long a newer live run waits for the one in flight before stopping it.
+# Short enough that a 230 s run of a whole-cell model does not hold every later
+# click, long enough that a sub-second run finishes and keeps its compiled model
+# (stopping the worker throws away every model it has compiled).
+SUPERSEDE_AFTER = 3.0
+
+
 class WorkerError(RuntimeError):
     """The worker could not be started, or died with a request in flight."""
+
+
+class WorkerStopped(WorkerError):
+    """The request in flight was stopped on purpose: ``reason`` is
+    ``"superseded"`` (a newer live run) or ``"cancelled"`` (the user)."""
+
+    def __init__(self, reason: str):
+        super().__init__(f"the live run was {reason}")
+        self.reason = reason
+
+
+class WorkerGone(WorkerError):
+    """The worker was stopped under an earlier request: start a new one and retry."""
 
 
 class SimWorker:
@@ -64,6 +84,10 @@ class SimWorker:
         self._stdout_thread: threading.Thread | None = None
         self._next_id = 0
         self._lock = threading.Lock()
+        # Whether the request in flight is a live run, which a newer live run or
+        # the user may stop; None when the worker is idle.
+        self._in_flight_live: bool | None = None
+        self._interrupted: str | None = None
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -171,48 +195,86 @@ class SimWorker:
     # ------------------------------------------------------------------
     # The wire
     # ------------------------------------------------------------------
-    def call(self, op: str, **payload) -> dict:
+    def interrupt(self, reason: str) -> bool:
+        """Stop the worker under a live run in flight; whether one was stopped.
+
+        The process is killed, since a solver mid-run cannot be asked to stop:
+        the stopped call raises ``WorkerStopped(reason)``, a call waiting behind
+        it ``WorkerGone``, and the engine starts a new worker.
+        """
+        if not self._in_flight_live:
+            return False
+        proc = self._proc
+        if proc is None or proc.poll() is not None:
+            return False
+        self._interrupted = reason
+        proc.kill()
+        return True
+
+    def call(self, op: str, *, live: bool = False, **payload) -> dict:
         """Send one request and return the worker's reply.
 
         Serialised: one worker, one model cache, one request at a time. That
         matches the in-process engine, which held a lock around exactly the same
         work for exactly the same reason.
+
+        A ``live`` run (the plots' own run) that waits more than
+        ``SUPERSEDE_AFTER`` seconds behind another live run stops it: the plots
+        only ever show the newest run, so the older one is wasted work.
         """
-        with self._lock:
-            proc = self._proc
-            if proc is None or proc.poll() is not None:
-                raise WorkerError(self._died_message())
+        if live and not self._lock.acquire(timeout=SUPERSEDE_AFTER):
+            self.interrupt("superseded")
+            self._lock.acquire()
+        elif not live:
+            self._lock.acquire()
+        try:
+            return self._call_locked(op, live, payload)
+        finally:
+            self._lock.release()
 
-            self._next_id += 1
-            request = {"id": self._next_id, "op": op, **payload}
-            try:
-                proc.stdin.write(json.dumps(request) + "\n")
-                proc.stdin.flush()
-            except (BrokenPipeError, OSError, ValueError) as exc:
-                raise WorkerError(self._died_message()) from exc
+    def _call_locked(self, op: str, live: bool, payload: dict) -> dict:
+        proc = self._proc
+        if proc is None or proc.poll() is not None:
+            if self._interrupted:
+                raise WorkerGone(self._died_message())
+            raise WorkerError(self._died_message())
 
-            try:
-                line = self._replies.get(timeout=self.timeout)
-            except queue.Empty:
-                # Hung rather than dead. Kill it: its state is unknown, and the
-                # alternative is holding this lock until the process is reaped by
-                # something else.
-                tail = "\n".join(self._stderr)
+        self._next_id += 1
+        request = {"id": self._next_id, "op": op, **payload}
+        try:
+            proc.stdin.write(json.dumps(request) + "\n")
+            proc.stdin.flush()
+        except (BrokenPipeError, OSError, ValueError) as exc:
+            raise WorkerError(self._died_message()) from exc
+
+        self._in_flight_live = live
+        try:
+            line = self._replies.get(timeout=self.timeout)
+        except queue.Empty:
+            # Hung rather than dead. Kill it: its state is unknown, and the
+            # alternative is holding this lock until the process is reaped by
+            # something else.
+            tail = "\n".join(self._stderr)
+            self.stop()
+            raise WorkerError(
+                f"the simulation worker stopped responding after {self.timeout:g}s "
+                f"and was stopped. It runs in {self.python or 'this interpreter'}; "
+                f"a first compile can be slow, but this is long enough that "
+                f"something is stuck." + (f"\n{tail}" if tail else "")
+            ) from None
+        finally:
+            self._in_flight_live = None
+        if line is _EOF:
+            if self._interrupted:
                 self.stop()
-                raise WorkerError(
-                    f"the simulation worker stopped responding after {self.timeout:g}s "
-                    f"and was stopped. It runs in {self.python or 'this interpreter'}; "
-                    f"a first compile can be slow, but this is long enough that "
-                    f"something is stuck." + (f"\n{tail}" if tail else "")
-                ) from None
-            if line is _EOF:
-                raise WorkerError(self._died_message())
-            try:
-                return json.loads(line)
-            except ValueError as exc:
-                raise WorkerError(
-                    f"the simulation worker sent something that is not a reply: {line[:200]!r}"
-                ) from exc
+                raise WorkerStopped(self._interrupted)
+            raise WorkerError(self._died_message())
+        try:
+            return json.loads(line)
+        except ValueError as exc:
+            raise WorkerError(
+                f"the simulation worker sent something that is not a reply: {line[:200]!r}"
+            ) from exc
 
     def _died_message(self) -> str:
         proc = self._proc

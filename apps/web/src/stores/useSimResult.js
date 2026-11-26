@@ -17,14 +17,25 @@ export function useSimResult() {
   // stand in for. The url carries a per-run token, so it is its own
   // cache-buster and nothing here has to version it.
   const solverPlots = ref([])
-  const status = ref('idle') // idle | running | ok | error
+  const status = ref('idle') // idle | running | ok | error | cancelled
   const message = ref('')
   const lastRunMs = ref(null)
+  // When the run in progress started (Date.now()), for the elapsed time beside
+  // "Simulating..."; null when no run is in progress.
+  const startedAt = ref(null)
 
   function setRunning() {
     status.value = 'running'
     message.value = ''
     warnings.value = []
+    startedAt.value = Date.now()
+  }
+
+  // The user stopped the run: the last result stays on screen.
+  function setCancelled(msg = '') {
+    status.value = 'cancelled'
+    message.value = msg
+    startedAt.value = null
   }
 
   function setResult(data, elapsedMs = null) {
@@ -41,6 +52,7 @@ export function useSimResult() {
     experiments.value = []
     status.value = 'ok'
     lastRunMs.value = elapsedMs
+    startedAt.value = null
   }
 
   function setExperiments(exps, warns = [], elapsedMs = null, runCost = null, plots = []) {
@@ -51,6 +63,7 @@ export function useSimResult() {
     solverPlots.value = plots ?? []
     status.value = 'ok'
     lastRunMs.value = elapsedMs
+    startedAt.value = null
   }
 
   // A new model (or a new obs_data, which regroups the plots) has nothing to do
@@ -62,6 +75,7 @@ export function useSimResult() {
   function setError(msg) {
     status.value = 'error'
     message.value = msg
+    startedAt.value = null
   }
 
   return {
@@ -73,7 +87,9 @@ export function useSimResult() {
     status,
     message,
     lastRunMs,
+    startedAt,
     setRunning,
+    setCancelled,
     setResult,
     setExperiments,
     setError,

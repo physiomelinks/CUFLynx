@@ -23,6 +23,8 @@ export function errorMessage(e) {
   const data = res?.data
   const detail = typeof data === 'string' ? data : data?.detail
   if (typeof detail === 'string' && detail.trim()) return detail
+  // A structured detail that carries its own wording (a stopped live run's 409).
+  if (typeof detail?.message === 'string' && detail.message.trim()) return detail.message
   // 422s from FastAPI validation arrive as a list of {loc, msg} objects.
   if (Array.isArray(detail) && detail.length) {
     return detail.map((d) => d?.msg || JSON.stringify(d)).join('; ')
@@ -187,6 +189,24 @@ export async function simulate(modelId, params, options = {}) {
   // skipped instead of failing the run (#150).
   if (options.bestEffortOutputs) body.best_effort_outputs = true
   const { data } = await axios.post(url('/api/simulate'), body)
+  return data
+}
+
+/**
+ * Why a live run answered without a result: 'superseded' (a newer live run took
+ * the worker) or 'cancelled', or null for any other failure.
+ */
+export function liveRunStopped(e) {
+  if (e?.response?.status !== 409) return null
+  return e.response.data?.detail?.stopped ?? null
+}
+
+/**
+ * Stop the live run in flight. Resolves to {cancelled, reason?}: only a run in
+ * the simulation worker (a Python chosen in Settings) can be stopped.
+ */
+export async function cancelLiveRun() {
+  const { data } = await axios.post(url('/api/simulate/cancel'))
   return data
 }
 
