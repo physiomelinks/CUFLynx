@@ -98,6 +98,8 @@ for runner in (
     "calibrated_cellml.py",
     "cellml_meta.py",
     "params_for_id.py",
+    # which components hold a model's parameters (PhLynx's by id, #422); both import it
+    "phlynx_components.py",
     # uq_runner rewrites an obs_data (MLE cost_type) and reads its items through
     # obs_data's helper.
     "obs_data.py",

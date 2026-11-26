@@ -35,16 +35,8 @@ from xml.sax.saxutils import quoteattr
 
 import omex_import
 from calibrated_cellml import calibrated_cellml
+from cellml_meta import CellMLParseError, parse_cellml
 from params_for_id import PARAM_COMPONENTS
-
-#: The components #287 says PhLynx will read parameter changes back out of. A
-#: value written anywhere else is still written -- CUFLynx does not own the
-#: model's layout -- but the caller is told, because PhLynx will not pick it up.
-#:
-#: One list, shared with the resolver, so the components CUFLynx *finds* a
-#: parameter in and the ones it reports as readable cannot drift apart -- which
-#: is how #345 was noticed: PhLynx renamed these and only one side knew.
-PHLYNX_PARAMETER_COMPONENTS = PARAM_COMPONENTS
 
 #: The name a synthesised archive gives its model. PhLynx's URL loader looks the
 #: member up by this exact name today, and per #287 the filename is ours to
@@ -111,14 +103,28 @@ def substitute_values(cellml_text: str, values: dict[str, float]) -> tuple[str, 
     return calibrated_cellml(cellml_text, values)
 
 
-def outside_parameter_components(report: dict) -> list[str]:
-    """Written names whose owning component is not one PhLynx reads back (#287)."""
+def outside_parameter_components(report: dict,
+                                 components: tuple[str, ...] = PARAM_COMPONENTS) -> list[str]:
+    """Written names whose owning component is not one PhLynx reads back (#287).
+
+    A value written anywhere else is still written -- CUFLynx does not own the
+    model's layout -- but the caller is told, because PhLynx will not pick it up.
+    ``components``: the model's parameter components (``CellMLModel.parameter_components``:
+    PhLynx's by id, #422), the same ones the resolver prefers, so what CUFLynx finds a
+    parameter in and what it reports as readable cannot drift apart (#345)."""
     out = []
     for full_name, key in (report.get("resolved") or {}).items():
         component = key.partition("/")[0]
-        if component not in PHLYNX_PARAMETER_COMPONENTS:
+        if component not in components:
             out.append(f"{full_name} -> {key}")
     return sorted(out)
+
+
+def _parameter_components(cellml_text: str) -> tuple[str, ...]:
+    try:
+        return parse_cellml(cellml_text).parameter_components
+    except CellMLParseError:
+        return PARAM_COMPONENTS
 
 
 def _relative(location: str) -> str:
@@ -244,7 +250,7 @@ def build_archive(
     report = {
         "updated": report.get("updated", []),
         "unresolved": report.get("unresolved", []),
-        "outside_parameters": outside_parameter_components(report),
+        "outside_parameters": outside_parameter_components(report, _parameter_components(new_cellml)),
         "model_name": model_out,
         "members": sorted(members),
     }

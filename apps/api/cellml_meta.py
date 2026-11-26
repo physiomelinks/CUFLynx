@@ -18,6 +18,8 @@ import re
 from dataclasses import dataclass, field
 from xml.etree import ElementTree as ET
 
+import phlynx_components
+
 
 def _strip_ns(tag: str) -> str:
     """Return the local tag name, dropping any ``{namespace}`` prefix."""
@@ -40,10 +42,18 @@ class CellMLModel:
     # unit names are identifiers, not typeset expressions, so no pretty-printing
     # or unit algebra is attempted here.
     units: dict[str, str] = field(default_factory=dict)
+    # component name -> its ``id`` attribute (None when it has none)
+    component_ids: dict[str, str | None] = field(default_factory=dict)
 
     @property
     def variable_count(self) -> int:
         return len(self.all_names)
+
+    @property
+    def parameter_components(self) -> tuple[str, ...]:
+        """The components holding the model's parameters: PhLynx's by their ids, else by name
+        (:func:`phlynx_components.parameter_components`)."""
+        return phlynx_components.parameter_components(self.component_ids)
 
     def as_dict(self) -> dict:
         return {
@@ -133,6 +143,7 @@ def parse_cellml(data: bytes | str) -> CellMLModel:
         comp_name = comp.get("name")
         if not comp_name:
             continue
+        model.component_ids[comp_name] = comp.get("id")
         states, computed = _classify_math(comp)
 
         for var in comp:
