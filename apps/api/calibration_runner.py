@@ -32,6 +32,7 @@ from pathlib import Path
 import ca_obs
 import emulator_config
 from ca_imports import ensure_ca_path
+from optimiser_budget import default_method
 
 # Force a headless matplotlib backend before circulatory_autogen imports pyplot
 # (the post-calibration error plots run server-side with no display).
@@ -158,9 +159,10 @@ def run(config: dict) -> dict:
         np.random.seed(int(seed))
 
     optimiser_options = _optimiser_options(settings, seed)
+    method = settings.get("param_id_method") or default_method()
 
     print(
-        f"Starting {settings.get('param_id_method', 'genetic_algorithm')} "
+        f"Starting {method} "
         f"calibration ({optimiser_options.get('num_calls_to_function', '?')} max evals)",
         flush=True,
     )
@@ -173,7 +175,7 @@ def run(config: dict) -> dict:
     param_id = CVS0DParamID(
         model_path=config["model_path"],
         model_type=model_type,
-        param_id_method=settings.get("param_id_method", "genetic_algorithm"),
+        param_id_method=method,
         file_name_prefix=config.get("file_prefix", "model"),
         params_for_id_path=config["params_path"],
         param_id_obs_path=config["obs_path"],

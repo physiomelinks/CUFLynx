@@ -240,10 +240,10 @@ def test_export_pipeline_writes_self_contained_folder(client, tmp_path):
 # CA present. These cases therefore assert the null contract directly.
 # ---------------------------------------------------------------------------
 NULLABLE_NUMERIC_SETTINGS = [
-    # Unset budget with no method named: one genetic-algorithm population, from CA's
+    # Unset budget with no method named: CA's default method's budget, from CA's
     # schema (test_optimiser_budget pins the arithmetic).
     ("calibration", "num_calls_to_function", ("optimiser_options", "num_calls_to_function"),
-     lambda: optimiser_budget.default_num_calls("genetic_algorithm")),
+     lambda: optimiser_budget.default_num_calls(optimiser_budget.default_method())),
     ("calibration", "cost_convergence", ("optimiser_options", "cost_convergence"), 0.0001),
     ("calibration", "max_patience", ("optimiser_options", "max_patience"), 10),
     ("sensitivity", "num_samples", ("sa_options", "num_samples"), 256),
@@ -274,7 +274,7 @@ def test_null_settings_still_yaml_serialisable():
         uq={"num_walkers": None, "cost_type": None},
     )
     # Nulls must not leak through into the yaml CA reads back.
-    assert ui["param_id_method"] == "genetic_algorithm"
+    assert ui["param_id_method"] == optimiser_budget.default_method()
     assert ui["sa_options"]["method"] == "sobol"
     assert ui["UQ_options"]["cost_type"] == "gaussian_MLE"
     yaml.safe_dump(ui)

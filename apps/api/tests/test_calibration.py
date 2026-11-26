@@ -110,7 +110,8 @@ def _wait(client, job_id, timeout=15):
 # ---------------------------------------------------------------------------
 def test_calibration_defaults(client):
     body = client.get("/api/calibration/defaults").json()
-    assert body["param_id_method"] == "genetic_algorithm"
+    # param_id_method is CA's default (test_optimiser_budget covers both ways).
+    assert body["param_id_method"] in {m["value"] for m in body["methods"]}
     # methods are introspected from CA's PARAM_ID_METHODS schema (fallback list
     # when CA lacks it): a list of {value, label, gradient_based, ...}.
     methods = body["methods"]
