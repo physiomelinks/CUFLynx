@@ -357,7 +357,7 @@ function onRun() {
          would be a control that cannot work, and the degraded form is what read
          as a bug in the first place. -->
     <p v-if="needsStudy" class="hint" data-testid="emu-needs-study">
-      Load a model, an obs_data.json and a params_for_id.csv to train an emulator.
+      Load a model, an obs_data.json and a params_for_id.json to train an emulator.
     </p>
 
     <div v-if="showUnavailable" class="emu-unavailable" data-testid="emu-unavailable">
