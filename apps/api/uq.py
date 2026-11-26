@@ -46,6 +46,10 @@ class UQJob:
         self.burn_in: float = 0.5
         self.target_steps: int | None = None
         self.params: list | None = None  # per-parameter posterior summaries
+        # Profile likelihood (laplace method with ia_options.method
+        # profile_likelihood): CA's profiles, in place of a posterior.
+        self.profiles: list | None = None
+        self.ia_method: str | None = None
         self.error: str | None = None
         # Set when the run finished but its process failed on the way out.
         self.warning: str | None = None
@@ -182,8 +186,19 @@ class UQManager:
             # The posterior is re-derived from the samples the run persisted, not
             # from a summary it serialised for us (#210). Which method ran is the
             # only thing no file holds, so it comes over the pipe.
+            meta = read_meta_line(job.lines, META_MARKER)
+            job.ia_method = meta.get("ia_method")
+            if finished and job.ia_method:
+                job.profiles = ca_run_history.profile_likelihood(job.output_dir)
+                if job.profiles is not None:
+                    job.method = meta.get("method")
+                    job.state = "done"
+                    if code != 0:
+                        job.warning = teardown_warning(code, job.lines)
+                    return
             params = (
-                ca_run_history.uq_distributions(job.output_dir) if finished else None
+                ca_run_history.uq_distributions(job.output_dir)
+                if finished and not job.ia_method else None
             )
             if params is not None:
                 try:
@@ -197,8 +212,11 @@ class UQManager:
                     job.state = "error"
                     job.error = f"failed to read results: {exc}"
             else:
+                from sensitivity import fail_message  # noqa: PLC0415
+
                 job.state = "error"
-                job.error = job.error or f"runner exited with code {code}"
+                job.error = (job.error or fail_message(job.lines, FAIL_MARKER)
+                             or f"runner exited with code {code}")
 
     def _salvage_partial(self, job: UQJob) -> None:
         """Build the posterior from the chain a cancelled run had already sampled.
@@ -255,6 +273,8 @@ class UQManager:
                 "next_offset": offset + len(lines),
                 "method": job.method,
                 "params": job.params,
+                "profiles": job.profiles,
+                "ia_method": job.ia_method,
                 "error": job.error,
                 "warning": job.warning,
                 "coverage": job.coverage,

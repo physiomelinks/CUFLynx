@@ -39,6 +39,16 @@ vi.mock('./lib/api', () => ({
   cancelUQ: vi.fn().mockResolvedValue({}),
   getSensitivityDefaults: vi.fn().mockResolvedValue({}),
   getUQDefaults: vi.fn().mockResolvedValue({}),
+  getIdentifiabilityDefaults: vi.fn().mockResolvedValue({}),
+  listSobolRuns: vi.fn().mockResolvedValue({ runs: [] }),
+  startParamReduction: vi.fn().mockResolvedValue({ job_id: 'job-5' }),
+  getParamReductionStatus: vi.fn().mockResolvedValue({ state: 'error', lines: [], error: '' }),
+  cancelParamReduction: vi.fn().mockResolvedValue({}),
+  paramReductionHeatmapUrl: vi.fn((d) => `/api/param_reduction/heatmap?report_dir=${d}`),
+  adoptReducedParams: vi.fn().mockResolvedValue({
+    params: [{ qnames: ['m/alpha'], min: 0.1, max: 7 }],
+    filename: 'reduced_params_for_id.json',
+  }),
   getEmulatorDefaults: vi.fn().mockResolvedValue({}),
   getEmulatorInfo: vi.fn().mockResolvedValue({}),
   predictEmulator: vi.fn().mockResolvedValue({ labels: [], values: [], cost: null }),
@@ -82,6 +92,7 @@ import {
   predictEmulator,
   costAtParams,
   getEmulatorInfo,
+  adoptReducedParams,
 } from './lib/api'
 import { setNotificationCtor } from './lib/notify'
 import App from './App.vue'
@@ -2754,7 +2765,7 @@ describe('guided tour', () => {
     expect(tour.exists()).toBe(true)
     expect(tour.props('step')).toBe(0)
     expect(tour.props('steps')).toBe(TOUR_STEPS)
-    expect(tour.props('steps').length).toBe(41)
+    expect(tour.props('steps').length).toBe(43)
     // The ctx is getters over App's own state, read on the overlay's tick.
     expect(typeof tour.props('ctx').hasModel).toBe('function')
     expect(tour.props('ctx').hasModel()).toBe(false)
@@ -3076,5 +3087,31 @@ describe('a baseline set on a parameter that is not calibrated (#350)', () => {
     expect(values['aortic_root/C']).toBe(1e-8)
     expect(Object.keys(values)).toEqual(['aortic_root/C'])
     wrapper.unmount()
+  })
+})
+
+describe('App.vue Identifiability tab', () => {
+  it('sits before the Sensitivity tab', () => {
+    const wrapper = shallowMount(App)
+    const ids = wrapper
+      .findAll('.left-tabs button')
+      .map((b) => b.attributes('data-testid'))
+    expect(ids).toContain('tab-ia')
+    expect(ids.indexOf('tab-ia')).toBe(ids.indexOf('tab-sensitivity') - 1)
+    expect(ids.indexOf('tab-ia')).toBeGreaterThan(ids.indexOf('tab-emulator'))
+  })
+
+  it('"Calibrate these" adopts the reduced params_for_id and opens Calibration', async () => {
+    const wrapper = shallowMount(App)
+    await flushPromises()
+    await wrapper.find('[data-testid="tab-ia"]').trigger('click')
+    wrapper.findComponent({ name: 'IAPanel' }).vm.$emit('adopt', '/out/sa/param_reduction')
+    await flushPromises()
+
+    expect(adoptReducedParams).toHaveBeenCalledWith(null, '/out/sa/param_reduction')
+    expect(wrapper.find('[data-testid="tab-calibration"]').classes()).toContain('active')
+    expect(wrapper.findComponent({ name: 'FileImport' }).props('loadedFilename')).toBe(
+      'reduced_params_for_id.json',
+    )
   })
 })

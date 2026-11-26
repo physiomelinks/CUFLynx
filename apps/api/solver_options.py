@@ -639,7 +639,29 @@ def _introspect_analysis_options() -> dict:
             "options_key": meta.get("options_key"),
             "options": [dict(o) for o in (meta.get("options") or [])],
         }
+    if "param_reduction" in out:
+        _annotate_reduction_methods(out["param_reduction"]["options"])
     return out
+
+
+def _annotate_reduction_methods(options: list[dict]) -> None:
+    """Mark each ``param_reduction`` option with the ``methods`` that read it.
+
+    From CA's ``REDUCTIONS`` registry (each method's ``OPTIONS``), so a form shows
+    only the chosen method's options -- ``ParamReduction.from_options`` refuses an
+    option of another method set to anything but its default. ``method`` and the
+    path options are read by every method and stay unmarked, as does everything
+    when this CA has no registry.
+    """
+    try:
+        reductions = ca_from("sensitivity_analysis.parameter_reduction", "REDUCTIONS")
+    except Exception:  # noqa: BLE001 - an older CA, or one missing pandas: show them all
+        return
+    for option in options:
+        methods = [name for name, cls in reductions.items()
+                   if option.get("name") in getattr(cls, "OPTIONS", ())]
+        if methods:
+            option["methods"] = methods
 
 
 #: Source text run by *another* interpreter, so it cannot call :mod:`ca_imports`

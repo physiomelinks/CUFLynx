@@ -48,7 +48,7 @@
  * 16,17,18 · 14,15 (user-defined ops) -> 19,20,21 · 14dup -> 22 · 15dup -> 23 ·
  * 16,17,18 -> 24,25,26 · 19 -> 27 · 20 -> 28 · 21 -> 29 · 22 -> 30 · 23,24 ->
  * 31,32 · 25,26 -> 33,34 · 27,28 -> 35,36 · +37 progress · +38 analysis ·
- * +39,40 the two exports.
+ * +39,40 the two exports · +ia-tab, ia-run for the Identifiability tab (43).
  */
 
 /** Is an anchor on the page right now? Queries `document`, not `#app`: every
@@ -328,7 +328,8 @@ export const TOUR_STEPS = Object.freeze([
   },
 
   /* ---------------------------------------------------------------- *
-   * 29-41  Emulator, sensitivity, calibration, UQ, progress, analysis, export
+   * 29-43  Emulator, identifiability, sensitivity, calibration, UQ, progress,
+   *        analysis, export
    *
    * Every pane below is `v-show`n, so each section opens with a step that asks
    * the user to click its tab -- the tour cannot click it for them. Those steps
@@ -365,6 +366,26 @@ export const TOUR_STEPS = Object.freeze([
     // Not gated on ctx.hasEmulator(): the greyed-out state is exactly what the
     // copy explains, so the step is worth seeing before anything is trained.
     text: 'This button makes all other simulations use the created emulator — sensitivity, calibration and UQ evaluate it instead of the solver. It stays greyed out until an emulator has been trained, and the sliders keep using the real solver so you can always see the gap.',
+  },
+  {
+    id: 'ia-tab',
+    target: '[data-testid="tab-ia"]',
+    side: 'right',
+    title: 'Identifiability',
+    text: 'This answers "which parameters can the data actually fix?", so a calibration fits only those. Click the tab.',
+    when: (ctx) => ctx.leftTab() !== 'ia',
+    advanceOn: { event: 'click' },
+  },
+  {
+    id: 'ia-run',
+    target: '[data-testid="pr-settings"]',
+    side: 'right',
+    text: 'Parameter reduction reads a Sobol run (an existing one, or one it runs first with the Sensitivity tab\'s settings) and keeps the parameters that move the data by more than its noise, one per independent direction. "Calibrate these" makes the kept ones the params_for_id the Calibration tab fits.',
+    bullets: [
+      'pca scales the outputs by their obs_data std, so a parameter whose effect is below the noise is dropped',
+      'sobol keeps the n_params with the highest Sobol index',
+      'below it, the identifiability analysis checks a best fit: a Laplace approximation, or profile likelihood intervals',
+    ],
   },
   {
     id: 'sensitivity-tab',
