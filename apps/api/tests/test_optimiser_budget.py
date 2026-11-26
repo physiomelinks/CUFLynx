@@ -126,6 +126,14 @@ def test_a_study_steps_calibrate_first_falls_back_to_one_population(fake_schema)
     assert budget(num_calls_to_function=300) == 300
 
 
+def test_a_study_steps_calibrate_first_takes_the_methods_budget(ca_default_cma):
+    import main
+
+    assert main._study_ga_options({}, {"cost_convergence": 1e-4})["num_calls_to_function"] == 5000
+    assert main._study_ga_options({"param_id_method": "genetic_algorithm"},
+                                  {"cost_convergence": 1e-4})["num_calls_to_function"] == 27
+
+
 def test_uq_calibrate_first_falls_back_to_one_population(fake_schema):
     """The UQ runner's calibrate-first search (and the profile likelihood's
     re-calibrations, which take its optimiser_options) gets the same fallback."""
@@ -170,8 +178,8 @@ def test_defaults_routes_without_a_declared_default_offer_ga(client, fake_schema
 def test_export_and_runners_fall_back_to_cas_default_method(monkeypatch, ca_default_cma):
     user_inputs = export_pipeline.build_user_inputs(
         file_prefix="m", model_type="cellml_only", solver="CVODE_myokit", solver_info={},
-        dt=0.01, pre_time=0.0, sim_time=1.0, model_file="m.cellml", obs_file=None,
-        params_for_id_file=None, calibration={}, sensitivity=None, uq=None, enabled=None,
+        dt=0.01, pre_time=0.0, sim_time=1.0, model_path="m.cellml", obs_path=None,
+        params_for_id_path=None, calibration={}, sensitivity=None, uq=None, enabled=None,
     )
     assert user_inputs["param_id_method"] == "CMA-ES"
     assert user_inputs["optimiser_options"]["num_calls_to_function"] == 5000

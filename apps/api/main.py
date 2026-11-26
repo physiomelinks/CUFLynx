@@ -4527,7 +4527,8 @@ def _study_ga_options(settings: dict, defaults: dict) -> dict:
     """``optimiser_options`` of the calibration a sensitivity or UQ run makes first.
 
     A setting the panel left empty (absent or null) takes its default: the budget is
-    one GA population (``optimiser_budget``), the smallest CA's GA accepts.
+    the method's own (``optimiser_budget``; one population for CA's GA, the smallest
+    it accepts).
     """
     from optimiser_budget import default_num_calls  # noqa: PLC0415
 
@@ -4537,7 +4538,8 @@ def _study_ga_options(settings: dict, defaults: dict) -> dict:
 
     num_calls = given("num_calls_to_function")
     if num_calls is None:
-        num_calls = default_num_calls("genetic_algorithm", debug=bool(settings.get("DEBUG")))
+        num_calls = default_num_calls(settings.get("param_id_method") or default_param_id_method(),
+                                      debug=bool(settings.get("DEBUG")))
     convergence = given("cost_convergence")
     patience = given("max_patience")
     opts = {"num_calls_to_function": int(num_calls),
@@ -4578,7 +4580,7 @@ def _study_calibration(record, req, config: dict, configured: str) -> list:
                 req.current_params, qnames, study_workflow.SLIDER_REASON))
         elif start_from == "best_fit":
             start = _study_point(plan, record.model_id, qnames)
-        method = settings.get("param_id_method", "genetic_algorithm")
+        method = settings.get("param_id_method") or default_param_id_method()
         extra = {"param_id_method": method,
                  "optimiser_options": _optimiser_options(study_workflow.options(settings),
                                                          _analysis_seed),
@@ -4624,7 +4626,7 @@ def _study_sensitivity(record, req, config: dict, configured: str) -> list:
         own = plan.main_id(study_workflow.LABELS["local" if local else "sobol"])
         at = None
         if first:
-            ga = {"param_id_method": settings.get("param_id_method", "genetic_algorithm"),
+            ga = {"param_id_method": (settings.get("param_id_method") or default_param_id_method()),
                   "optimiser_options": _study_ga_options(settings, {"cost_convergence": 0.0001})}
             at = plan.add("add_calibration", plan.first_id(study_workflow.LABELS["calibration"],
                                                           "result_from", own),
@@ -4810,7 +4812,7 @@ def _study_uq(record, config: dict, configured: str) -> list:
         own = plan.main_id(study_workflow.LABELS["profile"] if profile
                            else study_workflow.LABELS.get(method, "uq"))
         if first:
-            ga = {"param_id_method": settings.get("param_id_method", "genetic_algorithm"),
+            ga = {"param_id_method": (settings.get("param_id_method") or default_param_id_method()),
                   "optimiser_options": _study_ga_options(
                       settings, {"cost_convergence": 0.001, "cost_type": cost_type})}
             at = plan.add("add_calibration", plan.first_id(study_workflow.LABELS["calibration"],
@@ -4823,7 +4825,7 @@ def _study_uq(record, config: dict, configured: str) -> list:
         if profile:
             # a profile likelihood re-calibrates at each held value: it needs the budget a
             # calibration made first gets (CA's GA refuses a step with none)
-            refit = {"param_id_method": settings.get("param_id_method", "genetic_algorithm"),
+            refit = {"param_id_method": (settings.get("param_id_method") or default_param_id_method()),
                      "optimiser_options": _study_ga_options(
                          settings, {"cost_convergence": 0.001, "cost_type": cost_type})}
             plan.add("add_identifiability", own,

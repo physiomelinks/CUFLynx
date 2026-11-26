@@ -17,6 +17,7 @@ import pytest
 
 import calibration as calibration_mod
 import main
+import optimiser_budget
 import sensitivity as sensitivity_mod
 import study_workflow
 import uq as uq_mod
@@ -986,9 +987,9 @@ def test_a_profile_likelihood_is_an_identifiability_step(client, fake_runs, tmp_
     assert step["kind"] == "identifiability"
     assert step["settings"]["ia_options"]["method"] == "profile_likelihood"
     assert step["result_from"] == "calibration-1"
-    # its re-calibrations run with a budget (one GA population when the panel gave none):
+    # its re-calibrations run with a budget (the method's own when the panel gave none):
     # CA's GA refuses a step with no optimiser_options.num_calls_to_function
-    assert step["settings"]["param_id_method"] == "genetic_algorithm"
+    assert step["settings"]["param_id_method"] == optimiser_budget.default_method()
     assert step["settings"]["optimiser_options"]["num_calls_to_function"] > 0
     assert [p["param_name"] for p in status["profiles"]] == [QNAMES[0]]
     assert status["profiles"][0]["ci_95"] == {"lower": 0.8, "upper": 1.2}
