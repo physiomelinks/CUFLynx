@@ -1000,7 +1000,7 @@ const predictiveBandWidth = computed(() => `${(2 / (2 * PREDICTIVE_LIMIT)) * 100
         <span v-if="emulatorInUse" class="uq-method"> · in use for analyses</span>
       </h2>
       <p v-if="!hasEmulator" class="empty-hint">
-        Train an emulator in the Emulator tab to see how well it reproduces the
+        Train an emulator in the Surrogate tab to see how well it reproduces the
         model.
       </p>
       <template v-else>

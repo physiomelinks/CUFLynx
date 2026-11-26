@@ -348,9 +348,11 @@ function onRun() {
 <template>
   <section class="calibration-panel">
     <header class="cal-header">
-      <h2>Emulator</h2>
+      <h2>Surrogate</h2>
       <span class="cal-state" :data-state="state">{{ state }}</span>
     </header>
+    <!-- One subheading per kind of surrogate; reduced-order models will sit beside it. -->
+    <h3 class="section-title" data-testid="surrogate-emulator-heading">Emulator</h3>
 
     <!-- Emulation the chosen interpreter cannot do: the explanation, and nothing
          else. No settings, no Train button, no use tick box — every one of them
@@ -667,6 +669,11 @@ function onRun() {
   display: flex;
   align-items: center;
   justify-content: space-between;
+}
+.section-title {
+  margin: 0.2rem 0 0;
+  font-size: 0.85rem;
+  font-weight: 600;
 }
 .cal-state {
   font-size: 0.7rem;
